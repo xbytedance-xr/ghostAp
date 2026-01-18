@@ -113,15 +113,11 @@ class EmojiReaction:
 
     @staticmethod
     def on_smart_mode() -> str:
-        return EmojiType.SMART
+        return EmojiType.OK
 
     @staticmethod
     def on_coco_mode() -> str:
         return EmojiType.GET
-
-    @staticmethod
-    def on_shell_mode() -> str:
-        return EmojiType.OK
 
 
 class FeishuWSClient:
@@ -265,8 +261,6 @@ class FeishuWSClient:
                 print(f"⏭️ 跳过重复消息: {message_id}")
                 return
 
-            self._add_reaction(message_id, EmojiReaction.on_message_received())
-
             if message_type != "text":
                 self._reply_message(message_id, "⚠️ 目前仅支持文本消息")
                 return
@@ -295,6 +289,7 @@ class FeishuWSClient:
                 from ..mode import InteractionMode
                 self._mode_manager.enter_coco_mode(chat_id, auto=True)
                 self._add_reaction(message_id, EmojiReaction.on_coco_mode())
+                self._add_reaction(message_id, EmojiReaction.on_processing())
                 self._handle_coco_message(message_id, chat_id, text, project)
             else:
                 self._process_with_intent(message_id, chat_id, text, project)
@@ -560,22 +555,15 @@ class FeishuWSClient:
         
         current_mode = self._mode_manager.get_mode(chat_id)
         is_in_coco = current_mode == InteractionMode.COCO
-        is_in_shell = current_mode == InteractionMode.SHELL
-        
-        if is_in_shell:
-            self._add_reaction(message_id, EmojiReaction.on_shell_mode())
-            working_dir = self._get_working_dir(chat_id)
-            self.message_callback(message_id, chat_id, text, working_dir)
-            if project:
-                project.add_conversation("user", text, message_id)
-            return
         
         if is_in_coco:
             self._add_reaction(message_id, EmojiReaction.on_coco_mode())
+            self._add_reaction(message_id, EmojiReaction.on_processing())
             self._handle_coco_message(message_id, chat_id, text, project)
             return
 
         self._add_reaction(message_id, EmojiReaction.on_smart_mode())
+        self._add_reaction(message_id, EmojiReaction.on_processing())
 
         try:
             intent_result = self._intent_recognizer.recognize(text, is_in_coco)
@@ -631,12 +619,6 @@ class FeishuWSClient:
 
         elif intent == IntentType.EXIT_COCO:
             self._exit_coco_mode(message_id, chat_id, project=project)
-
-        elif intent == IntentType.ENTER_SHELL:
-            self._enter_shell_mode(message_id, chat_id, project=project)
-
-        elif intent == IntentType.EXIT_SHELL:
-            self._exit_shell_mode(message_id, chat_id, project=project)
 
         elif intent == IntentType.EXIT_MODE:
             self._exit_current_mode(message_id, chat_id, project=project)
@@ -899,55 +881,6 @@ class FeishuWSClient:
         else:
             self._reply_message(message_id, fmt.format_warning("当前不在编程模式中"))
 
-    def _enter_shell_mode(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
-        from ..mode import InteractionMode
-        
-        if self._mode_manager.is_shell_mode(chat_id):
-            working_dir = self._get_working_dir(chat_id)
-            self._reply_message(
-                message_id,
-                fmt.format_warning(f"已经在 Shell 模式中\n\n📁 工作目录: `{working_dir}`\n\n说「退出模式」或发送 /exit 退出")
-            )
-            return
-
-        if self._mode_manager.is_coco_mode(chat_id):
-            self._exit_coco_mode(message_id, chat_id, project)
-
-        self._mode_manager.enter_shell_mode(chat_id)
-        self._add_reaction(message_id, EmojiReaction.on_shell_executed())
-        
-        working_dir = self._get_working_dir(chat_id)
-        
-        if project:
-            content = f"💻 已进入 Shell 模式\n\n所有消息将作为 Shell 命令执行\n\n📁 工作目录: `{working_dir}`\n\n说「退出模式」或发送 `/exit` 退出"
-            msg_type, card_content = CardBuilder.build_project_response_card(
-                project, "💻 Shell 模式", content, show_buttons=True
-            )
-            response_id = self._reply_message_with_id(message_id, card_content, msg_type)
-            if response_id:
-                self._register_message_project(response_id, project)
-        else:
-            self._reply_message(message_id, f"💻 已进入 Shell 模式\n\n所有消息将作为 Shell 命令执行\n\n📁 工作目录: `{working_dir}`\n\n说「退出模式」或发送 `/exit` 退出")
-
-    def _exit_shell_mode(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
-        if not self._mode_manager.is_shell_mode(chat_id):
-            self._reply_message(message_id, fmt.format_warning("当前不在 Shell 模式中"))
-            return
-
-        self._mode_manager.exit_to_smart(chat_id)
-        self._add_reaction(message_id, EmojiReaction.on_done())
-        
-        if project:
-            content = "👋 已退出 Shell 模式\n\n当前为 🧠 智能模式"
-            msg_type, card_content = CardBuilder.build_project_response_card(
-                project, "已退出 Shell 模式", content, show_buttons=True
-            )
-            response_id = self._reply_message_with_id(message_id, card_content, msg_type)
-            if response_id:
-                self._register_message_project(response_id, project)
-        else:
-            self._reply_message(message_id, "👋 已退出 Shell 模式\n\n当前为 🧠 智能模式")
-
     def _exit_current_mode(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
         from ..mode import InteractionMode
         
@@ -955,8 +888,6 @@ class FeishuWSClient:
         
         if current_mode == InteractionMode.COCO:
             self._exit_coco_mode(message_id, chat_id, project)
-        elif current_mode == InteractionMode.SHELL:
-            self._exit_shell_mode(message_id, chat_id, project)
         else:
             self._reply_message(message_id, "🧠 当前已经在智能模式中")
 
@@ -1032,8 +963,6 @@ class FeishuWSClient:
             else:
                 self._reply_message(message_id, fmt.format_warning("Coco 会话已过期，请说「帮我写代码」重新开始"))
                 return
-
-        self._add_reaction(message_id, EmojiReaction.on_processing())
 
         global_working_dir = self._get_working_dir(chat_id)
         

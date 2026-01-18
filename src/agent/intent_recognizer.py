@@ -12,8 +12,6 @@ from ..config import get_settings
 class IntentType(Enum):
     ENTER_COCO = "enter_coco"
     EXIT_COCO = "exit_coco"
-    ENTER_SHELL = "enter_shell"
-    EXIT_SHELL = "exit_shell"
     EXIT_MODE = "exit_mode"
     CHANGE_DIR = "change_dir"
     SHELL_COMMAND = "shell"
@@ -178,8 +176,6 @@ class IntentRecognizer:
     INTENT_MAP = {
         "enter_coco": IntentType.ENTER_COCO,
         "exit_coco": IntentType.EXIT_COCO,
-        "enter_shell": IntentType.ENTER_SHELL,
-        "exit_shell": IntentType.EXIT_SHELL,
         "exit_mode": IntentType.EXIT_MODE,
         "coco_message": IntentType.COCO_MESSAGE,
         "change_dir": IntentType.CHANGE_DIR,
@@ -195,12 +191,8 @@ class IntentRecognizer:
     EXACT_COMMANDS = {
         "/coco": (IntentType.ENTER_COCO, "进入编程模式"),
         "/enter_coco": (IntentType.ENTER_COCO, "进入编程模式"),
-        "/shell": (IntentType.ENTER_SHELL, "进入 Shell 模式"),
-        "/enter_shell": (IntentType.ENTER_SHELL, "进入 Shell 模式"),
         "/end_coco": (IntentType.EXIT_COCO, "退出编程模式"),
         "/exit_coco": (IntentType.EXIT_COCO, "退出编程模式"),
-        "/end_shell": (IntentType.EXIT_SHELL, "退出 Shell 模式"),
-        "/exit_shell": (IntentType.EXIT_SHELL, "退出 Shell 模式"),
         "/exit": (IntentType.EXIT_MODE, "退出当前模式"),
         "/quit": (IntentType.EXIT_MODE, "退出当前模式"),
         "/projects": (IntentType.LIST_PROJECTS, "查看项目列表"),
@@ -252,8 +244,7 @@ class IntentRecognizer:
     DIR_KEYWORDS = {"切换目录", "去目录", "进入目录", "当前目录", "上级目录", "cd "}
     
     ENTER_COCO_KEYWORDS = {"进入编程模式", "编程模式", "开始编程", "进入coco", "coco模式"}
-    ENTER_SHELL_KEYWORDS = {"进入shell模式", "shell模式", "进入命令行模式", "命令行模式"}
-    EXIT_MODE_KEYWORDS = {"退出模式", "退出编程模式", "退出shell模式", "退出命令行模式"}
+    EXIT_MODE_KEYWORDS = {"退出模式", "退出编程模式"}
 
     def _quick_match(self, text: str, is_in_coco_mode: bool = False) -> Optional[IntentResult]:
         text_lower = text.lower().strip()
@@ -329,15 +320,6 @@ class IntentRecognizer:
                 original_text=text,
                 reasoning="检测到进入编程模式关键词",
                 description="进入编程模式"
-            )
-
-        if any(kw in text_lower for kw in self.ENTER_SHELL_KEYWORDS):
-            return IntentResult.single(
-                intent=IntentType.ENTER_SHELL,
-                confidence=0.95,
-                original_text=text,
-                reasoning="检测到进入Shell模式关键词",
-                description="进入 Shell 模式"
             )
 
         if is_in_coco_mode and len(text) < 20:

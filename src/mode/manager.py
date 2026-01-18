@@ -7,7 +7,6 @@ import threading
 class InteractionMode(Enum):
     SMART = "smart"
     COCO = "coco"
-    SHELL = "shell"
 
 
 @dataclass
@@ -40,17 +39,11 @@ class ModeManager:
     def enter_coco_mode(self, chat_id: str, auto: bool = False) -> InteractionMode:
         return self.set_mode(chat_id, InteractionMode.COCO, auto_entered=auto)
 
-    def enter_shell_mode(self, chat_id: str) -> InteractionMode:
-        return self.set_mode(chat_id, InteractionMode.SHELL, auto_entered=False)
-
     def exit_to_smart(self, chat_id: str) -> InteractionMode:
         return self.set_mode(chat_id, InteractionMode.SMART, auto_entered=False)
 
     def is_coco_mode(self, chat_id: str) -> bool:
         return self.get_mode(chat_id) == InteractionMode.COCO
-
-    def is_shell_mode(self, chat_id: str) -> bool:
-        return self.get_mode(chat_id) == InteractionMode.SHELL
 
     def is_smart_mode(self, chat_id: str) -> bool:
         return self.get_mode(chat_id) == InteractionMode.SMART
@@ -65,5 +58,4 @@ class ModeManager:
         return {
             InteractionMode.SMART: "🧠 智能模式",
             InteractionMode.COCO: "🤖 编程模式",
-            InteractionMode.SHELL: "💻 Shell 模式",
         }.get(mode, "未知模式")
