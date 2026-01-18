@@ -142,6 +142,30 @@ class IntentRecognizer:
         "/quit": (IntentType.EXIT_COCO, "退出 Coco 模式"),
     }
 
+    SHELL_COMMANDS = {
+        "ls", "pwd", "cd", "cat", "head", "tail", "grep", "find", "echo",
+        "mkdir", "touch", "rm", "cp", "mv", "chmod", "chown", "ln",
+        "git", "npm", "yarn", "pnpm", "python", "pip", "uv", "node",
+        "docker", "kubectl", "curl", "wget", "ssh", "scp", "rsync",
+        "ps", "top", "kill", "df", "du", "free", "whoami", "date", "uname",
+        "tar", "zip", "unzip", "gzip", "gunzip", "xz",
+        "vim", "nano", "less", "more", "wc", "sort", "uniq", "awk", "sed",
+        "brew", "apt", "yum", "pacman", "make", "cmake", "cargo", "go",
+        "which", "whereis", "man", "env", "export", "source", "alias",
+        "ping", "netstat", "ifconfig", "ip", "nc", "telnet", "nslookup",
+    }
+
+    COMMON_WORDS = {
+        "ok", "yes", "no", "hi", "hello", "hey", "thanks", "thank", "good",
+        "nice", "great", "cool", "fine", "sure", "please", "sorry", "wow",
+        "test", "testing", "done", "ready", "start", "stop", "wait", "check",
+        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+        "have", "has", "had", "do", "does", "did", "will", "would", "could",
+        "should", "may", "might", "must", "can", "need", "want", "like",
+        "this", "that", "these", "those", "it", "its", "my", "your", "our",
+        "what", "how", "why", "when", "where", "who", "which",
+    }
+
     def __init__(self):
         self.settings = get_settings()
         self._llm: Optional[ChatOpenAI] = None
@@ -179,16 +203,30 @@ class IntentRecognizer:
                 description="查看 Coco 会话信息"
             )
 
-        if re.match(r'^[a-z][a-z0-9_.-]*(\s|$)', text_lower):
-            first_word = text_lower.split()[0]
-            if not any(kw in first_word for kw in ['帮', '请', '能', '可以', '想']):
-                return IntentResult.single(
-                    intent=IntentType.SHELL_COMMAND,
-                    confidence=0.9,
-                    original_text=text,
-                    reasoning=f"命令格式匹配: {first_word}",
-                    description=f"执行命令: {text}"
-                )
+        first_word = text_lower.split()[0] if text_lower else ""
+
+        if first_word in self.SHELL_COMMANDS:
+            return IntentResult.single(
+                intent=IntentType.SHELL_COMMAND,
+                confidence=0.95,
+                original_text=text,
+                reasoning=f"Shell命令白名单匹配: {first_word}",
+                description=f"执行命令: {text}"
+            )
+
+        if first_word in self.COMMON_WORDS:
+            return None
+
+        if (re.match(r'^[a-z][a-z0-9_.-]*$', first_word) and
+            2 <= len(first_word) <= 15 and
+            not any(kw in text_lower for kw in ['帮', '请', '能', '可以', '想', '吗', '呢'])):
+            return IntentResult.single(
+                intent=IntentType.SHELL_COMMAND,
+                confidence=0.7,
+                original_text=text,
+                reasoning=f"可能是命令: {first_word}",
+                description=f"执行命令: {text}"
+            )
 
         return None
 
