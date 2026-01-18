@@ -4,7 +4,7 @@ import re
 from enum import Enum
 from typing import Optional
 from dataclasses import dataclass, field
-from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from ..config import get_settings
 
@@ -141,13 +141,14 @@ class IntentRecognizer:
 
     def __init__(self):
         self.settings = get_settings()
-        self._llm: Optional[ChatOllama] = None
+        self._llm: Optional[ChatOpenAI] = None
 
-    def _get_llm(self) -> ChatOllama:
+    def _get_llm(self) -> ChatOpenAI:
         if self._llm is None:
-            self._llm = ChatOllama(
-                base_url=self.settings.ollama_base_url,
-                model=self.settings.ollama_model,
+            self._llm = ChatOpenAI(
+                base_url=self.settings.ark_base_url,
+                api_key=self.settings.ark_api_key,
+                model=self.settings.ark_model,
                 temperature=0.1,
             )
         return self._llm
