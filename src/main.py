@@ -2,13 +2,13 @@ import sys
 from typing import Optional
 try:
     from config import get_settings
-    from feishu.ws_client import FeishuWSClient, EmojiType
+    from feishu.ws_client import FeishuWSClient, EmojiReaction
     from feishu.message_formatter import FeishuMessageFormatter as fmt
     from sandbox.executor import SandboxExecutor
     from agent.shell_agent import ShellAgent
 except ImportError:
     from .config import get_settings
-    from .feishu.ws_client import FeishuWSClient, EmojiType
+    from .feishu.ws_client import FeishuWSClient, EmojiReaction
     from .feishu.message_formatter import FeishuMessageFormatter as fmt
     from .sandbox.executor import SandboxExecutor
     from .agent.shell_agent import ShellAgent
@@ -25,16 +25,18 @@ class Application:
         try:
             is_safe, reason = self.sandbox_executor.is_command_safe(command)
             if not is_safe:
-                self.feishu_client.add_reaction(message_id, EmojiType.CROSS_MARK)
-                self.feishu_client.reply(message_id, fmt.format_safety_block(command, reason))
+                self.feishu_client.add_reaction(message_id, EmojiReaction.on_blocked())
+                self.feishu_client.reply(message_id, fmt.format_safety_block(command, reason), chat_id=chat_id)
                 return
 
+            self.feishu_client.add_reaction(message_id, EmojiReaction.on_processing())
+            
             result = self.sandbox_executor.execute(command, cwd=working_dir)
             
             if result.success:
-                self.feishu_client.add_reaction(message_id, EmojiType.DONE)
+                self.feishu_client.add_reaction(message_id, EmojiReaction.on_shell_executed())
             else:
-                self.feishu_client.add_reaction(message_id, EmojiType.CROSS_MARK)
+                self.feishu_client.add_reaction(message_id, EmojiReaction.on_error())
             
             response = fmt.format_command_result(
                 command=command,
@@ -45,13 +47,13 @@ class Application:
                 success=result.success,
                 error_message=result.error_message
             )
-            self.feishu_client.reply(message_id, response)
+            self.feishu_client.reply(message_id, response, chat_id=chat_id)
 
         except Exception as e:
             print(f"处理命令异常: {e}")
             try:
-                self.feishu_client.add_reaction(message_id, EmojiType.CROSS_MARK)
-                self.feishu_client.reply(message_id, fmt.format_error(str(e)))
+                self.feishu_client.add_reaction(message_id, EmojiReaction.on_error())
+                self.feishu_client.reply(message_id, fmt.format_error(str(e)), chat_id=chat_id)
             except Exception:
                 pass
 
