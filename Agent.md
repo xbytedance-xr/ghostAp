@@ -9,13 +9,19 @@
 - **远程命令执行**: 直接在飞书对话框发送 Shell 命令（如 `ls -la`, `docker ps`），实时获取执行结果。
 - **安全防护**:
   - 内置危险命令拦截机制（如禁止 `rm -rf`）。
-  - 支持基于 LLM (Ollama) 的智能命令安全审计。
+  - 支持基于 LLM (Ollama/ARK) 的智能命令安全审计。
   - 执行超时控制与输出长度限制，防止滥用。
+- **工具集成**: 集成 LangGraph ReAct Agent 框架，支持文件编辑、Shell 执行等工具。
 
 ### 2.2 Coco AI 远程开发模式
 - **智能交互**: 通过 `/coco` 命令激活，与集成在服务端的 Coco AI 进行多轮对话。
 - **开发辅助**: 支持代码编写、调试、Git 操作等远程开发任务。
 - **会话管理**: 提供独立的会话隔离、上下文保持及 YOLO（自动确认）模式，提升交互效率。
+
+### 2.3 智能意图识别 (NEW)
+- **ReAct 推理**: 基于 Thought-Action-Observation-Reflection 链式推理模式。
+- **多任务拆解**: 自动识别复合意图并拆解为可执行步骤。
+- **自然语言理解**: 支持模糊匹配和语义理解，智能选择 Shell 模式或 Coco 模式。
 
 ## 3. 技术架构与优势
 
@@ -27,8 +33,8 @@
 ### 3.2 技术栈
 - **语言**: Python 3.11+
 - **核心框架**:
-  - `lark-oapi`: 飞书开放平台 SDK。
-  - `LangChain` + `langchain-ollama`: 驱动 AI 智能决策与安全检查。
+  - `lark-oapi`: 飞书开放平台 SDK（WebSocket 长连接模式）。
+  - `LangChain` + `LangGraph`: AI 应用框架，支持 ReAct Agent 和工具调用。
   - `pydantic-settings`: 健壮的配置管理。
 - **包管理**: 使用 `uv` 进行现代化的 Python 依赖管理。
 

@@ -15,8 +15,9 @@ class Settings(BaseSettings):
     verification_token: Optional[str] = None
     encrypt_key: Optional[str] = None
 
-    ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "qwen2.5-coder:latest"
+    ark_api_key: str = ""
+    ark_model: str = ""
+    ark_base_url: str = "https://ark-cn-beijing.bytedance.net/api/v3"
 
     sandbox_timeout: int = 30
     sandbox_max_output_length: int = 4000
@@ -25,15 +26,17 @@ class Settings(BaseSettings):
     coco_execution_timeout: int = 7200
     coco_session_timeout: int = 86400
 
-    server_host: str = "0.0.0.0"
-    server_port: int = 8000
-
     @property
     def command_blacklist(self) -> list[str]:
         return [cmd.strip() for cmd in self.sandbox_command_blacklist.split(",") if cmd.strip()]
 
     def validate_feishu_config(self) -> bool:
         if not self.app_id or not self.app_secret:
+            return False
+        return True
+
+    def validate_ark_config(self) -> bool:
+        if not self.ark_api_key or not self.ark_model:
             return False
         return True
 
