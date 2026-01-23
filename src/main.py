@@ -5,13 +5,11 @@ try:
     from feishu.ws_client import FeishuWSClient, EmojiReaction
     from feishu.message_formatter import FeishuMessageFormatter as fmt
     from sandbox.executor import SandboxExecutor
-    from agent.shell_agent import ShellAgent
 except ImportError:
     from .config import get_settings
     from .feishu.ws_client import FeishuWSClient, EmojiReaction
     from .feishu.message_formatter import FeishuMessageFormatter as fmt
     from .sandbox.executor import SandboxExecutor
-    from .agent.shell_agent import ShellAgent
 
 
 class Application:
@@ -19,7 +17,6 @@ class Application:
         self.settings = get_settings()
         self.feishu_client: Optional[FeishuWSClient] = None
         self.sandbox_executor: Optional[SandboxExecutor] = None
-        self.shell_agent: Optional[ShellAgent] = None
 
     def handle_message(self, message_id: str, chat_id: str, command: str, working_dir: Optional[str] = None):
         try:
@@ -75,7 +72,6 @@ class Application:
         print()
 
         self.sandbox_executor = SandboxExecutor()
-        self.shell_agent = ShellAgent()
         self.feishu_client = FeishuWSClient(message_callback=self.handle_message)
 
         print("🚀 启动飞书长连接服务...")

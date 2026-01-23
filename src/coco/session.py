@@ -1,8 +1,9 @@
 import subprocess
 import time
 import re
+import threading
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Callable, Generator
 from ..config import get_settings
 
 
@@ -58,7 +59,7 @@ class CocoSession:
             output = self._clean_output(output)
 
             settings = get_settings()
-            max_len = settings.sandbox_max_output_length
+            max_len = settings.coco_max_output_length
             if len(output) > max_len:
                 output = output[:max_len] + f"\n\n... (输出被截断，共 {len(output)} 字符)"
 
@@ -70,6 +71,94 @@ class CocoSession:
             return "❌ 未找到 coco 命令，请确保已安装 coco"
         except Exception as e:
             return f"❌ Coco 执行异常: {str(e)}"
+
+    def send_prompt_streaming(
+        self,
+        prompt: str,
+        on_chunk: Callable[[str], None],
+        timeout: Optional[int] = None,
+        cwd: Optional[str] = None,
+        resume: bool = False,
+        chunk_interval: float = 0.3
+    ) -> str:
+        self.last_active = time.time()
+        self.message_count += 1
+        self.last_query = prompt
+
+        settings = get_settings()
+        if timeout is None:
+            timeout = settings.coco_execution_timeout
+
+        try:
+            cmd = [
+                "coco",
+                "-p",
+                "-y",
+                "--session-id", self.session_id,
+            ]
+
+            if resume and not self.is_resumed:
+                cmd.extend(["--resume", self.session_id])
+                self.is_resumed = True
+
+            cmd.append(prompt)
+
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=cwd,
+                bufsize=1,
+            )
+
+            full_output = ""
+            last_update_time = time.time()
+            start_time = time.time()
+
+            while True:
+                if time.time() - start_time > timeout:
+                    process.kill()
+                    return f"⏱️ Coco 执行超时（{timeout}秒）"
+
+                line = process.stdout.readline()
+                if line:
+                    full_output += line
+                    current_time = time.time()
+                    if current_time - last_update_time >= chunk_interval:
+                        cleaned = self._clean_output(full_output.strip())
+                        if cleaned:
+                            on_chunk(cleaned)
+                        last_update_time = current_time
+
+                if process.poll() is not None:
+                    remaining = process.stdout.read()
+                    if remaining:
+                        full_output += remaining
+                    break
+
+            stderr = process.stderr.read()
+            if stderr:
+                full_output += f"\n\n⚠️ stderr:\n{stderr.strip()}"
+
+            output = self._clean_output(full_output.strip())
+
+            max_len = settings.coco_max_output_length
+            if len(output) > max_len:
+                output = output[:max_len] + f"\n\n... (输出被截断，共 {len(output)} 字符)"
+
+            on_chunk(output)
+
+            return output if output else "✅ 执行完成（无输出）"
+
+        except FileNotFoundError:
+            error_msg = "❌ 未找到 coco 命令，请确保已安装 coco"
+            on_chunk(error_msg)
+            return error_msg
+        except Exception as e:
+            error_msg = f"❌ Coco 执行异常: {str(e)}"
+            on_chunk(error_msg)
+            return error_msg
 
     def resume(self, cwd: Optional[str] = None) -> str:
         self.last_active = time.time()

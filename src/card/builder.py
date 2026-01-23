@@ -27,7 +27,181 @@ class CardBuilder:
                     "content": full_content
                 }
             }
-    
+
+    @staticmethod
+    def _build_header_title(project: Optional[ProjectContext], is_coco_mode: bool = False) -> str:
+        if not project:
+            mode_icon = "🤖" if is_coco_mode else "🧠"
+            mode_name = "编程模式" if is_coco_mode else "智能模式"
+            return f"{mode_icon} {mode_name}"
+        
+        mode_icon = "🤖" if is_coco_mode or project.coco_mode else "🧠"
+        return f"{mode_icon} {project.project_name}"
+
+    @staticmethod
+    def _build_directory_element(project: Optional[ProjectContext], working_dir: Optional[str] = None) -> dict:
+        if project:
+            path = project.root_path
+        elif working_dir:
+            path = working_dir
+        else:
+            path = "~"
+        
+        return {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": f"📁 `{path}`"
+            }
+        }
+
+    @staticmethod
+    def _build_footer_buttons(project: Optional[ProjectContext], is_coco_mode: bool = False) -> list[dict]:
+        buttons = []
+        project_id = project.project_id if project else None
+        
+        if is_coco_mode or (project and project.coco_mode):
+            buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "🚪 退出Coco"},
+                "type": "default",
+                "value": {
+                    "action": "exit_coco",
+                    "project_id": project_id
+                }
+            })
+            buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "📊 状态"},
+                "type": "default",
+                "value": {
+                    "action": "show_status",
+                    "project_id": project_id
+                }
+            })
+            buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "🔄 切换项目"},
+                "type": "default",
+                "value": {"action": "switch_project"}
+            })
+        else:
+            buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "🤖 编程模式"},
+                "type": "primary",
+                "value": {
+                    "action": "enter_coco",
+                    "project_id": project_id
+                }
+            })
+            buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "📊 状态"},
+                "type": "default",
+                "value": {
+                    "action": "show_status",
+                    "project_id": project_id
+                }
+            })
+            buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "📋 项目列表"},
+                "type": "default",
+                "value": {"action": "show_board"}
+            })
+        
+        return buttons
+
+    @staticmethod
+    def _build_footer_note(project: Optional[ProjectContext], working_dir: Optional[str] = None) -> Optional[dict]:
+        if project:
+            return {
+                "tag": "note",
+                "elements": [
+                    {"tag": "plain_text", "content": f"📂 项目目录: {project.root_path}"}
+                ]
+            }
+        return None
+
+    @staticmethod
+    def build_coco_response_card(
+        project: Optional[ProjectContext],
+        title: str,
+        content: str,
+        working_dir: Optional[str] = None,
+        show_buttons: bool = True,
+    ) -> tuple[str, str]:
+        theme = get_theme(project.theme_color if project else "blue")
+        
+        header_title = CardBuilder._build_header_title(project, is_coco_mode=True)
+        
+        elements = [
+            CardBuilder._build_directory_element(project, working_dir),
+            {"tag": "hr"},
+            CardBuilder._build_content_element(content, title)
+        ]
+        
+        footer_note = CardBuilder._build_footer_note(project, working_dir)
+        if footer_note:
+            elements.append(footer_note)
+        
+        if show_buttons:
+            elements.append({
+                "tag": "action",
+                "actions": CardBuilder._build_footer_buttons(project, is_coco_mode=True)
+            })
+        
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": header_title},
+                "template": theme.header_template
+            },
+            "elements": elements
+        }
+        
+        return "interactive", json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
+    def build_smart_response_card(
+        project: Optional[ProjectContext],
+        title: str,
+        content: str,
+        working_dir: Optional[str] = None,
+        show_buttons: bool = True,
+    ) -> tuple[str, str]:
+        theme = get_theme(project.theme_color if project else "blue")
+        
+        header_title = CardBuilder._build_header_title(project, is_coco_mode=False)
+        
+        elements = [
+            CardBuilder._build_directory_element(project, working_dir),
+            {"tag": "hr"},
+            CardBuilder._build_content_element(content, title)
+        ]
+        
+        footer_note = CardBuilder._build_footer_note(project, working_dir)
+        if footer_note:
+            elements.append(footer_note)
+        
+        if show_buttons:
+            elements.append({
+                "tag": "action",
+                "actions": CardBuilder._build_footer_buttons(project, is_coco_mode=False)
+            })
+        
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": header_title},
+                "template": theme.header_template
+            },
+            "elements": elements
+        }
+        
+        return "interactive", json.dumps(card, ensure_ascii=False)
+
     @staticmethod
     def build_project_response_card(
         project: ProjectContext,
@@ -39,21 +213,11 @@ class CardBuilder:
     ) -> tuple[str, str]:
         theme = get_theme(project.theme_color)
 
-        header_title = f"{project.get_status_emoji()} {project.project_name}"
-        if project.coco_mode:
-            header_title += " 🤖"
+        header_title = CardBuilder._build_header_title(project, is_coco_mode=project.coco_mode)
 
         elements = [
-            {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": f"📂 `{project.root_path}`"
-                }
-            },
-            {
-                "tag": "hr"
-            },
+            CardBuilder._build_directory_element(project),
+            {"tag": "hr"},
             CardBuilder._build_content_element(content, title)
         ]
 
@@ -66,51 +230,9 @@ class CardBuilder:
             })
 
         if show_buttons:
-            buttons = []
-
-            if project.coco_mode:
-                buttons.append({
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": "🚪 退出Coco"},
-                    "type": "default",
-                    "value": {
-                        "action": "exit_coco",
-                        "project_id": project.project_id
-                    }
-                })
-            else:
-                buttons.append({
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": "🤖 Coco模式"},
-                    "type": "primary",
-                    "value": {
-                        "action": "enter_coco",
-                        "project_id": project.project_id
-                    }
-                })
-
-            buttons.append({
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": "📊 状态"},
-                "type": "default",
-                "value": {
-                    "action": "show_status",
-                    "project_id": project.project_id
-                }
-            })
-
-            buttons.append({
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": "🔄 切换项目"},
-                "type": "default",
-                "value": {
-                    "action": "switch_project"
-                }
-            })
-
+            buttons = CardBuilder._build_footer_buttons(project, is_coco_mode=project.coco_mode)
             if extra_buttons:
                 buttons.extend(extra_buttons)
-
             elements.append({
                 "tag": "action",
                 "actions": buttons[:4]
@@ -292,13 +414,7 @@ class CardBuilder:
         header_title = f"{type_emoji} {title}"
 
         elements = [
-            {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": f"📂 **{project.project_name}** | `{project.root_path}`"
-                }
-            },
+            CardBuilder._build_directory_element(project),
             {"tag": "hr"},
             CardBuilder._build_content_element(content)
         ]
@@ -316,29 +432,9 @@ class CardBuilder:
                 "actions": buttons[:4]
             })
         else:
-            default_buttons = [
-                {
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": "继续开发"},
-                    "type": "primary",
-                    "value": {
-                        "action": "continue_dev",
-                        "project_id": project.project_id
-                    }
-                },
-                {
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": "🤖 Coco帮我"},
-                    "type": "default",
-                    "value": {
-                        "action": "enter_coco",
-                        "project_id": project.project_id
-                    }
-                }
-            ]
             elements.append({
                 "tag": "action",
-                "actions": default_buttons
+                "actions": CardBuilder._build_footer_buttons(project, is_coco_mode=project.coco_mode)
             })
 
         card = {
@@ -393,14 +489,10 @@ class CardBuilder:
             }
         ]
 
+        header_title = CardBuilder._build_header_title(project, is_coco_mode=True)
+
         elements = [
-            {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": f"📂 `{project.root_path}`"
-                }
-            },
+            CardBuilder._build_directory_element(project),
             {"tag": "hr"},
             CardBuilder._build_content_element(content),
             {
@@ -412,7 +504,7 @@ class CardBuilder:
         card = {
             "config": {"wide_screen_mode": True},
             "header": {
-                "title": {"tag": "plain_text", "content": f"{project.get_status_emoji()} {project.project_name}"},
+                "title": {"tag": "plain_text", "content": header_title},
                 "template": theme.header_template
             },
             "elements": elements
@@ -454,7 +546,7 @@ class CardBuilder:
             },
             {
                 "tag": "button",
-                "text": {"tag": "plain_text", "content": "📊 项目看板"},
+                "text": {"tag": "plain_text", "content": "📋 项目看板"},
                 "type": "default",
                 "value": {"action": "show_board"}
             }
@@ -489,13 +581,7 @@ class CardBuilder:
         ]
 
         if project:
-            elements.insert(0, {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": f"📂 **{project.project_name}** | `{project.root_path}`"
-                }
-            })
+            elements.insert(0, CardBuilder._build_directory_element(project))
             elements.insert(1, {"tag": "hr"})
 
         card = {

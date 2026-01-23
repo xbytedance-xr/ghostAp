@@ -4,6 +4,7 @@ import os
 from collections import OrderedDict
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import *
+from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTrigger, P2CardActionTriggerResponse
 from typing import Callable, Optional, Any
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -12,6 +13,7 @@ from ..coco.session import CocoSessionManager
 from ..agent.intent_recognizer import IntentRecognizer, IntentType, IntentResult, TaskStep
 from ..project import ProjectManager, ProjectContext, ProjectStatus, MessageProjectMapper
 from ..card import CardBuilder
+from ..card.streaming import StreamingCardManager
 from .message_formatter import FeishuMessageFormatter as fmt
 
 
@@ -142,6 +144,9 @@ class FeishuWSClient:
         
         from ..mode import ModeManager
         self._mode_manager = ModeManager()
+        
+        self._streaming_manager: Optional[StreamingCardManager] = None
+        self._enable_streaming = True
 
     def _is_message_expired(self, create_time: int) -> bool:
         if not create_time:
@@ -179,6 +184,11 @@ class FeishuWSClient:
                 .log_level(lark.LogLevel.INFO) \
                 .build()
         return self._api_client
+
+    def _get_streaming_manager(self) -> StreamingCardManager:
+        if self._streaming_manager is None:
+            self._streaming_manager = StreamingCardManager(self._get_api_client())
+        return self._streaming_manager
 
     def _add_reaction(self, message_id: str, emoji_type: str):
         try:
@@ -426,26 +436,66 @@ class FeishuWSClient:
         else:
             self._reply_message(message_id, f"❌ {msg}")
 
-    def _handle_card_action(self, data: Any):
+    def _handle_card_action(self, data: P2CardActionTrigger) -> Optional[P2CardActionTriggerResponse]:
+        try:
+            header = data.header
+            event = data.event
+            action = event.action
+            context = event.context
+            value_preview = action.value
+            if isinstance(value_preview, str):
+                value_preview = value_preview[:500]
+            else:
+                try:
+                    value_preview = json.dumps(value_preview, ensure_ascii=False)[:500]
+                except Exception:
+                    value_preview = str(value_preview)[:500]
+            print(
+                "📩 卡片回调收到: "
+                f"event_id={header.event_id}, event_type={header.event_type}, "
+                f"open_message_id={context.open_message_id}, open_chat_id={context.open_chat_id}, "
+                f"action_tag={action.tag}, action_name={action.name}, value_type={type(action.value).__name__}, "
+                f"value_preview={value_preview}"
+            )
+        except Exception as e:
+            print(f"卡片回调基础信息解析失败: {e}")
         self._executor.submit(self._process_card_action_async, data)
+        return None
 
     def _process_card_action_async(self, data: Any):
         try:
+            start_time = time.perf_counter()
             action = data.event.action
-            value_str = action.value
+            value_raw = action.value
             operator = data.event.operator
             open_message_id = data.event.context.open_message_id
             open_chat_id = data.event.context.open_chat_id
+            print(
+                "🧾 卡片回调上下文: "
+                f"operator_open_id={getattr(operator, 'open_id', None)}, "
+                f"operator_user_id={getattr(operator, 'user_id', None)}, "
+                f"value_raw_type={type(value_raw).__name__}"
+            )
 
-            try:
-                value = json.loads(value_str) if isinstance(value_str, str) else value_str
-            except json.JSONDecodeError:
-                value = {"action": value_str}
+            if isinstance(value_raw, dict):
+                value = value_raw
+            elif isinstance(value_raw, str):
+                try:
+                    value = json.loads(value_raw)
+                except (json.JSONDecodeError, TypeError):
+                    print(f"⚠️ 卡片 value 解析失败: value_raw={value_raw[:500]}")
+                    value = {"action": value_raw}
+            else:
+                value = {"action": str(value_raw)}
 
             action_type = value.get("action", "")
             project_id = value.get("project_id", "")
 
-            print(f"🔘 卡片按钮点击: action={action_type}, project_id={project_id}")
+            print(
+                "🔘 卡片按钮点击: "
+                f"action={action_type}, project_id={project_id}, "
+                f"value_keys={list(value.keys())}"
+            )
 
             if action_type == "enter_coco":
                 self._handle_card_enter_coco(open_message_id, open_chat_id, project_id)
@@ -491,6 +541,8 @@ class FeishuWSClient:
                 self._handle_card_new_coco(open_message_id, open_chat_id, project_id)
             elif action_type == "new_project_prompt":
                 self._reply_message(open_message_id, "📝 创建新项目\n\n请发送: `/new 项目名 路径`\n\n例如: `/new myApp ~/workspace/myApp`")
+            elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+            print(f"⏱️ 卡片回调处理耗时: {elapsed_ms}ms")
 
         except Exception as e:
             print(f"处理卡片回调异常: {e}")
@@ -557,6 +609,10 @@ class FeishuWSClient:
         is_in_coco = current_mode == InteractionMode.COCO
         
         if is_in_coco:
+            if self._is_exit_command(text):
+                self._add_reaction(message_id, EmojiReaction.on_coco_mode())
+                self._exit_current_mode(message_id, chat_id, project=project)
+                return
             self._add_reaction(message_id, EmojiReaction.on_coco_mode())
             self._add_reaction(message_id, EmojiReaction.on_processing())
             self._handle_coco_message(message_id, chat_id, text, project)
@@ -881,6 +937,16 @@ class FeishuWSClient:
         else:
             self._reply_message(message_id, fmt.format_warning("当前不在编程模式中"))
 
+    def _is_exit_command(self, text: str) -> bool:
+        text_lower = text.lower().strip()
+        exit_commands = {"/exit", "/quit", "/end_coco", "/exit_coco"}
+        exit_keywords = {"退出模式", "退出编程模式", "退出编程", "结束编程"}
+        
+        if text_lower in exit_commands:
+            return True
+        
+        return any(kw in text_lower for kw in exit_keywords)
+
     def _exit_current_mode(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
         from ..mode import InteractionMode
         
@@ -970,7 +1036,13 @@ class FeishuWSClient:
             coco_cwd = project.root_path
         else:
             coco_cwd = global_working_dir
-        
+
+        if self._enable_streaming:
+            self._handle_coco_streaming(message_id, chat_id, text, session, project, coco_cwd, global_working_dir)
+        else:
+            self._handle_coco_normal(message_id, chat_id, text, session, project, coco_cwd, global_working_dir)
+
+    def _handle_coco_normal(self, message_id: str, chat_id: str, text: str, session, project, coco_cwd: str, global_working_dir: str):
         response = session.send_prompt(text, cwd=coco_cwd)
 
         if project:
@@ -995,6 +1067,62 @@ class FeishuWSClient:
         else:
             response_with_dir = f"{response}\n\n---\n📁 工作目录: `{global_working_dir}`"
             self._reply_message(message_id, fmt.format_coco_response(response_with_dir))
+
+    def _handle_coco_streaming(self, message_id: str, chat_id: str, text: str, session, project, coco_cwd: str, global_working_dir: str):
+        streaming_manager = self._get_streaming_manager()
+
+        project_name = project.project_name if project else None
+        project_path = project.root_path if project else global_working_dir
+        project_id = project.project_id if project else None
+
+        print(f"🎬 开始流式输出: project={project_name}, path={project_path}")
+
+        streaming_card = streaming_manager.create_streaming_card(
+            chat_id=chat_id,
+            project_name=project_name,
+            project_path=project_path,
+            project_id=project_id,
+            initial_content="🤔 正在思考...",
+            is_coco_mode=True,
+        )
+
+        if not streaming_card:
+            print("⚠️ 创建流式卡片失败，回退到普通模式")
+            self._handle_coco_normal(message_id, chat_id, text, session, project, coco_cwd, global_working_dir)
+            return
+
+        card_message_id = streaming_manager.send_streaming_card(streaming_card)
+        if not card_message_id:
+            print("⚠️ 发送流式卡片失败，回退到普通模式")
+            self._handle_coco_normal(message_id, chat_id, text, session, project, coco_cwd, global_working_dir)
+            return
+
+        update_count = [0]
+
+        def on_chunk(content: str):
+            update_count[0] += 1
+            streaming_manager.update_content(streaming_card, content)
+
+        final_response = session.send_prompt_streaming(
+            text,
+            on_chunk=on_chunk,
+            cwd=coco_cwd,
+            chunk_interval=0.3
+        )
+
+        print(f"🎬 流式输出完成: 更新次数={update_count[0]}, 最终长度={len(final_response)}")
+
+        streaming_manager.close_streaming(streaming_card, final_content=final_response)
+
+        if project:
+            project.update_coco_snapshot(text, session.message_count)
+            project.add_conversation("user", text, message_id)
+            project.add_conversation("assistant", final_response[:200])
+
+        self._add_reaction(message_id, EmojiReaction.on_coco_response())
+
+        if card_message_id and project:
+            self._register_message_project(card_message_id, project)
 
     def _show_help(self, message_id: str, chat_id: str):
         is_coco_mode = self._coco_manager.is_in_coco_mode(chat_id)
@@ -1132,10 +1260,18 @@ class FeishuWSClient:
     def _handle_reaction_created(self, data):
         pass
 
+    def _handle_chat_entered(self, data):
+        pass
+
+    def _handle_message_read(self, data):
+        pass
+
     def start(self):
         event_handler = lark.EventDispatcherHandler.builder("", "") \
             .register_p2_im_message_receive_v1(self._handle_message) \
             .register_p2_im_message_reaction_created_v1(self._handle_reaction_created) \
+            .register_p2_im_chat_access_event_bot_p2p_chat_entered_v1(self._handle_chat_entered) \
+            .register_p2_im_message_message_read_v1(self._handle_message_read) \
             .register_p2_card_action_trigger(self._handle_card_action) \
             .build()
 

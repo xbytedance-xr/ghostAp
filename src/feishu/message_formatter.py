@@ -169,10 +169,6 @@ class FeishuMessageFormatter:
         return "post", json.dumps(post_content)
 
     @staticmethod
-    def format_coco_exit() -> str:
-        return "👋 **已退出 Coco 模式**，恢复 Shell 命令模式"
-
-    @staticmethod
     def format_coco_response(response: str) -> tuple[str, str]:
         content = [[{"tag": "md", "text": response}]]
 
@@ -217,14 +213,6 @@ class FeishuMessageFormatter:
         return "post", json.dumps(post_content)
 
     @staticmethod
-    def format_task_step_result(step_num: int, description: str, success: bool, detail: str = "") -> str:
-        status = "✅" if success else "❌"
-        result = f"{status} **步骤 {step_num}**: {description}"
-        if detail:
-            result += f"\n   {detail}"
-        return result
-
-    @staticmethod
     def format_unknown_intent() -> tuple[str, str]:
         md_text = """**💡 你可以**:
 - 直接输入 shell 命令执行
@@ -249,10 +237,6 @@ class FeishuMessageFormatter:
     @staticmethod
     def format_warning(message: str) -> str:
         return f"⚠️ **警告**: {message}"
-
-    @staticmethod
-    def format_info(message: str) -> str:
-        return f"ℹ️ {message}"
 
     @staticmethod
     def is_post_format(result) -> bool:

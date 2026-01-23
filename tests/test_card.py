@@ -56,6 +56,10 @@ class TestCardBuilder:
         elements = card["elements"]
         assert any("Test Title" in str(e) for e in elements)
         assert any("Test content here" in str(e) for e in elements)
+        action_elements = [e for e in elements if e.get("tag") == "action"]
+        assert len(action_elements) == 1
+        for action in action_elements[0]["actions"]:
+            assert isinstance(action.get("value"), dict)
 
     def test_build_project_response_card_coco_mode(self, sample_project):
         sample_project.coco_mode = True
@@ -169,7 +173,7 @@ class TestCardBuilder:
         card = json.loads(content)
         content_str = json.dumps(card)
         
-        assert "Test Project" in content_str
+        assert "/tmp/test" in content_str
         assert "Error message" in content_str
 
     def test_format_time_ago(self):

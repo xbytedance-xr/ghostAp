@@ -25,10 +25,6 @@ class ModeManager:
             state = self._modes.get(chat_id)
             return state.mode if state else InteractionMode.SMART
 
-    def get_state(self, chat_id: str) -> ModeState:
-        with self._lock:
-            return self._modes.get(chat_id, ModeState())
-
     def set_mode(self, chat_id: str, mode: InteractionMode, auto_entered: bool = False) -> InteractionMode:
         with self._lock:
             old_state = self._modes.get(chat_id, ModeState())
@@ -47,15 +43,3 @@ class ModeManager:
 
     def is_smart_mode(self, chat_id: str) -> bool:
         return self.get_mode(chat_id) == InteractionMode.SMART
-
-    def was_auto_entered(self, chat_id: str) -> bool:
-        with self._lock:
-            state = self._modes.get(chat_id)
-            return state.auto_entered if state else False
-
-    def get_mode_display_name(self, chat_id: str) -> str:
-        mode = self.get_mode(chat_id)
-        return {
-            InteractionMode.SMART: "🧠 智能模式",
-            InteractionMode.COCO: "🤖 编程模式",
-        }.get(mode, "未知模式")

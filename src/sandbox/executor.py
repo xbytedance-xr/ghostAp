@@ -117,6 +117,3 @@ class SandboxExecutor:
                 return_code=-1,
                 error_message=f"执行异常: {str(e)}"
             )
-
-    async def execute_async(self, command: str, cwd: Optional[str] = None) -> ExecutionResult:
-        return self.execute(command, cwd)

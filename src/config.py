@@ -12,8 +12,6 @@ class Settings(BaseSettings):
 
     app_id: str = ""
     app_secret: str = ""
-    verification_token: Optional[str] = None
-    encrypt_key: Optional[str] = None
 
     ark_api_key: str = ""
     ark_model: str = ""
@@ -25,20 +23,17 @@ class Settings(BaseSettings):
 
     coco_execution_timeout: int = 7200
     coco_session_timeout: int = 86400
+    coco_max_output_length: int = 30000
 
     @property
     def command_blacklist(self) -> list[str]:
         return [cmd.strip() for cmd in self.sandbox_command_blacklist.split(",") if cmd.strip()]
 
     def validate_feishu_config(self) -> bool:
-        if not self.app_id or not self.app_secret:
-            return False
-        return True
+        return bool(self.app_id and self.app_secret)
 
     def validate_ark_config(self) -> bool:
-        if not self.ark_api_key or not self.ark_model:
-            return False
-        return True
+        return bool(self.ark_api_key and self.ark_model)
 
 
 _settings: Optional[Settings] = None
@@ -48,10 +43,4 @@ def get_settings() -> Settings:
     global _settings
     if _settings is None:
         _settings = Settings()
-    return _settings
-
-
-def reload_settings() -> Settings:
-    global _settings
-    _settings = Settings()
     return _settings
