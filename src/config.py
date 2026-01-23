@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     coco_session_timeout: int = 86400
     coco_max_output_length: int = 30000
 
+    streaming_enabled: bool = True
+
     @property
     def command_blacklist(self) -> list[str]:
         return [cmd.strip() for cmd in self.sandbox_command_blacklist.split(",") if cmd.strip()]

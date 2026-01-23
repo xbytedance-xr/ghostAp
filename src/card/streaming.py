@@ -18,6 +18,7 @@ class StreamingCard:
     created_at: float = field(default_factory=time.time)
     last_content: str = ""
     project_id: Optional[str] = None
+    reply_to_message_id: Optional[str] = None
 
 
 class StreamingCardManager:
@@ -35,6 +36,7 @@ class StreamingCardManager:
         initial_content: str = "正在思考...",
         element_id: str = "content_md",
         is_coco_mode: bool = True,
+        reply_to_message_id: Optional[str] = None,
     ) -> Optional[StreamingCard]:
         mode_icon = "🤖" if is_coco_mode else "🧠"
         if project_name:
@@ -84,11 +86,28 @@ class StreamingCardManager:
                         "tag": "markdown",
                         "content": initial_content,
                         "element_id": element_id
+                    },
+                    {"tag": "hr"},
+                    {
+                        "tag": "column_set",
+                        "flex_mode": "stretch",
+                        "background_style": "default",
+                        "columns": [
+                            {
+                                "tag": "column",
+                                "width": "weighted",
+                                "weight": 1,
+                                "elements": [buttons[0]] if buttons else []
+                            },
+                            {
+                                "tag": "column",
+                                "width": "weighted",
+                                "weight": 1,
+                                "elements": [buttons[1]] if len(buttons) > 1 else []
+                            }
+                        ]
                     }
                 ]
-            },
-            "actions": {
-                "actions": buttons
             }
         }
 
@@ -115,7 +134,8 @@ class StreamingCardManager:
                 element_id=element_id,
                 chat_id=chat_id,
                 last_content=initial_content,
-                project_id=project_id
+                project_id=project_id,
+                reply_to_message_id=reply_to_message_id
             )
 
             with self._lock:
@@ -140,12 +160,6 @@ class StreamingCardManager:
                 },
                 {
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "📊 状态"},
-                    "type": "default",
-                    "behaviors": [{"type": "callback", "value": {"action": "show_status", "project_id": project_id}}]
-                },
-                {
-                    "tag": "button",
                     "text": {"tag": "plain_text", "content": "🔄 切换项目"},
                     "type": "default",
                     "behaviors": [{"type": "callback", "value": {"action": "switch_project"}}]
@@ -161,13 +175,7 @@ class StreamingCardManager:
                 },
                 {
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "📊 状态"},
-                    "type": "default",
-                    "behaviors": [{"type": "callback", "value": {"action": "show_status", "project_id": project_id}}]
-                },
-                {
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": "📋 项目列表"},
+                    "text": {"tag": "plain_text", "content": "📋 选择项目"},
                     "type": "default",
                     "behaviors": [{"type": "callback", "value": {"action": "show_board"}}]
                 }
@@ -180,17 +188,28 @@ class StreamingCardManager:
         })
 
         try:
-            print(f"📤 发送流式卡片: card_id={card.card_id}, chat_id={card.chat_id}")
-            request = CreateMessageRequest.builder() \
-                .receive_id_type("chat_id") \
-                .request_body(CreateMessageRequestBody.builder()
-                    .receive_id(card.chat_id)
-                    .msg_type("interactive")
-                    .content(content)
-                    .build()) \
-                .build()
-
-            response = self._client.im.v1.message.create(request)
+            if card.reply_to_message_id:
+                print(f"📤 回复流式卡片: card_id={card.card_id}, reply_to={card.reply_to_message_id}")
+                from lark_oapi.api.im.v1 import ReplyMessageRequest, ReplyMessageRequestBody
+                request = ReplyMessageRequest.builder() \
+                    .message_id(card.reply_to_message_id) \
+                    .request_body(ReplyMessageRequestBody.builder()
+                        .msg_type("interactive")
+                        .content(content)
+                        .build()) \
+                    .build()
+                response = self._client.im.v1.message.reply(request)
+            else:
+                print(f"📤 发送流式卡片: card_id={card.card_id}, chat_id={card.chat_id}")
+                request = CreateMessageRequest.builder() \
+                    .receive_id_type("chat_id") \
+                    .request_body(CreateMessageRequestBody.builder()
+                        .receive_id(card.chat_id)
+                        .msg_type("interactive")
+                        .content(content)
+                        .build()) \
+                    .build()
+                response = self._client.im.v1.message.create(request)
 
             if not response.success():
                 print(f"❌ 发送流式卡片失败: code={response.code}, msg={response.msg}")

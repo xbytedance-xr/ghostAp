@@ -146,7 +146,7 @@ class FeishuWSClient:
         self._mode_manager = ModeManager()
         
         self._streaming_manager: Optional[StreamingCardManager] = None
-        self._enable_streaming = True
+        self._enable_streaming = self.settings.streaming_enabled
 
     def _is_message_expired(self, create_time: int) -> bool:
         if not create_time:
@@ -1084,6 +1084,7 @@ class FeishuWSClient:
             project_id=project_id,
             initial_content="🤔 正在思考...",
             is_coco_mode=True,
+            reply_to_message_id=message_id,
         )
 
         if not streaming_card:

@@ -45,17 +45,19 @@ class TestStreamingCardManager:
     def test_build_buttons_coco_mode(self, manager):
         buttons = manager._build_buttons(is_coco_mode=True, project_id="proj_123")
 
-        assert len(buttons) == 3
+        assert len(buttons) == 2
         assert buttons[0]["text"]["content"] == "🚪 退出Coco"
         assert buttons[0]["behaviors"][0]["value"]["action"] == "exit_coco"
         assert buttons[0]["behaviors"][0]["value"]["project_id"] == "proj_123"
+        assert buttons[1]["text"]["content"] == "🔄 切换项目"
 
     def test_build_buttons_smart_mode(self, manager):
         buttons = manager._build_buttons(is_coco_mode=False, project_id="proj_123")
 
-        assert len(buttons) == 3
+        assert len(buttons) == 2
         assert buttons[0]["text"]["content"] == "🤖 编程模式"
         assert buttons[0]["behaviors"][0]["value"]["action"] == "enter_coco"
+        assert buttons[1]["text"]["content"] == "📋 选择项目"
 
     def test_create_streaming_card_success(self, manager, mock_client):
         mock_response = MagicMock()

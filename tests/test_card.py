@@ -56,10 +56,16 @@ class TestCardBuilder:
         elements = card["elements"]
         assert any("Test Title" in str(e) for e in elements)
         assert any("Test content here" in str(e) for e in elements)
-        action_elements = [e for e in elements if e.get("tag") == "action"]
-        assert len(action_elements) == 1
-        for action in action_elements[0]["actions"]:
-            assert isinstance(action.get("value"), dict)
+        column_set_elements = [e for e in elements if e.get("tag") == "column_set"]
+        assert len(column_set_elements) == 1
+        columns = column_set_elements[0]["columns"]
+        assert len(columns) == 2
+        for col in columns:
+            if col["elements"]:
+                btn = col["elements"][0]
+                assert "behaviors" in btn
+                assert btn["behaviors"][0]["type"] == "callback"
+                assert isinstance(btn["behaviors"][0]["value"], dict)
 
     def test_build_project_response_card_coco_mode(self, sample_project):
         sample_project.coco_mode = True

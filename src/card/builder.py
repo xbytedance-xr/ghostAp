@@ -59,58 +59,34 @@ class CardBuilder:
     def _build_footer_buttons(project: Optional[ProjectContext], is_coco_mode: bool = False) -> list[dict]:
         buttons = []
         project_id = project.project_id if project else None
-        
+
         if is_coco_mode or (project and project.coco_mode):
             buttons.append({
                 "tag": "button",
                 "text": {"tag": "plain_text", "content": "🚪 退出Coco"},
                 "type": "default",
-                "value": {
-                    "action": "exit_coco",
-                    "project_id": project_id
-                }
-            })
-            buttons.append({
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": "📊 状态"},
-                "type": "default",
-                "value": {
-                    "action": "show_status",
-                    "project_id": project_id
-                }
+                "behaviors": [{"type": "callback", "value": {"action": "exit_coco", "project_id": project_id}}]
             })
             buttons.append({
                 "tag": "button",
                 "text": {"tag": "plain_text", "content": "🔄 切换项目"},
                 "type": "default",
-                "value": {"action": "switch_project"}
+                "behaviors": [{"type": "callback", "value": {"action": "switch_project"}}]
             })
         else:
             buttons.append({
                 "tag": "button",
                 "text": {"tag": "plain_text", "content": "🤖 编程模式"},
                 "type": "primary",
-                "value": {
-                    "action": "enter_coco",
-                    "project_id": project_id
-                }
+                "behaviors": [{"type": "callback", "value": {"action": "enter_coco", "project_id": project_id}}]
             })
             buttons.append({
                 "tag": "button",
-                "text": {"tag": "plain_text", "content": "📊 状态"},
+                "text": {"tag": "plain_text", "content": "� 选择项目"},
                 "type": "default",
-                "value": {
-                    "action": "show_status",
-                    "project_id": project_id
-                }
+                "behaviors": [{"type": "callback", "value": {"action": "show_board"}}]
             })
-            buttons.append({
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": "📋 项目列表"},
-                "type": "default",
-                "value": {"action": "show_board"}
-            })
-        
+
         return buttons
 
     @staticmethod
@@ -233,9 +209,25 @@ class CardBuilder:
             buttons = CardBuilder._build_footer_buttons(project, is_coco_mode=project.coco_mode)
             if extra_buttons:
                 buttons.extend(extra_buttons)
+            elements.append({"tag": "hr"})
             elements.append({
-                "tag": "action",
-                "actions": buttons[:4]
+                "tag": "column_set",
+                "flex_mode": "stretch",
+                "background_style": "default",
+                "columns": [
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "elements": [buttons[0]] if buttons else []
+                    },
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "elements": [buttons[1]] if len(buttons) > 1 else []
+                    }
+                ]
             })
 
         card = {
