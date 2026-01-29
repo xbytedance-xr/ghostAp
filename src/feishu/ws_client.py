@@ -1,7 +1,6 @@
 import json
 import time
 import os
-from collections import OrderedDict
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import *
 from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTrigger, P2CardActionTriggerResponse
@@ -15,111 +14,8 @@ from ..project import ProjectManager, ProjectContext, ProjectStatus, MessageProj
 from ..card import CardBuilder
 from ..card.streaming import StreamingCardManager
 from .message_formatter import FeishuMessageFormatter as fmt
-
-
-class EmojiType:
-    GET = "OnIt"
-    TYPING = "Typing"
-    THINKING = "THINKING"
-    ONE_SEC = "OneSec"
-    
-    DONE = "DONE"
-    CHECK_MARK = "CheckMark"
-    LGTM = "LGTM"
-    THUMBSUP = "THUMBSUP"
-    OK = "OK"
-    AWESOME = "AWESOME"
-    
-    CROSS_MARK = "CrossMark"
-    ERROR = "ERROR"
-    SOB = "SOB"
-    WRONG = "WRONGED"
-    
-    SMART = "SMART"
-    ROCKET = "Rocket"
-    FIRE = "Fire"
-    MUSCLE = "MUSCLE"
-    YEAH = "YEAH"
-    PARTY = "PARTY"
-    
-    SALUTE = "SALUTE"
-    HIGHFIVE = "HIGHFIVE"
-    WAVE = "WAVE"
-    CLAP = "CLAP"
-    
-    FLASH = "StatusFlashOfInspiration"
-    READING = "StatusReading"
-    BUSY = "BusyStatus"
-
-
-class EmojiReaction:
-    @staticmethod
-    def on_message_received() -> str:
-        return EmojiType.GET
-    
-    @staticmethod
-    def on_processing() -> str:
-        return EmojiType.TYPING
-    
-    @staticmethod
-    def on_thinking() -> str:
-        return EmojiType.THINKING
-    
-    @staticmethod
-    def on_success() -> str:
-        return EmojiType.DONE
-    
-    @staticmethod
-    def on_error() -> str:
-        return EmojiType.SOB
-    
-    @staticmethod
-    def on_coco_enter() -> str:
-        return EmojiType.SMART
-    
-    @staticmethod
-    def on_coco_exit() -> str:
-        return EmojiType.WAVE
-    
-    @staticmethod
-    def on_coco_response() -> str:
-        return EmojiType.LGTM
-    
-    @staticmethod
-    def on_multi_task_start() -> str:
-        return EmojiType.ROCKET
-    
-    @staticmethod
-    def on_multi_task_done() -> str:
-        return EmojiType.PARTY
-    
-    @staticmethod
-    def on_project_created() -> str:
-        return EmojiType.FLASH
-    
-    @staticmethod
-    def on_project_switched() -> str:
-        return EmojiType.HIGHFIVE
-    
-    @staticmethod
-    def on_dir_changed() -> str:
-        return EmojiType.CHECK_MARK
-    
-    @staticmethod
-    def on_shell_executed() -> str:
-        return EmojiType.DONE
-    
-    @staticmethod
-    def on_blocked() -> str:
-        return EmojiType.CROSS_MARK
-
-    @staticmethod
-    def on_smart_mode() -> str:
-        return EmojiType.OK
-
-    @staticmethod
-    def on_coco_mode() -> str:
-        return EmojiType.GET
+from .emoji import EmojiType, EmojiReaction
+from .message_cache import MessageCache
 
 
 class FeishuWSClient:
@@ -132,11 +28,8 @@ class FeishuWSClient:
         self._api_client: Optional[lark.Client] = None
         self._coco_manager = CocoSessionManager()
         self._intent_recognizer = IntentRecognizer()
-        self._processed_messages: OrderedDict[str, float] = OrderedDict()
-        self._message_cache_ttl = 300
-        self._message_cache_max_size = 1000
+        self._message_cache = MessageCache(ttl=300, max_size=1000, cleanup_interval=60)
         self._executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="ghost_worker")
-        self._lock = threading.Lock()
         self._working_dirs: dict[str, str] = {}
 
         self._project_manager = ProjectManager()
@@ -156,25 +49,7 @@ class FeishuWSClient:
         return message_age_ms > self.MESSAGE_EXPIRE_SECONDS * 1000
 
     def _is_duplicate_message(self, message_id: str) -> bool:
-        current_time = time.time()
-
-        with self._lock:
-            while self._processed_messages:
-                oldest_id, timestamp = next(iter(self._processed_messages.items()))
-                if current_time - timestamp > self._message_cache_ttl:
-                    self._processed_messages.pop(oldest_id)
-                else:
-                    break
-
-            if message_id in self._processed_messages:
-                return True
-
-            self._processed_messages[message_id] = current_time
-
-            while len(self._processed_messages) > self._message_cache_max_size:
-                self._processed_messages.popitem(last=False)
-
-            return False
+        return self._message_cache.is_duplicate(message_id)
 
     def _get_api_client(self) -> lark.Client:
         if self._api_client is None:
@@ -1220,40 +1095,7 @@ class FeishuWSClient:
             return None
 
     def reply(self, message_id: str, content, msg_type: str = "text", chat_id: Optional[str] = None):
-        """回复消息，并复制一份重新发送"""
-        # 第一次回复（原回复）
         self._reply_message(message_id, content, msg_type)
-        
-        # 复制内容并重新发送
-        import time
-        time.sleep(1)  # 等待1秒避免消息发送过快
-        
-        # 解析内容，准备重新发送
-        if isinstance(content, tuple) and len(content) == 2:
-            # 如果是元组格式 (msg_type, content_str)
-            content_to_resend = content[1]
-        elif hasattr(content, '__contains__') and 'text' in str(content):
-            # 如果是JSON字符串
-            try:
-                import json
-                content_dict = json.loads(content) if isinstance(content, str) else content
-                text_content = content_dict.get('text', '')
-                content_to_resend = json.dumps({'text': f'【复制】{text_content}'})
-            except:
-                content_to_resend = str(content)
-        else:
-            # 其他情况直接转换为字符串
-            content_to_resend = str(content)
-        
-        # 重新发送（作为新消息而不是回复）
-        if chat_id:
-            try:
-                print(f"🔄 复制消息并重新发送: {content_to_resend[:50]}...")
-                self.send_message(chat_id, content_to_resend, msg_type)
-            except Exception as e:
-                print(f"重新发送消息失败: {e}")
-        else:
-            print("⚠️ 无法重新发送消息：缺少 chat_id")
 
     def add_reaction(self, message_id: str, emoji_type: str):
         self._add_reaction(message_id, emoji_type)
@@ -1283,6 +1125,8 @@ class FeishuWSClient:
             log_level=lark.LogLevel.DEBUG
         )
 
+        self._message_cache.start_cleanup_thread()
+        
         print("🔌 正在建立飞书长连接...")
         print("📋 多项目管理已启用")
         self._client.start()
