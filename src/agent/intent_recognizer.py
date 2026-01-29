@@ -12,15 +12,22 @@ from ..config import get_settings
 class IntentType(Enum):
     ENTER_COCO = "enter_coco"
     EXIT_COCO = "exit_coco"
+    ENTER_CLAUDE = "enter_claude"
+    EXIT_CLAUDE = "exit_claude"
     EXIT_MODE = "exit_mode"
     CHANGE_DIR = "change_dir"
     SHELL_COMMAND = "shell"
     COCO_MESSAGE = "coco_message"
+    CLAUDE_MESSAGE = "claude_message"
     CREATE_PROJECT = "create_project"
     SWITCH_PROJECT = "switch_project"
     LIST_PROJECTS = "list_projects"
     CLOSE_PROJECT = "close_project"
     PROJECT_STATUS = "project_status"
+    ENTER_DEEP = "enter_deep"
+    DEEP_STATUS = "deep_status"
+    STOP_DEEP = "stop_deep"
+    SHOW_HELP = "show_help"
     UNKNOWN = "unknown"
 
 
@@ -176,8 +183,11 @@ class IntentRecognizer:
     INTENT_MAP = {
         "enter_coco": IntentType.ENTER_COCO,
         "exit_coco": IntentType.EXIT_COCO,
+        "enter_claude": IntentType.ENTER_CLAUDE,
+        "exit_claude": IntentType.EXIT_CLAUDE,
         "exit_mode": IntentType.EXIT_MODE,
         "coco_message": IntentType.COCO_MESSAGE,
+        "claude_message": IntentType.CLAUDE_MESSAGE,
         "change_dir": IntentType.CHANGE_DIR,
         "shell": IntentType.SHELL_COMMAND,
         "create_project": IntentType.CREATE_PROJECT,
@@ -185,19 +195,32 @@ class IntentRecognizer:
         "list_projects": IntentType.LIST_PROJECTS,
         "close_project": IntentType.CLOSE_PROJECT,
         "project_status": IntentType.PROJECT_STATUS,
+        "enter_deep": IntentType.ENTER_DEEP,
+        "deep_status": IntentType.DEEP_STATUS,
+        "stop_deep": IntentType.STOP_DEEP,
+        "show_help": IntentType.SHOW_HELP,
         "unknown": IntentType.UNKNOWN,
     }
 
     EXACT_COMMANDS = {
-        "/coco": (IntentType.ENTER_COCO, "进入编程模式"),
-        "/enter_coco": (IntentType.ENTER_COCO, "进入编程模式"),
-        "/end_coco": (IntentType.EXIT_COCO, "退出编程模式"),
-        "/exit_coco": (IntentType.EXIT_COCO, "退出编程模式"),
+        "/coco": (IntentType.ENTER_COCO, "进入 Coco 编程模式"),
+        "/enter_coco": (IntentType.ENTER_COCO, "进入 Coco 编程模式"),
+        "/end_coco": (IntentType.EXIT_COCO, "退出 Coco 编程模式"),
+        "/exit_coco": (IntentType.EXIT_COCO, "退出 Coco 编程模式"),
+        "/claude": (IntentType.ENTER_CLAUDE, "进入 Claude 编程模式"),
+        "/enter_claude": (IntentType.ENTER_CLAUDE, "进入 Claude 编程模式"),
+        "/end_claude": (IntentType.EXIT_CLAUDE, "退出 Claude 编程模式"),
+        "/exit_claude": (IntentType.EXIT_CLAUDE, "退出 Claude 编程模式"),
         "/exit": (IntentType.EXIT_MODE, "退出当前模式"),
         "/quit": (IntentType.EXIT_MODE, "退出当前模式"),
         "/projects": (IntentType.LIST_PROJECTS, "查看项目列表"),
         "/project": (IntentType.PROJECT_STATUS, "查看当前项目"),
         "/status": (IntentType.PROJECT_STATUS, "查看项目状态"),
+        "/deep": (IntentType.ENTER_DEEP, "进入 Deep 模式"),
+        "/deep_status": (IntentType.DEEP_STATUS, "查看 Deep 任务状态"),
+        "/stop_deep": (IntentType.STOP_DEEP, "停止 Deep 任务"),
+        "/help": (IntentType.SHOW_HELP, "显示帮助信息"),
+        "/帮助": (IntentType.SHOW_HELP, "显示帮助信息"),
     }
 
     SHELL_COMMANDS = {
@@ -244,10 +267,44 @@ class IntentRecognizer:
     DIR_KEYWORDS = {"切换目录", "去目录", "进入目录", "当前目录", "上级目录", "cd "}
     
     ENTER_COCO_KEYWORDS = {"进入编程模式", "编程模式", "开始编程", "进入coco", "coco模式"}
+    ENTER_CLAUDE_KEYWORDS = {"进入claude模式", "claude模式", "进入claude", "使用claude"}
     EXIT_MODE_KEYWORDS = {"退出模式", "退出编程模式"}
+    
+    DEEP_MODE_KEYWORDS = {"deep模式", "深度模式", "deep agent", "复杂任务", "大任务"}
+    
+    HELP_KEYWORDS = {"帮助", "help", "使用说明", "怎么用", "如何使用"}
+
+    COMMAND_TYPO_MAP = {
+        "/calude": "/claude",
+        "/cluade": "/claude",
+        "/cluad": "/claude",
+        "/calud": "/claude",
+        "/claud": "/claude",
+        "/cooc": "/coco",
+        "/coc": "/coco",
+        "/cocoo": "/coco",
+        "/exti": "/exit",
+        "/eixt": "/exit",
+        "/exut": "/exit",
+        "/hlep": "/help",
+        "/hepl": "/help",
+        "/helo": "/help",
+    }
 
     def _quick_match(self, text: str, is_in_coco_mode: bool = False) -> Optional[IntentResult]:
         text_lower = text.lower().strip()
+
+        if text_lower in self.COMMAND_TYPO_MAP:
+            corrected = self.COMMAND_TYPO_MAP[text_lower]
+            if corrected in self.EXACT_COMMANDS:
+                intent, desc = self.EXACT_COMMANDS[corrected]
+                return IntentResult.single(
+                    intent=intent,
+                    confidence=0.95,
+                    original_text=text,
+                    reasoning=f"纠正拼写错误: {text_lower} -> {corrected}",
+                    description=f"{desc}（已纠正拼写）"
+                )
 
         if text_lower in self.EXACT_COMMANDS:
             intent, desc = self.EXACT_COMMANDS[text_lower]
@@ -304,6 +361,17 @@ class IntentRecognizer:
                 description=f"关闭项目: {name}"
             )
 
+        if text_lower.startswith("/deep "):
+            requirement = text[6:].strip()
+            return IntentResult.single(
+                intent=IntentType.ENTER_DEEP,
+                confidence=1.0,
+                data={"requirement": requirement},
+                original_text=text,
+                reasoning=f"精确匹配: /deep 命令",
+                description=f"启动 Deep Engine"
+            )
+
         if any(kw in text_lower for kw in self.EXIT_MODE_KEYWORDS):
             return IntentResult.single(
                 intent=IntentType.EXIT_MODE,
@@ -318,8 +386,27 @@ class IntentRecognizer:
                 intent=IntentType.ENTER_COCO,
                 confidence=0.95,
                 original_text=text,
-                reasoning="检测到进入编程模式关键词",
-                description="进入编程模式"
+                reasoning="检测到进入 Coco 编程模式关键词",
+                description="进入 Coco 编程模式"
+            )
+
+        if any(kw in text_lower for kw in self.ENTER_CLAUDE_KEYWORDS):
+            return IntentResult.single(
+                intent=IntentType.ENTER_CLAUDE,
+                confidence=0.95,
+                original_text=text,
+                reasoning="检测到进入 Claude 编程模式关键词",
+                description="进入 Claude 编程模式"
+            )
+
+        if text_lower == "/claude_info":
+            return IntentResult.single(
+                intent=IntentType.CLAUDE_MESSAGE,
+                confidence=1.0,
+                data={"command": "info"},
+                original_text=text,
+                reasoning="精确匹配: /claude_info",
+                description="查看 Claude 会话信息"
             )
 
         if is_in_coco_mode and len(text) < 20:
@@ -329,7 +416,7 @@ class IntentRecognizer:
                     confidence=0.95,
                     original_text=text,
                     reasoning="Coco模式下检测到退出关键词",
-                    description="退出编程模式"
+                    description="退出 Coco 编程模式"
                 )
 
         if any(kw in text_lower for kw in self.PROJECT_LIST_KEYWORDS):
