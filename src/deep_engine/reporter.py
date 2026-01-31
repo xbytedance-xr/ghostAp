@@ -194,66 +194,43 @@ class ProgressReporter:
             DeepTaskStatus.BLOCKED: "🚫",
         }.get(status, "❓")
 
+    # --- Card title helpers ---
 
-def create_deep_card_content(project: DeepProject, show_buttons: bool = True) -> dict:
-    reporter = ProgressReporter()
-    progress_bar = reporter._make_progress_bar(project.completed_count, project.total_count)
+    def get_planning_start_title(self) -> str:
+        return "🧠 Deep Engine 启动"
 
-    status_text = {
-        DeepProjectStatus.IDLE: "等待开始",
-        DeepProjectStatus.PLANNING: "正在规划",
-        DeepProjectStatus.EXECUTING: "执行中",
-        DeepProjectStatus.PAUSED: "已暂停",
-        DeepProjectStatus.COMPLETED: "已完成",
-        DeepProjectStatus.FAILED: "执行失败",
-    }.get(project.status, "未知")
+    def get_planning_done_title(self) -> str:
+        return "✅ 任务规划完成"
 
-    task_lines = []
-    for task in project.tasks:
-        emoji = reporter._get_status_emoji(task.status)
-        duration = f" ({task.duration():.1f}s)" if task.duration() else ""
-        task_lines.append(f"{emoji} {task.order + 1}. {task.title}{duration}")
+    def get_task_start_title(self, current: int, total: int) -> str:
+        return f"🔄 执行任务 [{current}/{total}]"
 
-    content = {
-        "header": {
-            "title": f"🧠 Deep Engine - {project.name}",
-            "subtitle": f"{status_text} | {progress_bar}",
-        },
-        "elements": [
-            {
-                "tag": "markdown",
-                "content": "\n".join(task_lines),
-            }
-        ],
-    }
+    def get_task_done_title(self, success: bool, current: int, total: int) -> str:
+        if success:
+            return f"✅ 任务完成 [{current}/{total}]"
+        return f"❌ 任务失败 [{current}/{total}]"
 
-    if show_buttons and project.status in (DeepProjectStatus.EXECUTING, DeepProjectStatus.PAUSED):
-        buttons = []
-        if project.status == DeepProjectStatus.EXECUTING:
-            buttons.append({
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": "⏸️ 暂停"},
-                "type": "default",
-                "value": {"action": "deep_pause", "project_id": project.project_id},
-            })
-        elif project.status == DeepProjectStatus.PAUSED:
-            buttons.append({
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": "▶️ 继续"},
-                "type": "primary",
-                "value": {"action": "deep_resume", "project_id": project.project_id},
-            })
+    def get_project_done_title(self, project: DeepProject) -> str:
+        if project.status == DeepProjectStatus.COMPLETED:
+            return "🎉 全部任务完成！"
+        elif project.status == DeepProjectStatus.FAILED:
+            return "⚠️ 执行完成（有失败）"
+        return "⏸️ 执行已暂停"
 
-        buttons.append({
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": "🛑 停止"},
-            "type": "danger",
-            "value": {"action": "deep_stop", "project_id": project.project_id},
-        })
+    def get_error_title(self) -> str:
+        return "❌ Deep Engine 错误"
 
-        content["elements"].append({
-            "tag": "action",
-            "actions": buttons,
-        })
+    def get_status_title(self) -> str:
+        return "📊 任务状态"
 
-    return content
+    def get_progress_info(self, project: DeepProject) -> dict:
+        return {
+            "progress_bar": self._make_progress_bar(project.completed_count, project.total_count),
+            "completed_count": project.completed_count,
+            "total_count": project.total_count,
+            "status": project.status,
+            "project_name": project.name,
+            "project_id": project.project_id,
+            "is_executing": project.status == DeepProjectStatus.EXECUTING,
+            "is_paused": project.status == DeepProjectStatus.PAUSED,
+        }

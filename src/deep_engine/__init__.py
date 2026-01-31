@@ -11,7 +11,7 @@ from .models import (
 from .parser import RequirementParser
 from .planner import TaskPlanner
 from .executor import TaskExecutor
-from .reporter import ProgressReporter, create_deep_card_content
+from .reporter import ProgressReporter
 
 __all__ = [
     "DeepEngine",
@@ -28,5 +28,4 @@ __all__ = [
     "TaskPlanner",
     "TaskExecutor",
     "ProgressReporter",
-    "create_deep_card_content",
 ]

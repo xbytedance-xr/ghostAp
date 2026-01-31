@@ -291,7 +291,7 @@ class IntentRecognizer:
         "/helo": "/help",
     }
 
-    def _quick_match(self, text: str, is_in_coco_mode: bool = False) -> Optional[IntentResult]:
+    def _quick_match(self, text: str, current_mode: str = "smart") -> Optional[IntentResult]:
         text_lower = text.lower().strip()
 
         if text_lower in self.COMMAND_TYPO_MAP:
@@ -409,14 +409,15 @@ class IntentRecognizer:
                 description="查看 Claude 会话信息"
             )
 
-        if is_in_coco_mode and len(text) < 20:
+        is_programming = current_mode in ("coco", "claude")
+        if is_programming and len(text) < 20:
             if any(kw in text_lower for kw in self.EXIT_KEYWORDS):
                 return IntentResult.single(
-                    intent=IntentType.EXIT_COCO,
+                    intent=IntentType.EXIT_MODE,
                     confidence=0.95,
                     original_text=text,
-                    reasoning="Coco模式下检测到退出关键词",
-                    description="退出 Coco 编程模式"
+                    reasoning=f"{current_mode}模式下检测到退出关键词",
+                    description="退出当前编程模式"
                 )
 
         if any(kw in text_lower for kw in self.PROJECT_LIST_KEYWORDS):
@@ -510,25 +511,35 @@ class IntentRecognizer:
             path = os.path.expanduser(path)
         return path
 
-    def _get_context_hint(self, is_in_coco_mode: bool) -> str:
-        if is_in_coco_mode:
-            return "用户当前处于**编程模式**中。编程相关的消息应该判断为 coco_message，而不是 enter_coco。"
+    def _get_context_hint(self, current_mode: str) -> str:
+        if current_mode == "coco":
+            return "用户当前处于 **Coco 编程模式** 中。编程相关的消息应该判断为 coco_message，而不是 enter_coco。"
+        elif current_mode == "claude":
+            return "用户当前处于 **Claude 编程模式** 中。编程相关的消息应该判断为 claude_message，而不是 enter_claude。"
         else:
-            return "用户当前**不在编程模式**中。如果用户想要编程，应该判断为 enter_coco。"
+            return "用户当前处于 **智能模式**（默认模式）。如果用户想要编程，应该判断为 enter_coco 或 enter_claude。"
 
-    def _get_fallback_intent(self, is_in_coco_mode: bool) -> IntentType:
-        return IntentType.COCO_MESSAGE if is_in_coco_mode else IntentType.SHELL_COMMAND
+    def _get_fallback_intent(self, current_mode: str) -> IntentType:
+        if current_mode == "coco":
+            return IntentType.COCO_MESSAGE
+        elif current_mode == "claude":
+            return IntentType.CLAUDE_MESSAGE
+        else:
+            return IntentType.SHELL_COMMAND
 
-    def recognize(self, text: str, is_in_coco_mode: bool = False) -> IntentResult:
-        quick_result = self._quick_match(text, is_in_coco_mode)
+    def recognize(self, text: str, current_mode: str = "smart") -> IntentResult:
+        quick_result = self._quick_match(text, current_mode)
         if quick_result:
             return quick_result
 
+        is_in_coco = current_mode == "coco"
+        is_in_claude = current_mode == "claude"
+
         try:
             llm = self._get_llm()
-            context_hint = self._get_context_hint(is_in_coco_mode)
+            context_hint = self._get_context_hint(current_mode)
             prompt = self.REACT_SYSTEM_PROMPT.format(context_hint=context_hint)
-            
+
             messages = [
                 SystemMessage(content=prompt),
                 HumanMessage(content=f"请分析以下用户输入的意图：\n\n\"{text}\""),
@@ -541,7 +552,7 @@ class IntentRecognizer:
             result, reasoning = self._parse_response(content)
 
             if not result or "tasks" not in result:
-                fallback = self._get_fallback_intent(is_in_coco_mode)
+                fallback = self._get_fallback_intent(current_mode)
                 return IntentResult.single(
                     intent=fallback,
                     confidence=0.5,
@@ -555,8 +566,10 @@ class IntentRecognizer:
                 intent_str = task_data.get("intent", "unknown")
                 intent = self.INTENT_MAP.get(intent_str, IntentType.UNKNOWN)
 
-                if intent == IntentType.ENTER_COCO and is_in_coco_mode:
+                if intent == IntentType.ENTER_COCO and is_in_coco:
                     intent = IntentType.COCO_MESSAGE
+                if intent == IntentType.ENTER_CLAUDE and is_in_claude:
+                    intent = IntentType.CLAUDE_MESSAGE
 
                 data = task_data.get("data", {})
                 if intent == IntentType.CHANGE_DIR and "path" in data:
@@ -569,7 +582,7 @@ class IntentRecognizer:
                 ))
 
             if not tasks:
-                fallback = self._get_fallback_intent(is_in_coco_mode)
+                fallback = self._get_fallback_intent(current_mode)
                 return IntentResult.single(
                     intent=fallback,
                     confidence=0.5,
@@ -587,7 +600,7 @@ class IntentRecognizer:
 
         except Exception as e:
             print(f"意图识别异常: {e}")
-            fallback = self._get_fallback_intent(is_in_coco_mode)
+            fallback = self._get_fallback_intent(current_mode)
             return IntentResult.single(
                 intent=fallback,
                 confidence=0.3,

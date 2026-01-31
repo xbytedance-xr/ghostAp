@@ -4,9 +4,51 @@
 GhostAP 是一个飞书机器人Shell沙箱服务，通过飞书机器人对话来安全执行本地shell命令，并支持 Coco AI 和 Claude AI 远程开发模式。
 
 ## 最新更新
-**更新时间**: 2026-01-29 19:30:00
+**更新时间**: 2026-01-29 21:00:00
 
-### Claude 编程模式（2026-01-29 19:30:00）
+### Claude 编程模式全面修复（2026-01-29 21:00:00）
+修复 Claude 编程模式无法使用的问题（报错 `Invalid session ID. Must be a valid UUID`），并全面适配卡片按钮、项目管理和会话快照。
+
+#### 根因修复
+- **Session ID 格式**: 从 `feishu_claude_{chat_id}_{timestamp}` 改为 `uuid.uuid4()` 生成的合法 UUID
+- **命令构造冲突**: 第一条消息用 `--session-id`，后续消息用 `--resume`，不再同时传两个参数
+
+#### 卡片按钮适配
+- Claude 模式下显示「退出Claude」+「切换项目」按钮
+- Smart 模式下显示「Coco模式」+「Claude模式」两个入口按钮
+- 流式卡片同步适配，传 `is_claude_mode=True`
+- 项目创建卡片新增「开始 Claude」按钮
+
+#### 项目管理兼容
+- `ProjectContext` 新增 `claude_mode`、`claude_session_snapshot` 字段
+- 新增 `ClaudeSessionSnapshot` 数据类
+- 新增 `set_claude_mode()`、`update_claude_snapshot()` 方法
+- 快照序列化/反序列化包含 Claude 字段，兼容旧数据
+- 退出 Claude 模式时保存会话快照，下次可恢复
+- 切换项目时显示 Claude 恢复卡片
+
+#### 卡片动作处理
+- 新增 `enter_claude`、`exit_claude`、`resume_claude`、`new_claude` 四个卡片动作
+- 进入 Claude 时自动退出 Coco（互斥保护，反之亦然）
+- 回复编程消息自动识别 Claude/Coco 模式并自动进入
+- 项目状态面板显示 Claude 模式信息
+
+#### 改动文件
+- 修改 `src/claude/session.py` — UUID 生成 + 命令构造修复
+- 修改 `src/project/context.py` — 新增 Claude 字段和方法
+- 修改 `src/project/__init__.py` — 导出 ClaudeSessionSnapshot
+- 修改 `src/card/builder.py` — Claude 模式按钮、标题、恢复卡片
+- 修改 `src/card/streaming.py` — 流式卡片 Claude 适配
+- 修改 `src/feishu/ws_client.py` — 卡片动作、状态管理、快照保存
+- 修改 `tests/test_claude.py` — 新增 15 个测试（UUID、快照、按钮）
+- 修改 `tests/test_streaming.py` — 适配按钮文案变更
+
+#### 测试
+- 总测试数 214 个全部通过
+
+---
+
+### Claude 编程模式初始实现（2026-01-29 19:30:00）
 新增 Claude 编程模式，与 Coco 模式平行，用户可以选择使用不同的 AI 进行编程。
 
 #### 新增功能

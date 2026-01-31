@@ -27,6 +27,12 @@ class Settings(BaseSettings):
 
     streaming_enabled: bool = True
 
+    # 卡片按钮布局策略：
+    # - desktop: 使用飞书 action 原生布局（更贴近桌面端观感）
+    # - mobile: 强制两列 column_set（手机端更稳定，一行两个按钮）
+    # - responsive: 默认值；<=2 个按钮用 action，>2 个按钮用两列 column_set
+    card_button_layout: str = "responsive"
+
     @property
     def command_blacklist(self) -> list[str]:
         return [cmd.strip() for cmd in self.sandbox_command_blacklist.split(",") if cmd.strip()]

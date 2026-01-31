@@ -36,18 +36,36 @@ class StreamingCardManager:
         initial_content: str = "正在思考...",
         element_id: str = "content_md",
         is_coco_mode: bool = True,
+        is_claude_mode: bool = False,
         reply_to_message_id: Optional[str] = None,
+        image_keys: Optional[list[str]] = None,
     ) -> Optional[StreamingCard]:
-        mode_icon = "🤖" if is_coco_mode else "🧠"
-        if project_name:
-            title = f"{mode_icon} {project_name}"
+        if is_claude_mode:
+            mode_icon = "🔮"
+        elif is_coco_mode:
+            mode_icon = "🤖"
         else:
-            mode_name = "编程模式" if is_coco_mode else "智能模式"
+            mode_icon = "🧠"
+
+        if project_name:
+            if is_claude_mode:
+                title = f"🔮 {project_name} · Claude"
+            elif is_coco_mode:
+                title = f"🤖 {project_name} · Coco"
+            else:
+                title = f"🧠 {project_name}"
+        else:
+            if is_claude_mode:
+                mode_name = "Claude 编程模式"
+            elif is_coco_mode:
+                mode_name = "编程模式"
+            else:
+                mode_name = "智能模式"
             title = f"{mode_icon} {mode_name}"
 
         path_display = project_path or "~"
 
-        buttons = self._build_buttons(is_coco_mode, project_id)
+        buttons = self._build_buttons(is_coco_mode, project_id, is_claude_mode)
 
         card_json = {
             "schema": "2.0",
@@ -82,6 +100,17 @@ class StreamingCardManager:
                         "element_id": "path_md"
                     },
                     {"tag": "hr"},
+                    *([
+                        *[
+                            {
+                                "tag": "img",
+                                "img_key": key,
+                                "alt": {"tag": "plain_text", "content": f"图片 {i + 1}"}
+                            }
+                            for i, key in enumerate(image_keys)
+                        ],
+                        {"tag": "hr"},
+                    ] if image_keys else []),
                     {
                         "tag": "markdown",
                         "content": initial_content,
@@ -149,19 +178,38 @@ class StreamingCardManager:
             traceback.print_exc()
             return None
 
-    def _build_buttons(self, is_coco_mode: bool, project_id: Optional[str] = None) -> list[dict]:
-        if is_coco_mode:
+    def _build_buttons(self, is_coco_mode: bool, project_id: Optional[str] = None, is_claude_mode: bool = False) -> list[dict]:
+        if is_claude_mode:
+            return [
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "🚪 退出Claude"},
+                    "type": "default",
+                    "size": "small",
+                    "behaviors": [{"type": "callback", "value": {"action": "exit_claude", "project_id": project_id}}]
+                },
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "🔄 切换项目"},
+                    "type": "default",
+                    "size": "small",
+                    "behaviors": [{"type": "callback", "value": {"action": "switch_project"}}]
+                }
+            ]
+        elif is_coco_mode:
             return [
                 {
                     "tag": "button",
                     "text": {"tag": "plain_text", "content": "🚪 退出Coco"},
                     "type": "default",
+                    "size": "small",
                     "behaviors": [{"type": "callback", "value": {"action": "exit_coco", "project_id": project_id}}]
                 },
                 {
                     "tag": "button",
                     "text": {"tag": "plain_text", "content": "🔄 切换项目"},
                     "type": "default",
+                    "size": "small",
                     "behaviors": [{"type": "callback", "value": {"action": "switch_project"}}]
                 }
             ]
@@ -169,15 +217,17 @@ class StreamingCardManager:
             return [
                 {
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "🤖 编程模式"},
+                    "text": {"tag": "plain_text", "content": "🤖 Coco模式"},
                     "type": "primary",
+                    "size": "small",
                     "behaviors": [{"type": "callback", "value": {"action": "enter_coco", "project_id": project_id}}]
                 },
                 {
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "📋 选择项目"},
+                    "text": {"tag": "plain_text", "content": "🔮 Claude模式"},
                     "type": "default",
-                    "behaviors": [{"type": "callback", "value": {"action": "show_board"}}]
+                    "size": "small",
+                    "behaviors": [{"type": "callback", "value": {"action": "enter_claude", "project_id": project_id}}]
                 }
             ]
 

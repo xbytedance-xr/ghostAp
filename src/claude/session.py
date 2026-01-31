@@ -1,6 +1,7 @@
 import subprocess
 import time
 import re
+import uuid
 import threading
 from dataclasses import dataclass, field
 from typing import Optional, Callable, Generator
@@ -19,7 +20,7 @@ class ClaudeSession:
 
     def __post_init__(self):
         if not self.session_id:
-            self.session_id = f"feishu_claude_{self.chat_id}_{int(self.created_at)}"
+            self.session_id = str(uuid.uuid4())
 
     def send_prompt(self, prompt: str, timeout: Optional[int] = None, cwd: Optional[str] = None, resume: bool = False) -> str:
         self.last_active = time.time()
@@ -35,12 +36,14 @@ class ClaudeSession:
                 "claude",
                 "-p",
                 "--dangerously-skip-permissions",
-                "--session-id", self.session_id,
             ]
 
-            if resume and not self.is_resumed:
+            # First message of a new session uses --session-id
+            # Subsequent messages or resumed sessions use --resume
+            if self.message_count == 1 and not self.is_resumed:
+                cmd.extend(["--session-id", self.session_id])
+            else:
                 cmd.extend(["--resume", self.session_id])
-                self.is_resumed = True
 
             cmd.append(prompt)
 
@@ -51,6 +54,27 @@ class ClaudeSession:
                 timeout=timeout,
                 cwd=cwd,
             )
+
+            # If resume failed (session expired/not found), create new session and retry
+            if result.stderr and "No conversation found with session ID" in result.stderr:
+                print(f"⚠️ Claude 会话 {self.session_id} 已失效，创建新会话重试")
+                self.session_id = str(uuid.uuid4())
+                self.is_resumed = False
+                self.message_count = 1
+                cmd = [
+                    "claude",
+                    "-p",
+                    "--dangerously-skip-permissions",
+                    "--session-id", self.session_id,
+                    prompt,
+                ]
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    cwd=cwd,
+                )
 
             output = result.stdout.strip()
             if result.stderr:
@@ -94,52 +118,45 @@ class ClaudeSession:
                 "claude",
                 "-p",
                 "--dangerously-skip-permissions",
-                "--session-id", self.session_id,
             ]
 
-            if resume and not self.is_resumed:
+            if self.message_count == 1 and not self.is_resumed:
+                cmd.extend(["--session-id", self.session_id])
+            else:
                 cmd.extend(["--resume", self.session_id])
-                self.is_resumed = True
 
             cmd.append(prompt)
 
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=cwd,
-                bufsize=1,
+            full_output, stderr_text, timed_out = self._run_streaming_process(
+                cmd, cwd, timeout, on_chunk, chunk_interval
             )
 
-            full_output = ""
-            last_update_time = time.time()
-            start_time = time.time()
+            if timed_out:
+                return f"⏱️ Claude 执行超时（{timeout}秒）"
 
-            while True:
-                if time.time() - start_time > timeout:
-                    process.kill()
+            # If resume failed (session expired/not found), create new session and retry
+            if stderr_text and "No conversation found with session ID" in stderr_text:
+                print(f"⚠️ Claude 会话 {self.session_id} 已失效，创建新会话重试")
+                self.session_id = str(uuid.uuid4())
+                self.is_resumed = False
+                self.message_count = 1
+
+                cmd = [
+                    "claude",
+                    "-p",
+                    "--dangerously-skip-permissions",
+                    "--session-id", self.session_id,
+                    prompt,
+                ]
+                full_output, stderr_text, timed_out = self._run_streaming_process(
+                    cmd, cwd, timeout, on_chunk, chunk_interval
+                )
+
+                if timed_out:
                     return f"⏱️ Claude 执行超时（{timeout}秒）"
 
-                line = process.stdout.readline()
-                if line:
-                    full_output += line
-                    current_time = time.time()
-                    if current_time - last_update_time >= chunk_interval:
-                        cleaned = self._clean_output(full_output.strip())
-                        if cleaned:
-                            on_chunk(cleaned)
-                        last_update_time = current_time
-
-                if process.poll() is not None:
-                    remaining = process.stdout.read()
-                    if remaining:
-                        full_output += remaining
-                    break
-
-            stderr = process.stderr.read()
-            if stderr:
-                full_output += f"\n\n⚠️ stderr:\n{stderr.strip()}"
+            if stderr_text:
+                full_output += f"\n\n⚠️ stderr:\n{stderr_text.strip()}"
 
             output = self._clean_output(full_output.strip())
 
@@ -159,6 +176,45 @@ class ClaudeSession:
             error_msg = f"❌ Claude 执行异常: {str(e)}"
             on_chunk(error_msg)
             return error_msg
+
+    def _run_streaming_process(self, cmd, cwd, timeout, on_chunk, chunk_interval):
+        """Run command with streaming output. Returns (full_output, stderr_text, timed_out)."""
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=cwd,
+            bufsize=1,
+        )
+
+        full_output = ""
+        last_update_time = time.time()
+        start_time = time.time()
+
+        while True:
+            if time.time() - start_time > timeout:
+                process.kill()
+                return "", "", True
+
+            line = process.stdout.readline()
+            if line:
+                full_output += line
+                current_time = time.time()
+                if current_time - last_update_time >= chunk_interval:
+                    cleaned = self._clean_output(full_output.strip())
+                    if cleaned:
+                        on_chunk(cleaned)
+                    last_update_time = current_time
+
+            if process.poll() is not None:
+                remaining = process.stdout.read()
+                if remaining:
+                    full_output += remaining
+                break
+
+        stderr_text = process.stderr.read()
+        return full_output, stderr_text, False
 
     def resume(self, cwd: Optional[str] = None) -> str:
         self.last_active = time.time()

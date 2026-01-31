@@ -49,15 +49,20 @@ class TestStreamingCardManager:
         assert buttons[0]["text"]["content"] == "🚪 退出Coco"
         assert buttons[0]["behaviors"][0]["value"]["action"] == "exit_coco"
         assert buttons[0]["behaviors"][0]["value"]["project_id"] == "proj_123"
+        assert buttons[0].get("size") == "small"
         assert buttons[1]["text"]["content"] == "🔄 切换项目"
+        assert buttons[1].get("size") == "small"
 
     def test_build_buttons_smart_mode(self, manager):
         buttons = manager._build_buttons(is_coco_mode=False, project_id="proj_123")
 
         assert len(buttons) == 2
-        assert buttons[0]["text"]["content"] == "🤖 编程模式"
+        assert buttons[0]["text"]["content"] == "🤖 Coco模式"
         assert buttons[0]["behaviors"][0]["value"]["action"] == "enter_coco"
-        assert buttons[1]["text"]["content"] == "📋 选择项目"
+        assert buttons[0].get("size") == "small"
+        assert buttons[1]["text"]["content"] == "🔮 Claude模式"
+        assert buttons[1]["behaviors"][0]["value"]["action"] == "enter_claude"
+        assert buttons[1].get("size") == "small"
 
     def test_create_streaming_card_success(self, manager, mock_client):
         mock_response = MagicMock()
@@ -79,6 +84,34 @@ class TestStreamingCardManager:
         assert card.chat_id == "chat_123"
         assert card.project_id == "proj_456"
         assert card.last_content == "思考中..."
+
+    def test_create_streaming_card_with_images(self, manager, mock_client):
+        mock_response = MagicMock()
+        mock_response.success.return_value = True
+        mock_response.data.card_id = "card_img"
+        mock_client.cardkit.v1.card.create.return_value = mock_response
+
+        card = manager.create_streaming_card(
+            chat_id="chat_123",
+            project_name="TestProject",
+            project_path="/tmp/test",
+            project_id="proj_456",
+            initial_content="思考中...",
+            is_coco_mode=True,
+            image_keys=["img_v2_abc", "img_v2_def"],
+        )
+
+        assert card is not None
+        # Verify the card JSON passed to API contains image elements
+        call_args = mock_client.cardkit.v1.card.create.call_args
+        request = call_args[0][0]
+        import json
+        card_data = json.loads(request.body.data)
+        body_elements = card_data["body"]["elements"]
+        img_elements = [e for e in body_elements if e.get("tag") == "img"]
+        assert len(img_elements) == 2
+        assert img_elements[0]["img_key"] == "img_v2_abc"
+        assert img_elements[1]["img_key"] == "img_v2_def"
 
     def test_create_streaming_card_failure(self, manager, mock_client):
         mock_response = MagicMock()

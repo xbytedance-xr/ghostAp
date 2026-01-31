@@ -19,6 +19,7 @@ from ..deep_engine.models import DeepProject, DeepProjectStatus, DeepTask, Execu
 from .message_formatter import FeishuMessageFormatter as fmt
 from .emoji import EmojiType, EmojiReaction
 from .message_cache import MessageCache
+from .image_handler import FeishuImageHandler
 
 
 class FeishuWSClient:
@@ -43,6 +44,8 @@ class FeishuWSClient:
         self._mode_manager = ModeManager()
         
         self._streaming_manager: Optional[StreamingCardManager] = None
+        self._image_handler: Optional[FeishuImageHandler] = None
+        self._pending_image_keys: dict[str, list[str]] = {}
         self._enable_streaming = self.settings.streaming_enabled
         
         self._deep_engine_manager = DeepEngineManager()
@@ -71,6 +74,11 @@ class FeishuWSClient:
         if self._streaming_manager is None:
             self._streaming_manager = StreamingCardManager(self._get_api_client())
         return self._streaming_manager
+
+    def _get_image_handler(self) -> FeishuImageHandler:
+        if self._image_handler is None:
+            self._image_handler = FeishuImageHandler(self._get_api_client())
+        return self._image_handler
 
     def _add_reaction(self, message_id: str, emoji_type: str):
         try:
@@ -106,9 +114,9 @@ class FeishuWSClient:
         else:
             return False, f"目录不存在: {expanded_path}"
 
-    def _resolve_project_from_message(self, message_id: str, chat_id: str, parent_id: Optional[str] = None) -> tuple[Optional[ProjectContext], bool]:
-        auto_enter_coco = False
-        
+    def _resolve_project_from_message(self, message_id: str, chat_id: str, parent_id: Optional[str] = None) -> tuple[Optional[ProjectContext], Optional[str]]:
+        auto_enter_mode = None
+
         if parent_id:
             project_id = self._message_mapper.get_project_id(parent_id)
             if project_id:
@@ -116,14 +124,17 @@ class FeishuWSClient:
                 if project:
                     self._project_manager.set_active_project(chat_id, project_id)
                     print(f"📎 通过消息引用切换到项目: {project.project_name}")
-                    
-                    if project.coco_mode:
-                        auto_enter_coco = True
-                        print(f"🤖 自动进入编程模式 (回复编程消息)")
-                    
-                    return project, auto_enter_coco
 
-        return self._project_manager.get_active_project(chat_id), False
+                    if project.claude_mode:
+                        auto_enter_mode = "claude"
+                        print(f"🔮 自动进入 Claude 模式 (回复编程消息)")
+                    elif project.coco_mode:
+                        auto_enter_mode = "coco"
+                        print(f"🤖 自动进入编程模式 (回复编程消息)")
+
+                    return project, auto_enter_mode
+
+        return self._project_manager.get_active_project(chat_id), None
 
     def _register_message_project(self, message_id: str, project: ProjectContext):
         self._message_mapper.register(message_id, project.project_id)
@@ -153,17 +164,15 @@ class FeishuWSClient:
                 print(f"⏭️ 跳过重复消息: {message_id}")
                 return
 
-            if message_type != "text":
-                self._reply_message(message_id, "⚠️ 目前仅支持文本消息")
+            supported_types = {"text", "image", "post"}
+            if message_type not in supported_types:
+                self._reply_message(message_id, "⚠️ 目前仅支持文本、图片和富文本消息")
                 return
 
-            try:
-                content_dict = json.loads(content_str)
-                text = content_dict.get("text", "")
-            except json.JSONDecodeError:
-                text = content_str
+            image_handler = self._get_image_handler()
+            parse_result = image_handler.parse_message(message_type, content_str)
 
-            text = text.strip()
+            text = parse_result.text.strip()
             if text.startswith("@"):
                 parts = text.split(None, 1)
                 if len(parts) > 1:
@@ -171,20 +180,73 @@ class FeishuWSClient:
                 else:
                     text = ""
 
+            if parse_result.image_keys:
+                # 保存原始 image_keys 供响应卡片展示图片
+                self._pending_image_keys[message_id] = parse_result.image_keys
+
+                project, auto_enter_mode = self._resolve_project_from_message(
+                    message_id, chat_id, parent_id or root_id
+                )
+                save_dir = FeishuImageHandler.get_image_save_dir(
+                    project.root_path if project else None,
+                    self._get_working_dir(chat_id),
+                )
+                download_result = image_handler.download_images(
+                    message_id, parse_result.image_keys, save_dir
+                )
+                if download_result.saved_paths:
+                    ref_text = FeishuImageHandler.build_image_reference_text(
+                        download_result.saved_paths
+                    )
+                    if text:
+                        text += ref_text
+                    else:
+                        text = "用户发送了图片，请查看以下图片文件：" + ref_text
+                if download_result.failed_keys:
+                    print(f"部分图片下载失败: {download_result.failed_keys}")
+            else:
+                project = None
+                auto_enter_mode = None
+
             if not text:
+                # 编程模式下即使 text 为空（如图片下载失败），也路由到编程 handler
+                from ..mode import InteractionMode
+                current_mode = self._mode_manager.get_mode(chat_id)
+                if current_mode == InteractionMode.CLAUDE:
+                    if project is None:
+                        project = self._project_manager.get_active_project(chat_id)
+                    self._handle_claude_message(message_id, chat_id, text, project)
+                    return
+                elif current_mode == InteractionMode.COCO:
+                    if project is None:
+                        project = self._project_manager.get_active_project(chat_id)
+                    self._handle_coco_message(message_id, chat_id, text, project)
+                    return
                 self._show_help(message_id, chat_id)
                 return
 
-            project, auto_enter_coco = self._resolve_project_from_message(message_id, chat_id, parent_id or root_id)
+            if project is None and auto_enter_mode is None:
+                project, auto_enter_mode = self._resolve_project_from_message(
+                    message_id, chat_id, parent_id or root_id
+                )
 
-            if auto_enter_coco:
-                from ..mode import InteractionMode
-                self._mode_manager.enter_coco_mode(chat_id, auto=True)
-                self._add_reaction(message_id, EmojiReaction.on_coco_mode())
-                self._add_reaction(message_id, EmojiReaction.on_processing())
-                self._handle_coco_message(message_id, chat_id, text, project)
-            else:
-                self._process_with_intent(message_id, chat_id, text, project)
+            try:
+                if auto_enter_mode == "claude":
+                    # 自动进入时不要直接 set_mode：需要走 _enter_claude_mode 来确保会话/项目状态一致
+                    self._enter_claude_mode(message_id, chat_id, silent=True, project=project)
+                    self._add_reaction(message_id, EmojiReaction.on_coco_mode())
+                    self._add_reaction(message_id, EmojiReaction.on_processing())
+                    self._handle_claude_message(message_id, chat_id, text, project)
+                elif auto_enter_mode == "coco":
+                    # 自动进入时不要直接 set_mode：需要走 _enter_coco_mode 来确保会话/项目状态一致
+                    self._enter_coco_mode(message_id, chat_id, silent=True, project=project)
+                    self._add_reaction(message_id, EmojiReaction.on_coco_mode())
+                    self._add_reaction(message_id, EmojiReaction.on_processing())
+                    self._handle_coco_message(message_id, chat_id, text, project)
+                else:
+                    self._process_with_intent(message_id, chat_id, text, project)
+            finally:
+                self._pending_image_keys.pop(message_id, None)
 
         except Exception as e:
             print(f"处理消息异常: {e}")
@@ -214,7 +276,8 @@ class FeishuWSClient:
             f"• 📂 项目目录: `{project.root_path}`\n"
             f"• 📁 工作目录: `{global_working_dir}`\n"
             f"• 状态: {project.get_status_emoji()} {project.status.value}\n"
-            f"• Coco 模式: {'🤖 开启' if project.coco_mode else '关闭'}"
+            f"• Coco 模式: {'🤖 开启' if project.coco_mode else '关闭'}\n"
+            f"• Claude 模式: {'🔮 开启' if project.claude_mode else '关闭'}"
         )
 
         msg_type, card_content = CardBuilder.build_project_response_card(
@@ -234,13 +297,18 @@ class FeishuWSClient:
             snap = project.coco_session_snapshot
             coco_info = f"\n\n🤖 **Coco 会话**\n• 会话 ID: `{snap.session_id}`\n• 对话数: {snap.query_count}"
 
+        claude_info = ""
+        if project.claude_mode and project.claude_session_snapshot:
+            snap = project.claude_session_snapshot
+            claude_info = f"\n\n🔮 **Claude 会话**\n• 会话 ID: `{snap.session_id}`\n• 对话数: {snap.query_count}"
+
         global_working_dir = self._get_working_dir(chat_id)
         content = (
             f"• 状态: {project.get_status_emoji()} {project.status.value}\n"
             f"• 📂 项目目录: `{project.root_path}`\n"
             f"• 📁 工作目录: `{global_working_dir}`\n"
             f"• 最后活跃: {CardBuilder._format_time_ago(project.last_active)}"
-            f"{coco_info}"
+            f"{coco_info}{claude_info}"
         )
 
         msg_type, card_content = CardBuilder.build_project_response_card(
@@ -297,6 +365,8 @@ class FeishuWSClient:
 
             if project.coco_session_snapshot and project.coco_session_snapshot.is_resumable:
                 msg_type, card_content = CardBuilder.build_coco_resume_card(project)
+            elif project.claude_session_snapshot and project.claude_session_snapshot.is_resumable:
+                msg_type, card_content = CardBuilder.build_claude_resume_card(project)
             else:
                 msg_type, card_content = CardBuilder.build_project_response_card(
                     project, "🔄 项目已切换", content, show_buttons=True
@@ -421,6 +491,21 @@ class FeishuWSClient:
                 self._handle_card_resume_coco(open_message_id, open_chat_id, project_id, session_id)
             elif action_type == "new_coco":
                 self._handle_card_new_coco(open_message_id, open_chat_id, project_id)
+            elif action_type == "enter_claude":
+                self._handle_card_enter_claude(open_message_id, open_chat_id, project_id)
+            elif action_type == "exit_claude":
+                self._handle_card_exit_claude(open_message_id, open_chat_id, project_id)
+            elif action_type == "resume_claude":
+                session_id = value.get("session_id", "")
+                self._handle_card_resume_claude(open_message_id, open_chat_id, project_id, session_id)
+            elif action_type == "new_claude":
+                self._handle_card_new_claude(open_message_id, open_chat_id, project_id)
+            elif action_type == "deep_pause":
+                self._pause_deep_engine(open_message_id, open_chat_id)
+            elif action_type == "deep_resume":
+                self._resume_deep_engine(open_message_id, open_chat_id)
+            elif action_type == "deep_stop":
+                self._stop_deep_engine(open_message_id, open_chat_id)
             elif action_type == "new_project_prompt":
                 self._reply_message(open_message_id, "📝 创建新项目\n\n请发送: `/new 项目名 路径`\n\n例如: `/new myApp ~/workspace/myApp`")
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
@@ -444,6 +529,10 @@ class FeishuWSClient:
                         self._register_message_project(response_id, project)
                     return
 
+                # 重要：按钮入口必须把 project 透传进去，否则会按 working_dir 自动选错项目
+                self._enter_coco_mode(message_id, chat_id, project=project)
+                return
+
         self._enter_coco_mode(message_id, chat_id)
 
     def _handle_card_exit_coco(self, message_id: str, chat_id: str, project_id: str):
@@ -451,6 +540,10 @@ class FeishuWSClient:
             project = self._project_manager.get_project(project_id)
             if project and project.coco_mode:
                 project.set_coco_mode(False)
+
+            # 透传 project，确保 snapshot 能更新、状态能落盘
+            self._exit_coco_mode(message_id, chat_id, project=project)
+            return
 
         self._exit_coco_mode(message_id, chat_id)
 
@@ -482,7 +575,80 @@ class FeishuWSClient:
             self._project_manager.set_active_project(chat_id, project_id)
             project.coco_session_snapshot = None
 
+            self._enter_coco_mode(message_id, chat_id, project=project)
+            return
+
         self._enter_coco_mode(message_id, chat_id)
+
+    def _handle_card_enter_claude(self, message_id: str, chat_id: str, project_id: str):
+        if project_id:
+            project = self._project_manager.get_project(project_id)
+            if project:
+                self._project_manager.set_active_project(chat_id, project_id)
+
+                if project.claude_session_snapshot and project.claude_session_snapshot.is_resumable:
+                    msg_type, card_content = CardBuilder.build_claude_resume_card(project)
+                    response_id = self._reply_message_with_id(message_id, card_content, msg_type)
+                    if response_id:
+                        self._register_message_project(response_id, project)
+                    return
+
+                # 重要：按钮入口必须把 project 透传进去，否则会按 working_dir 自动选错项目
+                self._enter_claude_mode(message_id, chat_id, project=project)
+                return
+
+        self._enter_claude_mode(message_id, chat_id)
+
+    def _handle_card_exit_claude(self, message_id: str, chat_id: str, project_id: str):
+        if project_id:
+            project = self._project_manager.get_project(project_id)
+            if project and project.claude_mode:
+                project.set_claude_mode(False)
+
+            # 透传 project，确保 snapshot 能更新、状态能落盘
+            self._exit_claude_mode(message_id, chat_id, project=project)
+            return
+
+        self._exit_claude_mode(message_id, chat_id)
+
+    def _handle_card_resume_claude(self, message_id: str, chat_id: str, project_id: str, session_id: str):
+        project = self._project_manager.get_project(project_id) if project_id else None
+        if project:
+            self._project_manager.set_active_project(chat_id, project_id)
+
+        self._add_reaction(message_id, EmojiReaction.on_coco_enter())
+
+        session = self._claude_manager.start_session(chat_id, session_id=session_id)
+        session.is_resumed = True
+
+        # 恢复会话时也要保持项目模式互斥
+        if project and project.coco_mode:
+            project.set_coco_mode(False)
+
+        self._mode_manager.enter_claude_mode(chat_id)
+
+        if project:
+            project.set_claude_mode(True, session_id)
+            content = f"🔄 已恢复 Claude 会话\n\n会话 ID: `{session_id}`\n\n现在可以继续之前的对话了"
+            msg_type, card_content = CardBuilder.build_project_response_card(
+                project, "Claude 会话已恢复", content, show_buttons=True
+            )
+            response_id = self._reply_message_with_id(message_id, card_content, msg_type)
+            if response_id:
+                self._register_message_project(response_id, project)
+        else:
+            self._reply_message(message_id, f"🔄 已恢复 Claude 会话: `{session_id}`")
+
+    def _handle_card_new_claude(self, message_id: str, chat_id: str, project_id: str):
+        project = self._project_manager.get_project(project_id) if project_id else None
+        if project:
+            self._project_manager.set_active_project(chat_id, project_id)
+            project.claude_session_snapshot = None
+
+            self._enter_claude_mode(message_id, chat_id, project=project)
+            return
+
+        self._enter_claude_mode(message_id, chat_id)
 
     def _process_with_intent(self, message_id: str, chat_id: str, text: str, project: Optional[ProjectContext] = None):
         from ..mode import InteractionMode
@@ -529,7 +695,7 @@ class FeishuWSClient:
         self._add_reaction(message_id, EmojiReaction.on_processing())
 
         try:
-            intent_result = self._intent_recognizer.recognize(text, is_in_coco)
+            intent_result = self._intent_recognizer.recognize(text, current_mode.value)
         except Exception as e:
             print(f"意图识别异常: {e}")
             working_dir = self._get_working_dir(chat_id)
@@ -777,7 +943,7 @@ class FeishuWSClient:
 
     def _enter_coco_mode(self, message_id: str, chat_id: str, silent: bool = False, project: Optional[ProjectContext] = None):
         from ..mode import InteractionMode
-        
+
         if self._mode_manager.is_coco_mode(chat_id):
             if not silent:
                 info = self._coco_manager.get_session_info(chat_id)
@@ -786,6 +952,10 @@ class FeishuWSClient:
                     fmt.format_warning(f"已经在编程模式中\n\n{info}\n\n说「退出模式」或发送 /exit 退出")
                 )
             return
+
+        # If in Claude mode, exit it first (mutual exclusion)
+        if self._mode_manager.is_claude_mode(chat_id):
+            self._exit_claude_mode(message_id, chat_id, project=project)
 
         self._mode_manager.enter_coco_mode(chat_id)
         self._add_reaction(message_id, EmojiReaction.on_coco_enter())
@@ -844,11 +1014,13 @@ class FeishuWSClient:
     def _exit_coco_mode(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
         session = self._coco_manager.get_session(chat_id)
 
-        if project and session:
-            project.update_coco_snapshot(
-                query=session.session_id,
-                query_count=session.message_count
-            )
+        if project:
+            if session:
+                project.update_coco_snapshot(
+                    query=session.last_query,
+                    query_count=session.message_count
+                )
+            # 无论会话是否存在，都要把项目状态切回非 Coco，避免卡片/按钮显示错乱
             project.set_coco_mode(False)
 
         self._mode_manager.exit_to_smart(chat_id)
@@ -927,7 +1099,7 @@ class FeishuWSClient:
 
     def _enter_claude_mode(self, message_id: str, chat_id: str, silent: bool = False, project: Optional[ProjectContext] = None):
         from ..mode import InteractionMode
-        
+
         if self._mode_manager.is_claude_mode(chat_id):
             if not silent:
                 info = self._claude_manager.get_session_info(chat_id)
@@ -936,6 +1108,10 @@ class FeishuWSClient:
                     fmt.format_warning(f"已经在 Claude 编程模式中\n\n{info}\n\n说「退出模式」或发送 /exit 退出")
                 )
             return
+
+        # If in Coco mode, exit it first (mutual exclusion)
+        if self._mode_manager.is_coco_mode(chat_id):
+            self._exit_coco_mode(message_id, chat_id, project=project)
 
         self._mode_manager.enter_claude_mode(chat_id)
         self._add_reaction(message_id, EmojiReaction.on_coco_enter())
@@ -958,27 +1134,59 @@ class FeishuWSClient:
                     self._reply_message(message_id, f"⚠️ {path_msg}\n\n请切换到有效目录后重试")
                 return
 
-            if not silent:
-                content = "🔮 已进入 Claude 编程模式\n\n现在可以用自然语言描述你的需求\n\n说「退出模式」或发送 `/exit` 退出"
-                msg_type, card_content = CardBuilder.build_project_response_card(
-                    project, "🔮 Claude 编程模式", content, show_buttons=True,
-                    footer=f"📂 项目目录: {project.root_path}"
-                )
-                response_id = self._reply_message_with_id(message_id, card_content, msg_type)
-                if response_id:
-                    self._register_message_project(response_id, project)
+            if project.claude_session_snapshot and project.claude_session_snapshot.is_resumable:
+                session.session_id = project.claude_session_snapshot.session_id
+                session.is_resumed = True
+                project.set_claude_mode(True, session.session_id, project.claude_session_snapshot.query_count)
+                if not silent:
+                    content = (
+                        f"🔄 已恢复 Claude 会话\n\n"
+                        f"• 会话 ID: `{session.session_id}`\n"
+                        f"• 历史对话: {project.claude_session_snapshot.query_count} 条\n\n"
+                        f"继续之前的对话吧！"
+                    )
+                    msg_type, card_content = CardBuilder.build_project_response_card(
+                        project, "Claude 会话已恢复", content, show_buttons=True,
+                        footer=f"📂 项目目录: {project.root_path}"
+                    )
+                    response_id = self._reply_message_with_id(message_id, card_content, msg_type)
+                    if response_id:
+                        self._register_message_project(response_id, project)
+            else:
+                project.set_claude_mode(True, session.session_id)
+                if not silent:
+                    content = "🔮 已进入 Claude 编程模式\n\n现在可以用自然语言描述你的需求\n\n说「退出模式」或发送 `/exit` 退出"
+                    msg_type, card_content = CardBuilder.build_project_response_card(
+                        project, "🔮 Claude 编程模式", content, show_buttons=True,
+                        footer=f"📂 项目目录: {project.root_path}"
+                    )
+                    response_id = self._reply_message_with_id(message_id, card_content, msg_type)
+                    if response_id:
+                        self._register_message_project(response_id, project)
         else:
             if not silent:
                 self._reply_message(message_id, "🔮 已进入 Claude 编程模式\n\n现在可以用自然语言描述你的需求\n\n说「退出模式」或发送 `/exit` 退出")
 
     def _exit_claude_mode(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
+        session = self._claude_manager.get_session(chat_id)
+
+        if project:
+            if session:
+                project.update_claude_snapshot(
+                    query=session.last_query,
+                    query_count=session.message_count,
+                    session_id=session.session_id
+                )
+            # 无论会话是否存在，都要把项目状态切回非 Claude，避免卡片/按钮显示错乱
+            project.set_claude_mode(False)
+
         self._mode_manager.exit_to_smart(chat_id)
-        
+
         if self._claude_manager.end_session(chat_id):
             self._add_reaction(message_id, EmojiReaction.on_coco_exit())
 
             if project:
-                content = "👋 已退出 Claude 编程模式\n\n当前为 🧠 智能模式"
+                content = "👋 已退出 Claude 编程模式\n\n会话已保存，下次可以恢复\n\n当前为 🧠 智能模式"
                 msg_type, card_content = CardBuilder.build_project_response_card(
                     project, "已退出 Claude 编程模式", content, show_buttons=True
                 )
@@ -1033,16 +1241,22 @@ class FeishuWSClient:
     def _handle_claude_normal(self, message_id: str, chat_id: str, text: str, session, project, claude_cwd: str, global_working_dir: str):
         response = session.send_prompt(text, cwd=claude_cwd)
 
+        if project:
+            project.update_claude_snapshot(text, session.message_count, session.session_id)
+            project.add_conversation("user", text, message_id)
+            project.add_conversation("assistant", response[:200])
+
         self._add_reaction(message_id, EmojiReaction.on_coco_response())
 
         if project:
-            header = f"🔮 Claude · {project.project_name}"
             footer = (
                 f"📂 项目目录: {project.root_path}\n"
                 f"📁 工作目录: {global_working_dir}"
             )
+            image_keys = self._pending_image_keys.get(message_id)
             msg_type, card_content = CardBuilder.build_project_response_card(
-                project, header, response, show_buttons=True, footer=footer
+                project, "🔮 Claude", response, show_buttons=True, footer=footer,
+                image_keys=image_keys,
             )
             response_id = self._reply_message_with_id(message_id, card_content, msg_type)
             if response_id:
@@ -1057,6 +1271,7 @@ class FeishuWSClient:
         project_name = project.project_name if project else None
         project_path = project.root_path if project else global_working_dir
         project_id = project.project_id if project else None
+        image_keys = self._pending_image_keys.get(message_id)
 
         print(f"🎬 开始 Claude 流式输出: project={project_name}, path={project_path}")
 
@@ -1066,8 +1281,10 @@ class FeishuWSClient:
             project_path=project_path,
             project_id=project_id,
             initial_content="🔮 Claude 正在思考...",
-            is_coco_mode=True,
+            is_coco_mode=False,
+            is_claude_mode=True,
             reply_to_message_id=message_id,
+            image_keys=image_keys,
         )
 
         if not streaming_card:
@@ -1097,6 +1314,11 @@ class FeishuWSClient:
         print(f"🎬 Claude 流式输出完成: 更新次数={update_count[0]}, 最终长度={len(final_response)}")
 
         streaming_manager.close_streaming(streaming_card, final_content=final_response)
+
+        if project:
+            project.update_claude_snapshot(text, session.message_count, session.session_id)
+            project.add_conversation("user", text, message_id)
+            project.add_conversation("assistant", final_response[:200])
 
         self._add_reaction(message_id, EmojiReaction.on_coco_response())
 
@@ -1184,13 +1406,14 @@ class FeishuWSClient:
         self._add_reaction(message_id, EmojiReaction.on_coco_response())
 
         if project:
-            header = f"🤖 Coco · {project.project_name}"
             footer = (
                 f"📂 项目目录: {project.root_path}\n"
                 f"📁 工作目录: {global_working_dir}"
             )
+            image_keys = self._pending_image_keys.get(message_id)
             msg_type, card_content = CardBuilder.build_project_response_card(
-                project, header, response, show_buttons=True, footer=footer
+                project, "🤖 Coco", response, show_buttons=True, footer=footer,
+                image_keys=image_keys,
             )
             response_id = self._reply_message_with_id(message_id, card_content, msg_type)
             if response_id:
@@ -1205,6 +1428,7 @@ class FeishuWSClient:
         project_name = project.project_name if project else None
         project_path = project.root_path if project else global_working_dir
         project_id = project.project_id if project else None
+        image_keys = self._pending_image_keys.get(message_id)
 
         print(f"🎬 开始流式输出: project={project_name}, path={project_path}")
 
@@ -1216,6 +1440,7 @@ class FeishuWSClient:
             initial_content="🤔 正在思考...",
             is_coco_mode=True,
             reply_to_message_id=message_id,
+            image_keys=image_keys,
         )
 
         if not streaming_card:
@@ -1261,7 +1486,23 @@ class FeishuWSClient:
         current_dir = self._get_working_dir(chat_id)
         project = self._project_manager.get_active_project(chat_id)
 
-        help_text = fmt.format_help(current_dir, is_coco_mode)
+        help_result = fmt.format_help(current_dir, is_coco_mode)
+
+        # format_help returns ('post', json_str)，提取 markdown 文本避免 f-string 将 tuple 转为字符串
+        if isinstance(help_result, tuple) and len(help_result) == 2:
+            try:
+                post_data = json.loads(help_result[1])
+                lang_data = next(iter(post_data.values()))
+                md_parts = []
+                for row in lang_data.get("content", []):
+                    for elem in row:
+                        if elem.get("tag") == "md":
+                            md_parts.append(elem.get("text", ""))
+                help_md = "\n".join(md_parts)
+            except Exception:
+                help_md = str(help_result[1])
+        else:
+            help_md = str(help_result)
 
         project_help = (
             "\n\n📋 **项目管理命令**\n"
@@ -1272,9 +1513,9 @@ class FeishuWSClient:
         )
 
         if project:
-            self._reply_message(message_id, f"当前项目: **{project.project_name}**\n\n{help_text}{project_help}")
+            self._reply_message(message_id, f"当前项目: **{project.project_name}**\n\n{help_md}{project_help}")
         else:
-            self._reply_message(message_id, f"{help_text}{project_help}")
+            self._reply_message(message_id, f"{help_md}{project_help}")
 
     def _show_full_help(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
         from ..mode import InteractionMode
@@ -1440,8 +1681,16 @@ class FeishuWSClient:
 
         self._add_reaction(message_id, EmojiReaction.on_multi_task_start())
 
-        planning_msg = self._progress_reporter.format_planning_start(requirement)
-        self._reply_message(message_id, planning_msg)
+        planning_content = self._progress_reporter.format_planning_start(requirement)
+        planning_title = self._progress_reporter.get_planning_start_title()
+        msg_type, card_content = CardBuilder.build_deep_card(
+            project=project,
+            title=planning_title,
+            content=planning_content,
+            engine_name="Coco",
+            show_buttons=False,
+        )
+        self._reply_message(message_id, card_content, msg_type=msg_type)
 
         engine = self._deep_engine_manager.get_or_create(chat_id, root_path)
 
@@ -1453,36 +1702,99 @@ class FeishuWSClient:
                 print(f"Deep Engine 执行异常: {e}")
                 import traceback
                 traceback.print_exc()
-                error_msg = self._progress_reporter.format_error(str(e))
-                self.send_message(chat_id, json.dumps({"text": error_msg}))
+                error_content = self._progress_reporter.format_error(str(e))
+                error_title = self._progress_reporter.get_error_title()
+                err_msg_type, err_card = CardBuilder.build_deep_card(
+                    project=project,
+                    title=error_title,
+                    content=error_content,
+                    engine_name="Coco",
+                    show_buttons=False,
+                )
+                self.send_message(chat_id, err_card, err_msg_type)
 
         self._executor.submit(run_deep_engine)
 
     def _create_deep_callbacks(self, message_id: str, chat_id: str, project: Optional[ProjectContext]) -> DeepEngineCallbacks:
+        engine_name = "Coco"
+
         def on_planning_done(deep_project: DeepProject):
-            msg = self._progress_reporter.format_planning_done(deep_project)
-            self.send_message(chat_id, json.dumps({"text": msg}))
+            content = self._progress_reporter.format_planning_done(deep_project)
+            title = self._progress_reporter.get_planning_done_title()
+            msg_type, card_content = CardBuilder.build_deep_card(
+                project=project,
+                title=title,
+                content=content,
+                deep_project_id=deep_project.project_id,
+                engine_name=engine_name,
+                show_buttons=False,
+            )
+            self.send_message(chat_id, card_content, msg_type)
 
         def on_task_start(task: DeepTask, current: int, total: int):
-            msg = self._progress_reporter.format_task_start(task, current, total)
-            self.send_message(chat_id, json.dumps({"text": msg}))
+            content = self._progress_reporter.format_task_start(task, current, total)
+            title = self._progress_reporter.get_task_start_title(current, total)
+            progress_bar = self._progress_reporter._make_progress_bar(current - 1, total)
+            engine = self._deep_engine_manager.get(chat_id, project.root_path if project else "")
+            deep_project_id = engine.project.project_id if engine and engine.project else None
+            msg_type, card_content = CardBuilder.build_deep_card(
+                project=project,
+                title=title,
+                content=content,
+                progress_bar=progress_bar,
+                deep_project_id=deep_project_id,
+                is_executing=True,
+                engine_name=engine_name,
+            )
+            self.send_message(chat_id, card_content, msg_type)
 
         def on_task_done(task: DeepTask, result: ExecutionResult):
             engine = self._deep_engine_manager.get(chat_id, project.root_path if project else "")
             if engine and engine.project:
                 current = engine.project.completed_count
                 total = engine.project.total_count
-                msg = self._progress_reporter.format_task_done(task, result, current, total)
-                self.send_message(chat_id, json.dumps({"text": msg}))
+                content = self._progress_reporter.format_task_done(task, result, current, total)
+                title = self._progress_reporter.get_task_done_title(result.success, current, total)
+                progress_bar = self._progress_reporter._make_progress_bar(current, total)
+                msg_type, card_content = CardBuilder.build_deep_card(
+                    project=project,
+                    title=title,
+                    content=content,
+                    progress_bar=progress_bar,
+                    deep_project_id=engine.project.project_id,
+                    is_executing=True,
+                    engine_name=engine_name,
+                )
+                self.send_message(chat_id, card_content, msg_type)
 
         def on_project_done(deep_project: DeepProject):
-            msg = self._progress_reporter.format_project_done(deep_project)
-            self.send_message(chat_id, json.dumps({"text": msg}))
+            content = self._progress_reporter.format_project_done(deep_project)
+            title = self._progress_reporter.get_project_done_title(deep_project)
+            progress_bar = self._progress_reporter._make_progress_bar(
+                deep_project.completed_count, deep_project.total_count
+            )
+            msg_type, card_content = CardBuilder.build_deep_card(
+                project=project,
+                title=title,
+                content=content,
+                progress_bar=progress_bar,
+                deep_project_id=deep_project.project_id,
+                engine_name=engine_name,
+            )
+            self.send_message(chat_id, card_content, msg_type)
             self._add_reaction(message_id, EmojiReaction.on_multi_task_done())
 
         def on_error(error: str):
-            msg = self._progress_reporter.format_error(error)
-            self.send_message(chat_id, json.dumps({"text": msg}))
+            content = self._progress_reporter.format_error(error)
+            title = self._progress_reporter.get_error_title()
+            msg_type, card_content = CardBuilder.build_deep_card(
+                project=project,
+                title=title,
+                content=content,
+                engine_name=engine_name,
+                show_buttons=False,
+            )
+            self.send_message(chat_id, card_content, msg_type)
             self._add_reaction(message_id, EmojiReaction.on_error())
 
         return DeepEngineCallbacks(
@@ -1502,11 +1814,59 @@ class FeishuWSClient:
             if active_engine and active_engine.project:
                 engine = active_engine
             else:
-                self._reply_message(message_id, "📊 当前没有 Deep Engine 任务\n\n发送 `/deep 你的需求` 开始一个复杂任务")
+                msg_type, card_content = CardBuilder.build_deep_card(
+                    project=project,
+                    title="📊 当前状态",
+                    content="当前没有 Deep Engine 任务\n\n发送 `/deep 你的需求` 开始一个复杂任务",
+                    engine_name="Coco",
+                    show_buttons=False,
+                )
+                self._reply_message(message_id, card_content, msg_type=msg_type)
                 return
 
-        status_msg = self._progress_reporter.format_status(engine.project)
-        self._reply_message(message_id, status_msg)
+        status_content = self._progress_reporter.format_status(engine.project)
+        status_title = self._progress_reporter.get_status_title()
+        progress_info = self._progress_reporter.get_progress_info(engine.project)
+        msg_type, card_content = CardBuilder.build_deep_card(
+            project=project,
+            title=status_title,
+            content=status_content,
+            progress_bar=progress_info["progress_bar"],
+            deep_project_id=progress_info["project_id"],
+            is_executing=progress_info["is_executing"],
+            is_paused=progress_info["is_paused"],
+            engine_name="Coco",
+        )
+        self._reply_message(message_id, card_content, msg_type=msg_type)
+
+    def _pause_deep_engine(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
+        root_path = project.root_path if project else self._get_working_dir(chat_id)
+        engine = self._deep_engine_manager.get(chat_id, root_path)
+
+        if not engine:
+            engine = self._deep_engine_manager.get_active_engine(chat_id)
+
+        if engine and engine.is_running:
+            engine.pause()
+            self._reply_message(message_id, "⏸️ Deep Engine 已暂停")
+        else:
+            self._reply_message(message_id, "当前没有正在执行的任务")
+
+    def _resume_deep_engine(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
+        root_path = project.root_path if project else self._get_working_dir(chat_id)
+        engine = self._deep_engine_manager.get(chat_id, root_path)
+
+        if not engine:
+            engine = self._deep_engine_manager.get_active_engine(chat_id)
+
+        if engine and engine.project and engine.project.status == DeepProjectStatus.PAUSED:
+            callbacks = self._create_deep_callbacks(message_id, chat_id, project)
+            def run_resume():
+                engine.resume(callbacks)
+            self._executor.submit(run_resume)
+            self._reply_message(message_id, "▶️ Deep Engine 已恢复执行")
+        else:
+            self._reply_message(message_id, "当前没有可恢复的任务")
 
     def _stop_deep_engine(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
         root_path = project.root_path if project else self._get_working_dir(chat_id)

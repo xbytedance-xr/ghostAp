@@ -370,10 +370,84 @@ class TestProgressReporter:
         ]
         tasks[0].complete("完成")
         project.set_tasks(tasks)
-        
+
         msg = reporter.format_status(project)
         assert "项目" in msg
         assert "1/2" in msg
+
+    def test_get_planning_start_title(self, reporter):
+        title = reporter.get_planning_start_title()
+        assert "Deep Engine" in title
+
+    def test_get_planning_done_title(self, reporter):
+        title = reporter.get_planning_done_title()
+        assert "任务规划完成" in title
+
+    def test_get_task_start_title(self, reporter):
+        title = reporter.get_task_start_title(2, 5)
+        assert "[2/5]" in title
+
+    def test_get_task_done_title_success(self, reporter):
+        title = reporter.get_task_done_title(True, 3, 5)
+        assert "任务完成" in title
+        assert "[3/5]" in title
+
+    def test_get_task_done_title_failed(self, reporter):
+        title = reporter.get_task_done_title(False, 3, 5)
+        assert "任务失败" in title
+        assert "[3/5]" in title
+
+    def test_get_project_done_title_completed(self, reporter):
+        project = DeepProject.create("项目", "/tmp")
+        project.status = DeepProjectStatus.COMPLETED
+        title = reporter.get_project_done_title(project)
+        assert "全部任务完成" in title
+
+    def test_get_project_done_title_failed(self, reporter):
+        project = DeepProject.create("项目", "/tmp")
+        project.status = DeepProjectStatus.FAILED
+        title = reporter.get_project_done_title(project)
+        assert "有失败" in title
+
+    def test_get_project_done_title_paused(self, reporter):
+        project = DeepProject.create("项目", "/tmp")
+        project.status = DeepProjectStatus.PAUSED
+        title = reporter.get_project_done_title(project)
+        assert "暂停" in title
+
+    def test_get_error_title(self, reporter):
+        title = reporter.get_error_title()
+        assert "错误" in title
+
+    def test_get_status_title(self, reporter):
+        title = reporter.get_status_title()
+        assert "状态" in title
+
+    def test_get_progress_info(self, reporter):
+        project = DeepProject.create("测试项目", "/tmp")
+        project.status = DeepProjectStatus.EXECUTING
+        tasks = [
+            DeepTask.create("任务1", "", ""),
+            DeepTask.create("任务2", "", ""),
+        ]
+        tasks[0].complete("完成")
+        project.set_tasks(tasks)
+
+        info = reporter.get_progress_info(project)
+        assert info["is_executing"] is True
+        assert info["is_paused"] is False
+        assert info["completed_count"] == 1
+        assert info["total_count"] == 2
+        assert "50%" in info["progress_bar"]
+        assert info["project_name"] == "测试项目"
+
+    def test_get_progress_info_paused(self, reporter):
+        project = DeepProject.create("项目", "/tmp")
+        project.status = DeepProjectStatus.PAUSED
+
+        info = reporter.get_progress_info(project)
+        assert info["is_executing"] is False
+        assert info["is_paused"] is True
 
 
 class TestRequirementParser:

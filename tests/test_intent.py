@@ -89,17 +89,27 @@ class TestIntentRecognizerQuickMatch:
         assert result.primary_intent == IntentType.SHELL_COMMAND
 
     def test_exit_keyword_in_coco_mode(self, recognizer):
-        result = recognizer._quick_match("退出", is_in_coco_mode=True)
+        result = recognizer._quick_match("退出", current_mode="coco")
         assert result is not None
-        assert result.primary_intent == IntentType.EXIT_COCO
+        assert result.primary_intent == IntentType.EXIT_MODE
 
     def test_exit_keyword_exit_in_coco_mode(self, recognizer):
-        result = recognizer._quick_match("exit", is_in_coco_mode=True)
+        result = recognizer._quick_match("exit", current_mode="coco")
         assert result is not None
-        assert result.primary_intent == IntentType.EXIT_COCO
+        assert result.primary_intent == IntentType.EXIT_MODE
 
-    def test_exit_keyword_not_in_coco_mode(self, recognizer):
-        result = recognizer._quick_match("退出", is_in_coco_mode=False)
+    def test_exit_keyword_in_claude_mode(self, recognizer):
+        result = recognizer._quick_match("退出", current_mode="claude")
+        assert result is not None
+        assert result.primary_intent == IntentType.EXIT_MODE
+
+    def test_exit_keyword_exit_in_claude_mode(self, recognizer):
+        result = recognizer._quick_match("exit", current_mode="claude")
+        assert result is not None
+        assert result.primary_intent == IntentType.EXIT_MODE
+
+    def test_exit_keyword_not_in_programming_mode(self, recognizer):
+        result = recognizer._quick_match("退出", current_mode="smart")
         assert result is None
 
     def test_project_list_keyword(self, recognizer):
@@ -127,21 +137,30 @@ class TestIntentRecognizerContextHint:
         return IntentRecognizer()
 
     def test_context_hint_coco_mode(self, recognizer):
-        hint = recognizer._get_context_hint(is_in_coco_mode=True)
-        assert "编程模式" in hint
+        hint = recognizer._get_context_hint(current_mode="coco")
+        assert "Coco 编程模式" in hint
         assert "coco_message" in hint
 
-    def test_context_hint_not_coco_mode(self, recognizer):
-        hint = recognizer._get_context_hint(is_in_coco_mode=False)
-        assert "不在编程模式" in hint
+    def test_context_hint_claude_mode(self, recognizer):
+        hint = recognizer._get_context_hint(current_mode="claude")
+        assert "Claude 编程模式" in hint
+        assert "claude_message" in hint
+
+    def test_context_hint_smart_mode(self, recognizer):
+        hint = recognizer._get_context_hint(current_mode="smart")
+        assert "智能模式" in hint
         assert "enter_coco" in hint
 
     def test_fallback_intent_coco_mode(self, recognizer):
-        fallback = recognizer._get_fallback_intent(is_in_coco_mode=True)
+        fallback = recognizer._get_fallback_intent(current_mode="coco")
         assert fallback == IntentType.COCO_MESSAGE
 
-    def test_fallback_intent_not_coco_mode(self, recognizer):
-        fallback = recognizer._get_fallback_intent(is_in_coco_mode=False)
+    def test_fallback_intent_claude_mode(self, recognizer):
+        fallback = recognizer._get_fallback_intent(current_mode="claude")
+        assert fallback == IntentType.CLAUDE_MESSAGE
+
+    def test_fallback_intent_smart_mode(self, recognizer):
+        fallback = recognizer._get_fallback_intent(current_mode="smart")
         assert fallback == IntentType.SHELL_COMMAND
 
 

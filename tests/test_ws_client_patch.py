@@ -9,9 +9,12 @@ class TestCardActionHandler(unittest.TestCase):
         # Mock settings
         with patch('src.feishu.ws_client.get_settings') as mock_get_settings, \
              patch('src.feishu.ws_client.CocoSessionManager'), \
+             patch('src.feishu.ws_client.ClaudeSessionManager'), \
              patch('src.feishu.ws_client.IntentRecognizer'), \
              patch('src.feishu.ws_client.ProjectManager'), \
              patch('src.feishu.ws_client.MessageProjectMapper'), \
+             patch('src.feishu.ws_client.DeepEngineManager'), \
+             patch('src.feishu.ws_client.ProgressReporter'), \
              patch('src.mode.ModeManager'):
             
             mock_settings = MagicMock()
@@ -39,9 +42,12 @@ class TestCardActionHandler(unittest.TestCase):
         """验证字符串 value 被解析后触发对应处理"""
         with patch('src.feishu.ws_client.get_settings') as mock_get_settings, \
              patch('src.feishu.ws_client.CocoSessionManager'), \
+             patch('src.feishu.ws_client.ClaudeSessionManager'), \
              patch('src.feishu.ws_client.IntentRecognizer'), \
              patch('src.feishu.ws_client.ProjectManager'), \
              patch('src.feishu.ws_client.MessageProjectMapper'), \
+             patch('src.feishu.ws_client.DeepEngineManager'), \
+             patch('src.feishu.ws_client.ProgressReporter'), \
              patch('src.mode.ModeManager'):
 
             mock_settings = MagicMock()
@@ -67,6 +73,42 @@ class TestCardActionHandler(unittest.TestCase):
             client._process_card_action_async(data)
 
             client._handle_card_enter_coco.assert_called_once_with("om_1", "oc_1", "p1")
+
+    def test_handle_card_enter_claude_passes_project(self):
+        """验证卡片入口 Claude 时把 project 透传给 _enter_claude_mode（避免选错项目导致显示 Coco 卡片）"""
+        with patch('src.feishu.ws_client.get_settings') as mock_get_settings, \
+             patch('src.feishu.ws_client.CocoSessionManager'), \
+             patch('src.feishu.ws_client.ClaudeSessionManager'), \
+             patch('src.feishu.ws_client.IntentRecognizer'), \
+             patch('src.feishu.ws_client.ProjectManager'), \
+             patch('src.feishu.ws_client.MessageProjectMapper'), \
+             patch('src.feishu.ws_client.DeepEngineManager'), \
+             patch('src.feishu.ws_client.ProgressReporter'), \
+             patch('src.mode.ModeManager'):
+
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+            client._project_manager = MagicMock()
+
+            project = SimpleNamespace(
+                project_id="p1",
+                claude_session_snapshot=None,
+                coco_session_snapshot=None,
+            )
+            client._project_manager.get_project.return_value = project
+            client._enter_claude_mode = MagicMock()
+
+            client._handle_card_enter_claude("om_1", "oc_1", "p1")
+
+            client._enter_claude_mode.assert_called_once()
+            args, kwargs = client._enter_claude_mode.call_args
+            self.assertEqual(args[0], "om_1")
+            self.assertEqual(args[1], "oc_1")
+            self.assertIs(kwargs.get("project"), project)
 
 if __name__ == '__main__':
     unittest.main()

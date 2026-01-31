@@ -1,5 +1,6 @@
 import pytest
 import time
+import uuid
 from unittest.mock import patch, MagicMock
 from src.claude.session import ClaudeSession, ClaudeSessionManager
 
@@ -8,13 +9,20 @@ class TestClaudeSession:
     def test_create_session(self):
         session = ClaudeSession(chat_id="test_chat")
         assert session.chat_id == "test_chat"
-        assert session.session_id.startswith("feishu_claude_test_chat_")
+        # Session ID must be a valid UUID
+        parsed = uuid.UUID(session.session_id)
+        assert str(parsed) == session.session_id
         assert session.message_count == 0
         assert session.is_resumed is False
 
     def test_create_session_with_custom_id(self):
         session = ClaudeSession(chat_id="test_chat", session_id="custom_session_id")
         assert session.session_id == "custom_session_id"
+
+    def test_session_id_is_unique(self):
+        session1 = ClaudeSession(chat_id="test_chat")
+        session2 = ClaudeSession(chat_id="test_chat")
+        assert session1.session_id != session2.session_id
 
     def test_session_to_snapshot(self):
         session = ClaudeSession(chat_id="test_chat")
@@ -255,17 +263,163 @@ class TestIntentRecognizerClaude:
 
     def test_other_typo_corrections(self):
         from src.agent.intent_recognizer import IntentRecognizer, IntentType
-        
+
         recognizer = IntentRecognizer()
-        
+
         result = recognizer._quick_match("/cooc")
         assert result is not None
         assert result.primary_intent == IntentType.ENTER_COCO
-        
+
         result = recognizer._quick_match("/exti")
         assert result is not None
         assert result.primary_intent == IntentType.EXIT_MODE
-        
+
         result = recognizer._quick_match("/hlep")
         assert result is not None
         assert result.primary_intent == IntentType.SHOW_HELP
+
+
+class TestClaudeProjectContext:
+    def test_claude_fields_default(self):
+        from src.project.context import ProjectContext
+
+        ctx = ProjectContext(
+            project_id="test",
+            project_name="Test Project",
+            root_path="/tmp/test"
+        )
+        assert ctx.claude_mode is False
+        assert ctx.claude_session_snapshot is None
+
+    def test_set_claude_mode(self):
+        from src.project.context import ProjectContext
+
+        ctx = ProjectContext(
+            project_id="test",
+            project_name="Test Project",
+            root_path="/tmp/test"
+        )
+        ctx.set_claude_mode(True, "uuid-session-id", 0)
+
+        assert ctx.claude_mode is True
+        assert ctx.claude_session_snapshot is not None
+        assert ctx.claude_session_snapshot.session_id == "uuid-session-id"
+        assert ctx.claude_session_snapshot.is_resumable is True
+
+    def test_set_claude_mode_disable(self):
+        from src.project.context import ProjectContext
+
+        ctx = ProjectContext(
+            project_id="test",
+            project_name="Test Project",
+            root_path="/tmp/test"
+        )
+        ctx.set_claude_mode(True, "uuid-session-id", 0)
+        ctx.set_claude_mode(False)
+
+        assert ctx.claude_mode is False
+        assert ctx.claude_session_snapshot is not None
+        assert ctx.claude_session_snapshot.is_resumable is True
+
+    def test_update_claude_snapshot(self):
+        from src.project.context import ProjectContext
+
+        ctx = ProjectContext(
+            project_id="test",
+            project_name="Test Project",
+            root_path="/tmp/test"
+        )
+        ctx.set_claude_mode(True, "uuid-session-id", 0)
+        ctx.update_claude_snapshot("test query", 5)
+
+        assert ctx.claude_session_snapshot.last_query == "test query"
+        assert ctx.claude_session_snapshot.query_count == 5
+
+    def test_claude_snapshot_serialization(self):
+        from src.project.context import ProjectContext
+
+        ctx = ProjectContext(
+            project_id="test",
+            project_name="Test Project",
+            root_path="/tmp/test"
+        )
+        ctx.set_claude_mode(True, "uuid-session-id", 3)
+        ctx.update_claude_snapshot("last query", 3)
+
+        snapshot = ctx.to_snapshot()
+        assert snapshot["claude_mode"] is True
+        assert snapshot["claude_session_snapshot"]["session_id"] == "uuid-session-id"
+        assert snapshot["claude_session_snapshot"]["query_count"] == 3
+
+        restored = ProjectContext.from_snapshot(snapshot)
+        assert restored.claude_mode is True
+        assert restored.claude_session_snapshot.session_id == "uuid-session-id"
+        assert restored.claude_session_snapshot.query_count == 3
+        assert restored.claude_session_snapshot.last_query == "last query"
+
+    def test_backward_compatible_snapshot(self):
+        """Old snapshots without claude fields should still load."""
+        from src.project.context import ProjectContext
+
+        old_snapshot = {
+            "project_id": "test",
+            "project_name": "Test Project",
+            "root_path": "/tmp/test",
+            "status": "idle",
+            "coco_mode": False,
+            "theme_color": "green",
+            "emoji_prefix": "🟢",
+            "env_vars": {},
+        }
+
+        ctx = ProjectContext.from_snapshot(old_snapshot)
+        assert ctx.claude_mode is False
+        assert ctx.claude_session_snapshot is None
+
+
+class TestCardButtonsClaude:
+    def test_claude_mode_buttons(self):
+        from src.card.builder import CardBuilder
+
+        buttons = CardBuilder._build_footer_buttons(None, is_coco_mode=False, is_claude_mode=True)
+        assert len(buttons) == 2
+        assert "退出Claude" in buttons[0]["text"]["content"]
+        assert buttons[0]["behaviors"][0]["value"]["action"] == "exit_claude"
+        assert "切换项目" in buttons[1]["text"]["content"]
+
+    def test_coco_mode_buttons(self):
+        from src.card.builder import CardBuilder
+
+        buttons = CardBuilder._build_footer_buttons(None, is_coco_mode=True, is_claude_mode=False)
+        assert len(buttons) == 2
+        assert "退出Coco" in buttons[0]["text"]["content"]
+        assert buttons[0]["behaviors"][0]["value"]["action"] == "exit_coco"
+
+    def test_smart_mode_buttons_have_both(self):
+        from src.card.builder import CardBuilder
+
+        buttons = CardBuilder._build_footer_buttons(None, is_coco_mode=False, is_claude_mode=False)
+        assert len(buttons) == 2
+        assert "Coco" in buttons[0]["text"]["content"]
+        assert buttons[0]["behaviors"][0]["value"]["action"] == "enter_coco"
+        assert "Claude" in buttons[1]["text"]["content"]
+        assert buttons[1]["behaviors"][0]["value"]["action"] == "enter_claude"
+
+    def test_header_title_claude_mode(self):
+        from src.card.builder import CardBuilder
+
+        title = CardBuilder._build_header_title(None, is_claude_mode=True)
+        assert "🔮" in title
+        assert "Claude" in title
+
+    def test_header_title_coco_mode(self):
+        from src.card.builder import CardBuilder
+
+        title = CardBuilder._build_header_title(None, is_coco_mode=True)
+        assert "🤖" in title
+
+    def test_header_title_smart_mode(self):
+        from src.card.builder import CardBuilder
+
+        title = CardBuilder._build_header_title(None)
+        assert "🧠" in title

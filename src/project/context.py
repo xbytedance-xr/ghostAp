@@ -48,6 +48,14 @@ class CocoSessionSnapshot:
 
 
 @dataclass
+class ClaudeSessionSnapshot:
+    session_id: str
+    query_count: int
+    last_query: str
+    is_resumable: bool = True
+
+
+@dataclass
 class ProjectContext:
     project_id: str
     project_name: str
@@ -59,6 +67,9 @@ class ProjectContext:
 
     coco_session_snapshot: Optional[CocoSessionSnapshot] = None
     coco_mode: bool = False
+
+    claude_session_snapshot: Optional[ClaudeSessionSnapshot] = None
+    claude_mode: bool = False
 
     task_queue: list[Task] = field(default_factory=list)
     current_task: Optional[Task] = None
@@ -104,6 +115,25 @@ class ProjectContext:
             self.coco_session_snapshot.last_query = query
             self.coco_session_snapshot.query_count = query_count
 
+    def set_claude_mode(self, enabled: bool, session_id: Optional[str] = None, query_count: int = 0):
+        self.claude_mode = enabled
+        if enabled and session_id:
+            self.claude_session_snapshot = ClaudeSessionSnapshot(
+                session_id=session_id,
+                query_count=query_count,
+                last_query="",
+                is_resumable=True
+            )
+        elif not enabled and self.claude_session_snapshot:
+            self.claude_session_snapshot.is_resumable = True
+
+    def update_claude_snapshot(self, query: str, query_count: int, session_id: Optional[str] = None):
+        if self.claude_session_snapshot:
+            self.claude_session_snapshot.last_query = query
+            self.claude_session_snapshot.query_count = query_count
+            if session_id:
+                self.claude_session_snapshot.session_id = session_id
+
     def get_status_emoji(self) -> str:
         status_map = {
             ProjectStatus.IDLE: "⚪",
@@ -130,6 +160,13 @@ class ProjectContext:
                 "last_query": self.coco_session_snapshot.last_query,
                 "is_resumable": self.coco_session_snapshot.is_resumable,
             } if self.coco_session_snapshot else None,
+            "claude_mode": self.claude_mode,
+            "claude_session_snapshot": {
+                "session_id": self.claude_session_snapshot.session_id,
+                "query_count": self.claude_session_snapshot.query_count,
+                "last_query": self.claude_session_snapshot.last_query,
+                "is_resumable": self.claude_session_snapshot.is_resumable,
+            } if self.claude_session_snapshot else None,
             "theme_color": self.theme_color,
             "emoji_prefix": self.emoji_prefix,
             "env_vars": self.env_vars,
@@ -146,6 +183,7 @@ class ProjectContext:
             created_at=data.get("created_at", time.time()),
             last_active=data.get("last_active", time.time()),
             coco_mode=data.get("coco_mode", False),
+            claude_mode=data.get("claude_mode", False),
             theme_color=data.get("theme_color", "green"),
             emoji_prefix=data.get("emoji_prefix", "🟢"),
             env_vars=data.get("env_vars", {}),
@@ -153,6 +191,14 @@ class ProjectContext:
         if data.get("coco_session_snapshot"):
             snap = data["coco_session_snapshot"]
             ctx.coco_session_snapshot = CocoSessionSnapshot(
+                session_id=snap["session_id"],
+                query_count=snap["query_count"],
+                last_query=snap["last_query"],
+                is_resumable=snap.get("is_resumable", True),
+            )
+        if data.get("claude_session_snapshot"):
+            snap = data["claude_session_snapshot"]
+            ctx.claude_session_snapshot = ClaudeSessionSnapshot(
                 session_id=snap["session_id"],
                 query_count=snap["query_count"],
                 last_query=snap["last_query"],
