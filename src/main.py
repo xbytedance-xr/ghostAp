@@ -1,3 +1,4 @@
+import logging
 import sys
 from typing import Optional
 try:
@@ -10,6 +11,8 @@ except ImportError:
     from .feishu.ws_client import FeishuWSClient, EmojiReaction
     from .feishu.message_formatter import FeishuMessageFormatter as fmt
     from .sandbox.executor import SandboxExecutor
+
+logger = logging.getLogger(__name__)
 
 
 class Application:
@@ -47,7 +50,7 @@ class Application:
             self.feishu_client.reply(message_id, response, chat_id=chat_id)
 
         except Exception as e:
-            print(f"处理命令异常: {e}")
+            logger.error("处理命令异常: %s", e)
             try:
                 self.feishu_client.add_reaction(message_id, EmojiReaction.on_error())
                 self.feishu_client.reply(message_id, fmt.format_error(str(e)), chat_id=chat_id)
@@ -55,39 +58,35 @@ class Application:
                 pass
 
     def run(self):
-        print("=" * 50)
-        print("🔮 GhostAP - 飞书机器人Shell沙箱服务")
-        print("=" * 50)
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        )
+
+        logger.info("=" * 50)
+        logger.info("GhostAP - 飞书机器人Shell沙箱服务")
+        logger.info("=" * 50)
 
         if not self.settings.validate_feishu_config():
-            print("\n❌ 配置错误:")
-            print("   - APP_ID 和 APP_SECRET 未配置或不完整")
-            print("   - 请在 .env 文件或环境变量中配置")
-            print("   - 参考 .env.example 文件\n")
+            logger.error("配置错误: APP_ID 和 APP_SECRET 未配置或不完整，请在 .env 文件或环境变量中配置")
             sys.exit(1)
 
-        print(f"📱 APP_ID: {self.settings.app_id[:8]}...")
-        print(f"⏱️  命令超时: {self.settings.sandbox_timeout}秒")
-        print(f"🧠 意图识别: ARK ({self.settings.ark_model})")
-        print()
+        logger.info("APP_ID: %s...", self.settings.app_id[:8])
+        logger.info("命令超时: %d秒", self.settings.sandbox_timeout)
+        logger.info("意图识别: ARK (%s)", self.settings.ark_model)
 
         self.sandbox_executor = SandboxExecutor()
         self.feishu_client = FeishuWSClient(message_callback=self.handle_message)
 
-        print("🚀 启动飞书长连接服务...")
-        print()
-        print("💡 支持的功能:")
-        print("   📟 Shell 模式 - 直接发送命令执行")
-        print("   🤖 Coco 模式  - 说「帮我写代码」进入AI对话")
-        print("   📁 目录切换   - 说「切换到xxx目录」")
-        print()
+        logger.info("启动飞书长连接服务...")
+        logger.info("支持的功能: Shell模式 | Coco模式 | 目录切换")
 
         try:
             self.feishu_client.start()
         except KeyboardInterrupt:
-            print("\n👋 服务已停止")
+            logger.info("服务已停止")
         except Exception as e:
-            print(f"\n❌ 服务异常: {e}")
+            logger.error("服务异常: %s", e)
             sys.exit(1)
         finally:
             try:

@@ -1,3 +1,4 @@
+import logging
 import os
 import json
 import time
@@ -5,7 +6,10 @@ import threading
 from typing import Optional
 from pathlib import Path
 
-from .context import ProjectContext, ProjectStatus, THEME_COLORS, EMOJI_PREFIXES
+from .context import ProjectContext, ProjectStatus
+from ..card.themes import THEMES
+
+logger = logging.getLogger(__name__)
 
 
 class ProjectManager:
@@ -24,10 +28,10 @@ class ProjectManager:
         self._load_projects()
 
     def _get_next_theme(self) -> tuple[str, str]:
-        color = THEME_COLORS[self._color_index % len(THEME_COLORS)]
-        emoji = EMOJI_PREFIXES[self._color_index % len(EMOJI_PREFIXES)]
+        theme_list = list(THEMES.values())
+        theme = theme_list[self._color_index % len(theme_list)]
         self._color_index += 1
-        return color, emoji
+        return theme.color, theme.emoji
 
     def create_project(
         self,
@@ -223,7 +227,7 @@ class ProjectManager:
             with open(self._storage_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            print(f"保存项目数据失败: {e}")
+            logger.error("保存项目数据失败: %s", e)
 
     def _load_projects(self):
         if not self._storage_path.exists():
@@ -241,9 +245,9 @@ class ProjectManager:
                     ctx.status = ProjectStatus.IDLE
                     self._projects[pid] = ctx
                 except Exception as e:
-                    print(f"加载项目 {pid} 失败: {e}")
+                    logger.error("加载项目 %s 失败: %s", pid, e)
 
             self._active_project = data.get("active_project", {})
             self._color_index = data.get("color_index", 0)
         except Exception as e:
-            print(f"加载项目数据失败: {e}")
+            logger.error("加载项目数据失败: %s", e)

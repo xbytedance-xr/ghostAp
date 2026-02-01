@@ -1,10 +1,13 @@
 import json
+import logging
 import re
 from typing import Optional
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from ..config import get_settings
 from .models import ParsedRequirement, DeepTask
+
+logger = logging.getLogger(__name__)
 
 
 class TaskPlanner:
@@ -176,7 +179,7 @@ goals: ["创建项目结构", "实现数据抓取", "解析数据", "保存CSV",
 
             response = llm.invoke(messages)
             content = response.content.strip()
-            print(f"📝 任务规划结果:\n{content[:800]}...")
+            logger.debug("任务规划结果:\n%s...", content[:800])
 
             result = self._parse_json_response(content)
 
@@ -190,7 +193,7 @@ goals: ["创建项目结构", "实现数据抓取", "解析数据", "保存CSV",
             return self._build_task_ids(tasks_data)
 
         except Exception as e:
-            print(f"任务规划异常: {e}")
+            logger.error("任务规划异常: %s", e)
             return self._create_fallback_tasks(requirement)
 
     def _create_fallback_tasks(self, requirement: ParsedRequirement) -> list[DeepTask]:
@@ -241,5 +244,5 @@ goals: ["创建项目结构", "实现数据抓取", "解析数据", "保存CSV",
             )
 
         except Exception as e:
-            print(f"任务重规划异常: {e}")
+            logger.error("任务重规划异常: %s", e)
             return failed_task

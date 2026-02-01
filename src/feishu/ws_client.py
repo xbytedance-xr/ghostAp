@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 import os
 import lark_oapi as lark
@@ -10,7 +11,7 @@ from ..config import get_settings
 from ..coco.session import CocoSessionManager
 from ..claude.session import ClaudeSessionManager
 from ..agent.intent_recognizer import IntentRecognizer, IntentType, IntentResult, TaskStep
-from ..project import ProjectManager, ProjectContext, ProjectStatus, MessageProjectMapper
+from ..project import ProjectManager, ProjectContext, ProjectStatus, MessageProjectMapper, ProjectContextManager, ContextSourceMode
 from ..card import CardBuilder
 from ..card.streaming import StreamingCardManager
 from ..deep_engine import DeepEngine, DeepEngineManager, DeepEngineCallbacks, ProgressReporter
@@ -20,6 +21,9 @@ from .message_formatter import FeishuMessageFormatter as fmt
 from .emoji import EmojiType, EmojiReaction
 from .message_cache import MessageCache
 from .image_handler import FeishuImageHandler
+
+
+logger = logging.getLogger(__name__)
 
 
 class FeishuWSClient:
@@ -54,6 +58,8 @@ class FeishuWSClient:
         
         self._deep_engine_manager = DeepEngineManager()
         self._progress_reporter = ProgressReporter()
+
+        self._context_manager = ProjectContextManager()
 
     def close(self):
         """Best-effort cleanup for background resources."""
@@ -115,9 +121,9 @@ class FeishuWSClient:
 
             response = client.im.v1.message_reaction.create(request)
             if not response.success():
-                print(f"添加表情失败: {response.code} - {response.msg}")
+                logger.warning("添加表情失败: %s - %s", response.code, response.msg)
         except Exception as e:
-            print(f"添加表情异常: {e}")
+            logger.warning("添加表情异常: %s", e)
 
     def _get_working_dir(self, chat_id: str) -> str:
         return self._working_dirs.get(chat_id, os.getcwd())
@@ -144,14 +150,14 @@ class FeishuWSClient:
                 project = self._project_manager.get_project(project_id)
                 if project:
                     self._project_manager.set_active_project(chat_id, project_id)
-                    print(f"📎 通过消息引用切换到项目: {project.project_name}")
+                    logger.info("通过消息引用切换到项目: %s", project.project_name)
 
                     if project.claude_mode:
                         auto_enter_mode = "claude"
-                        print(f"🔮 自动进入 Claude 模式 (回复编程消息)")
+                        logger.info("自动进入 Claude 模式 (回复编程消息)")
                     elif project.coco_mode:
                         auto_enter_mode = "coco"
-                        print(f"🤖 自动进入编程模式 (回复编程消息)")
+                        logger.info("自动进入编程模式 (回复编程消息)")
 
                     return project, auto_enter_mode
 
@@ -195,11 +201,11 @@ class FeishuWSClient:
             root_id = getattr(message, 'root_id', None)
 
             if create_time and self._is_message_expired(int(create_time)):
-                print(f"⏭️ 跳过过期消息: {message_id} (超过{self.MESSAGE_EXPIRE_SECONDS}秒)")
+                logger.debug("跳过过期消息: %s (超过%d秒)", message_id, self.MESSAGE_EXPIRE_SECONDS)
                 return
 
             if self._is_duplicate_message(message_id):
-                print(f"⏭️ 跳过重复消息: {message_id}")
+                logger.debug("跳过重复消息: %s", message_id)
                 return
 
             supported_types = {"text", "image", "post"}
@@ -241,7 +247,7 @@ class FeishuWSClient:
                     else:
                         text = "用户发送了图片，请查看以下图片文件：" + ref_text
                 if download_result.failed_keys:
-                    print(f"部分图片下载失败: {download_result.failed_keys}")
+                    logger.warning("部分图片下载失败: %s", download_result.failed_keys)
             else:
                 project = None
                 auto_enter_mode = None
@@ -287,9 +293,7 @@ class FeishuWSClient:
                 self._pending_image_keys.pop(message_id, None)
 
         except Exception as e:
-            print(f"处理消息异常: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error("处理消息异常: %s", e, exc_info=True)
 
     def _show_project_board(self, message_id: str, chat_id: str):
         projects = self._project_manager.get_all_projects()
@@ -375,6 +379,91 @@ class FeishuWSClient:
             msg_type, card_content = CardBuilder.build_error_card(msg)
             self._reply_message(message_id, card_content, msg_type)
 
+    def _preserve_project_context(self, chat_id: str, project: ProjectContext):
+        """
+        保留项目上下文：在离开项目前调用，安全退出当前模式并保存状态。
+
+        操作：
+        1. 若当前正在 Coco/Claude 模式中，保存会话快照到统一上下文
+        2. 为项目创建版本书签，记录离开时刻的上下文状态
+        """
+        from ..mode import InteractionMode
+
+        current_mode = self._mode_manager.get_mode(chat_id)
+        logger.info("[%s] 保留项目上下文: project=%s, mode=%s", chat_id, project.project_name, current_mode.value if hasattr(current_mode, 'value') else current_mode)
+
+        # 保存当前活跃的 AI 会话快照到统一上下文（但不退出模式——由调用方决定）
+        if current_mode == InteractionMode.COCO:
+            session = self._coco_manager.get_session(chat_id)
+            if session:
+                project.update_coco_snapshot(
+                    query=session.last_query,
+                    query_count=session.message_count,
+                )
+                self._context_manager.update_context(
+                    project.project_id,
+                    session_snapshot={
+                        "data": session.to_snapshot(),
+                        "source_mode": ContextSourceMode.COCO.value,
+                    },
+                )
+        elif current_mode == InteractionMode.CLAUDE:
+            session = self._claude_manager.get_session(chat_id)
+            if session:
+                project.update_claude_snapshot(
+                    query=session.last_query,
+                    query_count=session.message_count,
+                    session_id=session.session_id,
+                )
+                self._context_manager.update_context(
+                    project.project_id,
+                    session_snapshot={
+                        "data": session.to_snapshot(),
+                        "source_mode": ContextSourceMode.CLAUDE.value,
+                    },
+                )
+
+    def _restore_project_context(self, project: ProjectContext) -> dict:
+        """
+        恢复项目上下文：在切换到项目后调用，加载已有的统一上下文状态。
+
+        返回 dict 包含恢复状态信息:
+            - has_context: bool 是否存在已有上下文
+            - entry_count: int 上下文条目数量
+            - version_count: int 版本数量
+            - last_mode: Optional[str] 上次使用的模式
+            - has_bridge: bool 是否有待消费的桥接摘要
+        """
+        ctx = self._context_manager.store.get(project.project_id)
+        if ctx is None:
+            logger.debug("[恢复上下文] 项目 %s 无已有上下文", project.project_name)
+            return {
+                "has_context": False,
+                "entry_count": 0,
+                "version_count": 0,
+                "last_mode": None,
+                "has_bridge": False,
+            }
+
+        # 从最近的 mode_transition 条目推断上次使用的模式
+        last_mode = None
+        transitions = ctx.get_entries_by_type(ContextEntryType.MODE_TRANSITION)
+        if transitions:
+            last_transition = transitions[-1]
+            last_mode = last_transition.metadata.get("to_mode")
+
+        info = {
+            "has_context": True,
+            "entry_count": ctx.entry_count,
+            "version_count": len(ctx.versions),
+            "last_mode": last_mode,
+            "has_bridge": ctx.last_bridge_summary is not None,
+        }
+        logger.info("[恢复上下文] 项目 %s: %d 条记录, %d 版本, 上次模式=%s, 有桥接=%s",
+                     project.project_name, info["entry_count"], info["version_count"],
+                     info["last_mode"], info["has_bridge"])
+        return info
+
     def _switch_project(self, message_id: str, chat_id: str, name: str, auto_enter_coco: bool = True):
         project = self._project_manager.find_project_by_name(name)
         if not project:
@@ -391,15 +480,52 @@ class FeishuWSClient:
             self._reply_message(message_id, f"⚠️ {path_msg}\n\n请检查项目路径是否存在")
             return
 
+        # ---- 保留旧项目上下文 ----
+        old_project = self._project_manager.get_active_project(chat_id)
+        if old_project and old_project.project_id != project.project_id:
+            # 1. 保存当前模式的会话快照
+            self._preserve_project_context(chat_id, old_project)
+
+            # 2. 安全退出当前编程模式（释放 session 资源，更新 mode_manager）
+            from ..mode import InteractionMode
+            current_mode = self._mode_manager.get_mode(chat_id)
+            if current_mode == InteractionMode.COCO:
+                self._exit_coco_mode(message_id, chat_id, project=old_project)
+            elif current_mode == InteractionMode.CLAUDE:
+                self._exit_claude_mode(message_id, chat_id, project=old_project)
+
+            # 3. 为旧项目创建离开版本
+            old_ctx = self._context_manager.store.get(old_project.project_id)
+            if old_ctx:
+                old_ctx.create_version(
+                    reason=f"project_switch: {old_project.project_name} -> {project.project_name}",
+                    source_mode=ContextSourceMode.SMART,
+                    summary=f"Switched to project {project.project_name}",
+                )
+
+        # ---- 激活新项目 ----
         success, msg = self._project_manager.set_active_project(chat_id, project.project_id)
         if not success:
             self._reply_message(message_id, f"❌ {msg}")
             return
 
+        # ---- 恢复新项目上下文 ----
+        restore_info = self._restore_project_context(project)
+
+        # 确保新项目的统一上下文存在（首次切换到该项目时自动创建）
+        self._context_manager.store.get_or_create(project.project_id)
+
         if auto_enter_coco:
             self._enter_coco_mode(message_id, chat_id, project=project)
         else:
-            content = f"已切换到项目 **{project.project_name}**\n\n� 项目目录: `{project.root_path}`"
+            # 构建切换反馈——附带上下文恢复信息
+            context_info = ""
+            if restore_info["has_context"]:
+                context_info = f"\n\n📋 已恢复上下文: {restore_info['entry_count']} 条记录"
+                if restore_info["last_mode"]:
+                    context_info += f", 上次模式: {restore_info['last_mode']}"
+
+            content = f"已切换到项目 **{project.project_name}**\n\n📂 项目目录: `{project.root_path}`{context_info}"
 
             if project.coco_session_snapshot and project.coco_session_snapshot.is_resumable:
                 msg_type, card_content = CardBuilder.build_coco_resume_card(project)
@@ -440,15 +566,16 @@ class FeishuWSClient:
                     value_preview = json.dumps(value_preview, ensure_ascii=False)[:500]
                 except Exception:
                     value_preview = str(value_preview)[:500]
-            print(
-                "📩 卡片回调收到: "
-                f"event_id={header.event_id}, event_type={header.event_type}, "
-                f"open_message_id={context.open_message_id}, open_chat_id={context.open_chat_id}, "
-                f"action_tag={action.tag}, action_name={action.name}, value_type={type(action.value).__name__}, "
-                f"value_preview={value_preview}"
+            logger.debug(
+                "卡片回调收到: event_id=%s, event_type=%s, open_message_id=%s, open_chat_id=%s, "
+                "action_tag=%s, action_name=%s, value_type=%s, value_preview=%s",
+                header.event_id, header.event_type,
+                context.open_message_id, context.open_chat_id,
+                action.tag, action.name, type(action.value).__name__,
+                value_preview,
             )
         except Exception as e:
-            print(f"卡片回调基础信息解析失败: {e}")
+            logger.warning("卡片回调基础信息解析失败: %s", e)
         try:
             open_message_id = data.event.context.open_message_id
             open_chat_id = data.event.context.open_chat_id
@@ -475,11 +602,11 @@ class FeishuWSClient:
             operator = data.event.operator
             open_message_id = data.event.context.open_message_id
             open_chat_id = data.event.context.open_chat_id
-            print(
-                "🧾 卡片回调上下文: "
-                f"operator_open_id={getattr(operator, 'open_id', None)}, "
-                f"operator_user_id={getattr(operator, 'user_id', None)}, "
-                f"value_raw_type={type(value_raw).__name__}"
+            logger.debug(
+                "卡片回调上下文: operator_open_id=%s, operator_user_id=%s, value_raw_type=%s",
+                getattr(operator, 'open_id', None),
+                getattr(operator, 'user_id', None),
+                type(value_raw).__name__,
             )
 
             if isinstance(value_raw, dict):
@@ -488,7 +615,7 @@ class FeishuWSClient:
                 try:
                     value = json.loads(value_raw)
                 except (json.JSONDecodeError, TypeError):
-                    print(f"⚠️ 卡片 value 解析失败: value_raw={value_raw[:500]}")
+                    logger.warning("卡片 value 解析失败: value_raw=%s", value_raw[:500])
                     value = {"action": value_raw}
             else:
                 value = {"action": str(value_raw)}
@@ -496,10 +623,9 @@ class FeishuWSClient:
             action_type = value.get("action", "")
             project_id = value.get("project_id", "")
 
-            print(
-                "🔘 卡片按钮点击: "
-                f"action={action_type}, project_id={project_id}, "
-                f"value_keys={list(value.keys())}"
+            logger.info(
+                "卡片按钮点击: action=%s, project_id=%s, value_keys=%s",
+                action_type, project_id, list(value.keys()),
             )
 
             if action_type == "enter_coco":
@@ -562,12 +688,10 @@ class FeishuWSClient:
             elif action_type == "new_project_prompt":
                 self._reply_message(open_message_id, "📝 创建新项目\n\n请发送: `/new 项目名 路径`\n\n例如: `/new myApp ~/workspace/myApp`")
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
-            print(f"⏱️ 卡片回调处理耗时: {elapsed_ms}ms")
+            logger.debug("卡片回调处理耗时: %dms", elapsed_ms)
 
         except Exception as e:
-            print(f"处理卡片回调异常: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error("处理卡片回调异常: %s", e, exc_info=True)
 
     def _handle_card_enter_coco(self, message_id: str, chat_id: str, project_id: str):
         if project_id:
@@ -607,11 +731,24 @@ class FeishuWSClient:
 
         self._add_reaction(message_id, EmojiReaction.on_coco_enter())
 
+        # 统一上下文：记录模式恢复
+        from ..mode import InteractionMode
+        previous_mode = self._mode_manager.get_mode(chat_id)
+
+        self._mode_manager.enter_coco_mode(chat_id)
+
         session = self._coco_manager.start_session(chat_id)
         session.session_id = session_id
 
         if project:
             project.set_coco_mode(True, session_id)
+
+            # 统一上下文：记录模式切换并构建桥接摘要
+            self._record_mode_transition(
+                project.project_id, previous_mode, InteractionMode.COCO,
+                reason="resume_coco_session",
+            )
+
             content = f"🔄 已恢复 Coco 会话\n\n会话 ID: `{session_id}`\n\n现在可以继续之前的对话了"
             msg_type, card_content = CardBuilder.build_project_response_card(
                 project, "Coco 会话已恢复", content, show_buttons=True
@@ -671,6 +808,10 @@ class FeishuWSClient:
 
         self._add_reaction(message_id, EmojiReaction.on_coco_enter())
 
+        # 统一上下文：记录模式恢复
+        from ..mode import InteractionMode
+        previous_mode = self._mode_manager.get_mode(chat_id)
+
         session = self._claude_manager.start_session(chat_id, session_id=session_id)
         session.is_resumed = True
 
@@ -682,6 +823,13 @@ class FeishuWSClient:
 
         if project:
             project.set_claude_mode(True, session_id)
+
+            # 统一上下文：记录模式切换并构建桥接摘要
+            self._record_mode_transition(
+                project.project_id, previous_mode, InteractionMode.CLAUDE,
+                reason="resume_claude_session",
+            )
+
             content = f"🔄 已恢复 Claude 会话\n\n会话 ID: `{session_id}`\n\n现在可以继续之前的对话了"
             msg_type, card_content = CardBuilder.build_project_response_card(
                 project, "Claude 会话已恢复", content, show_buttons=True
@@ -715,13 +863,17 @@ class FeishuWSClient:
                 self._add_reaction(message_id, EmojiReaction.on_coco_mode())
                 self._exit_current_mode(message_id, chat_id, project=project)
                 return
-            
+
             if self._is_deep_command(text):
                 self._add_reaction(message_id, EmojiReaction.on_smart_mode())
                 self._add_reaction(message_id, EmojiReaction.on_processing())
                 self._handle_deep_command(message_id, chat_id, text, project)
                 return
-            
+
+            if self._is_interceptable_command(text):
+                self._handle_intercepted_command(message_id, chat_id, text, project)
+                return
+
             self._add_reaction(message_id, EmojiReaction.on_coco_mode())
             self._add_reaction(message_id, EmojiReaction.on_processing())
             self._handle_coco_message(message_id, chat_id, text, project)
@@ -732,13 +884,17 @@ class FeishuWSClient:
                 self._add_reaction(message_id, EmojiReaction.on_coco_mode())
                 self._exit_current_mode(message_id, chat_id, project=project)
                 return
-            
+
             if self._is_deep_command(text):
                 self._add_reaction(message_id, EmojiReaction.on_smart_mode())
                 self._add_reaction(message_id, EmojiReaction.on_processing())
                 self._handle_deep_command(message_id, chat_id, text, project)
                 return
-            
+
+            if self._is_interceptable_command(text):
+                self._handle_intercepted_command(message_id, chat_id, text, project)
+                return
+
             self._add_reaction(message_id, EmojiReaction.on_coco_mode())
             self._add_reaction(message_id, EmojiReaction.on_processing())
             self._handle_claude_message(message_id, chat_id, text, project)
@@ -750,12 +906,12 @@ class FeishuWSClient:
         try:
             intent_result = self._intent_recognizer.recognize(text, current_mode.value)
         except Exception as e:
-            print(f"意图识别异常: {e}")
+            logger.error("意图识别异常: %s", e)
             working_dir = self._get_working_dir(chat_id)
             self.message_callback(message_id, chat_id, text, working_dir)
             return
 
-        print(f"🧠 意图识别: {intent_result.primary_intent.value} (置信度: {intent_result.confidence:.2f}, 任务数: {len(intent_result.tasks)})")
+        logger.info("意图识别: %s (置信度: %.2f, 任务数: %d)", intent_result.primary_intent.value, intent_result.confidence, len(intent_result.tasks))
 
         if intent_result.is_multi_task:
             self._execute_multi_tasks(message_id, chat_id, intent_result, project)
@@ -882,6 +1038,8 @@ class FeishuWSClient:
 
             if project:
                 project.add_conversation("user", cmd, message_id)
+                # 统一上下文：记录 Shell 命令
+                self._context_manager.update_context(project.project_id, conversation={"role": "user", "content": cmd, "source_mode": "shell", "message_id": message_id})
 
         elif intent == IntentType.UNKNOWN:
             self._reply_message(message_id, fmt.format_unknown_intent())
@@ -891,7 +1049,7 @@ class FeishuWSClient:
         data = task.data
         desc = task.description or self._get_task_description(task)
 
-        print(f"📌 执行步骤 {step_num}/{total_steps}: {desc}")
+        logger.info("执行步骤 %d/%d: %s", step_num, total_steps, desc)
 
         try:
             if intent == IntentType.ENTER_COCO:
@@ -962,7 +1120,7 @@ class FeishuWSClient:
                 return False
 
         except Exception as e:
-            print(f"执行步骤 {step_num} 异常: {e}")
+            logger.error("执行步骤 %d 异常: %s", step_num, e)
             return False
 
     def _get_task_description(self, task: TaskStep) -> str:
@@ -1006,6 +1164,9 @@ class FeishuWSClient:
                 )
             return
 
+        # 记录切换前的模式（用于统一上下文的模式转换记录）
+        previous_mode = self._mode_manager.get_mode(chat_id)
+
         # If in Claude mode, exit it first (mutual exclusion)
         if self._mode_manager.is_claude_mode(chat_id):
             self._exit_claude_mode(message_id, chat_id, project=project)
@@ -1018,9 +1179,9 @@ class FeishuWSClient:
             try:
                 project, is_new = self._project_manager.get_or_create_project_for_path(working_dir, chat_id)
                 if is_new:
-                    print(f"📁 自动创建项目: {project.project_name} @ {project.root_path}")
+                    logger.info("自动创建项目: %s @ %s", project.project_name, project.root_path)
             except Exception as e:
-                print(f"自动创建项目失败: {e}")
+                logger.error("自动创建项目失败: %s", e)
 
         session = self._coco_manager.start_session(chat_id)
 
@@ -1064,6 +1225,14 @@ class FeishuWSClient:
             if not silent:
                 self._reply_message(message_id, fmt.format_coco_enter())
 
+        # 统一上下文：记录模式切换
+        if project:
+            from ..mode import InteractionMode
+            self._record_mode_transition(
+                project.project_id, previous_mode, InteractionMode.COCO,
+                reason="enter_coco_mode",
+            )
+
     def _exit_coco_mode(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
         session = self._coco_manager.get_session(chat_id)
 
@@ -1072,6 +1241,14 @@ class FeishuWSClient:
                 project.update_coco_snapshot(
                     query=session.last_query,
                     query_count=session.message_count
+                )
+                # 统一上下文：保存会话快照
+                self._context_manager.update_context(
+                    project.project_id,
+                    session_snapshot={
+                        "data": session.to_snapshot(),
+                        "source_mode": ContextSourceMode.COCO.value,
+                    },
                 )
             # 无论会话是否存在，都要把项目状态切回非 Coco，避免卡片/按钮显示错乱
             project.set_coco_mode(False)
@@ -1094,6 +1271,61 @@ class FeishuWSClient:
         else:
             self._reply_message(message_id, fmt.format_warning("当前不在编程模式中"))
 
+    @staticmethod
+    def _mode_to_context_source(mode) -> ContextSourceMode:
+        """将 InteractionMode 映射为 ContextSourceMode"""
+        from ..mode import InteractionMode
+        mapping = {
+            InteractionMode.SMART: ContextSourceMode.SMART,
+            InteractionMode.COCO: ContextSourceMode.COCO,
+            InteractionMode.CLAUDE: ContextSourceMode.CLAUDE,
+        }
+        return mapping.get(mode, ContextSourceMode.SMART)
+
+    def _record_mode_transition(self, project_id: str, from_mode, to_mode, reason: str = ""):
+        """记录模式切换到统一上下文，并构建桥接摘要"""
+        from_source = self._mode_to_context_source(from_mode)
+        to_source = self._mode_to_context_source(to_mode)
+        logger.info("[模式切换] project=%s: %s -> %s, reason=%s", project_id, from_source.value, to_source.value, reason)
+        self._context_manager.update_context(
+            project_id,
+            mode_transition={
+                "from_mode": from_source.value,
+                "to_mode": to_source.value,
+                "reason": reason,
+            },
+        )
+        # 构建桥接摘要，供新模式首条 prompt 使用
+        ctx = self._context_manager.store.get(project_id)
+        if ctx:
+            ctx.build_bridge_summary(from_source, to_source)
+            ctx.create_version(
+                reason=f"mode_transition: {from_source.value} -> {to_source.value}",
+                source_mode=from_source,
+            )
+
+    def _inject_bridge_context(self, text: str, project: Optional[ProjectContext]) -> str:
+        """
+        如果存在待消费的桥接摘要，将其注入到用户 prompt 前面。
+
+        桥接摘要是一次性消费的：取出后自动清空，避免重复注入。
+        仅在首条消息时注入（因为 consume_bridge_summary 取完即空）。
+        """
+        if not project:
+            return text
+        ctx = self._context_manager.store.get(project.project_id)
+        if not ctx:
+            return text
+        bridge = ctx.consume_bridge_summary()
+        if not bridge:
+            return text
+        injection = bridge.to_injection_prompt()
+        if not injection:
+            return text
+        logger.info("[Bridge注入] project=%s: %s -> %s, 注入 %d 字符到 prompt",
+                     project.project_name, bridge.from_mode.value, bridge.to_mode.value, len(injection))
+        return f"{injection}\n\n{text}"
+
     def _is_exit_command(self, text: str) -> bool:
         text_lower = text.lower().strip()
         exit_commands = {"/exit", "/quit", "/end_coco", "/exit_coco", "/end_claude", "/exit_claude"}
@@ -1107,6 +1339,59 @@ class FeishuWSClient:
     def _is_deep_command(self, text: str) -> bool:
         text_lower = text.lower().strip()
         return text_lower.startswith("/deep") or text_lower.startswith("/stop_deep")
+
+    def _is_interceptable_command(self, text: str) -> bool:
+        """判断是否为需要在编程模式中拦截的系统命令。
+
+        这些命令即使在 Coco/Claude 模式中也应由系统处理，而非发送给 AI。
+        """
+        text_lower = text.lower().strip()
+        # 精确匹配的命令
+        exact_commands = {
+            "/help", "/帮助",
+            "/coco_info", "/claude_info",
+            "/projects", "/status", "/project",
+        }
+        if text_lower in exact_commands:
+            return True
+        # 前缀匹配的命令（带参数的）
+        prefix_commands = ("/switch ", "/new ", "/close ")
+        return any(text_lower.startswith(p) for p in prefix_commands)
+
+    def _handle_intercepted_command(self, message_id: str, chat_id: str, text: str, project: Optional[ProjectContext] = None):
+        """处理在编程模式中拦截的系统命令。"""
+        text_lower = text.lower().strip()
+
+        if text_lower in ("/help", "/帮助"):
+            self._show_full_help(message_id, chat_id, project)
+        elif text_lower == "/coco_info":
+            self._show_coco_info(message_id, chat_id, project)
+        elif text_lower == "/claude_info":
+            self._show_claude_info(message_id, chat_id, project)
+        elif text_lower in ("/projects", "/project"):
+            self._show_project_board(message_id, chat_id)
+        elif text_lower == "/status":
+            self._show_project_status(message_id, chat_id, project)
+        elif text_lower.startswith("/switch "):
+            name = text[8:].strip()
+            if name:
+                self._switch_project(message_id, chat_id, name)
+            else:
+                self._show_project_board(message_id, chat_id)
+        elif text_lower.startswith("/new "):
+            parts = text[5:].strip().split(None, 1)
+            name = parts[0] if parts else ""
+            path = parts[1] if len(parts) > 1 else self._get_working_dir(chat_id)
+            if name:
+                self._create_project(message_id, chat_id, name, path)
+            else:
+                self._reply_message(message_id, "用法: `/new 项目名 [路径]`")
+        elif text_lower.startswith("/close "):
+            name = text[7:].strip()
+            if name:
+                self._close_project(message_id, chat_id, name)
+        else:
+            self._show_full_help(message_id, chat_id, project)
 
     def _handle_deep_command(self, message_id: str, chat_id: str, text: str, project: Optional[ProjectContext] = None):
         text_lower = text.lower().strip()
@@ -1162,6 +1447,9 @@ class FeishuWSClient:
                 )
             return
 
+        # 记录切换前的模式
+        previous_mode = self._mode_manager.get_mode(chat_id)
+
         # If in Coco mode, exit it first (mutual exclusion)
         if self._mode_manager.is_coco_mode(chat_id):
             self._exit_coco_mode(message_id, chat_id, project=project)
@@ -1174,9 +1462,9 @@ class FeishuWSClient:
             try:
                 project, is_new = self._project_manager.get_or_create_project_for_path(working_dir, chat_id)
                 if is_new:
-                    print(f"📁 自动创建项目: {project.project_name} @ {project.root_path}")
+                    logger.info("自动创建项目: %s @ %s", project.project_name, project.root_path)
             except Exception as e:
-                print(f"自动创建项目失败: {e}")
+                logger.error("自动创建项目失败: %s", e)
 
         session = self._claude_manager.start_session(chat_id)
 
@@ -1220,6 +1508,14 @@ class FeishuWSClient:
             if not silent:
                 self._reply_message(message_id, "🔮 已进入 Claude 编程模式\n\n现在可以用自然语言描述你的需求\n\n说「退出模式」或发送 `/exit` 退出")
 
+        # 统一上下文：记录模式切换
+        if project:
+            from ..mode import InteractionMode
+            self._record_mode_transition(
+                project.project_id, previous_mode, InteractionMode.CLAUDE,
+                reason="enter_claude_mode",
+            )
+
     def _exit_claude_mode(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
         session = self._claude_manager.get_session(chat_id)
 
@@ -1229,6 +1525,14 @@ class FeishuWSClient:
                     query=session.last_query,
                     query_count=session.message_count,
                     session_id=session.session_id
+                )
+                # 统一上下文：保存会话快照
+                self._context_manager.update_context(
+                    project.project_id,
+                    session_snapshot={
+                        "data": session.to_snapshot(),
+                        "source_mode": ContextSourceMode.CLAUDE.value,
+                    },
                 )
             # 无论会话是否存在，都要把项目状态切回非 Claude，避免卡片/按钮显示错乱
             project.set_claude_mode(False)
@@ -1268,7 +1572,7 @@ class FeishuWSClient:
 
     def _handle_claude_message(self, message_id: str, chat_id: str, text: str, project: Optional[ProjectContext] = None):
         session = self._claude_manager.get_session(chat_id)
-        
+
         if not session:
             if project:
                 self._enter_claude_mode(message_id, chat_id, project=project)
@@ -1279,46 +1583,23 @@ class FeishuWSClient:
                 self._reply_message(message_id, fmt.format_warning("Claude 会话已过期，请发送 /claude 重新开始"))
                 return
 
+        # 注入跨模式/跨项目桥接上下文（首条消息时一次性注入）
+        text = self._inject_bridge_context(text, project)
+
         global_working_dir = self._get_working_dir(chat_id)
-        
+
         if project:
             claude_cwd = project.root_path
         else:
             claude_cwd = global_working_dir
 
-        if self._enable_streaming:
-            self._handle_claude_streaming(message_id, chat_id, text, session, project, claude_cwd, global_working_dir)
-        else:
-            self._handle_claude_normal(message_id, chat_id, text, session, project, claude_cwd, global_working_dir)
+        self._handle_claude_response(message_id, chat_id, text, session, project, claude_cwd, global_working_dir)
 
-    def _handle_claude_normal(self, message_id: str, chat_id: str, text: str, session, project, claude_cwd: str, global_working_dir: str):
-        response = session.send_prompt(text, cwd=claude_cwd)
+    def _handle_claude_response(self, message_id: str, chat_id: str, text: str, session, project, claude_cwd: str, global_working_dir: str):
+        """统一处理 Claude 模式回复，流式和非流式均使用 CardKit schema 2.0 卡片。
 
-        if project:
-            project.update_claude_snapshot(text, session.message_count, session.session_id)
-            project.add_conversation("user", text, message_id)
-            project.add_conversation("assistant", response[:200])
-
-        self._add_reaction(message_id, EmojiReaction.on_coco_response())
-
-        if project:
-            footer = (
-                f"📂 项目目录: {project.root_path}\n"
-                f"📁 工作目录: {global_working_dir}"
-            )
-            image_keys = self._pending_image_keys.get(message_id)
-            msg_type, card_content = CardBuilder.build_project_response_card(
-                project, "🔮 Claude", response, show_buttons=True, footer=footer,
-                image_keys=image_keys,
-            )
-            response_id = self._reply_message_with_id(message_id, card_content, msg_type)
-            if response_id:
-                self._register_message_project(response_id, project)
-        else:
-            response_with_dir = f"{response}\n\n---\n📁 工作目录: `{global_working_dir}`"
-            self._reply_message(message_id, response_with_dir)
-
-    def _handle_claude_streaming(self, message_id: str, chat_id: str, text: str, session, project, claude_cwd: str, global_working_dir: str):
+        无论流式/非流式，都先创建卡片展示"正在思考"，让用户立即获得反馈。
+        """
         streaming_manager = self._get_streaming_manager()
 
         project_name = project.project_name if project else None
@@ -1326,52 +1607,61 @@ class FeishuWSClient:
         project_id = project.project_id if project else None
         image_keys = self._pending_image_keys.get(message_id)
 
-        print(f"🎬 开始 Claude 流式输出: project={project_name}, path={project_path}")
+        # 统一创建流式卡片，先给用户展示"正在思考"
+        thinking_text = "🔮 Claude 正在思考..."
+        logger.info("开始 Claude 输出: project=%s, path=%s, streaming=%s", project_name, project_path, self._enable_streaming)
 
         streaming_card = streaming_manager.create_streaming_card(
             chat_id=chat_id,
             project_name=project_name,
             project_path=project_path,
             project_id=project_id,
-            initial_content="🔮 Claude 正在思考...",
+            initial_content=thinking_text,
             is_coco_mode=False,
             is_claude_mode=True,
             reply_to_message_id=message_id,
             image_keys=image_keys,
         )
 
-        if not streaming_card:
-            print("⚠️ 创建流式卡片失败，回退到普通模式")
-            self._handle_claude_normal(message_id, chat_id, text, session, project, claude_cwd, global_working_dir)
-            return
+        card_message_id = None
+        if streaming_card:
+            card_message_id = streaming_manager.send_streaming_card(streaming_card)
 
-        card_message_id = streaming_manager.send_streaming_card(streaming_card)
-        if not card_message_id:
-            print("⚠️ 发送流式卡片失败，回退到普通模式")
-            self._handle_claude_normal(message_id, chat_id, text, session, project, claude_cwd, global_working_dir)
-            return
+        if not streaming_card or not card_message_id:
+            # 卡片创建/发送失败，回退到纯文本流程
+            logger.warning("创建流式卡片失败，回退到纯文本")
+            final_response = session.send_prompt(text, cwd=claude_cwd) if not self._enable_streaming else session.send_prompt_streaming(text, on_chunk=lambda c: None, cwd=claude_cwd, chunk_interval=0.3)
+            response_with_dir = f"{final_response}\n\n---\n📁 工作目录: `{global_working_dir}`"
+            self._reply_message(message_id, response_with_dir)
+        elif self._enable_streaming:
+            # ---- 流式路径：逐步更新卡片内容 ----
+            update_count = [0]
 
-        update_count = [0]
+            def on_chunk(content: str):
+                update_count[0] += 1
+                streaming_manager.update_content(streaming_card, content)
 
-        def on_chunk(content: str):
-            update_count[0] += 1
-            streaming_manager.update_content(streaming_card, content)
+            final_response = session.send_prompt_streaming(
+                text,
+                on_chunk=on_chunk,
+                cwd=claude_cwd,
+                chunk_interval=0.3
+            )
 
-        final_response = session.send_prompt_streaming(
-            text,
-            on_chunk=on_chunk,
-            cwd=claude_cwd,
-            chunk_interval=0.3
-        )
+            logger.info("Claude 流式输出完成: 更新次数=%d, 最终长度=%d", update_count[0], len(final_response))
+            streaming_manager.close_streaming(streaming_card, final_content=final_response)
+        else:
+            # ---- 非流式路径：卡片已展示"正在思考"，等待完整响应后更新 ----
+            final_response = session.send_prompt(text, cwd=claude_cwd)
+            streaming_manager.close_streaming(streaming_card, final_content=final_response)
 
-        print(f"🎬 Claude 流式输出完成: 更新次数={update_count[0]}, 最终长度={len(final_response)}")
-
-        streaming_manager.close_streaming(streaming_card, final_content=final_response)
-
+        # ---- 公共后处理：记录上下文、添加表情 ----
         if project:
             project.update_claude_snapshot(text, session.message_count, session.session_id)
             project.add_conversation("user", text, message_id)
             project.add_conversation("assistant", final_response[:200])
+            self._context_manager.update_context(project.project_id, conversation={"role": "user", "content": text, "source_mode": "claude", "message_id": message_id})
+            self._context_manager.update_context(project.project_id, conversation={"role": "assistant", "content": final_response[:200], "source_mode": "claude"})
 
         self._add_reaction(message_id, EmojiReaction.on_coco_response())
 
@@ -1419,13 +1709,13 @@ class FeishuWSClient:
 
     def _handle_coco_message(self, message_id: str, chat_id: str, text: str, project: Optional[ProjectContext] = None):
         session = self._coco_manager.get_session(chat_id)
-        
+
         if project and project.coco_session_snapshot:
             project_session_id = project.coco_session_snapshot.session_id
             if not session or session.session_id != project_session_id:
                 session = self._coco_manager.resume_session(chat_id, project_session_id)
-                print(f"🔄 切换到项目 {project.project_name} 的 Coco 会话: {project_session_id}")
-        
+                logger.info("切换到项目 %s 的 Coco 会话: %s", project.project_name, project_session_id)
+
         if not session:
             if project:
                 self._enter_coco_mode(message_id, chat_id, project=project)
@@ -1436,46 +1726,23 @@ class FeishuWSClient:
                 self._reply_message(message_id, fmt.format_warning("Coco 会话已过期，请说「帮我写代码」重新开始"))
                 return
 
+        # 注入跨模式/跨项目桥接上下文（首条消息时一次性注入）
+        text = self._inject_bridge_context(text, project)
+
         global_working_dir = self._get_working_dir(chat_id)
-        
+
         if project:
             coco_cwd = project.root_path
         else:
             coco_cwd = global_working_dir
 
-        if self._enable_streaming:
-            self._handle_coco_streaming(message_id, chat_id, text, session, project, coco_cwd, global_working_dir)
-        else:
-            self._handle_coco_normal(message_id, chat_id, text, session, project, coco_cwd, global_working_dir)
+        self._handle_coco_response(message_id, chat_id, text, session, project, coco_cwd, global_working_dir)
 
-    def _handle_coco_normal(self, message_id: str, chat_id: str, text: str, session, project, coco_cwd: str, global_working_dir: str):
-        response = session.send_prompt(text, cwd=coco_cwd)
+    def _handle_coco_response(self, message_id: str, chat_id: str, text: str, session, project, coco_cwd: str, global_working_dir: str):
+        """统一处理 Coco 模式回复，流式和非流式均使用 CardKit schema 2.0 卡片。
 
-        if project:
-            project.update_coco_snapshot(text, session.message_count)
-            project.add_conversation("user", text, message_id)
-            project.add_conversation("assistant", response[:200])
-
-        self._add_reaction(message_id, EmojiReaction.on_coco_response())
-
-        if project:
-            footer = (
-                f"📂 项目目录: {project.root_path}\n"
-                f"📁 工作目录: {global_working_dir}"
-            )
-            image_keys = self._pending_image_keys.get(message_id)
-            msg_type, card_content = CardBuilder.build_project_response_card(
-                project, "🤖 Coco", response, show_buttons=True, footer=footer,
-                image_keys=image_keys,
-            )
-            response_id = self._reply_message_with_id(message_id, card_content, msg_type)
-            if response_id:
-                self._register_message_project(response_id, project)
-        else:
-            response_with_dir = f"{response}\n\n---\n📁 工作目录: `{global_working_dir}`"
-            self._reply_message(message_id, fmt.format_coco_response(response_with_dir))
-
-    def _handle_coco_streaming(self, message_id: str, chat_id: str, text: str, session, project, coco_cwd: str, global_working_dir: str):
+        无论流式/非流式，都先创建卡片展示"正在思考"，让用户立即获得反馈。
+        """
         streaming_manager = self._get_streaming_manager()
 
         project_name = project.project_name if project else None
@@ -1483,51 +1750,60 @@ class FeishuWSClient:
         project_id = project.project_id if project else None
         image_keys = self._pending_image_keys.get(message_id)
 
-        print(f"🎬 开始流式输出: project={project_name}, path={project_path}")
+        # 统一创建流式卡片，先给用户展示"正在思考"
+        thinking_text = "🤔 Coco 正在思考..."
+        logger.info("开始 Coco 输出: project=%s, path=%s, streaming=%s", project_name, project_path, self._enable_streaming)
 
         streaming_card = streaming_manager.create_streaming_card(
             chat_id=chat_id,
             project_name=project_name,
             project_path=project_path,
             project_id=project_id,
-            initial_content="🤔 正在思考...",
+            initial_content=thinking_text,
             is_coco_mode=True,
             reply_to_message_id=message_id,
             image_keys=image_keys,
         )
 
-        if not streaming_card:
-            print("⚠️ 创建流式卡片失败，回退到普通模式")
-            self._handle_coco_normal(message_id, chat_id, text, session, project, coco_cwd, global_working_dir)
-            return
+        card_message_id = None
+        if streaming_card:
+            card_message_id = streaming_manager.send_streaming_card(streaming_card)
 
-        card_message_id = streaming_manager.send_streaming_card(streaming_card)
-        if not card_message_id:
-            print("⚠️ 发送流式卡片失败，回退到普通模式")
-            self._handle_coco_normal(message_id, chat_id, text, session, project, coco_cwd, global_working_dir)
-            return
+        if not streaming_card or not card_message_id:
+            # 卡片创建/发送失败，回退到纯文本流程
+            logger.warning("创建流式卡片失败，回退到纯文本")
+            final_response = session.send_prompt(text, cwd=coco_cwd) if not self._enable_streaming else session.send_prompt_streaming(text, on_chunk=lambda c: None, cwd=coco_cwd, chunk_interval=0.3)
+            response_with_dir = f"{final_response}\n\n---\n📁 工作目录: `{global_working_dir}`"
+            self._reply_message(message_id, response_with_dir)
+        elif self._enable_streaming:
+            # ---- 流式路径：逐步更新卡片内容 ----
+            update_count = [0]
 
-        update_count = [0]
+            def on_chunk(content: str):
+                update_count[0] += 1
+                streaming_manager.update_content(streaming_card, content)
 
-        def on_chunk(content: str):
-            update_count[0] += 1
-            streaming_manager.update_content(streaming_card, content)
+            final_response = session.send_prompt_streaming(
+                text,
+                on_chunk=on_chunk,
+                cwd=coco_cwd,
+                chunk_interval=0.3
+            )
 
-        final_response = session.send_prompt_streaming(
-            text,
-            on_chunk=on_chunk,
-            cwd=coco_cwd,
-            chunk_interval=0.3
-        )
+            logger.info("Coco 流式输出完成: 更新次数=%d, 最终长度=%d", update_count[0], len(final_response))
+            streaming_manager.close_streaming(streaming_card, final_content=final_response)
+        else:
+            # ---- 非流式路径：卡片已展示"正在思考"，等待完整响应后更新 ----
+            final_response = session.send_prompt(text, cwd=coco_cwd)
+            streaming_manager.close_streaming(streaming_card, final_content=final_response)
 
-        print(f"🎬 流式输出完成: 更新次数={update_count[0]}, 最终长度={len(final_response)}")
-
-        streaming_manager.close_streaming(streaming_card, final_content=final_response)
-
+        # ---- 公共后处理：记录上下文、添加表情 ----
         if project:
             project.update_coco_snapshot(text, session.message_count)
             project.add_conversation("user", text, message_id)
             project.add_conversation("assistant", final_response[:200])
+            self._context_manager.update_context(project.project_id, conversation={"role": "user", "content": text, "source_mode": "coco", "message_id": message_id})
+            self._context_manager.update_context(project.project_id, conversation={"role": "assistant", "content": final_response[:200], "source_mode": "coco"})
 
         self._add_reaction(message_id, EmojiReaction.on_coco_response())
 
@@ -1596,27 +1872,32 @@ class FeishuWSClient:
                 "elements": [
                     {
                         "tag": "markdown",
-                        "content": f"**当前状态**\n• 模式: {current_mode_str}\n• 工作目录: `{current_dir}`\n• 项目: {project_info}"
+                        "text_size": "notation",
+                        "content": f"**当前状态**  •  {current_mode_str}  •  `{current_dir}`  •  项目: {project_info}"
                     },
                     {"tag": "hr"},
                     {
                         "tag": "markdown",
+                        "text_size": "normal",
                         "content": "**🔄 编程模式切换**\n`/coco` - 进入 Coco 编程模式（字节跳动 AI）\n`/claude` - 进入 Claude 编程模式（Anthropic AI）\n`/exit` - 退出当前编程模式\n`/coco_info` - 查看 Coco 会话信息\n`/claude_info` - 查看 Claude 会话信息"
                     },
                     {"tag": "hr"},
                     {
                         "tag": "markdown",
+                        "text_size": "normal",
                         "content": "**📂 项目管理**\n`/projects` - 查看所有项目\n`/new <名称> [路径]` - 创建新项目\n`/switch <名称>` - 切换项目\n`/close <名称>` - 关闭项目\n`/status` - 查看当前项目状态"
                     },
                     {"tag": "hr"},
                     {
                         "tag": "markdown",
+                        "text_size": "normal",
                         "content": "**🧠 Deep Engine（复杂任务）**\n`/deep <需求>` - 启动 Deep Engine\n`/deep_status` - 查看任务进度\n`/stop_deep` - 停止任务"
                     },
                     {"tag": "hr"},
                     {
                         "tag": "markdown",
-                        "content": "**💡 使用提示**\n1. 发送 `/coco` 或 `/claude` 进入编程模式\n2. 在编程模式中发送 `/exit` 或说「退出模式」退出\n3. 智能模式下直接输入 Shell 命令即可执行\n4. 发送 `/help` 或 `/帮助` 查看本帮助"
+                        "text_size": "normal",
+                        "content": "**💡 使用提示**\n1. 发送 `/coco` 或 `/claude` 进入编程模式\n2. 在编程模式中直接对话，系统命令（如 `/help`）会自动拦截\n3. 智能模式下直接输入 Shell 命令即可执行\n4. 发送 `/help` 或 `/帮助` 随时查看本帮助"
                     }
                 ]
             }
@@ -1650,9 +1931,9 @@ class FeishuWSClient:
 
             response = client.im.v1.message.reply(request)
             if not response.success():
-                print(f"回复消息失败: {response.code} - {response.msg}")
+                logger.warning("回复消息失败: %s - %s", response.code, response.msg)
         except Exception as e:
-            print(f"回复消息异常: {e}")
+            logger.error("回复消息异常: %s", e)
 
     def _reply_message_with_id(self, message_id: str, content: str, msg_type: str = "text") -> Optional[str]:
         try:
@@ -1670,10 +1951,10 @@ class FeishuWSClient:
             if response.success() and response.data and response.data.message_id:
                 return response.data.message_id
             else:
-                print(f"回复消息失败: {response.code} - {response.msg}")
+                logger.warning("回复消息失败: %s - %s", response.code, response.msg)
                 return None
         except Exception as e:
-            print(f"回复消息异常: {e}")
+            logger.error("回复消息异常: %s", e)
             return None
 
     def send_message(self, chat_id: str, content: str, msg_type: str = "text") -> Optional[str]:
@@ -1693,10 +1974,10 @@ class FeishuWSClient:
             if response.success() and response.data and response.data.message_id:
                 return response.data.message_id
             else:
-                print(f"发送消息失败: {response.code} - {response.msg}")
+                logger.warning("发送消息失败: %s - %s", response.code, response.msg)
                 return None
         except Exception as e:
-            print(f"发送消息异常: {e}")
+            logger.error("发送消息异常: %s", e)
             return None
 
     def reply(self, message_id: str, content, msg_type: str = "text", chat_id: Optional[str] = None):
@@ -1728,7 +2009,7 @@ class FeishuWSClient:
             try:
                 project, is_new = self._project_manager.get_or_create_project_for_path(working_dir, chat_id)
                 if is_new:
-                    print(f"📁 Deep Engine 自动创建项目: {project.project_name} @ {project.root_path}")
+                    logger.info("Deep Engine 自动创建项目: %s @ %s", project.project_name, project.root_path)
             except Exception as e:
                 self._reply_message(message_id, f"❌ 创建项目失败: {e}")
                 return
@@ -1762,9 +2043,7 @@ class FeishuWSClient:
                 callbacks = self._create_deep_callbacks(message_id, chat_id, project, engine_name)
                 engine.plan_and_execute(requirement, callbacks)
             except Exception as e:
-                print(f"Deep Engine 执行异常: {e}")
-                import traceback
-                traceback.print_exc()
+                logger.error("Deep Engine 执行异常: %s", e, exc_info=True)
                 error_content = self._progress_reporter.format_error(str(e))
                 error_title = self._progress_reporter.get_error_title()
                 err_msg_type, err_card = CardBuilder.build_deep_card(
@@ -1855,6 +2134,20 @@ class FeishuWSClient:
             )
             self.send_message(chat_id, card_content, msg_type)
             self._add_reaction(message_id, EmojiReaction.on_multi_task_done())
+
+            # 统一上下文：记录 Deep Engine 结果并创建版本
+            if project:
+                self._context_manager.update_context(
+                    project.project_id,
+                    deep_result={"data": deep_project.to_dict()},
+                )
+                ctx = self._context_manager.store.get(project.project_id)
+                if ctx:
+                    ctx.create_version(
+                        reason=f"deep_engine_done: {deep_project.name}",
+                        source_mode=ContextSourceMode.DEEP_ENGINE,
+                        summary=f"Deep Engine completed: {deep_project.completed_count}/{deep_project.total_count} tasks",
+                    )
 
         def on_error(error: str):
             content = self._progress_reporter.format_error(error)
@@ -1985,6 +2278,6 @@ class FeishuWSClient:
 
         self._message_cache.start_cleanup_thread()
         
-        print("🔌 正在建立飞书长连接...")
-        print("📋 多项目管理已启用")
+        logger.info("正在建立飞书长连接...")
+        logger.info("多项目管理已启用")
         self._client.start()

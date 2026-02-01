@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 from enum import Enum
@@ -7,6 +8,8 @@ from dataclasses import dataclass, field
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from ..config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class IntentType(Enum):
@@ -547,7 +550,7 @@ class IntentRecognizer:
 
             response = llm.invoke(messages)
             content = response.content.strip()
-            print(f"🧠 ReAct:\n{content[:300]}...")
+            logger.debug("ReAct:\n%s...", content[:300])
 
             result, reasoning = self._parse_response(content)
 
@@ -599,7 +602,7 @@ class IntentRecognizer:
             )
 
         except Exception as e:
-            print(f"意图识别异常: {e}")
+            logger.error("意图识别异常: %s", e)
             fallback = self._get_fallback_intent(current_mode)
             return IntentResult.single(
                 intent=fallback,

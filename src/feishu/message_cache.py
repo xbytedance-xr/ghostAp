@@ -1,7 +1,10 @@
+import logging
 import time
 import threading
 from collections import OrderedDict
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 class MessageCache:
@@ -60,7 +63,7 @@ class MessageCache:
                 expired_count += 1
         
         if expired_count > 0:
-            print(f"🧹 清理过期消息缓存: {expired_count} 条")
+            logger.debug("清理过期消息缓存: %d 条", expired_count)
 
     def is_duplicate(self, message_id: str) -> bool:
         current_time = time.time()

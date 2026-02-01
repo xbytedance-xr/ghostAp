@@ -1,10 +1,13 @@
 import json
+import logging
 import re
 from typing import Optional
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from ..config import get_settings
 from .models import ParsedRequirement
+
+logger = logging.getLogger(__name__)
 
 
 class RequirementParser:
@@ -110,7 +113,7 @@ class RequirementParser:
 
             response = llm.invoke(messages)
             content = response.content.strip()
-            print(f"📋 需求解析结果:\n{content[:500]}...")
+            logger.debug("需求解析结果:\n%s...", content[:500])
 
             result = self._parse_json_response(content)
 
@@ -132,7 +135,7 @@ class RequirementParser:
             )
 
         except Exception as e:
-            print(f"需求解析异常: {e}")
+            logger.error("需求解析异常: %s", e)
             return ParsedRequirement(
                 original_text=requirement_text,
                 summary=requirement_text[:100],

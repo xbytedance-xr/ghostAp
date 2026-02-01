@@ -8,6 +8,7 @@ class InteractionMode(Enum):
     SMART = "smart"
     COCO = "coco"
     CLAUDE = "claude"
+    SHELL = "shell"
 
 
 @dataclass
@@ -39,6 +40,9 @@ class ModeManager:
     def enter_claude_mode(self, chat_id: str, auto: bool = False) -> InteractionMode:
         return self.set_mode(chat_id, InteractionMode.CLAUDE, auto_entered=auto)
 
+    def enter_shell_mode(self, chat_id: str) -> InteractionMode:
+        return self.set_mode(chat_id, InteractionMode.SHELL, auto_entered=False)
+
     def exit_to_smart(self, chat_id: str) -> InteractionMode:
         return self.set_mode(chat_id, InteractionMode.SMART, auto_entered=False)
 
@@ -51,6 +55,18 @@ class ModeManager:
     def is_smart_mode(self, chat_id: str) -> bool:
         return self.get_mode(chat_id) == InteractionMode.SMART
 
+    def is_shell_mode(self, chat_id: str) -> bool:
+        return self.get_mode(chat_id) == InteractionMode.SHELL
+
     def is_programming_mode(self, chat_id: str) -> bool:
         mode = self.get_mode(chat_id)
         return mode in (InteractionMode.COCO, InteractionMode.CLAUDE)
+
+    def get_mode_display_name(self, chat_id: str) -> str:
+        mode = self.get_mode(chat_id)
+        return {
+            InteractionMode.SMART: "🧠 智能模式",
+            InteractionMode.COCO: "🤖 Coco 编程模式",
+            InteractionMode.CLAUDE: "🔮 Claude 编程模式",
+            InteractionMode.SHELL: "💻 Shell 模式",
+        }.get(mode, "未知模式")

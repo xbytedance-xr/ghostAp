@@ -2,7 +2,7 @@ import json
 import pytest
 from unittest.mock import patch, MagicMock
 
-from src.project.context import ProjectContext, ProjectStatus, CocoSessionSnapshot
+from src.project.context import ProjectContext, ProjectStatus, CocoSessionSnapshot, SessionSnapshot
 from src.card.builder import CardBuilder
 from src.deep_engine.reporter import ProgressReporter
 from src.deep_engine.models import DeepTask, ExecutionResult
@@ -48,15 +48,15 @@ class TestCardBuilder:
             content="Test content here",
             show_buttons=True,
         )
-        
+
         assert msg_type == "interactive"
-        
+
         card = json.loads(content)
         assert card["config"]["wide_screen_mode"] is True
         assert "Test Project" in card["header"]["title"]["content"]
         assert card["header"]["template"] == "green"
-        
-        elements = card["elements"]
+
+        elements = card["body"]["elements"]
         assert any("Test Title" in str(e) for e in elements)
         assert any("Test content here" in str(e) for e in elements)
         # 响应式布局：默认 <=2 个按钮用 action（更贴近桌面端），更多按钮用 column_set
@@ -87,7 +87,7 @@ class TestCardBuilder:
 
     def test_build_project_response_card_mobile_layout_forces_grid(self, sample_project):
         # 强制 mobile 布局：<=2 个按钮也应使用 column_set（避免小屏自动换行堆叠）
-        with patch("src.card.builder.get_settings") as mock_get_settings:
+        with patch("src.card.shared.get_settings") as mock_get_settings:
             mock_settings = MagicMock()
             mock_settings.card_button_layout = "mobile"
             mock_get_settings.return_value = mock_settings
@@ -101,7 +101,7 @@ class TestCardBuilder:
 
         assert msg_type == "interactive"
         card = json.loads(content)
-        elements = card["elements"]
+        elements = card["body"]["elements"]
         assert any(e.get("tag") == "column_set" for e in elements)
 
     def test_build_deep_card_progress_bar_not_duplicated_when_content_contains_bar(self):
@@ -118,7 +118,7 @@ class TestCardBuilder:
         )
         card = json.loads(card_content)
         progress_elems = [
-            e for e in card.get("elements", [])
+            e for e in card.get("body", {}).get("elements", [])
             if e.get("tag") == "markdown" and str(e.get("content", "")).startswith("📊 ")
         ]
         assert len(progress_elems) == 0
@@ -158,7 +158,7 @@ class TestCardBuilder:
         )
         
         card = json.loads(content)
-        action_elements = [e for e in card["elements"] if e.get("tag") == "action"]
+        action_elements = [e for e in card["body"]["elements"] if e.get("tag") == "action"]
         assert len(action_elements) == 0
 
     def test_build_status_board_card_empty(self):
@@ -168,7 +168,7 @@ class TestCardBuilder:
         
         card = json.loads(content)
         assert "项目看板" in card["header"]["title"]["content"]
-        assert any("暂无项目" in str(e) for e in card["elements"])
+        assert any("暂无项目" in str(e) for e in card["body"]["elements"])
 
     def test_build_status_board_card_with_projects(self, sample_project):
         project2 = ProjectContext(
@@ -204,7 +204,7 @@ class TestCardBuilder:
         
         card = json.loads(content)
         assert "✅" in card["header"]["title"]["content"]
-        assert any("建议下一步" in str(e) for e in card["elements"])
+        assert any("建议下一步" in str(e) for e in card["body"]["elements"])
 
     def test_build_coco_resume_card(self, sample_project):
         sample_project.coco_session_snapshot = CocoSessionSnapshot(
@@ -238,7 +238,7 @@ class TestCardBuilder:
         card = json.loads(content)
         
         assert card["header"]["template"] == "red"
-        assert any("Something went wrong" in str(e) for e in card["elements"])
+        assert any("Something went wrong" in str(e) for e in card["body"]["elements"])
 
     def test_build_error_card_with_project(self, sample_project):
         msg_type, content = CardBuilder.build_error_card(
@@ -261,7 +261,7 @@ class TestCardBuilder:
         )
 
         card = json.loads(content)
-        elements = card["elements"]
+        elements = card["body"]["elements"]
         img_elements = [e for e in elements if e.get("tag") == "img"]
         assert len(img_elements) == 2
         assert img_elements[0]["img_key"] == "img_v2_abc"
@@ -275,7 +275,7 @@ class TestCardBuilder:
         )
 
         card = json.loads(content)
-        elements = card["elements"]
+        elements = card["body"]["elements"]
         img_elements = [e for e in elements if e.get("tag") == "img"]
         assert len(img_elements) == 0
 
@@ -393,7 +393,7 @@ class TestDeepCard:
         card = json.loads(card_content)
         # 只允许一个进度条元素（markdown 以 📊 开头）
         progress_elems = [
-            e for e in card.get("elements", [])
+            e for e in card.get("body", {}).get("elements", [])
             if e.get("tag") == "markdown" and str(e.get("content", "")).startswith("📊 ")
         ]
         assert len(progress_elems) == 1
@@ -418,7 +418,7 @@ class TestDeepCard:
         )
 
         card = json.loads(content)
-        column_set_elements = [e for e in card["elements"] if e.get("tag") == "column_set"]
+        column_set_elements = [e for e in card["body"]["elements"] if e.get("tag") == "column_set"]
         assert len(column_set_elements) == 0
 
     def test_build_deep_card_completed_shows_mode_buttons(self, sample_project):
@@ -458,3 +458,697 @@ class TestDeepCard:
     def test_build_deep_buttons_neither(self):
         buttons = CardBuilder._build_deep_buttons("proj123")
         assert len(buttons) == 0
+
+
+# ---------------------------------------------------------------------------
+# 卡片结构验证 —— 所有卡片使用 v2 格式（schema 2.0，body.elements）
+# ---------------------------------------------------------------------------
+
+class TestCardSchema20Structure:
+    """验证所有卡片均使用正确的 v2 卡片结构（schema 2.0，body.elements）"""
+
+    @pytest.fixture
+    def project(self):
+        return ProjectContext(
+            project_id="md_test",
+            project_name="MD Test",
+            root_path="/tmp/md_test",
+            working_dir="/tmp/md_test",
+            theme_color="blue",
+            emoji_prefix="🔵",
+        )
+
+    def _parse_card(self, card_tuple: tuple[str, str]) -> dict:
+        msg_type, content = card_tuple
+        assert msg_type == "interactive"
+        return json.loads(content)
+
+    def _assert_v2_structure(self, card: dict, label: str):
+        """断言卡片使用 v2 结构（schema 2.0，body.elements）"""
+        assert "schema" in card, f"{label}: missing schema field"
+        assert card["schema"] == "2.0", f"{label}: schema should be '2.0'"
+        assert "body" in card, f"{label}: missing body field"
+        assert "elements" in card["body"], f"{label}: missing elements in body"
+
+    def _assert_no_lark_md(self, card: dict, label: str):
+        """断言卡片中没有任何 lark_md 标签"""
+        card_str = json.dumps(card, ensure_ascii=False)
+        assert "lark_md" not in card_str, f"{label}: contains lark_md"
+
+    def _assert_all_text_use_markdown_tag(self, elements: list[dict], label: str):
+        """断言所有文本内容元素使用 markdown 标签（而非 div + lark_md）"""
+        for i, elem in enumerate(elements):
+            tag = elem.get("tag")
+            if tag == "div":
+                div_str = json.dumps(elem)
+                assert "lark_md" not in div_str, \
+                    f"{label}: element[{i}] is div with lark_md"
+
+    # ---- 各卡片类型的结构验证 ----
+
+    def test_coco_response_card_schema(self, project):
+        card = self._parse_card(
+            CardBuilder.build_coco_response_card(project, "Title", "Content")
+        )
+        self._assert_v2_structure(card, "coco_response")
+        self._assert_no_lark_md(card, "coco_response")
+        self._assert_all_text_use_markdown_tag(card["body"]["elements"], "coco_response")
+
+    def test_smart_response_card_schema(self, project):
+        card = self._parse_card(
+            CardBuilder.build_smart_response_card(project, "Title", "Content")
+        )
+        self._assert_v2_structure(card, "smart_response")
+        self._assert_no_lark_md(card, "smart_response")
+
+    def test_project_response_card_schema(self, project):
+        card = self._parse_card(
+            CardBuilder.build_project_response_card(project, "Title", "Content")
+        )
+        self._assert_v2_structure(card, "project_response")
+        self._assert_no_lark_md(card, "project_response")
+
+    def test_status_board_card_empty_schema(self):
+        card = self._parse_card(
+            CardBuilder.build_status_board_card([], None)
+        )
+        self._assert_v2_structure(card, "status_board_empty")
+        self._assert_no_lark_md(card, "status_board_empty")
+
+    def test_status_board_card_with_projects_schema(self, project):
+        card = self._parse_card(
+            CardBuilder.build_status_board_card([project], project.project_id)
+        )
+        self._assert_v2_structure(card, "status_board")
+        self._assert_no_lark_md(card, "status_board")
+
+    def test_notification_card_schema(self, project):
+        card = self._parse_card(
+            CardBuilder.build_notification_card(
+                project, "success", "Done", "Content",
+                suggestions=["Run tests"],
+            )
+        )
+        self._assert_v2_structure(card, "notification")
+        self._assert_no_lark_md(card, "notification")
+
+    def test_coco_resume_card_schema(self, project):
+        project.coco_session_snapshot = CocoSessionSnapshot(
+            session_id="s1", query_count=3, last_query="test", is_resumable=True,
+        )
+        card = self._parse_card(
+            CardBuilder.build_coco_resume_card(project)
+        )
+        self._assert_v2_structure(card, "coco_resume")
+        self._assert_no_lark_md(card, "coco_resume")
+
+    def test_project_created_card_schema(self, project):
+        card = self._parse_card(
+            CardBuilder.build_project_created_card(project)
+        )
+        self._assert_v2_structure(card, "project_created")
+        self._assert_no_lark_md(card, "project_created")
+
+    def test_error_card_schema(self):
+        card = self._parse_card(
+            CardBuilder.build_error_card("Error msg")
+        )
+        self._assert_v2_structure(card, "error")
+        self._assert_no_lark_md(card, "error")
+
+    def test_deep_card_schema(self, project):
+        card = self._parse_card(
+            CardBuilder.build_deep_card(project, "Title", "Content", engine_name="Coco")
+        )
+        self._assert_v2_structure(card, "deep")
+        self._assert_no_lark_md(card, "deep")
+
+
+# ---------------------------------------------------------------------------
+# Markdown 内容元素的渲染验证
+# ---------------------------------------------------------------------------
+
+class TestMarkdownContentRendering:
+    """
+    验证 _build_content_element 始终使用 {"tag": "markdown"} 标签，
+    并且各种 Markdown 语法能够正确传递到卡片 JSON 中。
+
+    注意：这里不测试飞书客户端的实际渲染效果（那是飞书 SDK 的责任），
+    而是验证 GhostAP 输出的卡片 JSON 结构满足 Markdown 渲染要求：
+    1. 内容元素使用 {"tag": "markdown"} 而非 {"tag": "div", "text": {"tag": "lark_md"}}
+    2. Markdown 文本被完整传递，不被截断或转义
+    """
+
+    @pytest.fixture
+    def project(self):
+        return ProjectContext(
+            project_id="md_project",
+            project_name="Markdown Test",
+            root_path="/tmp/md",
+            theme_color="green",
+            emoji_prefix="🟢",
+        )
+
+    def _get_content_element(self, card_tuple: tuple[str, str]) -> dict:
+        """从卡片中提取主要内容 markdown 元素"""
+        card = json.loads(card_tuple[1])
+        elements = card["body"]["elements"]
+        # 找到内容 markdown 元素（排除路径元素和进度条）
+        md_elements = [
+            e for e in elements
+            if e.get("tag") == "markdown"
+            and not str(e.get("content", "")).startswith("📁")
+            and not str(e.get("content", "")).startswith("📊")
+            and not str(e.get("content", "")).startswith("💡")
+        ]
+        assert len(md_elements) >= 1, "No content markdown element found"
+        return md_elements[0]
+
+    # ---- 1. 常见 Markdown 语法 ----
+
+    def test_heading_syntax(self, project):
+        content = "# 一级标题\n## 二级标题\n### 三级标题"
+        elem = self._get_content_element(
+            CardBuilder.build_project_response_card(project, "Test", content, show_buttons=False)
+        )
+        assert elem["tag"] == "markdown"
+        assert "# 一级标题" in elem["content"]
+        assert "## 二级标题" in elem["content"]
+        assert "### 三级标题" in elem["content"]
+
+    def test_unordered_list(self, project):
+        content = "结果如下：\n- 项目一\n- 项目二\n- 项目三"
+        elem = self._get_content_element(
+            CardBuilder.build_project_response_card(project, "Test", content, show_buttons=False)
+        )
+        assert elem["tag"] == "markdown"
+        assert "- 项目一" in elem["content"]
+        assert "- 项目三" in elem["content"]
+
+    def test_ordered_list(self, project):
+        content = "步骤：\n1. 安装依赖\n2. 运行测试\n3. 部署"
+        elem = self._get_content_element(
+            CardBuilder.build_project_response_card(project, "Test", content, show_buttons=False)
+        )
+        assert elem["tag"] == "markdown"
+        assert "1. 安装依赖" in elem["content"]
+        assert "3. 部署" in elem["content"]
+
+    def test_bold_and_italic(self, project):
+        content = "这是 **粗体** 和 *斜体* 以及 ***粗斜体***"
+        elem = self._get_content_element(
+            CardBuilder.build_project_response_card(project, "Test", content, show_buttons=False)
+        )
+        assert elem["tag"] == "markdown"
+        assert "**粗体**" in elem["content"]
+        assert "*斜体*" in elem["content"]
+
+    def test_inline_code(self, project):
+        content = "使用 `pip install flask` 安装"
+        elem = self._get_content_element(
+            CardBuilder.build_project_response_card(project, "Test", content, show_buttons=False)
+        )
+        assert elem["tag"] == "markdown"
+        assert "`pip install flask`" in elem["content"]
+
+    def test_code_block(self, project):
+        content = "```python\ndef hello():\n    print('hello')\n```"
+        elem = self._get_content_element(
+            CardBuilder.build_project_response_card(project, "Test", content, show_buttons=False)
+        )
+        assert elem["tag"] == "markdown"
+        assert "```python" in elem["content"]
+        assert "def hello():" in elem["content"]
+        assert "```" in elem["content"]
+
+    def test_link(self, project):
+        content = "参考 [飞书文档](https://open.feishu.cn/) 获取更多信息"
+        elem = self._get_content_element(
+            CardBuilder.build_project_response_card(project, "Test", content, show_buttons=False)
+        )
+        assert elem["tag"] == "markdown"
+        assert "[飞书文档](https://open.feishu.cn/)" in elem["content"]
+
+    def test_blockquote(self, project):
+        content = "> 这是一段引用\n> 包含多行内容"
+        elem = self._get_content_element(
+            CardBuilder.build_project_response_card(project, "Test", content, show_buttons=False)
+        )
+        assert elem["tag"] == "markdown"
+        assert "> 这是一段引用" in elem["content"]
+
+    def test_horizontal_rule_in_content(self, project):
+        content = "上半部分\n\n---\n\n下半部分"
+        elem = self._get_content_element(
+            CardBuilder.build_project_response_card(project, "Test", content, show_buttons=False)
+        )
+        assert elem["tag"] == "markdown"
+        assert "---" in elem["content"]
+
+    def test_strikethrough(self, project):
+        content = "这是 ~~删除线~~ 文字"
+        elem = self._get_content_element(
+            CardBuilder.build_project_response_card(project, "Test", content, show_buttons=False)
+        )
+        assert elem["tag"] == "markdown"
+        assert "~~删除线~~" in elem["content"]
+
+    # ---- 2. 复杂 Markdown 内容 ----
+
+    def test_mixed_markdown_ai_response(self, project):
+        """模拟 AI 回复的典型复杂 Markdown"""
+        content = (
+            "# 分析结果\n\n"
+            "## 问题描述\n"
+            "代码中存在以下问题：\n\n"
+            "1. **内存泄漏**: `session` 对象未正确关闭\n"
+            "2. **SQL注入**: 使用了字符串拼接\n"
+            "3. **竞态条件**: 缺少锁保护\n\n"
+            "## 修复方案\n\n"
+            "```python\n"
+            "class SessionManager:\n"
+            "    def __init__(self):\n"
+            "        self._lock = threading.Lock()\n"
+            "    \n"
+            "    def close_session(self, session_id: str):\n"
+            "        with self._lock:\n"
+            "            if session_id in self._sessions:\n"
+            "                self._sessions[session_id].close()\n"
+            "                del self._sessions[session_id]\n"
+            "```\n\n"
+            "> 注意：修复后需要运行完整测试套件验证\n\n"
+            "相关文档：[Python线程安全](https://docs.python.org/3/library/threading.html)"
+        )
+        elem = self._get_content_element(
+            CardBuilder.build_project_response_card(project, "代码审查", content, show_buttons=False)
+        )
+        assert elem["tag"] == "markdown"
+        # 验证所有 Markdown 语法都完整传递
+        assert "# 分析结果" in elem["content"]
+        assert "**内存泄漏**" in elem["content"]
+        assert "```python" in elem["content"]
+        assert "class SessionManager:" in elem["content"]
+        assert "> 注意" in elem["content"]
+        assert "[Python线程安全]" in elem["content"]
+
+    def test_nested_list_with_code(self, project):
+        content = (
+            "安装步骤：\n"
+            "1. 克隆仓库\n"
+            "   ```bash\n"
+            "   git clone https://github.com/example/repo.git\n"
+            "   ```\n"
+            "2. 安装依赖\n"
+            "   - Python: `pip install -r requirements.txt`\n"
+            "   - Node: `npm install`\n"
+            "3. 启动服务\n"
+            "   ```bash\n"
+            "   python -m src.main\n"
+            "   ```"
+        )
+        elem = self._get_content_element(
+            CardBuilder.build_project_response_card(project, "安装指南", content, show_buttons=False)
+        )
+        assert elem["tag"] == "markdown"
+        assert "git clone" in elem["content"]
+        assert "`pip install -r requirements.txt`" in elem["content"]
+
+    def test_multiple_code_blocks_different_languages(self, project):
+        content = (
+            "## Python\n"
+            "```python\n"
+            "print('hello')\n"
+            "```\n\n"
+            "## JavaScript\n"
+            "```javascript\n"
+            "console.log('hello');\n"
+            "```\n\n"
+            "## Shell\n"
+            "```bash\n"
+            "echo 'hello'\n"
+            "```"
+        )
+        elem = self._get_content_element(
+            CardBuilder.build_project_response_card(project, "多语言示例", content, show_buttons=False)
+        )
+        assert elem["tag"] == "markdown"
+        assert "```python" in elem["content"]
+        assert "```javascript" in elem["content"]
+        assert "```bash" in elem["content"]
+
+    def test_table_syntax(self, project):
+        """飞书 Card JSON 2.0 markdown 标签支持表格"""
+        content = (
+            "| 方法 | 耗时 | 结果 |\n"
+            "|------|------|------|\n"
+            "| GET  | 12ms | 200  |\n"
+            "| POST | 45ms | 201  |\n"
+            "| PUT  | 30ms | 200  |"
+        )
+        elem = self._get_content_element(
+            CardBuilder.build_project_response_card(project, "API测试", content, show_buttons=False)
+        )
+        assert elem["tag"] == "markdown"
+        assert "| 方法 |" in elem["content"]
+        assert "| GET  |" in elem["content"]
+
+    def test_content_with_title_prepended(self, project):
+        """with_title 参数时，标题以 **title** 格式前置"""
+        content = "这是正文内容"
+        elem = CardBuilder._build_content_element(content, with_title="测试标题")
+        assert elem["tag"] == "markdown"
+        assert elem["content"].startswith("**测试标题**")
+        assert "这是正文内容" in elem["content"]
+
+    def test_content_without_title(self, project):
+        """无标题时内容直接传递"""
+        content = "纯内容"
+        elem = CardBuilder._build_content_element(content, with_title=None)
+        assert elem["tag"] == "markdown"
+        assert elem["content"] == "纯内容"
+
+    def test_deep_card_markdown_rendering(self, project):
+        """Deep 卡片也使用 markdown 标签"""
+        content = "## 任务进度\n- [x] 步骤一\n- [ ] 步骤二\n\n```python\nresult = run()\n```"
+        card = json.loads(
+            CardBuilder.build_deep_card(
+                project, "Deep任务", content, engine_name="Claude", show_buttons=False
+            )[1]
+        )
+        elements = card["body"]["elements"]
+        md_content = [
+            e for e in elements
+            if e.get("tag") == "markdown"
+            and "任务进度" in str(e.get("content", ""))
+        ]
+        assert len(md_content) >= 1
+        assert "```python" in md_content[0]["content"]
+
+    def test_notification_card_suggestions_use_markdown(self, project):
+        """通知卡片的建议部分也使用 markdown 标签"""
+        card = json.loads(
+            CardBuilder.build_notification_card(
+                project, "success", "Done", "全部完成",
+                suggestions=["运行 `pytest`", "执行 **部署**"],
+            )[1]
+        )
+        elements = card["body"]["elements"]
+        suggestion_md = [
+            e for e in elements
+            if e.get("tag") == "markdown" and "建议下一步" in str(e.get("content", ""))
+        ]
+        assert len(suggestion_md) == 1
+        assert "运行 `pytest`" in suggestion_md[0]["content"]
+        assert "执行 **部署**" in suggestion_md[0]["content"]
+
+    def test_status_board_project_info_uses_markdown(self, project):
+        """状态看板中项目信息使用 markdown 标签"""
+        card = json.loads(
+            CardBuilder.build_status_board_card([project], project.project_id)[1]
+        )
+        elements = card["body"]["elements"]
+        # 项目信息元素应为 markdown 标签（项目名为 "Markdown Test"）
+        project_md = [
+            e for e in elements
+            if e.get("tag") == "markdown" and "Markdown Test" in str(e.get("content", ""))
+        ]
+        assert len(project_md) >= 1
+
+    def test_error_card_markdown_rendering(self):
+        """错误卡片使用 markdown 标签渲染错误信息"""
+        card = json.loads(
+            CardBuilder.build_error_card("找不到文件 `config.yaml`")[1]
+        )
+        elements = card["body"]["elements"]
+        error_md = [
+            e for e in elements
+            if e.get("tag") == "markdown" and "config.yaml" in str(e.get("content", ""))
+        ]
+        assert len(error_md) == 1
+        assert "`config.yaml`" in error_md[0]["content"]
+
+    # ---- 3. 各卡片类型通过完整 pipeline 的 Markdown 传递 ----
+
+    def test_coco_card_passes_markdown_through(self, project):
+        """Coco 卡片完整传递 Markdown"""
+        content = "**步骤一**: `git pull`\n\n```bash\ngit pull origin main\n```"
+        card = json.loads(
+            CardBuilder.build_coco_response_card(project, "Git操作", content, show_buttons=False)[1]
+        )
+        card_text = json.dumps(card, ensure_ascii=False)
+        assert "**步骤一**" in card_text
+        assert "```bash" in card_text
+
+    def test_smart_card_passes_markdown_through(self, project):
+        """Smart 卡片完整传递 Markdown"""
+        content = "- 选项A: *推荐*\n- 选项B: ~~不推荐~~"
+        card = json.loads(
+            CardBuilder.build_smart_response_card(project, "建议", content, show_buttons=False)[1]
+        )
+        card_text = json.dumps(card, ensure_ascii=False)
+        assert "*推荐*" in card_text
+        assert "~~不推荐~~" in card_text
+
+
+# ---------------------------------------------------------------------------
+# Markdown 渲染边界情况
+# ---------------------------------------------------------------------------
+
+class TestMarkdownEdgeCases:
+    """Markdown 渲染的边界情况测试"""
+
+    @pytest.fixture
+    def project(self):
+        return ProjectContext(
+            project_id="edge_test",
+            project_name="Edge Test",
+            root_path="/tmp/edge",
+            theme_color="orange",
+            emoji_prefix="🟠",
+        )
+
+    # ---- 空内容和空白 ----
+
+    def test_empty_content(self, project):
+        """空字符串内容"""
+        elem = CardBuilder._build_content_element("")
+        assert elem["tag"] == "markdown"
+        assert elem["content"] == ""
+
+    def test_whitespace_only_content(self, project):
+        """纯空白内容"""
+        elem = CardBuilder._build_content_element("   \n\n   ")
+        assert elem["tag"] == "markdown"
+        assert elem["content"] == "   \n\n   "
+
+    def test_empty_content_with_title(self, project):
+        """有标题但内容为空"""
+        elem = CardBuilder._build_content_element("", with_title="标题")
+        assert elem["tag"] == "markdown"
+        assert "**标题**" in elem["content"]
+
+    # ---- 特殊字符 ----
+
+    def test_html_tags_in_content(self, project):
+        """HTML 标签在内容中（不应被解析为 HTML）"""
+        content = "<script>alert('xss')</script>\n<b>bold</b>\n<img src='x'>"
+        elem = CardBuilder._build_content_element(content)
+        assert elem["tag"] == "markdown"
+        # 内容应原样传递，由飞书客户端决定如何处理
+        assert "<script>" in elem["content"]
+        assert "<b>bold</b>" in elem["content"]
+
+    def test_json_in_content(self, project):
+        """JSON 内容"""
+        content = '```json\n{"key": "value", "nested": {"a": 1}}\n```'
+        elem = CardBuilder._build_content_element(content)
+        assert elem["tag"] == "markdown"
+        assert '"key": "value"' in elem["content"]
+
+    def test_unicode_emoji_content(self, project):
+        """Unicode 和 emoji"""
+        content = "✅ 成功 | ❌ 失败 | ⚠️ 警告\n🇨🇳 中文 | 🇺🇸 English | 🇯🇵 日本語"
+        elem = CardBuilder._build_content_element(content)
+        assert elem["tag"] == "markdown"
+        assert "✅ 成功" in elem["content"]
+        assert "🇨🇳 中文" in elem["content"]
+
+    def test_backslash_and_escapes(self, project):
+        """反斜杠和转义字符"""
+        content = "路径: C:\\Users\\test\\file.txt\n正则: `\\d+\\.\\d+`"
+        elem = CardBuilder._build_content_element(content)
+        assert elem["tag"] == "markdown"
+        assert "C:\\Users\\test\\file.txt" in elem["content"]
+
+    def test_markdown_special_chars_unescaped(self, project):
+        """Markdown 特殊字符不做额外转义（由飞书渲染器处理）"""
+        content = "价格 $100 | 100% 完成 | a_b_c | [text] | {code}"
+        elem = CardBuilder._build_content_element(content)
+        assert elem["tag"] == "markdown"
+        assert elem["content"] == content
+
+    # ---- 超长内容 ----
+
+    def test_very_long_content(self, project):
+        """超长内容不被截断"""
+        long_line = "A" * 5000
+        content = f"开始\n{long_line}\n结束"
+        elem = CardBuilder._build_content_element(content)
+        assert elem["tag"] == "markdown"
+        assert len(elem["content"]) == len(content)
+        assert elem["content"].startswith("开始")
+        assert elem["content"].endswith("结束")
+
+    def test_many_lines_content(self, project):
+        """大量行数的内容"""
+        content = "\n".join(f"第 {i} 行内容" for i in range(200))
+        elem = CardBuilder._build_content_element(content)
+        assert elem["tag"] == "markdown"
+        assert "第 0 行内容" in elem["content"]
+        assert "第 199 行内容" in elem["content"]
+
+    def test_large_code_block(self, project):
+        """大型代码块"""
+        code_lines = "\n".join(f"    line_{i} = func({i})" for i in range(100))
+        content = f"```python\n{code_lines}\n```"
+        elem = CardBuilder._build_content_element(content)
+        assert elem["tag"] == "markdown"
+        assert "line_0 = func(0)" in elem["content"]
+        assert "line_99 = func(99)" in elem["content"]
+
+    # ---- 嵌套和边界 Markdown ----
+
+    def test_unclosed_code_block(self, project):
+        """未闭合的代码块"""
+        content = "```python\ndef foo():\n    pass"
+        elem = CardBuilder._build_content_element(content)
+        assert elem["tag"] == "markdown"
+        assert "```python" in elem["content"]
+        assert "def foo():" in elem["content"]
+
+    def test_multiple_backticks(self, project):
+        """嵌套 backticks"""
+        content = "使用 `` ` `` 表示单个反引号，或 ``` `` ``` 表示两个"
+        elem = CardBuilder._build_content_element(content)
+        assert elem["tag"] == "markdown"
+        assert elem["content"] == content
+
+    def test_only_markdown_symbols(self, project):
+        """仅包含 Markdown 符号字符"""
+        content = "# ## ### * ** *** - --- > >> ``` ~~"
+        elem = CardBuilder._build_content_element(content)
+        assert elem["tag"] == "markdown"
+        assert elem["content"] == content
+
+    # ---- 目录元素 ----
+
+    def test_directory_element_uses_markdown(self, project):
+        """目录路径元素使用 markdown 标签"""
+        elem = CardBuilder._build_directory_element(project)
+        assert elem["tag"] == "markdown"
+        assert f"`{project.root_path}`" in elem["content"]
+        assert "📁" in elem["content"]
+
+    def test_directory_element_no_project(self):
+        """无项目时路径默认为 ~"""
+        elem = CardBuilder._build_directory_element(None)
+        assert elem["tag"] == "markdown"
+        assert "`~`" in elem["content"]
+
+    def test_directory_element_with_working_dir(self):
+        """使用 working_dir 参数"""
+        elem = CardBuilder._build_directory_element(None, working_dir="/home/user/work")
+        assert elem["tag"] == "markdown"
+        assert "`/home/user/work`" in elem["content"]
+
+    def test_directory_path_with_spaces(self, project):
+        """路径包含空格"""
+        project.root_path = "/home/user/my project/src"
+        elem = CardBuilder._build_directory_element(project)
+        assert elem["tag"] == "markdown"
+        assert "`/home/user/my project/src`" in elem["content"]
+
+    # ---- 完整卡片中的边界情况 ----
+
+    def test_full_card_empty_content(self, project):
+        """完整卡片使用空内容"""
+        _, content = CardBuilder.build_project_response_card(
+            project, "Title", "", show_buttons=False
+        )
+        card = json.loads(content)
+        assert "body" in card
+        elements = card["body"]["elements"]
+        md_elems = [e for e in elements if e.get("tag") == "markdown"]
+        assert len(md_elems) >= 1
+
+    def test_full_card_with_newlines_only(self, project):
+        """完整卡片使用纯换行内容"""
+        _, content = CardBuilder.build_project_response_card(
+            project, "Title", "\n\n\n", show_buttons=False
+        )
+        card = json.loads(content)
+        assert "body" in card
+
+    def test_full_card_json_serialization_integrity(self, project):
+        """确保含特殊字符的内容经 JSON 序列化后不损坏"""
+        special_content = '包含 "引号" 和 \\反斜杠 以及\n换行\t制表符'
+        _, card_str = CardBuilder.build_project_response_card(
+            project, "Title", special_content, show_buttons=False
+        )
+        # 反序列化应成功
+        card = json.loads(card_str)
+        # 直接检查解析后的 content 字段，避免二次 JSON 序列化的转义干扰
+        md_elems = [
+            e for e in card["body"]["elements"]
+            if e.get("tag") == "markdown" and "引号" in str(e.get("content", ""))
+        ]
+        assert len(md_elems) == 1
+        content = md_elems[0]["content"]
+        assert '包含 "引号"' in content
+        assert "\\反斜杠" in content
+        assert "\n" in content
+        assert "\t" in content
+
+    def test_notification_card_no_suggestions(self, project):
+        """通知卡片无建议时不应有建议元素"""
+        _, content = CardBuilder.build_notification_card(
+            project, "info", "Info", "纯信息通知"
+        )
+        card = json.loads(content)
+        elements = card["body"]["elements"]
+        suggestion_elems = [
+            e for e in elements
+            if e.get("tag") == "markdown" and "建议下一步" in str(e.get("content", ""))
+        ]
+        assert len(suggestion_elems) == 0
+
+    def test_status_board_empty_uses_markdown_for_prompt(self):
+        """空项目看板的提示使用 markdown 标签"""
+        _, content = CardBuilder.build_status_board_card([], None)
+        card = json.loads(content)
+        elements = card["body"]["elements"]
+        prompt_md = [
+            e for e in elements
+            if e.get("tag") == "markdown" and "暂无项目" in str(e.get("content", ""))
+        ]
+        assert len(prompt_md) == 1
+        assert "/new" in prompt_md[0]["content"]
+
+    def test_deep_card_progress_bar_uses_markdown(self):
+        """Deep 卡片的进度条使用 markdown 标签"""
+        _, content = CardBuilder.build_deep_card(
+            project=None,
+            title="Test",
+            content="Running",
+            progress_bar="[████░░░░░░] 40%",
+            show_buttons=False,
+            engine_name="Coco",
+        )
+        card = json.loads(content)
+        elements = card["body"]["elements"]
+        progress_md = [
+            e for e in elements
+            if e.get("tag") == "markdown" and "📊" in str(e.get("content", ""))
+        ]
+        assert len(progress_md) == 1
+        assert "40%" in progress_md[0]["content"]

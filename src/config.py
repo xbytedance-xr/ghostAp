@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     coco_session_timeout: int = 86400
     coco_max_output_length: int = 30000
 
+    claude_execution_timeout: int = 7200
+    claude_session_timeout: int = 86400
+    claude_max_output_length: int = 30000
+
     streaming_enabled: bool = True
 
     # Task scheduler (thread-based) settings

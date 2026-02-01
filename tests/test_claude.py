@@ -423,3 +423,136 @@ class TestCardButtonsClaude:
 
         title = CardBuilder._build_header_title(None)
         assert "🧠" in title
+
+
+class TestCommandInterceptionInProgrammingMode:
+    """测试编程模式（Coco/Claude）中系统命令的拦截。
+
+    在 Coco/Claude 模式中，/help, /帮助, /projects 等系统命令
+    不应被发送给 AI，而应由系统直接处理。
+    """
+
+    def _create_mock_client(self):
+        """创建带有完整 mock 的 FeishuWSClient 实例。"""
+        from unittest.mock import patch, MagicMock
+
+        patches = {
+            'settings': patch('src.feishu.ws_client.get_settings'),
+            'coco': patch('src.feishu.ws_client.CocoSessionManager'),
+            'claude': patch('src.feishu.ws_client.ClaudeSessionManager'),
+            'intent': patch('src.feishu.ws_client.IntentRecognizer'),
+            'project': patch('src.feishu.ws_client.ProjectManager'),
+            'mapper': patch('src.feishu.ws_client.MessageProjectMapper'),
+            'deep': patch('src.feishu.ws_client.DeepEngineManager'),
+            'reporter': patch('src.feishu.ws_client.ProgressReporter'),
+            'mode': patch('src.mode.ModeManager'),
+        }
+
+        mocks = {}
+        for name, p in patches.items():
+            mocks[name] = p.start()
+
+        mock_settings = MagicMock()
+        mock_settings.app_id = "test"
+        mock_settings.app_secret = "test"
+        mock_settings.streaming_enabled = False
+        mock_settings.task_scheduler_max_concurrent = 2
+        mock_settings.task_scheduler_per_key_concurrency = 1
+        mocks['settings'].return_value = mock_settings
+
+        from src.feishu.ws_client import FeishuWSClient
+        client = FeishuWSClient(MagicMock())
+        client._scheduler = MagicMock()
+
+        return client, patches
+
+    def _stop_patches(self, patches):
+        for p in patches.values():
+            p.stop()
+
+    def test_is_interceptable_command_help(self):
+        client, patches = self._create_mock_client()
+        try:
+            assert client._is_interceptable_command("/help") is True
+            assert client._is_interceptable_command("/帮助") is True
+            assert client._is_interceptable_command("/Help") is True
+        finally:
+            self._stop_patches(patches)
+
+    def test_is_interceptable_command_info(self):
+        client, patches = self._create_mock_client()
+        try:
+            assert client._is_interceptable_command("/coco_info") is True
+            assert client._is_interceptable_command("/claude_info") is True
+        finally:
+            self._stop_patches(patches)
+
+    def test_is_interceptable_command_project(self):
+        client, patches = self._create_mock_client()
+        try:
+            assert client._is_interceptable_command("/projects") is True
+            assert client._is_interceptable_command("/status") is True
+            assert client._is_interceptable_command("/switch myproject") is True
+            assert client._is_interceptable_command("/new myproject /tmp") is True
+        finally:
+            self._stop_patches(patches)
+
+    def test_is_interceptable_command_false_for_regular_text(self):
+        client, patches = self._create_mock_client()
+        try:
+            assert client._is_interceptable_command("hello") is False
+            assert client._is_interceptable_command("帮我写个函数") is False
+            assert client._is_interceptable_command("/deep do something") is False
+            assert client._is_interceptable_command("/exit") is False
+        finally:
+            self._stop_patches(patches)
+
+    def test_is_interceptable_command_false_for_exit(self):
+        """退出命令不应被当作拦截命令，它有专门的处理路径。"""
+        client, patches = self._create_mock_client()
+        try:
+            assert client._is_interceptable_command("/exit") is False
+            assert client._is_interceptable_command("/quit") is False
+            assert client._is_interceptable_command("/exit_claude") is False
+        finally:
+            self._stop_patches(patches)
+
+    def test_handle_intercepted_command_help(self):
+        from unittest.mock import MagicMock
+        client, patches = self._create_mock_client()
+        try:
+            client._show_full_help = MagicMock()
+            client._handle_intercepted_command("msg1", "chat1", "/帮助", None)
+            client._show_full_help.assert_called_once_with("msg1", "chat1", None)
+        finally:
+            self._stop_patches(patches)
+
+    def test_handle_intercepted_command_claude_info(self):
+        from unittest.mock import MagicMock
+        client, patches = self._create_mock_client()
+        try:
+            client._show_claude_info = MagicMock()
+            client._handle_intercepted_command("msg1", "chat1", "/claude_info", None)
+            client._show_claude_info.assert_called_once_with("msg1", "chat1", None)
+        finally:
+            self._stop_patches(patches)
+
+    def test_handle_intercepted_command_projects(self):
+        from unittest.mock import MagicMock
+        client, patches = self._create_mock_client()
+        try:
+            client._show_project_board = MagicMock()
+            client._handle_intercepted_command("msg1", "chat1", "/projects", None)
+            client._show_project_board.assert_called_once_with("msg1", "chat1")
+        finally:
+            self._stop_patches(patches)
+
+    def test_handle_intercepted_command_switch(self):
+        from unittest.mock import MagicMock
+        client, patches = self._create_mock_client()
+        try:
+            client._switch_project = MagicMock()
+            client._handle_intercepted_command("msg1", "chat1", "/switch myproject", None)
+            client._switch_project.assert_called_once_with("msg1", "chat1", "myproject")
+        finally:
+            self._stop_patches(patches)

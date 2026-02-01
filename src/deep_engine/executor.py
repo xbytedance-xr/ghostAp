@@ -1,12 +1,14 @@
+import logging
 import time
-from typing import Optional, Callable, Union
-from ..coco.session import CocoSession
-from ..claude.session import ClaudeSession
+from typing import Optional, Callable
+from ..session.base import BaseSession
 from ..config import get_settings
 from .models import DeepTask, ExecutionResult, DeepTaskStatus
 
-# CocoSession 和 ClaudeSession 接口一致，使用 Union 类型
-AISession = Union[CocoSession, ClaudeSession]
+logger = logging.getLogger(__name__)
+
+# CocoSession and ClaudeSession share the same BaseSession interface
+AISession = BaseSession
 
 
 class TaskExecutor:
@@ -131,7 +133,7 @@ class TaskExecutor:
         retry_count = 0
         while not result.success and retry_count < max_retries:
             retry_count += 1
-            print(f"🔄 任务 {task.title} 执行失败，第 {retry_count} 次重试...")
+            logger.info("任务 %s 执行失败，第 %d 次重试...", task.title, retry_count)
 
             task.status = DeepTaskStatus.PENDING
             result = self.execute(task, on_chunk)

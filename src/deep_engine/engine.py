@@ -1,3 +1,4 @@
+import logging
 import time
 import json
 import os
@@ -7,6 +8,8 @@ from dataclasses import dataclass
 from ..coco.session import CocoSession, CocoSessionManager
 from ..claude.session import ClaudeSession, ClaudeSessionManager
 from ..config import get_settings
+
+logger = logging.getLogger(__name__)
 from .models import (
     DeepProject,
     DeepProjectStatus,
@@ -88,11 +91,11 @@ class DeepEngine:
         self._project.status = DeepProjectStatus.PLANNING
 
         try:
-            print(f"📋 开始解析需求...")
+            logger.info("开始解析需求...")
             requirement = self._parser.parse(requirement_text)
             self._project.set_requirement(requirement)
 
-            print(f"📝 开始规划任务...")
+            logger.info("开始规划任务...")
             tasks = self._planner.plan(requirement)
             self._project.set_tasks(tasks)
 
@@ -105,7 +108,7 @@ class DeepEngine:
 
         except Exception as e:
             error_msg = f"规划失败: {str(e)}"
-            print(f"❌ {error_msg}")
+            logger.error("%s", error_msg)
             self._project.fail(error_msg)
 
             if callbacks.on_error:
@@ -146,7 +149,7 @@ class DeepEngine:
                     callbacks.on_task_done(task, result)
 
                 if not result.success and task.status == DeepTaskStatus.FAILED:
-                    print(f"❌ 任务 {task.title} 失败，跳过后续依赖任务")
+                    logger.warning("任务 %s 失败，跳过后续依赖任务", task.title)
                     self._skip_dependent_tasks(task)
 
             if self._project.is_completed:
@@ -164,7 +167,7 @@ class DeepEngine:
 
         except Exception as e:
             error_msg = f"执行异常: {str(e)}"
-            print(f"❌ {error_msg}")
+            logger.error("%s", error_msg)
             self._project.fail(error_msg)
 
             if callbacks.on_error:
@@ -296,7 +299,7 @@ class DeepEngine:
             return True
 
         except Exception as e:
-            print(f"加载状态失败: {e}")
+            logger.error("加载状态失败: %s", e)
             return False
 
     def cleanup(self):

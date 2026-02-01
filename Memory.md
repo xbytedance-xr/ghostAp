@@ -4,7 +4,305 @@
 GhostAP 是一个飞书机器人Shell沙箱服务，通过飞书机器人对话来安全执行本地shell命令，并支持 Coco AI 和 Claude AI 远程开发模式。
 
 ## 最新更新
-**更新时间**: 2026-02-01 12:00:00
+**更新时间**: 2026-02-01 23:00:00
+
+### 项目大扫除 — 6 阶段重构（2026-02-01 23:00:00）
+
+对项目进行全面重构，消除重复代码、统一架构、升级卡片 schema、清理配置命名和日志。全量 580 测试通过。
+
+#### Phase 0: 基础清理
+- **新增** `src/utils/text.py`: 提取 `clean_terminal_output()` 和 `truncate_output()` 共享函数
+- **修改** `src/coco/session.py`, `src/claude/session.py`: 移除未使用 import（threading, Generator, re），委托给共享 utils
+- **修改** `src/sandbox/executor.py`: 移除未使用 shlex import，委托截断逻辑给 `truncate_output()`
+
+#### Phase 1: 统一 SessionSnapshot + 上下文清理
+- **修改** `src/project/context.py`: 合并 `CocoSessionSnapshot` / `ClaudeSessionSnapshot` 为单一 `SessionSnapshot`（保留别名向后兼容）；移除 `THEME_COLORS` / `EMOJI_PREFIXES` 常量
+- **修改** `src/project/manager.py`: 改从 `card/themes.py` 的 `THEMES` 字典派生主题颜色
+
+#### Phase 2: 会话基类提取（核心重构）
+- **新增** `src/session/base.py`: `BaseSession` 抽象基类，包含 `send_prompt()`, `send_prompt_streaming()`, `resume()`, `to_snapshot()`, `from_snapshot()` 等 80%+ 共享代码
+- **新增** `src/session/manager.py`: `BaseSessionManager[T]` 泛型基类，包含 `start_session()`, `resume_session()`, `get_session()`, `end_session()` 等共享逻辑
+- **修改** `src/coco/session.py`: CocoSession 精简为薄子类（~60 行 vs 原 ~300 行）
+- **修改** `src/claude/session.py`: ClaudeSession 精简为薄子类，保留错误恢复钩子
+- **修改** `src/deep_engine/executor.py`: `AISession = BaseSession`（替代 Union 类型）
+
+#### Phase 3: 卡片统一升级 schema 2.0
+- **新增** `src/card/shared.py`: 共享卡片元素构建器（`build_mode_buttons()`, `build_responsive_layout()`, `resolve_title_and_template()`, `apply_compact_style()`）
+- **修改** `src/card/builder.py`: 升级到 schema 2.0（`_wrap_card()` 方法），合并重复方法（resume 卡片、response 卡片），委托给 shared.py
+- **修改** `src/card/streaming.py`: 委托按钮/标题/布局给 shared.py 共享函数
+- **修改** `tests/test_card.py`: 更新全部卡片结构断言从 v1 到 v2 格式
+
+#### Phase 4: 配置命名优化
+- **修改** `src/config.py`: 新增 `claude_execution_timeout`, `claude_session_timeout`, `claude_max_output_length` 独立配置项
+- **修改** `src/claude/session.py`: `_get_execution_timeout()` / `_get_max_output_length()` 使用 Claude 专属配置；`ClaudeSessionManager` 使用 `claude_session_timeout`
+
+#### Phase 5: 统一日志
+- 将全部 `print()` 调用替换为 `logging`（logger.info/warning/error/debug）
+- 涉及模块: `main.py`, `ws_client.py`, `streaming.py`, `executor.py`, `session.py`, `intent_recognizer.py`, `engine.py`, `planner.py`, `parser.py`, `manager.py`, `message_cache.py`
+- 在 `main.py` 的 `run()` 中配置 `logging.basicConfig()`
+
+#### 预期成果
+| 指标 | 重构前 | 重构后 |
+|------|--------|--------|
+| session 代码行数 | ~650 行（两文件重复） | ~300 行（基类+两个薄子类） |
+| 卡片按钮重复 | 2 套独立实现 | 1 套共享 + schema 2.0 统一 |
+| 配置命名 | Claude 用 coco 的配置名 | 各有独立配置项 |
+| 日志方式 | 91 处 print() | 统一 logging |
+| SessionSnapshot 类 | 2 个一样的类 | 1 个 + 别名 |
+
+---
+
+### 编程模式命令拦截 + 即时反馈 + 卡片渲染优化（2026-02-02 03:00:00）
+
+修复编程模式（Coco/Claude）中系统命令被错误发送给 AI 的问题，优化消息处理的即时反馈，改善卡片 Markdown 渲染。
+
+#### 问题
+1. **命令拦截缺失**: 在 Claude/Coco 模式中，`/帮助`、`/help`、`/projects`、`/status` 等系统命令未被拦截，直接发送给 AI 处理，导致无响应或错误响应
+2. **无即时反馈**: 非流式路径中用户发送消息后看不到任何卡片，直到 AI 完整响应返回才展示
+3. **卡片样式简陋**: 卡片内 Markdown 元素缺少 `text_size` 属性，渲染效果不佳
+
+#### 修改 `src/feishu/ws_client.py`
+- **新增** `_is_interceptable_command()`: 判断是否为需要在编程模式中拦截的系统命令（`/help`、`/帮助`、`/coco_info`、`/claude_info`、`/projects`、`/status`、`/switch`、`/new`、`/close`）
+- **新增** `_handle_intercepted_command()`: 统一路由拦截的系统命令到对应处理方法
+- **修改** `_process_with_intent()`: 在 Coco/Claude 模式路径中，退出命令和 Deep 命令之后、发送给 AI 之前，增加 `_is_interceptable_command()` 检查
+- **重构** `_handle_claude_response()` 和 `_handle_coco_response()`: 无论流式/非流式，统一先创建流式卡片展示"正在思考"，再等待 AI 响应。消除非流式路径中"空白等待"问题
+- **改善** `_show_full_help()`: 帮助卡片增加 `text_size` 属性，状态栏使用 `notation` 大小更紧凑
+
+#### 修改 `src/card/streaming.py`
+- **改善** `_build_card_json()`: 路径元素增加 `text_size: "notation"`（更紧凑），内容元素增加 `text_size: "normal"`（更可读）
+
+#### 新增测试 `tests/test_claude.py` — 9 个新测试
+- `TestCommandInterceptionInProgrammingMode`: 系统命令拦截测试类
+  - `_is_interceptable_command()`: 5 个测试（help/info/project 命令 + 普通文本 + exit 命令区分）
+  - `_handle_intercepted_command()`: 4 个测试（help/claude_info/projects/switch 路由）
+- 更新 `tests/test_streaming.py`: `test_build_card_json_streaming_mode` 增加 `text_size` 断言
+
+#### 全部 580 个测试通过 ✅
+
+---
+
+### 统一编程模式回复为 CardKit 流式卡片（2026-02-02 01:30:00）
+
+将所有编程模式（Coco/Claude）的消息回复统一为 CardKit 流式卡片（schema 2.0），移除旧的 `CardBuilder` 静态卡片路径，消除两套并行的卡片渲染实现。
+
+#### 背景
+- **旧架构**: 非流式路径（`_handle_xxx_normal`）使用 `CardBuilder` 构建旧格式卡片；流式路径（`_handle_xxx_streaming`）使用 `StreamingCardManager` 的 CardKit API
+- **问题**: 两套代码维护成本高，非流式卡片虽已升级到 schema 2.0 但仍与流式卡片走不同的构建路径
+
+#### 修改 `src/card/streaming.py` — 重构 StreamingCardManager
+- **提取共享方法** `_build_card_json()`: 统一流式/非流式卡片的 JSON 结构构建
+  - `streaming_mode=True`: 包含 `streaming_config`（print frequency/step/strategy）
+  - `streaming_mode=False`: 不含 streaming 配置，直接渲染完整内容
+- **提取** `_resolve_title_and_template()`: 根据 mode（Coco/Claude/Smart）和项目名解析标题与头部颜色模板
+- **新增** `create_and_send_card()`: 非流式 CardKit 卡片一次性发送方法
+  - 创建 streaming_mode=false 的 CardKit 卡片 → 写入完整内容 → 发送消息 → 返回 message_id
+  - 支持 reply（引用回复）和 create（直接发送）两种模式
+- **重构** `create_streaming_card()`: 复用 `_build_card_json()` 和 `_resolve_title_and_template()`
+
+#### 修改 `src/feishu/ws_client.py` — 合并消息处理路径
+- **删除** 4 个旧方法: `_handle_coco_normal`、`_handle_coco_streaming`、`_handle_claude_normal`、`_handle_claude_streaming`
+- **新增** 2 个统一方法:
+  - `_handle_coco_response`: 合并 Coco 模式的流式/非流式处理
+  - `_handle_claude_response`: 合并 Claude 模式的流式/非流式处理
+- **统一逻辑**: 方法内部根据 `self._enable_streaming` 分支：
+  - `True`: 创建流式卡片 → 实时 update_content → close_streaming（打字机效果）
+  - `False`: 同步获取完整响应 → `create_and_send_card()` 一次性发送（CardKit schema 2.0）
+- **Fallback**: 流式创建失败时，自动降级为非流式 `create_and_send_card()`，不再回退到旧 `CardBuilder`
+
+#### 新增测试 `tests/test_streaming.py` — 14 个新测试
+- `_resolve_title_and_template()`: 5 个测试（Coco/Claude/Smart + 有无项目名）
+- `_build_card_json()`: 3 个测试（streaming/non-streaming/带图片）
+- `create_and_send_card()`: 5 个测试（reply 模式、create 模式、卡片创建失败、消息发送失败、Claude 模板）
+- `_build_button_elements()`: 1 个测试（Claude 模式按钮）
+
+#### 保留的兼容性
+- `CardBuilder` 类保留用于非编程模式场景（项目创建、状态看板、错误卡片、Deep Engine 进度、通知等）
+- `streaming_enabled` 配置项保留，语义不变（true=打字机效果，false=一次性渲染）
+
+#### 测试结果: 571 全部通过（14 新增）
+
+---
+
+### 高优先级代码质量修复（2026-02-02 00:30:00）
+
+#### 1. 修复 `build_bridge_summary()` FILE_CHANGE 死代码
+- **问题**: `FILE_CHANGE` 不在 `bridgeable_types` 中，但 `build_bridge_summary()` 有处理 `FILE_CHANGE` 的分支代码，导致 `files_modified` 列表永远为空
+- **方案**: 将 `FILE_CHANGE` 加入 `bridgeable_types`，使文件变更信息可正确传递到桥接摘要。跨模式切换时知道哪些文件被修改过是有价值的上下文信息
+- **文件**: `src/project/unified_context.py:484`
+
+#### 2. 修复 `max_entries=0` 边界行为
+- **问题**: `add_entry()` 中 `self._entries[-0:]` 等价于 `self._entries[:]`，当 `max_entries=0` 时实际不触发淘汰（依赖 Python 切片的偶然行为）
+- **方案**: 增加 `if self.max_entries > 0` 的显式保护判断，`max_entries=0` 明确语义为"不限制条目数量"
+- **文件**: `src/project/unified_context.py:263`
+
+#### 3. 添加关键操作日志
+- 使用 `logging` 模块为上下文管理和模式切换的关键路径添加日志
+- **unified_context.py**: 条目淘汰(DEBUG)、版本创建(DEBUG)、桥接摘要构建(INFO)、桥接摘要消费(INFO)、上下文创建/移除(INFO)
+- **ws_client.py**: 项目上下文保留(INFO)、恢复(INFO/DEBUG)、模式切换记录(INFO)、Bridge 注入(INFO)
+
+#### 测试更新
+- `test_bridge_summary_skips_file_changes` → 重命名为 `test_bridge_summary_collects_file_changes`，验证 FILE_CHANGE 被正确收集
+- `test_max_entries_zero_keeps_all` → 重命名为 `test_max_entries_zero_means_unlimited`，反映明确的语义
+- 全部 557 个测试通过 ✅
+
+---
+
+**更新时间**: 2026-02-01 23:30:00
+
+### 卡片 Markdown 渲染效果测试用例（2026-02-01 23:30:00）
+为修复后的卡片 Markdown 渲染编写了 56 个测试用例（从 34 → 90），覆盖三个维度。
+
+#### 新增测试类和覆盖范围
+
+**1. TestCardSchema20Structure（10 个测试）— Card JSON 2.0 结构验证**
+- 验证所有 10 种卡片类型（coco/smart/project/status_board_empty/status_board/notification/coco_resume/project_created/error/deep）均使用：
+  - `"schema": "2.0"` 声明
+  - `"body": {"elements": [...]}` 而非顶层 `"elements"`
+  - 无任何 `lark_md` 残留
+  - 无 `div` + `lark_md` 组合
+
+**2. TestMarkdownContentRendering（22 个测试）— 常见/复杂 Markdown 语法渲染**
+- 常见语法（10 个）：标题(#/##/###)、无序列表、有序列表、粗体/斜体、行内代码、代码块、链接、引用、水平线、删除线
+- 复杂内容（7 个）：
+  - 模拟 AI 回复（标题+列表+代码块+引用+链接混合）
+  - 嵌套列表+代码块
+  - 多语言代码块（Python/JS/Bash）
+  - 表格语法
+  - 标题前置（with_title 参数）
+- 各卡片类型 pipeline 验证（5 个）：Deep 卡片、通知卡片建议、状态看板项目信息、错误卡片、Coco/Smart 卡片的 Markdown 完整传递
+
+**3. TestMarkdownEdgeCases（24 个测试）— 边界情况**
+- 空内容/空白：空字符串、纯空白、有标题无内容
+- 特殊字符：HTML 标签、JSON 内容、Unicode/emoji、反斜杠/转义、Markdown 特殊符号
+- 超长内容：5000 字符长文本、200 行内容、100 行代码块
+- 嵌套边界：未闭合代码块、嵌套 backticks、纯 Markdown 符号
+- 目录元素：使用 markdown 标签、无项目默认 ~、working_dir、路径含空格
+- 完整卡片边界：空内容卡片、纯换行卡片、JSON 序列化完整性（引号/转义/换行/制表符）、无建议的通知卡片、空看板提示、Deep 进度条
+
+#### 测试结果: 557 全部通过（90 卡片 + 199 统一上下文 + 268 其他）
+
+### 补充项目级上下文管理的综合测试用例（2026-02-01 22:30:00）
+为统一上下文管理系统编写了 61 个新测试用例（从 138 → 199），覆盖 4 大维度的测试需求。
+
+#### 新增测试类和覆盖范围
+
+**1. TestCRUDAdvanced（17 个测试）— 补充 CRUD 高级场景**
+- FILE_CHANGE / AI_SUMMARY 条目类型的创建与查询
+- 同时更新 content 和 metadata、单独更新保留另一字段
+- 组合条件查询（type + mode + since + limit 同时使用）
+- 删除无匹配模式返回 0、清空后重新添加、删除中间条目保持顺序
+- ProjectContextManager 的 entries+conversation 混合更新、type+limit 组合查询
+
+**2. TestCrossModeContextSharing（12 个测试）— 跨模式上下文共享（此前完全空白）**
+- 5 种模式（SMART/COCO/CLAUDE/SHELL/DEEP_ENGINE）条目共存验证
+- 完整工作流：SMART→COCO→CLAUDE→SHELL→DEEP_ENGINE 全链路
+- 桥接摘要携带多模式历史、桥接链跨多次模式切换
+- 删除单一模式不影响其他模式、跨模式按时间排序
+- 版本快照捕获多模式状态、FILE_CHANGE 不在 bridgeable_types 中的行为验证
+- ProjectContextManager 端到端跨模式工作流+桥接
+
+**3. TestProjectSwitchAdvanced（3 个测试）— 项目切换补充场景**
+- 多项目快速切换 A→B→C→A 数据累积与版本链
+- 切换时存在未完成模式切换的快照保存
+- A↔B 反复切换版本累积正确性
+
+**4. TestEdgeCases（29 个测试）— 边界情况**
+- 空字符串、10 万字符长文本、Unicode/特殊字符、metadata 中换行符
+- max_entries=1/0 边界行为、max_versions=1 淘汰验证
+- 版本 entry_count stale 后的 diff 行为、clear 后 diff 返回空
+- 空上下文/无可桥接条目的桥接摘要、内容截断（300 字符）、摘要行数上限（8 行）
+- from_dict 缺少字段时默认值、所有 6 种条目类型的序列化/反序列化 roundtrip
+- 并发版本创建、并发读写不崩溃
+- 删除+添加后索引一致性、按模式清除后索引正确
+- ProjectContextManager 传入 None project_id 的防御性校验（5 个接口）
+- Store 交叉操作隔离性
+
+#### 发现的实现行为说明
+- `build_bridge_summary` 的 `bridgeable_types` 不包含 `FILE_CHANGE`，导致 `files_modified` 始终为空列表（代码中 `elif FILE_CHANGE` 分支为死代码）
+- `max_entries=0` 时 `[-0:]` 等同于 `[:]`，不触发淘汰，实际保留全部条目
+
+#### 测试结果: 501 全部通过（199 统一上下文 + 302 其他）
+
+### 修复卡片 Markdown 未渲染问题（2026-02-01 21:00:00）
+修复飞书卡片回复内容 Markdown 未正确渲染的问题。根因分析发现两个核心问题并全部修复。
+
+#### 问题根因
+1. **`_build_content_element()` 使用 `div` + `lark_md` 渲染非代码块内容**：`lark_md` 是飞书卡片 JSON 1.0 的文本级标签，仅支持有限的 Markdown 子集（粗体、斜体、链接），不支持代码块、表格、列表等完整 Markdown 语法。AI 回复中的列表、标题等格式在无代码块时全部退化为纯文本。
+2. **非流式卡片使用 JSON 1.0 结构**：流式卡片 (`streaming.py`) 已使用 `schema: "2.0"` + `body.elements` 结构，支持完整 Markdown 渲染；非流式卡片 (`builder.py`) 无 schema 声明，默认 JSON 1.0 行为，Markdown 渲染能力受限。
+
+#### 修改 `src/card/builder.py` — 统一升级到卡片 JSON 2.0
+- **`_build_content_element()`**: 移除 `_has_code_block()` 分支判断，统一使用 `{"tag": "markdown"}` 元素替代 `div` + `lark_md`
+- **`_build_directory_element()`**: 同样从 `div` + `lark_md` 改为 `markdown` 标签
+- **所有 11 个卡片构建方法**: 添加 `"schema": "2.0"` 声明，将 `"elements"` 移入 `"body": {"elements": [...]}` 结构，与流式卡片保持一致
+- **`build_status_board_card()`**: 修复空项目卡片和项目列表卡片中的 4 处 `lark_md` 用法
+- **`build_notification_card()`**: 修复建议文本的 `lark_md` 用法
+- 删除不再需要的 `_has_code_block()` 静态方法
+
+#### 修改 `tests/test_card.py` — 适配新的卡片结构
+- 所有 `card["elements"]` 引用更新为 `card["body"]["elements"]`
+- 所有 `card.get("elements", [])` 引用更新为 `card.get("body", {}).get("elements", [])`
+
+#### 测试结果: 440 全部通过
+
+### 项目切换上下文保留与恢复（2026-02-01 19:30:00）
+实现项目切换时的上下文完整保留与安全恢复，确保切换项目不会丢失任何 AI 会话上下文。
+
+#### 修改 `src/feishu/ws_client.py` — 项目切换上下文安全
+- 新增 `_preserve_project_context()`: 离开项目前保存当前模式的 AI 会话快照到统一上下文
+- 新增 `_restore_project_context()`: 切换到目标项目时加载已有上下文，返回恢复状态信息
+- 重构 `_switch_project()`:
+  - 切换前先调用 `_preserve_project_context` 保存会话快照
+  - 安全退出当前模式（Coco/Claude），释放 session 资源
+  - 为旧项目创建离开版本书签
+  - 为新项目自动创建/加载统一上下文
+  - UI 反馈中包含上下文恢复信息（条目数、上次模式等）
+- 新增 `_inject_bridge_context()`: 在消息处理时检查并消费桥接摘要，注入到 AI prompt 前面
+- 在 `_handle_coco_message` 和 `_handle_claude_message` 中注入桥接上下文
+- 在 `_handle_card_resume_coco` 和 `_handle_card_resume_claude` 中记录模式切换到统一上下文
+
+#### 新增测试: 24 个测试覆盖项目切换上下文流程
+- `TestProjectSwitchContextPreservation` (4 tests): 旧项目上下文保留、快照保存、版本创建、增量 diff
+- `TestProjectSwitchContextRestoration` (4 tests): 新项目自动创建、已有上下文加载、恢复信息格式
+- `TestProjectSwitchBridgeSummary` (6 tests): 桥接摘要构建、一次性消费、prompt 注入格式、跨切换保留
+- `TestProjectSwitchEdgeCases` (6 tests): 同项目切换、无活跃项目、空上下文、快速多次切换、滚动窗口、版本链
+- `TestProjectSwitchEndToEnd` (4 tests): 完整切换流程、无会话切换、Deep Engine 结果保留、桥接包含 Deep 结果
+
+#### 测试结果: 440 passed
+
+---
+
+### 项目级统一上下文管理系统（2026-02-01 18:00:00）
+实现项目级统一上下文管理系统，解决各编程模式（Coco/Claude/Shell/Deep Engine）上下文彼此隔离的问题。
+
+#### 新增 `src/project/unified_context.py`
+- **数据结构**: `ContextEntry`（统一上下文条目）、`ContextVersion`（版本书签）、`ContextBridgeSummary`（跨模式桥接摘要）
+- **枚举**: `ContextEntryType`（6种条目类型）、`ContextSourceMode`（5种来源模式）
+- **UnifiedContext**: 单项目上下文容器，滚动窗口(200条)、版本控制(50个)、O(1)条目查找、桥接摘要生成
+- **UnifiedContextStore**: 内存存储管理器，按 project_id 隔离，线程安全
+- **ContextResult**: 标准化响应格式
+- **ProjectContextManager**: 5个标准CRUD操作接口（create/get/update/delete/exists）
+
+#### 修改 `src/feishu/ws_client.py` — 集成统一上下文
+- `__init__`: 新增 `self._context_manager = ProjectContextManager()`
+- `_enter_coco_mode` / `_enter_claude_mode`: 记录模式切换 + 创建版本 + 构建桥接摘要
+- `_exit_coco_mode` / `_exit_claude_mode`: 保存会话快照到统一上下文
+- `_handle_coco_normal/streaming` / `_handle_claude_normal/streaming`: 对话写入统一上下文
+- Shell 命令处理: 写入统一上下文
+- `_switch_project`: 切换前为旧项目创建版本快照
+- Deep Engine `on_project_done`: 写入结果 + 创建版本
+- 新增辅助方法: `_mode_to_context_source()`、`_record_mode_transition()`
+
+#### 修复 `src/project/context.py` — conversation_history 序列化
+- `to_snapshot()`: 新增 `conversation_history` 字段序列化
+- `from_snapshot()`: 新增 `conversation_history` 字段反序列化
+- 修复服务重启后对话历史丢失的问题
+
+#### 新增 `tests/test_unified_context.py` — 114 个测试
+- 覆盖所有数据结构、CRUD、滚动窗口、版本控制、桥接摘要、序列化、线程安全等
+
+#### 测试结果: 416 passed
+
+---
 
 ### 任务调度器 + Deep Engine 多后端 + 卡片 UI 优化（2026-02-01 12:00:00）
 引入全新的线程级任务调度器替换原有 ThreadPoolExecutor，Deep Engine 支持 Coco/Claude 双后端，卡片 UI 按引擎类型区分视觉样式。

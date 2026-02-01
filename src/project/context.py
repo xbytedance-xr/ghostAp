@@ -13,10 +13,6 @@ class ProjectStatus(Enum):
     CLOSED = "closed"
 
 
-THEME_COLORS = ["green", "blue", "purple", "orange", "red", "turquoise"]
-EMOJI_PREFIXES = ["🟢", "🔵", "🟣", "🟠", "🔴", "🩵"]
-
-
 @dataclass
 class ConversationItem:
     role: str
@@ -40,19 +36,16 @@ class Task:
 
 
 @dataclass
-class CocoSessionSnapshot:
+class SessionSnapshot:
     session_id: str
     query_count: int
     last_query: str
     is_resumable: bool = True
 
 
-@dataclass
-class ClaudeSessionSnapshot:
-    session_id: str
-    query_count: int
-    last_query: str
-    is_resumable: bool = True
+# Backward-compatible aliases
+CocoSessionSnapshot = SessionSnapshot
+ClaudeSessionSnapshot = SessionSnapshot
 
 
 @dataclass
@@ -65,10 +58,10 @@ class ProjectContext:
     created_at: float = field(default_factory=time.time)
     last_active: float = field(default_factory=time.time)
 
-    coco_session_snapshot: Optional[CocoSessionSnapshot] = None
+    coco_session_snapshot: Optional[SessionSnapshot] = None
     coco_mode: bool = False
 
-    claude_session_snapshot: Optional[ClaudeSessionSnapshot] = None
+    claude_session_snapshot: Optional[SessionSnapshot] = None
     claude_mode: bool = False
 
     task_queue: list[Task] = field(default_factory=list)
@@ -170,6 +163,15 @@ class ProjectContext:
             "theme_color": self.theme_color,
             "emoji_prefix": self.emoji_prefix,
             "env_vars": self.env_vars,
+            "conversation_history": [
+                {
+                    "role": item.role,
+                    "content": item.content,
+                    "timestamp": item.timestamp,
+                    "message_id": item.message_id,
+                }
+                for item in self.conversation_history
+            ],
         }
 
     @classmethod
@@ -204,4 +206,11 @@ class ProjectContext:
                 last_query=snap["last_query"],
                 is_resumable=snap.get("is_resumable", True),
             )
+        for item_data in data.get("conversation_history", []):
+            ctx.conversation_history.append(ConversationItem(
+                role=item_data["role"],
+                content=item_data["content"],
+                timestamp=item_data.get("timestamp", time.time()),
+                message_id=item_data.get("message_id"),
+            ))
         return ctx

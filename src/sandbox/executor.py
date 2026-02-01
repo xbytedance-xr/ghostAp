@@ -1,9 +1,9 @@
 import subprocess
-import shlex
 import re
 from dataclasses import dataclass
 from typing import Optional
 from ..config import get_settings
+from ..utils.text import truncate_output
 
 
 @dataclass
@@ -89,10 +89,8 @@ class SandboxExecutor:
             stderr = process.stderr
             max_len = self.settings.sandbox_max_output_length
 
-            if len(stdout) > max_len:
-                stdout = stdout[:max_len] + f"\n... (输出被截断，共 {len(process.stdout)} 字符)"
-            if len(stderr) > max_len:
-                stderr = stderr[:max_len] + f"\n... (错误输出被截断，共 {len(process.stderr)} 字符)"
+            stdout = truncate_output(stdout, max_len)
+            stderr = truncate_output(stderr, max_len, label="错误输出被截断")
 
             return ExecutionResult(
                 success=process.returncode == 0,
