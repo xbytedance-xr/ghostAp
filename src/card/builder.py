@@ -79,10 +79,9 @@ class CardBuilder:
     def _build_footer_note(project: Optional[ProjectContext], working_dir: Optional[str] = None) -> Optional[dict]:
         if project:
             return {
-                "tag": "note",
-                "elements": [
-                    {"tag": "plain_text", "content": f"📂 项目目录: {project.root_path}"}
-                ]
+                "tag": "markdown",
+                "content": f"📂 项目目录: `{project.root_path}`",
+                "text_size": "notation",
             }
         return None
 
@@ -137,10 +136,9 @@ class CardBuilder:
 
         if footer:
             elements.append({
-                "tag": "note",
-                "elements": [
-                    {"tag": "plain_text", "content": footer}
-                ]
+                "tag": "markdown",
+                "content": footer,
+                "text_size": "notation",
             })
         else:
             footer_note = CardBuilder._build_footer_note(project, working_dir)
@@ -227,17 +225,14 @@ class CardBuilder:
                     "tag": "markdown",
                     "content": "暂无项目\n\n发送 `/new 项目名 路径` 创建新项目"
                 },
-                {
-                    "tag": "action",
-                    "actions": [
-                        apply_compact_style({
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "➕ 新建项目"},
-                            "type": "primary",
-                            "value": {"action": "new_project_prompt"}
-                        })
-                    ]
-                }
+                *build_responsive_layout([
+                    apply_compact_style({
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "➕ 新建项目"},
+                        "type": "primary",
+                        "value": {"action": "new_project_prompt"}
+                    })
+                ])
             ]
             card = CardBuilder._wrap_card("📋 项目看板", "blue", empty_elements)
             return "interactive", json.dumps(card, ensure_ascii=False)

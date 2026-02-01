@@ -59,31 +59,18 @@ class TestCardBuilder:
         elements = card["body"]["elements"]
         assert any("Test Title" in str(e) for e in elements)
         assert any("Test content here" in str(e) for e in elements)
-        # 响应式布局：默认 <=2 个按钮用 action（更贴近桌面端），更多按钮用 column_set
-        action_elements = [e for e in elements if e.get("tag") == "action"]
+        # Schema 2.0: 按钮统一使用 column_set 布局
         column_set_elements = [e for e in elements if e.get("tag") == "column_set"]
-        assert len(action_elements) + len(column_set_elements) >= 1
-
-        if action_elements:
-            actions = action_elements[-1].get("actions", [])
-            assert len(actions) >= 1
-            for btn in actions:
-                assert btn.get("tag") == "button"
+        assert len(column_set_elements) >= 1
+        columns = column_set_elements[0]["columns"]
+        assert len(columns) >= 1
+        for col in columns:
+            if col["elements"]:
+                btn = col["elements"][0]
                 assert "behaviors" in btn
                 assert btn["behaviors"][0]["type"] == "callback"
                 assert isinstance(btn["behaviors"][0]["value"], dict)
                 assert btn.get("size") == "small"
-        else:
-            assert len(column_set_elements) >= 1
-            columns = column_set_elements[0]["columns"]
-            assert len(columns) == 2
-            for col in columns:
-                if col["elements"]:
-                    btn = col["elements"][0]
-                    assert "behaviors" in btn
-                    assert btn["behaviors"][0]["type"] == "callback"
-                    assert isinstance(btn["behaviors"][0]["value"], dict)
-                    assert btn.get("size") == "small"
 
     def test_build_project_response_card_mobile_layout_forces_grid(self, sample_project):
         # 强制 mobile 布局：<=2 个按钮也应使用 column_set（避免小屏自动换行堆叠）
@@ -158,8 +145,8 @@ class TestCardBuilder:
         )
         
         card = json.loads(content)
-        action_elements = [e for e in card["body"]["elements"] if e.get("tag") == "action"]
-        assert len(action_elements) == 0
+        column_set_elements = [e for e in card["body"]["elements"] if e.get("tag") == "column_set"]
+        assert len(column_set_elements) == 0
 
     def test_build_status_board_card_empty(self):
         msg_type, content = CardBuilder.build_status_board_card([], None)

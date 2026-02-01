@@ -134,10 +134,13 @@ def resolve_title_and_template(
 # ---- Internal helpers ----
 
 def _build_button_row_action(buttons: list[dict]) -> list[dict]:
+    """Build button row using column_set (schema 2.0 compatible).
+
+    Schema 2.0 does not support the 'action' tag; use column_set grid instead.
+    """
     if not buttons:
         return []
-    styled = [apply_compact_style(b) for b in buttons]
-    return [{"tag": "action", "actions": styled}]
+    return _build_button_grid(buttons, columns=len(buttons))
 
 
 def _build_button_grid(buttons: list[dict], columns: int = 2) -> list[dict]:
