@@ -398,7 +398,6 @@ class StreamingCardManager:
                 .message_id(card.message_id)
                 .request_body(
                     UpdateMessageRequestBody.builder()
-                    .msg_type("interactive")
                     .content(json.dumps(card_json, ensure_ascii=False))
                     .build()
                 )
@@ -442,7 +441,6 @@ class StreamingCardManager:
                 .message_id(card.message_id)
                 .request_body(
                     UpdateMessageRequestBody.builder()
-                    .msg_type("interactive")
                     .content(json.dumps(card_json, ensure_ascii=False))
                     .build()
                 )
