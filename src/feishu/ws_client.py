@@ -6,7 +6,6 @@ from lark_oapi.api.im.v1 import *
 from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTrigger, P2CardActionTriggerResponse
 from typing import Callable, Optional, Any
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from ..config import get_settings
 from ..coco.session import CocoSessionManager
 from ..claude.session import ClaudeSessionManager
@@ -16,6 +15,7 @@ from ..card import CardBuilder
 from ..card.streaming import StreamingCardManager
 from ..deep_engine import DeepEngine, DeepEngineManager, DeepEngineCallbacks, ProgressReporter
 from ..deep_engine.models import DeepProject, DeepProjectStatus, DeepTask, ExecutionResult
+from ..tasking import TaskScheduler, TaskSpec, TaskPriority
 from .message_formatter import FeishuMessageFormatter as fmt
 from .emoji import EmojiType, EmojiReaction
 from .message_cache import MessageCache
@@ -34,7 +34,11 @@ class FeishuWSClient:
         self._claude_manager = ClaudeSessionManager()
         self._intent_recognizer = IntentRecognizer()
         self._message_cache = MessageCache(ttl=300, max_size=1000, cleanup_interval=60)
-        self._executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="ghost_worker")
+        self._scheduler = TaskScheduler(
+            max_concurrent=self.settings.task_scheduler_max_concurrent,
+            per_chat_concurrency=self.settings.task_scheduler_per_key_concurrency,
+            thread_name_prefix="ghost_worker",
+        )
         self._working_dirs: dict[str, str] = {}
 
         self._project_manager = ProjectManager()
@@ -50,6 +54,23 @@ class FeishuWSClient:
         
         self._deep_engine_manager = DeepEngineManager()
         self._progress_reporter = ProgressReporter()
+
+    def close(self):
+        """Best-effort cleanup for background resources."""
+        try:
+            self._message_cache.stop_cleanup_thread()
+        except Exception:
+            pass
+
+        try:
+            self._deep_engine_manager.cleanup_all()
+        except Exception:
+            pass
+
+        try:
+            self._scheduler.stop(wait=True, shutdown_executor=True)
+        except Exception:
+            pass
 
     def _is_message_expired(self, create_time: int) -> bool:
         if not create_time:
@@ -140,7 +161,24 @@ class FeishuWSClient:
         self._message_mapper.register(message_id, project.project_id)
 
     def _handle_message(self, data: P2ImMessageReceiveV1):
-        self._executor.submit(self._process_message_async, data)
+        try:
+            msg = data.event.message
+            message_id = msg.message_id
+            chat_id = msg.chat_id
+        except Exception:
+            # Fallback: schedule without ids
+            message_id = None
+            chat_id = "unknown"
+
+        spec = TaskSpec(
+            chat_id=chat_id,
+            queue_key=chat_id,
+            name="process_message",
+            task_type="feishu_message",
+            message_id=message_id,
+            priority=TaskPriority.NORMAL,
+        )
+        self._scheduler.submit(spec, lambda ctx: self._process_message_async(data))
 
     def _process_message_async(self, data: P2ImMessageReceiveV1):
         try:
@@ -411,7 +449,22 @@ class FeishuWSClient:
             )
         except Exception as e:
             print(f"卡片回调基础信息解析失败: {e}")
-        self._executor.submit(self._process_card_action_async, data)
+        try:
+            open_message_id = data.event.context.open_message_id
+            open_chat_id = data.event.context.open_chat_id
+        except Exception:
+            open_message_id = None
+            open_chat_id = "unknown"
+
+        spec = TaskSpec(
+            chat_id=open_chat_id,
+            queue_key=open_chat_id,
+            name="process_card_action",
+            task_type="feishu_card_action",
+            message_id=open_message_id,
+            priority=TaskPriority.NORMAL,
+        )
+        self._scheduler.submit(spec, lambda ctx: self._process_card_action_async(data))
         return None
 
     def _process_card_action_async(self, data: Any):
@@ -1661,6 +1714,14 @@ class FeishuWSClient:
     def _handle_message_read(self, data):
         pass
 
+    def _get_engine_name(self, chat_id: str) -> str:
+        """根据当前交互模式返回对应的 engine 名称。"""
+        from ..mode import InteractionMode
+        current_mode = self._mode_manager.get_mode(chat_id)
+        if current_mode == InteractionMode.CLAUDE:
+            return "Claude"
+        return "Coco"
+
     def _start_deep_engine(self, message_id: str, chat_id: str, requirement: str, project: Optional[ProjectContext] = None):
         if not project:
             working_dir = self._get_working_dir(chat_id)
@@ -1681,22 +1742,24 @@ class FeishuWSClient:
 
         self._add_reaction(message_id, EmojiReaction.on_multi_task_start())
 
+        engine_name = self._get_engine_name(chat_id)
+
         planning_content = self._progress_reporter.format_planning_start(requirement)
         planning_title = self._progress_reporter.get_planning_start_title()
         msg_type, card_content = CardBuilder.build_deep_card(
             project=project,
             title=planning_title,
             content=planning_content,
-            engine_name="Coco",
+            engine_name=engine_name,
             show_buttons=False,
         )
         self._reply_message(message_id, card_content, msg_type=msg_type)
 
-        engine = self._deep_engine_manager.get_or_create(chat_id, root_path)
+        engine = self._deep_engine_manager.get_or_create(chat_id, root_path, engine_name=engine_name)
 
         def run_deep_engine():
             try:
-                callbacks = self._create_deep_callbacks(message_id, chat_id, project)
+                callbacks = self._create_deep_callbacks(message_id, chat_id, project, engine_name)
                 engine.plan_and_execute(requirement, callbacks)
             except Exception as e:
                 print(f"Deep Engine 执行异常: {e}")
@@ -1708,15 +1771,24 @@ class FeishuWSClient:
                     project=project,
                     title=error_title,
                     content=error_content,
-                    engine_name="Coco",
+                    engine_name=engine_name,
                     show_buttons=False,
                 )
                 self.send_message(chat_id, err_card, err_msg_type)
 
-        self._executor.submit(run_deep_engine)
+        # Deep 任务属于长耗时后台任务：使用独立 queue_key，避免阻塞同 chat 的控制指令
+        spec = TaskSpec(
+            chat_id=chat_id,
+            queue_key=f"{chat_id}:deep",
+            name="deep_engine_run",
+            task_type="deep_engine",
+            project_id=project.project_id if project else None,
+            message_id=message_id,
+            priority=TaskPriority.NORMAL,
+        )
+        self._scheduler.submit(spec, lambda ctx: run_deep_engine())
 
-    def _create_deep_callbacks(self, message_id: str, chat_id: str, project: Optional[ProjectContext]) -> DeepEngineCallbacks:
-        engine_name = "Coco"
+    def _create_deep_callbacks(self, message_id: str, chat_id: str, project: Optional[ProjectContext], engine_name: str = "Coco") -> DeepEngineCallbacks:
 
         def on_planning_done(deep_project: DeepProject):
             content = self._progress_reporter.format_planning_done(deep_project)
@@ -1814,16 +1886,18 @@ class FeishuWSClient:
             if active_engine and active_engine.project:
                 engine = active_engine
             else:
+                engine_name = self._get_engine_name(chat_id)
                 msg_type, card_content = CardBuilder.build_deep_card(
                     project=project,
                     title="📊 当前状态",
                     content="当前没有 Deep Engine 任务\n\n发送 `/deep 你的需求` 开始一个复杂任务",
-                    engine_name="Coco",
+                    engine_name=engine_name,
                     show_buttons=False,
                 )
                 self._reply_message(message_id, card_content, msg_type=msg_type)
                 return
 
+        engine_name = engine.engine_name
         status_content = self._progress_reporter.format_status(engine.project)
         status_title = self._progress_reporter.get_status_title()
         progress_info = self._progress_reporter.get_progress_info(engine.project)
@@ -1835,7 +1909,7 @@ class FeishuWSClient:
             deep_project_id=progress_info["project_id"],
             is_executing=progress_info["is_executing"],
             is_paused=progress_info["is_paused"],
-            engine_name="Coco",
+            engine_name=engine_name,
         )
         self._reply_message(message_id, card_content, msg_type=msg_type)
 
@@ -1863,7 +1937,16 @@ class FeishuWSClient:
             callbacks = self._create_deep_callbacks(message_id, chat_id, project)
             def run_resume():
                 engine.resume(callbacks)
-            self._executor.submit(run_resume)
+            spec = TaskSpec(
+                chat_id=chat_id,
+                queue_key=f"{chat_id}:deep",
+                name="deep_engine_resume",
+                task_type="deep_engine",
+                project_id=project.project_id if project else None,
+                message_id=message_id,
+                priority=TaskPriority.HIGH,
+            )
+            self._scheduler.submit(spec, lambda ctx: run_resume())
             self._reply_message(message_id, "▶️ Deep Engine 已恢复执行")
         else:
             self._reply_message(message_id, "当前没有可恢复的任务")

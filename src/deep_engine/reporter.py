@@ -44,10 +44,7 @@ class ProgressReporter:
         return "\n".join(lines)
 
     def format_task_start(self, task: DeepTask, current: int, total: int) -> str:
-        progress_bar = self._make_progress_bar(current - 1, total)
         return f"""🔄 **执行任务 [{current}/{total}]**
-
-{progress_bar}
 
 📌 **{task.title}**
 {task.description}
@@ -63,13 +60,9 @@ class ProgressReporter:
 ```"""
 
     def format_task_done(self, task: DeepTask, result: ExecutionResult, current: int, total: int) -> str:
-        progress_bar = self._make_progress_bar(current, total)
-
         if result.success:
             output_preview = result.output[-800:] if len(result.output) > 800 else result.output
             return f"""✅ **任务完成 [{current}/{total}]**
-
-{progress_bar}
 
 📌 **{task.title}**
 ⏱️ 耗时: {result.duration:.1f}s
@@ -82,8 +75,6 @@ class ProgressReporter:
             error_preview = result.error[:300] if result.error else "未知错误"
             return f"""❌ **任务失败 [{current}/{total}]**
 
-{progress_bar}
-
 📌 **{task.title}**
 ⏱️ 耗时: {result.duration:.1f}s
 
@@ -93,13 +84,9 @@ class ProgressReporter:
 ```"""
 
     def format_project_done(self, project: DeepProject) -> str:
-        progress_bar = self._make_progress_bar(project.completed_count, project.total_count)
-
         if project.status == DeepProjectStatus.COMPLETED:
             lines = [
                 f"🎉 **全部任务完成！**\n",
-                progress_bar,
-                "",
                 f"📂 项目: {project.name}",
                 f"⏱️ 总耗时: {project.duration():.1f}s" if project.duration() else "",
                 "",
@@ -108,8 +95,6 @@ class ProgressReporter:
         elif project.status == DeepProjectStatus.FAILED:
             lines = [
                 f"⚠️ **执行完成（有失败）**\n",
-                progress_bar,
-                "",
                 f"📂 项目: {project.name}",
                 f"⏱️ 总耗时: {project.duration():.1f}s" if project.duration() else "",
                 f"❌ 失败任务: {project.failed_count} 个",
@@ -119,8 +104,6 @@ class ProgressReporter:
         else:
             lines = [
                 f"⏸️ **执行已暂停**\n",
-                progress_bar,
-                "",
                 f"📂 项目: {project.name}",
                 f"✅ 已完成: {project.completed_count}/{project.total_count}",
                 "",
@@ -145,7 +128,6 @@ class ProgressReporter:
 
     def format_status(self, project: DeepProject) -> str:
         progress = project.get_progress_update("")
-        progress_bar = self._make_progress_bar(project.completed_count, project.total_count)
 
         status_text = {
             DeepProjectStatus.IDLE: "⏳ 等待开始",
@@ -158,8 +140,6 @@ class ProgressReporter:
 
         lines = [
             f"📊 **{project.name}** 状态\n",
-            progress_bar,
-            "",
             f"状态: {status_text}",
             f"进度: {project.completed_count}/{project.total_count}",
         ]

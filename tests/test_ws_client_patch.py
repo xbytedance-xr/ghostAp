@@ -20,14 +20,17 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings = MagicMock()
             mock_settings.app_id = "test_app_id"
             mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
             mock_get_settings.return_value = mock_settings
             
             # 实例化 client
             mock_callback = MagicMock()
             client = FeishuWSClient(mock_callback)
             
-            # Mock executor to avoid running async task
-            client._executor = MagicMock()
+            # Mock scheduler to avoid running async task
+            client._scheduler = MagicMock()
 
             # 调用 handler
             result = client._handle_card_action(MagicMock())
@@ -36,7 +39,7 @@ class TestCardActionHandler(unittest.TestCase):
             self.assertIsNone(result)
             
             # 验证异步任务被提交
-            client._executor.submit.assert_called_once()
+            client._scheduler.submit.assert_called_once()
 
     def test_process_card_action_parses_string_value(self):
         """验证字符串 value 被解析后触发对应处理"""
@@ -53,6 +56,9 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings = MagicMock()
             mock_settings.app_id = "test_app_id"
             mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
             mock_get_settings.return_value = mock_settings
 
             client = FeishuWSClient(MagicMock())
@@ -89,6 +95,9 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings = MagicMock()
             mock_settings.app_id = "test_app_id"
             mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
             mock_get_settings.return_value = mock_settings
 
             client = FeishuWSClient(MagicMock())

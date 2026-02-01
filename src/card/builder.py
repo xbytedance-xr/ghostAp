@@ -768,6 +768,21 @@ class CardBuilder:
         return f"🧠 Deep Engine ({engine_name})"
 
     @staticmethod
+    def _pick_engine_template(engine_name: str) -> str:
+        """为 Deep/对话模式选择更直观的头部颜色。
+
+        - Coco: blue
+        - Claude: purple
+        - 默认: turquoise
+        """
+        name = (engine_name or "").strip().lower()
+        if name.startswith("claude"):
+            return "purple"
+        if name.startswith("coco"):
+            return "blue"
+        return "turquoise"
+
+    @staticmethod
     def _build_deep_buttons(
         deep_project_id: Optional[str] = None,
         is_executing: bool = False,
@@ -800,7 +815,7 @@ class CardBuilder:
                 "type": "danger",
                 "behaviors": [{"type": "callback", "value": {"action": "deep_stop", "project_id": deep_project_id}}]
             })
-        return buttons
+        return [CardBuilder._apply_compact_button_style(b) for b in buttons]
 
     @staticmethod
     def build_deep_card(
@@ -815,7 +830,9 @@ class CardBuilder:
         show_buttons: bool = True,
         working_dir: Optional[str] = None,
     ) -> tuple[str, str]:
-        theme = get_theme(project.theme_color if project else "turquoise")
+        # Deep 卡片更强调“引擎视角”：Coco/Claude 用不同颜色区分，减少用户认知成本
+        header_template = CardBuilder._pick_engine_template(engine_name)
+        theme = get_theme(header_template)
 
         header_title = CardBuilder._build_deep_header_title(project, engine_name)
 
@@ -824,11 +841,9 @@ class CardBuilder:
             {"tag": "hr"},
         ]
 
-        if progress_bar:
-            elements.append({
-                "tag": "div",
-                "text": {"tag": "lark_md", "content": f"📊 {progress_bar}"}
-            })
+        # 避免重复：如果正文里已经包含相同进度条文本，则不再单独渲染一次
+        if progress_bar and (not content or progress_bar not in content):
+            elements.append({"tag": "markdown", "content": f"📊 {progress_bar}"})
 
         elements.append(CardBuilder._build_content_element(content, title))
 
@@ -840,25 +855,8 @@ class CardBuilder:
 
             if buttons:
                 elements.append({"tag": "hr"})
-                elements.append({
-                    "tag": "column_set",
-                    "flex_mode": "stretch",
-                    "background_style": "default",
-                    "columns": [
-                        {
-                            "tag": "column",
-                            "width": "weighted",
-                            "weight": 1,
-                            "elements": [buttons[0]] if buttons else []
-                        },
-                        {
-                            "tag": "column",
-                            "width": "weighted",
-                            "weight": 1,
-                            "elements": [buttons[1]] if len(buttons) > 1 else []
-                        }
-                    ]
-                })
+                # 统一使用响应式按钮布局（桌面 action / 手机两列）
+                elements.extend(CardBuilder._build_buttons_responsive(buttons))
 
         card = {
             "config": {"wide_screen_mode": True},

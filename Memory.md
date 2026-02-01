@@ -4,7 +4,70 @@
 GhostAP 是一个飞书机器人Shell沙箱服务，通过飞书机器人对话来安全执行本地shell命令，并支持 Coco AI 和 Claude AI 远程开发模式。
 
 ## 最新更新
-**更新时间**: 2026-01-29 21:00:00
+**更新时间**: 2026-02-01 12:00:00
+
+### 任务调度器 + Deep Engine 多后端 + 卡片 UI 优化（2026-02-01 12:00:00）
+引入全新的线程级任务调度器替换原有 ThreadPoolExecutor，Deep Engine 支持 Coco/Claude 双后端，卡片 UI 按引擎类型区分视觉样式。
+
+#### 新增 `src/tasking/` 模块 — TaskScheduler
+- **TaskScheduler**: 轻量线程级调度器，替换 `ThreadPoolExecutor`
+  - per-chat 有序执行（`per_chat_concurrency` 默认 1，同一 chat 消息串行处理）
+  - 全局并发限制（`max_concurrent` 默认 10）
+  - 支持 `queue_key` 路由：长耗时任务（如 Deep Engine）使用独立队列，不阻塞同 chat 的控制指令
+  - 任务优先级（HIGH / NORMAL / LOW），HIGH 任务插队到队列头部
+  - `CancellationToken` 协作式取消 + `TaskCanceledError`
+  - `TaskContext.progress()` 进度上报
+  - `TaskHandle` 支持 cancel / wait / get_state
+  - 事件监听器 `add_listener(callback)` 用于外部扩展
+- **数据模型**: `TaskSpec`、`TaskResult`、`TaskEvent`、`TaskHandle`、`TaskRunState`
+- **配置项**: `task_scheduler_max_concurrent`、`task_scheduler_per_key_concurrency`（`config.py`）
+
+#### Deep Engine 支持 Claude 后端
+- `DeepEngine` 新增 `engine_name` 参数，`_coco_session` 泛化为 `_ai_session`（`Union[CocoSession, ClaudeSession]`）
+- `TaskExecutor` 的 `coco_session` 泛化为 `session: AISession`
+- `DeepEngineManager` 维护 `_coco_session_manager` 和 `_claude_session_manager` 两个实例
+  - `get_or_create()` 根据 `engine_name` 自动选择后端
+  - 已有 engine 切换后端时自动清理重建（非运行中时）
+- `ws_client.py` 新增 `_get_engine_name()` 根据当前交互模式返回 "Coco" 或 "Claude"
+- Deep Engine 启动/恢复/状态查询全部传递正确的 engine_name
+
+#### ws_client.py 调度迁移
+- `_handle_message` 和 `_handle_card_action` 改用 `TaskScheduler.submit(TaskSpec, fn)` 调度
+- Deep Engine 任务使用 `queue_key=f"{chat_id}:deep"`，避免阻塞同 chat 的普通消息处理
+- Deep Engine 恢复任务使用 `TaskPriority.HIGH` 优先调度
+- 新增 `close()` 方法：停止 MessageCache 清理线程 + DeepEngineManager 清理 + TaskScheduler 停止
+- `main.py` 的 `Application.run()` 新增 `finally` 块调用 `feishu_client.close()` 做优雅退出
+
+#### 卡片 UI 优化
+- **Deep 卡片头部颜色按引擎区分**: Coco → blue、Claude → purple、默认 → turquoise（`_pick_engine_template()`）
+- **流式卡片头部同步适配**: Coco=blue、Claude=purple
+- **移除重复进度条**: `reporter.py` 不再在正文内嵌 progress_bar；`builder.py` 去重检测，正文已含进度条时不再额外渲染
+- **按钮布局统一**: Deep 卡片按钮改用 `_build_buttons_responsive()` 响应式布局
+- **流式卡片按钮布局**: 新增 `_build_button_elements()` 支持 desktop / mobile / responsive 三种策略，由 `card_button_layout` 配置控制
+- **按钮样式**: Deep 卡片按钮统一应用 `_apply_compact_button_style`
+- **流式卡片**: 新增 `wide_screen_mode: True` 配置
+
+#### 改动文件
+- 新增 `src/tasking/__init__.py` — 模块导出
+- 新增 `src/tasking/scheduler.py` — TaskScheduler 实现（~450 行）
+- 修改 `src/config.py` — 新增调度器配置项
+- 修改 `src/main.py` — 优雅退出
+- 修改 `src/feishu/ws_client.py` — 调度迁移 + close() + engine_name 传递
+- 修改 `src/deep_engine/engine.py` — 多后端支持
+- 修改 `src/deep_engine/executor.py` — AISession 泛化
+- 修改 `src/deep_engine/reporter.py` — 移除内嵌进度条
+- 修改 `src/card/builder.py` — 引擎颜色区分 + 按钮布局 + 进度条去重
+- 修改 `src/card/streaming.py` — 头部颜色 + 按钮布局策略
+- 新增 `tests/test_task_scheduler.py` — 调度器单元测试（90 行）
+- 新增 `tests/test_task_scheduler_stability.py` — 调度器稳定性测试（195 行）
+- 修改 `tests/test_card.py` — 新增进度条去重、布局、引擎颜色测试
+- 修改 `tests/test_streaming.py` — 适配 get_settings mock、新增 Claude/mobile 布局测试
+- 修改 `tests/test_ws_client_patch.py` — 适配 TaskScheduler mock + 新增配置项
+
+#### 测试
+- 总测试数 302 个（收集成功）
+
+---
 
 ### Claude 编程模式全面修复（2026-01-29 21:00:00）
 修复 Claude 编程模式无法使用的问题（报错 `Invalid session ID. Must be a valid UUID`），并全面适配卡片按钮、项目管理和会话快照。

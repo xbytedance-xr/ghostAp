@@ -1,0 +1,450 @@
+import time
+import uuid
+import threading
+from collections import defaultdict, deque
+from dataclasses import dataclass, field
+from enum import Enum, IntEnum
+from typing import Any, Callable, Deque, Optional
+
+from concurrent.futures import Future, ThreadPoolExecutor
+
+
+class TaskStatus(str, Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELED = "canceled"
+
+
+class TaskPriority(IntEnum):
+    HIGH = 0
+    NORMAL = 10
+    LOW = 20
+
+
+@dataclass(frozen=True)
+class TaskSpec:
+    """Metadata that influences routing and scheduling."""
+
+    chat_id: str
+    name: str
+    task_type: str = "generic"
+    # Queue routing key. If not provided, defaults to chat_id.
+    # Use this to allow control-plane tasks (cancel/stop/status) to bypass
+    # long-running data-plane tasks while still attributing events to chat_id.
+    queue_key: Optional[str] = None
+    project_id: Optional[str] = None
+    message_id: Optional[str] = None
+    priority: TaskPriority = TaskPriority.NORMAL
+
+
+@dataclass
+class TaskResult:
+    run_id: str
+    status: TaskStatus
+    value: Any = None
+    error: Optional[str] = None
+    started_at: Optional[float] = None
+    ended_at: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class TaskEvent:
+    run_id: str
+    chat_id: str
+    status: TaskStatus
+    timestamp: float
+    name: str
+    task_type: str
+    project_id: Optional[str] = None
+    message_id: Optional[str] = None
+    progress_message: Optional[str] = None
+    progress_percent: Optional[float] = None
+    error: Optional[str] = None
+
+
+class CancellationToken:
+    def __init__(self):
+        self._evt = threading.Event()
+
+    def cancel(self):
+        self._evt.set()
+
+    @property
+    def is_canceled(self) -> bool:
+        return self._evt.is_set()
+
+    def raise_if_canceled(self):
+        if self.is_canceled:
+            raise TaskCanceledError("task canceled")
+
+
+class TaskCanceledError(RuntimeError):
+    pass
+
+
+@dataclass
+class TaskRunState:
+    spec: TaskSpec
+    run_id: str
+    status: TaskStatus = TaskStatus.QUEUED
+    created_at: float = field(default_factory=time.time)
+    started_at: Optional[float] = None
+    ended_at: Optional[float] = None
+    progress_message: Optional[str] = None
+    progress_percent: Optional[float] = None
+    error: Optional[str] = None
+    cancellation: CancellationToken = field(default_factory=CancellationToken)
+    future: Optional[Future] = None
+
+
+class TaskContext:
+    """Context passed to the running task function."""
+
+    def __init__(self, scheduler: "TaskScheduler", run_id: str, token: CancellationToken):
+        self._scheduler = scheduler
+        self.run_id = run_id
+        self.cancel_token = token
+
+    def progress(self, message: str, percent: Optional[float] = None):
+        self._scheduler.update_progress(self.run_id, message=message, percent=percent)
+
+    def check_canceled(self):
+        self.cancel_token.raise_if_canceled()
+
+
+@dataclass
+class _QueuedTask:
+    run_id: str
+    spec: TaskSpec
+    fn: Callable[[TaskContext], Any]
+
+
+class TaskHandle:
+    def __init__(self, scheduler: "TaskScheduler", run_id: str):
+        self._scheduler = scheduler
+        self.run_id = run_id
+
+    def cancel(self) -> bool:
+        return self._scheduler.cancel(self.run_id)
+
+    def wait(self, timeout: Optional[float] = None) -> TaskResult:
+        return self._scheduler.wait(self.run_id, timeout=timeout)
+
+    def get_state(self) -> TaskRunState:
+        state = self._scheduler.get_state(self.run_id)
+        if not state:
+            raise KeyError(f"unknown run_id: {self.run_id}")
+        return state
+
+
+class TaskScheduler:
+    """A lightweight scheduler that provides:
+    - per-chat ordered execution (default per_chat_concurrency=1)
+    - global concurrency limit (max_concurrent)
+    - task status tracking and progress updates
+
+    It is intentionally thread-based to match the current codebase.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_concurrent: int = 10,
+        per_chat_concurrency: int = 1,
+        worker_executor: Optional[ThreadPoolExecutor] = None,
+        thread_name_prefix: str = "task_worker",
+    ):
+        if max_concurrent <= 0:
+            raise ValueError("max_concurrent must be > 0")
+        if per_chat_concurrency <= 0:
+            raise ValueError("per_chat_concurrency must be > 0")
+
+        self._max_concurrent = max_concurrent
+        self._per_chat = per_chat_concurrency
+
+        self._executor = worker_executor or ThreadPoolExecutor(
+            max_workers=max_concurrent,
+            thread_name_prefix=thread_name_prefix,
+        )
+
+        self._lock = threading.Lock()
+        self._cv = threading.Condition(self._lock)
+        self._queues: dict[str, Deque[_QueuedTask]] = defaultdict(deque)  # queue_key -> queue
+        self._running_by_key: dict[str, int] = defaultdict(int)
+        self._running_total = 0
+        self._states: dict[str, TaskRunState] = {}
+        self._listeners: list[Callable[[TaskEvent], None]] = []
+        self._stopped = False
+        self._dispatcher = threading.Thread(
+            target=self._dispatch_loop,
+            name="task_scheduler_dispatcher",
+            daemon=True,
+        )
+        self._dispatcher.start()
+
+    def add_listener(self, listener: Callable[[TaskEvent], None]):
+        with self._lock:
+            self._listeners.append(listener)
+
+    def submit(self, spec: TaskSpec, fn: Callable[[TaskContext], Any]) -> TaskHandle:
+        run_id = str(uuid.uuid4())[:10]
+        state = TaskRunState(spec=spec, run_id=run_id)
+
+        with self._cv:
+            if self._stopped:
+                raise RuntimeError("TaskScheduler is stopped")
+            self._states[run_id] = state
+            key = spec.queue_key or spec.chat_id
+            q = self._queues[key]
+            item = _QueuedTask(run_id=run_id, spec=spec, fn=fn)
+
+            # priority insertion: keep stable order within same priority
+            if spec.priority == TaskPriority.HIGH:
+                q.appendleft(item)
+            else:
+                q.append(item)
+
+            self._emit(run_id, TaskStatus.QUEUED)
+            self._cv.notify_all()
+
+        return TaskHandle(self, run_id)
+
+    def cancel(self, run_id: str) -> bool:
+        with self._cv:
+            state = self._states.get(run_id)
+            if not state:
+                return False
+            if state.status in (TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED):
+                return False
+
+            # cooperative cancellation for running tasks
+            state.cancellation.cancel()
+
+            # if queued, mark canceled immediately and remove from queue
+            if state.status == TaskStatus.QUEUED:
+                self._remove_from_queue_unlocked(run_id, state.spec.queue_key or state.spec.chat_id)
+                state.status = TaskStatus.CANCELED
+                state.ended_at = time.time()
+                self._emit(run_id, TaskStatus.CANCELED)
+                self._cv.notify_all()
+                return True
+
+            # RUNNING: keep status until wrapper finishes and turns into CANCELED
+            self._cv.notify_all()
+            return True
+
+    def update_progress(self, run_id: str, *, message: str, percent: Optional[float] = None):
+        with self._lock:
+            state = self._states.get(run_id)
+            if not state:
+                return
+            if state.status != TaskStatus.RUNNING:
+                return
+            state.progress_message = message
+            if percent is not None:
+                # clamp into [0, 100]
+                state.progress_percent = max(0.0, min(100.0, float(percent)))
+            self._emit(run_id, state.status, progress_message=message, progress_percent=state.progress_percent)
+
+    def get_state(self, run_id: str) -> Optional[TaskRunState]:
+        with self._lock:
+            return self._states.get(run_id)
+
+    def wait(self, run_id: str, timeout: Optional[float] = None) -> TaskResult:
+        deadline = None if timeout is None else (time.time() + timeout)
+
+        with self._cv:
+            st = self._states.get(run_id)
+            if not st:
+                raise KeyError(f"unknown run_id: {run_id}")
+
+            while st.status not in (TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED):
+                remaining = None if deadline is None else max(0.0, deadline - time.time())
+                if remaining is not None and remaining <= 0:
+                    raise TimeoutError("wait timeout")
+                self._cv.wait(timeout=remaining)
+                st = self._states.get(run_id)
+                if not st:
+                    raise KeyError(f"unknown run_id: {run_id}")
+
+            # terminal
+            value = None
+            if st.future and st.status == TaskStatus.SUCCEEDED:
+                try:
+                    # future should already be done; keep it best-effort
+                    value = st.future.result(timeout=0)
+                except Exception:
+                    value = None
+
+            return TaskResult(
+                run_id=run_id,
+                status=st.status,
+                value=value,
+                error=st.error,
+                started_at=st.started_at,
+                ended_at=st.ended_at,
+            )
+
+    def stop(self, *, wait: bool = False, shutdown_executor: bool = False):
+        with self._cv:
+            self._stopped = True
+            self._cv.notify_all()
+        if wait:
+            self._dispatcher.join(timeout=2)
+        if shutdown_executor:
+            try:
+                self._executor.shutdown(wait=False, cancel_futures=False)
+            except Exception:
+                pass
+
+    # ------------------------ internal ------------------------
+
+    def _dispatch_loop(self):
+        while True:
+            with self._cv:
+                if self._stopped:
+                    return
+
+                task = self._pick_next_task_unlocked()
+                if not task:
+                    self._cv.wait(timeout=0.2)
+                    continue
+
+                # reserve slots
+                self._running_total += 1
+                key = task.spec.queue_key or task.spec.chat_id
+                self._running_by_key[key] += 1
+                state = self._states.get(task.run_id)
+                if state:
+                    state.status = TaskStatus.RUNNING
+                    state.started_at = time.time()
+                    self._emit(task.run_id, TaskStatus.RUNNING)
+                self._cv.notify_all()
+
+                # dispatch to pool
+                fut = self._executor.submit(self._run_wrapper, task)
+                if state:
+                    state.future = fut
+
+            # loop continues
+
+    def _pick_next_task_unlocked(self) -> Optional[_QueuedTask]:
+        if self._running_total >= self._max_concurrent:
+            return None
+
+        # Find any key that has capacity and queued tasks.
+        for key, q in list(self._queues.items()):
+            if not q:
+                continue
+            if self._running_by_key.get(key, 0) >= self._per_chat:
+                continue
+
+            # skip canceled tasks in head
+            while q:
+                item = q[0]
+                st = self._states.get(item.run_id)
+                if st and st.cancellation.is_canceled:
+                    q.popleft()
+                    st.status = TaskStatus.CANCELED
+                    st.ended_at = time.time()
+                    self._emit(item.run_id, TaskStatus.CANCELED)
+                    continue
+                break
+
+            if not q:
+                continue
+            return q.popleft()
+
+        return None
+
+    def _run_wrapper(self, task: _QueuedTask):
+        run_id = task.run_id
+        spec = task.spec
+        state = self.get_state(run_id)
+        token = state.cancellation if state else CancellationToken()
+        ctx = TaskContext(self, run_id=run_id, token=token)
+
+        try:
+            token.raise_if_canceled()
+            value = task.fn(ctx)
+            token.raise_if_canceled()
+
+            with self._cv:
+                st = self._states.get(run_id)
+                if st:
+                    st.status = TaskStatus.SUCCEEDED
+                    st.ended_at = time.time()
+                    self._emit(run_id, TaskStatus.SUCCEEDED)
+                self._cv.notify_all()
+                return value
+
+        except TaskCanceledError:
+            with self._cv:
+                st = self._states.get(run_id)
+                if st:
+                    st.status = TaskStatus.CANCELED
+                    st.ended_at = time.time()
+                    self._emit(run_id, TaskStatus.CANCELED)
+                self._cv.notify_all()
+            return None
+
+        except Exception as e:
+            with self._cv:
+                st = self._states.get(run_id)
+                if st:
+                    st.status = TaskStatus.FAILED
+                    st.error = str(e)
+                    st.ended_at = time.time()
+                    self._emit(run_id, TaskStatus.FAILED, error=str(e))
+                self._cv.notify_all()
+            raise
+
+        finally:
+            with self._cv:
+                self._running_total = max(0, self._running_total - 1)
+                key = spec.queue_key or spec.chat_id
+                self._running_by_key[key] = max(0, self._running_by_key[key] - 1)
+                self._cv.notify_all()
+
+    def _emit(
+        self,
+        run_id: str,
+        status: TaskStatus,
+        *,
+        progress_message: Optional[str] = None,
+        progress_percent: Optional[float] = None,
+        error: Optional[str] = None,
+    ):
+        st = self._states.get(run_id)
+        if not st:
+            return
+        ev = TaskEvent(
+            run_id=run_id,
+            chat_id=st.spec.chat_id,
+            status=status,
+            timestamp=time.time(),
+            name=st.spec.name,
+            task_type=st.spec.task_type,
+            project_id=st.spec.project_id,
+            message_id=st.spec.message_id,
+            progress_message=progress_message,
+            progress_percent=progress_percent,
+            error=error,
+        )
+        for listener in list(self._listeners):
+            try:
+                listener(ev)
+            except Exception:
+                # listeners must never break scheduler
+                pass
+
+    def _remove_from_queue_unlocked(self, run_id: str, key: str):
+        q = self._queues.get(key)
+        if not q:
+            return
+        if not q:
+            return
+        new_q = deque(item for item in q if item.run_id != run_id)
+        self._queues[key] = new_q

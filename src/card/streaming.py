@@ -7,6 +7,8 @@ import lark_oapi as lark
 from lark_oapi.api.cardkit.v1 import *
 from lark_oapi.api.im.v1 import *
 
+from ..config import get_settings
+
 
 @dataclass
 class StreamingCard:
@@ -40,6 +42,7 @@ class StreamingCardManager:
         reply_to_message_id: Optional[str] = None,
         image_keys: Optional[list[str]] = None,
     ) -> Optional[StreamingCard]:
+        settings = get_settings()
         if is_claude_mode:
             mode_icon = "🔮"
         elif is_coco_mode:
@@ -67,9 +70,20 @@ class StreamingCardManager:
 
         buttons = self._build_buttons(is_coco_mode, project_id, is_claude_mode)
 
+        # 头部颜色：Coco/Claude 快速区分
+        if is_claude_mode:
+            header_template = "purple"
+        elif is_coco_mode:
+            header_template = "blue"
+        else:
+            header_template = "turquoise"
+
+        button_elements = self._build_button_elements(buttons, layout=(settings.card_button_layout or "responsive"))
+
         card_json = {
             "schema": "2.0",
             "config": {
+                "wide_screen_mode": True,
                 "update_multi": True,
                 "streaming_mode": True,
                 "streaming_config": {
@@ -90,7 +104,7 @@ class StreamingCardManager:
             },
             "header": {
                 "title": {"tag": "plain_text", "content": title},
-                "template": "blue"
+                "template": header_template
             },
             "body": {
                 "elements": [
@@ -116,26 +130,7 @@ class StreamingCardManager:
                         "content": initial_content,
                         "element_id": element_id
                     },
-                    {"tag": "hr"},
-                    {
-                        "tag": "column_set",
-                        "flex_mode": "stretch",
-                        "background_style": "default",
-                        "columns": [
-                            {
-                                "tag": "column",
-                                "width": "weighted",
-                                "weight": 1,
-                                "elements": [buttons[0]] if buttons else []
-                            },
-                            {
-                                "tag": "column",
-                                "width": "weighted",
-                                "weight": 1,
-                                "elements": [buttons[1]] if len(buttons) > 1 else []
-                            }
-                        ]
-                    }
+                    *([{"tag": "hr"}, *button_elements] if button_elements else [])
                 ]
             }
         }
@@ -230,6 +225,44 @@ class StreamingCardManager:
                     "behaviors": [{"type": "callback", "value": {"action": "enter_claude", "project_id": project_id}}]
                 }
             ]
+
+    def _build_button_elements(self, buttons: list[dict], layout: str = "responsive") -> list[dict]:
+        """为流式卡片生成按钮区。
+
+        - desktop: 使用 action（桌面端更紧凑）
+        - mobile: 强制两列 column_set
+        - responsive: <=2 个按钮用 action，否则用两列
+        """
+        if not buttons:
+            return []
+        layout = (layout or "responsive").strip().lower()
+
+        def as_action(btns: list[dict]) -> list[dict]:
+            return [{"tag": "action", "actions": btns}]
+
+        def as_grid_two(btns: list[dict]) -> list[dict]:
+            # 目前 streaming 场景按钮数固定 <=2，直接生成两列
+            col_1 = btns[0] if len(btns) > 0 else None
+            col_2 = btns[1] if len(btns) > 1 else None
+            return [{
+                "tag": "column_set",
+                "flex_mode": "stretch",
+                "background_style": "default",
+                "columns": [
+                    {"tag": "column", "width": "weighted", "weight": 1, "elements": [col_1] if col_1 else []},
+                    {"tag": "column", "width": "weighted", "weight": 1, "elements": [col_2] if col_2 else []},
+                ]
+            }]
+
+        if layout == "desktop":
+            return as_action(buttons)
+        if layout == "mobile":
+            return as_grid_two(buttons)
+
+        # responsive
+        if len(buttons) <= 2:
+            return as_action(buttons)
+        return as_grid_two(buttons)
 
     def send_streaming_card(self, card: StreamingCard) -> Optional[str]:
         content = json.dumps({

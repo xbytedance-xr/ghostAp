@@ -89,6 +89,12 @@ class Application:
         except Exception as e:
             print(f"\n❌ 服务异常: {e}")
             sys.exit(1)
+        finally:
+            try:
+                if self.feishu_client:
+                    self.feishu_client.close()
+            except Exception:
+                pass
 
 
 def main():

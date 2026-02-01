@@ -1,13 +1,17 @@
 import time
-from typing import Optional, Callable
+from typing import Optional, Callable, Union
 from ..coco.session import CocoSession
+from ..claude.session import ClaudeSession
 from ..config import get_settings
 from .models import DeepTask, ExecutionResult, DeepTaskStatus
 
+# CocoSession 和 ClaudeSession 接口一致，使用 Union 类型
+AISession = Union[CocoSession, ClaudeSession]
+
 
 class TaskExecutor:
-    def __init__(self, coco_session: CocoSession, cwd: str):
-        self.coco_session = coco_session
+    def __init__(self, session: AISession, cwd: str):
+        self.session = session
         self.cwd = cwd
         self.settings = get_settings()
 
@@ -22,7 +26,7 @@ class TaskExecutor:
 
         try:
             if on_chunk:
-                output = self.coco_session.send_prompt_streaming(
+                output = self.session.send_prompt_streaming(
                     prompt=task.prompt,
                     on_chunk=on_chunk,
                     timeout=timeout or self.settings.coco_execution_timeout,
@@ -30,7 +34,7 @@ class TaskExecutor:
                     chunk_interval=0.5,
                 )
             else:
-                output = self.coco_session.send_prompt(
+                output = self.session.send_prompt(
                     prompt=task.prompt,
                     timeout=timeout or self.settings.coco_execution_timeout,
                     cwd=self.cwd,

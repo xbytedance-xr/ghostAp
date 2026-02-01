@@ -70,20 +70,36 @@ class TestStreamingCardManager:
         mock_response.data.card_id = "card_abc123"
         mock_client.cardkit.v1.card.create.return_value = mock_response
 
-        card = manager.create_streaming_card(
-            chat_id="chat_123",
-            project_name="TestProject",
-            project_path="/tmp/test",
-            project_id="proj_456",
-            initial_content="思考中...",
-            is_coco_mode=True
-        )
+        with patch("src.card.streaming.get_settings") as mock_get_settings:
+            mock_settings = MagicMock()
+            mock_settings.card_button_layout = "responsive"
+            mock_get_settings.return_value = mock_settings
+
+            card = manager.create_streaming_card(
+                chat_id="chat_123",
+                project_name="TestProject",
+                project_path="/tmp/test",
+                project_id="proj_456",
+                initial_content="思考中...",
+                is_coco_mode=True
+            )
 
         assert card is not None
         assert card.card_id == "card_abc123"
         assert card.chat_id == "chat_123"
         assert card.project_id == "proj_456"
         assert card.last_content == "思考中..."
+
+        # Verify header template + wide screen config in card json
+        call_args = mock_client.cardkit.v1.card.create.call_args
+        request = call_args[0][0]
+        import json
+        card_data = json.loads(request.body.data)
+        assert card_data["config"]["wide_screen_mode"] is True
+        assert card_data["header"]["template"] == "blue"  # coco
+        # responsive + 2 buttons => action
+        body_elements = card_data["body"]["elements"]
+        assert any(e.get("tag") == "action" for e in body_elements)
 
     def test_create_streaming_card_with_images(self, manager, mock_client):
         mock_response = MagicMock()
@@ -112,6 +128,39 @@ class TestStreamingCardManager:
         assert len(img_elements) == 2
         assert img_elements[0]["img_key"] == "img_v2_abc"
         assert img_elements[1]["img_key"] == "img_v2_def"
+
+    def test_create_streaming_card_claude_template_and_mobile_layout(self, manager, mock_client):
+        mock_response = MagicMock()
+        mock_response.success.return_value = True
+        mock_response.data.card_id = "card_claude"
+        mock_client.cardkit.v1.card.create.return_value = mock_response
+
+        with patch("src.card.streaming.get_settings") as mock_get_settings:
+            mock_settings = MagicMock()
+            mock_settings.card_button_layout = "mobile"
+            mock_get_settings.return_value = mock_settings
+
+            card = manager.create_streaming_card(
+                chat_id="chat_123",
+                project_name="TestProject",
+                project_path="/tmp/test",
+                project_id="proj_456",
+                initial_content="thinking...",
+                is_coco_mode=False,
+                is_claude_mode=True,
+            )
+
+        assert card is not None
+
+        call_args = mock_client.cardkit.v1.card.create.call_args
+        request = call_args[0][0]
+        import json
+        card_data = json.loads(request.body.data)
+        assert card_data["header"]["template"] == "purple"
+
+        body_elements = card_data["body"]["elements"]
+        # mobile => column_set
+        assert any(e.get("tag") == "column_set" for e in body_elements)
 
     def test_create_streaming_card_failure(self, manager, mock_client):
         mock_response = MagicMock()

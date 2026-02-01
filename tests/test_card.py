@@ -1,8 +1,11 @@
 import json
 import pytest
+from unittest.mock import patch, MagicMock
 
 from src.project.context import ProjectContext, ProjectStatus, CocoSessionSnapshot
 from src.card.builder import CardBuilder
+from src.deep_engine.reporter import ProgressReporter
+from src.deep_engine.models import DeepTask, ExecutionResult
 from src.card.themes import get_theme, THEMES
 
 
@@ -81,6 +84,44 @@ class TestCardBuilder:
                     assert btn["behaviors"][0]["type"] == "callback"
                     assert isinstance(btn["behaviors"][0]["value"], dict)
                     assert btn.get("size") == "small"
+
+    def test_build_project_response_card_mobile_layout_forces_grid(self, sample_project):
+        # 强制 mobile 布局：<=2 个按钮也应使用 column_set（避免小屏自动换行堆叠）
+        with patch("src.card.builder.get_settings") as mock_get_settings:
+            mock_settings = MagicMock()
+            mock_settings.card_button_layout = "mobile"
+            mock_get_settings.return_value = mock_settings
+
+            msg_type, content = CardBuilder.build_project_response_card(
+                project=sample_project,
+                title="Test",
+                content="Content",
+                show_buttons=True,
+            )
+
+        assert msg_type == "interactive"
+        card = json.loads(content)
+        elements = card["elements"]
+        assert any(e.get("tag") == "column_set" for e in elements)
+
+    def test_build_deep_card_progress_bar_not_duplicated_when_content_contains_bar(self):
+        # 兜底：即使调用方把 progress_bar 文本拼到 content，build_deep_card 也不应重复渲染
+        progress_bar = "[████░░░░░░] 40% (2/5)"
+        content = f"任务中...\n\n{progress_bar}\n"
+        _, card_content = CardBuilder.build_deep_card(
+            project=None,
+            title="X",
+            content=content,
+            progress_bar=progress_bar,
+            engine_name="Coco",
+            show_buttons=False,
+        )
+        card = json.loads(card_content)
+        progress_elems = [
+            e for e in card.get("elements", [])
+            if e.get("tag") == "markdown" and str(e.get("content", "")).startswith("📊 ")
+        ]
+        assert len(progress_elems) == 0
 
     def test_build_project_response_card_coco_mode(self, sample_project):
         sample_project.coco_mode = True
@@ -330,7 +371,32 @@ class TestDeepCard:
         header_title = card["header"]["title"]["content"]
         assert "Deep Engine" in header_title
         assert "Coco" in header_title
-        assert card["header"]["template"] == "turquoise"
+        # Deep 卡片按引擎区分颜色：Coco=blue / Claude=purple
+        assert card["header"]["template"] == "blue"
+
+    def test_deep_progress_bar_renders_only_once(self):
+        reporter = ProgressReporter()
+        task = DeepTask.create(title="T", description="D", prompt="P")
+        content = reporter.format_task_start(task, current=1, total=3)
+        # 正文不应包含进度条字符（避免与独立进度条重复）
+        assert "█" not in content and "░" not in content
+
+        progress_bar = reporter._make_progress_bar(0, 3)
+        _, card_content = CardBuilder.build_deep_card(
+            project=None,
+            title="X",
+            content=content,
+            progress_bar=progress_bar,
+            engine_name="Coco",
+            show_buttons=False,
+        )
+        card = json.loads(card_content)
+        # 只允许一个进度条元素（markdown 以 📊 开头）
+        progress_elems = [
+            e for e in card.get("elements", [])
+            if e.get("tag") == "markdown" and str(e.get("content", "")).startswith("📊 ")
+        ]
+        assert len(progress_elems) == 1
 
     def test_build_deep_card_claude_engine(self, sample_project):
         msg_type, content = CardBuilder.build_deep_card(

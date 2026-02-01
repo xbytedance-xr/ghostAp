@@ -27,6 +27,10 @@ class Settings(BaseSettings):
 
     streaming_enabled: bool = True
 
+    # Task scheduler (thread-based) settings
+    task_scheduler_max_concurrent: int = 10
+    task_scheduler_per_key_concurrency: int = 1
+
     # 卡片按钮布局策略：
     # - desktop: 使用飞书 action 原生布局（更贴近桌面端观感）
     # - mobile: 强制两列 column_set（手机端更稳定，一行两个按钮）

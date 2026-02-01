@@ -178,42 +178,59 @@ class ClaudeSession:
             return error_msg
 
     def _run_streaming_process(self, cmd, cwd, timeout, on_chunk, chunk_interval):
-        """Run command with streaming output. Returns (full_output, stderr_text, timed_out)."""
+        """Run command with streaming output. Returns (full_output, stderr_text, timed_out).
+
+        Uses os.read() instead of readline() to avoid buffering issues in
+        non-TTY environments — Claude CLI may not flush per-line, causing
+        readline() to block until the process finishes.
+        """
+        import os as _os
+        import select
+
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             cwd=cwd,
-            bufsize=1,
         )
 
         full_output = ""
         last_update_time = time.time()
         start_time = time.time()
+        stdout_fd = process.stdout.fileno()
 
         while True:
-            if time.time() - start_time > timeout:
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
                 process.kill()
+                process.wait()
                 return "", "", True
 
-            line = process.stdout.readline()
-            if line:
-                full_output += line
+            # Wait for data with a short timeout so we can check overall timeout
+            ready, _, _ = select.select([stdout_fd], [], [], 0.2)
+            if ready:
+                chunk = _os.read(stdout_fd, 4096)
+                if not chunk:
+                    # EOF
+                    break
+                full_output += chunk.decode("utf-8", errors="replace")
                 current_time = time.time()
                 if current_time - last_update_time >= chunk_interval:
                     cleaned = self._clean_output(full_output.strip())
                     if cleaned:
                         on_chunk(cleaned)
                     last_update_time = current_time
+            else:
+                # No data ready; check if process has exited
+                if process.poll() is not None:
+                    # Drain any remaining output
+                    remaining = _os.read(stdout_fd, 65536)
+                    if remaining:
+                        full_output += remaining.decode("utf-8", errors="replace")
+                    break
 
-            if process.poll() is not None:
-                remaining = process.stdout.read()
-                if remaining:
-                    full_output += remaining
-                break
-
-        stderr_text = process.stderr.read()
+        process.wait()
+        stderr_text = process.stderr.read().decode("utf-8", errors="replace") if process.stderr else ""
         return full_output, stderr_text, False
 
     def resume(self, cwd: Optional[str] = None) -> str:

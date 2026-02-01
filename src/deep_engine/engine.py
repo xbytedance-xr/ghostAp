@@ -1,9 +1,11 @@
 import time
 import json
 import os
-from typing import Optional, Callable, AsyncGenerator
+import uuid
+from typing import Optional, Callable, AsyncGenerator, Union
 from dataclasses import dataclass
 from ..coco.session import CocoSession, CocoSessionManager
+from ..claude.session import ClaudeSession, ClaudeSessionManager
 from ..config import get_settings
 from .models import (
     DeepProject,
@@ -16,7 +18,10 @@ from .models import (
 )
 from .parser import RequirementParser
 from .planner import TaskPlanner
-from .executor import TaskExecutor
+from .executor import TaskExecutor, AISession
+
+# Session manager 的 Union 类型
+AISessionManager = Union[CocoSessionManager, ClaudeSessionManager]
 
 
 @dataclass
@@ -31,10 +36,11 @@ class DeepEngineCallbacks:
 
 
 class DeepEngine:
-    def __init__(self, chat_id: str, root_path: str, session_manager: Optional[CocoSessionManager] = None):
+    def __init__(self, chat_id: str, root_path: str, session_manager: Optional[AISessionManager] = None, engine_name: str = "Coco"):
         self.chat_id = chat_id
         self.root_path = os.path.expanduser(root_path)
         self.settings = get_settings()
+        self.engine_name = engine_name
 
         self._session_manager = session_manager or CocoSessionManager()
         self._parser = RequirementParser()
@@ -42,7 +48,7 @@ class DeepEngine:
 
         self._project: Optional[DeepProject] = None
         self._executor: Optional[TaskExecutor] = None
-        self._coco_session: Optional[CocoSession] = None
+        self._ai_session: Optional[AISession] = None
         self._is_running = False
         self._should_stop = False
 
@@ -54,19 +60,21 @@ class DeepEngine:
     def is_running(self) -> bool:
         return self._is_running
 
-    def _ensure_coco_session(self) -> CocoSession:
-        if self._coco_session is None:
-            session_id = f"deep_{self.chat_id}_{int(time.time())}"
-            self._coco_session = self._session_manager.start_session(
+    def _ensure_ai_session(self) -> AISession:
+        if self._ai_session is None:
+            # Claude CLI 要求 session_id 必须为合法 UUID；Coco 无此限制
+            # 统一使用 UUID 格式，兼容两种后端
+            session_id = str(uuid.uuid4())
+            self._ai_session = self._session_manager.start_session(
                 chat_id=self.chat_id,
                 session_id=session_id
             )
-        return self._coco_session
+        return self._ai_session
 
     def _ensure_executor(self) -> TaskExecutor:
         if self._executor is None:
-            coco_session = self._ensure_coco_session()
-            self._executor = TaskExecutor(coco_session, self.root_path)
+            ai_session = self._ensure_ai_session()
+            self._executor = TaskExecutor(ai_session, self.root_path)
         return self._executor
 
     def plan(self, requirement_text: str, callbacks: Optional[DeepEngineCallbacks] = None) -> DeepProject:
@@ -292,9 +300,9 @@ class DeepEngine:
             return False
 
     def cleanup(self):
-        if self._coco_session:
+        if self._ai_session:
             self._session_manager.end_session(self.chat_id)
-            self._coco_session = None
+            self._ai_session = None
         self._executor = None
         self._project = None
         self._is_running = False
@@ -303,16 +311,37 @@ class DeepEngine:
 class DeepEngineManager:
     def __init__(self):
         self._engines: dict[str, DeepEngine] = {}
-        self._session_manager = CocoSessionManager()
+        self._coco_session_manager = CocoSessionManager()
+        self._claude_session_manager = ClaudeSessionManager()
 
-    def get_or_create(self, chat_id: str, root_path: str) -> DeepEngine:
+    def get_or_create(self, chat_id: str, root_path: str, engine_name: str = "Coco") -> DeepEngine:
         key = f"{chat_id}:{root_path}"
         if key not in self._engines:
+            if engine_name.lower().startswith("claude"):
+                session_manager = self._claude_session_manager
+            else:
+                session_manager = self._coco_session_manager
             self._engines[key] = DeepEngine(
                 chat_id=chat_id,
                 root_path=root_path,
-                session_manager=self._session_manager
+                session_manager=session_manager,
+                engine_name=engine_name,
             )
+        else:
+            # 如果已有 engine 但 engine_name 不同，重建以使用正确的后端
+            existing = self._engines[key]
+            if existing.engine_name.lower() != engine_name.lower() and not existing.is_running:
+                existing.cleanup()
+                if engine_name.lower().startswith("claude"):
+                    session_manager = self._claude_session_manager
+                else:
+                    session_manager = self._coco_session_manager
+                self._engines[key] = DeepEngine(
+                    chat_id=chat_id,
+                    root_path=root_path,
+                    session_manager=session_manager,
+                    engine_name=engine_name,
+                )
         return self._engines[key]
 
     def get(self, chat_id: str, root_path: str) -> Optional[DeepEngine]:
