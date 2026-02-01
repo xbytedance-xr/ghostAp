@@ -174,6 +174,26 @@ class ProgressReporter:
             DeepTaskStatus.BLOCKED: "🚫",
         }.get(status, "❓")
 
+    def format_context_injected(self, message: str) -> str:
+        preview = message[:200] + "..." if len(message) > 200 else message
+        return f"""💬 **上下文已注入**
+
+> {preview}
+
+将在下一个任务执行前生效。"""
+
+    def format_task_adapted(self, task: DeepTask, reason: str, prompt_preview: str) -> str:
+        preview = prompt_preview[:300] + "..." if len(prompt_preview) > 300 else prompt_preview
+        return f"""🔄 **任务指令已调整**
+
+📌 **{task.title}**
+📝 调整原因: {reason}
+
+**调整后指令预览:**
+```
+{preview}
+```"""
+
     # --- Card title helpers ---
 
     def get_planning_start_title(self) -> str:
@@ -196,6 +216,12 @@ class ProgressReporter:
         elif project.status == DeepProjectStatus.FAILED:
             return "⚠️ 执行完成（有失败）"
         return "⏸️ 执行已暂停"
+
+    def get_context_injected_title(self) -> str:
+        return "💬 上下文已注入"
+
+    def get_task_adapted_title(self) -> str:
+        return "🔄 任务指令已调整"
 
     def get_error_title(self) -> str:
         return "❌ Deep Engine 错误"

@@ -4,7 +4,67 @@
 GhostAP 是一个飞书机器人Shell沙箱服务，通过飞书机器人对话来安全执行本地shell命令，并支持 Coco AI 和 Claude AI 远程开发模式。
 
 ## 最新更新
-**更新时间**: 2026-02-02 06:30:00
+**更新时间**: 2026-02-02 08:00:00
+
+### Deep Engine 实时上下文调整优化（2026-02-02 08:00:00）
+
+为 Deep Engine 引入执行上下文累积器、LLM 自适应 prompt 调整、智能失败重规划以及 `/deep_update` 用户注入命令，解决三个核心缺陷：任务 prompt 静态固化、失败重试盲目、无用户介入通道。
+
+#### 新增 `src/deep_engine/models.py` — ContextEntry + ExecutionContext
+- **ContextEntry**: 上下文条目数据类，支持 task_result / user_injection / deviation / adaptation 四种类型
+- **ExecutionContext**: 线程安全的上下文累积器（`threading.Lock` 保护）
+  - `add_result()`: 记录任务执行结果（不触发 adaptation flag）
+  - `inject_user_context()`: 注入用户上下文（触发 adaptation flag）
+  - `has_meaningful_context()`: O(1) 布尔 flag 判断
+  - `consume_new_context_flag()`: 消费 flag 避免重复触发
+  - `build_context_prompt(max_entries=10)`: 构建上下文摘要给 LLM
+  - 完整 `to_dict()` / `from_dict()` 序列化支持
+- **DeepTask** 新增 `original_prompt` 和 `adapted_prompt` 可选字段用于审计跟踪
+
+#### 新增 `src/deep_engine/planner.py` — adapt_task_prompt()
+- 使用专用 system prompt 指导 LLM 做保守调整
+- LLM 返回 JSON: `{should_adapt, reason, adapted_prompt}`
+- 异常时 fallback 到原始 prompt，不影响执行
+
+#### 修改 `src/deep_engine/engine.py` — 核心执行循环改造
+- 新增 `_execution_context: ExecutionContext` 字段
+- 新增 `inject_context(message)` 公共方法（线程安全，供 ws_client 调用）
+- 新增 `on_context_adapted` 回调（task, reason, prompt_preview）
+- **execute() 循环改造**:
+  - ① 上下文感知 prompt 适配（仅当 `has_meaningful_context()` 时触发 LLM）
+  - ② 执行任务
+  - ③ 记录结果到上下文
+  - ④ 智能失败处理：使用 `replan_task()` 替代盲目重试
+
+#### 修改 `src/deep_engine/reporter.py` — 新增展示方法
+- `format_context_injected()` / `get_context_injected_title()`
+- `format_task_adapted()` / `get_task_adapted_title()`
+
+#### 修改 `src/agent/intent_recognizer.py` — 新增意图类型
+- `IntentType.DEEP_UPDATE = "deep_update"`
+- `INTENT_MAP` / `EXACT_COMMANDS` / `_quick_match()` 中添加 `/deep_update` 映射
+
+#### 修改 `src/feishu/ws_client.py` — /deep_update 命令路由
+- `_handle_deep_command()`: 新增 `/deep_update` 路由
+- 新增 `_update_deep_context()`: 找到 active engine → 调用 `inject_context()` → 回复确认卡片
+- `_create_deep_callbacks()`: 新增 `on_context_adapted` 回调处理
+
+#### 修改 `src/deep_engine/__init__.py` — 导出更新
+- 新增 `ContextEntry`、`ExecutionContext` 到导出列表
+
+#### 新增测试 `tests/test_deep_engine.py` — 35 个新测试
+- `TestContextEntry` (2): 基础创建、序列化
+- `TestExecutionContext` (12): CRUD、flag 机制、上下文构建、max_entries 截断、线程安全、序列化
+- `TestDeepTaskAdaptedFields` (4): 默认值、赋值、序列化、反序列化兼容
+- `TestTaskPlannerAdapt` (4): LLM mock 测试 adapt/no-adapt/error/unparseable 四种路径
+- `TestDeepEngineContextInjection` (5): inject_context、adaptation 触发、无上下文不触发、replan_on_failure
+- `TestProgressReporterContextMethods` (5): 新展示方法
+- `TestIntentRecognizerDeepUpdate` (3): /deep_update 命令识别和路由
+- `TestWsClientDeepUpdate` (1): _is_deep_command 识别 /deep_update
+
+#### 测试结果: 617 全部通过 ✅
+
+---
 
 ### 修复流式卡片更新失败 + Claude 会话闲置优化（2026-02-02 06:30:00）
 

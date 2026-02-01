@@ -209,6 +209,70 @@ goals: ["创建项目结构", "实现数据抓取", "解析数据", "保存CSV",
             tasks.append(task)
         return tasks
 
+    ADAPT_SYSTEM_PROMPT = """你是一个任务指令调整专家。根据执行上下文判断是否需要调整即将执行的任务指令。
+
+## 原则
+1. **保守调整**: 只在上下文明确要求变更时才调整，不要过度解读
+2. **保留原意**: 调整后的 prompt 必须保留原始任务的核心目标
+3. **增量修改**: 优先在原始 prompt 基础上补充/修正，而非重写
+4. **用户优先**: 用户注入的上下文具有最高优先级
+
+## 输出格式
+请严格按照以下 JSON 格式输出：
+
+```json
+{
+  "should_adapt": true/false,
+  "reason": "调整原因（简短）",
+  "adapted_prompt": "调整后的完整 prompt（仅当 should_adapt=true 时需要）"
+}
+```
+
+只输出 JSON，不要有其他内容。"""
+
+    def adapt_task_prompt(self, task: DeepTask, context_prompt: str) -> tuple[bool, str, str]:
+        """根据上下文评估是否需要调整 task prompt。
+
+        Returns:
+            (was_adapted, final_prompt, reason)
+        """
+        try:
+            llm = self._get_llm()
+
+            input_text = f"""当前要执行的任务：
+- 标题: {task.title}
+- 描述: {task.description}
+- 原始指令: {task.prompt}
+
+{context_prompt}
+
+请判断是否需要根据上下文调整任务指令。"""
+
+            messages = [
+                SystemMessage(content=self.ADAPT_SYSTEM_PROMPT),
+                HumanMessage(content=input_text),
+            ]
+
+            response = llm.invoke(messages)
+            content = response.content.strip()
+            logger.debug("任务适配结果:\n%s...", content[:500])
+
+            result = self._parse_json_response(content)
+            if not result:
+                return False, task.prompt, "LLM 响应解析失败"
+
+            should_adapt = result.get("should_adapt", False)
+            reason = result.get("reason", "")
+            adapted_prompt = result.get("adapted_prompt", task.prompt)
+
+            if should_adapt and adapted_prompt:
+                return True, adapted_prompt, reason
+            return False, task.prompt, reason
+
+        except Exception as e:
+            logger.error("任务适配异常: %s", e)
+            return False, task.prompt, f"适配异常: {e}"
+
     def replan_task(self, failed_task: DeepTask, error: str, context: str = "") -> DeepTask:
         try:
             llm = self._get_llm()

@@ -30,6 +30,7 @@ class IntentType(Enum):
     ENTER_DEEP = "enter_deep"
     DEEP_STATUS = "deep_status"
     STOP_DEEP = "stop_deep"
+    DEEP_UPDATE = "deep_update"
     SHOW_HELP = "show_help"
     UNKNOWN = "unknown"
 
@@ -201,6 +202,7 @@ class IntentRecognizer:
         "enter_deep": IntentType.ENTER_DEEP,
         "deep_status": IntentType.DEEP_STATUS,
         "stop_deep": IntentType.STOP_DEEP,
+        "deep_update": IntentType.DEEP_UPDATE,
         "show_help": IntentType.SHOW_HELP,
         "unknown": IntentType.UNKNOWN,
     }
@@ -221,6 +223,7 @@ class IntentRecognizer:
         "/status": (IntentType.PROJECT_STATUS, "查看项目状态"),
         "/deep": (IntentType.ENTER_DEEP, "进入 Deep 模式"),
         "/deep_status": (IntentType.DEEP_STATUS, "查看 Deep 任务状态"),
+        "/deep_update": (IntentType.DEEP_UPDATE, "更新 Deep 任务上下文"),
         "/stop_deep": (IntentType.STOP_DEEP, "停止 Deep 任务"),
         "/help": (IntentType.SHOW_HELP, "显示帮助信息"),
         "/帮助": (IntentType.SHOW_HELP, "显示帮助信息"),
@@ -362,6 +365,17 @@ class IntentRecognizer:
                 original_text=text,
                 reasoning=f"精确匹配: /close 命令",
                 description=f"关闭项目: {name}"
+            )
+
+        if text_lower.startswith("/deep_update "):
+            update_message = text[len("/deep_update "):].strip()
+            return IntentResult.single(
+                intent=IntentType.DEEP_UPDATE,
+                confidence=1.0,
+                data={"message": update_message},
+                original_text=text,
+                reasoning="精确匹配: /deep_update 命令",
+                description="更新 Deep Engine 上下文"
             )
 
         if text_lower.startswith("/deep "):

@@ -1,3 +1,4 @@
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -40,6 +41,8 @@ class DeepTask:
     error: Optional[str] = None
     retry_count: int = 0
     max_retries: int = 2
+    original_prompt: Optional[str] = None
+    adapted_prompt: Optional[str] = None
 
     @classmethod
     def create(cls, title: str, description: str, prompt: str, order: int = 0,
@@ -101,6 +104,8 @@ class DeepTask:
             "result": self.result,
             "error": self.error,
             "retry_count": self.retry_count,
+            "original_prompt": self.original_prompt,
+            "adapted_prompt": self.adapted_prompt,
         }
 
     @classmethod
@@ -119,6 +124,8 @@ class DeepTask:
             result=data.get("result"),
             error=data.get("error"),
             retry_count=data.get("retry_count", 0),
+            original_prompt=data.get("original_prompt"),
+            adapted_prompt=data.get("adapted_prompt"),
         )
         return task
 
@@ -337,3 +344,134 @@ class DeepProject:
         if data.get("tasks"):
             project.tasks = [DeepTask.from_dict(t) for t in data["tasks"]]
         return project
+
+
+@dataclass
+class ContextEntry:
+    """上下文条目，记录执行过程中的各类事件。"""
+    entry_type: str  # "task_result" | "user_injection" | "deviation" | "adaptation"
+    content: str
+    task_id: Optional[str] = None
+    timestamp: float = field(default_factory=time.time)
+
+    def to_dict(self) -> dict:
+        return {
+            "entry_type": self.entry_type,
+            "content": self.content,
+            "task_id": self.task_id,
+            "timestamp": self.timestamp,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ContextEntry":
+        return cls(
+            entry_type=data["entry_type"],
+            content=data["content"],
+            task_id=data.get("task_id"),
+            timestamp=data.get("timestamp", time.time()),
+        )
+
+
+class ExecutionContext:
+    """线程安全的执行上下文累积器。
+
+    在 Deep Engine 执行过程中累积任务结果、用户注入、偏差记录等信息，
+    供后续任务的 prompt 自适应调整使用。
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._entries: list[ContextEntry] = []
+        self._new_context_since_last_check = False
+
+    def add_result(self, task_id: str, title: str, success: bool, summary: str):
+        """记录任务执行结果。不设置 flag，因为 AI session 已有会话上下文。"""
+        content = f"任务「{title}」{'成功' if success else '失败'}: {summary[:200]}"
+        entry = ContextEntry(
+            entry_type="task_result",
+            content=content,
+            task_id=task_id,
+        )
+        with self._lock:
+            self._entries.append(entry)
+
+    def inject_user_context(self, message: str):
+        """注入用户上下文（跨线程安全）。设置 flag 触发 adaptation。"""
+        entry = ContextEntry(
+            entry_type="user_injection",
+            content=message,
+        )
+        with self._lock:
+            self._entries.append(entry)
+            self._new_context_since_last_check = True
+
+    def record_deviation(self, task_id: str, deviation: str):
+        """记录偏差。"""
+        entry = ContextEntry(
+            entry_type="deviation",
+            content=deviation,
+            task_id=task_id,
+        )
+        with self._lock:
+            self._entries.append(entry)
+
+    def record_adaptation(self, task_id: str, description: str):
+        """记录适配操作。"""
+        entry = ContextEntry(
+            entry_type="adaptation",
+            content=description,
+            task_id=task_id,
+        )
+        with self._lock:
+            self._entries.append(entry)
+
+    def has_meaningful_context(self) -> bool:
+        """O(1) 检查是否有新上下文需要处理。"""
+        with self._lock:
+            return self._new_context_since_last_check
+
+    def consume_new_context_flag(self):
+        """消费 flag，避免重复触发。"""
+        with self._lock:
+            self._new_context_since_last_check = False
+
+    def build_context_prompt(self, max_entries: int = 10) -> str:
+        """构建上下文摘要给 LLM。"""
+        with self._lock:
+            entries = self._entries[-max_entries:] if max_entries > 0 else self._entries[:]
+
+        if not entries:
+            return ""
+
+        lines = ["## 执行上下文\n"]
+        for entry in entries:
+            type_label = {
+                "task_result": "📋 任务结果",
+                "user_injection": "💬 用户指示",
+                "deviation": "⚠️ 偏差",
+                "adaptation": "🔄 已适配",
+            }.get(entry.entry_type, entry.entry_type)
+
+            task_ref = f" [{entry.task_id}]" if entry.task_id else ""
+            lines.append(f"- {type_label}{task_ref}: {entry.content}")
+
+        return "\n".join(lines)
+
+    @property
+    def entry_count(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+    def to_dict(self) -> dict:
+        with self._lock:
+            return {
+                "entries": [e.to_dict() for e in self._entries],
+                "new_context_flag": self._new_context_since_last_check,
+            }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ExecutionContext":
+        ctx = cls()
+        ctx._entries = [ContextEntry.from_dict(e) for e in data.get("entries", [])]
+        ctx._new_context_since_last_check = data.get("new_context_flag", False)
+        return ctx

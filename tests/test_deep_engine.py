@@ -1,12 +1,15 @@
 import pytest
+import threading
 import time
 from unittest.mock import patch, MagicMock, Mock
 
 from src.deep_engine.models import (
+    ContextEntry,
     DeepTask,
     DeepTaskStatus,
     DeepProject,
     DeepProjectStatus,
+    ExecutionContext,
     ParsedRequirement,
     ExecutionResult,
     ProgressUpdate,
@@ -553,3 +556,436 @@ class TestWsClientDeepCommands:
         assert client._is_deep_command("/coco") is False
         assert client._is_deep_command("/exit") is False
         assert client._is_deep_command("deep 模式") is False
+
+
+class TestContextEntry:
+    def test_create_entry(self):
+        entry = ContextEntry(
+            entry_type="task_result",
+            content="任务完成",
+            task_id="abc123",
+        )
+        assert entry.entry_type == "task_result"
+        assert entry.content == "任务完成"
+        assert entry.task_id == "abc123"
+        assert entry.timestamp > 0
+
+    def test_entry_to_dict_and_from_dict(self):
+        entry = ContextEntry(
+            entry_type="user_injection",
+            content="改用 PostgreSQL",
+            task_id=None,
+            timestamp=1000.0,
+        )
+        data = entry.to_dict()
+        restored = ContextEntry.from_dict(data)
+        assert restored.entry_type == entry.entry_type
+        assert restored.content == entry.content
+        assert restored.task_id is None
+        assert restored.timestamp == 1000.0
+
+
+class TestExecutionContext:
+    def test_add_result(self):
+        ctx = ExecutionContext()
+        ctx.add_result("t1", "创建文件", True, "文件已创建")
+        assert ctx.entry_count == 1
+        # task_result 不触发 flag
+        assert ctx.has_meaningful_context() is False
+
+    def test_inject_user_context(self):
+        ctx = ExecutionContext()
+        ctx.inject_user_context("改用 PostgreSQL")
+        assert ctx.entry_count == 1
+        assert ctx.has_meaningful_context() is True
+
+    def test_consume_flag(self):
+        ctx = ExecutionContext()
+        ctx.inject_user_context("新需求")
+        assert ctx.has_meaningful_context() is True
+        ctx.consume_new_context_flag()
+        assert ctx.has_meaningful_context() is False
+
+    def test_record_deviation(self):
+        ctx = ExecutionContext()
+        ctx.record_deviation("t1", "输出格式不匹配")
+        assert ctx.entry_count == 1
+
+    def test_record_adaptation(self):
+        ctx = ExecutionContext()
+        ctx.record_adaptation("t1", "已调整数据库类型")
+        assert ctx.entry_count == 1
+
+    def test_build_context_prompt_empty(self):
+        ctx = ExecutionContext()
+        assert ctx.build_context_prompt() == ""
+
+    def test_build_context_prompt_with_entries(self):
+        ctx = ExecutionContext()
+        ctx.add_result("t1", "创建文件", True, "完成")
+        ctx.inject_user_context("改用 PostgreSQL")
+        prompt = ctx.build_context_prompt()
+        assert "执行上下文" in prompt
+        assert "任务结果" in prompt
+        assert "用户指示" in prompt
+        assert "PostgreSQL" in prompt
+
+    def test_build_context_prompt_max_entries(self):
+        ctx = ExecutionContext()
+        for i in range(20):
+            ctx.add_result(f"t{i}", f"任务{i}", True, f"完成{i}")
+        prompt = ctx.build_context_prompt(max_entries=5)
+        # 只包含最后 5 条
+        assert "任务15" in prompt
+        assert "任务19" in prompt
+        # 不包含前面的
+        assert "任务0" not in prompt
+
+    def test_thread_safety(self):
+        ctx = ExecutionContext()
+        errors = []
+
+        def writer():
+            try:
+                for i in range(100):
+                    ctx.inject_user_context(f"消息 {i}")
+                    ctx.add_result(f"t{i}", f"任务{i}", True, "完成")
+            except Exception as e:
+                errors.append(e)
+
+        def reader():
+            try:
+                for _ in range(100):
+                    ctx.has_meaningful_context()
+                    ctx.build_context_prompt()
+                    ctx.entry_count
+            except Exception as e:
+                errors.append(e)
+
+        threads = [
+            threading.Thread(target=writer),
+            threading.Thread(target=reader),
+            threading.Thread(target=writer),
+            threading.Thread(target=reader),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(errors) == 0
+
+    def test_to_dict_and_from_dict(self):
+        ctx = ExecutionContext()
+        ctx.add_result("t1", "任务1", True, "完成")
+        ctx.inject_user_context("新需求")
+
+        data = ctx.to_dict()
+        assert len(data["entries"]) == 2
+        assert data["new_context_flag"] is True
+
+        restored = ExecutionContext.from_dict(data)
+        assert restored.entry_count == 2
+        assert restored.has_meaningful_context() is True
+
+    def test_from_dict_empty(self):
+        ctx = ExecutionContext.from_dict({})
+        assert ctx.entry_count == 0
+        assert ctx.has_meaningful_context() is False
+
+
+class TestDeepTaskAdaptedFields:
+    def test_adapted_fields_default_none(self):
+        task = DeepTask.create("任务", "描述", "提示")
+        assert task.original_prompt is None
+        assert task.adapted_prompt is None
+
+    def test_adapted_fields_set(self):
+        task = DeepTask.create("任务", "描述", "原始提示")
+        task.original_prompt = "原始提示"
+        task.prompt = "调整后提示"
+        task.adapted_prompt = "调整后提示"
+        assert task.original_prompt == "原始提示"
+        assert task.adapted_prompt == "调整后提示"
+
+    def test_adapted_fields_serialization(self):
+        task = DeepTask.create("任务", "描述", "提示")
+        task.original_prompt = "原始"
+        task.adapted_prompt = "调整后"
+        data = task.to_dict()
+        restored = DeepTask.from_dict(data)
+        assert restored.original_prompt == "原始"
+        assert restored.adapted_prompt == "调整后"
+
+    def test_adapted_fields_absent_in_dict(self):
+        data = {
+            "task_id": "abc",
+            "title": "任务",
+            "description": "描述",
+            "prompt": "提示",
+        }
+        task = DeepTask.from_dict(data)
+        assert task.original_prompt is None
+        assert task.adapted_prompt is None
+
+
+class TestTaskPlannerAdapt:
+    @pytest.fixture
+    def planner(self):
+        return TaskPlanner()
+
+    @patch("src.deep_engine.planner.TaskPlanner._get_llm")
+    def test_adapt_returns_adapted(self, mock_get_llm, planner):
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = MagicMock(
+            content='```json\n{"should_adapt": true, "reason": "用户要求改用PostgreSQL", "adapted_prompt": "使用 PostgreSQL 创建数据库"}\n```'
+        )
+        mock_get_llm.return_value = mock_llm
+
+        task = DeepTask.create("创建数据库", "创建数据库结构", "使用 SQLite 创建数据库")
+        context = "## 执行上下文\n- 💬 用户指示: 改用 PostgreSQL"
+
+        was_adapted, prompt, reason = planner.adapt_task_prompt(task, context)
+        assert was_adapted is True
+        assert "PostgreSQL" in prompt
+        assert "PostgreSQL" in reason
+
+    @patch("src.deep_engine.planner.TaskPlanner._get_llm")
+    def test_adapt_returns_no_adapt(self, mock_get_llm, planner):
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = MagicMock(
+            content='```json\n{"should_adapt": false, "reason": "无需调整"}\n```'
+        )
+        mock_get_llm.return_value = mock_llm
+
+        task = DeepTask.create("创建文件", "创建项目文件", "创建 main.py")
+        context = "## 执行上下文\n- 📋 任务结果: 完成"
+
+        was_adapted, prompt, reason = planner.adapt_task_prompt(task, context)
+        assert was_adapted is False
+        assert prompt == "创建 main.py"
+
+    @patch("src.deep_engine.planner.TaskPlanner._get_llm")
+    def test_adapt_error_fallback(self, mock_get_llm, planner):
+        mock_llm = MagicMock()
+        mock_llm.invoke.side_effect = Exception("LLM 调用失败")
+        mock_get_llm.return_value = mock_llm
+
+        task = DeepTask.create("任务", "描述", "原始 prompt")
+        was_adapted, prompt, reason = planner.adapt_task_prompt(task, "上下文")
+        assert was_adapted is False
+        assert prompt == "原始 prompt"
+        assert "异常" in reason
+
+    @patch("src.deep_engine.planner.TaskPlanner._get_llm")
+    def test_adapt_unparseable_response(self, mock_get_llm, planner):
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = MagicMock(content="这不是 JSON")
+        mock_get_llm.return_value = mock_llm
+
+        task = DeepTask.create("任务", "描述", "原始 prompt")
+        was_adapted, prompt, reason = planner.adapt_task_prompt(task, "上下文")
+        assert was_adapted is False
+        assert prompt == "原始 prompt"
+
+
+class TestDeepEngineContextInjection:
+    def test_inject_context(self):
+        engine = DeepEngine.__new__(DeepEngine)
+        engine._execution_context = ExecutionContext()
+        engine.inject_context("改用 PostgreSQL")
+        assert engine._execution_context.has_meaningful_context() is True
+        assert engine._execution_context.entry_count == 1
+
+    def test_execution_context_property(self):
+        engine = DeepEngine.__new__(DeepEngine)
+        engine._execution_context = ExecutionContext()
+        assert engine.execution_context is engine._execution_context
+
+    @patch("src.deep_engine.engine.DeepEngine._ensure_executor")
+    @patch("src.deep_engine.planner.TaskPlanner.adapt_task_prompt")
+    def test_execute_triggers_adaptation(self, mock_adapt, mock_ensure_exec):
+        """测试 execute 循环中上下文注入触发 adaptation。"""
+        engine = DeepEngine.__new__(DeepEngine)
+        engine.settings = MagicMock()
+        engine._planner = TaskPlanner.__new__(TaskPlanner)
+        engine._planner._llm = None
+        engine._planner.settings = MagicMock()
+        engine._execution_context = ExecutionContext()
+        engine._should_stop = False
+        engine._is_running = False
+
+        # 创建项目
+        project = DeepProject.create("测试", "/tmp/test")
+        task = DeepTask.create("任务1", "描述", "原始prompt")
+        project.set_tasks([task])
+        engine._project = project
+
+        # Mock executor — 需要正确更新 task 状态
+        mock_executor = MagicMock()
+        def execute_side_effect(t, on_chunk=None):
+            t.start()
+            t.complete("完成")
+            return ExecutionResult(
+                task_id=t.task_id, success=True, output="完成", duration=1.0
+            )
+        mock_executor.execute.side_effect = execute_side_effect
+        mock_ensure_exec.return_value = mock_executor
+
+        # Mock adapt
+        mock_adapt.return_value = (True, "调整后的 prompt", "用户要求变更")
+
+        # 注入上下文
+        engine.inject_context("请使用 TypeScript")
+
+        # 记录回调
+        adapted_calls = []
+        callbacks = DeepEngineCallbacks(
+            on_context_adapted=lambda t, r, p: adapted_calls.append((t, r, p)),
+        )
+
+        engine.execute(callbacks)
+
+        # 验证 adaptation 被触发
+        assert mock_adapt.called
+        assert len(adapted_calls) == 1
+        assert adapted_calls[0][1] == "用户要求变更"
+
+    @patch("src.deep_engine.engine.DeepEngine._ensure_executor")
+    def test_execute_no_adaptation_without_context(self, mock_ensure_exec):
+        """没有新上下文时不触发 adaptation。"""
+        engine = DeepEngine.__new__(DeepEngine)
+        engine.settings = MagicMock()
+        engine._planner = MagicMock()
+        engine._execution_context = ExecutionContext()
+        engine._should_stop = False
+        engine._is_running = False
+
+        project = DeepProject.create("测试", "/tmp/test")
+        task = DeepTask.create("任务1", "描述", "prompt")
+        project.set_tasks([task])
+        engine._project = project
+
+        mock_executor = MagicMock()
+        def execute_side_effect(t, on_chunk=None):
+            t.start()
+            t.complete("完成")
+            return ExecutionResult(
+                task_id=t.task_id, success=True, output="完成", duration=1.0
+            )
+        mock_executor.execute.side_effect = execute_side_effect
+        mock_ensure_exec.return_value = mock_executor
+
+        engine.execute()
+
+        # adapt_task_prompt 不应被调用
+        engine._planner.adapt_task_prompt.assert_not_called()
+
+    @patch("src.deep_engine.engine.DeepEngine._ensure_executor")
+    @patch("src.deep_engine.planner.TaskPlanner.replan_task")
+    def test_execute_replan_on_failure(self, mock_replan, mock_ensure_exec):
+        """任务失败时触发 replan。"""
+        engine = DeepEngine.__new__(DeepEngine)
+        engine.settings = MagicMock()
+        engine._planner = TaskPlanner.__new__(TaskPlanner)
+        engine._planner._llm = None
+        engine._planner.settings = MagicMock()
+        engine._execution_context = ExecutionContext()
+        engine._should_stop = False
+        engine._is_running = False
+
+        project = DeepProject.create("测试", "/tmp/test")
+        task = DeepTask.create("任务1", "描述", "prompt")
+        task.max_retries = 2
+        project.set_tasks([task])
+        engine._project = project
+
+        # 第一次失败（task.fail 增加 retry_count 但保持 PENDING），第二次成功
+        call_count = [0]
+        mock_executor = MagicMock()
+        def execute_side_effect(t, on_chunk=None):
+            call_count[0] += 1
+            t.start()
+            if call_count[0] == 1:
+                t.fail("编译错误")
+                return ExecutionResult(
+                    task_id=t.task_id, success=False, output="", duration=1.0, error="编译错误"
+                )
+            else:
+                t.complete("完成")
+                return ExecutionResult(
+                    task_id=t.task_id, success=True, output="完成", duration=1.0
+                )
+        mock_executor.execute.side_effect = execute_side_effect
+        mock_ensure_exec.return_value = mock_executor
+
+        replanned_task = DeepTask.create("任务1", "[重试] 描述", "改进后的 prompt")
+        mock_replan.return_value = replanned_task
+
+        engine.execute()
+
+        assert mock_replan.called
+
+
+class TestProgressReporterContextMethods:
+    @pytest.fixture
+    def reporter(self):
+        return ProgressReporter()
+
+    def test_format_context_injected(self, reporter):
+        msg = reporter.format_context_injected("改用 PostgreSQL")
+        assert "上下文已注入" in msg
+        assert "PostgreSQL" in msg
+
+    def test_format_context_injected_truncates(self, reporter):
+        long_msg = "x" * 300
+        msg = reporter.format_context_injected(long_msg)
+        assert "..." in msg
+
+    def test_format_task_adapted(self, reporter):
+        task = DeepTask.create("创建数据库", "描述", "prompt")
+        msg = reporter.format_task_adapted(task, "用户要求变更", "使用 PostgreSQL 创建")
+        assert "任务指令已调整" in msg
+        assert "创建数据库" in msg
+        assert "用户要求变更" in msg
+
+    def test_get_context_injected_title(self, reporter):
+        title = reporter.get_context_injected_title()
+        assert "上下文已注入" in title
+
+    def test_get_task_adapted_title(self, reporter):
+        title = reporter.get_task_adapted_title()
+        assert "任务指令已调整" in title
+
+
+class TestIntentRecognizerDeepUpdate:
+    @pytest.fixture
+    def recognizer(self):
+        from src.agent.intent_recognizer import IntentRecognizer
+        return IntentRecognizer()
+
+    def test_deep_update_command(self, recognizer):
+        from src.agent.intent_recognizer import IntentType
+        result = recognizer._quick_match("/deep_update 改用 PostgreSQL")
+        assert result is not None
+        assert result.primary_intent == IntentType.DEEP_UPDATE
+        assert result.primary_data.get("message") == "改用 PostgreSQL"
+
+    def test_deep_update_exact(self, recognizer):
+        from src.agent.intent_recognizer import IntentType
+        result = recognizer._quick_match("/deep_update")
+        assert result is not None
+        assert result.primary_intent == IntentType.DEEP_UPDATE
+
+    def test_deep_update_in_intent_map(self):
+        from src.agent.intent_recognizer import IntentRecognizer, IntentType
+        assert "deep_update" in IntentRecognizer.INTENT_MAP
+        assert IntentRecognizer.INTENT_MAP["deep_update"] == IntentType.DEEP_UPDATE
+
+
+class TestWsClientDeepUpdate:
+    def test_is_deep_command_deep_update(self):
+        from src.feishu.ws_client import FeishuWSClient
+        client = FeishuWSClient.__new__(FeishuWSClient)
+        assert client._is_deep_command("/deep_update 改用 PostgreSQL") is True
+        assert client._is_deep_command("/deep_update") is True
+        assert client._is_deep_command("/DEEP_UPDATE test") is True

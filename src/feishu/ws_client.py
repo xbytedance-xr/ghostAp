@@ -1395,22 +1395,52 @@ class FeishuWSClient:
 
     def _handle_deep_command(self, message_id: str, chat_id: str, text: str, project: Optional[ProjectContext] = None):
         text_lower = text.lower().strip()
-        
+
         if text_lower == "/deep_status":
             self._show_deep_status(message_id, chat_id, project)
         elif text_lower == "/stop_deep":
             self._stop_deep_engine(message_id, chat_id, project)
+        elif text_lower.startswith("/deep_update "):
+            update_message = text[len("/deep_update "):].strip()
+            self._update_deep_context(message_id, chat_id, update_message, project)
+        elif text_lower == "/deep_update":
+            self._reply_message(message_id, "📝 请提供上下文信息\n\n用法: `/deep_update <上下文描述>`\n\n例如: `/deep_update 数据库改用 PostgreSQL 而不是 SQLite`")
         elif text_lower.startswith("/deep "):
             requirement = text[6:].strip()
             self._start_deep_engine(message_id, chat_id, requirement, project)
         elif text_lower == "/deep":
             self._reply_message(message_id, "📝 请提供需求描述\n\n用法: `/deep <你的需求描述>`\n\n例如: `/deep 帮我写一个 Python 爬虫，爬取豆瓣电影 Top250`")
         else:
-            self._reply_message(message_id, "❓ 未知的 Deep 命令\n\n可用命令:\n• `/deep <需求>` - 启动 Deep Engine\n• `/deep_status` - 查看进度\n• `/stop_deep` - 停止任务")
+            self._reply_message(message_id, "❓ 未知的 Deep 命令\n\n可用命令:\n• `/deep <需求>` - 启动 Deep Engine\n• `/deep_update <上下文>` - 注入执行上下文\n• `/deep_status` - 查看进度\n• `/stop_deep` - 停止任务")
+
+    def _update_deep_context(self, message_id: str, chat_id: str, update_message: str, project: Optional[ProjectContext] = None):
+        """注入用户上下文到正在运行的 Deep Engine。"""
+        engine = self._deep_engine_manager.get_active_engine(chat_id)
+        if not engine:
+            root_path = project.root_path if project else self._get_working_dir(chat_id)
+            engine = self._deep_engine_manager.get(chat_id, root_path)
+
+        if not engine or not engine.is_running:
+            self._reply_message(message_id, "⚠️ 当前没有正在运行的 Deep Engine 任务\n\n请先使用 `/deep <需求>` 启动任务")
+            return
+
+        engine.inject_context(update_message)
+
+        content = self._progress_reporter.format_context_injected(update_message)
+        title = self._progress_reporter.get_context_injected_title()
+        engine_name = engine.engine_name
+        msg_type, card_content = CardBuilder.build_deep_card(
+            project=project,
+            title=title,
+            content=content,
+            engine_name=engine_name,
+            show_buttons=False,
+        )
+        self.send_message(chat_id, card_content, msg_type)
 
     def _exit_current_mode(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
         from ..mode import InteractionMode
-        
+
         current_mode = self._mode_manager.get_mode(chat_id)
         
         if current_mode == InteractionMode.COCO:
@@ -2162,10 +2192,26 @@ class FeishuWSClient:
             self.send_message(chat_id, card_content, msg_type)
             self._add_reaction(message_id, EmojiReaction.on_error())
 
+        def on_context_adapted(task: DeepTask, reason: str, prompt_preview: str):
+            content = self._progress_reporter.format_task_adapted(task, reason, prompt_preview)
+            title = self._progress_reporter.get_task_adapted_title()
+            engine = self._deep_engine_manager.get(chat_id, project.root_path if project else "")
+            deep_project_id = engine.project.project_id if engine and engine.project else None
+            msg_type, card_content = CardBuilder.build_deep_card(
+                project=project,
+                title=title,
+                content=content,
+                deep_project_id=deep_project_id,
+                engine_name=engine_name,
+                show_buttons=False,
+            )
+            self.send_message(chat_id, card_content, msg_type)
+
         return DeepEngineCallbacks(
             on_planning_done=on_planning_done,
             on_task_start=on_task_start,
             on_task_done=on_task_done,
+            on_context_adapted=on_context_adapted,
             on_project_done=on_project_done,
             on_error=on_error,
         )

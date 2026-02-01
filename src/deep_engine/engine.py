@@ -17,6 +17,7 @@ from .models import (
     DeepTaskStatus,
     ParsedRequirement,
     ExecutionResult,
+    ExecutionContext,
     ProgressUpdate,
 )
 from .parser import RequirementParser
@@ -34,6 +35,7 @@ class DeepEngineCallbacks:
     on_task_start: Optional[Callable[[DeepTask, int, int], None]] = None
     on_task_progress: Optional[Callable[[DeepTask, str], None]] = None
     on_task_done: Optional[Callable[[DeepTask, ExecutionResult], None]] = None
+    on_context_adapted: Optional[Callable[[DeepTask, str, str], None]] = None  # (task, reason, prompt_preview)
     on_project_done: Optional[Callable[[DeepProject], None]] = None
     on_error: Optional[Callable[[str], None]] = None
 
@@ -52,6 +54,7 @@ class DeepEngine:
         self._project: Optional[DeepProject] = None
         self._executor: Optional[TaskExecutor] = None
         self._ai_session: Optional[AISession] = None
+        self._execution_context = ExecutionContext()
         self._is_running = False
         self._should_stop = False
 
@@ -62,6 +65,15 @@ class DeepEngine:
     @property
     def is_running(self) -> bool:
         return self._is_running
+
+    @property
+    def execution_context(self) -> ExecutionContext:
+        return self._execution_context
+
+    def inject_context(self, message: str):
+        """线程安全地注入用户上下文，供 ws_client 调用。"""
+        self._execution_context.inject_user_context(message)
+        logger.info("上下文已注入: %s...", message[:100])
 
     def _ensure_ai_session(self) -> AISession:
         if self._ai_session is None:
@@ -136,6 +148,25 @@ class DeepEngine:
 
                 current_index = self._project.completed_count + 1
 
+                # ① 上下文感知 prompt 适配（仅当有新上下文时触发 LLM）
+                if self._execution_context.has_meaningful_context():
+                    try:
+                        context_prompt = self._execution_context.build_context_prompt()
+                        was_adapted, adapted_prompt, reason = self._planner.adapt_task_prompt(task, context_prompt)
+                        self._execution_context.consume_new_context_flag()
+                        if was_adapted:
+                            task.original_prompt = task.prompt
+                            task.prompt = adapted_prompt
+                            task.adapted_prompt = adapted_prompt
+                            self._execution_context.record_adaptation(task.task_id, reason)
+                            logger.info("任务 %s 指令已适配: %s", task.title, reason)
+                            if callbacks.on_context_adapted:
+                                preview = adapted_prompt[:200]
+                                callbacks.on_context_adapted(task, reason, preview)
+                    except Exception as e:
+                        logger.error("任务适配异常，使用原始 prompt: %s", e)
+                        self._execution_context.consume_new_context_flag()
+
                 if callbacks.on_task_start:
                     callbacks.on_task_start(task, current_index, total_tasks)
 
@@ -143,12 +174,35 @@ class DeepEngine:
                     if callbacks.on_task_progress:
                         callbacks.on_task_progress(task, content)
 
+                # ② 执行任务
                 result = executor.execute(task, on_chunk=on_chunk)
 
                 if callbacks.on_task_done:
                     callbacks.on_task_done(task, result)
 
-                if not result.success and task.status == DeepTaskStatus.FAILED:
+                # ③ 记录结果到上下文
+                summary = result.output[-200:] if result.output else (result.error or "")
+                self._execution_context.add_result(
+                    task.task_id, task.title, result.success, summary
+                )
+
+                # ④ 智能失败处理（使用 replan 替代盲目重试）
+                if not result.success and task.retry_count < task.max_retries:
+                    try:
+                        context_prompt = self._execution_context.build_context_prompt()
+                        replanned = self._planner.replan_task(
+                            task, result.error or "未知错误", context_prompt
+                        )
+                        task.prompt = replanned.prompt
+                        task.status = DeepTaskStatus.PENDING
+                        logger.info("任务 %s 重规划后重试", task.title)
+                        continue
+                    except Exception as e:
+                        logger.error("任务重规划异常: %s", e)
+                        # 重规划失败，保持原有 fail 逻辑
+                        if task.status == DeepTaskStatus.FAILED:
+                            self._skip_dependent_tasks(task)
+                elif not result.success and task.status == DeepTaskStatus.FAILED:
                     logger.warning("任务 %s 失败，跳过后续依赖任务", task.title)
                     self._skip_dependent_tasks(task)
 

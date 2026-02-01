@@ -1,9 +1,11 @@
 from .engine import DeepEngine, DeepEngineManager, DeepEngineCallbacks
 from .models import (
+    ContextEntry,
     DeepTask,
     DeepTaskStatus,
     DeepProject,
     DeepProjectStatus,
+    ExecutionContext,
     ParsedRequirement,
     ExecutionResult,
     ProgressUpdate,
@@ -14,6 +16,7 @@ from .executor import TaskExecutor
 from .reporter import ProgressReporter
 
 __all__ = [
+    "ContextEntry",
     "DeepEngine",
     "DeepEngineManager",
     "DeepEngineCallbacks",
@@ -21,6 +24,7 @@ __all__ = [
     "DeepTaskStatus",
     "DeepProject",
     "DeepProjectStatus",
+    "ExecutionContext",
     "ParsedRequirement",
     "ExecutionResult",
     "ProgressUpdate",
