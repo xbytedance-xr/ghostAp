@@ -153,7 +153,7 @@ class TestStreamingCardManager:
     def test_update_content_success(self, manager, mock_client):
         mock_response = MagicMock()
         mock_response.success.return_value = True
-        mock_client.im.v1.message.update.return_value = mock_response
+        mock_client.im.v1.message.patch.return_value = mock_response
 
         card = StreamingCard(
             chat_id="chat_456",
@@ -181,12 +181,12 @@ class TestStreamingCardManager:
         result = manager.update_content(card, "same content")
 
         assert result is True
-        mock_client.im.v1.message.update.assert_not_called()
+        mock_client.im.v1.message.patch.assert_not_called()
 
     def test_close_streaming_success(self, manager, mock_client):
         mock_response = MagicMock()
         mock_response.success.return_value = True
-        mock_client.im.v1.message.update.return_value = mock_response
+        mock_client.im.v1.message.patch.return_value = mock_response
 
         card = StreamingCard(
             chat_id="chat_456",
@@ -206,7 +206,7 @@ class TestStreamingCardManager:
     def test_close_streaming_with_final_content(self, manager, mock_client):
         mock_update_response = MagicMock()
         mock_update_response.success.return_value = True
-        mock_client.im.v1.message.update.return_value = mock_update_response
+        mock_client.im.v1.message.patch.return_value = mock_update_response
 
         card = StreamingCard(
             chat_id="chat_456",
@@ -219,7 +219,7 @@ class TestStreamingCardManager:
         result = manager.close_streaming(card, final_content="final result")
 
         assert result is True
-        mock_client.im.v1.message.update.assert_called_once()
+        mock_client.im.v1.message.patch.assert_called_once()
 
     def test_get_card(self, manager):
         card = StreamingCard(
@@ -365,6 +365,53 @@ class TestStreamingCardManager:
         img_elements = [e for e in elements if e.get("tag") == "img"]
         assert len(img_elements) == 2
         assert img_elements[0]["img_key"] == "img_key_1"
+
+    # ---- _build_update_card_json (legacy for PATCH update) ----
+
+    def test_build_update_card_json_is_legacy_format(self, manager):
+        card_json = manager._build_update_card_json(
+            title="Test Title",
+            header_template="blue",
+            project_path="/tmp/test",
+            initial_content="thinking...",
+            streaming_mode=True,
+            buttons=None,
+            image_keys=None,
+        )
+
+        # legacy 卡片没有 schema/body 包装
+        assert "schema" not in card_json
+        assert "body" not in card_json
+        assert "elements" in card_json
+        assert card_json["header"]["template"] == "blue"
+
+        # legacy 元素不应包含 schema 2.0 专属字段
+        md_elements = [e for e in card_json["elements"] if e.get("tag") == "markdown"]
+        assert md_elements
+        for el in md_elements:
+            assert "text_size" not in el
+            assert "element_id" not in el
+
+    def test_send_streaming_card_uses_legacy_payload(self, manager, mock_client):
+        mock_response = MagicMock()
+        mock_response.success.return_value = True
+        mock_response.data.message_id = "msg_xyz789"
+        mock_client.im.v1.message.create.return_value = mock_response
+
+        card = StreamingCard(
+            chat_id="chat_456",
+            title="🤖 Test",
+            header_template="blue",
+            last_content="思考中...",
+        )
+
+        message_id = manager.send_streaming_card(card)
+        assert message_id == "msg_xyz789"
+
+        req = mock_client.im.v1.message.create.call_args[0][0]
+        payload = json.loads(req.body.content)
+        assert "schema" not in payload
+        assert "elements" in payload
 
     # ---- create_and_send_card ----
 

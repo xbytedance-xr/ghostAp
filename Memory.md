@@ -4,6 +4,38 @@
 GhostAP 是一个飞书机器人Shell沙箱服务，通过飞书机器人对话来安全执行本地shell命令，并支持 Coco AI 和 Claude AI 远程开发模式。
 
 ## 最新更新
+**更新时间**: 2026-02-02 06:30:00
+
+### 修复流式卡片更新失败 + Claude 会话闲置优化（2026-02-02 06:30:00）
+
+修复流式卡片 `update_content()` 和 `close_streaming()` 更新失败的问题（`code=99992402, msg=field validation failed`），并优化 Claude 会话闲置后的恢复体验。
+
+#### 问题根因
+
+1. **卡片更新使用了错误的 API 端点**：代码使用 `UpdateMessageRequest`（对应 `PUT /open-apis/im/v1/messages/:message_id`），该端点用于更新**文本/富文本消息**，不支持卡片消息更新。飞书卡片消息更新应使用 `PatchMessageRequest`（对应 `PATCH /open-apis/im/v1/messages/:message_id`），该端点专门用于更新应用发送的消息卡片。
+
+2. **Claude 会话闲置过久后恢复失败**：Claude CLI 内部的会话有独立的过期机制。当 GhostAP 尝试 `--resume` 一个已在 Claude CLI 中过期的会话时，会触发 "No conversation found with session ID" 错误。虽然现有的错误恢复机制有效（自动创建新会话），但失败的恢复尝试增加了不必要的延迟。
+
+#### 修改 `src/card/streaming.py` — 卡片更新 API 修复
+
+- **替换导入**：`UpdateMessageRequest` / `UpdateMessageRequestBody` → `PatchMessageRequest` / `PatchMessageRequestBody`
+- **`update_content()`**：`client.im.v1.message.update(req)` → `client.im.v1.message.patch(req)`
+- **`close_streaming()`**：`client.im.v1.message.update(req)` → `client.im.v1.message.patch(req)`
+
+#### 修改 `src/claude/session.py` — Claude 会话闲置优化
+
+- **新增** `_CLI_SESSION_MAX_IDLE = 1800`：Claude CLI 会话最大闲置时间阈值（30分钟）
+- **新增** `_reset_stale_session()`：在 `send_prompt` / `send_prompt_streaming` 调用前检查会话是否闲置过久，若超过阈值则主动创建新会话，避免触发失败的 `--resume` 尝试
+- **重写** `send_prompt()` / `send_prompt_streaming()`：在调用基类方法前执行闲置检查
+
+#### 修改 `tests/test_streaming.py`
+
+- 所有 `mock_client.im.v1.message.update` 替换为 `mock_client.im.v1.message.patch`
+
+#### 测试结果: 582 全部通过 ✅
+
+---
+
 **更新时间**: 2026-02-01 23:00:00
 
 ### 项目大扫除 — 6 阶段重构（2026-02-01 23:00:00）

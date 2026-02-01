@@ -9,10 +9,10 @@ import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
     CreateMessageRequest,
     CreateMessageRequestBody,
+    PatchMessageRequest,
+    PatchMessageRequestBody,
     ReplyMessageRequest,
     ReplyMessageRequestBody,
-    UpdateMessageRequest,
-    UpdateMessageRequestBody,
 )
 
 from ..config import get_settings
@@ -84,13 +84,31 @@ class StreamingCardManager:
         element_id: str,
         image_keys: Optional[list[str]],
         buttons: Optional[list[dict]],
+        *,
+        legacy: bool = False,
     ) -> list[dict]:
-        """构建卡片内容元素列表（create 和 update 共用）。"""
+        """构建卡片内容元素列表。
+
+        注意：飞书消息 PATCH 更新（`im/v1/message.update`）对卡片字段校验更严格，
+        legacy 卡片不支持 schema 2.0 的部分字段（如 `schema`/`body`/`text_size`/`element_id`）。
+        """
         path_display = project_path or "~"
         button_elements = self._build_button_elements(buttons or [])
 
+        def _maybe_attach(target: dict, **kv):
+            if legacy:
+                return target
+            for k, v in kv.items():
+                if v is not None:
+                    target[k] = v
+            return target
+
         return [
-            {"tag": "markdown", "content": f"📁 `{path_display}`", "element_id": "path_md", "text_size": "notation"},
+            _maybe_attach(
+                {"tag": "markdown", "content": f"📁 `{path_display}`"},
+                element_id="path_md",
+                text_size="notation",
+            ),
             {"tag": "hr"},
             *([
                 *[
@@ -103,7 +121,11 @@ class StreamingCardManager:
                 ],
                 {"tag": "hr"},
             ] if image_keys else []),
-            {"tag": "markdown", "content": initial_content, "element_id": element_id, "text_size": "normal"},
+            _maybe_attach(
+                {"tag": "markdown", "content": initial_content},
+                element_id=element_id,
+                text_size="normal",
+            ),
             *([{"tag": "hr"}, *button_elements] if button_elements else []),
         ]
 
@@ -119,7 +141,14 @@ class StreamingCardManager:
         streaming_mode: bool = True,
     ) -> dict:
         """构建 schema 2.0 卡片 JSON（用于 create/reply）。"""
-        elements = self._build_elements(project_path, initial_content, element_id, image_keys, buttons)
+        elements = self._build_elements(
+            project_path,
+            initial_content,
+            element_id,
+            image_keys,
+            buttons,
+            legacy=False,
+        )
 
         config: dict = {
             "wide_screen_mode": True,
@@ -156,8 +185,20 @@ class StreamingCardManager:
         buttons: Optional[list[dict]] = None,
         streaming_mode: bool = True,
     ) -> dict:
-        """构建 legacy 格式卡片 JSON（用于 PATCH 更新，不支持 schema 2.0）。"""
-        elements = self._build_elements(project_path, initial_content, element_id, image_keys, buttons)
+        """构建 legacy 格式卡片 JSON。
+
+        该格式同时用于：
+        - 创建“可被 PATCH 更新”的流式消息卡片（create/reply）
+        - 后续通过 `UpdateMessageRequest` 进行更新/关闭
+        """
+        elements = self._build_elements(
+            project_path,
+            initial_content,
+            element_id,
+            image_keys,
+            buttons,
+            legacy=True,
+        )
 
         config: dict = {
             "wide_screen_mode": True,
@@ -311,7 +352,10 @@ class StreamingCardManager:
                 is_final=False,
                 max_chars=self._max_card_chars,
             )
-            card_json = self._build_card_json(
+            # 关键：流式卡片后续需要用 message.update(PATCH) 更新。
+            # PATCH 更新对卡片字段校验严格，schema 2.0 格式会触发 field validation failed。
+            # 因此创建阶段也必须使用 legacy 卡片结构。
+            card_json = self._build_update_card_json(
                 title=card.title,
                 header_template=card.header_template,
                 project_path=card.project_path,
@@ -394,16 +438,16 @@ class StreamingCardManager:
                 streaming_mode=True,
             )
             req = (
-                UpdateMessageRequest.builder()
+                PatchMessageRequest.builder()
                 .message_id(card.message_id)
                 .request_body(
-                    UpdateMessageRequestBody.builder()
+                    PatchMessageRequestBody.builder()
                     .content(json.dumps(card_json, ensure_ascii=False))
                     .build()
                 )
                 .build()
             )
-            resp = self._client.im.v1.message.update(req)
+            resp = self._client.im.v1.message.patch(req)
             if not resp.success():
                 logger.warning("卡片消息更新失败: code=%s, msg=%s", resp.code, resp.msg)
                 return False
@@ -437,16 +481,16 @@ class StreamingCardManager:
                 streaming_mode=False,
             )
             req = (
-                UpdateMessageRequest.builder()
+                PatchMessageRequest.builder()
                 .message_id(card.message_id)
                 .request_body(
-                    UpdateMessageRequestBody.builder()
+                    PatchMessageRequestBody.builder()
                     .content(json.dumps(card_json, ensure_ascii=False))
                     .build()
                 )
                 .build()
             )
-            resp = self._client.im.v1.message.update(req)
+            resp = self._client.im.v1.message.patch(req)
             if not resp.success():
                 logger.warning("关闭流式失败: code=%s, msg=%s", resp.code, resp.msg)
                 return False

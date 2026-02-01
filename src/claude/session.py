@@ -13,6 +13,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ClaudeSession(BaseSession):
+    # Claude CLI sessions expire internally; if we haven't interacted
+    # for longer than this threshold, proactively create a new session
+    # instead of attempting a --resume that will fail.
+    _CLI_SESSION_MAX_IDLE = 1800  # 30 minutes
+
     def _generate_session_id(self) -> str:
         return str(uuid.uuid4())
 
@@ -24,6 +29,35 @@ class ClaudeSession(BaseSession):
 
     def _get_max_output_length(self) -> int:
         return get_settings().claude_max_output_length
+
+    def _reset_stale_session(self) -> None:
+        """Reset session if idle too long (Claude CLI sessions expire internally).
+
+        Must be called BEFORE base class updates ``last_active`` so the original
+        timestamp from the snapshot/creation is still available.
+        """
+        would_resume = not (self.message_count == 0 and not self.is_resumed)
+        if would_resume:
+            idle = time.time() - self.last_active
+            if idle > self._CLI_SESSION_MAX_IDLE:
+                logger.info(
+                    "Claude 会话 %s 闲置 %ds (> %ds)，主动创建新会话避免恢复失败",
+                    self.session_id, int(idle), self._CLI_SESSION_MAX_IDLE,
+                )
+                self.session_id = str(uuid.uuid4())
+                self.is_resumed = False
+                self.message_count = 0
+
+    def send_prompt(self, prompt, timeout=None, cwd=None, resume=False):
+        self._reset_stale_session()
+        return super().send_prompt(prompt, timeout, cwd, resume)
+
+    def send_prompt_streaming(self, prompt, on_chunk, timeout=None, cwd=None,
+                              resume=False, chunk_interval=0.3):
+        self._reset_stale_session()
+        return super().send_prompt_streaming(
+            prompt, on_chunk, timeout, cwd, resume, chunk_interval,
+        )
 
     def _build_cmd(self, prompt: str, resume: bool) -> list[str]:
         cmd = [
