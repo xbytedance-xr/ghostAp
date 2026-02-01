@@ -77,6 +77,36 @@ class StreamingCardManager:
 
     # ---- 卡片 JSON 构建（共用） ----
 
+    def _build_elements(
+        self,
+        project_path: Optional[str],
+        initial_content: str,
+        element_id: str,
+        image_keys: Optional[list[str]],
+        buttons: Optional[list[dict]],
+    ) -> list[dict]:
+        """构建卡片内容元素列表（create 和 update 共用）。"""
+        path_display = project_path or "~"
+        button_elements = self._build_button_elements(buttons or [])
+
+        return [
+            {"tag": "markdown", "content": f"📁 `{path_display}`", "element_id": "path_md", "text_size": "notation"},
+            {"tag": "hr"},
+            *([
+                *[
+                    {
+                        "tag": "img",
+                        "img_key": key,
+                        "alt": {"tag": "plain_text", "content": f"图片 {i + 1}"},
+                    }
+                    for i, key in enumerate(image_keys)
+                ],
+                {"tag": "hr"},
+            ] if image_keys else []),
+            {"tag": "markdown", "content": initial_content, "element_id": element_id, "text_size": "normal"},
+            *([{"tag": "hr"}, *button_elements] if button_elements else []),
+        ]
+
     def _build_card_json(
         self,
         title: str,
@@ -88,15 +118,8 @@ class StreamingCardManager:
         buttons: Optional[list[dict]] = None,
         streaming_mode: bool = True,
     ) -> dict:
-        """构建 CardKit schema 2.0 卡片 JSON 结构。
-
-        流式和非流式共用同一结构，区别仅在 config.streaming_mode。
-        """
-        settings = get_settings()
-        path_display = project_path or "~"
-        button_elements = self._build_button_elements(
-            buttons or [], layout=(settings.card_button_layout or "responsive")
-        )
+        """构建 schema 2.0 卡片 JSON（用于 create/reply）。"""
+        elements = self._build_elements(project_path, initial_content, element_id, image_keys, buttons)
 
         config: dict = {
             "wide_screen_mode": True,
@@ -118,24 +141,43 @@ class StreamingCardManager:
                 "template": header_template,
             },
             "body": {
-                "elements": [
-                    {"tag": "markdown", "content": f"📁 `{path_display}`", "element_id": "path_md", "text_size": "notation"},
-                    {"tag": "hr"},
-                    *([
-                        *[
-                            {
-                                "tag": "img",
-                                "img_key": key,
-                                "alt": {"tag": "plain_text", "content": f"图片 {i + 1}"},
-                            }
-                            for i, key in enumerate(image_keys)
-                        ],
-                        {"tag": "hr"},
-                    ] if image_keys else []),
-                    {"tag": "markdown", "content": initial_content, "element_id": element_id, "text_size": "normal"},
-                    *([{"tag": "hr"}, *button_elements] if button_elements else []),
-                ]
+                "elements": elements,
             },
+        }
+
+    def _build_update_card_json(
+        self,
+        title: str,
+        header_template: str,
+        project_path: Optional[str] = None,
+        initial_content: str = "正在思考...",
+        element_id: str = "content_md",
+        image_keys: Optional[list[str]] = None,
+        buttons: Optional[list[dict]] = None,
+        streaming_mode: bool = True,
+    ) -> dict:
+        """构建 legacy 格式卡片 JSON（用于 PATCH 更新，不支持 schema 2.0）。"""
+        elements = self._build_elements(project_path, initial_content, element_id, image_keys, buttons)
+
+        config: dict = {
+            "wide_screen_mode": True,
+            "update_multi": True,
+        }
+        if streaming_mode:
+            config["streaming_mode"] = True
+            config["streaming_config"] = {
+                "print_frequency_ms": {"default": 30, "android": 30, "ios": 30, "pc": 30},
+                "print_step": {"default": 3, "android": 3, "ios": 3, "pc": 3},
+                "print_strategy": "fast",
+            }
+
+        return {
+            "config": config,
+            "header": {
+                "title": {"tag": "plain_text", "content": title},
+                "template": header_template,
+            },
+            "elements": elements,
         }
 
     def _resolve_title_and_template(
@@ -342,7 +384,7 @@ class StreamingCardManager:
 
         try:
             buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode)
-            card_json = self._build_card_json(
+            card_json = self._build_update_card_json(
                 title=card.title,
                 header_template=card.header_template,
                 project_path=card.project_path,
@@ -356,6 +398,7 @@ class StreamingCardManager:
                 .message_id(card.message_id)
                 .request_body(
                     UpdateMessageRequestBody.builder()
+                    .msg_type("interactive")
                     .content(json.dumps(card_json, ensure_ascii=False))
                     .build()
                 )
@@ -385,7 +428,7 @@ class StreamingCardManager:
                 max_chars=self._max_card_chars,
             )
             buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode)
-            card_json = self._build_card_json(
+            card_json = self._build_update_card_json(
                 title=card.title,
                 header_template=card.header_template,
                 project_path=card.project_path,
@@ -399,6 +442,7 @@ class StreamingCardManager:
                 .message_id(card.message_id)
                 .request_body(
                     UpdateMessageRequestBody.builder()
+                    .msg_type("interactive")
                     .content(json.dumps(card_json, ensure_ascii=False))
                     .build()
                 )
