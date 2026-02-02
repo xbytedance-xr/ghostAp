@@ -34,6 +34,7 @@ class DeepEngineCallbacks:
     on_task_start: Optional[Callable[[DeepTask, int, int], None]] = None
     on_task_progress: Optional[Callable[[DeepTask, str], None]] = None
     on_task_done: Optional[Callable[[DeepTask, ExecutionResult], None]] = None
+    on_task_retry: Optional[Callable[[DeepTask, str, int, int], None]] = None  # (task, error, retry_num, max_retries)
     on_context_adapted: Optional[Callable[[DeepTask, str, str], None]] = None  # (task, reason, prompt_preview)
     on_project_done: Optional[Callable[[DeepProject], None]] = None
     on_error: Optional[Callable[[str], None]] = None
@@ -208,21 +209,30 @@ class DeepEngine:
                 # ④ 智能失败处理（使用 replan 替代盲目重试）
                 if not result.success and task.retry_count < task.max_retries:
                     try:
+                        error_msg = result.error or "未知错误"
                         context_prompt = self._execution_context.build_context_prompt()
+                        if task.original_prompt is None:
+                            task.original_prompt = task.prompt
+
+                        if callbacks.on_task_retry:
+                            callbacks.on_task_retry(task, error_msg, task.retry_count + 1, task.max_retries)
+
                         replanned = self._planner.replan_task(
-                            task, result.error or "未知错误", context_prompt
+                            task, error_msg, context_prompt, task.retry_count
                         )
                         task.prompt = replanned.prompt
                         task.status = DeepTaskStatus.PENDING
-                        logger.info("[Deep:%s] 任务「%s」重规划后重试 (第 %d 次)", project_name, task.title, task.retry_count)
+                        logger.info("[Deep:%s] 任务「%s」重规划后重试 (第 %d/%d 次), prompt 长度: %d -> %d",
+                                   project_name, task.title, task.retry_count + 1, task.max_retries,
+                                   len(task.original_prompt or ""), len(task.prompt))
                         continue
                     except Exception as e:
                         logger.error("[Deep:%s] 任务重规划异常: %s", project_name, e)
-                        # 重规划失败，保持原有 fail 逻辑
                         if task.status == DeepTaskStatus.FAILED:
                             self._skip_dependent_tasks(task)
                 elif not result.success and task.status == DeepTaskStatus.FAILED:
-                    logger.warning("[Deep:%s] 任务「%s」失败，跳过后续依赖任务", project_name, task.title)
+                    logger.warning("[Deep:%s] 任务「%s」最终失败（已重试 %d 次），跳过后续依赖任务",
+                                  project_name, task.title, task.retry_count)
                     self._skip_dependent_tasks(task)
 
             if self._project.is_completed:

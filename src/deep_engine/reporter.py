@@ -12,11 +12,10 @@ from .models import (
 
 class ProgressReporter:
     def format_planning_start(self, requirement: str) -> str:
-        preview = requirement[:100] + "..." if len(requirement) > 100 else requirement
         return f"""🧠 **Deep Agent 启动**
 
 📝 正在分析需求...
-> {preview}
+> {requirement}
 
 ⏳ 请稍候，正在规划任务..."""
 
@@ -53,16 +52,14 @@ class ProgressReporter:
 ⏳ 正在执行..."""
 
     def format_task_progress(self, task: DeepTask, content: str) -> str:
-        preview = content[-500:] if len(content) > 500 else content
         return f"""🔄 **{task.title}** 执行中...
 
 ```
-{preview}
+{content}
 ```"""
 
     def format_task_done(self, task: DeepTask, result: ExecutionResult, current: int, total: int) -> str:
         if result.success:
-            output_preview = result.output[-800:] if len(result.output) > 800 else result.output
             return f"""✅ **任务完成 [{current}/{total}]**
 
 📌 **{task.title}**
@@ -70,10 +67,10 @@ class ProgressReporter:
 
 **执行结果:**
 ```
-{output_preview}
+{result.output}
 ```"""
         else:
-            error_preview = result.error[:300] if result.error else "未知错误"
+            error_text = result.error if result.error else "未知错误"
             return f"""❌ **任务失败 [{current}/{total}]**
 
 📌 **{task.title}**
@@ -81,7 +78,7 @@ class ProgressReporter:
 
 **错误信息:**
 ```
-{error_preview}
+{error_text}
 ```"""
 
     def format_project_done(self, project: DeepProject) -> str:
@@ -122,7 +119,7 @@ class ProgressReporter:
         return f"""❌ **Deep Agent 错误**
 
 ```
-{error[:500]}
+{error}
 ```
 
 请检查错误信息后重试。"""
@@ -160,10 +157,7 @@ class ProgressReporter:
                 duration_str = f" ({task.duration():.1f}s)" if task.duration() else ""
                 result_preview = ""
                 if task.result:
-                    preview = task.result.strip()[:80]
-                    if len(task.result) > 80:
-                        preview += "..."
-                    result_preview = f"\n     └ {preview}"
+                    result_preview = f"\n     └ {task.result.strip()}"
                 lines.append(f"  {task.order + 1}. {task.title}{duration_str}{result_preview}")
 
         failed_tasks = [t for t in project.tasks if t.status == DeepTaskStatus.FAILED]
@@ -172,19 +166,14 @@ class ProgressReporter:
             for task in failed_tasks:
                 error_preview = ""
                 if task.error:
-                    preview = task.error.strip()[:60]
-                    if len(task.error) > 60:
-                        preview += "..."
-                    error_preview = f"\n     └ {preview}"
+                    error_preview = f"\n     └ {task.error.strip()}"
                 lines.append(f"  {task.order + 1}. {task.title}{error_preview}")
 
         pending_tasks = [t for t in project.tasks if t.status in (DeepTaskStatus.PENDING, DeepTaskStatus.READY)]
         if pending_tasks:
             lines.append(f"\n**⏳ 待执行任务 ({len(pending_tasks)}):**")
-            for task in pending_tasks[:5]:
+            for task in pending_tasks:
                 lines.append(f"  {task.order + 1}. {task.title}")
-            if len(pending_tasks) > 5:
-                lines.append(f"  ... 还有 {len(pending_tasks) - 5} 个任务")
 
         return "\n".join(lines)
 
@@ -210,15 +199,13 @@ class ProgressReporter:
         }.get(status, "❓")
 
     def format_context_injected(self, message: str) -> str:
-        preview = message[:200] + "..." if len(message) > 200 else message
         return f"""💬 **上下文已注入**
 
-> {preview}
+> {message}
 
 将在下一个任务执行前生效。"""
 
     def format_task_adapted(self, task: DeepTask, reason: str, prompt_preview: str) -> str:
-        preview = prompt_preview[:300] + "..." if len(prompt_preview) > 300 else prompt_preview
         return f"""🔄 **任务指令已调整**
 
 📌 **{task.title}**
@@ -226,8 +213,23 @@ class ProgressReporter:
 
 **调整后指令预览:**
 ```
-{preview}
+{prompt_preview}
 ```"""
+
+    def format_task_retry(self, task: DeepTask, error: str, retry_num: int, max_retries: int) -> str:
+        return f"""🔄 **任务重试中 [{retry_num}/{max_retries}]**
+
+📌 **{task.title}**
+
+**失败原因:**
+```
+{error}
+```
+
+⏳ 正在智能分析错误并重新规划任务..."""
+
+    def get_task_retry_title(self, retry_num: int, max_retries: int) -> str:
+        return f"🔄 任务重试 [{retry_num}/{max_retries}]"
 
     # --- Card title helpers ---
 

@@ -399,12 +399,11 @@ class CardBuilder:
                 project, f"{mode_name} 模式", "没有可恢复的会话", show_buttons=True
             )
 
-        last_query_display = snapshot.last_query[:50] + "..." if len(snapshot.last_query) > 50 else snapshot.last_query
         content = (
             f"🔄 检测到未完成的 {mode_name} 会话\n\n"
             f"• 会话 ID: `{snapshot.session_id}`\n"
             f"• 对话数: {snapshot.query_count} 条\n"
-            f"• 最后对话: {last_query_display}"
+            f"• 最后对话: {snapshot.last_query}"
         )
 
         resume_action = f"resume_{mode}"

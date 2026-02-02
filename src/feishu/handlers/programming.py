@@ -302,10 +302,10 @@ class ProgrammingModeHandler(BaseHandler):
         if project:
             self._update_snapshot_on_project(project, text, session.message_count, session.session_id)
             project.add_conversation("user", text, message_id)
-            project.add_conversation("assistant", final_response[:200])
+            project.add_conversation("assistant", final_response)
             source = self.mode_name.lower()
             self.context_manager.update_context(project.project_id, conversation={"role": "user", "content": text, "source_mode": source, "message_id": message_id})
-            self.context_manager.update_context(project.project_id, conversation={"role": "assistant", "content": final_response[:200], "source_mode": source})
+            self.context_manager.update_context(project.project_id, conversation={"role": "assistant", "content": final_response, "source_mode": source})
 
         self.add_reaction(message_id, EmojiReaction.on_coco_response())
 

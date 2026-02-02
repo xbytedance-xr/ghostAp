@@ -170,6 +170,7 @@ class TestDeepProject:
         tasks[0].complete("完成")
         tasks[1].fail("失败")
         tasks[1].fail("失败")
+        tasks[1].fail("失败")
         
         assert project.completed_count == 1
         assert project.failed_count == 1
@@ -968,10 +969,10 @@ class TestProgressReporterContextMethods:
         assert "上下文已注入" in msg
         assert "PostgreSQL" in msg
 
-    def test_format_context_injected_truncates(self, reporter):
+    def test_format_context_injected_long_message(self, reporter):
         long_msg = "x" * 300
         msg = reporter.format_context_injected(long_msg)
-        assert "..." in msg
+        assert long_msg in msg
 
     def test_format_task_adapted(self, reporter):
         task = DeepTask.create("创建数据库", "描述", "prompt")

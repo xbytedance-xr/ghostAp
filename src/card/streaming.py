@@ -71,9 +71,7 @@ class StreamingCardManager:
         self._cards: dict[str, StreamingCard] = {}
         self._lock = threading.Lock()
 
-        settings = get_settings()
-        # 卡片消息每次更新都要全量携带 card JSON，建议保守一些
-        self._max_card_chars = min(getattr(settings, "coco_max_output_length", 30000), 8000)
+        self._max_card_chars = 12222
 
     # ---- 卡片 JSON 构建（共用） ----
 

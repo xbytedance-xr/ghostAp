@@ -273,40 +273,145 @@ goals: ["创建项目结构", "实现数据抓取", "解析数据", "保存CSV",
             logger.error("任务适配异常: %s", e)
             return False, task.prompt, f"适配异常: {e}"
 
-    def replan_task(self, failed_task: DeepTask, error: str, context: str = "") -> DeepTask:
+    REPLAN_SYSTEM_PROMPT = """你是一个任务修复专家，负责分析失败原因并改进任务指令。
+
+## 你的核心目标
+帮助用户达成原始任务目标。任务失败不是终点，而是优化的机会。
+
+## 常见错误类型及修复策略
+
+### 1. Prompt is too long（提示词过长）
+- **原因**: 任务指令太详细，超出了 AI 助手的上下文限制
+- **修复策略**:
+  - 精简指令，只保留核心要求
+  - 移除冗余的背景说明
+  - 将复杂任务拆分为更小的步骤
+  - 使用简洁的表述替代详细描述
+
+### 2. 执行超时
+- **原因**: 任务范围太大或操作太复杂
+- **修复策略**:
+  - 缩小任务范围
+  - 分步骤执行
+  - 简化操作要求
+
+### 3. 文件/依赖不存在
+- **原因**: 前置条件未满足
+- **修复策略**:
+  - 在指令中添加检查/创建步骤
+  - 明确指出需要先创建的文件
+
+### 4. 语法/编译错误
+- **原因**: 生成的代码有问题
+- **修复策略**:
+  - 要求更严格的代码检查
+  - 添加测试验证步骤
+
+## 输出要求
+1. 直接输出改进后的 prompt，不要有任何其他格式或说明
+2. 保留原始任务的核心目标
+3. 确保新的 prompt 能避免之前的错误
+4. 在 prompt 末尾保留 DEEP_TASK_SUCCESS / DEEP_TASK_FAILURE 的输出要求"""
+
+    def replan_task(self, failed_task: DeepTask, error: str, context: str = "", retry_count: int = 0) -> DeepTask:
         try:
             llm = self._get_llm()
 
-            prompt = f"""之前的任务执行失败，请重新规划这个任务。
+            error_analysis = self._analyze_error(error)
 
-失败的任务：
+            prompt = f"""任务执行失败，需要修复并重试。
+
+## 失败的任务
 - 标题: {failed_task.title}
 - 描述: {failed_task.description}
-- 原始指令: {failed_task.prompt}
+- 重试次数: {retry_count + 1}/3
 
-失败原因：
+## 原始指令
+```
+{failed_task.prompt}
+```
+
+## 失败原因
 {error}
 
-{f"上下文信息：{context}" if context else ""}
+## 错误分析
+{error_analysis}
 
-请生成一个改进的任务指令，避免之前的问题。只输出新的 prompt 内容，不要其他格式。"""
+{f"## 执行上下文\n{context}" if context else ""}
+
+## 要求
+请根据错误分析，生成一个改进的任务指令。目标是让任务能够成功执行，帮助用户达成目标。
+
+直接输出新的 prompt 内容，不要有其他格式。"""
 
             messages = [
-                SystemMessage(content="你是一个任务优化专家，负责改进失败的任务指令。"),
+                SystemMessage(content=self.REPLAN_SYSTEM_PROMPT),
                 HumanMessage(content=prompt),
             ]
 
             response = llm.invoke(messages)
             new_prompt = response.content.strip()
 
-            return DeepTask.create(
+            if new_prompt.startswith("```"):
+                lines = new_prompt.split("\n")
+                new_prompt = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+
+            logger.info("任务重规划完成: 原始长度=%d, 新长度=%d", len(failed_task.prompt), len(new_prompt))
+
+            new_task = DeepTask.create(
                 title=failed_task.title,
-                description=f"[重试] {failed_task.description}",
+                description=failed_task.description,
                 prompt=new_prompt,
                 order=failed_task.order,
                 dependencies=failed_task.dependencies,
             )
+            new_task.original_prompt = failed_task.original_prompt or failed_task.prompt
+            new_task.retry_count = retry_count
+
+            return new_task
 
         except Exception as e:
             logger.error("任务重规划异常: %s", e)
             return failed_task
+
+    def _analyze_error(self, error: str) -> str:
+        error_lower = error.lower()
+
+        if "prompt is too long" in error_lower or "too long" in error_lower or "context length" in error_lower:
+            return """**错误类型**: Prompt 过长
+**修复建议**:
+1. 大幅精简指令，只保留最核心的要求
+2. 移除所有背景说明和冗余描述
+3. 使用简洁的动词短语
+4. 如果任务复杂，只保留当前步骤的指令"""
+
+        if "timeout" in error_lower or "超时" in error_lower:
+            return """**错误类型**: 执行超时
+**修复建议**:
+1. 缩小任务范围
+2. 简化操作步骤
+3. 避免大规模文件操作"""
+
+        if "not found" in error_lower or "不存在" in error_lower or "no such file" in error_lower:
+            return """**错误类型**: 文件/资源不存在
+**修复建议**:
+1. 在指令开头添加检查/创建步骤
+2. 确保依赖的文件已创建"""
+
+        if "syntax error" in error_lower or "语法错误" in error_lower:
+            return """**错误类型**: 语法错误
+**修复建议**:
+1. 要求生成代码后进行语法检查
+2. 添加简单的测试验证"""
+
+        if "permission" in error_lower or "权限" in error_lower:
+            return """**错误类型**: 权限问题
+**修复建议**:
+1. 检查文件/目录权限
+2. 使用适当的权限命令"""
+
+        return """**错误类型**: 未知错误
+**修复建议**:
+1. 简化任务指令
+2. 添加更多错误处理
+3. 分步骤执行"""

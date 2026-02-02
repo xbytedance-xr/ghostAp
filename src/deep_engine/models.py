@@ -40,7 +40,7 @@ class DeepTask:
     result: Optional[str] = None
     error: Optional[str] = None
     retry_count: int = 0
-    max_retries: int = 2
+    max_retries: int = 3
     original_prompt: Optional[str] = None
     adapted_prompt: Optional[str] = None
 

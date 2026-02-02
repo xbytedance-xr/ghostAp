@@ -220,10 +220,26 @@ class DeepHandler(BaseHandler):
             )
             self.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
 
+        def on_task_retry(task: DeepTask, error: str, retry_num: int, max_retries: int):
+            content = reporter.format_task_retry(task, error, retry_num, max_retries)
+            title = reporter.get_task_retry_title(retry_num, max_retries)
+            engine = self.ctx.deep_engine_manager.get(chat_id, project.root_path if project else "")
+            deep_project_id = engine.project.project_id if engine and engine.project else None
+            progress_bar = None
+            if engine and engine.project:
+                progress_bar = reporter._make_progress_bar(engine.project.completed_count, engine.project.total_count)
+            msg_type, card_content = CardBuilder.build_deep_card(
+                project=project, title=title, content=content,
+                progress_bar=progress_bar, deep_project_id=deep_project_id,
+                is_executing=True, engine_name=engine_name,
+            )
+            self.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
+
         return DeepEngineCallbacks(
             on_planning_done=on_planning_done,
             on_task_start=on_task_start,
             on_task_done=on_task_done,
+            on_task_retry=on_task_retry,
             on_context_adapted=on_context_adapted,
             on_project_done=on_project_done,
             on_error=on_error,
