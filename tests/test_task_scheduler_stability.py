@@ -7,7 +7,7 @@ from src.tasking import TaskScheduler, TaskSpec, TaskPriority, TaskStatus
 def test_scheduler_isolates_queue_keys_within_same_chat():
     """同一个 chat_id 下，不同 queue_key 的任务可以并行执行（用于 deep 不阻塞消息）。"""
 
-    scheduler = TaskScheduler(max_concurrent=2, per_chat_concurrency=1)
+    scheduler = TaskScheduler(max_concurrent=2, per_key_concurrency=1)
 
     lock = threading.Lock()
     active_total = 0
@@ -51,7 +51,7 @@ def test_scheduler_isolates_queue_keys_within_same_chat():
 
 
 def test_scheduler_emits_valid_event_sequence_with_progress_updates():
-    scheduler = TaskScheduler(max_concurrent=2, per_chat_concurrency=1)
+    scheduler = TaskScheduler(max_concurrent=2, per_key_concurrency=1)
     events: list[tuple[str, str]] = []  # (run_id, status)
     lock = threading.Lock()
 
@@ -86,7 +86,7 @@ def test_scheduler_emits_valid_event_sequence_with_progress_updates():
 
 
 def test_scheduler_priority_high_runs_before_normal_in_same_queue():
-    scheduler = TaskScheduler(max_concurrent=1, per_chat_concurrency=1)
+    scheduler = TaskScheduler(max_concurrent=1, per_key_concurrency=1)
 
     order: list[str] = []
     lock = threading.Lock()
@@ -127,7 +127,7 @@ def test_scheduler_priority_high_runs_before_normal_in_same_queue():
 
 
 def test_scheduler_cancel_running_task_cooperatively():
-    scheduler = TaskScheduler(max_concurrent=1, per_chat_concurrency=1)
+    scheduler = TaskScheduler(max_concurrent=1, per_key_concurrency=1)
     started = threading.Event()
 
     def long_running(ctx):
@@ -149,7 +149,7 @@ def test_scheduler_cancel_running_task_cooperatively():
 def test_scheduler_stress_no_deadlock_or_conflict():
     """轻量压力测试：大量任务混合不同 chat/queue_key，验证不会死锁且满足并发语义。"""
 
-    scheduler = TaskScheduler(max_concurrent=8, per_chat_concurrency=1)
+    scheduler = TaskScheduler(max_concurrent=8, per_key_concurrency=1)
     lock = threading.Lock()
     active_total = 0
     max_active_total = 0
@@ -190,6 +190,6 @@ def test_scheduler_stress_no_deadlock_or_conflict():
     assert all(r.status == TaskStatus.SUCCEEDED for r in results)
     assert max_active_total <= 8
 
-    # 每个 key 内必须串行（per_chat_concurrency=1 实际按 queue_key 生效）
+    # 每个 key 内必须串行（per_key_concurrency=1 实际按 queue_key 生效）
     assert all(v <= 1 for v in max_active_by_key.values())
 

@@ -26,7 +26,7 @@ from ..card import CardBuilder
 from ..card.streaming import StreamingCardManager
 from ..deep_engine import DeepEngine, DeepEngineManager, DeepEngineCallbacks, ProgressReporter
 from ..deep_engine.models import DeepProject, DeepProjectStatus, DeepTask, ExecutionResult
-from ..tasking import TaskScheduler, TaskSpec, TaskPriority
+from ..tasking import TaskScheduler, TaskSpec, TaskPriority, SYSTEM_QUEUE_SUFFIX
 from .message_formatter import FeishuMessageFormatter as fmt
 from .emoji import EmojiType, EmojiReaction
 from .message_cache import MessageCache
@@ -59,7 +59,8 @@ class FeishuWSClient:
         self._message_cache = MessageCache(ttl=300, max_size=1000, cleanup_interval=60)
         self._scheduler = TaskScheduler(
             max_concurrent=self.settings.task_scheduler_max_concurrent,
-            per_chat_concurrency=self.settings.task_scheduler_per_key_concurrency,
+            per_key_concurrency=self.settings.task_scheduler_per_key_concurrency,
+            system_concurrency=10,
             thread_name_prefix="ghost_worker",
         )
         self._working_dirs: dict[str, str] = {}
@@ -447,18 +448,20 @@ class FeishuWSClient:
             except Exception:
                 project_id = None
 
+        is_system = self._is_system_command_message(data)
+
         request_id = self._ensure_request_id(message_id, chat_id=chat_id, project_id=project_id)
 
         spec = TaskSpec(
             chat_id=chat_id,
-            queue_key=chat_id,
             name="process_message",
             task_type="feishu_message",
             message_id=message_id,
             project_id=project_id,
             origin_message_id=message_id,
             request_id=request_id,
-            priority=TaskPriority.NORMAL,
+            priority=TaskPriority.HIGH if is_system else TaskPriority.NORMAL,
+            is_system_command=is_system,
         )
         handle = self._scheduler.submit(spec, lambda ctx: self._process_message_async(data, task_ctx=ctx))
         try:
@@ -466,6 +469,23 @@ class FeishuWSClient:
                 self._message_linker.link_task(message_id, handle.run_id)
         except Exception:
             pass
+
+    def _is_system_command_message(self, data: P2ImMessageReceiveV1) -> bool:
+        """Check if the message is a system command that should bypass project queue."""
+        try:
+            message = data.event.message
+            content_str = message.content
+            if not content_str:
+                return False
+            import json
+            content = json.loads(content_str)
+            text = content.get("text", "").strip()
+            if text.startswith("@"):
+                parts = text.split(None, 1)
+                text = parts[1].strip() if len(parts) > 1 else ""
+            return self._is_interceptable_command(text)
+        except Exception:
+            return False
 
     def _process_message_async(self, data: P2ImMessageReceiveV1, task_ctx=None):
         try:
@@ -655,16 +675,18 @@ class FeishuWSClient:
         origin_message_id = origin_message_id or open_message_id
         request_id = self._ensure_request_id(origin_message_id, chat_id=open_chat_id, project_id=project_id)
 
+        is_system = self._is_system_card_action(data)
+
         spec = TaskSpec(
             chat_id=open_chat_id,
-            queue_key=open_chat_id,
             name="process_card_action",
             task_type="feishu_card_action",
             message_id=open_message_id,
             project_id=project_id,
             origin_message_id=origin_message_id,
             request_id=request_id,
-            priority=TaskPriority.NORMAL,
+            priority=TaskPriority.HIGH if is_system else TaskPriority.NORMAL,
+            is_system_command=is_system,
         )
         handle = self._scheduler.submit(spec, lambda ctx: self._process_card_action_async(data, task_ctx=ctx))
         try:
@@ -672,6 +694,29 @@ class FeishuWSClient:
         except Exception:
             pass
         return None
+
+    def _is_system_card_action(self, data: P2CardActionTrigger) -> bool:
+        """Check if the card action is a system action that should bypass project queue."""
+        try:
+            value_raw = data.event.action.value
+            if isinstance(value_raw, dict):
+                action_type = value_raw.get("action", "")
+            elif isinstance(value_raw, str):
+                import json
+                try:
+                    parsed = json.loads(value_raw)
+                    action_type = parsed.get("action", "") if isinstance(parsed, dict) else ""
+                except Exception:
+                    action_type = ""
+            else:
+                action_type = ""
+            system_actions = {
+                "show_status", "switch_project", "show_board", "refresh_board",
+                "show_detail", "new_project_prompt",
+            }
+            return action_type in system_actions
+        except Exception:
+            return False
 
     def _process_card_action_async(self, data: Any, task_ctx=None):
         try:

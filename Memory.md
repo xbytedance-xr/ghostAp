@@ -4,7 +4,59 @@
 GhostAP 是一个飞书机器人Shell沙箱服务，通过飞书机器人对话来安全执行本地shell命令，并支持 Coco AI 和 Claude AI 远程开发模式。
 
 ## 最新更新
-**更新时间**: 2026-02-02 19:20:00
+**更新时间**: 2026-02-02 21:30:00
+
+### 项目级任务隔离与系统命令快速通道（2026-02-02 21:30:00）
+
+#### 问题背景
+在编码模式下，系统命令（如 `/help`, `/projects`）被阻塞，无法立即执行。不同项目的任务也无法并发执行。
+
+#### 解决方案
+重新设计任务调度系统，实现以项目维度管理对话任务：
+
+1. **TaskSpec 增强**
+   - 新增 `is_system_command: bool` 字段
+   - 新增 `get_effective_queue_key()` 方法，自动计算 queue_key
+   - 路由规则：
+     - 系统命令: `{chat_id}:SYSTEM` (高并发)
+     - 项目任务: `{chat_id}:{project_id}` (串行)
+     - 无项目任务: `{chat_id}:DEFAULT` (串行)
+
+2. **TaskScheduler 改进**
+   - 参数重命名: `per_chat_concurrency` → `per_key_concurrency`
+   - 新增 `system_concurrency` 参数（默认 10），系统队列并发数
+   - 系统命令使用独立快速通道，不受 `per_key_concurrency` 限制
+
+3. **ModeManager 项目级模式管理**
+   - 支持 `project_id` 参数，每个项目可以有独立的编码模式
+   - 模式解析顺序：项目模式 > chat 模式 > SMART（默认）
+   - 新增 `clear_project_mode()`, `get_project_mode()` 方法
+
+4. **ws_client.py 集成**
+   - 新增 `_is_system_command_message()` 方法识别系统命令
+   - 新增 `_is_system_card_action()` 方法识别系统卡片动作
+   - 系统命令使用 `TaskPriority.HIGH` + `is_system_command=True`
+
+#### 系统命令定义
+立即执行（系统命令）：`/help`, `/帮助`, `/projects`, `/status`, `/coco_info`, `/claude_info`, `/deep_status`, `/deep_board`
+
+受项目隔离（普通任务）：`/coco`, `/claude`, `/exit`, `/deep <requirement>`, 普通消息
+
+#### 测试
+- 新增 6 个 TaskScheduler 测试（queue_key 计算、系统队列高并发、项目并发隔离）
+- 新增 7 个 ModeManager 项目级模式测试
+- 全部 744 个测试通过
+
+#### 修改文件
+- `src/tasking/scheduler.py`: TaskSpec 增强、TaskScheduler 改进
+- `src/tasking/__init__.py`: 导出新常量
+- `src/mode/manager.py`: 项目级模式管理
+- `src/feishu/ws_client.py`: 系统命令识别与路由
+- `tests/test_task_scheduler.py`: 新增测试
+- `tests/test_task_scheduler_stability.py`: 参数名更新
+- `tests/test_mode_manager.py`: 新增项目级模式测试
+
+---
 
 ### 清理无关入口文件（2026-02-02 19:20:00）
 - 删除根目录误入的爬虫项目入口文件 `main.py`，避免与真实入口混淆

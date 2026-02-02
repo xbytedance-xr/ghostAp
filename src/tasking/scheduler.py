@@ -24,6 +24,10 @@ class TaskPriority(IntEnum):
     LOW = 20
 
 
+SYSTEM_QUEUE_SUFFIX = ":SYSTEM"
+DEFAULT_QUEUE_SUFFIX = ":DEFAULT"
+
+
 @dataclass(frozen=True)
 class TaskSpec:
     """Metadata that influences routing and scheduling."""
@@ -31,16 +35,29 @@ class TaskSpec:
     chat_id: str
     name: str
     task_type: str = "generic"
-    # Queue routing key. If not provided, defaults to chat_id.
-    # Use this to allow control-plane tasks (cancel/stop/status) to bypass
-    # long-running data-plane tasks while still attributing events to chat_id.
     queue_key: Optional[str] = None
     project_id: Optional[str] = None
     message_id: Optional[str] = None
-    # Correlation ids (best-effort). Useful for tracing replies/cards back to the user's trigger message.
     origin_message_id: Optional[str] = None
     request_id: Optional[str] = None
     priority: TaskPriority = TaskPriority.NORMAL
+    is_system_command: bool = False
+
+    def get_effective_queue_key(self) -> str:
+        """Calculate the effective queue key for routing.
+        
+        Routing rules:
+        - System commands: {chat_id}:SYSTEM (high concurrency, bypasses per-key limit)
+        - Project tasks: {chat_id}:{project_id} (serial within project)
+        - No project: {chat_id}:DEFAULT (serial)
+        """
+        if self.queue_key:
+            return self.queue_key
+        if self.is_system_command:
+            return f"{self.chat_id}{SYSTEM_QUEUE_SUFFIX}"
+        if self.project_id:
+            return f"{self.chat_id}:{self.project_id}"
+        return f"{self.chat_id}{DEFAULT_QUEUE_SUFFIX}"
 
 
 @dataclass
@@ -147,28 +164,37 @@ class TaskHandle:
 
 class TaskScheduler:
     """A lightweight scheduler that provides:
-    - per-chat ordered execution (default per_chat_concurrency=1)
+    - per-key ordered execution (default per_key_concurrency=1)
     - global concurrency limit (max_concurrent)
     - task status tracking and progress updates
-
-    It is intentionally thread-based to match the current codebase.
+    - system command fast-track (bypasses per-key limit)
+    
+    Queue key routing:
+    - System commands: {chat_id}:SYSTEM (high concurrency)
+    - Project tasks: {chat_id}:{project_id} (serial within project)
+    - No project: {chat_id}:DEFAULT (serial)
+    
+    This allows different projects to execute concurrently while
+    maintaining serial execution within each project.
     """
 
     def __init__(
         self,
         *,
         max_concurrent: int = 10,
-        per_chat_concurrency: int = 1,
+        per_key_concurrency: int = 1,
+        system_concurrency: int = 10,
         worker_executor: Optional[ThreadPoolExecutor] = None,
         thread_name_prefix: str = "task_worker",
     ):
         if max_concurrent <= 0:
             raise ValueError("max_concurrent must be > 0")
-        if per_chat_concurrency <= 0:
-            raise ValueError("per_chat_concurrency must be > 0")
+        if per_key_concurrency <= 0:
+            raise ValueError("per_key_concurrency must be > 0")
 
         self._max_concurrent = max_concurrent
-        self._per_chat = per_chat_concurrency
+        self._per_key = per_key_concurrency
+        self._system_concurrency = system_concurrency
 
         self._executor = worker_executor or ThreadPoolExecutor(
             max_workers=max_concurrent,
@@ -207,15 +233,13 @@ class TaskScheduler:
             if self._stopped:
                 raise RuntimeError("TaskScheduler is stopped")
             self._states[run_id] = state
-            # index
             self._by_chat[spec.chat_id].append(run_id)
             if spec.project_id:
                 self._by_project[str(spec.project_id)].append(run_id)
-            key = spec.queue_key or spec.chat_id
+            key = spec.get_effective_queue_key()
             q = self._queues[key]
             item = _QueuedTask(run_id=run_id, spec=spec, fn=fn)
 
-            # priority insertion: keep stable order within same priority
             if spec.priority == TaskPriority.HIGH:
                 q.appendleft(item)
             else:
@@ -264,19 +288,16 @@ class TaskScheduler:
             if state.status in (TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED):
                 return False
 
-            # cooperative cancellation for running tasks
             state.cancellation.cancel()
 
-            # if queued, mark canceled immediately and remove from queue
             if state.status == TaskStatus.QUEUED:
-                self._remove_from_queue_unlocked(run_id, state.spec.queue_key or state.spec.chat_id)
+                self._remove_from_queue_unlocked(run_id, state.spec.get_effective_queue_key())
                 state.status = TaskStatus.CANCELED
                 state.ended_at = time.time()
                 self._emit(run_id, TaskStatus.CANCELED)
                 self._cv.notify_all()
                 return True
 
-            # RUNNING: keep status until wrapper finishes and turns into CANCELED
             self._cv.notify_all()
             return True
 
@@ -401,9 +422,8 @@ class TaskScheduler:
                     self._cv.wait(timeout=0.2)
                     continue
 
-                # reserve slots
                 self._running_total += 1
-                key = task.spec.queue_key or task.spec.chat_id
+                key = task.spec.get_effective_queue_key()
                 self._running_by_key[key] += 1
                 state = self._states.get(task.run_id)
                 if state:
@@ -412,25 +432,29 @@ class TaskScheduler:
                     self._emit(task.run_id, TaskStatus.RUNNING)
                 self._cv.notify_all()
 
-                # dispatch to pool
                 fut = self._executor.submit(self._run_wrapper, task)
                 if state:
                     state.future = fut
 
-            # loop continues
+    def _is_system_queue(self, key: str) -> bool:
+        return key.endswith(SYSTEM_QUEUE_SUFFIX)
+
+    def _get_key_concurrency_limit(self, key: str) -> int:
+        if self._is_system_queue(key):
+            return self._system_concurrency
+        return self._per_key
 
     def _pick_next_task_unlocked(self) -> Optional[_QueuedTask]:
         if self._running_total >= self._max_concurrent:
             return None
 
-        # Find any key that has capacity and queued tasks.
         for key, q in list(self._queues.items()):
             if not q:
                 continue
-            if self._running_by_key.get(key, 0) >= self._per_chat:
+            limit = self._get_key_concurrency_limit(key)
+            if self._running_by_key.get(key, 0) >= limit:
                 continue
 
-            # skip canceled tasks in head
             while q:
                 item = q[0]
                 st = self._states.get(item.run_id)
@@ -493,7 +517,7 @@ class TaskScheduler:
         finally:
             with self._cv:
                 self._running_total = max(0, self._running_total - 1)
-                key = spec.queue_key or spec.chat_id
+                key = spec.get_effective_queue_key()
                 self._running_by_key[key] = max(0, self._running_by_key[key] - 1)
                 self._cv.notify_all()
 

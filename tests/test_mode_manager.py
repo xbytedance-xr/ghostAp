@@ -105,12 +105,12 @@ class TestModeManagerIsolation:
         mgr = ModeManager()
         mgr.enter_coco_mode("chat1", auto=True)
         with mgr._lock:
-            state = mgr._modes["chat1"]
+            state = mgr._chat_modes["chat1"]
         assert state.auto_entered is True
 
         mgr.enter_coco_mode("chat1", auto=False)
         with mgr._lock:
-            state = mgr._modes["chat1"]
+            state = mgr._chat_modes["chat1"]
         assert state.auto_entered is False
 
 
@@ -139,3 +139,56 @@ class TestModeManagerThreadSafety:
         # All chats should end in SMART
         for i in range(10):
             assert mgr.get_mode(f"chat{i}") == InteractionMode.SMART
+
+
+class TestModeManagerProjectLevel:
+    """Tests for project-level mode management."""
+
+    def test_project_mode_takes_precedence_over_chat_mode(self):
+        mgr = ModeManager()
+        mgr.enter_coco_mode("chat1")
+        mgr.enter_claude_mode("chat1", project_id="proj1")
+        assert mgr.get_mode("chat1") == InteractionMode.COCO
+        assert mgr.get_mode("chat1", project_id="proj1") == InteractionMode.CLAUDE
+
+    def test_project_mode_fallback_to_chat_mode(self):
+        mgr = ModeManager()
+        mgr.enter_coco_mode("chat1")
+        assert mgr.get_mode("chat1", project_id="proj_no_mode") == InteractionMode.COCO
+
+    def test_different_projects_independent_modes(self):
+        mgr = ModeManager()
+        mgr.enter_coco_mode("chat1", project_id="proj1")
+        mgr.enter_claude_mode("chat1", project_id="proj2")
+        assert mgr.get_mode("chat1", project_id="proj1") == InteractionMode.COCO
+        assert mgr.get_mode("chat1", project_id="proj2") == InteractionMode.CLAUDE
+        assert mgr.get_mode("chat1") == InteractionMode.SMART
+
+    def test_clear_project_mode(self):
+        mgr = ModeManager()
+        mgr.enter_coco_mode("chat1", project_id="proj1")
+        old = mgr.clear_project_mode("proj1")
+        assert old == InteractionMode.COCO
+        assert mgr.get_project_mode("proj1") is None
+        assert mgr.get_mode("chat1", project_id="proj1") == InteractionMode.SMART
+
+    def test_get_project_mode_returns_none_for_unset(self):
+        mgr = ModeManager()
+        assert mgr.get_project_mode("proj_never_set") is None
+
+    def test_project_mode_predicates(self):
+        mgr = ModeManager()
+        mgr.enter_coco_mode("chat1", project_id="proj1")
+        mgr.enter_claude_mode("chat1", project_id="proj2")
+        assert mgr.is_coco_mode("chat1", project_id="proj1") is True
+        assert mgr.is_claude_mode("chat1", project_id="proj1") is False
+        assert mgr.is_claude_mode("chat1", project_id="proj2") is True
+        assert mgr.is_programming_mode("chat1", project_id="proj1") is True
+        assert mgr.is_programming_mode("chat1", project_id="proj2") is True
+        assert mgr.is_smart_mode("chat1") is True
+
+    def test_exit_to_smart_clears_project_mode(self):
+        mgr = ModeManager()
+        mgr.enter_coco_mode("chat1", project_id="proj1")
+        mgr.exit_to_smart("chat1", project_id="proj1")
+        assert mgr.get_mode("chat1", project_id="proj1") == InteractionMode.SMART
