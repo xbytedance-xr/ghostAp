@@ -1,4 +1,5 @@
 import pytest
+import sys
 import time
 import uuid
 from unittest.mock import patch, MagicMock
@@ -63,6 +64,30 @@ class TestClaudeSession:
         assert "Hello" in clean
         assert "World" in clean
         assert "\x1b" not in clean
+
+    def test_streaming_reads_stderr_without_deadlock(self):
+        """大量 stderr 输出不应导致流式读取卡死/超时。"""
+        session = ClaudeSession(chat_id="test_chat")
+
+        # Write a lot to stderr first; old implementation could deadlock and time out.
+        cmd = [
+            sys.executable,
+            "-c",
+            "import sys; sys.stderr.write('x'*200000); sys.stderr.flush(); print('done')",
+        ]
+
+        chunks = []
+        out, err, timed_out = session._run_streaming_process(
+            cmd,
+            cwd=None,
+            timeout=3,
+            on_chunk=lambda s: chunks.append(s),
+            chunk_interval=0.01,
+        )
+
+        assert timed_out is False
+        assert "done" in out
+        assert len(err) > 100000
 
 
 class TestClaudeSessionManager:
@@ -521,9 +546,9 @@ class TestCommandInterceptionInProgrammingMode:
         from unittest.mock import MagicMock
         client, patches = self._create_mock_client()
         try:
-            client._show_full_help = MagicMock()
+            client._system_handler.show_full_help = MagicMock()
             client._handle_intercepted_command("msg1", "chat1", "/帮助", None)
-            client._show_full_help.assert_called_once_with("msg1", "chat1", None)
+            client._system_handler.show_full_help.assert_called_once_with("msg1", "chat1", None)
         finally:
             self._stop_patches(patches)
 
@@ -531,9 +556,9 @@ class TestCommandInterceptionInProgrammingMode:
         from unittest.mock import MagicMock
         client, patches = self._create_mock_client()
         try:
-            client._show_claude_info = MagicMock()
+            client._claude_handler.show_info = MagicMock()
             client._handle_intercepted_command("msg1", "chat1", "/claude_info", None)
-            client._show_claude_info.assert_called_once_with("msg1", "chat1", None)
+            client._claude_handler.show_info.assert_called_once_with("msg1", "chat1", None)
         finally:
             self._stop_patches(patches)
 
@@ -541,9 +566,9 @@ class TestCommandInterceptionInProgrammingMode:
         from unittest.mock import MagicMock
         client, patches = self._create_mock_client()
         try:
-            client._show_project_board = MagicMock()
+            client._project_handler.show_project_board = MagicMock()
             client._handle_intercepted_command("msg1", "chat1", "/projects", None)
-            client._show_project_board.assert_called_once_with("msg1", "chat1")
+            client._project_handler.show_project_board.assert_called_once_with("msg1", "chat1")
         finally:
             self._stop_patches(patches)
 
@@ -551,8 +576,12 @@ class TestCommandInterceptionInProgrammingMode:
         from unittest.mock import MagicMock
         client, patches = self._create_mock_client()
         try:
-            client._switch_project = MagicMock()
+            client._project_handler.switch_project = MagicMock()
             client._handle_intercepted_command("msg1", "chat1", "/switch myproject", None)
-            client._switch_project.assert_called_once_with("msg1", "chat1", "myproject")
+            client._project_handler.switch_project.assert_called_once_with(
+                "msg1", "chat1", "myproject",
+                coco_handler=client._coco_handler,
+                claude_handler=client._claude_handler,
+            )
         finally:
             self._stop_patches(patches)

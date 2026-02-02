@@ -219,6 +219,7 @@ class IntentRecognizer:
         "/exit": (IntentType.EXIT_MODE, "退出当前模式"),
         "/quit": (IntentType.EXIT_MODE, "退出当前模式"),
         "/projects": (IntentType.LIST_PROJECTS, "查看项目列表"),
+        "/switch": (IntentType.SWITCH_PROJECT, "切换项目（打开项目看板）"),
         "/project": (IntentType.PROJECT_STATUS, "查看当前项目"),
         "/status": (IntentType.PROJECT_STATUS, "查看项目状态"),
         "/deep": (IntentType.ENTER_DEEP, "进入 Deep 模式"),
@@ -376,6 +377,28 @@ class IntentRecognizer:
                 original_text=text,
                 reasoning="精确匹配: /deep_update 命令",
                 description="更新 Deep Engine 上下文"
+            )
+
+        if text_lower.startswith("/deep_status "):
+            # e.g. /deep_status all
+            return IntentResult.single(
+                intent=IntentType.DEEP_STATUS,
+                confidence=1.0,
+                data={"arg": text[len("/deep_status "):].strip()},
+                original_text=text,
+                reasoning="前缀匹配: /deep_status 命令",
+                description="查看 Deep Agent 任务状态"
+            )
+
+        if text_lower.startswith("/stop_deep "):
+            # e.g. /stop_deep all
+            return IntentResult.single(
+                intent=IntentType.STOP_DEEP,
+                confidence=1.0,
+                data={"arg": text[len("/stop_deep "):].strip()},
+                original_text=text,
+                reasoning="前缀匹配: /stop_deep 命令",
+                description="停止 Deep Agent 任务"
             )
 
         if text_lower.startswith("/deep "):

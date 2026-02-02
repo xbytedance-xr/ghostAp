@@ -88,3 +88,24 @@ def test_cancel_queued_task_prevents_execution():
     r2 = h2.wait(timeout=1)
     assert r2.status == TaskStatus.CANCELED
 
+
+def test_scheduler_can_update_project_id_and_query_by_project():
+    scheduler = TaskScheduler(max_concurrent=2, per_chat_concurrency=1)
+
+    def _fn(ctx):
+        # project is resolved inside task body
+        assert scheduler.update_project_id(ctx.run_id, "p1") is True
+        ctx.progress("working", percent=30)
+        return "ok"
+
+    h = scheduler.submit(TaskSpec(chat_id="c1", name="t1", task_type="test"), _fn)
+    r = h.wait(timeout=3)
+    assert r.status == TaskStatus.SUCCEEDED
+
+    # include_done=True to include terminal tasks
+    tasks = scheduler.list_tasks(project_id="p1", include_done=True)
+    assert any(st.run_id == h.run_id for st in tasks)
+
+    # intersection filter
+    tasks2 = scheduler.list_tasks(chat_id="c1", project_id="p1", include_done=True)
+    assert any(st.run_id == h.run_id for st in tasks2)

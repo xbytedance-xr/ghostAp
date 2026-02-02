@@ -180,40 +180,79 @@ class BaseSession(ABC):
             cwd=cwd,
         )
 
-        full_output = ""
+        stdout_text = ""
+        stderr_text = ""
         last_update_time = time.time()
         start_time = time.time()
-        stdout_fd = process.stdout.fileno()
 
-        while True:
+        stdout_fd = process.stdout.fileno() if process.stdout else None
+        stderr_fd = process.stderr.fileno() if process.stderr else None
+
+        fds: list[int] = []
+        if stdout_fd is not None:
+            fds.append(stdout_fd)
+        if stderr_fd is not None and stderr_fd != stdout_fd:
+            fds.append(stderr_fd)
+
+        # Set non-blocking to safely drain on EOF/exit without deadlocks.
+        for fd in fds:
+            try:
+                _os.set_blocking(fd, False)
+            except Exception:
+                # Best-effort: select + os.read should still work on most platforms.
+                pass
+
+        while fds:
             elapsed = time.time() - start_time
             if elapsed > timeout:
-                process.kill()
-                process.wait()
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+                try:
+                    process.wait(timeout=1)
+                except Exception:
+                    pass
                 return "", "", True
 
-            ready, _, _ = select.select([stdout_fd], [], [], 0.2)
-            if ready:
-                chunk = _os.read(stdout_fd, 4096)
-                if not chunk:
-                    break
-                full_output += chunk.decode("utf-8", errors="replace")
-                current_time = time.time()
-                if current_time - last_update_time >= chunk_interval:
-                    cleaned = self._clean_output(full_output.strip())
-                    if cleaned:
-                        on_chunk(cleaned)
-                    last_update_time = current_time
-            else:
-                if process.poll() is not None:
-                    remaining = _os.read(stdout_fd, 65536)
-                    if remaining:
-                        full_output += remaining.decode("utf-8", errors="replace")
-                    break
+            ready, _, _ = select.select(fds, [], [], 0.2)
+            if not ready:
+                continue
 
-        process.wait()
-        stderr_text = process.stderr.read().decode("utf-8", errors="replace") if process.stderr else ""
-        return full_output, stderr_text, False
+            for fd in list(ready):
+                try:
+                    chunk = _os.read(fd, 4096)
+                except BlockingIOError:
+                    continue
+                except OSError:
+                    # FD likely closed
+                    if fd in fds:
+                        fds.remove(fd)
+                    continue
+
+                if not chunk:
+                    if fd in fds:
+                        fds.remove(fd)
+                    continue
+
+                text = chunk.decode("utf-8", errors="replace")
+                if fd == stdout_fd:
+                    stdout_text += text
+                    current_time = time.time()
+                    if current_time - last_update_time >= chunk_interval:
+                        cleaned = self._clean_output(stdout_text.strip())
+                        if cleaned:
+                            on_chunk(cleaned)
+                        last_update_time = current_time
+                else:
+                    stderr_text += text
+
+        try:
+            process.wait(timeout=1)
+        except Exception:
+            process.wait()
+
+        return stdout_text, stderr_text, False
 
     def resume(self, cwd: Optional[str] = None) -> str:
         self.last_active = time.time()

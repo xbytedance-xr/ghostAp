@@ -11,7 +11,7 @@ from src.project.context import (
     CocoSessionSnapshot,
 )
 from src.project.manager import ProjectManager
-from src.project.mapper import MessageProjectMapper
+from src.project.mapper import MessageProjectMapper, MessageLinker
 
 
 class TestProjectContext:
@@ -227,6 +227,16 @@ class TestProjectManager:
         assert project is not None
         assert project.project_name == "Test"
 
+    def test_persistence_corrupted_file_backup(self, temp_storage):
+        storage_path = Path(temp_storage)
+        storage_path.write_text("{invalid json", encoding="utf-8")
+
+        manager = ProjectManager(storage_path=temp_storage)
+        assert manager.get_all_projects() == []
+
+        corrupt_files = list(storage_path.parent.glob(f"{storage_path.name}.corrupt.*"))
+        assert len(corrupt_files) == 1
+
     def test_get_all_projects_sorted_by_recent(self, temp_storage, project_dir):
         import time
         manager = ProjectManager(storage_path=temp_storage)
@@ -415,7 +425,6 @@ class TestProjectManager:
         
         project = manager.get_project("test_proj")
         assert project.working_dir == subdir
-
     def test_update_working_dir_relative_path(self, temp_storage, project_dir):
         manager = ProjectManager(storage_path=temp_storage)
         manager.create_project("test_proj", "Test Project", project_dir)
@@ -521,3 +530,35 @@ class TestMessageProjectMapper:
         mapper.clear()
         
         assert len(mapper) == 0
+
+
+class TestMessageLinker:
+    def test_link_and_query(self):
+        linker = MessageLinker(ttl=60, max_size=100)
+
+        origin = "om_origin"
+        request_id = "req_123"
+        linker.register_origin(origin, request_id=request_id, chat_id="chat_1", project_id="p1")
+
+        reply1 = "om_reply_1"
+        reply2 = "om_reply_2"
+        linker.link_reply(origin, reply1)
+        linker.link_reply(origin, reply2)
+
+        run1 = "run_aaa"
+        run2 = "run_bbb"
+        linker.link_task(origin, run1)
+        linker.link_task(origin, run2)
+
+        data = linker.query(origin)
+        assert data is not None
+        assert data["origin_message_id"] == origin
+        assert data["request_id"] == request_id
+        assert reply1 in data["reply_message_ids"]
+        assert reply2 in data["reply_message_ids"]
+        assert run1 in data["task_run_ids"]
+        assert run2 in data["task_run_ids"]
+
+        assert linker.query(reply1)["origin_message_id"] == origin
+        assert linker.query(run2)["origin_message_id"] == origin
+        assert linker.query(request_id)["origin_message_id"] == origin

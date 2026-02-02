@@ -66,6 +66,8 @@ class ContextEntry:
         created_at:   创建时间戳
     """
     entry_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    # 单调递增的序号（用于跨滚动窗口的增量 diff）
+    seq: int = 0
     entry_type: ContextEntryType = ContextEntryType.CONVERSATION
     source_mode: ContextSourceMode = ContextSourceMode.SMART
     content: str = ""
@@ -75,6 +77,7 @@ class ContextEntry:
     def to_dict(self) -> dict:
         return {
             "entry_id": self.entry_id,
+            "seq": self.seq,
             "entry_type": self.entry_type.value,
             "source_mode": self.source_mode.value,
             "content": self.content,
@@ -86,6 +89,7 @@ class ContextEntry:
     def from_dict(cls, data: dict) -> "ContextEntry":
         return cls(
             entry_id=data.get("entry_id", uuid.uuid4().hex[:12]),
+            seq=data.get("seq", 0),
             entry_type=ContextEntryType(data.get("entry_type", "conversation")),
             source_mode=ContextSourceMode(data.get("source_mode", "smart")),
             content=data.get("content", ""),
@@ -117,6 +121,8 @@ class ContextVersion:
     source_mode: ContextSourceMode = ContextSourceMode.SMART
     summary: str = ""
     entry_count: int = 0
+    # 版本创建时刻的最后一个 entry.seq（用于在滚动窗口淘汰后仍能计算增量 diff）
+    last_seq: int = 0
     created_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict:
@@ -127,6 +133,7 @@ class ContextVersion:
             "source_mode": self.source_mode.value,
             "summary": self.summary,
             "entry_count": self.entry_count,
+            "last_seq": self.last_seq,
             "created_at": self.created_at,
         }
 
@@ -139,6 +146,7 @@ class ContextVersion:
             source_mode=ContextSourceMode(data.get("source_mode", "smart")),
             summary=data.get("summary", ""),
             entry_count=data.get("entry_count", 0),
+            last_seq=data.get("last_seq", 0),
             created_at=data.get("created_at", time.time()),
         )
 
@@ -231,6 +239,9 @@ class UnifiedContext:
         self._current_version_number: int = 0
         self._last_bridge: Optional[ContextBridgeSummary] = None
 
+        # 单调递增 entry 序号（不因滚动窗口淘汰而回退）
+        self._next_seq: int = 1
+
         # entry_id -> list index 的快速查找映射
         self._entry_index: dict[str, int] = {}
 
@@ -260,6 +271,15 @@ class UnifiedContext:
 
     def add_entry(self, entry: ContextEntry) -> ContextEntry:
         """添加一条上下文记录，超出容量时淘汰最旧的条目"""
+        # 为新 entry 分配单调递增的 seq，便于版本 diff
+        try:
+            if getattr(entry, "seq", 0) <= 0:
+                entry.seq = self._next_seq
+                self._next_seq += 1
+        except Exception:
+            # 极端情况下（比如被外部替换为非 dataclass 对象）兜底不影响主流程
+            pass
+
         self._entries.append(entry)
         self._entry_index[entry.entry_id] = len(self._entries) - 1
 
@@ -435,12 +455,19 @@ class UnifiedContext:
     ) -> ContextVersion:
         """在当前时刻创建版本书签"""
         self._current_version_number += 1
+        last_seq = 0
+        if self._entries:
+            try:
+                last_seq = getattr(self._entries[-1], "seq", 0) or 0
+            except Exception:
+                last_seq = 0
         version = ContextVersion(
             version_number=self._current_version_number,
             reason=reason,
             source_mode=source_mode,
             summary=summary,
             entry_count=len(self._entries),
+            last_seq=last_seq,
         )
         self._versions.append(version)
         if len(self._versions) > self.max_versions:
@@ -461,9 +488,22 @@ class UnifiedContext:
         version = self.get_version(version_number)
         if version is None:
             return list(self._entries)
+
+        # 优先使用 seq 做增量 diff：即使滚动窗口淘汰了旧条目，也能正确返回“仍在窗口内”的新增条目
+        last_seq = getattr(version, "last_seq", 0) or 0
+        if last_seq > 0:
+            results: list[ContextEntry] = []
+            for e in self._entries:
+                try:
+                    if getattr(e, "seq", 0) > last_seq:
+                        results.append(e)
+                except Exception:
+                    continue
+            return results
+
         # entry_count 记录的是版本创建时的列表长度
         # 但由于滚动窗口淘汰，实际可用条目可能少于记录值
-        # 此处做安全处理：如果当前总数 < 版本时的 entry_count，返回全部
+        # 此处做安全处理：如果当前总数 <= 版本时的 entry_count，说明版本之后可能没有新增
         if len(self._entries) <= version.entry_count:
             return []
         return list(self._entries[version.entry_count:])
@@ -567,6 +607,14 @@ class UnifiedContext:
         ctx._versions = [ContextVersion.from_dict(v) for v in data.get("versions", [])]
         if data.get("last_bridge_summary"):
             ctx._last_bridge = ContextBridgeSummary.from_dict(data["last_bridge_summary"])
+        # 恢复 seq 自增计数器
+        try:
+            max_seq = 0
+            for e in ctx._entries:
+                max_seq = max(max_seq, getattr(e, "seq", 0) or 0)
+            ctx._next_seq = max_seq + 1 if max_seq > 0 else 1
+        except Exception:
+            ctx._next_seq = 1
         ctx._rebuild_index()
         return ctx
 

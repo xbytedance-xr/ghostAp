@@ -356,7 +356,7 @@ class TestDeepCard:
 
         card = json.loads(content)
         header_title = card["header"]["title"]["content"]
-        assert "Deep Engine" in header_title
+        assert "Deep Agent" in header_title
         assert "Coco" in header_title
         # Deep 卡片按引擎区分颜色：Coco=blue / Claude=purple
         assert card["header"]["template"] == "blue"
@@ -424,11 +424,11 @@ class TestDeepCard:
 
     def test_build_deep_header_title_with_project(self, sample_project):
         title = CardBuilder._build_deep_header_title(sample_project, "Coco")
-        assert title == "🧠 Test Project · Deep (Coco)"
+        assert title == "🧠 Test Project · Deep Agent (Coco)"
 
     def test_build_deep_header_title_no_project(self):
         title = CardBuilder._build_deep_header_title(None, "Claude")
-        assert title == "🧠 Deep Engine (Claude)"
+        assert title == "🧠 Deep Agent (Claude)"
 
     def test_build_deep_buttons_executing(self):
         buttons = CardBuilder._build_deep_buttons("proj123", is_executing=True)

@@ -2,6 +2,7 @@ import time
 import uuid
 import threading
 from collections import defaultdict, deque
+from dataclasses import replace
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum
 from typing import Any, Callable, Deque, Optional
@@ -36,6 +37,9 @@ class TaskSpec:
     queue_key: Optional[str] = None
     project_id: Optional[str] = None
     message_id: Optional[str] = None
+    # Correlation ids (best-effort). Useful for tracing replies/cards back to the user's trigger message.
+    origin_message_id: Optional[str] = None
+    request_id: Optional[str] = None
     priority: TaskPriority = TaskPriority.NORMAL
 
 
@@ -59,6 +63,8 @@ class TaskEvent:
     task_type: str
     project_id: Optional[str] = None
     message_id: Optional[str] = None
+    origin_message_id: Optional[str] = None
+    request_id: Optional[str] = None
     progress_message: Optional[str] = None
     progress_percent: Optional[float] = None
     error: Optional[str] = None
@@ -176,6 +182,11 @@ class TaskScheduler:
         self._running_total = 0
         self._states: dict[str, TaskRunState] = {}
         self._listeners: list[Callable[[TaskEvent], None]] = []
+
+        # Lightweight indexes for querying tasks by project/chat.
+        # Keep ordering by insertion time (oldest -> newest).
+        self._by_chat: dict[str, Deque[str]] = defaultdict(deque)      # chat_id -> run_ids
+        self._by_project: dict[str, Deque[str]] = defaultdict(deque)   # project_id -> run_ids
         self._stopped = False
         self._dispatcher = threading.Thread(
             target=self._dispatch_loop,
@@ -196,6 +207,10 @@ class TaskScheduler:
             if self._stopped:
                 raise RuntimeError("TaskScheduler is stopped")
             self._states[run_id] = state
+            # index
+            self._by_chat[spec.chat_id].append(run_id)
+            if spec.project_id:
+                self._by_project[str(spec.project_id)].append(run_id)
             key = spec.queue_key or spec.chat_id
             q = self._queues[key]
             item = _QueuedTask(run_id=run_id, spec=spec, fn=fn)
@@ -210,6 +225,36 @@ class TaskScheduler:
             self._cv.notify_all()
 
         return TaskHandle(self, run_id)
+
+    def update_project_id(self, run_id: str, project_id: Optional[str]) -> bool:
+        """Best-effort update of project_id for an existing task.
+
+        Useful when the project is resolved inside the task body (e.g. by
+        reply-chain mapping) rather than at submit time.
+        """
+        if not project_id:
+            return False
+
+        with self._lock:
+            state = self._states.get(run_id)
+            if not state:
+                return False
+            old_project = state.spec.project_id
+            if old_project == project_id:
+                return True
+
+            # replace frozen TaskSpec
+            state.spec = replace(state.spec, project_id=str(project_id))
+
+            # update indexes
+            if old_project:
+                self._remove_from_index_unlocked(self._by_project, str(old_project), run_id)
+            self._by_project[str(project_id)].append(run_id)
+
+            # emit updated state to listeners (as RUNNING with progress info if running,
+            # otherwise as current status). This is for observability only.
+            self._emit(run_id, state.status, progress_message=state.progress_message, progress_percent=state.progress_percent)
+            return True
 
     def cancel(self, run_id: str) -> bool:
         with self._cv:
@@ -251,6 +296,50 @@ class TaskScheduler:
     def get_state(self, run_id: str) -> Optional[TaskRunState]:
         with self._lock:
             return self._states.get(run_id)
+
+    def list_tasks(
+        self,
+        *,
+        chat_id: Optional[str] = None,
+        project_id: Optional[str] = None,
+        include_done: bool = False,
+        limit: int = 50,
+    ) -> list[TaskRunState]:
+        """Query tasks by chat/project.
+
+        - If both chat_id and project_id are provided, it returns the intersection.
+        - By default, it returns non-terminal tasks only.
+        """
+        if limit <= 0:
+            return []
+
+        with self._lock:
+            run_ids: list[str]
+
+            if chat_id is not None and project_id is not None:
+                chat_ids = list(self._by_chat.get(chat_id, []))
+                proj_ids = set(self._by_project.get(str(project_id), []))
+                run_ids = [rid for rid in chat_ids if rid in proj_ids]
+            elif chat_id is not None:
+                run_ids = list(self._by_chat.get(chat_id, []))
+            elif project_id is not None:
+                run_ids = list(self._by_project.get(str(project_id), []))
+            else:
+                run_ids = list(self._states.keys())
+
+            # newest first
+            run_ids = run_ids[-limit:][::-1]
+
+            out: list[TaskRunState] = []
+            for rid in run_ids:
+                st = self._states.get(rid)
+                if not st:
+                    continue
+                if not include_done and st.status in (TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED):
+                    continue
+                out.append(st)
+
+            return out
 
     def wait(self, run_id: str, timeout: Optional[float] = None) -> TaskResult:
         deadline = None if timeout is None else (time.time() + timeout)
@@ -429,6 +518,8 @@ class TaskScheduler:
             task_type=st.spec.task_type,
             project_id=st.spec.project_id,
             message_id=st.spec.message_id,
+            origin_message_id=st.spec.origin_message_id,
+            request_id=st.spec.request_id,
             progress_message=progress_message,
             progress_percent=progress_percent,
             error=error,
@@ -448,3 +539,10 @@ class TaskScheduler:
             return
         new_q = deque(item for item in q if item.run_id != run_id)
         self._queues[key] = new_q
+
+    def _remove_from_index_unlocked(self, index: dict[str, Deque[str]], key: str, run_id: str):
+        q = index.get(key)
+        if not q:
+            return
+        # rebuild to remove run_id
+        index[key] = deque(rid for rid in q if rid != run_id)

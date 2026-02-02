@@ -482,11 +482,11 @@ class TestUnifiedContextVersioning:
         for i in range(5):
             ctx.add_conversation("user", f"new_{i}", ContextSourceMode.CLAUDE)
 
-        # 现在 entries 总数为 5（max_entries），但 v1 记录的 entry_count=3
-        # 由于淘汰，当前 entries 长度(5) > v1.entry_count(3)，返回 entries[3:]
+        # 滚动窗口淘汰了 v1 之前的旧条目，但 v1 之后新增的条目仍在窗口内
+        # 使用 seq 作为增量 diff 基准，应返回所有新增条目
         since = ctx.get_entries_since_version(v1.version_number)
-        assert len(since) == 2
-        assert since[0].content == "new_3"
+        assert len(since) == 5
+        assert since[0].content == "new_0"
 
 
 # ---------------------------------------------------------------------------
@@ -2522,7 +2522,7 @@ class TestEdgeCases:
     # ---- 版本和滚动窗口交互 ----
 
     def test_version_entry_count_stale_after_eviction(self):
-        """滚动窗口淘汰后，旧版本的 entry_count 变成 stale"""
+        """滚动窗口淘汰后，diff 仍能基于 seq 正确返回版本之后的新增条目"""
         ctx = UnifiedContext(project_id="test", max_entries=3, max_versions=10)
 
         ctx.add_conversation("user", "msg_0", ContextSourceMode.SMART)
@@ -2535,14 +2535,14 @@ class TestEdgeCases:
         ctx.add_conversation("user", "msg_3", ContextSourceMode.SMART)
         ctx.add_conversation("user", "msg_4", ContextSourceMode.SMART)
 
-        # 现在 entries=[msg_2, msg_3, msg_4], len=3, v1.entry_count=2
-        # 3 > 2, 所以 get_entries_since_version(1) 返回 entries[2:] = [msg_4]
+        # 现在 entries=[msg_2, msg_3, msg_4], 旧实现会用 entry_count 切片导致丢失 msg_2/msg_3
+        # 新实现使用 last_seq 做增量 diff，应返回 v1 之后仍在窗口内的所有新增条目
         diff = ctx.get_entries_since_version(1)
-        assert len(diff) == 1
-        assert diff[0].content == "msg_4"
+        assert len(diff) == 3
+        assert [d.content for d in diff] == ["msg_2", "msg_3", "msg_4"]
 
     def test_version_entry_count_larger_than_current(self):
-        """当 current entries < version.entry_count 时返回空列表"""
+        """清空 entries 后仍应基于 seq 正确识别版本之后的新条目"""
         ctx = UnifiedContext(project_id="test", max_entries=3, max_versions=10)
 
         for i in range(5):
@@ -2550,12 +2550,13 @@ class TestEdgeCases:
         v1 = ctx.create_version("v1", ContextSourceMode.SMART)
         # v1.entry_count = 3 (max_entries=3 所以实际只有3条)
 
-        # 清空再添加少于 v1.entry_count 的条目
+        # 清空再添加少量条目
         ctx.clear_entries()
         ctx.add_conversation("user", "new_msg", ContextSourceMode.SMART)
-        # 现在 len=1 <= v1.entry_count=3 -> 返回空
+        # 版本之后产生的新条目 seq > v1.last_seq，应返回该条目
         diff = ctx.get_entries_since_version(v1.version_number)
-        assert len(diff) == 0
+        assert len(diff) == 1
+        assert diff[0].content == "new_msg"
 
     # ---- 桥接边界 ----
 

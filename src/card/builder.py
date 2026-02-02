@@ -524,8 +524,8 @@ class CardBuilder:
         engine_name: str = "Coco",
     ) -> str:
         if project:
-            return f"🧠 {project.project_name} · Deep ({engine_name})"
-        return f"🧠 Deep Engine ({engine_name})"
+            return f"🧠 {project.project_name} · Deep Agent ({engine_name})"
+        return f"🧠 Deep Agent ({engine_name})"
 
     @staticmethod
     def _pick_engine_template(engine_name: str) -> str:
@@ -538,6 +538,7 @@ class CardBuilder:
 
     @staticmethod
     def _build_deep_buttons(
+        project_id: Optional[str] = None,
         deep_project_id: Optional[str] = None,
         is_executing: bool = False,
         is_paused: bool = False,
@@ -548,26 +549,38 @@ class CardBuilder:
                 "tag": "button",
                 "text": {"tag": "plain_text", "content": "⏸️ 暂停"},
                 "type": "default",
-                "behaviors": [{"type": "callback", "value": {"action": "deep_pause", "project_id": deep_project_id}}]
+                "behaviors": [{
+                    "type": "callback",
+                    "value": {"action": "deep_pause", "project_id": project_id, "deep_project_id": deep_project_id}
+                }]
             })
             buttons.append({
                 "tag": "button",
                 "text": {"tag": "plain_text", "content": "🛑 停止"},
                 "type": "danger",
-                "behaviors": [{"type": "callback", "value": {"action": "deep_stop", "project_id": deep_project_id}}]
+                "behaviors": [{
+                    "type": "callback",
+                    "value": {"action": "deep_stop", "project_id": project_id, "deep_project_id": deep_project_id}
+                }]
             })
         elif is_paused:
             buttons.append({
                 "tag": "button",
                 "text": {"tag": "plain_text", "content": "▶️ 继续"},
                 "type": "primary",
-                "behaviors": [{"type": "callback", "value": {"action": "deep_resume", "project_id": deep_project_id}}]
+                "behaviors": [{
+                    "type": "callback",
+                    "value": {"action": "deep_resume", "project_id": project_id, "deep_project_id": deep_project_id}
+                }]
             })
             buttons.append({
                 "tag": "button",
                 "text": {"tag": "plain_text", "content": "🛑 停止"},
                 "type": "danger",
-                "behaviors": [{"type": "callback", "value": {"action": "deep_stop", "project_id": deep_project_id}}]
+                "behaviors": [{
+                    "type": "callback",
+                    "value": {"action": "deep_stop", "project_id": project_id, "deep_project_id": deep_project_id}
+                }]
             })
         return [apply_compact_style(b) for b in buttons]
 
@@ -601,7 +614,12 @@ class CardBuilder:
 
         if show_buttons:
             if is_executing or is_paused:
-                buttons = CardBuilder._build_deep_buttons(deep_project_id, is_executing, is_paused)
+                buttons = CardBuilder._build_deep_buttons(
+                    project.project_id if project else None,
+                    deep_project_id,
+                    is_executing,
+                    is_paused,
+                )
             else:
                 buttons = CardBuilder._build_footer_buttons(project, is_coco_mode=False, is_claude_mode=False)
 

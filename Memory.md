@@ -4,7 +4,71 @@
 GhostAP 是一个飞书机器人Shell沙箱服务，通过飞书机器人对话来安全执行本地shell命令，并支持 Coco AI 和 Claude AI 远程开发模式。
 
 ## 最新更新
-**更新时间**: 2026-02-02 08:00:00
+**更新时间**: 2026-02-02 19:20:00
+
+### 清理无关入口文件（2026-02-02 19:20:00）
+- 删除根目录误入的爬虫项目入口文件 `main.py`，避免与真实入口混淆
+- 验证：`uv run pytest tests/test_project.py -q`
+
+**更新时间**: 2026-02-02 19:10:00
+
+### 项目持久化原子写与损坏恢复（2026-02-02 19:10:00）
+- 为 `projects.json` 持久化引入跨进程文件锁与原子写入，降低中断/并发导致的文件损坏风险
+- 加入损坏文件备份策略：读取失败时备份为 `projects.json.corrupt.<ts>` 并继续启动
+- 新增单元测试覆盖损坏文件自动恢复场景
+- 测试: `uv run pytest tests/test_project.py -k corrupted`
+
+**更新时间**: 2026-02-02 18:30:00
+**更新时间**: 2026-02-02 18:30:00
+
+### ws_client.py God Class 拆分重构（2026-02-02 18:30:00）
+
+将 `src/feishu/ws_client.py`（3,444 行 / 104 方法）拆分为 Dispatcher + Handlers 架构。ws_client.py 从 3,444 行缩减至约 1,170 行，业务逻辑移至 6 个专职 Handler。
+
+#### 架构设计
+
+- **HandlerContext** (`src/feishu/handler_context.py`): 依赖注入容器 dataclass，聚合 16+ 共享依赖
+- **BaseHandler** (`src/feishu/handlers/base.py`): 公共基类，提供消息发送/回复/反应/流式卡片/工作目录/上下文桥接等工具方法
+- **ProgrammingModeHandler** (`src/feishu/handlers/programming.py`): Coco/Claude 共享模板方法基类
+  - **CocoModeHandler**: ~40 行配置子类
+  - **ClaudeModeHandler**: ~40 行配置子类
+- **DeepHandler** (`src/feishu/handlers/deep.py`): Deep Engine 全生命周期（start/status/pause/resume/stop/update）
+- **ProjectHandler** (`src/feishu/handlers/project.py`): 项目 CRUD + 上下文保存/恢复 + 项目切换
+- **SystemHandler** (`src/feishu/handlers/system.py`): 帮助/退出/Shell/目录/拦截命令路由
+- **DiagnosticsHandler** (`src/feishu/handlers/diagnostics.py`): 任务看板/上下文 Diff/消息追踪
+
+#### ws_client.py 改造
+
+- `__init__` 中创建 HandlerContext，实例化 6 个 Handler，建立跨 Handler 引用（互斥模式、拦截命令路由）
+- 保留 ~60 个向后兼容转发 stub（如 `_enter_coco_mode` → `self._coco_handler.enter_mode(...)`）
+- 核心路由方法保留在 ws_client 中（_handle_message, _process_message_async, _process_with_intent, _process_card_action_async, _execute_single_task 等）
+
+#### 测试
+
+- 修复 5 个因 mock 目标从 ws_client stub 迁移到 handler 级别的测试（test_claude.py, test_ws_client_patch.py）
+- 新增 `tests/test_handlers.py`: 85 个测试覆盖 BaseHandler、SystemHandler（路由/退出）、CocoModeHandler、ClaudeModeHandler（模板方法/进入/退出/卡片）、ProjectHandler、DeepHandler、DiagnosticsHandler
+- 新增 `tests/test_mode_manager.py`: 16 个测试覆盖 ModeManager 状态机（基础切换、谓词、显示名、隔离性、线程安全）
+- 全部 730 个测试通过（原 629 + 新增 101）
+
+#### 文件清单
+
+| 文件 | 操作 | 行数 |
+|------|------|------|
+| `src/feishu/handler_context.py` | 新增 | ~62 |
+| `src/feishu/handlers/__init__.py` | 新增 | ~20 |
+| `src/feishu/handlers/base.py` | 新增 | ~438 |
+| `src/feishu/handlers/programming.py` | 新增 | ~507 |
+| `src/feishu/handlers/deep.py` | 新增 | ~469 |
+| `src/feishu/handlers/project.py` | 新增 | ~245 |
+| `src/feishu/handlers/system.py` | 新增 | ~291 |
+| `src/feishu/handlers/diagnostics.py` | 新增 | ~473 |
+| `src/feishu/ws_client.py` | 修改 | 3444→~1170 |
+| `tests/test_handlers.py` | 新增 | ~740 |
+| `tests/test_mode_manager.py` | 新增 | ~135 |
+| `tests/test_claude.py` | 修改 | mock 目标更新 |
+| `tests/test_ws_client_patch.py` | 修改 | mock 目标更新 |
+
+---
 
 ### Deep Engine 实时上下文调整优化（2026-02-02 08:00:00）
 

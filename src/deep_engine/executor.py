@@ -73,37 +73,82 @@ class TaskExecutor:
             )
 
     def _check_success(self, output: str) -> bool:
+        # 1. Explicit tokens (highest priority)
+        if "DEEP_TASK_SUCCESS" in output:
+            return True
+        if "DEEP_TASK_FAILURE" in output:
+            return False
+
+        lower_output = output.lower()
+
+        # 2. Critical errors that usually mean immediate failure
+        critical_errors = [
+            "traceback (most recent call last)",
+            "command not found",
+            "no such file or directory",
+            "syntaxerror:",
+            "importerror:",
+            "modulenotfounderror:",
+            "permission denied",
+        ]
+        
+        for err in critical_errors:
+            if err in lower_output:
+                # If "✅" appears AFTER the error, assume it was fixed/handled
+                if "✅" in output:
+                    if output.rindex("✅") > lower_output.rindex(err):
+                        continue
+                return False
+
+        # 3. General error indicators
         error_indicators = [
             "❌",
-            "Error:",
             "error:",
-            "Failed:",
             "failed:",
-            "Exception:",
-            "Traceback",
-            "未找到",
+            "exception:",
             "执行超时",
             "执行异常",
         ]
 
         for indicator in error_indicators:
-            if indicator in output:
-                if "✅" in output and output.index("✅") > output.index(indicator):
+            ind_lower = indicator.lower()
+            if ind_lower in lower_output:
+                # Check for recovery (success marker after error)
+                last_error_idx = lower_output.rindex(ind_lower)
+                
+                has_recovery = False
+                # Strong recovery markers
+                recovery_markers = ["✅", "fixed", "resolved", "success"]
+                for mark in recovery_markers:
+                    if mark in lower_output:
+                        if lower_output.rindex(mark) > last_error_idx:
+                            has_recovery = True
+                            break
+                
+                if has_recovery:
                     continue
+                    
                 return False
 
+        # 4. Success indicators
         success_indicators = [
             "✅",
             "完成",
             "成功",
-            "Done",
-            "Success",
-            "Created",
-            "Updated",
-            "Installed",
+            "done",
+            "success",
+            "created",
+            "updated",
+            "installed",
+            "completed",
+            "finished",
+            "saved",
+            "generated",
+            "verified",
         ]
 
-        return any(indicator in output for indicator in success_indicators) or len(output) > 50
+        # If any success indicator is present OR output is reasonably long (heuristic)
+        return any(indicator in lower_output for indicator in success_indicators) or len(output) > 50
 
     def _extract_error(self, output: str) -> str:
         error_patterns = [

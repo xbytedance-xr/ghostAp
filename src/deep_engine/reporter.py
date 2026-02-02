@@ -12,7 +12,7 @@ from .models import (
 class ProgressReporter:
     def format_planning_start(self, requirement: str) -> str:
         preview = requirement[:100] + "..." if len(requirement) > 100 else requirement
-        return f"""🧠 **Deep Engine 启动**
+        return f"""🧠 **Deep Agent 启动**
 
 📝 正在分析需求...
 > {preview}
@@ -118,7 +118,7 @@ class ProgressReporter:
         return "\n".join(lines)
 
     def format_error(self, error: str) -> str:
-        return f"""❌ **Deep Engine 错误**
+        return f"""❌ **Deep Agent 错误**
 
 ```
 {error[:500]}
@@ -197,7 +197,7 @@ class ProgressReporter:
     # --- Card title helpers ---
 
     def get_planning_start_title(self) -> str:
-        return "🧠 Deep Engine 启动"
+        return "🧠 Deep Agent 启动"
 
     def get_planning_done_title(self) -> str:
         return "✅ 任务规划完成"
@@ -224,7 +224,7 @@ class ProgressReporter:
         return "🔄 任务指令已调整"
 
     def get_error_title(self) -> str:
-        return "❌ Deep Engine 错误"
+        return "❌ Deep Agent 错误"
 
     def get_status_title(self) -> str:
         return "📊 任务状态"

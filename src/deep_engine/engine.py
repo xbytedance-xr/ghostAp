@@ -417,6 +417,33 @@ class DeepEngineManager:
                 return engine
         return None
 
+    def get_active_engines(self, chat_id: str) -> list[DeepEngine]:
+        """Return all running engines for a chat (multi-project support)."""
+        engines: list[DeepEngine] = []
+        for key, engine in self._engines.items():
+            if key.startswith(f"{chat_id}:") and engine.is_running:
+                engines.append(engine)
+        return engines
+
+    def list_engines(self, chat_id: Optional[str] = None) -> list[DeepEngine]:
+        """List all engines, optionally filtered by chat."""
+        if chat_id is None:
+            return list(self._engines.values())
+        prefix = f"{chat_id}:"
+        return [e for k, e in self._engines.items() if k.startswith(prefix)]
+
+    def find_by_deep_project_id(self, chat_id: str, deep_project_id: str) -> Optional[DeepEngine]:
+        """Find engine by its DeepProject.project_id (used by card callbacks)."""
+        if not deep_project_id:
+            return None
+        for engine in self.get_active_engines(chat_id) + self.list_engines(chat_id):
+            try:
+                if engine.project and engine.project.project_id == deep_project_id:
+                    return engine
+            except Exception:
+                continue
+        return None
+
     def cleanup_all(self):
         for engine in self._engines.values():
             engine.cleanup()

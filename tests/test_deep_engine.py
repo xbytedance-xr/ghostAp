@@ -290,7 +290,7 @@ class TestProgressReporter:
 
     def test_format_planning_start(self, reporter):
         msg = reporter.format_planning_start("帮我写一个爬虫")
-        assert "Deep Engine" in msg
+        assert "Deep Agent" in msg
         assert "帮我写一个爬虫" in msg
 
     def test_format_planning_done(self, reporter):
@@ -380,7 +380,7 @@ class TestProgressReporter:
 
     def test_get_planning_start_title(self, reporter):
         title = reporter.get_planning_start_title()
-        assert "Deep Engine" in title
+        assert "Deep Agent" in title
 
     def test_get_planning_done_title(self, reporter):
         title = reporter.get_planning_done_title()
@@ -502,6 +502,24 @@ class TestDeepEngineManager:
         assert manager.get("chat1", "/tmp/project1") is None
         assert manager.get("chat2", "/tmp/project2") is None
 
+    def test_get_active_engines_and_find_by_deep_project_id(self):
+        manager = DeepEngineManager()
+        e1 = manager.get_or_create("chat1", "/tmp/project1")
+        e2 = manager.get_or_create("chat1", "/tmp/project2")
+
+        # simulate running engines
+        e1._is_running = True
+        e2._is_running = True
+
+        active = manager.get_active_engines("chat1")
+        assert len(active) == 2
+
+        # simulate planned deep project
+        p = DeepProject.create("p", "/tmp/project1")
+        e1._project = p
+        found = manager.find_by_deep_project_id("chat1", p.project_id)
+        assert found is e1
+
 
 class TestIntentRecognizerDeepCommands:
     @pytest.fixture
@@ -522,11 +540,25 @@ class TestIntentRecognizerDeepCommands:
         assert result is not None
         assert result.primary_intent == IntentType.DEEP_STATUS
 
+    def test_deep_status_all_command(self, recognizer):
+        from src.agent.intent_recognizer import IntentType
+        result = recognizer._quick_match("/deep_status all")
+        assert result is not None
+        assert result.primary_intent == IntentType.DEEP_STATUS
+        assert result.primary_data.get("arg") == "all"
+
     def test_stop_deep_command(self, recognizer):
         from src.agent.intent_recognizer import IntentType
         result = recognizer._quick_match("/stop_deep")
         assert result is not None
         assert result.primary_intent == IntentType.STOP_DEEP
+
+    def test_stop_deep_all_command(self, recognizer):
+        from src.agent.intent_recognizer import IntentType
+        result = recognizer._quick_match("/stop_deep all")
+        assert result is not None
+        assert result.primary_intent == IntentType.STOP_DEEP
+        assert result.primary_data.get("arg") == "all"
 
 
 class TestWsClientDeepCommands:

@@ -2,6 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from src.feishu.ws_client import FeishuWSClient
+from src.mode import InteractionMode
 
 class TestCardActionHandler(unittest.TestCase):
     def test_handle_card_action_returns_none(self):
@@ -81,7 +82,7 @@ class TestCardActionHandler(unittest.TestCase):
             client._handle_card_enter_coco.assert_called_once_with("om_1", "oc_1", "p1")
 
     def test_handle_card_enter_claude_passes_project(self):
-        """验证卡片入口 Claude 时把 project 透传给 _enter_claude_mode（避免选错项目导致显示 Coco 卡片）"""
+        """验证卡片入口 Claude 时把 project 透传给 enter_mode（避免选错项目导致显示 Coco 卡片）"""
         with patch('src.feishu.ws_client.get_settings') as mock_get_settings, \
              patch('src.feishu.ws_client.CocoSessionManager'), \
              patch('src.feishu.ws_client.ClaudeSessionManager'), \
@@ -101,23 +102,74 @@ class TestCardActionHandler(unittest.TestCase):
             mock_get_settings.return_value = mock_settings
 
             client = FeishuWSClient(MagicMock())
-            client._project_manager = MagicMock()
 
             project = SimpleNamespace(
                 project_id="p1",
                 claude_session_snapshot=None,
                 coco_session_snapshot=None,
             )
-            client._project_manager.get_project.return_value = project
-            client._enter_claude_mode = MagicMock()
+            # Mock at handler level: project_manager lives inside handler context
+            client._claude_handler.project_manager.get_project.return_value = project
+            client._claude_handler.enter_mode = MagicMock()
 
             client._handle_card_enter_claude("om_1", "oc_1", "p1")
 
-            client._enter_claude_mode.assert_called_once()
-            args, kwargs = client._enter_claude_mode.call_args
+            client._claude_handler.enter_mode.assert_called_once()
+            args, kwargs = client._claude_handler.enter_mode.call_args
             self.assertEqual(args[0], "om_1")
             self.assertEqual(args[1], "oc_1")
             self.assertIs(kwargs.get("project"), project)
+
+    def test_is_interceptable_command_includes_diff(self):
+        """验证 /diff 会被识别为系统拦截命令（避免被当成 shell 或转发给 AI）"""
+        with patch('src.feishu.ws_client.get_settings') as mock_get_settings, \
+             patch('src.feishu.ws_client.CocoSessionManager'), \
+             patch('src.feishu.ws_client.ClaudeSessionManager'), \
+             patch('src.feishu.ws_client.IntentRecognizer'), \
+             patch('src.feishu.ws_client.ProjectManager'), \
+             patch('src.feishu.ws_client.MessageProjectMapper'), \
+             patch('src.feishu.ws_client.DeepEngineManager'), \
+             patch('src.feishu.ws_client.ProgressReporter'), \
+             patch('src.mode.ModeManager'):
+
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+            self.assertTrue(client._is_interceptable_command("/diff"))
+            self.assertTrue(client._is_interceptable_command("/diff current"))
+
+    def test_process_with_intent_routes_diff_in_smart_mode(self):
+        """验证 Smart 模式下 /diff 走系统命令分支，而不是进入 intent 识别/执行"""
+        with patch('src.feishu.ws_client.get_settings') as mock_get_settings, \
+             patch('src.feishu.ws_client.CocoSessionManager'), \
+             patch('src.feishu.ws_client.ClaudeSessionManager'), \
+             patch('src.feishu.ws_client.IntentRecognizer'), \
+             patch('src.feishu.ws_client.ProjectManager'), \
+             patch('src.feishu.ws_client.MessageProjectMapper'), \
+             patch('src.feishu.ws_client.DeepEngineManager'), \
+             patch('src.feishu.ws_client.ProgressReporter'), \
+             patch('src.mode.ModeManager'):
+
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+            client._mode_manager.get_mode.return_value = InteractionMode.SMART
+            client._handle_intercepted_command = MagicMock()
+
+            client._process_with_intent("m1", "c1", "/diff", project=None)
+            client._handle_intercepted_command.assert_called_once()
 
 if __name__ == '__main__':
     unittest.main()

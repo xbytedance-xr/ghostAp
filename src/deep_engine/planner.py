@@ -44,12 +44,12 @@ class TaskPlanner:
 - **prompt**: 发送给 AI 编程助手（Coco）的具体指令，要求清晰、可执行
 - **dependencies**: 依赖的任务索引数组（从0开始），如果没有依赖则为空数组
 
-## Prompt 编写规则
+## Prompt 编写规则 (CRITICAL)
 1. 每个 prompt 应该是独立的、可执行的指令
 2. prompt 应该包含足够的上下文信息
 3. prompt 应该明确指出要创建/修改的文件
 4. prompt 应该说明预期的输出或效果
-5. 避免使用"首先"、"然后"等连接词，每个任务应该独立
+5. **验证要求**: 在 prompt 的末尾，必须要求 AI 编程助手在任务成功完成后输出字符串 `DEEP_TASK_SUCCESS`，如果彻底失败则输出 `DEEP_TASK_FAILURE`。这对于自动化验证至关重要。
 
 ## 示例
 
@@ -66,31 +66,31 @@ goals: ["创建项目结构", "实现数据抓取", "解析数据", "保存CSV",
     {
       "title": "创建项目结构",
       "description": "创建 Python 项目的基本目录结构和配置文件",
-      "prompt": "创建一个 Python 爬虫项目，包含以下文件：\\n- main.py: 主程序入口\\n- scraper.py: 爬虫核心逻辑\\n- requirements.txt: 依赖列表（requests, beautifulsoup4, lxml）\\n\\n请先创建这些空文件的基本结构。",
+      "prompt": "创建一个 Python 爬虫项目，包含以下文件：\\n- main.py: 主程序入口\\n- scraper.py: 爬虫核心逻辑\\n- requirements.txt: 依赖列表（requests, beautifulsoup4, lxml）\\n\\n请先创建这些空文件的基本结构。\\n\\n如果创建成功，请输出: DEEP_TASK_SUCCESS",
       "dependencies": []
     },
     {
       "title": "实现数据抓取",
       "description": "实现豆瓣电影 Top250 页面的 HTTP 请求和数据抓取",
-      "prompt": "在 scraper.py 中实现一个 DoubanScraper 类，包含：\\n1. fetch_page(url) 方法：发送 HTTP 请求获取页面内容\\n2. 添加请求头模拟浏览器\\n3. 添加请求间隔避免被封\\n4. 处理分页（每页25部电影，共10页）",
+      "prompt": "在 scraper.py 中实现一个 DoubanScraper 类，包含：\\n1. fetch_page(url) 方法：发送 HTTP 请求获取页面内容\\n2. 添加请求头模拟浏览器\\n3. 添加请求间隔避免被封\\n4. 处理分页（每页25部电影，共10页）\\n\\n完成后请输出: DEEP_TASK_SUCCESS",
       "dependencies": [0]
     },
     {
       "title": "解析电影数据",
       "description": "使用 BeautifulSoup 解析页面，提取电影信息",
-      "prompt": "在 scraper.py 中添加 parse_movie(html) 方法：\\n1. 使用 BeautifulSoup 解析 HTML\\n2. 提取电影名称、评分、导演、年份、简介\\n3. 返回结构化的电影数据字典",
+      "prompt": "在 scraper.py 中添加 parse_movie(html) 方法：\\n1. 使用 BeautifulSoup 解析 HTML\\n2. 提取电影名称、评分、导演、年份、简介\\n3. 返回结构化的电影数据字典\\n\\n完成后请输出: DEEP_TASK_SUCCESS",
       "dependencies": [1]
     },
     {
       "title": "保存CSV文件",
       "description": "将爬取的数据保存到 CSV 文件",
-      "prompt": "在 scraper.py 中添加 save_to_csv(movies, filename) 方法：\\n1. 使用 csv 模块写入数据\\n2. 包含表头：名称、评分、导演、年份、简介\\n3. 处理中文编码（utf-8-sig）",
+      "prompt": "在 scraper.py 中添加 save_to_csv(movies, filename) 方法：\\n1. 使用 csv 模块写入数据\\n2. 包含表头：名称、评分、导演、年份、简介\\n3. 处理中文编码（utf-8-sig）\\n\\n完成后请输出: DEEP_TASK_SUCCESS",
       "dependencies": [2]
     },
     {
       "title": "完善主程序",
       "description": "在 main.py 中整合所有功能，添加异常处理",
-      "prompt": "完善 main.py：\\n1. 导入 DoubanScraper 类\\n2. 实现主函数，依次爬取所有页面\\n3. 添加 try-except 异常处理\\n4. 添加进度打印\\n5. 最后调用 save_to_csv 保存数据",
+      "prompt": "完善 main.py：\\n1. 导入 DoubanScraper 类\\n2. 实现主函数，依次爬取所有页面\\n3. 添加 try-except 异常处理\\n4. 添加进度打印\\n5. 最后调用 save_to_csv 保存数据\\n\\n完成后请输出: DEEP_TASK_SUCCESS",
       "dependencies": [3]
     }
   ]

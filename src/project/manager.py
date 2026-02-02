@@ -3,6 +3,8 @@ import os
 import json
 import time
 import threading
+import fcntl
+from contextlib import contextmanager
 from typing import Optional
 from pathlib import Path
 
@@ -26,6 +28,39 @@ class ProjectManager:
         self._storage_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._load_projects()
+
+    @contextmanager
+    def _file_lock(self, exclusive: bool):
+        lock_path = Path(f"{self._storage_path}.lock")
+        with open(lock_path, "a+", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+    def _write_atomic(self, payload: dict):
+        tmp_path = Path(f"{self._storage_path}.tmp")
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self._storage_path)
+            try:
+                dir_fd = os.open(self._storage_path.parent, os.O_DIRECTORY)
+            except OSError:
+                return
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
 
     def _get_next_theme(self) -> tuple[str, str]:
         theme_list = list(THEMES.values())
@@ -224,8 +259,8 @@ class ProjectManager:
                 "active_project": self._active_project,
                 "color_index": self._color_index,
             }
-            with open(self._storage_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            with self._file_lock(True):
+                self._write_atomic(data)
         except Exception as e:
             logger.error("保存项目数据失败: %s", e)
 
@@ -234,8 +269,9 @@ class ProjectManager:
             return
 
         try:
-            with open(self._storage_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            with self._file_lock(True):
+                with open(self._storage_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
 
             for pid, snap in data.get("projects", {}).items():
                 try:
@@ -250,4 +286,10 @@ class ProjectManager:
             self._active_project = data.get("active_project", {})
             self._color_index = data.get("color_index", 0)
         except Exception as e:
-            logger.error("加载项目数据失败: %s", e)
+            corrupt_path = Path(f"{self._storage_path}.corrupt.{int(time.time())}")
+            try:
+                if self._storage_path.exists():
+                    os.replace(self._storage_path, corrupt_path)
+                    logger.error("加载项目数据失败，已备份损坏文件到: %s", corrupt_path)
+            except Exception:
+                logger.error("加载项目数据失败: %s", e)
