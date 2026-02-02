@@ -610,7 +610,7 @@ class CardBuilder:
         if progress_bar and (not content or progress_bar not in content):
             elements.append({"tag": "markdown", "content": f"📊 {progress_bar}"})
 
-        elements.append(CardBuilder._build_content_element(content, title))
+        elements.append(CardBuilder._build_content_element(content))
 
         if show_buttons:
             if is_executing or is_paused:

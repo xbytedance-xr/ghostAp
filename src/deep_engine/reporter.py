@@ -1,3 +1,4 @@
+import time
 from typing import Optional
 from .models import (
     DeepProject,
@@ -127,8 +128,6 @@ class ProgressReporter:
 请检查错误信息后重试。"""
 
     def format_status(self, project: DeepProject) -> str:
-        progress = project.get_progress_update("")
-
         status_text = {
             DeepProjectStatus.IDLE: "⏳ 等待开始",
             DeepProjectStatus.PLANNING: "🧠 正在规划",
@@ -149,7 +148,43 @@ class ProgressReporter:
 
         current_task = project.get_current_task()
         if current_task:
-            lines.append(f"\n当前任务: {current_task.title}")
+            elapsed = time.time() - current_task.started_at if current_task.started_at else 0
+            lines.append(f"\n**🔄 正在执行:**")
+            lines.append(f"  {current_task.order + 1}. {current_task.title}")
+            lines.append(f"  ⏱️ 已运行: {elapsed:.0f}s")
+
+        completed_tasks = [t for t in project.tasks if t.status == DeepTaskStatus.COMPLETED]
+        if completed_tasks:
+            lines.append(f"\n**✅ 已完成任务 ({len(completed_tasks)}):**")
+            for task in completed_tasks:
+                duration_str = f" ({task.duration():.1f}s)" if task.duration() else ""
+                result_preview = ""
+                if task.result:
+                    preview = task.result.strip()[:80]
+                    if len(task.result) > 80:
+                        preview += "..."
+                    result_preview = f"\n     └ {preview}"
+                lines.append(f"  {task.order + 1}. {task.title}{duration_str}{result_preview}")
+
+        failed_tasks = [t for t in project.tasks if t.status == DeepTaskStatus.FAILED]
+        if failed_tasks:
+            lines.append(f"\n**❌ 失败任务 ({len(failed_tasks)}):**")
+            for task in failed_tasks:
+                error_preview = ""
+                if task.error:
+                    preview = task.error.strip()[:60]
+                    if len(task.error) > 60:
+                        preview += "..."
+                    error_preview = f"\n     └ {preview}"
+                lines.append(f"  {task.order + 1}. {task.title}{error_preview}")
+
+        pending_tasks = [t for t in project.tasks if t.status in (DeepTaskStatus.PENDING, DeepTaskStatus.READY)]
+        if pending_tasks:
+            lines.append(f"\n**⏳ 待执行任务 ({len(pending_tasks)}):**")
+            for task in pending_tasks[:5]:
+                lines.append(f"  {task.order + 1}. {task.title}")
+            if len(pending_tasks) > 5:
+                lines.append(f"  ... 还有 {len(pending_tasks) - 5} 个任务")
 
         return "\n".join(lines)
 

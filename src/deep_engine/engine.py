@@ -101,16 +101,22 @@ class DeepEngine:
         self._project = DeepProject.create(name=project_name, root_path=self.root_path)
         self._project.status = DeepProjectStatus.PLANNING
 
+        logger.info("[Deep:%s] 开始规划任务, 需求长度=%d, 路径=%s", project_name, len(requirement_text), self.root_path)
+
         try:
-            logger.info("开始解析需求...")
+            logger.info("[Deep:%s] 解析需求...", project_name)
             requirement = self._parser.parse(requirement_text)
             self._project.set_requirement(requirement)
 
-            logger.info("开始规划任务...")
+            logger.info("[Deep:%s] 生成任务计划...", project_name)
             tasks = self._planner.plan(requirement)
             self._project.set_tasks(tasks)
 
             self._project.status = DeepProjectStatus.IDLE
+
+            logger.info("[Deep:%s] 规划完成, 共 %d 个任务", project_name, len(tasks))
+            for i, task in enumerate(tasks):
+                logger.info("[Deep:%s]   任务 %d: %s", project_name, i + 1, task.title)
 
             if callbacks.on_planning_done:
                 callbacks.on_planning_done(self._project)
@@ -119,7 +125,7 @@ class DeepEngine:
 
         except Exception as e:
             error_msg = f"规划失败: {str(e)}"
-            logger.error("%s", error_msg)
+            logger.error("[Deep:%s] %s", project_name, error_msg)
             self._project.fail(error_msg)
 
             if callbacks.on_error:
@@ -138,6 +144,9 @@ class DeepEngine:
 
         executor = self._ensure_executor()
         total_tasks = self._project.total_count
+        project_name = self._project.name
+
+        logger.info("[Deep:%s] 开始执行, 共 %d 个任务", project_name, total_tasks)
 
         try:
             while not self._should_stop:
@@ -158,13 +167,15 @@ class DeepEngine:
                             task.prompt = adapted_prompt
                             task.adapted_prompt = adapted_prompt
                             self._execution_context.record_adaptation(task.task_id, reason)
-                            logger.info("任务 %s 指令已适配: %s", task.title, reason)
+                            logger.info("[Deep:%s] 任务 %d/%d「%s」指令已适配: %s", project_name, current_index, total_tasks, task.title, reason)
                             if callbacks.on_context_adapted:
                                 preview = adapted_prompt[:200]
                                 callbacks.on_context_adapted(task, reason, preview)
                     except Exception as e:
-                        logger.error("任务适配异常，使用原始 prompt: %s", e)
+                        logger.error("[Deep:%s] 任务适配异常，使用原始 prompt: %s", project_name, e)
                         self._execution_context.consume_new_context_flag()
+
+                logger.info("[Deep:%s] 开始任务 %d/%d:「%s」", project_name, current_index, total_tasks, task.title)
 
                 if callbacks.on_task_start:
                     callbacks.on_task_start(task, current_index, total_tasks)
@@ -174,7 +185,16 @@ class DeepEngine:
                         callbacks.on_task_progress(task, content)
 
                 # ② 执行任务
+                task_start_time = time.time()
                 result = executor.execute(task, on_chunk=on_chunk)
+                task_duration = time.time() - task_start_time
+
+                if result.success:
+                    logger.info("[Deep:%s] 任务 %d/%d「%s」完成, 耗时 %.1fs, 输出长度=%d",
+                               project_name, current_index, total_tasks, task.title, task_duration, len(result.output or ""))
+                else:
+                    logger.warning("[Deep:%s] 任务 %d/%d「%s」失败, 耗时 %.1fs, 错误: %s",
+                                  project_name, current_index, total_tasks, task.title, task_duration, (result.error or "未知")[:100])
 
                 if callbacks.on_task_done:
                     callbacks.on_task_done(task, result)
@@ -194,24 +214,29 @@ class DeepEngine:
                         )
                         task.prompt = replanned.prompt
                         task.status = DeepTaskStatus.PENDING
-                        logger.info("任务 %s 重规划后重试", task.title)
+                        logger.info("[Deep:%s] 任务「%s」重规划后重试 (第 %d 次)", project_name, task.title, task.retry_count)
                         continue
                     except Exception as e:
-                        logger.error("任务重规划异常: %s", e)
+                        logger.error("[Deep:%s] 任务重规划异常: %s", project_name, e)
                         # 重规划失败，保持原有 fail 逻辑
                         if task.status == DeepTaskStatus.FAILED:
                             self._skip_dependent_tasks(task)
                 elif not result.success and task.status == DeepTaskStatus.FAILED:
-                    logger.warning("任务 %s 失败，跳过后续依赖任务", task.title)
+                    logger.warning("[Deep:%s] 任务「%s」失败，跳过后续依赖任务", project_name, task.title)
                     self._skip_dependent_tasks(task)
 
             if self._project.is_completed:
                 if self._project.has_failures:
                     self._project.status = DeepProjectStatus.FAILED
+                    logger.warning("[Deep:%s] 执行完成（有失败）, 成功=%d, 失败=%d, 总耗时=%.1fs",
+                                  project_name, self._project.completed_count, self._project.failed_count, self._project.duration() or 0)
                 else:
                     self._project.complete()
+                    logger.info("[Deep:%s] 全部任务完成, 共 %d 个任务, 总耗时=%.1fs",
+                               project_name, self._project.completed_count, self._project.duration() or 0)
             elif self._should_stop:
                 self._project.pause()
+                logger.info("[Deep:%s] 执行已暂停, 已完成=%d/%d", project_name, self._project.completed_count, total_tasks)
 
             if callbacks.on_project_done:
                 callbacks.on_project_done(self._project)
@@ -220,7 +245,7 @@ class DeepEngine:
 
         except Exception as e:
             error_msg = f"执行异常: {str(e)}"
-            logger.error("%s", error_msg)
+            logger.error("[Deep:%s] %s", project_name, error_msg)
             self._project.fail(error_msg)
 
             if callbacks.on_error:

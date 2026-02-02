@@ -1,3 +1,4 @@
+import logging
 import os as _os
 import select
 import subprocess
@@ -8,6 +9,8 @@ from typing import Optional, Callable
 
 from ..config import get_settings
 from ..utils.text import clean_terminal_output, truncate_output
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -76,9 +79,12 @@ class BaseSession(ABC):
             timeout = self._get_execution_timeout()
 
         cli_name = self._get_cli_name()
+        prompt_preview = prompt[:80] + "..." if len(prompt) > 80 else prompt
+        logger.info("[%s:%s] 发送消息 #%d: %s", cli_name.upper(), self.session_id[:8], self.message_count, prompt_preview)
 
         try:
             cmd = self._build_cmd(prompt, resume)
+            start_time = time.time()
 
             result = subprocess.run(
                 cmd,
@@ -87,6 +93,8 @@ class BaseSession(ABC):
                 timeout=timeout,
                 cwd=cwd,
             )
+
+            duration = time.time() - start_time
 
             # Give subclass a chance to recover from errors (e.g. expired session)
             recovered = self._handle_send_error_recovery(result, prompt, timeout, cwd)
@@ -100,13 +108,17 @@ class BaseSession(ABC):
             output = self._clean_output(output)
             output = truncate_output(output, self._get_max_output_length())
 
+            logger.info("[%s:%s] 响应完成, 耗时=%.1fs, 输出长度=%d", cli_name.upper(), self.session_id[:8], duration, len(output))
             return output if output else "✅ 执行完成（无输出）"
 
         except subprocess.TimeoutExpired:
+            logger.warning("[%s:%s] 执行超时 (%ds)", cli_name.upper(), self.session_id[:8], timeout)
             return f"⏱️ {cli_name.capitalize()} 执行超时（{timeout}秒）"
         except FileNotFoundError:
+            logger.error("[%s:%s] 未找到命令", cli_name.upper(), self.session_id[:8])
             return f"❌ 未找到 {cli_name} 命令，请确保已安装 {cli_name}"
         except Exception as e:
+            logger.error("[%s:%s] 执行异常: %s", cli_name.upper(), self.session_id[:8], e)
             return f"❌ {cli_name.capitalize()} 执行异常: {str(e)}"
 
     def send_prompt_streaming(
@@ -126,15 +138,21 @@ class BaseSession(ABC):
             timeout = self._get_execution_timeout()
 
         cli_name = self._get_cli_name()
+        prompt_preview = prompt[:80] + "..." if len(prompt) > 80 else prompt
+        logger.info("[%s:%s] 流式发送消息 #%d: %s", cli_name.upper(), self.session_id[:8], self.message_count, prompt_preview)
 
         try:
             cmd = self._build_cmd(prompt, resume)
+            start_time = time.time()
 
             full_output, stderr_text, timed_out = self._run_streaming_process(
                 cmd, cwd, timeout, on_chunk, chunk_interval
             )
 
+            duration = time.time() - start_time
+
             if timed_out:
+                logger.warning("[%s:%s] 流式执行超时 (%ds)", cli_name.upper(), self.session_id[:8], timeout)
                 return f"⏱️ {cli_name.capitalize()} 执行超时（{timeout}秒）"
 
             # Give subclass a chance to recover from errors
@@ -144,6 +162,7 @@ class BaseSession(ABC):
             if recovered is not None:
                 full_output, stderr_text, timed_out = recovered
                 if timed_out:
+                    logger.warning("[%s:%s] 流式执行超时 (%ds)", cli_name.upper(), self.session_id[:8], timeout)
                     return f"⏱️ {cli_name.capitalize()} 执行超时（{timeout}秒）"
 
             if stderr_text:
@@ -154,14 +173,17 @@ class BaseSession(ABC):
 
             on_chunk(output)
 
+            logger.info("[%s:%s] 流式响应完成, 耗时=%.1fs, 输出长度=%d", cli_name.upper(), self.session_id[:8], duration, len(output))
             return output if output else "✅ 执行完成（无输出）"
 
         except FileNotFoundError:
             error_msg = f"❌ 未找到 {cli_name} 命令，请确保已安装 {cli_name}"
+            logger.error("[%s:%s] 未找到命令", cli_name.upper(), self.session_id[:8])
             on_chunk(error_msg)
             return error_msg
         except Exception as e:
             error_msg = f"❌ {cli_name.capitalize()} 执行异常: {str(e)}"
+            logger.error("[%s:%s] 流式执行异常: %s", cli_name.upper(), self.session_id[:8], e)
             on_chunk(error_msg)
             return error_msg
 

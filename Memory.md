@@ -4,7 +4,36 @@
 GhostAP 是一个飞书机器人Shell沙箱服务，通过飞书机器人对话来安全执行本地shell命令，并支持 Coco AI 和 Claude AI 远程开发模式。
 
 ## 最新更新
-**更新时间**: 2026-02-02 23:00:00
+**更新时间**: 2026-02-02 23:30:00
+
+### Bug 修复：表情类型无效 & Deep 卡片内容重复（2026-02-02 23:30:00）
+
+#### 问题1：表情类型无效 (reaction type is invalid)
+- **原因**：`EmojiType` 中使用了飞书 API 不支持的表情类型
+- **修复**：更新 `src/feishu/emoji.py`，将不支持的类型替换为官方支持的类型：
+  - `SMART` -> `FINGERHEART`
+  - `CheckMark` -> `DONE`
+  - `CrossMark`, `ERROR` -> `Skull`
+  - `WRONGED` -> `SOB`
+  - `SALUTE` -> `THANKS`
+  - `HIGHFIVE` -> `FISTBUMP`
+  - `CLAP` -> `APPLAUSE`
+  - `StatusFlashOfInspiration` -> `JIAYI`
+  - `StatusReading` -> `THINKING`
+  - `BusyStatus` -> `OneSec`
+
+#### 问题2：Deep 模式卡片内容重复
+- **现象**：
+  1. "🔄 执行任务 [1/13]" 显示两次
+  2. "🔗 关联: origin=... · req=..." 显示两次
+- **原因**：
+  1. `build_deep_card` 中 `_build_content_element(content, title)` 会添加 title 前缀，但 reporter 的 format 方法已包含标题
+  2. `_with_ref(content)` 添加了 ref_note，但 `send_message` 又在卡片末尾添加了一次
+- **修复**：
+  1. `src/card/builder.py`: `build_deep_card` 中不传递 title 给 `_build_content_element`
+  2. `src/feishu/handlers/deep.py`: 移除 `_with_ref` 函数，让 `send_message` 统一处理 ref_note
+
+---
 
 ### 项目结构精简与可维护性提升（2026-02-02 23:00:00）
 

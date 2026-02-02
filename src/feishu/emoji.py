@@ -5,32 +5,32 @@ class EmojiType:
     ONE_SEC = "OneSec"
     
     DONE = "DONE"
-    CHECK_MARK = "CheckMark"
+    CHECK_MARK = "DONE"
     LGTM = "LGTM"
     THUMBSUP = "THUMBSUP"
     OK = "OK"
     AWESOME = "AWESOME"
     
-    CROSS_MARK = "CrossMark"
-    ERROR = "ERROR"
+    CROSS_MARK = "Skull"
+    ERROR = "Skull"
     SOB = "SOB"
-    WRONG = "WRONGED"
+    WRONG = "SOB"
     
-    SMART = "SMART"
+    SMART = "FINGERHEART"
     ROCKET = "Rocket"
     FIRE = "Fire"
     MUSCLE = "MUSCLE"
     YEAH = "YEAH"
     PARTY = "PARTY"
     
-    SALUTE = "SALUTE"
-    HIGHFIVE = "HIGHFIVE"
+    SALUTE = "THANKS"
+    HIGHFIVE = "FISTBUMP"
     WAVE = "WAVE"
-    CLAP = "CLAP"
+    CLAP = "APPLAUSE"
     
-    FLASH = "StatusFlashOfInspiration"
-    READING = "StatusReading"
-    BUSY = "BusyStatus"
+    FLASH = "JIAYI"
+    READING = "THINKING"
+    BUSY = "OneSec"
 
 
 class EmojiReaction:

@@ -136,21 +136,13 @@ class DeepHandler(BaseHandler):
     # ------------------------------------------------------------------
     def _create_deep_callbacks(self, message_id: str, chat_id: str, project: Optional["ProjectContext"], engine_name: str = "Coco") -> DeepEngineCallbacks:
         request_id = self.ensure_request_id(message_id, chat_id=chat_id, project_id=(project.project_id if project else None))
-        ref_note = self.format_ref_note(message_id, request_id)
         reporter = self.ctx.progress_reporter
-
-        def _with_ref(text: str) -> str:
-            if not ref_note:
-                return text
-            if ref_note in (text or ""):
-                return text
-            return f"{text}\n\n{ref_note}" if text else ref_note
 
         def on_planning_done(deep_project: DeepProject):
             content = reporter.format_planning_done(deep_project)
             title = reporter.get_planning_done_title()
             msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title=title, content=_with_ref(content),
+                project=project, title=title, content=content,
                 deep_project_id=deep_project.project_id, engine_name=engine_name, show_buttons=False,
             )
             self.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
@@ -162,7 +154,7 @@ class DeepHandler(BaseHandler):
             engine = self.ctx.deep_engine_manager.get(chat_id, project.root_path if project else "")
             deep_project_id = engine.project.project_id if engine and engine.project else None
             msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title=title, content=_with_ref(content),
+                project=project, title=title, content=content,
                 progress_bar=progress_bar, deep_project_id=deep_project_id,
                 is_executing=True, engine_name=engine_name,
             )
@@ -177,7 +169,7 @@ class DeepHandler(BaseHandler):
                 title = reporter.get_task_done_title(result.success, current, total)
                 progress_bar = reporter._make_progress_bar(current, total)
                 msg_type, card_content = CardBuilder.build_deep_card(
-                    project=project, title=title, content=_with_ref(content),
+                    project=project, title=title, content=content,
                     progress_bar=progress_bar, deep_project_id=engine.project.project_id,
                     is_executing=True, engine_name=engine_name,
                 )
@@ -188,7 +180,7 @@ class DeepHandler(BaseHandler):
             title = reporter.get_project_done_title(deep_project)
             progress_bar = reporter._make_progress_bar(deep_project.completed_count, deep_project.total_count)
             msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title=title, content=_with_ref(content),
+                project=project, title=title, content=content,
                 progress_bar=progress_bar, deep_project_id=deep_project.project_id, engine_name=engine_name,
             )
             self.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
@@ -211,7 +203,7 @@ class DeepHandler(BaseHandler):
             content = reporter.format_error(error)
             title = reporter.get_error_title()
             msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title=title, content=_with_ref(content),
+                project=project, title=title, content=content,
                 engine_name=engine_name, show_buttons=False,
             )
             self.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
@@ -223,7 +215,7 @@ class DeepHandler(BaseHandler):
             engine = self.ctx.deep_engine_manager.get(chat_id, project.root_path if project else "")
             deep_project_id = engine.project.project_id if engine and engine.project else None
             msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title=title, content=_with_ref(content),
+                project=project, title=title, content=content,
                 deep_project_id=deep_project_id, engine_name=engine_name, show_buttons=False,
             )
             self.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
