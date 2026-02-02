@@ -9,8 +9,7 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTr
 from typing import Callable, Optional, Any
 import threading
 from ..config import get_settings
-from ..coco.session import CocoSessionManager
-from ..claude.session import ClaudeSessionManager
+from ..session import CocoSessionManager, ClaudeSessionManager
 from ..agent.intent_recognizer import IntentRecognizer, IntentType, IntentResult, TaskStep
 from ..project import (
     ProjectManager,

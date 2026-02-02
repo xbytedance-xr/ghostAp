@@ -3,7 +3,7 @@ import sys
 import time
 import uuid
 from unittest.mock import patch, MagicMock
-from src.claude.session import ClaudeSession, ClaudeSessionManager
+from src.session.claude import ClaudeSession, ClaudeSessionManager
 
 
 class TestClaudeSession:

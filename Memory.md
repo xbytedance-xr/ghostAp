@@ -4,7 +4,46 @@
 GhostAP 是一个飞书机器人Shell沙箱服务，通过飞书机器人对话来安全执行本地shell命令，并支持 Coco AI 和 Claude AI 远程开发模式。
 
 ## 最新更新
-**更新时间**: 2026-02-02 21:30:00
+**更新时间**: 2026-02-02 23:00:00
+
+### 项目结构精简与可维护性提升（2026-02-02 23:00:00）
+
+#### 第一阶段：合并 themes.py 到 shared.py
+- 将 `src/card/themes.py`（23行）合并到 `src/card/shared.py`
+- `ProjectTheme` dataclass 和 `THEMES` 字典、`get_theme()` 函数移入 shared.py
+- 更新所有 import 语句：
+  - `src/card/__init__.py`: 从 shared.py 导出
+  - `src/card/builder.py`: 改从 shared.py 导入
+  - `src/project/manager.py`: 改从 shared.py 导入
+  - `tests/test_card.py`: 改从 shared.py 导入
+- 删除 `src/card/themes.py`
+
+#### 第二阶段：统一会话模块目录结构
+- 将 `src/coco/session.py` 移动到 `src/session/coco.py`
+- 将 `src/claude/session.py` 移动到 `src/session/claude.py`
+- 更新 `src/session/__init__.py` 导出 CocoSession, CocoSessionManager, ClaudeSession, ClaudeSessionManager
+- 更新所有 import 语句：
+  - `src/feishu/ws_client.py`: `from ..session import CocoSessionManager, ClaudeSessionManager`
+  - `src/feishu/handler_context.py`: `from ..session import CocoSessionManager, ClaudeSessionManager`
+  - `src/deep_engine/engine.py`: `from ..session import CocoSession, CocoSessionManager, ClaudeSession, ClaudeSessionManager`
+  - `tests/test_claude.py`: `from src.session.claude import ClaudeSession, ClaudeSessionManager`
+- 删除空的 `src/coco/` 和 `src/claude/` 目录
+
+#### 附带修复
+- 修复 `tests/test_unified_context.py` 中 `test_query_entries_since_timestamp` 的时间精度问题（sleep 从 0.01s 改为 0.05s）
+
+#### 测试结果
+- 全部 744 个测试通过
+
+#### 精简效果
+| 指标 | 变化 |
+|------|------|
+| 删除文件 | 5 个（themes.py, coco/__init__.py, coco/session.py, claude/__init__.py, claude/session.py） |
+| 删除目录 | 2 个（src/coco/, src/claude/） |
+| 新增文件 | 2 个（session/coco.py, session/claude.py） |
+| 净减少文件 | 3 个 |
+
+---
 
 ### 项目级任务隔离与系统命令快速通道（2026-02-02 21:30:00）
 

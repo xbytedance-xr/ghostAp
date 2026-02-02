@@ -16,8 +16,7 @@ if TYPE_CHECKING:
     import lark_oapi as lark
     from ..agent.intent_recognizer import IntentRecognizer
     from ..card.streaming import StreamingCardManager
-    from ..coco.session import CocoSessionManager
-    from ..claude.session import ClaudeSessionManager
+    from ..session import CocoSessionManager, ClaudeSessionManager
     from ..deep_engine import DeepEngineManager, ProgressReporter
     from ..mode import ModeManager
     from ..project import MessageProjectMapper, ProjectContextManager, ProjectManager

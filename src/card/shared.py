@@ -1,10 +1,33 @@
 """Shared card element builders used by both CardBuilder and StreamingCardManager."""
 
+from dataclasses import dataclass
 from typing import Optional
 from ..config import get_settings
 
 
 BUTTON_SIZE = "small"
+
+
+@dataclass
+class ProjectTheme:
+    name: str
+    color: str
+    emoji: str
+    header_template: str
+
+
+THEMES = {
+    "green": ProjectTheme("green", "green", "🟢", "green"),
+    "blue": ProjectTheme("blue", "blue", "🔵", "blue"),
+    "purple": ProjectTheme("purple", "purple", "🟣", "purple"),
+    "orange": ProjectTheme("orange", "orange", "🟠", "orange"),
+    "red": ProjectTheme("red", "red", "🔴", "red"),
+    "turquoise": ProjectTheme("turquoise", "turquoise", "🩵", "turquoise"),
+}
+
+
+def get_theme(color: str) -> ProjectTheme:
+    return THEMES.get(color, THEMES["green"])
 
 
 def apply_compact_style(button: dict) -> dict:
@@ -109,7 +132,6 @@ def resolve_title_and_template(
 
     # If a theme_color is provided (from project), use it for the template
     if theme_color and not is_claude_mode and not is_coco_mode:
-        from .themes import get_theme
         header_template = get_theme(theme_color).header_template
 
     if project_name:

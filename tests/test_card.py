@@ -6,7 +6,7 @@ from src.project.context import ProjectContext, ProjectStatus, CocoSessionSnapsh
 from src.card.builder import CardBuilder
 from src.deep_engine.reporter import ProgressReporter
 from src.deep_engine.models import DeepTask, ExecutionResult
-from src.card.themes import get_theme, THEMES
+from src.card.shared import get_theme, THEMES
 
 
 class TestProjectTheme:

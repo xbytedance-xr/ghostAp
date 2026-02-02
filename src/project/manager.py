@@ -9,7 +9,7 @@ from typing import Optional
 from pathlib import Path
 
 from .context import ProjectContext, ProjectStatus
-from ..card.themes import THEMES
+from ..card.shared import THEMES
 
 logger = logging.getLogger(__name__)
 

@@ -3,8 +3,8 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 from ..config import get_settings
-from ..session.base import BaseSession
-from ..session.manager import BaseSessionManager
+from .base import BaseSession
+from .manager import BaseSessionManager
 
 
 @dataclass

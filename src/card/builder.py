@@ -2,8 +2,8 @@ import json
 import time
 from typing import Optional
 from ..project.context import ProjectContext, ProjectStatus
-from .themes import get_theme
 from .shared import (
+    get_theme,
     apply_compact_style,
     build_mode_buttons,
     build_responsive_layout,

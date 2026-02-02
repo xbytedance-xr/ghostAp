@@ -5,8 +5,7 @@ import os
 import uuid
 from typing import Optional, Callable, AsyncGenerator, Union
 from dataclasses import dataclass
-from ..coco.session import CocoSession, CocoSessionManager
-from ..claude.session import ClaudeSession, ClaudeSessionManager
+from ..session import CocoSession, CocoSessionManager, ClaudeSession, ClaudeSessionManager
 from ..config import get_settings
 
 logger = logging.getLogger(__name__)

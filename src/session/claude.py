@@ -5,8 +5,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Optional, Callable
 from ..config import get_settings
-from ..session.base import BaseSession
-from ..session.manager import BaseSessionManager
+from .base import BaseSession
+from .manager import BaseSessionManager
 
 logger = logging.getLogger(__name__)
 

@@ -305,8 +305,9 @@ class TestUnifiedContextCRUD:
 
     def test_query_entries_since_timestamp(self, ctx):
         ctx.add_conversation("user", "old", ContextSourceMode.SMART)
+        time.sleep(0.05)
         cutoff = time.time()
-        time.sleep(0.01)
+        time.sleep(0.05)
         ctx.add_conversation("user", "new", ContextSourceMode.SMART)
 
         results = ctx.query_entries(since=cutoff)
