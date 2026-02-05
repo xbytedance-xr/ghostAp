@@ -1147,19 +1147,24 @@ class TestMarkdownEdgeCases:
 # ---------------------------------------------------------------------------
 
 class TestReplyModeConfig:
-    """测试 reply_mode 配置项"""
+    """测试回复模式配置项（smart_reply_mode / default_reply_mode）"""
 
-    def test_default_reply_mode_is_direct(self):
-        """默认回复模式为 direct"""
+    def test_smart_reply_mode_default_is_direct(self):
+        """智能模式默认回复模式为 direct"""
         settings = Settings()
-        assert settings.reply_mode == "direct"
+        assert settings.smart_reply_mode == "direct"
 
-    def test_reply_mode_can_be_set_to_thread(self):
-        """回复模式可以设置为 thread"""
-        settings = Settings(reply_mode="thread")
-        assert settings.reply_mode == "thread"
+    def test_default_reply_mode_default_is_thread(self):
+        """其他模式默认回复模式为 thread"""
+        settings = Settings()
+        assert settings.default_reply_mode == "thread"
 
-    def test_reply_mode_can_be_set_to_direct(self):
-        """回复模式可以设置为 direct"""
-        settings = Settings(reply_mode="direct")
-        assert settings.reply_mode == "direct"
+    def test_smart_reply_mode_can_be_set_to_thread(self):
+        """智能模式回复模式可以设置为 thread"""
+        settings = Settings(smart_reply_mode="thread")
+        assert settings.smart_reply_mode == "thread"
+
+    def test_default_reply_mode_can_be_set_to_direct(self):
+        """其他模式回复模式可以设置为 direct"""
+        settings = Settings(default_reply_mode="direct")
+        assert settings.default_reply_mode == "direct"

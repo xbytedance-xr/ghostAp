@@ -138,6 +138,29 @@ class DeepHandler(BaseHandler):
         request_id = self.ensure_request_id(message_id, chat_id=chat_id, project_id=(project.project_id if project else None))
         reporter = self.ctx.progress_reporter
 
+        # 用于追踪话题模式下的第一条回复消息 ID，后续消息都回复到这个话题
+        # 在 thread 模式下，所有 deep 任务的消息都应该回复到同一个话题中
+        thread_root_message_id: list[str | None] = [None]  # 使用 list 包装以便在闭包中修改
+
+        def _send_deep_message(card_content: str, msg_type: str = "interactive"):
+            """发送 deep 任务消息，在话题模式下确保所有消息都回复到同一个话题。"""
+            use_thread = self.settings.default_reply_mode == "thread"
+
+            if use_thread:
+                # 话题模式：所有消息都回复到同一个话题
+                reply_to = thread_root_message_id[0] or message_id
+                result_id = self.reply_message(
+                    reply_to, card_content, msg_type=msg_type,
+                    origin_message_id=message_id, request_id=request_id,
+                    reply_in_thread=True,  # 强制使用话题回复
+                )
+                # 记录第一条回复的 message_id，后续消息都回复到这个消息形成的话题
+                if thread_root_message_id[0] is None and result_id:
+                    thread_root_message_id[0] = result_id
+            else:
+                # 直接模式：发送新消息到群聊
+                self.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
+
         def on_planning_done(deep_project: DeepProject):
             content = reporter.format_planning_done(deep_project)
             title = reporter.get_planning_done_title()
@@ -145,7 +168,7 @@ class DeepHandler(BaseHandler):
                 project=project, title=title, content=content,
                 deep_project_id=deep_project.project_id, engine_name=engine_name, show_buttons=False,
             )
-            self.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
+            _send_deep_message(card_content, msg_type)
 
         def on_task_start(task: DeepTask, current: int, total: int):
             content = reporter.format_task_start(task, current, total)
@@ -158,7 +181,7 @@ class DeepHandler(BaseHandler):
                 progress_bar=progress_bar, deep_project_id=deep_project_id,
                 is_executing=True, engine_name=engine_name,
             )
-            self.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
+            _send_deep_message(card_content, msg_type)
 
         def on_task_done(task: DeepTask, result: ExecutionResult):
             engine = self.ctx.deep_engine_manager.get(chat_id, project.root_path if project else "")
@@ -173,7 +196,7 @@ class DeepHandler(BaseHandler):
                     progress_bar=progress_bar, deep_project_id=engine.project.project_id,
                     is_executing=True, engine_name=engine_name,
                 )
-                self.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
+                _send_deep_message(card_content, msg_type)
 
         def on_project_done(deep_project: DeepProject):
             content = reporter.format_project_done(deep_project)
@@ -183,7 +206,7 @@ class DeepHandler(BaseHandler):
                 project=project, title=title, content=content,
                 progress_bar=progress_bar, deep_project_id=deep_project.project_id, engine_name=engine_name,
             )
-            self.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
+            _send_deep_message(card_content, msg_type)
             self.add_reaction(message_id, EmojiReaction.on_multi_task_done())
 
             if project:
@@ -206,7 +229,7 @@ class DeepHandler(BaseHandler):
                 project=project, title=title, content=content,
                 engine_name=engine_name, show_buttons=False,
             )
-            self.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
+            _send_deep_message(card_content, msg_type)
             self.add_reaction(message_id, EmojiReaction.on_error())
 
         def on_context_adapted(task: DeepTask, reason: str, prompt_preview: str):
@@ -218,7 +241,7 @@ class DeepHandler(BaseHandler):
                 project=project, title=title, content=content,
                 deep_project_id=deep_project_id, engine_name=engine_name, show_buttons=False,
             )
-            self.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
+            _send_deep_message(card_content, msg_type)
 
         def on_task_retry(task: DeepTask, error: str, retry_num: int, max_retries: int):
             content = reporter.format_task_retry(task, error, retry_num, max_retries)
@@ -233,7 +256,7 @@ class DeepHandler(BaseHandler):
                 progress_bar=progress_bar, deep_project_id=deep_project_id,
                 is_executing=True, engine_name=engine_name,
             )
-            self.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
+            _send_deep_message(card_content, msg_type)
 
         return DeepEngineCallbacks(
             on_planning_done=on_planning_done,

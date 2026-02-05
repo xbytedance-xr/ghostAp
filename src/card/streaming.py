@@ -32,6 +32,8 @@ class StreamingCard:
     image_keys: Optional[list[str]] = None
     is_coco_mode: bool = True
     is_claude_mode: bool = False
+    is_smart_mode: bool = False
+    reply_in_thread: Optional[bool] = None  # 显式指定时优先使用
 
     message_id: Optional[str] = None
     created_at: float = field(default_factory=time.time)
@@ -241,14 +243,16 @@ class StreamingCardManager:
         element_id: str = "content_md",
         is_coco_mode: bool = True,
         is_claude_mode: bool = False,
+        is_smart_mode: bool = False,
         reply_to_message_id: Optional[str] = None,
         image_keys: Optional[list[str]] = None,
+        reply_in_thread: Optional[bool] = None,
     ) -> Optional[StreamingCard]:
         title, header_template = self._resolve_title_and_template(
             project_name, is_coco_mode, is_claude_mode
         )
 
-        # “创建”阶段不做任何远端调用：先把卡片所需的元信息封装起来
+        # "创建"阶段不做任何远端调用：先把卡片所需的元信息封装起来
         return StreamingCard(
             chat_id=chat_id,
             title=title,
@@ -259,6 +263,8 @@ class StreamingCardManager:
             image_keys=image_keys,
             is_coco_mode=is_coco_mode,
             is_claude_mode=is_claude_mode,
+            is_smart_mode=is_smart_mode,
+            reply_in_thread=reply_in_thread,
             last_content=initial_content,
         )
 
@@ -273,8 +279,10 @@ class StreamingCardManager:
         project_id: Optional[str] = None,
         is_coco_mode: bool = True,
         is_claude_mode: bool = False,
+        is_smart_mode: bool = False,
         reply_to_message_id: Optional[str] = None,
         image_keys: Optional[list[str]] = None,
+        reply_in_thread: Optional[bool] = None,
     ) -> Optional[str]:
         """非流式发送：直接发送 schema 2.0 card JSON（不依赖 CardKit 卡片实体）。"""
         title, header_template = self._resolve_title_and_template(
@@ -294,8 +302,14 @@ class StreamingCardManager:
         try:
             msg_content = json.dumps(card_json, ensure_ascii=False)
             if reply_to_message_id:
-                # 根据配置决定是否使用话题回复
-                reply_in_thread = self._settings.reply_mode == "thread"
+                # 根据配置和模式决定是否使用话题回复
+                # 优先使用显式传入的 reply_in_thread 参数
+                effective_reply_in_thread = reply_in_thread
+                if effective_reply_in_thread is None:
+                    if is_smart_mode:
+                        effective_reply_in_thread = self._settings.smart_reply_mode == "thread"
+                    else:
+                        effective_reply_in_thread = self._settings.default_reply_mode == "thread"
                 msg_request = (
                     ReplyMessageRequest.builder()
                     .message_id(reply_to_message_id)
@@ -303,7 +317,7 @@ class StreamingCardManager:
                         ReplyMessageRequestBody.builder()
                         .msg_type("interactive")
                         .content(msg_content)
-                        .reply_in_thread(reply_in_thread)
+                        .reply_in_thread(effective_reply_in_thread)
                         .build()
                     )
                     .build()
@@ -369,8 +383,14 @@ class StreamingCardManager:
             content = json.dumps(card_json, ensure_ascii=False)
 
             if card.reply_to_message_id:
-                # 根据配置决定是否使用话题回复
-                reply_in_thread = self._settings.reply_mode == "thread"
+                # 根据配置和模式决定是否使用话题回复
+                # 优先使用显式传入的 reply_in_thread 参数
+                effective_reply_in_thread = card.reply_in_thread
+                if effective_reply_in_thread is None:
+                    if card.is_smart_mode:
+                        effective_reply_in_thread = self._settings.smart_reply_mode == "thread"
+                    else:
+                        effective_reply_in_thread = self._settings.default_reply_mode == "thread"
                 request = (
                     ReplyMessageRequest.builder()
                     .message_id(card.reply_to_message_id)
@@ -378,7 +398,7 @@ class StreamingCardManager:
                         ReplyMessageRequestBody.builder()
                         .msg_type("interactive")
                         .content(content)
-                        .reply_in_thread(reply_in_thread)
+                        .reply_in_thread(effective_reply_in_thread)
                         .build()
                     )
                     .build()

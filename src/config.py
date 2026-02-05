@@ -41,10 +41,14 @@ class Settings(BaseSettings):
     # - responsive: 默认值；<=2 个按钮用 action，>2 个按钮用两列 column_set
     card_button_layout: str = "responsive"
 
-    # 消息回复模式：
-    # - direct: 直接回复（消息显示在被回复消息下方，形成话题）
+    # 消息回复模式配置
+    # - direct: 直接回复（消息显示在被回复消息下方）
     # - thread: 话题回复（使用 reply_in_thread=True，消息会显示在独立话题区域，更整洁）
-    reply_mode: str = "direct"
+    #
+    # smart_reply_mode: 智能模式下的回复方式（默认 direct，群内直接引用消息回复）
+    # default_reply_mode: 其他模式（Coco/Claude/Shell/Deep等）的回复方式（默认 thread，话题回复更整洁）
+    smart_reply_mode: str = "direct"
+    default_reply_mode: str = "thread"
 
     @property
     def command_blacklist(self) -> list[str]:

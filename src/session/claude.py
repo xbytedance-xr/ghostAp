@@ -53,10 +53,10 @@ class ClaudeSession(BaseSession):
         return super().send_prompt(prompt, timeout, cwd, resume)
 
     def send_prompt_streaming(self, prompt, on_chunk, timeout=None, cwd=None,
-                              resume=False, chunk_interval=0.3):
+                              resume=False, chunk_interval=0.3, should_stop=None):
         self._reset_stale_session()
         return super().send_prompt_streaming(
-            prompt, on_chunk, timeout, cwd, resume, chunk_interval,
+            prompt, on_chunk, timeout, cwd, resume, chunk_interval, should_stop,
         )
 
     def _build_cmd(self, prompt: str, resume: bool) -> list[str]:

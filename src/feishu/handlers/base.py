@@ -77,6 +77,8 @@ class BaseHandler:
         origin_message_id: Optional[str] = None,
         request_id: Optional[str] = None,
         run_id: Optional[str] = None,
+        is_smart_mode: bool = False,
+        reply_in_thread: Optional[bool] = None,
     ):
         """Reply to *message_id*.  Thin wrapper that auto-resolves origin & request."""
         if origin_message_id is None:
@@ -90,6 +92,8 @@ class BaseHandler:
             message_id, content, msg_type=msg_type,
             origin_message_id=origin_message_id,
             request_id=request_id, run_id=run_id,
+            is_smart_mode=is_smart_mode,
+            reply_in_thread=reply_in_thread,
         )
 
     def reply_message_with_id(
@@ -101,6 +105,8 @@ class BaseHandler:
         origin_message_id: Optional[str] = None,
         request_id: Optional[str] = None,
         run_id: Optional[str] = None,
+        is_smart_mode: bool = False,
+        reply_in_thread: Optional[bool] = None,
     ) -> Optional[str]:
         """Reply and return the response message_id (or None on failure)."""
         try:
@@ -170,8 +176,13 @@ class BaseHandler:
                 except Exception:
                     pass
 
-            # 根据配置决定是否使用话题回复
-            reply_in_thread = self.settings.reply_mode == "thread"
+            # 根据配置和模式决定是否使用话题回复
+            # 优先使用显式传入的 reply_in_thread 参数
+            if reply_in_thread is None:
+                if is_smart_mode:
+                    reply_in_thread = self.settings.smart_reply_mode == "thread"
+                else:
+                    reply_in_thread = self.settings.default_reply_mode == "thread"
             request = ReplyMessageRequest.builder() \
                 .message_id(message_id) \
                 .request_body(ReplyMessageRequestBody.builder()
