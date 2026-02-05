@@ -1022,3 +1022,78 @@ class TestWsClientDeepUpdate:
         assert client._is_deep_command("/deep_update 改用 PostgreSQL") is True
         assert client._is_deep_command("/deep_update") is True
         assert client._is_deep_command("/DEEP_UPDATE test") is True
+
+
+class TestDeepEngineStop:
+    """测试 DeepEngine 的停止功能。"""
+
+    def test_stop_sets_should_stop_flag(self):
+        """stop() 应该设置 _should_stop 标志。"""
+        engine = DeepEngine.__new__(DeepEngine)
+        engine._should_stop = False
+        engine.stop()
+        assert engine._should_stop is True
+
+    def test_pause_sets_should_stop_flag(self):
+        """pause() 应该设置 _should_stop 标志并更新项目状态。"""
+        engine = DeepEngine.__new__(DeepEngine)
+        engine._should_stop = False
+        project = DeepProject.create("测试", "/tmp/test")
+        project.start()
+        engine._project = project
+        engine.pause()
+        assert engine._should_stop is True
+        assert engine._project.status == DeepProjectStatus.PAUSED
+
+    @patch("src.deep_engine.engine.DeepEngine._ensure_executor")
+    def test_execute_respects_stop_flag(self, mock_ensure_exec):
+        """执行循环应该在 _should_stop 为 True 时停止。"""
+        engine = DeepEngine.__new__(DeepEngine)
+        engine.settings = MagicMock()
+        engine._planner = MagicMock()
+        engine._execution_context = ExecutionContext()
+        engine._should_stop = False
+        engine._is_running = False
+
+        project = DeepProject.create("测试", "/tmp/test")
+        task1 = DeepTask.create("任务1", "描述1", "prompt1")
+        task2 = DeepTask.create("任务2", "描述2", "prompt2")
+        project.set_tasks([task1, task2])
+        engine._project = project
+
+        execution_count = [0]
+
+        def execute_side_effect(t, on_chunk=None):
+            execution_count[0] += 1
+            # 第一个任务完成后设置停止标志
+            if execution_count[0] == 1:
+                engine.stop()
+            t.start()
+            t.complete("完成")
+            return ExecutionResult(
+                task_id=t.task_id, success=True, output="完成", duration=1.0
+            )
+
+        mock_executor = MagicMock()
+        mock_executor.execute.side_effect = execute_side_effect
+        mock_ensure_exec.return_value = mock_executor
+
+        engine.execute()
+
+        # 只有第一个任务被执行
+        assert execution_count[0] == 1
+        assert engine._project.status == DeepProjectStatus.PAUSED
+
+    def test_executor_should_stop_callback(self):
+        """TaskExecutor 的 should_stop 回调应该正确工作。"""
+        should_stop_called = [False]
+
+        def should_stop():
+            should_stop_called[0] = True
+            return True
+
+        mock_session = MagicMock()
+        executor = TaskExecutor(mock_session, "/tmp/test", should_stop=should_stop)
+        assert executor._should_stop is not None
+        assert executor._should_stop() is True
+        assert should_stop_called[0] is True

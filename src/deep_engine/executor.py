@@ -12,10 +12,11 @@ AISession = BaseSession
 
 
 class TaskExecutor:
-    def __init__(self, session: AISession, cwd: str):
+    def __init__(self, session: AISession, cwd: str, should_stop: Optional[Callable[[], bool]] = None):
         self.session = session
         self.cwd = cwd
         self.settings = get_settings()
+        self._should_stop = should_stop
 
     def execute(
         self,
@@ -34,6 +35,7 @@ class TaskExecutor:
                     timeout=timeout or self.settings.coco_execution_timeout,
                     cwd=self.cwd,
                     chunk_interval=0.5,
+                    should_stop=self._should_stop,
                 )
             else:
                 output = self.session.send_prompt(

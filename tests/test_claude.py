@@ -77,7 +77,7 @@ class TestClaudeSession:
         ]
 
         chunks = []
-        out, err, timed_out = session._run_streaming_process(
+        out, err, timed_out, stopped = session._run_streaming_process(
             cmd,
             cwd=None,
             timeout=3,
@@ -86,6 +86,7 @@ class TestClaudeSession:
         )
 
         assert timed_out is False
+        assert stopped is False
         assert "done" in out
         assert len(err) > 100000
 

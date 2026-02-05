@@ -170,11 +170,14 @@ class BaseHandler:
                 except Exception:
                     pass
 
+            # 根据配置决定是否使用话题回复
+            reply_in_thread = self.settings.reply_mode == "thread"
             request = ReplyMessageRequest.builder() \
                 .message_id(message_id) \
                 .request_body(ReplyMessageRequestBody.builder()
                     .content(content_str)
                     .msg_type(msg_type)
+                    .reply_in_thread(reply_in_thread)
                     .build()) \
                 .build()
 

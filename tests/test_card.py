@@ -7,6 +7,7 @@ from src.card.builder import CardBuilder
 from src.deep_engine.reporter import ProgressReporter
 from src.deep_engine.models import DeepTask, ExecutionResult
 from src.card.shared import get_theme, THEMES
+from src.config import Settings
 
 
 class TestProjectTheme:
@@ -1139,3 +1140,26 @@ class TestMarkdownEdgeCases:
         ]
         assert len(progress_md) == 1
         assert "40%" in progress_md[0]["content"]
+
+
+# ---------------------------------------------------------------------------
+# 回复模式配置测试
+# ---------------------------------------------------------------------------
+
+class TestReplyModeConfig:
+    """测试 reply_mode 配置项"""
+
+    def test_default_reply_mode_is_direct(self):
+        """默认回复模式为 direct"""
+        settings = Settings()
+        assert settings.reply_mode == "direct"
+
+    def test_reply_mode_can_be_set_to_thread(self):
+        """回复模式可以设置为 thread"""
+        settings = Settings(reply_mode="thread")
+        assert settings.reply_mode == "thread"
+
+    def test_reply_mode_can_be_set_to_direct(self):
+        """回复模式可以设置为 direct"""
+        settings = Settings(reply_mode="direct")
+        assert settings.reply_mode == "direct"

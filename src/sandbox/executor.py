@@ -75,6 +75,26 @@ class SandboxExecutor:
             )
 
         try:
+            # 1) 尽可能把“会打开 pager 的命令”变成非交互式
+            command = self._sanitize_command_for_noninteractive(command)
+
+            # 2) 构建环境变量：禁用各种 pager，避免命令阻塞
+            import os
+            env = os.environ.copy()
+            env.update({
+                # git / man / systemd 等常见 pager
+                "GIT_PAGER": "cat",
+                "PAGER": "cat",
+                "MANPAGER": "cat",
+                "SYSTEMD_PAGER": "cat",
+                # less：F(一屏退出) R(支持颜色) X(不清屏)
+                "LESS": "FRX",
+                # 禁用 git 交互式提示（例如需要输入用户名密码时）
+                "GIT_TERMINAL_PROMPT": "0",
+                # 终端类型设为 dumb，尽量减少交互/控制序列
+                "TERM": "dumb",
+            })
+
             process = subprocess.run(
                 command,
                 shell=True,
@@ -82,7 +102,7 @@ class SandboxExecutor:
                 text=True,
                 timeout=self.settings.sandbox_timeout,
                 cwd=cwd,
-                env=None,
+                env=env,
             )
 
             stdout = process.stdout
@@ -115,3 +135,25 @@ class SandboxExecutor:
                 return_code=-1,
                 error_message=f"执行异常: {str(e)}"
             )
+
+    def _sanitize_command_for_noninteractive(self, command: str) -> str:
+        """Best-effort rewrite to avoid interactive pagers.
+
+        目前主要覆盖 git：在检测到 `git ...` 且未显式要求分页时，自动加上 `--no-pager`。
+
+        注意：此函数不做复杂 shell 解析，只做保守的前缀改写。
+        """
+        cmd = command.strip()
+        if not cmd:
+            return command
+
+        # 用户显式要求分页/或已禁用 pager 时，不做改写
+        lowered = cmd.lower()
+        if "--no-pager" in lowered or "--paginate" in lowered or re.search(r"(^|\s)git\s+-p(\s|$)", lowered):
+            return command
+
+        # 常见形态：git xxx... / sudo git xxx...
+        if re.match(r"^\s*(?:sudo\s+)?git\b", cmd):
+            return re.sub(r"^(\s*(?:sudo\s+)?)git\b", r"\1git --no-pager", command, count=1)
+
+        return command

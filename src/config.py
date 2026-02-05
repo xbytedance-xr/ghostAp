@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     # - responsive: 默认值；<=2 个按钮用 action，>2 个按钮用两列 column_set
     card_button_layout: str = "responsive"
 
+    # 消息回复模式：
+    # - direct: 直接回复（消息显示在被回复消息下方，形成话题）
+    # - thread: 话题回复（使用 reply_in_thread=True，消息会显示在独立话题区域，更整洁）
+    reply_mode: str = "direct"
+
     @property
     def command_blacklist(self) -> list[str]:
         return [cmd.strip() for cmd in self.sandbox_command_blacklist.split(",") if cmd.strip()]

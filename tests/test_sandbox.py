@@ -98,6 +98,38 @@ class TestSandboxExecutor:
         assert result.success is True
         assert result.stdout.strip() != ""
 
+    def test_git_log_no_pager(self):
+        """Test that git log doesn't hang due to pager."""
+        # This test verifies that GIT_PAGER is disabled
+        result = self.executor.execute("git log -n 3 --oneline")
+        # Should complete without hanging (timeout would fail the test)
+        assert isinstance(result, ExecutionResult)
+        # Either succeeds (in a git repo) or fails gracefully (not a git repo)
+        assert result.return_code in [0, 128]
+
+    def test_pager_env_disabled(self):
+        """Test that PAGER environment variable is set to cat."""
+        result = self.executor.execute("echo $PAGER")
+        assert result.success is True
+        assert result.stdout.strip() == "cat"
+
+    def test_git_pager_env_disabled(self):
+        """Test that GIT_PAGER environment variable is set to cat."""
+        result = self.executor.execute("echo \"GIT_PAGER=[$GIT_PAGER]\"")
+        assert result.success is True
+        assert "GIT_PAGER=[cat]" in result.stdout
+
+    def test_git_command_auto_no_pager_injection(self):
+        """Ensure we inject --no-pager for git commands by default."""
+        cmd = "git log -n 1 --oneline"
+        rewritten = self.executor._sanitize_command_for_noninteractive(cmd)
+        assert rewritten.startswith("git --no-pager ")
+
+        # User explicitly asks for pagination -> don't rewrite
+        cmd_paginate = "git --paginate log -n 1 --oneline"
+        rewritten2 = self.executor._sanitize_command_for_noninteractive(cmd_paginate)
+        assert rewritten2 == cmd_paginate
+
 
 class TestSandboxExecutorBlacklist:
     def setup_method(self):

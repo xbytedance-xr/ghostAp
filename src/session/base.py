@@ -51,6 +51,23 @@ class BaseSession(ABC):
     def _get_max_output_length(self) -> int:
         return get_settings().coco_max_output_length
 
+    def _build_noninteractive_env(self) -> dict:
+        """Environment vars to reduce interactive behaviors (e.g., pagers).
+
+        This helps avoid hanging when the underlying tools decide to open a pager.
+        """
+        env = _os.environ.copy()
+        env.update({
+            "GIT_PAGER": "cat",
+            "PAGER": "cat",
+            "MANPAGER": "cat",
+            "SYSTEMD_PAGER": "cat",
+            "LESS": "FRX",
+            "GIT_TERMINAL_PROMPT": "0",
+            "TERM": "dumb",
+        })
+        return env
+
     def _handle_send_error_recovery(
         self, result: subprocess.CompletedProcess, prompt: str,
         timeout: int, cwd: Optional[str]
@@ -92,6 +109,7 @@ class BaseSession(ABC):
                 text=True,
                 timeout=timeout,
                 cwd=cwd,
+                env=self._build_noninteractive_env(),
             )
 
             duration = time.time() - start_time
@@ -129,6 +147,7 @@ class BaseSession(ABC):
         cwd: Optional[str] = None,
         resume: bool = False,
         chunk_interval: float = 0.3,
+        should_stop: Optional[Callable[[], bool]] = None,
     ) -> str:
         self.last_active = time.time()
         self.message_count += 1
@@ -145,9 +164,13 @@ class BaseSession(ABC):
             cmd = self._build_cmd(prompt, resume)
             start_time = time.time()
 
-            full_output, stderr_text, timed_out = self._run_streaming_process(
-                cmd, cwd, timeout, on_chunk, chunk_interval
+            full_output, stderr_text, timed_out, stopped = self._run_streaming_process(
+                cmd, cwd, timeout, on_chunk, chunk_interval, should_stop
             )
+
+            if stopped:
+                logger.info("[%s:%s] 流式执行被用户中断", cli_name.upper(), self.session_id[:8])
+                return f"🛑 {cli_name.capitalize()} 执行已中断"
 
             duration = time.time() - start_time
 
@@ -189,17 +212,19 @@ class BaseSession(ABC):
 
     def _run_streaming_process(
         self, cmd: list[str], cwd: Optional[str], timeout: int,
-        on_chunk: Callable[[str], None], chunk_interval: float
-    ) -> tuple[str, str, bool]:
+        on_chunk: Callable[[str], None], chunk_interval: float,
+        should_stop: Optional[Callable[[], bool]] = None,
+    ) -> tuple[str, str, bool, bool]:
         """Run command with streaming output using os.read()/select.
 
-        Returns (full_output, stderr_text, timed_out).
+        Returns (full_output, stderr_text, timed_out, stopped).
         """
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             cwd=cwd,
+            env=self._build_noninteractive_env(),
         )
 
         stdout_text = ""
@@ -235,7 +260,23 @@ class BaseSession(ABC):
                     process.wait(timeout=1)
                 except Exception:
                     pass
-                return "", "", True
+                return "", "", True, False
+
+            # Check if stop was requested
+            if should_stop is not None and should_stop():
+                try:
+                    process.terminate()
+                except Exception:
+                    pass
+                try:
+                    process.wait(timeout=2)
+                except Exception:
+                    try:
+                        process.kill()
+                        process.wait(timeout=1)
+                    except Exception:
+                        pass
+                return stdout_text, stderr_text, False, True
 
             ready, _, _ = select.select(fds, [], [], 0.2)
             if not ready:
@@ -274,7 +315,7 @@ class BaseSession(ABC):
         except Exception:
             process.wait()
 
-        return stdout_text, stderr_text, False
+        return stdout_text, stderr_text, False, False
 
     def resume(self, cwd: Optional[str] = None) -> str:
         self.last_active = time.time()

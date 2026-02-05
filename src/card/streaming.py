@@ -67,6 +67,7 @@ def _normalize_streaming_markdown(content: str, *, is_final: bool, max_chars: in
 class StreamingCardManager:
     def __init__(self, client: lark.Client):
         self._client = client
+        self._settings = get_settings()
         # key 使用 message_id（发送成功后才会写入）
         self._cards: dict[str, StreamingCard] = {}
         self._lock = threading.Lock()
@@ -293,6 +294,8 @@ class StreamingCardManager:
         try:
             msg_content = json.dumps(card_json, ensure_ascii=False)
             if reply_to_message_id:
+                # 根据配置决定是否使用话题回复
+                reply_in_thread = self._settings.reply_mode == "thread"
                 msg_request = (
                     ReplyMessageRequest.builder()
                     .message_id(reply_to_message_id)
@@ -300,6 +303,7 @@ class StreamingCardManager:
                         ReplyMessageRequestBody.builder()
                         .msg_type("interactive")
                         .content(msg_content)
+                        .reply_in_thread(reply_in_thread)
                         .build()
                     )
                     .build()
@@ -365,6 +369,8 @@ class StreamingCardManager:
             content = json.dumps(card_json, ensure_ascii=False)
 
             if card.reply_to_message_id:
+                # 根据配置决定是否使用话题回复
+                reply_in_thread = self._settings.reply_mode == "thread"
                 request = (
                     ReplyMessageRequest.builder()
                     .message_id(card.reply_to_message_id)
@@ -372,6 +378,7 @@ class StreamingCardManager:
                         ReplyMessageRequestBody.builder()
                         .msg_type("interactive")
                         .content(content)
+                        .reply_in_thread(reply_in_thread)
                         .build()
                     )
                     .build()

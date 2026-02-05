@@ -89,7 +89,7 @@ class DeepEngine:
     def _ensure_executor(self) -> TaskExecutor:
         if self._executor is None:
             ai_session = self._ensure_ai_session()
-            self._executor = TaskExecutor(ai_session, self.root_path)
+            self._executor = TaskExecutor(ai_session, self.root_path, should_stop=lambda: self._should_stop)
         return self._executor
 
     def plan(self, requirement_text: str, callbacks: Optional[DeepEngineCallbacks] = None) -> DeepProject:
