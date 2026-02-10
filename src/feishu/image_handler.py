@@ -1,5 +1,4 @@
 import os
-import time
 import json
 import logging
 from typing import Optional
@@ -126,12 +125,15 @@ class FeishuImageHandler:
         image_keys: list[str],
         save_dir: str,
     ) -> ImageDownloadResult:
-        """批量下载图片并保存到指定目录
+        """批量下载图片并保存到按消息隔离的子目录
+
+        图片以序号命名（1.png, 2.png, ...），保存在
+        ``{save_dir}/{msg_short_id}/`` 子目录下，避免不同消息的图片冲突。
 
         Args:
-            message_id: 飞书消息 ID（下载 API 需要）
+            message_id: 飞书消息 ID（下载 API 需要，同时用于子目录命名）
             image_keys: 图片 key 列表
-            save_dir: 保存目录（不存在会自动创建）
+            save_dir: 基础保存目录（不存在会自动创建）
 
         Returns:
             ImageDownloadResult 包含成功保存的路径和下载失败的 key
@@ -141,10 +143,14 @@ class FeishuImageHandler:
         if not image_keys:
             return result
 
-        os.makedirs(save_dir, exist_ok=True)
+        msg_short_id = message_id[-8:] if len(message_id) > 8 else message_id
+        msg_dir = os.path.join(save_dir, f"msg_{msg_short_id}")
+        os.makedirs(msg_dir, exist_ok=True)
 
-        for image_key in image_keys:
-            saved_path = self._download_single_image(message_id, image_key, save_dir)
+        for index, image_key in enumerate(image_keys, 1):
+            saved_path = self._download_single_image(
+                message_id, image_key, msg_dir, index,
+            )
             if saved_path:
                 result.saved_paths.append(saved_path)
             else:
@@ -157,6 +163,7 @@ class FeishuImageHandler:
         message_id: str,
         image_key: str,
         save_dir: str,
+        index: int = 1,
     ) -> Optional[str]:
         """下载单张图片，返回保存路径或 None"""
         try:
@@ -175,9 +182,7 @@ class FeishuImageHandler:
                 )
                 return None
 
-            timestamp = int(time.time() * 1000)
-            safe_key = image_key.replace("/", "_").replace("\\", "_")
-            filename = f"{timestamp}_{safe_key}.png"
+            filename = f"{index}.png"
             filepath = os.path.join(save_dir, filename)
 
             with open(filepath, "wb") as f:
@@ -194,17 +199,21 @@ class FeishuImageHandler:
     def build_image_reference_text(saved_paths: list[str]) -> str:
         """生成追加到用户消息末尾的图片引用文本
 
-        格式:
-            \\n\\n[参考图片]
-            - /path/to/img1.png
-            - /path/to/img2.png
+        格式（单张）:
+            \\n\\n[用户附带了 1 张参考图片，请先查看后再回答]
+            图片1: /path/to/1.png
+        格式（多张）:
+            \\n\\n[用户附带了 N 张参考图片，请先查看后再回答]
+            图片1: /path/to/1.png
+            图片2: /path/to/2.png
         """
         if not saved_paths:
             return ""
 
-        lines = ["\n\n[参考图片]"]
-        for path in saved_paths:
-            lines.append(f"- {path}")
+        n = len(saved_paths)
+        lines = [f"\n\n[用户附带了 {n} 张参考图片，请先查看后再回答]"]
+        for i, path in enumerate(saved_paths, 1):
+            lines.append(f"图片{i}: {path}")
         return "\n".join(lines)
 
     @staticmethod

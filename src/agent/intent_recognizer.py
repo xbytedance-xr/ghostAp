@@ -31,6 +31,12 @@ class IntentType(Enum):
     DEEP_STATUS = "deep_status"
     STOP_DEEP = "stop_deep"
     DEEP_UPDATE = "deep_update"
+    ENTER_LOOP = "enter_loop"
+    LOOP_STATUS = "loop_status"
+    STOP_LOOP = "stop_loop"
+    LOOP_PAUSE = "loop_pause"
+    LOOP_RESUME = "loop_resume"
+    LOOP_GUIDE = "loop_guide"
     SHOW_HELP = "show_help"
     UNKNOWN = "unknown"
 
@@ -203,6 +209,12 @@ class IntentRecognizer:
         "deep_status": IntentType.DEEP_STATUS,
         "stop_deep": IntentType.STOP_DEEP,
         "deep_update": IntentType.DEEP_UPDATE,
+        "enter_loop": IntentType.ENTER_LOOP,
+        "loop_status": IntentType.LOOP_STATUS,
+        "stop_loop": IntentType.STOP_LOOP,
+        "loop_pause": IntentType.LOOP_PAUSE,
+        "loop_resume": IntentType.LOOP_RESUME,
+        "loop_guide": IntentType.LOOP_GUIDE,
         "show_help": IntentType.SHOW_HELP,
         "unknown": IntentType.UNKNOWN,
     }
@@ -226,6 +238,11 @@ class IntentRecognizer:
         "/deep_status": (IntentType.DEEP_STATUS, "查看 Deep 任务状态"),
         "/deep_update": (IntentType.DEEP_UPDATE, "更新 Deep 任务上下文"),
         "/stop_deep": (IntentType.STOP_DEEP, "停止 Deep 任务"),
+        "/loop": (IntentType.ENTER_LOOP, "进入 Loop 模式"),
+        "/loop_status": (IntentType.LOOP_STATUS, "查看 Loop 任务状态"),
+        "/stop_loop": (IntentType.STOP_LOOP, "停止 Loop 任务"),
+        "/loop_pause": (IntentType.LOOP_PAUSE, "暂停 Loop 任务"),
+        "/loop_resume": (IntentType.LOOP_RESUME, "恢复 Loop 任务"),
         "/help": (IntentType.SHOW_HELP, "显示帮助信息"),
         "/帮助": (IntentType.SHOW_HELP, "显示帮助信息"),
     }
@@ -410,6 +427,28 @@ class IntentRecognizer:
                 original_text=text,
                 reasoning=f"精确匹配: /deep 命令",
                 description=f"启动 Deep Engine"
+            )
+
+        if text_lower.startswith("/loop_guide "):
+            guide_message = text[len("/loop_guide "):].strip()
+            return IntentResult.single(
+                intent=IntentType.LOOP_GUIDE,
+                confidence=1.0,
+                data={"message": guide_message},
+                original_text=text,
+                reasoning="精确匹配: /loop_guide 命令",
+                description="注入 Loop 引导信息"
+            )
+
+        if text_lower.startswith("/loop "):
+            requirement = text[6:].strip()
+            return IntentResult.single(
+                intent=IntentType.ENTER_LOOP,
+                confidence=1.0,
+                data={"requirement": requirement},
+                original_text=text,
+                reasoning="精确匹配: /loop 命令",
+                description="启动 Loop Engine"
             )
 
         if any(kw in text_lower for kw in self.EXIT_MODE_KEYWORDS):

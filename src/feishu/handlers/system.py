@@ -28,6 +28,7 @@ class SystemHandler(BaseHandler):
     claude_handler = None
     project_handler = None
     deep_handler = None
+    loop_handler = None
     diagnostics_handler = None
 
     # ------------------------------------------------------------------
@@ -46,6 +47,11 @@ class SystemHandler(BaseHandler):
     def is_deep_command(text: str) -> bool:
         text_lower = text.lower().strip()
         return text_lower.startswith("/deep") or text_lower.startswith("/stop_deep")
+
+    @staticmethod
+    def is_loop_command(text: str) -> bool:
+        text_lower = text.lower().strip()
+        return text_lower.startswith("/loop") or text_lower.startswith("/stop_loop")
 
     @staticmethod
     def is_interceptable_command(text: str) -> bool:
@@ -279,6 +285,9 @@ class SystemHandler(BaseHandler):
                     {"tag": "hr"},
                     {"tag": "markdown", "text_size": "normal",
                      "content": "**🧠 Deep Engine（复杂任务）**\n`/deep <需求>` - 启动 Deep Engine\n`/deep_status` - 查看任务进度\n`/stop_deep` - 停止任务"},
+                    {"tag": "hr"},
+                    {"tag": "markdown", "text_size": "normal",
+                     "content": "**🔄 Loop Engine（迭代闭环）**\n`/loop <需求>` - 启动 Loop 模式\n`/loop_status` - 查看迭代进度\n`/loop_guide <引导>` - 注入引导信息\n`/loop_pause` - 暂停迭代\n`/loop_resume` - 恢复迭代\n`/stop_loop` - 停止 Loop"},
                     {"tag": "hr"},
                     {"tag": "markdown", "text_size": "normal",
                      "content": "**💡 使用提示**\n1. 发送 `/coco` 或 `/claude` 进入编程模式\n2. 在编程模式中直接对话，系统命令（如 `/help`）会自动拦截\n3. 智能模式下直接输入 Shell 命令即可执行\n4. 发送 `/help` 或 `/帮助` 随时查看本帮助"},
