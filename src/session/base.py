@@ -78,8 +78,8 @@ class BaseSession(ABC):
     def _handle_streaming_error_recovery(
         self, stderr: str, prompt: str, timeout: int, cwd: Optional[str],
         on_chunk: Callable[[str], None], chunk_interval: float
-    ) -> Optional[tuple[str, str, bool]]:
-        """Subclass hook for error recovery in streaming. Return (output, stderr, timed_out) or None."""
+    ) -> Optional[tuple[str, str, bool, bool]]:
+        """Subclass hook for error recovery in streaming. Return (output, stderr, timed_out, stopped) or None."""
         return None
 
     # ---- Shared implementations ----
@@ -183,7 +183,10 @@ class BaseSession(ABC):
                 stderr_text, prompt, timeout, cwd, on_chunk, chunk_interval
             )
             if recovered is not None:
-                full_output, stderr_text, timed_out = recovered
+                full_output, stderr_text, timed_out, recovered_stopped = recovered
+                if recovered_stopped:
+                    logger.info("[%s:%s] 流式执行被用户中断(恢复后)", cli_name.upper(), self.session_id[:8])
+                    return f"🛑 {cli_name.capitalize()} 执行已中断"
                 if timed_out:
                     logger.warning("[%s:%s] 流式执行超时 (%ds)", cli_name.upper(), self.session_id[:8], timeout)
                     return f"⏱️ {cli_name.capitalize()} 执行超时（{timeout}秒）"

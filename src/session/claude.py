@@ -112,7 +112,7 @@ class ClaudeSession(BaseSession):
     def _handle_streaming_error_recovery(
         self, stderr: str, prompt: str, timeout: int, cwd: Optional[str],
         on_chunk: Callable[[str], None], chunk_interval: float
-    ) -> Optional[tuple[str, str, bool]]:
+    ) -> Optional[tuple[str, str, bool, bool]]:
         # If resume failed (session expired/not found), create new session and retry
         if stderr and "No conversation found with session ID" in stderr:
             logger.warning("Claude 会话 %s 已失效，创建新会话重试", self.session_id)
