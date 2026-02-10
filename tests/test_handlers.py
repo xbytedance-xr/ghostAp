@@ -46,6 +46,8 @@ def _make_handler_context(**overrides) -> HandlerContext:
         context_manager=MagicMock(),
         deep_engine_manager=MagicMock(),
         progress_reporter=MagicMock(),
+        loop_engine_manager=MagicMock(),
+        loop_reporter=MagicMock(),
         streaming_manager_factory=MagicMock(),
         image_handler_factory=MagicMock(),
         working_dirs={},

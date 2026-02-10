@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from ..card.streaming import StreamingCardManager
     from ..session import CocoSessionManager, ClaudeSessionManager
     from ..deep_engine import DeepEngineManager, ProgressReporter
+    from ..loop_engine import LoopEngineManager, LoopReporter
     from ..mode import ModeManager
     from ..project import MessageProjectMapper, ProjectContextManager, ProjectManager
     from ..project.mapper import MessageLinker
@@ -47,6 +48,8 @@ class HandlerContext:
     context_manager: "ProjectContextManager"
     deep_engine_manager: "DeepEngineManager"
     progress_reporter: "ProgressReporter"
+    loop_engine_manager: "LoopEngineManager"
+    loop_reporter: "LoopReporter"
 
     # Lazy-initialized singletons
     streaming_manager_factory: Callable[[], "StreamingCardManager"]
