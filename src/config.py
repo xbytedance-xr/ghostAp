@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     claude_session_timeout: int = 86400
     claude_max_output_length: int = 30000
 
+    # Loop Engine settings
+    loop_max_iterations: int = 10
+    loop_execution_timeout: int = 7200
+    loop_convergence_window: int = 3
+
     streaming_enabled: bool = True
 
     # Task scheduler (thread-based) settings

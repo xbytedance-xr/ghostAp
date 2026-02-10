@@ -25,6 +25,7 @@ from ..card import CardBuilder
 from ..card.streaming import StreamingCardManager
 from ..deep_engine import DeepEngine, DeepEngineManager, DeepEngineCallbacks, ProgressReporter
 from ..deep_engine.models import DeepProject, DeepProjectStatus, DeepTask, ExecutionResult
+from ..loop_engine import LoopEngineManager, LoopReporter
 from ..tasking import TaskScheduler, TaskSpec, TaskPriority, SYSTEM_QUEUE_SUFFIX
 from .message_formatter import FeishuMessageFormatter as fmt
 from .emoji import EmojiType, EmojiReaction
@@ -35,6 +36,7 @@ from .handlers import (
     CocoModeHandler,
     ClaudeModeHandler,
     DeepHandler,
+    LoopHandler,
     ProjectHandler,
     SystemHandler,
     DiagnosticsHandler,
@@ -75,11 +77,14 @@ class FeishuWSClient:
         self._streaming_manager: Optional[StreamingCardManager] = None
         self._image_handler: Optional[FeishuImageHandler] = None
         self._pending_image_keys: dict[str, list[str]] = {}
+        self._pending_image_only: set[str] = set()  # message_ids that are image-only (no user text)
         self._pending_image_lock = threading.Lock()
         self._enable_streaming = self.settings.streaming_enabled
 
         self._deep_engine_manager = DeepEngineManager()
         self._progress_reporter = ProgressReporter()
+        self._loop_engine_manager = LoopEngineManager()
+        self._loop_reporter = LoopReporter()
 
         self._context_manager = ProjectContextManager()
 
@@ -101,6 +106,8 @@ class FeishuWSClient:
             context_manager=self._context_manager,
             deep_engine_manager=self._deep_engine_manager,
             progress_reporter=self._progress_reporter,
+            loop_engine_manager=self._loop_engine_manager,
+            loop_reporter=self._loop_reporter,
             streaming_manager_factory=self._get_streaming_manager,
             image_handler_factory=self._get_image_handler,
             working_dirs=self._working_dirs,
@@ -114,6 +121,7 @@ class FeishuWSClient:
         self._coco_handler = CocoModeHandler(self._handler_ctx)
         self._claude_handler = ClaudeModeHandler(self._handler_ctx)
         self._deep_handler = DeepHandler(self._handler_ctx)
+        self._loop_handler = LoopHandler(self._handler_ctx)
         self._project_handler = ProjectHandler(self._handler_ctx)
         self._system_handler = SystemHandler(self._handler_ctx)
         self._diagnostics_handler = DiagnosticsHandler(self._handler_ctx)
@@ -125,24 +133,30 @@ class FeishuWSClient:
         self._system_handler.claude_handler = self._claude_handler
         self._system_handler.project_handler = self._project_handler
         self._system_handler.deep_handler = self._deep_handler
+        self._system_handler.loop_handler = self._loop_handler
         self._system_handler.diagnostics_handler = self._diagnostics_handler
 
     def close(self):
         """Best-effort cleanup for background resources."""
         try:
             self._message_cache.stop_cleanup_thread()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("停止message_cache清理线程失败: %s", e)
 
         try:
             self._deep_engine_manager.cleanup_all()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("清理deep_engine_manager失败: %s", e)
+
+        try:
+            self._loop_engine_manager.cleanup_all()
+        except Exception as e:
+            logger.debug("清理loop_engine_manager失败: %s", e)
 
         try:
             self._scheduler.stop(wait=True, shutdown_executor=True)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("停止scheduler失败: %s", e)
 
     def _is_message_expired(self, create_time: int) -> bool:
         if not create_time:
@@ -174,154 +188,105 @@ class FeishuWSClient:
         return self._image_handler
 
     # ==================================================================
-    # Backward-compatible forwarding stubs
+    # Handler forwarding dispatch
     # ==================================================================
-    # These one-liner stubs keep existing tests working (they mock
-    # ``client._enter_coco_mode`` etc. directly).  After the test
-    # migration in Step 8 they can be removed.
+    # Maps ``client._xxx(...)`` calls to the corresponding handler
+    # method.  This replaces 50+ one-liner stubs with a single
+    # ``__getattr__`` lookup, keeping backward compatibility with tests
+    # that mock ``client._enter_coco_mode`` etc.
     # ------------------------------------------------------------------
 
-    def _add_reaction(self, message_id: str, emoji_type: str):
-        self._coco_handler.add_reaction(message_id, emoji_type)
+    # Dispatch table: _method_name -> (handler_attr, handler_method_name)
+    _FORWARDING_MAP: dict[str, tuple[str, str]] = {
+        # --- shared base handler helpers (delegate via _coco_handler) ---
+        "_add_reaction":             ("_coco_handler", "add_reaction"),
+        "_get_working_dir":          ("_coco_handler", "get_working_dir"),
+        "_set_working_dir":          ("_coco_handler", "set_working_dir"),
+        "_ensure_request_id":        ("_coco_handler", "ensure_request_id"),
+        "_format_ref_note":          ("_coco_handler", "format_ref_note"),
+        "_register_message_project": ("_coco_handler", "register_message_project"),
+        "_reply_message":            ("_coco_handler", "reply_message"),
+        "_reply_message_with_id":    ("_coco_handler", "reply_message_with_id"),
+        "send_message":              ("_coco_handler", "send_message"),
+        "_get_engine_name":          ("_coco_handler", "get_engine_name"),
+        "_record_mode_transition":   ("_coco_handler", "record_mode_transition"),
+        "_inject_bridge_context":    ("_coco_handler", "inject_bridge_context"),
+        # --- Coco mode ---
+        "_enter_coco_mode":          ("_coco_handler", "enter_mode"),
+        "_exit_coco_mode":           ("_coco_handler", "exit_mode"),
+        "_handle_coco_message":      ("_coco_handler", "handle_message"),
+        "_handle_coco_response":     ("_coco_handler", "handle_response"),
+        "_show_coco_info":           ("_coco_handler", "show_info"),
+        "_handle_card_enter_coco":   ("_coco_handler", "handle_card_enter"),
+        "_handle_card_exit_coco":    ("_coco_handler", "handle_card_exit"),
+        "_handle_card_resume_coco":  ("_coco_handler", "handle_card_resume"),
+        "_handle_card_new_coco":     ("_coco_handler", "handle_card_new"),
+        # --- Claude mode ---
+        "_enter_claude_mode":        ("_claude_handler", "enter_mode"),
+        "_exit_claude_mode":         ("_claude_handler", "exit_mode"),
+        "_handle_claude_message":    ("_claude_handler", "handle_message"),
+        "_handle_claude_response":   ("_claude_handler", "handle_response"),
+        "_show_claude_info":         ("_claude_handler", "show_info"),
+        "_handle_card_enter_claude": ("_claude_handler", "handle_card_enter"),
+        "_handle_card_exit_claude":  ("_claude_handler", "handle_card_exit"),
+        "_handle_card_resume_claude":("_claude_handler", "handle_card_resume"),
+        "_handle_card_new_claude":   ("_claude_handler", "handle_card_new"),
+        # --- Deep Engine ---
+        "_handle_deep_command":      ("_deep_handler", "handle_deep_command"),
+        "_start_deep_engine":        ("_deep_handler", "start_deep_engine"),
+        "_create_deep_callbacks":    ("_deep_handler", "_create_deep_callbacks"),
+        "_show_deep_status":         ("_deep_handler", "show_deep_status"),
+        "_show_deep_board":          ("_deep_handler", "show_deep_board"),
+        "_pause_deep_engine":        ("_deep_handler", "pause_deep_engine"),
+        "_resume_deep_engine":       ("_deep_handler", "resume_deep_engine"),
+        "_stop_deep_engine":         ("_deep_handler", "stop_deep_engine"),
+        "_stop_all_deep_engines":    ("_deep_handler", "stop_all_deep_engines"),
+        "_update_deep_context":      ("_deep_handler", "update_deep_context"),
+        # --- Loop Engine ---
+        "_handle_loop_command":       ("_loop_handler", "handle_loop_command"),
+        "_start_loop_engine":        ("_loop_handler", "start_loop_engine"),
+        "_show_loop_status":         ("_loop_handler", "show_loop_status"),
+        "_pause_loop_engine":        ("_loop_handler", "pause_loop_engine"),
+        "_resume_loop_engine":       ("_loop_handler", "resume_loop_engine"),
+        "_stop_loop_engine":         ("_loop_handler", "stop_loop_engine"),
+        "_update_loop_guidance":     ("_loop_handler", "update_loop_guidance"),
+        # --- Project ---
+        "_create_project":           ("_project_handler", "create_project"),
+        "_show_project_board":       ("_project_handler", "show_project_board"),
+        "_show_current_project":     ("_project_handler", "show_current_project"),
+        "_show_project_status":      ("_project_handler", "show_project_status"),
+        "_preserve_project_context": ("_project_handler", "preserve_project_context"),
+        "_restore_project_context":  ("_project_handler", "restore_project_context"),
+        "_close_project":            ("_project_handler", "close_project"),
+        # --- System ---
+        "_show_help":                ("_system_handler", "show_help"),
+        "_show_full_help":           ("_system_handler", "show_full_help"),
+        "_exit_current_mode":        ("_system_handler", "exit_current_mode"),
+        "_submit_shell_command":     ("_system_handler", "submit_shell_command"),
+        "_change_directory":         ("_system_handler", "change_directory"),
+        "_handle_intercepted_command": ("_system_handler", "handle_intercepted_command"),
+        # --- Diagnostics ---
+        "_show_task_board":          ("_diagnostics_handler", "show_task_board"),
+        "_show_context_diff":        ("_diagnostics_handler", "show_context_diff"),
+        "_build_context_diff_report":("_diagnostics_handler", "_build_context_diff_report"),
+        "_submit_diff_report":       ("_diagnostics_handler", "_submit_diff_report"),
+        "_show_message_trace":       ("_diagnostics_handler", "show_message_trace"),
+    }
 
-    def _get_working_dir(self, chat_id: str) -> str:
-        return self._coco_handler.get_working_dir(chat_id)
+    def __getattr__(self, name: str):
+        fwd = FeishuWSClient._FORWARDING_MAP.get(name)
+        if fwd is not None:
+            handler_attr, method_name = fwd
+            handler = object.__getattribute__(self, handler_attr)
+            return getattr(handler, method_name)
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
-    def _set_working_dir(self, chat_id: str, path: str) -> tuple[bool, str]:
-        return self._coco_handler.set_working_dir(chat_id, path)
-
-    def _ensure_request_id(self, message_id: Optional[str], chat_id: Optional[str] = None, project_id: Optional[str] = None) -> Optional[str]:
-        return self._coco_handler.ensure_request_id(message_id, chat_id, project_id)
-
-    def _format_ref_note(self, origin_message_id: Optional[str], request_id: Optional[str], run_id: Optional[str] = None) -> str:
-        return self._coco_handler.format_ref_note(origin_message_id, request_id, run_id)
-
-    def _register_message_project(self, message_id: str, project: ProjectContext):
-        self._coco_handler.register_message_project(message_id, project)
-
-    def _reply_message(self, message_id: str, content, msg_type: str = "text", *, origin_message_id: Optional[str] = None, request_id: Optional[str] = None, run_id: Optional[str] = None):
-        return self._coco_handler.reply_message(message_id, content, msg_type, origin_message_id=origin_message_id, request_id=request_id, run_id=run_id)
-
-    def _reply_message_with_id(self, message_id: str, content, msg_type: str = "text", *, origin_message_id: Optional[str] = None, request_id: Optional[str] = None, run_id: Optional[str] = None) -> Optional[str]:
-        return self._coco_handler.reply_message_with_id(message_id, content, msg_type, origin_message_id=origin_message_id, request_id=request_id, run_id=run_id)
-
-    def send_message(self, chat_id: str, content: str, msg_type: str = "text", *, origin_message_id: Optional[str] = None, request_id: Optional[str] = None, run_id: Optional[str] = None) -> Optional[str]:
-        return self._coco_handler.send_message(chat_id, content, msg_type, origin_message_id=origin_message_id, request_id=request_id, run_id=run_id)
-
+    # Thin wrappers that cannot be expressed as simple delegation
     def reply(self, message_id: str, content, msg_type: str = "text", chat_id: Optional[str] = None):
         self._reply_message(message_id, content, msg_type)
 
     def add_reaction(self, message_id: str, emoji_type: str):
         self._add_reaction(message_id, emoji_type)
-
-    # Coco / Claude forwarding stubs
-    def _enter_coco_mode(self, message_id: str, chat_id: str, silent: bool = False, project: Optional[ProjectContext] = None):
-        self._coco_handler.enter_mode(message_id, chat_id, silent=silent, project=project)
-
-    def _exit_coco_mode(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
-        self._coco_handler.exit_mode(message_id, chat_id, project=project)
-
-    def _handle_coco_message(self, message_id: str, chat_id: str, text: str, project: Optional[ProjectContext] = None):
-        self._coco_handler.handle_message(message_id, chat_id, text, project=project)
-
-    def _handle_coco_response(self, message_id: str, chat_id: str, text: str, session, project, cwd: str, global_working_dir: str):
-        self._coco_handler.handle_response(message_id, chat_id, text, session, project, cwd, global_working_dir)
-
-    def _show_coco_info(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
-        self._coco_handler.show_info(message_id, chat_id, project=project)
-
-    def _enter_claude_mode(self, message_id: str, chat_id: str, silent: bool = False, project: Optional[ProjectContext] = None):
-        self._claude_handler.enter_mode(message_id, chat_id, silent=silent, project=project)
-
-    def _exit_claude_mode(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
-        self._claude_handler.exit_mode(message_id, chat_id, project=project)
-
-    def _handle_claude_message(self, message_id: str, chat_id: str, text: str, project: Optional[ProjectContext] = None):
-        self._claude_handler.handle_message(message_id, chat_id, text, project=project)
-
-    def _handle_claude_response(self, message_id: str, chat_id: str, text: str, session, project, cwd: str, global_working_dir: str):
-        self._claude_handler.handle_response(message_id, chat_id, text, session, project, cwd, global_working_dir)
-
-    def _show_claude_info(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
-        self._claude_handler.show_info(message_id, chat_id, project=project)
-
-    # Card action forwarding stubs
-    def _handle_card_enter_coco(self, message_id: str, chat_id: str, project_id: str):
-        self._coco_handler.handle_card_enter(message_id, chat_id, project_id)
-
-    def _handle_card_exit_coco(self, message_id: str, chat_id: str, project_id: str):
-        self._coco_handler.handle_card_exit(message_id, chat_id, project_id)
-
-    def _handle_card_resume_coco(self, message_id: str, chat_id: str, project_id: str, session_id: str):
-        self._coco_handler.handle_card_resume(message_id, chat_id, project_id, session_id)
-
-    def _handle_card_new_coco(self, message_id: str, chat_id: str, project_id: str):
-        self._coco_handler.handle_card_new(message_id, chat_id, project_id)
-
-    def _handle_card_enter_claude(self, message_id: str, chat_id: str, project_id: str):
-        self._claude_handler.handle_card_enter(message_id, chat_id, project_id)
-
-    def _handle_card_exit_claude(self, message_id: str, chat_id: str, project_id: str):
-        self._claude_handler.handle_card_exit(message_id, chat_id, project_id)
-
-    def _handle_card_resume_claude(self, message_id: str, chat_id: str, project_id: str, session_id: str):
-        self._claude_handler.handle_card_resume(message_id, chat_id, project_id, session_id)
-
-    def _handle_card_new_claude(self, message_id: str, chat_id: str, project_id: str):
-        self._claude_handler.handle_card_new(message_id, chat_id, project_id)
-
-    # Deep Engine forwarding stubs
-    def _handle_deep_command(self, message_id: str, chat_id: str, text: str, project: Optional[ProjectContext] = None):
-        self._deep_handler.handle_deep_command(message_id, chat_id, text, project)
-
-    def _start_deep_engine(self, message_id: str, chat_id: str, requirement: str, project: Optional[ProjectContext] = None):
-        self._deep_handler.start_deep_engine(message_id, chat_id, requirement, project)
-
-    def _create_deep_callbacks(self, message_id: str, chat_id: str, project: Optional[ProjectContext], engine_name: str = "Coco") -> DeepEngineCallbacks:
-        return self._deep_handler._create_deep_callbacks(message_id, chat_id, project, engine_name)
-
-    def _show_deep_status(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
-        self._deep_handler.show_deep_status(message_id, chat_id, project)
-
-    def _show_deep_board(self, message_id: str, chat_id: str):
-        self._deep_handler.show_deep_board(message_id, chat_id)
-
-    def _pause_deep_engine(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
-        self._deep_handler.pause_deep_engine(message_id, chat_id, project)
-
-    def _resume_deep_engine(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
-        self._deep_handler.resume_deep_engine(message_id, chat_id, project)
-
-    def _stop_deep_engine(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
-        self._deep_handler.stop_deep_engine(message_id, chat_id, project)
-
-    def _stop_all_deep_engines(self, message_id: str, chat_id: str):
-        self._deep_handler.stop_all_deep_engines(message_id, chat_id)
-
-    def _update_deep_context(self, message_id: str, chat_id: str, update_message: str, project: Optional[ProjectContext] = None):
-        self._deep_handler.update_deep_context(message_id, chat_id, update_message, project)
-
-    def _get_engine_name(self, chat_id: str) -> str:
-        return self._coco_handler.get_engine_name(chat_id)
-
-    # Project forwarding stubs
-    def _create_project(self, message_id: str, chat_id: str, name: str, path: str):
-        self._project_handler.create_project(message_id, chat_id, name, path)
-
-    def _show_project_board(self, message_id: str, chat_id: str):
-        self._project_handler.show_project_board(message_id, chat_id)
-
-    def _show_current_project(self, message_id: str, chat_id: str, project: Optional[ProjectContext]):
-        self._project_handler.show_current_project(message_id, chat_id, project)
-
-    def _show_project_status(self, message_id: str, chat_id: str, project: Optional[ProjectContext]):
-        self._project_handler.show_project_status(message_id, chat_id, project)
-
-    def _preserve_project_context(self, chat_id: str, project: ProjectContext):
-        self._project_handler.preserve_project_context(chat_id, project)
-
-    def _restore_project_context(self, project: ProjectContext) -> dict:
-        return self._project_handler.restore_project_context(project)
 
     def _switch_project(self, message_id: str, chat_id: str, name: str, auto_enter_coco: bool = True):
         self._project_handler.switch_project(
@@ -329,54 +294,22 @@ class FeishuWSClient:
             coco_handler=self._coco_handler, claude_handler=self._claude_handler,
         )
 
-    def _close_project(self, message_id: str, chat_id: str, name: str):
-        self._project_handler.close_project(message_id, chat_id, name)
-
-    # System forwarding stubs
-    def _show_help(self, message_id: str, chat_id: str):
-        self._system_handler.show_help(message_id, chat_id)
-
-    def _show_full_help(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
-        self._system_handler.show_full_help(message_id, chat_id, project)
-
-    def _exit_current_mode(self, message_id: str, chat_id: str, project: Optional[ProjectContext] = None):
-        self._system_handler.exit_current_mode(message_id, chat_id, project)
-
-    def _submit_shell_command(self, message_id: str, chat_id: str, cmd: str, working_dir: Optional[str], project: Optional[ProjectContext] = None, origin_message_id: Optional[str] = None, request_id: Optional[str] = None):
-        return self._system_handler.submit_shell_command(message_id, chat_id, cmd, working_dir, project, origin_message_id, request_id)
-
-    def _change_directory(self, message_id: str, chat_id: str, path: str, project: Optional[ProjectContext] = None):
-        self._system_handler.change_directory(message_id, chat_id, path, project)
-
-    def _is_exit_command(self, text: str) -> bool:
+    @staticmethod
+    def _is_exit_command(text: str) -> bool:
         return SystemHandler.is_exit_command(text)
 
-    def _is_deep_command(self, text: str) -> bool:
+    @staticmethod
+    def _is_deep_command(text: str) -> bool:
         return SystemHandler.is_deep_command(text)
 
-    def _is_interceptable_command(self, text: str) -> bool:
+    @staticmethod
+    def _is_loop_command(text: str) -> bool:
+        return SystemHandler.is_loop_command(text)
+
+    @staticmethod
+    def _is_interceptable_command(text: str) -> bool:
         return SystemHandler.is_interceptable_command(text)
 
-    def _handle_intercepted_command(self, message_id: str, chat_id: str, text: str, project: Optional[ProjectContext] = None):
-        self._system_handler.handle_intercepted_command(message_id, chat_id, text, project)
-
-    # Diagnostics forwarding stubs
-    def _show_task_board(self, message_id: str, chat_id: str, text: str, project: Optional[ProjectContext] = None):
-        self._diagnostics_handler.show_task_board(message_id, chat_id, text, project)
-
-    def _show_context_diff(self, message_id: str, chat_id: str, text: str, project: Optional[ProjectContext] = None):
-        self._diagnostics_handler.show_context_diff(message_id, chat_id, text, project)
-
-    def _build_context_diff_report(self, chat_id: str, text: str, project: ProjectContext) -> tuple[bool, str, Optional[str]]:
-        return self._diagnostics_handler._build_context_diff_report(chat_id, text, project)
-
-    def _submit_diff_report(self, message_id: str, chat_id: str, text: str, project: Optional[ProjectContext] = None):
-        return self._diagnostics_handler._submit_diff_report(message_id, chat_id, text, project)
-
-    def _show_message_trace(self, message_id: str, chat_id: str, text: str, project: Optional[ProjectContext] = None):
-        self._diagnostics_handler.show_message_trace(message_id, chat_id, text, project)
-
-    # Unified context forwarding stubs
     @staticmethod
     def _mode_to_context_source(mode) -> ContextSourceMode:
         from ..mode import InteractionMode
@@ -386,12 +319,6 @@ class FeishuWSClient:
             InteractionMode.CLAUDE: ContextSourceMode.CLAUDE,
         }
         return mapping.get(mode, ContextSourceMode.SMART)
-
-    def _record_mode_transition(self, project_id: str, from_mode, to_mode, reason: str = ""):
-        self._coco_handler.record_mode_transition(project_id, from_mode, to_mode, reason)
-
-    def _inject_bridge_context(self, text: str, project: Optional[ProjectContext]) -> str:
-        return self._coco_handler.inject_bridge_context(text, project)
 
     # ==================================================================
     # Core routing — these remain in ws_client.py
@@ -466,8 +393,8 @@ class FeishuWSClient:
         try:
             if message_id:
                 self._message_linker.link_task(message_id, handle.run_id)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("link_task失败(message): message_id=%s, run_id=%s, err=%s", message_id, handle.run_id, e)
 
     def _is_system_command_message(self, data: P2ImMessageReceiveV1) -> bool:
         """Check if the message is a system command that should bypass project queue."""
@@ -526,6 +453,8 @@ class FeishuWSClient:
                 else:
                     text = ""
 
+            is_image_only = False  # 纯图片消息（无用户文字）
+
             if parse_result.image_keys:
                 with self._pending_image_lock:
                     self._pending_image_keys[message_id] = parse_result.image_keys
@@ -537,14 +466,14 @@ class FeishuWSClient:
                 try:
                     if project:
                         self._message_linker.register_origin(message_id, request_id=request_id, chat_id=chat_id, project_id=project.project_id)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("register_origin失败(image_msg): message_id=%s, err=%s", message_id, e)
 
                 if task_ctx and project:
                     try:
                         self._scheduler.update_project_id(task_ctx.run_id, project.project_id)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("update_project_id失败(image_msg): run_id=%s, err=%s", task_ctx.run_id, e)
                 save_dir = FeishuImageHandler.get_image_save_dir(
                     project.root_path if project else None,
                     self._get_working_dir(chat_id),
@@ -553,15 +482,20 @@ class FeishuWSClient:
                     message_id, parse_result.image_keys, save_dir
                 )
                 if download_result.saved_paths:
+                    is_image_only = not text
                     ref_text = FeishuImageHandler.build_image_reference_text(
                         download_result.saved_paths
                     )
                     if text:
                         text += ref_text
                     else:
-                        text = "用户发送了图片，请查看以下图片文件：" + ref_text
+                        text = "请查看并理解以下图片" + ref_text
                 if download_result.failed_keys:
                     logger.warning("部分图片下载失败: %s", download_result.failed_keys)
+
+                if is_image_only:
+                    with self._pending_image_lock:
+                        self._pending_image_only.add(message_id)
             else:
                 project = None
                 auto_enter_mode = None
@@ -590,28 +524,28 @@ class FeishuWSClient:
             if task_ctx and project:
                 try:
                     self._scheduler.update_project_id(task_ctx.run_id, project.project_id)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("update_project_id失败(text_msg): run_id=%s, err=%s", task_ctx.run_id, e)
 
-            try:
-                if auto_enter_mode == "claude":
-                    self._enter_claude_mode(message_id, chat_id, silent=True, project=project)
-                    self._add_reaction(message_id, EmojiReaction.on_coco_mode())
-                    self._add_reaction(message_id, EmojiReaction.on_processing())
-                    self._handle_claude_message(message_id, chat_id, text, project)
-                elif auto_enter_mode == "coco":
-                    self._enter_coco_mode(message_id, chat_id, silent=True, project=project)
-                    self._add_reaction(message_id, EmojiReaction.on_coco_mode())
-                    self._add_reaction(message_id, EmojiReaction.on_processing())
-                    self._handle_coco_message(message_id, chat_id, text, project)
-                else:
-                    self._process_with_intent(message_id, chat_id, text, project)
-            finally:
-                with self._pending_image_lock:
-                    self._pending_image_keys.pop(message_id, None)
+            if auto_enter_mode == "claude":
+                self._enter_claude_mode(message_id, chat_id, silent=True, project=project)
+                self._add_reaction(message_id, EmojiReaction.on_coco_mode())
+                self._add_reaction(message_id, EmojiReaction.on_processing())
+                self._handle_claude_message(message_id, chat_id, text, project)
+            elif auto_enter_mode == "coco":
+                self._enter_coco_mode(message_id, chat_id, silent=True, project=project)
+                self._add_reaction(message_id, EmojiReaction.on_coco_mode())
+                self._add_reaction(message_id, EmojiReaction.on_processing())
+                self._handle_coco_message(message_id, chat_id, text, project)
+            else:
+                self._process_with_intent(message_id, chat_id, text, project)
 
         except Exception as e:
             logger.error("处理消息异常: %s", e, exc_info=True)
+        finally:
+            with self._pending_image_lock:
+                self._pending_image_keys.pop(message_id, None)
+                self._pending_image_only.discard(message_id)
 
     def _handle_card_action(self, data: P2CardActionTrigger) -> Optional[P2CardActionTriggerResponse]:
         try:
@@ -690,8 +624,8 @@ class FeishuWSClient:
         handle = self._scheduler.submit(spec, lambda ctx: self._process_card_action_async(data, task_ctx=ctx))
         try:
             self._message_linker.link_task(origin_message_id, handle.run_id)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("link_task失败(card_action): origin=%s, run_id=%s, err=%s", origin_message_id, handle.run_id, e)
         return None
 
     def _is_system_card_action(self, data: P2CardActionTrigger) -> bool:
@@ -716,6 +650,19 @@ class FeishuWSClient:
             return action_type in system_actions
         except Exception:
             return False
+
+    def _resolve_deep_target_project(self, chat_id: str, project_id: str, deep_project_id: str) -> Optional[ProjectContext]:
+        """Resolve the project for a deep engine card action."""
+        target = self._project_manager.get_project(project_id) if project_id else None
+        if not target and deep_project_id:
+            try:
+                engine = self._deep_engine_manager.find_by_deep_project_id(chat_id, deep_project_id)
+                if engine:
+                    target = self._project_manager.find_project_by_path(engine.root_path)
+            except Exception as e:
+                logger.debug("resolve_deep_target_project失败: %s", e)
+                target = None
+        return target
 
     def _process_card_action_async(self, data: Any, task_ctx=None):
         try:
@@ -749,8 +696,8 @@ class FeishuWSClient:
             if task_ctx and project_id:
                 try:
                     self._scheduler.update_project_id(task_ctx.run_id, project_id)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("update_project_id失败(card_action): run_id=%s, err=%s", task_ctx.run_id, e)
 
             logger.info(
                 "卡片按钮点击: action=%s, project_id=%s, value_keys=%s",
@@ -808,39 +755,16 @@ class FeishuWSClient:
                 self._handle_card_resume_claude(open_message_id, open_chat_id, project_id, session_id)
             elif action_type == "new_claude":
                 self._handle_card_new_claude(open_message_id, open_chat_id, project_id)
-            elif action_type == "deep_pause":
-                deep_project_id = value.get("deep_project_id", "")
-                target_project = self._project_manager.get_project(project_id) if project_id else None
-                if not target_project and deep_project_id:
-                    try:
-                        engine = self._deep_engine_manager.find_by_deep_project_id(open_chat_id, deep_project_id)
-                        if engine:
-                            target_project = self._project_manager.find_project_by_path(engine.root_path)
-                    except Exception:
-                        target_project = None
-                self._pause_deep_engine(open_message_id, open_chat_id, project=target_project)
-            elif action_type == "deep_resume":
-                deep_project_id = value.get("deep_project_id", "")
-                target_project = self._project_manager.get_project(project_id) if project_id else None
-                if not target_project and deep_project_id:
-                    try:
-                        engine = self._deep_engine_manager.find_by_deep_project_id(open_chat_id, deep_project_id)
-                        if engine:
-                            target_project = self._project_manager.find_project_by_path(engine.root_path)
-                    except Exception:
-                        target_project = None
-                self._resume_deep_engine(open_message_id, open_chat_id, project=target_project)
-            elif action_type == "deep_stop":
-                deep_project_id = value.get("deep_project_id", "")
-                target_project = self._project_manager.get_project(project_id) if project_id else None
-                if not target_project and deep_project_id:
-                    try:
-                        engine = self._deep_engine_manager.find_by_deep_project_id(open_chat_id, deep_project_id)
-                        if engine:
-                            target_project = self._project_manager.find_project_by_path(engine.root_path)
-                    except Exception:
-                        target_project = None
-                self._stop_deep_engine(open_message_id, open_chat_id, project=target_project)
+            elif action_type in ("deep_pause", "deep_resume", "deep_stop"):
+                target_project = self._resolve_deep_target_project(
+                    open_chat_id, project_id, value.get("deep_project_id", "")
+                )
+                deep_actions = {
+                    "deep_pause":  self._pause_deep_engine,
+                    "deep_resume": self._resume_deep_engine,
+                    "deep_stop":   self._stop_deep_engine,
+                }
+                deep_actions[action_type](open_message_id, open_chat_id, project=target_project)
             elif action_type == "new_project_prompt":
                 self._reply_message(open_message_id, "📝 创建新项目\n\n请发送: `/new 项目名 路径`\n\n例如: `/new myApp ~/workspace/myApp`")
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
@@ -853,62 +777,50 @@ class FeishuWSClient:
         from ..mode import InteractionMode
 
         current_mode = self._mode_manager.get_mode(chat_id)
-        is_in_coco = current_mode == InteractionMode.COCO
-        is_in_claude = current_mode == InteractionMode.CLAUDE
+        is_in_programming = current_mode in (InteractionMode.COCO, InteractionMode.CLAUDE)
 
-        # Control-plane commands: handle them consistently in all modes
+        # Control-plane commands: handle consistently in all modes
         if self._is_deep_command(text):
             self._add_reaction(message_id, EmojiReaction.on_smart_mode())
             self._add_reaction(message_id, EmojiReaction.on_processing())
             self._handle_deep_command(message_id, chat_id, text, project)
             return
 
+        if self._is_loop_command(text):
+            self._add_reaction(message_id, EmojiReaction.on_smart_mode())
+            self._add_reaction(message_id, EmojiReaction.on_processing())
+            self._handle_loop_command(message_id, chat_id, text, project)
+            return
+
         if self._is_interceptable_command(text):
             self._handle_intercepted_command(message_id, chat_id, text, project)
             return
 
-        if is_in_coco:
+        # Programming mode (Coco / Claude): exit or forward to active session
+        if is_in_programming:
             if self._is_exit_command(text):
                 self._add_reaction(message_id, EmojiReaction.on_coco_mode())
                 self._exit_current_mode(message_id, chat_id, project=project)
                 return
 
-            if self._is_deep_command(text):
-                self._add_reaction(message_id, EmojiReaction.on_smart_mode())
-                self._add_reaction(message_id, EmojiReaction.on_processing())
-                self._handle_deep_command(message_id, chat_id, text, project)
-                return
+            self._add_reaction(message_id, EmojiReaction.on_coco_mode())
+            self._add_reaction(message_id, EmojiReaction.on_processing())
+            if current_mode == InteractionMode.COCO:
+                self._handle_coco_message(message_id, chat_id, text, project)
+            else:
+                self._handle_claude_message(message_id, chat_id, text, project)
+            return
 
-            if self._is_interceptable_command(text):
-                self._handle_intercepted_command(message_id, chat_id, text, project)
-                return
-
+        # SMART mode: image-only messages bypass intent recognition
+        with self._pending_image_lock:
+            is_image_only = message_id in self._pending_image_only
+        if is_image_only:
             self._add_reaction(message_id, EmojiReaction.on_coco_mode())
             self._add_reaction(message_id, EmojiReaction.on_processing())
             self._handle_coco_message(message_id, chat_id, text, project)
             return
 
-        if is_in_claude:
-            if self._is_exit_command(text):
-                self._add_reaction(message_id, EmojiReaction.on_coco_mode())
-                self._exit_current_mode(message_id, chat_id, project=project)
-                return
-
-            if self._is_deep_command(text):
-                self._add_reaction(message_id, EmojiReaction.on_smart_mode())
-                self._add_reaction(message_id, EmojiReaction.on_processing())
-                self._handle_deep_command(message_id, chat_id, text, project)
-                return
-
-            if self._is_interceptable_command(text):
-                self._handle_intercepted_command(message_id, chat_id, text, project)
-                return
-
-            self._add_reaction(message_id, EmojiReaction.on_coco_mode())
-            self._add_reaction(message_id, EmojiReaction.on_processing())
-            self._handle_claude_message(message_id, chat_id, text, project)
-            return
-
+        # SMART mode: intent recognition
         self._add_reaction(message_id, EmojiReaction.on_smart_mode())
         self._add_reaction(message_id, EmojiReaction.on_processing())
 
@@ -1054,6 +966,29 @@ class FeishuWSClient:
                 self._update_deep_context(message_id, chat_id, update_message, project)
             else:
                 self._reply_message(message_id, "📝 请提供上下文信息\n\n用法: `/deep_update <上下文描述>`")
+
+        elif intent == IntentType.ENTER_LOOP:
+            requirement = data.get("requirement") or original_text
+            self._start_loop_engine(message_id, chat_id, requirement, project)
+
+        elif intent == IntentType.LOOP_STATUS:
+            self._show_loop_status(message_id, chat_id, project)
+
+        elif intent == IntentType.STOP_LOOP:
+            self._stop_loop_engine(message_id, chat_id, project)
+
+        elif intent == IntentType.LOOP_PAUSE:
+            self._pause_loop_engine(message_id, chat_id, project)
+
+        elif intent == IntentType.LOOP_RESUME:
+            self._resume_loop_engine(message_id, chat_id, project)
+
+        elif intent == IntentType.LOOP_GUIDE:
+            guide_message = data.get("message")
+            if guide_message:
+                self._update_loop_guidance(message_id, chat_id, guide_message, project)
+            else:
+                self._reply_message(message_id, "📝 请提供引导信息\n\n用法: `/loop_guide <引导描述>`")
 
         elif intent == IntentType.SHELL_COMMAND:
             working_dir = self._get_working_dir(chat_id)

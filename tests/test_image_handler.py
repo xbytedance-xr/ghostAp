@@ -259,25 +259,62 @@ class TestDownloadImages:
         mock_client.im.v1.message_resource.get.return_value = mock_response
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            result = handler.download_images("msg_1", ["img_v2_abc"], tmpdir)
+            result = handler.download_images("msg_abcd1234", ["img_v2_abc"], tmpdir)
             assert len(result.saved_paths) == 1
             assert result.failed_keys == []
             assert os.path.exists(result.saved_paths[0])
-            assert result.saved_paths[0].endswith(".png")
-            assert "img_v2_abc" in result.saved_paths[0]
+            # 序号命名: 1.png
+            assert result.saved_paths[0].endswith("/1.png")
+            # 消息子目录
+            assert "/msg_bcd1234/" in result.saved_paths[0] or "/msg_abcd1234/" in result.saved_paths[0]
 
-    def test_download_multiple_images(self, handler, mock_client):
-        mock_response = MagicMock()
-        mock_response.success.return_value = True
-        mock_response.file = BytesIO(b"fakedata")
-        mock_client.im.v1.message_resource.get.return_value = mock_response
+    def test_download_multiple_images_sequential_naming(self, handler, mock_client):
+        """多张图片按序号命名: 1.png, 2.png, 3.png"""
+        responses = []
+        for _ in range(3):
+            resp = MagicMock()
+            resp.success.return_value = True
+            resp.file = BytesIO(b"fakedata")
+            responses.append(resp)
+        mock_client.im.v1.message_resource.get.side_effect = responses
 
         with tempfile.TemporaryDirectory() as tmpdir:
             result = handler.download_images(
-                "msg_1", ["img_1", "img_2", "img_3"], tmpdir
+                "msg_abcd1234", ["img_1", "img_2", "img_3"], tmpdir
             )
             assert len(result.saved_paths) == 3
             assert result.failed_keys == []
+            # 验证序号命名
+            filenames = [os.path.basename(p) for p in result.saved_paths]
+            assert filenames == ["1.png", "2.png", "3.png"]
+
+    def test_download_creates_message_subdirectory(self, handler, mock_client):
+        """每条消息的图片保存在独立子目录 msg_{short_id}/"""
+        mock_response = MagicMock()
+        mock_response.success.return_value = True
+        mock_response.file = BytesIO(b"data")
+        mock_client.im.v1.message_resource.get.return_value = mock_response
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = handler.download_images("msg_abcdefgh12345678", ["img_1"], tmpdir)
+            assert len(result.saved_paths) == 1
+            # 子目录以 msg_ 开头，取 message_id 后 8 位
+            msg_dir = os.path.dirname(result.saved_paths[0])
+            assert os.path.basename(msg_dir) == "msg_12345678"
+            assert os.path.isdir(msg_dir)
+
+    def test_download_short_message_id(self, handler, mock_client):
+        """短 message_id 直接作为子目录名"""
+        mock_response = MagicMock()
+        mock_response.success.return_value = True
+        mock_response.file = BytesIO(b"data")
+        mock_client.im.v1.message_resource.get.return_value = mock_response
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = handler.download_images("m1", ["img_1"], tmpdir)
+            assert len(result.saved_paths) == 1
+            msg_dir = os.path.dirname(result.saved_paths[0])
+            assert os.path.basename(msg_dir) == "msg_m1"
 
     def test_download_api_failure(self, handler, mock_client):
         mock_response = MagicMock()
@@ -287,32 +324,39 @@ class TestDownloadImages:
         mock_client.im.v1.message_resource.get.return_value = mock_response
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            result = handler.download_images("msg_1", ["img_fail"], tmpdir)
+            result = handler.download_images("msg_1234", ["img_fail"], tmpdir)
             assert result.saved_paths == []
             assert result.failed_keys == ["img_fail"]
 
     def test_download_partial_failure(self, handler, mock_client):
-        success_resp = MagicMock()
-        success_resp.success.return_value = True
-        success_resp.file = BytesIO(b"ok")
+        success_resp1 = MagicMock()
+        success_resp1.success.return_value = True
+        success_resp1.file = BytesIO(b"ok")
 
         fail_resp = MagicMock()
         fail_resp.success.return_value = False
         fail_resp.code = 99999
         fail_resp.msg = "error"
 
+        success_resp2 = MagicMock()
+        success_resp2.success.return_value = True
+        success_resp2.file = BytesIO(b"ok2")
+
         mock_client.im.v1.message_resource.get.side_effect = [
-            success_resp, fail_resp, success_resp
+            success_resp1, fail_resp, success_resp2
         ]
 
         with tempfile.TemporaryDirectory() as tmpdir:
             result = handler.download_images(
-                "msg_1", ["img_ok1", "img_fail", "img_ok2"], tmpdir
+                "msg_1234", ["img_ok1", "img_fail", "img_ok2"], tmpdir
             )
             assert len(result.saved_paths) == 2
             assert result.failed_keys == ["img_fail"]
+            # 序号跳过失败的: 成功的是 1.png 和 3.png
+            filenames = [os.path.basename(p) for p in result.saved_paths]
+            assert filenames == ["1.png", "3.png"]
 
-    def test_download_creates_directory(self, handler, mock_client):
+    def test_download_creates_nested_directory(self, handler, mock_client):
         mock_response = MagicMock()
         mock_response.success.return_value = True
         mock_response.file = BytesIO(b"data")
@@ -320,7 +364,7 @@ class TestDownloadImages:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             save_dir = os.path.join(tmpdir, "nested", "picturechat")
-            result = handler.download_images("msg_1", ["img_1"], save_dir)
+            result = handler.download_images("msg_1234", ["img_1"], save_dir)
             assert len(result.saved_paths) == 1
             assert os.path.isdir(save_dir)
 
@@ -328,7 +372,7 @@ class TestDownloadImages:
         mock_client.im.v1.message_resource.get.side_effect = Exception("network error")
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            result = handler.download_images("msg_1", ["img_err"], tmpdir)
+            result = handler.download_images("msg_1234", ["img_err"], tmpdir)
             assert result.saved_paths == []
             assert result.failed_keys == ["img_err"]
 
@@ -338,15 +382,18 @@ class TestBuildImageReferenceText:
         assert FeishuImageHandler.build_image_reference_text([]) == ""
 
     def test_single_path(self):
-        text = FeishuImageHandler.build_image_reference_text(["/a/b/img.png"])
-        assert "[参考图片]" in text
-        assert "- /a/b/img.png" in text
+        text = FeishuImageHandler.build_image_reference_text(["/a/b/1.png"])
+        assert "1 张参考图片" in text
+        assert "请先查看后再回答" in text
+        assert "图片1: /a/b/1.png" in text
 
     def test_multiple_paths(self):
-        paths = ["/a/img1.png", "/a/img2.png", "/a/img3.png"]
+        paths = ["/a/1.png", "/a/2.png", "/a/3.png"]
         text = FeishuImageHandler.build_image_reference_text(paths)
-        assert text.count("- /a/") == 3
-        assert "[参考图片]" in text
+        assert "3 张参考图片" in text
+        assert "图片1: /a/1.png" in text
+        assert "图片2: /a/2.png" in text
+        assert "图片3: /a/3.png" in text
 
     def test_format_starts_with_newlines(self):
         text = FeishuImageHandler.build_image_reference_text(["/x.png"])
