@@ -17,18 +17,21 @@ from typing import Optional
 # Enums
 # ---------------------------------------------------------------------------
 
+
 class LoopProjectStatus(Enum):
     """Loop 项目状态机。"""
-    IDLE = "idle"               # 未启动
-    ANALYZING = "analyzing"     # 需求解析中
-    RUNNING = "running"         # 迭代执行中
-    PAUSED = "paused"           # 用户暂停
-    COMPLETED = "completed"     # 全部标准满足
-    ABORTED = "aborted"         # 触发终止条件
+
+    IDLE = "idle"  # 未启动
+    ANALYZING = "analyzing"  # 需求解析中
+    RUNNING = "running"  # 迭代执行中
+    PAUSED = "paused"  # 用户暂停
+    COMPLETED = "completed"  # 全部标准满足
+    ABORTED = "aborted"  # 触发终止条件
 
 
 class IterationStatus(Enum):
     """单轮迭代状态。"""
+
     RUNNING = "running"
     SUCCESS = "success"
     FAILED = "failed"
@@ -36,6 +39,7 @@ class IterationStatus(Enum):
 
 class LoopRole(Enum):
     """迭代角色类型。"""
+
     ARCHITECT = "architect"
     DEVELOPER = "developer"
     REVIEWER = "reviewer"
@@ -68,21 +72,24 @@ class LoopRole(Enum):
 
 class TerminationSignal(Enum):
     """终止信号类型。"""
-    CONTINUE = "continue"       # 继续迭代
-    COMPLETE = "complete"       # 所有标准满足
-    CONVERGED = "converged"     # 收敛终止（连续N轮无进展）
-    MAX_ITER = "max_iter"       # 达到最大迭代次数
-    FATAL = "fatal"             # 不可恢复的错误
-    USER_STOP = "user_stop"     # 用户主动停止
+
+    CONTINUE = "continue"  # 继续迭代
+    COMPLETE = "complete"  # 所有标准满足
+    CONVERGED = "converged"  # 收敛终止（连续N轮无进展）
+    MAX_ITER = "max_iter"  # 达到最大迭代次数
+    FATAL = "fatal"  # 不可恢复的错误
+    USER_STOP = "user_stop"  # 用户主动停止
 
 
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class LoopRequirement:
     """结构化的产品诉求。"""
+
     goal: str
     acceptance_criteria: list[str]
     constraints: list[str] = field(default_factory=list)
@@ -118,6 +125,7 @@ class LoopRequirement:
 @dataclass
 class RoleSelection:
     """角色选择结果。"""
+
     role: LoopRole
     reason: str
     focus: str
@@ -126,6 +134,7 @@ class RoleSelection:
 @dataclass
 class IterationRecord:
     """单轮迭代记录。"""
+
     iteration: int
     role: Optional[LoopRole] = None
     focus: str = ""
@@ -192,6 +201,7 @@ class IterationRecord:
 @dataclass
 class CriteriaTracker:
     """验收标准追踪器。"""
+
     criteria: list[str] = field(default_factory=list)
     satisfied: dict[int, bool] = field(default_factory=dict)
     satisfied_at_iteration: dict[int, int] = field(default_factory=dict)
@@ -249,13 +259,16 @@ class CriteriaTracker:
         tracker.criteria = data.get("criteria", [])
         # JSON keys are strings, convert to int
         tracker.satisfied = {int(k): v for k, v in data.get("satisfied", {}).items()}
-        tracker.satisfied_at_iteration = {int(k): v for k, v in data.get("satisfied_at_iteration", {}).items()}
+        tracker.satisfied_at_iteration = {
+            int(k): v for k, v in data.get("satisfied_at_iteration", {}).items()
+        }
         return tracker
 
 
 @dataclass
 class TerminationResult:
     """终止判断结果。"""
+
     signal: TerminationSignal
     reason: str
     summary: str = ""
@@ -264,6 +277,7 @@ class TerminationResult:
 @dataclass
 class IterationState:
     """单轮迭代开始前的状态快照，供角色选择和 prompt 构建使用。"""
+
     iteration_number: int
     requirement: LoopRequirement
     criteria_tracker: CriteriaTracker
@@ -277,6 +291,7 @@ class IterationState:
 @dataclass
 class LoopProject:
     """Loop 项目顶层容器。"""
+
     project_id: str
     name: str
     root_path: str
@@ -290,7 +305,9 @@ class LoopProject:
     error: Optional[str] = None
 
     @classmethod
-    def create(cls, name: str = "", root_path: str = "", chat_id: str = "") -> "LoopProject":
+    def create(
+        cls, name: str = "", root_path: str = "", chat_id: str = ""
+    ) -> "LoopProject":
         if not name:
             name = os.path.basename(root_path) or "loop_project"
         return cls(
@@ -398,15 +415,20 @@ class LoopProject:
         if data.get("requirement"):
             project.requirement = LoopRequirement.from_dict(data["requirement"])
         if data.get("iterations"):
-            project.iterations = [IterationRecord.from_dict(it) for it in data["iterations"]]
+            project.iterations = [
+                IterationRecord.from_dict(it) for it in data["iterations"]
+            ]
         if data.get("criteria_tracker"):
-            project.criteria_tracker = CriteriaTracker.from_dict(data["criteria_tracker"])
+            project.criteria_tracker = CriteriaTracker.from_dict(
+                data["criteria_tracker"]
+            )
         return project
 
 
 # ---------------------------------------------------------------------------
 # Context Manager
 # ---------------------------------------------------------------------------
+
 
 class LoopContextManager:
     """线程安全的迭代上下文管理器。
@@ -464,7 +486,9 @@ class LoopContextManager:
 
             if distance_from_end < recent_full:
                 # 最新轮: 完整输出
-                lines.append(f"### 第{record.iteration}轮 [{role_label}] {status_emoji}")
+                lines.append(
+                    f"### 第{record.iteration}轮 [{role_label}] {status_emoji}"
+                )
                 if record.summary:
                     lines.append(f"摘要: {record.summary}")
                 if record.output:
@@ -473,10 +497,16 @@ class LoopContextManager:
             elif distance_from_end < recent_full + recent_brief:
                 # 近期: 简要摘要
                 summary = record.summary or "(无摘要)"
-                lines.append(f"- 第{record.iteration}轮 [{role_label}] {status_emoji}: {summary}")
+                lines.append(
+                    f"- 第{record.iteration}轮 [{role_label}] {status_emoji}: {summary}"
+                )
             else:
                 # 远期: 一行摘要
-                brief = record.summary[:80] if record.summary else f"{record.role.display_name} {'成功' if record.status == IterationStatus.SUCCESS else '失败'}"
+                brief = (
+                    record.summary[:80]
+                    if record.summary
+                    else f"{record.role.display_name} {'成功' if record.status == IterationStatus.SUCCESS else '失败'}"
+                )
                 lines.append(f"- #{record.iteration} {status_emoji} {brief}")
 
         return "\n".join(lines)

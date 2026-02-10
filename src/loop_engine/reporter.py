@@ -1,7 +1,5 @@
 """Loop Engine 进度报告器 — 格式化进度信息供 Feishu 卡片展示。"""
 
-from typing import Optional
-
 from .models import (
     LoopProject,
     LoopProjectStatus,
@@ -31,7 +29,7 @@ class LoopReporter:
 
         req = project.requirement
         lines = [
-            f"✅ **需求分析完成**\n",
+            "✅ **需求分析完成**\n",
             f"📂 项目: {project.name}",
             f"🎯 目标: {req.goal}",
             f"📊 验收标准: {project.total_criteria} 条\n",
@@ -90,7 +88,9 @@ class LoopReporter:
             else:
                 lines.append(f"  🔲 {i + 1}. {criterion}")
 
-        progress_bar = self._make_progress_bar(tracker.satisfied_count, tracker.total_count)
+        progress_bar = self._make_progress_bar(
+            tracker.satisfied_count, tracker.total_count
+        )
         lines.append(f"\n{progress_bar}")
 
         return "\n".join(lines)
@@ -98,7 +98,7 @@ class LoopReporter:
     def format_project_done(self, project: LoopProject) -> str:
         if project.status == LoopProjectStatus.COMPLETED:
             lines = [
-                f"🎉 **Loop 模式完成！**\n",
+                "🎉 **Loop 模式完成！**\n",
                 f"📂 项目: {project.name}",
                 f"🎯 目标: {project.requirement.goal if project.requirement else '未知'}",
                 f"🔁 总迭代: {project.current_iteration} 轮",
@@ -106,7 +106,7 @@ class LoopReporter:
             ]
         elif project.status == LoopProjectStatus.ABORTED:
             lines = [
-                f"⚠️ **Loop 模式终止**\n",
+                "⚠️ **Loop 模式终止**\n",
                 f"📂 项目: {project.name}",
                 f"📝 原因: {project.error or '未知'}",
                 f"🔁 总迭代: {project.current_iteration} 轮",
@@ -114,7 +114,7 @@ class LoopReporter:
             ]
         else:
             lines = [
-                f"⏸️ **Loop 模式暂停**\n",
+                "⏸️ **Loop 模式暂停**\n",
                 f"📂 项目: {project.name}",
                 f"📊 验收标准: {project.satisfied_count}/{project.total_criteria} 满足",
             ]
@@ -165,12 +165,14 @@ class LoopReporter:
         if project.iterations:
             lines.append("\n**最近迭代:**")
             for record in project.iterations[-5:]:
-                status_emoji = "✅" if record.status == IterationStatus.SUCCESS else "❌"
+                status_emoji = (
+                    "✅" if record.status == IterationStatus.SUCCESS else "❌"
+                )
                 focus_text = record.focus[:60] if record.focus else ""
                 lines.append(f"  {status_emoji} #{record.iteration} {focus_text}")
 
         # 标准进度
-        lines.append(f"\n**验收标准:**")
+        lines.append("\n**验收标准:**")
         tracker = project.criteria_tracker
         for i, criterion in enumerate(tracker.criteria):
             satisfied = tracker.satisfied.get(i, False)
@@ -239,7 +241,9 @@ class LoopReporter:
 
     def get_progress_info(self, project: LoopProject) -> dict:
         return {
-            "progress_bar": self._make_progress_bar(project.satisfied_count, project.total_criteria),
+            "progress_bar": self._make_progress_bar(
+                project.satisfied_count, project.total_criteria
+            ),
             "satisfied_count": project.satisfied_count,
             "total_criteria": project.total_criteria,
             "iteration_count": project.current_iteration,

@@ -1,4 +1,3 @@
-import os
 from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -33,6 +32,8 @@ class Settings(BaseSettings):
     loop_max_iterations: int = 10
     loop_execution_timeout: int = 7200
     loop_convergence_window: int = 3
+    loop_max_context_tokens: int = 8000
+    loop_default_max_retries: int = 2
 
     streaming_enabled: bool = True
 
@@ -57,7 +58,11 @@ class Settings(BaseSettings):
 
     @property
     def command_blacklist(self) -> list[str]:
-        return [cmd.strip() for cmd in self.sandbox_command_blacklist.split(",") if cmd.strip()]
+        return [
+            cmd.strip()
+            for cmd in self.sandbox_command_blacklist.split(",")
+            if cmd.strip()
+        ]
 
     def validate_feishu_config(self) -> bool:
         return bool(self.app_id and self.app_secret)
