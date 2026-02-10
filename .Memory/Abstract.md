@@ -1,9 +1,8 @@
 # GhostAP 项目记忆索引
 
 ## 2026-02-10
+- **ACP 协议重构** - subprocess→ACP 结构化 agent 通信，8阶段重构 → [2026-02-10.md](2026-02-10.md)
 - **Loop Engine 移植到 multicoco** - ACP→subprocess 改造，4新文件+6修改+61测试 → [2026-02-10.md](2026-02-10.md)
-- **架构文档复制 + 实现对比** - docs/loop_mode_architecture.md 从 acp 分支复制，对比实现差距 → [2026-02-10.md](2026-02-10.md)
-
 
 ## 2026-02-09
 - **Loop Mode 集成** - Loop Engine 端到端接入主消息流 + 帮助文档 + CLAUDE.md → [2026-02-09.md](2026-02-09.md)
