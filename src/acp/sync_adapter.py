@@ -13,7 +13,7 @@ import subprocess
 import threading
 import time
 from functools import lru_cache
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from .models import ACPEvent, ACPSessionState, PromptResult
 from .session import ACPSession
@@ -28,6 +28,10 @@ def _supports_acp_serve(command: str) -> bool:
     """Best-effort detection whether a binary supports `acp serve`.
 
     We avoid hard-failing on environments where the agent CLI differs.
+
+    Note: Results are cached indefinitely per command name. If a binary is
+    upgraded to support ACP after the first probe, a process restart is
+    required to pick up the change.
     """
     try:
         p = subprocess.run(
@@ -396,7 +400,7 @@ class SyncACPSession:
         self._started.set()
         self._loop.run_forever()
 
-    def _run_async(self, coro, timeout: float = 60) -> any:
+    def _run_async(self, coro, timeout: float = 60) -> Any:
         """Run async coroutine in background loop, blocking until done."""
         if not self._loop:
             raise RuntimeError("Event loop not started")

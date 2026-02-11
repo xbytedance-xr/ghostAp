@@ -152,12 +152,16 @@ def _safe_resolve_path(root_dir: str, user_path: str) -> Path:
     return resolved
 
 
+_TERMINAL_TTL = 3600  # 1 hour — expired terminals are cleaned up lazily
+
+
 @dataclass
 class _TerminalRecord:
     output: str
     exit_code: int
     truncated: bool
     cursor: int = 0
+    created_at: float = 0.0
 
 
 def _parse_tool_call(update: ToolCallStart | ToolCallProgress) -> ToolCallInfo:
@@ -377,6 +381,9 @@ class GhostAPClient(Client):
     # Terminal operations (stub — agent manages its own terminals)
     # ------------------------------------------------------------------
     async def create_terminal(self, command: str, session_id: str, **kwargs: Any) -> CreateTerminalResponse:
+        # Lazy cleanup of expired terminals to prevent unbounded growth
+        self._cleanup_expired_terminals()
+
         ok, reason = self._sandbox.is_command_safe(command)
         if not ok:
             # Create a virtual terminal that immediately returns the safety error.
@@ -385,6 +392,7 @@ class GhostAPClient(Client):
                 output=f"❌ 安全检查未通过: {reason}",
                 exit_code=-1,
                 truncated=False,
+                created_at=time.time(),
             )
             self._record(session_id, "execute", {"command": command, "blocked": True, "reason": reason})
             return CreateTerminalResponse(terminal_id=term_id, field_meta={"blocked": True, "reason": reason})
@@ -416,8 +424,18 @@ class GhostAPClient(Client):
             output=output,
             exit_code=result.return_code,
             truncated=truncated,
+            created_at=time.time(),
         )
         return CreateTerminalResponse(terminal_id=term_id)
+
+    def _cleanup_expired_terminals(self) -> None:
+        """Remove terminal records older than _TERMINAL_TTL."""
+        if not self._terminals:
+            return
+        now = time.time()
+        expired = [tid for tid, rec in self._terminals.items() if now - rec.created_at > _TERMINAL_TTL]
+        for tid in expired:
+            del self._terminals[tid]
 
     async def terminal_output(self, session_id: str, terminal_id: str, **kwargs: Any) -> TerminalOutputResponse:
         rec = self._terminals.get(terminal_id)

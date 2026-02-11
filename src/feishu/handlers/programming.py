@@ -246,19 +246,14 @@ class ProgrammingModeHandler(BaseHandler):
     def handle_message(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"] = None):
         session = self._get_session_manager().get_session(chat_id)
 
-        if self.is_coco and project and project.coco_session_snapshot:
-            project_session_id = project.coco_session_snapshot.session_id
-            if not session or session.session_id != project_session_id:
-                cwd = project.root_path if project else self.get_working_dir(chat_id)
-                session = self._get_session_manager().resume_session(chat_id, project_session_id, cwd=cwd)
-                logger.info("切换到项目 %s 的 %s 会话: %s", project.project_name, self.mode_name, project_session_id)
-
-        if (not self.is_coco) and project and project.claude_session_snapshot:
-            project_session_id = project.claude_session_snapshot.session_id
-            if not session or session.session_id != project_session_id:
-                cwd = project.root_path if project else self.get_working_dir(chat_id)
-                session = self._get_session_manager().resume_session(chat_id, project_session_id, cwd=cwd)
-                logger.info("切换到项目 %s 的 %s 会话: %s", project.project_name, self.mode_name, project_session_id)
+        if project:
+            snapshot = self._get_snapshot(project)
+            if snapshot:
+                project_session_id = snapshot.session_id
+                if not session or session.session_id != project_session_id:
+                    cwd = project.root_path if project else self.get_working_dir(chat_id)
+                    session = self._get_session_manager().resume_session(chat_id, project_session_id, cwd=cwd)
+                    logger.info("切换到项目 %s 的 %s 会话: %s", project.project_name, self.mode_name, project_session_id)
 
         if not session:
             if project:

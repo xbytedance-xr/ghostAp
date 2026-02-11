@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ from typing import Callable, Optional, Protocol
 
 from .acp.models import ACPEvent, ACPEventType, PromptResult
 from .acp.sync_adapter import SyncACPSession
+from .config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +58,7 @@ class ClaudeCLIConfig:
 
     command: str = "claude"
     add_dir: bool = True
-    bypass_permissions: bool = True
+    bypass_permissions: Optional[bool] = None  # None → use config.claude_cli_skip_permissions
 
 
 class SyncClaudeCLISession:
@@ -70,6 +72,8 @@ class SyncClaudeCLISession:
     def __init__(self, cwd: str, config: Optional[ClaudeCLIConfig] = None):
         self._cwd = cwd
         self._cfg = config or ClaudeCLIConfig()
+        self._proc: Optional[subprocess.Popen] = None
+        self._cancel_event = threading.Event()
 
         self.session_id: str = ""
         self.created_at: float = time.time()
@@ -108,6 +112,12 @@ class SyncClaudeCLISession:
     def is_server_healthy(self, healthcheck_timeout: float = 2.0) -> bool:
         return True
 
+    def _resolve_bypass_permissions(self) -> bool:
+        """Resolve whether to skip Claude permissions (config > explicit)."""
+        if self._cfg.bypass_permissions is not None:
+            return self._cfg.bypass_permissions
+        return get_settings().claude_cli_skip_permissions
+
     def send_prompt(
         self,
         text: str,
@@ -117,16 +127,15 @@ class SyncClaudeCLISession:
         if not self.session_id:
             self.start()
 
+        self._cancel_event.clear()
         self.last_active = time.time()
         self.message_count += 1
         self.last_query = text
 
         args: list[str] = [self._cfg.command, "-p"]
-        # Restrict tool access scope (best-effort). Claude Code uses current dir by default,
-        # but `--add-dir` makes intent explicit.
         if self._cfg.add_dir:
             args += ["--add-dir", self._cwd]
-        if self._cfg.bypass_permissions:
+        if self._resolve_bypass_permissions():
             args.append("--dangerously-skip-permissions")
 
         if self.is_resumed:
@@ -136,37 +145,62 @@ class SyncClaudeCLISession:
 
         args.append(text)
 
+        chunks: list[str] = []
         try:
-            p = subprocess.run(
+            self._proc = subprocess.Popen(
                 args,
                 cwd=self._cwd,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout,
             )
-        except subprocess.TimeoutExpired:
-            return PromptResult(stop_reason="cancelled", text="❌ Claude 执行超时，已取消")
+
+            # Stream stdout line-by-line for real-time card updates
+            deadline = (time.monotonic() + timeout) if timeout else None
+            for line in self._proc.stdout:
+                if self._cancel_event.is_set():
+                    self._proc.terminate()
+                    self._proc.wait(timeout=5)
+                    self.is_resumed = True
+                    return PromptResult(stop_reason="cancelled", text="".join(chunks))
+                if deadline and time.monotonic() > deadline:
+                    self._proc.terminate()
+                    self._proc.wait(timeout=5)
+                    self.is_resumed = True
+                    return PromptResult(stop_reason="cancelled", text="❌ Claude 执行超时，已取消")
+                chunks.append(line)
+                if on_event:
+                    on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=line))
+
+            self._proc.wait(timeout=30)
+            returncode = self._proc.returncode
+            stderr = (self._proc.stderr.read() or "").strip("\n") if self._proc.stderr else ""
+
         except Exception as e:
             return PromptResult(stop_reason="error", text=f"❌ Claude 执行异常: {e}")
+        finally:
+            self._proc = None
 
-        stdout = (p.stdout or "").strip("\n")
-        stderr = (p.stderr or "").strip("\n")
-        output = stdout
-        if p.returncode != 0 and stderr:
-            output = (stdout + "\n" + stderr).strip("\n")
+        output = "".join(chunks).strip("\n")
+        if returncode != 0 and stderr:
+            output = (output + "\n" + stderr).strip("\n")
+            # Emit stderr as a final chunk so it shows in the card
+            if on_event and stderr:
+                on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="\n" + stderr))
 
-        if output and on_event:
-            # Emit once; keep it simple and reliable.
-            on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=output))
-
-        # After first successful call, mark resumed so later prompts keep the session.
         self.is_resumed = True
-        stop_reason = "end_turn" if p.returncode == 0 else "failed"
+        stop_reason = "end_turn" if returncode == 0 else "failed"
         return PromptResult(stop_reason=stop_reason, text=output)
 
     def cancel(self) -> None:
-        # Per-prompt run; nothing to cancel from another thread in this backend.
-        return
+        """Signal cancellation — the streaming loop will terminate the process."""
+        self._cancel_event.set()
+        proc = self._proc
+        if proc:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
 
     def close(self) -> None:
         # Nothing persistent to close.
@@ -208,3 +242,24 @@ def create_sync_session(agent_type: str, cwd: str) -> SyncSession:
     if agent_type == "claude":
         return SyncClaudeCLISession(cwd=cwd)
     return SyncACPSession(agent_type=agent_type or "coco", cwd=cwd)
+
+
+def create_engine_session(agent_type: str, cwd: str) -> SyncSession:
+    """Create and start a session for Deep/Loop engines.
+
+    - Claude: CLI backend (no ACP retry needed)
+    - Others: ACP backend with retry and progressive timeout
+    """
+    from .acp.sync_adapter import start_session_with_retry
+
+    agent_type = (agent_type or "").lower()
+    if agent_type == "claude":
+        session = SyncClaudeCLISession(cwd=cwd)
+        session.start()
+        return session
+
+    return start_session_with_retry(
+        agent_type=agent_type or "coco",
+        cwd=cwd,
+        startup_timeout=get_settings().acp_startup_timeout,
+    )

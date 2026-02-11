@@ -136,45 +136,8 @@ class BaseHandler:
             else:
                 content_str = content
 
-            # Best-effort inject ref into interactive card JSON
-            if msg_type == "interactive" and ref_note and isinstance(content_str, str):
-                try:
-                    card = json.loads(content_str)
-                    body = card.get("body") if isinstance(card, dict) else None
-                    if isinstance(body, dict) and isinstance(body.get("elements"), list):
-                        body["elements"].append({
-                            "tag": "markdown",
-                            "text_size": "notation",
-                            "content": ref_note,
-                        })
-                        content_str = json.dumps(card, ensure_ascii=False)
-                except Exception:
-                    pass
-
-            # Best-effort inject ref into post(JSON) content
-            if msg_type == "post" and ref_note and isinstance(content_str, str):
-                try:
-                    post = json.loads(content_str)
-                    if isinstance(post, dict):
-                        lang = post.get("zh_cn")
-                        if isinstance(lang, dict) and isinstance(lang.get("content"), list):
-                            blocks = lang.get("content")
-                            injected = False
-                            for row in reversed(blocks):
-                                if not isinstance(row, list):
-                                    continue
-                                for node in reversed(row):
-                                    if isinstance(node, dict) and node.get("tag") == "md" and isinstance(node.get("text"), str):
-                                        node["text"] = f"{node['text']}\n\n---\n{ref_note}"
-                                        injected = True
-                                        break
-                                if injected:
-                                    break
-                            if not injected:
-                                blocks.append([{"tag": "md", "text": f"---\n{ref_note}"}])
-                            content_str = json.dumps(post, ensure_ascii=False)
-                except Exception:
-                    pass
+            # Best-effort inject ref into interactive/post card JSON
+            content_str = self._inject_ref_note(content_str, msg_type, ref_note)
 
             # 根据配置和模式决定是否使用话题回复
             # 优先使用显式传入的 reply_in_thread 参数
@@ -234,42 +197,8 @@ class BaseHandler:
                         content_str = json.dumps({"text": f"{content}\n\n{ref_note}"}, ensure_ascii=False)
                 except Exception:
                     content_str = json.dumps({"text": f"{content}\n\n{ref_note}"}, ensure_ascii=False)
-            elif msg_type == "interactive" and ref_note and isinstance(content, str):
-                try:
-                    card = json.loads(content)
-                    body = card.get("body") if isinstance(card, dict) else None
-                    if isinstance(body, dict) and isinstance(body.get("elements"), list):
-                        body["elements"].append({
-                            "tag": "markdown",
-                            "text_size": "notation",
-                            "content": ref_note,
-                        })
-                        content_str = json.dumps(card, ensure_ascii=False)
-                except Exception:
-                    content_str = content
-            elif msg_type == "post" and ref_note and isinstance(content, str):
-                try:
-                    post = json.loads(content)
-                    if isinstance(post, dict):
-                        lang = post.get("zh_cn")
-                        if isinstance(lang, dict) and isinstance(lang.get("content"), list):
-                            blocks = lang.get("content")
-                            injected = False
-                            for row in reversed(blocks):
-                                if not isinstance(row, list):
-                                    continue
-                                for node in reversed(row):
-                                    if isinstance(node, dict) and node.get("tag") == "md" and isinstance(node.get("text"), str):
-                                        node["text"] = f"{node['text']}\n\n---\n{ref_note}"
-                                        injected = True
-                                        break
-                                if injected:
-                                    break
-                            if not injected:
-                                blocks.append([{"tag": "md", "text": f"---\n{ref_note}"}])
-                            content_str = json.dumps(post, ensure_ascii=False)
-                except Exception:
-                    content_str = content
+            else:
+                content_str = self._inject_ref_note(content_str, msg_type, ref_note)
 
             request = CreateMessageRequest.builder() \
                 .receive_id_type("chat_id") \
@@ -296,6 +225,54 @@ class BaseHandler:
         except Exception as e:
             logger.error("发送消息异常: %s", e)
             return None
+
+    # ------------------------------------------------------------------
+    # Ref-note injection (shared by reply_message_with_id and send_message)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _inject_ref_note(content_str: str, msg_type: str, ref_note: str) -> str:
+        """Best-effort inject ref_note into interactive/post content. Returns modified content_str."""
+        if not ref_note:
+            return content_str
+
+        if msg_type == "interactive" and isinstance(content_str, str):
+            try:
+                card = json.loads(content_str)
+                body = card.get("body") if isinstance(card, dict) else None
+                if isinstance(body, dict) and isinstance(body.get("elements"), list):
+                    body["elements"].append({
+                        "tag": "markdown",
+                        "text_size": "notation",
+                        "content": ref_note,
+                    })
+                    return json.dumps(card, ensure_ascii=False)
+            except Exception:
+                pass
+        elif msg_type == "post" and isinstance(content_str, str):
+            try:
+                post = json.loads(content_str)
+                if isinstance(post, dict):
+                    lang = post.get("zh_cn")
+                    if isinstance(lang, dict) and isinstance(lang.get("content"), list):
+                        blocks = lang.get("content")
+                        injected = False
+                        for row in reversed(blocks):
+                            if not isinstance(row, list):
+                                continue
+                            for node in reversed(row):
+                                if isinstance(node, dict) and node.get("tag") == "md" and isinstance(node.get("text"), str):
+                                    node["text"] = f"{node['text']}\n\n---\n{ref_note}"
+                                    injected = True
+                                    break
+                            if injected:
+                                break
+                        if not injected:
+                            blocks.append([{"tag": "md", "text": f"---\n{ref_note}"}])
+                        return json.dumps(post, ensure_ascii=False)
+            except Exception:
+                pass
+
+        return content_str
 
     # ------------------------------------------------------------------
     # Reactions

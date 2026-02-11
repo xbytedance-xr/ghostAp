@@ -5,12 +5,10 @@ try:
     from config import get_settings
     from feishu.ws_client import FeishuWSClient, EmojiReaction
     from feishu.message_formatter import FeishuMessageFormatter as fmt
-    from sandbox.executor import SandboxExecutor
 except ImportError:
     from .config import get_settings
     from .feishu.ws_client import FeishuWSClient, EmojiReaction
     from .feishu.message_formatter import FeishuMessageFormatter as fmt
-    from .sandbox.executor import SandboxExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -19,36 +17,11 @@ class Application:
     def __init__(self):
         self.settings = get_settings()
         self.feishu_client: Optional[FeishuWSClient] = None
-        self.sandbox_executor: Optional[SandboxExecutor] = None
 
     def handle_message(self, message_id: str, chat_id: str, command: str, working_dir: Optional[str] = None):
+        """Legacy callback — delegates to SystemHandler for unified shell execution."""
         try:
-            is_safe, reason = self.sandbox_executor.is_command_safe(command)
-            if not is_safe:
-                self.feishu_client.add_reaction(message_id, EmojiReaction.on_blocked())
-                self.feishu_client.reply(message_id, fmt.format_safety_block(command, reason), chat_id=chat_id)
-                return
-
-            self.feishu_client.add_reaction(message_id, EmojiReaction.on_processing())
-            
-            result = self.sandbox_executor.execute(command, cwd=working_dir)
-            
-            if result.success:
-                self.feishu_client.add_reaction(message_id, EmojiReaction.on_shell_executed())
-            else:
-                self.feishu_client.add_reaction(message_id, EmojiReaction.on_error())
-            
-            response = fmt.format_command_result(
-                command=command,
-                working_dir=working_dir,
-                stdout=result.stdout,
-                stderr=result.stderr,
-                return_code=result.return_code,
-                success=result.success,
-                error_message=result.error_message
-            )
-            self.feishu_client.reply(message_id, response, chat_id=chat_id)
-
+            self.feishu_client._submit_shell_command(message_id, chat_id, command, working_dir, None)
         except Exception as e:
             logger.error("处理命令异常: %s", e)
             try:
@@ -75,7 +48,6 @@ class Application:
         logger.info("命令超时: %d秒", self.settings.sandbox_timeout)
         logger.info("意图识别: ARK (%s)", self.settings.ark_model)
 
-        self.sandbox_executor = SandboxExecutor()
         self.feishu_client = FeishuWSClient(message_callback=self.handle_message)
 
         logger.info("启动飞书长连接服务...")

@@ -135,6 +135,11 @@ class FeishuWSClient:
         self._system_handler.loop_handler = self._loop_handler
         self._system_handler.diagnostics_handler = self._diagnostics_handler
 
+        # Bind forwarding methods directly on instance (replaces __getattr__ dispatch)
+        for attr_name, (handler_attr, method_name) in self._FORWARDING_MAP.items():
+            handler = getattr(self, handler_attr)
+            setattr(self, attr_name, getattr(handler, method_name))
+
     def close(self):
         """Best-effort cleanup for background resources."""
         try:
@@ -273,11 +278,9 @@ class FeishuWSClient:
     }
 
     def __getattr__(self, name: str):
-        fwd = FeishuWSClient._FORWARDING_MAP.get(name)
-        if fwd is not None:
-            handler_attr, method_name = fwd
-            handler = object.__getattribute__(self, handler_attr)
-            return getattr(handler, method_name)
+        # Fallback for any attribute not found — all forwarding methods are
+        # bound eagerly in __init__ via setattr, so this only fires for
+        # genuinely missing attributes.
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
     # Thin wrappers that cannot be expressed as simple delegation

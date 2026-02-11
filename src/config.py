@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     # ACP permission auto-approve (True = agent actions auto-approved, False = denied by default)
     acp_permission_auto_approve: bool = True
 
+    # Claude CLI backend: skip Claude's built-in permission checks.
+    # GhostAP has its own sandbox safety layer, so this is usually safe.
+    claude_cli_skip_permissions: bool = True
+
     # ACP agent command overrides (optional)
     # Example:
     #   COCO_ACP_CMD=coco

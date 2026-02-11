@@ -559,8 +559,6 @@ class TaskScheduler:
         q = self._queues.get(key)
         if not q:
             return
-        if not q:
-            return
         new_q = deque(item for item in q if item.run_id != run_id)
         self._queues[key] = new_q
 
