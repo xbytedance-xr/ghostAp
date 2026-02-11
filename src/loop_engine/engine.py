@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -30,6 +31,11 @@ from .models import (
 from .tracker import IterationTracker
 
 logger = logging.getLogger(__name__)
+
+# Pre-compiled regex patterns for criteria evaluation (up to 100 criteria)
+_CRITERIA_PATTERNS: list[re.Pattern] = [
+    re.compile(rf"CRITERIA_{i}\s*:\s*(PASS|FAIL)") for i in range(1, 101)
+]
 
 
 @dataclass
@@ -59,7 +65,7 @@ class LoopEngine:
         self._project: Optional[LoopProject] = None
         self._renderer = ACPEventRenderer()
         self._run_state = EngineRunState.IDLE
-        self._user_guidance: Optional[str] = None
+        self._user_guidance: list[str] = []
 
     @property
     def project(self) -> Optional[LoopProject]:
@@ -72,6 +78,15 @@ class LoopEngine:
     @property
     def is_running(self) -> bool:
         return self._run_state != EngineRunState.IDLE
+
+    def _close_session_safely(self) -> None:
+        """Close existing ACP session, ignoring errors."""
+        if self._session:
+            try:
+                self._session.close()
+            except Exception as e:
+                logger.debug("关闭旧ACP session失败: %s", e)
+            self._session = None
 
     def execute(
         self,
@@ -109,7 +124,7 @@ class LoopEngine:
             # Create ACP session (with retry and progressive timeout)
             self._session = start_session_with_retry(
                 agent_type=self._agent_type, cwd=self.root_path,
-                startup_timeout=self.settings.loop_execution_timeout,
+                startup_timeout=self.settings.acp_startup_timeout,
             )
 
             # Build initial prompt
@@ -133,13 +148,7 @@ class LoopEngine:
 
                 # Track events for this iteration
                 iter_tracker = IterationTracker()
-
-                def on_event(event: ACPEvent, _it=iteration):
-                    iter_tracker.process(event)
-                    self._renderer.process_event(event)
-                    if callbacks.on_iteration_event:
-                        callbacks.on_iteration_event(_it, event)
-
+                on_event = self._make_on_event(iter_tracker, iteration, callbacks)
                 result = self._session.send_prompt(prompt, on_event=on_event, timeout=timeout)
 
                 # Record iteration — full output, proper duration, extract focus
@@ -201,6 +210,20 @@ class LoopEngine:
         finally:
             self._run_state = EngineRunState.IDLE
 
+    def _make_on_event(
+        self,
+        iter_tracker: IterationTracker,
+        iteration: int,
+        callbacks: LoopEngineCallbacks,
+    ) -> Callable[[ACPEvent], None]:
+        """Create the on_event callback shared by execute and resume loops."""
+        def on_event(event: ACPEvent, _it=iteration):
+            iter_tracker.process(event)
+            self._renderer.process_event(event)
+            if callbacks.on_iteration_event:
+                callbacks.on_iteration_event(_it, event)
+        return on_event
+
     def _parse_requirement(self, text: str) -> LoopRequirement:
         """Simple requirement parsing — extract goal and acceptance criteria."""
         lines = text.strip().split("\n")
@@ -257,8 +280,9 @@ class LoopEngine:
 
         guidance_section = ""
         if self._user_guidance:
-            guidance_section = f"\n## 用户引导\n{self._user_guidance}\n"
-            self._user_guidance = None  # consume after use
+            combined = "\n\n".join(self._user_guidance)
+            guidance_section = f"\n## 用户引导\n{combined}\n"
+            self._user_guidance.clear()  # consume after use
         return f"""继续完成剩余的验收标准。这是第 {iteration} 轮迭代。
 
 ## 验收标准进度
@@ -298,8 +322,8 @@ CRITERIA_2: FAIL
             # Parse per-criteria results: look for "CRITERIA_N: PASS" or "CRITERIA_N: FAIL"
             per_criteria: dict[int, bool] = {}
             for i in range(len(criteria)):
-                pattern = rf"CRITERIA_{i+1}\s*:\s*(PASS|FAIL)"
-                match = re.search(pattern, full_text)
+                pat = _CRITERIA_PATTERNS[i] if i < len(_CRITERIA_PATTERNS) else re.compile(rf"CRITERIA_{i+1}\s*:\s*(PASS|FAIL)")
+                match = pat.search(full_text)
                 if match:
                     per_criteria[i] = (match.group(1) == "PASS")
 
@@ -352,9 +376,12 @@ CRITERIA_2: FAIL
         return False
 
     def inject_guidance(self, message: str):
-        """Inject user guidance — will be included in the next iteration prompt."""
-        self._user_guidance = message
-        logger.info("[Loop] 用户引导已注入: %s...", message[:100])
+        """Inject user guidance — will be included in the next iteration prompt.
+
+        Multiple calls accumulate; all pending guidance is consumed together.
+        """
+        self._user_guidance.append(message)
+        logger.info("[Loop] 用户引导已注入(队列=%d): %s...", len(self._user_guidance), message[:100])
 
     def stop(self):
         self._run_state = EngineRunState.STOPPING
@@ -384,9 +411,11 @@ CRITERIA_2: FAIL
         project_name = self._project.name
 
         try:
+            # Close old session before opening new one (prevent resource leak)
+            self._close_session_safely()
             self._session = start_session_with_retry(
                 agent_type=self._agent_type, cwd=self.root_path,
-                startup_timeout=self.settings.loop_execution_timeout,
+                startup_timeout=self.settings.acp_startup_timeout,
             )
 
             timeout = self.settings.loop_execution_timeout
@@ -402,13 +431,7 @@ CRITERIA_2: FAIL
 
                 prompt = self._build_iteration_prompt(iteration, requirement)
                 iter_tracker = IterationTracker()
-
-                def on_event(event: ACPEvent, _it=iteration):
-                    iter_tracker.process(event)
-                    self._renderer.process_event(event)
-                    if callbacks.on_iteration_event:
-                        callbacks.on_iteration_event(_it, event)
-
+                on_event = self._make_on_event(iter_tracker, iteration, callbacks)
                 result = self._session.send_prompt(prompt, on_event=on_event, timeout=timeout)
 
                 iter_end = time.time()
@@ -491,55 +514,72 @@ CRITERIA_2: FAIL
 
 
 class LoopEngineManager:
-    """Manages LoopEngine instances per chat."""
+    """Manages LoopEngine instances per chat.
+
+    Uses a secondary index (_chat_keys) to avoid O(n) full-table scans.
+    """
 
     def __init__(self):
         self._engines: dict[str, LoopEngine] = {}
+        self._chat_keys: dict[str, set[str]] = {}  # chat_id → set of keys
+        self._lock = threading.Lock()
+
+    def _add_index(self, chat_id: str, key: str) -> None:
+        self._chat_keys.setdefault(chat_id, set()).add(key)
+
+    def _iter_chat_engines(self, chat_id: str):
+        """Yield engines belonging to a chat (O(k) where k = engines per chat)."""
+        for key in self._chat_keys.get(chat_id, ()):
+            engine = self._engines.get(key)
+            if engine:
+                yield engine
 
     def get_or_create(self, chat_id: str, root_path: str, engine_name: str = "Coco") -> LoopEngine:
         key = f"{chat_id}:{root_path}"
         agent_type = "claude" if engine_name.lower().startswith("claude") else "coco"
 
-        if key not in self._engines:
-            self._engines[key] = LoopEngine(
-                chat_id=chat_id,
-                root_path=root_path,
-                agent_type=agent_type,
-                engine_name=engine_name,
-            )
-        else:
-            existing = self._engines[key]
-            if existing.engine_name.lower() != engine_name.lower() and not existing.is_running:
-                existing.cleanup()
+        with self._lock:
+            if key not in self._engines:
                 self._engines[key] = LoopEngine(
                     chat_id=chat_id,
                     root_path=root_path,
                     agent_type=agent_type,
                     engine_name=engine_name,
                 )
-        return self._engines[key]
+                self._add_index(chat_id, key)
+            else:
+                existing = self._engines[key]
+                if existing.engine_name.lower() != engine_name.lower() and not existing.is_running:
+                    existing.cleanup()
+                    self._engines[key] = LoopEngine(
+                        chat_id=chat_id,
+                        root_path=root_path,
+                        agent_type=agent_type,
+                        engine_name=engine_name,
+                    )
+            return self._engines[key]
 
     def get(self, chat_id: str, root_path: str) -> Optional[LoopEngine]:
         key = f"{chat_id}:{root_path}"
         return self._engines.get(key)
 
     def get_active_engine(self, chat_id: str) -> Optional[LoopEngine]:
-        for key, engine in self._engines.items():
-            if key.startswith(f"{chat_id}:") and engine.is_running:
+        for engine in self._iter_chat_engines(chat_id):
+            if engine.is_running:
                 return engine
         return None
 
     def get_active_engines(self, chat_id: str) -> list[LoopEngine]:
-        return [e for k, e in self._engines.items()
-                if k.startswith(f"{chat_id}:") and e.is_running]
+        return [e for e in self._iter_chat_engines(chat_id) if e.is_running]
 
     def list_engines(self, chat_id: Optional[str] = None) -> list[LoopEngine]:
         if chat_id is None:
             return list(self._engines.values())
-        prefix = f"{chat_id}:"
-        return [e for k, e in self._engines.items() if k.startswith(prefix)]
+        return list(self._iter_chat_engines(chat_id))
 
     def cleanup_all(self):
-        for engine in self._engines.values():
-            engine.cleanup()
-        self._engines.clear()
+        with self._lock:
+            for engine in self._engines.values():
+                engine.cleanup()
+            self._engines.clear()
+            self._chat_keys.clear()

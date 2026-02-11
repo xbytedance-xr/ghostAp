@@ -61,7 +61,10 @@ class TestLoopEngine:
     def test_inject_guidance(self):
         engine = self._make_engine()
         engine.inject_guidance("focus on login")
-        assert engine._user_guidance == "focus on login"
+        assert engine._user_guidance == ["focus on login"]
+        # Multiple injections accumulate
+        engine.inject_guidance("also fix logout")
+        assert engine._user_guidance == ["focus on login", "also fix logout"]
 
     def test_parse_requirement_with_criteria(self):
         engine = self._make_engine()
@@ -111,13 +114,13 @@ class TestLoopEngine:
 
     def test_build_iteration_prompt_with_guidance(self):
         engine = self._make_engine()
-        engine._user_guidance = "prioritize email"
+        engine.inject_guidance("prioritize email")
         req = LoopRequirement(
             goal="login", acceptance_criteria=["c1"], raw_text="test",
         )
         prompt = engine._build_iteration_prompt(3, req)
         assert "prioritize email" in prompt
-        assert engine._user_guidance is None  # consumed
+        assert engine._user_guidance == []  # consumed
 
     def test_detect_convergence_not_enough_iterations(self):
         engine = self._make_engine()
@@ -249,7 +252,7 @@ class TestIterationTracker:
 
     def test_reset(self):
         tracker = IterationTracker()
-        tracker.text_buffer = "hello"
+        tracker._text_chunks.append("hello")
         tracker.modified_files.add("/a.py")
         tracker.reset()
         assert tracker.text_buffer == ""

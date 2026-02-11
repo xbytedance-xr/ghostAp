@@ -75,6 +75,8 @@ class StreamingCardManager:
         self._lock = threading.Lock()
 
         self._max_card_chars = 12222
+        self._last_cleanup: float = 0.0
+        self._cleanup_interval: float = 300.0  # auto-cleanup every 5 minutes
 
     # ---- 卡片 JSON 构建（共用） ----
 
@@ -360,7 +362,16 @@ class StreamingCardManager:
 
     # ---- 发送/更新/关闭 ----
 
+    def _maybe_cleanup(self) -> None:
+        """Amortized auto-cleanup: evict expired cards periodically."""
+        now = time.time()
+        if now - self._last_cleanup < self._cleanup_interval:
+            return
+        self._last_cleanup = now
+        self.cleanup_expired_cards()
+
     def send_streaming_card(self, card: StreamingCard) -> Optional[str]:
+        self._maybe_cleanup()
         try:
             buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode)
             initial = _normalize_streaming_markdown(

@@ -18,7 +18,7 @@ class DeepProgress:
     plan_entries: list[dict] = field(default_factory=list)  # [{content, status, priority}]
     tool_calls: list[ToolCallInfo] = field(default_factory=list)
     modified_files: set[str] = field(default_factory=set)
-    text_buffer: str = ""
+    _text_chunks: list[str] = field(default_factory=list)
 
     def update_plan(self, plan: PlanInfo) -> None:
         self.plan_entries = [
@@ -31,8 +31,12 @@ class DeepProgress:
         for loc in tool.locations:
             self.modified_files.add(loc)
 
+    @property
+    def text_buffer(self) -> str:
+        return "".join(self._text_chunks)
+
     def append_text(self, text: str) -> None:
-        self.text_buffer += text
+        self._text_chunks.append(text)
 
     @property
     def completed_steps(self) -> int:

@@ -19,14 +19,14 @@ class IterationTracker:
     tool_calls: list[ToolCallInfo] = field(default_factory=list)
     modified_files: set[str] = field(default_factory=set)
     plan_progress: Optional[PlanInfo] = None
-    text_buffer: str = ""
+    _text_chunks: list[str] = field(default_factory=list)
 
     def process(self, event: ACPEvent) -> None:
         """Process an ACP event."""
         match event.event_type:
             case ACPEventType.TEXT_CHUNK:
                 if event.text:
-                    self.text_buffer += event.text
+                    self._text_chunks.append(event.text)
             case ACPEventType.TOOL_CALL_START:
                 if event.tool_call:
                     for loc in event.tool_call.locations:
@@ -40,9 +40,13 @@ class IterationTracker:
                 if event.plan:
                     self.plan_progress = event.plan
 
+    @property
+    def text_buffer(self) -> str:
+        return "".join(self._text_chunks)
+
     def reset(self) -> None:
         """Reset for a new iteration."""
         self.tool_calls.clear()
         self.modified_files.clear()
         self.plan_progress = None
-        self.text_buffer = ""
+        self._text_chunks.clear()

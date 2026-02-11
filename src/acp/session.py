@@ -141,8 +141,8 @@ class ACPSession:
             if on_event:
                 try:
                     on_event(ev)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("[ACP] on_event callback error: %s", exc)
 
         self._event_handler = _collector
         self._state.message_count += 1

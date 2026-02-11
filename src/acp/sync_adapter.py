@@ -148,6 +148,11 @@ class SyncACPSession:
         self._acp_session: Optional[ACPSession] = None
         self._started = threading.Event()
 
+        # Persistent watchdog: monitors active prompt future for process death
+        self._active_future: Optional[asyncio.Future] = None
+        self._watchdog_stop = threading.Event()
+        self._watchdog_thread: Optional[threading.Thread] = None
+
         # Public state (compatible with old BaseSession interface)
         self.session_id: str = ""
         self.created_at: float = time.time()
@@ -262,6 +267,34 @@ class SyncACPSession:
             self.history = []
         return list(self.history)
 
+    def _start_watchdog(self) -> None:
+        """Start a persistent watchdog thread that monitors active prompt futures."""
+        if self._watchdog_thread and self._watchdog_thread.is_alive():
+            return
+        self._watchdog_stop.clear()
+
+        def _watchdog_loop():
+            while not self._watchdog_stop.wait(timeout=5.0):
+                fut = self._active_future
+                if fut is None or fut.done():
+                    continue
+                if not self.is_server_running():
+                    logger.warning("[ACP:%s] Agent process died mid-prompt, cancelling",
+                                   self._agent_type)
+                    fut.cancel()
+
+        self._watchdog_thread = threading.Thread(
+            target=_watchdog_loop, daemon=True, name=f"acp-watchdog-{self._agent_type}",
+        )
+        self._watchdog_thread.start()
+
+    def _stop_watchdog(self) -> None:
+        """Stop the persistent watchdog thread."""
+        self._watchdog_stop.set()
+        if self._watchdog_thread and self._watchdog_thread.is_alive():
+            self._watchdog_thread.join(timeout=2)
+        self._watchdog_thread = None
+
     def send_prompt(
         self,
         text: str,
@@ -270,8 +303,8 @@ class SyncACPSession:
     ) -> PromptResult:
         """Send prompt synchronously, blocking until completion.
 
-        Includes a process-alive watchdog: if the agent process dies mid-prompt,
-        the future is cancelled early instead of waiting for the full timeout.
+        A persistent watchdog thread monitors for agent process death and
+        cancels the future early instead of waiting for the full timeout.
         """
         if not self._acp_session:
             raise RuntimeError("Session not started")
@@ -284,31 +317,19 @@ class SyncACPSession:
             self._acp_session.prompt(text, on_event=on_event),
             self._loop,
         )
-
-        # Watchdog: periodically check if agent process is still alive.
-        # If it dies, cancel the prompt future to avoid hanging until timeout.
-        stop_watchdog = threading.Event()
-
-        def _watchdog():
-            while not stop_watchdog.wait(timeout=5.0):
-                if future.done():
-                    break
-                if not self.is_server_running():
-                    logger.warning("[ACP:%s] Agent process died mid-prompt, cancelling",
-                                   self._agent_type)
-                    future.cancel()
-                    break
-
-        watchdog = threading.Thread(target=_watchdog, daemon=True, name="acp-watchdog")
-        watchdog.start()
+        self._active_future = future
+        self._start_watchdog()
 
         try:
             return future.result(timeout=timeout)
         except asyncio.CancelledError:
             raise RuntimeError("ACP agent 进程在执行过程中意外终止")
+        except TimeoutError:
+            # Cancel the agent process on timeout to free resources
+            self.cancel()
+            raise
         finally:
-            stop_watchdog.set()
-            watchdog.join(timeout=2)
+            self._active_future = None
 
     def cancel(self) -> None:
         """Cancel current prompt."""
@@ -320,6 +341,7 @@ class SyncACPSession:
 
     def close(self) -> None:
         """Close session and stop event loop."""
+        self._stop_watchdog()
         if self._acp_session and self._loop:
             try:
                 future = asyncio.run_coroutine_threadsafe(

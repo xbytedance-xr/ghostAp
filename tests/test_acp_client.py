@@ -69,12 +69,13 @@ def test_acp_manager_unhealthy_session_is_cleaned(monkeypatch):
     class DeadSession:
         def __init__(self):
             self.session_id = "s_dead"
-            self.last_active = _time.time()
+            # Idle > 30s to trigger health check path in get_session
+            self.last_active = _time.time() - 60
             self.message_count = 0
             self.closed = False
 
-        def is_server_healthy(self, healthcheck_timeout: float = 2.0) -> bool:
-            return False
+        def is_server_running(self) -> bool:
+            return False  # process is dead
 
         def to_snapshot(self):
             return {"session_id": self.session_id}

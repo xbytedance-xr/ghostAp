@@ -1,8 +1,10 @@
 # GhostAP 项目记忆索引
 
 ## 2026-02-11
+- **架构审查修复（8项）** - Engine状态卡死修复、EngineManager线程安全、ACPSessionManager并发保护、resume会话泄漏修复、inject_context队列模式、超时cancel、on_event错误可见性、用户错误反馈，716测试全通过 → [2026-02-11.md](2026-02-11.md)
 - **Loop Engine 卡片显示修复 + 迭代上限放开** - CriteriaTracker 初始化/更新修复、输出截断移除、迭代上限10→100、duration/focus 修复、卡片验收标准展示，716测试全通过 → [2026-02-11.md](2026-02-11.md)
 - **ACP 实现缺陷修复（5项）** - inject_context 实装、resume 实装、引擎 retry 接入、auto_approve 配置化、进程崩溃 watchdog，716测试全通过 → [2026-02-11.md](2026-02-11.md)
+- **性能优化审查（10项）** - O(n^2)字符串拼接→list+join、regex预编译、health check分层、持久化watchdog、on_event去重、StreamingCard自动清理、EngineManager二级索引，716测试全通过 → [2026-02-11.md](2026-02-11.md)
 
 ## 2026-02-10
 - **ACP 协议重构实施** - subprocess CLI→ACP (JSON-RPC 2.0 over stdio)，新增 src/acp/ 7文件，重写 deep_engine(6→4文件)、loop_engine(7→4文件)，删除 src/session/，704测试全通过 → [2026-02-10.md](2026-02-10.md)

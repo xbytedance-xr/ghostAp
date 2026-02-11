@@ -25,6 +25,8 @@ from .progress import DeepProgress
 
 logger = logging.getLogger(__name__)
 
+_STATUS_ICONS = {"pending": "⏳", "in_progress": "🔄", "completed": "✅"}
+
 
 @dataclass
 class DeepEngineCallbacks:
@@ -52,7 +54,7 @@ class DeepEngine:
         self._progress = DeepProgress()
         self._renderer = ACPEventRenderer()
         self._run_state = EngineRunState.IDLE
-        self._pending_context: Optional[str] = None
+        self._pending_context: list[str] = []
         self._context_lock = threading.Lock()
 
     @property
@@ -70,6 +72,42 @@ class DeepEngine:
     @property
     def progress(self) -> DeepProgress:
         return self._progress
+
+    def _make_on_event(self, callbacks: DeepEngineCallbacks) -> Callable[[ACPEvent], None]:
+        """Create the on_event callback shared by plan_and_execute and resume."""
+        def on_event(event: ACPEvent):
+            if self._run_state == EngineRunState.STOPPING:
+                if self._session:
+                    self._session.cancel()
+                return
+
+            self._renderer.process_event(event)
+
+            match event.event_type:
+                case ACPEventType.PLAN_UPDATE:
+                    if event.plan:
+                        self._progress.update_plan(event.plan)
+                case ACPEventType.TOOL_CALL_DONE:
+                    if event.tool_call:
+                        self._progress.record_tool(event.tool_call)
+                case ACPEventType.TEXT_CHUNK:
+                    if event.text:
+                        self._progress.append_text(event.text)
+
+            if callbacks.on_event:
+                callbacks.on_event(event)
+            if event.event_type == ACPEventType.TEXT_CHUNK and callbacks.on_text:
+                callbacks.on_text(event.text or "")
+        return on_event
+
+    def _close_session_safely(self) -> None:
+        """Close existing ACP session, ignoring errors."""
+        if self._session:
+            try:
+                self._session.close()
+            except Exception as e:
+                logger.debug("关闭旧ACP session失败: %s", e)
+            self._session = None
 
     def plan_and_execute(
         self,
@@ -106,31 +144,7 @@ class DeepEngine:
             if callbacks.on_planning_done:
                 callbacks.on_planning_done(self._project)
 
-            # Track progress via ACP events
-            def on_event(event: ACPEvent):
-                if self._run_state == EngineRunState.STOPPING:
-                    if self._session:
-                        self._session.cancel()
-                    return
-
-                self._renderer.process_event(event)
-
-                match event.event_type:
-                    case ACPEventType.PLAN_UPDATE:
-                        if event.plan:
-                            self._progress.update_plan(event.plan)
-                    case ACPEventType.TOOL_CALL_DONE:
-                        if event.tool_call:
-                            self._progress.record_tool(event.tool_call)
-                    case ACPEventType.TEXT_CHUNK:
-                        if event.text:
-                            self._progress.append_text(event.text)
-
-                if callbacks.on_event:
-                    callbacks.on_event(event)
-                if event.event_type == ACPEventType.TEXT_CHUNK and callbacks.on_text:
-                    callbacks.on_text(event.text or "")
-
+            on_event = self._make_on_event(callbacks)
             timeout = self.settings.coco_execution_timeout if self._agent_type == "coco" else self.settings.claude_execution_timeout
             result = self._session.send_prompt(prompt, on_event=on_event, timeout=timeout)
 
@@ -173,11 +187,12 @@ class DeepEngine:
         """Send any pending context injections as follow-up prompts in the same session."""
         while self._run_state == EngineRunState.RUNNING:
             with self._context_lock:
-                ctx = self._pending_context
-                self._pending_context = None
-            if not ctx:
+                batch = list(self._pending_context)
+                self._pending_context.clear()
+            if not batch:
                 break
-            logger.info("[Deep] 发送注入的上下文: %s...", ctx[:100])
+            ctx = "\n\n---\n\n".join(batch)
+            logger.info("[Deep] 发送注入的上下文(%d条): %s...", len(batch), ctx[:100])
             follow_up = f"""用户提供了额外的上下文/指导信息，请据此继续执行：
 
 {ctx}
@@ -204,10 +219,13 @@ class DeepEngine:
 """
 
     def inject_context(self, message: str):
-        """Inject user context — will be sent as follow-up prompt after current execution."""
+        """Inject user context — will be sent as follow-up prompt after current execution.
+
+        Multiple calls accumulate; all pending messages are drained together.
+        """
         with self._context_lock:
-            self._pending_context = message
-        logger.info("[Deep] 上下文已注入(待发送): %s...", message[:100])
+            self._pending_context.append(message)
+        logger.info("[Deep] 上下文已注入(待发送, 队列=%d): %s...", len(self._pending_context), message[:100])
 
     def stop(self):
         self._run_state = EngineRunState.STOPPING
@@ -231,7 +249,8 @@ class DeepEngine:
         self._project.status = DeepProjectStatus.EXECUTING
 
         try:
-            # Start a new ACP session with retry
+            # Close old session before opening new one (prevent resource leak)
+            self._close_session_safely()
             self._session = start_session_with_retry(
                 agent_type=self._agent_type, cwd=self.root_path,
                 startup_timeout=self.settings.acp_startup_timeout,
@@ -241,25 +260,7 @@ class DeepEngine:
 检查之前的进度，对未完成的部分继续实现。
 完成后输出总结报告。"""
 
-            def on_event(event: ACPEvent):
-                if self._run_state == EngineRunState.STOPPING:
-                    if self._session:
-                        self._session.cancel()
-                    return
-                self._renderer.process_event(event)
-                match event.event_type:
-                    case ACPEventType.PLAN_UPDATE:
-                        if event.plan:
-                            self._progress.update_plan(event.plan)
-                    case ACPEventType.TOOL_CALL_DONE:
-                        if event.tool_call:
-                            self._progress.record_tool(event.tool_call)
-                    case ACPEventType.TEXT_CHUNK:
-                        if event.text:
-                            self._progress.append_text(event.text)
-                if callbacks.on_event:
-                    callbacks.on_event(event)
-
+            on_event = self._make_on_event(callbacks)
             timeout = self.settings.coco_execution_timeout if self._agent_type == "coco" else self.settings.claude_execution_timeout
             result = self._session.send_prompt(resume_prompt, on_event=on_event, timeout=timeout)
             result = self._drain_pending_context(on_event, timeout, result)
@@ -286,26 +287,33 @@ class DeepEngine:
 
         return self._project
 
+    # Static status messages (no f-string allocation per call)
+    _STATUS_MESSAGES: dict[DeepProjectStatus, str] = {
+        DeepProjectStatus.IDLE: "等待开始",
+        DeepProjectStatus.PLANNING: "正在规划任务...",
+        DeepProjectStatus.PAUSED: "已暂停",
+        DeepProjectStatus.COMPLETED: "全部完成",
+    }
+
     def get_progress(self) -> Optional[ProgressUpdate]:
         if not self._project:
             return None
 
-        status_messages = {
-            DeepProjectStatus.IDLE: "等待开始",
-            DeepProjectStatus.PLANNING: "正在规划任务...",
-            DeepProjectStatus.EXECUTING: f"执行中 (工具调用: {len(self._progress.tool_calls)})",
-            DeepProjectStatus.PAUSED: "已暂停",
-            DeepProjectStatus.COMPLETED: "全部完成",
-            DeepProjectStatus.FAILED: f"执行失败: {self._project.error or '未知错误'}",
-        }
+        status = self._project.status
+        if status == DeepProjectStatus.EXECUTING:
+            message = f"执行中 (工具调用: {len(self._progress.tool_calls)})"
+        elif status == DeepProjectStatus.FAILED:
+            message = f"执行失败: {self._project.error or '未知错误'}"
+        else:
+            message = self._STATUS_MESSAGES.get(status, "未知状态")
 
         return ProgressUpdate(
             project_id=self._project.project_id,
             current_task=None,
             completed_count=self._progress.completed_steps,
             total_count=self._progress.total_steps or 1,
-            status=self._project.status,
-            message=status_messages.get(self._project.status, "未知状态"),
+            status=status,
+            message=message,
         )
 
     def get_task_summary(self) -> str:
@@ -318,7 +326,7 @@ class DeepEngine:
             lines.append(self._progress.progress_bar)
             lines.append("")
             for entry in self._progress.plan_entries:
-                icon = {"pending": "⏳", "in_progress": "🔄", "completed": "✅"}.get(entry["status"], "⬜")
+                icon = _STATUS_ICONS.get(entry["status"], "⬜")
                 lines.append(f"{icon} {entry['content']}")
         else:
             lines.append(f"🔧 工具调用: {len(self._progress.tool_calls)} 次")
@@ -384,33 +392,51 @@ class DeepEngine:
 
 
 class DeepEngineManager:
-    """Manages DeepEngine instances per chat+project."""
+    """Manages DeepEngine instances per chat+project.
+
+    Thread-safe: all dict mutations are protected by _lock.
+    Uses a secondary index (_chat_keys) to avoid O(n) full-table scans.
+    """
 
     def __init__(self):
         self._engines: dict[str, DeepEngine] = {}
+        self._chat_keys: dict[str, set[str]] = {}  # chat_id → set of keys
+        self._lock = threading.Lock()
+
+    def _add_index(self, chat_id: str, key: str) -> None:
+        self._chat_keys.setdefault(chat_id, set()).add(key)
+
+    def _remove_index(self, chat_id: str, key: str) -> None:
+        keys = self._chat_keys.get(chat_id)
+        if keys:
+            keys.discard(key)
+            if not keys:
+                del self._chat_keys[chat_id]
 
     def get_or_create(self, chat_id: str, root_path: str, engine_name: str = "Coco") -> DeepEngine:
         key = f"{chat_id}:{root_path}"
         agent_type = "claude" if engine_name.lower().startswith("claude") else "coco"
 
-        if key not in self._engines:
-            self._engines[key] = DeepEngine(
-                chat_id=chat_id,
-                root_path=root_path,
-                agent_type=agent_type,
-                engine_name=engine_name,
-            )
-        else:
-            existing = self._engines[key]
-            if existing.engine_name.lower() != engine_name.lower() and not existing.is_running:
-                existing.cleanup()
+        with self._lock:
+            if key not in self._engines:
                 self._engines[key] = DeepEngine(
                     chat_id=chat_id,
                     root_path=root_path,
                     agent_type=agent_type,
                     engine_name=engine_name,
                 )
-        return self._engines[key]
+                self._add_index(chat_id, key)
+            else:
+                existing = self._engines[key]
+                if existing.engine_name.lower() != engine_name.lower() and not existing.is_running:
+                    existing.cleanup()
+                    self._engines[key] = DeepEngine(
+                        chat_id=chat_id,
+                        root_path=root_path,
+                        agent_type=agent_type,
+                        engine_name=engine_name,
+                    )
+            return self._engines[key]
 
     def get(self, chat_id: str, root_path: str) -> Optional[DeepEngine]:
         key = f"{chat_id}:{root_path}"
@@ -418,30 +444,38 @@ class DeepEngineManager:
 
     def remove(self, chat_id: str, root_path: str):
         key = f"{chat_id}:{root_path}"
-        if key in self._engines:
-            self._engines[key].cleanup()
-            del self._engines[key]
+        with self._lock:
+            if key in self._engines:
+                self._engines[key].cleanup()
+                del self._engines[key]
+                self._remove_index(chat_id, key)
+
+    def _iter_chat_engines(self, chat_id: str):
+        """Yield engines belonging to a chat (O(k) where k = engines per chat)."""
+        for key in self._chat_keys.get(chat_id, ()):
+            engine = self._engines.get(key)
+            if engine:
+                yield engine
 
     def get_active_engine(self, chat_id: str) -> Optional[DeepEngine]:
-        for key, engine in self._engines.items():
-            if key.startswith(f"{chat_id}:") and engine.is_running:
+        for engine in self._iter_chat_engines(chat_id):
+            if engine.is_running:
                 return engine
         return None
 
     def get_active_engines(self, chat_id: str) -> list[DeepEngine]:
-        return [e for k, e in self._engines.items()
-                if k.startswith(f"{chat_id}:") and e.is_running]
+        return [e for e in self._iter_chat_engines(chat_id) if e.is_running]
 
     def list_engines(self, chat_id: Optional[str] = None) -> list[DeepEngine]:
         if chat_id is None:
             return list(self._engines.values())
-        prefix = f"{chat_id}:"
-        return [e for k, e in self._engines.items() if k.startswith(prefix)]
+        return list(self._iter_chat_engines(chat_id))
 
     def find_by_deep_project_id(self, chat_id: str, deep_project_id: str) -> Optional[DeepEngine]:
         if not deep_project_id:
             return None
-        for engine in self.get_active_engines(chat_id) + self.list_engines(chat_id):
+        # Single pass instead of double traversal
+        for engine in self._iter_chat_engines(chat_id):
             try:
                 if engine.project and engine.project.project_id == deep_project_id:
                     return engine
@@ -450,6 +484,8 @@ class DeepEngineManager:
         return None
 
     def cleanup_all(self):
-        for engine in self._engines.values():
-            engine.cleanup()
-        self._engines.clear()
+        with self._lock:
+            for engine in self._engines.values():
+                engine.cleanup()
+            self._engines.clear()
+            self._chat_keys.clear()

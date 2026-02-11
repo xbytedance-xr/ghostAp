@@ -541,6 +541,10 @@ class FeishuWSClient:
 
         except Exception as e:
             logger.error("处理消息异常: %s", e, exc_info=True)
+            try:
+                self._reply_message(message_id, f"❌ 处理消息时发生内部错误，请稍后重试")
+            except Exception:
+                pass
         finally:
             with self._pending_image_lock:
                 self._pending_image_keys.pop(message_id, None)

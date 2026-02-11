@@ -7,6 +7,7 @@ management. Supports both Coco and Claude agent types.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Optional
 
@@ -23,6 +24,7 @@ class ACPSessionManager:
         self._agent_type = agent_type  # "coco" / "claude"
         self._sessions: dict[str, SyncACPSession] = {}
         self._session_timeout = session_timeout
+        self._lock = threading.Lock()
 
     def start_session(
         self,
@@ -36,9 +38,10 @@ class ACPSessionManager:
         startup_timeout controls how long we wait for the ACP agent process
         (`<agent> acp serve`) to spawn + complete protocol handshake.
         """
-        # Close existing session if any
-        if chat_id in self._sessions:
-            self.end_session(chat_id)
+        # Close existing session if any (under lock to prevent concurrent create)
+        with self._lock:
+            if chat_id in self._sessions:
+                self._end_session_unlocked(chat_id)
 
         settings = get_settings()
         retries = int(getattr(settings, "acp_startup_retries", 2) or 2)
@@ -105,7 +108,8 @@ class ACPSessionManager:
         except Exception:
             pass
 
-        self._sessions[chat_id] = session
+        with self._lock:
+            self._sessions[chat_id] = session
         return session
 
     def ensure_session(
@@ -131,15 +135,24 @@ class ACPSessionManager:
                 existing = None
 
         if existing:
-            # Health check (process + lightweight RPC)
-            health_to = float(getattr(get_settings(), "acp_healthcheck_timeout", 2.0) or 2.0)
-            if not existing.is_server_healthy(healthcheck_timeout=health_to):
+            idle = time.time() - existing.last_active
+            # Quick process-alive check first (no RPC); full health only after prolonged idle
+            if not existing.is_server_running():
                 logger.warning(
-                    "[ACP:%s] Detected unhealthy ACP server, restarting: chat=%s session=%s",
+                    "[ACP:%s] Detected dead ACP server, restarting: chat=%s session=%s",
                     self._agent_type.upper(), chat_id[-8:], (existing.session_id or "none")[:8],
                 )
                 self.end_session(chat_id)
                 existing = None
+            elif idle > 30.0:
+                health_to = float(getattr(get_settings(), "acp_healthcheck_timeout", 2.0) or 2.0)
+                if not existing.is_server_healthy(healthcheck_timeout=health_to):
+                    logger.warning(
+                        "[ACP:%s] Detected unhealthy ACP server, restarting: chat=%s session=%s",
+                        self._agent_type.upper(), chat_id[-8:], (existing.session_id or "none")[:8],
+                    )
+                    self.end_session(chat_id)
+                    existing = None
 
         if existing and session_id and existing.session_id != session_id:
             # Different target session requested; restart to load requested session.
@@ -156,27 +169,35 @@ class ACPSessionManager:
         return self.start_session(chat_id, cwd=cwd, session_id=session_id)
 
     def get_session(self, chat_id: str) -> Optional[SyncACPSession]:
-        """Get active session for a chat (with timeout check)."""
+        """Get active session for a chat (with timeout check).
+
+        Health check is only performed when the session has been idle for a while
+        (> 30s) to avoid costly RPC round-trips on every call.  For recently-active
+        sessions the send_prompt watchdog already handles crash detection.
+        """
         session = self._sessions.get(chat_id)
         if session:
-            if time.time() - session.last_active > self._session_timeout:
+            now = time.time()
+            idle = now - session.last_active
+            if idle > self._session_timeout:
                 logger.info("[ACP:%s] Session timeout: chat=%s",
                              self._agent_type.upper(), chat_id[-8:])
                 self.end_session(chat_id)
                 return None
-            # Detect whether the underlying ACP server is unhealthy.
-            health_to = float(getattr(get_settings(), "acp_healthcheck_timeout", 2.0) or 2.0)
-            if not session.is_server_healthy(healthcheck_timeout=health_to):
-                logger.warning(
-                    "[ACP:%s] Session server unhealthy: chat=%s session=%s",
-                    self._agent_type.upper(), chat_id[-8:], (session.session_id or "none")[:8],
-                )
-                self.end_session(chat_id)
-                return None
+            # Only do expensive RPC health check after prolonged idle (>30s).
+            # Recently active sessions are protected by the send_prompt watchdog.
+            if idle > 30.0:
+                if not session.is_server_running():
+                    logger.warning(
+                        "[ACP:%s] Session server dead: chat=%s session=%s",
+                        self._agent_type.upper(), chat_id[-8:], (session.session_id or "none")[:8],
+                    )
+                    self.end_session(chat_id)
+                    return None
         return session
 
-    def end_session(self, chat_id: str) -> Optional[dict]:
-        """End a session and return its snapshot."""
+    def _end_session_unlocked(self, chat_id: str) -> Optional[dict]:
+        """End a session without acquiring lock (caller must hold _lock)."""
         if chat_id in self._sessions:
             session = self._sessions[chat_id]
             logger.info("[ACP:%s] Session ended: chat=%s, session=%s, msgs=%d",
@@ -191,6 +212,11 @@ class ACPSessionManager:
             del self._sessions[chat_id]
             return snapshot
         return None
+
+    def end_session(self, chat_id: str) -> Optional[dict]:
+        """End a session and return its snapshot."""
+        with self._lock:
+            return self._end_session_unlocked(chat_id)
 
     def has_active_session(self, chat_id: str) -> bool:
         return self.get_session(chat_id) is not None

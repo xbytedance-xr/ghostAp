@@ -42,7 +42,7 @@ class ACPEventRenderer:
     """Converts ACP events into Feishu-displayable Markdown content."""
 
     def __init__(self):
-        self._text_buffer: str = ""
+        self._text_chunks: list[str] = []
         self._active_tools: dict[str, ToolCallInfo] = {}
         self._completed_tools: list[ToolCallInfo] = []
         self._plan: Optional[PlanInfo] = None
@@ -52,7 +52,8 @@ class ACPEventRenderer:
         """Process an event and return the current complete rendered content."""
         match event.event_type:
             case ACPEventType.TEXT_CHUNK:
-                self._text_buffer += event.text or ""
+                if event.text:
+                    self._text_chunks.append(event.text)
 
             case ACPEventType.THOUGHT_CHUNK:
                 # Optionally show thoughts — for now, skip to avoid noise
@@ -83,7 +84,7 @@ class ACPEventRenderer:
                     loc_str = ""
                     if event.tool_call.locations:
                         loc_str = f" `{event.tool_call.locations[0]}`"
-                    self._text_buffer += f"\n{icon} {event.tool_call.title}{loc_str} {status_icon}\n"
+                    self._text_chunks.append(f"\n{icon} {event.tool_call.title}{loc_str} {status_icon}\n")
 
             case ACPEventType.PLAN_UPDATE:
                 if event.plan:
@@ -99,12 +100,12 @@ class ACPEventRenderer:
     @property
     def text_content(self) -> str:
         """Raw accumulated text."""
-        return self._text_buffer
+        return "".join(self._text_chunks)
 
     @property
     def modified_files(self) -> set[str]:
-        """Set of file paths modified during this session."""
-        return self._modified_files.copy()
+        """Set of file paths modified during this session (read-only view)."""
+        return self._modified_files
 
     @property
     def completed_tool_count(self) -> int:
@@ -127,8 +128,8 @@ class ACPEventRenderer:
             if rendered_tools:
                 parts.append(rendered_tools)
 
-        if self._text_buffer:
-            parts.append(self._text_buffer)
+        if self._text_chunks:
+            parts.append("".join(self._text_chunks))
 
         return "\n".join(parts) if parts else ""
 
