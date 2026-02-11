@@ -28,6 +28,9 @@ from .models import (
     IterationStatus,
     CriteriaTracker,
     TerminationSignal,
+    ReviewPerspective,
+    PerspectiveReview,
+    ReviewResult,
 )
 from .tracker import IterationTracker
 
@@ -38,6 +41,20 @@ _CRITERIA_PATTERNS: list[re.Pattern] = [
     re.compile(rf"CRITERIA_{i}\s*:\s*(PASS|FAIL)") for i in range(1, 101)
 ]
 
+# Pre-compiled regex for multi-perspective review parsing
+_REVIEW_SECTION_PATTERN = re.compile(
+    r"\[(\w+)\]\s*\n\s*(PASS|FAIL)\b(.*?)(?=\[(?:ARCHITECT|PRODUCT|USER|TESTER)\]|\Z)",
+    re.DOTALL,
+)
+
+# Map perspective tag → ReviewPerspective enum
+_PERSPECTIVE_TAG_MAP: dict[str, ReviewPerspective] = {
+    "ARCHITECT": ReviewPerspective.ARCHITECT,
+    "PRODUCT": ReviewPerspective.PRODUCT,
+    "USER": ReviewPerspective.USER,
+    "TESTER": ReviewPerspective.TESTER,
+}
+
 
 @dataclass
 class LoopEngineCallbacks:
@@ -47,6 +64,7 @@ class LoopEngineCallbacks:
     on_iteration_start: Optional[Callable[[int, int], None]] = None  # (current, max)
     on_iteration_event: Optional[Callable[[int, ACPEvent], None]] = None
     on_iteration_done: Optional[Callable[[int, IterationRecord], None]] = None
+    on_review_done: Optional[Callable[[int, ReviewResult], None]] = None  # (iteration, review)
     on_project_done: Optional[Callable[[LoopProject], None]] = None
     on_error: Optional[Callable[[str], None]] = None
 
@@ -67,6 +85,8 @@ class LoopEngine:
         self._renderer = ACPEventRenderer()
         self._run_state = EngineRunState.IDLE
         self._user_guidance: list[str] = []
+        self._last_review: Optional[ReviewResult] = None
+        self._review_extra_used: int = 0
 
     @property
     def project(self) -> Optional[LoopProject]:
@@ -129,6 +149,11 @@ class LoopEngine:
             initial_prompt = self._build_initial_prompt(requirement)
             timeout = self.settings.loop_execution_timeout
 
+            review_enabled = self.settings.loop_review_enabled
+            review_extra_max = self.settings.loop_review_extra_iterations
+            self._review_extra_used = 0
+            self._last_review = None
+
             for iteration in range(1, max_iterations + 1):
                 if self._run_state != EngineRunState.RUNNING:
                     break
@@ -162,21 +187,40 @@ class LoopEngine:
                     duration=iter_end - iter_start,
                     completed_at=iter_end,
                 )
-                self._project.iterations.append(record)
 
                 logger.info("[Loop:%s] 迭代 %d/%d 完成, 工具=%d, 文件=%d",
                              project_name, iteration, max_iterations,
                              len(iter_tracker.tool_calls),
                              len(iter_tracker.modified_files))
 
+                # Multi-perspective review phase
+                if review_enabled and self._run_state == EngineRunState.RUNNING:
+                    review_result = self._conduct_review(iteration, callbacks)
+                    record.review_result = review_result
+                    self._last_review = review_result
+
+                self._project.iterations.append(record)
+
                 if callbacks.on_iteration_done:
                     callbacks.on_iteration_done(iteration, record)
 
                 # Evaluate acceptance criteria in the same session
                 criteria_result = self._evaluate_criteria(requirement.acceptance_criteria, iteration)
-                if criteria_result.get("all_satisfied", False):
-                    logger.info("[Loop:%s] 所有验收标准已满足, 迭代 %d 轮", project_name, iteration)
-                    break
+                all_criteria_satisfied = criteria_result.get("all_satisfied", False)
+
+                # Termination logic: criteria + review
+                if all_criteria_satisfied:
+                    if not review_enabled or (self._last_review and self._last_review.all_passed):
+                        logger.info("[Loop:%s] 所有验收标准+审查通过, 迭代 %d 轮", project_name, iteration)
+                        break
+                    # Criteria satisfied but review has suggestions — allow extra iterations
+                    self._review_extra_used += 1
+                    if self._review_extra_used > review_extra_max:
+                        logger.info("[Loop:%s] 验收标准已满足，审查额外迭代超限(%d), 迭代 %d 轮",
+                                     project_name, review_extra_max, iteration)
+                        break
+                    logger.info("[Loop:%s] 验收标准已满足但审查有建议, 额外迭代 %d/%d",
+                                 project_name, self._review_extra_used, review_extra_max)
 
                 # Convergence detection
                 if self._detect_convergence():
@@ -247,6 +291,13 @@ class LoopEngine:
 
     def _build_initial_prompt(self, requirement: LoopRequirement) -> str:
         criteria_list = "\n".join(f"- [ ] {c}" for c in requirement.acceptance_criteria)
+        review_note = ""
+        if self.settings.loop_review_enabled:
+            review_note = """
+## 审查机制
+每轮实现完成后，将从架构师、产品经理、用户和测试四个视角对你的工作进行审查。
+审查产生的改进建议将作为下一轮迭代的输入，请认真对待每个视角的反馈。
+"""
         return f"""你是一个专业的软件工程师。请完成以下产品需求：
 
 ## 需求
@@ -257,7 +308,7 @@ class LoopEngine:
 
 ## 工作目录
 {self.root_path}
-
+{review_note}
 ## 要求
 1. 先分析需求，理解验收标准
 2. 制定实现计划并逐步执行
@@ -281,12 +332,23 @@ class LoopEngine:
             combined = "\n\n".join(self._user_guidance)
             guidance_section = f"\n## 用户引导\n{combined}\n"
             self._user_guidance.clear()  # consume after use
+
+        review_section = ""
+        if self._last_review and not self._last_review.all_passed:
+            review_lines = ["## 上轮审查反馈\n以下是上一轮多视角审查中提出的改进建议，请在本轮迭代中优先解决：\n"]
+            for pr in self._last_review.failed_perspectives:
+                review_lines.append(f"{pr.perspective.emoji} **{pr.perspective.display_name}**:")
+                for s in pr.suggestions:
+                    review_lines.append(f"  - {s}")
+                review_lines.append("")
+            review_section = "\n".join(review_lines)
+
         return f"""继续完成剩余的验收标准。这是第 {iteration} 轮迭代。
 
 ## 验收标准进度
 {criteria_list}
-{guidance_section}
-请聚焦未满足的标准（未打勾的），继续实现。
+{guidance_section}{review_section}
+请聚焦未满足的标准（未打勾的）和审查反馈，继续实现。
 完成后报告每个标准的状态。
 """
 
@@ -339,6 +401,127 @@ CRITERIA_2: FAIL
         except Exception as e:
             logger.debug("[Loop] 验收标准评估失败: %s", e)
             return {"all_satisfied": False}
+
+    def _build_review_prompt(self) -> str:
+        """Build the multi-perspective review prompt."""
+        perspective_sections = []
+        for p in ReviewPerspective:
+            perspective_sections.append(f"- **{p.value.upper()}**: {p.review_focus}")
+        perspectives_desc = "\n".join(perspective_sections)
+
+        goal = ""
+        if self._project and self._project.requirement:
+            goal = self._project.requirement.goal
+
+        return f"""请从以下四个视角审查当前的实现质量，并给出结构化的审查结果。
+
+## 项目目标
+{goal}
+
+## 审查视角
+{perspectives_desc}
+
+## 输出格式要求
+严格按照以下格式输出每个视角的审查结果（每个视角占一个区块）：
+
+[ARCHITECT]
+PASS 或 FAIL
+- 改进建议1（如果FAIL）
+- 改进建议2（如果FAIL）
+
+[PRODUCT]
+PASS 或 FAIL
+- 改进建议1（如果FAIL）
+
+[USER]
+PASS 或 FAIL
+- 改进建议1（如果FAIL）
+
+[TESTER]
+PASS 或 FAIL
+- 改进建议1（如果FAIL）
+
+## 审查标准
+- PASS: 该视角认为当前实现质量良好，无需改进
+- FAIL: 该视角发现可改进之处，请列出具体建议
+- 建议应具体、可操作，而非泛泛而谈
+- 如果某视角为 PASS，不需要列出建议
+"""
+
+    def _parse_review_output(self, text: str, iteration: int) -> ReviewResult:
+        """Parse structured review output into ReviewResult."""
+        reviews: list[PerspectiveReview] = []
+        found_perspectives: set[str] = set()
+
+        for match in _REVIEW_SECTION_PATTERN.finditer(text):
+            tag = match.group(1).upper()
+            verdict = match.group(2).upper()
+            body = match.group(3).strip()
+
+            perspective = _PERSPECTIVE_TAG_MAP.get(tag)
+            if not perspective or tag in found_perspectives:
+                continue
+            found_perspectives.add(tag)
+
+            passed = verdict == "PASS"
+            suggestions = []
+            if not passed and body:
+                for line in body.split("\n"):
+                    line = line.strip()
+                    if line.startswith("- ") or line.startswith("* "):
+                        suggestion = line[2:].strip()
+                        if suggestion:
+                            suggestions.append(suggestion)
+
+            reviews.append(PerspectiveReview(
+                perspective=perspective,
+                passed=passed,
+                suggestions=suggestions,
+                summary=f"{'通过' if passed else f'{len(suggestions)}条建议'}",
+            ))
+
+        # If parsing found nothing, treat as "has suggestions" to be safe
+        if not reviews:
+            logger.warning("[Loop] 审查输出解析失败，将视为有改进建议继续迭代")
+            for p in ReviewPerspective:
+                reviews.append(PerspectiveReview(
+                    perspective=p, passed=False,
+                    suggestions=["审查输出解析失败，请检查实现质量"],
+                    summary="解析失败",
+                ))
+
+        return ReviewResult(reviews=reviews, iteration=iteration)
+
+    def _conduct_review(self, iteration: int, callbacks: LoopEngineCallbacks) -> ReviewResult:
+        """Conduct multi-perspective review in the same ACP session."""
+        if not self._session:
+            return ReviewResult(iteration=iteration)
+
+        review_prompt = self._build_review_prompt()
+        review_text: list[str] = []
+
+        def on_review_event(event: ACPEvent):
+            if event.event_type == ACPEventType.TEXT_CHUNK and event.text:
+                review_text.append(event.text)
+
+        try:
+            self._session.send_prompt(review_prompt, on_event=on_review_event, timeout=120)
+            full_text = "".join(review_text)
+            review_result = self._parse_review_output(full_text, iteration)
+        except Exception as e:
+            logger.warning("[Loop] 多视角审查异常: %s, 将继续迭代", e)
+            review_result = ReviewResult(reviews=[
+                PerspectiveReview(
+                    perspective=p, passed=False,
+                    suggestions=[f"审查执行异常: {e}"],
+                    summary="异常",
+                ) for p in ReviewPerspective
+            ], iteration=iteration)
+
+        if callbacks.on_review_done:
+            callbacks.on_review_done(iteration, review_result)
+
+        return review_result
 
     def _extract_focus(self, text: str) -> str:
         """Extract a brief focus description from agent output.
@@ -414,6 +597,8 @@ CRITERIA_2: FAIL
             self._session = create_engine_session(agent_type=self._agent_type, cwd=self.root_path)
 
             timeout = self.settings.loop_execution_timeout
+            review_enabled = self.settings.loop_review_enabled
+            review_extra_max = self.settings.loop_review_extra_iterations
 
             for iteration in range(start_iteration, max_iterations + 1):
                 if self._run_state != EngineRunState.RUNNING:
@@ -441,15 +626,30 @@ CRITERIA_2: FAIL
                     duration=iter_end - iter_start,
                     completed_at=iter_end,
                 )
+
+                # Multi-perspective review phase
+                if review_enabled and self._run_state == EngineRunState.RUNNING:
+                    review_result = self._conduct_review(iteration, callbacks)
+                    record.review_result = review_result
+                    self._last_review = review_result
+
                 self._project.iterations.append(record)
 
                 if callbacks.on_iteration_done:
                     callbacks.on_iteration_done(iteration, record)
 
                 criteria_result = self._evaluate_criteria(requirement.acceptance_criteria, iteration)
-                if criteria_result.get("all_satisfied", False):
-                    logger.info("[Loop:%s] 恢复后所有验收标准已满足, 迭代 %d 轮", project_name, iteration)
-                    break
+                all_criteria_satisfied = criteria_result.get("all_satisfied", False)
+
+                if all_criteria_satisfied:
+                    if not review_enabled or (self._last_review and self._last_review.all_passed):
+                        logger.info("[Loop:%s] 恢复后所有验收标准+审查通过, 迭代 %d 轮", project_name, iteration)
+                        break
+                    self._review_extra_used += 1
+                    if self._review_extra_used > review_extra_max:
+                        logger.info("[Loop:%s] 恢复后验收标准已满足，审查额外迭代超限(%d), 迭代 %d 轮",
+                                     project_name, review_extra_max, iteration)
+                        break
 
                 if self._detect_convergence():
                     logger.info("[Loop:%s] 恢复后收敛检测触发, 迭代 %d 轮", project_name, iteration)

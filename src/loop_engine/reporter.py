@@ -5,6 +5,7 @@ from .models import (
     LoopProjectStatus,
     IterationRecord,
     IterationStatus,
+    ReviewResult,
 )
 
 
@@ -105,6 +106,26 @@ class LoopReporter:
             tracker.satisfied_count, tracker.total_count
         )
         lines.append(f"\n{progress_bar}")
+
+        return "\n".join(lines)
+
+    def format_review_result(self, review: ReviewResult) -> str:
+        lines = [f"🔍 **多视角审查 [第{review.iteration}轮]**\n"]
+
+        for pr in review.reviews:
+            if pr.passed:
+                lines.append(f"{pr.perspective.emoji} **{pr.perspective.display_name}**: ✅ PASS")
+            else:
+                lines.append(f"{pr.perspective.emoji} **{pr.perspective.display_name}**: ❌ 有建议")
+                for s in pr.suggestions:
+                    lines.append(f"  - {s}")
+            lines.append("")
+
+        total = review.total_suggestions
+        if total > 0:
+            lines.append(f"💡 **改进建议: {total} 条** → 将在下轮迭代中处理")
+        else:
+            lines.append("✅ **所有视角均通过，无改进建议**")
 
         return "\n".join(lines)
 
@@ -225,6 +246,11 @@ class LoopReporter:
         elif project.status == LoopProjectStatus.ABORTED:
             return "⚠️ Loop 模式终止"
         return "⏸️ Loop 模式暂停"
+
+    def get_review_title(self, iteration: int, all_passed: bool) -> str:
+        if all_passed:
+            return f"✅ 审查通过 [第{iteration}轮]"
+        return f"🔍 多视角审查 [第{iteration}轮]"
 
     def get_criteria_update_title(self) -> str:
         return "📋 验收标准更新"

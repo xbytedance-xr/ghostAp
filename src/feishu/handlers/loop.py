@@ -11,6 +11,7 @@ from ...loop_engine.models import (
     LoopProject,
     LoopProjectStatus,
     IterationRecord,
+    ReviewResult,
 )
 from ...tasking import TaskSpec, TaskPriority
 from ...utils.errors import fmt_error
@@ -194,6 +195,20 @@ class LoopHandler(BaseHandler):
                 )
                 _send_loop_message(card_content, msg_type)
 
+        def on_review_done(iteration: int, review: ReviewResult):
+            content = reporter.format_review_result(review)
+            title = reporter.get_review_title(iteration, review.all_passed)
+            engine = self.ctx.loop_engine_manager.get(chat_id, project.root_path if project else "")
+            progress_bar = None
+            if engine and engine.project:
+                progress_bar = reporter._make_progress_bar(engine.project.satisfied_count, engine.project.total_criteria)
+            msg_type, card_content = CardBuilder.build_deep_card(
+                project=project, title=title, content=content,
+                progress_bar=progress_bar,
+                is_executing=True, engine_name=f"Loop({engine_name})",
+            )
+            _send_loop_message(card_content, msg_type)
+
         def on_project_done(loop_project: LoopProject):
             content = reporter.format_project_done(loop_project)
             title = reporter.get_project_done_title(loop_project)
@@ -219,6 +234,7 @@ class LoopHandler(BaseHandler):
             on_analyzing_done=on_analyzing_done,
             on_iteration_start=on_iteration_start,
             on_iteration_done=on_iteration_done,
+            on_review_done=on_review_done,
             on_project_done=on_project_done,
             on_error=on_error,
         )

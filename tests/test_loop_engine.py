@@ -11,6 +11,9 @@ from src.loop_engine.models import (
     LoopRequirement,
     IterationRecord,
     IterationStatus,
+    ReviewPerspective,
+    PerspectiveReview,
+    ReviewResult,
 )
 from src.loop_engine.tracker import IterationTracker
 from src.loop_engine.reporter import LoopReporter
@@ -356,3 +359,619 @@ class TestLoopReporter:
         reporter = LoopReporter()
         result = reporter.format_guidance_injected("focus on email")
         assert "focus on email" in result
+
+
+# ===========================================================================
+# Multi-Perspective Review — Model Tests
+# ===========================================================================
+
+
+class TestReviewPerspective:
+    def test_all_perspectives(self):
+        assert len(ReviewPerspective) == 4
+        assert ReviewPerspective.ARCHITECT.value == "architect"
+        assert ReviewPerspective.PRODUCT.value == "product"
+        assert ReviewPerspective.USER.value == "user"
+        assert ReviewPerspective.TESTER.value == "tester"
+
+    def test_display_name(self):
+        assert ReviewPerspective.ARCHITECT.display_name == "架构师"
+        assert ReviewPerspective.PRODUCT.display_name == "产品经理"
+        assert ReviewPerspective.USER.display_name == "用户"
+        assert ReviewPerspective.TESTER.display_name == "测试"
+
+    def test_emoji(self):
+        assert ReviewPerspective.ARCHITECT.emoji == "🏗️"
+        assert ReviewPerspective.PRODUCT.emoji == "📦"
+        assert ReviewPerspective.USER.emoji == "👤"
+        assert ReviewPerspective.TESTER.emoji == "🧪"
+
+    def test_review_focus(self):
+        for p in ReviewPerspective:
+            assert isinstance(p.review_focus, str)
+            assert len(p.review_focus) > 0
+
+
+class TestPerspectiveReview:
+    def test_basic_pass(self):
+        pr = PerspectiveReview(perspective=ReviewPerspective.ARCHITECT, passed=True)
+        assert pr.passed
+        assert pr.suggestions == []
+        assert pr.summary == ""
+
+    def test_fail_with_suggestions(self):
+        pr = PerspectiveReview(
+            perspective=ReviewPerspective.TESTER,
+            passed=False,
+            suggestions=["缺少边界测试", "没有异常处理测试"],
+            summary="2条建议",
+        )
+        assert not pr.passed
+        assert len(pr.suggestions) == 2
+
+    def test_to_dict(self):
+        pr = PerspectiveReview(
+            perspective=ReviewPerspective.PRODUCT,
+            passed=False,
+            suggestions=["缺少用户引导"],
+            summary="1条建议",
+        )
+        d = pr.to_dict()
+        assert d["perspective"] == "product"
+        assert d["passed"] is False
+        assert d["suggestions"] == ["缺少用户引导"]
+
+    def test_from_dict(self):
+        d = {"perspective": "user", "passed": True, "suggestions": [], "summary": "通过"}
+        pr = PerspectiveReview.from_dict(d)
+        assert pr.perspective == ReviewPerspective.USER
+        assert pr.passed
+
+    def test_from_dict_minimal(self):
+        d = {"perspective": "architect", "passed": False}
+        pr = PerspectiveReview.from_dict(d)
+        assert pr.perspective == ReviewPerspective.ARCHITECT
+        assert not pr.passed
+        assert pr.suggestions == []
+
+
+class TestReviewResult:
+    def _make_all_pass(self) -> ReviewResult:
+        return ReviewResult(
+            reviews=[
+                PerspectiveReview(perspective=p, passed=True)
+                for p in ReviewPerspective
+            ],
+            iteration=3,
+        )
+
+    def _make_mixed(self) -> ReviewResult:
+        return ReviewResult(
+            reviews=[
+                PerspectiveReview(perspective=ReviewPerspective.ARCHITECT, passed=True),
+                PerspectiveReview(perspective=ReviewPerspective.PRODUCT, passed=False, suggestions=["s1", "s2"]),
+                PerspectiveReview(perspective=ReviewPerspective.USER, passed=True),
+                PerspectiveReview(perspective=ReviewPerspective.TESTER, passed=False, suggestions=["s3"]),
+            ],
+            iteration=2,
+        )
+
+    def test_all_passed_true(self):
+        r = self._make_all_pass()
+        assert r.all_passed
+
+    def test_all_passed_false(self):
+        r = self._make_mixed()
+        assert not r.all_passed
+
+    def test_all_passed_empty(self):
+        r = ReviewResult(reviews=[], iteration=1)
+        assert not r.all_passed
+
+    def test_total_suggestions(self):
+        r = self._make_mixed()
+        assert r.total_suggestions == 3
+
+    def test_total_suggestions_all_pass(self):
+        r = self._make_all_pass()
+        assert r.total_suggestions == 0
+
+    def test_failed_perspectives(self):
+        r = self._make_mixed()
+        failed = r.failed_perspectives
+        assert len(failed) == 2
+        assert failed[0].perspective == ReviewPerspective.PRODUCT
+        assert failed[1].perspective == ReviewPerspective.TESTER
+
+    def test_suggestions_by_perspective(self):
+        r = self._make_mixed()
+        by_p = r.suggestions_by_perspective()
+        assert ReviewPerspective.PRODUCT in by_p
+        assert ReviewPerspective.TESTER in by_p
+        assert ReviewPerspective.ARCHITECT not in by_p
+
+    def test_to_dict_and_from_dict_roundtrip(self):
+        r = self._make_mixed()
+        d = r.to_dict()
+        restored = ReviewResult.from_dict(d)
+        assert restored.iteration == 2
+        assert len(restored.reviews) == 4
+        assert restored.total_suggestions == 3
+        assert not restored.all_passed
+
+    def test_from_dict_empty(self):
+        r = ReviewResult.from_dict({})
+        assert r.reviews == []
+        assert r.iteration == 0
+
+
+class TestIterationRecordReview:
+    def test_review_result_field_default_none(self):
+        record = IterationRecord(iteration=1)
+        assert record.review_result is None
+
+    def test_review_result_in_to_dict(self):
+        review = ReviewResult(
+            reviews=[PerspectiveReview(perspective=ReviewPerspective.ARCHITECT, passed=True)],
+            iteration=1,
+        )
+        record = IterationRecord(iteration=1, review_result=review)
+        d = record.to_dict()
+        assert d["review_result"] is not None
+        assert d["review_result"]["iteration"] == 1
+
+    def test_review_result_none_in_to_dict(self):
+        record = IterationRecord(iteration=1)
+        d = record.to_dict()
+        assert d["review_result"] is None
+
+    def test_review_result_from_dict(self):
+        d = {
+            "iteration": 1,
+            "review_result": {
+                "reviews": [{"perspective": "tester", "passed": False, "suggestions": ["add tests"]}],
+                "iteration": 1,
+            },
+        }
+        record = IterationRecord.from_dict(d)
+        assert record.review_result is not None
+        assert record.review_result.total_suggestions == 1
+
+    def test_review_result_from_dict_no_review(self):
+        d = {"iteration": 2}
+        record = IterationRecord.from_dict(d)
+        assert record.review_result is None
+
+
+# ===========================================================================
+# Multi-Perspective Review — Engine Tests
+# ===========================================================================
+
+
+class TestReviewParsing:
+    @patch("src.loop_engine.engine.get_settings")
+    def _make_engine(self, mock_settings):
+        s = MagicMock()
+        s.loop_max_iterations = 15
+        s.loop_convergence_window = 3
+        s.loop_execution_timeout = 300
+        s.loop_review_enabled = True
+        s.loop_review_extra_iterations = 3
+        mock_settings.return_value = s
+        return LoopEngine(chat_id="c1", root_path="/tmp/test")
+
+    def test_parse_all_pass(self):
+        engine = self._make_engine()
+        text = """[ARCHITECT]
+PASS
+
+[PRODUCT]
+PASS
+
+[USER]
+PASS
+
+[TESTER]
+PASS
+"""
+        result = engine._parse_review_output(text, 1)
+        assert result.all_passed
+        assert result.iteration == 1
+        assert len(result.reviews) == 4
+        assert result.total_suggestions == 0
+
+    def test_parse_mixed(self):
+        engine = self._make_engine()
+        text = """[ARCHITECT]
+FAIL
+- 缺少抽象层
+- 耦合度过高
+
+[PRODUCT]
+PASS
+
+[USER]
+FAIL
+- 错误提示不够友好
+
+[TESTER]
+PASS
+"""
+        result = engine._parse_review_output(text, 2)
+        assert not result.all_passed
+        assert result.total_suggestions == 3
+        assert len(result.failed_perspectives) == 2
+
+        arch = [r for r in result.reviews if r.perspective == ReviewPerspective.ARCHITECT][0]
+        assert not arch.passed
+        assert len(arch.suggestions) == 2
+        assert "缺少抽象层" in arch.suggestions
+
+        user = [r for r in result.reviews if r.perspective == ReviewPerspective.USER][0]
+        assert not user.passed
+        assert len(user.suggestions) == 1
+
+    def test_parse_all_fail(self):
+        engine = self._make_engine()
+        text = """[ARCHITECT]
+FAIL
+- issue1
+
+[PRODUCT]
+FAIL
+- issue2
+
+[USER]
+FAIL
+- issue3
+
+[TESTER]
+FAIL
+- issue4
+"""
+        result = engine._parse_review_output(text, 3)
+        assert not result.all_passed
+        assert result.total_suggestions == 4
+        assert len(result.failed_perspectives) == 4
+
+    def test_parse_empty_output_fallback(self):
+        engine = self._make_engine()
+        result = engine._parse_review_output("", 1)
+        # Should return a "failed" result for safety
+        assert not result.all_passed
+        assert len(result.reviews) == 4
+        for r in result.reviews:
+            assert not r.passed
+
+    def test_parse_garbage_output_fallback(self):
+        engine = self._make_engine()
+        result = engine._parse_review_output("random garbage text\nno structure at all", 1)
+        assert not result.all_passed
+        assert len(result.reviews) == 4
+
+    def test_parse_partial_perspectives(self):
+        engine = self._make_engine()
+        # Only ARCHITECT and TESTER present
+        text = """[ARCHITECT]
+PASS
+
+[TESTER]
+FAIL
+- missing edge case tests
+"""
+        result = engine._parse_review_output(text, 1)
+        assert len(result.reviews) == 2
+        assert not result.all_passed  # TESTER failed
+
+    def test_parse_with_extra_whitespace(self):
+        engine = self._make_engine()
+        text = """  [ARCHITECT]
+  PASS
+
+  [PRODUCT]
+  FAIL
+  - suggestion with spaces
+
+  [USER]
+  PASS
+
+  [TESTER]
+  PASS
+"""
+        # The regex should still work with leading spaces on suggestion lines
+        result = engine._parse_review_output(text, 1)
+        assert len(result.reviews) >= 1  # At least some parsed
+
+    def test_parse_with_star_bullet(self):
+        engine = self._make_engine()
+        text = """[ARCHITECT]
+FAIL
+* use dependency injection
+* reduce coupling
+
+[PRODUCT]
+PASS
+
+[USER]
+PASS
+
+[TESTER]
+PASS
+"""
+        result = engine._parse_review_output(text, 1)
+        arch = [r for r in result.reviews if r.perspective == ReviewPerspective.ARCHITECT][0]
+        assert len(arch.suggestions) == 2
+
+    def test_parse_duplicate_perspective_ignored(self):
+        engine = self._make_engine()
+        text = """[ARCHITECT]
+PASS
+
+[ARCHITECT]
+FAIL
+- something
+
+[PRODUCT]
+PASS
+
+[USER]
+PASS
+
+[TESTER]
+PASS
+"""
+        result = engine._parse_review_output(text, 1)
+        arch_reviews = [r for r in result.reviews if r.perspective == ReviewPerspective.ARCHITECT]
+        assert len(arch_reviews) == 1
+        assert arch_reviews[0].passed  # First one wins
+
+
+class TestBuildReviewPrompt:
+    @patch("src.loop_engine.engine.get_settings")
+    def _make_engine(self, mock_settings):
+        s = MagicMock()
+        s.loop_max_iterations = 15
+        s.loop_convergence_window = 3
+        s.loop_execution_timeout = 300
+        s.loop_review_enabled = True
+        s.loop_review_extra_iterations = 3
+        mock_settings.return_value = s
+        return LoopEngine(chat_id="c1", root_path="/tmp/test")
+
+    def test_build_review_prompt_contains_perspectives(self):
+        engine = self._make_engine()
+        engine._project = LoopProject.create(name="test", root_path="/tmp")
+        engine._project.set_requirement(LoopRequirement(
+            goal="implement login", acceptance_criteria=["email", "phone"], raw_text="test",
+        ))
+        prompt = engine._build_review_prompt()
+        assert "[ARCHITECT]" in prompt
+        assert "[PRODUCT]" in prompt
+        assert "[USER]" in prompt
+        assert "[TESTER]" in prompt
+        assert "PASS" in prompt
+        assert "FAIL" in prompt
+
+    def test_build_review_prompt_includes_goal(self):
+        engine = self._make_engine()
+        engine._project = LoopProject.create(name="test", root_path="/tmp")
+        engine._project.set_requirement(LoopRequirement(
+            goal="build authentication system", acceptance_criteria=["c1"], raw_text="test",
+        ))
+        prompt = engine._build_review_prompt()
+        assert "build authentication system" in prompt
+
+
+class TestIterationPromptWithReview:
+    @patch("src.loop_engine.engine.get_settings")
+    def _make_engine(self, mock_settings):
+        s = MagicMock()
+        s.loop_max_iterations = 15
+        s.loop_convergence_window = 3
+        s.loop_execution_timeout = 300
+        s.loop_review_enabled = True
+        s.loop_review_extra_iterations = 3
+        mock_settings.return_value = s
+        return LoopEngine(chat_id="c1", root_path="/tmp/test")
+
+    def test_iteration_prompt_includes_review_feedback(self):
+        engine = self._make_engine()
+        engine._project = LoopProject.create(name="test", root_path="/tmp")
+        engine._last_review = ReviewResult(
+            reviews=[
+                PerspectiveReview(perspective=ReviewPerspective.ARCHITECT, passed=False, suggestions=["use DI pattern"]),
+                PerspectiveReview(perspective=ReviewPerspective.PRODUCT, passed=True),
+                PerspectiveReview(perspective=ReviewPerspective.USER, passed=True),
+                PerspectiveReview(perspective=ReviewPerspective.TESTER, passed=False, suggestions=["add unit tests"]),
+            ],
+            iteration=1,
+        )
+        req = LoopRequirement(goal="login", acceptance_criteria=["c1"], raw_text="test")
+        prompt = engine._build_iteration_prompt(2, req)
+        assert "上轮审查反馈" in prompt
+        assert "use DI pattern" in prompt
+        assert "add unit tests" in prompt
+        assert "架构师" in prompt
+        assert "测试" in prompt
+
+    def test_iteration_prompt_no_review_feedback_when_all_pass(self):
+        engine = self._make_engine()
+        engine._project = LoopProject.create(name="test", root_path="/tmp")
+        engine._last_review = ReviewResult(
+            reviews=[PerspectiveReview(perspective=p, passed=True) for p in ReviewPerspective],
+            iteration=1,
+        )
+        req = LoopRequirement(goal="login", acceptance_criteria=["c1"], raw_text="test")
+        prompt = engine._build_iteration_prompt(2, req)
+        assert "上轮审查反馈" not in prompt
+
+    def test_iteration_prompt_no_review_when_none(self):
+        engine = self._make_engine()
+        engine._last_review = None
+        req = LoopRequirement(goal="login", acceptance_criteria=["c1"], raw_text="test")
+        prompt = engine._build_iteration_prompt(2, req)
+        assert "上轮审查反馈" not in prompt
+
+
+class TestInitialPromptReviewNote:
+    @patch("src.loop_engine.engine.get_settings")
+    def _make_engine(self, mock_settings, review_enabled=True):
+        s = MagicMock()
+        s.loop_max_iterations = 15
+        s.loop_convergence_window = 3
+        s.loop_execution_timeout = 300
+        s.loop_review_enabled = review_enabled
+        s.loop_review_extra_iterations = 3
+        mock_settings.return_value = s
+        return LoopEngine(chat_id="c1", root_path="/tmp/test")
+
+    def test_initial_prompt_has_review_note_when_enabled(self):
+        engine = self._make_engine(review_enabled=True)
+        req = LoopRequirement(goal="test", acceptance_criteria=["c1"], raw_text="test")
+        prompt = engine._build_initial_prompt(req)
+        assert "审查机制" in prompt
+        assert "架构师" in prompt
+
+    def test_initial_prompt_no_review_note_when_disabled(self):
+        engine = self._make_engine(review_enabled=False)
+        req = LoopRequirement(goal="test", acceptance_criteria=["c1"], raw_text="test")
+        prompt = engine._build_initial_prompt(req)
+        assert "审查机制" not in prompt
+
+
+class TestConductReview:
+    @patch("src.loop_engine.engine.get_settings")
+    def _make_engine(self, mock_settings):
+        s = MagicMock()
+        s.loop_max_iterations = 15
+        s.loop_convergence_window = 3
+        s.loop_execution_timeout = 300
+        s.loop_review_enabled = True
+        s.loop_review_extra_iterations = 3
+        mock_settings.return_value = s
+        return LoopEngine(chat_id="c1", root_path="/tmp/test")
+
+    def test_conduct_review_no_session(self):
+        engine = self._make_engine()
+        engine._session = None
+        engine._project = LoopProject.create(name="test", root_path="/tmp")
+        engine._project.set_requirement(LoopRequirement(
+            goal="test", acceptance_criteria=["c1"], raw_text="test",
+        ))
+        callbacks = LoopEngineCallbacks()
+        result = engine._conduct_review(1, callbacks)
+        assert result.reviews == []
+
+    def test_conduct_review_calls_session(self):
+        engine = self._make_engine()
+        engine._project = LoopProject.create(name="test", root_path="/tmp")
+        engine._project.set_requirement(LoopRequirement(
+            goal="test", acceptance_criteria=["c1"], raw_text="test",
+        ))
+
+        mock_session = MagicMock()
+        review_output = """[ARCHITECT]
+PASS
+
+[PRODUCT]
+PASS
+
+[USER]
+PASS
+
+[TESTER]
+PASS
+"""
+        def mock_send(prompt, on_event=None, timeout=None):
+            if on_event:
+                on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=review_output))
+            return MagicMock(stop_reason="end_turn")
+
+        mock_session.send_prompt = mock_send
+        engine._session = mock_session
+
+        callback_called = []
+        callbacks = LoopEngineCallbacks(
+            on_review_done=lambda it, r: callback_called.append((it, r)),
+        )
+        result = engine._conduct_review(1, callbacks)
+        assert result.all_passed
+        assert len(callback_called) == 1
+        assert callback_called[0][0] == 1
+
+    def test_conduct_review_session_exception(self):
+        engine = self._make_engine()
+        engine._project = LoopProject.create(name="test", root_path="/tmp")
+        engine._project.set_requirement(LoopRequirement(
+            goal="test", acceptance_criteria=["c1"], raw_text="test",
+        ))
+
+        mock_session = MagicMock()
+        mock_session.send_prompt.side_effect = RuntimeError("timeout")
+        engine._session = mock_session
+
+        callbacks = LoopEngineCallbacks()
+        result = engine._conduct_review(1, callbacks)
+        assert not result.all_passed  # Exception → treated as having suggestions
+
+
+# ===========================================================================
+# Multi-Perspective Review — Reporter Tests
+# ===========================================================================
+
+
+class TestReviewReporter:
+    def test_format_review_result_all_pass(self):
+        reporter = LoopReporter()
+        review = ReviewResult(
+            reviews=[PerspectiveReview(perspective=p, passed=True) for p in ReviewPerspective],
+            iteration=3,
+        )
+        result = reporter.format_review_result(review)
+        assert "多视角审查" in result
+        assert "第3轮" in result
+        assert "所有视角均通过" in result
+        # All should show PASS
+        assert result.count("✅ PASS") == 4
+
+    def test_format_review_result_mixed(self):
+        reporter = LoopReporter()
+        review = ReviewResult(
+            reviews=[
+                PerspectiveReview(perspective=ReviewPerspective.ARCHITECT, passed=True),
+                PerspectiveReview(perspective=ReviewPerspective.PRODUCT, passed=False, suggestions=["建议1", "建议2"]),
+                PerspectiveReview(perspective=ReviewPerspective.USER, passed=True),
+                PerspectiveReview(perspective=ReviewPerspective.TESTER, passed=False, suggestions=["建议3"]),
+            ],
+            iteration=2,
+        )
+        result = reporter.format_review_result(review)
+        assert "改进建议: 3 条" in result
+        assert "建议1" in result
+        assert "建议2" in result
+        assert "建议3" in result
+        assert "有建议" in result
+
+    def test_format_review_result_all_fail(self):
+        reporter = LoopReporter()
+        review = ReviewResult(
+            reviews=[
+                PerspectiveReview(perspective=p, passed=False, suggestions=["issue"])
+                for p in ReviewPerspective
+            ],
+            iteration=1,
+        )
+        result = reporter.format_review_result(review)
+        assert "改进建议: 4 条" in result
+
+    def test_get_review_title_passed(self):
+        reporter = LoopReporter()
+        title = reporter.get_review_title(3, all_passed=True)
+        assert "审查通过" in title
+        assert "第3轮" in title
+
+    def test_get_review_title_not_passed(self):
+        reporter = LoopReporter()
+        title = reporter.get_review_title(2, all_passed=False)
+        assert "多视角审查" in title
+        assert "第2轮" in title

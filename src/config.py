@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     loop_max_context_tokens: int = 8000
     loop_default_max_retries: int = 2
 
+    # Loop Engine multi-perspective review (Ralph Loop)
+    loop_review_enabled: bool = True
+    loop_review_extra_iterations: int = 3
+
     streaming_enabled: bool = True
 
     # Task scheduler (thread-based) settings
