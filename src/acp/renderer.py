@@ -138,11 +138,17 @@ class ACPEventRenderer:
         if not self._plan or not self._plan.entries:
             return ""
 
-        lines = ["**📋 执行计划**"]
+        lines: list[str] = []
         for entry in self._plan.entries:
+            content = (entry.content or "").strip()
+            if not content:
+                continue
             icon = _STATUS_ICONS.get(entry.status, "⬜")
-            lines.append(f"{icon} {entry.content}")
-        return "\n".join(lines)
+            lines.append(f"{icon} {content}")
+
+        if not lines:
+            return ""
+        return "\n".join(["**📋 执行计划**", *lines])
 
     def _render_active_tools(self) -> str:
         """Render currently active tool calls."""

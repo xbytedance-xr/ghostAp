@@ -11,7 +11,8 @@ import logging
 from abc import abstractmethod
 from typing import TYPE_CHECKING, Optional
 
-from ...acp import ACPEventRenderer, ACPSessionManager, SyncACPSession
+from ...acp import ACPEventRenderer, ACPSessionManager
+from ...agent_session import SyncSession
 from ...card import CardBuilder
 from ...project import ContextSourceMode
 from ...utils.errors import fmt_error
@@ -132,7 +133,7 @@ class ProgrammingModeHandler(BaseHandler):
         if snapshot and snapshot.is_resumable:
             target_session_id = snapshot.session_id
 
-        # Ensure ACP server is running before switching mode
+        # Ensure backend session is ready before switching mode
         startup_timeout = getattr(self.settings, "acp_startup_timeout", 20)
         try:
             session = self._get_session_manager().ensure_session(
@@ -144,13 +145,13 @@ class ProgrammingModeHandler(BaseHandler):
         except TimeoutError as e:
             if not silent:
                 self.reply_message(message_id, fmt_error(
-                    f"启动 {self.mode_name} ACP Server 超时({startup_timeout}s)",
+                    f"启动 {self.mode_name} 会话超时({startup_timeout}s)",
                     str(e),
                 ))
             return
         except Exception as e:
             if not silent:
-                self.reply_message(message_id, fmt_error(f"启动 {self.mode_name} ACP Server 失败", str(e)))
+                self.reply_message(message_id, fmt_error(f"启动 {self.mode_name} 会话失败", str(e)))
             return
 
         # Now switch mode (after ACP server is confirmed ready)
@@ -252,6 +253,13 @@ class ProgrammingModeHandler(BaseHandler):
                 session = self._get_session_manager().resume_session(chat_id, project_session_id, cwd=cwd)
                 logger.info("切换到项目 %s 的 %s 会话: %s", project.project_name, self.mode_name, project_session_id)
 
+        if (not self.is_coco) and project and project.claude_session_snapshot:
+            project_session_id = project.claude_session_snapshot.session_id
+            if not session or session.session_id != project_session_id:
+                cwd = project.root_path if project else self.get_working_dir(chat_id)
+                session = self._get_session_manager().resume_session(chat_id, project_session_id, cwd=cwd)
+                logger.info("切换到项目 %s 的 %s 会话: %s", project.project_name, self.mode_name, project_session_id)
+
         if not session:
             if project:
                 self.enter_mode(message_id, chat_id, project=project)
@@ -270,7 +278,7 @@ class ProgrammingModeHandler(BaseHandler):
     # ------------------------------------------------------------------
     # handle_response (streaming / non-streaming)
     # ------------------------------------------------------------------
-    def handle_response(self, message_id: str, chat_id: str, text: str, session: SyncACPSession, project, cwd: str, global_working_dir: str):
+    def handle_response(self, message_id: str, chat_id: str, text: str, session: SyncSession, project, cwd: str, global_working_dir: str):
         from ...acp.models import ACPEvent
         streaming_manager = self.get_streaming_manager()
 
@@ -280,7 +288,7 @@ class ProgrammingModeHandler(BaseHandler):
         with self.ctx.pending_image_lock:
             image_keys = self.ctx.pending_image_keys.get(message_id)
 
-        logger.info("开始 %s ACP输出: project=%s, path=%s", self.mode_name, project_name, project_path)
+        logger.info("开始 %s 输出: project=%s, path=%s", self.mode_name, project_name, project_path)
 
         streaming_card = streaming_manager.create_streaming_card(
             chat_id=chat_id,
@@ -306,12 +314,12 @@ class ProgrammingModeHandler(BaseHandler):
             except Exception as e:
                 logger.debug("link消息失败(programming): message_id=%s, card_message_id=%s, err=%s", message_id, card_message_id, e)
 
-        # ACP event-driven rendering
+        # Event-driven rendering (ACP backend emits rich events; CLI backend emits TEXT_CHUNK only)
         renderer = ACPEventRenderer()
         timeout = self.settings.coco_execution_timeout if self.is_coco else self.settings.claude_execution_timeout
 
         if not streaming_card or not card_message_id:
-            logger.warning("创建流式卡片失败，回退到纯文本ACP模式")
+            logger.warning("创建流式卡片失败，回退到纯文本模式")
             try:
                 result = session.send_prompt(text, on_event=None, timeout=timeout)
                 final_response = renderer.get_final_content() or "✅ 执行完成"
@@ -421,7 +429,7 @@ class ProgrammingModeHandler(BaseHandler):
             try:
                 session = self.ctx.claude_manager.start_session(chat_id, cwd=cwd, session_id=session_id)
             except Exception as e:
-                self.reply_message(message_id, fmt_error("恢复 Claude ACP 会话", str(e)))
+                self.reply_message(message_id, fmt_error("恢复 Claude 会话", str(e)))
                 return
             session.is_resumed = True
             # Mutual exclusion

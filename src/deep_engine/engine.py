@@ -13,7 +13,8 @@ import os
 from typing import Optional, Callable
 from dataclasses import dataclass
 
-from ..acp import ACPSessionManager, SyncACPSession, start_session_with_retry, ACPEvent, ACPEventType, ACPEventRenderer
+from ..acp import start_session_with_retry, ACPEvent, ACPEventType, ACPEventRenderer
+from ..agent_session import SyncSession, create_sync_session
 from ..config import get_settings
 from .models import (
     DeepProject,
@@ -49,7 +50,7 @@ class DeepEngine:
         self.engine_name = engine_name
         self._agent_type = agent_type
 
-        self._session: Optional[SyncACPSession] = None
+        self._session: Optional[SyncSession] = None
         self._project: Optional[DeepProject] = None
         self._progress = DeepProgress()
         self._renderer = ACPEventRenderer()
@@ -129,11 +130,16 @@ class DeepEngine:
                      project_name, len(requirement_text), self.root_path, self._agent_type)
 
         try:
-            # Create ACP session (with retry and progressive timeout)
-            self._session = start_session_with_retry(
-                agent_type=self._agent_type, cwd=self.root_path,
-                startup_timeout=self.settings.acp_startup_timeout,
-            )
+            # Create session
+            if self._agent_type.lower() == "claude":
+                self._session = create_sync_session(agent_type="claude", cwd=self.root_path)
+                self._session.start()
+            else:
+                # ACP session (with retry and progressive timeout)
+                self._session = start_session_with_retry(
+                    agent_type=self._agent_type, cwd=self.root_path,
+                    startup_timeout=self.settings.acp_startup_timeout,
+                )
 
             # Build deep prompt — let agent plan and execute autonomously
             prompt = self._build_deep_prompt(requirement_text)
@@ -251,10 +257,14 @@ class DeepEngine:
         try:
             # Close old session before opening new one (prevent resource leak)
             self._close_session_safely()
-            self._session = start_session_with_retry(
-                agent_type=self._agent_type, cwd=self.root_path,
-                startup_timeout=self.settings.acp_startup_timeout,
-            )
+            if self._agent_type.lower() == "claude":
+                self._session = create_sync_session(agent_type="claude", cwd=self.root_path)
+                self._session.start()
+            else:
+                self._session = start_session_with_retry(
+                    agent_type=self._agent_type, cwd=self.root_path,
+                    startup_timeout=self.settings.acp_startup_timeout,
+                )
 
             resume_prompt = """你之前的执行被暂停了。请继续完成剩余的任务。
 检查之前的进度，对未完成的部分继续实现。

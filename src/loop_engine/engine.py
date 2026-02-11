@@ -15,7 +15,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Optional, Callable
 
-from ..acp import ACPEvent, ACPEventType, ACPEventRenderer, SyncACPSession, start_session_with_retry
+from ..acp import ACPEvent, ACPEventType, ACPEventRenderer, start_session_with_retry
+from ..agent_session import SyncSession, create_sync_session
 from ..config import get_settings
 from ..deep_engine.models import EngineRunState
 
@@ -61,7 +62,7 @@ class LoopEngine:
         self.engine_name = engine_name
         self._agent_type = agent_type
 
-        self._session: Optional[SyncACPSession] = None
+        self._session: Optional[SyncSession] = None
         self._project: Optional[LoopProject] = None
         self._renderer = ACPEventRenderer()
         self._run_state = EngineRunState.IDLE
@@ -121,11 +122,16 @@ class LoopEngine:
             if callbacks.on_analyzing_done:
                 callbacks.on_analyzing_done(self._project)
 
-            # Create ACP session (with retry and progressive timeout)
-            self._session = start_session_with_retry(
-                agent_type=self._agent_type, cwd=self.root_path,
-                startup_timeout=self.settings.acp_startup_timeout,
-            )
+            # Create session
+            if self._agent_type.lower() == "claude":
+                self._session = create_sync_session(agent_type="claude", cwd=self.root_path)
+                self._session.start()
+            else:
+                # ACP session (with retry and progressive timeout)
+                self._session = start_session_with_retry(
+                    agent_type=self._agent_type, cwd=self.root_path,
+                    startup_timeout=self.settings.acp_startup_timeout,
+                )
 
             # Build initial prompt
             initial_prompt = self._build_initial_prompt(requirement)
@@ -413,10 +419,14 @@ CRITERIA_2: FAIL
         try:
             # Close old session before opening new one (prevent resource leak)
             self._close_session_safely()
-            self._session = start_session_with_retry(
-                agent_type=self._agent_type, cwd=self.root_path,
-                startup_timeout=self.settings.acp_startup_timeout,
-            )
+            if self._agent_type.lower() == "claude":
+                self._session = create_sync_session(agent_type="claude", cwd=self.root_path)
+                self._session.start()
+            else:
+                self._session = start_session_with_retry(
+                    agent_type=self._agent_type, cwd=self.root_path,
+                    startup_timeout=self.settings.acp_startup_timeout,
+                )
 
             timeout = self.settings.loop_execution_timeout
 

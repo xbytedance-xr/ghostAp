@@ -169,6 +169,18 @@ class TestParsePlan:
         assert plan.entries[0].content == "Step 1"
         assert plan.entries[0].status == "completed"
 
+    def test_skips_empty_entries(self):
+        class MockAgentPlanUpdate:
+            entries = [
+                MockPlanEntry("", status="completed"),
+                MockPlanEntry("   ", status="completed"),
+                MockPlanEntry(None, status="completed"),
+                MockPlanEntry("Real step", status="pending"),
+            ]
+
+        plan = _parse_plan(MockAgentPlanUpdate())
+        assert [e.content for e in plan.entries] == ["Real step"]
+
     def test_empty_plan(self):
         class MockAgentPlanUpdate:
             entries = []

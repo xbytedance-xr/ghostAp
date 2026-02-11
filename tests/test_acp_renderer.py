@@ -74,6 +74,20 @@ class TestACPEventRenderer:
         assert "Analyze code" in rendered
         assert "Write tests" in rendered
 
+    def test_plan_update_skips_empty_entries(self):
+        plan = PlanInfo(entries=[
+            PlanEntryInfo(content="", status="completed"),
+            PlanEntryInfo(content="   ", status="completed"),
+            PlanEntryInfo(content="Step 1", status="completed"),
+        ])
+        self.renderer.process_event(ACPEvent(
+            event_type=ACPEventType.PLAN_UPDATE, plan=plan,
+        ))
+        rendered = self.renderer._render()
+        assert "Step 1" in rendered
+        # Should not contain blank checklist lines
+        assert "✅ " not in rendered.replace("✅ Step 1", "")
+
     def test_get_final_content_clears_active(self):
         tc = ToolCallInfo(id="t1", title="Running", kind="execute",
                           status="in_progress")

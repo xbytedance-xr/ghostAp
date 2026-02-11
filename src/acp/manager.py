@@ -12,17 +12,22 @@ import time
 from typing import Optional
 
 from .sync_adapter import SyncACPSession
+from ..agent_session import SyncClaudeCLISession, SyncSession
 from ..config import get_settings
 
 logger = logging.getLogger(__name__)
 
 
 class ACPSessionManager:
-    """Manages per-chat ACP sessions for a specific agent type."""
+    """Manages per-chat sessions for a specific agent type.
+
+    - Coco: ACP backend (SyncACPSession)
+    - Claude: CLI backend (SyncClaudeCLISession)
+    """
 
     def __init__(self, agent_type: str, session_timeout: int = 86400):
         self._agent_type = agent_type  # "coco" / "claude"
-        self._sessions: dict[str, SyncACPSession] = {}
+        self._sessions: dict[str, SyncSession] = {}
         self._session_timeout = session_timeout
         self._lock = threading.Lock()
 
@@ -32,12 +37,8 @@ class ACPSessionManager:
         cwd: str = "",
         session_id: Optional[str] = None,
         startup_timeout: float = 60,
-    ) -> SyncACPSession:
-        """Start a new ACP session for a chat.
-
-        startup_timeout controls how long we wait for the ACP agent process
-        (`<agent> acp serve`) to spawn + complete protocol handshake.
-        """
+    ) -> SyncSession:
+        """Start a new session for a chat."""
         # Close existing session if any (under lock to prevent concurrent create)
         with self._lock:
             if chat_id in self._sessions:
@@ -46,16 +47,22 @@ class ACPSessionManager:
         settings = get_settings()
         retries = int(getattr(settings, "acp_startup_retries", 2) or 2)
         retries = max(1, retries)
+        if self._agent_type.lower() == "claude":
+            # CLI backend doesn't need handshake retries.
+            retries = 1
 
         last_err: Exception | None = None
-        session: SyncACPSession | None = None
+        session: SyncSession | None = None
         actual_id = ""
         last_spec = ""
 
         # Retry spawning agent process + handshake, since ACP CLI may be temporarily unavailable.
         for attempt in range(1, retries + 1):
             try:
-                session = SyncACPSession(agent_type=self._agent_type, cwd=cwd or ".")
+                if self._agent_type.lower() == "claude":
+                    session = SyncClaudeCLISession(cwd=cwd or ".")
+                else:
+                    session = SyncACPSession(agent_type=self._agent_type, cwd=cwd or ".")
                 try:
                     last_spec = session.describe_agent()
                 except Exception:
@@ -88,9 +95,8 @@ class ACPSessionManager:
         if not session or not actual_id:
             detail = str(last_err) if last_err else "unknown"
             spec = f" ({last_spec})" if last_spec else ""
-            raise RuntimeError(
-                f"启动 {self._agent_type} ACP Server 失败{spec}（已重试 {retries} 次）: {detail}"
-            )
+            kind = "会话" if self._agent_type.lower() == "claude" else "ACP Server"
+            raise RuntimeError(f"启动 {self._agent_type} {kind} 失败{spec}（已重试 {retries} 次）: {detail}")
 
         # If caller wants a specific session_id (resume), load it
         if session_id:
@@ -118,11 +124,11 @@ class ACPSessionManager:
         cwd: str = "",
         session_id: Optional[str] = None,
         startup_timeout: float = 60,
-    ) -> SyncACPSession:
-        """Ensure an ACP session exists and its underlying server is running.
+    ) -> SyncSession:
+        """Ensure a session exists and it is ready.
 
-        1) Detect whether current ACP server process is alive.
-        2) If not alive / missing / timed out, auto-start a new ACP session.
+        1) Detect whether current backend is alive/healthy (if applicable).
+        2) If not alive / missing / timed out, auto-start a new session.
         3) Optionally load a given session_id (resume) after startup.
         """
         existing = self._sessions.get(chat_id)
@@ -164,11 +170,11 @@ class ACPSessionManager:
 
         return self.start_session(chat_id, cwd=cwd, session_id=session_id, startup_timeout=startup_timeout)
 
-    def resume_session(self, chat_id: str, session_id: str, cwd: str = "") -> SyncACPSession:
+    def resume_session(self, chat_id: str, session_id: str, cwd: str = "") -> SyncSession:
         """Resume an existing session by session_id."""
         return self.start_session(chat_id, cwd=cwd, session_id=session_id)
 
-    def get_session(self, chat_id: str) -> Optional[SyncACPSession]:
+    def get_session(self, chat_id: str) -> Optional[SyncSession]:
         """Get active session for a chat (with timeout check).
 
         Health check is only performed when the session has been idle for a while

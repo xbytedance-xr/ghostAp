@@ -177,13 +177,25 @@ def _parse_tool_call(update: ToolCallStart | ToolCallProgress) -> ToolCallInfo:
 
 def _parse_plan(update: AgentPlanUpdate) -> PlanInfo:
     """Extract PlanInfo from an AgentPlanUpdate."""
-    entries = []
+    entries: list[PlanEntryInfo] = []
     for entry in update.entries:
-        entries.append(PlanEntryInfo(
-            content=entry.content,
-            priority=entry.priority or "medium",
-            status=entry.status or "pending",
-        ))
+        try:
+            raw_content = getattr(entry, "content", None)
+            content = ("" if raw_content is None else str(raw_content)).strip()
+        except Exception:
+            content = ""
+        # Some agents may emit placeholder entries with empty content; skip them to
+        # avoid rendering "✅" lines without text.
+        if not content:
+            continue
+
+        entries.append(
+            PlanEntryInfo(
+                content=content,
+                priority=getattr(entry, "priority", None) or "medium",
+                status=getattr(entry, "status", None) or "pending",
+            )
+        )
     return PlanInfo(entries=entries)
 
 
