@@ -5,11 +5,13 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Optional
 
+from ...acp import ACPEvent, ACPEventType, ACPEventRenderer
 from ...card import CardBuilder
 from ...deep_engine import DeepEngineCallbacks
-from ...deep_engine.models import DeepProject, DeepProjectStatus, DeepTask, ExecutionResult
+from ...deep_engine.models import DeepProject, DeepProjectStatus
 from ...project import ContextSourceMode
 from ...tasking import TaskSpec, TaskPriority
+from ...utils.errors import fmt_error
 from ..emoji import EmojiReaction
 from .base import BaseHandler
 
@@ -65,7 +67,7 @@ class DeepHandler(BaseHandler):
                 if is_new:
                     logger.info("Deep Engine 自动创建项目: %s @ %s", project.project_name, project.root_path)
             except Exception as e:
-                self.reply_message(message_id, f"❌ 创建项目失败: {e}")
+                self.reply_message(message_id, fmt_error("创建项目", str(e)))
                 return
 
         root_path = project.root_path if project else self.get_working_dir(chat_id)
@@ -128,8 +130,8 @@ class DeepHandler(BaseHandler):
         handle = self.scheduler.submit(spec, lambda ctx: run_deep_engine())
         try:
             self.ctx.message_linker.link_task(message_id, handle.run_id)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("link_task失败(deep_engine_run): message_id=%s, run_id=%s, err=%s", message_id, handle.run_id, e)
 
     # ------------------------------------------------------------------
     # callbacks factory
@@ -138,70 +140,68 @@ class DeepHandler(BaseHandler):
         request_id = self.ensure_request_id(message_id, chat_id=chat_id, project_id=(project.project_id if project else None))
         reporter = self.ctx.progress_reporter
 
-        # 用于追踪话题模式下的第一条回复消息 ID，后续消息都回复到这个话题
-        # 在 thread 模式下，所有 deep 任务的消息都应该回复到同一个话题中
-        thread_root_message_id: list[str | None] = [None]  # 使用 list 包装以便在闭包中修改
+        thread_root_message_id: list[str | None] = [None]
+        renderer = ACPEventRenderer()
 
         def _send_deep_message(card_content: str, msg_type: str = "interactive"):
             """发送 deep 任务消息，在话题模式下确保所有消息都回复到同一个话题。"""
             use_thread = self.settings.default_reply_mode == "thread"
-
             if use_thread:
-                # 话题模式：所有消息都回复到同一个话题
                 reply_to = thread_root_message_id[0] or message_id
                 result_id = self.reply_message(
                     reply_to, card_content, msg_type=msg_type,
                     origin_message_id=message_id, request_id=request_id,
-                    reply_in_thread=True,  # 强制使用话题回复
+                    reply_in_thread=True,
                 )
-                # 记录第一条回复的 message_id，后续消息都回复到这个消息形成的话题
                 if thread_root_message_id[0] is None and result_id:
                     thread_root_message_id[0] = result_id
             else:
-                # 直接模式：发送新消息到群聊
                 self.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
 
         def on_planning_done(deep_project: DeepProject):
-            content = reporter.format_planning_done(deep_project)
-            title = reporter.get_planning_done_title()
+            content = f"🚀 ACP Deep 执行开始\n\n📂 **{deep_project.name}**\n🔗 路径: `{deep_project.root_path}`"
             msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title=title, content=content,
+                project=project, title="🚀 开始执行",
+                content=content,
                 deep_project_id=deep_project.project_id, engine_name=engine_name, show_buttons=False,
             )
             _send_deep_message(card_content, msg_type)
 
-        def on_task_start(task: DeepTask, current: int, total: int):
-            content = reporter.format_task_start(task, current, total)
-            title = reporter.get_task_start_title(current, total)
-            progress_bar = reporter._make_progress_bar(current - 1, total)
-            engine = self.ctx.deep_engine_manager.get(chat_id, project.root_path if project else "")
-            deep_project_id = engine.project.project_id if engine and engine.project else None
-            msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title=title, content=content,
-                progress_bar=progress_bar, deep_project_id=deep_project_id,
-                is_executing=True, engine_name=engine_name,
-            )
-            _send_deep_message(card_content, msg_type)
-
-        def on_task_done(task: DeepTask, result: ExecutionResult):
-            engine = self.ctx.deep_engine_manager.get(chat_id, project.root_path if project else "")
-            if engine and engine.project:
-                current = engine.project.completed_count
-                total = engine.project.total_count
-                content = reporter.format_task_done(task, result, current, total)
-                title = reporter.get_task_done_title(result.success, current, total)
-                progress_bar = reporter._make_progress_bar(current, total)
+        def on_event(event: ACPEvent):
+            """Process ACP events and update streaming display."""
+            rendered = renderer.process_event(event)
+            # For plan updates, send a card
+            if event.event_type == ACPEventType.PLAN_UPDATE and event.plan:
+                engine = self.ctx.deep_engine_manager.get(chat_id, project.root_path if project else "")
+                deep_project_id = engine.project.project_id if engine and engine.project else None
+                progress = engine.progress if engine else None
+                progress_bar = progress.progress_bar if progress else None
                 msg_type, card_content = CardBuilder.build_deep_card(
-                    project=project, title=title, content=content,
-                    progress_bar=progress_bar, deep_project_id=engine.project.project_id,
+                    project=project, title="📋 执行计划更新",
+                    content=rendered[:2000],
+                    progress_bar=progress_bar, deep_project_id=deep_project_id,
                     is_executing=True, engine_name=engine_name,
                 )
                 _send_deep_message(card_content, msg_type)
 
         def on_project_done(deep_project: DeepProject):
-            content = reporter.format_project_done(deep_project)
-            title = reporter.get_project_done_title(deep_project)
-            progress_bar = reporter._make_progress_bar(deep_project.completed_count, deep_project.total_count)
+            engine = self.ctx.deep_engine_manager.get(chat_id, project.root_path if project else "")
+            progress = engine.progress if engine else None
+            rendered_content = engine.get_rendered_content() if engine else ""
+
+            summary_parts = []
+            if progress:
+                summary_parts.append(progress.format_summary())
+            if rendered_content:
+                # Truncate for card display
+                truncated = rendered_content[:3000]
+                summary_parts.append(f"\n**📝 输出摘要**\n{truncated}")
+
+            content = "\n\n".join(summary_parts) or "执行完成"
+            status_emoji = "✅" if deep_project.status == DeepProjectStatus.COMPLETED else "⚠️"
+            title = f"{status_emoji} Deep Agent 执行{'完成' if deep_project.status == DeepProjectStatus.COMPLETED else '结束'}"
+
+            progress_bar = progress.progress_bar if progress else None
             msg_type, card_content = CardBuilder.build_deep_card(
                 project=project, title=title, content=content,
                 progress_bar=progress_bar, deep_project_id=deep_project.project_id, engine_name=engine_name,
@@ -219,7 +219,7 @@ class DeepHandler(BaseHandler):
                     ctx.create_version(
                         reason=f"deep_engine_done: {deep_project.name}",
                         source_mode=ContextSourceMode.DEEP_ENGINE,
-                        summary=f"Deep Engine completed: {deep_project.completed_count}/{deep_project.total_count} tasks",
+                        summary=f"Deep Engine completed: tool_calls={len(progress.tool_calls) if progress else 0}",
                     )
 
         def on_error(error: str):
@@ -232,38 +232,9 @@ class DeepHandler(BaseHandler):
             _send_deep_message(card_content, msg_type)
             self.add_reaction(message_id, EmojiReaction.on_error())
 
-        def on_context_adapted(task: DeepTask, reason: str, prompt_preview: str):
-            content = reporter.format_task_adapted(task, reason, prompt_preview)
-            title = reporter.get_task_adapted_title()
-            engine = self.ctx.deep_engine_manager.get(chat_id, project.root_path if project else "")
-            deep_project_id = engine.project.project_id if engine and engine.project else None
-            msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title=title, content=content,
-                deep_project_id=deep_project_id, engine_name=engine_name, show_buttons=False,
-            )
-            _send_deep_message(card_content, msg_type)
-
-        def on_task_retry(task: DeepTask, error: str, retry_num: int, max_retries: int):
-            content = reporter.format_task_retry(task, error, retry_num, max_retries)
-            title = reporter.get_task_retry_title(retry_num, max_retries)
-            engine = self.ctx.deep_engine_manager.get(chat_id, project.root_path if project else "")
-            deep_project_id = engine.project.project_id if engine and engine.project else None
-            progress_bar = None
-            if engine and engine.project:
-                progress_bar = reporter._make_progress_bar(engine.project.completed_count, engine.project.total_count)
-            msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title=title, content=content,
-                progress_bar=progress_bar, deep_project_id=deep_project_id,
-                is_executing=True, engine_name=engine_name,
-            )
-            _send_deep_message(card_content, msg_type)
-
         return DeepEngineCallbacks(
             on_planning_done=on_planning_done,
-            on_task_start=on_task_start,
-            on_task_done=on_task_done,
-            on_task_retry=on_task_retry,
-            on_context_adapted=on_context_adapted,
+            on_event=on_event,
             on_project_done=on_project_done,
             on_error=on_error,
         )
@@ -416,8 +387,8 @@ class DeepHandler(BaseHandler):
             handle = self.scheduler.submit(spec, lambda ctx: run_resume())
             try:
                 self.ctx.message_linker.link_task(message_id, handle.run_id)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("link_task失败(deep_engine_resume): message_id=%s, run_id=%s, err=%s", message_id, handle.run_id, e)
             self.show_deep_status(message_id, chat_id, project=project)
         else:
             self.reply_message(message_id, "当前没有可恢复的任务")
@@ -452,8 +423,8 @@ class DeepHandler(BaseHandler):
         for e in engines:
             try:
                 e.stop()
-            except Exception:
-                pass
+            except Exception as ex:
+                logger.debug("停止deep engine失败: %s", ex)
         self.reply_message(message_id, f"🛑 已发送停止信号：{len(engines)} 个 Deep Agent 任务将在当前步骤完成后停止")
 
     # ------------------------------------------------------------------

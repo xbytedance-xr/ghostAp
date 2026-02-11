@@ -1,7 +1,7 @@
-"""Loop Engine — subprocess-driven iterative closed-loop development.
+"""Loop Engine — ACP-driven iterative closed-loop development.
 
-Uses session.send_prompt_streaming() to iterate until acceptance criteria
-are satisfied.
+Uses ACP session's multi-turn prompt capability to iterate until
+acceptance criteria are satisfied.
 """
 
 from .engine import LoopEngine, LoopEngineManager, LoopEngineCallbacks
@@ -19,6 +19,7 @@ from .models import (
     RoleSelection,
     LoopContextManager,
 )
+from .tracker import IterationTracker
 from .reporter import LoopReporter
 
 __all__ = [
@@ -39,6 +40,8 @@ __all__ = [
     "TerminationResult",
     "RoleSelection",
     "LoopContextManager",
+    # Tracker
+    "IterationTracker",
     # Reporter
     "LoopReporter",
 ]

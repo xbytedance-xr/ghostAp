@@ -1,252 +1,156 @@
+"""ACP-driven Deep Engine — leverages agent's own planning capabilities.
+
+Instead of parsing requirements → planning tasks → executing one-by-one,
+the new Deep Engine sends a single comprehensive prompt to the agent and
+monitors its plan/tool-call/text progress via ACP events.
+"""
+
 import logging
+import threading
 import time
 import json
 import os
-import uuid
-from typing import Optional, Callable, AsyncGenerator, Union
+from typing import Optional, Callable
 from dataclasses import dataclass
-from ..session import CocoSession, CocoSessionManager, ClaudeSession, ClaudeSessionManager
-from ..config import get_settings
 
-logger = logging.getLogger(__name__)
+from ..acp import ACPSessionManager, SyncACPSession, start_session_with_retry, ACPEvent, ACPEventType, ACPEventRenderer
+from ..config import get_settings
 from .models import (
     DeepProject,
     DeepProjectStatus,
-    DeepTask,
-    DeepTaskStatus,
-    ParsedRequirement,
-    ExecutionResult,
-    ExecutionContext,
+    EngineRunState,
     ProgressUpdate,
 )
-from .parser import RequirementParser
-from .planner import TaskPlanner
-from .executor import TaskExecutor, AISession
+from .progress import DeepProgress
 
-# Session manager 的 Union 类型
-AISessionManager = Union[CocoSessionManager, ClaudeSessionManager]
+logger = logging.getLogger(__name__)
 
 
 @dataclass
 class DeepEngineCallbacks:
+    """Callbacks for deep engine lifecycle events."""
     on_planning_start: Optional[Callable[[str], None]] = None
     on_planning_done: Optional[Callable[[DeepProject], None]] = None
-    on_task_start: Optional[Callable[[DeepTask, int, int], None]] = None
-    on_task_progress: Optional[Callable[[DeepTask, str], None]] = None
-    on_task_done: Optional[Callable[[DeepTask, ExecutionResult], None]] = None
-    on_task_retry: Optional[Callable[[DeepTask, str, int, int], None]] = None  # (task, error, retry_num, max_retries)
-    on_context_adapted: Optional[Callable[[DeepTask, str, str], None]] = None  # (task, reason, prompt_preview)
+    on_event: Optional[Callable[[ACPEvent], None]] = None
+    on_text: Optional[Callable[[str], None]] = None
     on_project_done: Optional[Callable[[DeepProject], None]] = None
     on_error: Optional[Callable[[str], None]] = None
 
 
 class DeepEngine:
-    def __init__(self, chat_id: str, root_path: str, session_manager: Optional[AISessionManager] = None, engine_name: str = "Coco"):
+    """ACP-driven Deep Engine — the agent plans and executes autonomously."""
+
+    def __init__(self, chat_id: str, root_path: str, agent_type: str = "coco", engine_name: str = "Coco"):
         self.chat_id = chat_id
         self.root_path = os.path.expanduser(root_path)
         self.settings = get_settings()
         self.engine_name = engine_name
+        self._agent_type = agent_type
 
-        self._session_manager = session_manager or CocoSessionManager()
-        self._parser = RequirementParser()
-        self._planner = TaskPlanner()
-
+        self._session: Optional[SyncACPSession] = None
         self._project: Optional[DeepProject] = None
-        self._executor: Optional[TaskExecutor] = None
-        self._ai_session: Optional[AISession] = None
-        self._execution_context = ExecutionContext()
-        self._is_running = False
-        self._should_stop = False
+        self._progress = DeepProgress()
+        self._renderer = ACPEventRenderer()
+        self._run_state = EngineRunState.IDLE
+        self._pending_context: Optional[str] = None
+        self._context_lock = threading.Lock()
 
     @property
     def project(self) -> Optional[DeepProject]:
         return self._project
 
     @property
-    def is_running(self) -> bool:
-        return self._is_running
+    def run_state(self) -> EngineRunState:
+        return self._run_state
 
     @property
-    def execution_context(self) -> ExecutionContext:
-        return self._execution_context
+    def is_running(self) -> bool:
+        return self._run_state != EngineRunState.IDLE
 
-    def inject_context(self, message: str):
-        """线程安全地注入用户上下文，供 ws_client 调用。"""
-        self._execution_context.inject_user_context(message)
-        logger.info("上下文已注入: %s...", message[:100])
+    @property
+    def progress(self) -> DeepProgress:
+        return self._progress
 
-    def _ensure_ai_session(self) -> AISession:
-        if self._ai_session is None:
-            # Claude CLI 要求 session_id 必须为合法 UUID；Coco 无此限制
-            # 统一使用 UUID 格式，兼容两种后端
-            session_id = str(uuid.uuid4())
-            self._ai_session = self._session_manager.start_session(
-                chat_id=self.chat_id,
-                session_id=session_id
-            )
-        return self._ai_session
-
-    def _ensure_executor(self) -> TaskExecutor:
-        if self._executor is None:
-            ai_session = self._ensure_ai_session()
-            self._executor = TaskExecutor(ai_session, self.root_path, should_stop=lambda: self._should_stop)
-        return self._executor
-
-    def plan(self, requirement_text: str, callbacks: Optional[DeepEngineCallbacks] = None) -> DeepProject:
+    def plan_and_execute(
+        self,
+        requirement_text: str,
+        callbacks: Optional[DeepEngineCallbacks] = None,
+    ) -> DeepProject:
+        """Single ACP prompt drives the entire deep execution."""
         callbacks = callbacks or DeepEngineCallbacks()
-
-        if callbacks.on_planning_start:
-            callbacks.on_planning_start(requirement_text)
+        self._run_state = EngineRunState.RUNNING
 
         project_name = os.path.basename(self.root_path) or "deep_project"
         self._project = DeepProject.create(name=project_name, root_path=self.root_path)
         self._project.status = DeepProjectStatus.PLANNING
 
-        logger.info("[Deep:%s] 开始规划任务, 需求长度=%d, 路径=%s", project_name, len(requirement_text), self.root_path)
+        if callbacks.on_planning_start:
+            callbacks.on_planning_start(requirement_text)
+
+        logger.info("[Deep:%s] ACP执行开始, 需求长度=%d, 路径=%s, agent=%s",
+                     project_name, len(requirement_text), self.root_path, self._agent_type)
 
         try:
-            logger.info("[Deep:%s] 解析需求...", project_name)
-            requirement = self._parser.parse(requirement_text)
-            self._project.set_requirement(requirement)
+            # Create ACP session (with retry and progressive timeout)
+            self._session = start_session_with_retry(
+                agent_type=self._agent_type, cwd=self.root_path,
+                startup_timeout=self.settings.acp_startup_timeout,
+            )
 
-            logger.info("[Deep:%s] 生成任务计划...", project_name)
-            tasks = self._planner.plan(requirement)
-            self._project.set_tasks(tasks)
+            # Build deep prompt — let agent plan and execute autonomously
+            prompt = self._build_deep_prompt(requirement_text)
 
-            self._project.status = DeepProjectStatus.IDLE
-
-            logger.info("[Deep:%s] 规划完成, 共 %d 个任务", project_name, len(tasks))
-            for i, task in enumerate(tasks):
-                logger.info("[Deep:%s]   任务 %d: %s", project_name, i + 1, task.title)
+            self._project.status = DeepProjectStatus.EXECUTING
+            self._project.start()
 
             if callbacks.on_planning_done:
                 callbacks.on_planning_done(self._project)
 
-            return self._project
+            # Track progress via ACP events
+            def on_event(event: ACPEvent):
+                if self._run_state == EngineRunState.STOPPING:
+                    if self._session:
+                        self._session.cancel()
+                    return
 
-        except Exception as e:
-            error_msg = f"规划失败: {str(e)}"
-            logger.error("[Deep:%s] %s", project_name, error_msg)
-            self._project.fail(error_msg)
+                self._renderer.process_event(event)
 
-            if callbacks.on_error:
-                callbacks.on_error(error_msg)
+                match event.event_type:
+                    case ACPEventType.PLAN_UPDATE:
+                        if event.plan:
+                            self._progress.update_plan(event.plan)
+                    case ACPEventType.TOOL_CALL_DONE:
+                        if event.tool_call:
+                            self._progress.record_tool(event.tool_call)
+                    case ACPEventType.TEXT_CHUNK:
+                        if event.text:
+                            self._progress.append_text(event.text)
 
-            return self._project
+                if callbacks.on_event:
+                    callbacks.on_event(event)
+                if event.event_type == ACPEventType.TEXT_CHUNK and callbacks.on_text:
+                    callbacks.on_text(event.text or "")
 
-    def execute(self, callbacks: Optional[DeepEngineCallbacks] = None) -> DeepProject:
-        if not self._project:
-            raise ValueError("请先调用 plan() 方法进行任务规划")
+            timeout = self.settings.coco_execution_timeout if self._agent_type == "coco" else self.settings.claude_execution_timeout
+            result = self._session.send_prompt(prompt, on_event=on_event, timeout=timeout)
 
-        callbacks = callbacks or DeepEngineCallbacks()
-        self._is_running = True
-        self._should_stop = False
-        self._project.start()
+            # Process pending context injections as follow-up prompts
+            result = self._drain_pending_context(on_event, timeout, result)
 
-        executor = self._ensure_executor()
-        total_tasks = self._project.total_count
-        project_name = self._project.name
-
-        logger.info("[Deep:%s] 开始执行, 共 %d 个任务", project_name, total_tasks)
-
-        try:
-            while not self._should_stop:
-                task = self._project.get_next_task()
-                if not task:
-                    break
-
-                current_index = self._project.completed_count + 1
-
-                # ① 上下文感知 prompt 适配（仅当有新上下文时触发 LLM）
-                if self._execution_context.has_meaningful_context():
-                    try:
-                        context_prompt = self._execution_context.build_context_prompt()
-                        was_adapted, adapted_prompt, reason = self._planner.adapt_task_prompt(task, context_prompt)
-                        self._execution_context.consume_new_context_flag()
-                        if was_adapted:
-                            task.original_prompt = task.prompt
-                            task.prompt = adapted_prompt
-                            task.adapted_prompt = adapted_prompt
-                            self._execution_context.record_adaptation(task.task_id, reason)
-                            logger.info("[Deep:%s] 任务 %d/%d「%s」指令已适配: %s", project_name, current_index, total_tasks, task.title, reason)
-                            if callbacks.on_context_adapted:
-                                preview = adapted_prompt[:200]
-                                callbacks.on_context_adapted(task, reason, preview)
-                    except Exception as e:
-                        logger.error("[Deep:%s] 任务适配异常，使用原始 prompt: %s", project_name, e)
-                        self._execution_context.consume_new_context_flag()
-
-                logger.info("[Deep:%s] 开始任务 %d/%d:「%s」", project_name, current_index, total_tasks, task.title)
-
-                if callbacks.on_task_start:
-                    callbacks.on_task_start(task, current_index, total_tasks)
-
-                def on_chunk(content: str):
-                    if callbacks.on_task_progress:
-                        callbacks.on_task_progress(task, content)
-
-                # ② 执行任务
-                task_start_time = time.time()
-                result = executor.execute(task, on_chunk=on_chunk)
-                task_duration = time.time() - task_start_time
-
-                if result.success:
-                    logger.info("[Deep:%s] 任务 %d/%d「%s」完成, 耗时 %.1fs, 输出长度=%d",
-                               project_name, current_index, total_tasks, task.title, task_duration, len(result.output or ""))
-                else:
-                    logger.warning("[Deep:%s] 任务 %d/%d「%s」失败, 耗时 %.1fs, 错误: %s",
-                                  project_name, current_index, total_tasks, task.title, task_duration, (result.error or "未知")[:100])
-
-                if callbacks.on_task_done:
-                    callbacks.on_task_done(task, result)
-
-                # ③ 记录结果到上下文
-                summary = result.output[-200:] if result.output else (result.error or "")
-                self._execution_context.add_result(
-                    task.task_id, task.title, result.success, summary
-                )
-
-                # ④ 智能失败处理（使用 replan 替代盲目重试）
-                if not result.success and task.retry_count < task.max_retries:
-                    try:
-                        error_msg = result.error or "未知错误"
-                        context_prompt = self._execution_context.build_context_prompt()
-                        if task.original_prompt is None:
-                            task.original_prompt = task.prompt
-
-                        if callbacks.on_task_retry:
-                            callbacks.on_task_retry(task, error_msg, task.retry_count + 1, task.max_retries)
-
-                        replanned = self._planner.replan_task(
-                            task, error_msg, context_prompt, task.retry_count
-                        )
-                        task.prompt = replanned.prompt
-                        task.status = DeepTaskStatus.PENDING
-                        logger.info("[Deep:%s] 任务「%s」重规划后重试 (第 %d/%d 次), prompt 长度: %d -> %d",
-                                   project_name, task.title, task.retry_count + 1, task.max_retries,
-                                   len(task.original_prompt or ""), len(task.prompt))
-                        continue
-                    except Exception as e:
-                        logger.error("[Deep:%s] 任务重规划异常: %s", project_name, e)
-                        if task.status == DeepTaskStatus.FAILED:
-                            self._skip_dependent_tasks(task)
-                elif not result.success and task.status == DeepTaskStatus.FAILED:
-                    logger.warning("[Deep:%s] 任务「%s」最终失败（已重试 %d 次），跳过后续依赖任务",
-                                  project_name, task.title, task.retry_count)
-                    self._skip_dependent_tasks(task)
-
-            if self._project.is_completed:
-                if self._project.has_failures:
-                    self._project.status = DeepProjectStatus.FAILED
-                    logger.warning("[Deep:%s] 执行完成（有失败）, 成功=%d, 失败=%d, 总耗时=%.1fs",
-                                  project_name, self._project.completed_count, self._project.failed_count, self._project.duration() or 0)
-                else:
-                    self._project.complete()
-                    logger.info("[Deep:%s] 全部任务完成, 共 %d 个任务, 总耗时=%.1fs",
-                               project_name, self._project.completed_count, self._project.duration() or 0)
-            elif self._should_stop:
+            # Determine final status
+            if self._run_state == EngineRunState.STOPPING:
                 self._project.pause()
-                logger.info("[Deep:%s] 执行已暂停, 已完成=%d/%d", project_name, self._project.completed_count, total_tasks)
+                logger.info("[Deep:%s] 执行已暂停", project_name)
+            elif result.stop_reason in ("end_turn", "max_turn_requests"):
+                self._project.complete()
+                logger.info("[Deep:%s] 执行完成, 工具调用=%d, 修改文件=%d, 总耗时=%.1fs",
+                             project_name, len(self._progress.tool_calls),
+                             len(self._progress.modified_files),
+                             self._project.duration() or 0)
+            elif result.stop_reason == "cancelled":
+                self._project.pause()
+            else:
+                self._project.fail(f"意外停止: {result.stop_reason}")
 
             if callbacks.on_project_done:
                 callbacks.on_project_done(self._project)
@@ -256,102 +160,180 @@ class DeepEngine:
         except Exception as e:
             error_msg = f"执行异常: {str(e)}"
             logger.error("[Deep:%s] %s", project_name, error_msg)
-            self._project.fail(error_msg)
-
+            if self._project:
+                self._project.fail(error_msg)
             if callbacks.on_error:
                 callbacks.on_error(error_msg)
-
             return self._project
 
         finally:
-            self._is_running = False
+            self._run_state = EngineRunState.IDLE
 
-    def plan_and_execute(
-        self,
-        requirement_text: str,
-        callbacks: Optional[DeepEngineCallbacks] = None
-    ) -> DeepProject:
-        self.plan(requirement_text, callbacks)
+    def _drain_pending_context(self, on_event, timeout, last_result):
+        """Send any pending context injections as follow-up prompts in the same session."""
+        while self._run_state == EngineRunState.RUNNING:
+            with self._context_lock:
+                ctx = self._pending_context
+                self._pending_context = None
+            if not ctx:
+                break
+            logger.info("[Deep] 发送注入的上下文: %s...", ctx[:100])
+            follow_up = f"""用户提供了额外的上下文/指导信息，请据此继续执行：
 
-        if self._project and self._project.status != DeepProjectStatus.FAILED:
-            return self.execute(callbacks)
+{ctx}
 
-        return self._project
+请根据以上信息调整你的执行方案并继续。"""
+            last_result = self._session.send_prompt(follow_up, on_event=on_event, timeout=timeout)
+        return last_result
+
+    def _build_deep_prompt(self, requirement: str) -> str:
+        """Build the deep prompt — let agent autonomously plan and execute."""
+        return f"""你是一个专业的软件工程师。请完成以下需求：
+
+## 需求
+{requirement}
+
+## 工作目录
+{self.root_path}
+
+## 要求
+1. 先分析需求，制定执行计划
+2. 按计划逐步实现，每步完成后验证
+3. 确保代码质量和测试覆盖
+4. 完成后输出总结报告
+"""
+
+    def inject_context(self, message: str):
+        """Inject user context — will be sent as follow-up prompt after current execution."""
+        with self._context_lock:
+            self._pending_context = message
+        logger.info("[Deep] 上下文已注入(待发送): %s...", message[:100])
 
     def stop(self):
-        self._should_stop = True
+        self._run_state = EngineRunState.STOPPING
+        if self._session:
+            self._session.cancel()
 
     def pause(self):
         if self._project:
             self._project.pause()
-        self._should_stop = True
+        self._run_state = EngineRunState.STOPPING
+        if self._session:
+            self._session.cancel()
 
     def resume(self, callbacks: Optional[DeepEngineCallbacks] = None) -> Optional[DeepProject]:
-        if not self._project:
-            return None
+        """Resume a paused deep execution by loading the ACP session and sending a continuation prompt."""
+        if not self._project or self._project.status != DeepProjectStatus.PAUSED:
+            return self._project
 
-        if self._project.status == DeepProjectStatus.PAUSED:
-            self._project.resume()
-            return self.execute(callbacks)
+        callbacks = callbacks or DeepEngineCallbacks()
+        self._run_state = EngineRunState.RUNNING
+        self._project.status = DeepProjectStatus.EXECUTING
+
+        try:
+            # Start a new ACP session with retry
+            self._session = start_session_with_retry(
+                agent_type=self._agent_type, cwd=self.root_path,
+                startup_timeout=self.settings.acp_startup_timeout,
+            )
+
+            resume_prompt = """你之前的执行被暂停了。请继续完成剩余的任务。
+检查之前的进度，对未完成的部分继续实现。
+完成后输出总结报告。"""
+
+            def on_event(event: ACPEvent):
+                if self._run_state == EngineRunState.STOPPING:
+                    if self._session:
+                        self._session.cancel()
+                    return
+                self._renderer.process_event(event)
+                match event.event_type:
+                    case ACPEventType.PLAN_UPDATE:
+                        if event.plan:
+                            self._progress.update_plan(event.plan)
+                    case ACPEventType.TOOL_CALL_DONE:
+                        if event.tool_call:
+                            self._progress.record_tool(event.tool_call)
+                    case ACPEventType.TEXT_CHUNK:
+                        if event.text:
+                            self._progress.append_text(event.text)
+                if callbacks.on_event:
+                    callbacks.on_event(event)
+
+            timeout = self.settings.coco_execution_timeout if self._agent_type == "coco" else self.settings.claude_execution_timeout
+            result = self._session.send_prompt(resume_prompt, on_event=on_event, timeout=timeout)
+            result = self._drain_pending_context(on_event, timeout, result)
+
+            if self._run_state == EngineRunState.STOPPING:
+                self._project.pause()
+            elif result.stop_reason in ("end_turn", "max_turn_requests"):
+                self._project.complete()
+            else:
+                self._project.fail(f"意外停止: {result.stop_reason}")
+
+            if callbacks.on_project_done:
+                callbacks.on_project_done(self._project)
+
+        except Exception as e:
+            error_msg = f"恢复执行异常: {str(e)}"
+            logger.error("[Deep:%s] %s", self._project.name, error_msg)
+            self._project.fail(error_msg)
+            if callbacks.on_error:
+                callbacks.on_error(error_msg)
+
+        finally:
+            self._run_state = EngineRunState.IDLE
 
         return self._project
-
-    def _skip_dependent_tasks(self, failed_task: DeepTask):
-        for task in self._project.tasks:
-            if failed_task.task_id in task.dependencies:
-                if task.status == DeepTaskStatus.PENDING:
-                    task.skip(f"依赖任务 {failed_task.title} 失败")
-                    self._skip_dependent_tasks(task)
 
     def get_progress(self) -> Optional[ProgressUpdate]:
         if not self._project:
             return None
 
-        current_task = self._project.get_current_task()
         status_messages = {
             DeepProjectStatus.IDLE: "等待开始",
             DeepProjectStatus.PLANNING: "正在规划任务...",
-            DeepProjectStatus.EXECUTING: f"正在执行: {current_task.title}" if current_task else "执行中",
+            DeepProjectStatus.EXECUTING: f"执行中 (工具调用: {len(self._progress.tool_calls)})",
             DeepProjectStatus.PAUSED: "已暂停",
             DeepProjectStatus.COMPLETED: "全部完成",
             DeepProjectStatus.FAILED: f"执行失败: {self._project.error or '未知错误'}",
         }
 
-        return self._project.get_progress_update(
-            message=status_messages.get(self._project.status, "未知状态")
+        return ProgressUpdate(
+            project_id=self._project.project_id,
+            current_task=None,
+            completed_count=self._progress.completed_steps,
+            total_count=self._progress.total_steps or 1,
+            status=self._project.status,
+            message=status_messages.get(self._project.status, "未知状态"),
         )
 
     def get_task_summary(self) -> str:
         if not self._project:
             return "暂无任务"
 
-        lines = [f"📊 **{self._project.name}** 任务进度\n"]
+        lines = [f"📊 **{self._project.name}** 执行进度\n"]
 
-        progress = self.get_progress()
-        if progress:
-            lines.append(f"{progress.progress_bar}\n")
+        if self._progress.plan_entries:
+            lines.append(self._progress.progress_bar)
+            lines.append("")
+            for entry in self._progress.plan_entries:
+                icon = {"pending": "⏳", "in_progress": "🔄", "completed": "✅"}.get(entry["status"], "⬜")
+                lines.append(f"{icon} {entry['content']}")
+        else:
+            lines.append(f"🔧 工具调用: {len(self._progress.tool_calls)} 次")
 
-        for task in self._project.tasks:
-            status_emoji = {
-                DeepTaskStatus.PENDING: "⏳",
-                DeepTaskStatus.READY: "🔜",
-                DeepTaskStatus.IN_PROGRESS: "🔄",
-                DeepTaskStatus.COMPLETED: "✅",
-                DeepTaskStatus.FAILED: "❌",
-                DeepTaskStatus.SKIPPED: "⏭️",
-                DeepTaskStatus.BLOCKED: "🚫",
-            }.get(task.status, "❓")
-
-            duration_str = ""
-            if task.duration():
-                duration_str = f" ({task.duration():.1f}s)"
-
-            lines.append(f"{status_emoji} {task.order + 1}. {task.title}{duration_str}")
+        if self._progress.modified_files:
+            lines.append(f"\n📝 修改文件: {len(self._progress.modified_files)} 个")
 
         if self._project.duration():
             lines.append(f"\n⏱️ 总耗时: {self._project.duration():.1f}s")
 
         return "\n".join(lines)
+
+    def get_rendered_content(self) -> str:
+        """Return the current rendered output from the ACP event renderer."""
+        return self._renderer.get_final_content()
 
     def save_state(self, filepath: Optional[str] = None) -> str:
         if not self._project:
@@ -367,8 +349,10 @@ class DeepEngine:
             "saved_at": time.time(),
         }
 
-        with open(filepath, "w", encoding="utf-8") as f:
+        tmp_path = filepath + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, filepath)
 
         return filepath
 
@@ -382,55 +366,48 @@ class DeepEngine:
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 state = json.load(f)
-
             self._project = DeepProject.from_dict(state["project"])
             return True
-
         except Exception as e:
             logger.error("加载状态失败: %s", e)
             return False
 
     def cleanup(self):
-        if self._ai_session:
-            self._session_manager.end_session(self.chat_id)
-            self._ai_session = None
-        self._executor = None
+        if self._session:
+            try:
+                self._session.close()
+            except Exception as e:
+                logger.debug("关闭ACP session失败: %s", e)
+            self._session = None
         self._project = None
-        self._is_running = False
+        self._run_state = EngineRunState.IDLE
 
 
 class DeepEngineManager:
+    """Manages DeepEngine instances per chat+project."""
+
     def __init__(self):
         self._engines: dict[str, DeepEngine] = {}
-        self._coco_session_manager = CocoSessionManager()
-        self._claude_session_manager = ClaudeSessionManager()
 
     def get_or_create(self, chat_id: str, root_path: str, engine_name: str = "Coco") -> DeepEngine:
         key = f"{chat_id}:{root_path}"
+        agent_type = "claude" if engine_name.lower().startswith("claude") else "coco"
+
         if key not in self._engines:
-            if engine_name.lower().startswith("claude"):
-                session_manager = self._claude_session_manager
-            else:
-                session_manager = self._coco_session_manager
             self._engines[key] = DeepEngine(
                 chat_id=chat_id,
                 root_path=root_path,
-                session_manager=session_manager,
+                agent_type=agent_type,
                 engine_name=engine_name,
             )
         else:
-            # 如果已有 engine 但 engine_name 不同，重建以使用正确的后端
             existing = self._engines[key]
             if existing.engine_name.lower() != engine_name.lower() and not existing.is_running:
                 existing.cleanup()
-                if engine_name.lower().startswith("claude"):
-                    session_manager = self._claude_session_manager
-                else:
-                    session_manager = self._coco_session_manager
                 self._engines[key] = DeepEngine(
                     chat_id=chat_id,
                     root_path=root_path,
-                    session_manager=session_manager,
+                    agent_type=agent_type,
                     engine_name=engine_name,
                 )
         return self._engines[key]
@@ -452,22 +429,16 @@ class DeepEngineManager:
         return None
 
     def get_active_engines(self, chat_id: str) -> list[DeepEngine]:
-        """Return all running engines for a chat (multi-project support)."""
-        engines: list[DeepEngine] = []
-        for key, engine in self._engines.items():
-            if key.startswith(f"{chat_id}:") and engine.is_running:
-                engines.append(engine)
-        return engines
+        return [e for k, e in self._engines.items()
+                if k.startswith(f"{chat_id}:") and e.is_running]
 
     def list_engines(self, chat_id: Optional[str] = None) -> list[DeepEngine]:
-        """List all engines, optionally filtered by chat."""
         if chat_id is None:
             return list(self._engines.values())
         prefix = f"{chat_id}:"
         return [e for k, e in self._engines.items() if k.startswith(prefix)]
 
     def find_by_deep_project_id(self, chat_id: str, deep_project_id: str) -> Optional[DeepEngine]:
-        """Find engine by its DeepProject.project_id (used by card callbacks)."""
         if not deep_project_id:
             return None
         for engine in self.get_active_engines(chat_id) + self.list_engines(chat_id):

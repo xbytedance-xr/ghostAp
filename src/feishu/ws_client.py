@@ -9,7 +9,7 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTr
 from typing import Callable, Optional, Any
 import threading
 from ..config import get_settings
-from ..session import CocoSessionManager, ClaudeSessionManager
+from ..acp import ACPSessionManager
 from ..agent.intent_recognizer import IntentRecognizer, IntentType, IntentResult, TaskStep
 from ..project import (
     ProjectManager,
@@ -23,8 +23,7 @@ from ..project import (
 )
 from ..card import CardBuilder
 from ..card.streaming import StreamingCardManager
-from ..deep_engine import DeepEngine, DeepEngineManager, DeepEngineCallbacks, ProgressReporter
-from ..deep_engine.models import DeepProject, DeepProjectStatus, DeepTask, ExecutionResult
+from ..deep_engine import DeepEngineManager, ProgressReporter
 from ..loop_engine import LoopEngineManager, LoopReporter
 from ..tasking import TaskScheduler, TaskSpec, TaskPriority, SYSTEM_QUEUE_SUFFIX
 from .message_formatter import FeishuMessageFormatter as fmt
@@ -54,8 +53,8 @@ class FeishuWSClient:
         self.message_callback = message_callback
         self._client: Optional[lark.ws.Client] = None
         self._api_client: Optional[lark.Client] = None
-        self._coco_manager = CocoSessionManager()
-        self._claude_manager = ClaudeSessionManager()
+        self._coco_manager = ACPSessionManager("coco", session_timeout=self.settings.coco_session_timeout)
+        self._claude_manager = ACPSessionManager("claude", session_timeout=self.settings.claude_session_timeout)
         self._intent_recognizer = IntentRecognizer()
         self._message_cache = MessageCache(ttl=300, max_size=1000, cleanup_interval=60)
         self._scheduler = TaskScheduler(

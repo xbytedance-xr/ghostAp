@@ -11,15 +11,16 @@ import logging
 from abc import abstractmethod
 from typing import TYPE_CHECKING, Optional
 
+from ...acp import ACPEventRenderer, ACPSessionManager, SyncACPSession
 from ...card import CardBuilder
 from ...project import ContextSourceMode
+from ...utils.errors import fmt_error
 from ..emoji import EmojiReaction
 from ..message_formatter import FeishuMessageFormatter as fmt
 from .base import BaseHandler
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
-    from ...session.manager import BaseSessionManager
     from ..handler_context import HandlerContext
 
 logger = logging.getLogger(__name__)
@@ -39,7 +40,7 @@ class ProgrammingModeHandler(BaseHandler):
     # Hooks — subclass implements
     # ------------------------------------------------------------------
     @abstractmethod
-    def _get_session_manager(self) -> "BaseSessionManager":
+    def _get_session_manager(self) -> ACPSessionManager:
         ...
 
     @abstractmethod
@@ -106,9 +107,6 @@ class ProgrammingModeHandler(BaseHandler):
         if self._is_in_opposite_mode(chat_id):
             self._exit_opposite_mode(message_id, chat_id, project=project)
 
-        self._enter_mode_on_manager(chat_id)
-        self.add_reaction(message_id, EmojiReaction.on_coco_enter())
-
         if not project:
             working_dir = self.get_working_dir(chat_id)
             try:
@@ -118,7 +116,8 @@ class ProgrammingModeHandler(BaseHandler):
             except Exception as e:
                 logger.error("自动创建项目失败: %s", e)
 
-        session = self._get_session_manager().start_session(chat_id)
+        working_dir = self.get_working_dir(chat_id)
+        cwd = project.root_path if project else working_dir
 
         if project:
             valid, path_msg = self.project_manager.validate_project_path(project.project_id)
@@ -127,36 +126,64 @@ class ProgrammingModeHandler(BaseHandler):
                     self.reply_message(message_id, f"⚠️ {path_msg}\n\n请切换到有效目录后重试")
                 return
 
-            snapshot = self._get_snapshot(project)
-            if snapshot and snapshot.is_resumable:
-                session.session_id = snapshot.session_id
-                session.is_resumed = True
-                self._set_mode_on_project(project, True, snapshot.session_id, snapshot.query_count)
-                if not silent:
-                    content = (
-                        f"🔄 已恢复 {self.mode_name} 会话\n\n"
-                        f"• 会话 ID: `{session.session_id}`\n"
-                        f"• 历史对话: {snapshot.query_count} 条\n\n"
-                        f"继续之前的对话吧！"
-                    )
-                    msg_type, card_content = CardBuilder.build_project_response_card(
-                        project, f"{self.mode_name} 会话已恢复", content, show_buttons=True,
-                        footer=f"📂 项目目录: {project.root_path}",
-                    )
-                    response_id = self.reply_message_with_id(message_id, card_content, msg_type)
-                    if response_id:
-                        self.register_message_project(response_id, project)
-            else:
-                self._set_mode_on_project(project, True, session.session_id)
-                if not silent:
-                    content = f"{self.mode_emoji} 已进入{self.mode_name}编程模式\n\n现在可以用自然语言描述你的需求\n\n说「退出模式」或发送 `/exit` 退出"
-                    msg_type, card_content = CardBuilder.build_project_response_card(
-                        project, f"{self.mode_emoji} {self.mode_name}编程模式", content, show_buttons=True,
-                        footer=f"📂 项目目录: {project.root_path}",
-                    )
-                    response_id = self.reply_message_with_id(message_id, card_content, msg_type)
-                    if response_id:
-                        self.register_message_project(response_id, project)
+        # Determine whether we should resume an existing ACP session
+        target_session_id = None
+        snapshot = self._get_snapshot(project) if project else None
+        if snapshot and snapshot.is_resumable:
+            target_session_id = snapshot.session_id
+
+        # Ensure ACP server is running before switching mode
+        startup_timeout = getattr(self.settings, "acp_startup_timeout", 20)
+        try:
+            session = self._get_session_manager().ensure_session(
+                chat_id,
+                cwd=cwd,
+                session_id=target_session_id,
+                startup_timeout=startup_timeout,
+            )
+        except TimeoutError as e:
+            if not silent:
+                self.reply_message(message_id, fmt_error(
+                    f"启动 {self.mode_name} ACP Server 超时({startup_timeout}s)",
+                    str(e),
+                ))
+            return
+        except Exception as e:
+            if not silent:
+                self.reply_message(message_id, fmt_error(f"启动 {self.mode_name} ACP Server 失败", str(e)))
+            return
+
+        # Now switch mode (after ACP server is confirmed ready)
+        self._enter_mode_on_manager(chat_id)
+        self.add_reaction(message_id, EmojiReaction.on_coco_enter())
+
+        if project and snapshot and snapshot.is_resumable:
+            self._set_mode_on_project(project, True, snapshot.session_id, snapshot.query_count)
+            if not silent:
+                content = (
+                    f"🔄 已恢复 {self.mode_name} 会话\n\n"
+                    f"• 会话 ID: `{session.session_id}`\n"
+                    f"• 历史对话: {snapshot.query_count} 条\n\n"
+                    f"继续之前的对话吧！"
+                )
+                msg_type, card_content = CardBuilder.build_project_response_card(
+                    project, f"{self.mode_name} 会话已恢复", content, show_buttons=True,
+                    footer=f"📂 项目目录: {project.root_path}",
+                )
+                response_id = self.reply_message_with_id(message_id, card_content, msg_type)
+                if response_id:
+                    self.register_message_project(response_id, project)
+        elif project:
+            self._set_mode_on_project(project, True, session.session_id)
+            if not silent:
+                content = f"{self.mode_emoji} 已进入{self.mode_name}编程模式\n\n现在可以用自然语言描述你的需求\n\n说「退出模式」或发送 `/exit` 退出"
+                msg_type, card_content = CardBuilder.build_project_response_card(
+                    project, f"{self.mode_emoji} {self.mode_name}编程模式", content, show_buttons=True,
+                    footer=f"📂 项目目录: {project.root_path}",
+                )
+                response_id = self.reply_message_with_id(message_id, card_content, msg_type)
+                if response_id:
+                    self.register_message_project(response_id, project)
         else:
             if not silent:
                 if self.is_coco:
@@ -221,7 +248,8 @@ class ProgrammingModeHandler(BaseHandler):
         if self.is_coco and project and project.coco_session_snapshot:
             project_session_id = project.coco_session_snapshot.session_id
             if not session or session.session_id != project_session_id:
-                session = self._get_session_manager().resume_session(chat_id, project_session_id)
+                cwd = project.root_path if project else self.get_working_dir(chat_id)
+                session = self._get_session_manager().resume_session(chat_id, project_session_id, cwd=cwd)
                 logger.info("切换到项目 %s 的 %s 会话: %s", project.project_name, self.mode_name, project_session_id)
 
         if not session:
@@ -242,7 +270,8 @@ class ProgrammingModeHandler(BaseHandler):
     # ------------------------------------------------------------------
     # handle_response (streaming / non-streaming)
     # ------------------------------------------------------------------
-    def handle_response(self, message_id: str, chat_id: str, text: str, session, project, cwd: str, global_working_dir: str):
+    def handle_response(self, message_id: str, chat_id: str, text: str, session: SyncACPSession, project, cwd: str, global_working_dir: str):
+        from ...acp.models import ACPEvent
         streaming_manager = self.get_streaming_manager()
 
         project_name = project.project_name if project else None
@@ -251,7 +280,7 @@ class ProgrammingModeHandler(BaseHandler):
         with self.ctx.pending_image_lock:
             image_keys = self.ctx.pending_image_keys.get(message_id)
 
-        logger.info("开始 %s 输出: project=%s, path=%s, streaming=%s", self.mode_name, project_name, project_path, self.ctx.enable_streaming)
+        logger.info("开始 %s ACP输出: project=%s, path=%s", self.mode_name, project_name, project_path)
 
         streaming_card = streaming_manager.create_streaming_card(
             chat_id=chat_id,
@@ -274,28 +303,39 @@ class ProgrammingModeHandler(BaseHandler):
                 rid = self.ensure_request_id(message_id, chat_id=chat_id, project_id=project_id)
                 self.ctx.message_linker.register_origin(message_id, request_id=rid, chat_id=chat_id, project_id=project_id)
                 self.ctx.message_linker.link_reply(message_id, card_message_id)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("link消息失败(programming): message_id=%s, card_message_id=%s, err=%s", message_id, card_message_id, e)
+
+        # ACP event-driven rendering
+        renderer = ACPEventRenderer()
+        timeout = self.settings.coco_execution_timeout if self.is_coco else self.settings.claude_execution_timeout
 
         if not streaming_card or not card_message_id:
-            logger.warning("创建流式卡片失败，回退到纯文本")
-            final_response = session.send_prompt(text, cwd=cwd) if not self.ctx.enable_streaming else session.send_prompt_streaming(text, on_chunk=lambda c: None, cwd=cwd, chunk_interval=0.3)
+            logger.warning("创建流式卡片失败，回退到纯文本ACP模式")
+            try:
+                result = session.send_prompt(text, on_event=None, timeout=timeout)
+                final_response = renderer.get_final_content() or "✅ 执行完成"
+            except Exception as e:
+                final_response = f"❌ 执行异常: {e}"
             response_with_dir = f"{final_response}\n\n---\n📁 工作目录: `{global_working_dir}`"
             self.reply_message(message_id, response_with_dir)
-        elif self.ctx.enable_streaming:
+        else:
             update_count = [0]
 
-            def on_chunk(content: str):
+            def on_event(event: ACPEvent):
                 update_count[0] += 1
-                streaming_manager.update_content(streaming_card, content)
+                rendered = renderer.process_event(event)
+                if rendered and streaming_card:
+                    streaming_manager.update_content(streaming_card, rendered)
 
-            final_response = session.send_prompt_streaming(
-                text, on_chunk=on_chunk, cwd=cwd, chunk_interval=0.3,
-            )
-            logger.info("%s 流式输出完成: 更新次数=%d, 最终长度=%d", self.mode_name, update_count[0], len(final_response))
-            streaming_manager.close_streaming(streaming_card, final_content=final_response)
-        else:
-            final_response = session.send_prompt(text, cwd=cwd)
+            try:
+                result = session.send_prompt(text, on_event=on_event, timeout=timeout)
+                final_response = renderer.get_final_content()
+            except Exception as e:
+                final_response = f"❌ 执行异常: {e}"
+                logger.error("%s ACP执行异常: %s", self.mode_name, e)
+
+            logger.info("%s ACP输出完成: 事件数=%d, 最终长度=%d", self.mode_name, update_count[0], len(final_response))
             streaming_manager.close_streaming(streaming_card, final_content=final_response)
 
         # Post-processing: record context, add reaction
@@ -375,9 +415,14 @@ class ProgrammingModeHandler(BaseHandler):
 
         previous_mode = self.mode_manager.get_mode(chat_id)
 
+        cwd = project.root_path if project else self.get_working_dir(chat_id)
         if not self.is_coco:
             # Claude resume: start_session with session_id, set resumed
-            session = self.ctx.claude_manager.start_session(chat_id, session_id=session_id)
+            try:
+                session = self.ctx.claude_manager.start_session(chat_id, cwd=cwd, session_id=session_id)
+            except Exception as e:
+                self.reply_message(message_id, fmt_error("恢复 Claude ACP 会话", str(e)))
+                return
             session.is_resumed = True
             # Mutual exclusion
             if project and project.coco_mode:
@@ -385,8 +430,11 @@ class ProgrammingModeHandler(BaseHandler):
             self._enter_mode_on_manager(chat_id)
         else:
             self._enter_mode_on_manager(chat_id)
-            session = self._get_session_manager().start_session(chat_id)
-            session.session_id = session_id
+            try:
+                session = self._get_session_manager().start_session(chat_id, cwd=cwd, session_id=session_id)
+            except Exception as e:
+                self.reply_message(message_id, fmt_error("恢复 Coco ACP 会话", str(e)))
+                return
 
         if project:
             self._set_mode_on_project(project, True, session_id)

@@ -1,8 +1,8 @@
-"""Loop Engine — subprocess-driven iterative closed-loop development.
+"""ACP-driven Loop Engine — iterative closed-loop development.
 
-Uses session.send_prompt_streaming() to iterate until acceptance criteria
-are satisfied. Each iteration uses role-aware prompts, evaluates criteria
-via a separate prompt, and applies multi-dimensional termination checks.
+Uses ACP session's multi-turn prompt capability to iterate until
+acceptance criteria are satisfied. Each iteration sends a prompt,
+tracks tool calls/plan progress, then evaluates criteria.
 """
 
 import json
@@ -11,105 +11,67 @@ import os
 import re
 import time
 import uuid
-from dataclasses import dataclass
-from typing import Optional, Callable, Union
+from dataclasses import dataclass, field
+from typing import Optional, Callable
 
-from ..session import CocoSessionManager, ClaudeSessionManager
-from ..session.base import BaseSession
+from ..acp import ACPEvent, ACPEventType, ACPEventRenderer, SyncACPSession, start_session_with_retry
 from ..config import get_settings
+from ..deep_engine.models import EngineRunState
 
 from .models import (
     LoopProject,
     LoopProjectStatus,
     LoopRequirement,
     IterationRecord,
-    IterationState,
-    LoopContextManager,
+    IterationStatus,
+    CriteriaTracker,
     TerminationSignal,
-    RoleSelection,
 )
-from .roles import RoleRouter
-from .termination import TerminationChecker
-from .analyzer import RequirementAnalyzer
+from .tracker import IterationTracker
 
 logger = logging.getLogger(__name__)
-
-AISessionManager = Union[CocoSessionManager, ClaudeSessionManager]
 
 
 @dataclass
 class LoopEngineCallbacks:
     """Loop Engine event callbacks."""
-
     on_analyzing_start: Optional[Callable[[str], None]] = None
     on_analyzing_done: Optional[Callable[[LoopProject], None]] = None
-    on_iteration_start: Optional[Callable[[int, int, RoleSelection], None]] = (
-        None  # (current, max, role)
-    )
-    on_iteration_event: Optional[Callable[[int, str], None]] = (
-        None  # (iteration, text_chunk)
-    )
+    on_iteration_start: Optional[Callable[[int, int], None]] = None  # (current, max)
+    on_iteration_event: Optional[Callable[[int, ACPEvent], None]] = None
     on_iteration_done: Optional[Callable[[int, IterationRecord], None]] = None
-    on_criteria_update: Optional[Callable[[LoopProject], None]] = None
     on_project_done: Optional[Callable[[LoopProject], None]] = None
     on_error: Optional[Callable[[str], None]] = None
 
 
 class LoopEngine:
-    """Subprocess-driven iterative closed-loop engine.
+    """ACP-driven iterative closed-loop engine."""
 
-    Integrates:
-    - RequirementAnalyzer: LLM-driven requirement parsing (fallback to text)
-    - RoleRouter: dynamic role selection per iteration
-    - TerminationChecker: multi-signal termination evaluation
-    - LoopContextManager: three-tier context compression
-    - Criteria writeback: evaluation results update CriteriaTracker
-    """
-
-    def __init__(
-        self,
-        chat_id: str,
-        root_path: str,
-        session_manager: Optional[AISessionManager] = None,
-        engine_name: str = "Coco",
-    ):
+    def __init__(self, chat_id: str, root_path: str,
+                 agent_type: str = "coco", engine_name: str = "Coco"):
         self.chat_id = chat_id
         self.root_path = os.path.expanduser(root_path)
         self.settings = get_settings()
         self.engine_name = engine_name
+        self._agent_type = agent_type
 
-        self._session_manager = session_manager or CocoSessionManager()
-        self._ai_session: Optional[BaseSession] = None
+        self._session: Optional[SyncACPSession] = None
         self._project: Optional[LoopProject] = None
-        self._is_running = False
-        self._should_stop = False
-
-        # Core modules
-        self._role_router = RoleRouter()
-        self._termination_checker = TerminationChecker(
-            max_iterations=self.settings.loop_max_iterations,
-            convergence_window=self.settings.loop_convergence_window,
-        )
-        self._context_manager = LoopContextManager(
-            max_context_tokens=getattr(self.settings, "loop_max_context_tokens", 8000),
-        )
+        self._renderer = ACPEventRenderer()
+        self._run_state = EngineRunState.IDLE
+        self._user_guidance: Optional[str] = None
 
     @property
     def project(self) -> Optional[LoopProject]:
         return self._project
 
     @property
-    def is_running(self) -> bool:
-        return self._is_running
+    def run_state(self) -> EngineRunState:
+        return self._run_state
 
-    def _ensure_ai_session(self) -> BaseSession:
-        if self._ai_session is None:
-            session_id = str(uuid.uuid4())
-            self._ai_session = self._session_manager.start_session(
-                chat_id=self.chat_id,
-                session_id=session_id,
-            )
-        return self._ai_session
+    @property
+    def is_running(self) -> bool:
+        return self._run_state != EngineRunState.IDLE
 
     def execute(
         self,
@@ -118,8 +80,7 @@ class LoopEngine:
     ) -> LoopProject:
         """Iterate until acceptance criteria are satisfied."""
         callbacks = callbacks or LoopEngineCallbacks()
-        self._is_running = True
-        self._should_stop = False
+        self._run_state = EngineRunState.RUNNING
         max_iterations = self.settings.loop_max_iterations
 
         # Create project
@@ -133,155 +94,94 @@ class LoopEngine:
         if callbacks.on_analyzing_start:
             callbacks.on_analyzing_start(requirement_text)
 
-        logger.info(
-            "[Loop:%s] 迭代开始, 需求长度=%d, 路径=%s, engine=%s",
-            project_name,
-            len(requirement_text),
-            self.root_path,
-            self.engine_name,
-        )
+        logger.info("[Loop:%s] ACP迭代开始, 需求长度=%d, 路径=%s, agent=%s",
+                     project_name, len(requirement_text), self.root_path, self._agent_type)
 
         try:
-            # Ensure AI session
-            session = self._ensure_ai_session()
-
-            # Parse requirement (LLM-driven with fallback)
-            analyzer = RequirementAnalyzer(session=session, cwd=self.root_path)
-            requirement = analyzer.analyze(requirement_text)
-            self._project.set_requirement(requirement)
-            self._project.start()
+            # Parse requirement — extract acceptance criteria
+            requirement = self._parse_requirement(requirement_text)
+            self._project.set_requirement(requirement)  # initializes CriteriaTracker
+            self._project.status = LoopProjectStatus.RUNNING
 
             if callbacks.on_analyzing_done:
                 callbacks.on_analyzing_done(self._project)
 
+            # Create ACP session (with retry and progressive timeout)
+            self._session = start_session_with_retry(
+                agent_type=self._agent_type, cwd=self.root_path,
+                startup_timeout=self.settings.loop_execution_timeout,
+            )
+
+            # Build initial prompt
+            initial_prompt = self._build_initial_prompt(requirement)
             timeout = self.settings.loop_execution_timeout
 
-            # --- Iteration loop ---
             for iteration in range(1, max_iterations + 1):
-                if self._should_stop:
+                if self._run_state != EngineRunState.RUNNING:
                     break
 
-                # 1. Build IterationState
-                state = self._build_iteration_state(iteration, requirement)
-
-                # 2. Select role
-                role_selection = self._role_router.select_role(state)
+                iter_start = time.time()
 
                 if callbacks.on_iteration_start:
-                    callbacks.on_iteration_start(
-                        iteration, max_iterations, role_selection
-                    )
+                    callbacks.on_iteration_start(iteration, max_iterations)
 
-                # 3. Build role-aware prompt
-                prompt = self._build_role_prompt(state, role_selection)
+                # Build prompt for this iteration
+                if iteration == 1:
+                    prompt = initial_prompt
+                else:
+                    prompt = self._build_iteration_prompt(iteration, requirement)
 
-                # 4. Execute via streaming
+                # Track events for this iteration
+                iter_tracker = IterationTracker()
+
+                def on_event(event: ACPEvent, _it=iteration):
+                    iter_tracker.process(event)
+                    self._renderer.process_event(event)
+                    if callbacks.on_iteration_event:
+                        callbacks.on_iteration_event(_it, event)
+
+                result = self._session.send_prompt(prompt, on_event=on_event, timeout=timeout)
+
+                # Record iteration — full output, proper duration, extract focus
+                iter_end = time.time()
+                focus = self._extract_focus(iter_tracker.text_buffer) or f"迭代 {iteration}"
                 record = IterationRecord(
                     iteration=iteration,
-                    role=role_selection.role,
-                    focus=role_selection.focus,
-                    prompt=prompt,
+                    role=None,
+                    focus=focus,
+                    output=iter_tracker.text_buffer,
+                    status=IterationStatus.SUCCESS if result.stop_reason == "end_turn" else IterationStatus.FAILED,
+                    started_at=iter_start,
+                    duration=iter_end - iter_start,
+                    completed_at=iter_end,
                 )
-
-                text_buffer: list[str] = []
-
-                def on_chunk(chunk: str, _it=iteration):
-                    text_buffer.append(chunk)
-                    if callbacks.on_iteration_event:
-                        callbacks.on_iteration_event(_it, chunk)
-
-                iter_start = time.time()
-                try:
-                    full_output = session.send_prompt_streaming(
-                        prompt=prompt,
-                        on_chunk=on_chunk,
-                        timeout=timeout,
-                        cwd=self.root_path,
-                        chunk_interval=0.5,
-                        should_stop=lambda: self._should_stop,
-                    )
-                except Exception as e:
-                    full_output = "".join(text_buffer)
-                    if not full_output:
-                        full_output = f"Error: {e}"
-                    record.fail(str(e), full_output[:2000])
-                    self._project.iterations.append(record)
-                    self._context_manager.record_iteration(record)
-                    logger.warning(
-                        "[Loop:%s] 迭代 %d 执行失败: %s", project_name, iteration, e
-                    )
-
-                    if callbacks.on_iteration_done:
-                        callbacks.on_iteration_done(iteration, record)
-
-                    # Check termination after failure
-                    term_result = self._termination_checker.evaluate(
-                        self._project, self._should_stop
-                    )
-                    if term_result.signal != TerminationSignal.CONTINUE:
-                        self._apply_termination(term_result)
-                        break
-                    continue
-
-                iter_duration = time.time() - iter_start
-
-                # 5. Evaluate criteria and writeback
-                criteria_progress = self._evaluate_criteria(
-                    session,
-                    requirement.acceptance_criteria,
-                    iteration,
-                )
-
-                # Complete the record
-                record.complete(
-                    output=full_output[:2000],
-                    summary=f"{role_selection.role.display_name}: {role_selection.focus}",
-                    criteria_progress=criteria_progress,
-                )
-                record.duration = iter_duration
-
                 self._project.iterations.append(record)
-                self._context_manager.record_iteration(record)
 
-                logger.info(
-                    "[Loop:%s] 迭代 %d/%d 完成 [%s], 输出长度=%d, 耗时=%.1fs, 标准=%d/%d",
-                    project_name,
-                    iteration,
-                    max_iterations,
-                    role_selection.role.display_name,
-                    len(full_output),
-                    iter_duration,
-                    self._project.satisfied_count,
-                    self._project.total_criteria,
-                )
+                logger.info("[Loop:%s] 迭代 %d/%d 完成, 工具=%d, 文件=%d",
+                             project_name, iteration, max_iterations,
+                             len(iter_tracker.tool_calls),
+                             len(iter_tracker.modified_files))
 
                 if callbacks.on_iteration_done:
                     callbacks.on_iteration_done(iteration, record)
 
-                if callbacks.on_criteria_update:
-                    callbacks.on_criteria_update(self._project)
-
-                # 6. Termination check
-                term_result = self._termination_checker.evaluate(
-                    self._project, self._should_stop
-                )
-                if term_result.signal != TerminationSignal.CONTINUE:
-                    logger.info(
-                        "[Loop:%s] 终止信号: %s — %s",
-                        project_name,
-                        term_result.signal.value,
-                        term_result.reason,
-                    )
-                    self._apply_termination(term_result)
+                # Evaluate acceptance criteria in the same session
+                criteria_result = self._evaluate_criteria(requirement.acceptance_criteria, iteration)
+                if criteria_result.get("all_satisfied", False):
+                    logger.info("[Loop:%s] 所有验收标准已满足, 迭代 %d 轮", project_name, iteration)
                     break
 
-            else:
-                # Loop exhausted max_iterations without breaking
-                self._project.abort(f"达到最大迭代次数 {max_iterations}")
+                # Convergence detection
+                if self._detect_convergence():
+                    logger.info("[Loop:%s] 收敛检测触发, 迭代 %d 轮", project_name, iteration)
+                    break
 
-            # Handle user stop (didn't go through termination checker)
-            if self._should_stop and self._project.status == LoopProjectStatus.RUNNING:
+            # Determine final status
+            if self._run_state == EngineRunState.STOPPING:
                 self._project.status = LoopProjectStatus.PAUSED
+            else:
+                self._project.status = LoopProjectStatus.COMPLETED
+                self._project.completed_at = time.time()
 
             if callbacks.on_project_done:
                 callbacks.on_project_done(self._project)
@@ -299,147 +199,268 @@ class LoopEngine:
             return self._project
 
         finally:
-            self._is_running = False
+            self._run_state = EngineRunState.IDLE
 
-    # ------------------------------------------------------------------
-    # State & prompt building
-    # ------------------------------------------------------------------
+    def _parse_requirement(self, text: str) -> LoopRequirement:
+        """Simple requirement parsing — extract goal and acceptance criteria."""
+        lines = text.strip().split("\n")
+        criteria = []
+        goal = text
 
-    def _build_iteration_state(
-        self, iteration: int, requirement: LoopRequirement
-    ) -> IterationState:
-        """Build a state snapshot for role selection and prompt construction."""
-        return IterationState(
-            iteration_number=iteration,
-            requirement=requirement,
-            criteria_tracker=self._project.criteria_tracker,
-            recent_iterations=self._project.iterations[-5:],
-            context_summary=self._context_manager.build_context_prompt(),
-            user_guidance=self._context_manager.consume_user_guidance(),
-            consecutive_failures=self._project.consecutive_failures,
-            last_role=self._project.last_role,
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("- ") or stripped.startswith("* "):
+                criteria.append(stripped[2:])
+            elif stripped.startswith("[ ] ") or stripped.startswith("[x] "):
+                criteria.append(stripped[4:])
+
+        if not criteria:
+            # If no explicit criteria, use the whole text as goal and generate generic criteria
+            criteria = [f"完成需求: {text[:100]}"]
+
+        return LoopRequirement(
+            goal=goal,
+            acceptance_criteria=criteria,
+            raw_text=text,
         )
 
-    def _build_role_prompt(
-        self, state: IterationState, selection: RoleSelection
-    ) -> str:
-        """Build a role-aware iteration prompt."""
-        role_prompt = self._role_router.get_role_prompt(selection.role)
+    def _build_initial_prompt(self, requirement: LoopRequirement) -> str:
+        criteria_list = "\n".join(f"- [ ] {c}" for c in requirement.acceptance_criteria)
+        return f"""你是一个专业的软件工程师。请完成以下产品需求：
 
-        # Build criteria list with satisfaction status
+## 需求
+{requirement.goal}
+
+## 验收标准
+{criteria_list}
+
+## 工作目录
+{self.root_path}
+
+## 要求
+1. 先分析需求，理解验收标准
+2. 制定实现计划并逐步执行
+3. 每个验收标准都必须通过验证
+4. 完成后确认所有标准已满足
+"""
+
+    def _build_iteration_prompt(self, iteration: int, requirement: LoopRequirement) -> str:
+        # Show satisfied vs unsatisfied criteria based on tracker state
+        tracker = self._project.criteria_tracker if self._project else None
         criteria_lines = []
-        for i, c in enumerate(state.requirement.acceptance_criteria):
-            satisfied = state.criteria_tracker.satisfied.get(i, False)
-            marker = "[x]" if satisfied else "[ ]"
-            criteria_lines.append(f"- {marker} {i + 1}. {c}")
+        for i, c in enumerate(requirement.acceptance_criteria):
+            if tracker and tracker.satisfied.get(i, False):
+                criteria_lines.append(f"- [x] {c} ✅ (已满足)")
+            else:
+                criteria_lines.append(f"- [ ] {c}")
+        criteria_list = "\n".join(criteria_lines)
 
-        sections = [
-            f"你是一个迭代式开发助手。当前是第 {state.iteration_number} 轮迭代。",
-            f"\n## 产品目标\n{state.requirement.goal}",
-            "\n## 验收标准\n" + "\n".join(criteria_lines),
-        ]
+        guidance_section = ""
+        if self._user_guidance:
+            guidance_section = f"\n## 用户引导\n{self._user_guidance}\n"
+            self._user_guidance = None  # consume after use
+        return f"""继续完成剩余的验收标准。这是第 {iteration} 轮迭代。
 
-        if state.context_summary:
-            sections.append(f"\n## 已完成的工作\n{state.context_summary}")
+## 验收标准进度
+{criteria_list}
+{guidance_section}
+请聚焦未满足的标准（未打勾的），继续实现。
+完成后报告每个标准的状态。
+"""
 
-        sections.append(f"\n## 你的角色: {selection.role.display_name}\n{role_prompt}")
-        sections.append(
-            f"\n## 本轮任务\n请以 {selection.role.display_name} 的视角，"
-            f"针对尚未满足的标准，执行下一步最有价值的工作。"
-        )
+    def _evaluate_criteria(self, criteria: list[str], iteration: int) -> dict:
+        """Evaluate acceptance criteria by asking the agent in the same session.
 
-        if state.user_guidance:
-            sections.append(f"\n## 用户引导\n{state.user_guidance}")
+        Updates the CriteriaTracker with per-criteria PASS/FAIL results.
+        """
+        if not self._session:
+            return {"all_satisfied": False}
 
-        sections.append(f"\n## 工作目录\n{self.root_path}")
-        sections.append("\n完成后输出 DEEP_TASK_SUCCESS。")
-
-        return "\n".join(sections)
-
-    # ------------------------------------------------------------------
-    # Criteria evaluation with writeback
-    # ------------------------------------------------------------------
-
-    def _evaluate_criteria(
-        self, session: BaseSession, criteria: list[str], iteration: int
-    ) -> dict[int, bool]:
-        """Evaluate acceptance criteria and writeback to CriteriaTracker."""
-        criteria_list = "\n".join(
-            f"CRITERIA_{i + 1}: {c}" for i, c in enumerate(criteria)
-        )
+        criteria_list = "\n".join(f"CRITERIA_{i+1}: {c}" for i, c in enumerate(criteria))
         eval_prompt = f"""请评估以下验收标准是否已满足：
 {criteria_list}
 
-对每个标准回答 PASS 或 FAIL，格式：
+对每个标准回答 PASS 或 FAIL，严格按照以下格式回复（每行一个）：
 CRITERIA_1: PASS
 CRITERIA_2: FAIL
+...
 """
-        progress: dict[int, bool] = {}
         try:
-            eval_output = session.send_prompt(
-                prompt=eval_prompt,
-                timeout=60,
-                cwd=self.root_path,
-            )
-            full_text = eval_output.upper()
+            eval_text = []
 
-            # Parse per-criteria results
+            def on_eval_event(event: ACPEvent):
+                if event.event_type == ACPEventType.TEXT_CHUNK and event.text:
+                    eval_text.append(event.text)
+
+            self._session.send_prompt(eval_prompt, on_event=on_eval_event, timeout=60)
+            full_text = "".join(eval_text).upper()
+
+            # Parse per-criteria results: look for "CRITERIA_N: PASS" or "CRITERIA_N: FAIL"
+            per_criteria: dict[int, bool] = {}
             for i in range(len(criteria)):
-                marker = f"CRITERIA_{i + 1}"
-                pattern = rf"{marker}\s*[:：]\s*(PASS|FAIL)"
+                pattern = rf"CRITERIA_{i+1}\s*:\s*(PASS|FAIL)"
                 match = re.search(pattern, full_text)
                 if match:
-                    progress[i] = match.group(1) == "PASS"
+                    per_criteria[i] = (match.group(1) == "PASS")
 
-            # Writeback to CriteriaTracker
-            self._project.criteria_tracker.batch_update(progress, iteration)
+            # Update CriteriaTracker
+            if self._project:
+                self._project.criteria_tracker.batch_update(per_criteria, iteration)
+
+            pass_count = sum(1 for v in per_criteria.values() if v)
+            fail_count = sum(1 for v in per_criteria.values() if not v)
+            # Use tracker state for all_satisfied (accumulates across iterations)
+            all_satisfied = self._project.criteria_tracker.is_all_satisfied if self._project else False
+
+            return {"all_satisfied": all_satisfied, "pass_count": pass_count, "fail_count": fail_count}
 
         except Exception as e:
             logger.debug("[Loop] 验收标准评估失败: %s", e)
+            return {"all_satisfied": False}
 
-        return progress
+    def _extract_focus(self, text: str) -> str:
+        """Extract a brief focus description from agent output.
 
-    # ------------------------------------------------------------------
-    # Termination
-    # ------------------------------------------------------------------
+        Takes the first meaningful line (non-empty, not just punctuation/whitespace)
+        and truncates to 80 chars as a concise summary of what the agent worked on.
+        """
+        if not text:
+            return ""
+        for line in text.strip().split("\n"):
+            line = line.strip()
+            # Skip empty lines, markdown markers, code fences
+            if not line or line.startswith("```") or line.startswith("---"):
+                continue
+            # Strip leading markdown markers like #, *, -, >
+            cleaned = line.lstrip("#*-> ").strip()
+            if len(cleaned) >= 4:
+                return cleaned[:80]
+        return ""
 
-    def _apply_termination(self, term_result):
-        """Apply termination result to project status."""
-        if term_result.signal in (
-            TerminationSignal.COMPLETE,
-            TerminationSignal.CONVERGED,
-        ):
-            self._project.complete()
-        elif term_result.signal == TerminationSignal.USER_STOP:
-            self._project.status = LoopProjectStatus.PAUSED
-        else:
-            self._project.abort(term_result.reason)
+    def _detect_convergence(self) -> bool:
+        """Detect if recent iterations made no progress."""
+        if not self._project or len(self._project.iterations) < self.settings.loop_convergence_window:
+            return False
 
-    # ------------------------------------------------------------------
-    # User interaction
-    # ------------------------------------------------------------------
+        window = self.settings.loop_convergence_window
+        recent = self._project.iterations[-window:]
+
+        # If all recent iterations have very short output, consider converged
+        if all(len(r.output or "") < 50 for r in recent):
+            return True
+
+        return False
 
     def inject_guidance(self, message: str):
-        """Inject user guidance via ContextManager."""
-        self._context_manager.inject_user_guidance(message)
+        """Inject user guidance — will be included in the next iteration prompt."""
+        self._user_guidance = message
         logger.info("[Loop] 用户引导已注入: %s...", message[:100])
 
     def stop(self):
-        self._should_stop = True
+        self._run_state = EngineRunState.STOPPING
+        if self._session:
+            self._session.cancel()
 
     def pause(self):
         if self._project:
             self._project.status = LoopProjectStatus.PAUSED
-        self._should_stop = True
+        self._run_state = EngineRunState.STOPPING
+        if self._session:
+            self._session.cancel()
 
-    def resume(
-        self, callbacks: Optional[LoopEngineCallbacks] = None
-    ) -> Optional[LoopProject]:
+    def resume(self, callbacks: Optional[LoopEngineCallbacks] = None) -> Optional[LoopProject]:
+        """Resume a paused loop execution — continue iterating from where we left off."""
+        if not self._project or self._project.status != LoopProjectStatus.PAUSED:
+            return self._project
+        if not self._project.requirement:
+            return self._project
+
+        callbacks = callbacks or LoopEngineCallbacks()
+        self._run_state = EngineRunState.RUNNING
+        self._project.status = LoopProjectStatus.RUNNING
+        max_iterations = self.settings.loop_max_iterations
+        start_iteration = len(self._project.iterations) + 1
+        requirement = self._project.requirement
+        project_name = self._project.name
+
+        try:
+            self._session = start_session_with_retry(
+                agent_type=self._agent_type, cwd=self.root_path,
+                startup_timeout=self.settings.loop_execution_timeout,
+            )
+
+            timeout = self.settings.loop_execution_timeout
+
+            for iteration in range(start_iteration, max_iterations + 1):
+                if self._run_state != EngineRunState.RUNNING:
+                    break
+
+                iter_start = time.time()
+
+                if callbacks.on_iteration_start:
+                    callbacks.on_iteration_start(iteration, max_iterations)
+
+                prompt = self._build_iteration_prompt(iteration, requirement)
+                iter_tracker = IterationTracker()
+
+                def on_event(event: ACPEvent, _it=iteration):
+                    iter_tracker.process(event)
+                    self._renderer.process_event(event)
+                    if callbacks.on_iteration_event:
+                        callbacks.on_iteration_event(_it, event)
+
+                result = self._session.send_prompt(prompt, on_event=on_event, timeout=timeout)
+
+                iter_end = time.time()
+                focus = self._extract_focus(iter_tracker.text_buffer) or f"迭代 {iteration}"
+                record = IterationRecord(
+                    iteration=iteration,
+                    role=None,
+                    focus=focus,
+                    output=iter_tracker.text_buffer,
+                    status=IterationStatus.SUCCESS if result.stop_reason == "end_turn" else IterationStatus.FAILED,
+                    started_at=iter_start,
+                    duration=iter_end - iter_start,
+                    completed_at=iter_end,
+                )
+                self._project.iterations.append(record)
+
+                if callbacks.on_iteration_done:
+                    callbacks.on_iteration_done(iteration, record)
+
+                criteria_result = self._evaluate_criteria(requirement.acceptance_criteria, iteration)
+                if criteria_result.get("all_satisfied", False):
+                    logger.info("[Loop:%s] 恢复后所有验收标准已满足, 迭代 %d 轮", project_name, iteration)
+                    break
+
+                if self._detect_convergence():
+                    logger.info("[Loop:%s] 恢复后收敛检测触发, 迭代 %d 轮", project_name, iteration)
+                    break
+
+            if self._run_state == EngineRunState.STOPPING:
+                self._project.status = LoopProjectStatus.PAUSED
+            else:
+                self._project.status = LoopProjectStatus.COMPLETED
+                self._project.completed_at = time.time()
+
+            if callbacks.on_project_done:
+                callbacks.on_project_done(self._project)
+
+        except Exception as e:
+            error_msg = f"Loop恢复异常: {str(e)}"
+            logger.error("[Loop:%s] %s", project_name, error_msg)
+            self._project.status = LoopProjectStatus.ABORTED
+            self._project.completed_at = time.time()
+            if callbacks.on_error:
+                callbacks.on_error(error_msg)
+
+        finally:
+            self._run_state = EngineRunState.IDLE
+
         return self._project
 
-    # ------------------------------------------------------------------
-    # State persistence
-    # ------------------------------------------------------------------
+    def get_rendered_content(self) -> str:
+        return self._renderer.get_final_content()
 
     def save_state(self, filepath: Optional[str] = None) -> str:
         if not self._project:
@@ -459,11 +480,14 @@ CRITERIA_2: FAIL
         return filepath
 
     def cleanup(self):
-        if self._ai_session:
-            self._session_manager.end_session(self.chat_id)
-            self._ai_session = None
+        if self._session:
+            try:
+                self._session.close()
+            except Exception as e:
+                logger.debug("关闭ACP session失败: %s", e)
+            self._session = None
         self._project = None
-        self._is_running = False
+        self._run_state = EngineRunState.IDLE
 
 
 class LoopEngineManager:
@@ -471,37 +495,26 @@ class LoopEngineManager:
 
     def __init__(self):
         self._engines: dict[str, LoopEngine] = {}
-        self._coco_session_manager = CocoSessionManager()
-        self._claude_session_manager = ClaudeSessionManager()
 
-    def get_or_create(
-        self, chat_id: str, root_path: str, engine_name: str = "Coco"
-    ) -> LoopEngine:
+    def get_or_create(self, chat_id: str, root_path: str, engine_name: str = "Coco") -> LoopEngine:
         key = f"{chat_id}:{root_path}"
-
-        if engine_name.lower().startswith("claude"):
-            session_manager = self._claude_session_manager
-        else:
-            session_manager = self._coco_session_manager
+        agent_type = "claude" if engine_name.lower().startswith("claude") else "coco"
 
         if key not in self._engines:
             self._engines[key] = LoopEngine(
                 chat_id=chat_id,
                 root_path=root_path,
-                session_manager=session_manager,
+                agent_type=agent_type,
                 engine_name=engine_name,
             )
         else:
             existing = self._engines[key]
-            if (
-                existing.engine_name.lower() != engine_name.lower()
-                and not existing.is_running
-            ):
+            if existing.engine_name.lower() != engine_name.lower() and not existing.is_running:
                 existing.cleanup()
                 self._engines[key] = LoopEngine(
                     chat_id=chat_id,
                     root_path=root_path,
-                    session_manager=session_manager,
+                    agent_type=agent_type,
                     engine_name=engine_name,
                 )
         return self._engines[key]
@@ -517,11 +530,8 @@ class LoopEngineManager:
         return None
 
     def get_active_engines(self, chat_id: str) -> list[LoopEngine]:
-        return [
-            e
-            for k, e in self._engines.items()
-            if k.startswith(f"{chat_id}:") and e.is_running
-        ]
+        return [e for k, e in self._engines.items()
+                if k.startswith(f"{chat_id}:") and e.is_running]
 
     def list_engines(self, chat_id: Optional[str] = None) -> list[LoopEngine]:
         if chat_id is None:

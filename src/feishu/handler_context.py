@@ -14,9 +14,9 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 if TYPE_CHECKING:
     import lark_oapi as lark
+    from ..acp import ACPSessionManager
     from ..agent.intent_recognizer import IntentRecognizer
     from ..card.streaming import StreamingCardManager
-    from ..session import CocoSessionManager, ClaudeSessionManager
     from ..deep_engine import DeepEngineManager, ProgressReporter
     from ..loop_engine import LoopEngineManager, LoopReporter
     from ..mode import ModeManager
@@ -34,9 +34,9 @@ class HandlerContext:
     api_client_factory: Callable[[], "lark.Client"]
     message_callback: Callable[[str, str, str, Optional[str]], None]
 
-    # Session managers
-    coco_manager: "CocoSessionManager"
-    claude_manager: "ClaudeSessionManager"
+    # Session managers (ACP-based)
+    coco_manager: "ACPSessionManager"
+    claude_manager: "ACPSessionManager"
 
     # Core services
     intent_recognizer: "IntentRecognizer"

@@ -9,8 +9,7 @@ class TestCardActionHandler(unittest.TestCase):
         """验证 _handle_card_action 返回 None"""
         # Mock settings
         with patch('src.feishu.ws_client.get_settings') as mock_get_settings, \
-             patch('src.feishu.ws_client.CocoSessionManager'), \
-             patch('src.feishu.ws_client.ClaudeSessionManager'), \
+             patch('src.feishu.ws_client.ACPSessionManager'), \
              patch('src.feishu.ws_client.IntentRecognizer'), \
              patch('src.feishu.ws_client.ProjectManager'), \
              patch('src.feishu.ws_client.MessageProjectMapper'), \
@@ -45,8 +44,7 @@ class TestCardActionHandler(unittest.TestCase):
     def test_process_card_action_parses_string_value(self):
         """验证字符串 value 被解析后触发对应处理"""
         with patch('src.feishu.ws_client.get_settings') as mock_get_settings, \
-             patch('src.feishu.ws_client.CocoSessionManager'), \
-             patch('src.feishu.ws_client.ClaudeSessionManager'), \
+             patch('src.feishu.ws_client.ACPSessionManager'), \
              patch('src.feishu.ws_client.IntentRecognizer'), \
              patch('src.feishu.ws_client.ProjectManager'), \
              patch('src.feishu.ws_client.MessageProjectMapper'), \
@@ -84,8 +82,7 @@ class TestCardActionHandler(unittest.TestCase):
     def test_handle_card_enter_claude_passes_project(self):
         """验证卡片入口 Claude 时把 project 透传给 enter_mode（避免选错项目导致显示 Coco 卡片）"""
         with patch('src.feishu.ws_client.get_settings') as mock_get_settings, \
-             patch('src.feishu.ws_client.CocoSessionManager'), \
-             patch('src.feishu.ws_client.ClaudeSessionManager'), \
+             patch('src.feishu.ws_client.ACPSessionManager'), \
              patch('src.feishu.ws_client.IntentRecognizer'), \
              patch('src.feishu.ws_client.ProjectManager'), \
              patch('src.feishu.ws_client.MessageProjectMapper'), \
@@ -123,8 +120,7 @@ class TestCardActionHandler(unittest.TestCase):
     def test_is_interceptable_command_includes_diff(self):
         """验证 /diff 会被识别为系统拦截命令（避免被当成 shell 或转发给 AI）"""
         with patch('src.feishu.ws_client.get_settings') as mock_get_settings, \
-             patch('src.feishu.ws_client.CocoSessionManager'), \
-             patch('src.feishu.ws_client.ClaudeSessionManager'), \
+             patch('src.feishu.ws_client.ACPSessionManager'), \
              patch('src.feishu.ws_client.IntentRecognizer'), \
              patch('src.feishu.ws_client.ProjectManager'), \
              patch('src.feishu.ws_client.MessageProjectMapper'), \
@@ -147,8 +143,7 @@ class TestCardActionHandler(unittest.TestCase):
     def test_process_with_intent_routes_diff_in_smart_mode(self):
         """验证 Smart 模式下 /diff 走系统命令分支，而不是进入 intent 识别/执行"""
         with patch('src.feishu.ws_client.get_settings') as mock_get_settings, \
-             patch('src.feishu.ws_client.CocoSessionManager'), \
-             patch('src.feishu.ws_client.ClaudeSessionManager'), \
+             patch('src.feishu.ws_client.ACPSessionManager'), \
              patch('src.feishu.ws_client.IntentRecognizer'), \
              patch('src.feishu.ws_client.ProjectManager'), \
              patch('src.feishu.ws_client.MessageProjectMapper'), \

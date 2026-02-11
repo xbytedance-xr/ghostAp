@@ -47,24 +47,25 @@ class LoopReporter:
         lines.append("\n🚀 准备开始迭代执行...")
         return "\n".join(lines)
 
-    def format_iteration_start(self, iteration: int, max_iterations: int) -> str:
-        return f"""🔄 **迭代 [{iteration}/{max_iterations}]**
-
-🤖 **Agent 执行中...**
-
-⏳ 正在执行..."""
+    def format_iteration_start(self, iteration: int, max_iterations: int,
+                               criteria_status: str = "") -> str:
+        parts = [f"🔄 **迭代 [{iteration}/{max_iterations}]**\n",
+                 "🤖 **Agent 执行中...**"]
+        if criteria_status:
+            parts.append(f"\n{criteria_status}")
+        parts.append("\n⏳ 正在执行...")
+        return "\n".join(parts)
 
     def format_iteration_done(self, iteration: int, record: IterationRecord) -> str:
         if record.status == IterationStatus.SUCCESS:
             summary = record.focus or "执行完成"
-            output_preview = ""
+            output_section = ""
             if record.output:
-                preview = record.output[:200]
-                output_preview = f"\n\n**输出预览:**\n```\n{preview}\n```"
+                output_section = f"\n\n**输出:**\n```\n{record.output}\n```"
             return f"""✅ **迭代完成 [{iteration}]**
 
 🤖 **{summary}**
-⏱️ 耗时: {record.duration:.1f}s{output_preview}"""
+⏱️ 耗时: {record.duration:.1f}s{output_section}"""
         else:
             error_text = record.error or "未知错误"
             return f"""❌ **迭代失败 [{iteration}]**
@@ -75,6 +76,18 @@ class LoopReporter:
 ```
 {error_text}
 ```"""
+
+    def format_criteria_brief(self, project: LoopProject) -> str:
+        """Brief criteria status for iteration cards."""
+        tracker = project.criteria_tracker
+        if not tracker.criteria:
+            return ""
+        lines = [f"📋 **验收标准 ({tracker.satisfied_count}/{tracker.total_count})**"]
+        for i, criterion in enumerate(tracker.criteria):
+            satisfied = tracker.satisfied.get(i, False)
+            marker = "✅" if satisfied else "🔲"
+            lines.append(f"  {marker} {criterion}")
+        return "\n".join(lines)
 
     def format_criteria_update(self, project: LoopProject) -> str:
         lines = ["📋 **验收标准进度**\n"]

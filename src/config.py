@@ -1,4 +1,5 @@
 from typing import Optional
+import shlex
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,8 +29,29 @@ class Settings(BaseSettings):
     claude_session_timeout: int = 86400
     claude_max_output_length: int = 30000
 
+    # ACP agent process startup timeout (seconds)
+    acp_startup_timeout: int = 20
+
+    # ACP agent startup retries (1 means no retry)
+    acp_startup_retries: int = 2
+
+    # ACP health check timeout (seconds)
+    acp_healthcheck_timeout: float = 2.0
+
+    # ACP permission auto-approve (True = agent actions auto-approved, False = denied by default)
+    acp_permission_auto_approve: bool = True
+
+    # ACP agent command overrides (optional)
+    # Example:
+    #   COCO_ACP_CMD=coco
+    #   COCO_ACP_ARGS="acp serve"
+    coco_acp_cmd: str = ""
+    coco_acp_args: str = ""
+    claude_acp_cmd: str = ""
+    claude_acp_args: str = ""
+
     # Loop Engine settings
-    loop_max_iterations: int = 10
+    loop_max_iterations: int = 100
     loop_execution_timeout: int = 7200
     loop_convergence_window: int = 3
     loop_max_context_tokens: int = 8000
@@ -69,6 +91,15 @@ class Settings(BaseSettings):
 
     def validate_ark_config(self) -> bool:
         return bool(self.ark_api_key and self.ark_model)
+
+    def get_acp_command(self, agent_type: str) -> tuple[str, list[str]]:
+        """Return (cmd, args) override for an ACP agent, if configured."""
+        agent_type = (agent_type or "").lower()
+        if agent_type == "coco" and self.coco_acp_cmd:
+            return self.coco_acp_cmd, shlex.split(self.coco_acp_args or "")
+        if agent_type == "claude" and self.claude_acp_cmd:
+            return self.claude_acp_cmd, shlex.split(self.claude_acp_args or "")
+        return "", []
 
 
 _settings: Optional[Settings] = None

@@ -1,0 +1,48 @@
+"""Iteration tracker — tracks ACP events within a single loop iteration.
+
+Collects tool calls, modified files, plan progress, and text output
+for one iteration of the loop engine.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Optional
+
+from ..acp.models import ACPEvent, ACPEventType, PlanInfo, ToolCallInfo
+
+
+@dataclass
+class IterationTracker:
+    """Tracks ACP events within a single iteration."""
+
+    tool_calls: list[ToolCallInfo] = field(default_factory=list)
+    modified_files: set[str] = field(default_factory=set)
+    plan_progress: Optional[PlanInfo] = None
+    text_buffer: str = ""
+
+    def process(self, event: ACPEvent) -> None:
+        """Process an ACP event."""
+        match event.event_type:
+            case ACPEventType.TEXT_CHUNK:
+                if event.text:
+                    self.text_buffer += event.text
+            case ACPEventType.TOOL_CALL_START:
+                if event.tool_call:
+                    for loc in event.tool_call.locations:
+                        self.modified_files.add(loc)
+            case ACPEventType.TOOL_CALL_DONE:
+                if event.tool_call:
+                    self.tool_calls.append(event.tool_call)
+                    for loc in event.tool_call.locations:
+                        self.modified_files.add(loc)
+            case ACPEventType.PLAN_UPDATE:
+                if event.plan:
+                    self.plan_progress = event.plan
+
+    def reset(self) -> None:
+        """Reset for a new iteration."""
+        self.tool_calls.clear()
+        self.modified_files.clear()
+        self.plan_progress = None
+        self.text_buffer = ""

@@ -5,14 +5,13 @@ from .models import (
     DeepTaskStatus,
     DeepProject,
     DeepProjectStatus,
+    EngineRunState,
     ExecutionContext,
     ParsedRequirement,
     ExecutionResult,
     ProgressUpdate,
 )
-from .parser import RequirementParser
-from .planner import TaskPlanner
-from .executor import TaskExecutor
+from .progress import DeepProgress
 from .reporter import ProgressReporter
 
 __all__ = [
@@ -20,16 +19,15 @@ __all__ = [
     "DeepEngine",
     "DeepEngineManager",
     "DeepEngineCallbacks",
+    "DeepProgress",
     "DeepTask",
     "DeepTaskStatus",
     "DeepProject",
     "DeepProjectStatus",
+    "EngineRunState",
     "ExecutionContext",
     "ParsedRequirement",
     "ExecutionResult",
     "ProgressUpdate",
-    "RequirementParser",
-    "TaskPlanner",
-    "TaskExecutor",
     "ProgressReporter",
 ]

@@ -1,6 +1,11 @@
 # GhostAP 项目记忆索引
 
+## 2026-02-11
+- **Loop Engine 卡片显示修复 + 迭代上限放开** - CriteriaTracker 初始化/更新修复、输出截断移除、迭代上限10→100、duration/focus 修复、卡片验收标准展示，716测试全通过 → [2026-02-11.md](2026-02-11.md)
+- **ACP 实现缺陷修复（5项）** - inject_context 实装、resume 实装、引擎 retry 接入、auto_approve 配置化、进程崩溃 watchdog，716测试全通过 → [2026-02-11.md](2026-02-11.md)
+
 ## 2026-02-10
+- **ACP 协议重构实施** - subprocess CLI→ACP (JSON-RPC 2.0 over stdio)，新增 src/acp/ 7文件，重写 deep_engine(6→4文件)、loop_engine(7→4文件)，删除 src/session/，704测试全通过 → [2026-02-10.md](2026-02-10.md)
 - **Bug修复：流式错误恢复元组解包崩溃** - ClaudeSession 4元组→3变量解包 + .env 配置字段名修正 → [2026-02-10.md](2026-02-10.md)
 - **ACP 协议重构** - subprocess→ACP 结构化 agent 通信，8阶段重构 → [2026-02-10.md](2026-02-10.md)
 - **Loop Engine 移植到 multicoco** - ACP→subprocess 改造，4新文件+6修改+61测试 → [2026-02-10.md](2026-02-10.md)
