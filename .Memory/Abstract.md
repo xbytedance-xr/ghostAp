@@ -1,6 +1,7 @@
 # GhostAP 项目记忆索引
 
 ## 2026-02-11
+- **Shell 命令卡死 + 会话上下文串台修复** - Shell 快速通道绕过项目队列阻塞 + ACPSessionManager 按 (chat_id, project_id) 隔离会话，792测试全通过 → [2026-02-11.md](2026-02-11.md)
 - **Loop Engine 多视角审查系统（Ralph Loop）** - 每轮迭代后从架构师/产品/用户/测试四视角审查，审查建议驱动下一轮迭代，764测试全通过 → [2026-02-11.md](2026-02-11.md)
 - **架构优化（14项）** - CLI流式输出+权限配置提取+shell路径统一+引擎会话去重+转发表setattr+snapshot统一+ref_note提取+终端TTL清理+杂项修复，718测试全通过 → [2026-02-11.md](2026-02-11.md)
 - **架构审查修复（8项）** - Engine状态卡死修复、EngineManager线程安全、ACPSessionManager并发保护、resume会话泄漏修复、inject_context队列模式、超时cancel、on_event错误可见性、用户错误反馈，716测试全通过 → [2026-02-11.md](2026-02-11.md)

@@ -377,6 +377,14 @@ class FeishuWSClient:
                 project_id = None
 
         is_system = self._is_system_command_message(data)
+        is_shell_fast = False if is_system else self._is_likely_shell_command_message(data)
+
+        # For likely shell commands, route to a separate shell queue so they
+        # don't block behind long-running programming tasks on the project queue.
+        shell_queue_key = None
+        if is_shell_fast:
+            queue_suffix = project_id or "default"
+            shell_queue_key = f"{chat_id}:shell:{queue_suffix}"
 
         request_id = self._ensure_request_id(message_id, chat_id=chat_id, project_id=project_id)
 
@@ -390,8 +398,9 @@ class FeishuWSClient:
             request_id=request_id,
             priority=TaskPriority.HIGH if is_system else TaskPriority.NORMAL,
             is_system_command=is_system,
+            queue_key=shell_queue_key,
         )
-        handle = self._scheduler.submit(spec, lambda ctx: self._process_message_async(data, task_ctx=ctx))
+        handle = self._scheduler.submit(spec, lambda ctx, _sf=is_shell_fast: self._process_message_async(data, task_ctx=ctx, shell_fast_tracked=_sf))
         try:
             if message_id:
                 self._message_linker.link_task(message_id, handle.run_id)
@@ -415,7 +424,27 @@ class FeishuWSClient:
         except Exception:
             return False
 
-    def _process_message_async(self, data: P2ImMessageReceiveV1, task_ctx=None):
+    def _extract_text_from_message(self, data: P2ImMessageReceiveV1) -> str:
+        """Extract plain text from a Feishu message event (for early routing)."""
+        try:
+            content_str = data.event.message.content
+            if not content_str:
+                return ""
+            content = json.loads(content_str)
+            text = content.get("text", "").strip()
+            if text.startswith("@"):
+                parts = text.split(None, 1)
+                text = parts[1].strip() if len(parts) > 1 else ""
+            return text
+        except Exception:
+            return ""
+
+    def _is_likely_shell_command_message(self, data: P2ImMessageReceiveV1) -> bool:
+        """Check if the message looks like a shell command for early routing."""
+        text = self._extract_text_from_message(data)
+        return SystemHandler.is_likely_shell_command(text) if text else False
+
+    def _process_message_async(self, data: P2ImMessageReceiveV1, task_ctx=None, shell_fast_tracked: bool = False):
         try:
             event = data.event
             message = event.message
@@ -504,7 +533,8 @@ class FeishuWSClient:
 
             if not text:
                 from ..mode import InteractionMode
-                current_mode = self._mode_manager.get_mode(chat_id)
+                _pid = project.project_id if project else (project_id or None)
+                current_mode = self._mode_manager.get_mode(chat_id, project_id=_pid)
                 if current_mode == InteractionMode.CLAUDE:
                     if project is None:
                         project = self._project_manager.get_active_project(chat_id)
@@ -540,7 +570,7 @@ class FeishuWSClient:
                 self._add_reaction(message_id, EmojiReaction.on_processing())
                 self._handle_coco_message(message_id, chat_id, text, project)
             else:
-                self._process_with_intent(message_id, chat_id, text, project)
+                self._process_with_intent(message_id, chat_id, text, project, shell_fast_tracked=shell_fast_tracked)
 
         except Exception as e:
             logger.error("处理消息异常: %s", e, exc_info=True)
@@ -779,10 +809,11 @@ class FeishuWSClient:
         except Exception as e:
             logger.error("处理卡片回调异常: %s", e, exc_info=True)
 
-    def _process_with_intent(self, message_id: str, chat_id: str, text: str, project: Optional[ProjectContext] = None):
+    def _process_with_intent(self, message_id: str, chat_id: str, text: str, project: Optional[ProjectContext] = None, *, shell_fast_tracked: bool = False):
         from ..mode import InteractionMode
 
-        current_mode = self._mode_manager.get_mode(chat_id)
+        _pid = project.project_id if project else None
+        current_mode = self._mode_manager.get_mode(chat_id, project_id=_pid)
         is_in_programming = current_mode in (InteractionMode.COCO, InteractionMode.CLAUDE)
 
         # Control-plane commands: handle consistently in all modes
@@ -843,7 +874,7 @@ class FeishuWSClient:
         if intent_result.is_multi_task:
             self._execute_multi_tasks(message_id, chat_id, intent_result, project)
         else:
-            self._execute_single_task(message_id, chat_id, intent_result.tasks[0] if intent_result.tasks else None, text, project)
+            self._execute_single_task(message_id, chat_id, intent_result.tasks[0] if intent_result.tasks else None, text, project, shell_fast_tracked=shell_fast_tracked)
 
     def _execute_multi_tasks(self, message_id: str, chat_id: str, intent_result: IntentResult, project: Optional[ProjectContext] = None):
         tasks = intent_result.tasks
@@ -871,7 +902,7 @@ class FeishuWSClient:
         else:
             self._add_reaction(message_id, EmojiReaction.on_error())
 
-    def _execute_single_task(self, message_id: str, chat_id: str, task: Optional[TaskStep], original_text: str, project: Optional[ProjectContext] = None):
+    def _execute_single_task(self, message_id: str, chat_id: str, task: Optional[TaskStep], original_text: str, project: Optional[ProjectContext] = None, *, shell_fast_tracked: bool = False):
         if not task:
             self._reply_message(message_id, "🤔 无法理解你的意图")
             return
@@ -999,7 +1030,11 @@ class FeishuWSClient:
         elif intent == IntentType.SHELL_COMMAND:
             working_dir = self._get_working_dir(chat_id)
             cmd = data.get("command") or original_text
-            self._submit_shell_command(message_id, chat_id, cmd, working_dir, project)
+            if shell_fast_tracked:
+                # Already on shell queue — execute directly to avoid nested-task deadlock
+                self.message_callback(message_id, chat_id, cmd, working_dir)
+            else:
+                self._submit_shell_command(message_id, chat_id, cmd, working_dir, project)
 
             if project:
                 project.add_conversation("user", cmd, message_id)

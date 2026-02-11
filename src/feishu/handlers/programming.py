@@ -58,8 +58,8 @@ class ProgrammingModeHandler(BaseHandler):
         ...
 
     @abstractmethod
-    def _enter_mode_on_manager(self, chat_id: str):
-        """Call mode_manager.enter_xxx_mode(chat_id)."""
+    def _enter_mode_on_manager(self, chat_id: str, project_id: Optional[str] = None):
+        """Call mode_manager.enter_xxx_mode(chat_id, project_id)."""
         ...
 
     @abstractmethod
@@ -93,9 +93,11 @@ class ProgrammingModeHandler(BaseHandler):
     def enter_mode(self, message_id: str, chat_id: str, silent: bool = False, project: Optional["ProjectContext"] = None):
         from ...mode import InteractionMode
 
+        project_id = project.project_id if project else None
+
         if self._is_in_this_mode(chat_id):
             if not silent:
-                info = self._get_session_manager().get_session_info(chat_id)
+                info = self._get_session_manager().get_session_info(chat_id, project_id=project_id)
                 self.reply_message(
                     message_id,
                     fmt.format_warning(f"已经在{self.mode_name}编程模式中\n\n{info}\n\n说「退出模式」或发送 /exit 退出"),
@@ -114,6 +116,7 @@ class ProgrammingModeHandler(BaseHandler):
                 project, is_new = self.project_manager.get_or_create_project_for_path(working_dir, chat_id)
                 if is_new:
                     logger.info("自动创建项目: %s @ %s", project.project_name, project.root_path)
+                project_id = project.project_id
             except Exception as e:
                 logger.error("自动创建项目失败: %s", e)
 
@@ -141,6 +144,7 @@ class ProgrammingModeHandler(BaseHandler):
                 cwd=cwd,
                 session_id=target_session_id,
                 startup_timeout=startup_timeout,
+                project_id=project_id,
             )
         except TimeoutError as e:
             if not silent:
@@ -155,7 +159,7 @@ class ProgrammingModeHandler(BaseHandler):
             return
 
         # Now switch mode (after ACP server is confirmed ready)
-        self._enter_mode_on_manager(chat_id)
+        self._enter_mode_on_manager(chat_id, project_id=project_id)
         self.add_reaction(message_id, EmojiReaction.on_coco_enter())
 
         if project and snapshot and snapshot.is_resumable:
@@ -203,7 +207,8 @@ class ProgrammingModeHandler(BaseHandler):
     # exit_mode
     # ------------------------------------------------------------------
     def exit_mode(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
-        session = self._get_session_manager().get_session(chat_id)
+        project_id = project.project_id if project else None
+        session = self._get_session_manager().get_session(chat_id, project_id=project_id)
 
         if project:
             if session:
@@ -222,9 +227,9 @@ class ProgrammingModeHandler(BaseHandler):
                 )
             self._set_mode_on_project(project, False)
 
-        self.mode_manager.exit_to_smart(chat_id)
+        self.mode_manager.exit_to_smart(chat_id, project_id=project_id)
 
-        if self._get_session_manager().end_session(chat_id):
+        if self._get_session_manager().end_session(chat_id, project_id=project_id):
             self.add_reaction(message_id, EmojiReaction.on_coco_exit())
 
             if project:
@@ -244,21 +249,13 @@ class ProgrammingModeHandler(BaseHandler):
     # handle_message
     # ------------------------------------------------------------------
     def handle_message(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"] = None):
-        session = self._get_session_manager().get_session(chat_id)
-
-        if project:
-            snapshot = self._get_snapshot(project)
-            if snapshot:
-                project_session_id = snapshot.session_id
-                if not session or session.session_id != project_session_id:
-                    cwd = project.root_path if project else self.get_working_dir(chat_id)
-                    session = self._get_session_manager().resume_session(chat_id, project_session_id, cwd=cwd)
-                    logger.info("切换到项目 %s 的 %s 会话: %s", project.project_name, self.mode_name, project_session_id)
+        project_id = project.project_id if project else None
+        session = self._get_session_manager().get_session(chat_id, project_id=project_id)
 
         if not session:
             if project:
                 self.enter_mode(message_id, chat_id, project=project)
-                session = self._get_session_manager().get_session(chat_id)
+                session = self._get_session_manager().get_session(chat_id, project_id=project_id)
                 if not session:
                     return
             else:
@@ -359,7 +356,8 @@ class ProgrammingModeHandler(BaseHandler):
     # show_info
     # ------------------------------------------------------------------
     def show_info(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
-        info = self._get_session_manager().get_session_info(chat_id)
+        project_id = project.project_id if project else None
+        info = self._get_session_manager().get_session_info(chat_id, project_id=project_id)
         if info:
             if project:
                 msg_type, card_content = CardBuilder.build_project_response_card(
@@ -411,6 +409,7 @@ class ProgrammingModeHandler(BaseHandler):
         from ...mode import InteractionMode
 
         project = self.project_manager.get_project(project_id) if project_id else None
+        pid = project.project_id if project else None
         if project:
             self.project_manager.set_active_project(chat_id, project_id)
 
@@ -422,7 +421,7 @@ class ProgrammingModeHandler(BaseHandler):
         if not self.is_coco:
             # Claude resume: start_session with session_id, set resumed
             try:
-                session = self.ctx.claude_manager.start_session(chat_id, cwd=cwd, session_id=session_id)
+                session = self.ctx.claude_manager.start_session(chat_id, cwd=cwd, session_id=session_id, project_id=pid)
             except Exception as e:
                 self.reply_message(message_id, fmt_error("恢复 Claude 会话", str(e)))
                 return
@@ -430,11 +429,11 @@ class ProgrammingModeHandler(BaseHandler):
             # Mutual exclusion
             if project and project.coco_mode:
                 project.set_coco_mode(False)
-            self._enter_mode_on_manager(chat_id)
+            self._enter_mode_on_manager(chat_id, project_id=pid)
         else:
-            self._enter_mode_on_manager(chat_id)
+            self._enter_mode_on_manager(chat_id, project_id=pid)
             try:
-                session = self._get_session_manager().start_session(chat_id, cwd=cwd, session_id=session_id)
+                session = self._get_session_manager().start_session(chat_id, cwd=cwd, session_id=session_id, project_id=pid)
             except Exception as e:
                 self.reply_message(message_id, fmt_error("恢复 Coco ACP 会话", str(e)))
                 return
@@ -491,8 +490,8 @@ class CocoModeHandler(ProgrammingModeHandler):
         if hasattr(self, '_opposite_handler'):
             self._opposite_handler.exit_mode(message_id, chat_id, project=project)
 
-    def _enter_mode_on_manager(self, chat_id):
-        self.mode_manager.enter_coco_mode(chat_id)
+    def _enter_mode_on_manager(self, chat_id, project_id=None):
+        self.mode_manager.enter_coco_mode(chat_id, project_id=project_id)
 
     def _get_interaction_mode(self):
         from ...mode import InteractionMode
@@ -534,8 +533,8 @@ class ClaudeModeHandler(ProgrammingModeHandler):
         if hasattr(self, '_opposite_handler'):
             self._opposite_handler.exit_mode(message_id, chat_id, project=project)
 
-    def _enter_mode_on_manager(self, chat_id):
-        self.mode_manager.enter_claude_mode(chat_id)
+    def _enter_mode_on_manager(self, chat_id, project_id=None):
+        self.mode_manager.enter_claude_mode(chat_id, project_id=project_id)
 
     def _get_interaction_mode(self):
         from ...mode import InteractionMode

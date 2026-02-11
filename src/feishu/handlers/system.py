@@ -54,6 +54,34 @@ class SystemHandler(BaseHandler):
         return text_lower.startswith("/loop") or text_lower.startswith("/stop_loop")
 
     @staticmethod
+    def is_likely_shell_command(text: str) -> bool:
+        """Heuristic check for common shell commands.
+
+        Used for early routing in _handle_message to prevent shell commands
+        from blocking behind long-running programming tasks on the project queue.
+        """
+        text_lower = text.strip()
+        if not text_lower or text_lower.startswith("/"):
+            return False
+        first_word = text_lower.split()[0].lower()
+        # Single-word commands that are almost certainly shell
+        shell_exact = {
+            "ls", "pwd", "whoami", "date", "uptime", "df", "du",
+            "ps", "top", "htop", "free", "uname", "env", "id",
+            "hostname", "which", "file", "wc", "tree",
+        }
+        if first_word in shell_exact:
+            return True
+        # Prefix patterns for parameterized shell commands
+        shell_prefixes = {
+            "ls", "cat", "head", "tail", "wc",
+            "git", "find", "grep", "mkdir", "rm", "cp", "mv",
+            "chmod", "chown", "touch", "echo", "curl", "wget",
+            "pip", "npm", "yarn", "docker", "make", "tree",
+        }
+        return first_word in shell_prefixes
+
+    @staticmethod
     def is_interceptable_command(text: str) -> bool:
         text_lower = text.lower().strip()
         exact_commands = {
@@ -125,7 +153,8 @@ class SystemHandler(BaseHandler):
     def exit_current_mode(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         from ...mode import InteractionMode
 
-        current_mode = self.mode_manager.get_mode(chat_id)
+        _pid = project.project_id if project else None
+        current_mode = self.mode_manager.get_mode(chat_id, project_id=_pid)
         if current_mode == InteractionMode.COCO:
             self.coco_handler.exit_mode(message_id, chat_id, project)
         elif current_mode == InteractionMode.CLAUDE:
@@ -216,7 +245,7 @@ class SystemHandler(BaseHandler):
     # Help
     # ------------------------------------------------------------------
     def show_help(self, message_id: str, chat_id: str):
-        is_coco_mode = self.ctx.coco_manager.is_in_coco_mode(chat_id)
+        is_coco_mode = self.mode_manager.is_coco_mode(chat_id)
         current_dir = self.get_working_dir(chat_id)
         project = self.project_manager.get_active_project(chat_id)
 

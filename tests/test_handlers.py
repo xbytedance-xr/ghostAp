@@ -349,7 +349,12 @@ class TestCocoModeHandler:
     def test_enter_mode_on_manager(self):
         h, ctx = self._make()
         h._enter_mode_on_manager("c1")
-        ctx.mode_manager.enter_coco_mode.assert_called_once_with("c1")
+        ctx.mode_manager.enter_coco_mode.assert_called_once_with("c1", project_id=None)
+
+    def test_enter_mode_on_manager_with_project(self):
+        h, ctx = self._make()
+        h._enter_mode_on_manager("c1", project_id="p1")
+        ctx.mode_manager.enter_coco_mode.assert_called_once_with("c1", project_id="p1")
 
     def test_get_interaction_mode(self):
         h, _ = self._make()
@@ -420,7 +425,12 @@ class TestClaudeModeHandler:
     def test_enter_mode_on_manager(self):
         h, ctx = self._make()
         h._enter_mode_on_manager("c1")
-        ctx.mode_manager.enter_claude_mode.assert_called_once_with("c1")
+        ctx.mode_manager.enter_claude_mode.assert_called_once_with("c1", project_id=None)
+
+    def test_enter_mode_on_manager_with_project(self):
+        h, ctx = self._make()
+        h._enter_mode_on_manager("c1", project_id="p1")
+        ctx.mode_manager.enter_claude_mode.assert_called_once_with("c1", project_id="p1")
 
     def test_get_interaction_mode(self):
         h, _ = self._make()
@@ -494,7 +504,7 @@ class TestProgrammingModeEnterExit:
         project.project_name = "test"
         project.project_id = "test_id"
         h.enter_mode("m1", "c1", project=project)
-        ctx.mode_manager.enter_coco_mode.assert_called_once_with("c1")
+        ctx.mode_manager.enter_coco_mode.assert_called_once_with("c1", project_id="test_id")
         project.set_coco_mode.assert_called_once()
         h.record_mode_transition.assert_called_once()
 
@@ -505,8 +515,8 @@ class TestProgrammingModeEnterExit:
         project.project_name = "test"
         project.root_path = "/tmp"
         h.exit_mode("m1", "c1", project=project)
-        ctx.mode_manager.exit_to_smart.assert_called_once_with("c1")
-        ctx.coco_manager.end_session.assert_called_once_with("c1")
+        ctx.mode_manager.exit_to_smart.assert_called_once_with("c1", project_id="p1")
+        ctx.coco_manager.end_session.assert_called_once_with("c1", project_id="p1")
 
     def test_enter_mode_mutual_exclusion(self):
         """When in Claude mode, entering Coco should exit Claude first."""
@@ -768,3 +778,106 @@ class TestDiagnosticsHandler:
         h, ctx = self._make()
         h.show_message_trace("m1", "c1", "/trace", None)
         h.reply_message.assert_called_once()
+
+
+# ======================================================================
+# Bug fix: Shell command fast-track heuristic
+# ======================================================================
+
+class TestShellCommandHeuristic:
+    """Tests for SystemHandler.is_likely_shell_command()."""
+
+    @pytest.mark.parametrize("cmd", [
+        "ls", "pwd", "whoami", "date", "uptime",
+        "ls -la", "git status", "cat foo.txt", "grep pattern file",
+        "docker ps", "make build", "tree src/",
+    ])
+    def test_detects_shell_commands(self, cmd):
+        assert SystemHandler.is_likely_shell_command(cmd) is True
+
+    @pytest.mark.parametrize("cmd", [
+        "/help", "/coco", "/deep implement X", "/exit",
+        "帮我写一个函数", "请解释这段代码",
+        "",
+    ])
+    def test_ignores_non_shell(self, cmd):
+        assert SystemHandler.is_likely_shell_command(cmd) is False
+
+    def test_slash_commands_are_not_shell(self):
+        assert SystemHandler.is_likely_shell_command("/projects") is False
+        assert SystemHandler.is_likely_shell_command("/switch foo") is False
+
+
+# ======================================================================
+# Bug fix: ACP Session Manager project isolation
+# ======================================================================
+
+class TestACPSessionManagerProjectIsolation:
+    """Tests for ACPSessionManager keyed by (chat_id, project_id)."""
+
+    def test_session_key_with_project(self):
+        from src.acp.manager import ACPSessionManager
+        key = ACPSessionManager._session_key("chat1", "proj_a")
+        assert key == "chat1:proj_a"
+
+    def test_session_key_without_project(self):
+        from src.acp.manager import ACPSessionManager
+        key = ACPSessionManager._session_key("chat1")
+        assert key == "chat1:_default_"
+        key2 = ACPSessionManager._session_key("chat1", None)
+        assert key2 == "chat1:_default_"
+
+    def test_different_projects_get_different_keys(self):
+        from src.acp.manager import ACPSessionManager
+        k1 = ACPSessionManager._session_key("chat1", "proj_a")
+        k2 = ACPSessionManager._session_key("chat1", "proj_b")
+        k3 = ACPSessionManager._session_key("chat1")
+        assert k1 != k2
+        assert k1 != k3
+        assert k2 != k3
+
+    def test_get_session_isolated_by_project(self):
+        from src.acp.manager import ACPSessionManager
+        mgr = ACPSessionManager("coco", session_timeout=999999)
+
+        # Manually insert two sessions for same chat, different projects
+        import time
+        s1 = MagicMock()
+        s1.last_active = time.time()
+        s1.session_id = "s1"
+        s2 = MagicMock()
+        s2.last_active = time.time()
+        s2.session_id = "s2"
+
+        k1 = mgr._session_key("chat1", "proj_a")
+        k2 = mgr._session_key("chat1", "proj_b")
+        mgr._sessions[k1] = s1
+        mgr._sessions[k2] = s2
+
+        assert mgr.get_session("chat1", project_id="proj_a") is s1
+        assert mgr.get_session("chat1", project_id="proj_b") is s2
+        # Default project should not find either
+        assert mgr.get_session("chat1") is None
+
+    def test_end_session_does_not_affect_other_projects(self):
+        from src.acp.manager import ACPSessionManager
+        import time
+        mgr = ACPSessionManager("coco", session_timeout=999999)
+
+        s1 = MagicMock()
+        s1.last_active = time.time()
+        s1.session_id = "s1"
+        s1.message_count = 0
+        s1.to_snapshot.return_value = {}
+        s2 = MagicMock()
+        s2.last_active = time.time()
+        s2.session_id = "s2"
+
+        mgr._sessions[mgr._session_key("chat1", "proj_a")] = s1
+        mgr._sessions[mgr._session_key("chat1", "proj_b")] = s2
+
+        mgr.end_session("chat1", project_id="proj_a")
+
+        # proj_a session ended, proj_b untouched
+        assert mgr.get_session("chat1", project_id="proj_a") is None
+        assert mgr.get_session("chat1", project_id="proj_b") is s2

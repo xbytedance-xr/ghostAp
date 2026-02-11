@@ -87,11 +87,12 @@ def test_acp_manager_unhealthy_session_is_cleaned(monkeypatch):
 
     m = mgr.ACPSessionManager("coco", session_timeout=999999)
     dead = DeadSession()
-    m._sessions["chat1"] = dead
+    key = m._session_key("chat1")
+    m._sessions[key] = dead
 
     assert m.get_session("chat1") is None
     assert dead.closed is True
-    assert "chat1" not in m._sessions
+    assert key not in m._sessions
 
 
 class MockToolCallStart:

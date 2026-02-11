@@ -111,23 +111,24 @@ class ProjectHandler(BaseHandler):
     def preserve_project_context(self, chat_id: str, project: "ProjectContext"):
         from ...mode import InteractionMode
 
-        current_mode = self.mode_manager.get_mode(chat_id)
+        pid = project.project_id
+        current_mode = self.mode_manager.get_mode(chat_id, project_id=pid)
         logger.info("[%s] 保留项目上下文: project=%s, mode=%s", chat_id, project.project_name, current_mode.value if hasattr(current_mode, 'value') else current_mode)
 
         if current_mode == InteractionMode.COCO:
-            session = self.ctx.coco_manager.get_session(chat_id)
+            session = self.ctx.coco_manager.get_session(chat_id, project_id=pid)
             if session:
                 project.update_coco_snapshot(query=session.last_query, query_count=session.message_count)
                 self.context_manager.update_context(
-                    project.project_id,
+                    pid,
                     session_snapshot={"data": session.to_snapshot(), "source_mode": ContextSourceMode.COCO.value},
                 )
         elif current_mode == InteractionMode.CLAUDE:
-            session = self.ctx.claude_manager.get_session(chat_id)
+            session = self.ctx.claude_manager.get_session(chat_id, project_id=pid)
             if session:
                 project.update_claude_snapshot(query=session.last_query, query_count=session.message_count, session_id=session.session_id)
                 self.context_manager.update_context(
-                    project.project_id,
+                    pid,
                     session_snapshot={"data": session.to_snapshot(), "source_mode": ContextSourceMode.CLAUDE.value},
                 )
 
@@ -185,7 +186,7 @@ class ProjectHandler(BaseHandler):
             self.preserve_project_context(chat_id, old_project)
 
             from ...mode import InteractionMode
-            current_mode = self.mode_manager.get_mode(chat_id)
+            current_mode = self.mode_manager.get_mode(chat_id, project_id=old_project.project_id)
             if current_mode == InteractionMode.COCO and coco_handler:
                 coco_handler.exit_mode(message_id, chat_id, project=old_project)
             elif current_mode == InteractionMode.CLAUDE and claude_handler:
