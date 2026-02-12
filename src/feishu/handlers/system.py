@@ -178,7 +178,10 @@ class SystemHandler(BaseHandler):
 
         executor = SandboxExecutor()
         result = executor.execute(cmd, cwd=working_dir)
-        self.reply_message(message_id, result.to_message())
+        msg_type, card_content = CardBuilder.build_shell_result_card(
+            cmd, result, working_dir, project,
+        )
+        self.reply_message(message_id, card_content, msg_type=msg_type)
         if result.success:
             self.add_reaction(message_id, EmojiReaction.on_shell_executed())
         else:

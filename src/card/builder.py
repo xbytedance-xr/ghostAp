@@ -515,6 +515,60 @@ class CardBuilder:
         card = CardBuilder._wrap_card("⚠️ 操作失败", "red", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
 
+    # ---- Shell result card ----
+
+    @staticmethod
+    def build_shell_result_card(
+        cmd: str,
+        result: "ExecutionResult",
+        working_dir: Optional[str] = None,
+        project: Optional[ProjectContext] = None,
+    ) -> tuple[str, str]:
+        """Build an interactive card for shell command execution results."""
+        if result.success:
+            header_title = "✅ 命令执行成功"
+            header_template = "turquoise"
+        else:
+            header_title = "❌ 命令执行失败"
+            header_template = "red"
+
+        elements = [
+            CardBuilder._build_directory_element(project, working_dir),
+            {"tag": "hr"},
+            {"tag": "markdown", "content": f"> 🖥️ `{cmd}`"},
+        ]
+
+        if result.error_message:
+            elements.append({
+                "tag": "markdown",
+                "content": f"🚫 **{result.error_message}**",
+            })
+        elif result.stdout or result.stderr:
+            if result.stdout:
+                elements.append({
+                    "tag": "markdown",
+                    "content": f"```BASH\n{result.stdout}\n```",
+                })
+            if result.stderr:
+                elements.append({
+                    "tag": "markdown",
+                    "content": f"⚠️ **错误输出**:\n```BASH\n{result.stderr}\n```",
+                })
+        else:
+            elements.append({
+                "tag": "markdown",
+                "content": "✅ 命令执行成功（无输出）",
+            })
+
+        elements.append({
+            "tag": "markdown",
+            "content": f"返回码: `{result.return_code}`",
+            "text_size": "notation",
+        })
+
+        card = CardBuilder._wrap_card(header_title, header_template, elements)
+        return "interactive", json.dumps(card, ensure_ascii=False)
+
     # ---- Deep Engine cards ----
 
     @staticmethod
