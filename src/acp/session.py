@@ -60,11 +60,20 @@ class ACPSession:
             auto_approve=settings.acp_permission_auto_approve,
             root_dir=self._cwd,
         )
+        # Raise the stdio stream buffer limit to handle large agent responses.
+        # Default asyncio limit (64KB) causes "Separator is found, but chunk is
+        # longer than limit" on verbose JSON-RPC messages from long-running tasks.
+        transport_kwargs = {}
+        buf_limit = getattr(settings, "acp_stream_buffer_limit", 0)
+        if buf_limit and buf_limit > 0:
+            transport_kwargs["limit"] = buf_limit
+
         self._ctx_manager = spawn_agent_process(
             client,
             self._agent_cmd,
             *self._agent_args,
             cwd=self._cwd,
+            transport_kwargs=transport_kwargs or None,
         )
         self._conn, self._proc = await self._ctx_manager.__aenter__()
 

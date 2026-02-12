@@ -1,6 +1,7 @@
 # GhostAP 项目记忆索引
 
 ## 2026-02-12
+- **ACP 流式缓冲区溢出修复** - Deep 模式长时间执行 "chunk is longer than limit" 崩溃，asyncio StreamReader 64KB 上限→10MB，792测试全通过 → [2026-02-12.md](2026-02-12.md)
 - **Shell 命令结果卡片渲染优化** - Shell 结果从纯文本改为 interactive 卡片（schema 2.0），新增 `build_shell_result_card`，792测试全通过 → [2026-02-12.md](2026-02-12.md)
 - **Shell 命令执行无限递归修复** - submit_shell_command 的 _run 回调 message_callback 形成无限循环，改为直接调用 SandboxExecutor.execute()，792测试全通过 → [2026-02-12.md](2026-02-12.md)
 
