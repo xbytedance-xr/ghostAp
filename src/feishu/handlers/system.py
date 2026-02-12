@@ -165,6 +165,26 @@ class SystemHandler(BaseHandler):
     # ------------------------------------------------------------------
     # Shell command submission
     # ------------------------------------------------------------------
+    def execute_shell_and_reply(
+        self,
+        message_id: str,
+        chat_id: str,
+        cmd: str,
+        working_dir: Optional[str],
+        project: Optional["ProjectContext"] = None,
+    ):
+        """Execute a shell command via SandboxExecutor and reply with the result."""
+        from ...sandbox import SandboxExecutor
+
+        executor = SandboxExecutor()
+        result = executor.execute(cmd, cwd=working_dir)
+        self.reply_message(message_id, result.to_message())
+        if result.success:
+            self.add_reaction(message_id, EmojiReaction.on_shell_executed())
+        else:
+            self.add_reaction(message_id, EmojiReaction.on_error())
+        return result
+
     def submit_shell_command(
         self,
         message_id: str,
@@ -192,7 +212,7 @@ class SystemHandler(BaseHandler):
         )
 
         def _run(_ctx):
-            return self.ctx.message_callback(message_id, chat_id, cmd, working_dir)
+            return self.execute_shell_and_reply(message_id, chat_id, cmd, working_dir, project)
 
         handle = self.scheduler.submit(spec, _run)
         try:

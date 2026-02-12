@@ -1,5 +1,8 @@
 # GhostAP 项目记忆索引
 
+## 2026-02-12
+- **Shell 命令执行无限递归修复** - submit_shell_command 的 _run 回调 message_callback 形成无限循环，改为直接调用 SandboxExecutor.execute()，792测试全通过 → [2026-02-12.md](2026-02-12.md)
+
 ## 2026-02-11
 - **Shell 命令卡死 + 会话上下文串台修复** - Shell 快速通道绕过项目队列阻塞 + ACPSessionManager 按 (chat_id, project_id) 隔离会话，792测试全通过 → [2026-02-11.md](2026-02-11.md)
 - **Loop Engine 多视角审查系统（Ralph Loop）** - 每轮迭代后从架构师/产品/用户/测试四视角审查，审查建议驱动下一轮迭代，764测试全通过 → [2026-02-11.md](2026-02-11.md)

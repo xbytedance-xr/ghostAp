@@ -1032,7 +1032,7 @@ class FeishuWSClient:
             cmd = data.get("command") or original_text
             if shell_fast_tracked:
                 # Already on shell queue — execute directly to avoid nested-task deadlock
-                self.message_callback(message_id, chat_id, cmd, working_dir)
+                self._system_handler.execute_shell_and_reply(message_id, chat_id, cmd, working_dir, project)
             else:
                 self._submit_shell_command(message_id, chat_id, cmd, working_dir, project)
 
@@ -1112,7 +1112,7 @@ class FeishuWSClient:
                 cmd = data.get("command", task.description)
                 if cmd:
                     working_dir = self._get_working_dir(chat_id)
-                    self.message_callback(message_id, chat_id, cmd, working_dir)
+                    self._system_handler.execute_shell_and_reply(message_id, chat_id, cmd, working_dir, project)
                 return True
 
             else:

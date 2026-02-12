@@ -19,9 +19,11 @@ class Application:
         self.feishu_client: Optional[FeishuWSClient] = None
 
     def handle_message(self, message_id: str, chat_id: str, command: str, working_dir: Optional[str] = None):
-        """Legacy callback — delegates to SystemHandler for unified shell execution."""
+        """Legacy callback — executes shell command directly via SandboxExecutor."""
         try:
-            self.feishu_client._submit_shell_command(message_id, chat_id, command, working_dir, None)
+            self.feishu_client._system_handler.execute_shell_and_reply(
+                message_id, chat_id, command, working_dir,
+            )
         except Exception as e:
             logger.error("处理命令异常: %s", e)
             try:
