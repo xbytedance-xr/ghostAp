@@ -131,3 +131,70 @@ class TestACPEventRenderer:
                 event_type=ACPEventType.TOOL_CALL_DONE, tool_call=tc,
             ))
         assert self.renderer.completed_tool_count == 6
+
+    def test_empty_title_tool_done_not_in_text(self):
+        """Empty-title TOOL_CALL_DONE should not appear in text_content."""
+        tc = ToolCallInfo(id="t1", title="", kind="other",
+                          status="completed", locations=["/tmp/x.py"])
+        self.renderer.process_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE, tool_call=tc,
+        ))
+        # Still counted as completed
+        assert self.renderer.completed_tool_count == 1
+        # But no text added (no "🔧  ✅" lines)
+        assert self.renderer.text_content.strip() == ""
+
+    def test_empty_title_active_tool_not_rendered(self):
+        """Active tool with empty title should not appear in rendered output."""
+        tc = ToolCallInfo(id="t1", title="", kind="other", status="in_progress")
+        self.renderer.process_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START, tool_call=tc,
+        ))
+        rendered = self.renderer._render()
+        # Should not contain the "🔧 ..." pattern for empty title
+        assert "🔧" not in rendered
+
+    def test_render_plan_view_excludes_text(self):
+        """render_plan_view() should only contain plan + active tools, not text history."""
+        # Add some text
+        self.renderer.process_event(ACPEvent(
+            event_type=ACPEventType.TEXT_CHUNK, text="Some agent output",
+        ))
+        # Add a completed tool with title (adds to text_chunks)
+        tc_done = ToolCallInfo(id="t1", title="Read config", kind="read",
+                               status="completed", locations=["/tmp/cfg.py"])
+        self.renderer.process_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE, tool_call=tc_done,
+        ))
+        # Add a plan
+        plan = PlanInfo(entries=[
+            PlanEntryInfo(content="Step A", status="completed"),
+            PlanEntryInfo(content="Step B", status="in_progress"),
+        ])
+        self.renderer.process_event(ACPEvent(
+            event_type=ACPEventType.PLAN_UPDATE, plan=plan,
+        ))
+        # Add an active tool
+        tc_active = ToolCallInfo(id="t2", title="Running tests", kind="execute",
+                                 status="in_progress")
+        self.renderer.process_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START, tool_call=tc_active,
+        ))
+
+        plan_view = self.renderer.render_plan_view()
+        full_render = self.renderer._render()
+
+        # Plan view should have plan and active tool
+        assert "Step A" in plan_view
+        assert "Step B" in plan_view
+        assert "Running tests" in plan_view
+        # Plan view should NOT have text chunks or completed tool summaries
+        assert "Some agent output" not in plan_view
+        assert "Read config" not in plan_view
+        # Full render should have everything
+        assert "Some agent output" in full_render
+        assert "Read config" in full_render
+
+    def test_render_plan_view_empty_state(self):
+        """render_plan_view() returns empty string when no plan or active tools."""
+        assert self.renderer.render_plan_view() == ""

@@ -83,7 +83,7 @@ class DeepHandler(BaseHandler):
         self.add_reaction(message_id, EmojiReaction.on_multi_task_start())
 
         request_id = self.ensure_request_id(message_id, chat_id=chat_id, project_id=(project.project_id if project else None))
-        engine_name = self.get_engine_name(chat_id)
+        engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
         reporter = self.ctx.progress_reporter
 
         planning_content = reporter.format_planning_start(requirement)
@@ -169,16 +169,17 @@ class DeepHandler(BaseHandler):
 
         def on_event(event: ACPEvent):
             """Process ACP events and update streaming display."""
-            rendered = renderer.process_event(event)
-            # For plan updates, send a card
+            renderer.process_event(event)
+            # For plan updates, send a card with plan-only view (no text history)
             if event.event_type == ACPEventType.PLAN_UPDATE and event.plan:
                 engine = self.ctx.deep_engine_manager.get(chat_id, project.root_path if project else "")
                 deep_project_id = engine.project.project_id if engine and engine.project else None
                 progress = engine.progress if engine else None
                 progress_bar = progress.progress_bar if progress else None
+                plan_content = renderer.render_plan_view()
                 msg_type, card_content = CardBuilder.build_deep_card(
                     project=project, title="📋 执行计划更新",
-                    content=rendered[:2000],
+                    content=plan_content[:2000],
                     progress_bar=progress_bar, deep_project_id=deep_project_id,
                     is_executing=True, engine_name=engine_name,
                 )
@@ -258,7 +259,7 @@ class DeepHandler(BaseHandler):
                 self.show_deep_board(message_id, chat_id)
                 return
             else:
-                engine_name = self.get_engine_name(chat_id)
+                engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
                 msg_type, card_content = CardBuilder.build_deep_card(
                     project=project, title="📊 当前状态",
                     content="当前没有 Deep Agent 任务\n\n发送 `/deep 你的需求` 开始一个复杂任务\n发送 `/deep_status all` 查看所有项目任务",
@@ -298,7 +299,7 @@ class DeepHandler(BaseHandler):
                 candidates.append(e)
 
         if not candidates:
-            engine_name = self.get_engine_name(chat_id)
+            engine_name = self.get_engine_name(chat_id, project_id=None)
             msg_type, card_content = CardBuilder.build_deep_card(
                 project=None, title="📊 Deep Agent 看板",
                 content="当前没有 Deep Agent 任务\n\n发送 `/deep <需求>` 开始一个复杂任务",

@@ -419,10 +419,10 @@ class BaseHandler:
     # ------------------------------------------------------------------
     # Engine name helper
     # ------------------------------------------------------------------
-    def get_engine_name(self, chat_id: str) -> str:
+    def get_engine_name(self, chat_id: str, project_id: str | None = None) -> str:
         """Return 'Coco' or 'Claude' based on current interaction mode."""
         from ...mode import InteractionMode
-        current_mode = self.ctx.mode_manager.get_mode(chat_id)
+        current_mode = self.ctx.mode_manager.get_mode(chat_id, project_id=project_id)
         if current_mode == InteractionMode.CLAUDE:
             return "Claude"
         return "Coco"

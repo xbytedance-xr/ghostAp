@@ -82,7 +82,7 @@ class LoopHandler(BaseHandler):
         self.add_reaction(message_id, EmojiReaction.on_multi_task_start())
 
         request_id = self.ensure_request_id(message_id, chat_id=chat_id, project_id=(project.project_id if project else None))
-        engine_name = self.get_engine_name(chat_id)
+        engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
         reporter = self.ctx.loop_reporter
 
         # 发送启动卡片
@@ -255,7 +255,7 @@ class LoopHandler(BaseHandler):
             if len(running) == 1 and running[0].project:
                 engine = running[0]
             else:
-                engine_name = self.get_engine_name(chat_id)
+                engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
                 msg_type, card_content = CardBuilder.build_deep_card(
                     project=project, title="📊 Loop 状态",
                     content="当前没有 Loop 任务\n\n发送 `/loop 你的需求` 开始迭代式开发",

@@ -139,6 +139,13 @@ class TestBaseHandler:
         h, ctx = self._make()
         ctx.mode_manager.get_mode.return_value = InteractionMode.CLAUDE
         assert h.get_engine_name("chat1") == "Claude"
+        ctx.mode_manager.get_mode.assert_called_with("chat1", project_id=None)
+
+    def test_get_engine_name_claude_with_project(self):
+        h, ctx = self._make()
+        ctx.mode_manager.get_mode.return_value = InteractionMode.CLAUDE
+        assert h.get_engine_name("chat1", project_id="proj1") == "Claude"
+        ctx.mode_manager.get_mode.assert_called_with("chat1", project_id="proj1")
 
     def test_get_engine_name_default_coco(self):
         h, ctx = self._make()

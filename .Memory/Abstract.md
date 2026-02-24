@@ -1,5 +1,9 @@
 # GhostAP 项目记忆索引
 
+## 2026-02-24
+- **Deep 模式卡片显示空白工具条目修复** - 空 title 工具不渲染 + `render_plan_view()` 分离计划视图避免内容膨胀，797测试全通过 → [2026-02-24.md](2026-02-24.md)
+- **Deep/Loop 模式 Claude 引擎不生效修复** - `get_engine_name()` 未传 `project_id` 导致项目级 Claude 模式被忽略，始终回退到 Coco，793测试全通过 → [2026-02-24.md](2026-02-24.md)
+
 ## 2026-02-12
 - **ACP 流式缓冲区溢出修复** - Deep 模式长时间执行 "chunk is longer than limit" 崩溃，asyncio StreamReader 64KB 上限→10MB，792测试全通过 → [2026-02-12.md](2026-02-12.md)
 - **Shell 命令结果卡片渲染优化** - Shell 结果从纯文本改为 interactive 卡片（schema 2.0），新增 `build_shell_result_card`，792测试全通过 → [2026-02-12.md](2026-02-12.md)

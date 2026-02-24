@@ -78,13 +78,15 @@ class ACPEventRenderer:
                     self._active_tools.pop(tool_id, None)
                     for loc in event.tool_call.locations:
                         self._modified_files.add(loc)
-                    # Add inline summary to text
-                    icon = _KIND_ICONS.get(event.tool_call.kind, "🔧")
-                    status_icon = _STATUS_ICONS.get(event.tool_call.status, "✅")
-                    loc_str = ""
-                    if event.tool_call.locations:
-                        loc_str = f" `{event.tool_call.locations[0]}`"
-                    self._text_chunks.append(f"\n{icon} {event.tool_call.title}{loc_str} {status_icon}\n")
+                    # Add inline summary to text (skip empty titles)
+                    title = (event.tool_call.title or "").strip()
+                    if title:
+                        icon = _KIND_ICONS.get(event.tool_call.kind, "🔧")
+                        status_icon = _STATUS_ICONS.get(event.tool_call.status, "✅")
+                        loc_str = ""
+                        if event.tool_call.locations:
+                            loc_str = f" `{event.tool_call.locations[0]}`"
+                        self._text_chunks.append(f"\n{icon} {title}{loc_str} {status_icon}\n")
 
             case ACPEventType.PLAN_UPDATE:
                 if event.plan:
@@ -154,10 +156,27 @@ class ACPEventRenderer:
         """Render currently active tool calls."""
         lines: list[str] = []
         for tool in self._active_tools.values():
-            if tool.status in ("in_progress", "pending"):
+            title = (tool.title or "").strip()
+            if tool.status in ("in_progress", "pending") and title:
                 kind_icon = _KIND_ICONS.get(tool.kind, "🔧")
                 loc_str = ""
                 if tool.locations:
                     loc_str = f" `{tool.locations[0]}`"
-                lines.append(f"{kind_icon} {tool.title}{loc_str}...")
+                lines.append(f"{kind_icon} {title}{loc_str}...")
         return "\n".join(lines) if lines else ""
+
+    def render_plan_view(self) -> str:
+        """Render plan + active tools only (no text history). For plan update cards."""
+        parts: list[str] = []
+
+        if self._plan:
+            rendered_plan = self._render_plan()
+            if rendered_plan:
+                parts.append(rendered_plan)
+
+        if self._active_tools:
+            rendered_tools = self._render_active_tools()
+            if rendered_tools:
+                parts.append(rendered_tools)
+
+        return "\n".join(parts) if parts else ""
