@@ -15,6 +15,9 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Optional, Callable
 
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
+
 from ..acp import ACPEvent, ACPEventType, ACPEventRenderer
 from ..agent_session import SyncSession, create_engine_session
 from ..config import get_settings
@@ -267,7 +270,13 @@ class LoopEngine:
         return on_event
 
     def _parse_requirement(self, text: str) -> LoopRequirement:
-        """Simple requirement parsing — extract goal and acceptance criteria."""
+        """Parse requirement — extract goal and acceptance criteria.
+
+        1. Try to extract criteria from explicit list markers (- / * / [ ]).
+        2. If none found, use LLM to summarize and decompose the user's
+           colloquial input into structured acceptance criteria.
+        3. Fall back to a single generic criterion only if LLM also fails.
+        """
         lines = text.strip().split("\n")
         criteria = []
         goal = text
@@ -280,14 +289,77 @@ class LoopEngine:
                 criteria.append(stripped[4:])
 
         if not criteria:
-            # If no explicit criteria, use the whole text as goal and generate generic criteria
-            criteria = [f"完成需求: {text[:100]}"]
+            # No explicit list markers — use LLM to decompose
+            criteria = self._decompose_criteria_with_llm(text)
+
+        if not criteria:
+            # LLM failed — last resort fallback
+            criteria = [f"完成需求: {text}"]
 
         return LoopRequirement(
             goal=goal,
             acceptance_criteria=criteria,
             raw_text=text,
         )
+
+    def _decompose_criteria_with_llm(self, text: str) -> list[str]:
+        """Use LLM to summarize and decompose colloquial user input into acceptance criteria."""
+        settings = self.settings
+        if not settings.ark_api_key or not settings.ark_model:
+            return []
+
+        prompt = f"""请分析以下用户需求，提取并拆解为明确的验收标准。
+
+用户需求（口语化描述）：
+{text}
+
+要求：
+1. 先理解用户的核心诉求
+2. 将需求拆解为 3-8 条具体、可验证的验收标准
+3. 每条标准应该是独立可验证的（能明确判断 PASS/FAIL）
+4. 标准应覆盖用户提到的所有功能点
+5. 用简洁的技术语言描述，不要过于笼统
+
+输出格式（严格按此格式，每行一条，以 "- " 开头）：
+- 验收标准1
+- 验收标准2
+- 验收标准3
+..."""
+
+        try:
+            llm = ChatOpenAI(
+                base_url=settings.ark_base_url,
+                api_key=settings.ark_api_key,
+                model=settings.ark_model,
+                temperature=0.1,
+            )
+            response = llm.invoke([
+                SystemMessage(content="你是一个需求分析助手，擅长将口语化的产品需求拆解为结构化的验收标准。"),
+                HumanMessage(content=prompt),
+            ])
+            return self._extract_criteria_from_llm_response(response.content)
+        except Exception as e:
+            logger.warning("[Loop] LLM 需求拆解失败: %s, 将使用原始文本", e)
+            return []
+
+    @staticmethod
+    def _extract_criteria_from_llm_response(text: str) -> list[str]:
+        """Extract criteria lines from LLM response."""
+        criteria = []
+        for line in text.strip().split("\n"):
+            stripped = line.strip()
+            # Accept "- xxx", "* xxx", "N. xxx", "N、xxx" patterns
+            if stripped.startswith("- ") or stripped.startswith("* "):
+                criterion = stripped[2:].strip()
+            elif len(stripped) > 2 and stripped[0].isdigit() and stripped[1] in ".、):） ":
+                criterion = stripped[2:].strip()
+            elif len(stripped) > 3 and stripped[:2].isdigit() and stripped[2] in ".、):） ":
+                criterion = stripped[3:].strip()
+            else:
+                continue
+            if criterion:
+                criteria.append(criterion)
+        return criteria
 
     def _build_initial_prompt(self, requirement: LoopRequirement) -> str:
         criteria_list = "\n".join(f"- [ ] {c}" for c in requirement.acceptance_criteria)

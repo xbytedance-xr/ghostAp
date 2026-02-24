@@ -89,12 +89,74 @@ class TestLoopEngine:
         req = engine._parse_requirement(text)
         assert len(req.acceptance_criteria) == 2
 
-    def test_parse_requirement_no_criteria(self):
+    @patch("src.loop_engine.engine.ChatOpenAI")
+    def test_parse_requirement_no_criteria_uses_llm(self, mock_chat):
+        """When no list markers, LLM decomposes the requirement."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = MagicMock(content="- 实现登录接口\n- 支持错误提示\n- 添加单元测试")
+        mock_chat.return_value = mock_llm
+
         engine = self._make_engine()
+        engine.settings.ark_api_key = "test-key"
+        engine.settings.ark_model = "test-model"
+        text = "实现登录功能，要有错误提示，还要有测试"
+        req = engine._parse_requirement(text)
+        assert len(req.acceptance_criteria) == 3
+        assert "实现登录接口" in req.acceptance_criteria
+        mock_llm.invoke.assert_called_once()
+
+    @patch("src.loop_engine.engine.ChatOpenAI")
+    def test_parse_requirement_llm_failure_fallback(self, mock_chat):
+        """When LLM fails, fall back to raw text as criterion."""
+        mock_llm = MagicMock()
+        mock_llm.invoke.side_effect = Exception("API error")
+        mock_chat.return_value = mock_llm
+
+        engine = self._make_engine()
+        engine.settings.ark_api_key = "test-key"
+        engine.settings.ark_model = "test-model"
         text = "实现登录功能"
         req = engine._parse_requirement(text)
         assert len(req.acceptance_criteria) == 1
         assert "完成需求" in req.acceptance_criteria[0]
+        # Full text should be preserved, not truncated
+        assert "实现登录功能" in req.acceptance_criteria[0]
+
+    def test_parse_requirement_no_api_key_fallback(self):
+        """When no API key configured, skip LLM and fall back."""
+        engine = self._make_engine()
+        engine.settings.ark_api_key = ""
+        engine.settings.ark_model = ""
+        text = "实现登录功能"
+        req = engine._parse_requirement(text)
+        assert len(req.acceptance_criteria) == 1
+        assert "完成需求" in req.acceptance_criteria[0]
+
+    def test_extract_criteria_from_llm_response(self):
+        """Test various LLM response formats for criteria extraction."""
+        # Dash format
+        text = "- 标准1\n- 标准2\n- 标准3"
+        result = LoopEngine._extract_criteria_from_llm_response(text)
+        assert result == ["标准1", "标准2", "标准3"]
+
+        # Numbered format
+        text = "1. 标准一\n2. 标准二\n3. 标准三"
+        result = LoopEngine._extract_criteria_from_llm_response(text)
+        assert result == ["标准一", "标准二", "标准三"]
+
+        # Chinese numbered format
+        text = "1、标准一\n2、标准二"
+        result = LoopEngine._extract_criteria_from_llm_response(text)
+        assert result == ["标准一", "标准二"]
+
+        # Mixed with extra text
+        text = "以下是验收标准：\n- 标准A\n  some detail\n- 标准B"
+        result = LoopEngine._extract_criteria_from_llm_response(text)
+        assert result == ["标准A", "标准B"]
+
+        # Empty or no criteria
+        assert LoopEngine._extract_criteria_from_llm_response("") == []
+        assert LoopEngine._extract_criteria_from_llm_response("没有格式化内容") == []
 
     def test_build_initial_prompt(self):
         engine = self._make_engine()
