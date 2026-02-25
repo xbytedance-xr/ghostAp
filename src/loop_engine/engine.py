@@ -50,6 +50,95 @@ _REVIEW_SECTION_PATTERN = re.compile(
     re.DOTALL,
 )
 
+# More tolerant section header patterns (English tags / Chinese display names)
+_REVIEW_HEADER_EN_PATTERN = re.compile(
+    # Allow formats:
+    # - [ARCHITECT]
+    # - [ARCHITECT]: PASS
+    # - [ARCHITECT] PASS
+    r"(?im)^\s*(?:#+\s*)?\[\s*(ARCHITECT|PRODUCT|USER|TESTER)\s*\]\s*(?:[:：]?\s*(.*))?$")
+_REVIEW_HEADER_ZH_PATTERN = re.compile(
+    # Allow formats:
+    # - 架构师: PASS
+    # - 🏗️ 架构师 PASS
+    r"(?im)^\s*(?:#+\s*)?(?:🏗️|📦|👤|🧪)?\s*(架构师|产品经理|用户|测试)\s*(?:[:：]?\s*(.*))?$")
+
+_PERSPECTIVE_ZH_MAP: dict[str, ReviewPerspective] = {
+    "架构师": ReviewPerspective.ARCHITECT,
+    "产品经理": ReviewPerspective.PRODUCT,
+    "用户": ReviewPerspective.USER,
+    "测试": ReviewPerspective.TESTER,
+}
+
+
+def _normalize_review_verdict(text: str) -> Optional[str]:
+    """Return 'PASS'/'FAIL' if verdict can be inferred, else None."""
+    if not text:
+        return None
+    t = text.strip().upper()
+    if "PASS" in t:
+        return "PASS"
+    if "FAIL" in t:
+        return "FAIL"
+
+    # Chinese variants
+    if "通过" in text and "不通过" not in text:
+        return "PASS"
+    if "不通过" in text or "未通过" in text or "失败" in text:
+        return "FAIL"
+    return None
+
+
+_BULLET_PATTERN = re.compile(r"^\s*(?:[-*•]|\d+[.)]|\d+、)\s*(.+?)\s*$")
+
+
+def _extract_suggestions_from_body(body: str, limit: int = 10) -> list[str]:
+    suggestions: list[str] = []
+    if not body:
+        return suggestions
+    for line in body.split("\n"):
+        m = _BULLET_PATTERN.match(line)
+        if not m:
+            continue
+        s = (m.group(1) or "").strip()
+        if s:
+            suggestions.append(s)
+        if len(suggestions) >= limit:
+            break
+    return suggestions
+
+
+def _split_review_sections(text: str) -> list[tuple[str, str]]:
+    """Split review output into (tag, section_text) using tolerant headers.
+
+    tag is normalized to one of: ARCHITECT/PRODUCT/USER/TESTER.
+    """
+    if not text:
+        return []
+
+    normalized = text.replace("\r\n", "\n")
+    # Find all header occurrences
+    hits: list[tuple[int, int, str]] = []  # (start, end, tag)
+    for m in _REVIEW_HEADER_EN_PATTERN.finditer(normalized):
+        hits.append((m.start(), m.end(), m.group(1).upper()))
+    for m in _REVIEW_HEADER_ZH_PATTERN.finditer(normalized):
+        zh = (m.group(1) or "").strip()
+        p = _PERSPECTIVE_ZH_MAP.get(zh)
+        if not p:
+            continue
+        hits.append((m.start(), m.end(), p.name))
+
+    if not hits:
+        return []
+
+    hits.sort(key=lambda x: x[0])
+    sections: list[tuple[str, str]] = []
+    for i, (start, end, tag) in enumerate(hits):
+        next_start = hits[i + 1][0] if i + 1 < len(hits) else len(normalized)
+        block = normalized[start:next_start].strip("\n")
+        sections.append((tag, block))
+    return sections
+
 # Map perspective tag → ReviewPerspective enum
 _PERSPECTIVE_TAG_MAP: dict[str, ReviewPerspective] = {
     "ARCHITECT": ReviewPerspective.ARCHITECT,
@@ -523,34 +612,69 @@ PASS 或 FAIL
     def _parse_review_output(self, text: str, iteration: int) -> ReviewResult:
         """Parse structured review output into ReviewResult."""
         reviews: list[PerspectiveReview] = []
-        found_perspectives: set[str] = set()
+        found: set[ReviewPerspective] = set()
 
-        for match in _REVIEW_SECTION_PATTERN.finditer(text):
+        raw = (text or "").replace("\r\n", "\n")
+
+        # 1) Fast path: strict format (keeps compatibility with existing tests)
+        for match in _REVIEW_SECTION_PATTERN.finditer(raw):
             tag = match.group(1).upper()
             verdict = match.group(2).upper()
             body = match.group(3).strip()
-
             perspective = _PERSPECTIVE_TAG_MAP.get(tag)
-            if not perspective or tag in found_perspectives:
+            if not perspective or perspective in found:
                 continue
-            found_perspectives.add(tag)
+            found.add(perspective)
 
             passed = verdict == "PASS"
-            suggestions = []
-            if not passed and body:
-                for line in body.split("\n"):
-                    line = line.strip()
-                    if line.startswith("- ") or line.startswith("* "):
-                        suggestion = line[2:].strip()
-                        if suggestion:
-                            suggestions.append(suggestion)
-
+            suggestions = _extract_suggestions_from_body(body) if not passed else []
             reviews.append(PerspectiveReview(
                 perspective=perspective,
                 passed=passed,
                 suggestions=suggestions,
                 summary=f"{'通过' if passed else f'{len(suggestions)}条建议'}",
             ))
+
+        # 2) Tolerant path: headers in markdown / same-line verdict / Chinese headings
+        if not reviews:
+            for tag, block in _split_review_sections(raw):
+                perspective = _PERSPECTIVE_TAG_MAP.get(tag)
+                if not perspective or perspective in found:
+                    continue
+                found.add(perspective)
+
+                lines = [ln.strip() for ln in block.split("\n") if ln.strip()]
+                head = "\n".join(lines[:3])
+                verdict = _normalize_review_verdict(head) or _normalize_review_verdict(block)
+                passed = verdict == "PASS"
+
+                body_text = "\n".join(lines[1:]) if len(lines) > 1 else ""
+                suggestions = _extract_suggestions_from_body(body_text)
+
+                # If verdict is missing but we have suggestions, treat as FAIL.
+                if verdict is None:
+                    passed = len(suggestions) == 0
+                if passed:
+                    suggestions = []
+                elif not suggestions:
+                    # As a fallback, use a few meaningful lines as suggestions.
+                    tail_candidates: list[str] = []
+                    for ln in lines[1:]:
+                        if _normalize_review_verdict(ln):
+                            continue
+                        cleaned = ln.lstrip("-•* ").strip()
+                        if cleaned:
+                            tail_candidates.append(cleaned)
+                        if len(tail_candidates) >= 3:
+                            break
+                    suggestions = tail_candidates
+
+                reviews.append(PerspectiveReview(
+                    perspective=perspective,
+                    passed=passed,
+                    suggestions=suggestions,
+                    summary=f"{'通过' if passed else f'{len(suggestions)}条建议'}",
+                ))
 
         # If parsing found nothing, treat as "has suggestions" to be safe
         if not reviews:

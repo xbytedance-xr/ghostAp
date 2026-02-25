@@ -764,6 +764,40 @@ PASS
         arch = [r for r in result.reviews if r.perspective == ReviewPerspective.ARCHITECT][0]
         assert len(arch.suggestions) == 2
 
+    def test_parse_same_line_verdict(self):
+        engine = self._make_engine()
+        text = """[ARCHITECT] FAIL
+- a1
+
+[PRODUCT] PASS
+
+[USER] FAIL
+- u1
+
+[TESTER] PASS
+"""
+        result = engine._parse_review_output(text, 1)
+        assert len(result.reviews) == 4
+        assert not result.all_passed
+        assert result.total_suggestions == 2
+
+    def test_parse_chinese_headings(self):
+        engine = self._make_engine()
+        text = """🏗️ 架构师: FAIL
+- 需要解耦
+
+📦 产品经理：PASS
+
+👤 用户: FAIL
+- 文案不清晰
+
+🧪 测试: PASS
+"""
+        result = engine._parse_review_output(text, 2)
+        assert len(result.reviews) == 4
+        assert not result.all_passed
+        assert result.total_suggestions == 2
+
     def test_parse_duplicate_perspective_ignored(self):
         engine = self._make_engine()
         text = """[ARCHITECT]
