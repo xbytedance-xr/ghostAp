@@ -200,13 +200,6 @@ class DeepHandler(BaseHandler):
                 pass
             return None
 
-        def _tail(text: str, limit: int) -> str:
-            if not text:
-                return ""
-            if len(text) <= limit:
-                return text
-            return "…" + text[-limit:]
-
         def _maybe_stream_update(force: bool = False) -> None:
             nonlocal last_stream_ts, last_stream_text_len
 
@@ -226,7 +219,7 @@ class DeepHandler(BaseHandler):
                     return
 
             plan_view = renderer.render_plan_view()
-            recent = _tail(renderer.text_content or "", 1400)
+            recent = renderer.text_content or ""
 
             if not plan_view and not recent:
                 return
@@ -246,9 +239,9 @@ class DeepHandler(BaseHandler):
             if plan_view:
                 parts.append(plan_view)
             if recent:
-                parts.append(f"\n**📝 最近输出（截断展示）**\n{recent}")
+                parts.append(f"\n**📝 最近输出**\n{recent}")
 
-            content = "\n\n".join(parts)[:2000]
+            content = "\n\n".join(parts)
             msg_type, card_content = CardBuilder.build_deep_card(
                 project=project,
                 title=title,
@@ -279,7 +272,7 @@ class DeepHandler(BaseHandler):
                     msg_type, card_content = CardBuilder.build_deep_card(
                         project=project,
                         title="📋 执行计划",
-                        content=plan_content[:2000],
+                        content=plan_content,
                         progress_bar=progress_bar,
                         deep_project_id=deep_project_id,
                         is_executing=True,
@@ -307,9 +300,7 @@ class DeepHandler(BaseHandler):
             if progress:
                 summary_parts.append(progress.format_summary())
             if rendered_content:
-                # Truncate for card display
-                truncated = rendered_content[:3000]
-                summary_parts.append(f"\n**📝 输出摘要**\n{truncated}")
+                summary_parts.append(f"\n**📝 执行输出**\n{rendered_content}")
 
             content = "\n\n".join(summary_parts) or "执行完成"
             status_emoji = "✅" if deep_project.status == DeepProjectStatus.COMPLETED else "⚠️"
