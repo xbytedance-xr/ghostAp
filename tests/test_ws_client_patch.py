@@ -1,3 +1,4 @@
+import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -116,6 +117,59 @@ class TestCardActionHandler(unittest.TestCase):
             self.assertEqual(args[0], "om_1")
             self.assertEqual(args[1], "oc_1")
             self.assertIs(kwargs.get("project"), project)
+
+    def test_is_system_command_message_detects_all_slash_commands(self):
+        """验证所有 /command 格式的消息被识别为系统命令，走 SYSTEM 快速通道"""
+        with patch('src.feishu.ws_client.get_settings') as mock_get_settings, \
+             patch('src.feishu.ws_client.ACPSessionManager'), \
+             patch('src.feishu.ws_client.IntentRecognizer'), \
+             patch('src.feishu.ws_client.ProjectManager'), \
+             patch('src.feishu.ws_client.MessageProjectMapper'), \
+             patch('src.feishu.ws_client.DeepEngineManager'), \
+             patch('src.feishu.ws_client.ProgressReporter'), \
+             patch('src.mode.ModeManager'):
+
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+
+            def _make_data(text):
+                data = MagicMock()
+                data.event.message.content = json.dumps({"text": text})
+                return data
+
+            # Previously blocked commands — now should be system commands
+            self.assertTrue(client._is_system_command_message(_make_data("/stop_deep")))
+            self.assertTrue(client._is_system_command_message(_make_data("/stop_loop")))
+            self.assertTrue(client._is_system_command_message(_make_data("/deep_status")))
+            self.assertTrue(client._is_system_command_message(_make_data("/loop_status")))
+            self.assertTrue(client._is_system_command_message(_make_data("/exit")))
+            self.assertTrue(client._is_system_command_message(_make_data("/coco")))
+            self.assertTrue(client._is_system_command_message(_make_data("/claude")))
+            self.assertTrue(client._is_system_command_message(_make_data("/deep do stuff")))
+            self.assertTrue(client._is_system_command_message(_make_data("/loop do stuff")))
+            self.assertTrue(client._is_system_command_message(_make_data("/loop_guide keep going")))
+
+            # Already-supported interceptable commands still work
+            self.assertTrue(client._is_system_command_message(_make_data("/help")))
+            self.assertTrue(client._is_system_command_message(_make_data("/projects")))
+            self.assertTrue(client._is_system_command_message(_make_data("/diff")))
+
+            # Chinese exit keywords (no slash) — should also be system commands
+            self.assertTrue(client._is_system_command_message(_make_data("退出模式")))
+            self.assertTrue(client._is_system_command_message(_make_data("退出编程模式")))
+
+            # Non-commands should NOT be system commands
+            self.assertFalse(client._is_system_command_message(_make_data("hello")))
+            self.assertFalse(client._is_system_command_message(_make_data("ls -la")))
+            self.assertFalse(client._is_system_command_message(_make_data("git status")))
+            self.assertFalse(client._is_system_command_message(_make_data("")))
 
     def test_is_interceptable_command_includes_diff(self):
         """验证 /diff 会被识别为系统拦截命令（避免被当成 shell 或转发给 AI）"""

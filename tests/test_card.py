@@ -5,7 +5,6 @@ from unittest.mock import patch, MagicMock
 from src.project.context import ProjectContext, ProjectStatus, CocoSessionSnapshot, SessionSnapshot
 from src.card.builder import CardBuilder
 from src.deep_engine.reporter import ProgressReporter
-from src.deep_engine.models import DeepTask, ExecutionResult
 from src.card.shared import get_theme, THEMES
 from src.config import Settings
 
@@ -361,30 +360,6 @@ class TestDeepCard:
         assert "Coco" in header_title
         # Deep 卡片按引擎区分颜色：Coco=blue / Claude=purple
         assert card["header"]["template"] == "blue"
-
-    def test_deep_progress_bar_renders_only_once(self):
-        reporter = ProgressReporter()
-        task = DeepTask.create(title="T", description="D", prompt="P")
-        content = reporter.format_task_start(task, current=1, total=3)
-        # 正文不应包含进度条字符（避免与独立进度条重复）
-        assert "█" not in content and "░" not in content
-
-        progress_bar = reporter._make_progress_bar(0, 3)
-        _, card_content = CardBuilder.build_deep_card(
-            project=None,
-            title="X",
-            content=content,
-            progress_bar=progress_bar,
-            engine_name="Coco",
-            show_buttons=False,
-        )
-        card = json.loads(card_content)
-        # 只允许一个进度条元素（markdown 以 📊 开头）
-        progress_elems = [
-            e for e in card.get("body", {}).get("elements", [])
-            if e.get("tag") == "markdown" and str(e.get("content", "")).startswith("📊 ")
-        ]
-        assert len(progress_elems) == 1
 
     def test_build_deep_card_claude_engine(self, sample_project):
         msg_type, content = CardBuilder.build_deep_card(

@@ -1,13 +1,5 @@
-import time
-from typing import Optional
-from .models import (
-    DeepProject,
-    DeepProjectStatus,
-    DeepTask,
-    DeepTaskStatus,
-    ExecutionResult,
-    ProgressUpdate,
-)
+from ..utils.text import make_progress_bar
+from .models import DeepProject, DeepProjectStatus
 
 
 class ProgressReporter:
@@ -20,100 +12,33 @@ class ProgressReporter:
 ⏳ 请稍候，正在规划任务..."""
 
     def format_planning_done(self, project: DeepProject) -> str:
-        lines = [
-            f"✅ **任务规划完成**\n",
-            f"📂 项目: {project.name}",
-            f"📍 目录: `{project.root_path}`",
-            f"📊 共 {project.total_count} 个任务\n",
-            "**任务列表:**",
-        ]
+        return f"""✅ **任务规划完成**
 
-        for task in project.tasks:
-            dep_info = ""
-            if task.dependencies:
-                dep_indices = [
-                    str(t.order + 1) for t in project.tasks
-                    if t.task_id in task.dependencies
-                ]
-                if dep_indices:
-                    dep_info = f" (依赖: {', '.join(dep_indices)})"
+📂 项目: {project.name}
+📍 目录: `{project.root_path}`
 
-            lines.append(f"  {task.order + 1}. {task.title}{dep_info}")
-
-        lines.append("\n🚀 准备开始执行...")
-        return "\n".join(lines)
-
-    def format_task_start(self, task: DeepTask, current: int, total: int) -> str:
-        return f"""🔄 **执行任务 [{current}/{total}]**
-
-📌 **{task.title}**
-{task.description}
-
-⏳ 正在执行..."""
-
-    def format_task_progress(self, task: DeepTask, content: str) -> str:
-        return f"""🔄 **{task.title}** 执行中...
-
-```
-{content}
-```"""
-
-    def format_task_done(self, task: DeepTask, result: ExecutionResult, current: int, total: int) -> str:
-        if result.success:
-            return f"""✅ **任务完成 [{current}/{total}]**
-
-📌 **{task.title}**
-⏱️ 耗时: {result.duration:.1f}s
-
-**执行结果:**
-```
-{result.output}
-```"""
-        else:
-            error_text = result.error if result.error else "未知错误"
-            return f"""❌ **任务失败 [{current}/{total}]**
-
-📌 **{task.title}**
-⏱️ 耗时: {result.duration:.1f}s
-
-**错误信息:**
-```
-{error_text}
-```"""
+🚀 准备开始执行..."""
 
     def format_project_done(self, project: DeepProject) -> str:
         if project.status == DeepProjectStatus.COMPLETED:
             lines = [
-                f"🎉 **全部任务完成！**\n",
+                "🎉 **全部任务完成！**\n",
                 f"📂 项目: {project.name}",
                 f"⏱️ 总耗时: {project.duration():.1f}s" if project.duration() else "",
-                "",
-                "**任务执行结果:**",
             ]
         elif project.status == DeepProjectStatus.FAILED:
             lines = [
-                f"⚠️ **执行完成（有失败）**\n",
+                "⚠️ **执行完成（有失败）**\n",
                 f"📂 项目: {project.name}",
                 f"⏱️ 总耗时: {project.duration():.1f}s" if project.duration() else "",
-                f"❌ 失败任务: {project.failed_count} 个",
-                "",
-                "**任务执行结果:**",
             ]
         else:
             lines = [
-                f"⏸️ **执行已暂停**\n",
+                "⏸️ **执行已暂停**\n",
                 f"📂 项目: {project.name}",
-                f"✅ 已完成: {project.completed_count}/{project.total_count}",
-                "",
-                "**任务状态:**",
             ]
 
-        for task in project.tasks:
-            status_emoji = self._get_status_emoji(task.status)
-            duration_str = f" ({task.duration():.1f}s)" if task.duration() else ""
-            lines.append(f"  {status_emoji} {task.order + 1}. {task.title}{duration_str}")
-
-        return "\n".join(lines)
+        return "\n".join(line for line in lines if line)
 
     def format_error(self, error: str) -> str:
         return f"""❌ **Deep Agent 错误**
@@ -137,66 +62,16 @@ class ProgressReporter:
         lines = [
             f"📊 **{project.name}** 状态\n",
             f"状态: {status_text}",
-            f"进度: {project.completed_count}/{project.total_count}",
         ]
 
         if project.duration():
             lines.append(f"耗时: {project.duration():.1f}s")
 
-        current_task = project.get_current_task()
-        if current_task:
-            elapsed = time.time() - current_task.started_at if current_task.started_at else 0
-            lines.append(f"\n**🔄 正在执行:**")
-            lines.append(f"  {current_task.order + 1}. {current_task.title}")
-            lines.append(f"  ⏱️ 已运行: {elapsed:.0f}s")
-
-        completed_tasks = [t for t in project.tasks if t.status == DeepTaskStatus.COMPLETED]
-        if completed_tasks:
-            lines.append(f"\n**✅ 已完成任务 ({len(completed_tasks)}):**")
-            for task in completed_tasks:
-                duration_str = f" ({task.duration():.1f}s)" if task.duration() else ""
-                result_preview = ""
-                if task.result:
-                    result_preview = f"\n     └ {task.result.strip()}"
-                lines.append(f"  {task.order + 1}. {task.title}{duration_str}{result_preview}")
-
-        failed_tasks = [t for t in project.tasks if t.status == DeepTaskStatus.FAILED]
-        if failed_tasks:
-            lines.append(f"\n**❌ 失败任务 ({len(failed_tasks)}):**")
-            for task in failed_tasks:
-                error_preview = ""
-                if task.error:
-                    error_preview = f"\n     └ {task.error.strip()}"
-                lines.append(f"  {task.order + 1}. {task.title}{error_preview}")
-
-        pending_tasks = [t for t in project.tasks if t.status in (DeepTaskStatus.PENDING, DeepTaskStatus.READY)]
-        if pending_tasks:
-            lines.append(f"\n**⏳ 待执行任务 ({len(pending_tasks)}):**")
-            for task in pending_tasks:
-                lines.append(f"  {task.order + 1}. {task.title}")
-
         return "\n".join(lines)
 
-    def _make_progress_bar(self, completed: int, total: int) -> str:
-        if total == 0:
-            return "[░░░░░░░░░░] 0%"
-
-        percent = (completed / total) * 100
-        filled = int(percent / 10)
-        empty = 10 - filled
-
-        return f"[{'█' * filled}{'░' * empty}] {percent:.0f}% ({completed}/{total})"
-
-    def _get_status_emoji(self, status: DeepTaskStatus) -> str:
-        return {
-            DeepTaskStatus.PENDING: "⏳",
-            DeepTaskStatus.READY: "🔜",
-            DeepTaskStatus.IN_PROGRESS: "🔄",
-            DeepTaskStatus.COMPLETED: "✅",
-            DeepTaskStatus.FAILED: "❌",
-            DeepTaskStatus.SKIPPED: "⏭️",
-            DeepTaskStatus.BLOCKED: "🚫",
-        }.get(status, "❓")
+    @staticmethod
+    def _make_progress_bar(completed: int, total: int) -> str:
+        return make_progress_bar(completed, total)
 
     def format_context_injected(self, message: str) -> str:
         return f"""💬 **上下文已注入**
@@ -205,32 +80,6 @@ class ProgressReporter:
 
 将在下一个任务执行前生效。"""
 
-    def format_task_adapted(self, task: DeepTask, reason: str, prompt_preview: str) -> str:
-        return f"""🔄 **任务指令已调整**
-
-📌 **{task.title}**
-📝 调整原因: {reason}
-
-**调整后指令预览:**
-```
-{prompt_preview}
-```"""
-
-    def format_task_retry(self, task: DeepTask, error: str, retry_num: int, max_retries: int) -> str:
-        return f"""🔄 **任务重试中 [{retry_num}/{max_retries}]**
-
-📌 **{task.title}**
-
-**失败原因:**
-```
-{error}
-```
-
-⏳ 正在智能分析错误并重新规划任务..."""
-
-    def get_task_retry_title(self, retry_num: int, max_retries: int) -> str:
-        return f"🔄 任务重试 [{retry_num}/{max_retries}]"
-
     # --- Card title helpers ---
 
     def get_planning_start_title(self) -> str:
@@ -238,14 +87,6 @@ class ProgressReporter:
 
     def get_planning_done_title(self) -> str:
         return "✅ 任务规划完成"
-
-    def get_task_start_title(self, current: int, total: int) -> str:
-        return f"🔄 执行任务 [{current}/{total}]"
-
-    def get_task_done_title(self, success: bool, current: int, total: int) -> str:
-        if success:
-            return f"✅ 任务完成 [{current}/{total}]"
-        return f"❌ 任务失败 [{current}/{total}]"
 
     def get_project_done_title(self, project: DeepProject) -> str:
         if project.status == DeepProjectStatus.COMPLETED:
@@ -257,20 +98,18 @@ class ProgressReporter:
     def get_context_injected_title(self) -> str:
         return "💬 上下文已注入"
 
-    def get_task_adapted_title(self) -> str:
-        return "🔄 任务指令已调整"
-
     def get_error_title(self) -> str:
         return "❌ Deep Agent 错误"
 
     def get_status_title(self) -> str:
         return "📊 任务状态"
 
-    def get_progress_info(self, project: DeepProject) -> dict:
+    def get_progress_info(self, project: DeepProject,
+                          completed: int = 0, total: int = 0) -> dict:
         return {
-            "progress_bar": self._make_progress_bar(project.completed_count, project.total_count),
-            "completed_count": project.completed_count,
-            "total_count": project.total_count,
+            "progress_bar": self._make_progress_bar(completed, total),
+            "completed_count": completed,
+            "total_count": total,
             "status": project.status,
             "project_name": project.name,
             "project_id": project.project_id,

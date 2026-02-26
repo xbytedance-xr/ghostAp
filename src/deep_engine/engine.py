@@ -14,7 +14,7 @@ from typing import Optional, Callable
 from dataclasses import dataclass
 
 from ..acp import ACPEvent, ACPEventType, ACPEventRenderer
-from ..agent_session import SyncSession, create_engine_session
+from ..agent_session import SyncSession, close_session_safely, create_engine_session
 from ..config import get_settings
 from .models import (
     DeepProject,
@@ -130,12 +130,8 @@ class DeepEngine:
 
     def _close_session_safely(self) -> None:
         """Close existing ACP session, ignoring errors."""
-        if self._session:
-            try:
-                self._session.close()
-            except Exception as e:
-                logger.debug("关闭旧ACP session失败: %s", e)
-            self._session = None
+        close_session_safely(self._session)
+        self._session = None
 
     def plan_and_execute(
         self,
@@ -339,7 +335,6 @@ class DeepEngine:
 
         return ProgressUpdate(
             project_id=self._project.project_id,
-            current_task=None,
             completed_count=self._progress.completed_steps,
             total_count=self._progress.total_steps or 1,
             status=status,

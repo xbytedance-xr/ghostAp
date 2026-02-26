@@ -1,4 +1,4 @@
-from .text import clean_terminal_output, truncate_output
+from .text import clean_terminal_output, make_progress_bar, truncate_output
 from .errors import (
     GhostAPError,
     SessionExpiredError,
@@ -13,6 +13,7 @@ from .errors import (
 
 __all__ = [
     "clean_terminal_output",
+    "make_progress_bar",
     "truncate_output",
     "GhostAPError",
     "SessionExpiredError",

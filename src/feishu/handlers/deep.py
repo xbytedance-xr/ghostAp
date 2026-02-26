@@ -391,7 +391,11 @@ class DeepHandler(BaseHandler):
 
         status_content = reporter.format_status(engine.project)
         status_title = reporter.get_status_title()
-        progress_info = reporter.get_progress_info(engine.project)
+        progress_info = reporter.get_progress_info(
+            engine.project,
+            completed=engine.progress.completed_steps,
+            total=engine.progress.total_steps,
+        )
         msg_type, card_content = CardBuilder.build_deep_card(
             project=project, title=status_title, content=status_content,
             progress_bar=progress_info["progress_bar"],
@@ -437,7 +441,11 @@ class DeepHandler(BaseHandler):
                 proj = None
             proj_name = proj.project_name if proj else (e.project.name or "unknown")
             root = e.root_path
-            info = reporter.get_progress_info(e.project)
+            info = reporter.get_progress_info(
+                e.project,
+                completed=e.progress.completed_steps,
+                total=e.progress.total_steps,
+            )
             status = e.project.status.value
             lines.append(f"- 🧠 **{proj_name}** · `{status}` · {info['progress_bar']} · `{root}`")
 

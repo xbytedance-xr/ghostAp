@@ -257,6 +257,15 @@ class SyncClaudeCLISession:
         )
 
 
+def close_session_safely(session: Optional[SyncSession]) -> None:
+    """Close an ACP/CLI session, ignoring errors."""
+    if session:
+        try:
+            session.close()
+        except Exception as e:
+            logger.debug("关闭旧ACP session失败: %s", e)
+
+
 def create_sync_session(agent_type: str, cwd: str) -> SyncSession:
     """Factory for creating a sync session by backend.
 

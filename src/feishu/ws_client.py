@@ -408,7 +408,12 @@ class FeishuWSClient:
             logger.debug("link_task失败(message): message_id=%s, run_id=%s, err=%s", message_id, handle.run_id, e)
 
     def _is_system_command_message(self, data: P2ImMessageReceiveV1) -> bool:
-        """Check if the message is a system command that should bypass project queue."""
+        """Check if the message is a system command that should bypass project queue.
+
+        All slash commands (``/xxx``) are system commands: they should never
+        block behind long-running Coco/Claude programming tasks on the project
+        queue.  This includes ``/stop_deep``, ``/exit``, ``/loop_status``, etc.
+        """
         try:
             message = data.event.message
             content_str = message.content
@@ -420,7 +425,13 @@ class FeishuWSClient:
             if text.startswith("@"):
                 parts = text.split(None, 1)
                 text = parts[1].strip() if len(parts) > 1 else ""
-            return self._is_interceptable_command(text)
+            if not text:
+                return False
+            # All /command messages are system commands
+            if text.startswith("/"):
+                return True
+            # Also detect exit keywords (Chinese)
+            return self._is_exit_command(text)
         except Exception:
             return False
 

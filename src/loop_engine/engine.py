@@ -19,7 +19,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from ..acp import ACPEvent, ACPEventType, ACPEventRenderer
-from ..agent_session import SyncSession, create_engine_session
+from ..agent_session import SyncSession, close_session_safely, create_engine_session
 from ..config import get_settings
 from ..deep_engine.models import EngineRunState
 
@@ -219,12 +219,8 @@ class LoopEngine:
 
     def _close_session_safely(self) -> None:
         """Close existing ACP session, ignoring errors."""
-        if self._session:
-            try:
-                self._session.close()
-            except Exception as e:
-                logger.debug("关闭旧ACP session失败: %s", e)
-            self._session = None
+        close_session_safely(self._session)
+        self._session = None
 
     def execute(
         self,

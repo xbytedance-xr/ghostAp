@@ -1,5 +1,6 @@
 """Loop Engine 进度报告器 — 格式化进度信息供 Feishu 卡片展示。"""
 
+from ..utils.text import make_progress_bar
 from .models import (
     LoopProject,
     LoopProjectStatus,
@@ -268,15 +269,9 @@ class LoopReporter:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _make_progress_bar(self, completed: int, total: int) -> str:
-        if total == 0:
-            return "[░░░░░░░░░░] 0%"
-
-        percent = (completed / total) * 100
-        filled = int(percent / 10)
-        empty = 10 - filled
-
-        return f"[{'█' * filled}{'░' * empty}] {percent:.0f}% ({completed}/{total})"
+    @staticmethod
+    def _make_progress_bar(completed: int, total: int) -> str:
+        return make_progress_bar(completed, total)
 
     def get_progress_info(self, project: LoopProject) -> dict:
         return {

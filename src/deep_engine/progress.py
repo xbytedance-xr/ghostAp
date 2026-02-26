@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from ..acp.models import PlanInfo, ToolCallInfo
+from ..utils.text import make_progress_bar
 
 
 @dataclass
@@ -54,10 +55,7 @@ class DeepProgress:
 
     @property
     def progress_bar(self) -> str:
-        percent = self.progress_percent
-        filled = int(percent / 10)
-        empty = 10 - filled
-        return f"[{'█' * filled}{'░' * empty}] {percent:.0f}%"
+        return make_progress_bar(self.completed_steps, self.total_steps)
 
     def format_summary(self) -> str:
         """Return human-readable progress summary."""
