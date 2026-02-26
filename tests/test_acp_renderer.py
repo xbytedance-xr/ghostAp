@@ -198,3 +198,192 @@ class TestACPEventRenderer:
     def test_render_plan_view_empty_state(self):
         """render_plan_view() returns empty string when no plan or active tools."""
         assert self.renderer.render_plan_view() == ""
+
+    # ------------------------------------------------------------------
+    # TodoWrite content tracking
+    # ------------------------------------------------------------------
+    def test_todo_content_tracked_on_tool_start(self):
+        """TodoWrite content should be tracked when tool starts."""
+        todo_text = "✅ Research code\n🔄 Implement fix\n⏳ Run tests"
+        tc = ToolCallInfo(id="t1", title="TodoWrite", kind="other",
+                          status="in_progress", content=todo_text)
+        self.renderer.process_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START, tool_call=tc,
+        ))
+        assert self.renderer.todo_content == todo_text
+        rendered = self.renderer._render()
+        assert "任务进度" in rendered
+        assert "Research code" in rendered
+        assert "Implement fix" in rendered
+
+    def test_todo_content_updated_on_tool_done(self):
+        """TodoWrite content should update on completion."""
+        tc_start = ToolCallInfo(id="t1", title="TodoWrite", kind="other",
+                                status="in_progress", content="⏳ Step 1")
+        self.renderer.process_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START, tool_call=tc_start,
+        ))
+        tc_done = ToolCallInfo(id="t1", title="TodoWrite", kind="other",
+                               status="completed", content="✅ Step 1")
+        self.renderer.process_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE, tool_call=tc_done,
+        ))
+        assert self.renderer.todo_content == "✅ Step 1"
+
+    def test_todo_done_not_in_text_chunks(self):
+        """TodoWrite completion should NOT add lines to text_chunks."""
+        tc = ToolCallInfo(id="t1", title="TodoWrite", kind="other",
+                          status="completed", content="✅ Done")
+        self.renderer.process_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE, tool_call=tc,
+        ))
+        # text_content should be empty (TodoWrite doesn't pollute text buffer)
+        assert self.renderer.text_content.strip() == ""
+        # But completed_tool_count should still increment
+        assert self.renderer.completed_tool_count == 1
+
+    def test_todo_active_tool_not_in_active_tools_render(self):
+        """Active TodoWrite should not appear in active tools section (shown in todo section instead)."""
+        tc = ToolCallInfo(id="t1", title="TodoWrite", kind="other",
+                          status="in_progress", content="🔄 Working")
+        self.renderer.process_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START, tool_call=tc,
+        ))
+        active_tools = self.renderer._render_active_tools()
+        # Should NOT show "TodoWrite..." in active tools
+        assert "TodoWrite" not in active_tools
+        # But todo content should be in render
+        rendered = self.renderer._render()
+        assert "Working" in rendered
+
+    def test_todo_in_plan_view(self):
+        """render_plan_view() should include todo content."""
+        tc = ToolCallInfo(id="t1", title="TodoWrite", kind="other",
+                          status="completed", content="✅ Step A\n🔄 Step B")
+        self.renderer.process_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE, tool_call=tc,
+        ))
+        plan_view = self.renderer.render_plan_view()
+        assert "Step A" in plan_view
+        assert "Step B" in plan_view
+
+    def test_todo_persists_across_other_tools(self):
+        """Todo content should persist when other (non-todo) tools run."""
+        # First, a TodoWrite
+        tc_todo = ToolCallInfo(id="t1", title="TodoWrite", kind="other",
+                               status="completed", content="🔄 Building feature")
+        self.renderer.process_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE, tool_call=tc_todo,
+        ))
+        # Then, a regular tool
+        tc_edit = ToolCallInfo(id="t2", title="Edit main.py", kind="edit",
+                               status="completed", locations=["/tmp/main.py"])
+        self.renderer.process_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE, tool_call=tc_edit,
+        ))
+        # Todo content should still be there
+        assert self.renderer.todo_content == "🔄 Building feature"
+        rendered = self.renderer._render()
+        assert "Building feature" in rendered
+
+    def test_todo_latest_wins(self):
+        """Multiple TodoWrite calls should keep only the latest content."""
+        tc1 = ToolCallInfo(id="t1", title="TodoWrite", kind="other",
+                           status="completed", content="⏳ Old task")
+        self.renderer.process_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE, tool_call=tc1,
+        ))
+        tc2 = ToolCallInfo(id="t2", title="TodoWrite", kind="other",
+                           status="completed", content="🔄 New task")
+        self.renderer.process_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE, tool_call=tc2,
+        ))
+        assert self.renderer.todo_content == "🔄 New task"
+        assert "Old task" not in self.renderer._render()
+
+
+class TestParseToolCallTodoWrite:
+    """Tests for _parse_tool_call with TodoWrite raw_input extraction."""
+
+    def test_todo_content_from_raw_input(self):
+        from src.acp.client import _parse_tool_call
+
+        class MockTodoToolCall:
+            tool_call_id = "tc1"
+            title = "TodoWrite"
+            kind = "other"
+            status = "completed"
+            locations = None
+            raw_input = {
+                "todos": [
+                    {"content": "Research codebase", "status": "completed", "activeForm": "Researching codebase"},
+                    {"content": "Implement fix", "status": "in_progress", "activeForm": "Implementing fix"},
+                    {"content": "Run tests", "status": "pending", "activeForm": "Running tests"},
+                ]
+            }
+
+        tc = _parse_tool_call(MockTodoToolCall())
+        assert "✅ Research codebase" in tc.content
+        assert "🔄 Implementing fix" in tc.content
+        assert "⏳ Run tests" in tc.content
+
+    def test_non_todo_tool_no_content(self):
+        from src.acp.client import _parse_tool_call
+
+        class MockRegularToolCall:
+            tool_call_id = "tc2"
+            title = "Read file"
+            kind = "read"
+            status = "in_progress"
+            locations = None
+            raw_input = {"path": "/tmp/a.py"}
+
+        tc = _parse_tool_call(MockRegularToolCall())
+        assert tc.content == ""
+
+    def test_todo_detected_by_raw_input_key(self):
+        """Even if title doesn't say 'todo', raw_input with 'todos' key triggers extraction."""
+        from src.acp.client import _parse_tool_call
+
+        class MockToolCall:
+            tool_call_id = "tc3"
+            title = "Update task list"
+            kind = "other"
+            status = "completed"
+            locations = None
+            raw_input = {
+                "todos": [
+                    {"content": "Task A", "status": "completed", "activeForm": "Doing A"},
+                ]
+            }
+
+        tc = _parse_tool_call(MockToolCall())
+        assert "✅ Task A" in tc.content
+
+    def test_todo_no_raw_input(self):
+        """Tool without raw_input should have empty content."""
+        from src.acp.client import _parse_tool_call
+
+        class MockToolCall:
+            tool_call_id = "tc4"
+            title = "TodoWrite"
+            kind = "other"
+            status = "completed"
+            locations = None
+            # No raw_input attribute
+
+        tc = _parse_tool_call(MockToolCall())
+        assert tc.content == ""
+
+    def test_todo_in_progress_prefers_active_form(self):
+        """In-progress items should use activeForm for display."""
+        from src.acp.client import _format_todo_content
+
+        raw_input = {
+            "todos": [
+                {"content": "Fix bug", "status": "in_progress", "activeForm": "Fixing bug"},
+            ]
+        }
+        result = _format_todo_content(raw_input)
+        assert "🔄 Fixing bug" in result
+        assert "Fix bug" not in result  # Should use activeForm, not content

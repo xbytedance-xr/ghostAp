@@ -2,11 +2,13 @@
 
 import pytest
 from unittest.mock import patch, MagicMock, PropertyMock
+import io
 
 from src.deep_engine.models import EngineRunState, DeepProject, DeepProjectStatus
 from src.deep_engine.engine import DeepEngine, DeepEngineManager, DeepEngineCallbacks
 from src.deep_engine.progress import DeepProgress
 from src.acp.models import PlanEntryInfo, PlanInfo, ToolCallInfo
+from src.agent_session import SyncClaudeCLISession, ClaudeCLIConfig
 
 
 class TestDeepEngine:
@@ -169,3 +171,47 @@ class TestDeepProgress:
         p.update_plan(plan)
         bar = p.progress_bar
         assert "50%" in bar
+
+
+class TestClaudeCLISession:
+    def test_resume_missing_conversation_fallback_to_new_session(self):
+        class FakeProc:
+            def __init__(self, stdout_text: str, stderr_text: str, returncode: int):
+                self.stdout = io.StringIO(stdout_text)
+                self.stderr = io.StringIO(stderr_text)
+                self.returncode = returncode
+
+            def wait(self, timeout: int = 0):
+                return self.returncode
+
+            def terminate(self):
+                return None
+
+        cfg = ClaudeCLIConfig(command="claude", add_dir=False, bypass_permissions=False)
+        s = SyncClaudeCLISession(cwd="/tmp", config=cfg)
+        s.session_id = "sid0"
+        s.is_resumed = True
+
+        procs = [
+            FakeProc(stdout_text="", stderr_text="No conversation found with session ID: sid0\n", returncode=1),
+            FakeProc(stdout_text="ok\n", stderr_text="", returncode=0),
+        ]
+
+        popen_calls = []
+
+        def fake_popen(args, cwd, stdout, stderr, text):
+            popen_calls.append(args)
+            return procs.pop(0)
+
+        with patch("src.agent_session.subprocess.Popen", side_effect=fake_popen), \
+             patch("src.agent_session.uuid.uuid4", return_value="sid_new"):
+            events = []
+            res = s.send_prompt("hi", on_event=lambda e: events.append(e), timeout=5)
+
+        assert res.stop_reason == "end_turn"
+        assert "ok" in res.text
+        assert len(popen_calls) == 2
+        assert "--resume" in popen_calls[0]
+        assert "sid0" in popen_calls[0]
+        assert "--session-id" in popen_calls[1]
+        assert "sid_new" in popen_calls[1]

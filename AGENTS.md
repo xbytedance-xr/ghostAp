@@ -1,184 +1,351 @@
-# GhostAP 项目总结
+# GhostAP 技术架构文档
 
-## 1. 项目概述
-**GhostAP** 是一个创新的飞书机器人服务，旨在通过飞书聊天界面提供安全的本地 Shell 命令执行环境及 AI 辅助远程开发能力。它将即时通讯工具转化为强大的远程控制终端，特别适合运维监控、轻量级远程开发及自动化任务执行。
+> 最后更新：2026-02-26
 
-## 项目规范
-- AI Native 优先 — 通用问题优先用模型能力解决，禁止硬编码，仅在模型不稳定时才写代码解决
-- 复杂/高风险任务前必须深度思考，不确定时主动使用MCP或skill，先方案后执行
-- 问题闭环 — 任务标准是彻底解决，非阶段性完成，未验证前不汇报
-- python项目强制用 uv ，禁止 pip/conda/直接 python；统一 uv run python <script.py>执行
-- 代码保持简洁清晰，删除冗余，不留历史包袱
-- 数据库 — 默认 SQLite，禁止擅自引入外部数据库
-- 配置管理 — 敏感信息从 .env 读取，禁止硬编码
-- 单元测试 — 所有功能必须配套 UT
-- 目录规范 — 测试/临时代码放 tests/ ，根目录保持整洁
-- 维护好Memory.md（如无文件请创建一个），行动前先查Memory.md，避免重复失败方案；每次行动后摘要整- 理，保持简洁可回溯，按每次任务的时间（格式YYYY-MM-DD HH:MM:SS）倒序记录到 Memory.md
-- 当请求代码示例、工程配置步骤、库/API 使用说明时，强制使用Byted-Context7
-- 解决问题时候思考至少两种方案以上的方案，并选择其中最优的一种方案进行行动
-- **编程模式兼容** — 所有编程模式（Coco/Claude/Shell 等）相关的后续功能，默认必须实现所有编程模式的兼容，除非用户明确指定不需要兼容
-- 用户学习的时候要好好讲解，不能只给代码，要给用户讲解代码的作用和实现原理。
-- 我们有足够的时间，不要担心:任务复杂的时候你可以慢慢干，反复自我换位验证，哪怕干个数小时，但是一定要交付验证没问题的代码。
+## 1. 系统架构总览
 
-## 2. 核心功能
+GhostAP 采用分层架构，从上到下为：**接入层 → 调度层 → 业务层 → 协议层 → 执行层**。
 
-### 2.1 Shell 沙箱模式 (默认)
-- **远程命令执行**: 直接在飞书对话框发送 Shell 命令（如 `ls -la`, `docker ps`），实时获取执行结果。
-- **安全防护**:
-  - 内置危险命令拦截机制（20+ 危险模式检测）。
-  - 支持基于 ARK 方舟大模型的智能命令安全审计。
-  - 执行超时控制与输出长度限制，防止滥用。
-- **工具集成**: 集成 LangGraph ReAct Agent 框架，支持文件编辑、Shell 执行等工具。
-
-### 2.2 Coco AI 远程开发模式
-- **智能交互**: 通过 `/coco` 命令或自然语言（如"帮我写代码"）激活，与集成在服务端的 Coco AI 进行多轮对话。
-- **开发辅助**: 支持代码编写、调试、Git 操作等远程开发任务。
-- **会话管理**: 提供独立的会话隔离、上下文保持及会话恢复功能，提升交互效率。
-
-### 2.3 智能意图识别
-- **ReAct 推理**: 基于 Thought-Action-Observation-Reflection 链式推理模式。
-- **多任务拆解**: 自动识别复合意图并拆解为可执行步骤。
-- **自然语言理解**: 支持模糊匹配和语义理解，智能选择 Shell 模式或 Coco 模式。
-- **快速匹配**: 支持精确命令、关键词和 Shell 命令白名单匹配。
-
-### 2.4 项目管理 (NEW)
-- **多项目支持**: 并行管理多个项目，每个项目有独立的工作空间。
-- **项目状态追踪**: 支持 ACTIVE/IDLE/BUSY/SUSPENDED/CLOSED 五种状态。
-- **自动项目创建**: 基于当前工作目录自动创建项目。
-- **会话快照**: 项目会话自动保存和恢复。
-
-### 2.5 安全工具链
-- **SafeShellTool**: 安全的 Shell 命令执行工具
-  - 20+ 危险命令模式检测
-  - 黑名单/白名单双模式
-  - 风险等级评估 (SAFE/LOW/MEDIUM/HIGH/CRITICAL)
-- **FileEditorTool**: 文件编辑工具
-  - 支持 JSON/YAML/Markdown/Python 等格式
-  - 路径安全检查、扩展名过滤
-  - 删除保护、大小限制
-- **ToolManager**: 统一管理工具和 AI Agent
-
-### 2.6 富交互体验 (NEW)
-- **表情符号反馈**: 50+ 表情符号实时反馈执行状态。
-- **富文本卡片**: 交互式卡片消息（按钮、下拉菜单）。
-- **工作目录管理**: 支持 `cd` 切换和路径补全。
-- **消息去重**: 防止重复处理相同消息。
-
-## 3. 技术架构与优势
-
-### 3.1 连接机制
-- **WebSocket 长连接**: 采用飞书 SDK 的长连接模式。
-  - **无需公网 IP**: 只要本地机器能访问互联网即可服务，彻底摆脱内网穿透工具（如 ngrok, frp）的依赖。
-  - **自动加密**: 天然具备通信加密特性。
-
-### 3.2 技术栈
-- **语言**: Python 3.11+
-- **核心框架**:
-  - `lark-oapi`: 飞书开放平台 SDK（WebSocket 长连接模式）
-  - `LangChain` + `LangGraph`: AI 应用框架，支持 ReAct Agent 和工具调用
-  - `pydantic-settings`: 健壮的配置管理
-- **大模型**: ARK 方舟大模型（字节跳动）
-- **包管理**: 使用 `uv` 进行现代化的 Python 依赖管理
-
-### 3.3 架构设计 (NEW)
-
-#### **分层架构**
 ```
-表现层: 飞书消息处理 → 业务层: 意图识别/项目管理 → 服务层: 沙箱执行/会话管理 → 工具层: 安全工具链
+┌──────────────────────────────────────────────────────────────────────────┐
+│                          接入层 (Feishu)                                 │
+│  FeishuWSClient → MessageCache(去重) → _handle_message(校验/过期)        │
+└───────────────────────────────┬──────────────────────────────────────────┘
+                                │
+┌───────────────────────────────▼──────────────────────────────────────────┐
+│                          调度层 (Tasking)                                │
+│  TaskScheduler: per-chat 串行队列 + 全局并发控制 + 优先级                  │
+│  IntentRecognizer: ReAct LLM 意图分类 (~30 种)                          │
+└───────────────────────────────┬──────────────────────────────────────────┘
+                                │ 路由分发
+        ┌───────────┬───────────┼───────────┬───────────┐
+        ▼           ▼           ▼           ▼           ▼
+┌─────────────┐┌─────────┐┌─────────┐┌──────────┐┌──────────┐
+│ Programming ││  Deep   ││  Loop   ││ Project  ││ System   │
+│  Handler    ││ Handler ││ Handler ││ Handler  ││ Handler  │
+│(Coco/Claude)││         ││         ││          ││(Shell等) │
+└──────┬──────┘└────┬────┘└────┬────┘└──────────┘└──────────┘
+       │            │          │
+┌──────▼────────────▼──────────▼──────────────────────────────────────────┐
+│                         协议层 (ACP)                                    │
+│  ACPSessionManager → SyncACPSession → ACPSession → GhostAPClient      │
+│                                                     (JSON-RPC 2.0)     │
+└───────────────────────────────┬──────────────────────────────────────────┘
+                                │ stdio
+┌───────────────────────────────▼──────────────────────────────────────────┐
+│                         执行层 (Agent Process)                           │
+│  Coco Agent (ARK 方舟大模型)  /  Claude Code Agent                       │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### **核心模块**
-- **feishu/**: WebSocket客户端、消息处理、卡片构建
-- **agent/**: 意图识别、ReAct推理、任务拆解
-- **project/**: 项目管理、状态追踪、会话快照
-- **coco/**: Coco会话管理、生命周期控制
-- **sandbox/**: 沙箱执行器、安全策略
-- **tools/**: 安全工具链、ToolManager
-- **mode/**: 交互模式管理
-- **card/**: 富文本卡片构建器
-- **notification/**: 通知中心
+## 2. 模块详解
 
-#### **设计模式**
-- **策略模式**: `SecurityPolicy`/`FileSecurityPolicy` 安全策略配置
-- **工厂模式**: `CardBuilder`卡片构建，`EmojiReaction`表情生成
-- **观察者模式**: `NotificationHub`通知中心
-- **状态模式**: `ProjectStatus`项目状态管理
-- **单例模式**: `get_settings()`配置单例
+### 2.1 ACP 协议层 (`src/acp/`)
 
-#### **线程安全**
-- 关键模块使用 `threading.Lock`
-- 消息去重使用 `OrderedDict`+锁机制
-- 项目数据存储使用文件锁
+ACP（Agent Client Protocol）是 GhostAP 与 AI 后端通信的核心协议，基于 JSON-RPC 2.0 over stdio。
 
-## 4. 已完成的优化
+**设计目标**：替代早期的 subprocess CLI 调用（`coco -p`、`claude -p`），实现结构化的工具调用追踪、执行计划感知和权限控制。
 
-### ✅ 代码库清理
-- 移除 HTTP Webhook 模式的废弃代码 (`server.py`, `feishu/client.py`, `feishu/handler.py`)
-- 精简项目结构，删除无用测试文件
+```
+文件                  职责
+models.py            事件模型定义
+                     - ACPEventType: TEXT_CHUNK, THOUGHT_CHUNK, TOOL_CALL_START/UPDATE/DONE, PLAN_UPDATE
+                     - ACPEvent: 统一事件结构 (type, content, tool_call, plan)
+                     - ToolCallInfo: 工具调用详情 (call_id, name, status, error)
+                     - PlanInfo/PlanEntryInfo: 执行计划条目
+                     - ACPSessionState: session 状态枚举
+                     - PromptResult: prompt 执行结果
 
-### ✅ 架构重构
-- `main.py` 封装为 `Application` 类管理生命周期
-- 消除全局变量依赖
-- 实现模块化设计，职责分离清晰
+client.py            GhostAPClient(Client)
+                     - session_update() 按 update type 分发 → ACPEvent
+                     - request_permission() 自动批准（AllowedOutcome）
+                     - 文件/终端操作 stub（ReadTextFileResponse 等）
 
-### ✅ 安全工具链实现
-- 实现 `SafeShellTool` 安全 Shell 执行工具
-- 实现 `FileEditorTool` 文件编辑工具
-- 实现 `ToolManager` 统一管理器
-- 实现 `SecurityPolicy` 安全策略配置
+session.py           ACPSession（async 生命周期）
+                     - start(): spawn_agent_process() + 初始化
+                     - prompt(): text_block() 发送消息
+                     - cancel() / close(): 优雅终止
 
-### ✅ 项目管理功能 (NEW)
-- 实现 `ProjectManager` 多项目管理
-- 实现 `ProjectContext` 项目上下文
-- 支持项目状态追踪（ACTIVE/IDLE/BUSY/SUSPENDED/CLOSED）
-- 支持会话快照和恢复
+sync_adapter.py      SyncACPSession（async→sync 桥接）
+                     - daemon thread 运行 asyncio event loop
+                     - run_coroutine_threadsafe() 暴露同步 API
 
-### ✅ 配置统一
-- 所有配置项统一移至 `config.py` 和 `.env` 管理
-- 移除无用的 `server_host`/`server_port` 配置
-- 使用 `pydantic-settings` 进行配置验证
+manager.py           ACPSessionManager
+                     - 按 (chat_id, project_id) 隔离会话
+                     - 超时清理、并发安全（threading.Lock）
+                     - inject_context / resume 支持
 
-### ✅ 富交互体验 (NEW)
-- 实现 `CardBuilder` 富文本卡片构建器
-- 实现 `EmojiReaction` 表情符号反馈系统（50+ 表情）
-- 实现消息去重和过期处理
-- 支持工作目录切换和管理
+renderer.py          ACPEventRenderer（事件→飞书 Markdown）
+                     - 累积 TEXT + TOOL_CALL + PLAN_UPDATE
+                     - render_tool_calls(): 工具状态行
+                     - render_plan_view(): 计划视图（独立于正文）
+                     - on_event 回调驱动实时卡片
+```
 
-## 5. 代码统计
+**关键 SDK 模式**:
+```python
+from acp import spawn_agent_process, text_block
+from acp.interfaces import Client, Agent
+from acp.schema import ToolCallStart, ToolCallProgress, AgentMessageChunk
+from acp.schema import AllowedOutcome, ReadTextFileResponse
+```
 
-| 类型 | 行数 |
+### 2.2 Deep 引擎 (`src/deep_engine/`)
+
+**定位**：单次输入完整需求 → Agent 自主规划并执行。适合明确可拆分的多步任务。
+
+**执行流程**：
+1. 用户发送 `/deep <需求>`
+2. 构建包含完整需求的 prompt
+3. 通过 ACP 单次 prompt 发送给 Agent
+4. Agent 自主制定计划并执行（GhostAP 被动追踪）
+5. 通过 ACP 事件流实时更新进度卡片
+
+```
+文件                  职责
+models.py            DeepProject（项目状态）、DeepTask、EngineRunState
+engine.py            DeepEngine: 核心引擎
+                     - execute(): ACP prompt → 事件流处理
+                     - _process_events(): 消费 ACPEvent 更新 DeepProgress
+                     DeepEngineManager: per-chat 引擎管理
+                     DeepEngineCallbacks: 事件转发接口
+progress.py          DeepProgress: 追踪计划条目、工具调用、修改文件
+reporter.py          ProgressReporter: 进度格式化为 Markdown
+```
+
+**状态机**: `IDLE → RUNNING → STOPPING → IDLE`（EngineRunState）
+
+### 2.3 Loop 引擎 (`src/loop_engine/`)
+
+**定位**：迭代闭环开发引擎。将产品诉求转化为可验证的验收标准，通过多轮迭代持续推进直到全部标准满足。
+
+**核心特性**：
+- **验收标准驱动**：LLM 将口语化需求拆解为结构化验收标准
+- **迭代闭环**：每轮迭代后评估标准完成情况，动态决策下一步
+- **收敛检测**：连续 N 轮无新标准满足时自动终止，避免无限循环
+- **多视角审查（Ralph Loop）**：功能迭代完成后，从架构师/产品/用户/测试四视角审查
+
+**执行流程**：
+```
+/loop <需求>
+  → LLM 拆解为验收标准
+    → 迭代主循环:
+       ① ACP prompt 执行一轮迭代
+       ② IterationTracker 追踪事件
+       ③ LLM 评估验收标准完成情况
+       ④ 收敛检测 → CONTINUE / COMPLETE / CONVERGED / MAX_ITER
+    → 全部标准满足后进入 Ralph Loop（可选）:
+       ⑤ 架构师审查 → 产品审查 → 用户体验审查 → 测试审查
+       ⑥ 审查意见驱动额外迭代
+    → 输出最终报告
+```
+
+```
+文件                  职责
+models.py            LoopProject, IterationRecord, CriteriaTracker
+                     LoopRole (架构师/开发者/审查/测试/调试/集成)
+engine.py            LoopEngine: 迭代主循环
+                     - execute(): while RUNNING { prompt → track → evaluate }
+                     - _evaluate_criteria(): LLM 评估标准完成
+                     - _detect_convergence(): 收敛检测
+                     - _run_review(): Ralph Loop 多视角审查
+                     LoopEngineManager: per-chat 引擎管理
+tracker.py           IterationTracker: 处理 ACP 事件 → 迭代记录
+reporter.py          LoopReporter: 迭代进度 + 验收标准格式化
+```
+
+### 2.4 会话后端抽象 (`src/agent_session.py`)
+
+提供统一的 `SyncSession` 接口，支持两种后端：
+
+| 后端 | 类 | 协议 | 特点 |
+|------|-----|------|------|
+| ACP | `SyncACPSession` | JSON-RPC 2.0 over stdio | 结构化事件（工具/计划/文本） |
+| CLI | `SyncClaudeCLISession` | `claude -p` 子进程 | 文本流，支持 `--resume` |
+
+```python
+# 工厂方法
+session = create_sync_session("coco", cwd="/path/to/project")  # → SyncACPSession
+session = create_sync_session("claude", cwd="/path/to/project")  # → SyncClaudeCLISession
+
+# 引擎用（自动启动 + 重试）
+session = create_engine_session("coco", cwd="/path/to/project")
+```
+
+### 2.5 飞书集成 (`src/feishu/`)
+
+**ws_client.py** — 消息调度中枢。通过 `_FORWARDING_MAP` + `__getattr__` 将方法调用委托到对应 Handler。
+
+**Handler 架构**（7 个 Handler）：
+
+| Handler | 文件 | 职责 |
+|---------|------|------|
+| `CocoModeHandler` | programming.py | Coco 多轮编程会话 |
+| `ClaudeModeHandler` | programming.py | Claude 多轮编程会话 |
+| `DeepHandler` | deep.py | Deep 引擎命令路由 |
+| `LoopHandler` | loop.py | Loop 引擎命令路由 |
+| `ProjectHandler` | project.py | 项目创建/切换/查看 |
+| `SystemHandler` | system.py | 帮助/Shell/模式切换 |
+| `DiagnosticsHandler` | diagnostics.py | 调试信息 |
+
+**handler_context.py** — HandlerContext，所有 Handler 共享的上下文：
+- `coco_manager` / `claude_manager`：ACPSessionManager 实例
+- `deep_manager` / `loop_manager`：EngineManager 实例
+- `project_manager`：ProjectManager
+- `mode_manager`：ModeManager
+- `scheduler`：TaskScheduler
+- 飞书 API client
+
+### 2.6 卡片渲染 (`src/card/`)
+
+- **CardBuilder** — 构建飞书 Interactive Card（schema 2.0），支持按钮、菜单、Markdown 区块。引擎感知的 header 颜色（Coco=蓝、Claude=紫）。
+- **StreamingCardManager** — 通过 Feishu Patch API 实现卡片实时更新。支持 desktop/mobile/responsive 三种按钮布局策略。
+
+### 2.7 任务调度 (`src/tasking/scheduler.py`)
+
+- 线程池 + per-chat 串行队列 + 全局并发上限（默认 10）
+- `TaskSpec` 元数据：chat_id, project_id, priority, queue_key
+- 长时任务（Deep/Loop）使用独立 queue_key 避免阻塞系统命令
+- 支持取消令牌（CancellationToken）和进度追踪
+
+### 2.8 意图识别 (`src/agent/intent_recognizer.py`)
+
+基于 LangChain + ARK 的 ReAct Agent，支持 ~30 种意图类型：
+
+```
+编程模式:  ENTER_COCO, EXIT_COCO, ENTER_CLAUDE, EXIT_CLAUDE, COCO_MESSAGE, CLAUDE_MESSAGE
+Shell:    SHELL_COMMAND, CHANGE_DIR
+项目:     CREATE_PROJECT, SWITCH_PROJECT, LIST_PROJECTS, CLOSE_PROJECT, PROJECT_STATUS
+Deep:     ENTER_DEEP, DEEP_STATUS, STOP_DEEP, DEEP_UPDATE
+Loop:     ENTER_LOOP, LOOP_STATUS, STOP_LOOP, LOOP_PAUSE, LOOP_RESUME, LOOP_GUIDE
+系统:     SHOW_HELP, EXIT_MODE, UNKNOWN
+```
+
+### 2.9 其他模块
+
+| 模块 | 说明 |
 |------|------|
-| 源代码 | 4,997 行 |
-| 测试代码 | 519 行 |
-| **总计** | **5,516 行** |
+| `src/project/` | 多项目管理（ProjectManager + ProjectContext + UnifiedContext + MessageProjectMapper） |
+| `src/mode/manager.py` | ModeManager 状态机：SMART ↔ COCO / CLAUDE / SHELL |
+| `src/sandbox/executor.py` | SandboxExecutor：20+ 危险正则 + 黑名单 + 超时 + 截断 |
+| `src/utils/` | 错误格式化（fmt_*）、文本处理 |
 
-### 模块分布 (UPDATED)
+## 3. 关键设计决策
 
-| 模块 | 行数 | 说明 |
-|------|------|------|
-| feishu/ | 1,223 | WebSocket客户端、消息处理、卡片构建 |
-| tools/ | 1,044 | 安全工具链（SafeShellTool、FileEditorTool、ToolManager） |
-| agent/ | 543 | AI Agent、意图识别、ReAct推理 |
-| project/ | 250 | 项目管理、状态追踪、会话快照 |
-| card/ | 526 | 富文本卡片构建器 |
-| coco/ | 198 | Coco会话管理、生命周期控制 |
-| sandbox/ | 125 | 沙箱执行器、安全策略 |
-| mode/ | 70 | 交互模式管理 |
-| notification/ | 221 | 通知中心 |
-| 其他 | 151 | 配置、入口、工具函数 |
+### 3.1 ACP 替代 subprocess CLI
 
-## 6. 快速开始
+**问题**：早期通过 `coco -p` / `claude -p` 子进程调用，只有纯文本流，无法感知 Agent 内部的工具调用、文件修改、执行计划。
 
-### 常用指令
-- **执行命令**: 直接输入 Shell 命令
-- **进入 AI 模式**: `/coco`
-- **退出 AI 模式**: `/end_coco`
-- **查看状态**: `/coco_info`
+**方案**：迁移到 ACP（JSON-RPC 2.0 over stdio），获得结构化事件流。
 
-### 部署简述
-1. 配置飞书机器人（获取 App ID & Secret，开启长连接）
-2. 配置 `.env` 环境变量（包括 ARK 大模型配置）
-3. 运行 `uv run python -m src.main` 启动服务
+**影响**：删除 `src/session/` 整个目录，重写 deep_engine（6→4文件）和 loop_engine（14→4文件），代码量减少 60%+。
 
----
-*文档更新时间: 2026-01-18*
+### 3.2 同步-异步桥接
+
+**问题**：ACP SDK 是异步的（asyncio），但 GhostAP 的 Handler/Engine 运行在同步线程中。
+
+**方案**：`SyncACPSession` 在 daemon thread 中运行 asyncio event loop，通过 `run_coroutine_threadsafe()` 暴露同步 API。
+
+### 3.3 per-chat 会话隔离
+
+**问题**：同一用户在同一 chat 中切换项目时，AI 会话上下文可能串台。
+
+**方案**：`ACPSessionManager` 按 `(chat_id, project_id)` 双键隔离会话，确保项目间上下文完全独立。
+
+### 3.4 Loop 引擎收敛保护
+
+**问题**：Agent 可能在某些验收标准上反复尝试但无进展，导致无限循环。
+
+**方案**：三级终止保护：
+1. 收敛检测（连续 N 轮无新标准满足）
+2. 最大迭代上限（默认 100）
+3. 用户手动停止（`/stop_loop`）
+
+### 3.5 多视角审查（Ralph Loop）
+
+**问题**：Agent 自评"全部标准满足"可能存在盲区。
+
+**方案**：功能迭代完成后，追加 3 轮多视角审查迭代（架构师→产品→用户体验→测试），审查意见驱动修复。可通过 `LOOP_REVIEW_ENABLED` 开关控制。
+
+### 3.6 ACP 缓冲区溢出
+
+**问题**：asyncio.StreamReader 默认 64KB 缓冲区，Agent 长时间执行产生的大量输出导致 "chunk is longer than limit" 崩溃。
+
+**方案**：`ACP_STREAM_BUFFER_LIMIT` 配置化，默认 10MB。
+
+## 4. 线程安全
+
+| 资源 | 保护方式 |
+|------|----------|
+| ACPSessionManager 会话字典 | `threading.Lock` |
+| EngineManager 引擎注册 | `threading.Lock` |
+| MessageCache 消息去重 | `threading.Lock` + 后台清理线程 |
+| ProjectManager 项目数据 | 文件锁（fcntl/msvcrt） |
+| TaskScheduler 队列 | `threading.Lock` + `queue.PriorityQueue` |
+| ModeManager 模式状态 | `threading.Lock` |
+| StreamingCardManager 卡片 | `threading.Lock` + 自动清理 |
+
+## 5. 配置一览
+
+所有配置通过 `.env` 文件 + `pydantic-settings` 管理，参见 `src/config.py`。
+
+关键分组：
+
+| 分组 | 配置项 | 默认值 |
+|------|--------|--------|
+| **飞书** | `APP_ID`, `APP_SECRET` | （必填） |
+| **ARK** | `ARK_API_KEY`, `ARK_MODEL`, `ARK_BASE_URL` | （必填） |
+| **沙箱** | `SANDBOX_TIMEOUT`, `SANDBOX_MAX_OUTPUT_LENGTH` | 30s, 4000 |
+| **Coco** | `COCO_EXECUTION_TIMEOUT`, `COCO_SESSION_TIMEOUT` | 7200s, 86400s |
+| **Claude** | `CLAUDE_EXECUTION_TIMEOUT`, `CLAUDE_CLI_SKIP_PERMISSIONS` | 7200s, true |
+| **ACP** | `ACP_PERMISSION_AUTO_APPROVE`, `ACP_STREAM_BUFFER_LIMIT` | true, 10MB |
+| **Loop** | `LOOP_MAX_ITERATIONS`, `LOOP_REVIEW_ENABLED` | 100, true |
+| **调度** | `TASK_SCHEDULER_MAX_CONCURRENT` | 10 |
+| **卡片** | `CARD_BUTTON_LAYOUT`, `STREAMING_ENABLED` | responsive, true |
+
+## 6. 测试
+
+815 个测试，20 个测试文件，覆盖全部核心模块。
+
+```bash
+uv run python -m pytest tests/ -v          # 全部
+uv run python -m pytest tests/ -x -q       # 快速（失败即停）
+```
+
+| 测试文件 | 覆盖模块 |
+|----------|----------|
+| test_acp_client.py | GhostAPClient 事件分发 |
+| test_acp_models.py | ACPEvent 模型 |
+| test_acp_renderer.py | ACPEventRenderer Markdown 渲染 |
+| test_acp_stdio_integration.py | ACP 端到端通信 |
+| test_deep_engine.py | DeepEngine 执行/进度 |
+| test_loop_engine.py | LoopEngine 迭代/收敛/审查 |
+| test_handlers.py | Handler 意图路由 |
+| test_card.py | CardBuilder 卡片构建 |
+| test_streaming.py | StreamingCardManager |
+| test_task_scheduler*.py | TaskScheduler 并发/稳定性 |
+| test_intent.py | IntentRecognizer 分类 |
+| test_sandbox.py | SandboxExecutor 安全 |
+| test_project.py | ProjectManager |
+| test_mode_manager.py | ModeManager 状态切换 |
+| test_message_cache.py | MessageCache 去重 |
+| test_unified_context.py | UnifiedContext 跨模式 |
+
+## 7. 开发演进
+
+项目从 2026-01 启动至今的关键里程碑：
+
+| 时间 | 里程碑 |
+|------|--------|
+| 2026-01-09 | 项目创建：飞书 WebSocket + Coco 会话 + ReAct 意图识别 |
+| 2026-01-18 | 多项目管理 + 安全工具链 + 三模式架构 |
+| 2026-01-22 | 流式卡片 + Card schema 2.0 |
+| 2026-01-29 | Claude 编程模式 + Deep Engine |
+| 2026-02-01 | 项目大扫除（Session 基类 + 卡片统一 + 配置整理） |
+| 2026-02-02 | ws_client God Class 拆分（3444→1170 行，6 Handler） |
+| 2026-02-09 | Loop Engine 完整实现（12 模块，1550 测试） |
+| 2026-02-10 | **ACP 协议重构**（subprocess→JSON-RPC 2.0，删除 src/session/） |
+| 2026-02-11 | Ralph Loop 多视角审查 + 架构优化 14 项 + 性能优化 10 项 |
+| 2026-02-12 | ACP 缓冲区溢出修复 + Shell 卡片渲染 |
+| 2026-02-24 | Loop 验收标准 LLM 拆解 + Deep 卡片修复 |
+| 2026-02-26 | Loop 多视角审查输出解析三级容错 |

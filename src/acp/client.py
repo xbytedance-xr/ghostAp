@@ -164,17 +164,59 @@ class _TerminalRecord:
     created_at: float = 0.0
 
 
+def _format_todo_content(raw_input: Any) -> str:
+    """Format TodoWrite raw_input into a readable checklist."""
+    if not isinstance(raw_input, dict):
+        return ""
+    todos = raw_input.get("todos")
+    if not isinstance(todos, list):
+        return ""
+
+    _icons = {"completed": "✅", "in_progress": "🔄", "pending": "⏳"}
+    lines: list[str] = []
+    for item in todos:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content") or ""
+        status = item.get("status", "pending")
+        # For in_progress items, prefer activeForm for better readability
+        if status == "in_progress":
+            content = item.get("activeForm") or content
+        if not content:
+            continue
+        icon = _icons.get(status, "⬜")
+        lines.append(f"{icon} {content}")
+
+    return "\n".join(lines)
+
+
+def _is_todo_tool(title: str, raw_input: Any) -> bool:
+    """Check if this tool call is a TodoWrite."""
+    if "todo" in (title or "").lower():
+        return True
+    if isinstance(raw_input, dict) and "todos" in raw_input:
+        return True
+    return False
+
+
 def _parse_tool_call(update: ToolCallStart | ToolCallProgress) -> ToolCallInfo:
     """Extract ToolCallInfo from a ToolCallStart or ToolCallProgress."""
     locations: list[str] = []
     if update.locations:
         locations = [loc.path for loc in update.locations]
 
+    title = update.title or ""
+    content = ""
+    raw_input = getattr(update, "raw_input", None)
+    if raw_input and _is_todo_tool(title, raw_input):
+        content = _format_todo_content(raw_input)
+
     return ToolCallInfo(
         id=update.tool_call_id,
-        title=update.title or "",
+        title=title,
         kind=update.kind or "other",
         status=update.status or "in_progress",
+        content=content,
         locations=locations,
     )
 

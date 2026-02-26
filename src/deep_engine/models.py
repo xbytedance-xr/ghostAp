@@ -247,7 +247,9 @@ class DeepProject:
 
     def start(self):
         self.status = DeepProjectStatus.EXECUTING
-        self.started_at = time.time()
+        # started_at may already be set when entering PLANNING; keep the earliest.
+        if self.started_at is None:
+            self.started_at = time.time()
 
     def pause(self):
         self.status = DeepProjectStatus.PAUSED

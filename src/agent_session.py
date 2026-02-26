@@ -132,65 +132,91 @@ class SyncClaudeCLISession:
         self.message_count += 1
         self.last_query = text
 
-        args: list[str] = [self._cfg.command, "-p"]
-        if self._cfg.add_dir:
-            args += ["--add-dir", self._cwd]
-        if self._resolve_bypass_permissions():
-            args.append("--dangerously-skip-permissions")
+        def _build_args(resumed: bool) -> list[str]:
+            args: list[str] = [self._cfg.command, "-p"]
+            if self._cfg.add_dir:
+                args += ["--add-dir", self._cwd]
+            if self._resolve_bypass_permissions():
+                args.append("--dangerously-skip-permissions")
 
-        if self.is_resumed:
-            args += ["--resume", self.session_id]
-        else:
-            args += ["--session-id", self.session_id]
+            if resumed:
+                args += ["--resume", self.session_id]
+            else:
+                args += ["--session-id", self.session_id]
 
-        args.append(text)
+            args.append(text)
+            return args
 
-        chunks: list[str] = []
+        def _run_once(resumed: bool) -> tuple[int, str, str, str]:
+            """Run one claude invocation and return (returncode, stdout, stderr, state)."""
+            args = _build_args(resumed)
+            chunks: list[str] = []
+            try:
+                self._proc = subprocess.Popen(
+                    args,
+                    cwd=self._cwd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+
+                deadline = (time.monotonic() + timeout) if timeout else None
+                assert self._proc.stdout is not None
+                for line in self._proc.stdout:
+                    if self._cancel_event.is_set():
+                        self._proc.terminate()
+                        self._proc.wait(timeout=5)
+                        return (1, "".join(chunks), "", "cancelled")
+                    if deadline and time.monotonic() > deadline:
+                        self._proc.terminate()
+                        self._proc.wait(timeout=5)
+                        return (1, "".join(chunks), "", "timeout")
+                    chunks.append(line)
+                    if on_event:
+                        on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=line))
+
+                self._proc.wait(timeout=30)
+                rc = int(self._proc.returncode or 0)
+                err = (self._proc.stderr.read() or "").strip("\n") if self._proc.stderr else ""
+                return (rc, "".join(chunks).strip("\n"), err, "ok")
+            finally:
+                self._proc = None
+
+        def _is_missing_conversation(err_text: str, out_text: str) -> bool:
+            blob = (err_text or "") + "\n" + (out_text or "")
+            return "No conversation found with session ID" in blob
+
         try:
-            self._proc = subprocess.Popen(
-                args,
-                cwd=self._cwd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
+            # First try: follow the normal resume/session-id flow
+            rc, out, err, state = _run_once(resumed=self.is_resumed)
 
-            # Stream stdout line-by-line for real-time card updates
-            deadline = (time.monotonic() + timeout) if timeout else None
-            for line in self._proc.stdout:
-                if self._cancel_event.is_set():
-                    self._proc.terminate()
-                    self._proc.wait(timeout=5)
-                    self.is_resumed = True
-                    return PromptResult(stop_reason="cancelled", text="".join(chunks))
-                if deadline and time.monotonic() > deadline:
-                    self._proc.terminate()
-                    self._proc.wait(timeout=5)
-                    self.is_resumed = True
-                    return PromptResult(stop_reason="cancelled", text="❌ Claude 执行超时，已取消")
-                chunks.append(line)
+            if state == "cancelled":
+                self.is_resumed = True
+                return PromptResult(stop_reason="cancelled", text=out)
+            if state == "timeout":
+                self.is_resumed = True
+                return PromptResult(stop_reason="cancelled", text="❌ Claude 执行超时，已取消")
+
+            # If resume failed because local conversation doesn't exist, fall back to a fresh session once.
+            if self.is_resumed and rc != 0 and _is_missing_conversation(err, out):
+                logger.info("[ClaudeCLI] resume failed (missing conversation), fallback to new session")
+                self.session_id = str(uuid.uuid4())
+                self.is_resumed = False
+                rc, out, err, _ = _run_once(resumed=False)
+
+            output = out
+            if rc != 0 and err:
+                output = (output + "\n" + err).strip("\n")
                 if on_event:
-                    on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=line))
+                    on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="\n" + err))
 
-            self._proc.wait(timeout=30)
-            returncode = self._proc.returncode
-            stderr = (self._proc.stderr.read() or "").strip("\n") if self._proc.stderr else ""
+            self.is_resumed = True
+            stop_reason = "end_turn" if rc == 0 else "failed"
+            return PromptResult(stop_reason=stop_reason, text=output)
 
         except Exception as e:
+            self.is_resumed = True
             return PromptResult(stop_reason="error", text=f"❌ Claude 执行异常: {e}")
-        finally:
-            self._proc = None
-
-        output = "".join(chunks).strip("\n")
-        if returncode != 0 and stderr:
-            output = (output + "\n" + stderr).strip("\n")
-            # Emit stderr as a final chunk so it shows in the card
-            if on_event and stderr:
-                on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="\n" + stderr))
-
-        self.is_resumed = True
-        stop_reason = "end_turn" if returncode == 0 else "failed"
-        return PromptResult(stop_reason=stop_reason, text=output)
 
     def cancel(self) -> None:
         """Signal cancellation — the streaming loop will terminate the process."""

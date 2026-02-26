@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Optional
 
 from ...acp import ACPEvent, ACPEventType, ACPEventRenderer
@@ -101,7 +102,13 @@ class DeepHandler(BaseHandler):
 
         def run_deep_engine():
             try:
-                callbacks = self._create_deep_callbacks(message_id, chat_id, project, engine_name)
+                callbacks = self._create_deep_callbacks(
+                    message_id,
+                    chat_id,
+                    project,
+                    engine_name,
+                    root_path=root_path,
+                )
                 engine.plan_and_execute(requirement, callbacks)
             except Exception as e:
                 logger.error("Deep Engine 执行异常: %s", e, exc_info=True)
@@ -136,12 +143,25 @@ class DeepHandler(BaseHandler):
     # ------------------------------------------------------------------
     # callbacks factory
     # ------------------------------------------------------------------
-    def _create_deep_callbacks(self, message_id: str, chat_id: str, project: Optional["ProjectContext"], engine_name: str = "Coco") -> DeepEngineCallbacks:
+    def _create_deep_callbacks(
+        self,
+        message_id: str,
+        chat_id: str,
+        project: Optional["ProjectContext"],
+        engine_name: str = "Coco",
+        root_path: Optional[str] = None,
+    ) -> DeepEngineCallbacks:
         request_id = self.ensure_request_id(message_id, chat_id=chat_id, project_id=(project.project_id if project else None))
         reporter = self.ctx.progress_reporter
 
         thread_root_message_id: list[str | None] = [None]
         renderer = ACPEventRenderer()
+
+        # Throttle streaming updates to avoid spamming Feishu
+        last_stream_ts: float = 0.0
+        last_stream_text_len: int = 0
+        last_plan_ts: float = 0.0
+        last_plan_content: str = ""
 
         def _send_deep_message(card_content: str, msg_type: str = "interactive"):
             """发送 deep 任务消息，在话题模式下确保所有消息都回复到同一个话题。"""
@@ -167,26 +187,119 @@ class DeepHandler(BaseHandler):
             )
             _send_deep_message(card_content, msg_type)
 
+        def _get_engine():
+            rp = root_path or (project.root_path if project else "")
+            if rp:
+                return self.ctx.deep_engine_manager.get(chat_id, rp)
+            # Best-effort fallback: if only one running engine, use it
+            try:
+                running = self.ctx.deep_engine_manager.get_active_engines(chat_id)
+                if len(running) == 1:
+                    return running[0]
+            except Exception:
+                pass
+            return None
+
+        def _tail(text: str, limit: int) -> str:
+            if not text:
+                return ""
+            if len(text) <= limit:
+                return text
+            return "…" + text[-limit:]
+
+        def _maybe_stream_update(force: bool = False) -> None:
+            nonlocal last_stream_ts, last_stream_text_len
+
+            engine = _get_engine()
+            deep_project_id = engine.project.project_id if engine and engine.project else None
+            progress = engine.progress if engine else None
+            progress_bar = progress.progress_bar if progress else None
+
+            now = time.monotonic()
+            text_len = len(renderer.text_content or "")
+
+            # Emit when forced OR enough time passed + enough new text accumulated
+            min_interval = 2.5
+            min_new_chars = 350
+            if not force:
+                if (now - last_stream_ts) < min_interval and (text_len - last_stream_text_len) < min_new_chars:
+                    return
+
+            plan_view = renderer.render_plan_view()
+            recent = _tail(renderer.text_content or "", 1400)
+
+            if not plan_view and not recent:
+                return
+
+            status = None
+            try:
+                status = engine.project.status if engine and engine.project else None
+            except Exception:
+                status = None
+
+            if status == DeepProjectStatus.PLANNING:
+                title = "🧠 分析/规划中"
+            else:
+                title = "🔄 执行中"
+
+            parts = []
+            if plan_view:
+                parts.append(plan_view)
+            if recent:
+                parts.append(f"\n**📝 最近输出（截断展示）**\n{recent}")
+
+            content = "\n\n".join(parts)[:2000]
+            msg_type, card_content = CardBuilder.build_deep_card(
+                project=project,
+                title=title,
+                content=content,
+                progress_bar=progress_bar,
+                deep_project_id=deep_project_id,
+                is_executing=True,
+                engine_name=engine_name,
+            )
+            _send_deep_message(card_content, msg_type)
+            last_stream_ts = now
+            last_stream_text_len = text_len
+
         def on_event(event: ACPEvent):
             """Process ACP events and update streaming display."""
             renderer.process_event(event)
-            # For plan updates, send a card with plan-only view (no text history)
+            nonlocal last_plan_ts, last_plan_content
+
+            # 1) Plan updates: send plan-only view (throttled)
             if event.event_type == ACPEventType.PLAN_UPDATE and event.plan:
-                engine = self.ctx.deep_engine_manager.get(chat_id, project.root_path if project else "")
-                deep_project_id = engine.project.project_id if engine and engine.project else None
-                progress = engine.progress if engine else None
-                progress_bar = progress.progress_bar if progress else None
+                now = time.monotonic()
                 plan_content = renderer.render_plan_view()
-                msg_type, card_content = CardBuilder.build_deep_card(
-                    project=project, title="📋 执行计划更新",
-                    content=plan_content[:2000],
-                    progress_bar=progress_bar, deep_project_id=deep_project_id,
-                    is_executing=True, engine_name=engine_name,
-                )
-                _send_deep_message(card_content, msg_type)
+                if plan_content and (plan_content != last_plan_content or (now - last_plan_ts) > 1.5):
+                    engine = _get_engine()
+                    deep_project_id = engine.project.project_id if engine and engine.project else None
+                    progress = engine.progress if engine else None
+                    progress_bar = progress.progress_bar if progress else None
+                    msg_type, card_content = CardBuilder.build_deep_card(
+                        project=project,
+                        title="📋 执行计划",
+                        content=plan_content[:2000],
+                        progress_bar=progress_bar,
+                        deep_project_id=deep_project_id,
+                        is_executing=True,
+                        engine_name=engine_name,
+                    )
+                    _send_deep_message(card_content, msg_type)
+                    last_plan_ts = now
+                    last_plan_content = plan_content
+
+            # 2) Stream text/tool progress so users can see "分析→计划→执行" 过程
+            if event.event_type in (
+                ACPEventType.TEXT_CHUNK,
+                ACPEventType.TOOL_CALL_START,
+                ACPEventType.TOOL_CALL_UPDATE,
+                ACPEventType.TOOL_CALL_DONE,
+            ):
+                _maybe_stream_update(force=(event.event_type == ACPEventType.TOOL_CALL_DONE))
 
         def on_project_done(deep_project: DeepProject):
-            engine = self.ctx.deep_engine_manager.get(chat_id, project.root_path if project else "")
+            engine = _get_engine()
             progress = engine.progress if engine else None
             rendered_content = engine.get_rendered_content() if engine else ""
 
@@ -371,7 +484,13 @@ class DeepHandler(BaseHandler):
                 except Exception:
                     project = None
 
-            callbacks = self._create_deep_callbacks(message_id, chat_id, project, engine_name=engine.engine_name)
+            callbacks = self._create_deep_callbacks(
+                message_id,
+                chat_id,
+                project,
+                engine_name=engine.engine_name,
+                root_path=engine.root_path,
+            )
 
             def run_resume():
                 engine.resume(callbacks)

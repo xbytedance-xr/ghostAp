@@ -50,18 +50,39 @@ _REVIEW_SECTION_PATTERN = re.compile(
     re.DOTALL,
 )
 
-# More tolerant section header patterns (English tags / Chinese display names)
-_REVIEW_HEADER_EN_PATTERN = re.compile(
-    # Allow formats:
-    # - [ARCHITECT]
-    # - [ARCHITECT]: PASS
-    # - [ARCHITECT] PASS
-    r"(?im)^\s*(?:#+\s*)?\[\s*(ARCHITECT|PRODUCT|USER|TESTER)\s*\]\s*(?:[:：]?\s*(.*))?$")
+# Tolerant section header patterns (English tags / Chinese display names)
+# Each pattern captures: group(1) = tag name, group(2) = optional rest of line
+_REVIEW_HEADER_EN_PATTERNS: list[re.Pattern] = [
+    # [ARCHITECT] / [ARCHITECT]: PASS / ## [ARCHITECT] PASS
+    re.compile(
+        r"(?im)^\s*(?:#+\s*)?\[\s*(ARCHITECT|PRODUCT|USER|TESTER)\s*\]\s*(?:[:：]?\s*(.*))?$"),
+    # **[ARCHITECT]** / **[ARCHITECT]**: PASS
+    re.compile(
+        r"(?im)^\s*(?:#+\s*)?\*{1,2}\[\s*(ARCHITECT|PRODUCT|USER|TESTER)\s*\]\*{1,2}\s*(?:[:：]?\s*(.*))?$"),
+    # **ARCHITECT** / **ARCHITECT**: PASS / ## **ARCHITECT** PASS
+    re.compile(
+        r"(?im)^\s*(?:#+\s*)?\*{1,2}(ARCHITECT|PRODUCT|USER|TESTER)\*{1,2}\s*(?:[:：]?\s*(.*))?$"),
+    # ### ARCHITECT / ## ARCHITECT: PASS  (heading + plain tag, no brackets/bold)
+    re.compile(
+        r"(?im)^\s*#+\s*(ARCHITECT|PRODUCT|USER|TESTER)\s*(?:[:：]?\s*(.*))?$"),
+    # ARCHITECT: PASS  (plain tag with mandatory colon — avoids matching random text)
+    re.compile(
+        r"(?im)^\s*(ARCHITECT|PRODUCT|USER|TESTER)\s*[:：]\s*(.*)$"),
+]
 _REVIEW_HEADER_ZH_PATTERN = re.compile(
     # Allow formats:
-    # - 架构师: PASS
-    # - 🏗️ 架构师 PASS
-    r"(?im)^\s*(?:#+\s*)?(?:🏗️|📦|👤|🧪)?\s*(架构师|产品经理|用户|测试)\s*(?:[:：]?\s*(.*))?$")
+    # - 架构师: PASS         / **架构师**: PASS / **架构师**
+    # - 🏗️ 架构师 PASS       / 🏗️ **架构师** PASS
+    # - ## 架构师: FAIL       / ### **架构师**
+    # - 1. 架构师: PASS       / - 架构师: PASS
+    r"(?im)^\s*(?:#+\s*)?(?:\d+[.、)]\s*)?(?:[-*]\s*)?"  # heading/numbered/bullet
+    r"(?:🏗️|📦|👤|🧪)?\s*"                                 # optional emoji
+    r"\*{0,2}"                                             # optional bold open
+    r"(架构师|产品经理|用户|测试)"                              # Chinese name
+    r"\*{0,2}"                                             # optional bold close
+    r"(?:审查|评审|视角)?"                                    # optional suffix
+    r"\s*(?:[:：]\s*(.*))?$"                                # optional colon + rest
+)
 
 _PERSPECTIVE_ZH_MAP: dict[str, ReviewPerspective] = {
     "架构师": ReviewPerspective.ARCHITECT,
@@ -119,8 +140,12 @@ def _split_review_sections(text: str) -> list[tuple[str, str]]:
     normalized = text.replace("\r\n", "\n")
     # Find all header occurrences
     hits: list[tuple[int, int, str]] = []  # (start, end, tag)
-    for m in _REVIEW_HEADER_EN_PATTERN.finditer(normalized):
-        hits.append((m.start(), m.end(), m.group(1).upper()))
+    seen_positions: set[int] = set()  # avoid duplicates from multiple EN patterns
+    for pat in _REVIEW_HEADER_EN_PATTERNS:
+        for m in pat.finditer(normalized):
+            if m.start() not in seen_positions:
+                seen_positions.add(m.start())
+                hits.append((m.start(), m.end(), m.group(1).upper()))
     for m in _REVIEW_HEADER_ZH_PATTERN.finditer(normalized):
         zh = (m.group(1) or "").strip()
         p = _PERSPECTIVE_ZH_MAP.get(zh)
@@ -676,9 +701,15 @@ PASS 或 FAIL
                     summary=f"{'通过' if passed else f'{len(suggestions)}条建议'}",
                 ))
 
-        # If parsing found nothing, treat as "has suggestions" to be safe
+        # 3) LLM fallback: regex failed, use AI to extract structured data
         if not reviews:
-            logger.warning("[Loop] 审查输出解析失败，将视为有改进建议继续迭代")
+            preview = raw[:500] if raw else "(empty)"
+            logger.warning("[Loop] 正则解析全部失败, 尝试LLM兜底解析. 原文预览: %s", preview)
+            reviews = self._parse_review_with_llm(raw)
+
+        # 4) Final fallback: nothing parsed at all
+        if not reviews:
+            logger.warning("[Loop] 审查输出解析失败(含LLM兜底), 将视为有改进建议继续迭代")
             for p in ReviewPerspective:
                 reviews.append(PerspectiveReview(
                     perspective=p, passed=False,
@@ -687,6 +718,108 @@ PASS 或 FAIL
                 ))
 
         return ReviewResult(reviews=reviews, iteration=iteration)
+
+    def _parse_review_with_llm(self, raw_text: str) -> list[PerspectiveReview]:
+        """LLM fallback: extract review verdicts from free-form text using AI."""
+        settings = self.settings
+        if not settings.ark_api_key or not settings.ark_model:
+            return []
+        if not raw_text or len(raw_text.strip()) < 10:
+            return []
+
+        prompt = f"""请从以下文本中提取四个视角的审查结果。
+
+文本内容：
+{raw_text[:3000]}
+
+请严格按以下 JSON 格式输出（不要输出其他内容）：
+[
+  {{"perspective": "ARCHITECT", "verdict": "PASS或FAIL", "suggestions": ["建议1", "建议2"]}},
+  {{"perspective": "PRODUCT", "verdict": "PASS或FAIL", "suggestions": []}},
+  {{"perspective": "USER", "verdict": "PASS或FAIL", "suggestions": []}},
+  {{"perspective": "TESTER", "verdict": "PASS或FAIL", "suggestions": []}}
+]
+
+规则：
+- perspective 只能是 ARCHITECT/PRODUCT/USER/TESTER
+- verdict 只能是 PASS 或 FAIL
+- 如果文本中找不到某个视角的审查，verdict 设为 FAIL，suggestions 填 ["未找到该视角的审查结果"]
+- suggestions 数组中只放 FAIL 视角的改进建议，PASS 视角为空数组"""
+
+        try:
+            llm = ChatOpenAI(
+                base_url=settings.ark_base_url,
+                api_key=settings.ark_api_key,
+                model=settings.ark_model,
+                temperature=0.0,
+            )
+            response = llm.invoke([
+                SystemMessage(content="你是一个文本解析助手。从审查文本中提取结构化的审查结果，只输出JSON。"),
+                HumanMessage(content=prompt),
+            ])
+            return self._extract_reviews_from_llm_response(response.content)
+        except Exception as e:
+            logger.warning("[Loop] LLM 兜底审查解析失败: %s", e)
+            return []
+
+    @staticmethod
+    def _extract_reviews_from_llm_response(text: str) -> list[PerspectiveReview]:
+        """Parse LLM JSON response into PerspectiveReview list."""
+        # Find JSON array in the response (may be wrapped in markdown code block)
+        cleaned = text.strip()
+        if "```" in cleaned:
+            # Extract content between code fences
+            parts = cleaned.split("```")
+            for part in parts:
+                stripped = part.strip()
+                if stripped.startswith("json"):
+                    stripped = stripped[4:].strip()
+                if stripped.startswith("["):
+                    cleaned = stripped
+                    break
+
+        # Find the JSON array
+        start = cleaned.find("[")
+        end = cleaned.rfind("]")
+        if start == -1 or end == -1 or end <= start:
+            return []
+
+        try:
+            data = json.loads(cleaned[start:end + 1])
+        except json.JSONDecodeError:
+            return []
+
+        if not isinstance(data, list):
+            return []
+
+        reviews: list[PerspectiveReview] = []
+        found: set[str] = set()
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            tag = str(item.get("perspective", "")).upper()
+            perspective = _PERSPECTIVE_TAG_MAP.get(tag)
+            if not perspective or tag in found:
+                continue
+            found.add(tag)
+
+            verdict = str(item.get("verdict", "")).upper()
+            passed = verdict == "PASS"
+            suggestions = item.get("suggestions", [])
+            if not isinstance(suggestions, list):
+                suggestions = []
+            suggestions = [str(s) for s in suggestions if s]
+            if passed:
+                suggestions = []
+
+            reviews.append(PerspectiveReview(
+                perspective=perspective,
+                passed=passed,
+                suggestions=suggestions,
+                summary=f"{'通过' if passed else f'{len(suggestions)}条建议'}",
+            ))
+
+        return reviews
 
     def _conduct_review(self, iteration: int, callbacks: LoopEngineCallbacks) -> ReviewResult:
         """Conduct multi-perspective review in the same ACP session."""

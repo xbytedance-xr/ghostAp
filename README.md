@@ -1,120 +1,138 @@
-# 🛡️ GhostAP
+# GhostAP
 
-飞书机器人 Shell 沙箱服务 —— 通过飞书机器人对话安全执行本地 Shell 命令，并支持 Coco AI 远程开发模式。
+飞书 AI 开发助手 —— 通过飞书对话实现安全的远程 Shell 执行、多模型 AI 编程（Coco / Claude）、以及自主任务编排（Deep / Loop 引擎）。无需公网 IP，WebSocket 长连接即插即用。
 
-## ✨ 功能特性
+## 功能概览
 
-### 三种交互模式
-
-| 模式 | 图标 | 说明 | 进入方式 | 退出方式 |
-|------|------|------|----------|----------|
-| **智能模式** | 🧠 | 默认模式，根据意图自动选择 | 默认 / 退出其他模式 | - |
-| **编程模式** | 🤖 | 所有消息发给 Coco AI | `/coco` / "进入编程模式" | `/exit` / "退出模式" |
-| **Shell 模式** | 💻 | 所有消息作为命令执行 | `/shell` / "进入shell模式" | `/exit` / "退出模式" |
-
-### 🧠 智能模式（默认）
-根据用户意图自动选择执行方式：
-- **Shell 命令**：`ls -la`、`git status` → 直接执行
-- **编程需求**：「帮我写一个函数」→ 进入编程模式
-- **目录切换**：「切换到用户目录」→ 智能解析路径
-- **项目管理**：「创建项目」→ 创建/切换/查看项目
-
-### 🤖 编程模式
-与 Coco AI 进行远程开发对话：
-```
-/coco              # 进入编程模式
-帮我写一个排序函数...
-/exit              # 退出编程模式
-/coco_info         # 查看会话状态
-```
-
-**特性：**
-- 回复编程消息自动进入编程模式
-- 会话保存，下次可恢复
-- 使用项目目录作为工作目录
-
-### 💻 Shell 模式
-所有消息直接作为 Shell 命令执行：
-```
-/shell             # 进入 Shell 模式
-ls -la
-git status
-npm install
-/exit              # 退出 Shell 模式
-```
-
-### 📂 多项目并行开发
-单对话框管理多个开发项目：
-
-**自然语言支持：**
-- 「创建项目」→ 使用当前目录名作为项目名
-- 「创建项目 myapp」→ 创建名为 myapp 的项目
-- 「切换到 test 项目」→ 切换项目
-- 「看看有哪些项目」→ 显示项目列表
-
-**命令支持：**
-- `/projects` - 查看所有项目状态面板
-- `/new <名称> [目录]` - 创建新项目
-- `/switch <名称>` - 切换当前项目
-- `/close <名称>` - 关闭项目
-- `/status` - 查看当前项目详情
-
-### 🛠️ 安全工具链
-基于 LangChain 的安全工具链系统：
-- **SafeShellTool** - 安全的 Shell 命令执行，内置危险命令拦截
-- **FileEditorTool** - 文件读写编辑，支持 JSON/YAML/Markdown 等格式
-- **ToolManager** - 统一管理工具和 AI Agent
-
-### 😀 表情状态反馈
-- ✅ 收到消息：OK 表情
-- ⌨️ 处理中：Typing 表情
-- ✔️ 完成：Done 表情
-- 🚀 多任务执行：Rocket 表情
-
-## 🏗️ 技术架构
+GhostAP 提供 **4 种交互模式** + **2 种编排引擎**，覆盖从简单命令到复杂开发任务的全场景：
 
 ```
-┌─────────────────┐     WebSocket      ┌─────────────────┐
-│   飞书客户端     │ ◄──────────────────► │   GhostAP 服务   │
-└─────────────────┘    (长连接模式)      └────────┬────────┘
-                                                  │
-                    ┌─────────────────────────────┼─────────────────────────────┐
-                    │                             │                             │
-              ┌─────▼─────┐               ┌───────▼───────┐             ┌───────▼───────┐
-              │  模式管理   │               │    Shell      │             │    Coco       │
-              │  ModeManager│               │   沙箱执行     │             │   远程开发     │
-              └─────┬─────┘               └───────────────┘             └───────────────┘
-                    │
-              ┌─────▼─────┐
-              │  ReAct    │
-              │ 意图识别   │
-              └─────┬─────┘
-                    │
-              ┌─────▼─────┐
-              │    ARK    │
-              │  方舟大模型 │
-              └───────────┘
+交互模式（用户驱动）                 编排引擎（系统驱动）
+┌─────────┐ ┌──────────┐           ┌─────────────────┐
+│  Smart  │ │  Shell   │           │  Deep Engine    │
+│ 智能路由 │ │ 命令直达  │           │  一次规划 · 顺序执行 │
+└─────────┘ └──────────┘           └─────────────────┘
+┌─────────┐ ┌──────────┐           ┌─────────────────┐
+│  Coco   │ │  Claude  │           │  Loop Engine    │
+│ 多轮编程 │ │ 多轮编程  │           │  迭代闭环 · 动态决策 │
+└─────────┘ └──────────┘           └─────────────────┘
 ```
 
-### 技术栈
-- **语言**: Python 3.11+
-- **飞书 SDK**: lark-oapi（长连接 WebSocket 模式）
-- **AI 框架**: LangChain + LangGraph（ReAct Agent）
-- **大模型**: ARK 方舟大模型（字节跳动）
-- **配置管理**: pydantic-settings
-- **远程开发**: Coco CLI
-- **包管理**: uv
+### 交互模式
 
-## 🚀 快速开始
+| 模式 | 说明 | 进入方式 | 退出方式 |
+|------|------|----------|----------|
+| **Smart** | 默认模式，LLM 意图识别自动路由 | 默认 | - |
+| **Coco** | 与 Coco AI（字节 ARK）多轮编程对话 | `/coco` | `/exit` |
+| **Claude** | 与 Claude Code 多轮编程对话 | `/claude` | `/exit` |
+| **Shell** | 所有消息直接作为 Shell 命令执行 | `/shell` | `/exit` |
+
+### 编排引擎
+
+| 引擎 | 说明 | 启动方式 | 停止方式 |
+|------|------|----------|----------|
+| **Deep** | 单次输入完整需求，Agent 自主规划并执行 | `/deep <需求>` | `/stop_deep` |
+| **Loop** | 迭代闭环开发，验收标准驱动，收敛后自动停止 | `/loop <需求>` | `/stop_loop` |
+
+#### Deep Engine vs Loop Engine
+
+| 维度 | Deep Engine | Loop Engine |
+|------|------------|-------------|
+| 执行策略 | 一次规划，顺序执行 | 多轮迭代，动态决策 |
+| 适用场景 | 明确可拆分的多步任务 | 模糊/探索性/需反复验证的需求 |
+| 进度追踪 | 计划条目 + 工具调用 | 验收标准完成率 + 迭代报告 |
+| 终止条件 | 计划执行完毕 | 所有验收标准满足 / 收敛检测 |
+| 质量保证 | - | 多视角审查（架构师/产品/用户/测试） |
+
+### 多项目管理
+
+单对话框并行管理多个开发项目，每个项目有独立的工作目录、AI 会话和上下文：
+
+```
+创建项目 myapp              → 创建项目
+/switch myapp               → 切换项目
+/projects                   → 项目面板
+```
+
+## 技术架构
+
+### 消息处理流
+
+```
+飞书 WebSocket 消息
+  → FeishuWSClient._handle_message（校验、去重、过期检查）
+    → TaskScheduler.submit（per-chat 有序、全局并发控制）
+      → IntentRecognizer（ReAct LLM 意图分类，~30 种意图）
+        → 路由分发:
+            SHELL_COMMAND → SandboxExecutor（安全检查 → 执行）
+            ENTER_COCO    → ACPSessionManager("coco")（多轮 AI 会话）
+            ENTER_CLAUDE  → ACPSessionManager("claude")（Claude Code 会话）
+            DEEP_COMMAND  → DeepEngine（ACP 单次深度执行）
+            LOOP_COMMAND  → LoopEngine（ACP 迭代闭环）
+            项目/模式命令  → ProjectHandler / SystemHandler
+      → ACPEventRenderer（结构化事件 → 飞书 Markdown）
+      → StreamingCardManager（实时流式卡片更新）
+      → 飞书 API 回复 + EmojiReaction 反馈
+```
+
+### ACP 协议层
+
+GhostAP 通过 **ACP（Agent Client Protocol）** 与 AI 后端通信，基于 JSON-RPC 2.0 over stdio，实现结构化的工具调用追踪、执行计划感知和实时进度展示：
+
+```
+┌──────────────────┐      JSON-RPC 2.0       ┌──────────────────┐
+│   GhostAPClient  │ ◄─── stdio stream ────► │  Coco / Claude   │
+│   (ACP Client)   │                          │  Agent Process   │
+└────────┬─────────┘                          └──────────────────┘
+         │
+         │  ACPEvent 流
+         ▼
+┌──────────────────┐      Feishu Markdown     ┌──────────────────┐
+│ ACPEventRenderer │ ──────────────────────► │ StreamingCard    │
+│ (事件→渲染)       │                          │ (实时卡片更新)    │
+└──────────────────┘                          └──────────────────┘
+```
+
+**ACP 事件类型**:
+- `TEXT_CHUNK` / `THOUGHT_CHUNK` — 文本/思考流
+- `TOOL_CALL_START` / `TOOL_CALL_UPDATE` / `TOOL_CALL_DONE` — 工具调用全生命周期
+- `PLAN_UPDATE` — 执行计划实时更新
+
+### 核心模块
+
+| 模块 | 代码量 | 职责 |
+|------|--------|------|
+| `src/acp/` | 1,844 行 | ACP 协议层：Client、Session、SyncAdapter、Manager、Renderer |
+| `src/feishu/` | 4,988 行 | 飞书集成：WebSocket 客户端 + 7 个 Handler + 消息缓存 |
+| `src/deep_engine/` | 1,395 行 | Deep 引擎：单次规划执行、进度追踪、报告生成 |
+| `src/loop_engine/` | 2,132 行 | Loop 引擎：迭代闭环、验收标准、收敛检测、多视角审查 |
+| `src/card/` | 1,477 行 | 卡片渲染：CardBuilder（schema 2.0）+ 流式更新 |
+| `src/project/` | 1,896 行 | 多项目管理：上下文隔离、会话快照、跨模式桥接 |
+| `src/agent/` | 692 行 | 意图识别：ReAct LLM 推理，~30 种意图类型 |
+| `src/tasking/` | 608 行 | 任务调度：per-chat 串行 + 全局并发控制 + 优先级队列 |
+| `src/agent_session.py` | 292 行 | 会话后端抽象：ACP / Claude CLI 双后端支持 |
+| `src/sandbox/` | 162 行 | Shell 安全沙箱：20+ 危险模式正则 + 黑名单 |
+| `src/mode/` | 142 行 | 模式状态机：SMART / COCO / CLAUDE / SHELL 切换 |
+| `src/utils/` | 135 行 | 工具函数：错误格式化、文本处理 |
+
+### 设计模式
+
+- **ACP 协议通信**: JSON-RPC 2.0 over stdio，`GhostAPClient` 实现 ACP `Client` 接口
+- **事件驱动渲染**: `ACPEventRenderer` 处理事件流 → 飞书 Markdown，Handler 注册 `on_event` 回调驱动实时卡片
+- **状态机**: `InteractionMode`（交互模式切换）、`EngineRunState`（引擎生命周期）
+- **同步-异步桥接**: `SyncACPSession` 通过 daemon thread + `run_coroutine_threadsafe()` 桥接 async ACP 到同步线程
+- **per-chat 任务调度**: `TaskScheduler` 每个 chat 串行执行，全局并发上限，长时任务独立队列
+- **会话隔离**: `ACPSessionManager` 按 `(chat_id, project_id)` 隔离 AI 会话
+
+## 快速开始
 
 ### 1. 环境准备
 
 ```bash
-# 克隆项目
 git clone <repo-url>
 cd ghostAp
 
-# 安装依赖（使用 uv）
+# 安装依赖（必须使用 uv）
 uv sync --group dev
 ```
 
@@ -123,40 +141,54 @@ uv sync --group dev
 1. 登录 [飞书开放平台](https://open.feishu.cn/)
 2. 创建企业自建应用，获取 `APP_ID` 和 `APP_SECRET`
 3. 进入 **事件与回调 > 事件配置**
-4. 选择订阅方式为 **使用长连接接收事件**
+4. 选择 **使用长连接接收事件**
 5. 添加事件：`im.message.receive_v1`
-6. 添加权限：`im:message:receive_v1`, `im:message:send_v1`
+6. 添加权限：`im:message:receive_v1`, `im:message:send_v1`, `im:message:patch_v1`（流式卡片需要 patch 权限）
 
 ### 3. 配置环境变量
 
 ```bash
-# 复制配置模板
 cp .env.example .env
-
-# 编辑配置文件
 vim .env
 ```
 
-必填配置项：
+必填配置：
+
 ```env
 APP_ID=your_app_id
 APP_SECRET=your_app_secret
 
-# ARK 方舟大模型配置
+# ARK 方舟大模型（Coco 后端）
 ARK_API_KEY=your_ark_api_key
 ARK_MODEL=your_model_endpoint
 ARK_BASE_URL=https://ark-cn-beijing.bytedance.net/api/v3
 ```
 
-可选配置项：
-```env
-# 沙箱配置
-SANDBOX_TIMEOUT=30
-SANDBOX_MAX_OUTPUT_LENGTH=4000
+可选配置（均有合理默认值）：
 
-# Coco 配置
-COCO_EXECUTION_TIMEOUT=7200
-COCO_SESSION_TIMEOUT=86400
+```env
+# Shell 沙箱
+SANDBOX_TIMEOUT=30                    # 命令超时（秒）
+SANDBOX_MAX_OUTPUT_LENGTH=4000        # 输出截断长度
+
+# AI 会话
+COCO_EXECUTION_TIMEOUT=7200           # Coco 单次执行超时
+CLAUDE_EXECUTION_TIMEOUT=7200         # Claude 单次执行超时
+
+# ACP 协议
+ACP_PERMISSION_AUTO_APPROVE=true      # 自动批准 Agent 操作
+ACP_STREAM_BUFFER_LIMIT=10485760      # stdio 缓冲区（默认 10MB）
+
+# Loop 引擎
+LOOP_MAX_ITERATIONS=100               # 最大迭代次数
+LOOP_REVIEW_ENABLED=true              # 启用多视角审查（Ralph Loop）
+
+# 卡片
+CARD_BUTTON_LAYOUT=responsive         # 按钮布局：desktop / mobile / responsive
+STREAMING_ENABLED=true                # 启用流式卡片
+
+# 任务调度
+TASK_SCHEDULER_MAX_CONCURRENT=10      # 全局最大并发数
 ```
 
 ### 4. 启动服务
@@ -165,144 +197,213 @@ COCO_SESSION_TIMEOUT=86400
 uv run python -m src.main
 ```
 
-启动成功后，即可在飞书中与机器人对话！
+## 命令参考
 
-## 📖 使用说明
-
-### 模式切换命令
+### 模式控制
 
 | 命令 | 作用 |
 |------|------|
-| `/coco` | 进入编程模式 |
-| `/shell` | 进入 Shell 模式 |
+| `/coco` | 进入 Coco 编程模式 |
+| `/claude` | 进入 Claude 编程模式 |
+| `/shell` | 进入 Shell 直通模式 |
 | `/exit` | 退出当前模式，回到智能模式 |
-| `/end_coco` | 退出编程模式 |
-| `/end_shell` | 退出 Shell 模式 |
 
-### 项目管理命令
+### Deep 引擎
 
 | 命令 | 作用 |
 |------|------|
-| `/projects` | 查看所有项目 |
+| `/deep <需求>` | 启动 Deep 任务 |
+| `/deep_status` | 查看执行进度 |
+| `/deep_update <补充>` | 注入上下文补充 |
+| `/stop_deep` | 停止当前任务 |
+
+### Loop 引擎
+
+| 命令 | 作用 |
+|------|------|
+| `/loop <需求>` | 启动 Loop 迭代开发 |
+| `/loop_status` | 查看迭代进度和验收标准 |
+| `/loop_guide <引导>` | 注入迭代方向引导 |
+| `/loop_pause` | 暂停迭代 |
+| `/loop_resume` | 恢复迭代 |
+| `/stop_loop` | 停止 Loop |
+
+### 项目管理
+
+| 命令 | 作用 |
+|------|------|
+| `/projects` | 查看项目面板 |
 | `/new <名称> [目录]` | 创建新项目 |
 | `/switch <名称>` | 切换项目 |
 | `/close <名称>` | 关闭项目 |
-| `/status` | 查看当前项目状态 |
+| `/status` | 当前项目详情 |
 
-### 自然语言示例
+### 其他
 
-```
-# 智能模式
-帮我看下当前目录有哪些文件    → 执行 ls
-切换到上级目录                → 执行 cd ..
-创建项目 myapp               → 创建项目
+| 命令 | 作用 |
+|------|------|
+| `/help` | 查看帮助信息 |
+| `/coco_info` / `/claude_info` | 查看 AI 会话状态 |
 
-# 编程模式
-进入编程模式                  → 进入编程模式
-帮我写一个排序函数            → Coco 处理
-退出模式                      → 回到智能模式
+## 安全机制
 
-# Shell 模式
-进入shell模式                 → 进入 Shell 模式
-ls -la                       → 直接执行
-退出模式                      → 回到智能模式
-```
+### Shell 沙箱
 
-## 🔒 安全机制
+- **20+ 危险模式正则** — `rm -rf /`、`mkfs`、`dd`、`shutdown` 等
+- **命令黑名单** — 可通过 `SANDBOX_COMMAND_BLACKLIST` 配置
+- **执行超时** — 默认 30 秒
+- **输出截断** — 默认 4000 字符
 
-### Shell 安全
-1. **危险命令检测** - 正则表达式匹配 20+ 危险模式（如 `rm -rf /`、`mkfs`、`dd`）
-2. **命令黑名单** - 可配置的禁止命令列表
-3. **白名单模式** - 可选的严格模式，仅允许指定命令
-4. **风险等级评估** - SAFE/LOW/MEDIUM/HIGH/CRITICAL 五级评估
-5. **执行超时控制** - 默认 30 秒超时
-6. **输出长度限制** - 默认 4000 字符，防止刷屏攻击
+### ACP 权限控制
 
-### 文件安全
-1. **路径黑名单** - 禁止访问系统目录（/etc, /usr, /bin 等）
-2. **扩展名过滤** - 禁止操作可执行文件（.exe, .dll, .so 等）
-3. **删除保护** - 默认禁止删除操作
-4. **大小限制** - 默认 10MB 文件大小限制
+- Agent 工具调用通过 `GhostAPClient.request_permission()` 拦截
+- 可配置自动批准（`ACP_PERMISSION_AUTO_APPROVE=true`）或逐项审核
 
 ### 消息安全
-1. **消息过期丢弃** - 超过 30 秒的旧消息自动忽略
-2. **消息去重** - 防止重复处理
 
-## 📁 项目结构
+- **消息过期** — 超过 30 秒的消息自动忽略
+- **消息去重** — `MessageCache` 防止重复处理
+
+## 项目结构
 
 ```
 ghostAp/
-├── src/                          # 源代码目录
-│   ├── main.py                   # 主入口
-│   ├── config.py                 # 配置管理
-│   ├── feishu/                   # 飞书集成模块
-│   │   ├── ws_client.py          # 长连接客户端
-│   │   └── message_formatter.py  # 消息格式化
-│   ├── mode/                     # 模式管理模块 (NEW)
-│   │   └── manager.py            # 模式管理器
-│   ├── sandbox/                  # 沙箱执行模块
-│   │   └── executor.py           # 命令执行器
-│   ├── tools/                    # 安全工具链模块
-│   │   ├── shell_tool.py         # 安全 Shell 工具
-│   │   ├── file_tool.py          # 文件编辑工具
-│   │   └── tool_manager.py       # 工具管理器
-│   ├── project/                  # 项目管理模块
-│   │   ├── context.py            # 项目上下文
-│   │   ├── manager.py            # 项目管理器
-│   │   └── mapper.py             # 消息-项目映射
-│   ├── card/                     # 飞书卡片模块
-│   │   ├── builder.py            # 卡片构建器
-│   │   └── themes.py             # 主题配置
-│   ├── coco/                     # Coco 远程开发模块
-│   │   └── session.py            # 会话管理
-│   └── agent/                    # AI Agent 模块
-│       ├── shell_agent.py        # 安全检查
-│       └── intent_recognizer.py  # 意图识别
-├── tests/                        # 测试目录
-│   ├── test_tools.py             # 工具链测试
-│   ├── test_intent.py            # 意图识别测试
-│   └── test_sandbox.py           # 沙箱测试
-├── docs/                         # 文档目录
-├── .env.example                  # 配置示例
-└── pyproject.toml                # 项目配置
+├── src/
+│   ├── main.py                      # 入口：Application 类
+│   ├── config.py                    # Settings 单例（pydantic-settings）
+│   ├── agent_session.py             # 会话后端抽象（ACP / CLI）
+│   │
+│   ├── acp/                         # ACP 协议层
+│   │   ├── models.py                #   事件模型：ACPEvent, ToolCallInfo, PlanInfo
+│   │   ├── client.py                #   GhostAPClient（ACP Client 实现）
+│   │   ├── session.py               #   ACPSession（async 生命周期管理）
+│   │   ├── sync_adapter.py          #   SyncACPSession（async→sync 桥接）
+│   │   ├── manager.py               #   ACPSessionManager（per-chat 会话管理）
+│   │   └── renderer.py              #   ACPEventRenderer（事件→飞书 Markdown）
+│   │
+│   ├── deep_engine/                 # Deep 编排引擎
+│   │   ├── models.py                #   DeepProject, EngineRunState
+│   │   ├── engine.py                #   DeepEngine, DeepEngineManager
+│   │   ├── progress.py              #   DeepProgress（计划/工具调用追踪）
+│   │   └── reporter.py              #   进度格式化
+│   │
+│   ├── loop_engine/                 # Loop 迭代引擎
+│   │   ├── models.py                #   LoopProject, IterationRecord, CriteriaTracker
+│   │   ├── engine.py                #   LoopEngine, LoopEngineManager
+│   │   ├── tracker.py               #   IterationTracker（ACP 事件处理）
+│   │   └── reporter.py              #   迭代报告格式化
+│   │
+│   ├── feishu/                      # 飞书集成
+│   │   ├── ws_client.py             #   WebSocket 客户端（消息调度中枢）
+│   │   ├── handler_context.py       #   HandlerContext（Handler 共享状态）
+│   │   ├── handlers/                #   消息处理器
+│   │   │   ├── base.py              #     BaseHandler 抽象基类
+│   │   │   ├── programming.py       #     Coco/Claude 模式 Handler
+│   │   │   ├── deep.py              #     Deep 引擎 Handler
+│   │   │   ├── loop.py              #     Loop 引擎 Handler
+│   │   │   ├── project.py           #     项目管理 Handler
+│   │   │   ├── system.py            #     系统命令 Handler
+│   │   │   └── diagnostics.py       #     诊断调试 Handler
+│   │   ├── message_cache.py         #   消息去重（TTL + 后台清理）
+│   │   ├── message_formatter.py     #   消息格式化工具
+│   │   ├── emoji.py                 #   EmojiReaction 表情反馈
+│   │   └── image_handler.py         #   图片消息处理
+│   │
+│   ├── card/                        # 卡片渲染
+│   │   ├── builder.py               #   CardBuilder（schema 2.0 交互卡片）
+│   │   ├── streaming.py             #   StreamingCardManager（实时更新）
+│   │   └── shared.py                #   共享枚举和工具
+│   │
+│   ├── project/                     # 多项目管理
+│   │   ├── manager.py               #   ProjectManager 生命周期
+│   │   ├── context.py               #   ProjectContext 会话历史
+│   │   ├── unified_context.py       #   UnifiedContext 跨模式桥接
+│   │   └── mapper.py                #   消息→项目映射
+│   │
+│   ├── agent/                       # AI Agent
+│   │   └── intent_recognizer.py     #   ReAct 意图识别（~30 种意图）
+│   │
+│   ├── sandbox/                     # Shell 安全
+│   │   └── executor.py              #   SandboxExecutor
+│   │
+│   ├── tasking/                     # 任务调度
+│   │   └── scheduler.py             #   TaskScheduler
+│   │
+│   ├── mode/                        # 模式管理
+│   │   └── manager.py               #   ModeManager 状态机
+│   │
+│   └── utils/                       # 工具函数
+│       ├── errors.py                #   错误格式化
+│       └── text.py                  #   文本处理
+│
+├── tests/                           # 测试套件（815 个测试）
+│   ├── test_acp_*.py                #   ACP 协议测试（4 个文件）
+│   ├── test_deep_engine.py          #   Deep 引擎测试
+│   ├── test_loop_engine.py          #   Loop 引擎测试
+│   ├── test_handlers.py             #   Handler 路由测试
+│   ├── test_card.py                 #   卡片渲染测试
+│   ├── test_streaming.py            #   流式更新测试
+│   ├── test_intent.py               #   意图识别测试
+│   ├── test_sandbox.py              #   沙箱安全测试
+│   ├── test_project.py              #   项目管理测试
+│   ├── test_task_scheduler*.py      #   调度器测试（2 个文件）
+│   └── ...                          #   其他模块测试
+│
+├── docs/                            # 架构文档
+├── .Memory/                         # 项目记忆（开发决策日志）
+├── CLAUDE.md                        # Claude Code 项目指令
+├── pyproject.toml                   # 项目配置 & 依赖
+└── .env.example                     # 环境变量模板
 ```
 
-## 🧪 运行测试
+## 技术栈
+
+| 组件 | 技术 |
+|------|------|
+| 语言 | Python 3.11+ |
+| 飞书 SDK | lark-oapi（WebSocket 长连接） |
+| AI 后端 | Coco（ARK 方舟大模型）、Claude Code |
+| Agent 协议 | ACP（Agent Client Protocol, JSON-RPC 2.0） |
+| 意图识别 | LangChain + LangGraph（ReAct Agent） |
+| 配置管理 | pydantic-settings + .env |
+| 包管理 | uv |
+| 测试 | pytest + pytest-asyncio |
+
+## 开发
 
 ```bash
+# 安装依赖
+uv sync --group dev
+
+# 运行全部测试
 uv run python -m pytest tests/ -v
+
+# 运行单个测试文件
+uv run python -m pytest tests/test_deep_engine.py -v
+
+# 运行单个测试用例
+uv run python -m pytest tests/test_loop_engine.py::TestLoopEngine::test_execute -v
 ```
 
-当前测试覆盖：
-- ✅ 175 个测试用例全部通过
-- ✅ Shell 安全检测测试
-- ✅ 文件操作测试
-- ✅ 意图识别测试
-- ✅ 安全策略测试
+**测试覆盖**：815 个测试，覆盖 ACP 协议、Deep/Loop 引擎、Handler 路由、卡片渲染、安全沙箱、任务调度等全部核心模块。
 
-## 🌟 连接方式优势
+## 连接优势
 
-使用飞书 SDK 的**长连接模式（WebSocket）**：
-- ✅ 无需公网 IP 或域名
-- ✅ 无需内网穿透
-- ✅ 本地只要能访问公网就能接收消息
-- ✅ 自动加密传输
+使用飞书 SDK 的 **WebSocket 长连接模式**：
+- 无需公网 IP 或域名
+- 无需内网穿透（ngrok、frp）
+- 本地可访问公网即可接收消息
+- 自动加密传输
 
-## 📊 代码统计
+## 代码统计
 
-| 类型 | 行数 |
+| 类型 | 规模 |
 |------|------|
-| 源代码 | ~4,000 行 |
-| 测试代码 | ~900 行 |
-| **总计** | **~4,900 行** |
+| 源代码 | ~15,500 行 |
+| 测试代码 | ~9,900 行 |
+| 测试用例 | 815 个 |
+| 核心模块 | 12 个 |
 
-## ⚠️ 注意事项
-
-- 建议仅在受信任的环境中使用
-- 请勿在生产服务器上运行
-- 定期检查命令执行日志
-- 建议配置 ARK 大模型启用 AI 安全检查
-
-## 📄 License
+## License
 
 MIT License

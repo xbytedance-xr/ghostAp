@@ -47,6 +47,7 @@ class ACPEventRenderer:
         self._completed_tools: list[ToolCallInfo] = []
         self._plan: Optional[PlanInfo] = None
         self._modified_files: set[str] = set()
+        self._todo_content: str = ""  # Latest TodoWrite rendered content
 
     def process_event(self, event: ACPEvent) -> str:
         """Process an event and return the current complete rendered content."""
@@ -64,12 +65,17 @@ class ACPEventRenderer:
                     self._active_tools[event.tool_call.id] = event.tool_call
                     for loc in event.tool_call.locations:
                         self._modified_files.add(loc)
+                    # Track TodoWrite content
+                    if event.tool_call.content:
+                        self._todo_content = event.tool_call.content
 
             case ACPEventType.TOOL_CALL_UPDATE:
                 if event.tool_call:
                     self._active_tools[event.tool_call.id] = event.tool_call
                     for loc in event.tool_call.locations:
                         self._modified_files.add(loc)
+                    if event.tool_call.content:
+                        self._todo_content = event.tool_call.content
 
             case ACPEventType.TOOL_CALL_DONE:
                 if event.tool_call:
@@ -78,15 +84,20 @@ class ACPEventRenderer:
                     self._active_tools.pop(tool_id, None)
                     for loc in event.tool_call.locations:
                         self._modified_files.add(loc)
-                    # Add inline summary to text (skip empty titles)
-                    title = (event.tool_call.title or "").strip()
-                    if title:
-                        icon = _KIND_ICONS.get(event.tool_call.kind, "🔧")
-                        status_icon = _STATUS_ICONS.get(event.tool_call.status, "✅")
-                        loc_str = ""
-                        if event.tool_call.locations:
-                            loc_str = f" `{event.tool_call.locations[0]}`"
-                        self._text_chunks.append(f"\n{icon} {title}{loc_str} {status_icon}\n")
+
+                    if event.tool_call.content:
+                        # TodoWrite: update dedicated section, don't pollute text buffer
+                        self._todo_content = event.tool_call.content
+                    else:
+                        # Add inline summary to text (skip empty titles)
+                        title = (event.tool_call.title or "").strip()
+                        if title:
+                            icon = _KIND_ICONS.get(event.tool_call.kind, "🔧")
+                            status_icon = _STATUS_ICONS.get(event.tool_call.status, "✅")
+                            loc_str = ""
+                            if event.tool_call.locations:
+                                loc_str = f" `{event.tool_call.locations[0]}`"
+                            self._text_chunks.append(f"\n{icon} {title}{loc_str} {status_icon}\n")
 
             case ACPEventType.PLAN_UPDATE:
                 if event.plan:
@@ -110,6 +121,11 @@ class ACPEventRenderer:
         return self._modified_files
 
     @property
+    def todo_content(self) -> str:
+        """Latest TodoWrite content."""
+        return self._todo_content
+
+    @property
     def completed_tool_count(self) -> int:
         return len(self._completed_tools)
 
@@ -117,13 +133,16 @@ class ACPEventRenderer:
     # Rendering
     # ------------------------------------------------------------------
     def _render(self) -> str:
-        """Render complete content: plan + active tools + text."""
+        """Render complete content: plan + todo + active tools + text."""
         parts: list[str] = []
 
         if self._plan:
             rendered_plan = self._render_plan()
             if rendered_plan:
                 parts.append(rendered_plan)
+
+        if self._todo_content:
+            parts.append(f"**📝 任务进度**\n{self._todo_content}")
 
         if self._active_tools:
             rendered_tools = self._render_active_tools()
@@ -156,6 +175,9 @@ class ACPEventRenderer:
         """Render currently active tool calls."""
         lines: list[str] = []
         for tool in self._active_tools.values():
+            # Skip TodoWrite-like tools — they are rendered in the todo section
+            if tool.content:
+                continue
             title = (tool.title or "").strip()
             if tool.status in ("in_progress", "pending") and title:
                 kind_icon = _KIND_ICONS.get(tool.kind, "🔧")
@@ -166,13 +188,16 @@ class ACPEventRenderer:
         return "\n".join(lines) if lines else ""
 
     def render_plan_view(self) -> str:
-        """Render plan + active tools only (no text history). For plan update cards."""
+        """Render plan + todo + active tools only (no text history). For plan update cards."""
         parts: list[str] = []
 
         if self._plan:
             rendered_plan = self._render_plan()
             if rendered_plan:
                 parts.append(rendered_plan)
+
+        if self._todo_content:
+            parts.append(f"**📝 任务进度**\n{self._todo_content}")
 
         if self._active_tools:
             rendered_tools = self._render_active_tools()

@@ -57,6 +57,7 @@ class DeepEngine:
         self._run_state = EngineRunState.IDLE
         self._pending_context: list[str] = []
         self._context_lock = threading.Lock()
+        self._planning_done_fired: bool = False
 
     @property
     def project(self) -> Optional[DeepProject]:
@@ -83,6 +84,32 @@ class DeepEngine:
                 return
 
             self._renderer.process_event(event)
+
+            # Transition: planning -> executing
+            # Some backends (Claude CLI) only emit TEXT_CHUNK; for ACP backend,
+            # tool calls/plan updates are strong signals that execution has started.
+            if self._project and self._project.status == DeepProjectStatus.PLANNING:
+                marker_hit = False
+                try:
+                    if event.event_type == ACPEventType.TEXT_CHUNK:
+                        txt = self._renderer.text_content or ""
+                        # Heuristic markers for CLI backend
+                        if "### 执行过程" in txt or "## 执行过程" in txt or "开始执行" in txt:
+                            marker_hit = True
+                except Exception:
+                    marker_hit = False
+
+                if marker_hit or event.event_type in (
+                    ACPEventType.PLAN_UPDATE,
+                    ACPEventType.TOOL_CALL_START,
+                    ACPEventType.TOOL_CALL_UPDATE,
+                    ACPEventType.TOOL_CALL_DONE,
+                ):
+                    # Mark as executing and fire "planning done" once.
+                    self._project.start()
+                    if (not self._planning_done_fired) and callbacks.on_planning_done:
+                        self._planning_done_fired = True
+                        callbacks.on_planning_done(self._project)
 
             match event.event_type:
                 case ACPEventType.PLAN_UPDATE:
@@ -118,10 +145,12 @@ class DeepEngine:
         """Single ACP prompt drives the entire deep execution."""
         callbacks = callbacks or DeepEngineCallbacks()
         self._run_state = EngineRunState.RUNNING
+        self._planning_done_fired = False
 
         project_name = os.path.basename(self.root_path) or "deep_project"
         self._project = DeepProject.create(name=project_name, root_path=self.root_path)
         self._project.status = DeepProjectStatus.PLANNING
+        self._project.started_at = time.time()
 
         if callbacks.on_planning_start:
             callbacks.on_planning_start(requirement_text)
@@ -135,12 +164,6 @@ class DeepEngine:
 
             # Build deep prompt — let agent plan and execute autonomously
             prompt = self._build_deep_prompt(requirement_text)
-
-            self._project.status = DeepProjectStatus.EXECUTING
-            self._project.start()
-
-            if callbacks.on_planning_done:
-                callbacks.on_planning_done(self._project)
 
             on_event = self._make_on_event(callbacks)
             timeout = self.settings.coco_execution_timeout if self._agent_type == "coco" else self.settings.claude_execution_timeout
@@ -210,10 +233,22 @@ class DeepEngine:
 {self.root_path}
 
 ## 要求
-1. 先分析需求，制定执行计划
-2. 按计划逐步实现，每步完成后验证
-3. 确保代码质量和测试覆盖
-4. 完成后输出总结报告
+1. 必须先输出清晰的【分析】与【执行计划】，再开始调用工具执行
+2. 计划需要拆成可验证的步骤（建议 3~8 步），每步一句话描述产物/验证点
+3. 执行时严格按计划逐步推进；如需调整计划，先解释原因并更新计划
+4. 每个关键步骤完成后做一次自检/验证（单测/运行/静态检查等，按项目能力选择）
+5. 完成后输出总结：做了什么、改了哪些文件、如何验证
+
+## 输出格式（强制）
+### 分析
+- ...
+
+### 执行计划
+1. ...
+2. ...
+
+### 执行过程
+（从这里开始再调用工具）
 """
 
     def inject_context(self, message: str):

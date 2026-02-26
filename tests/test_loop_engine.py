@@ -821,6 +821,209 @@ PASS
         assert len(arch_reviews) == 1
         assert arch_reviews[0].passed  # First one wins
 
+    def test_parse_bold_brackets(self):
+        """LLM wraps [TAG] in bold: **[ARCHITECT]**"""
+        engine = self._make_engine()
+        text = """**[ARCHITECT]**: PASS
+
+**[PRODUCT]**: FAIL
+- 需求覆盖不足
+- 缺少边界处理
+
+**[USER]**: PASS
+
+**[TESTER]**: FAIL
+- 缺少单元测试
+"""
+        result = engine._parse_review_output(text, 1)
+        assert len(result.reviews) == 4
+        assert not result.all_passed
+        assert result.total_suggestions == 3
+
+    def test_parse_bold_no_brackets(self):
+        """LLM uses bold tags without brackets: **ARCHITECT**"""
+        engine = self._make_engine()
+        text = """**ARCHITECT**: PASS
+
+**PRODUCT**: FAIL
+- 边界场景未覆盖
+
+**USER**: PASS
+
+**TESTER**: PASS
+"""
+        result = engine._parse_review_output(text, 1)
+        assert len(result.reviews) == 4
+        assert not result.all_passed
+        prod = [r for r in result.reviews if r.perspective == ReviewPerspective.PRODUCT][0]
+        assert not prod.passed
+        assert len(prod.suggestions) == 1
+
+    def test_parse_markdown_heading_no_brackets(self):
+        """LLM uses markdown headings without brackets: ### ARCHITECT"""
+        engine = self._make_engine()
+        text = """### ARCHITECT: PASS
+
+### PRODUCT: FAIL
+- 功能不完整
+
+### USER: PASS
+
+### TESTER: PASS
+"""
+        result = engine._parse_review_output(text, 1)
+        assert len(result.reviews) == 4
+        assert not result.all_passed
+
+    def test_parse_plain_tag_with_colon(self):
+        """LLM uses plain tag with colon: ARCHITECT: PASS"""
+        engine = self._make_engine()
+        text = """ARCHITECT: PASS
+
+PRODUCT: FAIL
+- 遗漏需求点
+
+USER: PASS
+
+TESTER: PASS
+"""
+        result = engine._parse_review_output(text, 1)
+        assert len(result.reviews) == 4
+        assert not result.all_passed
+
+    def test_parse_bold_chinese_headings(self):
+        """LLM uses bold Chinese names: **架构师**: PASS"""
+        engine = self._make_engine()
+        text = """**架构师**: PASS
+
+**产品经理**: FAIL
+- 边界场景处理不足
+
+**用户**: PASS
+
+**测试**: PASS
+"""
+        result = engine._parse_review_output(text, 1)
+        assert len(result.reviews) == 4
+        assert not result.all_passed
+
+    def test_parse_chinese_with_suffix(self):
+        """LLM appends 审查/评审 to Chinese names."""
+        engine = self._make_engine()
+        text = """架构师审查: PASS
+
+产品经理评审: FAIL
+- 需要补充文档
+
+用户视角: PASS
+
+测试: PASS
+"""
+        result = engine._parse_review_output(text, 1)
+        assert len(result.reviews) == 4
+        assert not result.all_passed
+
+    def test_parse_numbered_chinese(self):
+        """LLM uses numbered list with Chinese: 1. 架构师: PASS"""
+        engine = self._make_engine()
+        text = """1. 架构师: PASS
+2. 产品经理: FAIL
+- 功能缺失
+3. 用户: PASS
+4. 测试: PASS
+"""
+        result = engine._parse_review_output(text, 1)
+        assert len(result.reviews) == 4
+        assert not result.all_passed
+
+    def test_parse_markdown_heading_bold_chinese(self):
+        """LLM uses ### **架构师** format."""
+        engine = self._make_engine()
+        text = """### **架构师**
+PASS
+
+### **产品经理**
+FAIL
+- 缺少异常场景
+
+### **用户**
+PASS
+
+### **测试**
+PASS
+"""
+        result = engine._parse_review_output(text, 1)
+        assert len(result.reviews) == 4
+        assert not result.all_passed
+
+    @patch("src.loop_engine.engine.get_settings")
+    def test_parse_llm_fallback_json(self, mock_settings):
+        """When regex fails, LLM fallback extracts from JSON."""
+        s = MagicMock()
+        s.loop_max_iterations = 15
+        s.loop_convergence_window = 3
+        s.loop_execution_timeout = 300
+        s.loop_review_enabled = True
+        s.loop_review_extra_iterations = 3
+        s.ark_api_key = "test-key"
+        s.ark_model = "test-model"
+        s.ark_base_url = "https://test.example.com"
+        mock_settings.return_value = s
+        engine = LoopEngine(chat_id="c1", root_path="/tmp/test")
+
+        # Simulate LLM response
+        llm_json = """[
+  {"perspective": "ARCHITECT", "verdict": "PASS", "suggestions": []},
+  {"perspective": "PRODUCT", "verdict": "FAIL", "suggestions": ["需要补充边界测试"]},
+  {"perspective": "USER", "verdict": "PASS", "suggestions": []},
+  {"perspective": "TESTER", "verdict": "FAIL", "suggestions": ["缺少集成测试", "覆盖率不足"]}
+]"""
+        with patch.object(engine, "_parse_review_with_llm",
+                          return_value=engine._extract_reviews_from_llm_response(llm_json)):
+            result = engine._parse_review_output("totally unstructured free text", 5)
+        assert len(result.reviews) == 4
+        assert not result.all_passed
+        assert result.total_suggestions == 3
+
+    def test_extract_reviews_from_llm_response_valid(self):
+        """Test _extract_reviews_from_llm_response with valid JSON."""
+        engine = self._make_engine()
+        text = """```json
+[
+  {"perspective": "ARCHITECT", "verdict": "PASS", "suggestions": []},
+  {"perspective": "PRODUCT", "verdict": "FAIL", "suggestions": ["issue1"]},
+  {"perspective": "USER", "verdict": "PASS", "suggestions": []},
+  {"perspective": "TESTER", "verdict": "PASS", "suggestions": []}
+]
+```"""
+        reviews = engine._extract_reviews_from_llm_response(text)
+        assert len(reviews) == 4
+        prod = [r for r in reviews if r.perspective == ReviewPerspective.PRODUCT][0]
+        assert not prod.passed
+        assert prod.suggestions == ["issue1"]
+
+    def test_extract_reviews_from_llm_response_invalid(self):
+        """Test _extract_reviews_from_llm_response with invalid JSON."""
+        engine = self._make_engine()
+        assert engine._extract_reviews_from_llm_response("not json at all") == []
+        assert engine._extract_reviews_from_llm_response("") == []
+        assert engine._extract_reviews_from_llm_response("{}") == []
+
+    def test_extract_reviews_pass_clears_suggestions(self):
+        """PASS verdict should always have empty suggestions."""
+        engine = self._make_engine()
+        text = """[
+  {"perspective": "ARCHITECT", "verdict": "PASS", "suggestions": ["this should be cleared"]},
+  {"perspective": "PRODUCT", "verdict": "PASS", "suggestions": []},
+  {"perspective": "USER", "verdict": "PASS", "suggestions": []},
+  {"perspective": "TESTER", "verdict": "PASS", "suggestions": []}
+]"""
+        reviews = engine._extract_reviews_from_llm_response(text)
+        assert len(reviews) == 4
+        arch = [r for r in reviews if r.perspective == ReviewPerspective.ARCHITECT][0]
+        assert arch.passed
+        assert arch.suggestions == []
+
 
 class TestBuildReviewPrompt:
     @patch("src.loop_engine.engine.get_settings")
