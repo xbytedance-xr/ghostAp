@@ -137,14 +137,18 @@ class DeepEngine:
         self,
         requirement_text: str,
         callbacks: Optional[DeepEngineCallbacks] = None,
+        task_id: Optional[str] = None,
+        on_rate_limit: Optional[Callable[[int], None]] = None,
     ) -> DeepProject:
         """Single ACP prompt drives the entire deep execution."""
         callbacks = callbacks or DeepEngineCallbacks()
         self._run_state = EngineRunState.RUNNING
         self._planning_done_fired = False
+        self._on_rate_limit = on_rate_limit
 
         project_name = os.path.basename(self.root_path) or "deep_project"
         self._project = DeepProject.create(name=project_name, root_path=self.root_path)
+        self._project.task_id = task_id
         self._project.status = DeepProjectStatus.PLANNING
         self._project.started_at = time.time()
 
@@ -156,7 +160,10 @@ class DeepEngine:
 
         try:
             # Create session
-            self._session = create_engine_session(agent_type=self._agent_type, cwd=self.root_path)
+            self._session = create_engine_session(
+                agent_type=self._agent_type, cwd=self.root_path,
+                on_rate_limit=on_rate_limit,
+            )
 
             # Build deep prompt — let agent plan and execute autonomously
             prompt = self._build_deep_prompt(requirement_text)
@@ -280,7 +287,10 @@ class DeepEngine:
         try:
             # Close old session before opening new one (prevent resource leak)
             self._close_session_safely()
-            self._session = create_engine_session(agent_type=self._agent_type, cwd=self.root_path)
+            self._session = create_engine_session(
+                agent_type=self._agent_type, cwd=self.root_path,
+                on_rate_limit=getattr(self, "_on_rate_limit", None),
+            )
 
             resume_prompt = """你之前的执行被暂停了。请继续完成剩余的任务。
 检查之前的进度，对未完成的部分继续实现。

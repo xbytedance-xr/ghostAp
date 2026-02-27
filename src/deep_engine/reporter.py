@@ -1,4 +1,4 @@
-from ..utils.text import make_progress_bar
+from ..utils.text import format_duration, make_progress_bar
 from .models import DeepProject, DeepProjectStatus
 
 
@@ -24,13 +24,13 @@ class ProgressReporter:
             lines = [
                 "🎉 **全部任务完成！**\n",
                 f"📂 项目: {project.name}",
-                f"⏱️ 总耗时: {project.duration():.1f}s" if project.duration() else "",
+                f"⏱️ 总耗时: {format_duration(project.duration())}" if project.duration() else "",
             ]
         elif project.status == DeepProjectStatus.FAILED:
             lines = [
                 "⚠️ **执行完成（有失败）**\n",
                 f"📂 项目: {project.name}",
-                f"⏱️ 总耗时: {project.duration():.1f}s" if project.duration() else "",
+                f"⏱️ 总耗时: {format_duration(project.duration())}" if project.duration() else "",
             ]
         else:
             lines = [
@@ -65,7 +65,7 @@ class ProgressReporter:
         ]
 
         if project.duration():
-            lines.append(f"耗时: {project.duration():.1f}s")
+            lines.append(f"⏱️ 已执行: {format_duration(project.duration())}")
 
         return "\n".join(lines)
 

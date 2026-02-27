@@ -17,11 +17,14 @@ stop_service() {
     if [ -f "$PID_FILE" ]; then
         PID=$(cat "$PID_FILE")
         if kill -0 "$PID" 2>/dev/null; then
-            kill "$PID"
+            # 先尝试优雅停止（进程本身 + 进程组，确保子进程(ACP agent等)不残留）
+            kill "$PID" 2>/dev/null || true
+            kill -- -"$PID" 2>/dev/null || true
             sleep 2
             if kill -0 "$PID" 2>/dev/null; then
                 echo "进程未响应，强制终止..."
-                kill -9 "$PID"
+                kill -9 "$PID" 2>/dev/null || true
+                kill -9 -- -"$PID" 2>/dev/null || true
             fi
             echo "已停止进程 PID: $PID"
         fi
@@ -31,11 +34,18 @@ stop_service() {
     PIDS=$(get_running_pids)
     if [ -n "$PIDS" ]; then
         echo "发现残留进程: $PIDS，正在清理..."
-        echo "$PIDS" | xargs kill 2>/dev/null
+        # 同时杀进程本身与进程组，避免遗留子进程
+        echo "$PIDS" | xargs kill 2>/dev/null || true
+        for p in $PIDS; do
+            kill -- -"$p" 2>/dev/null || true
+        done
         sleep 1
         PIDS=$(get_running_pids)
         if [ -n "$PIDS" ]; then
-            echo "$PIDS" | xargs kill -9 2>/dev/null
+            echo "$PIDS" | xargs kill -9 2>/dev/null || true
+            for p in $PIDS; do
+                kill -9 -- -"$p" 2>/dev/null || true
+            done
         fi
     fi
     
@@ -89,18 +99,24 @@ echo "$(date '+%Y-%m-%d %H:%M:%S') [RESTART] 开始重启..." >> "$LOG_FILE"
 if [ -f "$PID_FILE" ]; then
     PID=$(cat "$PID_FILE")
     if kill -0 "$PID" 2>/dev/null; then
-        kill "$PID" 2>/dev/null
+        kill "$PID" 2>/dev/null || true
+        kill -- -"$PID" 2>/dev/null || true
         sleep 2
-        kill -0 "$PID" 2>/dev/null && kill -9 "$PID" 2>/dev/null
+        kill -0 "$PID" 2>/dev/null && {
+            kill -9 "$PID" 2>/dev/null || true
+            kill -9 -- -"$PID" 2>/dev/null || true
+        }
     fi
     rm -f "$PID_FILE"
 fi
 
 PIDS=$(ps aux | grep -E "(uv run python -m src\.main|\.venv/bin/python.*-m src\.main)" | grep -v grep | awk '{print $2}')
-[ -n "$PIDS" ] && echo "$PIDS" | xargs kill 2>/dev/null
+[ -n "$PIDS" ] && echo "$PIDS" | xargs kill 2>/dev/null || true
+[ -n "$PIDS" ] && for p in $PIDS; do kill -- -"$p" 2>/dev/null || true; done
 sleep 1
 PIDS=$(ps aux | grep -E "(uv run python -m src\.main|\.venv/bin/python.*-m src\.main)" | grep -v grep | awk '{print $2}')
-[ -n "$PIDS" ] && echo "$PIDS" | xargs kill -9 2>/dev/null
+[ -n "$PIDS" ] && echo "$PIDS" | xargs kill -9 2>/dev/null || true
+[ -n "$PIDS" ] && for p in $PIDS; do kill -9 -- -"$p" 2>/dev/null || true; done
 
 sleep 1
 

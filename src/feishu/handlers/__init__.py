@@ -4,6 +4,7 @@ from .base import BaseHandler
 from .programming import ProgrammingModeHandler, CocoModeHandler, ClaudeModeHandler
 from .deep import DeepHandler
 from .loop import LoopHandler
+from .spec import SpecHandler
 from .project import ProjectHandler
 from .system import SystemHandler
 from .diagnostics import DiagnosticsHandler
@@ -15,6 +16,7 @@ __all__ = [
     "ClaudeModeHandler",
     "DeepHandler",
     "LoopHandler",
+    "SpecHandler",
     "ProjectHandler",
     "SystemHandler",
     "DiagnosticsHandler",

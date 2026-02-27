@@ -417,6 +417,35 @@ class BaseHandler:
         return f"{injection}\n\n{text}"
 
     # ------------------------------------------------------------------
+    # Shared engine callback factories
+    # ------------------------------------------------------------------
+    def create_rate_limit_callback(
+        self,
+        chat_id: str,
+        message_id: str,
+        project: Optional["ProjectContext"],
+        engine_name: str,
+        request_id: Optional[str] = None,
+    ):
+        """Create a reusable _on_rate_limit callback for any engine handler."""
+        from ...card import CardBuilder
+
+        def _on_rate_limit(wait_seconds: int):
+            try:
+                msg_type, card_content = CardBuilder.build_deep_card(
+                    project=project,
+                    title="⏸️ 限速等待",
+                    content=f"🔄 API 限速触发，自动等待 {wait_seconds} 秒后恢复...\n\n无需操作，任务将自动继续。",
+                    engine_name=engine_name,
+                    show_buttons=False,
+                )
+                self.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
+            except Exception:
+                pass
+
+        return _on_rate_limit
+
+    # ------------------------------------------------------------------
     # Engine name helper
     # ------------------------------------------------------------------
     def get_engine_name(self, chat_id: str, project_id: str | None = None) -> str:

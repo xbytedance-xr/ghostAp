@@ -25,6 +25,7 @@ from ..card import CardBuilder
 from ..card.streaming import StreamingCardManager
 from ..deep_engine import DeepEngineManager, ProgressReporter
 from ..loop_engine import LoopEngineManager, LoopReporter
+from ..spec_engine import SpecEngineManager, SpecReporter
 from ..tasking import TaskScheduler, TaskSpec, TaskPriority, SYSTEM_QUEUE_SUFFIX
 from .message_formatter import FeishuMessageFormatter as fmt
 from .emoji import EmojiType, EmojiReaction
@@ -36,6 +37,7 @@ from .handlers import (
     ClaudeModeHandler,
     DeepHandler,
     LoopHandler,
+    SpecHandler,
     ProjectHandler,
     SystemHandler,
     DiagnosticsHandler,
@@ -84,6 +86,8 @@ class FeishuWSClient:
         self._progress_reporter = ProgressReporter()
         self._loop_engine_manager = LoopEngineManager()
         self._loop_reporter = LoopReporter()
+        self._spec_engine_manager = SpecEngineManager()
+        self._spec_reporter = SpecReporter()
 
         self._context_manager = ProjectContextManager()
 
@@ -107,6 +111,8 @@ class FeishuWSClient:
             progress_reporter=self._progress_reporter,
             loop_engine_manager=self._loop_engine_manager,
             loop_reporter=self._loop_reporter,
+            spec_engine_manager=self._spec_engine_manager,
+            spec_reporter=self._spec_reporter,
             streaming_manager_factory=self._get_streaming_manager,
             image_handler_factory=self._get_image_handler,
             working_dirs=self._working_dirs,
@@ -121,6 +127,7 @@ class FeishuWSClient:
         self._claude_handler = ClaudeModeHandler(self._handler_ctx)
         self._deep_handler = DeepHandler(self._handler_ctx)
         self._loop_handler = LoopHandler(self._handler_ctx)
+        self._spec_handler = SpecHandler(self._handler_ctx)
         self._project_handler = ProjectHandler(self._handler_ctx)
         self._system_handler = SystemHandler(self._handler_ctx)
         self._diagnostics_handler = DiagnosticsHandler(self._handler_ctx)
@@ -133,6 +140,7 @@ class FeishuWSClient:
         self._system_handler.project_handler = self._project_handler
         self._system_handler.deep_handler = self._deep_handler
         self._system_handler.loop_handler = self._loop_handler
+        self._system_handler.spec_handler = self._spec_handler
         self._system_handler.diagnostics_handler = self._diagnostics_handler
 
         # Bind forwarding methods directly on instance (replaces __getattr__ dispatch)
@@ -142,10 +150,52 @@ class FeishuWSClient:
 
     def close(self):
         """Best-effort cleanup for background resources."""
+        # 1) Stop long-running engines first (they may hold ACP subprocesses)
+        try:
+            for engine in self._deep_engine_manager.list_engines():
+                try:
+                    if engine and getattr(engine, "is_running", False):
+                        engine.stop()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        try:
+            for engine in self._loop_engine_manager.list_engines():
+                try:
+                    if engine and getattr(engine, "is_running", False):
+                        engine.stop()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        try:
+            for engine in self._spec_engine_manager.list_engines():
+                try:
+                    if engine and getattr(engine, "is_running", False):
+                        engine.stop()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         try:
             self._message_cache.stop_cleanup_thread()
         except Exception as e:
             logger.debug("停止message_cache清理线程失败: %s", e)
+
+        # 2) Close per-chat programming sessions (kills ACP agent subprocesses)
+        try:
+            self._coco_manager.cleanup_all()
+        except Exception as e:
+            logger.debug("清理coco_session_manager失败: %s", e)
+
+        try:
+            self._claude_manager.cleanup_all()
+        except Exception as e:
+            logger.debug("清理claude_session_manager失败: %s", e)
 
         try:
             self._deep_engine_manager.cleanup_all()
@@ -156,6 +206,11 @@ class FeishuWSClient:
             self._loop_engine_manager.cleanup_all()
         except Exception as e:
             logger.debug("清理loop_engine_manager失败: %s", e)
+
+        try:
+            self._spec_engine_manager.cleanup_all()
+        except Exception as e:
+            logger.debug("清理spec_engine_manager失败: %s", e)
 
         try:
             self._scheduler.stop(wait=True, shutdown_executor=True)
@@ -254,6 +309,14 @@ class FeishuWSClient:
         "_resume_loop_engine":       ("_loop_handler", "resume_loop_engine"),
         "_stop_loop_engine":         ("_loop_handler", "stop_loop_engine"),
         "_update_loop_guidance":     ("_loop_handler", "update_loop_guidance"),
+        # --- Spec Engine ---
+        "_handle_spec_command":       ("_spec_handler", "handle_spec_command"),
+        "_start_spec_engine":        ("_spec_handler", "start_spec_engine"),
+        "_show_spec_status":         ("_spec_handler", "show_spec_status"),
+        "_pause_spec_engine":        ("_spec_handler", "pause_spec_engine"),
+        "_resume_spec_engine":       ("_spec_handler", "resume_spec_engine"),
+        "_stop_spec_engine":         ("_spec_handler", "stop_spec_engine"),
+        "_update_spec_guidance":     ("_spec_handler", "update_spec_guidance"),
         # --- Project ---
         "_create_project":           ("_project_handler", "create_project"),
         "_show_project_board":       ("_project_handler", "show_project_board"),
@@ -307,6 +370,10 @@ class FeishuWSClient:
     @staticmethod
     def _is_loop_command(text: str) -> bool:
         return SystemHandler.is_loop_command(text)
+
+    @staticmethod
+    def _is_spec_command(text: str) -> bool:
+        return SystemHandler.is_spec_command(text)
 
     @staticmethod
     def _is_interceptable_command(text: str) -> bool:
@@ -840,6 +907,12 @@ class FeishuWSClient:
             self._handle_loop_command(message_id, chat_id, text, project)
             return
 
+        if self._is_spec_command(text):
+            self._add_reaction(message_id, EmojiReaction.on_smart_mode())
+            self._add_reaction(message_id, EmojiReaction.on_processing())
+            self._handle_spec_command(message_id, chat_id, text, project)
+            return
+
         if self._is_interceptable_command(text):
             self._handle_intercepted_command(message_id, chat_id, text, project)
             return
@@ -1037,6 +1110,29 @@ class FeishuWSClient:
                 self._update_loop_guidance(message_id, chat_id, guide_message, project)
             else:
                 self._reply_message(message_id, "📝 请提供引导信息\n\n用法: `/loop_guide <引导描述>`")
+
+        elif intent == IntentType.ENTER_SPEC:
+            requirement = data.get("requirement") or original_text
+            self._start_spec_engine(message_id, chat_id, requirement, project)
+
+        elif intent == IntentType.SPEC_STATUS:
+            self._show_spec_status(message_id, chat_id, project)
+
+        elif intent == IntentType.STOP_SPEC:
+            self._stop_spec_engine(message_id, chat_id, project)
+
+        elif intent == IntentType.SPEC_PAUSE:
+            self._pause_spec_engine(message_id, chat_id, project)
+
+        elif intent == IntentType.SPEC_RESUME:
+            self._resume_spec_engine(message_id, chat_id, project)
+
+        elif intent == IntentType.SPEC_GUIDE:
+            guide_message = data.get("message")
+            if guide_message:
+                self._update_spec_guidance(message_id, chat_id, guide_message, project)
+            else:
+                self._reply_message(message_id, "📝 请提供引导信息\n\n用法: `/spec_guide <引导描述>`")
 
         elif intent == IntentType.SHELL_COMMAND:
             working_dir = self._get_working_dir(chat_id)

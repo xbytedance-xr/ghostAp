@@ -70,10 +70,59 @@ class Settings(BaseSettings):
     loop_review_enabled: bool = True
     loop_review_extra_iterations: int = 3
 
+    # Spec Engine settings
+    spec_max_cycles: int = 10
+    # Hard upper bound for long-range spec cycles (configurable via env).
+    # Engine will clamp spec_max_cycles to this limit.
+    spec_max_cycles_limit: int = 5000
+    spec_execution_timeout: int = 7200
+    spec_convergence_window: int = 2
+    spec_review_enabled: bool = True
+
+    # Spec long-range persistence / monitoring
+    spec_state_filename: str = ".spec_engine_state.json"
+    spec_artifacts_dirname: str = ".spec_engine"
+    # Keep in-memory phase outputs bounded for 5k+ cycles
+    spec_cycle_output_max_chars: int = 4000
+    spec_cycle_tasks_max: int = 50
+    # Persisted artifact bounds / retention (avoid 5k cycles generating huge disk usage)
+    spec_phase_output_persist_max_chars: int = 20000
+    spec_cycle_artifact_retention: int = 50
+    # Whether to persist phase raw outputs (spec/plan/tasks/build/review) to disk.
+    # Metrics/state/spec files are still persisted for long-range monitoring/resume.
+    spec_persist_phase_artifacts: bool = True
+    # Post-cycle self-questioning (problem discovery) + spec generation
+    spec_discovery_enabled: bool = True
+    spec_discovery_max_questions: int = 5
+    spec_discovery_force_nonempty: bool = True
+    spec_generated_specs_per_cycle: int = 3
+    # Persistence cadence
+    spec_persist_every_phase: bool = True
+    spec_allow_resume_from_disk: bool = True
+    # Continuation policy
+    # - infinite_mode: never stop due to convergence/early-stop; only stop on success/user stop/max_cycles
+    spec_infinite_mode: bool = False
+    spec_disable_convergence: bool = False
+    spec_disable_early_stop: bool = False
+    # State file compaction (avoid O(n^2) rewrite cost for 5k cycles)
+    spec_state_cycles_tail: int = 50
+    spec_state_work_items_tail: int = 200
+    spec_state_metrics_tail: int = 200
+
+    # History / retention
+    spec_history_log_filename: str = "history.jsonl"
+    spec_generated_specs_retention: int = 1000
+
     streaming_enabled: bool = True
 
+    # Rate limiting handling (auto-pause and retry on API throttling)
+    rate_limit_retry_enabled: bool = True
+    rate_limit_max_wait: int = 300      # Max seconds to wait for rate limit cooldown
+    rate_limit_base_wait: int = 30      # Default wait if no retry-after header
+    rate_limit_max_retries: int = 5     # Max consecutive rate limit retries
+
     # Task scheduler (thread-based) settings
-    task_scheduler_max_concurrent: int = 10
+    task_scheduler_max_concurrent: int = 20
     task_scheduler_per_key_concurrency: int = 1
 
     # 卡片按钮布局策略：

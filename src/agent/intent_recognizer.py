@@ -37,6 +37,12 @@ class IntentType(Enum):
     LOOP_PAUSE = "loop_pause"
     LOOP_RESUME = "loop_resume"
     LOOP_GUIDE = "loop_guide"
+    ENTER_SPEC = "enter_spec"
+    SPEC_STATUS = "spec_status"
+    STOP_SPEC = "stop_spec"
+    SPEC_PAUSE = "spec_pause"
+    SPEC_RESUME = "spec_resume"
+    SPEC_GUIDE = "spec_guide"
     SHOW_HELP = "show_help"
     UNKNOWN = "unknown"
 
@@ -215,6 +221,12 @@ class IntentRecognizer:
         "loop_pause": IntentType.LOOP_PAUSE,
         "loop_resume": IntentType.LOOP_RESUME,
         "loop_guide": IntentType.LOOP_GUIDE,
+        "enter_spec": IntentType.ENTER_SPEC,
+        "spec_status": IntentType.SPEC_STATUS,
+        "stop_spec": IntentType.STOP_SPEC,
+        "spec_pause": IntentType.SPEC_PAUSE,
+        "spec_resume": IntentType.SPEC_RESUME,
+        "spec_guide": IntentType.SPEC_GUIDE,
         "show_help": IntentType.SHOW_HELP,
         "unknown": IntentType.UNKNOWN,
     }
@@ -243,6 +255,11 @@ class IntentRecognizer:
         "/stop_loop": (IntentType.STOP_LOOP, "停止 Loop 任务"),
         "/loop_pause": (IntentType.LOOP_PAUSE, "暂停 Loop 任务"),
         "/loop_resume": (IntentType.LOOP_RESUME, "恢复 Loop 任务"),
+        "/spec": (IntentType.ENTER_SPEC, "进入 Spec 模式"),
+        "/spec_status": (IntentType.SPEC_STATUS, "查看 Spec 任务状态"),
+        "/stop_spec": (IntentType.STOP_SPEC, "停止 Spec 任务"),
+        "/spec_pause": (IntentType.SPEC_PAUSE, "暂停 Spec 任务"),
+        "/spec_resume": (IntentType.SPEC_RESUME, "恢复 Spec 任务"),
         "/help": (IntentType.SHOW_HELP, "显示帮助信息"),
         "/帮助": (IntentType.SHOW_HELP, "显示帮助信息"),
     }
@@ -449,6 +466,28 @@ class IntentRecognizer:
                 original_text=text,
                 reasoning="精确匹配: /loop 命令",
                 description="启动 Loop Engine"
+            )
+
+        if text_lower.startswith("/spec_guide "):
+            guide_message = text[len("/spec_guide "):].strip()
+            return IntentResult.single(
+                intent=IntentType.SPEC_GUIDE,
+                confidence=1.0,
+                data={"message": guide_message},
+                original_text=text,
+                reasoning="精确匹配: /spec_guide 命令",
+                description="注入 Spec 引导信息"
+            )
+
+        if text_lower.startswith("/spec "):
+            requirement = text[6:].strip()
+            return IntentResult.single(
+                intent=IntentType.ENTER_SPEC,
+                confidence=1.0,
+                data={"requirement": requirement},
+                original_text=text,
+                reasoning="精确匹配: /spec 命令",
+                description="启动 Spec Engine"
             )
 
         if any(kw in text_lower for kw in self.EXIT_MODE_KEYWORDS):

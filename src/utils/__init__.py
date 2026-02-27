@@ -1,4 +1,4 @@
-from .text import clean_terminal_output, make_progress_bar, truncate_output
+from .text import append_duration_to_title, clean_terminal_output, format_duration, generate_task_id, make_progress_bar, truncate_output
 from .errors import (
     GhostAPError,
     SessionExpiredError,
@@ -12,7 +12,10 @@ from .errors import (
 )
 
 __all__ = [
+    "append_duration_to_title",
     "clean_terminal_output",
+    "format_duration",
+    "generate_task_id",
     "make_progress_bar",
     "truncate_output",
     "GhostAPError",

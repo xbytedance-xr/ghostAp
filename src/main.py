@@ -1,5 +1,7 @@
 import logging
 import sys
+import signal
+import threading
 from typing import Optional
 try:
     from config import get_settings
@@ -17,6 +19,26 @@ class Application:
     def __init__(self):
         self.settings = get_settings()
         self.feishu_client: Optional[FeishuWSClient] = None
+        self._shutdown_once = threading.Event()
+
+    def _install_signal_handlers(self):
+        """Ensure SIGTERM triggers graceful cleanup.
+
+        restart.sh uses SIGTERM; without a handler Python may exit immediately
+        and skip finally blocks, leaving child agent processes orphaned.
+        """
+
+        def _handle_sigterm(signum, frame):  # pragma: no cover
+            if self._shutdown_once.is_set():
+                return
+            self._shutdown_once.set()
+            raise KeyboardInterrupt
+
+        try:
+            signal.signal(signal.SIGTERM, _handle_sigterm)
+        except Exception:
+            # Some environments (non-main thread / restricted) may fail; best-effort.
+            pass
 
     def handle_message(self, message_id: str, chat_id: str, command: str, working_dir: Optional[str] = None):
         """Legacy callback — executes shell command directly via SandboxExecutor."""
@@ -49,6 +71,8 @@ class Application:
         logger.info("APP_ID: %s...", self.settings.app_id[:8])
         logger.info("命令超时: %d秒", self.settings.sandbox_timeout)
         logger.info("意图识别: ARK (%s)", self.settings.ark_model)
+
+        self._install_signal_handlers()
 
         self.feishu_client = FeishuWSClient(message_callback=self.handle_message)
 

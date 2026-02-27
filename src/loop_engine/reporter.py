@@ -1,6 +1,6 @@
 """Loop Engine 进度报告器 — 格式化进度信息供 Feishu 卡片展示。"""
 
-from ..utils.text import make_progress_bar
+from ..utils.text import format_duration, make_progress_bar
 from .models import (
     LoopProject,
     LoopProjectStatus,
@@ -67,12 +67,12 @@ class LoopReporter:
             return f"""✅ **迭代完成 [{iteration}]**
 
 🤖 **{summary}**
-⏱️ 耗时: {record.duration:.1f}s{output_section}"""
+⏱️ 耗时: {format_duration(record.duration)}{output_section}"""
         else:
             error_text = record.error or "未知错误"
             return f"""❌ **迭代失败 [{iteration}]**
 
-⏱️ 耗时: {record.duration:.1f}s
+⏱️ 耗时: {format_duration(record.duration)}
 
 **错误信息:**
 ```
@@ -155,7 +155,7 @@ class LoopReporter:
             ]
 
         if project.duration():
-            lines.append(f"⏱️ 总耗时: {project.duration():.1f}s")
+            lines.append(f"⏱️ 总耗时: {format_duration(project.duration())}")
 
         # 标准详情
         lines.append("\n**验收标准:**")
@@ -194,7 +194,7 @@ class LoopReporter:
         ]
 
         if project.duration():
-            lines.append(f"耗时: {project.duration():.1f}s")
+            lines.append(f"⏱️ 已执行: {format_duration(project.duration())}")
 
         # 最近的迭代
         if project.iterations:

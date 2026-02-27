@@ -406,6 +406,7 @@ class LoopProject:
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
     error: Optional[str] = None
+    task_id: Optional[str] = None  # Human-readable task ID
 
     @classmethod
     def create(
@@ -501,6 +502,7 @@ class LoopProject:
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "error": self.error,
+            "task_id": self.task_id,
         }
 
     @classmethod
@@ -514,6 +516,7 @@ class LoopProject:
             started_at=data.get("started_at"),
             completed_at=data.get("completed_at"),
             error=data.get("error"),
+            task_id=data.get("task_id"),
         )
         if data.get("requirement"):
             project.requirement = LoopRequirement.from_dict(data["requirement"])

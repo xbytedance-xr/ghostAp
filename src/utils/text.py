@@ -1,4 +1,42 @@
 import re
+import time
+import uuid
+
+
+def format_duration(seconds: float) -> str:
+    """Format seconds into human-readable duration string.
+
+    Examples: "5秒", "3分12秒", "1小时30分5秒"
+    """
+    if seconds < 0:
+        seconds = 0
+    total_secs = int(seconds)
+    hours = total_secs // 3600
+    minutes = (total_secs % 3600) // 60
+    secs = total_secs % 60
+    if hours > 0:
+        return f"{hours}小时{minutes}分{secs}秒"
+    if minutes > 0:
+        return f"{minutes}分{secs}秒"
+    return f"{secs}秒"
+
+
+def append_duration_to_title(title: str, duration_secs: float | None) -> str:
+    """Append formatted duration to title if available. E.g. '🔄 执行中 · 3分45秒'."""
+    if duration_secs:
+        return f"{title} · {format_duration(duration_secs)}"
+    return title
+
+
+def generate_task_id(project_name: str) -> str:
+    """Generate a human-readable task ID: {name}_{YYYYMMDD}_{HHMMSS}_{4hex}.
+
+    Includes 4 random hex chars to avoid collisions on rapid submission.
+    """
+    ts = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+    safe_name = "".join(c if c.isalnum() or c == "_" else "_" for c in project_name)[:30]
+    suffix = uuid.uuid4().hex[:4]
+    return f"{safe_name}_{ts}_{suffix}"
 
 
 def make_progress_bar(completed: int, total: int) -> str:

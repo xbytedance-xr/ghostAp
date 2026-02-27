@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import TYPE_CHECKING, Optional
 
@@ -13,6 +14,7 @@ from ...deep_engine.models import DeepProject, DeepProjectStatus
 from ...project import ContextSourceMode
 from ...tasking import TaskSpec, TaskPriority
 from ...utils.errors import fmt_error
+from ...utils.text import append_duration_to_title, generate_task_id
 from ..emoji import EmojiReaction
 from .base import BaseHandler
 
@@ -100,6 +102,11 @@ class DeepHandler(BaseHandler):
 
         engine = self.ctx.deep_engine_manager.get_or_create(chat_id, root_path, engine_name=engine_name)
 
+        project_name = project.project_name if project else os.path.basename(root_path) or "deep"
+        task_id = generate_task_id(project_name)
+
+        _on_rate_limit = self.create_rate_limit_callback(chat_id, message_id, project, engine_name, request_id)
+
         def run_deep_engine():
             try:
                 callbacks = self._create_deep_callbacks(
@@ -109,7 +116,7 @@ class DeepHandler(BaseHandler):
                     engine_name,
                     root_path=root_path,
                 )
-                engine.plan_and_execute(requirement, callbacks)
+                engine.plan_and_execute(requirement, callbacks, task_id=task_id, on_rate_limit=_on_rate_limit)
             except Exception as e:
                 logger.error("Deep Engine 执行异常: %s", e, exc_info=True)
                 error_content = reporter.format_error(str(e))
@@ -132,6 +139,7 @@ class DeepHandler(BaseHandler):
             message_id=message_id,
             origin_message_id=message_id,
             request_id=request_id,
+            task_id=task_id,
             priority=TaskPriority.NORMAL,
         )
         handle = self.scheduler.submit(spec, lambda ctx: run_deep_engine())
@@ -235,6 +243,8 @@ class DeepHandler(BaseHandler):
             else:
                 title = "🔄 执行中"
 
+            title = append_duration_to_title(title, engine.project.duration() if engine and engine.project else None)
+
             parts = []
             if plan_view:
                 parts.append(plan_view)
@@ -269,9 +279,10 @@ class DeepHandler(BaseHandler):
                     deep_project_id = engine.project.project_id if engine and engine.project else None
                     progress = engine.progress if engine else None
                     progress_bar = progress.progress_bar if progress else None
+                    plan_title = append_duration_to_title("📋 执行计划", engine.project.duration() if engine and engine.project else None)
                     msg_type, card_content = CardBuilder.build_deep_card(
                         project=project,
-                        title="📋 执行计划",
+                        title=plan_title,
                         content=plan_content,
                         progress_bar=progress_bar,
                         deep_project_id=deep_project_id,

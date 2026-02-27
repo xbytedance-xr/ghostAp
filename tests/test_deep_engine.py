@@ -3,6 +3,7 @@
 import pytest
 from unittest.mock import patch, MagicMock, PropertyMock
 import io
+import os
 
 from src.deep_engine.models import EngineRunState, DeepProject, DeepProjectStatus
 from src.deep_engine.engine import DeepEngine, DeepEngineManager, DeepEngineCallbacks
@@ -199,11 +200,14 @@ class TestClaudeCLISession:
 
         popen_calls = []
 
-        def fake_popen(args, cwd, stdout, stderr, text):
-            popen_calls.append(args)
+        def fake_popen(args, cwd, stdout, stderr, text, env=None):
+            popen_calls.append((args, env))
+            assert env is not None
+            assert "CLAUDECODE" not in env
             return procs.pop(0)
 
-        with patch("src.agent_session.subprocess.Popen", side_effect=fake_popen), \
+        with patch.dict(os.environ, {"CLAUDECODE": "1"}), \
+             patch("src.agent_session.subprocess.Popen", side_effect=fake_popen), \
              patch("src.agent_session.uuid.uuid4", return_value="sid_new"):
             events = []
             res = s.send_prompt("hi", on_event=lambda e: events.append(e), timeout=5)
@@ -211,7 +215,7 @@ class TestClaudeCLISession:
         assert res.stop_reason == "end_turn"
         assert "ok" in res.text
         assert len(popen_calls) == 2
-        assert "--resume" in popen_calls[0]
-        assert "sid0" in popen_calls[0]
-        assert "--session-id" in popen_calls[1]
-        assert "sid_new" in popen_calls[1]
+        assert "--resume" in popen_calls[0][0]
+        assert "sid0" in popen_calls[0][0]
+        assert "--session-id" in popen_calls[1][0]
+        assert "sid_new" in popen_calls[1][0]

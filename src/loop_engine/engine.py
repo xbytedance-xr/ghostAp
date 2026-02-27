@@ -39,138 +39,15 @@ from .tracker import IterationTracker
 
 logger = logging.getLogger(__name__)
 
-# Pre-compiled regex patterns for criteria evaluation (up to 100 criteria)
-_CRITERIA_PATTERNS: list[re.Pattern] = [
-    re.compile(rf"CRITERIA_{i}\s*:\s*(PASS|FAIL)") for i in range(1, 101)
-]
-
-# Pre-compiled regex for multi-perspective review parsing
-_REVIEW_SECTION_PATTERN = re.compile(
-    r"\[(\w+)\]\s*\n\s*(PASS|FAIL)\b(.*?)(?=\[(?:ARCHITECT|PRODUCT|USER|TESTER)\]|\Z)",
-    re.DOTALL,
+# 下沉到 utils：review/criteria 解析能力层（避免引擎间私有符号依赖）
+from ..utils.spec_utils import (
+    CRITERIA_PATTERNS as _CRITERIA_PATTERNS,
+    REVIEW_SECTION_PATTERN as _REVIEW_SECTION_PATTERN,
+    PERSPECTIVE_TAG_MAP as _PERSPECTIVE_TAG_MAP,
+    normalize_review_verdict as _normalize_review_verdict,
+    extract_suggestions_from_body as _extract_suggestions_from_body,
+    split_review_sections as _split_review_sections,
 )
-
-# Tolerant section header patterns (English tags / Chinese display names)
-# Each pattern captures: group(1) = tag name, group(2) = optional rest of line
-_REVIEW_HEADER_EN_PATTERNS: list[re.Pattern] = [
-    # [ARCHITECT] / [ARCHITECT]: PASS / ## [ARCHITECT] PASS
-    re.compile(
-        r"(?im)^\s*(?:#+\s*)?\[\s*(ARCHITECT|PRODUCT|USER|TESTER)\s*\]\s*(?:[:：]?\s*(.*))?$"),
-    # **[ARCHITECT]** / **[ARCHITECT]**: PASS
-    re.compile(
-        r"(?im)^\s*(?:#+\s*)?\*{1,2}\[\s*(ARCHITECT|PRODUCT|USER|TESTER)\s*\]\*{1,2}\s*(?:[:：]?\s*(.*))?$"),
-    # **ARCHITECT** / **ARCHITECT**: PASS / ## **ARCHITECT** PASS
-    re.compile(
-        r"(?im)^\s*(?:#+\s*)?\*{1,2}(ARCHITECT|PRODUCT|USER|TESTER)\*{1,2}\s*(?:[:：]?\s*(.*))?$"),
-    # ### ARCHITECT / ## ARCHITECT: PASS  (heading + plain tag, no brackets/bold)
-    re.compile(
-        r"(?im)^\s*#+\s*(ARCHITECT|PRODUCT|USER|TESTER)\s*(?:[:：]?\s*(.*))?$"),
-    # ARCHITECT: PASS  (plain tag with mandatory colon — avoids matching random text)
-    re.compile(
-        r"(?im)^\s*(ARCHITECT|PRODUCT|USER|TESTER)\s*[:：]\s*(.*)$"),
-]
-_REVIEW_HEADER_ZH_PATTERN = re.compile(
-    # Allow formats:
-    # - 架构师: PASS         / **架构师**: PASS / **架构师**
-    # - 🏗️ 架构师 PASS       / 🏗️ **架构师** PASS
-    # - ## 架构师: FAIL       / ### **架构师**
-    # - 1. 架构师: PASS       / - 架构师: PASS
-    r"(?im)^\s*(?:#+\s*)?(?:\d+[.、)]\s*)?(?:[-*]\s*)?"  # heading/numbered/bullet
-    r"(?:🏗️|📦|👤|🧪)?\s*"                                 # optional emoji
-    r"\*{0,2}"                                             # optional bold open
-    r"(架构师|产品经理|用户|测试)"                              # Chinese name
-    r"\*{0,2}"                                             # optional bold close
-    r"(?:审查|评审|视角)?"                                    # optional suffix
-    r"\s*(?:[:：]\s*(.*))?$"                                # optional colon + rest
-)
-
-_PERSPECTIVE_ZH_MAP: dict[str, ReviewPerspective] = {
-    "架构师": ReviewPerspective.ARCHITECT,
-    "产品经理": ReviewPerspective.PRODUCT,
-    "用户": ReviewPerspective.USER,
-    "测试": ReviewPerspective.TESTER,
-}
-
-
-def _normalize_review_verdict(text: str) -> Optional[str]:
-    """Return 'PASS'/'FAIL' if verdict can be inferred, else None."""
-    if not text:
-        return None
-    t = text.strip().upper()
-    if "PASS" in t:
-        return "PASS"
-    if "FAIL" in t:
-        return "FAIL"
-
-    # Chinese variants
-    if "通过" in text and "不通过" not in text:
-        return "PASS"
-    if "不通过" in text or "未通过" in text or "失败" in text:
-        return "FAIL"
-    return None
-
-
-_BULLET_PATTERN = re.compile(r"^\s*(?:[-*•]|\d+[.)]|\d+、)\s*(.+?)\s*$")
-
-
-def _extract_suggestions_from_body(body: str, limit: int = 10) -> list[str]:
-    suggestions: list[str] = []
-    if not body:
-        return suggestions
-    for line in body.split("\n"):
-        m = _BULLET_PATTERN.match(line)
-        if not m:
-            continue
-        s = (m.group(1) or "").strip()
-        if s:
-            suggestions.append(s)
-        if len(suggestions) >= limit:
-            break
-    return suggestions
-
-
-def _split_review_sections(text: str) -> list[tuple[str, str]]:
-    """Split review output into (tag, section_text) using tolerant headers.
-
-    tag is normalized to one of: ARCHITECT/PRODUCT/USER/TESTER.
-    """
-    if not text:
-        return []
-
-    normalized = text.replace("\r\n", "\n")
-    # Find all header occurrences
-    hits: list[tuple[int, int, str]] = []  # (start, end, tag)
-    seen_positions: set[int] = set()  # avoid duplicates from multiple EN patterns
-    for pat in _REVIEW_HEADER_EN_PATTERNS:
-        for m in pat.finditer(normalized):
-            if m.start() not in seen_positions:
-                seen_positions.add(m.start())
-                hits.append((m.start(), m.end(), m.group(1).upper()))
-    for m in _REVIEW_HEADER_ZH_PATTERN.finditer(normalized):
-        zh = (m.group(1) or "").strip()
-        p = _PERSPECTIVE_ZH_MAP.get(zh)
-        if not p:
-            continue
-        hits.append((m.start(), m.end(), p.name))
-
-    if not hits:
-        return []
-
-    hits.sort(key=lambda x: x[0])
-    sections: list[tuple[str, str]] = []
-    for i, (start, end, tag) in enumerate(hits):
-        next_start = hits[i + 1][0] if i + 1 < len(hits) else len(normalized)
-        block = normalized[start:next_start].strip("\n")
-        sections.append((tag, block))
-    return sections
-
-# Map perspective tag → ReviewPerspective enum
-_PERSPECTIVE_TAG_MAP: dict[str, ReviewPerspective] = {
-    "ARCHITECT": ReviewPerspective.ARCHITECT,
-    "PRODUCT": ReviewPerspective.PRODUCT,
-    "USER": ReviewPerspective.USER,
-    "TESTER": ReviewPerspective.TESTER,
-}
 
 
 @dataclass
@@ -226,10 +103,13 @@ class LoopEngine:
         self,
         requirement_text: str,
         callbacks: Optional[LoopEngineCallbacks] = None,
+        task_id: Optional[str] = None,
+        on_rate_limit: Optional[Callable[[int], None]] = None,
     ) -> LoopProject:
         """Iterate until acceptance criteria are satisfied."""
         callbacks = callbacks or LoopEngineCallbacks()
         self._run_state = EngineRunState.RUNNING
+        self._on_rate_limit = on_rate_limit
         max_iterations = self.settings.loop_max_iterations
 
         # Create project
@@ -238,6 +118,7 @@ class LoopEngine:
             name=project_name,
             root_path=self.root_path,
         )
+        self._project.task_id = task_id
         self._project.status = LoopProjectStatus.ANALYZING
 
         if callbacks.on_analyzing_start:
@@ -256,7 +137,10 @@ class LoopEngine:
                 callbacks.on_analyzing_done(self._project)
 
             # Create session
-            self._session = create_engine_session(agent_type=self._agent_type, cwd=self.root_path)
+            self._session = create_engine_session(
+                agent_type=self._agent_type, cwd=self.root_path,
+                on_rate_limit=on_rate_limit,
+            )
 
             # Build initial prompt
             initial_prompt = self._build_initial_prompt(requirement)
@@ -632,70 +516,11 @@ PASS 或 FAIL
 
     def _parse_review_output(self, text: str, iteration: int) -> ReviewResult:
         """Parse structured review output into ReviewResult."""
-        reviews: list[PerspectiveReview] = []
-        found: set[ReviewPerspective] = set()
-
         raw = (text or "").replace("\r\n", "\n")
 
-        # 1) Fast path: strict format (keeps compatibility with existing tests)
-        for match in _REVIEW_SECTION_PATTERN.finditer(raw):
-            tag = match.group(1).upper()
-            verdict = match.group(2).upper()
-            body = match.group(3).strip()
-            perspective = _PERSPECTIVE_TAG_MAP.get(tag)
-            if not perspective or perspective in found:
-                continue
-            found.add(perspective)
-
-            passed = verdict == "PASS"
-            suggestions = _extract_suggestions_from_body(body) if not passed else []
-            reviews.append(PerspectiveReview(
-                perspective=perspective,
-                passed=passed,
-                suggestions=suggestions,
-                summary=f"{'通过' if passed else f'{len(suggestions)}条建议'}",
-            ))
-
-        # 2) Tolerant path: headers in markdown / same-line verdict / Chinese headings
-        if not reviews:
-            for tag, block in _split_review_sections(raw):
-                perspective = _PERSPECTIVE_TAG_MAP.get(tag)
-                if not perspective or perspective in found:
-                    continue
-                found.add(perspective)
-
-                lines = [ln.strip() for ln in block.split("\n") if ln.strip()]
-                head = "\n".join(lines[:3])
-                verdict = _normalize_review_verdict(head) or _normalize_review_verdict(block)
-                passed = verdict == "PASS"
-
-                body_text = "\n".join(lines[1:]) if len(lines) > 1 else ""
-                suggestions = _extract_suggestions_from_body(body_text)
-
-                # If verdict is missing but we have suggestions, treat as FAIL.
-                if verdict is None:
-                    passed = len(suggestions) == 0
-                if passed:
-                    suggestions = []
-                elif not suggestions:
-                    # As a fallback, use a few meaningful lines as suggestions.
-                    tail_candidates: list[str] = []
-                    for ln in lines[1:]:
-                        if _normalize_review_verdict(ln):
-                            continue
-                        cleaned = ln.lstrip("-•* ").strip()
-                        if cleaned:
-                            tail_candidates.append(cleaned)
-                        if len(tail_candidates) >= 3:
-                            break
-                    suggestions = tail_candidates
-
-                reviews.append(PerspectiveReview(
-                    perspective=perspective,
-                    passed=passed,
-                    suggestions=suggestions,
-                    summary=f"{'通过' if passed else f'{len(suggestions)}条建议'}",
-                ))
+        # 1) strict/tolerant parsing (shared utils)
+        from ..utils.spec_utils import parse_review_output_strict_tolerant
+        reviews = parse_review_output_strict_tolerant(raw, iteration)
 
         # 3) LLM fallback: regex failed, use AI to extract structured data
         if not reviews:
@@ -919,7 +744,10 @@ PASS 或 FAIL
         try:
             # Close old session before opening new one (prevent resource leak)
             self._close_session_safely()
-            self._session = create_engine_session(agent_type=self._agent_type, cwd=self.root_path)
+            self._session = create_engine_session(
+                agent_type=self._agent_type, cwd=self.root_path,
+                on_rate_limit=getattr(self, "_on_rate_limit", None),
+            )
 
             timeout = self.settings.loop_execution_timeout
             review_enabled = self.settings.loop_review_enabled

@@ -40,6 +40,7 @@ class TaskSpec:
     message_id: Optional[str] = None
     origin_message_id: Optional[str] = None
     request_id: Optional[str] = None
+    task_id: Optional[str] = None  # Human-readable ID e.g. "myproject_20260227_143025_a1b2"
     priority: TaskPriority = TaskPriority.NORMAL
     is_system_command: bool = False
 
@@ -82,6 +83,7 @@ class TaskEvent:
     message_id: Optional[str] = None
     origin_message_id: Optional[str] = None
     request_id: Optional[str] = None
+    task_id: Optional[str] = None
     progress_message: Optional[str] = None
     progress_percent: Optional[float] = None
     error: Optional[str] = None
@@ -213,6 +215,7 @@ class TaskScheduler:
         # Keep ordering by insertion time (oldest -> newest).
         self._by_chat: dict[str, Deque[str]] = defaultdict(deque)      # chat_id -> run_ids
         self._by_project: dict[str, Deque[str]] = defaultdict(deque)   # project_id -> run_ids
+        self._by_task_id: dict[str, str] = {}                          # task_id -> run_id
         self._stopped = False
         self._dispatcher = threading.Thread(
             target=self._dispatch_loop,
@@ -233,6 +236,8 @@ class TaskScheduler:
             if self._stopped:
                 raise RuntimeError("TaskScheduler is stopped")
             self._states[run_id] = state
+            if spec.task_id:
+                self._by_task_id[spec.task_id] = run_id
             self._by_chat[spec.chat_id].append(run_id)
             if spec.project_id:
                 self._by_project[str(spec.project_id)].append(run_id)
@@ -317,6 +322,27 @@ class TaskScheduler:
     def get_state(self, run_id: str) -> Optional[TaskRunState]:
         with self._lock:
             return self._states.get(run_id)
+
+    def get_state_by_task_id(self, task_id: str) -> Optional[TaskRunState]:
+        """Look up a task by its human-readable task_id.
+
+        Supports exact match and partial suffix match (last 6+ chars).
+        """
+        with self._lock:
+            # Exact match
+            run_id = self._by_task_id.get(task_id)
+            if run_id:
+                return self._states.get(run_id)
+            # Partial suffix match (for short-id queries like "a1b2" or "143025_a1b2")
+            if len(task_id) >= 4:
+                matches = [
+                    (tid, rid)
+                    for tid, rid in self._by_task_id.items()
+                    if tid.endswith(task_id) or task_id in tid
+                ]
+                if len(matches) == 1:
+                    return self._states.get(matches[0][1])
+            return None
 
     def list_tasks(
         self,
@@ -405,7 +431,9 @@ class TaskScheduler:
             self._dispatcher.join(timeout=2)
         if shutdown_executor:
             try:
-                self._executor.shutdown(wait=False, cancel_futures=False)
+                # Best-effort: cancel queued futures to speed up shutdown.
+                # Running futures cannot be forcibly stopped by ThreadPoolExecutor.
+                self._executor.shutdown(wait=False, cancel_futures=True)
             except Exception:
                 pass
 
@@ -544,6 +572,7 @@ class TaskScheduler:
             message_id=st.spec.message_id,
             origin_message_id=st.spec.origin_message_id,
             request_id=st.spec.request_id,
+            task_id=st.spec.task_id,
             progress_message=progress_message,
             progress_percent=progress_percent,
             error=error,

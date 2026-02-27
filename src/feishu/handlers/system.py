@@ -29,6 +29,7 @@ class SystemHandler(BaseHandler):
     project_handler = None
     deep_handler = None
     loop_handler = None
+    spec_handler = None
     diagnostics_handler = None
 
     # ------------------------------------------------------------------
@@ -52,6 +53,11 @@ class SystemHandler(BaseHandler):
     def is_loop_command(text: str) -> bool:
         text_lower = text.lower().strip()
         return text_lower.startswith("/loop") or text_lower.startswith("/stop_loop")
+
+    @staticmethod
+    def is_spec_command(text: str) -> bool:
+        text_lower = text.lower().strip()
+        return text_lower.startswith("/spec") or text_lower.startswith("/stop_spec")
 
     @staticmethod
     def is_likely_shell_command(text: str) -> bool:
@@ -95,7 +101,7 @@ class SystemHandler(BaseHandler):
         }
         if text_lower in exact_commands:
             return True
-        prefix_commands = ("/switch ", "/new ", "/close ", "/tasks ", "/diff ", "/trace ")
+        prefix_commands = ("/switch ", "/new ", "/close ", "/tasks ", "/diff ", "/trace ", "/status ")
         return any(text_lower.startswith(p) for p in prefix_commands)
 
     # ------------------------------------------------------------------
@@ -112,8 +118,8 @@ class SystemHandler(BaseHandler):
             self.claude_handler.show_info(message_id, chat_id, project)
         elif text_lower in ("/projects", "/project"):
             self.project_handler.show_project_board(message_id, chat_id)
-        elif text_lower == "/status":
-            self.project_handler.show_project_status(message_id, chat_id, project)
+        elif text_lower == "/status" or text_lower.startswith("/status "):
+            self.diagnostics_handler.show_unified_status(message_id, chat_id, text, project)
         elif text_lower == "/switch":
             self.project_handler.show_project_board(message_id, chat_id)
         elif text_lower == "/tasks" or text_lower.startswith("/tasks "):
@@ -294,7 +300,8 @@ class SystemHandler(BaseHandler):
             "• `/projects` - 查看项目看板\n"
             "• `/new 名称 路径` - 创建新项目\n"
             "• `/switch 名称` - 切换项目\n"
-            "• `/status` - 查看当前项目状态\n"
+            "• `/status` - 查看所有引擎任务状态（Deep/Loop/Spec）\n"
+            "• `/status <task_id>` - 查看指定任务详情\n"
             "• `/diff` - 查看最近两次版本变更（Diff 报告）"
         )
 
@@ -333,13 +340,31 @@ class SystemHandler(BaseHandler):
                      "content": "**🔄 编程模式切换**\n`/coco` - 进入 Coco 编程模式（字节跳动 AI）\n`/claude` - 进入 Claude 编程模式（Anthropic AI）\n`/exit` - 退出当前编程模式\n`/coco_info` - 查看 Coco 会话信息\n`/claude_info` - 查看 Claude 会话信息"},
                     {"tag": "hr"},
                     {"tag": "markdown", "text_size": "normal",
-                     "content": "**📂 项目管理**\n`/projects` - 查看所有项目\n`/new <名称> [路径]` - 创建新项目\n`/switch <名称>` - 切换项目\n`/close <名称>` - 关闭项目\n`/status` - 查看当前项目状态\n`/diff` - 查看最近两次版本变更（Diff 报告）"},
+                     "content": "**📂 项目管理**\n`/projects` - 查看所有项目\n`/new <名称> [路径]` - 创建新项目\n`/switch <名称>` - 切换项目\n`/close <名称>` - 关闭项目\n`/status` - 查看所有引擎任务状态\n`/status <task_id>` - 查看指定任务详情\n`/diff` - 查看最近两次版本变更"},
                     {"tag": "hr"},
                     {"tag": "markdown", "text_size": "normal",
                      "content": "**🧠 Deep Engine（复杂任务）**\n`/deep <需求>` - 启动 Deep Engine\n`/deep_status` - 查看任务进度\n`/stop_deep` - 停止任务"},
                     {"tag": "hr"},
                     {"tag": "markdown", "text_size": "normal",
                      "content": "**🔄 Loop Engine（迭代闭环）**\n`/loop <需求>` - 启动 Loop 模式\n`/loop_status` - 查看迭代进度\n`/loop_guide <引导>` - 注入引导信息\n`/loop_pause` - 暂停迭代\n`/loop_resume` - 恢复迭代\n`/stop_loop` - 停止 Loop"},
+                    {"tag": "hr"},
+                    {"tag": "markdown", "text_size": "normal",
+                     "content": "**📋 Spec Engine（结构化开发闭环）**\n"
+                                "适用：你希望按方法论持续迭代，输出可复盘的 Spec/Plan/Task/Build 产物\n"
+                                "区别：Spec=结构化产物驱动闭环；Deep=一次性深度执行；Loop=验收标准驱动迭代\n\n"
+                                "命令：\n"
+                                "`/spec <需求>` - 启动\n"
+                                "`/spec_status` - 查看进度\n"
+                                "`/spec_guide <引导>` - 补充约束/偏好（下轮生效）\n"
+                                "`/spec_history [N]` - 查看循环与 spec 文件历史（默认20，最多500）\n"
+                                "`/spec_metrics [N]` - 查看目标达成度与指标变化（默认20，最多500）\n"
+                                "`/spec_config` - 查看长程配置（阈值/保留策略）\n"
+                                "`/spec_save` - 立即保存状态（用于断点续传）\n"
+                                "`/spec_pause` - 暂停  •  `/spec_resume` - 恢复  •  `/stop_spec` - 停止\n\n"
+                                "最小示例：\n"
+                                "- Web：`/spec 做一个登录页+登录接口`\n"
+                                "- API：`/spec 新增 /v1/users 查询接口`\n"
+                                "- 脚本：`/spec 写一个批量重命名脚本，支持dry-run`"},
                     {"tag": "hr"},
                     {"tag": "markdown", "text_size": "normal",
                      "content": "**💡 使用提示**\n1. 发送 `/coco` 或 `/claude` 进入编程模式\n2. 在编程模式中直接对话，系统命令（如 `/help`）会自动拦截\n3. 智能模式下直接输入 Shell 命令即可执行\n4. 发送 `/help` 或 `/帮助` 随时查看本帮助"},

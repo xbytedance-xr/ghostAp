@@ -1,4 +1,4 @@
-"""Diagnostics handler — task board, context diff report, message trace."""
+"""Diagnostics handler — task board, context diff report, message trace, unified status."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Optional
 from ...card import CardBuilder
 from ...project import ContextEntryType, ContextSourceMode
 from ...tasking import TaskSpec, TaskPriority
+from ...utils.text import format_duration
 from .base import BaseHandler
 
 if TYPE_CHECKING:
@@ -106,6 +107,207 @@ class DiagnosticsHandler(BaseHandler):
             project, "📋 任务看板", "\n".join(lines), show_buttons=True,
         )
         self.reply_message(message_id, card_content, msg_type=msg_type)
+
+    # ------------------------------------------------------------------
+    # Unified status — /status [task_id|all]
+    # ------------------------------------------------------------------
+    def show_unified_status(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"] = None):
+        """Show unified status across all engine types (Deep/Loop/Spec).
+
+        - /status          → list running/paused engine tasks for current chat
+        - /status all      → include completed tasks
+        - /status <task_id> → detailed status for a specific task
+        """
+        arg = ""
+        try:
+            parts = (text or "").strip().split(None, 1)
+            if len(parts) > 1:
+                arg = parts[1].strip()
+        except Exception:
+            arg = ""
+
+        # /status <task_id> — specific task lookup
+        if arg and arg.lower() not in ("all", "-a", "--all"):
+            self._show_task_detail(message_id, chat_id, arg, project)
+            return
+
+        include_done = arg.lower() in ("all", "-a", "--all") if arg else False
+
+        lines: list[str] = []
+
+        # Collect engines across all three types
+        entries: list[tuple[str, str, str, str, str, Optional[float]]] = []  # (mode, task_id, name, status, info, started_at)
+
+        # Deep engines
+        for engine in self.ctx.deep_engine_manager.list_engines(chat_id):
+            if not engine.project:
+                continue
+            p = engine.project
+            status_val = p.status.value
+            if not include_done and status_val in ("completed", "failed"):
+                continue
+            tid = p.task_id or ""
+            dur = format_duration(p.duration()) if p.duration() else ""
+            info = f"{dur}" if dur else status_val
+            entries.append(("Deep", tid, p.name, status_val, info, p.started_at))
+
+        # Loop engines
+        for engine in self.ctx.loop_engine_manager.list_engines(chat_id):
+            if not engine.project:
+                continue
+            p = engine.project
+            status_val = p.status.value
+            if not include_done and status_val in ("completed", "aborted"):
+                continue
+            tid = p.task_id or ""
+            dur = format_duration(p.duration()) if p.duration() else ""
+            criteria = f"{p.satisfied_count}/{p.total_criteria}" if p.total_criteria else ""
+            parts_list = [f"迭代{p.current_iteration}"]
+            if criteria:
+                parts_list.append(f"标准{criteria}")
+            if dur:
+                parts_list.append(dur)
+            info = " · ".join(parts_list) if parts_list else status_val
+            entries.append(("Loop", tid, p.name, status_val, info, p.started_at))
+
+        # Spec engines
+        for engine in self.ctx.spec_engine_manager.list_engines(chat_id):
+            if not engine.project:
+                continue
+            p = engine.project
+            status_val = p.status.value
+            if not include_done and status_val in ("completed", "aborted"):
+                continue
+            tid = p.task_id or ""
+            dur = format_duration(p.duration()) if p.duration() else ""
+            criteria = f"{p.satisfied_count}/{p.total_criteria}" if p.total_criteria else ""
+            phase = ""
+            if p.current_cycle:
+                phase = p.current_cycle.phase.display_name
+            parts_list = [f"循环{p.current_cycle_number}"]
+            if phase:
+                parts_list.append(phase)
+            if criteria:
+                parts_list.append(f"标准{criteria}")
+            if dur:
+                parts_list.append(dur)
+            info = " · ".join(parts_list) if parts_list else status_val
+            entries.append(("Spec", tid, p.name, status_val, info, p.started_at))
+
+        if not entries:
+            proj_name = project.project_name if project else ""
+            content = "当前没有 Deep/Loop/Spec 引擎任务\n\n"
+            if proj_name:
+                content += f"📂 当前项目: **{proj_name}**\n\n"
+            content += "启动任务:\n• `/deep <需求>` — 单次深度执行\n• `/loop <需求>` — 迭代闭环\n• `/spec <需求>` — 结构化开发"
+            msg_type, card_content = CardBuilder.build_smart_response_card(
+                project=project, title="📊 统一状态",
+                content=content,
+                working_dir=self.get_working_dir(chat_id), show_buttons=True,
+            )
+            self.reply_message(message_id, card_content, msg_type=msg_type)
+            return
+
+        # Sort: running first, then by start time descending
+        def _sort_key(e):
+            _, _, _, status_val, _, started_at = e
+            running = 0 if status_val in ("executing", "running", "planning", "analyzing") else 1
+            return (running, -(started_at or 0))
+
+        entries.sort(key=_sort_key)
+
+        status_emoji_map = {
+            "idle": "⏳", "planning": "🧠", "executing": "🔄", "running": "🔄",
+            "analyzing": "🧠", "paused": "⏸️", "completed": "✅",
+            "failed": "❌", "aborted": "⚠️", "clarifying": "❓",
+        }
+
+        lines.append(f"**引擎任务 ({len(entries)})**\n")
+        for mode, tid, name, status_val, info, _ in entries:
+            emoji = status_emoji_map.get(status_val, "❓")
+            tid_short = f" `{tid[-12:]}`" if tid else ""
+            lines.append(f"- {emoji} **{mode}** · {name}{tid_short} · {info}")
+
+        if not include_done:
+            lines.append("\n_发送 `/status all` 查看包括已完成的任务_")
+
+        msg_type, card_content = CardBuilder.build_smart_response_card(
+            project=project, title="📊 统一状态",
+            content="\n".join(lines),
+            working_dir=self.get_working_dir(chat_id), show_buttons=True,
+        )
+        self.reply_message(message_id, card_content, msg_type=msg_type)
+
+    def _show_task_detail(self, message_id: str, chat_id: str, task_id: str, project: Optional["ProjectContext"] = None):
+        """Show detailed status for a specific task by task_id."""
+        # Search across all engine managers
+        for engine in self.ctx.deep_engine_manager.list_engines(chat_id):
+            if engine.project and engine.project.task_id and (
+                engine.project.task_id == task_id or task_id in engine.project.task_id
+            ):
+                content = self.ctx.progress_reporter.format_status(engine.project)
+                title = f"📊 Deep 任务详情"
+                engine_name = engine.engine_name
+                msg_type, card_content = CardBuilder.build_deep_card(
+                    project=project, title=title, content=content,
+                    engine_name=engine_name, show_buttons=False,
+                )
+                self.reply_message(message_id, card_content, msg_type=msg_type)
+                return
+
+        for engine in self.ctx.loop_engine_manager.list_engines(chat_id):
+            if engine.project and engine.project.task_id and (
+                engine.project.task_id == task_id or task_id in engine.project.task_id
+            ):
+                content = self.ctx.loop_reporter.format_status(engine.project)
+                title = f"📊 Loop 任务详情"
+                engine_name = engine.engine_name
+                msg_type, card_content = CardBuilder.build_deep_card(
+                    project=project, title=title, content=content,
+                    engine_name=f"Loop({engine_name})", show_buttons=False,
+                )
+                self.reply_message(message_id, card_content, msg_type=msg_type)
+                return
+
+        for engine in self.ctx.spec_engine_manager.list_engines(chat_id):
+            if engine.project and engine.project.task_id and (
+                engine.project.task_id == task_id or task_id in engine.project.task_id
+            ):
+                content = self.ctx.spec_reporter.format_status(engine.project)
+                title = f"📊 Spec 任务详情"
+                engine_name = engine.engine_name
+                msg_type, card_content = CardBuilder.build_deep_card(
+                    project=project, title=title, content=content,
+                    engine_name=f"Spec({engine_name})", show_buttons=False,
+                )
+                self.reply_message(message_id, card_content, msg_type=msg_type)
+                return
+
+        # Also check scheduler by task_id
+        state = self.scheduler.get_state_by_task_id(task_id)
+        if state:
+            status_emoji = {"queued": "⏳", "running": "🔄", "succeeded": "✅", "failed": "❌", "canceled": "⛔"}.get(
+                str(getattr(state.status, "value", state.status)), "❓"
+            )
+            lines = [
+                f"**任务**: {state.spec.name}",
+                f"**类型**: {state.spec.task_type}",
+                f"**状态**: {status_emoji} {state.status.value if hasattr(state.status, 'value') else state.status}",
+                f"**run_id**: `{state.run_id}`",
+            ]
+            if state.spec.task_id:
+                lines.append(f"**task_id**: `{state.spec.task_id}`")
+            if state.progress_message:
+                lines.append(f"**进度**: {state.progress_message}")
+            msg_type, card_content = CardBuilder.build_smart_response_card(
+                project=project, title="📊 任务详情",
+                content="\n".join(lines),
+                working_dir=self.get_working_dir(chat_id), show_buttons=False,
+            )
+            self.reply_message(message_id, card_content, msg_type=msg_type)
+            return
+
+        self.reply_message(message_id, f"未找到 task_id: `{task_id}`\n\n发送 `/status` 查看所有任务")
 
     # ------------------------------------------------------------------
     # Context diff

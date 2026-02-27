@@ -48,6 +48,8 @@ def _make_handler_context(**overrides) -> HandlerContext:
         progress_reporter=MagicMock(),
         loop_engine_manager=MagicMock(),
         loop_reporter=MagicMock(),
+        spec_engine_manager=MagicMock(),
+        spec_reporter=MagicMock(),
         streaming_manager_factory=MagicMock(),
         image_handler_factory=MagicMock(),
         working_dirs={},
@@ -262,7 +264,12 @@ class TestSystemHandlerRouting:
         h = self._make()
         project = MagicMock()
         h.handle_intercepted_command("m1", "c1", "/status", project)
-        h.project_handler.show_project_status.assert_called_once_with("m1", "c1", project)
+        h.diagnostics_handler.show_unified_status.assert_called_once_with("m1", "c1", "/status", project)
+
+    def test_route_status_with_arg(self):
+        h = self._make()
+        h.handle_intercepted_command("m1", "c1", "/status some_task_id", None)
+        h.diagnostics_handler.show_unified_status.assert_called_once_with("m1", "c1", "/status some_task_id", None)
 
     def test_route_tasks(self):
         h = self._make()

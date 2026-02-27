@@ -13,6 +13,7 @@ rendering and streaming cards can be reused.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 import threading
@@ -152,9 +153,16 @@ class SyncClaudeCLISession:
             args = _build_args(resumed)
             chunks: list[str] = []
             try:
+                # Claude Code CLI refuses to launch inside another Claude Code session.
+                # Our process may run under Claude Code / other wrappers, so we must
+                # explicitly unset the guard env to avoid nested-session crash.
+                env = os.environ.copy()
+                env.pop("CLAUDECODE", None)
+
                 self._proc = subprocess.Popen(
                     args,
                     cwd=self._cwd,
+                    env=env,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
@@ -257,6 +265,172 @@ class SyncClaudeCLISession:
         )
 
 
+import re as _re
+
+_RATE_LIMIT_PATTERNS = [
+    _re.compile(r"rate.?limit", _re.IGNORECASE),
+    _re.compile(r"\b429\b"),
+    _re.compile(r"too many requests", _re.IGNORECASE),
+    _re.compile(r"overloaded", _re.IGNORECASE),
+]
+_RETRY_AFTER_RE = _re.compile(r"retry[_\- ]?after[:\s=]*(\d+)", _re.IGNORECASE)
+
+
+def _detect_rate_limit(error: Exception) -> Optional[int]:
+    """Detect rate limiting from error.  Returns suggested wait seconds or 0 (detected
+    but no explicit wait), or None (not a rate-limit error)."""
+    msg = str(error)
+    for pat in _RATE_LIMIT_PATTERNS:
+        if pat.search(msg):
+            m = _RETRY_AFTER_RE.search(msg)
+            if m:
+                val = int(m.group(1))
+                return max(1, min(val, 600))  # clamp to [1, 600]
+            return 0  # detected but no explicit wait
+    return None
+
+
+class RateLimitAwareSession:
+    """Wraps a SyncSession with rate-limit-aware retry on send_prompt().
+
+    Implements the full SyncSession protocol by explicit delegation (no __getattr__).
+    """
+
+    def __init__(
+        self,
+        inner: SyncSession,
+        on_rate_limit: Optional[Callable[[int], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ):
+        self._inner = inner
+        self._on_rate_limit = on_rate_limit
+        self._cancel_event = cancel_event or threading.Event()
+        self._settings = get_settings()
+        # Rate-limit state visible to status queries
+        self.rate_limit_until: Optional[float] = None  # monotonic deadline
+
+    # --- Explicit SyncSession protocol delegation ---
+
+    @property
+    def session_id(self) -> str:
+        return self._inner.session_id
+
+    @session_id.setter
+    def session_id(self, value: str):
+        self._inner.session_id = value
+
+    @property
+    def created_at(self) -> float:
+        return self._inner.created_at
+
+    @property
+    def last_active(self) -> float:
+        return self._inner.last_active
+
+    @last_active.setter
+    def last_active(self, value: float):
+        self._inner.last_active = value
+
+    @property
+    def message_count(self) -> int:
+        return self._inner.message_count
+
+    @property
+    def last_query(self) -> str:
+        return self._inner.last_query
+
+    @property
+    def is_resumed(self) -> bool:
+        return self._inner.is_resumed
+
+    def describe_agent(self) -> str:
+        return self._inner.describe_agent()
+
+    def start(self, startup_timeout: float = 60) -> str:
+        return self._inner.start(startup_timeout=startup_timeout)
+
+    def load_session(self, session_id: str) -> None:
+        self._inner.load_session(session_id)
+
+    def load_local_history(self, session_id: Optional[str] = None, limit: int = 200) -> list[dict]:
+        return self._inner.load_local_history(session_id=session_id, limit=limit)
+
+    def cancel(self) -> None:
+        self._cancel_event.set()
+        self._inner.cancel()
+
+    def close(self) -> None:
+        self._inner.close()
+
+    def to_snapshot(self) -> dict:
+        return self._inner.to_snapshot()
+
+    def get_session_info(self) -> str:
+        return self._inner.get_session_info()
+
+    def is_server_running(self) -> bool:
+        return self._inner.is_server_running()
+
+    def is_server_healthy(self, healthcheck_timeout: float = 2.0) -> bool:
+        return self._inner.is_server_healthy(healthcheck_timeout=healthcheck_timeout)
+
+    # --- Rate-limit-aware send_prompt ---
+
+    def send_prompt(
+        self,
+        text: str,
+        on_event: Optional[Callable[[ACPEvent], None]] = None,
+        timeout: Optional[int] = None,
+    ) -> PromptResult:
+        if not self._settings.rate_limit_retry_enabled:
+            return self._inner.send_prompt(text, on_event=on_event, timeout=timeout)
+
+        max_retries = self._settings.rate_limit_max_retries
+        max_wait = self._settings.rate_limit_max_wait
+        base_wait = self._settings.rate_limit_base_wait
+        last_error: Optional[Exception] = None
+
+        for attempt in range(max_retries + 1):
+            try:
+                self.rate_limit_until = None
+                return self._inner.send_prompt(text, on_event=on_event, timeout=timeout)
+            except Exception as e:
+                wait_hint = _detect_rate_limit(e)
+                if wait_hint is None or attempt >= max_retries:
+                    raise
+                last_error = e
+                wait_time = min(wait_hint or base_wait, max_wait)
+                wait_time = max(wait_time, 1)
+
+                # Notify caller (UI) — swallow callback exceptions
+                try:
+                    if self._on_rate_limit:
+                        self._on_rate_limit(wait_time)
+                except Exception:
+                    pass
+
+                logger.warning(
+                    "[RateLimit] 限速检测，等待 %ds 后重试 (attempt=%d/%d): %s",
+                    wait_time, attempt + 1, max_retries, e,
+                )
+
+                # Interruptible sleep: check cancel_event every second
+                self.rate_limit_until = time.monotonic() + wait_time
+                deadline = time.monotonic() + wait_time
+                while time.monotonic() < deadline:
+                    if self._cancel_event.is_set():
+                        self.rate_limit_until = None
+                        raise last_error  # re-raise original error on cancel
+                    remaining = deadline - time.monotonic()
+                    self._cancel_event.wait(timeout=min(remaining, 1.0))
+                self.rate_limit_until = None
+
+        # Should not reach here, but just in case
+        if last_error:
+            raise last_error
+        return self._inner.send_prompt(text, on_event=on_event, timeout=timeout)
+
+
 def close_session_safely(session: Optional[SyncSession]) -> None:
     """Close an ACP/CLI session, ignoring errors."""
     if session:
@@ -279,22 +453,40 @@ def create_sync_session(agent_type: str, cwd: str) -> SyncSession:
     return SyncACPSession(agent_type=agent_type or "coco", cwd=cwd)
 
 
-def create_engine_session(agent_type: str, cwd: str) -> SyncSession:
-    """Create and start a session for Deep/Loop engines.
+def create_engine_session(
+    agent_type: str,
+    cwd: str,
+    on_rate_limit: Optional[Callable[[int], None]] = None,
+    cancel_event: Optional[threading.Event] = None,
+) -> SyncSession:
+    """Create and start a session for Deep/Loop/Spec engines.
 
     - Claude: CLI backend (no ACP retry needed)
     - Others: ACP backend with retry and progressive timeout
+
+    If rate_limit_retry_enabled is True in settings, the returned session
+    is wrapped with RateLimitAwareSession for automatic retry on throttling.
     """
     from .acp.sync_adapter import start_session_with_retry
 
+    settings = get_settings()
     agent_type = (agent_type or "").lower()
-    if agent_type == "claude":
-        session = SyncClaudeCLISession(cwd=cwd)
-        session.start()
-        return session
 
-    return start_session_with_retry(
-        agent_type=agent_type or "coco",
-        cwd=cwd,
-        startup_timeout=get_settings().acp_startup_timeout,
-    )
+    if agent_type == "claude":
+        session: SyncSession = SyncClaudeCLISession(cwd=cwd)
+        session.start()
+    else:
+        session = start_session_with_retry(
+            agent_type=agent_type or "coco",
+            cwd=cwd,
+            startup_timeout=settings.acp_startup_timeout,
+        )
+
+    if settings.rate_limit_retry_enabled:
+        session = RateLimitAwareSession(
+            inner=session,
+            on_rate_limit=on_rate_limit,
+            cancel_event=cancel_event,
+        )
+
+    return session

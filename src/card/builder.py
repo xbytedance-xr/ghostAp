@@ -587,6 +587,8 @@ class CardBuilder:
             return "purple"
         if name.startswith("coco"):
             return "blue"
+        if name.startswith("spec"):
+            return "green"
         return "turquoise"
 
     @staticmethod
