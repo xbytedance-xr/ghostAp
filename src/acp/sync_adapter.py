@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -34,11 +35,17 @@ def _supports_acp_serve(command: str) -> bool:
     required to pick up the change.
     """
     try:
+        # Some agent CLIs (notably Claude Code) refuse to launch when `CLAUDECODE`
+        # is set (nested-session guard). Since this probe is executed inside our
+        # service process, explicitly drop it to keep detection robust.
+        env = os.environ.copy()
+        env.pop("CLAUDECODE", None)
         p = subprocess.run(
             [command, "acp", "serve", "-h"],
             capture_output=True,
             text=True,
             timeout=2,
+            env=env,
         )
         out = (p.stdout or "") + "\n" + (p.stderr or "")
         out_lower = out.lower()

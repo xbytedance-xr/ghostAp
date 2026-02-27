@@ -1,6 +1,7 @@
 """Tests for acp.client — GhostAPClient event handling."""
 
 import asyncio
+import os
 from pathlib import Path
 import shutil
 from unittest.mock import MagicMock
@@ -59,6 +60,72 @@ def test_acp_manager_retries_start_failure(monkeypatch):
     s = m.start_session("chat1", cwd=".", startup_timeout=0.01)
     assert s.session_id == "s_ok"
     assert calls["start"] == 3
+
+
+def test_supports_acp_serve_unsets_claudecode(monkeypatch):
+    """ACP serve 探测不应继承 nested-session guard 环境变量。"""
+    from types import SimpleNamespace
+    from src.acp import sync_adapter as sa
+
+    # lru_cache: ensure isolation
+    try:
+        sa._supports_acp_serve.cache_clear()
+    except Exception:
+        pass
+
+    calls = {"env": None}
+
+    def fake_run(cmd, capture_output, text, timeout, env=None):
+        calls["env"] = env
+        return SimpleNamespace(stdout="ACP Server", stderr="")
+
+    monkeypatch.setattr(sa.subprocess, "run", fake_run)
+    with monkeypatch.context() as m:
+        m.setenv("CLAUDECODE", "1")
+        assert sa._supports_acp_serve("claude") is True
+        assert calls["env"] is not None
+        assert "CLAUDECODE" not in calls["env"]
+
+
+def test_acp_session_start_passes_env_without_claudecode(monkeypatch):
+    """ACPSession 启动时应主动剔除 CLAUDECODE，避免 Claude nested-session 检测。"""
+    from types import SimpleNamespace
+    from src.acp.session import ACPSession
+    import src.acp.session as session_mod
+
+    calls = {"env": None}
+
+    class FakeConn:
+        async def initialize(self, protocol_version: int = 1):
+            return None
+
+        async def new_session(self, cwd: str):
+            return SimpleNamespace(session_id="s_test")
+
+    class FakeProc:
+        returncode = None
+
+    class FakeCtx:
+        async def __aenter__(self):
+            return FakeConn(), FakeProc()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    def fake_spawn(to_client, command, *args, env=None, cwd=None, transport_kwargs=None, **kw):
+        calls["env"] = env
+        return FakeCtx()
+
+    monkeypatch.setattr(session_mod, "spawn_agent_process", fake_spawn)
+    monkeypatch.setattr(session_mod, "get_settings", lambda: SimpleNamespace(acp_permission_auto_approve=True, acp_stream_buffer_limit=0))
+
+    with monkeypatch.context() as m:
+        m.setenv("CLAUDECODE", "1")
+        s = ACPSession(agent_cmd="claude", agent_args=["acp", "serve"], cwd="/tmp")
+        sid = asyncio.run(s.start())
+        assert sid == "s_test"
+        assert calls["env"] is not None
+        assert "CLAUDECODE" not in calls["env"]
 
 
 def test_acp_manager_unhealthy_session_is_cleaned(monkeypatch):
@@ -196,7 +263,13 @@ class TestGhostAPClient:
         self.client = GhostAPClient(on_event=self.events.append)
 
     def _run_async(self, coro):
-        return asyncio.get_event_loop().run_until_complete(coro)
+        """Run async coroutine in sync tests (Py3.12-safe)."""
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        return loop.run_until_complete(coro)
 
     def test_request_permission_auto_approve(self):
         # Create mock options with an allow_once option

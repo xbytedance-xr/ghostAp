@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import time
 import asyncio
+import os
 from typing import Any, Callable, Optional
 
 from acp.stdio import spawn_agent_process
@@ -68,10 +69,17 @@ class ACPSession:
         if buf_limit and buf_limit > 0:
             transport_kwargs["limit"] = buf_limit
 
+        # Claude Code CLI refuses to launch inside another Claude Code session when
+        # `CLAUDECODE` is present. Even when we spawn an ACP server (e.g. `claude acp serve`)
+        # via an override, we must explicitly drop this guard env to avoid nested-session crash.
+        env = os.environ.copy()
+        env.pop("CLAUDECODE", None)
+
         self._ctx_manager = spawn_agent_process(
             client,
             self._agent_cmd,
             *self._agent_args,
+            env=env,
             cwd=self._cwd,
             transport_kwargs=transport_kwargs or None,
         )
