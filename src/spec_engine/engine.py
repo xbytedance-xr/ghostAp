@@ -230,9 +230,7 @@ class SpecEngine:
 
             # Determine final status
             reason = self._termination_reason or "max_cycles"
-            if reason == "clarifying":
-                self._project.status = SpecProjectStatus.CLARIFYING
-            elif self._run_state == EngineRunState.STOPPING or reason == "paused":
+            if self._run_state == EngineRunState.STOPPING or reason == "paused":
                 self._project.status = SpecProjectStatus.PAUSED
             elif reason == "success":
                 self._project.status = SpecProjectStatus.COMPLETED
@@ -395,21 +393,6 @@ class SpecEngine:
             if cycle_num == 1 and cycle.spec_artifact and cycle.spec_artifact.acceptance_criteria:
                 self._merge_acceptance_criteria(cycle.spec_artifact.acceptance_criteria)
 
-            # Clarification loop: if spec asks questions, stop here and wait for user answers.
-            if cycle.spec_artifact and cycle.spec_artifact.clarification_questions:
-                # Mark project as waiting for user input
-                if self._project:
-                    self._project.status = SpecProjectStatus.CLARIFYING
-                # Save this partial cycle for traceability
-                cycle.status = "clarifying"
-                cycle.completed_at = time.time()
-                cycle.duration = cycle.completed_at - cycle.started_at
-                self._project.cycles.append(cycle)
-                self._project.cycle_count_total = max(self._project.cycle_count_total, cycle_num)
-                self._persist_state_best_effort()
-                self._run_state = EngineRunState.STOPPING
-                termination = "clarifying"
-                break
             if self._run_state != EngineRunState.RUNNING:
                 cycle.fail()
                 self._project.cycles.append(cycle)
@@ -1100,14 +1083,16 @@ Schema（字段必须存在；数组元素为字符串）：
   "acceptance_criteria": ["可验证条件..."],
   "out_of_scope": ["明确不做什么..."],
   "risks": ["风险/约束..."],
-  "clarification_questions": ["需要用户补充的信息（不要自行假设）..."],
+  "clarification_questions": ["已识别的模糊点（仅记录，不等待用户回答）..."],
   "decisions": ["已确认/可接受的假设（必须显式标注为假设）..."],
   "version": "1.0"
 }}
 
 约束：
 - acceptance_criteria 必须可被判定 PASS/FAIL
-- clarification_questions 若为空，表示信息足够
+- 遇到信息不足时，不要停下等待用户——基于项目上下文和行业最佳实践自主选择最优方案
+- 将模糊点记录在 clarification_questions 中（仅供参考），将你的决策记录在 decisions 中
+- 如果用户引导中提供了相关信息，优先使用用户的指示
 """
 
     def _build_plan_prompt(self, spec: str) -> str:
@@ -1777,9 +1762,7 @@ CRITERIA_2: FAIL
             )
 
             reason = self._termination_reason or "max_cycles"
-            if reason == "clarifying":
-                self._project.status = SpecProjectStatus.CLARIFYING
-            elif self._run_state == EngineRunState.STOPPING or reason == "paused":
+            if self._run_state == EngineRunState.STOPPING or reason == "paused":
                 self._project.status = SpecProjectStatus.PAUSED
             elif reason == "success":
                 self._project.status = SpecProjectStatus.COMPLETED

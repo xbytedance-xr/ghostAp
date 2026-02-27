@@ -1387,31 +1387,30 @@ class TestSpecEngineExecution:
 
     @patch("src.spec_engine.engine.create_engine_session")
     @patch("src.spec_engine.engine.get_settings")
-    def test_execute_enters_clarifying_when_questions_present(self, mock_settings, mock_create):
-        """If spec artifact has clarification_questions, engine should stop and mark CLARIFYING."""
+    def test_execute_continues_when_clarification_questions_present(self, mock_settings, mock_create):
+        """Clarification questions should NOT pause the engine — it continues through all phases."""
         mock_settings.return_value = self._mock_settings()
 
-        spec_json = """```json\n{\"goals\":[\"G\"],\"functional_spec\":[\"F\"],\"non_functional_requirements\":[],\"acceptance_criteria\":[\"需要登录\"],\"out_of_scope\":[],\"risks\":[],\"clarification_questions\":[\"是否需要支持手机号登录？\"],\"decisions\":[],\"version\":\"1.0\"}\n```"""
-        calls = {"n": 0}
-        session = MagicMock()
-
-        def fake_send_prompt(prompt, on_event=None, timeout=None):
-            calls["n"] += 1
-            if on_event:
-                on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=spec_json))
-
-        session.send_prompt = fake_send_prompt
+        spec_json = """```json\n{\"goals\":[\"G\"],\"functional_spec\":[\"F\"],\"non_functional_requirements\":[],\"acceptance_criteria\":[\"需要登录\"],\"out_of_scope\":[],\"risks\":[],\"clarification_questions\":[\"是否需要支持手机号登录？\"],\"decisions\":[\"假设仅支持邮箱登录\"],\"version\":\"1.0\"}\n```"""
+        plan_json = """```json\n{\"architecture\":\"A\",\"tech_stack\":[],\"steps\":[\"S\"],\"file_changes\":[],\"test_plan\":[],\"risks\":[],\"version\":\"1.0\"}\n```"""
+        review_pass = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n"
+        session = self._make_mock_session([
+            spec_json, plan_json, "1. T1 (依赖: 无)", "build done " * 20,
+            review_pass, "CRITERIA_1: PASS",
+        ])
         mock_create.return_value = session
 
         engine = SpecEngine(chat_id="c1", root_path="/tmp/test")
         project = engine.execute("- 需要登录")
 
-        assert project.status == SpecProjectStatus.CLARIFYING
-        assert len(project.cycles) == 1
-        assert project.cycles[0].status == "clarifying"
-        assert project.cycles[0].spec_artifact is not None
-        assert project.cycles[0].spec_artifact.clarification_questions
-        assert calls["n"] == 1  # only SPEC phase executed
+        # Engine should NOT be in CLARIFYING state — it continued through all phases
+        assert project.status != SpecProjectStatus.CLARIFYING
+        assert len(project.cycles) >= 1
+        cycle = project.cycles[0]
+        assert cycle.spec_artifact is not None
+        assert cycle.spec_artifact.clarification_questions == ["是否需要支持手机号登录？"]
+        # All 5 phases should have been executed (SPEC + PLAN + TASK + BUILD + REVIEW)
+        assert cycle.phase == SpecPhase.REVIEW
 
     @patch("src.spec_engine.engine.create_engine_session")
     @patch("src.spec_engine.engine.get_settings")

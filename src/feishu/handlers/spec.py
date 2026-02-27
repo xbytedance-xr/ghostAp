@@ -231,7 +231,7 @@ class SpecHandler(BaseHandler):
                         for e in cc.spec_artifact_errors[:3]:
                             notice.append(f"- {e}")
                     if cc.spec_artifact and cc.spec_artifact.clarification_questions:
-                        notice.append("\n❓ **需要澄清后才能继续**（用 `/spec_guide` 回答后发送 `/spec_resume`）：")
+                        notice.append("\nℹ️ **已自主决策的模糊点：**")
                         for q in cc.spec_artifact.clarification_questions[:8]:
                             notice.append(f"- {q}")
                 elif phase == SpecPhase.PLAN:

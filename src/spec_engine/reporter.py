@@ -167,20 +167,14 @@ class SpecReporter:
                 for t in tips:
                     lines.append(f"- {t}")
         elif project.status == SpecProjectStatus.CLARIFYING:
+            # Legacy: CLARIFYING 状态不再由正常流程产生，保留用于向后兼容旧持久化状态
             lines = [
-                "❓ **需要澄清后才能继续**\n",
+                "⏸️ **Spec 模式暂停**（旧版澄清状态）\n",
                 f"📂 项目: {project.name}",
                 f"📊 验收标准: {project.satisfied_count}/{project.total_criteria} 满足",
             ]
-            # best-effort show questions from last cycle spec artifact
-            last = project.current_cycle
-            if last and last.spec_artifact and last.spec_artifact.clarification_questions:
-                lines.append("\n**澄清问题（请逐条回答）：**")
-                for q in last.spec_artifact.clarification_questions[:10]:
-                    lines.append(f"- {q}")
             lines.append("\n**继续方式：**")
-            lines.append("- 使用 `/spec_guide <你的回答>` 提供回答/约束")
-            lines.append("- 然后发送 `/spec_resume` 继续执行")
+            lines.append("- 发送 `/spec_resume` 继续执行")
         else:
             lines = [
                 "⏸️ **Spec 模式暂停**\n",
