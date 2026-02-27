@@ -331,9 +331,19 @@ class ProgrammingModeHandler(BaseHandler):
             try:
                 result = session.send_prompt(text, on_event=on_event, timeout=timeout)
                 final_response = renderer.get_final_content()
+                # Fallback: renderer may return "" (e.g. only THOUGHT_CHUNKs, empty tool titles, backend crash)
+                if not final_response and result and result.text:
+                    final_response = result.text
+                if not final_response:
+                    final_response = "✅ 执行完成"
             except Exception as e:
                 final_response = f"❌ 执行异常: {e}"
                 logger.error("%s ACP执行异常: %s", self.mode_name, e)
+
+            # Append completion summary (tool calls / modified files)
+            summary = renderer.render_summary()
+            if summary:
+                final_response += f"\n\n---\n{summary}"
 
             logger.info("%s ACP输出完成: 事件数=%d, 最终长度=%d", self.mode_name, update_count[0], len(final_response))
             streaming_manager.close_streaming(streaming_card, final_content=final_response)

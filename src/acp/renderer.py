@@ -187,6 +187,15 @@ class ACPEventRenderer:
                 lines.append(f"{kind_icon} {title}{loc_str}...")
         return "\n".join(lines) if lines else ""
 
+    def render_summary(self) -> str:
+        """Render a compact summary of completed work."""
+        parts = []
+        if self._completed_tools:
+            parts.append(f"🛠️ {len(self._completed_tools)} 次工具调用")
+        if self._modified_files:
+            parts.append(f"🗂️ {len(self._modified_files)} 个文件")
+        return "  ·  ".join(parts)
+
     def render_plan_view(self) -> str:
         """Render plan + todo + active tools only (no text history). For plan update cards."""
         parts: list[str] = []

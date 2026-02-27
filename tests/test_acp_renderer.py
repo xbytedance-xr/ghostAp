@@ -302,6 +302,51 @@ class TestACPEventRenderer:
         assert "Old task" not in self.renderer._render()
 
 
+    # ------------------------------------------------------------------
+    # render_summary()
+    # ------------------------------------------------------------------
+    def test_render_summary_with_tools_and_files(self):
+        """render_summary() should return compact summary with tool count and file count."""
+        for i in range(3):
+            tc = ToolCallInfo(id=f"t{i}", title=f"Edit f{i}.py", kind="edit",
+                              status="completed", locations=[f"/tmp/f{i}.py"])
+            self.renderer.process_event(ACPEvent(
+                event_type=ACPEventType.TOOL_CALL_DONE, tool_call=tc,
+            ))
+        summary = self.renderer.render_summary()
+        assert "🛠️ 3 次工具调用" in summary
+        assert "🗂️ 3 个文件" in summary
+        assert "·" in summary
+
+    def test_render_summary_tools_only(self):
+        """render_summary() with tools but no files."""
+        tc = ToolCallInfo(id="t1", title="Think", kind="think", status="completed")
+        self.renderer.process_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE, tool_call=tc,
+        ))
+        summary = self.renderer.render_summary()
+        assert "🛠️ 1 次工具调用" in summary
+        assert "🗂️" not in summary
+
+    def test_render_summary_empty(self):
+        """render_summary() with no tools or files should return empty string."""
+        assert self.renderer.render_summary() == ""
+
+    # ------------------------------------------------------------------
+    # get_final_content() empty scenario
+    # ------------------------------------------------------------------
+    def test_get_final_content_empty_returns_empty(self):
+        """get_final_content() with no events returns empty string."""
+        assert self.renderer.get_final_content() == ""
+
+    def test_get_final_content_thought_only_returns_empty(self):
+        """get_final_content() when only THOUGHT_CHUNKs were received returns empty."""
+        self.renderer.process_event(ACPEvent(
+            event_type=ACPEventType.THOUGHT_CHUNK, text="thinking hard...",
+        ))
+        assert self.renderer.get_final_content() == ""
+
+
 class TestParseToolCallTodoWrite:
     """Tests for _parse_tool_call with TodoWrite raw_input extraction."""
 

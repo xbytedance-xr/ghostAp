@@ -501,6 +501,30 @@ class TestStreamingCardManager:
         assert card_data["header"]["template"] == "purple"
         assert "Claude" in card_data["header"]["title"]["content"]
 
+    def test_close_streaming_empty_string_falls_back_to_last_content(self, manager, mock_client):
+        """close_streaming with empty string should use card.last_content instead."""
+        mock_response = MagicMock()
+        mock_response.success.return_value = True
+        mock_client.im.v1.message.patch.return_value = mock_response
+
+        card = StreamingCard(
+            chat_id="chat_456",
+            title="🤖 Test",
+            header_template="blue",
+            message_id="msg_123",
+            last_content="actual content from streaming",
+        )
+
+        result = manager.close_streaming(card, final_content="")
+
+        assert result is True
+        # Verify the PATCH payload uses last_content, not empty string
+        req = mock_client.im.v1.message.patch.call_args[0][0]
+        payload = json.loads(req.body.content)
+        md_elements = [e for e in payload["elements"] if e.get("tag") == "markdown"]
+        content_el = [e for e in md_elements if "actual content from streaming" in e["content"]]
+        assert len(content_el) == 1
+
     def test_build_buttons_claude_mode(self, manager):
         buttons = manager._build_buttons(is_coco_mode=False, project_id="proj_123", is_claude_mode=True)
 

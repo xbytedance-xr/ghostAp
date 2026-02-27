@@ -500,7 +500,7 @@ class StreamingCardManager:
             return False
 
         try:
-            final_text = final_content if final_content is not None else card.last_content
+            final_text = final_content if final_content else card.last_content
             normalized = _normalize_streaming_markdown(
                 final_text,
                 is_final=True,
