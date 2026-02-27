@@ -1247,7 +1247,7 @@ class TestConfigSpec:
     def test_spec_settings_defaults(self):
         from src.config import Settings
         s = Settings(app_id="", app_secret="")
-        assert s.spec_max_cycles == 10
+        assert s.spec_max_cycles == 500
         assert s.spec_max_cycles_limit >= 5000
         assert s.spec_execution_timeout == 7200
         assert s.spec_convergence_window == 2

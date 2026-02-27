@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     loop_review_extra_iterations: int = 3
 
     # Spec Engine settings
-    spec_max_cycles: int = 10
+    spec_max_cycles: int = 500
     # Hard upper bound for long-range spec cycles (configurable via env).
     # Engine will clamp spec_max_cycles to this limit.
     spec_max_cycles_limit: int = 5000
