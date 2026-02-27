@@ -1,6 +1,7 @@
 # GhostAP 项目记忆索引
 
 ## 2026-02-27
+- **Coco ACP Server 自动更新** - coco 不支持 ACP 时自动执行 `coco update` + 缓存清除 + 重检测，+12测试，1031测试全通过 → [2026-02-27.md](2026-02-27.md)
 - **编程模式卡片空白修复 + 完成摘要优化** - handle_response 三级 fallback + close_streaming 空保护 + render_summary()，1019测试全通过 → [2026-02-27.md](2026-02-27.md)
 - **Deep/Loop/Spec 引擎优化：限速自适应 + 统一状态 + 实时时长 + 架构去重 + 测试补全** - RateLimitAwareSession 自动重试、流式卡片实时时长、统一 /status、BaseHandler 共享回调工厂、+25工具函数测试，1011测试全通过 → [2026-02-27.md](2026-02-27.md)
 

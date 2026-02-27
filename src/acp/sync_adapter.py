@@ -30,9 +30,8 @@ def _supports_acp_serve(command: str) -> bool:
 
     We avoid hard-failing on environments where the agent CLI differs.
 
-    Note: Results are cached indefinitely per command name. If a binary is
-    upgraded to support ACP after the first probe, a process restart is
-    required to pick up the change.
+    Note: Results are cached per command name. The cache is cleared after a
+    successful auto-update so upgraded binaries are detected without restart.
     """
     try:
         # Some agent CLIs (notably Claude Code) refuse to launch when `CLAUDECODE`
@@ -54,6 +53,60 @@ def _supports_acp_serve(command: str) -> bool:
         return False
 
 
+# Track which agent CLIs have already been auto-updated in this process
+# to avoid repeated update attempts.
+_update_attempted: set[str] = set()
+
+
+def _auto_update_agent(command: str) -> bool:
+    """Attempt to auto-update an agent CLI binary.
+
+    Runs ``<command> update`` and returns True if the update process exits
+    successfully. Each command is only updated once per process lifecycle.
+    """
+    if command in _update_attempted:
+        logger.debug("[ACP] Auto-update already attempted for %s, skipping", command)
+        return False
+    _update_attempted.add(command)
+
+    settings = get_settings()
+    if not settings.acp_auto_update:
+        logger.debug("[ACP] Auto-update disabled by config (acp_auto_update=False)")
+        return False
+
+    logger.info("[ACP] %s does not support ACP server mode, attempting auto-update...", command)
+    try:
+        p = subprocess.run(
+            [command, "update"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        stdout = (p.stdout or "").strip()
+        stderr = (p.stderr or "").strip()
+        if p.returncode == 0:
+            logger.info("[ACP] %s auto-update succeeded. stdout=%s", command, stdout[-200:] if stdout else "(empty)")
+            return True
+        else:
+            logger.warning("[ACP] %s auto-update failed (rc=%d). stderr=%s", command, p.returncode, stderr[-200:] if stderr else "(empty)")
+            return False
+    except Exception as e:
+        logger.warning("[ACP] %s auto-update error: %s", command, e)
+        return False
+
+
+def _resolve_with_auto_update(command: str) -> bool:
+    """Check ACP support, auto-update if needed, return final support status."""
+    if _supports_acp_serve(command):
+        return True
+    # Try auto-update then re-probe
+    if _auto_update_agent(command):
+        _supports_acp_serve.cache_clear()
+        if _supports_acp_serve(command):
+            return True
+    return False
+
+
 def resolve_agent_spec(agent_type: str) -> tuple[str, list[str]]:
     """Resolve (command, args) for spawning an ACP agent process over stdio."""
     agent_type = (agent_type or "").lower()
@@ -65,7 +118,7 @@ def resolve_agent_spec(agent_type: str) -> tuple[str, list[str]]:
         return override_cmd, override_args
 
     if agent_type == "coco":
-        if _supports_acp_serve("coco"):
+        if _resolve_with_auto_update("coco"):
             return "coco", ["acp", "serve"]
         raise RuntimeError(
             "coco does not appear to support ACP server mode. "
@@ -73,8 +126,7 @@ def resolve_agent_spec(agent_type: str) -> tuple[str, list[str]]:
         )
 
     if agent_type == "claude":
-        # Some environments provide a Claude ACP agent; if not, fall back.
-        if _supports_acp_serve("claude"):
+        if _resolve_with_auto_update("claude"):
             return "claude", ["acp", "serve"]
         raise RuntimeError(
             "claude does not appear to support ACP server mode. "
@@ -82,7 +134,7 @@ def resolve_agent_spec(agent_type: str) -> tuple[str, list[str]]:
         )
 
     # Default: treat agent_type as command and try `acp serve` first.
-    if _supports_acp_serve(agent_type):
+    if _resolve_with_auto_update(agent_type):
         return agent_type, ["acp", "serve"]
     raise RuntimeError(
         f"{agent_type} does not appear to support ACP server mode. "

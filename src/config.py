@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     # ACP permission auto-approve (True = agent actions auto-approved, False = denied by default)
     acp_permission_auto_approve: bool = True
 
+    # Auto-update agent CLI when ACP server mode is not supported
+    acp_auto_update: bool = True
+
     # ACP stdio stream buffer limit (bytes). Default asyncio limit is 64KB which
     # is too small for large agent responses (code generation, file contents).
     # Set to 0 to use the asyncio default (64KB). 10MB should be generous enough.
