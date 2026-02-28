@@ -206,13 +206,21 @@ class SpecHandler(BaseHandler):
             title = reporter.get_cycle_start_title(current, max_cycles)
             engine = self.ctx.spec_engine_manager.get(chat_id, project.root_path if project else "")
             progress_bar = None
+            status_line = None
+            duration_line = None
+            criteria_section = None
             if engine and engine.project:
                 progress_bar = reporter._make_progress_bar(engine.project.satisfied_count, engine.project.total_criteria)
                 title = append_duration_to_title(title, engine.project.duration())
+                status_line = reporter.format_status_line(engine.project)
+                duration_line = reporter.format_duration_line(engine.project)
+                criteria_section = reporter.format_criteria_section(engine.project)
             msg_type, card_content = CardBuilder.build_deep_card(
                 project=project, title=title, content=content,
                 progress_bar=progress_bar,
                 is_executing=True, engine_name=f"Spec({engine_name})",
+                status_line=status_line, duration_line=duration_line,
+                criteria_section=criteria_section,
             )
             _send_spec_message(card_content, msg_type)
 
@@ -243,14 +251,22 @@ class SpecHandler(BaseHandler):
                 if notice:
                     content = "\n".join(notice) + "\n\n" + content
             progress_bar = None
+            status_line = None
+            duration_line = None
+            criteria_section = None
             if engine and engine.project:
                 progress_bar = reporter._make_progress_bar(engine.project.satisfied_count, engine.project.total_criteria)
                 title = append_duration_to_title(title, engine.project.duration())
+                status_line = reporter.format_status_line(engine.project)
+                duration_line = reporter.format_duration_line(engine.project)
+                criteria_section = reporter.format_criteria_section(engine.project)
             msg_type, card_content = CardBuilder.build_deep_card(
                 project=project, title=title, content=content,
                 progress_bar=progress_bar,
                 is_executing=bool(engine and engine.project and engine.project.status == SpecProjectStatus.RUNNING),
                 engine_name=f"Spec({engine_name})",
+                status_line=status_line, duration_line=duration_line,
+                criteria_section=criteria_section,
             )
             _send_spec_message(card_content, msg_type)
 
@@ -259,13 +275,21 @@ class SpecHandler(BaseHandler):
             title = reporter.get_review_title(cycle, review.all_passed)
             engine = self.ctx.spec_engine_manager.get(chat_id, project.root_path if project else "")
             progress_bar = None
+            status_line = None
+            duration_line = None
+            criteria_section = None
             if engine and engine.project:
                 progress_bar = reporter._make_progress_bar(engine.project.satisfied_count, engine.project.total_criteria)
                 title = append_duration_to_title(title, engine.project.duration())
+                status_line = reporter.format_status_line(engine.project)
+                duration_line = reporter.format_duration_line(engine.project)
+                criteria_section = reporter.format_criteria_section(engine.project)
             msg_type, card_content = CardBuilder.build_deep_card(
                 project=project, title=title, content=content,
                 progress_bar=progress_bar,
                 is_executing=True, engine_name=f"Spec({engine_name})",
+                status_line=status_line, duration_line=duration_line,
+                criteria_section=criteria_section,
             )
             _send_spec_message(card_content, msg_type)
 
@@ -273,9 +297,11 @@ class SpecHandler(BaseHandler):
             content = reporter.format_project_done(spec_project)
             title = reporter.get_project_done_title(spec_project)
             progress_bar = reporter._make_progress_bar(spec_project.satisfied_count, spec_project.total_criteria)
+            duration_line = reporter.format_duration_line(spec_project)
             msg_type, card_content = CardBuilder.build_deep_card(
                 project=project, title=title, content=content,
                 progress_bar=progress_bar, engine_name=f"Spec({engine_name})",
+                duration_line=duration_line,
             )
             _send_spec_message(card_content, msg_type)
             self.add_reaction(message_id, EmojiReaction.on_multi_task_done())

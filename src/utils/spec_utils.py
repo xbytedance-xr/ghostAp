@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Optional
 
@@ -302,5 +303,195 @@ def parse_review_output_strict_tolerant(text: str, iteration: int) -> list[Persp
             suggestions=suggestions,
             summary=f"{'通过' if passed else f'{len(suggestions)}条建议'}",
         ))
+
+    return reviews
+
+
+# ---------------------------------------------------------------------------
+# Review parsing — Level 2.5: loose (keyword-pair / JSON / table)
+# ---------------------------------------------------------------------------
+
+
+# Map of keywords → ReviewPerspective for loose matching
+_LOOSE_PERSPECTIVE_KEYWORDS: dict[str, ReviewPerspective] = {
+    "architect": ReviewPerspective.ARCHITECT,
+    "架构师": ReviewPerspective.ARCHITECT,
+    "架构": ReviewPerspective.ARCHITECT,
+    "product": ReviewPerspective.PRODUCT,
+    "产品经理": ReviewPerspective.PRODUCT,
+    "产品": ReviewPerspective.PRODUCT,
+    "user": ReviewPerspective.USER,
+    "用户": ReviewPerspective.USER,
+    "tester": ReviewPerspective.TESTER,
+    "测试": ReviewPerspective.TESTER,
+}
+
+_LOOSE_PASS_KEYWORDS = {"pass", "通过"}
+_LOOSE_FAIL_KEYWORDS = {"fail", "不通过", "未通过", "失败"}
+
+_LOOSE_LINE_PATTERN = re.compile(
+    r"(?i)\b("
+    + "|".join(re.escape(k) for k in _LOOSE_PERSPECTIVE_KEYWORDS)
+    + r")\b"
+)
+
+
+def _match_verdict_in_text(text: str) -> Optional[bool]:
+    """Check if text contains a PASS or FAIL verdict. Returns True=PASS, False=FAIL, None=no match."""
+    lower = text.lower()
+    for kw in _LOOSE_FAIL_KEYWORDS:
+        if kw in lower:
+            return False
+    for kw in _LOOSE_PASS_KEYWORDS:
+        if kw in lower:
+            return True
+    return None
+
+
+def _try_parse_json_reviews(text: str) -> list[PerspectiveReview]:
+    """Try to parse reviews from JSON array format."""
+    # Find JSON array
+    start = text.find("[")
+    end = text.rfind("]")
+    if start == -1 or end == -1 or end <= start:
+        return []
+    try:
+        data = json.loads(text[start:end + 1])
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+
+    reviews: list[PerspectiveReview] = []
+    found: set[ReviewPerspective] = set()
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        # Try to find perspective from any key
+        perspective = None
+        for key in ("perspective", "role", "视角", "角色"):
+            val = str(item.get(key, "")).strip().lower()
+            perspective = _LOOSE_PERSPECTIVE_KEYWORDS.get(val)
+            if perspective:
+                break
+        if not perspective or perspective in found:
+            continue
+        found.add(perspective)
+
+        # Try to find verdict
+        verdict_val = None
+        for key in ("verdict", "result", "结果", "passed"):
+            v = str(item.get(key, "")).strip()
+            if v:
+                verdict_val = _match_verdict_in_text(v)
+                if verdict_val is not None:
+                    break
+        passed = verdict_val if verdict_val is not None else True
+
+        suggestions_raw = item.get("suggestions", [])
+        if not isinstance(suggestions_raw, list):
+            suggestions_raw = []
+        suggestions = [str(s) for s in suggestions_raw if s] if not passed else []
+
+        reviews.append(PerspectiveReview(
+            perspective=perspective,
+            passed=passed,
+            suggestions=suggestions,
+            summary=f"{'通过' if passed else f'{len(suggestions)}条建议'}",
+        ))
+    return reviews
+
+
+def parse_review_output_loose(text: str, iteration: int) -> list[PerspectiveReview]:
+    """Level 2.5 loose parsing — keyword-pair matching, JSON array, table formats.
+
+    Sits between strict/tolerant and LLM fallback. Does not require section headers.
+    Scans for perspective keywords co-occurring with PASS/FAIL verdicts.
+    """
+    if not text:
+        return []
+    raw = text.replace("\r\n", "\n")
+
+    # Strategy 1: Try JSON array parsing (agent may output raw JSON)
+    json_reviews = _try_parse_json_reviews(raw)
+    if len(json_reviews) >= 2:
+        return json_reviews
+
+    # Strategy 2: Line-by-line keyword-pair scanning
+    lines = raw.split("\n")
+    reviews: list[PerspectiveReview] = []
+    found: set[ReviewPerspective] = set()
+
+    for i, line in enumerate(lines):
+        line_lower = line.lower().strip()
+        if not line_lower:
+            continue
+
+        # Find perspective in current line
+        for keyword, perspective in _LOOSE_PERSPECTIVE_KEYWORDS.items():
+            if keyword not in line_lower:
+                continue
+            if perspective in found:
+                continue
+
+            # Look for verdict in same line
+            verdict = _match_verdict_in_text(line)
+
+            # If not found in same line, check next 2 lines
+            if verdict is None:
+                for j in range(1, min(3, len(lines) - i)):
+                    verdict = _match_verdict_in_text(lines[i + j])
+                    if verdict is not None:
+                        break
+
+            if verdict is None:
+                continue
+
+            found.add(perspective)
+            # Collect suggestions from subsequent bullet lines
+            suggestions: list[str] = []
+            if not verdict:
+                for j in range(1, min(8, len(lines) - i)):
+                    next_line = lines[i + j].strip()
+                    m = BULLET_PATTERN.match(next_line)
+                    if m:
+                        s = (m.group(1) or "").strip()
+                        if s and _match_verdict_in_text(s) is None:
+                            suggestions.append(s)
+                    elif next_line and _LOOSE_LINE_PATTERN.search(next_line):
+                        break  # Next perspective section
+                    elif not next_line:
+                        continue
+
+            reviews.append(PerspectiveReview(
+                perspective=perspective,
+                passed=verdict,
+                suggestions=suggestions,
+                summary=f"{'通过' if verdict else f'{len(suggestions)}条建议'}",
+            ))
+            break  # Move to next line after finding a match
+
+    # Strategy 3: Table format (| 架构师 | PASS |)
+    if not reviews:
+        table_pattern = re.compile(
+            r"\|\s*([^|]+?)\s*\|\s*(PASS|FAIL|通过|不通过|未通过|失败)\s*\|",
+            re.IGNORECASE,
+        )
+        for m in table_pattern.finditer(raw):
+            cell = m.group(1).strip().lower()
+            perspective = _LOOSE_PERSPECTIVE_KEYWORDS.get(cell)
+            if not perspective or perspective in found:
+                continue
+            found.add(perspective)
+            verdict_text = m.group(2).strip()
+            passed = _match_verdict_in_text(verdict_text)
+            if passed is None:
+                passed = True
+            reviews.append(PerspectiveReview(
+                perspective=perspective,
+                passed=passed,
+                suggestions=[],
+                summary=f"{'通过' if passed else '有建议'}",
+            ))
 
     return reviews

@@ -36,6 +36,7 @@ from ..utils.spec_utils import (
     extract_json_blob,
     normalize_list,
     parse_review_output_strict_tolerant,
+    parse_review_output_loose,
     validate_plan_artifact_dict,
     validate_spec_artifact_dict,
 )
@@ -1187,8 +1188,10 @@ Schema（字段必须存在；数组元素为字符串）：
 ## 审查视角
 {perspectives_desc}
 
-## 输出格式要求
-严格按照以下格式输出每个视角的审查结果（每个视角占一个区块）：
+<output_format>
+严格按照以下格式输出每个视角的审查结果（每个视角占一个区块）。
+不要使用 markdown 表格、JSON、编号列表等任何其他格式。
+必须使用 [TAG] 作为区块分隔符。
 
 [ARCHITECT]
 PASS 或 FAIL
@@ -1206,6 +1209,24 @@ PASS 或 FAIL
 [TESTER]
 PASS 或 FAIL
 - 改进建议1（如果FAIL）
+</output_format>
+
+<example>
+[ARCHITECT]
+PASS
+
+[PRODUCT]
+FAIL
+- 缺少错误提示文案
+- 搜索结果无分页
+
+[USER]
+PASS
+
+[TESTER]
+FAIL
+- 缺少边界条件测试
+</example>
 
 ## 审查标准
 - PASS: 该视角认为当前实现质量良好，无需改进
@@ -1496,15 +1517,22 @@ CRITERIA_2: FAIL
 
         review_prompt = self._build_review_prompt()
         review_text: list[str] = []
+        thought_text: list[str] = []
 
         def on_review_event(event: ACPEvent):
             if event.event_type == ACPEventType.TEXT_CHUNK and event.text:
                 review_text.append(event.text)
+            elif event.event_type == ACPEventType.THOUGHT_CHUNK and event.text:
+                thought_text.append(event.text)
 
         try:
             self._session.send_prompt(review_prompt, on_event=on_review_event, timeout=120)
             full_text = "".join(review_text)
-            review_result = self._parse_review_output(full_text, cycle)
+            # Combine text + thought for parsing (some agents put verdicts in thinking)
+            combined_text = full_text
+            if thought_text:
+                combined_text = full_text + "\n" + "".join(thought_text)
+            review_result = self._parse_review_output(combined_text, cycle)
         except Exception as e:
             logger.warning("[Spec] 多视角审查异常: %s, 将继续循环", e)
             review_result = ReviewResult(reviews=[
@@ -1527,9 +1555,14 @@ CRITERIA_2: FAIL
         # 1) strict/tolerant parsing (shared utils)
         reviews = parse_review_output_strict_tolerant(raw, cycle)
 
+        # 2.5) loose parsing: keyword-pair / JSON / table formats
+        if not reviews:
+            reviews = parse_review_output_loose(raw, cycle)
+
         # 3) LLM fallback
         if not reviews:
-            logger.warning("[Spec] 正则解析全部失败, 尝试LLM兜底解析")
+            preview = raw[:500] if raw else "(empty)"
+            logger.warning("[Spec] 正则+loose解析全部失败, 尝试LLM兜底解析. 原文预览: %s", preview)
             reviews = self._parse_review_with_llm(raw)
 
         # 4) Final fallback

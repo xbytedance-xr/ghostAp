@@ -51,13 +51,11 @@ class SpecReporter:
         return f"{phase.emoji} **{phase.display_name}** [循环 {cycle}]\n\n⏳ 执行中..."
 
     def format_phase_done(self, cycle: int, phase: SpecPhase, content: str) -> str:
-        preview = content[:500] if content else "(无输出)"
-        if len(content) > 500:
-            preview += "\n..."
+        body = content if content else "(无输出)"
         return f"""{phase.emoji} **{phase.display_name}完成** [循环 {cycle}]
 
 ```
-{preview}
+{body}
 ```"""
 
     def format_review_result(self, review: ReviewResult, cycle: int) -> str:
@@ -380,6 +378,36 @@ class SpecReporter:
 
     def get_status_title(self) -> str:
         return "📊 Spec 状态"
+
+    # ------------------------------------------------------------------
+    # Structured card sections (for build_deep_card new params)
+    # ------------------------------------------------------------------
+
+    def format_status_line(self, project: SpecProject) -> str:
+        """One-line status for card metadata area."""
+        status_map = {
+            SpecProjectStatus.IDLE: "⏳ 等待开始",
+            SpecProjectStatus.ANALYZING: "🧠 分析中",
+            SpecProjectStatus.RUNNING: "🔄 循环执行中",
+            SpecProjectStatus.CLARIFYING: "❓ 等待澄清",
+            SpecProjectStatus.PAUSED: "⏸️ 已暂停",
+            SpecProjectStatus.COMPLETED: "✅ 已完成",
+            SpecProjectStatus.ABORTED: "⚠️ 已终止",
+        }
+        status_text = status_map.get(project.status, "❓ 未知")
+        cycle_info = f"循环 {project.current_cycle_number}"
+        criteria_info = f"标准 {project.satisfied_count}/{project.total_criteria}"
+        return f"{status_text} · {cycle_info} · {criteria_info}"
+
+    def format_duration_line(self, project: SpecProject) -> str:
+        """Duration line for card metadata area."""
+        if not project.duration():
+            return ""
+        return f"⏱️ {format_duration(project.duration())}"
+
+    def format_criteria_section(self, project: SpecProject) -> str:
+        """Standalone criteria section for card layout."""
+        return self.format_criteria_brief(project)
 
     # ------------------------------------------------------------------
     # Helpers

@@ -651,6 +651,10 @@ class CardBuilder:
         engine_name: str = "Coco",
         show_buttons: bool = True,
         working_dir: Optional[str] = None,
+        status_line: Optional[str] = None,
+        duration_line: Optional[str] = None,
+        criteria_section: Optional[str] = None,
+        footer_note: Optional[str] = None,
     ) -> tuple[str, str]:
         header_template = CardBuilder._pick_engine_template(engine_name)
         theme = get_theme(header_template)
@@ -662,10 +666,38 @@ class CardBuilder:
             {"tag": "hr"},
         ]
 
+        # Progress bar
         if progress_bar and (not content or progress_bar not in content):
             elements.append({"tag": "markdown", "content": f"📊 {progress_bar}"})
 
+        # Status + duration line (compact, notation-size)
+        meta_parts = [p for p in (status_line, duration_line) if p]
+        if meta_parts:
+            elements.append({
+                "tag": "markdown",
+                "content": " · ".join(meta_parts),
+                "text_size": "notation",
+            })
+
+        # Separator before main content (only if we have meta above)
+        if meta_parts:
+            elements.append({"tag": "hr"})
+
+        # Main content
         elements.append(CardBuilder._build_content_element(content))
+
+        # Criteria section (independent element)
+        if criteria_section:
+            elements.append({"tag": "hr"})
+            elements.append({"tag": "markdown", "content": criteria_section})
+
+        # Footer note
+        if footer_note:
+            elements.append({
+                "tag": "markdown",
+                "content": footer_note,
+                "text_size": "notation",
+            })
 
         if show_buttons:
             if is_executing or is_paused:

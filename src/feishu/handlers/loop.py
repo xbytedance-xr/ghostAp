@@ -173,9 +173,15 @@ class LoopHandler(BaseHandler):
             loop_project = engine.project if engine else None
             criteria_status = ""
             progress_bar = None
+            status_line = None
+            duration_line = None
+            criteria_section = None
             if loop_project:
                 criteria_status = reporter.format_criteria_brief(loop_project)
                 progress_bar = reporter._make_progress_bar(loop_project.satisfied_count, loop_project.total_criteria)
+                status_line = reporter.format_status_line(loop_project)
+                duration_line = reporter.format_duration_line(loop_project)
+                criteria_section = reporter.format_criteria_section(loop_project)
             content = reporter.format_iteration_start(current, max_iterations, criteria_status=criteria_status)
             title = reporter.get_iteration_start_title(current, max_iterations)
             title = append_duration_to_title(title, loop_project.duration() if loop_project else None)
@@ -183,6 +189,8 @@ class LoopHandler(BaseHandler):
                 project=project, title=title, content=content,
                 progress_bar=progress_bar,
                 is_executing=True, engine_name=f"Loop({engine_name})",
+                status_line=status_line, duration_line=duration_line,
+                criteria_section=criteria_section,
             )
             _send_loop_message(card_content, msg_type)
 
@@ -190,18 +198,21 @@ class LoopHandler(BaseHandler):
             engine = self.ctx.loop_engine_manager.get(chat_id, project.root_path if project else "")
             if engine and engine.project:
                 lp = engine.project
-                # Include criteria progress in iteration done card
-                criteria_status = reporter.format_criteria_brief(lp)
                 iter_content = reporter.format_iteration_done(iteration, record)
-                content = f"{iter_content}\n\n{criteria_status}" if criteria_status else iter_content
+                content = iter_content
                 success = record.status.value == "success"
                 title = reporter.get_iteration_done_title(success, iteration)
                 title = append_duration_to_title(title, lp.duration())
                 progress_bar = reporter._make_progress_bar(lp.satisfied_count, lp.total_criteria)
+                status_line = reporter.format_status_line(lp)
+                duration_line = reporter.format_duration_line(lp)
+                criteria_section = reporter.format_criteria_section(lp)
                 msg_type, card_content = CardBuilder.build_deep_card(
                     project=project, title=title, content=content,
                     progress_bar=progress_bar,
                     is_executing=True, engine_name=f"Loop({engine_name})",
+                    status_line=status_line, duration_line=duration_line,
+                    criteria_section=criteria_section,
                 )
                 _send_loop_message(card_content, msg_type)
 
@@ -210,13 +221,21 @@ class LoopHandler(BaseHandler):
             title = reporter.get_review_title(iteration, review.all_passed)
             engine = self.ctx.loop_engine_manager.get(chat_id, project.root_path if project else "")
             progress_bar = None
+            status_line = None
+            duration_line = None
+            criteria_section = None
             if engine and engine.project:
                 progress_bar = reporter._make_progress_bar(engine.project.satisfied_count, engine.project.total_criteria)
                 title = append_duration_to_title(title, engine.project.duration())
+                status_line = reporter.format_status_line(engine.project)
+                duration_line = reporter.format_duration_line(engine.project)
+                criteria_section = reporter.format_criteria_section(engine.project)
             msg_type, card_content = CardBuilder.build_deep_card(
                 project=project, title=title, content=content,
                 progress_bar=progress_bar,
                 is_executing=True, engine_name=f"Loop({engine_name})",
+                status_line=status_line, duration_line=duration_line,
+                criteria_section=criteria_section,
             )
             _send_loop_message(card_content, msg_type)
 
@@ -224,9 +243,11 @@ class LoopHandler(BaseHandler):
             content = reporter.format_project_done(loop_project)
             title = reporter.get_project_done_title(loop_project)
             progress_bar = reporter._make_progress_bar(loop_project.satisfied_count, loop_project.total_criteria)
+            duration_line = reporter.format_duration_line(loop_project)
             msg_type, card_content = CardBuilder.build_deep_card(
                 project=project, title=title, content=content,
                 progress_bar=progress_bar, engine_name=f"Loop({engine_name})",
+                duration_line=duration_line,
             )
             _send_loop_message(card_content, msg_type)
             self.add_reaction(message_id, EmojiReaction.on_multi_task_done())

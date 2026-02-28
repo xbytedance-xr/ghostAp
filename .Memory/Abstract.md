@@ -1,5 +1,8 @@
 # GhostAP 项目记忆索引
 
+## 2026-02-28
+- **Spec/Loop 模式三项优化：审查解析 + 截断修复 + 卡片布局** - loose parsing 三策略兜底审查解析、移除 format_phase_done 500字截断、build_deep_card 结构化布局(status_line/duration_line/criteria_section/footer_note)、+21测试，1052测试全通过 → [2026-02-28.md](2026-02-28.md)
+
 ## 2026-02-27
 - **Spec Engine 全自主决策** - 移除澄清问题打断机制，LLM 自主选择最优方案继续迭代，用户可随时 /spec_guide 注入信息，1031测试全通过 → [2026-02-27.md](2026-02-27.md)
 - **Coco ACP Server 自动更新** - coco 不支持 ACP 时自动执行 `coco update` + 缓存清除 + 重检测，+12测试，1031测试全通过 → [2026-02-27.md](2026-02-27.md)

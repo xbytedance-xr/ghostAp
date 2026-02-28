@@ -74,7 +74,7 @@ class StreamingCardManager:
         self._cards: dict[str, StreamingCard] = {}
         self._lock = threading.Lock()
 
-        self._max_card_chars = 12222
+        self._max_card_chars = 28000
         self._last_cleanup: float = 0.0
         self._cleanup_interval: float = 300.0  # auto-cleanup every 5 minutes
 
@@ -504,7 +504,7 @@ class StreamingCardManager:
             normalized = _normalize_streaming_markdown(
                 final_text,
                 is_final=True,
-                max_chars=self._max_card_chars,
+                max_chars=0,  # final card: no truncation
             )
             buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode)
             card_json = self._build_update_card_json(

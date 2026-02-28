@@ -47,6 +47,7 @@ from ..utils.spec_utils import (
     normalize_review_verdict as _normalize_review_verdict,
     extract_suggestions_from_body as _extract_suggestions_from_body,
     split_review_sections as _split_review_sections,
+    parse_review_output_loose as _parse_review_output_loose,
 )
 
 
@@ -487,8 +488,10 @@ CRITERIA_2: FAIL
 ## 审查视角
 {perspectives_desc}
 
-## 输出格式要求
-严格按照以下格式输出每个视角的审查结果（每个视角占一个区块）：
+<output_format>
+严格按照以下格式输出每个视角的审查结果（每个视角占一个区块）。
+不要使用 markdown 表格、JSON、编号列表等任何其他格式。
+必须使用 [TAG] 作为区块分隔符。
 
 [ARCHITECT]
 PASS 或 FAIL
@@ -506,6 +509,24 @@ PASS 或 FAIL
 [TESTER]
 PASS 或 FAIL
 - 改进建议1（如果FAIL）
+</output_format>
+
+<example>
+[ARCHITECT]
+PASS
+
+[PRODUCT]
+FAIL
+- 缺少错误提示文案
+- 搜索结果无分页
+
+[USER]
+PASS
+
+[TESTER]
+FAIL
+- 缺少边界条件测试
+</example>
 
 ## 审查标准
 - PASS: 该视角认为当前实现质量良好，无需改进
@@ -522,10 +543,14 @@ PASS 或 FAIL
         from ..utils.spec_utils import parse_review_output_strict_tolerant
         reviews = parse_review_output_strict_tolerant(raw, iteration)
 
+        # 2.5) loose parsing: keyword-pair / JSON / table formats
+        if not reviews:
+            reviews = _parse_review_output_loose(raw, iteration)
+
         # 3) LLM fallback: regex failed, use AI to extract structured data
         if not reviews:
             preview = raw[:500] if raw else "(empty)"
-            logger.warning("[Loop] 正则解析全部失败, 尝试LLM兜底解析. 原文预览: %s", preview)
+            logger.warning("[Loop] 正则+loose解析全部失败, 尝试LLM兜底解析. 原文预览: %s", preview)
             reviews = self._parse_review_with_llm(raw)
 
         # 4) Final fallback: nothing parsed at all
@@ -649,15 +674,22 @@ PASS 或 FAIL
 
         review_prompt = self._build_review_prompt()
         review_text: list[str] = []
+        thought_text: list[str] = []
 
         def on_review_event(event: ACPEvent):
             if event.event_type == ACPEventType.TEXT_CHUNK and event.text:
                 review_text.append(event.text)
+            elif event.event_type == ACPEventType.THOUGHT_CHUNK and event.text:
+                thought_text.append(event.text)
 
         try:
             self._session.send_prompt(review_prompt, on_event=on_review_event, timeout=120)
             full_text = "".join(review_text)
-            review_result = self._parse_review_output(full_text, iteration)
+            # Combine text + thought for parsing (some agents put verdicts in thinking)
+            combined_text = full_text
+            if thought_text:
+                combined_text = full_text + "\n" + "".join(thought_text)
+            review_result = self._parse_review_output(combined_text, iteration)
         except Exception as e:
             logger.warning("[Loop] 多视角审查异常: %s, 将继续迭代", e)
             review_result = ReviewResult(reviews=[

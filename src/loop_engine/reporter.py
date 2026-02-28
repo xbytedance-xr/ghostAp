@@ -266,6 +266,35 @@ class LoopReporter:
         return "📊 Loop 状态"
 
     # ------------------------------------------------------------------
+    # Structured card sections (for build_deep_card new params)
+    # ------------------------------------------------------------------
+
+    def format_status_line(self, project: LoopProject) -> str:
+        """One-line status for card metadata area."""
+        status_map = {
+            LoopProjectStatus.IDLE: "⏳ 等待开始",
+            LoopProjectStatus.ANALYZING: "🧠 分析中",
+            LoopProjectStatus.RUNNING: "🔄 迭代执行中",
+            LoopProjectStatus.PAUSED: "⏸️ 已暂停",
+            LoopProjectStatus.COMPLETED: "✅ 已完成",
+            LoopProjectStatus.ABORTED: "⚠️ 已终止",
+        }
+        status_text = status_map.get(project.status, "❓ 未知")
+        iter_info = f"迭代 {project.current_iteration}"
+        criteria_info = f"标准 {project.satisfied_count}/{project.total_criteria}"
+        return f"{status_text} · {iter_info} · {criteria_info}"
+
+    def format_duration_line(self, project: LoopProject) -> str:
+        """Duration line for card metadata area."""
+        if not project.duration():
+            return ""
+        return f"⏱️ {format_duration(project.duration())}"
+
+    def format_criteria_section(self, project: LoopProject) -> str:
+        """Standalone criteria section for card layout."""
+        return self.format_criteria_brief(project)
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 

@@ -324,11 +324,13 @@ class TestSpecReporter:
         assert "规格定义完成" in result
         assert "spec content output" in result
 
-    def test_format_phase_done_truncation(self):
+    def test_format_phase_done_no_truncation(self):
+        """format_phase_done should not truncate — full content is preserved."""
         r = SpecReporter()
         long_content = "x" * 600
         result = r.format_phase_done(1, SpecPhase.PLAN, long_content)
-        assert "..." in result
+        assert long_content in result
+        assert "..." not in result
 
     def test_format_review_result_all_passed(self):
         r = SpecReporter()
@@ -2053,3 +2055,196 @@ class TestSpecEngineProjectTypes:
         assert project.status == SpecProjectStatus.COMPLETED
         assert project.cycles[0].spec_artifact is not None
         assert project.cycles[0].plan_artifact is not None
+
+
+# ======================================================================
+# TestLooseReviewParsing — parse_review_output_loose
+# ======================================================================
+
+from src.utils.spec_utils import parse_review_output_loose
+
+
+class TestLooseReviewParsing:
+    """Tests for Level 2.5 loose review parsing."""
+
+    def test_json_array_format(self):
+        """Agent outputs a JSON array with perspective verdicts."""
+        text = """
+[
+  {"perspective": "ARCHITECT", "verdict": "PASS", "suggestions": []},
+  {"perspective": "PRODUCT", "verdict": "FAIL", "suggestions": ["需要分页"]},
+  {"perspective": "USER", "verdict": "PASS", "suggestions": []},
+  {"perspective": "TESTER", "verdict": "FAIL", "suggestions": ["缺少测试"]}
+]
+"""
+        reviews = parse_review_output_loose(text, 1)
+        assert len(reviews) == 4
+        by_name = {r.perspective.name: r for r in reviews}
+        assert by_name["ARCHITECT"].passed is True
+        assert by_name["PRODUCT"].passed is False
+        assert "需要分页" in by_name["PRODUCT"].suggestions
+        assert by_name["USER"].passed is True
+        assert by_name["TESTER"].passed is False
+
+    def test_keyword_pair_inline(self):
+        """Keywords and verdicts on the same line."""
+        text = """
+架构师: PASS
+产品经理: FAIL
+- 缺少搜索功能
+用户: PASS
+测试: PASS
+"""
+        reviews = parse_review_output_loose(text, 1)
+        assert len(reviews) == 4
+        by_name = {r.perspective.name: r for r in reviews}
+        assert by_name["ARCHITECT"].passed is True
+        assert by_name["PRODUCT"].passed is False
+
+    def test_keyword_pair_next_line(self):
+        """Verdict on the line after the perspective keyword."""
+        text = """
+架构师
+PASS
+
+产品经理
+FAIL
+- 需要优化性能
+
+用户
+PASS
+
+测试
+PASS
+"""
+        reviews = parse_review_output_loose(text, 1)
+        assert len(reviews) >= 3  # at least 3 should parse
+
+    def test_table_format(self):
+        """Agent outputs a markdown table."""
+        text = """
+| 视角 | 结果 |
+|------|------|
+| 架构师 | PASS |
+| 产品经理 | FAIL |
+| 用户 | PASS |
+| 测试 | PASS |
+"""
+        reviews = parse_review_output_loose(text, 1)
+        assert len(reviews) == 4
+        by_name = {r.perspective.name: r for r in reviews}
+        assert by_name["ARCHITECT"].passed is True
+        assert by_name["PRODUCT"].passed is False
+
+    def test_english_keywords(self):
+        """English keyword + verdict on same line."""
+        text = """
+ARCHITECT: PASS
+PRODUCT: FAIL
+- Missing validation
+USER: PASS
+TESTER: PASS
+"""
+        reviews = parse_review_output_loose(text, 1)
+        assert len(reviews) == 4
+        by_name = {r.perspective.name: r for r in reviews}
+        assert by_name["ARCHITECT"].passed is True
+        assert by_name["PRODUCT"].passed is False
+
+    def test_chinese_verdict(self):
+        """Chinese verdict keywords (通过/不通过)."""
+        text = """
+架构师: 通过
+产品: 不通过
+- 缺少错误处理
+用户: 通过
+测试: 通过
+"""
+        reviews = parse_review_output_loose(text, 1)
+        assert len(reviews) >= 3
+        by_name = {r.perspective.name: r for r in reviews}
+        assert by_name["ARCHITECT"].passed is True
+        assert by_name["PRODUCT"].passed is False
+
+    def test_empty_text(self):
+        assert parse_review_output_loose("", 1) == []
+        assert parse_review_output_loose(None, 1) == []
+
+    def test_no_verdicts(self):
+        """Text with no recognizable verdict patterns."""
+        text = "这是一些随机文本，没有任何审查格式。"
+        reviews = parse_review_output_loose(text, 1)
+        assert reviews == []
+
+    def test_json_with_role_key(self):
+        """JSON with 'role' key instead of 'perspective'."""
+        text = """[
+  {"role": "architect", "result": "PASS"},
+  {"role": "product", "result": "FAIL", "suggestions": ["优化"]},
+  {"role": "user", "result": "PASS"},
+  {"role": "tester", "result": "PASS"}
+]"""
+        reviews = parse_review_output_loose(text, 1)
+        assert len(reviews) == 4
+
+    def test_mixed_format_with_suggestions(self):
+        """Loose format with bullet suggestions after FAIL."""
+        text = """
+ARCHITECT PASS
+PRODUCT FAIL
+- 缺少分页
+- 搜索不准确
+USER PASS
+TESTER FAIL
+- 需要更多边界测试
+"""
+        reviews = parse_review_output_loose(text, 1)
+        assert len(reviews) >= 3
+        by_name = {r.perspective.name: r for r in reviews}
+        if "PRODUCT" in by_name:
+            assert by_name["PRODUCT"].passed is False
+            assert len(by_name["PRODUCT"].suggestions) >= 1
+
+
+# ======================================================================
+# TestSpecReporterNewMethods — status_line, duration_line, criteria_section
+# ======================================================================
+
+class TestSpecReporterNewMethods:
+    def _make_project(self, criteria=None):
+        project = SpecProject.create(name="test", root_path="/tmp/test")
+        if criteria:
+            project.acceptance_criteria = criteria
+            project.criteria_tracker.init_criteria(criteria)
+        return project
+
+    def test_format_status_line(self):
+        r = SpecReporter()
+        project = self._make_project(criteria=["C1", "C2"])
+        project.status = SpecProjectStatus.RUNNING
+        project.cycles.append(SpecCycle(cycle_number=1))
+        result = r.format_status_line(project)
+        assert "🔄" in result
+        assert "循环" in result
+        assert "标准" in result
+        assert "0/2" in result
+
+    def test_format_duration_line_no_duration(self):
+        r = SpecReporter()
+        project = self._make_project()
+        result = r.format_duration_line(project)
+        assert result == ""
+
+    def test_format_duration_line_with_duration(self):
+        r = SpecReporter()
+        project = self._make_project()
+        project.started_at = time.time() - 120
+        result = r.format_duration_line(project)
+        assert "⏱️" in result
+
+    def test_format_criteria_section(self):
+        r = SpecReporter()
+        project = self._make_project(criteria=["C1", "C2"])
+        result = r.format_criteria_section(project)
+        assert "C1" in result
+        assert "C2" in result
