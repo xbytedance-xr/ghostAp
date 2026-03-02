@@ -15,6 +15,15 @@ from .models import (
 )
 from .tracker import PhaseTracker
 from .reporter import SpecReporter
+from .task_persistence import (
+    SPEC_TASKS_DIR,
+    SpecTaskState,
+    generate_task_id,
+    save_task_state,
+    load_task_state,
+    delete_task_state,
+    list_pending_tasks,
+)
 
 __all__ = [
     # Engine
@@ -32,4 +41,12 @@ __all__ = [
     "PhaseTracker",
     # Reporter
     "SpecReporter",
+    # Task Persistence
+    "SPEC_TASKS_DIR",
+    "SpecTaskState",
+    "generate_task_id",
+    "save_task_state",
+    "load_task_state",
+    "delete_task_state",
+    "list_pending_tasks",
 ]

@@ -8,6 +8,7 @@ import os
 from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
+from ...coco_model import get_coco_model_manager
 from ...tasking import TaskSpec, TaskPriority
 from ..emoji import EmojiReaction
 from ..message_formatter import FeishuMessageFormatter as fmt
@@ -98,10 +99,11 @@ class SystemHandler(BaseHandler):
             "/tasks",
             "/diff",
             "/trace",
+            "/models", "/model",
         }
         if text_lower in exact_commands:
             return True
-        prefix_commands = ("/switch ", "/new ", "/close ", "/tasks ", "/diff ", "/trace ", "/status ")
+        prefix_commands = ("/switch ", "/new ", "/close ", "/tasks ", "/diff ", "/trace ", "/status ", "/model ")
         return any(text_lower.startswith(p) for p in prefix_commands)
 
     # ------------------------------------------------------------------
@@ -128,6 +130,13 @@ class SystemHandler(BaseHandler):
             self.diagnostics_handler.show_context_diff(message_id, chat_id, text, project)
         elif text_lower == "/trace" or text_lower.startswith("/trace "):
             self.diagnostics_handler.show_message_trace(message_id, chat_id, text, project)
+        elif text_lower == "/models":
+            self.show_models(message_id, chat_id)
+        elif text_lower == "/model":
+            self.show_current_model(message_id, chat_id)
+        elif text_lower.startswith("/model "):
+            model_name = text[7:].strip()
+            self.switch_model(message_id, chat_id, model_name)
         elif text_lower.startswith("/switch "):
             name = text[8:].strip()
             if name:
@@ -271,6 +280,42 @@ class SystemHandler(BaseHandler):
             self.reply_message(message_id, fmt.format_error(result))
 
     # ------------------------------------------------------------------
+    # Model management
+    # ------------------------------------------------------------------
+    def show_models(self, message_id: str, chat_id: str):
+        manager = get_coco_model_manager()
+        result = manager.get_models()
+        current = manager.get_current_model()
+
+        lines = ["**🤖 可用模型列表**\n"]
+        for m in result.models:
+            marker = "✅" if m.name == current else "•"
+            lines.append(f"{marker} `{m.name}` - {m.description}")
+
+        lines.append("\n使用 `/model <名称>` 切换模型")
+        self.reply_message(message_id, "\n".join(lines))
+
+    def show_current_model(self, message_id: str, chat_id: str):
+        manager = get_coco_model_manager()
+        current = manager.get_current_model()
+        if current:
+            self.reply_message(message_id, f"🤖 当前模型: `{current}`")
+        else:
+            self.reply_message(message_id, "🤖 当前模型: 默认")
+
+    def switch_model(self, message_id: str, chat_id: str, model_name: str):
+        manager = get_coco_model_manager()
+        success = manager.set_model(model_name)
+        if success:
+            self.add_reaction(message_id, EmojiReaction.on_done())
+            self.reply_message(message_id, f"✅ 已切换到模型: `{model_name}`")
+        else:
+            self.add_reaction(message_id, EmojiReaction.on_error())
+            result = manager.get_models()
+            available = ", ".join([f"`{m.name}`" for m in result.models])
+            self.reply_message(message_id, f"❌ 未知模型: `{model_name}`\n\n可用模型: {available}")
+
+    # ------------------------------------------------------------------
     # Help
     # ------------------------------------------------------------------
     def show_help(self, message_id: str, chat_id: str):
@@ -365,6 +410,9 @@ class SystemHandler(BaseHandler):
                                 "- Web：`/spec 做一个登录页+登录接口`\n"
                                 "- API：`/spec 新增 /v1/users 查询接口`\n"
                                 "- 脚本：`/spec 写一个批量重命名脚本，支持dry-run`"},
+                    {"tag": "hr"},
+                    {"tag": "markdown", "text_size": "normal",
+                     "content": "**🤖 模型管理**\n`/models` - 查看可用模型列表\n`/model` - 查看当前使用的模型\n`/model <名称>` - 切换到指定模型"},
                     {"tag": "hr"},
                     {"tag": "markdown", "text_size": "normal",
                      "content": "**💡 使用提示**\n1. 发送 `/coco` 或 `/claude` 进入编程模式\n2. 在编程模式中直接对话，系统命令（如 `/help`）会自动拦截\n3. 智能模式下直接输入 Shell 命令即可执行\n4. 发送 `/help` 或 `/帮助` 随时查看本帮助"},

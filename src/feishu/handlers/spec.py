@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
 from ...spec_engine import SpecEngineCallbacks
+from ...spec_engine.task_persistence import list_pending_tasks, load_task_state, delete_task_state
 from ...spec_engine.models import (
     SpecProject,
     SpecProjectStatus,
@@ -37,7 +38,12 @@ class SpecHandler(BaseHandler):
     def handle_spec_command(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"] = None):
         text_lower = text.lower().strip()
 
-        if text_lower == "/spec_status" or text_lower.startswith("/spec_status "):
+        if text_lower == "/spec_recover":
+            self.show_recoverable_tasks(message_id, chat_id)
+        elif text_lower.startswith("/spec_recover "):
+            task_id = text[len("/spec_recover "):].strip()
+            self.recover_spec_task(message_id, chat_id, task_id, project)
+        elif text_lower == "/spec_status" or text_lower.startswith("/spec_status "):
             self.show_spec_status(message_id, chat_id, project)
         elif text_lower == "/spec_history" or text_lower.startswith("/spec_history"):
             self.show_spec_history(message_id, chat_id, text, project)
@@ -86,6 +92,8 @@ class SpecHandler(BaseHandler):
                 "- `/spec_pause`：暂停\n"
                 "- `/spec_resume`：恢复\n"
                 "- `/stop_spec`：停止\n"
+                "- `/spec_recover`：列出可恢复的失败任务\n"
+                "- `/spec_recover <任务ID>`：恢复指定任务\n"
             )
         else:
             self.reply_message(message_id, "❓ 未知的 Spec 命令")
@@ -649,3 +657,113 @@ class SpecHandler(BaseHandler):
             engine_name=f"Spec({engine_name})", show_buttons=False,
         )
         self.send_message(chat_id, card_content, msg_type)
+
+    # ------------------------------------------------------------------
+    # recover
+    # ------------------------------------------------------------------
+    def show_recoverable_tasks(self, message_id: str, chat_id: str):
+        tasks = list_pending_tasks()
+        if not tasks:
+            self.reply_message(message_id, "📋 没有可恢复的任务")
+            return
+
+        lines = ["📋 **可恢复的 Spec 任务**\n"]
+        for t in tasks:
+            import time as _time
+            created_str = _time.strftime("%Y-%m-%d %H:%M", _time.localtime(t.created_at))
+            req_summary = t.requirement[:50] + "..." if len(t.requirement) > 50 else t.requirement
+            lines.append(f"**{t.task_id}**")
+            lines.append(f"- 需求: {req_summary}")
+            lines.append(f"- 创建时间: {created_str}")
+            if t.last_error:
+                error_summary = t.last_error[:80] + "..." if len(t.last_error) > 80 else t.last_error
+                lines.append(f"- 最后错误: {error_summary}")
+            lines.append("")
+
+        lines.append("使用 `/spec_recover <任务ID>` 恢复指定任务")
+        self.reply_message(message_id, "\n".join(lines))
+
+    def recover_spec_task(self, message_id: str, chat_id: str, task_id: str, project: Optional["ProjectContext"] = None):
+        state = load_task_state(task_id)
+        if not state:
+            self.reply_message(message_id, f"❌ 未找到任务: {task_id}")
+            return
+
+        project_path = state.project_path
+        if not os.path.isdir(project_path):
+            self.reply_message(message_id, f"❌ 项目路径不存在: {project_path}")
+            return
+
+        if not project:
+            try:
+                project, _ = self.project_manager.get_or_create_project_for_path(project_path, chat_id)
+            except Exception as e:
+                self.reply_message(message_id, fmt_error("恢复项目上下文", str(e)))
+                return
+
+        existing = self.ctx.spec_engine_manager.get(chat_id, project_path)
+        if existing and existing.is_running:
+            self.reply_message(
+                message_id,
+                "⚠️ 当前项目已有 Spec 任务在执行中\n\n发送 `/spec_status` 查看进度\n发送 `/stop_spec` 停止任务",
+            )
+            return
+
+        self.add_reaction(message_id, EmojiReaction.on_multi_task_start())
+
+        request_id = self.ensure_request_id(message_id, chat_id=chat_id, project_id=(project.project_id if project else None))
+        engine_name = state.agent_type.capitalize() if state.agent_type else "Coco"
+        reporter = self.ctx.spec_reporter
+
+        content = reporter.format_analyzing_start(state.requirement)
+        title = f"🔄 恢复任务 {task_id}"
+        msg_type, card_content = CardBuilder.build_deep_card(
+            project=project, title=title,
+            content=f"{content}\n\n{self.format_ref_note(message_id, request_id)}" if request_id else content,
+            engine_name=f"Spec({engine_name})", show_buttons=False,
+        )
+        self.reply_message(message_id, card_content, msg_type=msg_type, origin_message_id=message_id, request_id=request_id)
+
+        engine = self.ctx.spec_engine_manager.get_or_create(chat_id, project_path, engine_name=engine_name)
+
+        if state.project_snapshot:
+            try:
+                engine._project = SpecProject.from_dict(state.project_snapshot)
+            except Exception as e:
+                logger.warning("恢复 project_snapshot 失败: %s", e)
+
+        _on_rate_limit = self.create_rate_limit_callback(chat_id, message_id, project, f"Spec({engine_name})", request_id)
+
+        def run_spec_engine():
+            try:
+                callbacks = self._create_spec_callbacks(message_id, chat_id, project, engine_name)
+                engine.execute(state.requirement, callbacks, task_id=task_id, on_rate_limit=_on_rate_limit)
+                delete_task_state(task_id)
+            except Exception as e:
+                logger.error("Spec Engine 恢复执行异常: %s", e, exc_info=True)
+                error_content = reporter.format_error(str(e))
+                error_title = reporter.get_error_title()
+                err_msg_type, err_card = CardBuilder.build_deep_card(
+                    project=project, title=error_title,
+                    content=f"{error_content}\n\n{self.format_ref_note(message_id, request_id)}" if request_id else error_content,
+                    engine_name=f"Spec({engine_name})", show_buttons=False,
+                )
+                self.send_message(chat_id, err_card, err_msg_type, origin_message_id=message_id, request_id=request_id)
+
+        spec = TaskSpec(
+            chat_id=chat_id,
+            queue_key=f"{chat_id}:spec:{project.project_id if project else project_path}",
+            name="spec_engine_recover",
+            task_type="spec_engine",
+            project_id=project.project_id if project else None,
+            message_id=message_id,
+            origin_message_id=message_id,
+            request_id=request_id,
+            task_id=task_id,
+            priority=TaskPriority.NORMAL,
+        )
+        handle = self.scheduler.submit(spec, lambda ctx: run_spec_engine())
+        try:
+            self.ctx.message_linker.link_task(message_id, handle.run_id)
+        except Exception as e:
+            logger.debug("link_task失败(spec_engine_recover): message_id=%s, run_id=%s, err=%s", message_id, handle.run_id, e)

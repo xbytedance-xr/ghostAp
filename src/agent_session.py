@@ -440,17 +440,23 @@ def close_session_safely(session: Optional[SyncSession]) -> None:
             logger.debug("关闭旧ACP session失败: %s", e)
 
 
-def create_sync_session(agent_type: str, cwd: str) -> SyncSession:
+def create_sync_session(agent_type: str, cwd: str, model_name: Optional[str] = None) -> SyncSession:
     """Factory for creating a sync session by backend.
 
     - coco/default: ACP backend
     - claude: CLI backend
     """
+    from .coco_model import get_coco_model_manager
 
     agent_type = (agent_type or "").lower()
     if agent_type == "claude":
         return SyncClaudeCLISession(cwd=cwd)
-    return SyncACPSession(agent_type=agent_type or "coco", cwd=cwd)
+
+    effective_model = model_name
+    if not effective_model and agent_type in ("coco", ""):
+        effective_model = get_coco_model_manager().get_current_model()
+
+    return SyncACPSession(agent_type=agent_type or "coco", cwd=cwd, model_name=effective_model)
 
 
 def create_engine_session(
@@ -458,6 +464,7 @@ def create_engine_session(
     cwd: str,
     on_rate_limit: Optional[Callable[[int], None]] = None,
     cancel_event: Optional[threading.Event] = None,
+    model_name: Optional[str] = None,
 ) -> SyncSession:
     """Create and start a session for Deep/Loop/Spec engines.
 
@@ -468,6 +475,7 @@ def create_engine_session(
     is wrapped with RateLimitAwareSession for automatic retry on throttling.
     """
     from .acp.sync_adapter import start_session_with_retry
+    from .coco_model import get_coco_model_manager
 
     settings = get_settings()
     agent_type = (agent_type or "").lower()
@@ -476,10 +484,15 @@ def create_engine_session(
         session: SyncSession = SyncClaudeCLISession(cwd=cwd)
         session.start()
     else:
+        effective_model = model_name
+        if not effective_model:
+            effective_model = get_coco_model_manager().get_current_model()
+
         session = start_session_with_retry(
             agent_type=agent_type or "coco",
             cwd=cwd,
             startup_timeout=settings.acp_startup_timeout,
+            model_name=effective_model,
         )
 
     if settings.rate_limit_retry_enabled:

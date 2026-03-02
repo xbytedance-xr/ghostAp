@@ -1,5 +1,8 @@
 # GhostAP 项目记忆索引
 
+## 2026-03-02
+- **Coco 模型管理与 Spec 任务稳定性增强** - 新增 `/models`、`/model` 命令动态切换模型；Spec 任务失败自动重试+模型切换；`/spec_recover` 恢复中断任务；+51测试，963测试全通过 → [2026-03-02.md](2026-03-02.md)
+
 ## 2026-02-28
 - **Spec/Loop 模式三项优化：审查解析 + 截断修复 + 卡片布局** - loose parsing 三策略兜底审查解析、移除 format_phase_done 500字截断、build_deep_card 结构化布局(status_line/duration_line/criteria_section/footer_note)、+21测试，1052测试全通过 → [2026-02-28.md](2026-02-28.md)
 

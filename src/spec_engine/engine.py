@@ -54,7 +54,10 @@ from .models import (
     SpecWorkItemStatus,
     SpecCycleMetrics,
 )
+from .retry import RetryPolicy, should_retry, get_retry_delay
+from .task_persistence import SpecTaskState, save_task_state, delete_task_state, generate_task_id
 from .tracker import PhaseTracker
+from ..coco_model import get_coco_model_manager
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +82,9 @@ class SpecEngineCallbacks:
     on_cycle_done: Optional[Callable[[int, SpecCycle], None]] = None
     on_project_done: Optional[Callable[[SpecProject], None]] = None
     on_error: Optional[Callable[[str], None]] = None
+    on_retry: Optional[Callable[[int, str], None]] = None
+    on_model_switch: Optional[Callable[[str, str], None]] = None
+    on_task_saved: Optional[Callable[[str], None]] = None
 
 
 @dataclass
@@ -144,6 +150,10 @@ class SpecEngine:
         # success / paused / converged / max_cycles / stopped
         self._termination_reason: Optional[str] = None
         self._resume_meta: Optional[dict] = None
+        self._retry_policy = RetryPolicy()
+        self._models_tried: list[str] = []
+        self._current_model: Optional[str] = None
+        self._saved_task_id: Optional[str] = None
 
     @property
     def project(self) -> Optional[SpecProject]:
@@ -203,6 +213,9 @@ class SpecEngine:
                     project_name, len(requirement_text), self.root_path, self._agent_type)
 
         try:
+            self._current_model = get_coco_model_manager().get_current_model()
+            self._models_tried = [self._current_model] if self._current_model else []
+
             # Parse requirement — extract acceptance criteria
             criteria = self._parse_acceptance_criteria(requirement_text)
             self._project.acceptance_criteria = criteria
@@ -275,6 +288,13 @@ class SpecEngine:
         finally:
             self._close_session_safely()
             self._run_state = EngineRunState.IDLE
+            if (
+                self._project
+                and self._project.status == SpecProjectStatus.COMPLETED
+                and self._saved_task_id
+            ):
+                delete_task_state(self._saved_task_id)
+                self._saved_task_id = None
 
     # ------------------------------------------------------------------
     # Phase execution
@@ -291,21 +311,112 @@ class SpecEngine:
         if callbacks.on_phase_start:
             callbacks.on_phase_start(cycle_num, phase)
 
-        tracker = PhaseTracker()
+        max_retries = int(getattr(self.settings, "spec_max_retries", 3) or 3)
+        attempt = 0
+        last_error: Optional[str] = None
 
-        def on_event(event: ACPEvent):
-            tracker.process(event)
-            self._renderer.process_event(event)
-            if callbacks.on_phase_event:
-                callbacks.on_phase_event(cycle_num, phase, event)
+        while True:
+            try:
+                tracker = PhaseTracker()
 
-        self._session.send_prompt(prompt, on_event=on_event, timeout=timeout)
-        output = tracker.text_buffer
+                def on_event(event: ACPEvent):
+                    tracker.process(event)
+                    self._renderer.process_event(event)
+                    if callbacks.on_phase_event:
+                        callbacks.on_phase_event(cycle_num, phase, event)
 
-        if callbacks.on_phase_done:
-            callbacks.on_phase_done(cycle_num, phase, output)
+                self._session.send_prompt(prompt, on_event=on_event, timeout=timeout)
+                output = tracker.text_buffer
 
-        return output
+                if callbacks.on_phase_done:
+                    callbacks.on_phase_done(cycle_num, phase, output)
+
+                return output
+
+            except Exception as e:
+                last_error = str(e)
+                attempt += 1
+
+                if not should_retry(e) or attempt > max_retries:
+                    if self._try_switch_model(callbacks):
+                        attempt = 0
+                        continue
+
+                    task_id = self._save_failed_task(last_error, cycle_num, phase, callbacks)
+                    raise RuntimeError(
+                        f"Phase {phase.value} 失败，任务已保存(task_id={task_id}): {last_error}"
+                    ) from e
+
+                if callbacks.on_retry:
+                    callbacks.on_retry(attempt, last_error)
+
+                delay = get_retry_delay(attempt - 1, self._retry_policy)
+                logger.info("[Spec] Phase %s 失败，%ds 后重试 (attempt=%d/%d): %s",
+                           phase.value, delay, attempt, max_retries, last_error)
+                time.sleep(delay)
+
+    def _try_switch_model(self, callbacks: SpecEngineCallbacks) -> bool:
+        model_manager = get_coco_model_manager()
+        result = model_manager.get_models()
+        all_models = [m.name for m in result.models]
+
+        available = [m for m in all_models if m not in self._models_tried]
+        if not available:
+            return False
+
+        old_model = self._current_model or "(unknown)"
+        new_model = available[0]
+
+        if not model_manager.set_model(new_model):
+            return False
+
+        self._models_tried.append(new_model)
+        self._current_model = new_model
+
+        self._close_session_safely()
+        self._session = create_engine_session(
+            agent_type=self._agent_type,
+            cwd=self.root_path,
+            on_rate_limit=getattr(self, "_on_rate_limit", None),
+        )
+
+        logger.info("[Spec] 模型切换: %s -> %s", old_model, new_model)
+        if callbacks.on_model_switch:
+            callbacks.on_model_switch(old_model, new_model)
+
+        return True
+
+    def _save_failed_task(
+        self,
+        error: str,
+        cycle_num: int,
+        phase: SpecPhase,
+        callbacks: SpecEngineCallbacks,
+    ) -> str:
+        task_id = generate_task_id()
+        state = SpecTaskState(
+            task_id=task_id,
+            created_at=time.time(),
+            requirement=self._project.requirement if self._project else "",
+            project_path=self.root_path,
+            chat_id=self.chat_id,
+            agent_type=self._agent_type,
+            current_cycle=cycle_num,
+            current_phase=phase.value,
+            last_error=error,
+            retry_count=int(getattr(self.settings, "spec_max_retries", 3) or 3),
+            models_tried=list(self._models_tried),
+            project_snapshot=self._project_to_compact_dict() if self._project else None,
+        )
+        save_task_state(state)
+        self._saved_task_id = task_id
+
+        logger.info("[Spec] 任务已保存, task_id=%s, phase=%s, error=%s",
+                   task_id, phase.value, error[:100])
+        if callbacks.on_task_saved:
+            callbacks.on_task_saved(task_id)
+
+        return task_id
 
     # ------------------------------------------------------------------
     # Cycle loop (shared by execute / resume)

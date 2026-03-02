@@ -107,11 +107,10 @@ def _resolve_with_auto_update(command: str) -> bool:
     return False
 
 
-def resolve_agent_spec(agent_type: str) -> tuple[str, list[str]]:
+def resolve_agent_spec(agent_type: str, model_name: Optional[str] = None) -> tuple[str, list[str]]:
     """Resolve (command, args) for spawning an ACP agent process over stdio."""
     agent_type = (agent_type or "").lower()
 
-    # Config override first (allows custom binaries/wrappers)
     settings = get_settings()
     override_cmd, override_args = settings.get_acp_command(agent_type)
     if override_cmd:
@@ -119,7 +118,10 @@ def resolve_agent_spec(agent_type: str) -> tuple[str, list[str]]:
 
     if agent_type == "coco":
         if _resolve_with_auto_update("coco"):
-            return "coco", ["acp", "serve"]
+            args = ["acp", "serve"]
+            if model_name:
+                args.extend(["-c", f"model.name={model_name}"])
+            return "coco", args
         raise RuntimeError(
             "coco does not appear to support ACP server mode. "
             "Please upgrade coco or set COCO_ACP_CMD/COCO_ACP_ARGS."
@@ -146,6 +148,7 @@ def start_session_with_retry(
     agent_type: str,
     cwd: str,
     startup_timeout: float = 60,
+    model_name: Optional[str] = None,
 ) -> SyncACPSession:
     """Start an ACP session with retry and progressive timeout.
 
@@ -160,7 +163,7 @@ def start_session_with_retry(
 
     for attempt in range(1, retries + 1):
         try:
-            session = SyncACPSession(agent_type=agent_type, cwd=cwd)
+            session = SyncACPSession(agent_type=agent_type, cwd=cwd, model_name=model_name)
             effective_timeout = float(startup_timeout) * (1.0 + 0.5 * (attempt - 1))
             session.start(startup_timeout=effective_timeout)
             logger.info("[ACP:%s] Engine session started (attempt=%d/%d)",
@@ -196,14 +199,14 @@ class SyncACPSession:
     methods for the synchronous codebase.
     """
 
-    def __init__(self, agent_type: str, cwd: str, agent_args: Optional[list[str]] = None, agent_cmd: Optional[str] = None):
+    def __init__(self, agent_type: str, cwd: str, agent_args: Optional[list[str]] = None, agent_cmd: Optional[str] = None, model_name: Optional[str] = None):
         self._agent_type = agent_type
         self._cwd = cwd
         if agent_cmd is not None:
             self._agent_cmd = agent_cmd
             self._agent_args = agent_args or []
         else:
-            cmd, args = resolve_agent_spec(agent_type)
+            cmd, args = resolve_agent_spec(agent_type, model_name=model_name)
             self._agent_cmd = cmd
             self._agent_args = agent_args or args
         self._loop: Optional[asyncio.AbstractEventLoop] = None

@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     coco_execution_timeout: int = 7200
     coco_session_timeout: int = 86400
     coco_max_output_length: int = 30000
+    coco_default_model: str = ""
 
     claude_execution_timeout: int = 7200
     claude_session_timeout: int = 86400
@@ -114,6 +115,8 @@ class Settings(BaseSettings):
 
     # History / retention
     spec_history_log_filename: str = "history.jsonl"
+    spec_max_retries: int = 3
+    spec_model_switch_enabled: bool = True
     spec_generated_specs_retention: int = 1000
 
     streaming_enabled: bool = True
