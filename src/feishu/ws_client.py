@@ -611,7 +611,12 @@ class FeishuWSClient:
 
             if not text:
                 from ..mode import InteractionMode
-                _pid = project.project_id if project else (project_id or None)
+                # Fix NameError: project_id is not defined in this scope.
+                # Try to get from project object, or fallback to task context.
+                _pid = project.project_id if project else None
+                if not _pid and task_ctx and task_ctx.spec.project_id:
+                    _pid = task_ctx.spec.project_id
+
                 current_mode = self._mode_manager.get_mode(chat_id, project_id=_pid)
                 if current_mode == InteractionMode.CLAUDE:
                     if project is None:
