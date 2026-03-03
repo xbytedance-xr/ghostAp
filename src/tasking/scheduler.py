@@ -127,10 +127,11 @@ class TaskRunState:
 class TaskContext:
     """Context passed to the running task function."""
 
-    def __init__(self, scheduler: "TaskScheduler", run_id: str, token: CancellationToken):
+    def __init__(self, scheduler: "TaskScheduler", run_id: str, token: CancellationToken, spec: "TaskSpec"):
         self._scheduler = scheduler
         self.run_id = run_id
         self.cancel_token = token
+        self.spec = spec
 
     def progress(self, message: str, percent: Optional[float] = None):
         self._scheduler.update_progress(self.run_id, message=message, percent=percent)
@@ -505,7 +506,7 @@ class TaskScheduler:
         spec = task.spec
         state = self.get_state(run_id)
         token = state.cancellation if state else CancellationToken()
-        ctx = TaskContext(self, run_id=run_id, token=token)
+        ctx = TaskContext(self, run_id=run_id, token=token, spec=spec)
 
         try:
             token.raise_if_canceled()
