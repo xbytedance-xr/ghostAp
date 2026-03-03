@@ -729,6 +729,14 @@ class SpecHandler(BaseHandler):
         if state.project_snapshot:
             try:
                 engine._project = SpecProject.from_dict(state.project_snapshot)
+                # Ensure status is PAUSED so resume() accepts it
+                engine._project.status = SpecProjectStatus.PAUSED
+                # Force update total cycle count from snapshot if needed
+                if engine._project.cycles:
+                     engine._project.cycle_count_total = max(
+                         engine._project.cycle_count_total, 
+                         engine._project.cycles[-1].cycle_number
+                     )
             except Exception as e:
                 logger.warning("恢复 project_snapshot 失败: %s", e)
 
@@ -737,7 +745,9 @@ class SpecHandler(BaseHandler):
         def run_spec_engine():
             try:
                 callbacks = self._create_spec_callbacks(message_id, chat_id, project, engine_name)
-                engine.execute(state.requirement, callbacks, task_id=task_id, on_rate_limit=_on_rate_limit)
+                # Use resume() instead of execute() to preserve state
+                # The execute() method re-initializes the project, wiping previous progress.
+                engine.resume(callbacks)
                 delete_task_state(task_id)
             except Exception as e:
                 logger.error("Spec Engine 恢复执行异常: %s", e, exc_info=True)

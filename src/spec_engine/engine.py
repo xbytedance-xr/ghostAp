@@ -1888,7 +1888,13 @@ CRITERIA_2: FAIL
         self._run_state = EngineRunState.RUNNING
         self._project.status = SpecProjectStatus.RUNNING
         max_cycles = self._resolve_max_cycles(self.settings.spec_max_cycles)
-        start_cycle = len(self._project.cycles) + 1
+        
+        # Resume from the last known cycle number
+        last_cycle_num = 0
+        if self._project.cycles:
+            last_cycle_num = self._project.cycles[-1].cycle_number
+        start_cycle = max(last_cycle_num, self._project.cycle_count_total) + 1
+        
         self._termination_reason = None
 
         try:
