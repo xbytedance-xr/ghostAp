@@ -405,6 +405,7 @@ class SystemHandler(BaseHandler):
                                 "`/spec_metrics [N]` - 查看目标达成度与指标变化（默认20，最多500）\n"
                                 "`/spec_config` - 查看长程配置（阈值/保留策略）\n"
                                 "`/spec_save` - 立即保存状态（用于断点续传）\n"
+                                "`/spec_recover` - 恢复异常中断的任务（需指定 Task ID）\n"
                                 "`/spec_pause` - 暂停  •  `/spec_resume` - 恢复  •  `/stop_spec` - 停止\n\n"
                                 "最小示例：\n"
                                 "- Web：`/spec 做一个登录页+登录接口`\n"

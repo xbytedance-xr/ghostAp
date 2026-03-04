@@ -91,9 +91,8 @@ class SpecHandler(BaseHandler):
                 "- `/spec_save`：立即落盘保存状态（用于断点续传）\n"
                 "- `/spec_pause`：暂停\n"
                 "- `/spec_resume`：恢复\n"
+                "- `/spec_recover`：列出或恢复异常中断的任务（需指定 Task ID）\n"
                 "- `/stop_spec`：停止\n"
-                "- `/spec_recover`：列出可恢复的失败任务\n"
-                "- `/spec_recover <任务ID>`：恢复指定任务\n"
             )
         else:
             self.reply_message(message_id, "❓ 未知的 Spec 命令")

@@ -248,6 +248,7 @@ uv run python -m src.main
 | `/spec_guide <引导>` | 补充约束/偏好/回答澄清问题（下轮或恢复时生效） |
 | `/spec_pause` | 暂停 Spec |
 | `/spec_resume` | 恢复 Spec（常用于“待澄清”后继续） |
+| `/spec_recover` | 恢复异常中断的任务（需指定 Task ID） |
 | `/stop_spec` | 停止 Spec |
 
 ### 项目管理
