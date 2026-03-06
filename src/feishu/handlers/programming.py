@@ -87,6 +87,18 @@ class ProgrammingModeHandler(BaseHandler):
         ...
 
     # ------------------------------------------------------------------
+    # dynamic agent overrides (for TTADK, etc.)
+    # ------------------------------------------------------------------
+    def _get_agent_type_override(self, project: Optional["ProjectContext"] = None) -> Optional[str]:
+        return None
+
+    def _get_model_name_override(self, project: Optional["ProjectContext"] = None) -> Optional[str]:
+        return None
+
+    def _uses_claude_cli(self) -> bool:
+        return False
+
+    # ------------------------------------------------------------------
     # enter_mode
     # ------------------------------------------------------------------
     def enter_mode(self, message_id: str, chat_id: str, silent: bool = False, project: Optional["ProjectContext"] = None):
@@ -137,12 +149,16 @@ class ProgrammingModeHandler(BaseHandler):
         # Ensure backend session is ready before switching mode
         startup_timeout = getattr(self.settings, "acp_startup_timeout", 20)
         try:
+            agent_type_override = self._get_agent_type_override(project)
+            model_name = self._get_model_name_override(project)
             session = self._get_session_manager().ensure_session(
                 chat_id,
                 cwd=cwd,
                 session_id=target_session_id,
                 startup_timeout=startup_timeout,
                 project_id=project_id,
+                agent_type_override=agent_type_override,
+                model_name=model_name,
             )
         except TimeoutError as e:
             if not silent:
@@ -425,10 +441,19 @@ class ProgrammingModeHandler(BaseHandler):
         previous_mode = self.mode_manager.get_mode(chat_id)
 
         cwd = project.root_path if project else self.get_working_dir(chat_id)
-        if not self.is_coco:
+        if self._uses_claude_cli():
             # Claude resume: start_session with session_id, set resumed
             try:
-                session = self.ctx.claude_manager.start_session(chat_id, cwd=cwd, session_id=session_id, project_id=pid)
+                agent_type_override = self._get_agent_type_override(project)
+                model_name = self._get_model_name_override(project)
+                session = self.ctx.claude_manager.start_session(
+                    chat_id,
+                    cwd=cwd,
+                    session_id=session_id,
+                    project_id=pid,
+                    agent_type_override=agent_type_override,
+                    model_name=model_name,
+                )
             except Exception as e:
                 self.reply_message(message_id, fmt_error("恢复 Claude 会话", str(e)))
                 return
@@ -440,9 +465,18 @@ class ProgrammingModeHandler(BaseHandler):
         else:
             self._enter_mode_on_manager(chat_id, project_id=pid)
             try:
-                session = self._get_session_manager().start_session(chat_id, cwd=cwd, session_id=session_id, project_id=pid)
+                agent_type_override = self._get_agent_type_override(project)
+                model_name = self._get_model_name_override(project)
+                session = self._get_session_manager().start_session(
+                    chat_id,
+                    cwd=cwd,
+                    session_id=session_id,
+                    project_id=pid,
+                    agent_type_override=agent_type_override,
+                    model_name=model_name,
+                )
             except Exception as e:
-                self.reply_message(message_id, fmt_error("恢复 Coco ACP 会话", str(e)))
+                self.reply_message(message_id, fmt_error(f"恢复 {self.mode_name} 会话", str(e)))
                 return
 
         if project:
@@ -562,6 +596,9 @@ class ClaudeModeHandler(ProgrammingModeHandler):
     def _clear_snapshot_on_project(self, project):
         project.claude_session_snapshot = None
 
+    def _uses_claude_cli(self) -> bool:
+        return True
+
 
 class TTADKModeHandler(ProgrammingModeHandler):
     mode_name = "TTADK"
@@ -611,6 +648,35 @@ class TTADKModeHandler(ProgrammingModeHandler):
 
     def _clear_snapshot_on_project(self, project):
         project.ttadk_session_snapshot = None
+
+    def _get_agent_type_override(self, project: Optional["ProjectContext"] = None) -> Optional[str]:
+        from ...config import get_settings
+        from ...ttadk import get_ttadk_manager
+
+        settings = get_settings()
+        manager = get_ttadk_manager(
+            default_tool=settings.ttadk_default_tool,
+            default_model=settings.ttadk_default_model,
+        )
+        tool = (
+            self._current_tool
+            or manager.get_current_tool()
+            or settings.ttadk_default_tool
+            or "coco"
+        )
+        return f"ttadk_{tool}"
+
+    def _get_model_name_override(self, project: Optional["ProjectContext"] = None) -> Optional[str]:
+        from ...config import get_settings
+        from ...ttadk import get_ttadk_manager
+
+        settings = get_settings()
+        manager = get_ttadk_manager(
+            default_tool=settings.ttadk_default_tool,
+            default_model=settings.ttadk_default_model,
+        )
+        model = self._current_model or manager.get_current_model() or settings.ttadk_default_model
+        return model or None
 
     @property
     def current_tool(self) -> Optional[str]:

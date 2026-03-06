@@ -46,6 +46,8 @@ class ACPSessionManager:
         session_id: Optional[str] = None,
         startup_timeout: float = 60,
         project_id: Optional[str] = None,
+        agent_type_override: Optional[str] = None,
+        model_name: Optional[str] = None,
     ) -> SyncSession:
         """Start a new session for a chat/project."""
         key = self._session_key(chat_id, project_id)
@@ -57,7 +59,9 @@ class ACPSessionManager:
         settings = get_settings()
         retries = int(getattr(settings, "acp_startup_retries", 2) or 2)
         retries = max(1, retries)
-        if self._agent_type.lower() == "claude":
+        effective_agent_type = (agent_type_override or self._agent_type).lower()
+
+        if effective_agent_type == "claude":
             # CLI backend doesn't need handshake retries.
             retries = 1
 
@@ -69,10 +73,14 @@ class ACPSessionManager:
         # Retry spawning agent process + handshake, since ACP CLI may be temporarily unavailable.
         for attempt in range(1, retries + 1):
             try:
-                if self._agent_type.lower() == "claude":
+                if effective_agent_type == "claude":
                     session = SyncClaudeCLISession(cwd=cwd or ".")
                 else:
-                    session = SyncACPSession(agent_type=self._agent_type, cwd=cwd or ".")
+                    session = SyncACPSession(
+                        agent_type=effective_agent_type,
+                        cwd=cwd or ".",
+                        model_name=model_name,
+                    )
                 try:
                     last_spec = session.describe_agent()
                 except Exception:
@@ -83,14 +91,14 @@ class ACPSessionManager:
                 actual_id = session.start(startup_timeout=effective_timeout)
                 logger.info(
                     "[ACP:%s] Session started: key=%s, session=%s (attempt=%d/%d)",
-                    self._agent_type.upper(), key[-16:], actual_id[:8], attempt, retries,
+                    effective_agent_type.upper(), key[-16:], actual_id[:8], attempt, retries,
                 )
                 break
             except Exception as e:
                 last_err = e
                 logger.warning(
                     "[ACP:%s] Session start failed (attempt=%d/%d): %s",
-                    self._agent_type.upper(), attempt, retries, e,
+                    effective_agent_type.upper(), attempt, retries, e,
                 )
                 try:
                     if session:
@@ -105,8 +113,8 @@ class ACPSessionManager:
         if not session or not actual_id:
             detail = str(last_err) if last_err else "unknown"
             spec = f" ({last_spec})" if last_spec else ""
-            kind = "会话" if self._agent_type.lower() == "claude" else "ACP Server"
-            raise RuntimeError(f"启动 {self._agent_type} {kind} 失败{spec}（已重试 {retries} 次）: {detail}")
+            kind = "会话" if effective_agent_type == "claude" else "ACP Server"
+            raise RuntimeError(f"启动 {effective_agent_type} {kind} 失败{spec}（已重试 {retries} 次）: {detail}")
 
         # If caller wants a specific session_id (resume), load it
         if session_id:
@@ -116,7 +124,7 @@ class ACPSessionManager:
                 session.is_resumed = True
             except Exception as e:
                 logger.warning("[ACP:%s] Failed to load session %s, using new: %s",
-                               self._agent_type.upper(), session_id[:8], e)
+                               effective_agent_type.upper(), session_id[:8], e)
 
         # Load local persisted history (best-effort)
         try:
@@ -135,6 +143,8 @@ class ACPSessionManager:
         session_id: Optional[str] = None,
         startup_timeout: float = 60,
         project_id: Optional[str] = None,
+        agent_type_override: Optional[str] = None,
+        model_name: Optional[str] = None,
     ) -> SyncSession:
         """Ensure a session exists and it is ready.
 
@@ -151,6 +161,32 @@ class ACPSessionManager:
                             self._agent_type.upper(), key[-16:])
                 self.end_session(chat_id, project_id=project_id)
                 existing = None
+
+        # Agent type / model mismatch for dynamic backends (e.g., TTADK)
+        if existing and agent_type_override:
+            existing_agent = getattr(existing, "_agent_type", "")
+            if existing_agent and existing_agent.lower() != agent_type_override.lower():
+                logger.info(
+                    "[ACP:%s] Agent type changed (%s -> %s), restarting: key=%s",
+                    self._agent_type.upper(),
+                    existing_agent,
+                    agent_type_override,
+                    key[-16:],
+                )
+                self.end_session(chat_id, project_id=project_id)
+                existing = None
+            elif model_name:
+                existing_args = getattr(existing, "_agent_args", None)
+                args_text = " ".join(existing_args or [])
+                if model_name not in args_text:
+                    logger.info(
+                        "[ACP:%s] Model changed (missing %s), restarting: key=%s",
+                        self._agent_type.upper(),
+                        model_name,
+                        key[-16:],
+                    )
+                    self.end_session(chat_id, project_id=project_id)
+                    existing = None
 
         if existing:
             idle = time.time() - existing.last_active
@@ -180,7 +216,15 @@ class ACPSessionManager:
         if existing:
             return existing
 
-        return self.start_session(chat_id, cwd=cwd, session_id=session_id, startup_timeout=startup_timeout, project_id=project_id)
+        return self.start_session(
+            chat_id,
+            cwd=cwd,
+            session_id=session_id,
+            startup_timeout=startup_timeout,
+            project_id=project_id,
+            agent_type_override=agent_type_override,
+            model_name=model_name,
+        )
 
     def resume_session(self, chat_id: str, session_id: str, cwd: str = "", project_id: Optional[str] = None) -> SyncSession:
         """Resume an existing session by session_id."""

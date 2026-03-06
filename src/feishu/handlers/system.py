@@ -180,6 +180,23 @@ class SystemHandler(BaseHandler):
     # ------------------------------------------------------------------
     # TTADK command handling
     # ------------------------------------------------------------------
+    def _resolve_ttadk_cwd(
+        self,
+        chat_id: str,
+        project: Optional["ProjectContext"] = None,
+        project_id: Optional[str] = None,
+    ) -> Optional[str]:
+        if project:
+            return project.root_path
+        if project_id:
+            ctx = self.project_manager.get_project(project_id)
+            if ctx:
+                return ctx.root_path
+        active = self.project_manager.get_active_project(chat_id)
+        if active:
+            return active.root_path
+        return None
+
     def handle_ttadk_command(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         project_id = project.project_id if project else None
         manager = get_ttadk_manager()
@@ -194,16 +211,20 @@ class SystemHandler(BaseHandler):
         manager = get_ttadk_manager()
         current_tool = manager.get_current_tool()
         current_model = manager.get_current_model()
+        tools_result = manager.get_tools()
+        models_result = manager.get_models(cwd=self._resolve_ttadk_cwd(chat_id))
+        tool_desc = {t.name: t.description for t in (tools_result.tools or [])}
+        model_desc = {m.name: m.description for m in (models_result.models or [])}
         
         lines = ["**🎮 TTADK 当前状态**\n"]
         
         if current_tool:
-            lines.append(f"🔧 **当前工具**: `{current_tool.name}` - {current_tool.description}")
+            lines.append(f"🔧 **当前工具**: `{current_tool}` - {tool_desc.get(current_tool, 'AI Tool')}")
         else:
             lines.append("🔧 **当前工具**: 未设置")
         
         if current_model:
-            lines.append(f"🤖 **当前模型**: `{current_model.name}` - {current_model.description}")
+            lines.append(f"🤖 **当前模型**: `{current_model}` - {model_desc.get(current_model, current_model)}")
         else:
             lines.append("🤖 **当前模型**: 未设置")
         
@@ -223,7 +244,7 @@ class SystemHandler(BaseHandler):
         
         lines = ["**🔧 TTADK 可用工具列表**\n"]
         for tool in result.tools:
-            marker = "✅" if current and tool.name == current.name else "•"
+            marker = "✅" if current and tool.name == current else "•"
             lines.append(f"{marker} `{tool.name}` - {tool.description}")
         
         lines.append("\n使用 `/ttadk_tool <名称>` 切换工具")
@@ -243,7 +264,7 @@ class SystemHandler(BaseHandler):
     
     def show_ttadk_models(self, message_id: str, chat_id: str):
         manager = get_ttadk_manager()
-        result = manager.get_models()
+        result = manager.get_models(cwd=self._resolve_ttadk_cwd(chat_id))
         current = manager.get_current_model()
         
         if result.error:
@@ -252,7 +273,7 @@ class SystemHandler(BaseHandler):
         
         lines = ["**🤖 TTADK 可用模型列表**\n"]
         for model in result.models:
-            marker = "✅" if current and model.name == current.name else "•"
+            marker = "✅" if current and model.name == current else "•"
             lines.append(f"{marker} `{model.name}` - {model.description}")
         
         lines.append("\n使用 `/ttadk_model <名称>` 切换模型")
@@ -266,7 +287,7 @@ class SystemHandler(BaseHandler):
             self.reply_message(message_id, f"✅ 已切换到 TTADK 模型: `{model_name}`")
         else:
             self.add_reaction(message_id, EmojiReaction.on_error())
-            result = manager.get_models()
+            result = manager.get_models(cwd=self._resolve_ttadk_cwd(chat_id))
             available = ", ".join([f"`{m.name}`" for m in result.models]) if result.models else "无可用模型"
             self.reply_message(message_id, f"❌ 未知 TTADK 模型: `{model_name}`\n\n可用模型: {available}")
 
@@ -277,7 +298,7 @@ class SystemHandler(BaseHandler):
             self.reply_message(message_id, f"❌ 设置 TTADK 工具失败: {tool_name}")
             return
         
-        result = manager.get_models()
+        result = manager.get_models(cwd=self._resolve_ttadk_cwd(chat_id, project_id=project_id))
         if result.error:
             self.reply_message(message_id, f"❌ 获取 TTADK 模型列表失败: {result.error}")
             return

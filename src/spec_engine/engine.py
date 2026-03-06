@@ -226,11 +226,37 @@ class SpecEngine:
             if callbacks.on_analyzing_done:
                 callbacks.on_analyzing_done(self._project)
 
+            # Resolve real model name for TTADK
+            resolved_model = self._model_name
+            if self._agent_type.startswith("ttadk"):
+                from ..ttadk import get_ttadk_manager
+                manager = get_ttadk_manager()
+
+                tool_name = self._agent_type.replace("ttadk_", "")
+                model_intent = self._model_name or manager.get_current_model() or ""
+                resolved = manager.resolve_and_ensure_valid_model(
+                    model_intent,
+                    tool_name=tool_name,
+                    cwd=self.root_path,
+                )
+                resolved_model = resolved.real_name
+                logger.info(
+                    "[Spec:%s] TTADK 模型解析: tool=%s input=%s real=%s source=%s validated=%s warnings=%s",
+                    self._project.name,
+                    tool_name,
+                    model_intent,
+                    resolved.real_name,
+                    resolved.source,
+                    resolved.validated,
+                    resolved.warnings,
+                )
+                logger.info("[Spec:%s] model=%s", self._project.name, resolved_model)
+
             # Create ACP session
             self._session = create_engine_session(
                 agent_type=self._agent_type, cwd=self.root_path,
                 on_rate_limit=on_rate_limit,
-                model_name=self._model_name,
+                model_name=resolved_model,
             )
 
             self._last_review = None
@@ -357,9 +383,18 @@ class SpecEngine:
                 time.sleep(delay)
 
     def _try_switch_model(self, callbacks: SpecEngineCallbacks) -> bool:
-        model_manager = get_coco_model_manager()
-        result = model_manager.get_models()
-        all_models = [m.name for m in result.models]
+        # TTADK: 使用 TTADKManager 的可用模型 + 真实名解析
+        if (self._agent_type or "").startswith("ttadk"):
+            from ..ttadk import get_ttadk_manager
+
+            ttadk_manager = get_ttadk_manager()
+            tool_name = (self._agent_type or "").replace("ttadk_", "")
+            result = ttadk_manager.get_models(cwd=self.root_path, tool_name=tool_name)
+            all_models = [m.name for m in result.models]
+        else:
+            model_manager = get_coco_model_manager()
+            result = model_manager.get_models()
+            all_models = [m.name for m in result.models]
 
         available = [m for m in all_models if m not in self._models_tried]
         if not available:
@@ -379,7 +414,7 @@ class SpecEngine:
             agent_type=self._agent_type,
             cwd=self.root_path,
             on_rate_limit=getattr(self, "_on_rate_limit", None),
-            model_name=self._model_name,
+            model_name=self._current_model or self._model_name,
         )
 
         logger.info("[Spec] 模型切换: %s -> %s", old_model, new_model)
@@ -1647,11 +1682,16 @@ CRITERIA_2: FAIL
                 combined_text = full_text + "\n" + "".join(thought_text)
             review_result = self._parse_review_output(combined_text, cycle)
         except Exception as e:
-            logger.warning("[Spec] 多视角审查异常: %s, 将继续循环", e)
+            # Handle empty response (connection reset, etc) gracefully
+            err_str = str(e)
+            if not err_str and isinstance(e, (ConnectionError, RuntimeError)):
+                err_str = "Connection reset by peer"
+            
+            logger.warning("[Spec] 多视角审查异常: %s, 将继续循环", err_str)
             review_result = ReviewResult(reviews=[
                 PerspectiveReview(
                     perspective=p, passed=False,
-                    suggestions=[f"审查执行异常: {e}"],
+                    suggestions=[f"审查执行异常: {err_str}"],
                     summary="异常",
                 ) for p in ReviewPerspective
             ], iteration=cycle)
