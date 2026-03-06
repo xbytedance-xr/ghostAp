@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 ## 2026-03-06
+- **TTADK 工具模型列表动态获取实现** - 新建 model_fetcher.py 使用 pty 模拟终端交互获取模型列表，TTADKModel 添加 friendly_name 字段，Manager 集成 Fetcher + 工具级缓存，+7测试，15测试全通过 → [2026-03-06.md](2026-03-06.md)
+- **TTADK 帮助文档完善与命令实现** - 更新 show_full_help() 添加 TTADK 内容，实现 /ttadk_info、/ttadk_tool、/ttadk_model 命令，更新 exit_current_mode() 支持 TTADK 模式退出，1120测试全通过 → [2026-03-06.md](2026-03-06.md)
 - **TTADK 帮助文档完善与命令实现** - 更新 show_full_help() 添加 TTADK 内容，实现 /ttadk_info、/ttadk_tool、/ttadk_model 命令，更新 exit_current_mode() 支持 TTADK 模式退出，1120测试全通过 → [2026-03-06.md](2026-03-06.md)
 - **TTADK 模式 Deep/Loop/Spec 引擎兼容性完善** - 更新三个引擎的 __init__ 方法添加 model_name 参数，在 get_or_create() 中添加 TTADK 模式支持，更新所有 create_engine_session() 调用传递 model_name，1120测试全通过 → [2026-03-06.md](2026-03-06.md)
 - **项目文档确认与兼容性验证** - 确认 README.md、帮助文档、配置文件都已更新，全面验证 TTADK 模式与现有功能的兼容性，1120测试全通过 → [2026-03-06.md](2026-03-06.md)

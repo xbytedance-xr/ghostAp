@@ -118,11 +118,15 @@ def resolve_agent_spec(agent_type: str, model_name: Optional[str] = None) -> tup
 
     if agent_type.startswith("ttadk_"):
         tool_name = agent_type[len("ttadk_"):]
-        args = ["code", "-t", tool_name]
+        # Use wrapper script to filter out TTADK banner (which breaks JSON-RPC)
+        wrapper_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "utils", "ttadk_wrapper.py")
+        wrapper_path = os.path.abspath(wrapper_path)
+        
+        args = [wrapper_path, "ttadk", "code", "-t", tool_name]
         if model_name:
             args.extend(["-m", model_name])
         args.extend(["-a", "acp serve"])
-        return "ttadk", args
+        return "python3", args
 
     if agent_type == "coco":
         if _resolve_with_auto_update("coco"):

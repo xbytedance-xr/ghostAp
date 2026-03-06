@@ -11,9 +11,10 @@ class TTADKTool:
 
 @dataclass
 class TTADKModel:
-    name: str
-    description: str = ""
+    name: str  # 真实模型名称（如 gpt-5.2-codex-ttadk）
+    description: str = ""  # 描述
     is_default: bool = False
+    friendly_name: str = ""  # 友好显示名称（如 GPT 5.2 Codex (Recommended)）
 
 
 @dataclass
