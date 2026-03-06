@@ -1,7 +1,7 @@
 """Feishu message handlers — extracted from the monolithic FeishuWSClient."""
 
 from .base import BaseHandler
-from .programming import ProgrammingModeHandler, CocoModeHandler, ClaudeModeHandler
+from .programming import ProgrammingModeHandler, CocoModeHandler, ClaudeModeHandler, TTADKModeHandler
 from .deep import DeepHandler
 from .loop import LoopHandler
 from .spec import SpecHandler
@@ -14,6 +14,7 @@ __all__ = [
     "ProgrammingModeHandler",
     "CocoModeHandler",
     "ClaudeModeHandler",
+    "TTADKModeHandler",
     "DeepHandler",
     "LoopHandler",
     "SpecHandler",

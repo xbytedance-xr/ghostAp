@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
-import time
 from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
@@ -13,7 +11,6 @@ from .base import BaseHandler
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
-    from ..handler_context import HandlerContext
 
 logger = logging.getLogger(__name__)
 

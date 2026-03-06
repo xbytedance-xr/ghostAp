@@ -731,3 +731,68 @@ class CardBuilder:
         else:
             days = int(diff / 86400)
             return f"{days} 天前"
+
+    @staticmethod
+    def build_ttadk_tool_select_card(tools: list, project_id: Optional[str] = None) -> tuple[str, str]:
+        elements = [
+            {
+                "tag": "markdown",
+                "content": "请选择要使用的 TTADK 工具："
+            }
+        ]
+
+        buttons = []
+        for tool in tools:
+            btn_text = f"{tool.name}"
+            if tool.description:
+                btn_text += f" ({tool.description})"
+            buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": btn_text},
+                "type": "primary" if tool.is_default else "default",
+                "value": {
+                    "action": "select_ttadk_tool",
+                    "tool_name": tool.name,
+                    "project_id": project_id
+                }
+            })
+
+        elements.extend(build_responsive_layout(buttons))
+
+        card = CardBuilder._wrap_card("🔧 TTADK 工具选择", "blue", elements)
+        return "interactive", json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
+    def build_ttadk_model_select_card(
+        models: list,
+        tool_name: str,
+        project_id: Optional[str] = None
+    ) -> tuple[str, str]:
+        elements = [
+            {
+                "tag": "markdown",
+                "content": f"请为 **{tool_name}** 选择要使用的模型："
+            }
+        ]
+
+        buttons = []
+        for model in models:
+            btn_text = f"{model.name}"
+            if model.description:
+                btn_text += f" ({model.description})"
+            buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": btn_text},
+                "type": "primary" if model.is_default else "default",
+                "value": {
+                    "action": "select_ttadk_model",
+                    "tool_name": tool_name,
+                    "model_name": model.name,
+                    "project_id": project_id
+                }
+            })
+
+        elements.extend(build_responsive_layout(buttons))
+
+        card = CardBuilder._wrap_card(f"🤖 {tool_name} 模型选择", "blue", elements)
+        return "interactive", json.dumps(card, ensure_ascii=False)

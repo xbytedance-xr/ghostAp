@@ -38,6 +38,7 @@ class HandlerContext:
     # Session managers (ACP-based)
     coco_manager: "ACPSessionManager"
     claude_manager: "ACPSessionManager"
+    ttadk_manager: "ACPSessionManager"
 
     # Core services
     intent_recognizer: "IntentRecognizer"

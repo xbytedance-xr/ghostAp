@@ -2,7 +2,6 @@ import json
 import logging
 import time
 import os
-import uuid
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import *
 from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTrigger, P2CardActionTriggerResponse
@@ -14,27 +13,26 @@ from ..agent.intent_recognizer import IntentRecognizer, IntentType, IntentResult
 from ..project import (
     ProjectManager,
     ProjectContext,
-    ProjectStatus,
     MessageProjectMapper,
     MessageLinker,
     ProjectContextManager,
     ContextSourceMode,
-    ContextEntryType,
 )
 from ..card import CardBuilder
 from ..card.streaming import StreamingCardManager
 from ..deep_engine import DeepEngineManager, ProgressReporter
 from ..loop_engine import LoopEngineManager, LoopReporter
 from ..spec_engine import SpecEngineManager, SpecReporter
-from ..tasking import TaskScheduler, TaskSpec, TaskPriority, SYSTEM_QUEUE_SUFFIX
+from ..tasking import TaskScheduler, TaskSpec, TaskPriority
 from .message_formatter import FeishuMessageFormatter as fmt
-from .emoji import EmojiType, EmojiReaction
+from .emoji import EmojiReaction
 from .message_cache import MessageCache
 from .image_handler import FeishuImageHandler
 from .handler_context import HandlerContext
 from .handlers import (
     CocoModeHandler,
     ClaudeModeHandler,
+    TTADKModeHandler,
     DeepHandler,
     LoopHandler,
     SpecHandler,
@@ -57,6 +55,7 @@ class FeishuWSClient:
         self._api_client: Optional[lark.Client] = None
         self._coco_manager = ACPSessionManager("coco", session_timeout=self.settings.coco_session_timeout)
         self._claude_manager = ACPSessionManager("claude", session_timeout=self.settings.claude_session_timeout)
+        self._ttadk_manager = ACPSessionManager("ttadk", session_timeout=self.settings.coco_session_timeout)
         self._intent_recognizer = IntentRecognizer()
         self._message_cache = MessageCache(ttl=300, max_size=1000, cleanup_interval=60)
         self._scheduler = TaskScheduler(
@@ -100,6 +99,7 @@ class FeishuWSClient:
             message_callback=self.message_callback,
             coco_manager=self._coco_manager,
             claude_manager=self._claude_manager,
+            ttadk_manager=self._ttadk_manager,
             intent_recognizer=self._intent_recognizer,
             scheduler=self._scheduler,
             project_manager=self._project_manager,
@@ -125,6 +125,7 @@ class FeishuWSClient:
         # Instantiate handlers
         self._coco_handler = CocoModeHandler(self._handler_ctx)
         self._claude_handler = ClaudeModeHandler(self._handler_ctx)
+        self._ttadk_handler = TTADKModeHandler(self._handler_ctx)
         self._deep_handler = DeepHandler(self._handler_ctx)
         self._loop_handler = LoopHandler(self._handler_ctx)
         self._spec_handler = SpecHandler(self._handler_ctx)
@@ -135,8 +136,11 @@ class FeishuWSClient:
         # Wire cross-references
         self._coco_handler._opposite_handler = self._claude_handler
         self._claude_handler._opposite_handler = self._coco_handler
+        self._ttadk_handler._coco_handler = self._coco_handler
+        self._ttadk_handler._claude_handler = self._claude_handler
         self._system_handler.coco_handler = self._coco_handler
         self._system_handler.claude_handler = self._claude_handler
+        self._system_handler.ttadk_handler = self._ttadk_handler
         self._system_handler.project_handler = self._project_handler
         self._system_handler.deep_handler = self._deep_handler
         self._system_handler.loop_handler = self._loop_handler
@@ -196,6 +200,11 @@ class FeishuWSClient:
             self._claude_manager.cleanup_all()
         except Exception as e:
             logger.debug("清理claude_session_manager失败: %s", e)
+
+        try:
+            self._ttadk_manager.cleanup_all()
+        except Exception as e:
+            logger.debug("清理ttadk_session_manager失败: %s", e)
 
         try:
             self._deep_engine_manager.cleanup_all()
@@ -290,6 +299,19 @@ class FeishuWSClient:
         "_handle_card_exit_claude":  ("_claude_handler", "handle_card_exit"),
         "_handle_card_resume_claude":("_claude_handler", "handle_card_resume"),
         "_handle_card_new_claude":   ("_claude_handler", "handle_card_new"),
+        # --- TTADK mode ---
+        "_enter_ttadk_mode":         ("_ttadk_handler", "enter_mode"),
+        "_exit_ttadk_mode":          ("_ttadk_handler", "exit_mode"),
+        "_handle_ttadk_message":     ("_ttadk_handler", "handle_message"),
+        "_handle_ttadk_response":    ("_ttadk_handler", "handle_response"),
+        "_show_ttadk_info":          ("_ttadk_handler", "show_info"),
+        "_handle_card_enter_ttadk":  ("_ttadk_handler", "handle_card_enter"),
+        "_handle_card_exit_ttadk":   ("_ttadk_handler", "handle_card_exit"),
+        "_handle_card_resume_ttadk": ("_ttadk_handler", "handle_card_resume"),
+        "_handle_card_new_ttadk":    ("_ttadk_handler", "handle_card_new"),
+        "_handle_ttadk_command":     ("_system_handler", "handle_ttadk_command"),
+        "_handle_select_ttadk_tool": ("_system_handler", "handle_select_ttadk_tool"),
+        "_handle_select_ttadk_model":("_system_handler", "handle_select_ttadk_model"),
         # --- Deep Engine ---
         "_handle_deep_command":      ("_deep_handler", "handle_deep_command"),
         "_start_deep_engine":        ("_deep_handler", "start_deep_engine"),
@@ -658,7 +680,7 @@ class FeishuWSClient:
         except Exception as e:
             logger.error("处理消息异常: %s", e, exc_info=True)
             try:
-                self._reply_message(message_id, f"❌ 处理消息时发生内部错误，请稍后重试")
+                self._reply_message(message_id, "❌ 处理消息时发生内部错误，请稍后重试")
             except Exception:
                 pass
         finally:
@@ -765,6 +787,7 @@ class FeishuWSClient:
             system_actions = {
                 "show_status", "switch_project", "show_board", "refresh_board",
                 "show_detail", "new_project_prompt",
+                "select_ttadk_tool", "select_ttadk_model",
             }
             return action_type in system_actions
         except Exception:
@@ -886,6 +909,16 @@ class FeishuWSClient:
                 deep_actions[action_type](open_message_id, open_chat_id, project=target_project)
             elif action_type == "new_project_prompt":
                 self._reply_message(open_message_id, "📝 创建新项目\n\n请发送: `/new 项目名 路径`\n\n例如: `/new myApp ~/workspace/myApp`")
+            elif action_type == "select_ttadk_tool":
+                tool_name = value.get("tool_name", "")
+                project_id = value.get("project_id", "")
+                self._handle_select_ttadk_tool(open_message_id, open_chat_id, tool_name, project_id)
+            elif action_type == "select_ttadk_model":
+                tool_name = value.get("tool_name", "")
+                model_name = value.get("model_name", "")
+                project_id = value.get("project_id", "")
+                project = self._project_manager.get_project(project_id) if project_id else None
+                self._handle_select_ttadk_model(open_message_id, open_chat_id, tool_name, model_name, project)
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
             logger.debug("卡片回调处理耗时: %dms", elapsed_ms)
 

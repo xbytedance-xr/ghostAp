@@ -376,7 +376,7 @@ class IntentRecognizer:
                 confidence=1.0,
                 data={"name": name, "path": path},
                 original_text=text,
-                reasoning=f"精确匹配: /new 命令",
+                reasoning="精确匹配: /new 命令",
                 description=f"创建项目: {name}"
             )
 
@@ -387,7 +387,7 @@ class IntentRecognizer:
                 confidence=1.0,
                 data={"name": name},
                 original_text=text,
-                reasoning=f"精确匹配: /switch 命令",
+                reasoning="精确匹配: /switch 命令",
                 description=f"切换到项目: {name}"
             )
 
@@ -398,7 +398,7 @@ class IntentRecognizer:
                 confidence=1.0,
                 data={"name": name},
                 original_text=text,
-                reasoning=f"精确匹配: /close 命令",
+                reasoning="精确匹配: /close 命令",
                 description=f"关闭项目: {name}"
             )
 
@@ -442,8 +442,8 @@ class IntentRecognizer:
                 confidence=1.0,
                 data={"requirement": requirement},
                 original_text=text,
-                reasoning=f"精确匹配: /deep 命令",
-                description=f"启动 Deep Engine"
+                reasoning="精确匹配: /deep 命令",
+                description="启动 Deep Engine"
             )
 
         if text_lower.startswith("/loop_guide "):

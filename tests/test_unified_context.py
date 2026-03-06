@@ -2081,14 +2081,15 @@ class TestCrossModeContextSharing:
         return ProjectContextManager()
 
     def test_all_modes_entries_coexist(self, ctx):
-        """所有 5 种模式的条目在同一上下文中共存"""
+        """所有 6 种模式的条目在同一上下文中共存"""
         ctx.add_conversation("user", "smart cmd", ContextSourceMode.SMART)
         ctx.add_conversation("user", "coco msg", ContextSourceMode.COCO)
         ctx.add_conversation("user", "claude msg", ContextSourceMode.CLAUDE)
         ctx.add_conversation("user", "shell cmd", ContextSourceMode.SHELL)
+        ctx.add_conversation("user", "ttadk msg", ContextSourceMode.TTADK)
         ctx.add_deep_engine_result({"name": "task1", "tasks": []})
 
-        assert ctx.entry_count == 5
+        assert ctx.entry_count == 6
 
         # 所有模式的条目均可查询
         for mode in ContextSourceMode:

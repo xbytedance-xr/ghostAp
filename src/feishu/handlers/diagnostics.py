@@ -6,14 +6,13 @@ import logging
 from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
-from ...project import ContextEntryType, ContextSourceMode
+from ...project import ContextEntryType
 from ...tasking import TaskSpec, TaskPriority
 from ...utils.text import format_duration
 from .base import BaseHandler
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
-    from ..handler_context import HandlerContext
 
 logger = logging.getLogger(__name__)
 
@@ -246,7 +245,7 @@ class DiagnosticsHandler(BaseHandler):
                 engine.project.task_id == task_id or task_id in engine.project.task_id
             ):
                 content = self.ctx.progress_reporter.format_status(engine.project)
-                title = f"📊 Deep 任务详情"
+                title = "📊 Deep 任务详情"
                 engine_name = engine.engine_name
                 msg_type, card_content = CardBuilder.build_deep_card(
                     project=project, title=title, content=content,
@@ -260,7 +259,7 @@ class DiagnosticsHandler(BaseHandler):
                 engine.project.task_id == task_id or task_id in engine.project.task_id
             ):
                 content = self.ctx.loop_reporter.format_status(engine.project)
-                title = f"📊 Loop 任务详情"
+                title = "📊 Loop 任务详情"
                 engine_name = engine.engine_name
                 msg_type, card_content = CardBuilder.build_deep_card(
                     project=project, title=title, content=content,
@@ -274,7 +273,7 @@ class DiagnosticsHandler(BaseHandler):
                 engine.project.task_id == task_id or task_id in engine.project.task_id
             ):
                 content = self.ctx.spec_reporter.format_status(engine.project)
-                title = f"📊 Spec 任务详情"
+                title = "📊 Spec 任务详情"
                 engine_name = engine.engine_name
                 msg_type, card_content = CardBuilder.build_deep_card(
                     project=project, title=title, content=content,

@@ -20,7 +20,6 @@ from .base import BaseHandler
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
-    from ..handler_context import HandlerContext
 
 logger = logging.getLogger(__name__)
 

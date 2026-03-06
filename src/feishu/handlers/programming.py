@@ -22,7 +22,6 @@ from .base import BaseHandler
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
-    from ..handler_context import HandlerContext
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +90,6 @@ class ProgrammingModeHandler(BaseHandler):
     # enter_mode
     # ------------------------------------------------------------------
     def enter_mode(self, message_id: str, chat_id: str, silent: bool = False, project: Optional["ProjectContext"] = None):
-        from ...mode import InteractionMode
 
         project_id = project.project_id if project else None
 
@@ -416,7 +414,6 @@ class ProgrammingModeHandler(BaseHandler):
         self.exit_mode(message_id, chat_id)
 
     def handle_card_resume(self, message_id: str, chat_id: str, project_id: str, session_id: str):
-        from ...mode import InteractionMode
 
         project = self.project_manager.get_project(project_id) if project_id else None
         pid = project.project_id if project else None
@@ -564,3 +561,69 @@ class ClaudeModeHandler(ProgrammingModeHandler):
 
     def _clear_snapshot_on_project(self, project):
         project.claude_session_snapshot = None
+
+
+class TTADKModeHandler(ProgrammingModeHandler):
+    mode_name = "TTADK"
+    mode_emoji = "🎮"
+    is_coco = False
+    context_source = ContextSourceMode.TTADK
+    thinking_text = "🎮 TTADK 正在思考..."
+
+    def __init__(self, ctx):
+        super().__init__(ctx)
+        self._current_tool: Optional[str] = None
+        self._current_model: Optional[str] = None
+
+    def _get_session_manager(self):
+        return self.ctx.ttadk_manager
+
+    def _is_in_this_mode(self, chat_id):
+        return self.mode_manager.is_ttadk_mode(chat_id)
+
+    def _is_in_opposite_mode(self, chat_id):
+        return self.mode_manager.is_coco_mode(chat_id) or self.mode_manager.is_claude_mode(chat_id)
+
+    def _exit_opposite_mode(self, message_id, chat_id, project=None):
+        if hasattr(self, '_coco_handler'):
+            self._coco_handler.exit_mode(message_id, chat_id, project=project)
+        if hasattr(self, '_claude_handler'):
+            self._claude_handler.exit_mode(message_id, chat_id, project=project)
+
+    def _enter_mode_on_manager(self, chat_id, project_id=None):
+        self.mode_manager.enter_ttadk_mode(chat_id, project_id=project_id)
+
+    def _get_interaction_mode(self):
+        from ...mode import InteractionMode
+        return InteractionMode.TTADK
+
+    def _get_snapshot(self, project):
+        return project.ttadk_session_snapshot
+
+    def _set_mode_on_project(self, project, active, session_id="", count=0):
+        if active:
+            project.set_ttadk_mode(True, session_id, count)
+        else:
+            project.set_ttadk_mode(False)
+
+    def _update_snapshot_on_project(self, project, query, count, session_id=""):
+        project.update_ttadk_snapshot(query=query, query_count=count, session_id=session_id)
+
+    def _clear_snapshot_on_project(self, project):
+        project.ttadk_session_snapshot = None
+
+    @property
+    def current_tool(self) -> Optional[str]:
+        return self._current_tool
+
+    @current_tool.setter
+    def current_tool(self, value: Optional[str]):
+        self._current_tool = value
+
+    @property
+    def current_model(self) -> Optional[str]:
+        return self._current_model
+
+    @current_model.setter
+    def current_model(self, value: Optional[str]):
+        self._current_model = value

@@ -1,5 +1,19 @@
 # GhostAP 项目记忆索引
 
+## 2026-03-06
+- **TTADK 帮助文档完善与命令实现** - 更新 show_full_help() 添加 TTADK 内容，实现 /ttadk_info、/ttadk_tool、/ttadk_model 命令，更新 exit_current_mode() 支持 TTADK 模式退出，1120测试全通过 → [2026-03-06.md](2026-03-06.md)
+- **TTADK 模式 Deep/Loop/Spec 引擎兼容性完善** - 更新三个引擎的 __init__ 方法添加 model_name 参数，在 get_or_create() 中添加 TTADK 模式支持，更新所有 create_engine_session() 调用传递 model_name，1120测试全通过 → [2026-03-06.md](2026-03-06.md)
+- **项目文档确认与兼容性验证** - 确认 README.md、帮助文档、配置文件都已更新，全面验证 TTADK 模式与现有功能的兼容性，1120测试全通过 → [2026-03-06.md](2026-03-06.md)
+
+## 2026-03-05
+- **TTADK 统一模式完整实现与测试验证** - 运行完整测试套件，修复 9 个测试失败（HandlerContext 缺少 ttadk_manager、unified_context 缺少 TTADK 条目、性能测试超时），更新 checklist.md 所有检查点为已完成，1120测试全通过 → [2026-03-05.md](2026-03-05.md)
+- **TTADK 引擎支持完善** - 在 src/feishu/handlers/base.py 的 get_engine_name() 中添加 TTADK 支持，在 src/agent_session.py 的 create_sync_session() 和 create_engine_session() 中添加 ttadk_ 前缀支持，Deep/Loop/Spec 引擎兼容，115测试全通过 → [2026-03-05.md](2026-03-05.md)
+- **TTADK 工具和模型选择卡片实现** - 在 src/card/builder.py 中实现 build_ttadk_tool_select_card() 和 build_ttadk_model_select_card() 方法，使用按钮组实现选择，支持所有 8 个 ttadk 工具，+5测试，105卡片测试全通过 → [2026-03-05.md](2026-03-05.md)
+- **TTADK 配置管理模块实现** - 创建 src/ttadk/ 目录，实现 models.py（TTADKTool/TTADKModel/ToolListResult/ModelListResult）、manager.py（TTADKManager 管理工具和模型列表，支持 8 个预设工具和 8 个预设模型）、在 config.py 中添加 ttadk_default_tool/ttadk_default_model 配置项、__init__.py 导出模块，+6测试，1108测试全通过 → [2026-03-05.md](2026-03-05.md)
+- **resolve_agent_spec 函数添加 ttadk 支持** - 在 src/acp/sync_adapter.py 中添加对 ttadk_ 前缀 agent_type 的支持，构建 ["ttadk", "code", "-t", tool_name, "-a", "acp serve"] 命令，支持可选 model_name 参数，+4测试，93测试全通过 → [2026-03-05.md](2026-03-05.md)
+- **ProjectContext 中添加 TTADK 字段和方法** - 在 src/project/context.py 中添加 ttadk_mode 和 ttadk_session_snapshot 字段，添加 set_ttadk_mode() 和 update_ttadk_snapshot() 方法，在 to_snapshot() 和 from_snapshot() 中添加序列化和反序列化支持，保持与 coco/claude 一致的代码风格，41测试全通过 → [2026-03-05.md](2026-03-05.md)
+- **TTADK 编程模式支持** - 在 ModeManager 中添加 TTADK 模式，包括 enter_ttadk_mode()、is_ttadk_mode()，更新 is_programming_mode() 和 get_mode_display_name()，保持与 COCO/CLAUDE 一致的代码风格，+2测试，24测试全通过 → [2026-03-05.md](2026-03-05.md)
+
 ## 2026-03-02
 - **Coco 模型管理与 Spec 任务稳定性增强** - 新增 `/models`、`/model` 命令动态切换模型；Spec 任务失败自动重试+模型切换；`/spec_recover` 恢复中断任务；+51测试，963测试全通过 → [2026-03-02.md](2026-03-02.md)
 

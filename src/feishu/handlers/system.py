@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
 from ...coco_model import get_coco_model_manager
+from ...ttadk import get_ttadk_manager
 from ...tasking import TaskSpec, TaskPriority
 from ..emoji import EmojiReaction
 from ..message_formatter import FeishuMessageFormatter as fmt
@@ -16,7 +16,6 @@ from .base import BaseHandler
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
-    from ..handler_context import HandlerContext
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +26,7 @@ class SystemHandler(BaseHandler):
     # Reference to programming handlers set by ws_client after construction
     coco_handler = None
     claude_handler = None
+    ttadk_handler = None
     project_handler = None
     deep_handler = None
     loop_handler = None
@@ -93,17 +93,18 @@ class SystemHandler(BaseHandler):
         text_lower = text.lower().strip()
         exact_commands = {
             "/help", "/帮助",
-            "/coco_info", "/claude_info",
+            "/coco_info", "/claude_info", "/ttadk_info",
             "/projects", "/status", "/project",
             "/switch",
             "/tasks",
             "/diff",
             "/trace",
             "/models", "/model",
+            "/ttadk", "/ttadk_tool", "/ttadk_model",
         }
         if text_lower in exact_commands:
             return True
-        prefix_commands = ("/switch ", "/new ", "/close ", "/tasks ", "/diff ", "/trace ", "/status ", "/model ")
+        prefix_commands = ("/switch ", "/new ", "/close ", "/tasks ", "/diff ", "/trace ", "/status ", "/model ", "/ttadk_tool ", "/ttadk_model ")
         return any(text_lower.startswith(p) for p in prefix_commands)
 
     # ------------------------------------------------------------------
@@ -159,8 +160,143 @@ class SystemHandler(BaseHandler):
             name = text[7:].strip()
             if name:
                 self.project_handler.close_project(message_id, chat_id, name)
+        elif text_lower == "/ttadk":
+            self.handle_ttadk_command(message_id, chat_id, project)
+        elif text_lower == "/ttadk_info":
+            self.show_ttadk_info(message_id, chat_id)
+        elif text_lower == "/ttadk_tool":
+            self.show_ttadk_tools(message_id, chat_id)
+        elif text_lower.startswith("/ttadk_tool "):
+            tool_name = text[12:].strip()
+            self.switch_ttadk_tool(message_id, chat_id, tool_name)
+        elif text_lower == "/ttadk_model":
+            self.show_ttadk_models(message_id, chat_id)
+        elif text_lower.startswith("/ttadk_model "):
+            model_name = text[13:].strip()
+            self.switch_ttadk_model(message_id, chat_id, model_name)
         else:
             self.show_full_help(message_id, chat_id, project)
+
+    # ------------------------------------------------------------------
+    # TTADK command handling
+    # ------------------------------------------------------------------
+    def handle_ttadk_command(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+        project_id = project.project_id if project else None
+        manager = get_ttadk_manager()
+        result = manager.get_tools()
+        if result.error:
+            self.reply_message(message_id, f"❌ 获取 TTADK 工具列表失败: {result.error}")
+            return
+        msg_type, card_content = CardBuilder.build_ttadk_tool_select_card(result.tools, project_id)
+        self.reply_message(message_id, card_content, msg_type=msg_type)
+    
+    def show_ttadk_info(self, message_id: str, chat_id: str):
+        manager = get_ttadk_manager()
+        current_tool = manager.get_current_tool()
+        current_model = manager.get_current_model()
+        
+        lines = ["**🎮 TTADK 当前状态**\n"]
+        
+        if current_tool:
+            lines.append(f"🔧 **当前工具**: `{current_tool.name}` - {current_tool.description}")
+        else:
+            lines.append("🔧 **当前工具**: 未设置")
+        
+        if current_model:
+            lines.append(f"🤖 **当前模型**: `{current_model.name}` - {current_model.description}")
+        else:
+            lines.append("🤖 **当前模型**: 未设置")
+        
+        lines.append("\n使用 `/ttadk_tool <工具名>` 切换工具")
+        lines.append("使用 `/ttadk_model <模型名>` 切换模型")
+        
+        self.reply_message(message_id, "\n".join(lines))
+    
+    def show_ttadk_tools(self, message_id: str, chat_id: str):
+        manager = get_ttadk_manager()
+        result = manager.get_tools()
+        current = manager.get_current_tool()
+        
+        if result.error:
+            self.reply_message(message_id, f"❌ 获取 TTADK 工具列表失败: {result.error}")
+            return
+        
+        lines = ["**🔧 TTADK 可用工具列表**\n"]
+        for tool in result.tools:
+            marker = "✅" if current and tool.name == current.name else "•"
+            lines.append(f"{marker} `{tool.name}` - {tool.description}")
+        
+        lines.append("\n使用 `/ttadk_tool <名称>` 切换工具")
+        self.reply_message(message_id, "\n".join(lines))
+    
+    def switch_ttadk_tool(self, message_id: str, chat_id: str, tool_name: str):
+        manager = get_ttadk_manager()
+        success = manager.set_tool(tool_name)
+        if success:
+            self.add_reaction(message_id, EmojiReaction.on_done())
+            self.reply_message(message_id, f"✅ 已切换到 TTADK 工具: `{tool_name}`")
+        else:
+            self.add_reaction(message_id, EmojiReaction.on_error())
+            result = manager.get_tools()
+            available = ", ".join([f"`{t.name}`" for t in result.tools]) if result.tools else "无可用工具"
+            self.reply_message(message_id, f"❌ 未知 TTADK 工具: `{tool_name}`\n\n可用工具: {available}")
+    
+    def show_ttadk_models(self, message_id: str, chat_id: str):
+        manager = get_ttadk_manager()
+        result = manager.get_models()
+        current = manager.get_current_model()
+        
+        if result.error:
+            self.reply_message(message_id, f"❌ 获取 TTADK 模型列表失败: {result.error}")
+            return
+        
+        lines = ["**🤖 TTADK 可用模型列表**\n"]
+        for model in result.models:
+            marker = "✅" if current and model.name == current.name else "•"
+            lines.append(f"{marker} `{model.name}` - {model.description}")
+        
+        lines.append("\n使用 `/ttadk_model <名称>` 切换模型")
+        self.reply_message(message_id, "\n".join(lines))
+    
+    def switch_ttadk_model(self, message_id: str, chat_id: str, model_name: str):
+        manager = get_ttadk_manager()
+        success = manager.set_model(model_name)
+        if success:
+            self.add_reaction(message_id, EmojiReaction.on_done())
+            self.reply_message(message_id, f"✅ 已切换到 TTADK 模型: `{model_name}`")
+        else:
+            self.add_reaction(message_id, EmojiReaction.on_error())
+            result = manager.get_models()
+            available = ", ".join([f"`{m.name}`" for m in result.models]) if result.models else "无可用模型"
+            self.reply_message(message_id, f"❌ 未知 TTADK 模型: `{model_name}`\n\n可用模型: {available}")
+
+    def handle_select_ttadk_tool(self, message_id: str, chat_id: str, tool_name: str, project_id: Optional[str] = None):
+        manager = get_ttadk_manager()
+        success = manager.set_tool(tool_name)
+        if not success:
+            self.reply_message(message_id, f"❌ 设置 TTADK 工具失败: {tool_name}")
+            return
+        
+        result = manager.get_models()
+        if result.error:
+            self.reply_message(message_id, f"❌ 获取 TTADK 模型列表失败: {result.error}")
+            return
+        msg_type, card_content = CardBuilder.build_ttadk_model_select_card(result.models, tool_name, project_id)
+        self.reply_message(message_id, card_content, msg_type=msg_type)
+
+    def handle_select_ttadk_model(self, message_id: str, chat_id: str, tool_name: str, model_name: str, project: Optional["ProjectContext"] = None):
+        manager = get_ttadk_manager()
+        success = manager.set_model(model_name)
+        if not success:
+            self.reply_message(message_id, f"❌ 设置 TTADK 模型失败: {model_name}")
+            return
+        
+        if self.ttadk_handler:
+            self.ttadk_handler.current_tool = tool_name
+            self.ttadk_handler.current_model = model_name
+            self.ttadk_handler.enter_mode(message_id, chat_id, project=project)
+        else:
+            self.reply_message(message_id, "❌ TTADK 处理器未初始化")
 
     # ------------------------------------------------------------------
     # Exit current mode
@@ -174,6 +310,8 @@ class SystemHandler(BaseHandler):
             self.coco_handler.exit_mode(message_id, chat_id, project)
         elif current_mode == InteractionMode.CLAUDE:
             self.claude_handler.exit_mode(message_id, chat_id, project)
+        elif current_mode == InteractionMode.TTADK:
+            self.ttadk_handler.exit_mode(message_id, chat_id, project)
         else:
             self.reply_message(message_id, "🧠 当前已经在智能模式中")
 
@@ -365,6 +503,7 @@ class SystemHandler(BaseHandler):
             InteractionMode.SMART: "🧠 智能模式",
             InteractionMode.COCO: "🤖 Coco 编程模式",
             InteractionMode.CLAUDE: "🔮 Claude 编程模式",
+            InteractionMode.TTADK: "🎮 TTADK 多工具模式",
         }
         current_mode_str = mode_emoji.get(current_mode, "🧠 智能模式")
         project_info = f"**{project.project_name}** (`{project.root_path}`)" if project else "无"
@@ -382,7 +521,7 @@ class SystemHandler(BaseHandler):
                      "content": f"**当前状态**  •  {current_mode_str}  •  `{current_dir}`  •  项目: {project_info}"},
                     {"tag": "hr"},
                     {"tag": "markdown", "text_size": "normal",
-                     "content": "**🔄 编程模式切换**\n`/coco` - 进入 Coco 编程模式（字节跳动 AI）\n`/claude` - 进入 Claude 编程模式（Anthropic AI）\n`/exit` - 退出当前编程模式\n`/coco_info` - 查看 Coco 会话信息\n`/claude_info` - 查看 Claude 会话信息"},
+                     "content": "**🔄 编程模式切换**\n`/coco` - 进入 Coco 编程模式（字节跳动 AI）\n`/claude` - 进入 Claude 编程模式（Anthropic AI）\n`/ttadk` - 进入 TTADK 多工具编程模式（支持 Coco/Claude/Cursor/Gemini 等）\n`/exit` - 退出当前编程模式\n`/coco_info` - 查看 Coco 会话信息\n`/claude_info` - 查看 Claude 会话信息\n`/ttadk_info` - 查看 TTADK 当前工具和模型"},
                     {"tag": "hr"},
                     {"tag": "markdown", "text_size": "normal",
                      "content": "**📂 项目管理**\n`/projects` - 查看所有项目\n`/new <名称> [路径]` - 创建新项目\n`/switch <名称>` - 切换项目\n`/close <名称>` - 关闭项目\n`/status` - 查看所有引擎任务状态\n`/status <task_id>` - 查看指定任务详情\n`/diff` - 查看最近两次版本变更"},
@@ -413,7 +552,7 @@ class SystemHandler(BaseHandler):
                                 "- 脚本：`/spec 写一个批量重命名脚本，支持dry-run`"},
                     {"tag": "hr"},
                     {"tag": "markdown", "text_size": "normal",
-                     "content": "**🤖 模型管理**\n`/models` - 查看可用模型列表\n`/model` - 查看当前使用的模型\n`/model <名称>` - 切换到指定模型"},
+                     "content": "**🤖 模型管理**\n`/models` - 查看可用模型列表（Coco）\n`/model` - 查看当前使用的模型（Coco）\n`/model <名称>` - 切换到指定模型（Coco）\n`/ttadk_tool` - 查看 TTADK 可用工具\n`/ttadk_tool <工具>` - 切换 TTADK 使用的工具\n`/ttadk_model` - 查看 TTADK 可用模型\n`/ttadk_model <模型>` - 切换 TTADK 使用的模型"},
                     {"tag": "hr"},
                     {"tag": "markdown", "text_size": "normal",
                      "content": "**💡 使用提示**\n1. 发送 `/coco` 或 `/claude` 进入编程模式\n2. 在编程模式中直接对话，系统命令（如 `/help`）会自动拦截\n3. 智能模式下直接输入 Shell 命令即可执行\n4. 发送 `/help` 或 `/帮助` 随时查看本帮助"},

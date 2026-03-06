@@ -46,6 +46,7 @@ class SessionSnapshot:
 # Backward-compatible aliases
 CocoSessionSnapshot = SessionSnapshot
 ClaudeSessionSnapshot = SessionSnapshot
+TtadkSessionSnapshot = SessionSnapshot
 
 
 @dataclass
@@ -63,6 +64,9 @@ class ProjectContext:
 
     claude_session_snapshot: Optional[SessionSnapshot] = None
     claude_mode: bool = False
+
+    ttadk_session_snapshot: Optional[SessionSnapshot] = None
+    ttadk_mode: bool = False
 
     task_queue: list[Task] = field(default_factory=list)
     current_task: Optional[Task] = None
@@ -127,6 +131,25 @@ class ProjectContext:
             if session_id:
                 self.claude_session_snapshot.session_id = session_id
 
+    def set_ttadk_mode(self, enabled: bool, session_id: Optional[str] = None, query_count: int = 0):
+        self.ttadk_mode = enabled
+        if enabled and session_id:
+            self.ttadk_session_snapshot = TtadkSessionSnapshot(
+                session_id=session_id,
+                query_count=query_count,
+                last_query="",
+                is_resumable=True
+            )
+        elif not enabled and self.ttadk_session_snapshot:
+            self.ttadk_session_snapshot.is_resumable = True
+
+    def update_ttadk_snapshot(self, query: str, query_count: int, session_id: Optional[str] = None):
+        if self.ttadk_session_snapshot:
+            self.ttadk_session_snapshot.last_query = query
+            self.ttadk_session_snapshot.query_count = query_count
+            if session_id:
+                self.ttadk_session_snapshot.session_id = session_id
+
     def get_status_emoji(self) -> str:
         status_map = {
             ProjectStatus.IDLE: "⚪",
@@ -160,6 +183,13 @@ class ProjectContext:
                 "last_query": self.claude_session_snapshot.last_query,
                 "is_resumable": self.claude_session_snapshot.is_resumable,
             } if self.claude_session_snapshot else None,
+            "ttadk_mode": self.ttadk_mode,
+            "ttadk_session_snapshot": {
+                "session_id": self.ttadk_session_snapshot.session_id,
+                "query_count": self.ttadk_session_snapshot.query_count,
+                "last_query": self.ttadk_session_snapshot.last_query,
+                "is_resumable": self.ttadk_session_snapshot.is_resumable,
+            } if self.ttadk_session_snapshot else None,
             "theme_color": self.theme_color,
             "emoji_prefix": self.emoji_prefix,
             "env_vars": self.env_vars,
@@ -186,6 +216,7 @@ class ProjectContext:
             last_active=data.get("last_active", time.time()),
             coco_mode=data.get("coco_mode", False),
             claude_mode=data.get("claude_mode", False),
+            ttadk_mode=data.get("ttadk_mode", False),
             theme_color=data.get("theme_color", "green"),
             emoji_prefix=data.get("emoji_prefix", "🟢"),
             env_vars=data.get("env_vars", {}),
@@ -201,6 +232,14 @@ class ProjectContext:
         if data.get("claude_session_snapshot"):
             snap = data["claude_session_snapshot"]
             ctx.claude_session_snapshot = ClaudeSessionSnapshot(
+                session_id=snap["session_id"],
+                query_count=snap["query_count"],
+                last_query=snap["last_query"],
+                is_resumable=snap.get("is_resumable", True),
+            )
+        if data.get("ttadk_session_snapshot"):
+            snap = data["ttadk_session_snapshot"]
+            ctx.ttadk_session_snapshot = TtadkSessionSnapshot(
                 session_id=snap["session_id"],
                 query_count=snap["query_count"],
                 last_query=snap["last_query"],

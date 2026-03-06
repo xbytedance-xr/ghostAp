@@ -183,3 +183,25 @@ class TestResolveAgentSpec:
         settings.get_acp_command = lambda agent_type: ("/custom/coco", ["serve"])
         monkeypatch.setattr(sa, "get_settings", lambda: settings)
         assert sa.resolve_agent_spec("coco") == ("/custom/coco", ["serve"])
+
+    def test_ttadk_coco_no_model(self, monkeypatch):
+        """resolve_agent_spec returns ttadk spec for ttadk_coco without model."""
+        monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
+        assert sa.resolve_agent_spec("ttadk_coco") == ("ttadk", ["code", "-t", "coco", "-a", "acp serve"])
+
+    def test_ttadk_claude_no_model(self, monkeypatch):
+        """resolve_agent_spec returns ttadk spec for ttadk_claude without model."""
+        monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
+        assert sa.resolve_agent_spec("ttadk_claude") == ("ttadk", ["code", "-t", "claude", "-a", "acp serve"])
+
+    def test_ttadk_with_model(self, monkeypatch):
+        """resolve_agent_spec returns ttadk spec with model parameter."""
+        monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
+        assert sa.resolve_agent_spec("ttadk_coco", model_name="gpt-4") == (
+            "ttadk", ["code", "-t", "coco", "-m", "gpt-4", "-a", "acp serve"]
+        )
+
+    def test_ttadk_case_insensitive(self, monkeypatch):
+        """resolve_agent_spec handles case-insensitive ttadk prefix."""
+        monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
+        assert sa.resolve_agent_spec("TTADK_COCO") == ("ttadk", ["code", "-t", "coco", "-a", "acp serve"])

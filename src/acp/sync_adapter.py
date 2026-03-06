@@ -16,7 +16,7 @@ import time
 from functools import lru_cache
 from typing import Any, Callable, Optional
 
-from .models import ACPEvent, ACPSessionState, PromptResult
+from .models import ACPEvent, PromptResult
 from .session import ACPSession
 from .client import ACPHistoryStore
 from ..config import get_settings
@@ -115,6 +115,14 @@ def resolve_agent_spec(agent_type: str, model_name: Optional[str] = None) -> tup
     override_cmd, override_args = settings.get_acp_command(agent_type)
     if override_cmd:
         return override_cmd, override_args
+
+    if agent_type.startswith("ttadk_"):
+        tool_name = agent_type[len("ttadk_"):]
+        args = ["code", "-t", tool_name]
+        if model_name:
+            args.extend(["-m", model_name])
+        args.extend(["-a", "acp serve"])
+        return "ttadk", args
 
     if agent_type == "coco":
         if _resolve_with_auto_update("coco"):

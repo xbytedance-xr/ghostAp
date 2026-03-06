@@ -25,7 +25,6 @@ from lark_oapi.api.im.v1 import (
     ReplyMessageRequestBody,
 )
 
-from ..emoji import EmojiReaction
 from ..message_formatter import FeishuMessageFormatter as fmt
 
 if TYPE_CHECKING:
@@ -378,7 +377,6 @@ class BaseHandler:
 
     def record_mode_transition(self, project_id: str, from_mode, to_mode, reason: str = ""):
         """Record a mode switch into the unified context and build a bridge summary."""
-        from ...project import ContextSourceMode
         from_source = self.mode_to_context_source(from_mode)
         to_source = self.mode_to_context_source(to_mode)
         logger.info("[模式切换] project=%s: %s -> %s, reason=%s",
@@ -449,9 +447,11 @@ class BaseHandler:
     # Engine name helper
     # ------------------------------------------------------------------
     def get_engine_name(self, chat_id: str, project_id: str | None = None) -> str:
-        """Return 'Coco' or 'Claude' based on current interaction mode."""
+        """Return 'Coco' or 'Claude' or 'TTADK' based on current interaction mode."""
         from ...mode import InteractionMode
         current_mode = self.ctx.mode_manager.get_mode(chat_id, project_id=project_id)
         if current_mode == InteractionMode.CLAUDE:
             return "Claude"
+        if current_mode == InteractionMode.TTADK:
+            return "TTADK"
         return "Coco"

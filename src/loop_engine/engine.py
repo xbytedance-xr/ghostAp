@@ -11,8 +11,7 @@ import os
 import re
 import threading
 import time
-import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Callable
 
 from langchain_openai import ChatOpenAI
@@ -29,8 +28,6 @@ from .models import (
     LoopRequirement,
     IterationRecord,
     IterationStatus,
-    CriteriaTracker,
-    TerminationSignal,
     ReviewPerspective,
     PerspectiveReview,
     ReviewResult,
@@ -42,11 +39,7 @@ logger = logging.getLogger(__name__)
 # 下沉到 utils：review/criteria 解析能力层（避免引擎间私有符号依赖）
 from ..utils.spec_utils import (
     CRITERIA_PATTERNS as _CRITERIA_PATTERNS,
-    REVIEW_SECTION_PATTERN as _REVIEW_SECTION_PATTERN,
     PERSPECTIVE_TAG_MAP as _PERSPECTIVE_TAG_MAP,
-    normalize_review_verdict as _normalize_review_verdict,
-    extract_suggestions_from_body as _extract_suggestions_from_body,
-    split_review_sections as _split_review_sections,
     parse_review_output_loose as _parse_review_output_loose,
 )
 
@@ -68,12 +61,14 @@ class LoopEngine:
     """ACP-driven iterative closed-loop engine."""
 
     def __init__(self, chat_id: str, root_path: str,
-                 agent_type: str = "coco", engine_name: str = "Coco"):
+                 agent_type: str = "coco", engine_name: str = "Coco",
+                 model_name: Optional[str] = None):
         self.chat_id = chat_id
         self.root_path = os.path.expanduser(root_path)
         self.settings = get_settings()
         self.engine_name = engine_name
         self._agent_type = agent_type
+        self._model_name = model_name
 
         self._session: Optional[SyncSession] = None
         self._project: Optional[LoopProject] = None
@@ -141,6 +136,7 @@ class LoopEngine:
             self._session = create_engine_session(
                 agent_type=self._agent_type, cwd=self.root_path,
                 on_rate_limit=on_rate_limit,
+                model_name=self._model_name,
             )
 
             # Build initial prompt
@@ -779,6 +775,7 @@ FAIL
             self._session = create_engine_session(
                 agent_type=self._agent_type, cwd=self.root_path,
                 on_rate_limit=getattr(self, "_on_rate_limit", None),
+                model_name=self._model_name,
             )
 
             timeout = self.settings.loop_execution_timeout
@@ -916,7 +913,17 @@ class LoopEngineManager:
 
     def get_or_create(self, chat_id: str, root_path: str, engine_name: str = "Coco") -> LoopEngine:
         key = f"{chat_id}:{root_path}"
-        agent_type = "claude" if engine_name.lower().startswith("claude") else "coco"
+        
+        from ..ttadk import get_ttadk_manager
+        if engine_name.lower() == "ttadk":
+            ttadk_manager = get_ttadk_manager()
+            current_tool = ttadk_manager.get_current_tool()
+            current_model = ttadk_manager.get_current_model()
+            agent_type = f"ttadk_{current_tool}" if current_tool else "ttadk_coco"
+            model_name = current_model
+        else:
+            agent_type = "claude" if engine_name.lower().startswith("claude") else "coco"
+            model_name = None
 
         with self._lock:
             if key not in self._engines:
@@ -925,6 +932,7 @@ class LoopEngineManager:
                     root_path=root_path,
                     agent_type=agent_type,
                     engine_name=engine_name,
+                    model_name=model_name,
                 )
                 self._add_index(chat_id, key)
             else:
@@ -936,6 +944,7 @@ class LoopEngineManager:
                         root_path=root_path,
                         agent_type=agent_type,
                         engine_name=engine_name,
+                        model_name=model_name,
                     )
             return self._engines[key]
 

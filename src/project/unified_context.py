@@ -46,6 +46,7 @@ class ContextSourceMode(Enum):
     CLAUDE = "claude"
     SHELL = "shell"
     DEEP_ENGINE = "deep_engine"
+    TTADK = "ttadk"
 
 
 # ---------------------------------------------------------------------------

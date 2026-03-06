@@ -9,6 +9,7 @@ class InteractionMode(Enum):
     COCO = "coco"
     CLAUDE = "claude"
     SHELL = "shell"
+    TTADK = "ttadk"
 
 
 @dataclass
@@ -107,6 +108,9 @@ class ModeManager:
     def enter_claude_mode(self, chat_id: str, auto: bool = False, project_id: Optional[str] = None) -> InteractionMode:
         return self.set_mode(chat_id, InteractionMode.CLAUDE, auto_entered=auto, project_id=project_id)
 
+    def enter_ttadk_mode(self, chat_id: str, auto: bool = False, project_id: Optional[str] = None) -> InteractionMode:
+        return self.set_mode(chat_id, InteractionMode.TTADK, auto_entered=auto, project_id=project_id)
+
     def enter_shell_mode(self, chat_id: str, project_id: Optional[str] = None) -> InteractionMode:
         return self.set_mode(chat_id, InteractionMode.SHELL, auto_entered=False, project_id=project_id)
 
@@ -119,6 +123,9 @@ class ModeManager:
     def is_claude_mode(self, chat_id: str, project_id: Optional[str] = None) -> bool:
         return self.get_mode(chat_id, project_id) == InteractionMode.CLAUDE
 
+    def is_ttadk_mode(self, chat_id: str, project_id: Optional[str] = None) -> bool:
+        return self.get_mode(chat_id, project_id) == InteractionMode.TTADK
+
     def is_smart_mode(self, chat_id: str, project_id: Optional[str] = None) -> bool:
         return self.get_mode(chat_id, project_id) == InteractionMode.SMART
 
@@ -127,7 +134,7 @@ class ModeManager:
 
     def is_programming_mode(self, chat_id: str, project_id: Optional[str] = None) -> bool:
         mode = self.get_mode(chat_id, project_id)
-        return mode in (InteractionMode.COCO, InteractionMode.CLAUDE)
+        return mode in (InteractionMode.COCO, InteractionMode.CLAUDE, InteractionMode.TTADK)
 
     def get_mode_display_name(self, chat_id: str, project_id: Optional[str] = None) -> str:
         mode = self.get_mode(chat_id, project_id)
@@ -136,4 +143,5 @@ class ModeManager:
             InteractionMode.COCO: "🤖 Coco 编程模式",
             InteractionMode.CLAUDE: "🔮 Claude 编程模式",
             InteractionMode.SHELL: "💻 Shell 模式",
+            InteractionMode.TTADK: "🎮 TTADK 编程模式",
         }.get(mode, "未知模式")

@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     claude_acp_cmd: str = ""
     claude_acp_args: str = ""
 
+    ttadk_default_tool: str = "coco"
+    ttadk_default_model: str = ""
+
     # Loop Engine settings
     loop_max_iterations: int = 100
     loop_execution_timeout: int = 7200

@@ -40,6 +40,7 @@ Feishu WebSocket message
             SHELL_COMMAND → SandboxExecutor (safety check → execute)
             ENTER_COCO    → ACPSessionManager("coco") (multi-turn AI dev session via ACP)
             ENTER_CLAUDE  → ACPSessionManager("claude") (Claude AI session via ACP)
+            ENTER_TTADK   → TTADKManager (multi-tool AI dev session)
             DEEP_COMMAND  → DeepEngine (ACP-driven single-prompt deep execution)
             LOOP_COMMAND  → LoopEngine (ACP-driven iterative closed-loop)
             CREATE_PROJECT → ProjectManager
@@ -58,7 +59,10 @@ Feishu WebSocket message
   - `sync_adapter.py` — `SyncACPSession` wraps async ACPSession for use from synchronous threads
   - `manager.py` — `ACPSessionManager` manages per-chat ACP sessions with timeout/cleanup
   - `renderer.py` — `ACPEventRenderer` converts ACP events to Feishu Markdown (tool status, plan checklist, text accumulation)
-- **`src/feishu/ws_client.py`** — Core hub. Handles WebSocket events, routes messages to handlers by mode (SMART/COCO/CLAUDE/SHELL), manages component interactions. Uses `_FORWARDING_MAP` dict + `__getattr__` dispatch for handler delegation.
+- **`src/ttadk/`** — TTADK (Multi-Tool AI Development Kit) layer. Manages multi-tool AI programming sessions, supporting switching between different AI tools and models. Includes:
+  - `models.py` — `TTADKTool`, `TTADKModel` data models for tool/model definitions
+  - `manager.py` — `TTADKManager` singleton for managing current tool/model state, switching between available tools (coco/claude/cursor/gemini/codex/tmates/trae/opencode) and models (gpt-5.2/gpt-4.1/claude-3-opus/claude-3.5-sonnet/claude-3.7-sonnet/doubao-1.5-pro/gemini-2.0-pro/gemini-2.5-pro)
+- **`src/feishu/ws_client.py`** — Core hub. Handles WebSocket events, routes messages to handlers by mode (SMART/COCO/CLAUDE/SHELL/TTADK), manages component interactions. Uses `_FORWARDING_MAP` dict + `__getattr__` dispatch for handler delegation.
 - **`src/tasking/scheduler.py`** — `TaskScheduler`: thread-based task scheduler with per-chat ordered execution, global concurrency limit, priority queues, cancellation tokens, and progress tracking.
 - **`src/mode/manager.py`** — `ModeManager` state machine: SMART ↔ COCO/CLAUDE/SHELL mode transitions.
 - **`src/agent/intent_recognizer.py`** — LLM-powered ReAct intent recognition. Classifies user messages into ~30 intent types and generates shell commands from natural language.
@@ -73,9 +77,10 @@ Feishu WebSocket message
 ### Design Patterns
 
 - **ACP protocol**: All AI backend communication uses Agent Client Protocol (JSON-RPC 2.0 over stdio). `GhostAPClient` implements the `Client` interface; `SyncACPSession` bridges async ACP to synchronous threads.
+- **TTADK multi-tool layer**: TTADK provides a unified interface for multiple AI tools (Coco/Claude/Cursor/Gemini/etc) and models, with `TTADKManager` singleton managing tool/model switching and state.
 - **Event-driven rendering**: `ACPEventRenderer` processes `ACPEvent` stream (text chunks, tool calls, plan updates) into Feishu Markdown. Handlers register `on_event` callbacks to drive real-time card updates.
-- **State machine**: `InteractionMode` enum governs SMART/COCO/CLAUDE/SHELL transitions; `EngineRunState` enum tracks IDLE/RUNNING/STOPPING for Deep and Loop engines.
-- **Singleton**: `get_settings()` for configuration
+- **State machine**: `InteractionMode` enum governs SMART/COCO/CLAUDE/SHELL/TTADK transitions; `EngineRunState` enum tracks IDLE/RUNNING/STOPPING for Deep and Loop engines.
+- **Singleton**: `get_settings()` for configuration, `get_ttadk_manager()` for TTADK tool/model management
 - **Session managers**: `ACPSessionManager("coco")` and `ACPSessionManager("claude")` handle isolated ACP sessions per chat, replacing the old subprocess-based session managers.
 - **Task scheduling**: `TaskScheduler` provides per-chat ordered execution with global concurrency control. Long-running tasks (e.g. Deep Engine, Loop Engine) use separate `queue_key` to avoid blocking control commands.
 - **Thread safety**: Critical sections use `threading.Lock`; message dedup uses `MessageCache` with background cleanup thread

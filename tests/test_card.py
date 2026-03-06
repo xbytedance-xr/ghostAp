@@ -7,6 +7,7 @@ from src.card.builder import CardBuilder
 from src.deep_engine.reporter import ProgressReporter
 from src.card.shared import get_theme, THEMES
 from src.config import Settings
+from src.ttadk.models import TTADKTool, TTADKModel
 
 
 class TestProjectTheme:
@@ -1248,3 +1249,110 @@ class TestBuildDeepCardStructuredParams:
                 break
         else:
             pytest.fail("criteria_section element not found")
+
+
+# ---------------------------------------------------------------------------
+# TTADK 卡片测试
+# ---------------------------------------------------------------------------
+
+class TestTTADKCards:
+    """测试 TTADK 工具和模型选择卡片"""
+
+    def test_build_ttadk_tool_select_card_basic(self):
+        """测试构建 TTADK 工具选择卡片的基本功能"""
+        tools = [
+            TTADKTool(name="claude", description="Claude AI Assistant", is_default=True),
+            TTADKTool(name="coco", description="Coco AI Assistant"),
+            TTADKTool(name="gemini", description="Google Gemini AI"),
+        ]
+
+        msg_type, content = CardBuilder.build_ttadk_tool_select_card(tools, project_id="test_project")
+
+        assert msg_type == "interactive"
+        card = json.loads(content)
+
+        # 验证卡片结构
+        assert card["schema"] == "2.0"
+        assert "TTADK 工具选择" in card["header"]["title"]["content"]
+        assert card["header"]["template"] == "blue"
+
+        # 验证元素
+        elements = card["body"]["elements"]
+        assert len(elements) > 0
+
+        # 验证工具按钮存在
+        content_str = json.dumps(card, ensure_ascii=False)
+        assert "claude" in content_str
+        assert "Claude AI Assistant" in content_str
+        assert "coco" in content_str
+        assert "gemini" in content_str
+
+        # 验证默认工具按钮是 primary 类型
+        column_set_elements = [e for e in elements if e.get("tag") == "column_set"]
+        assert len(column_set_elements) >= 1
+
+    def test_build_ttadk_tool_select_card_without_project(self):
+        """测试不提供 project_id 时构建 TTADK 工具选择卡片"""
+        tools = [TTADKTool(name="claude", description="Claude AI Assistant")]
+
+        msg_type, content = CardBuilder.build_ttadk_tool_select_card(tools)
+        card = json.loads(content)
+
+        content_str = json.dumps(card, ensure_ascii=False)
+        assert "select_ttadk_tool" in content_str
+
+    def test_build_ttadk_model_select_card_basic(self):
+        """测试构建 TTADK 模型选择卡片的基本功能"""
+        models = [
+            TTADKModel(name="claude-3-opus", description="Claude 3 Opus", is_default=True),
+            TTADKModel(name="claude-3.5-sonnet", description="Claude 3.5 Sonnet"),
+            TTADKModel(name="gpt-5.2", description="GPT-5.2"),
+        ]
+
+        msg_type, content = CardBuilder.build_ttadk_model_select_card(
+            models, tool_name="claude", project_id="test_project"
+        )
+
+        assert msg_type == "interactive"
+        card = json.loads(content)
+
+        # 验证卡片结构
+        assert card["schema"] == "2.0"
+        assert "claude" in card["header"]["title"]["content"]
+        assert "模型选择" in card["header"]["title"]["content"]
+        assert card["header"]["template"] == "blue"
+
+        # 验证模型按钮存在
+        content_str = json.dumps(card, ensure_ascii=False)
+        assert "claude-3-opus" in content_str
+        assert "Claude 3 Opus" in content_str
+        assert "claude-3.5-sonnet" in content_str
+        assert "gpt-5.2" in content_str
+        assert "select_ttadk_model" in content_str
+
+    def test_build_ttadk_model_select_card_without_project(self):
+        """测试不提供 project_id 时构建 TTADK 模型选择卡片"""
+        models = [TTADKModel(name="gpt-5.2", description="GPT-5.2")]
+
+        msg_type, content = CardBuilder.build_ttadk_model_select_card(models, tool_name="codex")
+        card = json.loads(content)
+
+        content_str = json.dumps(card, ensure_ascii=False)
+        assert "select_ttadk_model" in content_str
+        assert "codex" in content_str
+
+    def test_ttadk_cards_schema_v2(self):
+        """验证 TTADK 卡片使用 schema 2.0 结构"""
+        tools = [TTADKTool(name="claude", description="Test")]
+        models = [TTADKModel(name="test-model", description="Test Model")]
+
+        for card_tuple in [
+            CardBuilder.build_ttadk_tool_select_card(tools),
+            CardBuilder.build_ttadk_model_select_card(models, "claude"),
+        ]:
+            msg_type, content = card_tuple
+            assert msg_type == "interactive"
+            card = json.loads(content)
+            assert card["schema"] == "2.0"
+            assert "body" in card
+            assert "elements" in card["body"]

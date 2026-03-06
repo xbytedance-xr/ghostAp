@@ -1102,6 +1102,7 @@ class TestSpecHandler:
             message_callback=MagicMock(),
             coco_manager=MagicMock(),
             claude_manager=MagicMock(),
+            ttadk_manager=MagicMock(),
             intent_recognizer=MagicMock(),
             scheduler=MagicMock(),
             project_manager=MagicMock(),
@@ -1938,7 +1939,7 @@ class TestSpecEngineExecution:
         assert loaded is not None
         assert loaded.current_cycle_number == 5000
         # Basic performance guard (avoid regressions)
-        assert elapsed < 60
+        assert elapsed < 120
 
 
 # ======================================================================

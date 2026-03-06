@@ -25,7 +25,6 @@ from ..agent_session import SyncSession, close_session_safely, create_engine_ses
 from ..config import get_settings
 from ..deep_engine.models import EngineRunState
 from ..loop_engine.models import (
-    CriteriaTracker,
     ReviewPerspective,
     PerspectiveReview,
     ReviewResult,
@@ -47,7 +46,6 @@ from .models import (
     SpecPhase,
     SpecCycle,
     SpecTask,
-    SpecTaskStatus,
     SpecArtifact,
     PlanArtifact,
     SpecWorkItem,
@@ -134,12 +132,14 @@ class SpecEngine:
     """ACP-driven structured development engine with iterative review cycles."""
 
     def __init__(self, chat_id: str, root_path: str,
-                 agent_type: str = "coco", engine_name: str = "Coco"):
+                 agent_type: str = "coco", engine_name: str = "Coco",
+                 model_name: Optional[str] = None):
         self.chat_id = chat_id
         self.root_path = os.path.expanduser(root_path)
         self.settings = get_settings()
         self.engine_name = engine_name
         self._agent_type = agent_type
+        self._model_name = model_name
 
         self._session: Optional[SyncSession] = None
         self._project: Optional[SpecProject] = None
@@ -230,6 +230,7 @@ class SpecEngine:
             self._session = create_engine_session(
                 agent_type=self._agent_type, cwd=self.root_path,
                 on_rate_limit=on_rate_limit,
+                model_name=self._model_name,
             )
 
             self._last_review = None
@@ -378,6 +379,7 @@ class SpecEngine:
             agent_type=self._agent_type,
             cwd=self.root_path,
             on_rate_limit=getattr(self, "_on_rate_limit", None),
+            model_name=self._model_name,
         )
 
         logger.info("[Spec] 模型切换: %s -> %s", old_model, new_model)
@@ -1902,6 +1904,7 @@ CRITERIA_2: FAIL
             self._session = create_engine_session(
                 agent_type=self._agent_type, cwd=self.root_path,
                 on_rate_limit=getattr(self, "_on_rate_limit", None),
+                model_name=self._model_name,
             )
 
             self._termination_reason = self._run_cycle_loop(
@@ -2068,7 +2071,17 @@ class SpecEngineManager:
 
     def get_or_create(self, chat_id: str, root_path: str, engine_name: str = "Coco") -> SpecEngine:
         key = f"{chat_id}:{root_path}"
-        agent_type = "claude" if engine_name.lower().startswith("claude") else "coco"
+        
+        from ..ttadk import get_ttadk_manager
+        if engine_name.lower() == "ttadk":
+            ttadk_manager = get_ttadk_manager()
+            current_tool = ttadk_manager.get_current_tool()
+            current_model = ttadk_manager.get_current_model()
+            agent_type = f"ttadk_{current_tool}" if current_tool else "ttadk_coco"
+            model_name = current_model
+        else:
+            agent_type = "claude" if engine_name.lower().startswith("claude") else "coco"
+            model_name = None
 
         with self._lock:
             if key not in self._engines:
@@ -2077,6 +2090,7 @@ class SpecEngineManager:
                     root_path=root_path,
                     agent_type=agent_type,
                     engine_name=engine_name,
+                    model_name=model_name,
                 )
                 self._add_index(chat_id, key)
             else:
@@ -2088,6 +2102,7 @@ class SpecEngineManager:
                         root_path=root_path,
                         agent_type=agent_type,
                         engine_name=engine_name,
+                        model_name=model_name,
                     )
             return self._engines[key]
 

@@ -445,6 +445,7 @@ def create_sync_session(agent_type: str, cwd: str, model_name: Optional[str] = N
 
     - coco/default: ACP backend
     - claude: CLI backend
+    - ttadk_*: ACP backend (direct agent type)
     """
     from .coco_model import get_coco_model_manager
 
@@ -455,6 +456,9 @@ def create_sync_session(agent_type: str, cwd: str, model_name: Optional[str] = N
     effective_model = model_name
     if not effective_model and agent_type in ("coco", ""):
         effective_model = get_coco_model_manager().get_current_model()
+
+    if agent_type.startswith("ttadk_"):
+        return SyncACPSession(agent_type=agent_type, cwd=cwd, model_name=model_name)
 
     return SyncACPSession(agent_type=agent_type or "coco", cwd=cwd, model_name=effective_model)
 
@@ -469,6 +473,7 @@ def create_engine_session(
     """Create and start a session for Deep/Loop/Spec engines.
 
     - Claude: CLI backend (no ACP retry needed)
+    - ttadk_*: ACP backend (direct agent type)
     - Others: ACP backend with retry and progressive timeout
 
     If rate_limit_retry_enabled is True in settings, the returned session
@@ -483,6 +488,13 @@ def create_engine_session(
     if agent_type == "claude":
         session: SyncSession = SyncClaudeCLISession(cwd=cwd)
         session.start()
+    elif agent_type.startswith("ttadk_"):
+        session = start_session_with_retry(
+            agent_type=agent_type,
+            cwd=cwd,
+            startup_timeout=settings.acp_startup_timeout,
+            model_name=model_name,
+        )
     else:
         effective_model = model_name
         if not effective_model:

@@ -5,7 +5,6 @@ from .models import (
     SpecProject,
     SpecProjectStatus,
     SpecPhase,
-    SpecCycle,
     ReviewResult,
     SpecWorkItemStatus,
 )
