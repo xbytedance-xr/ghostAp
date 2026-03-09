@@ -95,9 +95,13 @@ class SandboxExecutor:
                 "TERM": "dumb",
             })
 
+            # Detect shell and use it in interactive mode to load profiles/aliases
+            shell_path = os.environ.get("SHELL", "/bin/bash")
+            cmd_args = [shell_path, "-i", "-c", command]
+
             process = subprocess.run(
-                command,
-                shell=True,
+                cmd_args,
+                shell=False,
                 capture_output=True,
                 text=True,
                 timeout=self.settings.sandbox_timeout,
@@ -108,6 +112,18 @@ class SandboxExecutor:
             stdout = process.stdout
             stderr = process.stderr
             max_len = self.settings.sandbox_max_output_length
+
+            # Filter out interactive shell noise
+            if stderr:
+                ignore_patterns = [
+                    "no job control in this shell",
+                    "cannot set terminal process group",
+                    "Inappropriate ioctl for device"
+                ]
+                stderr = "\n".join([
+                    line for line in stderr.splitlines() 
+                    if not any(p in line for p in ignore_patterns)
+                ])
 
             stdout = truncate_output(stdout, max_len)
             stderr = truncate_output(stderr, max_len, label="错误输出被截断")
