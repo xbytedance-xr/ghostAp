@@ -1,0 +1,837 @@
+"""ACP diagnostics helpers (redaction + truncation).
+
+This module is intentionally dependency-light and must NOT import
+`src.acp.sync_adapter` to avoid circular imports.
+
+Public API in this module is intentionally stable and does not use leading
+underscores (e.g. `get_diagnostics_config`, `redact_text`, `truncate_text`).
+
+Compatibility note:
+- Older call sites may still import private helpers (``_safe_str`` etc.).
+  Those helpers are kept as thin wrappers to reduce refactor risk.
+
+Callers may inject a `get_settings_fn` for testing.
+"""
+
+from __future__ import annotations
+
+import re
+import numbers
+from dataclasses import dataclass, field
+from functools import lru_cache
+from typing import Callable, Optional
+
+__all__ = [
+    # Public API (stable)
+    "DiagnosticsConfig",
+    "get_diagnostics_config",
+    "safe_str",
+    "truncate_text",
+    "truncate_args",
+    "redact_text",
+    "format_attempts_summary",
+    "normalize_startup_diagnostics",
+    "format_startup_diagnostics_summary",
+    "format_startup_failure_log_line",
+]
+
+
+def normalize_startup_diagnostics(
+    diag: object,
+    *,
+    get_settings_fn: Optional[Callable[[], object]] = None,
+) -> dict:
+    """Normalize startup diagnostics into a stable, serializable dict (SSOT).
+
+    目标：把“启动失败诊断字段契约”集中在本模块：
+    - 稳定字段：cmd/args/rc/stdout_snippet/stderr_snippet/fail_reason/error_text/spec/error
+    - 兼容字段：agent_spec（若存在则保留）
+    - 兜底：error_text 必须非空；fail_reason 必须非空
+    - 安全：脱敏 + 截断严格遵循 diagnostics 配置（best-effort，永不抛异常）
+
+    注意：本函数不应引入对 `src.acp.sync_adapter` 的依赖，避免循环依赖。
+    """
+
+    # Resolve config (best-effort)
+    try:
+        cfg = get_diagnostics_config(get_settings_fn=get_settings_fn)
+        enabled = bool(cfg.redact_enabled)
+        patterns = list(cfg.redact_patterns or [])
+        repl = _safe_str(cfg.redact_replacement or "***REDACTED***") or "***REDACTED***"
+        args_limit = int(cfg.args_limit or 0) if int(cfg.args_limit or 0) > 0 else 600
+        snippet_limit = int(cfg.snippet_limit or 0) if int(cfg.snippet_limit or 0) > 0 else 240
+        total_limit = int(cfg.total_limit or 0) if int(cfg.total_limit or 0) > 0 else 2000
+    except Exception:
+        enabled, patterns, repl, args_limit, snippet_limit, total_limit = True, list(_DEFAULT_REDACT_PATTERNS), "***REDACTED***", 600, 240, 2000
+
+    # Base container (ensure stable keys always exist)
+    out: dict = {
+        "cmd": "",
+        "args": [],
+        "rc": None,
+        "stdout_snippet": "",
+        "stderr_snippet": "",
+        "fail_reason": "",
+        "error_text": "",
+        "spec": "",
+        "error": "",
+    }
+
+    # Preserve extra keys (best-effort) while ensuring stable keys exist.
+    try:
+        if isinstance(diag, dict):
+            out.update(diag)
+        elif diag is None:
+            out["error"] = "(empty)"
+        else:
+            out["error"] = _truncate_text(_safe_str(diag) or "(empty)", 400)
+    except Exception:
+        out["error"] = "format_error"
+
+    # args
+    try:
+        xs = out.get("args")
+        if xs is None:
+            xs = []
+        if not isinstance(xs, list):
+            xs = list(xs or [])
+        out["args"] = [str(x) for x in (xs or [])]
+    except Exception:
+        out["args"] = []
+
+    # cmd
+    out["cmd"] = _safe_str(out.get("cmd") or "")
+
+    # rc
+    try:
+        rc = out.get("rc")
+        if rc is None or rc == "":
+            out["rc"] = None
+        else:
+            out["rc"] = int(rc)
+    except Exception:
+        out["rc"] = None
+
+    # snippets/spec/error
+    out["stdout_snippet"] = _safe_str(out.get("stdout_snippet") or "")
+    out["stderr_snippet"] = _safe_str(out.get("stderr_snippet") or "")
+    out["spec"] = _safe_str(out.get("spec") or "")
+    if out.get("agent_spec") is not None:
+        try:
+            out["agent_spec"] = _safe_str(out.get("agent_spec") or "")
+        except Exception:
+            out["agent_spec"] = ""
+    out["error"] = _safe_str(out.get("error") or "")
+    out["error_text"] = _safe_str(out.get("error_text") or "")
+    out["fail_reason"] = _safe_str(out.get("fail_reason") or "")
+
+    # fail_reason fallback
+    fr = (out.get("fail_reason") or "").strip()
+    if not fr:
+        try:
+            fr = _safe_str(out.get("fail_phase") or "").strip()
+        except Exception:
+            fr = ""
+    out["fail_reason"] = fr or "start_failed"
+
+    # error_text fallback (non-empty)
+    et = (out.get("error_text") or "").strip()
+    if not et:
+        et = (out.get("stderr_snippet") or "").strip()
+    if not et:
+        et = (out.get("error") or "").strip()
+    if not et:
+        etype = _safe_str(out.get("error_type") or "Exception") or "Exception"
+        et = f"<{etype}> (empty output)"
+    out["error_text"] = et
+    if not (out.get("error") or "").strip():
+        out["error"] = out["error_text"]
+
+    # Redaction (SSOT)
+    if enabled:
+        try:
+            out["cmd"] = redact_text(out.get("cmd") or "", patterns, repl)
+            out["stdout_snippet"] = redact_text(out.get("stdout_snippet") or "", patterns, repl)
+            out["stderr_snippet"] = redact_text(out.get("stderr_snippet") or "", patterns, repl)
+            out["spec"] = redact_text(out.get("spec") or "", patterns, repl)
+            out["error"] = redact_text(out.get("error") or "", patterns, repl)
+            out["error_text"] = redact_text(out.get("error_text") or "", patterns, repl)
+            out["fail_reason"] = redact_text(out.get("fail_reason") or "", patterns, repl)
+            if "agent_spec" in out:
+                out["agent_spec"] = redact_text(out.get("agent_spec") or "", patterns, repl)
+            out["args"] = [redact_text(str(x), patterns, repl) for x in (out.get("args") or [])]
+        except Exception:
+            pass
+
+    # Truncation (SSOT)
+    try:
+        out["args"] = truncate_args([str(x) for x in (out.get("args") or [])], args_limit)
+    except Exception:
+        out["args"] = [str(x) for x in (out.get("args") or [])]
+
+    # cmd/snippets/error_text/error must be short enough (reuse snippet_limit)
+    try:
+        out["cmd"] = _truncate_text(_safe_str(out.get("cmd") or ""), snippet_limit)
+    except Exception:
+        out["cmd"] = _safe_str(out.get("cmd") or "")
+    try:
+        out["stdout_snippet"] = _truncate_text(_safe_str(out.get("stdout_snippet") or ""), snippet_limit)
+        out["stderr_snippet"] = _truncate_text(_safe_str(out.get("stderr_snippet") or ""), snippet_limit)
+    except Exception:
+        pass
+    try:
+        out["error_text"] = _truncate_text(_safe_str(out.get("error_text") or ""), min(400, snippet_limit) if snippet_limit > 0 else 240) or "(empty)"
+    except Exception:
+        out["error_text"] = _safe_str(out.get("error_text") or "") or "(empty)"
+    try:
+        out["error"] = _truncate_text(_safe_str(out.get("error") or ""), min(400, snippet_limit) if snippet_limit > 0 else 240) or out["error_text"]
+    except Exception:
+        out["error"] = _safe_str(out.get("error") or "") or out.get("error_text") or "(empty)"
+    try:
+        out["fail_reason"] = _truncate_text(_safe_str(out.get("fail_reason") or ""), 80) or "start_failed"
+    except Exception:
+        out["fail_reason"] = _safe_str(out.get("fail_reason") or "") or "start_failed"
+    # spec / agent_spec can be a bit longer but bounded
+    try:
+        out["spec"] = _truncate_text(_safe_str(out.get("spec") or ""), min(400, total_limit) if total_limit > 0 else 400)
+    except Exception:
+        out["spec"] = _safe_str(out.get("spec") or "")
+    try:
+        if "agent_spec" in out:
+            out["agent_spec"] = _truncate_text(_safe_str(out.get("agent_spec") or ""), min(400, total_limit) if total_limit > 0 else 400)
+    except Exception:
+        pass
+
+    # Final guard: stable keys must exist
+    for k in ("cmd", "args", "rc", "stdout_snippet", "stderr_snippet", "fail_reason", "error_text", "spec", "error"):
+        if k not in out:
+            out[k] = "" if k != "args" else []
+    if not (_safe_str(out.get("error_text") or "").strip()):
+        out["error_text"] = "<Exception> (empty output)"
+    if not (_safe_str(out.get("fail_reason") or "").strip()):
+        out["fail_reason"] = "start_failed"
+    return out
+
+_DEFAULT_REDACT_PATTERNS: list[str] = [
+    r"(?i)authorization\s*:\s*[^\s]+",
+    r"(?i)bearer\s+[^\s]+",
+    r"sk-[A-Za-z0-9]{10,}",
+    r"AKIA[0-9A-Z]{16}",
+    r"(?i)api[_-]?key\s*[:=]\s*[^\s]+",
+    r"(?i)secret\s*[:=]\s*[^\s]+",
+    r"(?i)token\s*[:=]\s*[^\s]+",
+]
+
+
+from ..config import get_settings as _default_get_settings
+
+
+@dataclass(frozen=True)
+class DiagnosticsConfig:
+    """Diagnostics redaction + truncation config (best-effort).
+
+    Contract:
+    - Must never raise during construction from settings
+    - Limits are non-negative ints
+    """
+
+    redact_enabled: bool = True
+    redact_patterns: list[str] = field(default_factory=lambda: list(_DEFAULT_REDACT_PATTERNS))
+    redact_replacement: str = "***REDACTED***"
+    args_limit: int = 600
+    snippet_limit: int = 240
+    total_limit: int = 2000
+
+
+def get_diagnostics_config(*, get_settings_fn: Optional[Callable[[], object]] = None) -> DiagnosticsConfig:
+    """Read diagnostics config from settings (best-effort).
+
+    - `get_settings_fn` is injectable for tests (avoid touching global config).
+    - Never raises.
+    """
+    enabled = True
+    patterns = list(_DEFAULT_REDACT_PATTERNS)
+    repl = "***REDACTED***"
+    args_limit = 600
+    snippet_limit = 240
+    total_limit = 2000
+
+    try:
+        getter = get_settings_fn or _default_get_settings
+        s = getter()
+        enabled = _safe_bool(getattr(s, "acp_diagnostics_redact_enabled", True), True)
+        patterns = _safe_str_list(getattr(s, "acp_diagnostics_redact_patterns", None), _DEFAULT_REDACT_PATTERNS)
+        repl = _safe_str(getattr(s, "acp_diagnostics_redact_replacement", repl) or repl) or repl
+        args_limit = _safe_int(getattr(s, "acp_diagnostics_args_limit", args_limit), args_limit)
+        snippet_limit = _safe_int(getattr(s, "acp_diagnostics_snippet_limit", snippet_limit), snippet_limit)
+        total_limit = _safe_int(getattr(s, "acp_diagnostics_total_limit", total_limit), total_limit)
+    except Exception:
+        pass
+
+    try:
+        args_limit = int(args_limit)
+    except Exception:
+        args_limit = 600
+    try:
+        snippet_limit = int(snippet_limit)
+    except Exception:
+        snippet_limit = 240
+    try:
+        total_limit = int(total_limit)
+    except Exception:
+        total_limit = 2000
+
+    if args_limit < 0:
+        args_limit = 600
+    if snippet_limit < 0:
+        snippet_limit = 240
+    if total_limit < 0:
+        total_limit = 2000
+
+    return DiagnosticsConfig(
+        redact_enabled=bool(enabled),
+        redact_patterns=list(patterns or []),
+        redact_replacement=repl or "***REDACTED***",
+        args_limit=args_limit,
+        snippet_limit=snippet_limit,
+        total_limit=total_limit,
+    )
+
+
+def safe_str(x: object) -> str:
+    """Public wrapper for safe string conversion (never raises)."""
+    return _safe_str(x)
+
+
+def truncate_text(text: str, limit: int) -> str:
+    """Public wrapper for text truncation (never raises)."""
+    return _truncate_text(text, limit)
+
+
+def truncate_args(args: list[str], limit: int) -> list[str]:
+    """Public wrapper for args truncation (never raises)."""
+    return _truncate_args(args, limit)
+
+
+def redact_text(text: str, patterns: list[str], replacement: str) -> str:
+    """Regex-based redaction with compiled-pattern cache (best-effort).
+
+    Contract:
+    - Never raises
+    - Preserves pattern order semantics
+    - Ignores invalid patterns (compile/sub errors)
+    """
+    s = _safe_str(text)
+    if not s:
+        return ""
+    rep = _safe_str(replacement) or "***REDACTED***"
+    pats = tuple([_safe_str(p) for p in (patterns or []) if _safe_str(p)])
+    if not pats:
+        return s
+
+    # 两层职责：
+    # 1) 编译缓存层：patterns -> compiled regex（仅与 patterns 有关）
+    # 2) 执行替换层：compiled + replacement -> redacted text
+    try:
+        compiled = _compile_redaction_patterns(pats)
+    except Exception:
+        compiled = ()
+
+    for cre in compiled:
+        try:
+            s = cre.sub(rep, s)
+        except Exception:
+            continue
+    return s
+
+
+def format_attempts_summary(
+    attempts: object,
+    *,
+    per_item_limit: Optional[int] = None,
+    total_limit: Optional[int] = None,
+    get_settings_fn: Optional[Callable[[], object]] = None,
+) -> str:
+    """将 startup attempts 摘要化为稳定、可 grep 的单行字符串（JSON）。
+
+    目标：为上层日志提供 SSOT 的 attempts 摘要输出，避免在 manager 中重复实现脱敏/截断。
+
+    Contract:
+    - best-effort：永不抛异常；任何输入都返回 str
+    - 稳定字段：fail_phase/decision/error_type/error_blob（缺失则兜底补齐）
+    - 安全：脱敏/截断严格遵循 diagnostics 配置（可通过参数进一步收紧，但不得放宽配置上限）
+    """
+
+    try:
+        cfg = get_diagnostics_config(get_settings_fn=get_settings_fn)
+        enabled = bool(cfg.redact_enabled)
+        patterns = list(cfg.redact_patterns or [])
+        repl = _safe_str(cfg.redact_replacement or "***REDACTED***") or "***REDACTED***"
+        cfg_snip = int(cfg.snippet_limit or 0)
+        cfg_total = int(cfg.total_limit or 0)
+    except Exception:
+        enabled, patterns, repl, cfg_snip, cfg_total = True, list(_DEFAULT_REDACT_PATTERNS), "***REDACTED***", 240, 2000
+
+    # 以配置为“上限”，参数只允许收紧，不允许放宽
+    try:
+        per_lim = int(per_item_limit) if per_item_limit is not None else int(cfg_snip or 0)
+    except Exception:
+        per_lim = int(cfg_snip or 0)
+    try:
+        total_lim = int(total_limit) if total_limit is not None else int(cfg_total or 0)
+    except Exception:
+        total_lim = int(cfg_total or 0)
+
+    if cfg_snip and per_lim:
+        per_lim = min(int(cfg_snip), int(per_lim))
+    elif cfg_snip:
+        per_lim = int(cfg_snip)
+    if per_lim <= 0:
+        per_lim = 240
+
+    if cfg_total and total_lim:
+        total_lim = min(int(cfg_total), int(total_lim))
+    elif cfg_total:
+        total_lim = int(cfg_total)
+    if total_lim <= 0:
+        total_lim = 2000
+
+    # Normalize attempts list
+    try:
+        items = list(attempts or []) if isinstance(attempts, (list, tuple)) else []
+    except Exception:
+        items = []
+    if not items:
+        return ""
+
+    out: list[dict] = []
+    for a in items[:8]:
+        d = a if isinstance(a, dict) else {}
+
+        phase = _safe_str(d.get("phase", ""))
+        ok = d.get("ok") if "ok" in d else None
+        fail_phase = _safe_str(d.get("fail_phase", ""))
+        decision = _safe_str(d.get("decision", ""))
+        error_type = _safe_str(d.get("error_type", ""))
+
+        # error_blob 收敛：优先 error_blob，其次 error，再其次 stderr/stdout snippet/raw
+        blob = _safe_str(d.get("error_blob", ""))
+        if not blob:
+            blob = _safe_str(d.get("error", ""))
+        if not blob:
+            blob = _safe_str(d.get("stderr_snippet", ""))
+        if not blob:
+            blob = _safe_str(d.get("stdout_snippet", ""))
+        if not blob:
+            blob = _safe_str(d.get("stderr", ""))
+        if not blob:
+            blob = _safe_str(d.get("stdout", ""))
+        blob = blob or "(empty)"
+        blob = _truncate_text(blob, per_lim) or "(empty)"
+
+        item = {
+            "phase": phase,
+            "ok": ok,
+            "fail_phase": fail_phase,
+            "decision": decision,
+            "error_type": error_type,
+            "error_blob": blob,
+        }
+        out.append(item)
+
+    # Serialize first, then redact (consistent with format_startup_diagnostics)
+    try:
+        import json
+
+        s = json.dumps(out, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        s = _safe_str(out)
+
+    if enabled:
+        try:
+            s = redact_text(s, patterns, repl)
+        except Exception:
+            pass
+    return _truncate_text(s, total_lim)
+
+
+def format_startup_diagnostics_summary(
+    diag: object,
+    *,
+    get_settings_fn: Optional[Callable[[], object]] = None,
+    total_limit: Optional[int] = None,
+) -> str:
+    """将 startup diagnostics 格式化为稳定单行摘要（JSON）。
+
+    约束：
+    - best-effort：永不抛异常
+    - 安全：脱敏 + 截断遵循 diagnostics 配置（参数仅允许收紧 total_limit）
+    """
+    base = {
+        "cmd": "",
+        "args": [],
+        "rc": None,
+        "stdout_snippet": "",
+        "stderr_snippet": "",
+        "spec": "",
+        "fail_reason": "",
+        "error_text": "",
+        "error": "",
+    }
+
+    # Normalize first (SSOT): keep output stable even if callers pass partial/legacy dicts.
+    try:
+        nd = normalize_startup_diagnostics(diag, get_settings_fn=get_settings_fn)
+        if isinstance(nd, dict):
+            base.update(nd)
+        else:
+            base["error"] = _truncate_text(_safe_str(nd), 400)
+    except Exception:
+        try:
+            if isinstance(diag, dict):
+                base.update(diag)
+            else:
+                base["error"] = _truncate_text(_safe_str(diag), 400)
+        except Exception:
+            base["error"] = "format_error"
+
+    # Resolve config (best-effort)
+    try:
+        cfg = get_diagnostics_config(get_settings_fn=get_settings_fn)
+        enabled = bool(cfg.redact_enabled)
+        patterns = list(cfg.redact_patterns or [])
+        repl = str(cfg.redact_replacement or "***REDACTED***")
+        cfg_total = int(cfg.total_limit or 0)
+    except Exception:
+        enabled, patterns, repl, cfg_total = True, list(_DEFAULT_REDACT_PATTERNS), "***REDACTED***", 2000
+
+    # total_limit: config is the upper bound, parameter can only tighten
+    eff_total = cfg_total if cfg_total > 0 else 2000
+    if total_limit is not None:
+        try:
+            tl = int(total_limit)
+            if tl > 0:
+                eff_total = min(eff_total, tl)
+        except Exception:
+            pass
+
+    try:
+        import json
+
+        s = json.dumps(base, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        s = _safe_str(base)
+
+    if enabled:
+        try:
+            s = redact_text(s, patterns, repl)
+        except Exception:
+            pass
+    return _truncate_text(s, eff_total)
+
+
+def format_startup_failure_log_line(
+    *,
+    agent_type: str,
+    event: str,
+    attempt: Optional[int],
+    retries: Optional[int],
+    error: object,
+    diag: Optional[dict] = None,
+    attempts: object = None,
+    get_settings_fn: Optional[Callable[[], object]] = None,
+) -> str:
+    """统一启动失败日志单行格式化（SSOT）。
+
+    输出字段（稳定）：
+    - err_type, err_repr（永不为空）
+    - fail_reason, error_text（永不为空；由 normalize_startup_diagnostics 兜底）
+    - diagnostics_summary（可选：仅当 diag 中存在有效字段）
+    - attempts_summary（可选：attempts 非空或 diag.attempts 非空）
+    """
+
+    at = (agent_type or "").upper()
+    ev = _safe_str(event).strip() or "startup_failed"
+
+    # attempt/retries best-effort
+    a = attempt
+    r = retries
+    try:
+        a = int(a) if a is not None else None
+    except Exception:
+        a = None
+    try:
+        r = int(r) if r is not None else None
+    except Exception:
+        r = None
+
+    # err_type/err_repr
+    try:
+        err_type = type(error).__name__
+    except Exception:
+        err_type = "Exception"
+    try:
+        err_repr = repr(error)
+    except Exception:
+        err_repr = ""
+    if not (err_repr or "").strip():
+        err_repr = f"<{err_type}>"
+
+    # err_repr 必须脱敏 + 截断（遵循 config，best-effort）
+    try:
+        cfg = get_diagnostics_config(get_settings_fn=get_settings_fn)
+        enabled = bool(cfg.redact_enabled)
+        patterns = list(cfg.redact_patterns or [])
+        repl = str(cfg.redact_replacement or "***REDACTED***")
+        lim = int(cfg.snippet_limit or 0)
+    except Exception:
+        enabled, patterns, repl, lim = True, list(_DEFAULT_REDACT_PATTERNS), "***REDACTED***", 240
+
+    if enabled:
+        try:
+            err_repr = redact_text(err_repr, patterns, repl)
+        except Exception:
+            pass
+    if lim > 0:
+        err_repr = _truncate_text(err_repr, lim) or f"<{err_type}>"
+
+    # Normalize diagnostics once (SSOT): always produce non-empty fail_reason/error_text.
+    diagnostics_summary = ""
+    d: dict = {}
+    try:
+        if diag is not None:
+            d = normalize_startup_diagnostics(diag, get_settings_fn=get_settings_fn)
+        else:
+            # Even if callers didn't pass diag, still build a minimal normalized diagnostics
+            # so that logs always include non-empty fail_reason + error_text.
+            d = normalize_startup_diagnostics(
+                {
+                    "error_type": err_type,
+                    "error": _safe_str(error) or "(empty)",
+                    "fail_reason": "",
+                },
+                get_settings_fn=get_settings_fn,
+            )
+    except Exception:
+        d = {
+            "fail_reason": "start_failed",
+            "error_text": f"<{err_type}> (empty output)",
+            "stderr_snippet": "",
+            "stdout_snippet": "",
+            "cmd": "",
+            "args": [],
+            "rc": None,
+            "spec": "",
+        }
+
+    try:
+        cmd = _safe_str(d.get("cmd", ""))
+        args = list(d.get("args") or [])
+        rc = d.get("rc")
+        out_snip = _safe_str(d.get("stdout_snippet", ""))
+        err_snip = _safe_str(d.get("stderr_snippet", ""))
+        spec = _safe_str(d.get("spec", ""))
+        has_diag = bool(cmd or args or (rc is not None) or out_snip or err_snip or spec)
+        if has_diag:
+            diagnostics_summary = format_startup_diagnostics_summary(d, get_settings_fn=get_settings_fn)
+    except Exception:
+        diagnostics_summary = ""
+
+    # attempts_summary（可选；TTADK 默认也输出，避免线上“缺字段/难 grep”）
+    include_attempts_summary = False
+    try:
+        if attempts is None and isinstance(diag, dict):
+            attempts = diag.get("attempts")
+        include_attempts_summary = (
+            attempts is not None
+            or (isinstance(diag, dict) and ("attempts" in diag))
+            or (str(agent_type or "").startswith("ttadk_"))
+        )
+    except Exception:
+        include_attempts_summary = bool(str(agent_type or "").startswith("ttadk_"))
+
+    attempts_summary = ""
+    if include_attempts_summary:
+        try:
+            if attempts:
+                attempts_summary = format_attempts_summary(attempts, get_settings_fn=get_settings_fn)
+        except Exception:
+            attempts_summary = ""
+        if not attempts_summary:
+            attempts_summary = "(empty)"
+
+    # Compose line
+    msg = f"[ACP:{at}] {ev}"
+    if a is not None and r is not None:
+        msg += f" (attempt={a}/{r})"
+    # Always include fail_reason + error_text (SSOT, non-empty)
+    fr = _safe_str(d.get("fail_reason", "")).strip() or "start_failed"
+    et = _safe_str(d.get("error_text", "")).strip() or f"<{err_type}> (empty output)"
+
+    msg += f": fail_reason={fr} error_text={et} err_type={err_type} err_repr={err_repr}"
+    if diagnostics_summary:
+        msg += f" diagnostics_summary={diagnostics_summary}"
+    if include_attempts_summary:
+        msg += f" attempts_summary={attempts_summary}"
+    return msg
+
+
+@lru_cache(maxsize=128)
+def _compile_redaction_patterns(patterns: tuple[str, ...]) -> tuple[re.Pattern, ...]:
+    """Compile redaction regex patterns with caching (best-effort).
+
+    Keyed by patterns only (replacement does not affect compilation).
+    """
+    out: list[re.Pattern] = []
+    for p in patterns or ():
+        try:
+            if not p:
+                continue
+            out.append(re.compile(p))
+        except Exception:
+            continue
+    return tuple(out)
+
+
+def _safe_str(x: object) -> str:
+    """兼容层：请改用公共 API `safe_str()`。
+
+    移除条件：仓内不再存在对本模块 `_safe_str` 的跨模块导入，且连续回归稳定后可删除。
+    """
+    try:
+        return str(x) if x is not None else ""
+    except Exception:
+        try:
+            return repr(x)
+        except Exception:
+            return ""
+
+
+def _truncate_text(text: str, limit: int) -> str:
+    """兼容层：请改用公共 API `truncate_text()`。
+
+    移除条件：仓内不再存在对本模块 `_truncate_text` 的跨模块导入，且连续回归稳定后可删除。
+    """
+    try:
+        limit = int(limit or 0)
+    except Exception:
+        limit = 0
+    if limit <= 0:
+        return ""
+    s = _safe_str(text)
+    if not s:
+        return ""
+    if len(s) <= limit:
+        return s
+    return s[:limit] + "…(truncated)"
+
+
+def _safe_bool(value: object, default: bool) -> bool:
+    try:
+        return value if isinstance(value, bool) else default
+    except Exception:
+        return default
+
+
+def _safe_int(value: object, default: int) -> int:
+    """Best-effort int parsing with MagicMock-safe semantics.
+
+    说明：测试里经常用 `MagicMock()` 作为 settings。
+    `int(MagicMock()) == 1` 会导致诊断截断上限意外变成 1，从而破坏日志/单测语义。
+    这里仅接受明确的数值/字符串输入；其他类型一律回退到 default。
+    """
+    try:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return default
+        if isinstance(value, int):
+            return value if value >= 0 else default
+        if isinstance(value, numbers.Integral):
+            v = int(value)
+            return v if v >= 0 else default
+        if isinstance(value, float):
+            v = int(value)
+            return v if v >= 0 else default
+        if isinstance(value, str):
+            v = int(value.strip() or "0")
+            return v if v >= 0 else default
+        return default
+    except Exception:
+        return default
+
+
+def _safe_str_list(value: object, default: list[str]) -> list[str]:
+    if value is None:
+        return list(default)
+    if isinstance(value, (list, tuple)):
+        out: list[str] = []
+        for x in value:
+            s = _safe_str(x).strip()
+            if s:
+                out.append(s)
+        return out or list(default)
+    if isinstance(value, str):
+        raw = value.replace(",", "\n")
+        out = [x.strip() for x in raw.splitlines() if x.strip()]
+        return out or list(default)
+    return list(default)
+
+
+def _get_diagnostics_redaction_config(
+    *,
+    get_settings_fn: Optional[Callable[[], object]] = None,
+) -> tuple[bool, list[str], str, int, int, int]:
+    """兼容层：请改用公共 API `get_diagnostics_config()`。
+
+    注意：该函数保留仅用于老代码/过渡期。
+    移除条件：仓内不再存在对本模块 `_get_diagnostics_redaction_config` 的跨模块导入，
+    且连续回归稳定后可删除。
+    """
+    cfg = get_diagnostics_config(get_settings_fn=get_settings_fn)
+    return (
+        bool(cfg.redact_enabled),
+        list(cfg.redact_patterns or []),
+        str(cfg.redact_replacement or "***REDACTED***"),
+        int(cfg.args_limit or 0),
+        int(cfg.snippet_limit or 0),
+        int(cfg.total_limit or 0),
+    )
+
+
+def _redact_text(text: str, patterns: list[str], replacement: str) -> str:
+    """兼容层：请改用公共 API `redact_text()`。
+
+    移除条件：仓内不再存在对本模块 `_redact_text` 的跨模块导入，且连续回归稳定后可删除。
+    """
+    return redact_text(text, patterns, replacement)
+
+
+def _truncate_args(args: list[str], limit: int) -> list[str]:
+    """兼容层：请改用公共 API `truncate_args()`。
+
+    移除条件：仓内不再存在对本模块 `_truncate_args` 的跨模块导入，且连续回归稳定后可删除。
+    """
+    try:
+        limit = int(limit or 0)
+    except Exception:
+        limit = 0
+    if limit <= 0:
+        return list(args or [])
+    out: list[str] = []
+    used = 0
+    for a in (args or []):
+        a = _safe_str(a)
+        if not a:
+            continue
+        extra = (1 if out else 0) + len(a)
+        if used + extra <= limit:
+            out.append(a)
+            used += extra
+            continue
+        if out:
+            out.append("…(truncated)")
+        else:
+            out.append(_truncate_text(a, limit))
+        break
+    return out

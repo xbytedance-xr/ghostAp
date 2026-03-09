@@ -8,20 +8,555 @@ methods that bridge to the async ACPSession.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import subprocess
 import threading
 import time
+import json
 from functools import lru_cache
 from typing import Any, Callable, Optional
 
 from .models import ACPEvent, PromptResult
-from .session import ACPSession
+from .session import ACPSession, ACPStartupError
 from .client import ACPHistoryStore
 from ..config import get_settings
+from .diagnostics import (
+    get_diagnostics_config,
+    redact_text,
+    truncate_args,
+    safe_str,
+    truncate_text,
+    normalize_startup_diagnostics,
+)
+
+from ..ttadk.env_sandbox import build_ttadk_subprocess_env
 
 logger = logging.getLogger(__name__)
+
+# 供 resolve_agent_spec 内部 best-effort 读取 manager 缓存时使用，避免引入额外锁实现。
+_NULL_LOCK = contextlib.nullcontext()
+
+
+def _safe_float_or_none(value: object) -> Optional[float]:
+    """Best-effort float conversion.
+
+    Contract: never raises; returns None when conversion is impossible.
+    """
+    if value is None:
+        return None
+    try:
+        # Fast path for common numeric inputs
+        if isinstance(value, (int, float)):
+            return float(value)
+        # Reject bool explicitly (bool is subclass of int)
+        if isinstance(value, bool):
+            return float(value)
+        s = str(value).strip()
+        if not s:
+            return None
+        return float(s)
+    except Exception:
+        return None
+
+
+def classify_startup_fail_phase(*, error: Exception, error_blob: str) -> str:
+    """Best-effort classify startup failure phase.
+
+    Contract:
+    - Never raises
+    - Returns one of: invalid_model | stdin_not_tty | timeout | start_failed
+
+    Notes:
+    - Prefer reusing TTADK-side matchers when available.
+    - Uses minimal string fallbacks to remain functional when TTADK module is unavailable.
+    """
+    try:
+        # Timeout variants
+        try:
+            if isinstance(error, TimeoutError) or type(error).__name__ == "TimeoutExpired":
+                return "timeout"
+        except Exception:
+            pass
+
+        blob = str(error_blob or "")
+        lower = blob.lower()
+
+        # Prefer TTADK matchers (best-effort, avoid hard dependency / circular import by delaying import).
+        try:
+            import importlib
+
+            m = importlib.import_module("src.ttadk.models")
+            is_invalid = getattr(m, "is_invalid_model_error", None)
+            is_tty = getattr(m, "is_stdin_not_tty_error", None)
+            try:
+                if callable(is_tty) and bool(is_tty(blob)):
+                    return "stdin_not_tty"
+            except Exception:
+                pass
+            try:
+                if callable(is_invalid) and bool(is_invalid(blob)):
+                    return "invalid_model"
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        # Minimal string fallbacks
+        if "stdin is not a terminal" in lower or "stdin-not-tty" in lower:
+            return "stdin_not_tty"
+        if (
+            "invalid model" in lower
+            or "model must be one of" in lower
+            or "unknown model" in lower
+            or ("invalid value" in lower and "--model" in lower)
+        ):
+            return "invalid_model"
+
+        return "start_failed"
+    except Exception:
+        return "start_failed"
+
+
+
+
+def build_startup_diagnostics(
+    *,
+    agent_type: str,
+    cwd: str,
+    model_name: Optional[str],
+    session: object = None,
+    error: Exception,
+    attempt: Optional[int] = None,
+    retries: Optional[int] = None,
+    timeout_s: Optional[float] = None,
+    snippet_limit: int = 240,
+) -> dict:
+    """构造稳定可序列化的启动失败诊断信息。
+
+    目标：无论错误对象/会话对象携带的信息是否完整，最终日志字段都稳定存在，
+    便于定位“启动失败但日志为空/极少”的问题。
+
+    必含字段：cmd/args/rc/stdout_snippet/stderr_snippet。
+    """
+    # NOTE: `build_startup_diagnostics` is a compat entry.
+    # New SSOT for non-empty fallbacks/redaction/truncation is
+    # `src.acp.diagnostics.normalize_startup_diagnostics`.
+    cfg = get_diagnostics_config(get_settings_fn=get_settings)
+    args_limit = int(cfg.args_limit or 0)
+    snippet_limit_cfg = int(cfg.snippet_limit or 0)
+    try:
+        snippet_limit_eff = int(snippet_limit_cfg or 0) if snippet_limit_cfg is not None else int(snippet_limit or 0)
+    except Exception:
+        snippet_limit_eff = int(snippet_limit or 240)
+    if snippet_limit_eff <= 0:
+        snippet_limit_eff = int(snippet_limit or 240)
+
+    diag: dict = {
+        "agent_type": (agent_type or ""),
+        "cwd": (cwd or ""),
+        "model": (model_name or ""),
+        "attempt": int(attempt) if isinstance(attempt, int) else attempt,
+        "retries": int(retries) if isinstance(retries, int) else retries,
+        "timeout_s": _safe_float_or_none(timeout_s),
+        "error_type": type(error).__name__ if error is not None else "",
+        # exception_type: optional alias for easier grep / external consumers
+        "exception_type": type(error).__name__ if error is not None else "",
+        # error_text: stable, human-readable summary (must be non-empty)
+        "error_text": "",
+        # error: backward-compatible alias
+        "error": "",
+        # error_repr: optional but useful when __str__ is empty
+        "error_repr": "",
+        "cmd": "",
+        "args": [],
+        "rc": None,
+        "stdout_snippet": "",
+        "stderr_snippet": "",
+        # fail_reason: stable, short classification string
+        "fail_reason": "",
+        "spec": "",
+        # Backward-compatible alias used by older diagnostics/logs
+        "agent_spec": "",
+    }
+
+    # error_repr (best-effort; later redaction+truncation handled by normalize_startup_diagnostics)
+    try:
+        diag["error_repr"] = truncate_text(repr(error) if error is not None else "", 240)
+    except Exception:
+        diag["error_repr"] = ""
+
+    # cmd/args: prefer session then error (标准协议优先：ACPStartupError.agent_cmd/agent_args)
+    try:
+        cmd = safe_str(getattr(session, "_agent_cmd", "") or "") if session is not None else ""
+        args = list(getattr(session, "_agent_args", []) or []) if session is not None else []
+        if cmd or args:
+            diag["cmd"] = cmd
+            diag["args"] = [str(x) for x in args]
+    except Exception:
+        pass
+
+    if not diag.get("cmd") and not diag.get("args"):
+        try:
+            diag["cmd"] = safe_str(getattr(error, "agent_cmd", "") or "")
+            diag["args"] = [str(x) for x in (getattr(error, "agent_args", []) or [])]
+        except Exception:
+            pass
+
+    # 迁移期兜底（可删除条件：全链路启动失败仅抛 ACPStartupError/其子类，并稳定设置 agent_cmd/agent_args）。
+    # Extra compatibility: some errors may use `cmd/args` instead of `agent_cmd/agent_args`.
+    if (not diag.get("cmd")) and (not (diag.get("args") or [])):
+        try:
+            diag["cmd"] = safe_str(getattr(error, "cmd", "") or "")
+            diag["args"] = [str(x) for x in (getattr(error, "args", []) or [])]
+        except Exception:
+            pass
+
+    # return code
+    try:
+        rc = getattr(error, "returncode", None)
+        if rc is not None:
+            diag["rc"] = int(rc)
+    except Exception:
+        pass
+
+    # 迁移期兜底（可删除条件同上）：部分历史错误用 `.rc` 表示 returncode。
+    # Extra compatibility: some subprocess-like errors may use `.rc`.
+    if diag.get("rc") is None:
+        try:
+            rc = getattr(error, "rc", None)
+            if rc is not None:
+                diag["rc"] = int(rc)
+        except Exception:
+            pass
+
+    # Optional: fail_phase from ACPStartupError (for log aggregation)
+    try:
+        phase = safe_str(getattr(error, "fail_phase", "") or "")
+        if phase:
+            diag["fail_phase"] = truncate_text(phase, 80)
+    except Exception:
+        pass
+
+    if diag.get("rc") is None:
+        try:
+            # best-effort: if process exists and has returncode
+            acp_session = getattr(session, "_acp_session", None) if session is not None else None
+            proc = getattr(acp_session, "_proc", None) if acp_session is not None else None
+            rc = getattr(proc, "returncode", None)
+            if rc is not None:
+                diag["rc"] = int(rc)
+        except Exception:
+            pass
+
+    # stdout/stderr snippets: prefer explicit snippet fields
+    try:
+        out = safe_str(getattr(error, "stdout_snippet", "") or "")
+        err = safe_str(getattr(error, "stderr_snippet", "") or "")
+        if out:
+            diag["stdout_snippet"] = truncate_text(out, snippet_limit_eff)
+        if err:
+            diag["stderr_snippet"] = truncate_text(err, snippet_limit_eff)
+    except Exception:
+        pass
+
+    # fallback to stdout/stderr raw
+    if not diag.get("stdout_snippet"):
+        try:
+            out = safe_str(getattr(error, "stdout", "") or "")
+            if out:
+                diag["stdout_snippet"] = truncate_text(out, snippet_limit_eff)
+        except Exception:
+            pass
+    if not diag.get("stderr_snippet"):
+        try:
+            err = safe_str(getattr(error, "stderr", "") or "")
+            if err:
+                diag["stderr_snippet"] = truncate_text(err, snippet_limit_eff)
+        except Exception:
+            pass
+
+    # 规范化兜底（SSOT 在 diagnostics.normalize_startup_diagnostics）：
+    # 此处仅做最小采集，不在这里重复实现“非空兜底/脱敏/截断”。
+
+    # cmd/args 兜底：若 session/error 都未提供命令信息，best-effort 通过 resolve_agent_spec 推断。
+    try:
+        if not safe_str(diag.get("cmd") or "").strip() and not list(diag.get("args") or []):
+            try:
+                cmd2, args2 = resolve_agent_spec(agent_type, model_name=model_name)
+                diag["cmd"] = safe_str(cmd2 or "")
+                diag["args"] = [str(x) for x in (args2 or [])]
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Best-effort fail_phase inference when upstream does not provide one.
+    # Run it after snippets are filled so classification has more context.
+    if not diag.get("fail_phase"):
+        try:
+            err_blob = "\n".join(
+                [
+                    safe_str(diag.get("error") or ""),
+                    safe_str(diag.get("stdout_snippet") or ""),
+                    safe_str(diag.get("stderr_snippet") or ""),
+                ]
+            )
+        except Exception:
+            err_blob = ""
+        try:
+            phase_guess = classify_startup_fail_phase(error=error, error_blob=err_blob)
+            diag["fail_phase"] = truncate_text(safe_str(phase_guess or ""), 80)
+        except Exception:
+            # ultimate fallback
+            diag["fail_phase"] = "start_failed"
+
+    # fail_reason 采集：上游若提供则保留；最终兜底由 normalize 统一处理
+    try:
+        diag["fail_reason"] = truncate_text(safe_str(getattr(error, "fail_reason", "") or ""), 80)
+    except Exception:
+        diag["fail_reason"] = ""
+
+    # human-readable spec (best-effort)
+    try:
+        if session is not None and hasattr(session, "describe_agent"):
+            diag["spec"] = truncate_text(safe_str(session.describe_agent()), 400)
+    except Exception:
+        pass
+
+    # Keep alias for compatibility
+    if diag.get("spec") and not diag.get("agent_spec"):
+        diag["agent_spec"] = diag.get("spec")
+
+    # If cmd/args missing but spec looks like `cmd=... args=...`, parse it best-effort.
+    if (not diag.get("cmd")) and (not (diag.get("args") or [])) and diag.get("spec"):
+        try:
+            s = str(diag.get("spec") or "")
+            # very simple parser: cmd=<...> args=<...> cwd=<...>
+            if "cmd=" in s:
+                cmd_part = s.split("cmd=", 1)[1]
+                cmd = cmd_part.split(" ", 1)[0].strip()
+                if cmd:
+                    diag["cmd"] = cmd
+            if "args=" in s:
+                args_part = s.split("args=", 1)[1]
+                args_txt = args_part.split(" cwd=", 1)[0].strip()
+                if args_txt:
+                    diag["args"] = [x for x in args_txt.split() if x]
+        except Exception:
+            pass
+
+    # Ensure required fields exist and are serializable.
+    if diag.get("args") is None:
+        diag["args"] = []
+    if not isinstance(diag.get("args"), list):
+        try:
+            diag["args"] = list(diag.get("args") or [])
+        except Exception:
+            diag["args"] = []
+    diag["args"] = [str(x) for x in (diag.get("args") or [])]
+    diag["cmd"] = safe_str(diag.get("cmd") or "")
+    diag["stdout_snippet"] = safe_str(diag.get("stdout_snippet") or "")
+    diag["stderr_snippet"] = safe_str(diag.get("stderr_snippet") or "")
+    diag["agent_spec"] = safe_str(diag.get("agent_spec") or "")
+    # Re-assert timeout_s contract: None | float
+    diag["timeout_s"] = _safe_float_or_none(diag.get("timeout_s"))
+
+    # Normalize error_text (some exceptions have empty __str__).
+    # Compose from: str(error) -> stderr/stdout snippets -> cause/context -> repr(error) -> type fallback.
+    try:
+        msg = ""
+        try:
+            msg = safe_str(error) if error is not None else ""
+        except Exception:
+            msg = ""
+
+        # If message is too generic/empty, prefer stderr/stdout snippets.
+        stderr_snip = safe_str(diag.get("stderr_snippet") or "")
+        stdout_snip = safe_str(diag.get("stdout_snippet") or "")
+        if not (msg or "").strip() or (msg or "").strip() in ("(empty)", "None"):
+            msg = (stderr_snip or "").strip() or (stdout_snip or "").strip()
+
+        # Add 1-level cause/context if still empty or extremely short.
+        if (not (msg or "").strip()) or len((msg or "").strip()) < 8:
+            try:
+                cause = getattr(error, "__cause__", None) or getattr(error, "__context__", None)
+            except Exception:
+                cause = None
+            if cause is not None and cause is not error:
+                try:
+                    c_msg = safe_str(cause)
+                except Exception:
+                    c_msg = ""
+                if not (c_msg or "").strip():
+                    try:
+                        c_msg = repr(cause)
+                    except Exception:
+                        c_msg = ""
+                c_msg = (c_msg or "").strip()
+                if c_msg:
+                    msg = (msg or "").strip()
+                    msg = (msg + "\n" if msg else "") + f"cause={type(cause).__name__}: {c_msg}"
+
+        # Final fallback: repr(error) or <Type>.
+        if not (msg or "").strip():
+            msg = (safe_str(diag.get("error_repr") or "") or "").strip()
+        if not (msg or "").strip():
+            et = safe_str(diag.get("error_type") or "Exception") or "Exception"
+            msg = f"<{et}> (empty output)"
+
+        # Include key structured hints if available.
+        hints: list[str] = []
+        try:
+            rc = diag.get("rc")
+            if rc is not None:
+                hints.append(f"rc={int(rc)}")
+        except Exception:
+            pass
+        try:
+            ph = safe_str(diag.get("fail_phase") or "").strip()
+            if ph:
+                hints.append(f"phase={truncate_text(ph, 40)}")
+        except Exception:
+            pass
+        if hints:
+            msg = (msg or "").strip()
+            msg = (msg + "\n" if msg else "") + " ".join(hints)
+
+        # Bound size before normalize to avoid giant intermediate strings.
+        msg = truncate_text(msg, 400) or "(empty)"
+        diag["error_text"] = msg
+        diag["error"] = msg
+    except Exception:
+        diag["error_text"] = "<Exception> (empty output)"
+        diag["error"] = diag["error_text"]
+
+    # Final SSOT normalize: non-empty fallbacks + redaction + truncation
+    return normalize_startup_diagnostics(diag, get_settings_fn=get_settings)
+
+
+def format_startup_diagnostics(diag: object, *, total_limit: int = 2000) -> str:
+    """将 diagnostics 格式化为稳定的单行字符串（JSON），避免日志为空/难 grep。"""
+    base = {
+        "cmd": "",
+        "args": [],
+        "rc": None,
+        "stdout_snippet": "",
+        "stderr_snippet": "",
+    }
+    try:
+        if isinstance(diag, dict):
+            base.update(diag)
+        else:
+            base["error"] = truncate_text(safe_str(diag), 400)
+    except Exception:
+        base["error"] = "format_error"
+
+    # Redaction + truncation ordering: redact first (on JSON string), then truncate.
+    try:
+        # NOTE: pass get_settings() explicitly to allow tests to monkeypatch
+        # src.acp.sync_adapter.get_settings without touching global config.
+        cfg = get_diagnostics_config(get_settings_fn=get_settings)
+        enabled = bool(cfg.redact_enabled)
+        patterns = list(cfg.redact_patterns or [])
+        repl = str(cfg.redact_replacement or "***REDACTED***")
+        if int(cfg.total_limit or 0) > 0:
+            total_limit = int(cfg.total_limit)
+    except Exception:
+        enabled, patterns, repl = True, [], "***REDACTED***"
+
+    try:
+        s = json.dumps(base, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        try:
+            s = safe_str(base)
+        except Exception:
+            s = "{\"error\":\"diagnostics_unavailable\"}"
+
+    if enabled:
+        try:
+            s = redact_text(s, patterns, repl)
+        except Exception:
+            pass
+    return truncate_text(s, int(total_limit or 2000))
+
+
+class AgentSpecResolveError(ACPStartupError):
+    """解析 agent spec 失败（统一可诊断异常协议）。
+
+    说明：该错误属于启动前阶段（fail_phase=agent_spec_resolve），用于避免进入 ACP handshake 超时。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        agent_cmd: str = "",
+        agent_args: Optional[list[str]] = None,
+        returncode: Optional[int] = None,
+        stdout_snippet: str = "",
+        stderr_snippet: str = "",
+    ):
+        super().__init__(
+            message,
+            agent_cmd=str(agent_cmd or ""),
+            agent_args=[str(x) for x in (agent_args or [])],
+            cwd="",
+            returncode=returncode,
+            stdout_snippet=str(stdout_snippet or ""),
+            stderr_snippet=str(stderr_snippet or ""),
+            fail_phase="agent_spec_resolve",
+            cause=None,
+        )
+
+
+def _build_error_text(err: Exception) -> str:
+    """从异常对象中尽量拼出可用于分类的文本。"""
+    parts: list[str] = []
+    try:
+        parts.append(str(err) or "")
+    except Exception:
+        parts.append("")
+    for k in ("stderr_snippet", "stdout_snippet", "stderr", "stdout"):
+        try:
+            v = str(getattr(err, k, "") or "")
+            if v:
+                parts.append(v)
+        except Exception:
+            continue
+    return "\n".join([p for p in parts if p])
+
+
+@lru_cache(maxsize=64)
+def _probe_acp_serve_help(command: str) -> tuple[bool, Optional[int], str, str]:
+    """探测 `<command> acp serve --help` 是否可用，并返回 (ok, rc, stdout_snip, stderr_snip)。
+
+    - ok=True 仅表示该命令支持 ACP server 启动（可用 `acp serve`）。
+    - 该探测用于 TTADK tool adapter，避免对不支持 ACP 的 tool 进入 handshake 超时。
+    """
+    cmd = (command or "").strip()
+    if not cmd:
+        return False, None, "", ""
+    try:
+        # Claude Code 等可能因嵌套会话 guard 拒绝启动；探测时移除该 env，提升稳健性。
+        env = os.environ.copy()
+        env.pop("CLAUDECODE", None)
+        p = subprocess.run(
+            [cmd, "acp", "serve", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            env=env,
+        )
+        out = (p.stdout or "")
+        err = (p.stderr or "")
+        blob = (out + "\n" + err).lower()
+        ok = bool(p.returncode == 0 and "acp serve" in blob and "usage" in blob)
+        # 片段截断，避免日志/异常过大
+        return ok, int(p.returncode), (out or "")[-200:], (err or "")[-200:]
+    except Exception as e:
+        return False, None, "", (str(e) or type(e).__name__)[:200]
 
 
 @lru_cache(maxsize=32)
@@ -40,17 +575,96 @@ def _supports_acp_serve(command: str) -> bool:
         env = os.environ.copy()
         env.pop("CLAUDECODE", None)
         p = subprocess.run(
-            [command, "acp", "serve", "-h"],
+            [command, "acp", "serve", "--help"],
             capture_output=True,
             text=True,
             timeout=2,
             env=env,
         )
-        out = (p.stdout or "") + "\n" + (p.stderr or "")
+        out = (getattr(p, "stdout", "") or "") + "\n" + (getattr(p, "stderr", "") or "")
         out_lower = out.lower()
-        return "acp" in out_lower and "server" in out_lower
+
+        # Some tests/fakes don't provide returncode; treat it as success.
+        rc = getattr(p, "returncode", 0)
+        if rc not in (0, None):
+            return False
+
+        # Preferred: explicit subcommand usage for `acp serve`.
+        if "acp serve" in out_lower and "usage:" in out_lower:
+            return True
+
+        # Backward-compatible heuristic: many CLIs print "Start the ACP server".
+        if "acp" in out_lower and "server" in out_lower:
+            return True
+        return False
     except Exception:
         return False
+
+
+_TTADK_TOOL_PROBE_LOCK = threading.Lock()
+_TTADK_TOOL_INFLIGHT: set[str] = set()
+
+
+@lru_cache(maxsize=64)
+def _ttadk_tool_supports_acp(tool_cmd: str) -> bool:
+    """Detect whether a downstream tool supports `acp serve` (best-effort)."""
+    tool_cmd = (tool_cmd or "").strip()
+    if not tool_cmd:
+        return False
+
+    # Fast known case (avoid executing external binaries).
+    if tool_cmd.lower() in ("coco",):
+        return True
+
+    # Inflight de-dup: avoid concurrent external probes.
+    with _TTADK_TOOL_PROBE_LOCK:
+        if tool_cmd in _TTADK_TOOL_INFLIGHT:
+            return False
+        _TTADK_TOOL_INFLIGHT.add(tool_cmd)
+
+    try:
+        ok, _, _, _ = _probe_acp_serve_help(tool_cmd)
+        return bool(ok)
+    except Exception:
+        return False
+    finally:
+        with _TTADK_TOOL_PROBE_LOCK:
+            _TTADK_TOOL_INFLIGHT.discard(tool_cmd)
+
+
+def _resolve_ttadk_passthrough_args(tool_name: str) -> str:
+    """Resolve `ttadk code -a <args>` for a specific tool.
+
+    Returns a single string for ttadk's `-a/--args` passthrough.
+    """
+    tool = (tool_name or "").strip().lower()
+    if not tool:
+        raise AgentSpecResolveError("TTADK tool 为空，无法解析启动参数")
+
+    # `ttadk code -a` 仅透传参数给下游 tool。GhostAP 的 ACP backend 依赖下游 tool
+    # 以 `acp serve` 形式输出 JSON-RPC over stdio。
+    # 因此这里做一次轻量探测：不支持则立刻抛 AgentSpecResolveError，让上层走确定性降级，避免 handshake 超时。
+
+    if tool == "coco":
+        return "acp serve"
+
+    # 兼容旧行为：对 claude 先返回 passthrough，由上层 quickcheck 决定是否降级。
+    # 原因：claude/codex 等工具在不同环境下能力差异较大，resolve_agent_spec 应尽量保持纯函数。
+    if tool == "claude":
+        return "acp serve"
+
+    ok, rc, out_snip, err_snip = _probe_acp_serve_help(tool)
+    if ok:
+        return "acp serve"
+
+    raise AgentSpecResolveError(
+        f"TTADK tool={tool} 不支持 `acp serve`（将触发降级）",
+        agent_cmd=tool,
+        agent_args=["acp", "serve"],
+        returncode=rc,
+        stdout_snippet=out_snip,
+        stderr_snippet=err_snip,
+    )
 
 
 # Track which agent CLIs have already been auto-updated in this process
@@ -102,12 +716,16 @@ def _resolve_with_auto_update(command: str) -> bool:
     # Try auto-update then re-probe
     if _auto_update_agent(command):
         _supports_acp_serve.cache_clear()
+        try:
+            _probe_acp_serve_help.cache_clear()
+        except Exception:
+            pass
         if _supports_acp_serve(command):
             return True
     return False
 
 
-def resolve_agent_spec(agent_type: str, model_name: Optional[str] = None) -> tuple[str, list[str]]:
+def resolve_agent_spec(agent_type: str, model_name: Optional[str] = None, *, ttadk_use_pty: bool = False) -> tuple[str, list[str]]:
     """Resolve (command, args) for spawning an ACP agent process over stdio."""
     agent_type = (agent_type or "").lower()
 
@@ -118,14 +736,90 @@ def resolve_agent_spec(agent_type: str, model_name: Optional[str] = None) -> tup
 
     if agent_type.startswith("ttadk_"):
         tool_name = agent_type[len("ttadk_"):]
-        # Use wrapper script to filter out TTADK banner (which breaks JSON-RPC)
-        wrapper_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "utils", "ttadk_wrapper.py")
-        wrapper_path = os.path.abspath(wrapper_path)
-        
-        args = [wrapper_path, "ttadk", "code", "-t", tool_name]
-        if model_name:
-            args.extend(["-m", model_name])
-        args.extend(["-a", "acp serve"])
+
+        # Use wrapper module to filter out TTADK banner (which breaks JSON-RPC).
+        # IMPORTANT: use `-m` to avoid script/relative-import drift.
+        wrapper_module = "src.utils.ttadk_wrapper"
+
+        # SSOT: TTADK 侧要求透传真实 model_id；这里做最后一道 best-effort 归一化，
+        # 防止上游误把 display/alias 直接透传到 -m 导致 invalid model。
+        input_model = (model_name or "").strip()
+        resolved_model: Optional[str] = None
+        resolution_source = ""
+        resolution_reason = ""
+        if input_model:
+            try:
+                from ..ttadk import get_ttadk_manager
+                from ..ttadk.models import resolve_model_id as _resolve_model_id
+                from ..ttadk.models import is_model_token as _is_model_token
+
+                # 关键约束：resolve_agent_spec 必须是“纯函数/无外部副作用”。
+                # 因此这里只读取内存缓存（不触发 fetch/probe/磁盘 I/O），防止单测/启动路径被阻塞。
+                mgr = get_ttadk_manager()
+                try:
+                    with getattr(mgr, "_lock", None) or _NULL_LOCK:  # type: ignore[name-defined]
+                        descriptors = list(getattr(mgr, "_tool_models_cache", {}).get(tool_name, []) or [])
+                except Exception:
+                    descriptors = []
+
+                if descriptors:
+                    r, diag = _resolve_model_id(
+                        tool_name=tool_name,
+                        input_name=input_model,
+                        descriptors=descriptors,
+                        allow_unknown_passthrough=True,
+                    )
+                    cand = str(getattr(r, "real_name", "") or "").strip()
+                    src = str(getattr(r, "source", "") or "")
+                    resolution_source = src
+                    if isinstance(diag, dict):
+                        resolution_reason = str(diag.get("resolution_reason") or "")
+                    if cand and src != "unknown":
+                        resolved_model = cand
+                    elif _is_model_token(input_model):
+                        resolved_model = input_model
+                        if not resolution_source:
+                            resolution_source = "token_passthrough"
+                    else:
+                        resolved_model = None
+                        if not resolution_source:
+                            resolution_source = "drop_m"
+                        if not resolution_reason:
+                            resolution_reason = "unresolved_display_or_alias"
+                else:
+                    # 无缓存：只做 token 透传，否则不透传 -m
+                    if _is_model_token(input_model):
+                        resolved_model = input_model
+                        resolution_source = "token_passthrough"
+                        resolution_reason = "no_cache"
+                    else:
+                        resolved_model = None
+                        resolution_source = "drop_m"
+                        resolution_reason = "no_cache"
+            except Exception:
+                resolved_model = input_model
+
+        passthrough = _resolve_ttadk_passthrough_args(tool_name)
+        args = ["-m", wrapper_module]
+        if ttadk_use_pty:
+            args.append("--pty")
+        args.extend(["ttadk", "code", "-t", tool_name])
+        if resolved_model:
+            args.extend(["-m", str(resolved_model)])
+
+        # NOTE: `-a/--args` is passthrough to downstream tool CLI.
+        args.extend(["-a", passthrough])
+
+        logger.info(
+            "[ACP:TTADK] resolve_agent_spec: tool=%s model=%s input_model=%s resolution_source=%s resolution_reason=%s passthrough=%s pty=%s",
+            tool_name,
+            (resolved_model or "(auto)"),
+            (input_model or ""),
+            (resolution_source or ""),
+            (resolution_reason or ""),
+            passthrough,
+            bool(ttadk_use_pty),
+        )
         return "python3", args
 
     if agent_type == "coco":
@@ -161,6 +855,9 @@ def start_session_with_retry(
     cwd: str,
     startup_timeout: float = 60,
     model_name: Optional[str] = None,
+    session_cls: Optional[type["SyncACPSession"]] = None,
+    ttadk_use_pty: bool = False,
+    log_failures: bool = True,
 ) -> SyncACPSession:
     """Start an ACP session with retry and progressive timeout.
 
@@ -172,19 +869,82 @@ def start_session_with_retry(
 
     last_err: Exception | None = None
     session: SyncACPSession | None = None
+    last_diag: dict | None = None
+
+    if session_cls is None:
+        session_cls = SyncACPSession
 
     for attempt in range(1, retries + 1):
         try:
-            session = SyncACPSession(agent_type=agent_type, cwd=cwd, model_name=model_name)
+            # Backward-compatible construction: allow fakes/older signatures without model_name kw.
+            if model_name:
+                try:
+                    session = session_cls(agent_type=agent_type, cwd=cwd, model_name=model_name, ttadk_use_pty=bool(ttadk_use_pty))
+                except TypeError:
+                    # 兼容旧签名 / 测试桩：不支持 ttadk_use_pty 时仍应保留 model_name 透传
+                    try:
+                        session = session_cls(agent_type=agent_type, cwd=cwd, model_name=model_name)
+                    except TypeError:
+                        session = session_cls(agent_type=agent_type, cwd=cwd)
+            else:
+                session = session_cls(agent_type=agent_type, cwd=cwd, ttadk_use_pty=bool(ttadk_use_pty))
             effective_timeout = float(startup_timeout) * (1.0 + 0.5 * (attempt - 1))
             session.start(startup_timeout=effective_timeout)
             logger.info("[ACP:%s] Engine session started (attempt=%d/%d)",
                         agent_type.upper(), attempt, retries)
             return session
+        except AgentSpecResolveError:
+            # 解析 agent spec 失败（例如 TTADK tool 不支持 `acp serve`）时重试无意义，直接交给上层降级。
+            raise
         except Exception as e:
             last_err = e
-            logger.warning("[ACP:%s] Engine session start failed (attempt=%d/%d): %s",
-                           agent_type.upper(), attempt, retries, e)
+            spec = ""
+            try:
+                spec = session.describe_agent() if session else ""
+            except Exception:
+                spec = ""
+
+            # Best-effort structured diagnostics for startup failures.
+            diag = build_startup_diagnostics(
+                agent_type=agent_type,
+                cwd=cwd,
+                model_name=model_name,
+                session=session,
+                error=e,
+                attempt=int(attempt),
+                retries=int(retries),
+            )
+            last_diag = dict(diag or {})
+            # 补充：保留可读 spec 以便快速复现
+            if spec and not diag.get("spec"):
+                try:
+                    diag["spec"] = _truncate_text(spec, 400)
+                except Exception:
+                    pass
+
+            if bool(log_failures):
+                try:
+                    from .diagnostics import format_startup_failure_log_line
+
+                    logger.warning(
+                        format_startup_failure_log_line(
+                            agent_type=agent_type,
+                            event="Engine session start failed",
+                            attempt=int(attempt),
+                            retries=int(retries),
+                            error=e,
+                            diag=diag if isinstance(diag, dict) else None,
+                            attempts=(diag.get("attempts") if isinstance(diag, dict) else None),
+                            get_settings_fn=get_settings,
+                        )
+                    )
+                except Exception:
+                    # fallback to legacy message
+                    logger.warning(
+                        "[ACP:%s] Engine session start failed: %s",
+                        agent_type.upper(),
+                        format_startup_diagnostics(diag),
+                    )
             try:
                 if session:
                     session.close()
@@ -199,9 +959,321 @@ def start_session_with_retry(
         spec = f" ({resolve_agent_spec(agent_type)})"
     except Exception:
         pass
-    raise RuntimeError(
-        f"启动 {agent_type} ACP Server 失败{spec}（已重试 {retries} 次）: {last_err}"
-    )
+
+    # 诊断载体契约（SSOT=build_startup_diagnostics）：
+    # - 上层（ACPSessionManager / engines）需要稳定读取 cmd/args/rc/stdout_snippet/stderr_snippet
+    # - 这里用 ACPStartupError 作为“可诊断异常”，避免仅抛 RuntimeError 导致信息丢失/日志为空
+    agent_cmd = ""
+    agent_args: list[str] = []
+    stdout_snip = ""
+    stderr_snip = ""
+    rc: Optional[int] = None
+    try:
+        if isinstance(last_diag, dict):
+            agent_cmd = safe_str(last_diag.get("cmd") or "")
+            agent_args = [str(x) for x in (last_diag.get("args") or [])]
+            stdout_snip = safe_str(last_diag.get("stdout_snippet") or "")
+            stderr_snip = safe_str(last_diag.get("stderr_snippet") or "")
+            _rc = last_diag.get("rc")
+            if _rc is not None:
+                rc = int(_rc)
+    except Exception:
+        pass
+
+    if not agent_cmd:
+        try:
+            # 注意：resolve_agent_spec 可能失败（例如 agent 不存在），因此 best-effort。
+            cmd, args = resolve_agent_spec(agent_type, model_name=model_name, ttadk_use_pty=bool(ttadk_use_pty))
+            agent_cmd = safe_str(cmd or "")
+            agent_args = [str(x) for x in (args or [])]
+        except Exception:
+            agent_cmd = safe_str(agent_type or "")
+
+    if rc is None:
+        try:
+            _rc = getattr(last_err, "returncode", None)
+            if _rc is not None:
+                rc = int(_rc)
+        except Exception:
+            rc = None
+
+    # 最后兜底：若 snippet 为空，尽量从异常上提取一点点（不做全量输出）
+    if not stdout_snip:
+        try:
+            stdout_snip = truncate_text(safe_str(getattr(last_err, "stdout_snippet", "") or getattr(last_err, "stdout", "") or ""), 240)
+        except Exception:
+            stdout_snip = ""
+    if not stderr_snip:
+        try:
+            stderr_snip = truncate_text(safe_str(getattr(last_err, "stderr_snippet", "") or getattr(last_err, "stderr", "") or ""), 240)
+        except Exception:
+            stderr_snip = ""
+
+    raise ACPStartupError(
+        f"启动 {agent_type} ACP Server 失败{spec}（已重试 {retries} 次）",
+        agent_cmd=agent_cmd or safe_str(agent_type or ""),
+        agent_args=list(agent_args or []),
+        cwd=cwd,
+        returncode=rc,
+        stdout_snippet=stdout_snip,
+        stderr_snippet=stderr_snip,
+        fail_phase="retry_exhausted",
+        cause=last_err,
+    ) from last_err
+
+
+def start_agent_session_with_diagnostics(
+    *,
+    agent_type: str,
+    cwd: str,
+    startup_timeout: float = 60,
+    model_name: Optional[str] = None,
+    session_cls: Optional[type["SyncACPSession"]] = None,
+    ttadk_use_pty: bool = False,
+    log_failures: bool = True,
+) -> tuple["SyncACPSession", str, dict]:
+    """通用 ACP 启动器封装：成功返回 (session, session_id, diagnostics)。
+
+    设计目的：
+    - 作为上层（ACPSessionManager / engines）的“可注入启动器”候选实现
+    - 统一失败诊断载体：在异常上附加 `.diagnostics`（dict，含非空 error_text）
+
+    约定：
+    - 成功：`session_id` 必须为非空字符串
+    - 失败：抛出异常（优先 ACPStartupError），且 `getattr(exc, 'diagnostics', None)` 可读
+    """
+    try:
+        s = start_session_with_retry(
+            agent_type=agent_type,
+            cwd=cwd,
+            startup_timeout=startup_timeout,
+            model_name=model_name,
+            session_cls=session_cls,
+            ttadk_use_pty=bool(ttadk_use_pty),
+            log_failures=bool(log_failures),
+        )
+        sid = str(getattr(s, "session_id", "") or "").strip()
+        if not sid:
+            # 极端兜底：不允许“成功但无 session_id”，避免上层误判。
+            raise ACPStartupError(
+                "ACP session started but session_id is empty",
+                agent_cmd=safe_str(getattr(s, "_agent_cmd", "") or ""),
+                agent_args=[str(x) for x in (getattr(s, "_agent_args", None) or [])],
+                cwd=cwd,
+                returncode=None,
+                stdout_snippet="",
+                stderr_snippet="",
+                fail_phase="missing_session_id",
+                cause=None,
+            )
+        return (s, sid, {"attempts": [{"phase": "start", "ok": True}]})
+    except Exception as e:
+        # 统一构造 diagnostics（SSOT=build_startup_diagnostics/normalize_startup_diagnostics）
+        try:
+            d = build_startup_diagnostics(
+                agent_type=agent_type,
+                cwd=cwd,
+                model_name=model_name,
+                session=None,
+                error=e,
+                attempt=1,
+                retries=max(1, int(getattr(get_settings(), "acp_startup_retries", 1) or 1)),
+                timeout_s=float(startup_timeout or 0),
+            )
+            d = normalize_startup_diagnostics(d, get_settings_fn=get_settings)
+        except Exception:
+            d = {"error_text": str(e) or "(empty)", "fail_reason": "start_failed"}
+        try:
+            setattr(e, "diagnostics", d)
+        except Exception:
+            pass
+        raise
+
+
+def _call_start_session_with_retry_compat(
+    *,
+    agent_type: str,
+    cwd: str,
+    startup_timeout: float,
+    model_name: Optional[str],
+    session_cls: Optional[type["SyncACPSession"]],
+    ttadk_use_pty: bool,
+    log_failures: bool,
+) -> SyncACPSession:
+    """兼容调用 `start_session_with_retry`（关键字调用 + 明确降参顺序）。
+
+    背景：单测桩/历史版本的 `start_session_with_retry` 可能缺少部分参数，常见差异：
+    - 不支持 `log_failures`
+    - 不支持 `ttadk_use_pty`
+    - 不支持 `session_cls`
+
+    设计：
+    - 永远使用关键字调用，避免 positional fallback 破坏 kw-only 的测试桩
+    - 捕获 TypeError 后按固定顺序逐步“降参”并重试（顺序是约定的一部分）：
+      1) 去掉 `log_failures`（最晚加入、最可能缺失）
+      2) 去掉 `ttadk_use_pty`（TTADK 专用开关，旧签名常缺）
+      3) 去掉 `session_cls`（测试桩常不接收）
+    - 最终仍失败时，抛出“最后一次 TypeError”，保持现有语义
+
+    适用范围：仅用于兼容 TTADK 启动链路/测试桩，不建议在非 TTADK 场景扩散使用。
+    """
+
+    base = {
+        "agent_type": agent_type,
+        "cwd": cwd,
+        "startup_timeout": startup_timeout,
+        "model_name": model_name,
+        "session_cls": session_cls,
+        "ttadk_use_pty": bool(ttadk_use_pty),
+        "log_failures": bool(log_failures),
+    }
+
+    # 注意：这里的顺序是约定的一部分，请修改时同步更新单测。
+    candidates: list[dict] = []
+    candidates.append(dict(base))
+    d = dict(base)
+    d.pop("log_failures", None)
+    candidates.append(d)
+    d2 = dict(d)
+    d2.pop("ttadk_use_pty", None)
+    candidates.append(d2)
+    d3 = dict(d2)
+    d3.pop("session_cls", None)
+    candidates.append(d3)
+
+    last_exc: Exception | None = None
+    for kw in candidates:
+        try:
+            # 移除 None 值，减少对签名的压力
+            kw = {k: v for k, v in kw.items() if v is not None or k in ("model_name",)}
+            return start_session_with_retry(**kw)
+        except TypeError as e:
+            last_exc = e
+            continue
+
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("unexpected_start_failure")
+
+
+def start_ttadk_session_with_pty_retry(
+    *,
+    agent_type: str,
+    cwd: str,
+    startup_timeout: float = 60,
+    model_name: Optional[str] = None,
+    session_cls: Optional[type["SyncACPSession"]] = None,
+    log_failures: bool = True,
+) -> SyncACPSession:
+    """TTADK 专用：先普通启动，若命中 stdin-not-tty 则自动用 PTY 重试一次。"""
+    settings = get_settings()
+    pty_enabled = bool(getattr(settings, "ttadk_pty_enabled", True))
+    retry_once = bool(getattr(settings, "ttadk_pty_retry_once", True))
+    cooldown_s = float(getattr(settings, "ttadk_pty_retry_cooldown_s", 60.0) or 60.0)
+    cooldown_s = max(0.0, cooldown_s)
+
+    # per-tool cooldown to avoid restart thrashing
+    tool = (agent_type or "").strip().lower()
+    now = time.time()
+    try:
+        _last = getattr(start_ttadk_session_with_pty_retry, "_last_retry_ts", None)
+        if not isinstance(_last, dict):
+            _last = {}
+            setattr(start_ttadk_session_with_pty_retry, "_last_retry_ts", _last)
+    except Exception:
+        _last = {}
+    if not pty_enabled:
+        return _call_start_session_with_retry_compat(
+            agent_type=agent_type,
+            cwd=cwd,
+            startup_timeout=startup_timeout,
+            model_name=model_name,
+            session_cls=session_cls,
+            ttadk_use_pty=False,
+            log_failures=bool(log_failures),
+        )
+
+    def _start(*, use_pty: bool) -> SyncACPSession:
+        """Best-effort call start_session_with_retry with backward compatibility."""
+        return _call_start_session_with_retry_compat(
+            agent_type=agent_type,
+            cwd=cwd,
+            startup_timeout=startup_timeout,
+            model_name=model_name,
+            session_cls=session_cls,
+            ttadk_use_pty=bool(use_pty),
+            log_failures=bool(log_failures),
+        )
+
+    try:
+        return _start(use_pty=False)
+    except Exception as e:
+        if not retry_once:
+            raise
+        # 分类 stdin-not-tty 必须是 best-effort，不能因为“分类逻辑自身异常”把原始错误信息吞掉。
+        try:
+            from ..ttadk.models import is_stdin_not_tty_error
+
+            blob = _build_error_text(e)
+            if not is_stdin_not_tty_error(blob):
+                raise
+        except Exception:
+            # 分类失败：按原异常抛出（保持可诊断字段）
+            raise
+
+        logger.warning(
+            "[ACP:%s] Detected stdin-not-tty, retry with PTY once: tool=%s cwd=%s model=%s reason=stdin_not_tty err_type=%s",
+            (agent_type or "").upper(),
+            tool,
+            cwd,
+            model_name or "(auto)",
+            type(e).__name__,
+        )
+
+        # cooldown gate
+        try:
+            last_ts = float(_last.get(tool, 0.0) or 0.0) if isinstance(_last, dict) else 0.0
+        except Exception:
+            last_ts = 0.0
+        if cooldown_s and last_ts and (now - last_ts) < cooldown_s:
+            logger.warning(
+                "[ACP:%s] PTY retry suppressed by cooldown: tool=%s cooldown_s=%.1f elapsed=%.1f",
+                (agent_type or "").upper(),
+                tool,
+                cooldown_s,
+                max(0.0, now - last_ts),
+            )
+            # 冷却抑制：抛出原始错误（保留可诊断字段），避免出现空错误
+            raise
+        try:
+            if isinstance(_last, dict):
+                _last[tool] = now
+        except Exception:
+            pass
+        try:
+            return _start(use_pty=True)
+        except Exception as e2:
+            # 若 PTY 重试也失败，用可诊断异常包裹，确保上层日志/diagnostics 不会为空。
+            blob = ""
+            try:
+                blob = _build_error_text(e2)
+            except Exception:
+                blob = ""
+            raise ACPStartupError(
+                "TTADK PTY 重试后仍启动失败",
+                agent_cmd=safe_str(getattr(e2, "agent_cmd", "") or "python3"),
+                agent_args=[str(x) for x in (getattr(e2, "agent_args", None) or [])] or ["(unknown)"],
+                cwd=cwd,
+                returncode=getattr(e2, "returncode", None),
+                stdout_snippet=truncate_text(safe_str(getattr(e2, "stdout_snippet", "") or getattr(e2, "stdout", "") or ""), 240),
+                stderr_snippet=truncate_text(safe_str(getattr(e2, "stderr_snippet", "") or getattr(e2, "stderr", "") or blob), 240),
+                fail_phase="pty_retry",
+                cause=e2,
+            ) from e2
+
+
+# Backward-compatible alias for legacy call sites/tests
+start_ttadk_session_with_pty_retry_once = start_ttadk_session_with_pty_retry
 
 
 class SyncACPSession:
@@ -211,14 +1283,22 @@ class SyncACPSession:
     methods for the synchronous codebase.
     """
 
-    def __init__(self, agent_type: str, cwd: str, agent_args: Optional[list[str]] = None, agent_cmd: Optional[str] = None, model_name: Optional[str] = None):
+    def __init__(
+        self,
+        agent_type: str,
+        cwd: str,
+        agent_args: Optional[list[str]] = None,
+        agent_cmd: Optional[str] = None,
+        model_name: Optional[str] = None,
+        ttadk_use_pty: bool = False,
+    ):
         self._agent_type = agent_type
         self._cwd = cwd
         if agent_cmd is not None:
             self._agent_cmd = agent_cmd
             self._agent_args = agent_args or []
         else:
-            cmd, args = resolve_agent_spec(agent_type, model_name=model_name)
+            cmd, args = resolve_agent_spec(agent_type, model_name=model_name, ttadk_use_pty=bool(ttadk_use_pty))
             self._agent_cmd = cmd
             self._agent_args = agent_args or args
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -316,11 +1396,15 @@ class SyncACPSession:
             return False
 
     async def _start_session(self) -> str:
-        self._acp_session = ACPSession(
-            agent_cmd=self._agent_cmd,
-            agent_args=self._agent_args,
-            cwd=self._cwd,
-        )
+        env_override = None
+        try:
+            if (self._agent_type or "").lower().startswith("ttadk_"):
+                tool = (self._agent_type or "").lower().replace("ttadk_", "", 1)
+                env_override, _ = build_ttadk_subprocess_env(cwd=self._cwd or ".", agent_type=self._agent_type, tool_name=tool)
+        except Exception:
+            env_override = None
+
+        self._acp_session = ACPSession(agent_cmd=self._agent_cmd, agent_args=self._agent_args, cwd=self._cwd, env=env_override)
         return await self._acp_session.start()
 
     def load_session(self, session_id: str) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
@@ -49,6 +50,8 @@ class SpecHandler(BaseHandler):
             self.show_spec_metrics(message_id, chat_id, text, project)
         elif text_lower == "/spec_config" or text_lower.startswith("/spec_config"):
             self.show_spec_config(message_id, chat_id, project)
+        elif text_lower == "/spec_export":
+            self.export_spec_report(message_id, chat_id, project)
         elif text_lower == "/spec_save":
             self.save_spec_state(message_id, chat_id, project)
         elif text_lower == "/stop_spec" or text_lower.startswith("/stop_spec "):
@@ -86,6 +89,7 @@ class SpecHandler(BaseHandler):
                 "- `/spec_history`：查看 spec 文件与循环历史\n"
                 "- `/spec_metrics`：查看目标达成度与指标变化\n"
                 "- `/spec_config`：查看 Spec 长程配置（阈值/保留策略）\n"
+                "- `/spec_export`：导出当前 Spec/Plan 报告\n"
                 "- `/spec_save`：立即落盘保存状态（用于断点续传）\n"
                 "- `/spec_pause`：暂停\n"
                 "- `/spec_resume`：恢复\n"
@@ -493,6 +497,68 @@ class SpecHandler(BaseHandler):
             engine_name=f"Spec({engine_name})", show_buttons=False,
         )
         self.reply_message(message_id, card_content, msg_type=msg_type)
+
+    def export_spec_report(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+        if project is None:
+            project = self.project_manager.get_active_project(chat_id)
+        
+        root_path = project.root_path if project else self.get_working_dir(chat_id)
+        engine = self.ctx.spec_engine_manager.get(chat_id, root_path)
+        
+        # Try to load from disk if not in memory
+        if not engine:
+            try:
+                engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
+                engine = self.ctx.spec_engine_manager.load_or_create_from_disk(chat_id, root_path, engine_name=engine_name)
+            except Exception:
+                pass
+
+        if not engine or not engine.project or not engine.project.cycles:
+            self.reply_message(message_id, "❌ 当前没有可导出的 Spec 记录")
+            return
+
+        spec_project = engine.project
+        lines = [f"# Spec Project Export: {spec_project.name}\n"]
+        lines.append(f"**Generated at**: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        lines.append(f"**Status**: {spec_project.status.value}")
+        lines.append(f"**Requirement**: {spec_project.requirement}\n")
+
+        lines.append("## Acceptance Criteria")
+        tracker = spec_project.criteria_tracker
+        for i, c in enumerate(tracker.criteria):
+            mark = "✅" if tracker.satisfied.get(i) else "🔲"
+            lines.append(f"- {mark} {c}")
+        lines.append("")
+
+        # Latest successful artifacts
+        latest_cycle = spec_project.current_cycle
+        if latest_cycle:
+            lines.append(f"## Latest Cycle (Cycle {latest_cycle.cycle_number})")
+            
+            if latest_cycle.spec_content:
+                lines.append("### Functional Spec")
+                lines.append(latest_cycle.spec_content)
+                lines.append("")
+            
+            if latest_cycle.plan_content:
+                lines.append("### Implementation Plan")
+                lines.append(latest_cycle.plan_content)
+                lines.append("")
+
+            if latest_cycle.review_result:
+                lines.append("### Review Result")
+                lines.append(self.ctx.spec_reporter.format_review_result(latest_cycle.review_result, latest_cycle.cycle_number))
+                lines.append("")
+
+        # Save to file
+        export_filename = f"spec_export_{spec_project.project_id}_{int(time.time())}.md"
+        export_path = os.path.join(root_path, export_filename)
+        try:
+            with open(export_path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+            self.reply_message(message_id, f"✅ 导出成功: `{export_path}`")
+        except Exception as e:
+            self.reply_message(message_id, f"❌ 导出失败: {str(e)}")
 
     def save_spec_state(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         if project is None:

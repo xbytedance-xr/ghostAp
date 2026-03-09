@@ -25,8 +25,12 @@ from typing import Callable, Optional, Protocol
 from .acp.models import ACPEvent, ACPEventType, PromptResult
 from .acp.sync_adapter import SyncACPSession
 from .config import get_settings
+from .ttadk.models import ModelListResult, ResolvedModelResult
 
 logger = logging.getLogger(__name__)
+
+
+TTADKStartupError = None  # legacy alias; do not use
 
 
 class SyncSession(Protocol):
@@ -276,6 +280,305 @@ _RATE_LIMIT_PATTERNS = [
 _RETRY_AFTER_RE = _re.compile(r"retry[_\- ]?after[:\s=]*(\d+)", _re.IGNORECASE)
 
 
+# =====================================================================
+# Model compaction / loop / failover detection (send_prompt-time)
+# =====================================================================
+#
+# 这些错误通常由底层模型服务返回，表现为：
+# - "Model failed: model 'gpt-5.2': receive message: need compaction"
+# - "loop detected"
+# - "Failing over to: gpt-5.1"
+#
+# 统一诊断字段（稳定契约，供日志与单测冻结）：
+# - fail_phase: str         # model_compaction | model_loop | model_failover | unknown
+# - reason: str             # need_compaction | loop_detected | unknown
+# - failed_model: str       # 从错误文本中解析的模型名（best-effort）
+# - failover_to: str        # 从错误文本中解析的 failover 目标（best-effort）
+# - attempt_count: int      # loop 检测用（窗口期内计数），若未知则为 0
+
+_NEED_COMPACTION_RE = _re.compile(r"\bneed\s+compaction\b", _re.IGNORECASE)
+_LOOP_DETECTED_RE = _re.compile(r"\bloop\s+detected\b", _re.IGNORECASE)
+_FAILED_MODEL_RE = _re.compile(r"\bmodel\s*['\"]([^'\"\s]+)['\"]", _re.IGNORECASE)
+_FAILOVER_TO_RE = _re.compile(r"\bfailing\s+over\s+to\s*:\s*([^\s]+)", _re.IGNORECASE)
+
+
+def _build_generic_error_blob(error: Exception) -> str:
+    """将 error 转成可匹配的通用文本 blob（best-effort, never raises）。
+
+    注意：该函数用于 compaction/loop/failover 等“通用模型失败”检测。
+    Invalid model 的“可用模型列表提取/诊断上下文构造”必须收敛到 `src.ttadk.models.build_invalid_model_context`
+    等 SSOT 入口，避免在上层重复实现/分叉规则。
+    """
+    parts: list[str] = []
+    try:
+        parts.append(str(error) or "")
+    except Exception:
+        parts.append("")
+    # 兼容 ACPStartupError/TTADKProbeError 等携带 snippet 字段的异常
+    for k in ("stderr_snippet", "stdout_snippet", "stderr", "stdout", "message"):
+        try:
+            v = getattr(error, k, None)
+            if v:
+                parts.append(str(v))
+        except Exception:
+            continue
+    return "\n".join([p for p in parts if p])
+
+
+def _extract_failed_model(blob: str) -> str:
+    """从错误文本中提取失败模型名（best-effort）。"""
+    try:
+        m = _FAILED_MODEL_RE.search(blob or "")
+        return (m.group(1) or "").strip() if m else ""
+    except Exception:
+        return ""
+
+
+def _extract_failover_to(blob: str) -> str:
+    """从错误文本中提取 failover 目标模型名（best-effort）。"""
+    try:
+        m = _FAILOVER_TO_RE.search(blob or "")
+        return (m.group(1) or "").strip() if m else ""
+    except Exception:
+        return ""
+
+
+def classify_model_failure(*, error: Exception) -> dict:
+    """分类模型失败原因（send_prompt-time）。
+
+    返回字段遵循本文件顶部“统一诊断字段”约定。
+    """
+    blob = _build_generic_error_blob(error)
+    failed_model = _extract_failed_model(blob)
+    failover_to = _extract_failover_to(blob)
+
+    reason = "unknown"
+    fail_phase = "unknown"
+    try:
+        if _NEED_COMPACTION_RE.search(blob or ""):
+            reason = "need_compaction"
+            fail_phase = "model_compaction"
+        elif _LOOP_DETECTED_RE.search(blob or ""):
+            reason = "loop_detected"
+            fail_phase = "model_loop"
+    except Exception:
+        reason = "unknown"
+        fail_phase = "unknown"
+
+    # failover 目标存在时，标记 fail_phase 为 model_failover（不覆盖更具体的 compaction/loop）
+    if (fail_phase == "unknown") and bool(failover_to):
+        fail_phase = "model_failover"
+
+    # 注意：attempt_count 由上层 loop 检测器回填；这里保持 0。
+    return {
+        "fail_phase": fail_phase,
+        "reason": reason,
+        "failed_model": failed_model,
+        "failover_to": failover_to,
+        "attempt_count": 0,
+        "error_blob": blob,
+    }
+
+
+def _extract_model_from_agent_args(args: list[str]) -> str:
+    """从 agent_args 中 best-effort 提取当前 model 名称。"""
+    try:
+        xs = [str(x) for x in (args or [])]
+    except Exception:
+        return ""
+
+    # coco: -c model.name=xxx
+    for i, x in enumerate(xs):
+        if not x:
+            continue
+        if x == "-c" and i + 1 < len(xs):
+            y = str(xs[i + 1] or "")
+            if y.startswith("model.name="):
+                return y.split("=", 1)[1].strip()
+        if "model.name=" in x:
+            try:
+                return x.split("model.name=", 1)[1].strip()
+            except Exception:
+                continue
+
+    # ttadk wrapper: python3 -m <wrapper_module> ... ttadk code ... -m <model>
+    # 注意：args 中可能同时存在两处 "-m"：
+    # - python 的 "-m <module>"
+    # - ttadk code 的 "-m <model>"（我们需要提取这个）
+    try:
+        for i in range(len(xs) - 1):
+            if xs[i] == "ttadk" and xs[i + 1] == "code":
+                for j in range(i + 2, len(xs) - 1):
+                    if xs[j] == "-m":
+                        return str(xs[j + 1] or "").strip()
+                break
+    except Exception:
+        pass
+
+    # generic: first -m <value>
+    for i, x in enumerate(xs):
+        if x == "-m" and i + 1 < len(xs):
+            return str(xs[i + 1] or "").strip()
+    return ""
+
+
+def _replace_model_in_agent_args(args: list[str], new_model: str) -> tuple[list[str], bool]:
+    """在 agent_args 中替换 model 参数（best-effort）。
+
+    返回 (new_args, replaced)。
+    """
+    new_model = str(new_model or "").strip()
+    if not new_model:
+        return (list(args or []), False)
+
+    try:
+        xs = [str(x) for x in (args or [])]
+    except Exception:
+        xs = list(args or [])
+
+    out = list(xs)
+    replaced = False
+
+    # coco style: -c model.name=xxx
+    for i, x in enumerate(out):
+        if x == "-c" and i + 1 < len(out):
+            y = str(out[i + 1] or "")
+            if y.startswith("model.name="):
+                out[i + 1] = f"model.name={new_model}"
+                replaced = True
+                break
+    if replaced:
+        return (out, True)
+
+    # ttadk wrapper: locate "ttadk code" then replace its "-m <model>"
+    try:
+        for i in range(len(out) - 1):
+            if str(out[i] or "") == "ttadk" and str(out[i + 1] or "") == "code":
+                for j in range(i + 2, len(out) - 1):
+                    if str(out[j] or "") == "-m":
+                        out[j + 1] = new_model
+                        return (out, True)
+                break
+    except Exception:
+        pass
+
+    # generic: first -m <value>
+    for i, x in enumerate(out):
+        if x == "-m" and i + 1 < len(out):
+            out[i + 1] = new_model
+            return (out, True)
+
+    return (out, False)
+
+
+def _remove_model_in_agent_args(args: list[str]) -> tuple[list[str], bool]:
+    """在 agent_args 中移除 model 参数（best-effort）。
+
+    目前主要用于 TTADK 运行期 Invalid model 自愈的 auto 回退：移除 `-m <model>`。
+
+    返回 (new_args, removed)。
+    """
+    try:
+        xs = [str(x) for x in (args or [])]
+    except Exception:
+        xs = list(args or [])
+
+    # 优先只移除 ttadk code 的 "-m <model>"，避免误删 python 的 "-m <module>"。
+    try:
+        for i in range(len(xs) - 1):
+            if str(xs[i] or "") == "ttadk" and str(xs[i + 1] or "") == "code":
+                out = list(xs)
+                for j in range(i + 2, len(out) - 1):
+                    if str(out[j] or "") == "-m":
+                        # delete "-m" and its value
+                        try:
+                            del out[j : j + 2]
+                        except Exception:
+                            return (list(xs), False)
+                        return (out, True)
+                return (list(xs), False)
+    except Exception:
+        pass
+
+    # fallback: remove first -m <value>
+    out2: list[str] = []
+    removed = False
+    i = 0
+    while i < len(xs):
+        x = str(xs[i] or "")
+        if x == "-m":
+            removed = True
+            i += 2
+            continue
+        out2.append(x)
+        i += 1
+    return (out2, removed)
+
+
+def _apply_compaction_once(
+    *,
+    session: SyncSession,
+    session_builder: Optional[Callable[..., SyncSession]] = None,
+    startup_timeout_s: Optional[float] = None,
+) -> Optional[SyncSession]:
+    """对当前 session 执行一次“轻量 compaction”处理（best-effort）。
+
+    设计取舍：
+    - 这里不尝试“压缩 LLM 上下文”（ACP 协议当前无该能力），而是通过重建会话来清空上下文。
+    - 对于支持 resume 的场景，调用方应使用更高层的恢复逻辑；此处只服务于运行期自动自愈。
+
+    返回新 session（已启动）表示已执行并认为可能有帮助；返回 None 表示无法执行。
+    """
+    # 如果没有必要的生命周期方法，直接失败（避免 AttributeError 冒泡）。
+    if not hasattr(session, "close") or not hasattr(session, "start"):
+        return None
+
+    # 尽量保留 agent_type/cwd 以便重建（仅对 ACP Session 有意义）。
+    agent_type = str(getattr(session, "_agent_type", "") or "")
+    cwd = str(getattr(session, "_cwd", "") or "")
+    if not agent_type or not cwd:
+        return None
+
+    # 继承 cmd/args（特别是 TTADK wrapper / PTY 等启动参数）
+    agent_cmd = str(getattr(session, "_agent_cmd", "") or "")
+    agent_args = list(getattr(session, "_agent_args", []) or [])
+
+    if not agent_cmd and not agent_args:
+        # 不是 ACP backend 或缺少启动信息
+        return None
+
+    # 关闭旧会话
+    try:
+        session.close()
+    except Exception:
+        # close 失败也继续尝试重建（best-effort）
+        pass
+
+    # 重建新会话（仅 ACP 后端），保持相同 cmd/args（即保持同模型）。
+    try:
+        timeout_s = float(startup_timeout_s or getattr(get_settings(), "acp_startup_timeout", 20) or 20)
+    except Exception:
+        timeout_s = 20.0
+    timeout_s = max(1.0, timeout_s)
+
+    builder = session_builder
+    if builder is None:
+        def builder(**kwargs):
+            return SyncACPSession(**kwargs)
+
+    try:
+        new_sess = builder(agent_type=agent_type, cwd=cwd, agent_cmd=agent_cmd, agent_args=list(agent_args))
+        new_sess.start(startup_timeout=timeout_s)
+        return new_sess
+    except Exception:
+        return None
+
+
+def _default_compaction_action(*, session: SyncSession) -> Optional[SyncSession]:
+    """默认 compaction 动作（best-effort，可用于生产调用）。"""
+    return _apply_compaction_once(session=session)
+
+
 def _detect_rate_limit(error: Exception) -> Optional[int]:
     """Detect rate limiting from error.  Returns suggested wait seconds or 0 (detected
     but no explicit wait), or None (not a rate-limit error)."""
@@ -308,6 +611,15 @@ class RateLimitAwareSession:
         self._settings = get_settings()
         # Rate-limit state visible to status queries
         self.rate_limit_until: Optional[float] = None  # monotonic deadline
+
+    def __getattr__(self, name: str):
+        """Best-effort proxy for non-protocol attributes.
+
+        说明：本类以“显式 delegation”实现 SyncSession 协议，避免隐藏行为。
+        但仓内部分测试/诊断会读取 `_model_name` / `_agent_args` 等私有字段。
+        为保持兼容，这里将未知属性透传给 inner。
+        """
+        return getattr(self._inner, name)
 
     # --- Explicit SyncSession protocol delegation ---
 
@@ -431,6 +743,665 @@ class RateLimitAwareSession:
         return self._inner.send_prompt(text, on_event=on_event, timeout=timeout)
 
 
+class ModelFailureAwareSession:
+    """在 send_prompt 阶段处理模型侧错误（need compaction / loop / failover）。
+
+    当前阶段（任务 4）：仅处理 need compaction：执行一次 compaction 动作并用同模型重试一次。
+    后续任务会在此类中扩展 loop 检测与模型 failover。
+    """
+
+    def __init__(
+        self,
+        inner: SyncSession,
+        *,
+        compaction_action: Optional[Callable[[SyncSession], Optional[SyncSession]]] = None,
+        on_rate_limit: Optional[Callable[[int], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ):
+        self._inner = inner
+        self._settings = get_settings()
+        self._compaction_action = compaction_action
+        self._on_rate_limit = on_rate_limit
+        self._cancel_event = cancel_event or threading.Event()
+
+        # compaction loop detector (per wrapper instance)
+        self._compaction_loop_events: list[float] = []
+
+    def _loop_limits(self) -> tuple[float, int]:
+        """读取 loop 检测参数（window_s, max_count）。"""
+        try:
+            window_s = float(getattr(self._settings, "model_failure_compaction_loop_window_s", 180.0) or 180.0)
+        except Exception:
+            window_s = 180.0
+        try:
+            max_count = int(getattr(self._settings, "model_failure_compaction_loop_max", 2) or 2)
+        except Exception:
+            max_count = 2
+        window_s = max(0.0, window_s)
+        max_count = max(1, max_count)
+        return (window_s, max_count)
+
+    def _record_compaction_event_and_check_loop(self) -> tuple[bool, int]:
+        """记录一次 compaction 事件，并判断是否达到 loop 阈值。"""
+        now = time.time()
+        window_s, max_count = self._loop_limits()
+        if window_s <= 0:
+            # window<=0: 认为每次都在窗口内
+            self._compaction_loop_events.append(now)
+        else:
+            self._compaction_loop_events = [t for t in self._compaction_loop_events if (now - float(t or 0.0)) <= window_s]
+            self._compaction_loop_events.append(now)
+        n = len(self._compaction_loop_events)
+        return (n >= max_count, n)
+
+    # --- Explicit SyncSession protocol delegation ---
+
+    @property
+    def session_id(self) -> str:
+        return self._inner.session_id
+
+    @session_id.setter
+    def session_id(self, value: str):
+        self._inner.session_id = value
+
+    @property
+    def created_at(self) -> float:
+        return self._inner.created_at
+
+    @property
+    def last_active(self) -> float:
+        return self._inner.last_active
+
+    @last_active.setter
+    def last_active(self, value: float):
+        self._inner.last_active = value
+
+    @property
+    def message_count(self) -> int:
+        return self._inner.message_count
+
+    @property
+    def last_query(self) -> str:
+        return self._inner.last_query
+
+    @property
+    def is_resumed(self) -> bool:
+        return self._inner.is_resumed
+
+    def describe_agent(self) -> str:
+        return self._inner.describe_agent()
+
+    def start(self, startup_timeout: float = 60) -> str:
+        return self._inner.start(startup_timeout=startup_timeout)
+
+    def load_session(self, session_id: str) -> None:
+        self._inner.load_session(session_id)
+
+    def load_local_history(self, session_id: Optional[str] = None, limit: int = 200) -> list[dict]:
+        return self._inner.load_local_history(session_id=session_id, limit=limit)
+
+    def cancel(self) -> None:
+        self._cancel_event.set()
+        self._inner.cancel()
+
+    def close(self) -> None:
+        self._inner.close()
+
+    def to_snapshot(self) -> dict:
+        return self._inner.to_snapshot()
+
+    def get_session_info(self) -> str:
+        return self._inner.get_session_info()
+
+    def is_server_running(self) -> bool:
+        return self._inner.is_server_running()
+
+    def is_server_healthy(self, healthcheck_timeout: float = 2.0) -> bool:
+        return self._inner.is_server_healthy(healthcheck_timeout=healthcheck_timeout)
+
+    # --- Internal helpers ---
+
+    def _unwrap_rate_limit(self) -> tuple[SyncSession, Callable[[SyncSession], SyncSession]]:
+        """若 inner 是 RateLimitAwareSession，则解包到其底层 session，并提供 rewrap 函数。"""
+        inner = self._inner
+        if isinstance(inner, RateLimitAwareSession):
+            base = getattr(inner, "_inner", None) or inner
+
+            def _rewrap(new_base: SyncSession) -> SyncSession:
+                return RateLimitAwareSession(inner=new_base, on_rate_limit=self._on_rate_limit, cancel_event=self._cancel_event)
+
+            return base, _rewrap
+
+        def _id(new_base: SyncSession) -> SyncSession:
+            return new_base
+
+        return inner, _id
+
+    def _do_compaction(self) -> bool:
+        """执行一次 compaction，并在成功时替换 self._inner。"""
+        action = self._compaction_action
+        if action is None:
+            # 默认行为：重建同 cmd/args 的 ACP session
+            action = lambda s: _default_compaction_action(session=s)
+
+        base, rewrap = self._unwrap_rate_limit()
+        try:
+            new_base = action(base)
+        except Exception:
+            new_base = None
+
+        if new_base is None:
+            return False
+        self._inner = rewrap(new_base)
+        return True
+
+    def _parse_failover_map(self) -> dict[str, str]:
+        """解析 failover 映射（from:to）。"""
+        raw = ""
+        try:
+            raw = str(getattr(self._settings, "model_failure_failover_map", "") or "")
+        except Exception:
+            raw = ""
+        pairs = []
+        for chunk in raw.replace(",", " ").split():
+            s = (chunk or "").strip()
+            if not s or ":" not in s:
+                continue
+            a, b = s.split(":", 1)
+            a, b = a.strip(), b.strip()
+            if a and b:
+                pairs.append((a, b))
+        out: dict[str, str] = {}
+        for a, b in pairs:
+            if a not in out:
+                out[a] = b
+        return out
+
+    def _do_failover(self, *, from_model: str, to_model: str) -> bool:
+        """执行一次 failover：切换到 to_model，并重建 session 后替换 self._inner。"""
+        from_model = str(from_model or "").strip()
+        to_model = str(to_model or "").strip()
+        if not to_model:
+            return False
+
+        base, rewrap = self._unwrap_rate_limit()
+        agent_cmd = str(getattr(base, "_agent_cmd", "") or "")
+        agent_args = list(getattr(base, "_agent_args", []) or [])
+        agent_type = str(getattr(base, "_agent_type", "") or "")
+        cwd = str(getattr(base, "_cwd", "") or "")
+        if not agent_cmd and not agent_args:
+            return False
+        if not agent_type or not cwd:
+            return False
+
+        new_args, replaced = _replace_model_in_agent_args(agent_args, to_model)
+        if not replaced:
+            return False
+
+        # close old
+        try:
+            base.close()
+        except Exception:
+            pass
+
+        # rebuild and start
+        try:
+            timeout_s = float(getattr(self._settings, "acp_startup_timeout", 20) or 20)
+        except Exception:
+            timeout_s = 20.0
+        timeout_s = max(1.0, timeout_s)
+
+        try:
+            new_base = SyncACPSession(agent_type=agent_type, cwd=cwd, agent_cmd=agent_cmd, agent_args=list(new_args))
+            new_base.start(startup_timeout=timeout_s)
+        except Exception:
+            return False
+
+        self._inner = rewrap(new_base)
+        return True
+
+    def _is_ttadk_agent_type(self, agent_type: str) -> bool:
+        try:
+            return str(agent_type or "").strip().lower().startswith("ttadk_")
+        except Exception:
+            return False
+
+    def _extract_ttadk_tool_name(self, *, agent_type: str, agent_args: list[str]) -> str:
+        """best-effort 提取 ttadk tool 名称（例如 codex/claude/coco）。"""
+        try:
+            at = str(agent_type or "").strip().lower()
+        except Exception:
+            at = ""
+        if at.startswith("ttadk_"):
+            return at.replace("ttadk_", "", 1)
+
+        # fallback: try parse "-t <tool>" from args
+        try:
+            xs = [str(x) for x in (agent_args or [])]
+        except Exception:
+            xs = list(agent_args or [])
+        for i, x in enumerate(xs):
+            if x in ("-t", "--tool") and i + 1 < len(xs):
+                v = str(xs[i + 1] or "").strip().lower()
+                if v:
+                    return v
+        return ""
+
+    def _runtime_invalid_model_settings(self) -> tuple[bool, bool, int, float]:
+        """读取运行期 invalid-model 自愈配置（enabled, allow_autoswitch, max_retries, cooldown_s）。"""
+        s = self._settings
+        try:
+            enabled = bool(getattr(s, "ttadk_runtime_retry_enabled", True))
+        except Exception:
+            enabled = True
+        try:
+            allow_autoswitch = bool(getattr(s, "ttadk_runtime_retry_allow_autoswitch", True))
+        except Exception:
+            allow_autoswitch = True
+        try:
+            max_retries = int(getattr(s, "ttadk_runtime_max_retries", 1) or 1)
+        except Exception:
+            max_retries = 1
+        try:
+            cooldown_s = float(getattr(s, "ttadk_runtime_retry_cooldown_s", 120.0) or 120.0)
+        except Exception:
+            cooldown_s = 120.0
+        max_retries = max(0, max_retries)
+        cooldown_s = max(0.0, cooldown_s)
+        return enabled, allow_autoswitch, max_retries, cooldown_s
+
+    def _pick_best_ttadk_retry_model(self, *, tool_name: str, input_model: str, available_models: list[str], allow_autoswitch: bool) -> str | None:
+        """从 available_models 中选择候选真实 model（best-effort）。"""
+        try:
+            cands = [str(x).strip() for x in (available_models or []) if str(x).strip()]
+        except Exception:
+            cands = []
+        if not cands:
+            return None
+
+        tool = str(tool_name or "").strip().lower()
+        if tool:
+            try:
+                tool_cands = [m for m in cands if tool in m.lower()]
+            except Exception:
+                tool_cands = []
+        else:
+            tool_cands = []
+
+        pool = tool_cands or cands
+        if not allow_autoswitch:
+            return pool[0]
+        try:
+            from .ttadk.models import choose_best_available_model
+
+            best = choose_best_available_model(input_model=str(input_model or ""), available_models=list(pool))
+            best = str(best).strip() if best is not None else ""
+            return best or pool[0]
+        except Exception:
+            return pool[0]
+
+    def _do_ttadk_auto(self) -> bool:
+        """将当前 TTADK 会话切换到 auto（移除 -m）并重建 session。"""
+        base, rewrap = self._unwrap_rate_limit()
+        agent_cmd = str(getattr(base, "_agent_cmd", "") or "")
+        agent_args = list(getattr(base, "_agent_args", []) or [])
+        agent_type = str(getattr(base, "_agent_type", "") or "")
+        cwd = str(getattr(base, "_cwd", "") or "")
+        if not agent_cmd and not agent_args:
+            return False
+        if not agent_type or not cwd:
+            return False
+        if not self._is_ttadk_agent_type(agent_type):
+            return False
+
+        new_args, removed = _remove_model_in_agent_args(agent_args)
+        if not removed:
+            # already auto
+            return False
+
+        try:
+            base.close()
+        except Exception:
+            pass
+
+        try:
+            timeout_s = float(getattr(self._settings, "acp_startup_timeout", 20) or 20)
+        except Exception:
+            timeout_s = 20.0
+        timeout_s = max(1.0, timeout_s)
+
+        try:
+            new_base = SyncACPSession(agent_type=agent_type, cwd=cwd, agent_cmd=agent_cmd, agent_args=list(new_args))
+            new_base.start(startup_timeout=timeout_s)
+        except Exception:
+            return False
+
+        self._inner = rewrap(new_base)
+        return True
+
+    def _do_degrade_to_coco(self) -> bool:
+        """运行期降级：切换到 coco ACP session 并替换 inner（best-effort）。"""
+        base, rewrap = self._unwrap_rate_limit()
+        cwd = str(getattr(base, "_cwd", "") or "")
+        if not cwd:
+            return False
+
+        try:
+            from .acp.sync_adapter import start_session_with_retry
+            from .coco_model import get_coco_model_manager
+
+            model = get_coco_model_manager().get_current_model()
+            timeout_s = float(getattr(self._settings, "acp_startup_timeout", 20) or 20)
+            new_base = start_session_with_retry(agent_type="coco", cwd=cwd, startup_timeout=timeout_s, model_name=model)
+        except Exception:
+            return False
+
+        try:
+            # best-effort 标记
+            setattr(new_base, "_degraded_to", "coco")
+        except Exception:
+            pass
+        self._inner = rewrap(new_base)
+        return True
+
+    # --- Model-failure-aware send_prompt ---
+
+    def send_prompt(
+        self,
+        text: str,
+        on_event: Optional[Callable[[ACPEvent], None]] = None,
+        timeout: Optional[int] = None,
+    ) -> PromptResult:
+        compaction_tried = False
+        failover_tried = False
+        invalid_real_tried = False
+        invalid_auto_tried = False
+        degraded_tried = False
+        runtime_attempts: list[dict] = []
+
+        def _set_last_attempts():
+            # 仅供诊断/单测：best-effort
+            try:
+                self._last_runtime_invalid_model_attempts = list(runtime_attempts)
+            except Exception:
+                pass
+
+        def _record_attempt(step: str, *, ok: bool, tool: str = "", input_model: str = "", passthrough_model: str | None = None, error: Exception | None = None, extra: Optional[dict] = None):
+            d: dict = {
+                "phase": "runtime_invalid_model",
+                "step": str(step or ""),
+                "ok": bool(ok),
+                "tool": str(tool or ""),
+                "input_model": str(input_model or ""),
+                "passthrough_model": passthrough_model,
+            }
+            if error is not None:
+                d["error_type"] = type(error).__name__
+                try:
+                    d["error"] = str(error) or "(empty)"
+                except Exception:
+                    d["error"] = "(empty)"
+            if extra:
+                try:
+                    d.update(dict(extra))
+                except Exception:
+                    pass
+            runtime_attempts.append(d)
+            _set_last_attempts()
+
+        while True:
+            try:
+                return self._inner.send_prompt(text, on_event=on_event, timeout=timeout)
+            except Exception as e:
+                # ------------------------------------------------------------
+                # TTADK runtime invalid-model self-healing (SSOT entry)
+                # ------------------------------------------------------------
+                base = getattr(self._inner, "_inner", self._inner)
+                agent_type = str(getattr(base, "_agent_type", "") or "")
+                if self._is_ttadk_agent_type(agent_type):
+                    enabled, allow_autoswitch, max_retries, cooldown_s = self._runtime_invalid_model_settings()
+                    if enabled and max_retries > 0:
+                        try:
+                            from .ttadk.models import build_invalid_model_context
+                            from .ttadk import get_ttadk_manager
+
+                            ctx = build_invalid_model_context(e, get_settings_fn=get_settings, limit=1600)
+                            is_invalid = bool(ctx.get("is_invalid_model"))
+                            available_models = list(ctx.get("available_models") or [])
+                        except Exception:
+                            ctx = {}
+                            is_invalid = False
+                            available_models = []
+
+                        if is_invalid:
+                            try:
+                                args0 = list(getattr(base, "_agent_args", []) or [])
+                            except Exception:
+                                args0 = []
+                            tool = self._extract_ttadk_tool_name(agent_type=agent_type, agent_args=args0)
+                            input_model = _extract_model_from_agent_args(args0)
+
+                            _record_attempt(
+                                "detect",
+                                ok=True,
+                                tool=tool,
+                                input_model=input_model,
+                                extra={"available_models_count": len(available_models), "retry_count": int(invalid_real_tried) + int(invalid_auto_tried)},
+                            )
+
+                            # cooldown gate
+                            try:
+                                mgr = get_ttadk_manager()
+                                allowed, last_ts = mgr.check_and_mark_runtime_invalid_model_repair(
+                                    tool_name=tool,
+                                    cooldown_s=float(cooldown_s or 0.0),
+                                    now_ts=time.time(),
+                                )
+                            except Exception:
+                                allowed, last_ts = True, 0.0
+
+                            if not allowed:
+                                _record_attempt(
+                                    "cooldown_skip",
+                                    ok=False,
+                                    tool=tool,
+                                    input_model=input_model,
+                                    extra={"cooldown_s": float(cooldown_s or 0.0), "last_ts": float(last_ts or 0.0)},
+                                )
+                                raise
+
+                            # 1) retry with real model once
+                            if (not invalid_real_tried) and max_retries >= 1:
+                                candidate = self._pick_best_ttadk_retry_model(
+                                    tool_name=tool,
+                                    input_model=input_model,
+                                    available_models=available_models,
+                                    allow_autoswitch=allow_autoswitch,
+                                )
+                                candidate = str(candidate or "").strip() or None
+                                if candidate and candidate != str(input_model or "").strip():
+                                    invalid_real_tried = True
+                                    ok = self._do_failover(from_model=str(input_model or ""), to_model=str(candidate or ""))
+                                    _record_attempt(
+                                        "retry_real_model",
+                                        ok=bool(ok),
+                                        tool=tool,
+                                        input_model=input_model,
+                                        passthrough_model=candidate,
+                                        extra={"retry_count": int(invalid_real_tried) + int(invalid_auto_tried)},
+                                    )
+                                    logger.warning(
+                                        "[TTADK:RuntimeInvalidModel] action=retry_real_model ok=%s tool=%s input_model=%s to_model=%s available_models=%d",
+                                        bool(ok),
+                                        tool,
+                                        input_model,
+                                        candidate,
+                                        len(available_models),
+                                    )
+                                    if ok:
+                                        continue
+
+                            # 2) retry with auto once
+                            if (not invalid_auto_tried) and max_retries >= 1:
+                                invalid_auto_tried = True
+                                ok = self._do_ttadk_auto()
+                                _record_attempt(
+                                    "retry_auto",
+                                    ok=bool(ok),
+                                    tool=tool,
+                                    input_model=input_model,
+                                    passthrough_model=None,
+                                    extra={"retry_count": int(invalid_real_tried) + int(invalid_auto_tried)},
+                                )
+                                logger.warning(
+                                    "[TTADK:RuntimeInvalidModel] action=retry_auto ok=%s tool=%s input_model=%s",
+                                    bool(ok),
+                                    tool,
+                                    input_model,
+                                )
+                                if ok:
+                                    continue
+
+                            # 3) degrade to coco (best-effort)
+                            if not degraded_tried:
+                                degraded_tried = True
+                                ok = self._do_degrade_to_coco()
+                                _record_attempt(
+                                    "degrade_to_coco",
+                                    ok=bool(ok),
+                                    tool=tool,
+                                    input_model=input_model,
+                                    extra={"retry_count": int(invalid_real_tried) + int(invalid_auto_tried), "degraded": bool(ok)},
+                                )
+                                logger.warning(
+                                    "[TTADK:RuntimeInvalidModel] action=degrade_to_coco ok=%s tool=%s input_model=%s",
+                                    bool(ok),
+                                    tool,
+                                    input_model,
+                                )
+                                if ok:
+                                    # 下一轮循环会对 coco 会话执行 send_prompt（达到“自动降级不崩溃”的目标）
+                                    continue
+
+                            # give up: raise a diagnosable error (keep original as cause)
+                            try:
+                                err = RuntimeError("ttadk_runtime_invalid_model_unrecoverable")
+                                try:
+                                    setattr(err, "tool_name", tool)
+                                    setattr(err, "input_model", input_model)
+                                    setattr(err, "available_models_count", len(available_models))
+                                    setattr(err, "attempts", list(runtime_attempts))
+                                except Exception:
+                                    pass
+                                raise err from e
+                            except Exception:
+                                raise
+
+                info = classify_model_failure(error=e)
+
+                # 1) loop detected: attempt failover once
+                if info.get("reason") == "loop_detected" and not failover_tried:
+                    failover_tried = True
+                    failed = info.get("failed_model") or _extract_model_from_agent_args(list(getattr(getattr(self._inner, "_inner", self._inner), "_agent_args", []) or []))
+                    fmap = self._parse_failover_map()
+                    target = fmap.get(str(failed or "").strip()) or fmap.get("gpt-5.2")
+                    ok = self._do_failover(from_model=str(failed or ""), to_model=str(target or ""))
+                    logger.warning(
+                        "[ModelFailure] action=failover reason=loop_detected fail_phase=model_loop failover=%s from_model=%s to_model=%s attempt_count=%d",
+                        bool(ok),
+                        failed or "",
+                        target or "",
+                        int(info.get("attempt_count") or 0),
+                    )
+                    if ok:
+                        continue
+                    raise
+
+                # 2) need compaction:
+                #    - 记录事件用于 loop 检测
+                #    - 首次命中：先 compaction，再同模型重试一次
+                #    - 若 compaction 后仍命中 need_compaction（或达到 loop 阈值）：触发 failover 一次
+                if info.get("reason") == "need_compaction":
+                    # loop detection (record every time)
+                    is_loop, n = self._record_compaction_event_and_check_loop()
+                    try:
+                        info["attempt_count"] = int(n)
+                    except Exception:
+                        pass
+
+                    # feature flag: disabled => no auto-repair
+                    try:
+                        if not bool(getattr(self._settings, "model_failure_compaction_enabled", True)):
+                            raise
+                    except Exception:
+                        pass
+
+                    # If loop detected: suppress compaction and attempt failover once.
+                    if is_loop:
+                        try:
+                            window_s, max_count = self._loop_limits()
+                        except Exception:
+                            window_s, max_count = (0.0, 1)
+                        logger.warning(
+                            "[ModelFailure] action=suppress reason=need_compaction fail_phase=model_loop attempt_count=%d loop_window_s=%.1f loop_max=%d",
+                            int(n),
+                            float(window_s or 0.0),
+                            int(max_count or 1),
+                        )
+                        if not failover_tried:
+                            failover_tried = True
+                            failed = info.get("failed_model") or _extract_model_from_agent_args(
+                                list(getattr(getattr(self._inner, "_inner", self._inner), "_agent_args", []) or [])
+                            )
+                            fmap = self._parse_failover_map()
+                            target = fmap.get(str(failed or "").strip()) or fmap.get("gpt-5.2")
+                            ok = self._do_failover(from_model=str(failed or ""), to_model=str(target or ""))
+                            logger.warning(
+                                "[ModelFailure] action=failover reason=need_compaction fail_phase=model_loop failover=%s from_model=%s to_model=%s attempt_count=%d",
+                                bool(ok),
+                                failed or "",
+                                target or "",
+                                int(n),
+                            )
+                            if ok:
+                                continue
+                        raise
+
+                    # Not loop: if compaction already tried once, attempt failover once.
+                    if compaction_tried and (not failover_tried):
+                        failover_tried = True
+                        failed = info.get("failed_model") or _extract_model_from_agent_args(
+                            list(getattr(getattr(self._inner, "_inner", self._inner), "_agent_args", []) or [])
+                        )
+                        fmap = self._parse_failover_map()
+                        target = fmap.get(str(failed or "").strip()) or fmap.get("gpt-5.2")
+                        ok = self._do_failover(from_model=str(failed or ""), to_model=str(target or ""))
+                        logger.warning(
+                            "[ModelFailure] action=failover reason=need_compaction fail_phase=model_loop failover=%s from_model=%s to_model=%s attempt_count=%d",
+                            bool(ok),
+                            failed or "",
+                            target or "",
+                            int(n),
+                        )
+                        if ok:
+                            continue
+
+                    # First time: do compaction once
+                    if not compaction_tried:
+                        compaction_tried = True
+                        ok = self._do_compaction()
+                        logger.warning(
+                            "[ModelFailure] action=compaction reason=need_compaction fail_phase=model_compaction compaction=%s model=%s failover_to=%s attempt_count=%d",
+                            bool(ok),
+                            info.get("failed_model") or "",
+                            info.get("failover_to") or "",
+                            int(info.get("attempt_count") or 0),
+                        )
+                        if ok:
+                            continue
+                raise
+
+
 def close_session_safely(session: Optional[SyncSession]) -> None:
     """Close an ACP/CLI session, ignoring errors."""
     if session:
@@ -438,6 +1409,40 @@ def close_session_safely(session: Optional[SyncSession]) -> None:
             session.close()
         except Exception as e:
             logger.debug("关闭旧ACP session失败: %s", e)
+
+
+def resolve_ttadk_engine_startup_model(
+    *,
+    agent_type: str,
+    cwd: str,
+    model_intent: Optional[str],
+) -> dict:
+    """为 Deep/Loop/Spec 引擎统一解析 TTADK 启动模型。
+
+    注意：该函数仅做“启动阶段预校验”，不做执行阶段强校验/纠错。
+    统一收敛到 `src.ttadk.startup_common.precheck_ttadk_startup_model()`，避免多处实现漂移。
+    """
+    from .ttadk.startup_common import precheck_ttadk_startup_model
+    from .utils.path import normalize_ttadk_cwd
+
+    raw_cwd = cwd
+    norm_cwd = normalize_ttadk_cwd(raw_cwd)
+    cwd = norm_cwd or raw_cwd
+    try:
+        if bool(getattr(get_settings(), "ttadk_cwd_debug_enabled", False)):
+            logger.debug("[TTADK:CWD] where=%s raw_cwd=%r normalized_cwd=%r", "agent_session.resolve_ttadk_engine_startup_model", raw_cwd, norm_cwd)
+    except Exception:
+        pass
+
+    info = precheck_ttadk_startup_model(agent_type=agent_type, cwd=cwd, model_intent=model_intent)
+    # 兼容旧调用方字段名：resolved_model
+    # 说明：startup_common 已输出 resolved_model；这里仅做 best-effort 兜底，不覆盖其语义。
+    if "resolved_model" not in info:
+        info["resolved_model"] = info.get("model")
+    # 透出诊断（用于引擎日志/排障，不参与逻辑判断）
+    if "diagnostics" not in info:
+        info["diagnostics"] = {}
+    return info
 
 
 def create_sync_session(agent_type: str, cwd: str, model_name: Optional[str] = None) -> SyncSession:
@@ -448,8 +1453,17 @@ def create_sync_session(agent_type: str, cwd: str, model_name: Optional[str] = N
     - ttadk_*: ACP backend (direct agent type)
     """
     from .coco_model import get_coco_model_manager
+    from .utils.path import normalize_ttadk_cwd
 
     agent_type = (agent_type or "").lower()
+    raw_cwd = cwd
+    norm_cwd = normalize_ttadk_cwd(raw_cwd)
+    cwd = norm_cwd or raw_cwd
+    try:
+        if bool(getattr(get_settings(), "ttadk_cwd_debug_enabled", False)):
+            logger.debug("[TTADK:CWD] where=%s raw_cwd=%r normalized_cwd=%r", "agent_session.create_sync_session", raw_cwd, norm_cwd)
+    except Exception:
+        pass
     if agent_type == "claude":
         return SyncClaudeCLISession(cwd=cwd)
 
@@ -458,6 +1472,26 @@ def create_sync_session(agent_type: str, cwd: str, model_name: Optional[str] = N
         effective_model = get_coco_model_manager().get_current_model()
 
     if agent_type.startswith("ttadk_"):
+        # 该工厂只负责构造 session：启动阶段预校验下沉到统一 helper，validated 才透传 -m。
+        try:
+            from .ttadk.startup_common import precheck_ttadk_startup_model
+
+            info = precheck_ttadk_startup_model(agent_type=agent_type, cwd=cwd, model_intent=model_name)
+            model_name = info.get("model")
+            logger.info(
+                "[SessionFactory] ttadk precheck(startup): tool=%s input_model=%s model=%s validated=%s source=%s decision=%s fail_phase=%s warnings=%s",
+                info.get("tool") or "",
+                info.get("input_model") or "",
+                (model_name or "(auto)"),
+                bool(info.get("validated")),
+                info.get("source") or "unknown",
+                info.get("decision") or "",
+                info.get("fail_phase") or "",
+                list(info.get("warnings") or []),
+            )
+        except Exception:
+            model_name = None
+        # NOTE: create_sync_session 仅构造会话（不负责启动/重试/PTY）；PTY 重试在启动点处理。
         return SyncACPSession(agent_type=agent_type, cwd=cwd, model_name=model_name)
 
     return SyncACPSession(agent_type=agent_type or "coco", cwd=cwd, model_name=effective_model)
@@ -481,20 +1515,114 @@ def create_engine_session(
     """
     from .acp.sync_adapter import start_session_with_retry
     from .coco_model import get_coco_model_manager
+    from .utils.path import normalize_ttadk_cwd
 
     settings = get_settings()
     agent_type = (agent_type or "").lower()
+
+    # TTADK/引擎侧 cwd 归一化：避免传入 "." 导致 TTADK 项目级缓存不落盘。
+    raw_cwd = cwd
+    norm_cwd = normalize_ttadk_cwd(raw_cwd)
+    cwd = norm_cwd or raw_cwd
+    try:
+        if bool(getattr(get_settings(), "ttadk_cwd_debug_enabled", False)):
+            logger.debug("[TTADK:CWD] where=%s raw_cwd=%r normalized_cwd=%r", "agent_session.create_engine_session", raw_cwd, norm_cwd)
+    except Exception:
+        pass
+
+    # 日志语义：
+    # - TTADK: 传入的可能是“友好名/意图”，并不等于最终透传 -m 的真实模型名；避免用 `model=` 误导。
+    # - 非 TTADK: 依旧输出 `model=` 便于排障。
+    if agent_type.startswith("ttadk_"):
+        logger.info(
+            "[SessionFactory] create_engine_session: agent=%s cwd=%s input_model=%s",
+            agent_type or "coco",
+            cwd,
+            model_name,
+        )
+    else:
+        logger.info(
+            "[SessionFactory] create_engine_session: agent=%s cwd=%s model=%s",
+            agent_type or "coco",
+            cwd,
+            model_name,
+        )
 
     if agent_type == "claude":
         session: SyncSession = SyncClaudeCLISession(cwd=cwd)
         session.start()
     elif agent_type.startswith("ttadk_"):
-        session = start_session_with_retry(
+        tool_name = agent_type.replace("ttadk_", "", 1)
+        # 统一启动入口：TTADK 启动编排 SSOT 在 `src.ttadk.startup.start_agent_session`。
+        from .ttadk.startup import start_agent_session
+
+        info = start_agent_session(
             agent_type=agent_type,
             cwd=cwd,
-            startup_timeout=settings.acp_startup_timeout,
+            startup_timeout=float(settings.acp_startup_timeout or 60),
             model_name=model_name,
+            session_cls=SyncACPSession,
+            log_failures=True,
+            get_settings_fn=get_settings,
         )
+
+        # 统一“启动点”语义日志：只消费 coordinator 的稳定字段（SSOT），避免二次推导。
+        diag = dict(info.get("diagnostics") or {}) if isinstance(info, dict) else {}
+        attempts = list(diag.get("attempts") or []) if isinstance(diag, dict) else []
+        # attempts 摘要（限长）：避免日志过大
+        attempts_summary = ""
+        try:
+            from .acp.diagnostics import format_attempts_summary
+
+            attempts_summary = format_attempts_summary(attempts, per_item_limit=220, total_limit=900, get_settings_fn=get_settings)
+        except Exception:
+            attempts_summary = ""
+
+        try:
+            # SSOT: model 字段语义必须是“实际透传值”（真实 id 或 (auto)）。
+            # 兼容：历史返回结构可能缺少 passthrough_model，但已提供 resolved_model=真实 id。
+            passthrough = info.get("passthrough_model")
+            if not passthrough and bool(info.get("validated")):
+                cand = str(info.get("resolved_model") or "").strip()
+                # 过滤 coordinator 的占位符（"(auto)"/"(fallback)"），避免误把占位符当真实透传值。
+                if cand and not cand.startswith("("):
+                    passthrough = cand
+
+            model_pass = passthrough or "(auto)"
+            resolved_real = info.get("resolved_real_name") or passthrough or info.get("resolved_model") or "(auto)"
+            model_display = str(info.get("model_display") or "")
+            resolution_source = str(info.get("resolution_source") or "")
+            resolution_reason = str(info.get("resolution_reason") or "")
+            logger.info(
+                "[SessionFactory] ttadk startup: tool=%s input_model=%s model=%s model_display=%s resolution_source=%s resolution_reason=%s resolved_real_name=%s passthrough_model=%s validated=%s source=%s degraded=%s repaired=%s fail_phase=%s decision=%s warnings=%s attempts_summary=%s",
+                info.get("tool") or tool_name,
+                info.get("input_model") or "",
+                model_pass,
+                model_display,
+                resolution_source,
+                resolution_reason,
+                resolved_real,
+                model_pass,
+                bool(info.get("validated")),
+                info.get("source") or "(unknown)",
+                bool(info.get("degraded")),
+                bool(info.get("repaired")),
+                info.get("fail_phase") or "",
+                info.get("decision") or "",
+                list(info.get("warnings") or []),
+                attempts_summary or "(empty)",
+            )
+        except Exception:
+            pass
+
+        session = info.get("session")
+        if session is None:
+            try:
+                session = (info.get("result") or (None, ""))[0]
+            except Exception:
+                session = None
+        if session is None:
+            raise RuntimeError("ttadk_start_agent_session_returned_empty_session")
     else:
         effective_model = model_name
         if not effective_model:
@@ -513,5 +1641,17 @@ def create_engine_session(
             on_rate_limit=on_rate_limit,
             cancel_event=cancel_event,
         )
+
+    # Model failure (compaction/loop/failover) auto-repair wrapper.
+    # 说明：该 wrapper 只在 send_prompt 阶段生效，不影响启动时 TTADK/ACP 的既有重试逻辑。
+    try:
+        session = ModelFailureAwareSession(
+            inner=session,
+            on_rate_limit=on_rate_limit,
+            cancel_event=cancel_event,
+        )
+    except Exception:
+        # best-effort: wrapper 失败不应影响正常会话创建
+        pass
 
     return session

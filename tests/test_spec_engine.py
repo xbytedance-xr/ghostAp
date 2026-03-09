@@ -8,6 +8,8 @@ import threading
 from unittest.mock import patch, MagicMock
 
 import pytest
+import logging
+import re
 
 from src.deep_engine.models import EngineRunState
 from src.spec_engine.engine import SpecEngine, SpecEngineManager, SpecEngineCallbacks
@@ -30,6 +32,553 @@ from src.loop_engine.models import (
     PerspectiveReview,
     ReviewResult,
 )
+
+
+def test_spec_engine_review_error_empty_message_uses_snippets(monkeypatch):
+    """回归：多视角审查异常 message 为空时，应从 stderr/stdout_snippet 补齐 error_text，避免日志空白。"""
+    engine = SpecEngine(chat_id="c", root_path="/tmp")
+
+    class _EmptyErr(RuntimeError):
+        def __str__(self):
+            return ""
+
+    err = _EmptyErr()
+    setattr(err, "stderr_snippet", "E: invalid params")
+
+    class _DummySession:
+        def send_prompt(self, *a, **kw):
+            raise err
+
+    engine._session = _DummySession()
+
+    # 只验证不抛异常且 suggestion 中包含补齐后的 err_str
+    r = engine._conduct_review(cycle=1, callbacks=SpecEngineCallbacks())
+    assert r is not None
+    assert any("invalid params" in s.lower() for rev in r.reviews for s in (rev.suggestions or []))
+
+
+def test_spec_engine_review_error_snippet_is_redacted(monkeypatch, caplog):
+    """回归：review 异常诊断应遵循 diagnostics 脱敏规则，避免在 error_text 中泄露 token。"""
+    engine = SpecEngine(chat_id="c", root_path="/tmp")
+
+    class _EmptyErr(RuntimeError):
+        def __str__(self):
+            return ""
+
+    err = _EmptyErr()
+    # 命中默认 redact pattern：token=...
+    setattr(err, "stderr_snippet", "token=SECRET_TOKEN")
+
+    class _DummySession:
+        def send_prompt(self, *a, **kw):
+            raise err
+
+    engine._session = _DummySession()
+
+    caplog.set_level(logging.WARNING, logger="src.spec_engine.engine")
+    caplog.clear()
+    _ = engine._conduct_review(cycle=3, callbacks=SpecEngineCallbacks())
+
+    msgs = [r.getMessage() for r in caplog.records]
+    hit = [m for m in msgs if "[Spec] review_exception:" in m]
+    assert hit
+    m = hit[-1]
+    assert "SECRET_TOKEN" not in m
+
+
+def test_spec_engine_review_error_snippet_is_truncated(monkeypatch, caplog):
+    """回归：review 异常日志需要对超长 snippet 做截断，避免日志刷屏/泄露大段内容。"""
+    engine = SpecEngine(chat_id="c", root_path="/tmp")
+
+    class _EmptyErr(RuntimeError):
+        def __str__(self):
+            return ""
+
+    err = _EmptyErr()
+    setattr(err, "stderr_snippet", "X" * 10000)
+
+    class _DummySession:
+        def send_prompt(self, *a, **kw):
+            raise err
+
+    engine._session = _DummySession()
+
+    caplog.set_level(logging.WARNING, logger="src.spec_engine.engine")
+    caplog.clear()
+    _ = engine._conduct_review(cycle=4, callbacks=SpecEngineCallbacks())
+
+    msgs = [r.getMessage() for r in caplog.records]
+    hit = [m for m in msgs if "[Spec] review_exception:" in m]
+    assert hit
+    m = hit[-1]
+    # 不能把整段超长内容打到日志里
+    assert len(m) < 5000
+    # 至少应出现一次截断标记
+    assert "truncated" in m
+
+
+@pytest.mark.parametrize(
+    "err",
+    [
+        RuntimeError(""),
+        type("_EmptyStrErr", (RuntimeError,), {"__str__": lambda self: ""})(),
+        type("_EmptyReprErr", (RuntimeError,), {"__repr__": lambda self: ""})(),
+        type(
+            "_StrBoomErr",
+            (RuntimeError,),
+            {"__str__": lambda self: (_ for _ in ()).throw(RuntimeError("boom"))},
+        )(),
+    ],
+)
+def test_spec_engine_review_exception_diagnostics_log_has_nonempty_error(monkeypatch, caplog, err):
+    """回归：审查异常日志必须包含非空 error（至少为 '(empty)' 或默认文案），且包含 exception_type。"""
+    engine = SpecEngine(chat_id="c", root_path="/tmp")
+
+    class _DummySession:
+        def send_prompt(self, *a, **kw):
+            raise err
+
+    engine._session = _DummySession()
+
+    caplog.set_level(logging.WARNING, logger="src.spec_engine.engine")
+    caplog.clear()
+    _ = engine._conduct_review(cycle=2, callbacks=SpecEngineCallbacks())
+
+    msgs = [r.getMessage() for r in caplog.records]
+    hit = [m for m in msgs if "[Spec] review_exception:" in m]
+    assert hit, "missing review exception log"
+    m = hit[-1]
+    # 新日志稳定字段契约：err_type/err_repr/error_text 必须存在且非空
+    assert "err_type=" in m
+
+    # 新日志格式：error_text= 必须非空（至少为 '(empty)' 或 '<ExceptionType>'）
+    assert "error_text=" in m
+    assert "error_text=," not in m
+    assert "error_text= " not in m
+
+    # err_repr 也必须非空（避免异常 repr/str 都为空时无信息）
+    assert "err_repr=" in m
+    assert "err_repr=," not in m
+    assert "err_repr= " not in m
+
+
+def test_spec_engine_review_failure_diagnostics_written_to_cycle_and_metrics(monkeypatch, tmp_path):
+    """回归：审查异常应 best-effort 写入 cycle/metrics，便于后续追踪。"""
+    engine = SpecEngine(chat_id="c", root_path=str(tmp_path))
+
+    class _Sess:
+        # phase runner uses send_prompt to produce outputs; we return empty ok responses
+        def send_prompt(self, prompt: str, on_event=None, timeout: int = 0, **kw):
+            # review phase prompt: contains structured tags like [ARCHITECT]
+            if "[ARCHITECT]" in (prompt or "") and "审查视角" in (prompt or ""):
+                raise RuntimeError("")
+            # Produce a minimal valid response for spec/plan/task/build/criteria
+            text = "{}"
+            if "将以下实现方案分解为可执行的具体任务" in (prompt or ""):
+                text = "1. [t] (依赖: 无)"
+            elif "按以下任务列表逐步执行实现" in (prompt or ""):
+                text = "done"
+            elif "请评估以下验收标准是否已满足" in (prompt or ""):
+                text = "CRITERIA_1: FAIL"
+
+            if on_event:
+                on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=text))
+            return MagicMock(stop_reason="end_turn")
+
+    engine._session = _Sess()
+
+    # keep settings minimal and avoid persistence side effects
+    class _S:
+        spec_max_cycles = 1
+        spec_execution_timeout = 2
+        spec_review_enabled = True
+        spec_persist_phase_artifacts = False
+        spec_persist_every_phase = False
+        spec_discovery_enabled = False
+        spec_discovery_force_nonempty = False
+        spec_discovery_max_questions = 1
+        spec_generated_specs_per_cycle = 1
+        spec_cycle_tasks_max = 1
+        spec_max_cycles_limit = 10
+        spec_cycle_output_max_chars = 2000
+        spec_max_retries = 1
+        # review llm fallback disabled
+        ark_api_key = ""
+        ark_model = ""
+        ark_base_url = ""
+        spec_convergence_window = 3
+
+    engine.settings = _S()
+
+    # Patch create_engine_session so execute() doesn't overwrite our _session
+    monkeypatch.setattr("src.spec_engine.engine.create_engine_session", lambda **kw: engine._session)
+    monkeypatch.setattr("src.spec_engine.engine.get_coco_model_manager", lambda: type("M", (), {"get_current_model": lambda self: ""})())
+
+    p = engine.execute("req")
+    assert p is not None
+    assert p.cycles and len(p.cycles) == 1
+    c = p.cycles[0]
+    assert (c.review_decision or "") == "review_failed_continue"
+    assert isinstance(c.review_diagnostics, dict)
+    assert c.review_diagnostics.get("err_type")
+    # metrics should include review failure markers
+    assert p.metrics_history
+    m = p.metrics_history[-1]
+    assert bool(getattr(m, "review_failed", False)) is True
+    assert (getattr(m, "review_decision", "") or "") == "review_failed_continue"
+
+
+def test_spec_engine_normalize_review_diagnostics_compat_to_stable():
+    """回归：历史 compat 字段应可规范化为 stable 字段，且关键字段非空。"""
+    compat = {
+        "cycle_number": 12,
+        "exception_type": "RuntimeError",
+        "review_role": "multi_perspective",
+        "decision": "review_failed_continue",
+        # error_text 允许为空，normalize 应兜底
+        "error_text": "",
+        "traceback_snippet": "",
+    }
+    out = SpecEngine._normalize_review_diagnostics(compat)
+    assert isinstance(out, dict)
+    # stable keys present
+    assert out.get("phase") == "review"
+    assert out.get("role") == "multi_perspective"
+    assert out.get("cycle") == 12
+    assert out.get("decision") == "review_failed_continue"
+    assert out.get("err_type") == "RuntimeError"
+    assert (out.get("err_repr") or "").strip()
+    assert (out.get("error_text") or "").strip()
+
+
+def test_spec_engine_format_review_exception_log_line_contains_stable_keys():
+    """回归：review 异常日志拼装 SSOT 必须包含 stable 键且关键字段非空。"""
+    diag = {
+        "phase": "review",
+        "role": "multi_perspective",
+        "cycle": 7,
+        "decision": "review_failed_continue",
+        "fail_reason": "exception",
+        "err_type": "RuntimeError",
+        "err_repr": "<RuntimeError>",
+        "error_text": "boom",
+        "traceback_snippet": "",
+    }
+    line = SpecEngine._format_review_exception_log_line(diag, diag_json="{}").strip()
+    assert line.startswith("[Spec] review_exception")
+    for key in ("phase=", "role=", "cycle=", "decision=", "fail_reason=", "err_type=", "err_repr=", "error_text=", "diag="):
+        assert key in line
+    assert "error_text=," not in line
+    assert "error_text= " not in line
+
+
+def test_spec_engine_review_failure_circuit_breaker_skips_review(monkeypatch, caplog, tmp_path):
+    """回归：启用熔断后连续 N 次审查异常应触发跳过（review_circuit_open）。"""
+    engine = SpecEngine(chat_id="c", root_path=str(tmp_path))
+
+    # minimal settings
+    class _S:
+        spec_max_cycles = 1
+        spec_execution_timeout = 2
+        spec_review_enabled = True
+        spec_persist_phase_artifacts = False
+        spec_persist_every_phase = False
+        spec_discovery_enabled = False
+        spec_discovery_force_nonempty = False
+        spec_discovery_max_questions = 1
+        spec_generated_specs_per_cycle = 1
+        spec_cycle_tasks_max = 1
+        spec_max_cycles_limit = 10
+        spec_cycle_output_max_chars = 2000
+        spec_max_retries = 1
+        spec_convergence_window = 3
+        # circuit breaker
+        spec_review_failure_circuit_enabled = True
+        spec_review_failure_max_consecutive = 1
+        spec_review_failure_cooldown_cycles = 10
+
+    engine.settings = _S()
+
+    class _Sess:
+        def __init__(self):
+            self.calls = 0
+
+        def send_prompt(self, prompt: str, on_event=None, timeout: int = 0, **kw):
+            # review prompt: trigger failure
+            if "[ARCHITECT]" in (prompt or "") and "审查视角" in (prompt or ""):
+                self.calls += 1
+                raise RuntimeError("")
+            # other phases: minimal valid output
+            text = "{}"
+            if "将以下实现方案分解为可执行的具体任务" in (prompt or ""):
+                text = "1. [t] (依赖: 无)"
+            elif "按以下任务列表逐步执行实现" in (prompt or ""):
+                text = "done"
+            elif "请评估以下验收标准是否已满足" in (prompt or ""):
+                text = "CRITERIA_1: FAIL"
+            if on_event:
+                on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=text))
+            return MagicMock(stop_reason="end_turn")
+
+    sess = _Sess()
+    engine._session = sess
+    monkeypatch.setattr("src.spec_engine.engine.create_engine_session", lambda **kw: engine._session)
+    monkeypatch.setattr("src.spec_engine.engine.get_coco_model_manager", lambda: type("M", (), {"get_current_model": lambda self: ""})())
+
+    caplog.set_level(logging.WARNING, logger="src.spec_engine.engine")
+    caplog.clear()
+
+    # First review: fails and opens circuit
+    p1 = engine.execute("req")
+    assert p1 and p1.cycles
+    assert sess.calls == 1
+
+    # First cycle should record circuit-open decision (not just continue)
+    c1 = p1.cycles[0]
+    assert (c1.review_decision or "") in ("review_failed_open_circuit", "review_failed_continue")
+
+    # Second call to _conduct_review in same engine instance should be skipped by circuit breaker
+    r2 = engine._conduct_review(cycle=2, callbacks=SpecEngineCallbacks())
+    assert r2 is not None
+    assert any("审查熔断" in (s or "") for rev in r2.reviews for s in (rev.suggestions or []))
+
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any("review_circuit_open" in m for m in msgs)
+
+
+def test_spec_engine_review_circuit_skip_does_not_block_main_loop(monkeypatch, tmp_path):
+    """回归：熔断跳过只影响 review 步骤，Spec 主循环仍可继续推进到下一轮 cycle。"""
+    engine = SpecEngine(chat_id="c", root_path=str(tmp_path))
+
+    class _S:
+        spec_max_cycles = 2
+        spec_execution_timeout = 2
+        spec_review_enabled = True
+        spec_persist_phase_artifacts = False
+        spec_persist_every_phase = False
+        spec_discovery_enabled = False
+        spec_discovery_force_nonempty = False
+        spec_discovery_max_questions = 1
+        spec_generated_specs_per_cycle = 1
+        spec_cycle_tasks_max = 1
+        spec_max_cycles_limit = 10
+        spec_cycle_output_max_chars = 2000
+        spec_max_retries = 1
+        spec_convergence_window = 3
+        # circuit breaker
+        spec_review_failure_circuit_enabled = True
+        spec_review_failure_max_consecutive = 1
+        spec_review_failure_cooldown_cycles = 10
+
+        # review llm fallback disabled
+        ark_api_key = ""
+        ark_model = ""
+        ark_base_url = ""
+
+    engine.settings = _S()
+
+    class _Sess:
+        def __init__(self):
+            self.review_calls = 0
+            self.total_calls = 0
+
+        def send_prompt(self, prompt: str, on_event=None, timeout: int = 0, **kw):
+            self.total_calls += 1
+            # review prompt: trigger failure on first cycle only
+            if "[ARCHITECT]" in (prompt or "") and "审查视角" in (prompt or ""):
+                self.review_calls += 1
+                raise RuntimeError("")
+
+            # other phases: minimal valid output
+            text = "{}"
+            if "将以下实现方案分解为可执行的具体任务" in (prompt or ""):
+                text = "1. [t] (依赖: 无)"
+            elif "按以下任务列表逐步执行实现" in (prompt or ""):
+                text = "done"
+            elif "请评估以下验收标准是否已满足" in (prompt or ""):
+                text = "CRITERIA_1: FAIL"
+
+            if on_event:
+                on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=text))
+            return MagicMock(stop_reason="end_turn")
+
+    sess = _Sess()
+    engine._session = sess
+    monkeypatch.setattr("src.spec_engine.engine.create_engine_session", lambda **kw: engine._session)
+    monkeypatch.setattr("src.spec_engine.engine.get_coco_model_manager", lambda: type("M", (), {"get_current_model": lambda self: ""})())
+
+    p = engine.execute("req")
+    assert p and p.cycles and len(p.cycles) == 2
+
+    # 只应真正执行一次 review prompt（cycle1 失败后开启熔断，cycle2 直接 skip）
+    assert sess.review_calls == 1
+
+    c1, c2 = p.cycles[0], p.cycles[1]
+    assert (c1.review_decision or "") in ("review_failed_open_circuit", "review_failed_continue")
+    assert (c2.review_decision or "") == "review_circuit_open_skip"
+    assert isinstance(c2.review_diagnostics, dict)
+    assert (c2.review_diagnostics.get("err_type") or "") == "ReviewCircuitOpen"
+    assert (c2.review_diagnostics.get("fail_reason") or "") == "circuit_open"
+
+
+def test_ttadk_startup_model_log_uses_real_or_auto(caplog):
+    """启动点日志语义：model 字段只能是真实名或 (auto)。"""
+    engine = SpecEngine(chat_id="c", root_path="/tmp/test", agent_type="ttadk_codex", model_name="gpt-5.2")
+
+    caplog.set_level(logging.INFO, logger="src.agent_session")
+
+    class _S:
+        def __init__(self):
+            self.session_id = "sid"
+            self.created_at = 0.0
+            self.last_active = 0.0
+            self.message_count = 0
+            self.last_query = ""
+            self.is_resumed = False
+
+        def describe_agent(self):
+            return "dummy"
+
+        def start(self, startup_timeout: float = 60):
+            return "sid"
+
+        def load_session(self, session_id: str):
+            return None
+
+        def load_local_history(self, session_id=None, limit: int = 200):
+            return []
+
+        def cancel(self):
+            return None
+
+        def close(self):
+            return None
+
+        def to_snapshot(self):
+            return {}
+
+        def get_session_info(self):
+            return ""
+
+        def is_server_running(self):
+            return True
+
+        def is_server_healthy(self, healthcheck_timeout: float = 2.0):
+            return True
+
+        def send_prompt(self, *a, **k):
+            return MagicMock(stop_reason="end_turn")
+
+    class _SessSettings:
+        acp_startup_timeout = 20
+        rate_limit_retry_enabled = False
+
+    with patch("src.agent_session.get_settings", return_value=_SessSettings()), \
+         patch("src.ttadk.get_ttadk_manager", return_value=MagicMock()), \
+         patch("src.ttadk.manager.start_ttadk_engine_session") as mk_start:
+        mk_start.return_value = {
+            "result": _S(),
+            "tool": "codex",
+            "input_model": "gpt-5.2",
+            "resolved_model": "gpt-5.2-codex-ttadk",
+            "validated": True,
+            "source": "probe",
+            "decision": "precheck_validated",
+            "fail_phase": "",
+            "warnings": [],
+            "degraded": False,
+            "repaired": False,
+            "diagnostics": {"attempts": [{"phase": "precheck"}]},
+        }
+        caplog.clear()
+        engine.execute("do something")
+
+    text = "\n".join([r.getMessage() for r in caplog.records])
+    assert "[SessionFactory] ttadk startup:" in text
+    m = re.search(r"\bmodel=([^\s]+)", text)
+    assert m is not None
+    assert m.group(1) == "gpt-5.2-codex-ttadk"
+    assert m.group(1) != "gpt-5.2"
+
+
+def test_ttadk_resume_model_log_uses_real_or_auto(caplog):
+    """恢复路径同样要求：model 字段只能是真实名或 (auto)。"""
+    engine = SpecEngine(chat_id="c", root_path="/tmp/test", agent_type="ttadk_codex", model_name="gpt-5.2")
+    engine._project = SpecProject.create(name="p", root_path="/tmp/test")
+    engine._project.status = SpecProjectStatus.PAUSED
+
+    caplog.set_level(logging.INFO, logger="src.agent_session")
+
+    class _S:
+        def __init__(self):
+            self.session_id = "sid"
+            self.created_at = 0.0
+            self.last_active = 0.0
+            self.message_count = 0
+            self.last_query = ""
+            self.is_resumed = False
+
+        def describe_agent(self):
+            return "dummy"
+
+        def start(self, startup_timeout: float = 60):
+            return "sid"
+
+        def load_session(self, session_id: str):
+            return None
+
+        def load_local_history(self, session_id=None, limit: int = 200):
+            return []
+
+        def cancel(self):
+            return None
+
+        def close(self):
+            return None
+
+        def to_snapshot(self):
+            return {}
+
+        def get_session_info(self):
+            return ""
+
+        def is_server_running(self):
+            return True
+
+        def is_server_healthy(self, healthcheck_timeout: float = 2.0):
+            return True
+
+        def send_prompt(self, *a, **k):
+            return MagicMock(stop_reason="end_turn")
+
+    class _SessSettings:
+        acp_startup_timeout = 20
+        rate_limit_retry_enabled = False
+
+    with patch("src.agent_session.get_settings", return_value=_SessSettings()), \
+         patch("src.ttadk.get_ttadk_manager", return_value=MagicMock()), \
+         patch("src.ttadk.manager.start_ttadk_engine_session") as mk_start:
+        mk_start.return_value = {
+            "result": _S(),
+            "tool": "codex",
+            "input_model": "gpt-5.2",
+            "resolved_model": "(auto)",
+            "validated": False,
+            "source": "defaults",
+            "decision": "precheck_auto",
+            "fail_phase": "",
+            "warnings": ["no_m_passthrough"],
+            "degraded": False,
+            "repaired": False,
+            "diagnostics": {"attempts": [{"phase": "precheck"}]},
+        }
+        caplog.clear()
+        engine.resume()
+
+    text = "\n".join([r.getMessage() for r in caplog.records])
+    assert "[SessionFactory] ttadk startup:" in text
+    assert "model=(auto)" in text
+    assert re.search(r"\bmodel=gpt-5\.2\b", text) is None
 
 
 # ======================================================================
@@ -705,6 +1254,7 @@ class TestSpecEngine:
         assert "PRODUCT" in prompt
         assert "USER" in prompt
         assert "TESTER" in prompt
+        assert "DESIGNER" in prompt
         assert "Build auth" in prompt
 
     def test_build_refinement_input(self):
@@ -899,9 +1449,12 @@ PASS
 
 [TESTER]
 PASS
+
+[DESIGNER]
+PASS
 """
         result = engine._parse_review_output(text, 1)
-        assert len(result.reviews) == 4
+        assert len(result.reviews) == 5
         assert result.reviews[0].passed is True  # ARCHITECT
         assert result.reviews[1].passed is False  # PRODUCT
         assert len(result.reviews[1].suggestions) == 2
@@ -911,7 +1464,7 @@ PASS
         engine._project = SpecProject.create(root_path="/tmp")
         # Completely unparseable text
         result = engine._parse_review_output("random garbage", 1)
-        assert len(result.reviews) == 4
+        assert len(result.reviews) == 5
         assert all(not r.passed for r in result.reviews)
 
 
@@ -1161,6 +1714,12 @@ class TestSpecHandler:
         handler.handle_spec_command("mid", "cid", "/spec_guide focus on auth", None)
         handler.update_spec_guidance.assert_called_once()
 
+    def test_handle_spec_command_routing_export(self):
+        handler = self._make_handler()
+        handler.export_spec_report = MagicMock()
+        handler.handle_spec_command("mid", "cid", "/spec_export", None)
+        handler.export_spec_report.assert_called_once()
+
     def test_update_spec_guidance_allows_when_clarifying(self):
         """/spec_guide should work even when engine is CLARIFYING (not running)."""
         handler = self._make_handler()
@@ -1208,6 +1767,7 @@ class TestSystemHandlerSpec:
         assert SystemHandler.is_spec_command("/spec_pause")
         assert SystemHandler.is_spec_command("/spec_resume")
         assert SystemHandler.is_spec_command("/spec_guide focus")
+        assert SystemHandler.is_spec_command("/spec_export")
         assert not SystemHandler.is_spec_command("/loop build")
         assert not SystemHandler.is_spec_command("/deep do stuff")
         assert not SystemHandler.is_spec_command("hello")

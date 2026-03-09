@@ -4,12 +4,14 @@ import pytest
 from unittest.mock import patch, MagicMock, PropertyMock
 import io
 import os
+import logging
+import re
 
 from src.deep_engine.models import EngineRunState, DeepProject, DeepProjectStatus
 from src.deep_engine.engine import DeepEngine, DeepEngineManager, DeepEngineCallbacks
 from src.deep_engine.progress import DeepProgress
 from src.acp.models import PlanEntryInfo, PlanInfo, ToolCallInfo
-from src.agent_session import SyncClaudeCLISession, ClaudeCLIConfig
+from src.agent_session import SyncClaudeCLISession, ClaudeCLIConfig, create_engine_session
 
 
 class TestDeepEngine:
@@ -82,6 +84,268 @@ class TestDeepEngine:
     def test_get_task_summary_no_project(self):
         engine = self._make_engine()
         assert engine.get_task_summary() == "暂无任务"
+
+    def test_ttadk_startup_model_log_uses_real_or_auto(self, caplog):
+        """启动点日志语义：model 字段只能是真实名或 (auto)，不应等于输入友好名。"""
+        engine = self._make_engine(agent_type="ttadk_codex", model_name="gpt-5.2")
+
+        caplog.set_level(logging.INFO, logger="src.agent_session")
+
+        class _S:
+            def __init__(self):
+                self.session_id = "sid"
+                self.created_at = 0.0
+                self.last_active = 0.0
+                self.message_count = 0
+                self.last_query = ""
+                self.is_resumed = False
+
+            def describe_agent(self):
+                return "dummy"
+
+            def start(self, startup_timeout: float = 60):
+                return "sid"
+
+            def load_session(self, session_id: str):
+                return None
+
+            def load_local_history(self, session_id=None, limit: int = 200):
+                return []
+
+            def cancel(self):
+                return None
+
+            def close(self):
+                return None
+
+            def to_snapshot(self):
+                return {}
+
+            def get_session_info(self):
+                return ""
+
+            def is_server_running(self):
+                return True
+
+            def is_server_healthy(self, healthcheck_timeout: float = 2.0):
+                return True
+
+            def send_prompt(self, *a, **k):
+                return MagicMock(stop_reason="end_turn")
+
+        class _SessSettings:
+            acp_startup_timeout = 20
+            rate_limit_retry_enabled = False
+
+        with patch("src.agent_session.get_settings", return_value=_SessSettings()), \
+             patch("src.ttadk.startup.start_agent_session") as mk_start:
+            # SSOT：create_engine_session 统一走 start_agent_session；单测不应触发真实 ttadk/codex 探测。
+            mk_start.return_value = {
+                "session": _S(),
+                "session_id": "sid",
+                "tool": "codex",
+                "input_model": "gpt-5.2",
+                "resolved_model": "gpt-5.2-codex-ttadk",
+                "resolved_real_name": "gpt-5.2-codex-ttadk",
+                "passthrough_model": "gpt-5.2-codex-ttadk",
+                "validated": True,
+                "source": "probe",
+                "decision": "precheck_validated",
+                "fail_phase": "",
+                "warnings": [],
+                "degraded": False,
+                "repaired": False,
+                "diagnostics": {"attempts": [{"phase": "precheck"}]},
+            }
+            caplog.clear()
+            engine.plan_and_execute("do something")
+
+        text = "\n".join([r.getMessage() for r in caplog.records])
+        assert "[SessionFactory] ttadk startup:" in text
+        m = re.search(r"\bmodel=([^\s]+)", text)
+        assert m is not None
+        assert m.group(1) == "gpt-5.2-codex-ttadk"
+        assert m.group(1) != "gpt-5.2"
+
+    def test_ttadk_resume_model_log_uses_real_or_auto(self, caplog):
+        """恢复路径同样要求：model 字段只能是真实名或 (auto)。"""
+        engine = self._make_engine(agent_type="ttadk_codex", model_name="gpt-5.2")
+        engine._project = DeepProject.create(name="p", root_path="/tmp/test")
+        engine._project.status = DeepProjectStatus.PAUSED
+
+        caplog.set_level(logging.INFO, logger="src.agent_session")
+
+        class _S:
+            def __init__(self):
+                self.session_id = "sid"
+                self.created_at = 0.0
+                self.last_active = 0.0
+                self.message_count = 0
+                self.last_query = ""
+                self.is_resumed = False
+
+            def describe_agent(self):
+                return "dummy"
+
+            def start(self, startup_timeout: float = 60):
+                return "sid"
+
+            def load_session(self, session_id: str):
+                return None
+
+            def load_local_history(self, session_id=None, limit: int = 200):
+                return []
+
+            def cancel(self):
+                return None
+
+            def close(self):
+                return None
+
+            def to_snapshot(self):
+                return {}
+
+            def get_session_info(self):
+                return ""
+
+            def is_server_running(self):
+                return True
+
+            def is_server_healthy(self, healthcheck_timeout: float = 2.0):
+                return True
+
+            def send_prompt(self, *a, **k):
+                return MagicMock(stop_reason="end_turn")
+
+        class _SessSettings:
+            acp_startup_timeout = 20
+            rate_limit_retry_enabled = False
+
+        with patch("src.agent_session.get_settings", return_value=_SessSettings()), \
+             patch("src.ttadk.startup.start_agent_session") as mk_start:
+            mk_start.return_value = {
+                "session": _S(),
+                "session_id": "sid",
+                "tool": "codex",
+                "input_model": "gpt-5.2",
+                "resolved_model": "(auto)",
+                "resolved_real_name": "(auto)",
+                "passthrough_model": None,
+                "validated": False,
+                "source": "defaults",
+                "decision": "precheck_auto",
+                "fail_phase": "",
+                "warnings": ["no_m_passthrough"],
+                "degraded": False,
+                "repaired": False,
+                "diagnostics": {"attempts": [{"phase": "precheck"}]},
+            }
+            caplog.clear()
+            engine.resume()
+
+        text = "\n".join([r.getMessage() for r in caplog.records])
+        assert "[SessionFactory] ttadk startup:" in text
+        assert "model=(auto)" in text
+        assert re.search(r"\bmodel=gpt-5\.2\b", text) is None
+
+
+def test_ttadk_startup_log_semantics_consistent_between_create_sync_and_engine(monkeypatch, caplog):
+    """跨入口一致性：create_sync_session 与 create_engine_session 的 TTADK 启动语义日志一致。"""
+    import logging
+    import src.agent_session as agent_session
+
+    caplog.set_level(logging.INFO, logger="src.agent_session")
+
+    class _SessSettings:
+        acp_startup_timeout = 20
+        rate_limit_retry_enabled = False
+
+    class _DummySession:
+        def __init__(self):
+            self.session_id = "sid"
+            self.created_at = 0.0
+            self.last_active = 0.0
+            self.message_count = 0
+            self.last_query = ""
+            self.is_resumed = False
+
+        def describe_agent(self):
+            return "dummy"
+
+        def start(self, startup_timeout: float = 60):
+            return "sid"
+
+        def load_session(self, session_id: str):
+            return None
+
+        def load_local_history(self, session_id=None, limit: int = 200):
+            return []
+
+        def cancel(self):
+            return None
+
+        def close(self):
+            return None
+
+        def to_snapshot(self):
+            return {}
+
+        def get_session_info(self):
+            return ""
+
+        def is_server_running(self):
+            return True
+
+        def is_server_healthy(self, healthcheck_timeout: float = 2.0):
+            return True
+
+        def send_prompt(self, *a, **k):
+            return MagicMock(stop_reason="end_turn")
+
+    info_ok = {
+        "result": _DummySession(),
+        "tool": "codex",
+        "input_model": "gpt-5.2",
+        "resolved_model": "gpt-5.2-codex-ttadk",
+        "validated": True,
+        "source": "probe",
+        "decision": "precheck_validated",
+        "fail_phase": "",
+        "warnings": [],
+        "degraded": False,
+        "repaired": False,
+        "diagnostics": {"attempts": [{"phase": "precheck"}]},
+    }
+
+    monkeypatch.setattr(agent_session, "get_settings", lambda: _SessSettings())
+    monkeypatch.setattr("src.ttadk.get_ttadk_manager", lambda *a, **k: MagicMock())
+    monkeypatch.setattr("src.ttadk.manager.start_ttadk_engine_session", lambda **kw: dict(info_ok))
+    monkeypatch.setattr("src.ttadk.startup_common.precheck_ttadk_startup_model", lambda **kw: {
+        "tool": "codex",
+        "input_model": "gpt-5.2",
+        "resolved_real_name": "gpt-5.2-codex-ttadk",
+        "model": "gpt-5.2-codex-ttadk",
+        "validated": True,
+        "source": "probe",
+        "decision": "precheck_validated",
+        "fail_phase": "",
+        "warnings": [],
+        "diagnostics": {},
+    })
+
+    # 避免触发真实 resolve_agent_spec 探测（codex 在本仓默认会抛 AgentSpecResolveError）。
+    monkeypatch.setattr(agent_session, "SyncACPSession", lambda *a, **k: _DummySession())
+
+    caplog.clear()
+    _ = agent_session.create_sync_session(agent_type="ttadk_codex", cwd="/tmp", model_name="gpt-5.2")
+    _ = agent_session.create_engine_session(agent_type="ttadk_codex", cwd="/tmp", model_name="gpt-5.2")
+
+    text = "\n".join([r.getMessage() for r in caplog.records])
+    assert "[SessionFactory] ttadk precheck(startup):" in text
+    assert "[SessionFactory] ttadk startup:" in text
+    # 允许存在 input_model=gpt-5.2；只需保证最终 model 不等于输入友好名。
+    assert "model=gpt-5.2-codex-ttadk" in text
+    assert "\n[SessionFactory] ttadk startup: tool=codex input_model=gpt-5.2 model=gpt-5.2 " not in text
 
 
 class TestDeepEngineManager:
@@ -219,3 +483,120 @@ class TestClaudeCLISession:
         assert "sid0" in popen_calls[0][0]
         assert "--session-id" in popen_calls[1][0]
         assert "sid_new" in popen_calls[1][0]
+
+
+def test_create_engine_session_ttadk_invalid_model_autofix(monkeypatch):
+    """当 TTADK ACP 启动因 Invalid model 失败时，应自动刷新并重试一次。"""
+    from src.ttadk.manager import TTADKManager
+    # 使用 ACP 可用的 tool（coco）覆盖 Invalid model 自动纠错闭环
+    m = TTADKManager(default_tool="coco", default_model="bad")
+    # 避免触碰真实 HOME 文件缓存
+    monkeypatch.setattr(TTADKManager, "_load_cache_from_file", lambda self: None)
+    monkeypatch.setattr(TTADKManager, "_save_cache_to_file", lambda self: None)
+    monkeypatch.setattr("src.ttadk.get_ttadk_manager", lambda *a, **k: m)
+
+    calls = {"n": 0}
+
+    def fake_start_session_with_retry(agent_type, cwd, startup_timeout=60, model_name=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("✗ Error: Invalid model 'bad'. Available models: a, b")
+        sess = MagicMock()
+        sess._agent_type = agent_type
+        sess._model_name = model_name
+        return sess
+
+    monkeypatch.setattr("src.acp.sync_adapter.start_session_with_retry", fake_start_session_with_retry)
+
+    # 触发 create_engine_session 的 TTADK 分支
+    s = create_engine_session(agent_type="ttadk_coco", cwd="/tmp", model_name="bad")
+    inner = getattr(s, "_inner", s)
+    assert getattr(inner, "_model_name", None) == "a"
+
+
+def test_resolve_ttadk_engine_startup_model_prefers_fast_path(monkeypatch):
+    """启动阶段应优先使用 resolve_startup_model，且仅 validated=True 才透传真实模型名。"""
+    from src.agent_session import resolve_ttadk_engine_startup_model
+
+    class _Resolved:
+        def __init__(self, real_name: str, validated: bool, source: str = "probe", warnings=None):
+            self.real_name = real_name
+            self.validated = validated
+            self.source = source
+            self.warnings = list(warnings or [])
+
+    class _MgrFast:
+        def get_current_model(self):
+            return "gpt-5.2"
+
+        def resolve_startup_model(self, model_name: str, *, tool_name: str, cwd: str):
+            assert tool_name == "codex"
+            assert cwd == "/tmp/test"
+            assert model_name == "gpt-5.2"
+            return _Resolved(real_name="gpt-5.2-codex-ttadk", validated=True, source="probe")
+
+    monkeypatch.setattr("src.ttadk.get_ttadk_manager", lambda *a, **k: _MgrFast())
+
+    info = resolve_ttadk_engine_startup_model(agent_type="ttadk_codex", cwd="/tmp/test", model_intent=None)
+    assert info["tool"] == "codex"
+    assert info["validated"] is True
+    assert info["resolved_model"] == "gpt-5.2-codex-ttadk"
+
+
+def test_resolve_ttadk_engine_startup_model_not_validated_returns_none(monkeypatch):
+    """当无法确认真实模型名时，不应透传 -m（resolved_model=None）。"""
+    from src.agent_session import resolve_ttadk_engine_startup_model
+
+    class _Resolved:
+        def __init__(self, real_name: str, validated: bool, source: str = "unknown", warnings=None):
+            self.real_name = real_name
+            self.validated = validated
+            self.source = source
+            self.warnings = list(warnings or [])
+
+    class _MgrLegacy:
+        def get_current_model(self):
+            return "gpt-5.2"
+
+        def resolve_and_ensure_valid_model(self, model_name: str, *, tool_name: str, cwd: str):
+            return _Resolved(real_name=model_name, validated=False, source="defaults", warnings=["no_m_passthrough"])
+
+    monkeypatch.setattr("src.ttadk.get_ttadk_manager", lambda *a, **k: _MgrLegacy())
+
+    info = resolve_ttadk_engine_startup_model(agent_type="ttadk_codex", cwd="/tmp/test", model_intent="gpt-5.2")
+    assert info["tool"] == "codex"
+    assert info["validated"] is False
+    assert info["resolved_model"] is None
+
+
+def test_resolve_ttadk_engine_startup_model_includes_models_phase_diagnostics(monkeypatch):
+    """集成断言：resolve_ttadk_engine_startup_model 返回 diagnostics.attempts，且包含 models 阶段记录。"""
+    from src.agent_session import resolve_ttadk_engine_startup_model
+    from src.ttadk.models import ResolvedModelResult
+
+    class _Mgr:
+        def resolve_startup_model_with_diagnostics(self, model_name: str, *, tool_name: str, cwd: str, timeout_s=None):
+            # validated=False: should not passthrough -m
+            resolved = ResolvedModelResult(
+                tool_name=tool_name,
+                input_name=model_name,
+                real_name=model_name,
+                source="defaults",
+                validated=False,
+                warnings=["no_m_passthrough"],
+            )
+            diag = {
+                "attempts": [
+                    {"phase": "quick", "validated": False, "source": "defaults"},
+                    {"phase": "models", "ok": False, "source": "defaults", "count": 0, "warnings": ["models_untrusted"]},
+                ]
+            }
+            return resolved, diag
+
+    monkeypatch.setattr("src.ttadk.get_ttadk_manager", lambda *a, **k: _Mgr())
+
+    info = resolve_ttadk_engine_startup_model(agent_type="ttadk_codex", cwd="/tmp/test", model_intent="gpt-5.2")
+    assert info["validated"] is False
+    assert info["resolved_model"] is None
+    attempts = list((info.get("diagnostics") or {}).get("attempts") or [])
+    assert any(a.get("phase") == "models" for a in attempts)

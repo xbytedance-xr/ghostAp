@@ -17,6 +17,7 @@ from src.feishu.handlers.programming import (
     CocoModeHandler,
     ClaudeModeHandler,
     ProgrammingModeHandler,
+    TTADKModeHandler,
 )
 from src.feishu.handlers.system import SystemHandler
 from src.feishu.handlers.project import ProjectHandler
@@ -591,6 +592,48 @@ class TestProgrammingModeEnterExit:
         h.handle_card_new("m1", "c1", "p1")
         assert project.coco_session_snapshot is None
         h.enter_mode.assert_called_once()
+
+
+class TestTTADKModeDegradeWarning:
+    def test_ttadk_enter_mode_emits_degrade_warning(self):
+        ctx = _make_handler_context()
+
+        ctx.mode_manager.is_ttadk_mode.return_value = False
+        ctx.mode_manager.is_coco_mode.return_value = False
+        ctx.mode_manager.is_claude_mode.return_value = False
+        ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
+
+        ctx.project_manager.validate_project_path.return_value = (True, "ok")
+        project = MagicMock()
+        project.ttadk_session_snapshot = None
+        project.root_path = "/tmp"
+        project.project_name = "test"
+        project.project_id = "test_id"
+        ctx.project_manager.get_or_create_project_for_path.return_value = (project, False)
+
+        sess = MagicMock()
+        sess.session_id = "sid_ttadk"
+        sess.is_resumed = False
+        sess._degraded_to = "coco"
+        sess._degraded_reason = "boom"
+        ctx.ttadk_manager.ensure_session.return_value = sess
+
+        h = TTADKModeHandler(ctx)
+        # 避免进入真实 ttadk 配置解析逻辑
+        h._get_agent_type_override = MagicMock(return_value="ttadk_coco")
+        h._get_model_name_override = MagicMock(return_value="gpt-5.2")
+
+        h.reply_message = MagicMock()
+        h.reply_message_with_id = MagicMock(return_value="reply_1")
+        h.add_reaction = MagicMock()
+        h.record_mode_transition = MagicMock()
+        h.register_message_project = MagicMock()
+
+        h.enter_mode("m1", "c1", project=project)
+
+        assert any(
+            "TTADK 后端暂不可用" in str(call) for call in h.reply_message.call_args_list
+        )
 
 
 # ======================================================================

@@ -5,7 +5,13 @@ from __future__ import annotations
 import logging
 import os
 import time
+import json
 from typing import TYPE_CHECKING, Optional
+
+from lark_oapi.api.im.v1 import (
+    PatchMessageRequest,
+    PatchMessageRequestBody,
+)
 
 from ...acp import ACPEvent, ACPEventType, ACPEventRenderer
 from ...card import CardBuilder
@@ -97,7 +103,7 @@ class DeepHandler(BaseHandler):
             engine_name=engine_name,
             show_buttons=False,
         )
-        self.reply_message(message_id, card_content, msg_type=msg_type, origin_message_id=message_id, request_id=request_id)
+        initial_msg_id = self.reply_message(message_id, card_content, msg_type=msg_type, origin_message_id=message_id, request_id=request_id)
 
         engine = self.ctx.deep_engine_manager.get_or_create(chat_id, root_path, engine_name=engine_name)
 
@@ -114,6 +120,7 @@ class DeepHandler(BaseHandler):
                     project,
                     engine_name,
                     root_path=root_path,
+                    initial_message_id=initial_msg_id,
                 )
                 engine.plan_and_execute(requirement, callbacks, task_id=task_id, on_rate_limit=_on_rate_limit)
             except Exception as e:
@@ -150,6 +157,22 @@ class DeepHandler(BaseHandler):
     # ------------------------------------------------------------------
     # callbacks factory
     # ------------------------------------------------------------------
+    def _convert_to_legacy_card(self, card_json_str: str) -> str:
+        """Convert Schema 2.0 card to legacy structure for PATCH API."""
+        try:
+            card = json.loads(card_json_str)
+            if isinstance(card, dict) and card.get("schema") == "2.0":
+                # Convert to legacy structure: lift elements from body, remove schema
+                new_card = {
+                    "config": card.get("config", {}),
+                    "header": card.get("header", {}),
+                    "elements": card.get("body", {}).get("elements", [])
+                }
+                return json.dumps(new_card, ensure_ascii=False)
+            return card_json_str
+        except Exception:
+            return card_json_str
+
     def _create_deep_callbacks(
         self,
         message_id: str,
@@ -157,11 +180,13 @@ class DeepHandler(BaseHandler):
         project: Optional["ProjectContext"],
         engine_name: str = "Coco",
         root_path: Optional[str] = None,
+        initial_message_id: Optional[str] = None,
     ) -> DeepEngineCallbacks:
         request_id = self.ensure_request_id(message_id, chat_id=chat_id, project_id=(project.project_id if project else None))
         reporter = self.ctx.progress_reporter
 
-        thread_root_message_id: list[str | None] = [None]
+        thread_root_message_id: list[str | None] = [initial_message_id]
+        current_status_message_id: list[str | None] = [initial_message_id]
         renderer = ACPEventRenderer()
 
         # Throttle streaming updates to avoid spamming Feishu
@@ -170,9 +195,29 @@ class DeepHandler(BaseHandler):
         last_plan_ts: float = 0.0
         last_plan_content: str = ""
 
-        def _send_deep_message(card_content: str, msg_type: str = "interactive"):
+        def _send_deep_message(card_content: str, msg_type: str = "interactive", is_update: bool = False):
             """发送 deep 任务消息，在话题模式下确保所有消息都回复到同一个话题。"""
+            # 1. Try update existing card
+            if is_update and current_status_message_id[0]:
+                try:
+                    client = self.ctx.api_client_factory()
+                    legacy_content = self._convert_to_legacy_card(card_content)
+                    req = PatchMessageRequest.builder() \
+                        .message_id(current_status_message_id[0]) \
+                        .request_body(PatchMessageRequestBody.builder()
+                            .content(legacy_content)
+                            .build()) \
+                        .build()
+                    resp = client.im.v1.message.patch(req)
+                    if resp.success():
+                        return
+                    logger.warning("Patch deep message failed: %s %s", resp.code, resp.msg)
+                except Exception as e:
+                    logger.error("Patch deep message error: %s", e)
+            
+            # 2. Fallback to create new message
             use_thread = self.settings.default_reply_mode == "thread"
+            result_id = None
             if use_thread:
                 reply_to = thread_root_message_id[0] or message_id
                 result_id = self.reply_message(
@@ -183,7 +228,10 @@ class DeepHandler(BaseHandler):
                 if thread_root_message_id[0] is None and result_id:
                     thread_root_message_id[0] = result_id
             else:
-                self.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
+                result_id = self.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
+
+            if result_id:
+                current_status_message_id[0] = result_id
 
         def on_planning_done(deep_project: DeepProject):
             content = f"🚀 ACP Deep 执行开始\n\n📂 **{deep_project.name}**\n🔗 路径: `{deep_project.root_path}`"
@@ -192,7 +240,7 @@ class DeepHandler(BaseHandler):
                 content=content,
                 deep_project_id=deep_project.project_id, engine_name=engine_name, show_buttons=False,
             )
-            _send_deep_message(card_content, msg_type)
+            _send_deep_message(card_content, msg_type, is_update=True)
 
         def _get_engine():
             rp = root_path or (project.root_path if project else "")
@@ -260,7 +308,7 @@ class DeepHandler(BaseHandler):
                 is_executing=True,
                 engine_name=engine_name,
             )
-            _send_deep_message(card_content, msg_type)
+            _send_deep_message(card_content, msg_type, is_update=True)
             last_stream_ts = now
             last_stream_text_len = text_len
 
@@ -288,7 +336,7 @@ class DeepHandler(BaseHandler):
                         is_executing=True,
                         engine_name=engine_name,
                     )
-                    _send_deep_message(card_content, msg_type)
+                    _send_deep_message(card_content, msg_type, is_update=True)
                     last_plan_ts = now
                     last_plan_content = plan_content
 
@@ -321,7 +369,7 @@ class DeepHandler(BaseHandler):
                 project=project, title=title, content=content,
                 progress_bar=progress_bar, deep_project_id=deep_project.project_id, engine_name=engine_name,
             )
-            _send_deep_message(card_content, msg_type)
+            _send_deep_message(card_content, msg_type, is_update=True)
             self.add_reaction(message_id, EmojiReaction.on_multi_task_done())
 
             if project:
@@ -344,7 +392,7 @@ class DeepHandler(BaseHandler):
                 project=project, title=title, content=content,
                 engine_name=engine_name, show_buttons=False,
             )
-            _send_deep_message(card_content, msg_type)
+            _send_deep_message(card_content, msg_type, is_update=True)
             self.add_reaction(message_id, EmojiReaction.on_error())
 
         return DeepEngineCallbacks(

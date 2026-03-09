@@ -50,6 +50,31 @@ class Settings(BaseSettings):
     # Set to 0 to use the asyncio default (64KB). 10MB should be generous enough.
     acp_stream_buffer_limit: int = 10 * 1024 * 1024
 
+    # ------------------------------------------------------------------
+    # ACP startup diagnostics (redaction + truncation)
+    # ------------------------------------------------------------------
+    # Safety-first: redact sensitive values from diagnostics logs.
+    acp_diagnostics_redact_enabled: bool = True
+    acp_diagnostics_redact_replacement: str = "***REDACTED***"
+    # Regex patterns applied to args/stdout_snippet/stderr_snippet/spec strings.
+    # NOTE: Keep patterns conservative to avoid excessive false positives.
+    acp_diagnostics_redact_patterns: list[str] = [
+        r"(?i)authorization\s*:\s*[^\s]+",
+        r"(?i)bearer\s+[^\s]+",
+        r"sk-[A-Za-z0-9]{10,}",
+        r"AKIA[0-9A-Z]{16}",
+        r"(?i)api[_-]?key\s*[:=]\s*[^\s]+",
+        r"(?i)secret\s*[:=]\s*[^\s]+",
+        r"(?i)token\s*[:=]\s*[^\s]+",
+    ]
+    # Unified truncation limits for diagnostics output.
+    # - args_limit: approximated length of joined args (best-effort)
+    # - snippet_limit: stdout/stderr snippet length
+    # - total_limit: final formatted JSON line length
+    acp_diagnostics_args_limit: int = 600
+    acp_diagnostics_snippet_limit: int = 240
+    acp_diagnostics_total_limit: int = 2000
+
     # Claude CLI backend: skip Claude's built-in permission checks.
     # GhostAP has its own sandbox safety layer, so this is usually safe.
     claude_cli_skip_permissions: bool = True
@@ -65,6 +90,95 @@ class Settings(BaseSettings):
 
     ttadk_default_tool: str = "coco"
     ttadk_default_model: str = ""
+
+    # TTADK common tool model preheating (probe-based, best-effort)
+    # - enabled: master switch
+    # - on_startup: trigger once on application startup
+    # - on_first_use: trigger once when first accessing a tool's models
+    # - tools: comma/space separated tool names
+    # - timeout: probe subprocess timeout (seconds)
+    ttadk_preheat_enabled: bool = True
+    ttadk_preheat_on_startup: bool = True
+    ttadk_preheat_on_first_use: bool = True
+    ttadk_preheat_tools: str = "claude,coco,trae,opencode,codex"
+    ttadk_preheat_timeout: float = 2.5
+
+    # TTADK model list fetch strategy knobs
+    # Interactive strategy is risky in multi-threaded service (pty + fork), so it is disabled by default.
+    ttadk_interactive_enabled: bool = False
+    ttadk_probe_timeout: float = 10.0
+    ttadk_structured_timeout: float = 8.0
+
+    # TTADK official CLI models strategy (non-PTY, preferred when available)
+    # - enabled: master switch for official_cli strategy
+    # - timeout: subprocess timeout (seconds)
+    ttadk_official_cli_enabled: bool = True
+    ttadk_official_timeout: float = 4.0
+
+    # TTADK CLI capabilities probe (`ttadk --help`)
+    # - ttl_s: cache TTL for parsed Commands list
+    # - timeout_s: subprocess timeout for `ttadk --help`
+    ttadk_cli_capabilities_ttl_s: float = 300.0
+    ttadk_cli_capabilities_timeout_s: float = 2.0
+
+    # TTADK model fetch strategy order (comma/space separated strategy names)
+    # Supported names: official_cli, structured_sync, file_cache, local_config, probe, interactive
+    # Empty means "use built-in conservative defaults".
+    ttadk_models_strategy_order: str = ""
+
+    # ------------------------------------------------------------------
+    # TTADK model cache (service-side disk cache, project-scoped)
+    # ------------------------------------------------------------------
+    # Cache file path template. If empty, defaults to "{cwd}/.ghostap/ttadk/models_cache.json".
+    # Supports "{cwd}" placeholder. If cwd is empty/None, disk cache is disabled.
+    ttadk_models_cache_path: str = ""
+    # Backward-compat: read legacy "~/.ttadk/models_cache.json" when project cache missing.
+    ttadk_models_cache_read_legacy_home: bool = True
+    # Whether to auto-migrate legacy cache content into project cache on first load.
+    ttadk_models_cache_migrate_from_legacy_home: bool = True
+
+    # TTADK cwd normalization diagnostics
+    # - enabled: emit debug logs for raw/normalized cwd at key call sites
+    ttadk_cwd_debug_enabled: bool = False
+
+    # ------------------------------------------------------------------
+    # TTADK subprocess env sandbox (avoid writing to real ~/.ttadk)
+    # ------------------------------------------------------------------
+    # Enable sandboxed HOME/XDG_* for all ttadk-related subprocess/PTY calls.
+    # Default: enabled to avoid test/runtime polluting user's real HOME.
+    ttadk_sandbox_home_enabled: bool = True
+    # Sandbox root directory. If empty, defaults to "<cwd>/.ttadk_sandbox".
+    # Supports "{cwd}" placeholder.
+    ttadk_sandbox_home_root: str = ""
+    # Whether to also override XDG_CACHE_HOME under the sandbox root.
+    ttadk_sandbox_cover_cache_home: bool = False
+
+    # TTADK runtime invalid-model self-healing (execution-time)
+    # - enabled: master switch
+    # - allow_autoswitch: when available models are known, allow selecting a best-match real model for one retry
+    # - cooldown: per-tool cooldown to avoid repeated retries (seconds)
+    # - max_retries: hard cap (kept as 1 for safety)
+    ttadk_runtime_retry_enabled: bool = True
+    ttadk_runtime_retry_allow_autoswitch: bool = True
+    ttadk_runtime_retry_cooldown_s: float = 120.0
+    ttadk_runtime_max_retries: int = 1
+
+    # TTADK runtime invalid-model stub cooldown store limits (service-side)
+    # Used only for non-TTADKManager manager stubs (tests/legacy path).
+    # - ttl_s: cleanup entries older than ttl seconds; 0 disables TTL cleanup
+    # - max_keys: hard cap for number of keys kept; 0 disables cap
+    # - gc_interval_s: minimum seconds between GC runs; 0 runs GC on every write
+    ttadk_runtime_stub_cooldown_ttl_s: float = 3600.0
+    ttadk_runtime_stub_cooldown_max_keys: int = 1024
+    ttadk_runtime_stub_cooldown_gc_interval_s: float = 60.0
+
+    # TTADK startup: auto PTY retry when downstream requires a real TTY
+    # - enabled: master switch
+    # - retry_once: whether to retry exactly once with PTY on stdin-not-tty errors
+    ttadk_pty_enabled: bool = True
+    ttadk_pty_retry_once: bool = True
+    # Cooldown for repeated PTY retries per tool (seconds)
+    ttadk_pty_retry_cooldown_s: float = 60.0
 
     # Loop Engine settings
     loop_max_iterations: int = 100
@@ -85,6 +199,14 @@ class Settings(BaseSettings):
     spec_execution_timeout: int = 7200
     spec_convergence_window: int = 2
     spec_review_enabled: bool = True
+
+    # Spec Engine review failure circuit breaker
+    # - enabled: master switch
+    # - max_consecutive: open circuit after N consecutive review failures
+    # - cooldown_cycles: keep circuit open for next K cycles (skip review)
+    spec_review_failure_circuit_enabled: bool = False
+    spec_review_failure_max_consecutive: int = 3
+    spec_review_failure_cooldown_cycles: int = 3
 
     # Spec long-range persistence / monitoring
     spec_state_filename: str = ".spec_engine_state.json"
@@ -129,6 +251,17 @@ class Settings(BaseSettings):
     rate_limit_max_wait: int = 300      # Max seconds to wait for rate limit cooldown
     rate_limit_base_wait: int = 30      # Default wait if no retry-after header
     rate_limit_max_retries: int = 5     # Max consecutive rate limit retries
+
+    # ------------------------------------------------------------------
+    # Model failure self-healing (send_prompt-time)
+    # ------------------------------------------------------------------
+    # need compaction / loop detected 防抖与 failover 参数
+    model_failure_compaction_enabled: bool = True
+    model_failure_compaction_loop_window_s: float = 180.0
+    model_failure_compaction_loop_max: int = 2
+    # failover mapping (comma/space separated: "from:to")
+    # default: gpt-5.2 -> gpt-5.1
+    model_failure_failover_map: str = "gpt-5.2:gpt-5.1"
 
     # Task scheduler (thread-based) settings
     task_scheduler_max_concurrent: int = 20

@@ -771,7 +771,10 @@ class CardBuilder:
         elements = [
             {
                 "tag": "markdown",
-                "content": f"请为 **{tool_name}** 选择要使用的模型："
+                "content": (
+                    f"请为 **{tool_name}** 选择要使用的模型：\n"
+                    "（若列表为空/不全，可点击下方『🔄 刷新模型列表』强制拉取）"
+                )
             }
         ]
 
@@ -793,6 +796,25 @@ class CardBuilder:
             })
 
         elements.extend(build_responsive_layout(buttons))
+
+        # 辅助入口：强制刷新模型列表（常用于 Invalid model / 可用模型为空）
+        elements.append({"tag": "hr"})
+        elements.extend(
+            build_responsive_layout(
+                [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "🔄 刷新模型列表"},
+                        "type": "primary",
+                        "value": {
+                            "action": "refresh_ttadk_models",
+                            "tool_name": tool_name,
+                            "project_id": project_id,
+                        },
+                    }
+                ]
+            )
+        )
 
         card = CardBuilder._wrap_card(f"🤖 {tool_name} 模型选择", "blue", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)

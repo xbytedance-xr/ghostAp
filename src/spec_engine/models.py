@@ -243,6 +243,9 @@ class SpecCycle:
     build_path: Optional[str] = None
     review_result: Optional[ReviewResult] = None
     review_path: Optional[str] = None
+    # 审查异常可观测性（best-effort，不影响既有成功路径）
+    review_decision: str = ""
+    review_diagnostics: Optional[dict] = None
     discovery_path: Optional[str] = None
     metrics_path: Optional[str] = None
     status: str = "running"  # running/completed/failed
@@ -279,6 +282,8 @@ class SpecCycle:
             "build_path": self.build_path,
             "review_result": self.review_result.to_dict() if self.review_result else None,
             "review_path": self.review_path,
+            "review_decision": self.review_decision,
+            "review_diagnostics": self.review_diagnostics,
             "discovery_path": self.discovery_path,
             "metrics_path": self.metrics_path,
             "status": self.status,
@@ -310,6 +315,8 @@ class SpecCycle:
             build_path=data.get("build_path"),
             review_result=ReviewResult.from_dict(review_data) if review_data else None,
             review_path=data.get("review_path"),
+            review_decision=str(data.get("review_decision") or ""),
+            review_diagnostics=(data.get("review_diagnostics") if isinstance(data.get("review_diagnostics"), dict) else None),
             discovery_path=data.get("discovery_path"),
             metrics_path=data.get("metrics_path"),
             status=data.get("status", "running"),
@@ -371,6 +378,11 @@ class SpecCycleMetrics:
     goal_attainment: float
     improvement_space: float
     termination_hint: str = ""
+    # 审查异常观测：可用于监控与后续问题发现（best-effort）
+    review_failed: bool = False
+    review_decision: str = ""
+    review_exception_type: str = ""
+    review_error_text: str = ""
     created_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict:
@@ -384,6 +396,10 @@ class SpecCycleMetrics:
             "goal_attainment": self.goal_attainment,
             "improvement_space": self.improvement_space,
             "termination_hint": self.termination_hint,
+            "review_failed": self.review_failed,
+            "review_decision": self.review_decision,
+            "review_exception_type": self.review_exception_type,
+            "review_error_text": self.review_error_text,
             "created_at": self.created_at,
         }
 
@@ -399,6 +415,10 @@ class SpecCycleMetrics:
             goal_attainment=float(data.get("goal_attainment") or 0.0),
             improvement_space=float(data.get("improvement_space") or 0.0),
             termination_hint=str(data.get("termination_hint") or ""),
+            review_failed=bool(data.get("review_failed", False)),
+            review_decision=str(data.get("review_decision") or ""),
+            review_exception_type=str(data.get("review_exception_type") or ""),
+            review_error_text=str(data.get("review_error_text") or ""),
             created_at=float(data.get("created_at") or time.time()),
         )
 

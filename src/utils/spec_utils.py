@@ -133,24 +133,24 @@ def validate_plan_artifact_dict(data: dict) -> list[str]:
 
 
 REVIEW_SECTION_PATTERN = re.compile(
-    r"\[(\w+)\]\s*\n\s*(PASS|FAIL)\b(.*?)(?=\[(?:ARCHITECT|PRODUCT|USER|TESTER)\]|\Z)",
+    r"\[(\w+)\]\s*\n\s*(PASS|FAIL)\b(.*?)(?=\[(?:ARCHITECT|PRODUCT|USER|TESTER|DESIGNER)\]|\Z)",
     re.DOTALL,
 )
 
 
 REVIEW_HEADER_EN_PATTERNS: list[re.Pattern] = [
-    re.compile(r"(?im)^\s*(?:#+\s*)?\[\s*(ARCHITECT|PRODUCT|USER|TESTER)\s*\]\s*(?:[:：]?\s*(.*))?$"),
-    re.compile(r"(?im)^\s*(?:#+\s*)?\*{1,2}\[\s*(ARCHITECT|PRODUCT|USER|TESTER)\s*\]\*{1,2}\s*(?:[:：]?\s*(.*))?$"),
-    re.compile(r"(?im)^\s*(?:#+\s*)?\*{1,2}(ARCHITECT|PRODUCT|USER|TESTER)\*{1,2}\s*(?:[:：]?\s*(.*))?$"),
-    re.compile(r"(?im)^\s*#+\s*(ARCHITECT|PRODUCT|USER|TESTER)\s*(?:[:：]?\s*(.*))?$"),
-    re.compile(r"(?im)^\s*(ARCHITECT|PRODUCT|USER|TESTER)\s*[:：]\s*(.*)$"),
+    re.compile(r"(?im)^\s*(?:#+\s*)?\[\s*(ARCHITECT|PRODUCT|USER|TESTER|DESIGNER)\s*\]\s*(?:[:：]?\s*(.*))?$"),
+    re.compile(r"(?im)^\s*(?:#+\s*)?\*{1,2}\[\s*(ARCHITECT|PRODUCT|USER|TESTER|DESIGNER)\s*\]\*{1,2}\s*(?:[:：]?\s*(.*))?$"),
+    re.compile(r"(?im)^\s*(?:#+\s*)?\*{1,2}(ARCHITECT|PRODUCT|USER|TESTER|DESIGNER)\*{1,2}\s*(?:[:：]?\s*(.*))?$"),
+    re.compile(r"(?im)^\s*#+\s*(ARCHITECT|PRODUCT|USER|TESTER|DESIGNER)\s*(?:[:：]?\s*(.*))?$"),
+    re.compile(r"(?im)^\s*(ARCHITECT|PRODUCT|USER|TESTER|DESIGNER)\s*[:：]\s*(.*)$"),
 ]
 
 REVIEW_HEADER_ZH_PATTERN = re.compile(
     r"(?im)^\s*(?:#+\s*)?(?:\d+[.、)]\s*)?(?:[-*]\s*)?"
-    r"(?:🏗️|📦|👤|🧪)?\s*"
+    r"(?:🏗️|📦|👤|🧪|🎨)?\s*"
     r"\*{0,2}"
-    r"(架构师|产品经理|用户|测试)"
+    r"(架构师|产品经理|用户|测试|设计师)"
     r"\*{0,2}"
     r"(?:审查|评审|视角)?"
     r"\s*(?:[:：]\s*(.*))?$",
@@ -161,6 +161,7 @@ PERSPECTIVE_ZH_MAP: dict[str, ReviewPerspective] = {
     "产品经理": ReviewPerspective.PRODUCT,
     "用户": ReviewPerspective.USER,
     "测试": ReviewPerspective.TESTER,
+    "设计师": ReviewPerspective.DESIGNER,
 }
 
 PERSPECTIVE_TAG_MAP: dict[str, ReviewPerspective] = {
@@ -168,6 +169,7 @@ PERSPECTIVE_TAG_MAP: dict[str, ReviewPerspective] = {
     "PRODUCT": ReviewPerspective.PRODUCT,
     "USER": ReviewPerspective.USER,
     "TESTER": ReviewPerspective.TESTER,
+    "DESIGNER": ReviewPerspective.DESIGNER,
 }
 
 
@@ -324,6 +326,9 @@ _LOOSE_PERSPECTIVE_KEYWORDS: dict[str, ReviewPerspective] = {
     "用户": ReviewPerspective.USER,
     "tester": ReviewPerspective.TESTER,
     "测试": ReviewPerspective.TESTER,
+    "designer": ReviewPerspective.DESIGNER,
+    "设计师": ReviewPerspective.DESIGNER,
+    "设计": ReviewPerspective.DESIGNER,
 }
 
 _LOOSE_PASS_KEYWORDS = {"pass", "通过"}

@@ -2,6 +2,8 @@
 
 import pytest
 from unittest.mock import patch, MagicMock
+import logging
+import re
 
 from src.deep_engine.models import EngineRunState
 from src.loop_engine.engine import LoopEngine, LoopEngineManager, LoopEngineCallbacks
@@ -219,6 +221,174 @@ class TestLoopEngine:
         engine = self._make_engine()
         assert isinstance(engine.get_rendered_content(), str)
 
+    def test_ttadk_startup_model_log_uses_real_or_auto(self, caplog):
+        """启动点日志语义：model 字段只能是真实名或 (auto)。"""
+        engine = self._make_engine(agent_type="ttadk_codex", model_name="gpt-5.2")
+
+        caplog.set_level(logging.INFO, logger="src.agent_session")
+
+        class _S:
+            def __init__(self):
+                self.session_id = "sid"
+                self.created_at = 0.0
+                self.last_active = 0.0
+                self.message_count = 0
+                self.last_query = ""
+                self.is_resumed = False
+
+            def describe_agent(self):
+                return "dummy"
+
+            def start(self, startup_timeout: float = 60):
+                return "sid"
+
+            def load_session(self, session_id: str):
+                return None
+
+            def load_local_history(self, session_id=None, limit: int = 200):
+                return []
+
+            def cancel(self):
+                return None
+
+            def close(self):
+                return None
+
+            def to_snapshot(self):
+                return {}
+
+            def get_session_info(self):
+                return ""
+
+            def is_server_running(self):
+                return True
+
+            def is_server_healthy(self, healthcheck_timeout: float = 2.0):
+                return True
+
+            def send_prompt(self, *a, **k):
+                return MagicMock(stop_reason="end_turn")
+
+        class _SessSettings:
+            acp_startup_timeout = 20
+            rate_limit_retry_enabled = False
+
+        with patch("src.agent_session.get_settings", return_value=_SessSettings()), \
+             patch("src.ttadk.startup.start_agent_session") as mk_start:
+            # SSOT：create_engine_session 统一走 start_agent_session；单测不应触发真实 ttadk/codex 探测。
+            mk_start.return_value = {
+                "session": _S(),
+                "session_id": "sid",
+                "tool": "codex",
+                "input_model": "gpt-5.2",
+                "resolved_model": "gpt-5.2-codex-ttadk",
+                "resolved_real_name": "gpt-5.2-codex-ttadk",
+                "passthrough_model": "gpt-5.2-codex-ttadk",
+                "validated": True,
+                "source": "probe",
+                "decision": "precheck_validated",
+                "fail_phase": "",
+                "warnings": [],
+                "degraded": False,
+                "repaired": False,
+                "diagnostics": {"attempts": [{"phase": "precheck"}]},
+            }
+            caplog.clear()
+            # 避免触发 LLM 拆解与 review 阶段噪声：直接 stub requirement 与 criteria evaluate
+            engine._parse_requirement = lambda txt: LoopRequirement(goal="g", acceptance_criteria=["c"], raw_text=txt)
+            engine._evaluate_criteria = lambda *a, **k: {"all_satisfied": True}
+            engine._conduct_review = lambda *a, **k: None
+            engine.execute("do something")
+
+        text = "\n".join([r.getMessage() for r in caplog.records])
+        assert "[SessionFactory] ttadk startup:" in text
+        m = re.search(r"\bmodel=([^\s]+)", text)
+        assert m is not None
+        assert m.group(1) == "gpt-5.2-codex-ttadk"
+        assert m.group(1) != "gpt-5.2"
+
+    def test_ttadk_resume_model_log_uses_real_or_auto(self, caplog):
+        """恢复路径同样要求：model 字段只能是真实名或 (auto)。"""
+        engine = self._make_engine(agent_type="ttadk_codex", model_name="gpt-5.2")
+        engine._project = LoopProject.create(name="p", root_path="/tmp/test")
+        engine._project.status = LoopProjectStatus.PAUSED
+        engine._project.requirement = LoopRequirement(goal="g", acceptance_criteria=["c"], raw_text="raw")
+
+        caplog.set_level(logging.INFO, logger="src.agent_session")
+
+        class _S:
+            def __init__(self):
+                self.session_id = "sid"
+                self.created_at = 0.0
+                self.last_active = 0.0
+                self.message_count = 0
+                self.last_query = ""
+                self.is_resumed = False
+
+            def describe_agent(self):
+                return "dummy"
+
+            def start(self, startup_timeout: float = 60):
+                return "sid"
+
+            def load_session(self, session_id: str):
+                return None
+
+            def load_local_history(self, session_id=None, limit: int = 200):
+                return []
+
+            def cancel(self):
+                return None
+
+            def close(self):
+                return None
+
+            def to_snapshot(self):
+                return {}
+
+            def get_session_info(self):
+                return ""
+
+            def is_server_running(self):
+                return True
+
+            def is_server_healthy(self, healthcheck_timeout: float = 2.0):
+                return True
+
+            def send_prompt(self, *a, **k):
+                return MagicMock(stop_reason="end_turn")
+
+        class _SessSettings:
+            acp_startup_timeout = 20
+            rate_limit_retry_enabled = False
+
+        with patch("src.agent_session.get_settings", return_value=_SessSettings()), \
+             patch("src.ttadk.startup.start_agent_session") as mk_start:
+            mk_start.return_value = {
+                "session": _S(),
+                "session_id": "sid",
+                "tool": "codex",
+                "input_model": "gpt-5.2",
+                "resolved_model": "(auto)",
+                "resolved_real_name": "(auto)",
+                "passthrough_model": None,
+                "validated": False,
+                "source": "defaults",
+                "decision": "precheck_auto",
+                "fail_phase": "",
+                "warnings": ["no_m_passthrough"],
+                "degraded": False,
+                "repaired": False,
+                "diagnostics": {"attempts": [{"phase": "precheck"}]},
+            }
+            caplog.clear()
+            engine.resume()
+
+        text = "\n".join([r.getMessage() for r in caplog.records])
+        assert "[SessionFactory] ttadk startup:" in text
+        assert "model=(auto)" in text
+        assert re.search(r"\bmodel=gpt-5\.2\b", text) is None
+
 
 class TestLoopEngineManager:
     @patch("src.loop_engine.engine.get_settings")
@@ -430,23 +600,26 @@ class TestLoopReporter:
 
 class TestReviewPerspective:
     def test_all_perspectives(self):
-        assert len(ReviewPerspective) == 4
+        assert len(ReviewPerspective) == 5
         assert ReviewPerspective.ARCHITECT.value == "architect"
         assert ReviewPerspective.PRODUCT.value == "product"
         assert ReviewPerspective.USER.value == "user"
         assert ReviewPerspective.TESTER.value == "tester"
+        assert ReviewPerspective.DESIGNER.value == "designer"
 
     def test_display_name(self):
         assert ReviewPerspective.ARCHITECT.display_name == "架构师"
         assert ReviewPerspective.PRODUCT.display_name == "产品经理"
         assert ReviewPerspective.USER.display_name == "用户"
         assert ReviewPerspective.TESTER.display_name == "测试"
+        assert ReviewPerspective.DESIGNER.display_name == "设计师"
 
     def test_emoji(self):
         assert ReviewPerspective.ARCHITECT.emoji == "🏗️"
         assert ReviewPerspective.PRODUCT.emoji == "📦"
         assert ReviewPerspective.USER.emoji == "👤"
         assert ReviewPerspective.TESTER.emoji == "🧪"
+        assert ReviewPerspective.DESIGNER.emoji == "🎨"
 
     def test_review_focus(self):
         for p in ReviewPerspective:
@@ -635,11 +808,14 @@ PASS
 
 [TESTER]
 PASS
+
+[DESIGNER]
+PASS
 """
         result = engine._parse_review_output(text, 1)
         assert result.all_passed
         assert result.iteration == 1
-        assert len(result.reviews) == 4
+        assert len(result.reviews) == 5
         assert result.total_suggestions == 0
 
     def test_parse_mixed(self):
@@ -690,18 +866,22 @@ FAIL
 [TESTER]
 FAIL
 - issue4
+
+[DESIGNER]
+FAIL
+- issue5
 """
         result = engine._parse_review_output(text, 3)
         assert not result.all_passed
-        assert result.total_suggestions == 4
-        assert len(result.failed_perspectives) == 4
+        assert result.total_suggestions == 5
+        assert len(result.failed_perspectives) == 5
 
     def test_parse_empty_output_fallback(self):
         engine = self._make_engine()
         result = engine._parse_review_output("", 1)
         # Should return a "failed" result for safety
         assert not result.all_passed
-        assert len(result.reviews) == 4
+        assert len(result.reviews) == 5
         for r in result.reviews:
             assert not r.passed
 
@@ -709,7 +889,7 @@ FAIL
         engine = self._make_engine()
         result = engine._parse_review_output("random garbage text\nno structure at all", 1)
         assert not result.all_passed
-        assert len(result.reviews) == 4
+        assert len(result.reviews) == 5
 
     def test_parse_partial_perspectives(self):
         engine = self._make_engine()
@@ -1231,7 +1411,7 @@ class TestReviewReporter:
         assert "第3轮" in result
         assert "所有视角均通过" in result
         # All should show PASS
-        assert result.count("✅ PASS") == 4
+        assert result.count("✅ PASS") == 5
 
     def test_format_review_result_mixed(self):
         reporter = LoopReporter()
@@ -1261,7 +1441,7 @@ class TestReviewReporter:
             iteration=1,
         )
         result = reporter.format_review_result(review)
-        assert "改进建议: 4 条" in result
+        assert "改进建议: 5 条" in result
 
     def test_get_review_title_passed(self):
         reporter = LoopReporter()

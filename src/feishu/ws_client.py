@@ -8,7 +8,7 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTr
 from typing import Callable, Optional, Any
 import threading
 from ..config import get_settings
-from ..acp import ACPSessionManager
+from ..acp.manager import ACPSessionManager
 from ..agent.intent_recognizer import IntentRecognizer, IntentType, IntentResult, TaskStep
 from ..project import (
     ProjectManager,
@@ -312,6 +312,7 @@ class FeishuWSClient:
         "_handle_ttadk_command":     ("_system_handler", "handle_ttadk_command"),
         "_handle_select_ttadk_tool": ("_system_handler", "handle_select_ttadk_tool"),
         "_handle_select_ttadk_model":("_system_handler", "handle_select_ttadk_model"),
+        "_handle_refresh_ttadk_models": ("_system_handler", "handle_refresh_ttadk_models"),
         # --- Deep Engine ---
         "_handle_deep_command":      ("_deep_handler", "handle_deep_command"),
         "_start_deep_engine":        ("_deep_handler", "start_deep_engine"),
@@ -788,6 +789,7 @@ class FeishuWSClient:
                 "show_status", "switch_project", "show_board", "refresh_board",
                 "show_detail", "new_project_prompt",
                 "select_ttadk_tool", "select_ttadk_model",
+                "refresh_ttadk_models",
             }
             return action_type in system_actions
         except Exception:
@@ -919,6 +921,10 @@ class FeishuWSClient:
                 project_id = value.get("project_id", "")
                 project = self._project_manager.get_project(project_id) if project_id else None
                 self._handle_select_ttadk_model(open_message_id, open_chat_id, tool_name, model_name, project)
+            elif action_type == "refresh_ttadk_models":
+                tool_name = value.get("tool_name", "")
+                project_id = value.get("project_id", "")
+                self._handle_refresh_ttadk_models(open_message_id, open_chat_id, tool_name, project_id)
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
             logger.debug("卡片回调处理耗时: %dms", elapsed_ms)
 

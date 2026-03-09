@@ -92,6 +92,41 @@ class TestCardBuilder:
         elements = card["body"]["elements"]
         assert any(e.get("tag") == "column_set" for e in elements)
 
+    def test_build_ttadk_model_select_card_includes_refresh_button(self):
+        """TTADK 模型选择卡：包含『刷新模型列表』按钮，便于 Invalid model 自助修复。"""
+        models = [
+            TTADKModel(name="gpt-5.2-codex-ttadk", description="", is_default=True),
+            TTADKModel(name="gpt-5.2-ttadk", description="", is_default=False),
+        ]
+        msg_type, content = CardBuilder.build_ttadk_model_select_card(models, tool_name="codex", project_id="p1")
+        assert msg_type == "interactive"
+
+        card = json.loads(content)
+        elements = card["body"]["elements"]
+
+        # 收集所有按钮（column_set -> columns -> elements）
+        buttons: list[dict] = []
+        for e in elements:
+            if e.get("tag") != "column_set":
+                continue
+            for col in e.get("columns", []) or []:
+                for el in col.get("elements", []) or []:
+                    if isinstance(el, dict) and el.get("tag") == "button":
+                        buttons.append(el)
+
+        refresh = next(
+            (
+                b
+                for b in buttons
+                if (b.get("text") or {}).get("content") == "🔄 刷新模型列表"
+            ),
+            None,
+        )
+        assert refresh is not None
+        assert (refresh.get("value") or {}).get("action") == "refresh_ttadk_models"
+        assert (refresh.get("value") or {}).get("tool_name") == "codex"
+        assert (refresh.get("value") or {}).get("project_id") == "p1"
+
     def test_build_deep_card_progress_bar_not_duplicated_when_content_contains_bar(self):
         # 兜底：即使调用方把 progress_bar 文本拼到 content，build_deep_card 也不应重复渲染
         progress_bar = "[████░░░░░░] 40% (2/5)"

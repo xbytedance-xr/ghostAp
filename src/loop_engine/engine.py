@@ -133,8 +133,11 @@ class LoopEngine:
                 callbacks.on_analyzing_done(self._project)
 
             # Create session
+            from ..utils.path import normalize_ttadk_cwd
+
             self._session = create_engine_session(
-                agent_type=self._agent_type, cwd=self.root_path,
+                agent_type=self._agent_type,
+                cwd=normalize_ttadk_cwd(self.root_path) or self.root_path,
                 on_rate_limit=on_rate_limit,
                 model_name=self._model_name,
             )
@@ -505,6 +508,12 @@ PASS 或 FAIL
 [TESTER]
 PASS 或 FAIL
 - 改进建议1（如果FAIL）
+
+[DESIGNER]
+PASS 或 FAIL
+- 改进建议1（如果FAIL）
+- 改进建议2（如果FAIL）
+- (请重点关注: UI视觉、交互体验、移动端适配)
 </output_format>
 
 <example>
@@ -522,6 +531,11 @@ PASS
 [TESTER]
 FAIL
 - 缺少边界条件测试
+
+[DESIGNER]
+FAIL
+- 按钮间距过小，容易误触
+- 错误提示颜色对比度不足
 </example>
 
 ## 审查标准
@@ -772,8 +786,12 @@ FAIL
         try:
             # Close old session before opening new one (prevent resource leak)
             self._close_session_safely()
+
+            from ..utils.path import normalize_ttadk_cwd
+
             self._session = create_engine_session(
-                agent_type=self._agent_type, cwd=self.root_path,
+                agent_type=self._agent_type,
+                cwd=normalize_ttadk_cwd(self.root_path) or self.root_path,
                 on_rate_limit=getattr(self, "_on_rate_limit", None),
                 model_name=self._model_name,
             )

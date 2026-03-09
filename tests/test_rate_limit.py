@@ -10,6 +10,11 @@ from src.acp.models import ACPEvent, ACPEventType, PromptResult
 from src.agent_session import (
     RateLimitAwareSession,
     _detect_rate_limit,
+    classify_model_failure,
+    _replace_model_in_agent_args,
+    _extract_model_from_agent_args,
+    _apply_compaction_once,
+    ModelFailureAwareSession,
 )
 
 
@@ -83,6 +88,350 @@ class TestDetectRateLimit:
     def test_case_insensitive(self):
         err = Exception("RATE LIMIT")
         assert _detect_rate_limit(err) is not None
+
+
+class TestModelFailureClassifier:
+    def test_need_compaction_detected_and_model_extracted(self):
+        err = Exception("Model failed: model 'gpt-5.2': receive message: need compaction")
+        info = classify_model_failure(error=err)
+        assert info.get("reason") == "need_compaction"
+        assert info.get("fail_phase") == "model_compaction"
+        assert info.get("failed_model") == "gpt-5.2"
+
+    def test_loop_detected(self):
+        err = Exception("loop detected")
+        info = classify_model_failure(error=err)
+        assert info.get("reason") == "loop_detected"
+        assert info.get("fail_phase") == "model_loop"
+
+    def test_failover_to_extracted_even_when_reason_unknown(self):
+        err = Exception("Failing over to: gpt-5.1")
+        info = classify_model_failure(error=err)
+        assert info.get("failover_to") == "gpt-5.1"
+
+    def test_snippet_fields_are_included_in_blob(self):
+        class _E(Exception):
+            pass
+
+        e = _E("")
+        e.stderr_snippet = "Model failed: model 'gpt-5.2': receive message: need compaction"
+        info = classify_model_failure(error=e)
+        assert info.get("reason") == "need_compaction"
+        assert info.get("failed_model") == "gpt-5.2"
+
+
+class TestModelFailoverHelpers:
+    def test_extract_model_from_agent_args_coco_style(self):
+        assert _extract_model_from_agent_args(["acp", "serve", "-c", "model.name=gpt-5.2"]) == "gpt-5.2"
+
+    def test_extract_model_from_agent_args_ttadk_style(self):
+        assert _extract_model_from_agent_args(["ttadk", "code", "-m", "gpt-5.2"]) == "gpt-5.2"
+
+    def test_replace_model_in_agent_args_coco_style(self):
+        args, ok = _replace_model_in_agent_args(["acp", "serve", "-c", "model.name=gpt-5.2"], "gpt-5.1")
+        assert ok is True
+        assert "model.name=gpt-5.1" in args
+
+    def test_replace_model_in_agent_args_ttadk_style(self):
+        args, ok = _replace_model_in_agent_args(["ttadk", "code", "-m", "gpt-5.2"], "gpt-5.1")
+        assert ok is True
+        assert args[args.index("-m") + 1] == "gpt-5.1"
+
+
+def test_apply_compaction_once_rebuilds_session_with_same_cmd_args(monkeypatch):
+    """compaction 动作：应在关闭旧 session 后，使用相同 cmd/args 重建并 start 新 session。"""
+    created = []
+
+    class _Old:
+        def __init__(self):
+            self._agent_type = "coco"
+            self._cwd = "/tmp"
+            self._agent_cmd = "coco"
+            self._agent_args = ["acp", "serve", "-c", "model.name=gpt-5.2"]
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+        def start(self, startup_timeout: float = 60) -> str:
+            return "old"
+
+    class _New:
+        def __init__(self, **kw):
+            created.append(dict(kw))
+            self._agent_type = kw.get("agent_type")
+            self._cwd = kw.get("cwd")
+            self._agent_cmd = kw.get("agent_cmd")
+            self._agent_args = kw.get("agent_args")
+            self.session_id = "new"
+
+        def start(self, startup_timeout: float = 60) -> str:
+            self.started_timeout = startup_timeout
+            return "new"
+
+        def close(self):
+            return None
+
+    old = _Old()
+    new = _apply_compaction_once(session=old, session_builder=lambda **kw: _New(**kw), startup_timeout_s=1.0)
+    assert old.closed is True
+    assert new is not None
+    assert created and created[-1]["agent_cmd"] == "coco"
+    assert "model.name=gpt-5.2" in " ".join(created[-1]["agent_args"])
+
+
+def test_model_failure_aware_session_need_compaction_compacts_then_retries(monkeypatch, caplog):
+    """ModelFailureAwareSession：need compaction 时应执行 compaction 并重试一次。"""
+    import logging
+
+    caplog.set_level(logging.WARNING)
+
+    class _Inner:
+        def __init__(self):
+            self.session_id = "sid"
+            self.created_at = 0.0
+            self.last_active = 0.0
+            self.message_count = 0
+            self.last_query = ""
+            self.is_resumed = False
+            self.calls = 0
+
+        def describe_agent(self):
+            return "dummy"
+
+        def start(self, startup_timeout: float = 60):
+            return "sid"
+
+        def load_session(self, session_id: str):
+            return None
+
+        def load_local_history(self, session_id=None, limit: int = 200):
+            return []
+
+        def cancel(self):
+            return None
+
+        def close(self):
+            return None
+
+        def to_snapshot(self):
+            return {}
+
+        def get_session_info(self):
+            return ""
+
+        def is_server_running(self):
+            return True
+
+        def is_server_healthy(self, healthcheck_timeout: float = 2.0):
+            return True
+
+        def send_prompt(self, text: str, on_event=None, timeout=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("Model failed: model 'gpt-5.2': receive message: need compaction")
+            return type("R", (), {"stop_reason": "end_turn", "text": "ok"})()
+
+    compactions = {"n": 0}
+
+    def _compaction_action(sess):
+        compactions["n"] += 1
+        return sess  # return same inner for test
+
+    s = ModelFailureAwareSession(inner=_Inner(), compaction_action=_compaction_action)
+    r = s.send_prompt("hi")
+    assert getattr(r, "text", "") == "ok"
+    assert compactions["n"] == 1
+    joined = "\n".join([x.getMessage() for x in caplog.records])
+    assert "action=compaction" in joined
+    assert "reason=need_compaction" in joined
+    assert "fail_phase=model_compaction" in joined
+
+
+def test_model_failure_aware_session_compaction_loop_suppresses_compaction(monkeypatch, caplog):
+    """loop 检测：窗口内 compaction 次数达到阈值时，应抑制 compaction 并直接抛错。"""
+    import logging
+
+    caplog.set_level(logging.WARNING)
+
+    class _Inner:
+        def __init__(self):
+            self.session_id = "sid"
+            self.created_at = 0.0
+            self.last_active = 0.0
+            self.message_count = 0
+            self.last_query = ""
+            self.is_resumed = False
+            self.calls = 0
+
+        def describe_agent(self):
+            return "dummy"
+
+        def start(self, startup_timeout: float = 60):
+            return "sid"
+
+        def load_session(self, session_id: str):
+            return None
+
+        def load_local_history(self, session_id=None, limit: int = 200):
+            return []
+
+        def cancel(self):
+            return None
+
+        def close(self):
+            return None
+
+        def to_snapshot(self):
+            return {}
+
+        def get_session_info(self):
+            return ""
+
+        def is_server_running(self):
+            return True
+
+        def is_server_healthy(self, healthcheck_timeout: float = 2.0):
+            return True
+
+        def send_prompt(self, text: str, on_event=None, timeout=None):
+            self.calls += 1
+            raise RuntimeError("Model failed: model 'gpt-5.2': receive message: need compaction")
+
+    class _Settings:
+        model_failure_compaction_enabled = True
+        model_failure_compaction_loop_window_s = 999.0
+        model_failure_compaction_loop_max = 1  # 1 次即判 loop
+
+    monkeypatch.setattr("src.agent_session.get_settings", lambda: _Settings())
+
+    called = {"n": 0}
+
+    def _compaction_action(sess):
+        called["n"] += 1
+        return sess
+
+    s = ModelFailureAwareSession(inner=_Inner(), compaction_action=_compaction_action)
+    with pytest.raises(RuntimeError):
+        s.send_prompt("hi")
+    assert called["n"] == 0
+    joined = "\n".join([x.getMessage() for x in caplog.records]).lower()
+    assert "action=suppress" in joined
+    assert "fail_phase=model_loop" in joined
+
+
+def test_model_failure_aware_session_loop_detected_triggers_failover(monkeypatch, caplog):
+    """loop detected：应触发一次 failover（gpt-5.2 -> gpt-5.1）并重试。"""
+    import logging
+
+    caplog.set_level(logging.WARNING)
+
+    class _Inner:
+        def __init__(self):
+            self.session_id = "sid"
+            self.created_at = 0.0
+            self.last_active = 0.0
+            self.message_count = 0
+            self.last_query = ""
+            self.is_resumed = False
+            self._agent_type = "coco"
+            self._cwd = "/tmp"
+            self._agent_cmd = "coco"
+            self._agent_args = ["acp", "serve", "-c", "model.name=gpt-5.2"]
+            self.calls = 0
+
+        def describe_agent(self):
+            return "dummy"
+
+        def start(self, startup_timeout: float = 60):
+            return "sid"
+
+        def load_session(self, session_id: str):
+            return None
+
+        def load_local_history(self, session_id=None, limit: int = 200):
+            return []
+
+        def cancel(self):
+            return None
+
+        def close(self):
+            return None
+
+        def to_snapshot(self):
+            return {}
+
+        def get_session_info(self):
+            return ""
+
+        def is_server_running(self):
+            return True
+
+        def is_server_healthy(self, healthcheck_timeout: float = 2.0):
+            return True
+
+        def send_prompt(self, text: str, on_event=None, timeout=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("loop detected\nFailing over to: gpt-5.1")
+            return type("R", (), {"stop_reason": "end_turn", "text": "ok"})()
+
+    class _New:
+        def __init__(self, **kw):
+            self.session_id = "new"
+            self.created_at = 0.0
+            self.last_active = 0.0
+            self.message_count = 0
+            self.last_query = ""
+            self.is_resumed = False
+            self._agent_type = kw.get("agent_type")
+            self._cwd = kw.get("cwd")
+            self._agent_cmd = kw.get("agent_cmd")
+            self._agent_args = kw.get("agent_args")
+            self._inner = _Inner()  # not used
+
+        def start(self, startup_timeout: float = 60):
+            return "new"
+
+        def describe_agent(self):
+            return "dummy"
+
+        def load_session(self, session_id: str):
+            return None
+
+        def load_local_history(self, session_id=None, limit: int = 200):
+            return []
+
+        def cancel(self):
+            return None
+
+        def close(self):
+            return None
+
+        def to_snapshot(self):
+            return {}
+
+        def get_session_info(self):
+            return ""
+
+        def is_server_running(self):
+            return True
+
+        def is_server_healthy(self, healthcheck_timeout: float = 2.0):
+            return True
+
+        def send_prompt(self, text: str, on_event=None, timeout=None):
+            return type("R", (), {"stop_reason": "end_turn", "text": "ok"})()
+
+    # patch SyncACPSession so _do_failover can rebuild
+    monkeypatch.setattr("src.agent_session.SyncACPSession", lambda **kw: _New(**kw))
+
+    s = ModelFailureAwareSession(inner=_Inner())
+    r = s.send_prompt("hi")
+    assert getattr(r, "text", "") == "ok"
+    logs = "\n".join([x.getMessage() for x in caplog.records]).lower()
+    assert "action=failover" in logs
+    assert "fail_phase=model_loop" in logs
 
 
 # ======================================================================
@@ -339,7 +688,11 @@ class TestRateLimitAwareSession:
 
 
 class TestCreateEngineSession:
-    """Test that create_engine_session wraps with RateLimitAwareSession."""
+    """Test that create_engine_session wraps with RateLimitAwareSession.
+
+    说明：当前 create_engine_session 会在最外层套一层 ModelFailureAwareSession，
+    因此这里需要检查“内层是否包含 RateLimitAwareSession”。
+    """
 
     @patch("src.agent_session.get_settings")
     @patch("src.agent_session.SyncClaudeCLISession")
@@ -355,7 +708,10 @@ class TestCreateEngineSession:
         from src.agent_session import create_engine_session
         result = create_engine_session("claude", "/tmp")
 
-        assert isinstance(result, RateLimitAwareSession)
+        from src.agent_session import ModelFailureAwareSession
+
+        assert isinstance(result, ModelFailureAwareSession)
+        assert isinstance(getattr(result, "_inner", None), RateLimitAwareSession)
         mock_session.start.assert_called_once()
 
     @patch("src.agent_session.get_settings")
@@ -372,4 +728,16 @@ class TestCreateEngineSession:
         from src.agent_session import create_engine_session
         result = create_engine_session("claude", "/tmp")
 
-        assert not isinstance(result, RateLimitAwareSession)
+        from src.agent_session import ModelFailureAwareSession
+
+        assert isinstance(result, ModelFailureAwareSession)
+        assert not isinstance(getattr(result, "_inner", None), RateLimitAwareSession)
+
+
+def test_model_failure_failover_map_default_in_settings(monkeypatch):
+    """配置回归：Settings 应提供默认 failover 映射 gpt-5.2:gpt-5.1。"""
+    from src.config import Settings
+
+    s = Settings()
+    assert "gpt-5.2" in (s.model_failure_failover_map or "")
+    assert "gpt-5.1" in (s.model_failure_failover_map or "")

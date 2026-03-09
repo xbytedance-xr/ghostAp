@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
 from ...coco_model import get_coco_model_manager
 from ...ttadk import get_ttadk_manager
+from ...utils.path import normalize_ttadk_cwd
 from ...tasking import TaskSpec, TaskPriority
 from ..emoji import EmojiReaction
 from ..message_formatter import FeishuMessageFormatter as fmt
@@ -58,7 +60,12 @@ class SystemHandler(BaseHandler):
     @staticmethod
     def is_spec_command(text: str) -> bool:
         text_lower = text.lower().strip()
-        return text_lower.startswith("/spec") or text_lower.startswith("/stop_spec")
+        spec_prefixes = (
+            "/spec", "/stop_spec", "/spec_status", "/spec_history",
+            "/spec_metrics", "/spec_config", "/spec_save", "/spec_pause",
+            "/spec_resume", "/spec_recover", "/spec_guide"
+        )
+        return any(text_lower == cmd or text_lower.startswith(f"{cmd} ") for cmd in spec_prefixes)
 
     @staticmethod
     def is_likely_shell_command(text: str) -> bool:
@@ -99,12 +106,12 @@ class SystemHandler(BaseHandler):
             "/tasks",
             "/diff",
             "/trace",
-            "/models", "/model",
-            "/ttadk", "/ttadk_tool", "/ttadk_model",
+            "/ttadk",
+            "/ttadk_refresh",
         }
         if text_lower in exact_commands:
             return True
-        prefix_commands = ("/switch ", "/new ", "/close ", "/tasks ", "/diff ", "/trace ", "/status ", "/model ", "/ttadk_tool ", "/ttadk_model ")
+        prefix_commands = ("/switch ", "/new ", "/close ", "/tasks ", "/diff ", "/trace ", "/status ")
         return any(text_lower.startswith(p) for p in prefix_commands)
 
     # ------------------------------------------------------------------
@@ -131,13 +138,6 @@ class SystemHandler(BaseHandler):
             self.diagnostics_handler.show_context_diff(message_id, chat_id, text, project)
         elif text_lower == "/trace" or text_lower.startswith("/trace "):
             self.diagnostics_handler.show_message_trace(message_id, chat_id, text, project)
-        elif text_lower == "/models":
-            self.show_models(message_id, chat_id)
-        elif text_lower == "/model":
-            self.show_current_model(message_id, chat_id)
-        elif text_lower.startswith("/model "):
-            model_name = text[7:].strip()
-            self.switch_model(message_id, chat_id, model_name)
         elif text_lower.startswith("/switch "):
             name = text[8:].strip()
             if name:
@@ -164,18 +164,94 @@ class SystemHandler(BaseHandler):
             self.handle_ttadk_command(message_id, chat_id, project)
         elif text_lower == "/ttadk_info":
             self.show_ttadk_info(message_id, chat_id)
-        elif text_lower == "/ttadk_tool":
-            self.show_ttadk_tools(message_id, chat_id)
-        elif text_lower.startswith("/ttadk_tool "):
-            tool_name = text[12:].strip()
-            self.switch_ttadk_tool(message_id, chat_id, tool_name)
-        elif text_lower == "/ttadk_model":
-            self.show_ttadk_models(message_id, chat_id)
-        elif text_lower.startswith("/ttadk_model "):
-            model_name = text[13:].strip()
-            self.switch_ttadk_model(message_id, chat_id, model_name)
+        elif text_lower == "/ttadk_refresh":
+            self.refresh_ttadk_models(message_id, chat_id, project)
         else:
             self.show_full_help(message_id, chat_id, project)
+
+    def refresh_ttadk_models(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+        """强制刷新 TTADK 当前工具的真实模型列表（优先 probe），并返回诊断摘要。"""
+        manager = get_ttadk_manager()
+        cwd = None
+        try:
+            raw_cwd = self._resolve_ttadk_cwd(chat_id, project=project)
+            cwd = normalize_ttadk_cwd(raw_cwd)
+            self._maybe_log_ttadk_cwd(where="SystemHandler.refresh_ttadk_models", raw_cwd=raw_cwd, normalized_cwd=cwd)
+        except Exception:
+            cwd = None
+
+        tool = manager.get_current_tool() or ""
+        try:
+            result = manager.refresh_models(tool_name=tool or None, cwd=cwd)
+        except Exception as e:
+            self.reply_message(message_id, fmt.format_error("❌ 刷新 TTADK 模型列表失败", str(e)))
+            return
+
+        lines = ["✅ 已触发 TTADK 模型列表强制刷新"]
+        if tool:
+            lines.append(f"工具: `{tool}`")
+        if getattr(result, "source", ""):
+            lines.append(f"来源: `{result.source}`")
+        if getattr(result, "warnings", None):
+            lines.append(f"⚠️ 警告: {'; '.join(result.warnings)}")
+        if getattr(result, "diagnostics", None):
+            try:
+                attempts = (result.diagnostics or {}).get("attempts")
+                if attempts:
+                    lines.append(f"诊断: attempts={attempts}")
+            except Exception:
+                pass
+        lines.append("\n最短修复路径：若仍不可用，请确认在项目目录执行过 `ttadk init`，或切换 tool 后重试。")
+        self.reply_message(message_id, "\n".join(lines))
+
+    def handle_refresh_ttadk_models(self, message_id: str, chat_id: str, tool_name: str, project_id: Optional[str] = None):
+        """卡片按钮入口：强制刷新指定 tool 的模型列表，并重新渲染模型选择卡片。"""
+        manager = get_ttadk_manager()
+        tool = (tool_name or manager.get_current_tool() or "").strip()
+        try:
+            raw_cwd = self._resolve_ttadk_cwd(chat_id, project_id=(project_id or None))
+            cwd = normalize_ttadk_cwd(raw_cwd)
+            self._maybe_log_ttadk_cwd(where="SystemHandler.handle_refresh_ttadk_models", raw_cwd=raw_cwd, normalized_cwd=cwd)
+        except Exception:
+            cwd = None
+
+        if not tool:
+            self.reply_message(message_id, "⚠️ 未指定 TTADK 工具，建议先发送 `/ttadk` 选择工具")
+            return
+
+        try:
+            result = manager.refresh_models(tool_name=tool, cwd=cwd)
+        except Exception as e:
+            self.reply_message(message_id, fmt.format_error("❌ 刷新 TTADK 模型列表失败", str(e)))
+            return
+
+        # 直接复用刷新结果渲染模型选择卡片（force_refresh=True 已经回填缓存）
+        models = list(getattr(result, "models", None) or [])
+        msg_type, card_content = CardBuilder.build_ttadk_model_select_card(models, tool, project_id)
+        self.reply_message(message_id, card_content, msg_type=msg_type)
+
+    def _maybe_log_ttadk_cwd(self, *, where: str, raw_cwd: Optional[str], normalized_cwd: Optional[str]) -> None:
+        """TTADK cwd 归一化的可观测日志（debug + 配置开关）。"""
+        try:
+            from ...config import get_settings
+
+            if not bool(getattr(get_settings(), "ttadk_cwd_debug_enabled", False)):
+                return
+        except Exception:
+            return
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
+        try:
+            is_abs = bool(normalized_cwd) and Path(str(normalized_cwd)).is_absolute()
+        except Exception:
+            is_abs = False
+        logger.debug(
+            "[TTADK:CWD] where=%s raw_cwd=%r normalized_cwd=%r is_abs=%s",
+            str(where or ""),
+            raw_cwd,
+            normalized_cwd,
+            bool(is_abs),
+        )
 
     # ------------------------------------------------------------------
     # TTADK command handling
@@ -212,7 +288,10 @@ class SystemHandler(BaseHandler):
         current_tool = manager.get_current_tool()
         current_model = manager.get_current_model()
         tools_result = manager.get_tools()
-        models_result = manager.get_models(cwd=self._resolve_ttadk_cwd(chat_id))
+        raw_cwd = self._resolve_ttadk_cwd(chat_id)
+        norm_cwd = normalize_ttadk_cwd(raw_cwd)
+        self._maybe_log_ttadk_cwd(where="SystemHandler.show_ttadk_info", raw_cwd=raw_cwd, normalized_cwd=norm_cwd)
+        models_result = manager.get_models(cwd=norm_cwd)
         tool_desc = {t.name: t.description for t in (tools_result.tools or [])}
         model_desc = {m.name: m.description for m in (models_result.models or [])}
         
@@ -228,85 +307,50 @@ class SystemHandler(BaseHandler):
         else:
             lines.append("🤖 **当前模型**: 未设置")
         
-        lines.append("\n使用 `/ttadk_tool <工具名>` 切换工具")
-        lines.append("使用 `/ttadk_model <模型名>` 切换模型")
+        lines.append("\n使用 `/ttadk` 切换工具或模型")
         
         self.reply_message(message_id, "\n".join(lines))
     
-    def show_ttadk_tools(self, message_id: str, chat_id: str):
-        manager = get_ttadk_manager()
-        result = manager.get_tools()
-        current = manager.get_current_tool()
-        
-        if result.error:
-            self.reply_message(message_id, f"❌ 获取 TTADK 工具列表失败: {result.error}")
-            return
-        
-        lines = ["**🔧 TTADK 可用工具列表**\n"]
-        for tool in result.tools:
-            marker = "✅" if current and tool.name == current else "•"
-            lines.append(f"{marker} `{tool.name}` - {tool.description}")
-        
-        lines.append("\n使用 `/ttadk_tool <名称>` 切换工具")
-        self.reply_message(message_id, "\n".join(lines))
-    
-    def switch_ttadk_tool(self, message_id: str, chat_id: str, tool_name: str):
-        manager = get_ttadk_manager()
-        success = manager.set_tool(tool_name)
-        if success:
-            self.add_reaction(message_id, EmojiReaction.on_done())
-            self.reply_message(message_id, f"✅ 已切换到 TTADK 工具: `{tool_name}`")
-        else:
-            self.add_reaction(message_id, EmojiReaction.on_error())
-            result = manager.get_tools()
-            available = ", ".join([f"`{t.name}`" for t in result.tools]) if result.tools else "无可用工具"
-            self.reply_message(message_id, f"❌ 未知 TTADK 工具: `{tool_name}`\n\n可用工具: {available}")
-    
-    def show_ttadk_models(self, message_id: str, chat_id: str):
-        manager = get_ttadk_manager()
-        result = manager.get_models(cwd=self._resolve_ttadk_cwd(chat_id))
-        current = manager.get_current_model()
-        
-        if result.error:
-            self.reply_message(message_id, f"❌ 获取 TTADK 模型列表失败: {result.error}")
-            return
-        
-        lines = ["**🤖 TTADK 可用模型列表**\n"]
-        for model in result.models:
-            marker = "✅" if current and model.name == current else "•"
-            lines.append(f"{marker} `{model.name}` - {model.description}")
-        
-        lines.append("\n使用 `/ttadk_model <名称>` 切换模型")
-        self.reply_message(message_id, "\n".join(lines))
-    
-    def switch_ttadk_model(self, message_id: str, chat_id: str, model_name: str):
-        manager = get_ttadk_manager()
-        success = manager.set_model(model_name)
-        if success:
-            self.add_reaction(message_id, EmojiReaction.on_done())
-            self.reply_message(message_id, f"✅ 已切换到 TTADK 模型: `{model_name}`")
-        else:
-            self.add_reaction(message_id, EmojiReaction.on_error())
-            result = manager.get_models(cwd=self._resolve_ttadk_cwd(chat_id))
-            available = ", ".join([f"`{m.name}`" for m in result.models]) if result.models else "无可用模型"
-            self.reply_message(message_id, f"❌ 未知 TTADK 模型: `{model_name}`\n\n可用模型: {available}")
-
     def handle_select_ttadk_tool(self, message_id: str, chat_id: str, tool_name: str, project_id: Optional[str] = None):
         manager = get_ttadk_manager()
+        try:
+            raw_cwd = self._resolve_ttadk_cwd(chat_id, project_id=project_id)
+            cwd = normalize_ttadk_cwd(raw_cwd)
+            self._maybe_log_ttadk_cwd(where="SystemHandler.handle_select_ttadk_tool", raw_cwd=raw_cwd, normalized_cwd=cwd)
+        except Exception:
+            cwd = None
+        logger.info(
+            "[TTADK] 选择工具: chat_id=%s project_id=%s tool=%s cwd=%s",
+            chat_id,
+            project_id,
+            tool_name,
+            cwd,
+        )
         success = manager.set_tool(tool_name)
         if not success:
             self.reply_message(message_id, f"❌ 设置 TTADK 工具失败: {tool_name}")
             return
         
-        result = manager.get_models(cwd=self._resolve_ttadk_cwd(chat_id, project_id=project_id))
+        result = manager.get_models(cwd=cwd)
         if result.error:
             self.reply_message(message_id, f"❌ 获取 TTADK 模型列表失败: {result.error}")
             return
+
+        if getattr(result, "warnings", None):
+            self.reply_message(message_id, f"⚠️ TTADK 模型列表可能不完整/不可信: {'; '.join(result.warnings)}")
+
         msg_type, card_content = CardBuilder.build_ttadk_model_select_card(result.models, tool_name, project_id)
         self.reply_message(message_id, card_content, msg_type=msg_type)
 
     def handle_select_ttadk_model(self, message_id: str, chat_id: str, tool_name: str, model_name: str, project: Optional["ProjectContext"] = None):
         manager = get_ttadk_manager()
+        logger.info(
+            "[TTADK] 选择模型: chat_id=%s project_id=%s tool=%s model=%s",
+            chat_id,
+            getattr(project, "project_id", None),
+            tool_name,
+            model_name,
+        )
         success = manager.set_model(model_name)
         if not success:
             self.reply_message(message_id, f"❌ 设置 TTADK 模型失败: {model_name}")
@@ -439,42 +483,6 @@ class SystemHandler(BaseHandler):
             self.reply_message(message_id, fmt.format_error(result))
 
     # ------------------------------------------------------------------
-    # Model management
-    # ------------------------------------------------------------------
-    def show_models(self, message_id: str, chat_id: str):
-        manager = get_coco_model_manager()
-        result = manager.get_models()
-        current = manager.get_current_model()
-
-        lines = ["**🤖 可用模型列表**\n"]
-        for m in result.models:
-            marker = "✅" if m.name == current else "•"
-            lines.append(f"{marker} `{m.name}` - {m.description}")
-
-        lines.append("\n使用 `/model <名称>` 切换模型")
-        self.reply_message(message_id, "\n".join(lines))
-
-    def show_current_model(self, message_id: str, chat_id: str):
-        manager = get_coco_model_manager()
-        current = manager.get_current_model()
-        if current:
-            self.reply_message(message_id, f"🤖 当前模型: `{current}`")
-        else:
-            self.reply_message(message_id, "🤖 当前模型: 默认")
-
-    def switch_model(self, message_id: str, chat_id: str, model_name: str):
-        manager = get_coco_model_manager()
-        success = manager.set_model(model_name)
-        if success:
-            self.add_reaction(message_id, EmojiReaction.on_done())
-            self.reply_message(message_id, f"✅ 已切换到模型: `{model_name}`")
-        else:
-            self.add_reaction(message_id, EmojiReaction.on_error())
-            result = manager.get_models()
-            available = ", ".join([f"`{m.name}`" for m in result.models])
-            self.reply_message(message_id, f"❌ 未知模型: `{model_name}`\n\n可用模型: {available}")
-
-    # ------------------------------------------------------------------
     # Help
     # ------------------------------------------------------------------
     def show_help(self, message_id: str, chat_id: str):
@@ -573,7 +581,7 @@ class SystemHandler(BaseHandler):
                                 "- 脚本：`/spec 写一个批量重命名脚本，支持dry-run`"},
                     {"tag": "hr"},
                     {"tag": "markdown", "text_size": "normal",
-                     "content": "**🤖 模型管理**\n`/models` - 查看可用模型列表（Coco）\n`/model` - 查看当前使用的模型（Coco）\n`/model <名称>` - 切换到指定模型（Coco）\n`/ttadk_tool` - 查看 TTADK 可用工具\n`/ttadk_tool <工具>` - 切换 TTADK 使用的工具\n`/ttadk_model` - 查看 TTADK 可用模型\n`/ttadk_model <模型>` - 切换 TTADK 使用的模型"},
+                     "content": "**🤖 TTADK 管理**\n`/ttadk_refresh` - 强制刷新 TTADK 模型列表（常用于 Invalid model）\n`/ttadk_info` - 查看 TTADK 当前状态"},
                     {"tag": "hr"},
                     {"tag": "markdown", "text_size": "normal",
                      "content": "**💡 使用提示**\n1. 发送 `/coco` 或 `/claude` 进入编程模式\n2. 在编程模式中直接对话，系统命令（如 `/help`）会自动拦截\n3. 智能模式下直接输入 Shell 命令即可执行\n4. 发送 `/help` 或 `/帮助` 随时查看本帮助"},

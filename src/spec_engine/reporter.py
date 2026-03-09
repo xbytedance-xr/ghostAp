@@ -7,6 +7,7 @@ from .models import (
     SpecPhase,
     ReviewResult,
     SpecWorkItemStatus,
+    ReviewPerspective,
 )
 
 
@@ -60,14 +61,23 @@ class SpecReporter:
     def format_review_result(self, review: ReviewResult, cycle: int) -> str:
         lines = [f"🔍 **多视角审查 [循环 {cycle}]**\n"]
 
+        count = 0
+        total_reviews = len(review.reviews)
+
         for pr in review.reviews:
+            count += 1
             if pr.passed:
                 lines.append(f"{pr.perspective.emoji} **{pr.perspective.display_name}**: ✅ PASS")
             else:
-                lines.append(f"{pr.perspective.emoji} **{pr.perspective.display_name}**: ❌ 有建议")
+                status_text = pr.perspective.failure_label
+                lines.append(f"{pr.perspective.emoji} **{pr.perspective.display_name}**: {status_text}")
                 for s in pr.suggestions:
                     lines.append(f"  - {s}")
-            lines.append("")
+            
+            if count < total_reviews:
+                lines.append("\n---")
+            else:
+                lines.append("")
 
         total = review.total_suggestions
         if total > 0:

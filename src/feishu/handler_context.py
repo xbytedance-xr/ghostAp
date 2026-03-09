@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 if TYPE_CHECKING:
     import lark_oapi as lark
-    from ..acp import ACPSessionManager
+    from ..acp.manager import ACPSessionManager
     from ..agent.intent_recognizer import IntentRecognizer
     from ..card.streaming import StreamingCardManager
     from ..deep_engine import DeepEngineManager, ProgressReporter

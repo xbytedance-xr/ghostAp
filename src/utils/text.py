@@ -1,6 +1,10 @@
 import re
 import time
+import threading
 import uuid
+
+_TASK_ID_LOCK = threading.Lock()
+_TASK_ID_SEQ = 0
 
 
 def format_duration(seconds: float) -> str:
@@ -33,9 +37,13 @@ def generate_task_id(project_name: str) -> str:
 
     Includes 4 random hex chars to avoid collisions on rapid submission.
     """
+    global _TASK_ID_SEQ
     ts = time.strftime("%Y%m%d_%H%M%S", time.localtime())
     safe_name = "".join(c if c.isalnum() or c == "_" else "_" for c in project_name)[:30]
-    suffix = uuid.uuid4().hex[:4]
+    # uuid4 的 16-bit 截断在高并发/同秒内仍可能碰撞；这里改为进程内自增序号保证稳定去重。
+    with _TASK_ID_LOCK:
+        _TASK_ID_SEQ = (_TASK_ID_SEQ + 1) & 0xFFFF
+        suffix = f"{_TASK_ID_SEQ:04x}"
     return f"{safe_name}_{ts}_{suffix}"
 
 

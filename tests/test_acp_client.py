@@ -7,6 +7,7 @@ import shutil
 from unittest.mock import MagicMock
 
 import pytest
+import logging
 
 from src.sandbox.executor import SandboxExecutor
 
@@ -15,7 +16,7 @@ from src.acp.client import GhostAPClient, ACPHistoryStore, _parse_tool_call, _pa
 from src.acp.sync_adapter import resolve_agent_spec
 
 
-def test_acp_manager_retries_start_failure(monkeypatch):
+def test_acp_manager_retries_start_failure(monkeypatch, caplog):
     import time as _time
     from types import SimpleNamespace
     from src.acp import manager as mgr
@@ -56,10 +57,112 @@ def test_acp_manager_retries_start_failure(monkeypatch):
     monkeypatch.setattr(mgr, "SyncACPSession", FakeSession)
     monkeypatch.setattr(mgr, "get_settings", lambda: SimpleNamespace(acp_startup_retries=3, acp_healthcheck_timeout=0.01))
 
+    caplog.set_level(logging.WARNING)
     m = mgr.ACPSessionManager("coco", session_timeout=999999)
     s = m.start_session("chat1", cwd=".", startup_timeout=0.01)
     assert s.session_id == "s_ok"
     assert calls["start"] == 3
+
+    # 启动失败日志应包含稳定字段（即便具体值为空）
+    joined = "\n".join(r.getMessage() for r in caplog.records)
+    assert "Session start failed" in joined
+    assert "\"cmd\"" in joined
+    assert "\"args\"" in joined
+    assert "\"rc\"" in joined
+    assert "\"stdout_snippet\"" in joined
+    assert "\"stderr_snippet\"" in joined
+
+
+def test_acp_manager_ttadk_fallback_to_coco_on_start_failure(monkeypatch, caplog):
+    """TTADK 启动失败时应确定性降级到 coco，不直接抛错。"""
+    import time as _time
+    from types import SimpleNamespace
+    from src.acp import manager as mgr
+
+    class FakeFailSession:
+        def __init__(self, agent_type: str, cwd: str, **kwargs):
+            self.session_id = ""
+            self.last_active = _time.time()
+            self.message_count = 0
+
+        def describe_agent(self):
+            return "cmd=fake args=acp serve cwd=."
+
+        def start(self, startup_timeout: float = 60):
+            raise RuntimeError("boom")
+
+        def load_session(self, session_id: str):
+            self.session_id = session_id
+
+        def load_local_history(self, *a, **kw):
+            return []
+
+        def to_snapshot(self):
+            return {"session_id": self.session_id}
+
+        def close(self):
+            return None
+
+        def is_server_healthy(self, healthcheck_timeout: float = 2.0) -> bool:
+            return False
+
+    class FakeOkCocoSession:
+        def __init__(self, agent_type: str, cwd: str, agent_cmd=None, agent_args=None, **kwargs):
+            # 断言降级时使用 coco 覆盖
+            assert agent_cmd == "coco"
+            assert isinstance(agent_args, list)
+            self.session_id = ""
+            self.last_active = _time.time()
+            self.message_count = 0
+
+        def describe_agent(self):
+            return "cmd=coco args=acp serve cwd=."
+
+        def start(self, startup_timeout: float = 60):
+            self.session_id = "s_coco"
+            return self.session_id
+
+        def load_session(self, session_id: str):
+            self.session_id = session_id
+
+        def load_local_history(self, *a, **kw):
+            return []
+
+        def to_snapshot(self):
+            return {"session_id": self.session_id}
+
+        def close(self):
+            return None
+
+        def is_server_healthy(self, healthcheck_timeout: float = 2.0) -> bool:
+            return True
+
+    # 让第一次构造的 session（正常 ttadk_*）失败；降级构造时成功
+    calls = {"n": 0}
+
+    def _factory(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeFailSession(**kwargs)
+        return FakeOkCocoSession(**kwargs)
+
+    monkeypatch.setattr(mgr, "SyncACPSession", lambda **kw: _factory(**kw))
+    monkeypatch.setattr(mgr, "get_settings", lambda: SimpleNamespace(acp_startup_retries=1, acp_healthcheck_timeout=0.01, ttadk_preheat_enabled=False))
+
+    caplog.set_level(logging.WARNING)
+    m = mgr.ACPSessionManager("ttadk", session_timeout=999999)
+    s = m.start_session("chat1", cwd=".", startup_timeout=0.01, agent_type_override="ttadk_coco")
+    assert s.session_id == "s_coco"
+    assert getattr(s, "_degraded_to", "") == "coco"
+
+    joined = "\n".join(r.getMessage() for r in caplog.records)
+    # TTADK 启动失败路径同样应输出稳定字段（避免出现日志空白）
+    assert "Engine session start failed" in joined or "Session start failed" in joined or "TTADK coordinator failed" in joined
+    assert "\"cmd\"" in joined
+    assert "\"args\"" in joined
+    assert "\"rc\"" in joined
+    assert "\"stdout_snippet\"" in joined
+    assert "\"stderr_snippet\"" in joined
 
 
 def test_supports_acp_serve_unsets_claudecode(monkeypatch):
@@ -126,6 +229,42 @@ def test_acp_session_start_passes_env_without_claudecode(monkeypatch):
         assert sid == "s_test"
         assert calls["env"] is not None
         assert "CLAUDECODE" not in calls["env"]
+
+
+def test_acp_session_start_failure_has_fail_phase(monkeypatch):
+    """ACPSession.start 失败时应抛 ACPStartupError 且携带 fail_phase（spawn/initialize/new_session）。"""
+    from types import SimpleNamespace
+    import src.acp.session as session_mod
+    from src.acp.session import ACPSession, ACPStartupError
+
+    class FakeProc:
+        returncode = 7
+        stdout = None
+        stderr = None
+
+    class FakeConn:
+        async def initialize(self, protocol_version: int = 1):
+            raise RuntimeError("init failed")
+
+    class FakeCtx:
+        async def __aenter__(self):
+            return FakeConn(), FakeProc()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    def fake_spawn(to_client, command, *args, env=None, cwd=None, transport_kwargs=None, **kw):
+        return FakeCtx()
+
+    monkeypatch.setattr(session_mod, "spawn_agent_process", fake_spawn)
+    monkeypatch.setattr(session_mod, "get_settings", lambda: SimpleNamespace(acp_permission_auto_approve=True, acp_stream_buffer_limit=0))
+
+    s = ACPSession(agent_cmd="claude", agent_args=["acp", "serve"], cwd="/tmp")
+    with pytest.raises(ACPStartupError) as ctx:
+        asyncio.run(s.start())
+
+    e = ctx.value
+    assert getattr(e, "fail_phase", "") in ("initialize", "spawn", "new_session", "unknown")
 
 
 def test_acp_manager_unhealthy_session_is_cleaned(monkeypatch):

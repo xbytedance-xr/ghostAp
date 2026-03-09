@@ -13,6 +13,7 @@ import re
 import shutil
 import threading
 import time
+import traceback
 import uuid
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -154,6 +155,11 @@ class SpecEngine:
         self._models_tried: list[str] = []
         self._current_model: Optional[str] = None
         self._saved_task_id: Optional[str] = None
+        # best-effort: carry review exception diagnostics to cycle/metrics
+        self._last_review_failure_diag: Optional[dict] = None
+        # review failure circuit breaker (best-effort)
+        self._review_failure_consecutive: int = 0
+        self._review_circuit_open_until_cycle: int = 0
 
     @property
     def project(self) -> Optional[SpecProject]:
@@ -182,6 +188,392 @@ class SpecEngine:
             return v if isinstance(v, bool) else default
         except Exception:
             return default
+
+    def _get_int_setting(self, name: str, default: int) -> int:
+        """Safely read int settings (avoid MagicMock truthiness / type drift)."""
+        try:
+            v = getattr(self.settings, name, default)
+            if isinstance(v, bool):
+                return default
+            if isinstance(v, int):
+                return v
+            try:
+                return int(v)
+            except Exception:
+                return default
+        except Exception:
+            return default
+
+    # ------------------------------------------------------------------
+    # Review failure diagnostics (SSOT)
+    # ------------------------------------------------------------------
+
+    # 审查异常诊断/日志稳定字段契约（SSOT）
+    #
+    # 目标：避免出现线上日志 `[Spec] 多视角审查异常: , 将继续循环` 这种“异常信息为空”的不可观测情况。
+    # 约定：
+    # - stable 字段为唯一“对外契约”（日志/metrics/持久化 state 消费方应优先使用 stable）。
+    # - compat 字段仅用于迁移窗口期的写入与历史状态读取（读取时由 normalize 统一兜底映射）。
+    #
+    # 迁移窗口期（退场计划）：
+    # - 当前：写入 stable，并可选保留 compat 写入（降低线上回归风险）。
+    # - 退场条件：连续 3 次全量回归稳定（或 1 个发布窗口）后，停止写入 compat；读取 compat 保持长期兼容。
+    #
+    # 所有 review 异常日志（包括熔断跳过）必须输出以下 stable 字段，且 `err_repr/error_text` 永不为空：
+    # - phase: 发生阶段（固定为 review）
+    # - role: 发生子阶段/角色（当前为 multi_perspective）
+    # - cycle: 当前循环号
+    # - decision: continue/skip/circuit_open 等决策
+    # - err_type: 异常类型（或 ReviewCircuitOpen）
+    # - err_repr: repr(exception)（空则回退为 <ExceptionType>）
+    # - error_text: 面向人类的摘要（空则回退为 err_repr）
+
+    _REVIEW_DIAG_STABLE_KEYS = (
+        "phase",
+        "role",
+        "cycle",
+        "decision",
+        "fail_reason",
+        "err_type",
+        "err_repr",
+        "error_text",
+        "traceback_snippet",
+    )
+
+    _REVIEW_DIAG_COMPAT_KEYS = (
+        "cycle_number",
+        "exception_type",
+        "review_role",
+    )
+
+    _REVIEW_EXCEPTION_LOG_FIELDS = (
+        "phase",
+        "role",
+        "cycle",
+        "decision",
+        "fail_reason",
+        "err_type",
+        "err_repr",
+        "error_text",
+        "diag_json",
+    )
+    @staticmethod
+    def _safe_str(x: object) -> str:
+        try:
+            return str(x)
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _truncate_text(text: str, max_len: int, suffix: str = "...") -> str:
+        try:
+            s = str(text or "")
+        except Exception:
+            return ""
+        if max_len <= 0:
+            return ""
+        if len(s) <= max_len:
+            return s
+        if len(suffix) >= max_len:
+            return s[:max_len]
+        return s[: max_len - len(suffix)] + suffix
+
+    def _build_review_exception_diagnostics(self, e: Exception, *, cycle: int) -> dict:
+        """构造多视角审查异常诊断信息（保证可序列化、error_text 非空）。"""
+
+        # Reuse ACP diagnostics config for redaction/truncation limits.
+        try:
+            from ..acp.diagnostics import get_diagnostics_config, redact_text
+
+            cfg = get_diagnostics_config(get_settings_fn=get_settings)
+            redact_enabled = bool(getattr(cfg, "redact_enabled", True))
+            redact_patterns = list(getattr(cfg, "redact_patterns", []) or [])
+            redact_repl = str(getattr(cfg, "redact_replacement", "***REDACTED***") or "***REDACTED***")
+            cfg_snip = int(getattr(cfg, "snippet_limit", 240) or 240)
+            cfg_total = int(getattr(cfg, "total_limit", 2000) or 2000)
+        except Exception:
+            redact_text = None  # type: ignore[assignment]
+            redact_enabled, redact_patterns, redact_repl = True, [], "***REDACTED***"
+            cfg_snip, cfg_total = 240, 2000
+
+        def _truncate_strict(s: str, lim: int) -> str:
+            try:
+                lim = int(lim or 0)
+            except Exception:
+                lim = 0
+            if lim <= 0:
+                return ""
+            ss = self._safe_str(s)
+            if not ss:
+                return ""
+            if len(ss) <= lim:
+                return ss
+            suffix = "…(truncated)"
+            if lim <= len(suffix):
+                return ss[:lim]
+            return ss[: max(0, lim - len(suffix))] + suffix
+
+        def _redact_and_truncate(text: str, *, hard_limit: int, cfg_limit: int) -> str:
+            lim = hard_limit
+            try:
+                lim = int(hard_limit or 0)
+            except Exception:
+                lim = 0
+            lim = max(1, lim)
+            try:
+                cfg_lim = int(cfg_limit or 0)
+            except Exception:
+                cfg_lim = 0
+            if cfg_lim > 0:
+                lim = min(lim, cfg_lim)
+
+            s = self._safe_str(text)
+            if redact_enabled and callable(redact_text):
+                try:
+                    s = redact_text(s, redact_patterns, redact_repl)  # type: ignore[misc]
+                except Exception:
+                    pass
+            return _truncate_strict(s, lim)
+
+        def _extract_error_text(err: Exception) -> str:
+            base = (self._safe_str(err) or "").strip()
+            if base:
+                return base
+            # 兼容：上游异常可能 message 为空，但携带 stderr/stdout 片段
+            for k in ("stderr_snippet", "stdout_snippet", "stderr", "stdout", "message", "detail"):
+                try:
+                    v = (self._safe_str(getattr(err, k, "")) or "").strip()
+                    if v:
+                        return v
+                except Exception:
+                    continue
+            return ""
+
+        def _infer_fail_reason(err: Exception) -> str:
+            """Best-effort, stable-ish failure reason string for logs/metrics."""
+            et = "Exception"
+            try:
+                et = type(err).__name__
+            except Exception:
+                et = "Exception"
+            # Timeout-ish
+            if isinstance(err, TimeoutError):
+                return "timeout"
+            if et in ("TimeoutExpired", "ReadTimeout", "ConnectTimeout"):
+                return "timeout"
+            # Parsing-ish
+            if et in ("JSONDecodeError",):
+                return "parse_json"
+            if et in ("ValueError", "TypeError"):
+                return "parse_error"
+            return "exception"
+
+        def _extract_err_repr(err: Exception) -> str:
+            # repr 也可能为空/抛异常（极端 mock / 自定义异常），必须兜底
+            err_type = "Exception"
+            try:
+                err_type = type(err).__name__
+            except Exception:
+                err_type = "Exception"
+            try:
+                s = repr(err)
+            except Exception:
+                s = ""
+            s = (self._safe_str(s) or "").strip()
+            if not s:
+                s = f"<{err_type}>"
+            return s
+
+        err_repr = _extract_err_repr(e)
+        err_type = "Exception"
+        try:
+            err_type = type(e).__name__
+        except Exception:
+            err_type = "Exception"
+
+        error_text = _extract_error_text(e)
+        if not (error_text or "").strip():
+            # 若 message/snippet 都为空，至少输出明确的“空 message”提示
+            error_text = f"{err_type} (empty message)"
+
+        fail_reason = _infer_fail_reason(e)
+        tb = ""
+        try:
+            tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+        except Exception:
+            tb = ""
+        tb = (tb or "").strip()
+
+        # 脱敏+截断：遵循 diagnostics 配置上限（hard_limit 只允许更严格）
+        err_repr_rt = _redact_and_truncate(err_repr, hard_limit=600, cfg_limit=cfg_snip)
+        if not (err_repr_rt or "").strip():
+            err_repr_rt = f"<{err_type}>"
+        error_text_rt = _redact_and_truncate(error_text, hard_limit=600, cfg_limit=cfg_snip)
+        if not (error_text_rt or "").strip():
+            error_text_rt = err_repr_rt
+
+        # 兼容字段（旧字段名） + 新字段名（稳定字段契约）并存，降低回归风险
+        diag = {
+            # Stable contract
+            "phase": "review",
+            "role": "multi_perspective",
+            "cycle": int(cycle or 0),
+            "decision": "review_failed_continue",
+            "fail_reason": str(fail_reason or "exception"),
+            "err_type": err_type,
+            "err_repr": err_repr_rt,
+            "error_text": error_text_rt,
+
+            # Backward-compatible keys (do not remove)
+            "cycle_number": int(cycle or 0),
+            "exception_type": err_type,
+            "review_role": "multi_perspective",
+
+            # traceback_snippet 用 total_limit 作为上限（避免写入过大）
+            "traceback_snippet": _redact_and_truncate(tb, hard_limit=1600, cfg_limit=cfg_total),
+            "project": (getattr(self._project, "name", "") or "").strip() if self._project else "",
+            "chat_id": (self.chat_id or ""),
+            "root_path": (self.root_path or ""),
+            "agent_type": (self._agent_type or ""),
+        }
+        # 尽量补充 session_id（不强依赖）
+        try:
+            diag["session_id"] = str(getattr(self._session, "session_id", "") or "")
+        except Exception:
+            diag["session_id"] = ""
+
+        return diag
+
+
+    @classmethod
+    def _normalize_review_diagnostics(cls, diag: object) -> dict:
+        """将 review diagnostics 规范化为 stable 字段（SSOT）。
+
+        语义：
+        - 输入可能来自：本版本产出的 diag、历史 state/artifacts（仅含 compat 字段）、或测试桩。
+        - 输出必须只包含 stable 字段（见 `_REVIEW_DIAG_STABLE_KEYS`），且关键字段永不为空：
+          `err_type/err_repr/error_text/cycle/decision/phase/role`。
+
+        注意：
+        - 本函数不做重型操作，且 best-effort 不抛异常。
+        - 脱敏/截断：沿用上游 `_build_review_exception_diagnostics` 已做的处理；若输入未脱敏，
+          此处只做“兜底截断”，不做额外 regex redact（避免重复成本与不一致）。
+        """
+
+        d = diag if isinstance(diag, dict) else {}
+
+        def _s(x: object) -> str:
+            try:
+                return str(x) if x is not None else ""
+            except Exception:
+                try:
+                    return repr(x)
+                except Exception:
+                    return ""
+
+        # phase/role
+        phase = (_s(d.get("phase")) or "review").strip() or "review"
+        role = (_s(d.get("role")) or _s(d.get("review_role")) or "multi_perspective").strip() or "multi_perspective"
+
+        # cycle: stable=cycle, compat=cycle_number
+        cycle_val: int = 0
+        try:
+            if "cycle" in d and d.get("cycle") is not None:
+                cycle_val = int(d.get("cycle") or 0)
+            else:
+                cycle_val = int(d.get("cycle_number") or 0)
+        except Exception:
+            cycle_val = 0
+
+        # decision
+        decision = (_s(d.get("decision")) or "review_failed_continue").strip() or "review_failed_continue"
+
+        # fail_reason: stable=fail_reason (best-effort, optional)
+        fail_reason = (_s(d.get("fail_reason")) or "").strip()
+        if not fail_reason:
+            fail_reason = "exception" if decision.startswith("review_failed") else ""
+
+        # err_type: stable=err_type, compat=exception_type
+        err_type = (_s(d.get("err_type")) or _s(d.get("exception_type")) or "Exception").strip() or "Exception"
+
+        # err_repr: stable=err_repr, fallback <err_type>
+        err_repr = (_s(d.get("err_repr")) or "").strip()
+        if not err_repr:
+            err_repr = f"<{err_type}>"
+
+        # error_text: stable=error_text, fallback err_repr
+        error_text = (_s(d.get("error_text")) or "").strip()
+        if not error_text:
+            error_text = err_repr
+
+        tb = (_s(d.get("traceback_snippet")) or "").strip()
+
+        out = {
+            "phase": phase,
+            "role": role,
+            "cycle": int(cycle_val),
+            "decision": decision,
+            "fail_reason": fail_reason,
+            "err_type": err_type,
+            "err_repr": err_repr,
+            "error_text": error_text,
+            "traceback_snippet": tb,
+        }
+
+        # Ensure output only includes stable keys
+        try:
+            return {k: out.get(k) for k in cls._REVIEW_DIAG_STABLE_KEYS}
+        except Exception:
+            return out
+
+
+    @classmethod
+    def _format_review_exception_log_line(cls, diag: dict, *, diag_json: str) -> str:
+        """格式化 review 异常日志单行（SSOT）。
+
+        约束：
+        - 输入 diag 应为 stable（可先调用 `_normalize_review_diagnostics`）。
+        - 输出必须包含 stable 字段，并保证关键字段永不为空。
+        - diag_json 可能较长：这里做“兜底截断”，脱敏/截断优先依赖上游 diagnostics。
+        """
+
+        d = cls._normalize_review_diagnostics(diag)
+
+        def _s(x: object) -> str:
+            try:
+                return str(x) if x is not None else ""
+            except Exception:
+                try:
+                    return repr(x)
+                except Exception:
+                    return ""
+
+        phase = (_s(d.get("phase")) or "review").strip() or "review"
+        role = (_s(d.get("role")) or "multi_perspective").strip() or "multi_perspective"
+        decision = (_s(d.get("decision")) or "review_failed_continue").strip() or "review_failed_continue"
+        fail_reason = (_s(d.get("fail_reason")) or "").strip()
+        err_type = (_s(d.get("err_type")) or "Exception").strip() or "Exception"
+        err_repr = (_s(d.get("err_repr")) or "").strip() or f"<{err_type}>"
+        error_text = (_s(d.get("error_text")) or "").strip() or err_repr
+
+        cycle_val = 0
+        try:
+            cycle_val = int(d.get("cycle") or 0)
+        except Exception:
+            cycle_val = 0
+
+        # best-effort truncate for diag_json (avoid overly long log lines)
+        dj = _s(diag_json)
+        try:
+            if len(dj) > 2400:
+                dj = dj[:2400] + "…(truncated)"
+        except Exception:
+            pass
+
+        return (
+            f"[Spec] review_exception: phase={phase} role={role} cycle={cycle_val} decision={decision} fail_reason={fail_reason} "
+            f"err_type={err_type} err_repr={err_repr} error_text={error_text} diag={dj}, 将继续循环"
+        )
 
     # ------------------------------------------------------------------
     # Main execution
@@ -226,37 +618,11 @@ class SpecEngine:
             if callbacks.on_analyzing_done:
                 callbacks.on_analyzing_done(self._project)
 
-            # Resolve real model name for TTADK
-            resolved_model = self._model_name
-            if self._agent_type.startswith("ttadk"):
-                from ..ttadk import get_ttadk_manager
-                manager = get_ttadk_manager()
-
-                tool_name = self._agent_type.replace("ttadk_", "")
-                model_intent = self._model_name or manager.get_current_model() or ""
-                resolved = manager.resolve_and_ensure_valid_model(
-                    model_intent,
-                    tool_name=tool_name,
-                    cwd=self.root_path,
-                )
-                resolved_model = resolved.real_name
-                logger.info(
-                    "[Spec:%s] TTADK 模型解析: tool=%s input=%s real=%s source=%s validated=%s warnings=%s",
-                    self._project.name,
-                    tool_name,
-                    model_intent,
-                    resolved.real_name,
-                    resolved.source,
-                    resolved.validated,
-                    resolved.warnings,
-                )
-                logger.info("[Spec:%s] model=%s", self._project.name, resolved_model)
-
             # Create ACP session
             self._session = create_engine_session(
                 agent_type=self._agent_type, cwd=self.root_path,
                 on_rate_limit=on_rate_limit,
-                model_name=resolved_model,
+                model_name=self._model_name,
             )
 
             self._last_review = None
@@ -386,10 +752,11 @@ class SpecEngine:
         # TTADK: 使用 TTADKManager 的可用模型 + 真实名解析
         if (self._agent_type or "").startswith("ttadk"):
             from ..ttadk import get_ttadk_manager
+            from ..utils.path import normalize_ttadk_cwd
 
             ttadk_manager = get_ttadk_manager()
             tool_name = (self._agent_type or "").replace("ttadk_", "")
-            result = ttadk_manager.get_models(cwd=self.root_path, tool_name=tool_name)
+            result = ttadk_manager.get_models(cwd=normalize_ttadk_cwd(self.root_path), tool_name=tool_name)
             all_models = [m.name for m in result.models]
         else:
             model_manager = get_coco_model_manager()
@@ -624,6 +991,11 @@ class SpecEngine:
                 cycle.phase = SpecPhase.REVIEW
                 review_result = self._conduct_review(cycle_num, callbacks)
                 cycle.review_result = review_result
+                # best-effort: persist review failure decision/diagnostics for traceability
+                diag = self._last_review_failure_diag
+                if isinstance(diag, dict) and diag:
+                    cycle.review_decision = str(diag.get("decision") or "review_failed_continue")
+                    cycle.review_diagnostics = dict(diag)
                 if self._get_bool_setting("spec_persist_phase_artifacts", True):
                     cycle.review_path = self._persist_cycle_artifact(cycle_num, "review", self._review_result_to_text(review_result), ext="txt")
                 self._last_review = review_result
@@ -1157,6 +1529,21 @@ class SpecEngine:
         if cycle.review_result:
             review_suggestions = int(cycle.review_result.total_suggestions)
 
+        # Review failure observability (best-effort)
+        review_decision = str(getattr(cycle, "review_decision", "") or "")
+        # 约定：review_failed* 表示审查执行异常（含开启熔断）；review_circuit_open_skip 仅表示跳过。
+        review_failed = bool(review_decision) and review_decision.startswith("review_failed")
+        review_exception_type = ""
+        review_error_text = ""
+        try:
+            diag = getattr(cycle, "review_diagnostics", None)
+            if isinstance(diag, dict):
+                d = self._normalize_review_diagnostics(diag)
+                review_exception_type = str(d.get("err_type") or "")
+                review_error_text = str(d.get("error_text") or "")
+        except Exception:
+            pass
+
         backlog_pending = sum(1 for w in self._project.work_items if w.status == SpecWorkItemStatus.PENDING)
 
         # 目标达成度：以验收标准为主（0~1），审查可作为次要信号
@@ -1189,6 +1576,10 @@ class SpecEngine:
             goal_attainment=goal_attainment,
             improvement_space=improvement_space,
             termination_hint=termination_hint,
+            review_failed=review_failed,
+            review_decision=review_decision,
+            review_exception_type=review_exception_type,
+            review_error_text=review_error_text,
         )
 
     @staticmethod
@@ -1357,6 +1748,12 @@ PASS 或 FAIL
 [TESTER]
 PASS 或 FAIL
 - 改进建议1（如果FAIL）
+
+[DESIGNER]
+PASS 或 FAIL
+- 改进建议1（如果FAIL）
+- 改进建议2（如果FAIL）
+- (请重点关注: UI视觉、交互体验、移动端适配)
 </output_format>
 
 <example>
@@ -1374,6 +1771,11 @@ PASS
 [TESTER]
 FAIL
 - 缺少边界条件测试
+
+[DESIGNER]
+FAIL
+- 按钮间距过小，容易误触
+- 错误提示颜色对比度不足
 </example>
 
 ## 审查标准
@@ -1529,7 +1931,8 @@ FAIL
     def _decompose_criteria_with_llm(self, text: str) -> list[str]:
         """Use LLM to decompose colloquial input into acceptance criteria."""
         settings = self.settings
-        if not settings.ark_api_key or not settings.ark_model:
+        # 测试里常用最小 settings stub；这里必须容忍缺失字段。
+        if not getattr(settings, "ark_api_key", "") or not getattr(settings, "ark_model", ""):
             return []
 
         prompt = f"""请分析以下用户需求，提取并拆解为明确的验收标准。
@@ -1552,9 +1955,9 @@ FAIL
 
         try:
             llm = ChatOpenAI(
-                base_url=settings.ark_base_url,
-                api_key=settings.ark_api_key,
-                model=settings.ark_model,
+                base_url=getattr(settings, "ark_base_url", None),
+                api_key=getattr(settings, "ark_api_key", ""),
+                model=getattr(settings, "ark_model", ""),
                 temperature=0.1,
             )
             response = llm.invoke([
@@ -1660,6 +2063,55 @@ CRITERIA_2: FAIL
     # ------------------------------------------------------------------
     def _conduct_review(self, cycle: int, callbacks: SpecEngineCallbacks) -> ReviewResult:
         """Conduct multi-perspective review in the same ACP session."""
+        # Optional circuit breaker: suppress repeated review failures.
+        enabled = self._get_bool_setting("spec_review_failure_circuit_enabled", False)
+        max_consecutive = max(1, self._get_int_setting("spec_review_failure_max_consecutive", 3))
+        cooldown_cycles = max(0, self._get_int_setting("spec_review_failure_cooldown_cycles", 3))
+
+        if enabled and int(self._review_circuit_open_until_cycle or 0) and int(cycle or 0) <= int(self._review_circuit_open_until_cycle or 0):
+            diag_raw = {
+                # Stable contract
+                "phase": "review",
+                "role": "multi_perspective",
+                "cycle": int(cycle or 0),
+                "decision": "review_circuit_open_skip",
+                "fail_reason": "circuit_open",
+                "err_type": "ReviewCircuitOpen",
+                "err_repr": "<ReviewCircuitOpen>",
+                "error_text": "review_circuit_open",
+
+                # Backward-compatible keys
+                "cycle_number": int(cycle or 0),
+                "exception_type": "ReviewCircuitOpen",
+                "review_role": "multi_perspective",
+
+                "traceback_snippet": "",
+                "consecutive_failures": int(self._review_failure_consecutive or 0),
+                "open_until_cycle": int(self._review_circuit_open_until_cycle or 0),
+            }
+
+            diag = self._normalize_review_diagnostics(diag_raw)
+            self._last_review_failure_diag = dict(diag)
+            logger.warning(
+                "[Spec] review_circuit_open: phase=review role=multi_perspective cycle=%s decision=review_circuit_open_skip open_until=%s consecutive=%s, 将跳过本轮审查",
+                diag_raw.get("cycle_number"),
+                diag_raw.get("open_until_cycle"),
+                diag_raw.get("consecutive_failures"),
+            )
+            return ReviewResult(
+                reviews=[
+                    PerspectiveReview(
+                        perspective=p,
+                        passed=False,
+                        suggestions=[f"审查熔断：连续{int(self._review_failure_consecutive or 0)}次异常，跳过本轮审查"],
+                        summary="熔断",
+                    )
+                    for p in ReviewPerspective
+                ],
+                iteration=cycle,
+            )
+
+        # 没有 session 时无法发送审查 prompt；但熔断判定已在上面完成。
         if not self._session:
             return ReviewResult(iteration=cycle)
 
@@ -1673,6 +2125,9 @@ CRITERIA_2: FAIL
             elif event.event_type == ACPEventType.THOUGHT_CHUNK and event.text:
                 thought_text.append(event.text)
 
+        # Reset failure diag for this review attempt
+        self._last_review_failure_diag = None
+
         try:
             self._session.send_prompt(review_prompt, on_event=on_review_event, timeout=120)
             full_text = "".join(review_text)
@@ -1681,17 +2136,63 @@ CRITERIA_2: FAIL
             if thought_text:
                 combined_text = full_text + "\n" + "".join(thought_text)
             review_result = self._parse_review_output(combined_text, cycle)
+            # success: reset circuit breaker
+            self._review_failure_consecutive = 0
+            self._review_circuit_open_until_cycle = 0
         except Exception as e:
-            # Handle empty response (connection reset, etc) gracefully
-            err_str = str(e)
-            if not err_str and isinstance(e, (ConnectionError, RuntimeError)):
-                err_str = "Connection reset by peer"
-            
-            logger.warning("[Spec] 多视角审查异常: %s, 将继续循环", err_str)
+            diag_raw = self._build_review_exception_diagnostics(e, cycle=cycle)
+            diag = self._normalize_review_diagnostics(diag_raw)
+            self._last_review_failure_diag = dict(diag)
+
+            # Update circuit breaker state (best-effort)
+            try:
+                self._review_failure_consecutive = int(self._review_failure_consecutive or 0) + 1
+            except Exception:
+                self._review_failure_consecutive = 1
+            if enabled and self._review_failure_consecutive >= max_consecutive and cooldown_cycles > 0:
+                try:
+                    self._review_circuit_open_until_cycle = int(cycle or 0) + int(cooldown_cycles)
+                except Exception:
+                    self._review_circuit_open_until_cycle = int(cycle or 0)
+                try:
+                    self._last_review_failure_diag["review_circuit_open"] = True
+                    self._last_review_failure_diag["open_until_cycle"] = int(self._review_circuit_open_until_cycle or 0)
+                    self._last_review_failure_diag["consecutive_failures"] = int(self._review_failure_consecutive or 0)
+                    # 标记“本次失败已触发熔断开启”（但仍按保守策略继续循环）。
+                    # 注意：metrics.review_failed 不能只依赖 == review_failed_continue，因此后续会统一判断。
+                    self._last_review_failure_diag["decision"] = "review_failed_open_circuit"
+                except Exception:
+                    pass
+            # 稳定单行字段契约：关键字段可 grep；diagnostics 使用 JSON 附加
+            diag_json = ""
+            try:
+                diag_json = json.dumps(diag, ensure_ascii=False, sort_keys=True)
+            except Exception:
+                diag_json = "{\"phase\":\"review\",\"decision\":\"review_failed_continue\"}"
+
+            # 关键：日志必须永不为空。
+            # 即便格式化 helper 意外抛异常，也要降级输出稳定字段（err_type/err_repr/error_text）。
+            try:
+                logger.warning(self._format_review_exception_log_line(diag, diag_json=diag_json))
+            except Exception as log_e:
+                d = self._normalize_review_diagnostics(diag)
+                err_type = str(d.get("err_type") or "Exception")
+                err_repr = str(d.get("err_repr") or "").strip() or f"<{err_type}>"
+                error_text = str(d.get("error_text") or "").strip() or err_repr
+                logger.warning(
+                    "[Spec] 多视角审查异常: phase=review role=multi_perspective cycle=%s decision=%s "
+                    "err_type=%s err_repr=%s error_text=%s (log_format_failed=%s), 将继续循环",
+                    d.get("cycle"),
+                    d.get("decision") or "review_failed_continue",
+                    err_type,
+                    err_repr,
+                    error_text,
+                    type(log_e).__name__,
+                )
             review_result = ReviewResult(reviews=[
                 PerspectiveReview(
                     perspective=p, passed=False,
-                    suggestions=[f"审查执行异常: {err_str}"],
+                    suggestions=[f"审查执行异常: {str(diag.get('error_text') or '').strip() or str(diag.get('err_repr') or '(empty)')}"],
                     summary="异常",
                 ) for p in ReviewPerspective
             ], iteration=cycle)
@@ -1733,7 +2234,8 @@ CRITERIA_2: FAIL
     def _parse_review_with_llm(self, raw_text: str) -> list[PerspectiveReview]:
         """LLM fallback: extract review verdicts from free-form text."""
         settings = self.settings
-        if not settings.ark_api_key or not settings.ark_model:
+        # 测试里常用最小 settings stub；这里必须容忍缺失字段。
+        if not getattr(settings, "ark_api_key", "") or not getattr(settings, "ark_model", ""):
             return []
         if not raw_text or len(raw_text.strip()) < 10:
             return []
@@ -1753,9 +2255,9 @@ CRITERIA_2: FAIL
 
         try:
             llm = ChatOpenAI(
-                base_url=settings.ark_base_url,
-                api_key=settings.ark_api_key,
-                model=settings.ark_model,
+                base_url=getattr(settings, "ark_base_url", None),
+                api_key=getattr(settings, "ark_api_key", ""),
+                model=getattr(settings, "ark_model", ""),
                 temperature=0.0,
             )
             response = llm.invoke([
@@ -1941,6 +2443,8 @@ CRITERIA_2: FAIL
 
         try:
             self._close_session_safely()
+
+            # Resolve TTADK startup model (resume)
             self._session = create_engine_session(
                 agent_type=self._agent_type, cwd=self.root_path,
                 on_rate_limit=getattr(self, "_on_rate_limit", None),

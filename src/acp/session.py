@@ -24,16 +24,88 @@ from ..config import get_settings
 logger = logging.getLogger(__name__)
 
 
+class ACPStartupError(RuntimeError):
+    """ACP 启动失败的统一可诊断异常（SSOT）。
+
+    字段协议（稳定）：
+    - agent_cmd/agent_args/cwd: 启动命令
+    - returncode/stdout_snippet/stderr_snippet: best-effort 诊断片段（应为短文本，便于日志输出/脱敏/截断）
+    - fail_phase: 失败阶段（可选但强烈建议设置），用于聚合与排障
+    - cause: 原始异常（保留异常链）
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        agent_cmd: str,
+        agent_args: list[str],
+        cwd: str,
+        returncode: Optional[int] = None,
+        stdout_snippet: str = "",
+        stderr_snippet: str = "",
+        fail_phase: str = "",
+        cause: Exception | None = None,
+    ):
+        super().__init__(message)
+        self.agent_cmd = str(agent_cmd or "")
+        self.agent_args = list(agent_args or [])
+        self.cwd = str(cwd or "")
+        self.returncode = returncode
+        self.stdout_snippet = stdout_snippet or ""
+        self.stderr_snippet = stderr_snippet or ""
+        self.fail_phase = str(fail_phase or "")
+        self.__cause__ = cause
+
+
+async def _read_stream_snippet(stream: object, *, max_bytes: int = 8192, timeout: float = 0.2) -> str:
+    """Best-effort read a small snippet from an asyncio stream.
+
+    IMPORTANT: stdout is ACP JSON-RPC in success path. We only use this on startup failures.
+    """
+    if stream is None:
+        return ""
+    try:
+        max_bytes = int(max_bytes or 0)
+    except Exception:
+        max_bytes = 8192
+    max_bytes = max(0, min(max_bytes, 64 * 1024))
+    if max_bytes <= 0:
+        return ""
+    try:
+        timeout = float(timeout or 0)
+    except Exception:
+        timeout = 0.2
+    timeout = max(0.05, min(timeout, 2.0))
+
+    try:
+        # asyncio.StreamReader: read(n)
+        coro = getattr(stream, "read", None)
+        if not callable(coro):
+            return ""
+        data = await asyncio.wait_for(coro(max_bytes), timeout=timeout)
+        if not data:
+            return ""
+        if isinstance(data, str):
+            return data
+        if isinstance(data, (bytes, bytearray)):
+            return bytes(data).decode("utf-8", errors="ignore")
+        return str(data)
+    except Exception:
+        return ""
+
+
 class ACPSession:
     """Single ACP session — manages one agent process's full lifecycle.
 
     This is an async class. For synchronous usage, see SyncACPSession.
     """
 
-    def __init__(self, agent_cmd: str, agent_args: list[str], cwd: str):
+    def __init__(self, agent_cmd: str, agent_args: list[str], cwd: str, env: Optional[dict[str, str]] = None):
         self._agent_cmd = agent_cmd
         self._agent_args = agent_args
         self._cwd = cwd
+        self._env_override = dict(env) if isinstance(env, dict) else None
         self._conn = None  # ClientSideConnection
         self._proc = None  # subprocess
         self._ctx_manager = None  # async context manager
@@ -72,7 +144,7 @@ class ACPSession:
         # Claude Code CLI refuses to launch inside another Claude Code session when
         # `CLAUDECODE` is present. Even when we spawn an ACP server (e.g. `claude acp serve`)
         # via an override, we must explicitly drop this guard env to avoid nested-session crash.
-        env = os.environ.copy()
+        env = dict(self._env_override) if isinstance(self._env_override, dict) else os.environ.copy()
         env.pop("CLAUDECODE", None)
 
         self._ctx_manager = spawn_agent_process(
@@ -83,19 +155,56 @@ class ACPSession:
             cwd=self._cwd,
             transport_kwargs=transport_kwargs or None,
         )
-        self._conn, self._proc = await self._ctx_manager.__aenter__()
 
-        # Initialize protocol
-        await self._conn.initialize(protocol_version=1)
+        phase = ""
+        try:
+            phase = "spawn"
+            self._conn, self._proc = await self._ctx_manager.__aenter__()
 
-        # Create new session
-        session_resp = await self._conn.new_session(cwd=self._cwd)
-        self._session_id = session_resp.session_id
-        self._state.session_id = self._session_id
-        self._state.is_active = True
+            # Initialize protocol
+            phase = "initialize"
+            await self._conn.initialize(protocol_version=1)
 
-        logger.info("[ACP:%s] Session started: %s", self._agent_cmd, self._session_id[:8])
-        return self._session_id
+            # Create new session
+            phase = "new_session"
+            session_resp = await self._conn.new_session(cwd=self._cwd)
+            self._session_id = session_resp.session_id
+            self._state.session_id = self._session_id
+            self._state.is_active = True
+
+            logger.info("[ACP:%s] Session started: %s", self._agent_cmd, self._session_id[:8])
+            return self._session_id
+        except Exception as e:
+            # Best-effort capture process outputs for debugging. Only for startup failures.
+            rc = None
+            try:
+                rc = getattr(self._proc, "returncode", None)
+            except Exception:
+                rc = None
+            stderr_snip = ""
+            stdout_snip = ""
+            try:
+                stderr_snip = await _read_stream_snippet(getattr(self._proc, "stderr", None))
+            except Exception:
+                stderr_snip = ""
+            # Only read stdout if stderr is empty; stdout may contain useful banner/error.
+            if not stderr_snip:
+                try:
+                    stdout_snip = await _read_stream_snippet(getattr(self._proc, "stdout", None))
+                except Exception:
+                    stdout_snip = ""
+
+            raise ACPStartupError(
+                "ACP 启动失败",
+                agent_cmd=self._agent_cmd,
+                agent_args=list(self._agent_args or []),
+                cwd=self._cwd,
+                returncode=rc,
+                stdout_snippet=stdout_snip,
+                stderr_snippet=stderr_snip,
+                fail_phase=phase or "unknown",
+                cause=e,
+            ) from e
 
     async def load_session(self, session_id: str) -> None:
         """Load an existing session by ID (for resume)."""
@@ -170,6 +279,18 @@ class ACPSession:
             session_id=self._session_id,
             prompt=[text_block(text)],
         )
+
+        # Race guard: some ACP agents (or stdio scheduling) may deliver the final
+        # PromptResponse slightly before the last streaming `session/update` messages.
+        # If we clear the handler immediately, late TEXT_CHUNKs can be dropped.
+        # We keep a tiny grace window only when no text has been observed yet.
+        try:
+            if not (result.text or ""):
+                deadline = time.time() + 0.05
+                while time.time() < deadline and not (result.text or ""):
+                    await asyncio.sleep(0.005)
+        except Exception:
+            pass
 
         self._event_handler = None
 

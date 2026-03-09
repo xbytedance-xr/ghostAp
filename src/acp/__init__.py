@@ -16,7 +16,6 @@ from .models import (
 from .client import GhostAPClient
 from .session import ACPSession
 from .sync_adapter import SyncACPSession, start_session_with_retry
-from .manager import ACPSessionManager
 from .renderer import ACPEventRenderer
 
 __all__ = [
@@ -31,6 +30,5 @@ __all__ = [
     "ACPSession",
     "SyncACPSession",
     "start_session_with_retry",
-    "ACPSessionManager",
     "ACPEventRenderer",
 ]

@@ -10,13 +10,135 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from .sync_adapter import SyncACPSession
+from .sync_adapter import build_startup_diagnostics, format_startup_diagnostics
+from .diagnostics import format_startup_failure_log_line
 from ..agent_session import SyncClaudeCLISession, SyncSession
 from ..config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+def _format_error_type_and_repr(err: object) -> tuple[str, str]:
+    """兼容入口：历史调用点需要 err_type/err_repr。
+
+    新 SSOT 在 `src.acp.diagnostics.format_startup_failure_log_line`。
+    这里保留函数名以降低回归风险。
+    """
+    try:
+        err_type = type(err).__name__
+    except Exception:
+        err_type = "Exception"
+    try:
+        err_repr = repr(err)
+    except Exception:
+        err_repr = ""
+    if not (err_repr or "").strip():
+        err_repr = f"<{err_type}>"
+    return (err_type or "Exception", err_repr)
+
+
+def _format_ttadk_startup_attempts(diagnostics: object, *, per_item_limit: int = 300, total_limit: int = 1600) -> str:
+    """TTADK 启动 attempts 摘要（compat wrapper）。
+
+    说明：脱敏/截断/配置读取的 SSOT 在 `src.acp.diagnostics`，本函数仅做 best-effort 薄封装，
+    以保持现有日志调用点与函数名稳定。
+    """
+    try:
+        from .diagnostics import format_attempts_summary
+
+        diag = diagnostics if isinstance(diagnostics, dict) else {}
+        attempts = (diag.get("attempts") or []) if isinstance(diag, dict) else []
+        return format_attempts_summary(attempts, per_item_limit=per_item_limit, total_limit=total_limit, get_settings_fn=get_settings)
+    except Exception:
+        return ""
+
+
+def _coco_acp_args(model_name: Optional[str]) -> list[str]:
+    args: list[str] = ["acp", "serve"]
+    if model_name:
+        args.extend(["-c", f"model.name={model_name}"])
+    return args
+
+
+def _degrade_ttadk_to_coco_acp(
+    *,
+    agent_type: str,
+    cwd: str,
+    startup_timeout: float,
+    reason: Exception,
+) -> tuple[SyncSession, str]:
+    """TTADK 启动失败时的确定性降级：使用 coco ACP 作为 agent_cmd/args 覆盖。
+
+    注意：保留 session 的 _agent_type=ttadk_*，避免 ensure_session 因 agent_type 变化而反复重启。
+    """
+    from ..coco_model import get_coco_model_manager
+
+    fallback_model = get_coco_model_manager().get_current_model()
+    s = SyncACPSession(
+        agent_type=agent_type,
+        cwd=cwd or ".",
+        agent_cmd="coco",
+        agent_args=_coco_acp_args(fallback_model),
+    )
+    sid = s.start(startup_timeout=float(startup_timeout or 60))
+    setattr(s, "_degraded_to", "coco")
+    # Best-effort: keep a non-empty, user-facing reason summary.
+    # Prefer structured diagnostics (fail_reason + error_text/stderr_snippet), fall back to repr.
+    try:
+        d = build_startup_diagnostics(
+            agent_type=agent_type,
+            cwd=cwd or ".",
+            model_name=None,
+            session=None,
+            error=reason,
+            timeout_s=float(startup_timeout or 0),
+        )
+        fr = str((d or {}).get("fail_reason") or (d or {}).get("fail_phase") or "start_failed")
+        et = str((d or {}).get("error_text") or (d or {}).get("stderr_snippet") or (d or {}).get("error") or "")
+        fr = (fr or "").strip() or "start_failed"
+        et = (et or "").strip() or (repr(reason) if reason is not None else "<Exception> (empty)")
+        setattr(s, "_degraded_reason", f"{fr}: {et}")
+    except Exception:
+        setattr(s, "_degraded_reason", str(reason) or (repr(reason) if reason is not None else ""))
+    return (s, sid)
+
+
+def _build_startup_diagnostics(
+    session: Optional[SyncSession],
+    agent_type: str,
+    cwd: str,
+    model_name: Optional[str],
+    timeout: float,
+    error: Exception,
+) -> dict:
+    """兼容入口：收敛到 SSOT（src.acp.sync_adapter.build_startup_diagnostics）。"""
+    try:
+        return build_startup_diagnostics(
+            agent_type=agent_type,
+            cwd=cwd,
+            model_name=model_name,
+            session=session,
+            error=error,
+            timeout_s=float(timeout or 0),
+        )
+    except Exception:
+        # 极端兜底：保证返回可序列化 dict
+        return {
+            "agent_type": agent_type or "",
+            "cwd": cwd or "",
+            "model": model_name or "",
+            "timeout_s": float(timeout or 0),
+            "error_type": type(error).__name__,
+            "error": str(error) if error is not None else "(empty)",
+            "cmd": "",
+            "args": [],
+            "rc": None,
+            "stdout_snippet": "",
+            "stderr_snippet": "",
+        }
 
 _DEFAULT_PROJECT = "_default_"
 
@@ -28,11 +150,19 @@ class ACPSessionManager:
     - Claude: CLI backend (SyncClaudeCLISession)
     """
 
-    def __init__(self, agent_type: str, session_timeout: int = 86400):
+    def __init__(
+        self,
+        agent_type: str,
+        session_timeout: int = 86400,
+        session_starter: Optional[Callable[..., tuple[SyncSession, str, dict]]] = None,
+    ):
         self._agent_type = agent_type  # "coco" / "claude"
         self._sessions: dict[str, SyncSession] = {}  # key = _session_key(...)
         self._session_timeout = session_timeout
         self._lock = threading.Lock()
+        # 可注入启动器：用于将 TTADK 启动编排与 ACPSessionManager 解耦。
+        # 约定：返回 (session, session_id, diagnostics_dict)。
+        self._session_starter = session_starter
 
     @staticmethod
     def _session_key(chat_id: str, project_id: Optional[str] = None) -> str:
@@ -61,6 +191,30 @@ class ACPSessionManager:
         retries = max(1, retries)
         effective_agent_type = (agent_type_override or self._agent_type).lower()
 
+        # 可注入启动器（优先）：允许上层把启动编排从 manager 中抽离。
+        # 重要：该注入点仅负责“启动并返回 (session, session_id, diagnostics)”，
+        # 失败诊断的日志格式仍由本模块与 `format_startup_failure_log_line` 统一控制。
+        if callable(self._session_starter):
+            try:
+                session, actual_id, _diag = self._session_starter(
+                    agent_type=effective_agent_type,
+                    cwd=cwd or ".",
+                    startup_timeout=float(startup_timeout or 60),
+                    model_name=model_name,
+                    session_id=session_id,
+                    project_id=project_id,
+                )
+                if session and actual_id:
+                    # best-effort：保留可读 agent spec
+                    try:
+                        last_spec = session.describe_agent()
+                    except Exception:
+                        last_spec = ""
+            except Exception:
+                # 注入启动器出错时，回退到内置逻辑（保持兼容/不引入回归）。
+                session = None
+                actual_id = ""
+
         if effective_agent_type == "claude":
             # CLI backend doesn't need handshake retries.
             retries = 1
@@ -70,45 +224,207 @@ class ACPSessionManager:
         actual_id = ""
         last_spec = ""
 
-        # Retry spawning agent process + handshake, since ACP CLI may be temporarily unavailable.
-        for attempt in range(1, retries + 1):
+        # TTADK/ACP: 统一归一化 cwd，避免传入 "." 导致项目级缓存不落盘。
+        try:
+            from ..utils.path import normalize_ttadk_cwd
+
+            raw_cwd = cwd
+            norm_cwd = normalize_ttadk_cwd(raw_cwd)
+            cwd = norm_cwd or raw_cwd
             try:
-                if effective_agent_type == "claude":
-                    session = SyncClaudeCLISession(cwd=cwd or ".")
-                else:
-                    session = SyncACPSession(
+                if bool(getattr(get_settings(), "ttadk_cwd_debug_enabled", False)):
+                    logger.debug("[TTADK:CWD] where=%s raw_cwd=%r normalized_cwd=%r", "acp.manager.ensure_session", raw_cwd, norm_cwd)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        # TTADK: 启动编排/纠错/降级 SSOT 在 `src.ttadk.startup.start_agent_session`。
+        # manager 层只做会话管理与失败诊断统一，不应内嵌 TTADK 专属分支。
+        if effective_agent_type.startswith("ttadk_") and (not session or not actual_id):
+            try:
+                from ..ttadk.startup import start_agent_session
+
+                info = start_agent_session(
+                    agent_type=effective_agent_type,
+                    cwd=cwd or ".",
+                    startup_timeout=float(startup_timeout or 60),
+                    model_name=model_name,
+                    # 便于测试 monkeypatch（tests 会 patch src.acp.manager.SyncACPSession）
+                    session_cls=SyncACPSession,
+                    log_failures=True,
+                    get_settings_fn=get_settings,
+                )
+                session = info.get("session")
+                actual_id = str(info.get("session_id") or "")
+                try:
+                    last_spec = session.describe_agent() if session else ""
+                except Exception:
+                    last_spec = ""
+            except Exception as e:
+                last_err = e
+                # SSOT 入口失败时，仍应 best-effort 降级到 coco ACP（避免直接崩溃）。
+                try:
+                    session, actual_id = _degrade_ttadk_to_coco_acp(
+                        agent_type=effective_agent_type,
+                        cwd=cwd or ".",
+                        startup_timeout=float(startup_timeout or 60),
+                        reason=e,
+                    )
+                    logger.warning(
+                        format_startup_failure_log_line(
+                            agent_type=effective_agent_type,
+                            event="TTADK start degraded_to_coco",
+                            attempt=None,
+                            retries=None,
+                            error=e,
+                            diag=getattr(e, "diagnostics", None) if isinstance(getattr(e, "diagnostics", None), dict) else None,
+                            attempts=(getattr(getattr(e, "diagnostics", None), "get", lambda _k, _d=None: None)("attempts") if isinstance(getattr(e, "diagnostics", None), dict) else None),
+                            get_settings_fn=get_settings,
+                        )
+                    )
+                    # 成功降级：跳出 TTADK 分支，继续通用收尾逻辑
+                    try:
+                        last_spec = session.describe_agent() if session else last_spec
+                    except Exception:
+                        pass
+                    # 注意：此处不 raise；继续沿用后续通用收尾逻辑（load_local_history + 写入 sessions）。
+                    last_err = None
+                except Exception:
+                    pass
+                # 关键：无论 TTADK SSOT 如何失败，都要输出稳定 diagnostics，避免线上出现空错误。
+                try:
+                    if session and actual_id:
+                        # 已成功降级：不要再打印 failed/raise（避免“降级成功但仍崩溃”）
+                        pass
+                    else:
+                        diag = getattr(e, "diagnostics", None)
+                        if not isinstance(diag, dict):
+                            diag = build_startup_diagnostics(
+                                agent_type=effective_agent_type,
+                                cwd=cwd or ".",
+                                model_name=model_name,
+                                session=None,
+                                error=e,
+                                attempt=1,
+                                retries=1,
+                                timeout_s=float(startup_timeout or 0),
+                            )
+                        # 兼容：确保后续 `detail=str(last_err)` 不会变成空串。
+                        try:
+                            et = str((diag or {}).get("error_text") or "").strip()
+                            if et and (not (str(e) or "").strip()):
+                                e.args = (et,)
+                        except Exception:
+                            pass
+                        logger.warning(
+                            format_startup_failure_log_line(
+                                agent_type=effective_agent_type,
+                                event="TTADK start failed",
+                                attempt=1,
+                                retries=1,
+                                error=e,
+                                diag=diag if isinstance(diag, dict) else None,
+                                attempts=(diag.get("attempts") if isinstance(diag, dict) else None),
+                                get_settings_fn=get_settings,
+                            )
+                        )
+                except Exception:
+                    pass
+
+                if not (session and actual_id):
+                    detail = str(last_err) if last_err else "unknown"
+                    spec = f" ({last_spec})" if last_spec else ""
+                    raise RuntimeError(f"启动 {effective_agent_type} ACP Server 失败{spec}: {detail}")
+
+        # Retry spawning agent process + handshake, since ACP CLI may be temporarily unavailable.
+        if not session or not actual_id:
+            effective_timeout = float(startup_timeout or 60)
+            for attempt in range(1, retries + 1):
+                try:
+                    if effective_agent_type == "claude":
+                        session = SyncClaudeCLISession(cwd=cwd or ".")
+                    else:
+                        # Backward-compatible construction: older tests/fakes may not accept model_name kw.
+                        if model_name:
+                            try:
+                                session = SyncACPSession(
+                                    agent_type=effective_agent_type,
+                                    cwd=cwd or ".",
+                                    model_name=model_name,
+                                )
+                            except TypeError:
+                                session = SyncACPSession(agent_type=effective_agent_type, cwd=cwd or ".")
+                        else:
+                            session = SyncACPSession(agent_type=effective_agent_type, cwd=cwd or ".")
+
+                    try:
+                        last_spec = session.describe_agent()
+                    except Exception:
+                        last_spec = ""
+
+                    # Progressive timeout: allow more time on later attempts.
+                    effective_timeout = float(startup_timeout) * (1.0 + 0.5 * (attempt - 1))
+                    actual_id = session.start(startup_timeout=effective_timeout)
+                    logger.info(
+                        "[ACP:%s] Session started: key=%s, session=%s (attempt=%d/%d)",
+                        effective_agent_type.upper(), key[-16:], actual_id[:8], attempt, retries,
+                    )
+                    break
+                except Exception as e:
+                    last_err = e
+                    # SSOT: 统一诊断构造入口（确保稳定字段存在）
+                    diag = build_startup_diagnostics(
                         agent_type=effective_agent_type,
                         cwd=cwd or ".",
                         model_name=model_name,
+                        session=session,
+                        error=e,
+                        attempt=int(attempt),
+                        retries=int(retries),
+                        timeout_s=float(effective_timeout or 0),
                     )
-                try:
-                    last_spec = session.describe_agent()
-                except Exception:
-                    last_spec = ""
 
-                # Progressive timeout: allow more time on later attempts.
-                effective_timeout = float(startup_timeout) * (1.0 + 0.5 * (attempt - 1))
-                actual_id = session.start(startup_timeout=effective_timeout)
-                logger.info(
-                    "[ACP:%s] Session started: key=%s, session=%s (attempt=%d/%d)",
-                    effective_agent_type.upper(), key[-16:], actual_id[:8], attempt, retries,
-                )
-                break
-            except Exception as e:
-                last_err = e
-                logger.warning(
-                    "[ACP:%s] Session start failed (attempt=%d/%d): %s",
-                    effective_agent_type.upper(), attempt, retries, e,
-                )
-                try:
-                    if session:
-                        session.close()
-                except Exception:
-                    pass
-                session = None
-                if attempt < retries:
-                    # small backoff
-                    time.sleep(min(2.0, 0.3 * attempt))
+                    # 兼容运行期老日志格式：保证 error_text 非空（避免出现 `...: ` 空原因）
+                    # 注意：真正的 SSOT 是 format_startup_failure_log_line，但历史日志仍依赖
+                    # `logger.warning("...: %s", str(e))` 风格；这里确保 `str(e)` 可读。
+                    try:
+                        if isinstance(diag, dict):
+                            et = str(diag.get("error_text") or "").strip()
+                            if et:
+                                # Best-effort: make `str(e)` informative even when __str__ is empty.
+                                # RuntimeError/Exception are mutable enough for this pattern.
+                                try:
+                                    if not (str(e) or "").strip() or (str(e) or "").strip() in ("(empty)", "None"):
+                                        e.args = (et,)
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+
+                    # 统一失败日志（SSOT=src.acp.diagnostics.format_startup_failure_log_line）
+                    logger.warning(
+                        format_startup_failure_log_line(
+                            agent_type=effective_agent_type,
+                            event="Session start failed",
+                            attempt=int(attempt),
+                            retries=int(retries),
+                            error=e,
+                            diag=diag if isinstance(diag, dict) else None,
+                            attempts=(diag.get("attempts") if isinstance(diag, dict) else None),
+                            get_settings_fn=get_settings,
+                        )
+                    )
+
+                    try:
+                        if session:
+                            session.close()
+                    except Exception:
+                        pass
+                    session = None
+                    if attempt < retries:
+                        # small backoff
+                        time.sleep(min(2.0, 0.3 * attempt))
 
         if not session or not actual_id:
             detail = str(last_err) if last_err else "unknown"
@@ -176,17 +492,52 @@ class ACPSessionManager:
                 self.end_session(chat_id, project_id=project_id)
                 existing = None
             elif model_name:
-                existing_args = getattr(existing, "_agent_args", None)
-                args_text = " ".join(existing_args or [])
-                if model_name not in args_text:
-                    logger.info(
-                        "[ACP:%s] Model changed (missing %s), restarting: key=%s",
-                        self._agent_type.upper(),
-                        model_name,
-                        key[-16:],
-                    )
-                    self.end_session(chat_id, project_id=project_id)
-                    existing = None
+                # TTADK: model_name 可能是“意图/友好名”，未必会透传 -m；仅当能解析出 validated 的真实模型名时才做一致性重启。
+                if agent_type_override.lower().startswith("ttadk_"):
+                    # 若该 session 已因 TTADK 启动失败降级（例如降级到 coco ACP），则不要再因 model mismatch 触发重启，
+                    # 否则在 TTADK 不可用时会产生“每次 ensure 都重启→再失败→再降级”的抖动。
+                    target_model: Optional[str] = None
+                    if not getattr(existing, "_degraded_to", ""):
+                        try:
+                            from ..ttadk import get_ttadk_manager
+                            from ..ttadk.startup_common import precheck_ttadk_startup_model
+
+                            ttadk_manager = get_ttadk_manager()
+                            pre = precheck_ttadk_startup_model(
+                                agent_type=agent_type_override,
+                                cwd=cwd or ".",
+                                model_intent=model_name,
+                                manager=ttadk_manager,
+                            )
+                            if bool(pre.get("validated")):
+                                target_model = str(pre.get("model") or "").strip() or None
+                        except Exception:
+                            target_model = None
+
+                    if target_model:
+                        existing_args = getattr(existing, "_agent_args", None)
+                        args_text = " ".join(existing_args or [])
+                        if target_model not in args_text:
+                            logger.info(
+                                "[ACP:%s] TTADK model changed (missing %s), restarting: key=%s",
+                                self._agent_type.upper(),
+                                target_model,
+                                key[-16:],
+                            )
+                            self.end_session(chat_id, project_id=project_id)
+                            existing = None
+                else:
+                    existing_args = getattr(existing, "_agent_args", None)
+                    args_text = " ".join(existing_args or [])
+                    if model_name not in args_text:
+                        logger.info(
+                            "[ACP:%s] Model changed (missing %s), restarting: key=%s",
+                            self._agent_type.upper(),
+                            model_name,
+                            key[-16:],
+                        )
+                        self.end_session(chat_id, project_id=project_id)
+                        existing = None
 
         if existing:
             idle = time.time() - existing.last_active

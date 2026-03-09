@@ -64,7 +64,17 @@ Thumbs.db
 *.pid
 .ghostap.pid
 
+# Spec engine runtime artifacts
+.spec_engine/
+.spec_engine_state.json
+task_summary.md
+
 
 bugpic/
 picturechat/
 .jieli/
+image.png
+
+# TTADK runtime artifacts
+.ghostap/
+.ttadk_sandbox/

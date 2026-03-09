@@ -4,10 +4,413 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import patch
+from pathlib import Path
+import re
 
 import pytest
 
 from src.acp import sync_adapter as sa
+from src.acp import diagnostics as diag
+
+
+def test_sync_adapter_startup_fail_log_has_err_type_and_err_repr(monkeypatch, caplog):
+    """防回归：sync_adapter 启动失败且 str(err)=='' 时日志仍可定位。"""
+
+    class _Cfg:
+        acp_diagnostics_redact_enabled = True
+        acp_diagnostics_redact_patterns = [r"(?i)token\s*[:=]\s*[^\s]+", r"(?i)api[_-]?key\s*[:=]\s*[^\s]+"]
+        acp_diagnostics_redact_replacement = "***REDACTED***"
+        acp_diagnostics_args_limit = 80
+        acp_diagnostics_snippet_limit = 120
+        acp_diagnostics_total_limit = 400
+
+    monkeypatch.setattr(sa, "get_settings", lambda: _Cfg())
+
+    class _EmptyStrErr(Exception):
+        def __str__(self):
+            return ""
+
+    class _FakeSession:
+        def __init__(self, agent_type: str, cwd: str, model_name=None, ttadk_use_pty=None):
+            self._agent_cmd = "ttadk"
+            self._agent_args = ["acp", "serve"]
+
+        def start(self, startup_timeout: float = 60):
+            raise _EmptyStrErr()
+
+        def describe_agent(self):
+            return "fake"
+
+        def close(self):
+            return None
+
+    caplog.set_level("WARNING")
+    with pytest.raises(sa.ACPStartupError):
+        sa.start_session_with_retry(
+            agent_type="ttadk_codex",
+            cwd="/tmp",
+            startup_timeout=0.1,
+            model_name="gpt-5.2",
+            session_cls=_FakeSession,
+            log_failures=True,
+        )
+
+    logs = "\n".join([r.getMessage() for r in caplog.records])
+    assert "Engine session start failed" in logs
+    assert "err_type=" in logs
+    assert "err_repr=" in logs
+
+
+def test_sync_adapter_startup_fail_diagnostics_summary_redacted_and_truncated(monkeypatch, caplog):
+    """防回归：sync_adapter 的 diagnostics_summary 必须脱敏且遵循 total_limit 截断。"""
+
+    class _Cfg:
+        acp_diagnostics_redact_enabled = True
+        acp_diagnostics_redact_patterns = [r"(?i)token\s*[:=]\s*[^\s]+", r"(?i)api[_-]?key\s*[:=]\s*[^\s]+"]
+        acp_diagnostics_redact_replacement = "***REDACTED***"
+        acp_diagnostics_args_limit = 40
+        acp_diagnostics_snippet_limit = 60
+        acp_diagnostics_total_limit = 220
+
+    monkeypatch.setattr(sa, "get_settings", lambda: _Cfg())
+
+    class _EmptyStrErr(Exception):
+        def __str__(self):
+            return ""
+
+    class _FakeSession:
+        def __init__(self, agent_type: str, cwd: str, model_name=None, ttadk_use_pty=None):
+            self._agent_cmd = "ttadk"
+            # include sensitive args for redaction
+            self._agent_args = ["acp", "serve", "--token=abc123", "--api_key=sk-secret-1234567890"]
+
+        def start(self, startup_timeout: float = 60):
+            e = _EmptyStrErr()
+            setattr(e, "stderr", "token=abc123 api_key=sk-secret-1234567890 " + ("x" * 1000))
+            raise e
+
+        def describe_agent(self):
+            return "fake"
+
+        def close(self):
+            return None
+
+    caplog.set_level("WARNING")
+    with pytest.raises(sa.ACPStartupError):
+        sa.start_session_with_retry(
+            agent_type="ttadk_codex",
+            cwd="/tmp",
+            startup_timeout=0.1,
+            model_name="gpt-5.2",
+            session_cls=_FakeSession,
+            log_failures=True,
+        )
+
+    logs = "\n".join([r.getMessage() for r in caplog.records])
+    assert "diagnostics_summary=" in logs
+    assert "abc123" not in logs
+    assert "sk-secret" not in logs
+    assert "***REDACTED***" in logs
+    assert len(logs) <= 2000
+
+
+def test_build_startup_diagnostics_has_error_text_and_fail_reason(monkeypatch):
+    """防回归：diagnostics 必须包含 error_text/fail_reason，且 error_text 永不为空。"""
+
+    class _Cfg:
+        acp_diagnostics_redact_enabled = True
+        acp_diagnostics_redact_patterns = []
+        acp_diagnostics_redact_replacement = "***REDACTED***"
+        acp_diagnostics_args_limit = 80
+        acp_diagnostics_snippet_limit = 120
+        acp_diagnostics_total_limit = 400
+
+    monkeypatch.setattr(sa, "get_settings", lambda: _Cfg())
+
+    class _EmptyStrErr(Exception):
+        def __str__(self):
+            return ""
+
+    e = _EmptyStrErr()
+    # Ensure classification sees invalid_model
+    setattr(e, "stderr", "Invalid model: foo. Model must be one of: bar,baz")
+
+    d = sa.build_startup_diagnostics(
+        agent_type="ttadk_codex",
+        cwd="/tmp",
+        model_name="foo",
+        session=None,
+        error=e,
+        attempt=1,
+        retries=2,
+        timeout_s=0.1,
+    )
+    assert isinstance(d, dict)
+    assert "error_text" in d
+    assert str(d.get("error_text") or "").strip() != ""
+    assert "fail_reason" in d
+    assert str(d.get("fail_reason") or "").strip() in ("invalid_model", "start_failed")
+
+
+def test_normalize_startup_diagnostics_empty_error_text_fallbacks(monkeypatch):
+    """防回归：normalize 必须保证 error_text/fail_reason 非空，并在缺字段时兜底。"""
+
+    class _Cfg:
+        acp_diagnostics_redact_enabled = False
+        acp_diagnostics_redact_patterns = []
+        acp_diagnostics_redact_replacement = "***REDACTED***"
+        acp_diagnostics_args_limit = 80
+        acp_diagnostics_snippet_limit = 80
+        acp_diagnostics_total_limit = 200
+
+    d = diag.normalize_startup_diagnostics(
+        {"cmd": "", "args": None, "stderr_snippet": "", "error": "", "error_text": "", "fail_reason": ""},
+        get_settings_fn=lambda: _Cfg(),
+    )
+    assert isinstance(d, dict)
+    assert str(d.get("error_text") or "").strip() != ""
+    assert str(d.get("fail_reason") or "").strip() != ""
+    assert isinstance(d.get("args"), list)
+
+
+def test_normalize_startup_diagnostics_redacts_and_truncates(monkeypatch):
+    """防回归：normalize 必须执行脱敏与截断（按 config 上限）。"""
+
+    class _Cfg:
+        acp_diagnostics_redact_enabled = True
+        # Cover common API key shapes including hyphens.
+        acp_diagnostics_redact_patterns = [r"(?i)token\s*[:=]\s*[^\s]+", r"sk-[^\s]{10,}"]
+        acp_diagnostics_redact_replacement = "***REDACTED***"
+        acp_diagnostics_args_limit = 40
+        acp_diagnostics_snippet_limit = 60
+        acp_diagnostics_total_limit = 200
+
+    raw = {
+        "cmd": "ttadk",
+        "args": ["--token=abc123", "--x=" + ("y" * 200)],
+        "stderr_snippet": "token=abc123 sk-secret-1234567890 " + ("x" * 2000),
+        "error_text": "token=abc123 " + ("z" * 2000),
+        "fail_reason": "invalid_model",
+    }
+    out = diag.normalize_startup_diagnostics(raw, get_settings_fn=lambda: _Cfg())
+    blob = "\n".join([
+        str(out.get("cmd") or ""),
+        " ".join([str(x) for x in (out.get("args") or [])]),
+        str(out.get("stderr_snippet") or ""),
+        str(out.get("error_text") or ""),
+    ])
+    assert "abc123" not in blob
+    assert "sk-secret" not in blob
+    assert "***REDACTED***" in blob
+    assert len(str(out.get("stderr_snippet") or "")) <= 200
+    assert len(str(out.get("error_text") or "")) <= 200
+
+
+def test_start_session_with_retry_ttadk_startup_error_empty_message_has_fail_reason_and_error_text(monkeypatch, caplog):
+    """回归A：TTADKStartupError('') 时，启动失败日志必须包含非空 fail_reason/error_text（不再出现空串）。"""
+
+    class _Cfg:
+        acp_startup_retries = 1
+        acp_diagnostics_redact_enabled = False
+        acp_diagnostics_redact_patterns = []
+        acp_diagnostics_redact_replacement = "***REDACTED***"
+        acp_diagnostics_args_limit = 80
+        acp_diagnostics_snippet_limit = 120
+        acp_diagnostics_total_limit = 500
+
+    monkeypatch.setattr(sa, "get_settings", lambda: _Cfg())
+
+    from src.ttadk.manager import TTADKStartupError
+
+    class _FakeSession:
+        def __init__(self, agent_type: str, cwd: str, model_name=None, ttadk_use_pty=None):
+            self._agent_cmd = "ttadk"
+            self._agent_args = ["acp", "serve"]
+
+        def start(self, startup_timeout: float = 60):
+            # Empty message on purpose
+            raise TTADKStartupError("")
+
+        def describe_agent(self):
+            return "fake"
+
+        def close(self):
+            return None
+
+    caplog.set_level("WARNING")
+    with pytest.raises(sa.ACPStartupError):
+        sa.start_session_with_retry(
+            agent_type="ttadk_claude",
+            cwd="/tmp",
+            startup_timeout=0.1,
+            model_name="gpt-5.2",
+            session_cls=_FakeSession,
+            log_failures=True,
+        )
+
+    logs = "\n".join([r.getMessage() for r in caplog.records])
+    assert "Engine session start failed" in logs
+    assert "fail_reason=" in logs
+    assert "error_text=" in logs
+
+
+def test_start_agent_session_with_diagnostics_attaches_non_empty_error_text(monkeypatch):
+    """冻结：通用启动器失败时，异常上必须携带 diagnostics 且 error_text 非空。"""
+
+    class _Cfg:
+        acp_startup_retries = 1
+        acp_diagnostics_redact_enabled = False
+        acp_diagnostics_redact_patterns = []
+        acp_diagnostics_redact_replacement = "***REDACTED***"
+        acp_diagnostics_args_limit = 80
+        acp_diagnostics_snippet_limit = 120
+        acp_diagnostics_total_limit = 400
+
+    monkeypatch.setattr(sa, "get_settings", lambda: _Cfg())
+
+    class _EmptyStrErr(Exception):
+        def __str__(self):
+            return ""
+
+    class _FakeSession:
+        def __init__(self, agent_type: str, cwd: str, model_name=None, ttadk_use_pty=None):
+            self.session_id = ""
+
+        def start(self, startup_timeout: float = 60):
+            raise _EmptyStrErr()
+
+        def close(self):
+            return None
+
+        def describe_agent(self):
+            return "fake"
+
+    with pytest.raises(Exception) as ei:
+        sa.start_agent_session_with_diagnostics(
+            agent_type="ttadk_codex",
+            cwd="/tmp",
+            startup_timeout=0.1,
+            model_name="gpt-5.2",
+            session_cls=_FakeSession,
+            log_failures=False,
+        )
+
+    d = getattr(ei.value, "diagnostics", None)
+    assert isinstance(d, dict)
+    assert str(d.get("error_text") or "").strip() != ""
+    assert str(d.get("fail_reason") or "").strip() != ""
+
+
+def test_start_session_with_retry_runtime_error_empty_message_has_fail_reason_and_error_text(monkeypatch, caplog):
+    """回归B：RuntimeError('')（无 stdout/stderr/rc）时，日志仍必须包含非空 fail_reason/error_text。"""
+
+    class _Cfg:
+        acp_startup_retries = 1
+        acp_diagnostics_redact_enabled = False
+        acp_diagnostics_redact_patterns = []
+        acp_diagnostics_redact_replacement = "***REDACTED***"
+        acp_diagnostics_args_limit = 80
+        acp_diagnostics_snippet_limit = 120
+        acp_diagnostics_total_limit = 500
+
+    monkeypatch.setattr(sa, "get_settings", lambda: _Cfg())
+
+    class _FakeSession:
+        def __init__(self, agent_type: str, cwd: str, model_name=None, ttadk_use_pty=None):
+            self._agent_cmd = "ttadk"
+            self._agent_args = ["acp", "serve"]
+
+        def start(self, startup_timeout: float = 60):
+            raise RuntimeError("")
+
+        def describe_agent(self):
+            return "fake"
+
+        def close(self):
+            return None
+
+    caplog.set_level("WARNING")
+    with pytest.raises(sa.ACPStartupError):
+        sa.start_session_with_retry(
+            agent_type="ttadk_claude",
+            cwd="/tmp",
+            startup_timeout=0.1,
+            model_name="gpt-5.2",
+            session_cls=_FakeSession,
+            log_failures=True,
+        )
+
+    logs = "\n".join([r.getMessage() for r in caplog.records])
+    assert "Engine session start failed" in logs
+    assert "fail_reason=" in logs
+    assert "error_text=" in logs
+
+
+def test_no_cross_module_private_import_from_acp_diagnostics():
+    """防回归：禁止在 src/ 下跨模块导入 src.acp.diagnostics 的私有 `_xxx`。
+
+    约束说明：只检查 `import`/`from ... import ...` 行，避免误伤注释/字符串。
+    """
+
+    root = Path(__file__).resolve().parents[1]
+    src_dir = root / "src"
+    assert src_dir.is_dir()
+
+    # Match only import lines to reduce false positives.
+    pat = re.compile(r"^\s*from\s+(src\.acp\.diagnostics|\.diagnostics)\s+import\s+.*\b_\w+", re.IGNORECASE)
+    alias_import_pat = re.compile(
+        r"^\s*import\s+src\.acp\.diagnostics\s+as\s+(?P<alias>[A-Za-z_]\w*)\s*$",
+        re.IGNORECASE,
+    )
+    alias_from_pat = re.compile(
+        r"^\s*from\s+src\.acp\s+import\s+diagnostics\s+as\s+(?P<alias>[A-Za-z_]\w*)\s*$",
+        re.IGNORECASE,
+    )
+
+    # Positive sanity checks: valid public API imports/usages should NOT match.
+    assert pat.search("from src.acp.diagnostics import redact_text") is None
+    assert re.search(r"\bd\._\w+\b", "d.redact_text('x')") is None
+
+    offenders: list[str] = []
+    for p in src_dir.rglob("*.py"):
+        if p.name == "diagnostics.py":
+            continue
+        try:
+            lines = p.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except Exception:
+            continue
+        aliases: set[str] = set()
+        for i, line in enumerate(lines, start=1):
+            # ignore commented-out imports
+            if line.lstrip().startswith("#"):
+                continue
+            if pat.search(line):
+                offenders.append(f"{p.relative_to(root)}:{i}:{line.strip()}")
+                break
+
+            m = alias_import_pat.search(line)
+            if m:
+                aliases.add(m.group("alias"))
+                continue
+            m = alias_from_pat.search(line)
+            if m:
+                aliases.add(m.group("alias"))
+                continue
+
+        # Also prevent `import src.acp.diagnostics as d; d._xxx` private usages.
+        if aliases:
+            for i, line in enumerate(lines, start=1):
+                if line.lstrip().startswith("#"):
+                    continue
+                for a in aliases:
+                    if re.search(rf"\b{re.escape(a)}\._\w+\b", line):
+                        offenders.append(f"{p.relative_to(root)}:{i}:{line.strip()}")
+                        aliases.clear()
+                        break
+                if not aliases:
+                    break
+
+    assert offenders == [], "发现跨模块私有导入（请改用 diagnostics 公共 API）：\n" + "\n".join(offenders)
 
 
 @pytest.fixture(autouse=True)
@@ -187,21 +590,222 @@ class TestResolveAgentSpec:
     def test_ttadk_coco_no_model(self, monkeypatch):
         """resolve_agent_spec returns ttadk spec for ttadk_coco without model."""
         monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
-        assert sa.resolve_agent_spec("ttadk_coco") == ("ttadk", ["code", "-t", "coco", "-a", "acp serve"])
+        assert sa.resolve_agent_spec("ttadk_coco") == (
+            "python3",
+            ["-m", "src.utils.ttadk_wrapper", "ttadk", "code", "-t", "coco", "-a", "acp serve"],
+        )
 
     def test_ttadk_claude_no_model(self, monkeypatch):
         """resolve_agent_spec returns ttadk spec for ttadk_claude without model."""
         monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
-        assert sa.resolve_agent_spec("ttadk_claude") == ("ttadk", ["code", "-t", "claude", "-a", "acp serve"])
+        assert sa.resolve_agent_spec("ttadk_claude") == (
+            "python3",
+            ["-m", "src.utils.ttadk_wrapper", "ttadk", "code", "-t", "claude", "-a", "acp serve"],
+        )
 
     def test_ttadk_with_model(self, monkeypatch):
         """resolve_agent_spec returns ttadk spec with model parameter."""
         monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
         assert sa.resolve_agent_spec("ttadk_coco", model_name="gpt-4") == (
-            "ttadk", ["code", "-t", "coco", "-m", "gpt-4", "-a", "acp serve"]
+            "python3",
+            ["-m", "src.utils.ttadk_wrapper", "ttadk", "code", "-t", "coco", "-m", "gpt-4", "-a", "acp serve"],
         )
 
     def test_ttadk_case_insensitive(self, monkeypatch):
         """resolve_agent_spec handles case-insensitive ttadk prefix."""
         monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
-        assert sa.resolve_agent_spec("TTADK_COCO") == ("ttadk", ["code", "-t", "coco", "-a", "acp serve"])
+        assert sa.resolve_agent_spec("TTADK_COCO") == (
+            "python3",
+            ["-m", "src.utils.ttadk_wrapper", "ttadk", "code", "-t", "coco", "-a", "acp serve"],
+        )
+
+
+def test_build_startup_diagnostics_timeout_s_unparseable_is_none():
+    class _Err(Exception):
+        pass
+
+    d1 = sa.build_startup_diagnostics(agent_type="coco", cwd=".", model_name=None, error=_Err("x"), timeout_s="abc")
+    assert d1.get("timeout_s") is None
+    d2 = sa.build_startup_diagnostics(agent_type="coco", cwd=".", model_name=None, error=_Err("x"), timeout_s="")
+    assert d2.get("timeout_s") is None
+    d3 = sa.build_startup_diagnostics(agent_type="coco", cwd=".", model_name=None, error=_Err("x"), timeout_s=object())
+    assert d3.get("timeout_s") is None
+
+
+def test_build_startup_diagnostics_timeout_s_parseable_is_float():
+    class _Err(Exception):
+        pass
+
+    d1 = sa.build_startup_diagnostics(agent_type="coco", cwd=".", model_name=None, error=_Err("x"), timeout_s="2.0")
+    assert isinstance(d1.get("timeout_s"), float)
+    assert d1.get("timeout_s") == 2.0
+    d2 = sa.build_startup_diagnostics(agent_type="coco", cwd=".", model_name=None, error=_Err("x"), timeout_s=1)
+    assert isinstance(d2.get("timeout_s"), float)
+    assert d2.get("timeout_s") == 1.0
+    d3 = sa.build_startup_diagnostics(agent_type="coco", cwd=".", model_name=None, error=_Err("x"), timeout_s=1.5)
+    assert isinstance(d3.get("timeout_s"), float)
+    assert d3.get("timeout_s") == 1.5
+
+
+def test_startup_diagnostics_redaction_enabled_masks_tokens(monkeypatch):
+    """脱敏开启：args/stdout/stderr 中的敏感片段应被掩码。"""
+    settings = _fake_settings(
+        acp_diagnostics_redact_enabled=True,
+        acp_diagnostics_redact_replacement="***REDACTED***",
+        acp_diagnostics_redact_patterns=[r"(?i)bearer\s+[^\s]+", r"sk-[A-Za-z0-9]{10,}"],
+        acp_diagnostics_args_limit=200,
+        acp_diagnostics_snippet_limit=200,
+        acp_diagnostics_total_limit=2000,
+    )
+    monkeypatch.setattr(sa, "get_settings", lambda: settings)
+
+    class _Err(Exception):
+        pass
+
+    e = _Err("boom")
+    # simulate error carrying stdout/stderr
+    e.stdout = "hello Bearer abcdef0123456789"  # type: ignore[attr-defined]
+    e.stderr = "sk-0123456789abcdefTOKEN"  # type: ignore[attr-defined]
+
+    d = sa.build_startup_diagnostics(
+        agent_type="coco",
+        cwd=".",
+        model_name=None,
+        error=e,
+        session=None,
+    )
+    out = sa.format_startup_diagnostics(d)
+    assert "Bearer abcdef" not in out
+    assert "sk-012345" not in out
+    assert "***REDACTED***" in out
+
+
+def test_startup_diagnostics_redaction_disabled_keeps_tokens(monkeypatch):
+    """脱敏关闭：输出允许包含原始片段（仍受长度截断）。"""
+    token1 = "Bearer abcdef0123456789"
+    token2 = "sk-0123456789abcdefTOKEN"
+    settings = _fake_settings(
+        acp_diagnostics_redact_enabled=False,
+        acp_diagnostics_redact_replacement="***REDACTED***",
+        acp_diagnostics_redact_patterns=[r"(?i)bearer\s+[^\s]+", r"sk-[A-Za-z0-9]{10,}"],
+        acp_diagnostics_args_limit=500,
+        acp_diagnostics_snippet_limit=500,
+        acp_diagnostics_total_limit=5000,
+    )
+    monkeypatch.setattr(sa, "get_settings", lambda: settings)
+
+    class _Err(Exception):
+        pass
+
+    e = _Err("boom")
+    e.stdout = f"hello {token1}"  # type: ignore[attr-defined]
+    e.stderr = token2  # type: ignore[attr-defined]
+
+    d = sa.build_startup_diagnostics(agent_type="coco", cwd=".", model_name=None, error=e, session=None)
+    out = sa.format_startup_diagnostics(d)
+    assert token1 in out
+    assert token2 in out
+
+
+def test_startup_diagnostics_truncation_marks_truncated(monkeypatch):
+    """超长输出：应出现截断标记。"""
+    settings = _fake_settings(
+        acp_diagnostics_redact_enabled=True,
+        acp_diagnostics_redact_patterns=[],
+        acp_diagnostics_redact_replacement="***REDACTED***",
+        acp_diagnostics_args_limit=50,
+        acp_diagnostics_snippet_limit=20,
+        acp_diagnostics_total_limit=200,
+    )
+    monkeypatch.setattr(sa, "get_settings", lambda: settings)
+
+    class _Err(Exception):
+        pass
+
+    e = _Err("boom")
+    e.stdout = "x" * 200  # type: ignore[attr-defined]
+    d = sa.build_startup_diagnostics(agent_type="coco", cwd=".", model_name=None, error=e, session=None)
+    out = sa.format_startup_diagnostics(d)
+    assert "truncated" in out
+
+
+def test_diagnostics_public_api_config_injection(monkeypatch):
+    """公共 API：get_diagnostics_config(get_settings_fn=...) 必须可注入且异常安全。"""
+
+    class Fake:
+        acp_diagnostics_redact_enabled = True
+        acp_diagnostics_redact_patterns = [r"sk-[A-Za-z0-9]{10,}"]
+        acp_diagnostics_redact_replacement = "XXX"
+        acp_diagnostics_args_limit = "123"
+        acp_diagnostics_snippet_limit = 7
+        acp_diagnostics_total_limit = 9
+
+    cfg = diag.get_diagnostics_config(get_settings_fn=lambda: Fake())
+    assert cfg.redact_enabled is True
+    assert cfg.redact_replacement == "XXX"
+    assert cfg.args_limit == 123
+    assert cfg.snippet_limit == 7
+    assert cfg.total_limit == 9
+    assert cfg.redact_patterns == [r"sk-[A-Za-z0-9]{10,}"]
+
+
+def test_diagnostics_public_api_redact_text_illegal_pattern_is_safe():
+    """公共 API：非法正则不应抛异常。"""
+    s = diag.redact_text("hello sk-0123456789abcdefTOKEN", patterns=["("], replacement="***")
+    # best-effort: may or may not redact, but must return a string and not raise
+    assert isinstance(s, str)
+
+
+def test_diagnostics_redact_text_compile_cache_reuses_compiled_patterns(monkeypatch):
+    """性能护栏：相同 patterns+replacement 多次调用不应重复编译。"""
+    # best-effort: tests should not rely on private internals, but cache clear makes it stable
+    try:
+        diag._compile_redaction_patterns.cache_clear()  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    orig_compile = diag.re.compile
+    count = {"n": 0}
+
+    def _counting_compile(p, *a, **kw):
+        count["n"] += 1
+        return orig_compile(p, *a, **kw)
+
+    monkeypatch.setattr(diag.re, "compile", _counting_compile)
+
+    patterns = [r"Bearer\s+[^\s]+", r"sk-[A-Za-z0-9]{10,}"]
+    s1 = diag.redact_text("Bearer abc sk-0123456789abcdefTOKEN", patterns=patterns, replacement="X")
+    s2 = diag.redact_text("Bearer abc sk-0123456789abcdefTOKEN", patterns=patterns, replacement="X")
+    assert isinstance(s1, str)
+    assert isinstance(s2, str)
+    assert count["n"] == len(patterns)
+
+
+def test_diagnostics_redact_text_compile_cache_replacement_change_does_not_recompile(monkeypatch):
+    """性能护栏：patterns 不变、仅 replacement 变化时不应重复编译。"""
+    try:
+        diag._compile_redaction_patterns.cache_clear()  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+    orig_compile = diag.re.compile
+    count = {"n": 0}
+
+    def _counting_compile(p, *a, **kw):
+        count["n"] += 1
+        return orig_compile(p, *a, **kw)
+
+    monkeypatch.setattr(diag.re, "compile", _counting_compile)
+
+    patterns = [r"Bearer\s+[^\s]+", r"sk-[A-Za-z0-9]{10,}"]
+    _ = diag.redact_text("Bearer abc sk-0123456789abcdefTOKEN", patterns=patterns, replacement="X")
+    _ = diag.redact_text("Bearer abc sk-0123456789abcdefTOKEN", patterns=patterns, replacement="Y")
+    assert count["n"] == len(patterns)
+
+
+def test_diagnostics_redact_text_mixed_valid_invalid_patterns_still_redacts():
+    """鲁棒性：混合合法/非法 pattern 时，合法规则仍应生效且不抛异常。"""
+    text = "hello Bearer abcdef0123456789"
+    out = diag.redact_text(text, patterns=["(", r"(?i)bearer\s+[^\s]+"], replacement="***")
+    assert isinstance(out, str)
+    assert "Bearer abcdef" not in out

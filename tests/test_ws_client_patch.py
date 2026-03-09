@@ -80,6 +80,43 @@ class TestCardActionHandler(unittest.TestCase):
 
             client._handle_card_enter_coco.assert_called_once_with("om_1", "oc_1", "p1")
 
+    def test_process_card_action_routes_refresh_ttadk_models(self):
+        """验证 TTADK 模型选择卡的『刷新模型列表』按钮可被正确路由。"""
+        with patch('src.feishu.ws_client.get_settings') as mock_get_settings, \
+             patch('src.feishu.ws_client.ACPSessionManager'), \
+             patch('src.feishu.ws_client.IntentRecognizer'), \
+             patch('src.feishu.ws_client.ProjectManager'), \
+             patch('src.feishu.ws_client.MessageProjectMapper'), \
+             patch('src.feishu.ws_client.DeepEngineManager'), \
+             patch('src.feishu.ws_client.ProgressReporter'), \
+             patch('src.mode.ModeManager'):
+
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+            client._handle_refresh_ttadk_models = MagicMock()
+
+            data = SimpleNamespace(
+                event=SimpleNamespace(
+                    action=SimpleNamespace(
+                        value={"action": "refresh_ttadk_models", "tool_name": "codex", "project_id": "p1"},
+                        tag="button",
+                        name="refresh",
+                    ),
+                    operator=SimpleNamespace(open_id="ou_x", user_id="u_x"),
+                    context=SimpleNamespace(open_message_id="om_1", open_chat_id="oc_1"),
+                )
+            )
+
+            client._process_card_action_async(data)
+            client._handle_refresh_ttadk_models.assert_called_once_with("om_1", "oc_1", "codex", "p1")
+
     def test_handle_card_enter_claude_passes_project(self):
         """验证卡片入口 Claude 时把 project 透传给 enter_mode（避免选错项目导致显示 Coco 卡片）"""
         with patch('src.feishu.ws_client.get_settings') as mock_get_settings, \

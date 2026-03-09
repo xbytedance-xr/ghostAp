@@ -11,7 +11,8 @@ import logging
 from abc import abstractmethod
 from typing import TYPE_CHECKING, Optional
 
-from ...acp import ACPEventRenderer, ACPSessionManager
+from ...acp import ACPEventRenderer
+from ...acp.manager import ACPSessionManager
 from ...agent_session import SyncSession
 from ...card import CardBuilder
 from ...project import ContextSourceMode
@@ -171,6 +172,26 @@ class ProgrammingModeHandler(BaseHandler):
             if not silent:
                 self.reply_message(message_id, fmt_error(f"启动 {self.mode_name} 会话失败", str(e)))
             return
+
+        # TTADK 启动失败降级提示（best-effort）
+        try:
+            if (
+                agent_type_override
+                and str(agent_type_override).lower().startswith("ttadk_")
+                and getattr(session, "_degraded_to", "")
+            ):
+                degraded_to = getattr(session, "_degraded_to", "")
+                reason = getattr(session, "_degraded_reason", "")
+                if not silent:
+                    self.reply_message(
+                        message_id,
+                        fmt.format_warning(
+                            f"⚠️ TTADK 后端暂不可用，已自动降级到 `{degraded_to}` 继续使用。\n\n"
+                            f"原因摘要：{reason or '(empty)'}"
+                        ),
+                    )
+        except Exception:
+            pass
 
         # Now switch mode (after ACP server is confirmed ready)
         self._enter_mode_on_manager(chat_id, project_id=project_id)
@@ -675,8 +696,45 @@ class TTADKModeHandler(ProgrammingModeHandler):
             default_tool=settings.ttadk_default_tool,
             default_model=settings.ttadk_default_model,
         )
-        model = self._current_model or manager.get_current_model() or settings.ttadk_default_model
-        return model or None
+        
+        # Determine the intended model name (which might be a friendly name)
+        model_intent = self._current_model or manager.get_current_model() or settings.ttadk_default_model
+        
+        if not model_intent:
+            return None
+            
+        # Get the current tool to scope the model lookup
+        tool = (
+            self._current_tool
+            or manager.get_current_tool()
+            or settings.ttadk_default_tool
+            or "coco"
+        )
+        
+        # 启动期模型决策 SSOT：统一收敛到 precheck helper，避免 handler 层旁路解析导致漂移。
+        from ...ttadk.startup_common import precheck_ttadk_startup_model
+
+        cwd = project.root_path if project else "."
+        pre = precheck_ttadk_startup_model(
+            agent_type=f"ttadk_{tool}",
+            cwd=cwd,
+            model_intent=model_intent,
+            manager=manager,
+        )
+        logger.info(
+            "[TTADK] 启动期模型预检: tool=%s input_model=%s model=%s validated=%s source=%s decision=%s fail_phase=%s warnings=%s",
+            pre.get("tool") or tool,
+            pre.get("input_model") or model_intent,
+            pre.get("model") or "(auto)",
+            bool(pre.get("validated")),
+            pre.get("source") or "unknown",
+            pre.get("decision") or "",
+            pre.get("fail_phase") or "",
+            list(pre.get("warnings") or []),
+        )
+
+        # validated=True 才透传 -m；否则返回 None 让 ttadk 走 (auto)
+        return pre.get("model")
 
     @property
     def current_tool(self) -> Optional[str]:

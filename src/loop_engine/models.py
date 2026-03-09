@@ -46,6 +46,7 @@ class LoopRole(Enum):
     TESTER = "tester"
     DEBUGGER = "debugger"
     INTEGRATOR = "integrator"
+    DESIGNER = "designer"
 
     @property
     def display_name(self) -> str:
@@ -56,6 +57,7 @@ class LoopRole(Enum):
             LoopRole.TESTER: "测试者",
             LoopRole.DEBUGGER: "调试者",
             LoopRole.INTEGRATOR: "集成者",
+            LoopRole.DESIGNER: "设计师",
         }[self]
 
     @property
@@ -67,6 +69,7 @@ class LoopRole(Enum):
             LoopRole.TESTER: "🧪",
             LoopRole.DEBUGGER: "🐛",
             LoopRole.INTEGRATOR: "🔗",
+            LoopRole.DESIGNER: "🎨",
         }[self]
 
 
@@ -77,6 +80,7 @@ class ReviewPerspective(Enum):
     PRODUCT = "product"
     USER = "user"
     TESTER = "tester"
+    DESIGNER = "designer"
 
     @property
     def display_name(self) -> str:
@@ -85,6 +89,7 @@ class ReviewPerspective(Enum):
             ReviewPerspective.PRODUCT: "产品经理",
             ReviewPerspective.USER: "用户",
             ReviewPerspective.TESTER: "测试",
+            ReviewPerspective.DESIGNER: "设计师",
         }[self]
 
     @property
@@ -94,6 +99,7 @@ class ReviewPerspective(Enum):
             ReviewPerspective.PRODUCT: "📦",
             ReviewPerspective.USER: "👤",
             ReviewPerspective.TESTER: "🧪",
+            ReviewPerspective.DESIGNER: "🎨",
         }[self]
 
     @property
@@ -103,7 +109,15 @@ class ReviewPerspective(Enum):
             ReviewPerspective.PRODUCT: "需求完整度、用户价值、边界场景、功能一致性",
             ReviewPerspective.USER: "易用性、文档、错误提示、交互体验、可理解性",
             ReviewPerspective.TESTER: "测试覆盖、边界条件、异常处理、回归风险、可测试性",
+            ReviewPerspective.DESIGNER: "UI视觉(配色/层级)、交互体验(动效/流程)、移动端适配、美观度",
         }[self]
+
+    @property
+    def failure_label(self) -> str:
+        """审查不通过时显示的特定文案，默认 '❌ 有建议'。"""
+        return {
+            ReviewPerspective.DESIGNER: "🎨 视觉/交互建议",
+        }.get(self, "❌ 有建议")
 
 
 class TerminationSignal(Enum):

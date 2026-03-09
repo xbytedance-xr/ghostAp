@@ -1,6 +1,10 @@
 # GhostAP 项目记忆索引
 
+## 2026-03-09
+- **TTADK 模型列表获取问题诊断** - 诊断发现 ttadk 0.3.8 无 models 子命令，coco/trae/cursor 工具 Available models 为空，ProbeStrategy 部分失败，待确定解决方案 → [2026-03-09.md](2026-03-09.md)
+
 ## 2026-03-06
+- **TTADK 模型列表误识别本地文件修复** - 修复模型提取过宽问题：仅在模型语义字段中提取，避免将 `image.png` 等目录文件当作模型；新增来源日志与2个回归测试，TTADK测试17通过 → [2026-03-06.md](2026-03-06.md)
 - **TTADK 工具模型列表动态获取实现** - 新建 model_fetcher.py 使用 pty 模拟终端交互获取模型列表，TTADKModel 添加 friendly_name 字段，Manager 集成 Fetcher + 工具级缓存，+7测试，15测试全通过 → [2026-03-06.md](2026-03-06.md)
 - **TTADK 帮助文档完善与命令实现** - 更新 show_full_help() 添加 TTADK 内容，实现 /ttadk_info、/ttadk_tool、/ttadk_model 命令，更新 exit_current_mode() 支持 TTADK 模式退出，1120测试全通过 → [2026-03-06.md](2026-03-06.md)
 - **TTADK 帮助文档完善与命令实现** - 更新 show_full_help() 添加 TTADK 内容，实现 /ttadk_info、/ttadk_tool、/ttadk_model 命令，更新 exit_current_mode() 支持 TTADK 模式退出，1120测试全通过 → [2026-03-06.md](2026-03-06.md)

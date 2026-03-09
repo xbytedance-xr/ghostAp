@@ -2,6 +2,7 @@ import logging
 import sys
 import signal
 import threading
+import os
 from typing import Optional
 try:
     from config import get_settings
@@ -71,6 +72,18 @@ class Application:
         logger.info("APP_ID: %s...", self.settings.app_id[:8])
         logger.info("命令超时: %d秒", self.settings.sandbox_timeout)
         logger.info("意图识别: ARK (%s)", self.settings.ark_model)
+
+        # TTADK 常用工具模型预热（后台 best-effort）
+        try:
+            if (
+                getattr(self.settings, "ttadk_preheat_enabled", True)
+                and getattr(self.settings, "ttadk_preheat_on_startup", True)
+            ):
+                from ttadk import get_ttadk_manager
+
+                get_ttadk_manager().kickoff_preheat_common_models(cwd=os.getcwd())
+        except Exception:
+            pass
 
         self._install_signal_handlers()
 
