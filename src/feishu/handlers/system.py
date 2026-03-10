@@ -63,7 +63,7 @@ class SystemHandler(BaseHandler):
         spec_prefixes = (
             "/spec", "/stop_spec", "/spec_status", "/spec_history",
             "/spec_metrics", "/spec_config", "/spec_save", "/spec_pause",
-            "/spec_resume", "/spec_recover", "/spec_guide"
+            "/spec_resume", "/spec_recover", "/spec_guide", "/spec_export"
         )
         return any(text_lower == cmd or text_lower.startswith(f"{cmd} ") for cmd in spec_prefixes)
 

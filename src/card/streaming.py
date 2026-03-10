@@ -40,6 +40,13 @@ class StreamingCard:
     last_content: str = ""
     last_update_at: float = 0.0
     min_update_interval_s: float = 0.6
+    size_threshold: int = 50  # Character count threshold for updates
+    last_content_len: int = 0
+    
+    # Pagination support
+    full_content: str = ""  # Complete content storage
+    visible_chars: int = 20000  # Current visibility limit (default ~20KB)
+    pagination_step: int = 5000  # How much to add on "Load More"
 
 
 def _normalize_streaming_markdown(content: str, *, is_final: bool, max_chars: int) -> str:
@@ -137,7 +144,7 @@ class StreamingCardManager:
         title: str,
         header_template: str,
         project_path: Optional[str] = None,
-        initial_content: str = "正在思考...",
+        initial_content: str = "🔄 正在思考...",
         element_id: str = "content_md",
         image_keys: Optional[list[str]] = None,
         buttons: Optional[list[dict]] = None,
@@ -182,7 +189,7 @@ class StreamingCardManager:
         title: str,
         header_template: str,
         project_path: Optional[str] = None,
-        initial_content: str = "正在思考...",
+        initial_content: str = "🔄 正在思考...",
         element_id: str = "content_md",
         image_keys: Optional[list[str]] = None,
         buttons: Optional[list[dict]] = None,
@@ -241,7 +248,7 @@ class StreamingCardManager:
         project_name: Optional[str] = None,
         project_path: Optional[str] = None,
         project_id: Optional[str] = None,
-        initial_content: str = "正在思考...",
+        initial_content: str = "🔄 正在思考...",
         element_id: str = "content_md",
         is_coco_mode: bool = True,
         is_claude_mode: bool = False,
@@ -444,26 +451,84 @@ class StreamingCardManager:
             logger.error("发送流式卡片异常: %s", e, exc_info=True)
             return None
 
-    def update_content(self, card: StreamingCard, content: str) -> bool:
+    def update_content(self, card: StreamingCard, content: str, force: bool = False) -> bool:
         if not card.message_id:
             return False
 
-        now = time.time()
-        if card.last_update_at and now - card.last_update_at < card.min_update_interval_s:
-            # 节流：过于频繁的 update 会触发飞书限流/失败
-            return True
-
+        # Update full content in memory
+        card.full_content = content
+        
+        # Calculate display content based on visible_chars
+        display_content = content
+        has_more = False
+        
+        if len(content) > card.visible_chars:
+            display_content = content[:card.visible_chars]
+            has_more = True
+            
         normalized = _normalize_streaming_markdown(
-            content,
+            display_content,
             is_final=False,
-            max_chars=self._max_card_chars,
+            max_chars=0, # Disable truncation in normalize since we handled it
         )
 
-        if normalized == card.last_content:
+        if normalized == card.last_content and not has_more: # If content same and no pagination change
+             # Need to be careful: if we just switched from no-more to has-more, we need update.
+             # But here we assume visible_chars didn't change (that's a separate action).
+             # If content grew but didn't cross visible_chars (and wasn't truncated before), normalized changes.
+             # If content grew and IS truncated (and was truncated), normalized MIGHT stay same if we are far past limit?
+             # No, if we are truncated at N, normalized is constant prefix.
+             # So if normalized == last_content, we might still need to update IF has_more status changed?
+             # But has_more is derived from len(content) > visible.
+             # If previously we were truncated (len > visible), has_more was True.
+             # Now len grew, has_more is True. Normalized is same.
+             # We don't need update.
+             return True
+
+        now = time.time()
+        # Dual buffering strategy: Time OR Size
+        # Update if enough time has passed OR enough content has accumulated
+        # We compare against the FULL content length for activity, but send truncated.
+        content_len = len(content)
+        size_delta = abs(content_len - card.last_content_len)
+        time_delta = now - card.last_update_at
+        
+        should_update = (
+            force or
+            card.last_update_at == 0.0 or
+            size_delta >= card.size_threshold or
+            time_delta >= card.min_update_interval_s or
+            # Force update if we just crossed the pagination boundary to show the button?
+            # If we were < visible, now > visible. has_more becomes True.
+            # normalized changes? No, normalized is prefix.
+            # Wait, if content < visible, normalized = content.
+            # If content > visible, normalized = content[:visible].
+            # If content grows from visible-1 to visible+1.
+            # normalized changes from X to X + 1char (then truncated).
+            # So normalized changes.
+            False 
+        )
+
+        if not should_update:
+            # Buffer the content but don't send yet
+            # We don't update last_content here to ensure next check compares against sent content
             return True
 
         try:
             buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode)
+            
+            # Inject Load More button if needed
+            if has_more:
+                buttons.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "⬇️ 加载更多"},
+                    "type": "primary",
+                    "value": {
+                        "action": "load_more",
+                        "message_id": card.message_id
+                    }
+                })
+            
             card_json = self._build_update_card_json(
                 title=card.title,
                 header_template=card.header_template,
@@ -483,12 +548,23 @@ class StreamingCardManager:
                 )
                 .build()
             )
-            resp = self._client.im.v1.message.patch(req)
-            if not resp.success():
+            
+            # Retry mechanism
+            max_retries = 1
+            for attempt in range(max_retries + 1):
+                resp = self._client.im.v1.message.patch(req)
+                if resp.success():
+                    break
+                
+                if attempt < max_retries:
+                    time.sleep(0.2)  # Short backoff
+                    continue
+                
                 logger.warning("卡片消息更新失败: code=%s, msg=%s", resp.code, resp.msg)
                 return False
 
             card.last_content = normalized
+            card.last_content_len = len(content) # Track FULL content length
             card.last_update_at = now
             return True
         except Exception as e:
@@ -554,3 +630,19 @@ class StreamingCardManager:
             for card_id in expired:
                 del self._cards[card_id]
                 logger.info("清理过期卡片: %s", card_id)
+
+    def increase_pagination(self, card_id: str) -> bool:
+        """Increase the visible character limit for a card and trigger update."""
+        with self._lock:
+            card = self._cards.get(card_id)
+            if not card:
+                return False
+            
+            # Increase limit
+            card.visible_chars += card.pagination_step
+            
+            # Force update via normal flow
+            # We use the cached full_content
+            content_to_render = card.full_content
+            
+        return self.update_content(card, content_to_render, force=True)

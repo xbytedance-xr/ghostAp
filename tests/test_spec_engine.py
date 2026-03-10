@@ -475,7 +475,7 @@ def test_ttadk_startup_model_log_uses_real_or_auto(caplog):
 
     with patch("src.agent_session.get_settings", return_value=_SessSettings()), \
          patch("src.ttadk.get_ttadk_manager", return_value=MagicMock()), \
-         patch("src.ttadk.manager.start_ttadk_engine_session") as mk_start:
+         patch("src.ttadk.startup.start_agent_session") as mk_start:
         mk_start.return_value = {
             "result": _S(),
             "tool": "codex",
@@ -557,7 +557,7 @@ def test_ttadk_resume_model_log_uses_real_or_auto(caplog):
 
     with patch("src.agent_session.get_settings", return_value=_SessSettings()), \
          patch("src.ttadk.get_ttadk_manager", return_value=MagicMock()), \
-         patch("src.ttadk.manager.start_ttadk_engine_session") as mk_start:
+         patch("src.ttadk.startup.start_agent_session") as mk_start:
         mk_start.return_value = {
             "result": _S(),
             "tool": "codex",
@@ -2162,7 +2162,7 @@ class TestSpecEngineExecution:
         """_conduct_review sends prompt and parses result."""
         mock_settings.return_value = self._mock_settings()
 
-        review_text = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nFAIL\n- Add error handling\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n"
+        review_text = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nFAIL\n- Add error handling\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n\n[DESIGNER]\nPASS\n"
         session = self._make_mock_session([review_text])
 
         engine = SpecEngine(chat_id="c1", root_path="/tmp/test")
@@ -2172,7 +2172,7 @@ class TestSpecEngineExecution:
 
         result = engine._conduct_review(1, SpecEngineCallbacks())
 
-        assert len(result.reviews) == 4
+        assert len(result.reviews) == 5
         assert result.reviews[0].passed  # ARCHITECT
         assert not result.reviews[1].passed  # PRODUCT
         assert "Add error handling" in result.reviews[1].suggestions
@@ -2193,7 +2193,7 @@ class TestSpecEngineExecution:
 
         result = engine._conduct_review(1, SpecEngineCallbacks())
 
-        assert len(result.reviews) == 4
+        assert len(result.reviews) == 5
         assert all(not r.passed for r in result.reviews)
         assert any("timeout" in s for r in result.reviews for s in r.suggestions)
 

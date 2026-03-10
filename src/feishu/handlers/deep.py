@@ -199,23 +199,41 @@ class DeepHandler(BaseHandler):
             """发送 deep 任务消息，在话题模式下确保所有消息都回复到同一个话题。"""
             # 1. Try update existing card
             if is_update and current_status_message_id[0]:
-                try:
-                    client = self.ctx.api_client_factory()
-                    legacy_content = self._convert_to_legacy_card(card_content)
-                    req = PatchMessageRequest.builder() \
-                        .message_id(current_status_message_id[0]) \
-                        .request_body(PatchMessageRequestBody.builder()
-                            .content(legacy_content)
-                            .build()) \
-                        .build()
-                    resp = client.im.v1.message.patch(req)
-                    if resp.success():
-                        return
-                    logger.warning("Patch deep message failed: %s %s", resp.code, resp.msg)
-                except Exception as e:
-                    logger.error("Patch deep message error: %s", e)
-            
-            # 2. Fallback to create new message
+                legacy_content = self._convert_to_legacy_card(card_content)
+                client = self.ctx.api_client_factory()
+                
+                # Simple exponential backoff for patch
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        req = PatchMessageRequest.builder() \
+                            .message_id(current_status_message_id[0]) \
+                            .request_body(PatchMessageRequestBody.builder()
+                                .content(legacy_content)
+                                .build()) \
+                            .build()
+                        resp = client.im.v1.message.patch(req)
+                        if resp.success():
+                            return
+                        
+                        logger.warning("Patch deep message failed (attempt %d/%d): %s %s", 
+                                     attempt + 1, max_retries, resp.code, resp.msg)
+                        
+                        # Wait before retry
+                        if attempt < max_retries - 1:
+                            time.sleep(0.5 * (2 ** attempt))
+                            
+                    except Exception as e:
+                        logger.error("Patch deep message error (attempt %d/%d): %s", 
+                                   attempt + 1, max_retries, e)
+                        if attempt < max_retries - 1:
+                            time.sleep(0.5 * (2 ** attempt))
+
+                # Patch failed, stop here if it was an update to an existing card
+                logger.error("Failed to patch deep message after %d attempts. Skipping update.", max_retries)
+                return
+
+            # 2. Create new message (Only if not updating or no existing message)
             use_thread = self.settings.default_reply_mode == "thread"
             result_id = None
             if use_thread:

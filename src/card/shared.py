@@ -177,27 +177,24 @@ def _build_button_grid(buttons: list[dict], columns: int = 2) -> list[dict]:
 
     for i in range(0, len(styled), columns):
         chunk = styled[i:i + columns]
-        col_1 = chunk[0] if len(chunk) > 0 else None
-        col_2 = chunk[1] if len(chunk) > 1 else None
+        
+        column_objs = []
+        for j in range(columns):
+            btn = chunk[j] if j < len(chunk) else None
+            # Only create column if it has content OR if we need to preserve grid spacing?
+            # Feishu schema 2.0: empty columns are allowed.
+            column_objs.append({
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "elements": [btn] if btn else [],
+            })
 
         rows.append({
             "tag": "column_set",
             "flex_mode": "stretch",
             "background_style": "default",
-            "columns": [
-                {
-                    "tag": "column",
-                    "width": "weighted",
-                    "weight": 1,
-                    "elements": [col_1] if col_1 else [],
-                },
-                {
-                    "tag": "column",
-                    "width": "weighted",
-                    "weight": 1,
-                    "elements": [col_2] if col_2 else [],
-                },
-            ],
+            "columns": column_objs,
         })
 
     return rows

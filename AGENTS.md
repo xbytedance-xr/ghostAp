@@ -154,7 +154,28 @@ tracker.py           IterationTracker: 处理 ACP 事件 → 迭代记录
 reporter.py          LoopReporter: 迭代进度 + 验收标准格式化
 ```
 
-### 2.4 会话后端抽象 (`src/agent_session.py`)
+### 2.4 Spec 引擎 (`src/spec_engine/`)
+
+**定位**：结构化开发方法论引擎。每个周期按照 `Spec → Plan → Task → Build → Review` 流程推进，通过多视角审查（Review）反馈驱动下一轮迭代。
+
+**核心特性**：
+- **全生命周期管理**：涵盖需求拆解、任务规划、编码实现、代码审查全流程。
+- **多视角审查**：集成 Ralph Loop 的多视角审查机制（架构师/产品/用户/测试）。
+- **迭代闭环**：审查意见直接作为下一轮迭代的输入，直到所有验收标准满足且审查通过。
+
+```
+文件                  职责
+models.py            SpecProject, SpecCycle, SpecTask, SpecPhase
+                     - SpecPhase: IDLE -> SPEC -> PLAN -> TASK -> BUILD -> REVIEW
+engine.py            SpecEngine: 核心循环
+                     - execute(): 驱动 SpecPhase 状态流转
+                     - _run_spec_phase(), _run_plan_phase()...
+                     - _run_review_phase(): 执行多视角审查
+tracker.py           SpecTracker: 追踪 ACP 事件，更新 SpecTask 状态
+reporter.py          SpecReporter: 生成结构化进度报告
+```
+
+### 2.5 会话后端抽象 (`src/agent_session.py`)
 
 提供统一的 `SyncSession` 接口，支持两种后端：
 
@@ -172,7 +193,7 @@ session = create_sync_session("claude", cwd="/path/to/project")  # → SyncClaud
 session = create_engine_session("coco", cwd="/path/to/project")
 ```
 
-### 2.5 飞书集成 (`src/feishu/`)
+### 2.6 飞书集成 (`src/feishu/`)
 
 **ws_client.py** — 消息调度中枢。通过 `_FORWARDING_MAP` + `__getattr__` 将方法调用委托到对应 Handler。
 
@@ -196,19 +217,19 @@ session = create_engine_session("coco", cwd="/path/to/project")
 - `scheduler`：TaskScheduler
 - 飞书 API client
 
-### 2.6 卡片渲染 (`src/card/`)
+### 2.7 卡片渲染 (`src/card/`)
 
 - **CardBuilder** — 构建飞书 Interactive Card（schema 2.0），支持按钮、菜单、Markdown 区块。引擎感知的 header 颜色（Coco=蓝、Claude=紫）。
 - **StreamingCardManager** — 通过 Feishu Patch API 实现卡片实时更新。支持 desktop/mobile/responsive 三种按钮布局策略。
 
-### 2.7 任务调度 (`src/tasking/scheduler.py`)
+### 2.8 任务调度 (`src/tasking/scheduler.py`)
 
 - 线程池 + per-chat 串行队列 + 全局并发上限（默认 10）
 - `TaskSpec` 元数据：chat_id, project_id, priority, queue_key
 - 长时任务（Deep/Loop）使用独立 queue_key 避免阻塞系统命令
 - 支持取消令牌（CancellationToken）和进度追踪
 
-### 2.8 意图识别 (`src/agent/intent_recognizer.py`)
+### 2.9 意图识别 (`src/agent/intent_recognizer.py`)
 
 基于 LangChain + ARK 的 ReAct Agent，支持 ~30 种意图类型：
 
@@ -221,7 +242,7 @@ Loop:     ENTER_LOOP, LOOP_STATUS, STOP_LOOP, LOOP_PAUSE, LOOP_RESUME, LOOP_GUID
 系统:     SHOW_HELP, EXIT_MODE, UNKNOWN
 ```
 
-### 2.9 其他模块
+### 2.10 其他模块
 
 | 模块 | 说明 |
 |------|------|
@@ -272,6 +293,15 @@ Loop:     ENTER_LOOP, LOOP_STATUS, STOP_LOOP, LOOP_PAUSE, LOOP_RESUME, LOOP_GUID
 **问题**：asyncio.StreamReader 默认 64KB 缓冲区，Agent 长时间执行产生的大量输出导致 "chunk is longer than limit" 崩溃。
 
 **方案**：`ACP_STREAM_BUFFER_LIMIT` 配置化，默认 10MB。
+
+### 3.7 TTADK 集成与诊断
+
+**问题**：TikTok 内部开发需要特定的工具链 (TTADK) 和模型访问权限，且这些工具通常依赖交互式 Shell 环境。
+
+**方案**：
+1.  **PTY 模拟**：在 ACP 中集成 PTY 支持，允许 Agent 像在真实终端中一样执行交互式命令（如 `ttadk auth`）。
+2.  **诊断增强**：引入 `DiagnosticsHandler` 和详细的错误追踪（Snippet Capture），在启动失败或 Review 失败时提供具体的上下文信息。
+3.  **模型解析**：实现智能的模型名称解析策略（`src/ttadk/manager.py`），支持别名、前缀匹配和模糊搜索，确保障碍更少的模型调用。
 
 ## 4. 线程安全
 
@@ -349,3 +379,5 @@ uv run python -m pytest tests/ -x -q       # 快速（失败即停）
 | 2026-02-12 | ACP 缓冲区溢出修复 + Shell 卡片渲染 |
 | 2026-02-24 | Loop 验收标准 LLM 拆解 + Deep 卡片修复 |
 | 2026-02-26 | Loop 多视角审查输出解析三级容错 |
+| 2026-03-02 | **Spec 引擎预览** (Spec-driven development) |
+| 2026-03-09 | **TTADK 深度集成** (PTY, Diagnostics, Model Resolver) |

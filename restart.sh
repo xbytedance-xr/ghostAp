@@ -54,6 +54,8 @@ stop_service() {
 
 start_service() {
     echo "正在启动 GhostAP 服务..."
+    # 清除 VIRTUAL_ENV 环境变量，避免 uv run 警告
+    unset VIRTUAL_ENV
     nohup uv run python -m src.main > "$LOG_FILE" 2>&1 &
     PID=$!
     echo $PID > "$PID_FILE"
@@ -120,6 +122,7 @@ PIDS=$(ps aux | grep -E "(uv run python -m src\.main|\.venv/bin/python.*-m src\.
 
 sleep 1
 
+unset VIRTUAL_ENV
 nohup uv run python -m src.main >> "$LOG_FILE" 2>&1 &
 echo $! > "$PID_FILE"
 

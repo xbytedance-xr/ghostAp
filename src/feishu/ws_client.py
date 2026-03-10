@@ -790,6 +790,7 @@ class FeishuWSClient:
                 "show_detail", "new_project_prompt",
                 "select_ttadk_tool", "select_ttadk_model",
                 "refresh_ttadk_models",
+                "load_more",
             }
             return action_type in system_actions
         except Exception:
@@ -925,6 +926,11 @@ class FeishuWSClient:
                 tool_name = value.get("tool_name", "")
                 project_id = value.get("project_id", "")
                 self._handle_refresh_ttadk_models(open_message_id, open_chat_id, tool_name, project_id)
+            elif action_type == "load_more":
+                message_id = value.get("message_id", "")
+                if message_id:
+                    manager = self._get_streaming_manager()
+                    manager.increase_pagination(message_id)
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
             logger.debug("卡片回调处理耗时: %dms", elapsed_ms)
 
