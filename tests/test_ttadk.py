@@ -3955,18 +3955,25 @@ def test_ttadk_manager():
 
 def test_ttadk_manager_set_tool_and_model():
     manager = TTADKManager()
-    
+
     assert manager.set_tool("claude") is True
     assert manager.get_current_tool() == "claude"
-    
+
     assert manager.set_tool("invalid_tool") is False
     assert manager.get_current_tool() == "claude"
-    
-    assert manager.set_model("gpt-5.2") is True
-    assert manager.get_current_model() == "gpt-5.2"
-    
+
+    # set_model 会解析模型名称并返回匹配后的真实模型 ID
+    # 如果输入 "gpt-5.2"， 它会被解析为匹配的真实模型名（如 gpt-5.2-codex-ttadk）
+    result = manager.set_model("gpt-5.2")
+    assert result is True
+    # 验证模型已设置（解析后的真实模型 ID 包含 gpt-5.2 前缀)
+    current_model = manager.get_current_model()
+    assert current_model is not None
+    assert "gpt-5.2" in current_model
+
     assert manager.set_model("invalid_model") is False
-    assert manager.get_current_model() == "gpt-5.2"
+    # 无效模型不应改变当前模型
+    assert manager.get_current_model() == current_model
 
 
 def test_get_ttadk_manager():
@@ -4868,14 +4875,27 @@ def test_start_session_with_retry_logs_stderr_when_error_message_empty(monkeypat
 
 def test_extract_models_ignores_unrelated_string_list(monkeypatch):
     manager = TTADKManager(default_tool="claude")
+
+    # Mock fetch_tool_models_with_diagnostics 返回指定的模型列表
+    from src.ttadk.model_fetcher import FetchResult, FetchDiagnostics
+
+    def mock_fetch(tool_name, cwd=None, force_refresh=False, prefer_probe=False):
+        if tool_name == "claude":
+            return FetchResult(
+                tool_name=tool_name,
+                models=[
+                    TTADKModel(name="claude-3.7-sonnet"),
+                    TTADKModel(name="claude-3.5-sonnet"),
+                ],
+                source="mock",
+                diagnostics=FetchDiagnostics(tool_name=tool_name),
+            )
+        return FetchResult(tool_name=tool_name, models=[], source="mock", diagnostics=FetchDiagnostics(tool_name=tool_name))
+
     monkeypatch.setattr(
-        manager._model_fetcher._structured,
-        "fetch",
-        lambda tool_name, cwd=None: [
-            TTADKModel(name="claude-3.7-sonnet"),
-            TTADKModel(name="claude-3.5-sonnet"),
-        ]
-        if tool_name == "claude" else [],
+        manager._model_fetcher,
+        "fetch_tool_models_with_diagnostics",
+        mock_fetch,
     )
 
     result = manager.get_models(cwd=".")
