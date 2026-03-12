@@ -3987,8 +3987,9 @@ def test_get_ttadk_manager():
 
 def test_default_tools():
     manager = TTADKManager()
-    tools_result = manager.get_tools()
-    
+    # 获取所有工具（不过滤），确保默认工具列表完整
+    tools_result = manager.get_tools(filter_available=False)
+
     tool_names = [t.name for t in tools_result.tools]
     assert "claude" in tool_names
     assert "cursor" in tool_names
@@ -4003,7 +4004,7 @@ def test_default_tools():
 def test_default_models():
     manager = TTADKManager()
     models_result = manager.get_models()
-    
+
     model_names = [m.name for m in models_result.models]
     assert "gpt-5.2" in model_names
     assert "gpt-4.1" in model_names
@@ -4013,6 +4014,49 @@ def test_default_models():
     assert "doubao-1.5-pro" in model_names
     assert "gemini-2.0-pro" in model_names
     assert "gemini-2.5-pro" in model_names
+
+
+def test_get_tools_filter_available(monkeypatch):
+    """测试工具可用性过滤功能"""
+    manager = TTADKManager()
+
+    # Mock shutil.which to simulate tool availability
+    def mock_which(cmd):
+        # 只有 claude, coco, codex 可用
+        available = {"claude", "coco", "codex"}
+        return f"/usr/bin/{cmd}" if cmd in available else None
+
+    monkeypatch.setattr("shutil.which", mock_which)
+
+    # 测试过滤后的结果
+    filtered_result = manager.get_tools(filter_available=True)
+    filtered_names = {t.name for t in filtered_result.tools}
+    assert filtered_names == {"claude", "coco", "codex"}
+
+    # 测试不过滤的结果
+    all_result = manager.get_tools(filter_available=False)
+    all_names = {t.name for t in all_result.tools}
+    assert "claude" in all_names
+    assert "cursor" in all_names  # 即使不可用也应该在列表中
+    assert "gemini" in all_names
+
+
+def test_get_tools_fallback_when_no_tools_available(monkeypatch):
+    """测试当过滤后没有可用工具时，回退到完整列表"""
+    manager = TTADKManager()
+
+    # Mock shutil.which to simulate no tools available
+    def mock_which_none(cmd):
+        return None
+
+    monkeypatch.setattr("shutil.which", mock_which_none)
+
+    # 即使 filter_available=True，也应该返回完整列表作为备选
+    result = manager.get_tools(filter_available=True)
+    tool_names = {t.name for t in result.tools}
+    # 应该回退到完整列表
+    assert "claude" in tool_names
+    assert "cursor" in tool_names
 
 
 def test_get_models_from_sync_output(monkeypatch):

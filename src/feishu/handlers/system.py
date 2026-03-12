@@ -330,14 +330,24 @@ class SystemHandler(BaseHandler):
         if not success:
             self.reply_message(message_id, f"❌ 设置 TTADK 工具失败: {tool_name}")
             return
-        
+
         result = manager.get_models(cwd=cwd)
         if result.error:
             self.reply_message(message_id, f"❌ 获取 TTADK 模型列表失败: {result.error}")
             return
 
-        if getattr(result, "warnings", None):
-            self.reply_message(message_id, f"⚠️ TTADK 模型列表可能不完整/不可信: {'; '.join(result.warnings)}")
+        # 只有在模型列表为空且有警告时才发送单独的警告消息
+        # 其他情况（如 official_cli_disabled）不影响使用，不单独发送
+        warnings = getattr(result, "warnings", None) or []
+        has_models = bool(result.models)
+        critical_warnings = [w for w in warnings if w in ("models_untrusted", "missing_tool")]
+
+        if not has_models and warnings:
+            # 模型列表为空且有警告，发送警告消息
+            self.reply_message(message_id, f"⚠️ TTADK 模型列表可能不完整/不可信: {'; '.join(warnings)}")
+        elif critical_warnings:
+            # 有严重警告（如 models_untrusted），发送警告消息
+            self.reply_message(message_id, f"⚠️ TTADK 模型列表可能不完整/不可信: {'; '.join(critical_warnings)}")
 
         msg_type, card_content = CardBuilder.build_ttadk_model_select_card(result.models, tool_name, project_id)
         self.reply_message(message_id, card_content, msg_type=msg_type)

@@ -1259,11 +1259,22 @@ class TTADKManager:
         except TypeError:
             return self._cache.save_to_file()
 
-    def get_tools(self, cwd: Optional[str] = None) -> ToolListResult:
+    def get_tools(self, cwd: Optional[str] = None, filter_available: bool = True) -> ToolListResult:
+        """获取工具列表。
+
+        Args:
+            cwd: 工作目录（保留参数，兼容性）
+            filter_available: 是否过滤掉不可用的工具（默认 True）
+        """
         self._ensure_initialized()
         with self._lock:
             try:
-                tools = self._load_tools()
+                # 先尝试过滤
+                tools = self._load_tools(filter_available=filter_available)
+                # 如果过滤后没有可用工具，回退到未过滤列表
+                if not tools and filter_available:
+                    logger.warning("No tools available after filtering, falling back to full list")
+                    tools = self._load_tools(filter_available=False)
                 return ToolListResult(tools=list(tools), cached=False)
             except Exception as e:
                 logger.error("Failed to load TTADK tools: %s", e)
@@ -1273,13 +1284,46 @@ class TTADKManager:
                     error=str(e),
                 )
 
-    def _load_tools(self) -> list[TTADKTool]:
+    def _check_tool_available(self, tool_name: str) -> bool:
+        """检查工具是否在系统中可用（使用 which 命令）。
+
+        对于某些工具（如 coco、claude），使用特殊的可用性检查逻辑。
+        """
+        # 工具名到可执行文件的映射
+        tool_executables = {
+            "claude": "claude",
+            "cursor": "cursor",
+            "gemini": "gemini",
+            "codex": "codex",
+            "coco": "coco",
+            "tmates": "tmates",
+            "trae": "trae",
+            "opencode": "opencode",
+        }
+
+        executable = tool_executables.get(tool_name, tool_name)
+        try:
+            result = shutil.which(executable)
+            return result is not None
+        except Exception:
+            return False
+
+    def _load_tools(self, filter_available: bool = True) -> list[TTADKTool]:
+        """加载工具列表。
+
+        Args:
+            filter_available: 是否过滤掉不可用的工具（默认 True）
+        """
         tools = []
         tool_names = self._load_tool_names_from_settings()
         if not tool_names:
             tool_names = [t.name for t in DEFAULT_TOOLS]
         self._known_tools = {str(name) for name in tool_names}
         for name in tool_names:
+            # 检查工具是否可用
+            if filter_available and not self._check_tool_available(name):
+                logger.debug("Tool %s is not available on this system, skipping", name)
+                continue
             tools.append(
                 TTADKTool(
                     name=name,
