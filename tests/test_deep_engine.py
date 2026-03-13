@@ -103,7 +103,7 @@ class TestDeepEngine:
             def describe_agent(self):
                 return "dummy"
 
-            def start(self, startup_timeout: float = 60):
+            def start(self, startup_timeout: float = 60, **kwargs):
                 return "sid"
 
             def load_session(self, session_id: str):
@@ -187,7 +187,7 @@ class TestDeepEngine:
             def describe_agent(self):
                 return "dummy"
 
-            def start(self, startup_timeout: float = 60):
+            def start(self, startup_timeout: float = 60, **kwargs):
                 return "sid"
 
             def load_session(self, session_id: str):
@@ -272,7 +272,7 @@ def test_ttadk_startup_log_semantics_consistent_between_create_sync_and_engine(m
         def describe_agent(self):
             return "dummy"
 
-        def start(self, startup_timeout: float = 60):
+        def start(self, startup_timeout: float = 60, **kwargs):
             return "sid"
 
         def load_session(self, session_id: str):
@@ -497,7 +497,7 @@ def test_create_engine_session_ttadk_invalid_model_autofix(monkeypatch):
 
     calls = {"n": 0}
 
-    def fake_start_session_with_retry(agent_type, cwd, startup_timeout=60, model_name=None):
+    def fake_start_session_with_retry(agent_type, cwd, startup_timeout=60, model_name=None, **kwargs):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("✗ Error: Invalid model 'bad'. Available models: a, b")
@@ -506,7 +506,7 @@ def test_create_engine_session_ttadk_invalid_model_autofix(monkeypatch):
         sess._model_name = model_name
         return sess
 
-    monkeypatch.setattr("src.acp.sync_adapter.start_session_with_retry", fake_start_session_with_retry)
+    monkeypatch.setattr("src.acp.sync_adapter.start_session_with_retry", lambda *a, **k: fake_start_session_with_retry(*a, **k))
 
     # 触发 create_engine_session 的 TTADK 分支
     s = create_engine_session(agent_type="ttadk_coco", cwd="/tmp", model_name="bad")

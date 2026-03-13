@@ -269,6 +269,162 @@ class SyncClaudeCLISession:
         )
 
 
+class SyncTTADKCLISession:
+    """TTADK CLI backend.
+
+    - Uses `ttadk code -t <tool> -m <model>` per prompt.
+    - Emits TEXT_CHUNK ACP events only (no plan/tool events).
+    - Stateless (no session ID management).
+    """
+
+    def __init__(self, agent_type: str, cwd: str, model_name: Optional[str] = None):
+        self._agent_type = agent_type
+        self._cwd = cwd
+        self._model_name = model_name
+        self._tool_name = agent_type.replace("ttadk_", "", 1) if agent_type.startswith("ttadk_") else "unknown"
+        
+        self.session_id: str = ""
+        self.created_at: float = time.time()
+        self.last_active: float = time.time()
+        self.message_count: int = 0
+        self.last_query: str = ""
+        self.is_resumed: bool = False
+        self._cancel_event = threading.Event()
+        self._proc: Optional[subprocess.Popen] = None
+
+    def describe_agent(self) -> str:
+        return f"tool={self._tool_name} model={self._model_name or '(auto)'} backend=cli cwd={self._cwd}"
+
+    def start(self, startup_timeout: float = 60) -> str:
+        if not shutil.which("ttadk"):
+            raise RuntimeError("未找到 ttadk 可执行文件")
+        if not self.session_id:
+            self.session_id = str(uuid.uuid4())
+        return self.session_id
+
+    def load_session(self, session_id: str) -> None:
+        self.session_id = session_id
+        self.is_resumed = True
+
+    def load_local_history(self, session_id: Optional[str] = None, limit: int = 200) -> list[dict]:
+        return []
+
+    def is_server_running(self) -> bool:
+        return True
+
+    def is_server_healthy(self, healthcheck_timeout: float = 2.0) -> bool:
+        return True
+
+    def cancel(self) -> None:
+        self._cancel_event.set()
+        proc = self._proc
+        if proc:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+    def close(self) -> None:
+        return
+
+    def to_snapshot(self) -> dict:
+        return {
+            "session_id": self.session_id,
+            "agent_type": self._agent_type,
+            "cwd": self._cwd,
+            "created_at": self.created_at,
+            "last_active": self.last_active,
+            "message_count": self.message_count,
+            "last_query": self.last_query,
+            "is_resumed": self.is_resumed,
+            "backend": "cli",
+            "model_name": self._model_name,
+        }
+
+    def get_session_info(self) -> str:
+        duration = int(time.time() - self.created_at)
+        minutes, seconds = divmod(duration, 60)
+        return (
+            f"📊 TTADK 会话信息 (CLI):\n"
+            f"- 工具: {self._tool_name}\n"
+            f"- 模型: {self._model_name or '(auto)'}\n"
+            f"- 消息数: {self.message_count}\n"
+            f"- 持续时间: {minutes}分{seconds}秒"
+        )
+
+    def send_prompt(
+        self,
+        text: str,
+        on_event: Optional[Callable[[ACPEvent], None]] = None,
+        timeout: Optional[int] = None,
+    ) -> PromptResult:
+        if not self.session_id:
+            self.start()
+
+        self._cancel_event.clear()
+        self.last_active = time.time()
+        self.message_count += 1
+        self.last_query = text
+
+        cmd = ["ttadk", "code", "-t", self._tool_name]
+        if self._model_name:
+            cmd.extend(["-m", self._model_name])
+        # Append prompt as the last argument
+        cmd.append(text)
+
+        chunks: list[str] = []
+        try:
+            self._proc = subprocess.Popen(
+                cmd,
+                cwd=self._cwd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1, # Line buffered
+            )
+
+            deadline = (time.monotonic() + timeout) if timeout else None
+            
+            # Read stdout line by line for streaming
+            if self._proc.stdout:
+                for line in self._proc.stdout:
+                    if self._cancel_event.is_set():
+                        self._proc.terminate()
+                        self._proc.wait(timeout=5)
+                        return PromptResult(stop_reason="cancelled", text="".join(chunks))
+                    
+                    if deadline and time.monotonic() > deadline:
+                        self._proc.terminate()
+                        self._proc.wait(timeout=5)
+                        return PromptResult(stop_reason="timeout", text="".join(chunks) + "\n❌ TTADK 执行超时")
+
+                    chunks.append(line)
+                    if on_event:
+                        on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=line))
+
+            self._proc.wait(timeout=30)
+            rc = int(self._proc.returncode or 0)
+            err = (self._proc.stderr.read() or "").strip() if self._proc.stderr else ""
+            
+            output = "".join(chunks).strip()
+            
+            if rc != 0:
+                if err:
+                    output = (output + "\n" + err).strip()
+                    if on_event:
+                        on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="\n" + err))
+                stop_reason = "failed"
+            else:
+                stop_reason = "end_turn"
+
+            return PromptResult(stop_reason=stop_reason, text=output)
+
+        except Exception as e:
+            return PromptResult(stop_reason="error", text=f"❌ TTADK 执行异常: {e}")
+        finally:
+            self._proc = None
+
+
 import re as _re
 
 _RATE_LIMIT_PATTERNS = [
@@ -1492,7 +1648,8 @@ def create_sync_session(agent_type: str, cwd: str, model_name: Optional[str] = N
         except Exception:
             model_name = None
         # NOTE: create_sync_session 仅构造会话（不负责启动/重试/PTY）；PTY 重试在启动点处理。
-        return SyncACPSession(agent_type=agent_type, cwd=cwd, model_name=model_name)
+        # 切换到 ACP backend
+        return SyncACPSession(agent_type=agent_type, cwd=cwd, model_name=model_name, ttadk_use_pty=True)
 
     return SyncACPSession(agent_type=agent_type or "coco", cwd=cwd, model_name=effective_model)
 
@@ -1507,7 +1664,7 @@ def create_engine_session(
     """Create and start a session for Deep/Loop/Spec engines.
 
     - Claude: CLI backend (no ACP retry needed)
-    - ttadk_*: ACP backend (direct agent type)
+    - ttadk_*: CLI backend (no ACP retry needed)
     - Others: ACP backend with retry and progressive timeout
 
     If rate_limit_retry_enabled is True in settings, the returned session
@@ -1535,7 +1692,7 @@ def create_engine_session(
     # - 非 TTADK: 依旧输出 `model=` 便于排障。
     if agent_type.startswith("ttadk_"):
         logger.info(
-            "[SessionFactory] create_engine_session: agent=%s cwd=%s input_model=%s",
+            "[SessionFactory] create_engine_session: agent=%s cwd=%s input_model=%s (ACP mode)",
             agent_type or "coco",
             cwd,
             model_name,
@@ -1552,77 +1709,37 @@ def create_engine_session(
         session: SyncSession = SyncClaudeCLISession(cwd=cwd)
         session.start()
     elif agent_type.startswith("ttadk_"):
-        tool_name = agent_type.replace("ttadk_", "", 1)
-        # 统一启动入口：TTADK 启动编排 SSOT 在 `src.ttadk.startup.start_agent_session`。
-        from .ttadk.startup import start_agent_session
-
-        info = start_agent_session(
-            agent_type=agent_type,
-            cwd=cwd,
-            startup_timeout=float(settings.acp_startup_timeout or 60),
-            model_name=model_name,
-            session_cls=SyncACPSession,
-            log_failures=True,
-            get_settings_fn=get_settings,
-        )
-
-        # 统一“启动点”语义日志：只消费 coordinator 的稳定字段（SSOT），避免二次推导。
-        diag = dict(info.get("diagnostics") or {}) if isinstance(info, dict) else {}
-        attempts = list(diag.get("attempts") or []) if isinstance(diag, dict) else []
-        # attempts 摘要（限长）：避免日志过大
-        attempts_summary = ""
+        # Use SSOT startup coordinator which handles precheck, PTY retry, and invalid model auto-repair.
         try:
-            from .acp.diagnostics import format_attempts_summary
+            from .ttadk.startup import start_agent_session
 
-            attempts_summary = format_attempts_summary(attempts, per_item_limit=220, total_limit=900, get_settings_fn=get_settings)
-        except Exception:
-            attempts_summary = ""
-
-        try:
-            # SSOT: model 字段语义必须是“实际透传值”（真实 id 或 (auto)）。
-            # 兼容：历史返回结构可能缺少 passthrough_model，但已提供 resolved_model=真实 id。
-            passthrough = info.get("passthrough_model")
-            if not passthrough and bool(info.get("validated")):
-                cand = str(info.get("resolved_model") or "").strip()
-                # 过滤 coordinator 的占位符（"(auto)"/"(fallback)"），避免误把占位符当真实透传值。
-                if cand and not cand.startswith("("):
-                    passthrough = cand
-
-            model_pass = passthrough or "(auto)"
-            resolved_real = info.get("resolved_real_name") or passthrough or info.get("resolved_model") or "(auto)"
-            model_display = str(info.get("model_display") or "")
-            resolution_source = str(info.get("resolution_source") or "")
-            resolution_reason = str(info.get("resolution_reason") or "")
-            logger.info(
-                "[SessionFactory] ttadk startup: tool=%s input_model=%s model=%s model_display=%s resolution_source=%s resolution_reason=%s resolved_real_name=%s passthrough_model=%s validated=%s source=%s degraded=%s repaired=%s fail_phase=%s decision=%s warnings=%s attempts_summary=%s",
-                info.get("tool") or tool_name,
-                info.get("input_model") or "",
-                model_pass,
-                model_display,
-                resolution_source,
-                resolution_reason,
-                resolved_real,
-                model_pass,
-                bool(info.get("validated")),
-                info.get("source") or "(unknown)",
-                bool(info.get("degraded")),
-                bool(info.get("repaired")),
-                info.get("fail_phase") or "",
-                info.get("decision") or "",
-                list(info.get("warnings") or []),
-                attempts_summary or "(empty)",
+            info = start_agent_session(
+                agent_type=agent_type,
+                cwd=cwd,
+                startup_timeout=settings.acp_startup_timeout,
+                model_name=model_name,
+                log_failures=True,
             )
-        except Exception:
-            pass
 
-        session = info.get("session")
-        if session is None:
+            # Compat: log summary for tests/legacy parsers
             try:
-                session = (info.get("result") or (None, ""))[0]
+                logger.info(
+                    "[SessionFactory] ttadk startup: tool=%s input_model=%s model=%s validated=%s source=%s decision=%s warnings=%s",
+                    info.get("tool") or "",
+                    info.get("input_model") or "",
+                    (info.get("resolved_model") or "(auto)"),
+                    bool(info.get("validated")),
+                    info.get("source") or "unknown",
+                    info.get("decision") or "",
+                    list(info.get("warnings") or []),
+                )
             except Exception:
-                session = None
-        if session is None:
-            raise RuntimeError("ttadk_start_agent_session_returned_empty_session")
+                pass
+
+            session = info["session"]
+        except Exception:
+            # Fallback (though start_agent_session should handle most cases/downgrades)
+            raise
     else:
         effective_model = model_name
         if not effective_model:

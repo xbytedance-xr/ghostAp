@@ -244,7 +244,7 @@ def test_start_ttadk_session_with_pty_retry_on_stdin_not_tty(monkeypatch, caplog
 
     calls: list[dict] = []
 
-    def _fake_start_session_with_retry(*, agent_type, cwd, startup_timeout, model_name, session_cls=None, ttadk_use_pty=False, log_failures=True):
+    def _fake_start_session_with_retry(*, agent_type, cwd, startup_timeout, model_name, session_cls=None, ttadk_use_pty=False, log_failures=True, **kwargs):
         calls.append({
             "agent_type": agent_type,
             "cwd": cwd,

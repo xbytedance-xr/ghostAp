@@ -439,7 +439,7 @@ def test_ttadk_startup_model_log_uses_real_or_auto(caplog):
         def describe_agent(self):
             return "dummy"
 
-        def start(self, startup_timeout: float = 60):
+        def start(self, startup_timeout: float = 60, **kwargs):
             return "sid"
 
         def load_session(self, session_id: str):
@@ -521,7 +521,7 @@ def test_ttadk_resume_model_log_uses_real_or_auto(caplog):
         def describe_agent(self):
             return "dummy"
 
-        def start(self, startup_timeout: float = 60):
+        def start(self, startup_timeout: float = 60, **kwargs):
             return "sid"
 
         def load_session(self, session_id: str):

@@ -35,7 +35,7 @@ def test_sync_adapter_startup_fail_log_has_err_type_and_err_repr(monkeypatch, ca
             self._agent_cmd = "ttadk"
             self._agent_args = ["acp", "serve"]
 
-        def start(self, startup_timeout: float = 60):
+        def start(self, startup_timeout: float = 60, **kwargs):
             raise _EmptyStrErr()
 
         def describe_agent(self):
@@ -84,7 +84,7 @@ def test_sync_adapter_startup_fail_diagnostics_summary_redacted_and_truncated(mo
             # include sensitive args for redaction
             self._agent_args = ["acp", "serve", "--token=abc123", "--api_key=sk-secret-1234567890"]
 
-        def start(self, startup_timeout: float = 60):
+        def start(self, startup_timeout: float = 60, **kwargs):
             e = _EmptyStrErr()
             setattr(e, "stderr", "token=abc123 api_key=sk-secret-1234567890 " + ("x" * 1000))
             raise e
@@ -227,7 +227,7 @@ def test_start_session_with_retry_ttadk_startup_error_empty_message_has_fail_rea
             self._agent_cmd = "ttadk"
             self._agent_args = ["acp", "serve"]
 
-        def start(self, startup_timeout: float = 60):
+        def start(self, startup_timeout: float = 60, **kwargs):
             # Empty message on purpose
             raise TTADKStartupError("")
 
@@ -276,7 +276,7 @@ def test_start_agent_session_with_diagnostics_attaches_non_empty_error_text(monk
         def __init__(self, agent_type: str, cwd: str, model_name=None, ttadk_use_pty=None):
             self.session_id = ""
 
-        def start(self, startup_timeout: float = 60):
+        def start(self, startup_timeout: float = 60, **kwargs):
             raise _EmptyStrErr()
 
         def close(self):
@@ -320,7 +320,7 @@ def test_start_session_with_retry_runtime_error_empty_message_has_fail_reason_an
             self._agent_cmd = "ttadk"
             self._agent_args = ["acp", "serve"]
 
-        def start(self, startup_timeout: float = 60):
+        def start(self, startup_timeout: float = 60, **kwargs):
             raise RuntimeError("")
 
         def describe_agent(self):
@@ -592,7 +592,7 @@ class TestResolveAgentSpec:
         monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
         assert sa.resolve_agent_spec("ttadk_coco") == (
             "python3",
-            ["-m", "src.utils.ttadk_wrapper", "ttadk", "code", "-t", "coco", "-a", "acp serve"],
+            ["-m", "src.utils.ttadk_wrapper", "ttadk", "code", "-t", "coco", "-a", "acp", "-a", "serve"],
         )
 
     def test_ttadk_claude_no_model(self, monkeypatch):
@@ -600,7 +600,7 @@ class TestResolveAgentSpec:
         monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
         assert sa.resolve_agent_spec("ttadk_claude") == (
             "python3",
-            ["-m", "src.utils.ttadk_wrapper", "ttadk", "code", "-t", "claude", "-a", "acp serve"],
+            ["-m", "src.utils.ttadk_wrapper", "ttadk", "code", "-t", "claude", "-a", "acp", "-a", "serve"],
         )
 
     def test_ttadk_with_model(self, monkeypatch):
@@ -608,7 +608,7 @@ class TestResolveAgentSpec:
         monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
         assert sa.resolve_agent_spec("ttadk_coco", model_name="gpt-4") == (
             "python3",
-            ["-m", "src.utils.ttadk_wrapper", "ttadk", "code", "-t", "coco", "-m", "gpt-4", "-a", "acp serve"],
+            ["-m", "src.utils.ttadk_wrapper", "ttadk", "code", "-t", "coco", "-m", "gpt-4", "-a", "acp", "-a", "serve"],
         )
 
     def test_ttadk_case_insensitive(self, monkeypatch):
@@ -616,7 +616,7 @@ class TestResolveAgentSpec:
         monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
         assert sa.resolve_agent_spec("TTADK_COCO") == (
             "python3",
-            ["-m", "src.utils.ttadk_wrapper", "ttadk", "code", "-t", "coco", "-a", "acp serve"],
+            ["-m", "src.utils.ttadk_wrapper", "ttadk", "code", "-t", "coco", "-a", "acp", "-a", "serve"],
         )
 
 

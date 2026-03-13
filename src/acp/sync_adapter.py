@@ -632,10 +632,10 @@ def _ttadk_tool_supports_acp(tool_cmd: str) -> bool:
             _TTADK_TOOL_INFLIGHT.discard(tool_cmd)
 
 
-def _resolve_ttadk_passthrough_args(tool_name: str) -> str:
+def _resolve_ttadk_passthrough_args(tool_name: str) -> list[str]:
     """Resolve `ttadk code -a <args>` for a specific tool.
 
-    Returns a single string for ttadk's `-a/--args` passthrough.
+    Returns a list of strings for ttadk's `-a/--args` passthrough.
     """
     tool = (tool_name or "").strip().lower()
     if not tool:
@@ -646,16 +646,16 @@ def _resolve_ttadk_passthrough_args(tool_name: str) -> str:
     # 因此这里做一次轻量探测：不支持则立刻抛 AgentSpecResolveError，让上层走确定性降级，避免 handshake 超时。
 
     if tool == "coco":
-        return "acp serve"
+        return ["acp", "serve"]
 
     # 兼容旧行为：对 claude 先返回 passthrough，由上层 quickcheck 决定是否降级。
     # 原因：claude/codex 等工具在不同环境下能力差异较大，resolve_agent_spec 应尽量保持纯函数。
     if tool == "claude":
-        return "acp serve"
+        return ["acp", "serve"]
 
     ok, rc, out_snip, err_snip = _probe_acp_serve_help(tool)
     if ok:
-        return "acp serve"
+        return ["acp", "serve"]
 
     raise AgentSpecResolveError(
         f"TTADK tool={tool} 不支持 `acp serve`（将触发降级）",
@@ -808,7 +808,8 @@ def resolve_agent_spec(agent_type: str, model_name: Optional[str] = None, *, tta
             args.extend(["-m", str(resolved_model)])
 
         # NOTE: `-a/--args` is passthrough to downstream tool CLI.
-        args.extend(["-a", passthrough])
+        for arg in passthrough:
+            args.extend(["-a", arg])
 
         logger.info(
             "[ACP:TTADK] resolve_agent_spec: tool=%s model=%s input_model=%s resolution_source=%s resolution_reason=%s passthrough=%s pty=%s",
