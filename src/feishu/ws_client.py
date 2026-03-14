@@ -2,6 +2,7 @@ import json
 import logging
 import time
 import os
+import asyncio
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import *
 from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTrigger, P2CardActionTriggerResponse
@@ -58,6 +59,7 @@ class FeishuWSClient:
         self._ttadk_manager = ACPSessionManager("ttadk", session_timeout=self.settings.coco_session_timeout)
         self._intent_recognizer = IntentRecognizer()
         self._message_cache = MessageCache(ttl=300, max_size=1000, cleanup_interval=60)
+        self._card_event_cache = MessageCache(ttl=300, max_size=1000, cleanup_interval=60)
         self._scheduler = TaskScheduler(
             max_concurrent=self.settings.task_scheduler_max_concurrent,
             per_key_concurrency=self.settings.task_scheduler_per_key_concurrency,
@@ -152,6 +154,97 @@ class FeishuWSClient:
             handler = getattr(self, handler_attr)
             setattr(self, attr_name, getattr(handler, method_name))
 
+        # --- Action Registry ---
+        self._action_registry_exact: dict[str, Callable] = {}
+        self._action_registry_prefix: list[tuple[str, Callable]] = []
+        self._init_action_registry()
+
+    def _register_action(self, handler: Callable, exact: Optional[str] = None, prefix: Optional[str] = None):
+        """Register a card action handler."""
+        if exact:
+            self._action_registry_exact[exact] = handler
+        if prefix:
+            self._action_registry_prefix.append((prefix, handler))
+
+    def _init_action_registry(self):
+        """Initialize all card action handlers."""
+        # Coco
+        self._register_action(self._handle_card_enter_coco, exact="enter_coco")
+        self._register_action(self._handle_card_exit_coco, exact="exit_coco")
+        self._register_action(lambda mid, cid, pid, val: self._handle_card_resume_coco(mid, cid, pid, val.get("session_id", "")), exact="resume_coco")
+        self._register_action(self._handle_card_new_coco, exact="new_coco")
+        
+        # Claude
+        self._register_action(self._handle_card_enter_claude, exact="enter_claude")
+        self._register_action(self._handle_card_exit_claude, exact="exit_claude")
+        self._register_action(lambda mid, cid, pid, val: self._handle_card_resume_claude(mid, cid, pid, val.get("session_id", "")), exact="resume_claude")
+        self._register_action(self._handle_card_new_claude, exact="new_claude")
+        
+        # Project
+        self._register_action(lambda mid, cid, pid, val: self._show_project_status(mid, cid, self._project_manager.get_project(pid) if pid else None), exact="show_status")
+        self._register_action(lambda mid, cid, pid, val: self._show_project_board(mid, cid, origin_message_id=mid), exact="switch_project")
+        self._register_action(lambda mid, cid, pid, val: self._show_project_board(mid, cid, origin_message_id=mid), exact="show_board")
+        self._register_action(lambda mid, cid, pid, val: self._show_project_board(mid, cid, origin_message_id=mid), exact="refresh_board")
+        self._register_action(lambda mid, cid, pid, val: self._show_project_status(mid, cid, self._project_manager.get_project(pid) if pid else None, origin_message_id=mid), exact="show_detail")
+        
+        def _handle_switch_to(mid, cid, pid, val):
+            if pid:
+                project = self._project_manager.get_project(pid)
+                if project:
+                    self._switch_project(mid, cid, project.project_name)
+        self._register_action(_handle_switch_to, exact="switch_to")
+        
+        def _handle_continue_dev(mid, cid, pid, val):
+            project = self._project_manager.get_project(pid) if pid else None
+            if project:
+                self._project_manager.set_active_project(cid, pid)
+                content = f"继续在 **{project.project_name}** 项目中开发\n\n📂 项目目录: `{project.root_path}`\n\n直接发送命令或消息即可"
+                msg_type, card_content = CardBuilder.build_project_response_card(
+                    project, "继续开发", content, show_buttons=True
+                )
+                response_id = self._reply_message_with_id(mid, card_content, msg_type)
+                if response_id:
+                    self._register_message_project(response_id, project)
+        self._register_action(_handle_continue_dev, exact="continue_dev")
+        
+        def _handle_list_files(mid, cid, pid, val):
+            project = self._project_manager.get_project(pid) if pid else None
+            if project:
+                self._project_manager.set_active_project(cid, pid)
+                self._submit_shell_command(mid, cid, "ls -la", project.root_path, project)
+        self._register_action(_handle_list_files, exact="list_files")
+        
+        self._register_action(lambda mid, cid, pid, val: self._reply_message(mid, "📝 创建新项目\n\n请发送: `/new 项目名 路径`\n\n例如: `/new myApp ~/workspace/myApp`"), exact="new_project_prompt")
+
+        # TTADK
+        self._register_action(lambda mid, cid, pid, val: self._handle_select_ttadk_tool(mid, cid, val.get("tool_name", ""), pid), exact="select_ttadk_tool")
+        self._register_action(lambda mid, cid, pid, val: self._handle_select_ttadk_model(mid, cid, val.get("tool_name", ""), val.get("model_name", ""), self._project_manager.get_project(pid) if pid else None), exact="select_ttadk_model")
+        self._register_action(lambda mid, cid, pid, val: self._handle_refresh_ttadk_models(mid, cid, val.get("tool_name", ""), pid), exact="refresh_ttadk_models")
+        self._register_action(lambda mid, cid, pid, val: self._handle_ttadk_command(mid, cid, self._project_manager.get_project(pid) if pid else None), exact="show_ttadk_menu")
+        
+        # System
+        self._register_action(lambda mid, cid, pid, val: self._show_full_help(mid, cid, self._project_manager.get_project(pid) if pid else None), exact="show_help_menu")
+        self._register_action(lambda mid, cid, pid, val: self._handle_deep_prompt(mid, cid), exact="enter_deep_prompt")
+        self._register_action(lambda mid, cid, pid, val: self._handle_help_category(mid, cid, val.get("category", "main"), self._project_manager.get_project(pid) if pid else None, origin_message_id=mid), exact="help_category")
+        
+        # Streaming
+        def _handle_load_more(mid, cid, pid, val):
+            msg_id = val.get("message_id", "")
+            if msg_id:
+                manager = self._get_streaming_manager()
+                manager.increase_pagination(msg_id)
+        self._register_action(_handle_load_more, exact="load_more")
+        
+        # Deep Engine
+        self._register_action(lambda mid, cid, pid, val: self._show_deep_status(mid, cid, self._project_manager.get_project(pid) if pid else None, origin_message_id=mid), exact="show_deep_status")
+        self._register_action(lambda mid, cid, pid, val, type=None: self._deep_handler.handle_card_action(mid, cid, type, val), prefix="deep_")
+        
+        # Loop Engine
+        self._register_action(lambda mid, cid, pid, val, type=None: self._loop_handler.handle_card_action(mid, cid, type, val), prefix="loop_")
+        
+        # Spec Engine
+        self._register_action(lambda mid, cid, pid, val, type=None: self._spec_handler.handle_card_action(mid, cid, type, val), prefix="spec_")
+
     def close(self):
         """Best-effort cleanup for background resources."""
         # 1) Stop long-running engines first (they may hold ACP subprocesses)
@@ -189,6 +282,11 @@ class FeishuWSClient:
             self._message_cache.stop_cleanup_thread()
         except Exception as e:
             logger.debug("停止message_cache清理线程失败: %s", e)
+
+        try:
+            self._card_event_cache.stop_cleanup_thread()
+        except Exception as e:
+            logger.debug("停止card_event_cache清理线程失败: %s", e)
 
         # 2) Close per-chat programming sessions (kills ACP agent subprocesses)
         try:
@@ -252,7 +350,7 @@ class FeishuWSClient:
 
     def _get_image_handler(self) -> FeishuImageHandler:
         if self._image_handler is None:
-            self._image_handler = FeishuImageHandler(self._get_api_client())
+            self._image_handler = FeishuImageHandler(self._get_api_client, self.settings)
         return self._image_handler
 
     # ==================================================================
@@ -313,6 +411,8 @@ class FeishuWSClient:
         "_handle_select_ttadk_tool": ("_system_handler", "handle_select_ttadk_tool"),
         "_handle_select_ttadk_model":("_system_handler", "handle_select_ttadk_model"),
         "_handle_refresh_ttadk_models": ("_system_handler", "handle_refresh_ttadk_models"),
+        "_handle_help_category":     ("_system_handler", "handle_help_category"),
+        "_handle_deep_prompt":       ("_system_handler", "handle_deep_prompt"),
         # --- Deep Engine ---
         "_handle_deep_command":      ("_deep_handler", "handle_deep_command"),
         "_start_deep_engine":        ("_deep_handler", "start_deep_engine"),
@@ -324,6 +424,8 @@ class FeishuWSClient:
         "_stop_deep_engine":         ("_deep_handler", "stop_deep_engine"),
         "_stop_all_deep_engines":    ("_deep_handler", "stop_all_deep_engines"),
         "_update_deep_context":      ("_deep_handler", "update_deep_context"),
+        "_toggle_deep_log":          ("_deep_handler", "toggle_deep_log"),
+        "_switch_deep_card_mode":    ("_deep_handler", "switch_deep_card_mode"),
         # --- Loop Engine ---
         "_handle_loop_command":       ("_loop_handler", "handle_loop_command"),
         "_start_loop_engine":        ("_loop_handler", "start_loop_engine"),
@@ -332,6 +434,8 @@ class FeishuWSClient:
         "_resume_loop_engine":       ("_loop_handler", "resume_loop_engine"),
         "_stop_loop_engine":         ("_loop_handler", "stop_loop_engine"),
         "_update_loop_guidance":     ("_loop_handler", "update_loop_guidance"),
+        "_toggle_loop_log":          ("_loop_handler", "toggle_loop_log"),
+        "_switch_loop_card_mode":    ("_loop_handler", "switch_loop_card_mode"),
         # --- Spec Engine ---
         "_handle_spec_command":       ("_spec_handler", "handle_spec_command"),
         "_start_spec_engine":        ("_spec_handler", "start_spec_engine"),
@@ -340,6 +444,8 @@ class FeishuWSClient:
         "_resume_spec_engine":       ("_spec_handler", "resume_spec_engine"),
         "_stop_spec_engine":         ("_spec_handler", "stop_spec_engine"),
         "_update_spec_guidance":     ("_spec_handler", "update_spec_guidance"),
+        "_toggle_spec_log":          ("_spec_handler", "toggle_spec_log"),
+        "_switch_spec_card_mode":    ("_spec_handler", "switch_spec_card_mode"),
         # --- Project ---
         "_create_project":           ("_project_handler", "create_project"),
         "_show_project_board":       ("_project_handler", "show_project_board"),
@@ -678,6 +784,20 @@ class FeishuWSClient:
             else:
                 self._process_with_intent(message_id, chat_id, text, project, shell_fast_tracked=shell_fast_tracked)
 
+        except asyncio.TimeoutError:
+            run_id = task_ctx.run_id if task_ctx else "unknown"
+            _mid = locals().get("message_id", "unknown")
+            _cid = locals().get("chat_id", "unknown")
+            _pid = locals().get("project_id", "unknown")
+            _rid = locals().get("request_id", "unknown")
+            logger.error(
+                "处理消息超时 (asyncio.TimeoutError): message_id=%s, chat_id=%s, project_id=%s, request_id=%s, run_id=%s",
+                _mid, _cid, _pid, _rid, run_id,
+            )
+            try:
+                self._reply_message(_mid, "❌ 请求处理超时，请稍后重试", request_id=_rid)
+            except Exception:
+                pass
         except Exception as e:
             logger.error("处理消息异常: %s", e, exc_info=True)
             try:
@@ -692,6 +812,11 @@ class FeishuWSClient:
     def _handle_card_action(self, data: P2CardActionTrigger) -> Optional[P2CardActionTriggerResponse]:
         try:
             header = data.header
+            event_id = header.event_id
+            if self._card_event_cache.is_duplicate(event_id):
+                logger.warning("跳过重复卡片回调事件: %s", event_id)
+                return None
+
             event = data.event
             action = event.action
             context = event.context
@@ -791,23 +916,11 @@ class FeishuWSClient:
                 "select_ttadk_tool", "select_ttadk_model",
                 "refresh_ttadk_models",
                 "load_more",
+                "show_ttadk_menu", "show_help_menu", "enter_deep_prompt", "help_category",
             }
             return action_type in system_actions
         except Exception:
             return False
-
-    def _resolve_deep_target_project(self, chat_id: str, project_id: str, deep_project_id: str) -> Optional[ProjectContext]:
-        """Resolve the project for a deep engine card action."""
-        target = self._project_manager.get_project(project_id) if project_id else None
-        if not target and deep_project_id:
-            try:
-                engine = self._deep_engine_manager.find_by_deep_project_id(chat_id, deep_project_id)
-                if engine:
-                    target = self._project_manager.find_project_by_path(engine.root_path)
-            except Exception as e:
-                logger.debug("resolve_deep_target_project失败: %s", e)
-                target = None
-        return target
 
     def _process_card_action_async(self, data: Any, task_ctx=None):
         try:
@@ -849,93 +962,55 @@ class FeishuWSClient:
                 action_type, project_id, list(value.keys()),
             )
 
-            if action_type == "enter_coco":
-                self._handle_card_enter_coco(open_message_id, open_chat_id, project_id)
-            elif action_type == "exit_coco":
-                self._handle_card_exit_coco(open_message_id, open_chat_id, project_id)
-            elif action_type == "show_status":
-                project = self._project_manager.get_project(project_id) if project_id else None
-                self._show_project_status(open_message_id, open_chat_id, project)
-            elif action_type == "switch_project":
-                self._show_project_board(open_message_id, open_chat_id)
-            elif action_type == "switch_to":
-                if project_id:
-                    project = self._project_manager.get_project(project_id)
-                    if project:
-                        self._switch_project(open_message_id, open_chat_id, project.project_name)
-            elif action_type == "continue_dev":
-                project = self._project_manager.get_project(project_id) if project_id else None
-                if project:
-                    self._project_manager.set_active_project(open_chat_id, project_id)
-                    content = f"继续在 **{project.project_name}** 项目中开发\n\n📂 项目目录: `{project.root_path}`\n\n直接发送命令或消息即可"
-                    msg_type, card_content = CardBuilder.build_project_response_card(
-                        project, "继续开发", content, show_buttons=True
-                    )
-                    response_id = self._reply_message_with_id(open_message_id, card_content, msg_type)
-                    if response_id:
-                        self._register_message_project(response_id, project)
-            elif action_type == "show_board":
-                self._show_project_board(open_message_id, open_chat_id)
-            elif action_type == "refresh_board":
-                self._show_project_board(open_message_id, open_chat_id)
-            elif action_type == "show_detail":
-                project = self._project_manager.get_project(project_id) if project_id else None
-                self._show_project_status(open_message_id, open_chat_id, project)
-            elif action_type == "list_files":
-                project = self._project_manager.get_project(project_id) if project_id else None
-                if project:
-                    self._project_manager.set_active_project(open_chat_id, project_id)
-                    self._submit_shell_command(open_message_id, open_chat_id, "ls -la", project.root_path, project)
-            elif action_type == "resume_coco":
-                session_id = value.get("session_id", "")
-                self._handle_card_resume_coco(open_message_id, open_chat_id, project_id, session_id)
-            elif action_type == "new_coco":
-                self._handle_card_new_coco(open_message_id, open_chat_id, project_id)
-            elif action_type == "enter_claude":
-                self._handle_card_enter_claude(open_message_id, open_chat_id, project_id)
-            elif action_type == "exit_claude":
-                self._handle_card_exit_claude(open_message_id, open_chat_id, project_id)
-            elif action_type == "resume_claude":
-                session_id = value.get("session_id", "")
-                self._handle_card_resume_claude(open_message_id, open_chat_id, project_id, session_id)
-            elif action_type == "new_claude":
-                self._handle_card_new_claude(open_message_id, open_chat_id, project_id)
-            elif action_type in ("deep_pause", "deep_resume", "deep_stop"):
-                target_project = self._resolve_deep_target_project(
-                    open_chat_id, project_id, value.get("deep_project_id", "")
-                )
-                deep_actions = {
-                    "deep_pause":  self._pause_deep_engine,
-                    "deep_resume": self._resume_deep_engine,
-                    "deep_stop":   self._stop_deep_engine,
-                }
-                deep_actions[action_type](open_message_id, open_chat_id, project=target_project)
-            elif action_type == "new_project_prompt":
-                self._reply_message(open_message_id, "📝 创建新项目\n\n请发送: `/new 项目名 路径`\n\n例如: `/new myApp ~/workspace/myApp`")
-            elif action_type == "select_ttadk_tool":
-                tool_name = value.get("tool_name", "")
-                project_id = value.get("project_id", "")
-                self._handle_select_ttadk_tool(open_message_id, open_chat_id, tool_name, project_id)
-            elif action_type == "select_ttadk_model":
-                tool_name = value.get("tool_name", "")
-                model_name = value.get("model_name", "")
-                project_id = value.get("project_id", "")
-                project = self._project_manager.get_project(project_id) if project_id else None
-                self._handle_select_ttadk_model(open_message_id, open_chat_id, tool_name, model_name, project)
-            elif action_type == "refresh_ttadk_models":
-                tool_name = value.get("tool_name", "")
-                project_id = value.get("project_id", "")
-                self._handle_refresh_ttadk_models(open_message_id, open_chat_id, tool_name, project_id)
-            elif action_type == "load_more":
-                message_id = value.get("message_id", "")
-                if message_id:
-                    manager = self._get_streaming_manager()
-                    manager.increase_pagination(message_id)
+            # --- Dispatch via Registry ---
+            
+            # 1. Exact match
+            if action_type in self._action_registry_exact:
+                self._action_registry_exact[action_type](open_message_id, open_chat_id, project_id, value)
+            else:
+                # 2. Prefix match
+                matched = False
+                for prefix, handler in self._action_registry_prefix:
+                    if action_type.startswith(prefix):
+                        handler(open_message_id, open_chat_id, project_id, value, type=action_type)
+                        matched = True
+                        break
+                
+                if not matched:
+                    # Fallback or unknown action logging if needed
+                    logger.debug("未注册的卡片动作: %s", action_type)
+            
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
             logger.debug("卡片回调处理耗时: %dms", elapsed_ms)
 
+        except asyncio.TimeoutError:
+            run_id = task_ctx.run_id if task_ctx else "unknown"
+            _action = locals().get("action_type", "unknown")
+            _pid = locals().get("project_id", "unknown")
+            _mid = locals().get("open_message_id", "unknown")
+            _cid = locals().get("open_chat_id", "unknown")
+            _rid = task_ctx.spec.request_id if task_ctx else "unknown"
+
+            logger.error(
+                "处理卡片回调超时 (asyncio.TimeoutError): action=%s, project_id=%s, open_message_id=%s, open_chat_id=%s, request_id=%s, run_id=%s",
+                _action, _pid, _mid, _cid, _rid, run_id,
+            )
+            try:
+                self._reply_message(_mid, "❌ 请求处理超时，请稍后重试", request_id=_rid)
+            except Exception:
+                pass
+
         except Exception as e:
             logger.error("处理卡片回调异常: %s", e, exc_info=True)
+            # 发送错误提示给用户
+            _mid = locals().get("open_message_id", "unknown")
+            _cid = locals().get("open_chat_id", "unknown")
+            _action = locals().get("action_type", "unknown")
+            try:
+                if _mid != "unknown":
+                    self._reply_message(_mid, f"❌ 操作失败 ({_action}): {e}")
+            except Exception:
+                pass
 
     def _process_with_intent(self, message_id: str, chat_id: str, text: str, project: Optional[ProjectContext] = None, *, shell_fast_tracked: bool = False):
         from ..mode import InteractionMode
@@ -1340,6 +1415,7 @@ class FeishuWSClient:
         )
 
         self._message_cache.start_cleanup_thread()
+        self._card_event_cache.start_cleanup_thread()
 
         logger.info("正在建立飞书长连接...")
         logger.info("多项目管理已启用")

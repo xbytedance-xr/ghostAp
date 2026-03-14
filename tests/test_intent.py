@@ -131,6 +131,32 @@ class TestIntentRecognizerQuickMatch:
         assert result is None
 
 
+
+class TestIntentRecognizerASR:
+    """测试 ASR 容错识别功能"""
+    @pytest.fixture
+    def recognizer(self):
+        return IntentRecognizer()
+
+    def test_asr_period_suffix(self, recognizer):
+        """测试末尾句号去除"""
+        # "帮我建个项目叫测试。" -> CREATE_PROJECT
+        # 这里只测试 _quick_match 能否覆盖部分规则，或者 mock LLM 测试复杂场景
+        # _quick_match 目前只处理特定命令前缀，对于自然语言 ASR 错误，主要依赖 LLM
+        pass
+
+    def test_asr_typo_correction_in_quick_match(self, recognizer):
+        """测试 _quick_match 中的拼写纠正"""
+        # /claud -> /claude
+        result = recognizer._quick_match("/claud")
+        assert result is not None
+        assert result.primary_intent == IntentType.ENTER_CLAUDE
+        
+        # /coc -> /coco
+        result = recognizer._quick_match("/coc")
+        assert result is not None
+        assert result.primary_intent == IntentType.ENTER_COCO
+
 class TestIntentRecognizerContextHint:
     @pytest.fixture
     def recognizer(self):

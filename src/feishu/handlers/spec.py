@@ -21,6 +21,7 @@ from ...utils.errors import fmt_error
 from ...utils.text import append_duration_to_title, generate_task_id
 from ..emoji import EmojiReaction
 from .base import BaseHandler
+from ..renderers.spec_renderer import SpecRenderer
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
@@ -30,6 +31,14 @@ logger = logging.getLogger(__name__)
 
 class SpecHandler(BaseHandler):
     """Manages the full lifecycle of Spec Engine tasks."""
+
+    def __init__(self, ctx: "HandlerContext") -> None:
+        super().__init__(ctx)
+        self.renderer = SpecRenderer(self)
+
+    def _get_ui_state(self, spec_project_id: str) -> dict:
+        """Deprecated: Delegate to renderer"""
+        return self.renderer.get_ui_state(spec_project_id)
 
     # ------------------------------------------------------------------
     # Command router
@@ -148,11 +157,21 @@ class SpecHandler(BaseHandler):
 
         def run_spec_engine():
             try:
-                callbacks = self._create_spec_callbacks(message_id, chat_id, project, engine_name)
+                callbacks = self.renderer.create_spec_callbacks(message_id, chat_id, project, engine_name)
                 engine.execute(requirement, callbacks, task_id=task_id, on_rate_limit=_on_rate_limit)
             except Exception as e:
                 logger.error("Spec Engine 执行异常: %s", e, exc_info=True)
-                error_content = reporter.format_error(str(e))
+                
+                # 使用增强的 fmt_error 处理异常消息
+                formatted = fmt_error("", e)
+                if formatted.startswith("❌ 失败: "):
+                    err_msg = formatted[len("❌ 失败: "):]
+                elif formatted == "❌ 失败":
+                    err_msg = "未知错误"
+                else:
+                    err_msg = formatted
+                
+                error_content = reporter.format_error(err_msg)
                 error_title = reporter.get_error_title()
                 err_msg_type, err_card = CardBuilder.build_deep_card(
                     project=project, title=error_title,
@@ -182,233 +201,24 @@ class SpecHandler(BaseHandler):
     # ------------------------------------------------------------------
     # callbacks factory
     # ------------------------------------------------------------------
-    def _create_spec_callbacks(self, message_id: str, chat_id: str, project: Optional["ProjectContext"], engine_name: str = "Coco") -> SpecEngineCallbacks:
-        request_id = self.ensure_request_id(message_id, chat_id=chat_id, project_id=(project.project_id if project else None))
-        reporter = self.ctx.spec_reporter
-        thread_root_message_id: list[str | None] = [None]
-
-        def _send_spec_message(card_content: str, msg_type: str = "interactive"):
-            use_thread = self.settings.default_reply_mode == "thread"
-            if use_thread:
-                reply_to = thread_root_message_id[0] or message_id
-                result_id = self.reply_message(
-                    reply_to, card_content, msg_type=msg_type,
-                    origin_message_id=message_id, request_id=request_id,
-                    reply_in_thread=True,
-                )
-                if thread_root_message_id[0] is None and result_id:
-                    thread_root_message_id[0] = result_id
-            else:
-                self.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
-
-        def on_analyzing_done(spec_project: SpecProject):
-            content = reporter.format_analyzing_done(spec_project)
-            title = reporter.get_analyzing_done_title()
-            msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title=title, content=content,
-                engine_name=f"Spec({engine_name})", show_buttons=False,
-            )
-            _send_spec_message(card_content, msg_type)
-
-        def on_cycle_start(current: int, max_cycles: int):
-            content = reporter.format_cycle_start(current, max_cycles)
-            title = reporter.get_cycle_start_title(current, max_cycles)
-            engine = self.ctx.spec_engine_manager.get(chat_id, project.root_path if project else "")
-            progress_bar = None
-            status_line = None
-            duration_line = None
-            criteria_section = None
-            if engine and engine.project:
-                progress_bar = reporter._make_progress_bar(engine.project.satisfied_count, engine.project.total_criteria)
-                title = append_duration_to_title(title, engine.project.duration())
-                status_line = reporter.format_status_line(engine.project)
-                duration_line = reporter.format_duration_line(engine.project)
-                criteria_section = reporter.format_criteria_section(engine.project)
-            msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title=title, content=content,
-                progress_bar=progress_bar,
-                is_executing=True, engine_name=f"Spec({engine_name})",
-                status_line=status_line, duration_line=duration_line,
-                criteria_section=criteria_section,
-            )
-            _send_spec_message(card_content, msg_type)
-
-        def on_phase_done(cycle: int, phase: SpecPhase, output: str):
-            content = reporter.format_phase_done(cycle, phase, output)
-            title = reporter.get_phase_title(cycle, phase)
-            engine = self.ctx.spec_engine_manager.get(chat_id, project.root_path if project else "")
-
-            # Surface structured-artifact validation / clarification in UI (avoid silent fallback)
-            if engine and engine.project and engine.project.current_cycle and engine.project.current_cycle.cycle_number == cycle:
-                cc = engine.project.current_cycle
-                notice: list[str] = []
-                if phase == SpecPhase.SPEC:
-                    if getattr(cc, "spec_artifact_errors", None):
-                        notice.append("⚠️ **规格产物不合规**（已降级为纯文本）：")
-                        for e in cc.spec_artifact_errors[:3]:
-                            notice.append(f"- {e}")
-                    if cc.spec_artifact and cc.spec_artifact.clarification_questions:
-                        notice.append("\nℹ️ **已自主决策的模糊点：**")
-                        for q in cc.spec_artifact.clarification_questions[:8]:
-                            notice.append(f"- {q}")
-                elif phase == SpecPhase.PLAN:
-                    if getattr(cc, "plan_artifact_errors", None):
-                        notice.append("⚠️ **规划产物不合规**（已降级为纯文本）：")
-                        for e in cc.plan_artifact_errors[:3]:
-                            notice.append(f"- {e}")
-
-                if notice:
-                    content = "\n".join(notice) + "\n\n" + content
-            progress_bar = None
-            status_line = None
-            duration_line = None
-            criteria_section = None
-            if engine and engine.project:
-                progress_bar = reporter._make_progress_bar(engine.project.satisfied_count, engine.project.total_criteria)
-                title = append_duration_to_title(title, engine.project.duration())
-                status_line = reporter.format_status_line(engine.project)
-                duration_line = reporter.format_duration_line(engine.project)
-                criteria_section = reporter.format_criteria_section(engine.project)
-            msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title=title, content=content,
-                progress_bar=progress_bar,
-                is_executing=bool(engine and engine.project and engine.project.status == SpecProjectStatus.RUNNING),
-                engine_name=f"Spec({engine_name})",
-                status_line=status_line, duration_line=duration_line,
-                criteria_section=criteria_section,
-            )
-            _send_spec_message(card_content, msg_type)
-
-        def on_review_done(cycle: int, review: ReviewResult):
-            content = reporter.format_review_result(review, cycle)
-            title = reporter.get_review_title(cycle, review.all_passed)
-            engine = self.ctx.spec_engine_manager.get(chat_id, project.root_path if project else "")
-            progress_bar = None
-            status_line = None
-            duration_line = None
-            criteria_section = None
-            if engine and engine.project:
-                progress_bar = reporter._make_progress_bar(engine.project.satisfied_count, engine.project.total_criteria)
-                title = append_duration_to_title(title, engine.project.duration())
-                status_line = reporter.format_status_line(engine.project)
-                duration_line = reporter.format_duration_line(engine.project)
-                criteria_section = reporter.format_criteria_section(engine.project)
-            msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title=title, content=content,
-                progress_bar=progress_bar,
-                is_executing=True, engine_name=f"Spec({engine_name})",
-                status_line=status_line, duration_line=duration_line,
-                criteria_section=criteria_section,
-            )
-            _send_spec_message(card_content, msg_type)
-
-        def on_project_done(spec_project: SpecProject):
-            content = reporter.format_project_done(spec_project)
-            title = reporter.get_project_done_title(spec_project)
-            progress_bar = reporter._make_progress_bar(spec_project.satisfied_count, spec_project.total_criteria)
-            duration_line = reporter.format_duration_line(spec_project)
-            msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title=title, content=content,
-                progress_bar=progress_bar, engine_name=f"Spec({engine_name})",
-                duration_line=duration_line,
-            )
-            _send_spec_message(card_content, msg_type)
-            self.add_reaction(message_id, EmojiReaction.on_multi_task_done())
-
-        def on_error(error: str):
-            content = reporter.format_error(error)
-            title = reporter.get_error_title()
-            msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title=title, content=content,
-                engine_name=f"Spec({engine_name})", show_buttons=False,
-            )
-            _send_spec_message(card_content, msg_type)
-            self.add_reaction(message_id, EmojiReaction.on_error())
-
-        def on_phase_start(cycle: int, phase: SpecPhase):
-            content = reporter.format_phase_start(cycle, phase)
-            title = reporter.get_phase_title(cycle, phase)
-            engine = self.ctx.spec_engine_manager.get(chat_id, project.root_path if project else "")
-            title = append_duration_to_title(title, engine.project.duration() if engine and engine.project else None)
-            msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title=title, content=content,
-                is_executing=True, engine_name=f"Spec({engine_name})",
-                show_buttons=False,
-            )
-            _send_spec_message(card_content, msg_type)
-
-        return SpecEngineCallbacks(
-            on_analyzing_done=on_analyzing_done,
-            on_cycle_start=on_cycle_start,
-            on_phase_start=on_phase_start,
-            on_phase_done=on_phase_done,
-            on_review_done=on_review_done,
-            on_project_done=on_project_done,
-            on_error=on_error,
-        )
+    def _create_spec_callbacks(self, *args, **kwargs):
+        """Deprecated: Delegate to renderer"""
+        return self.renderer.create_spec_callbacks(*args, **kwargs)
 
     # ------------------------------------------------------------------
     # status
     # ------------------------------------------------------------------
-    def show_spec_status(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+    def show_spec_status(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, origin_message_id: Optional[str] = None):
+        # User command "/spec_status" resets to status view
         if project is None:
             project = self.project_manager.get_active_project(chat_id)
-
+        
         root_path = project.root_path if project else self.get_working_dir(chat_id)
-        engine = self.ctx.spec_engine_manager.get(chat_id, root_path)
-        reporter = self.ctx.spec_reporter
-
-        if not engine or not engine.project:
-            # 断点续传：尝试从磁盘加载状态（进程重启后也可恢复）
-            try:
-                engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
-                engine = self.ctx.spec_engine_manager.load_or_create_from_disk(chat_id, root_path, engine_name=engine_name)
-            except Exception:
-                pass
-
-        if not engine or not engine.project:
-            running = self.ctx.spec_engine_manager.get_active_engines(chat_id)
-            if len(running) == 1 and running[0].project:
-                engine = running[0]
-            else:
-                engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
-                msg_type, card_content = CardBuilder.build_deep_card(
-                    project=project, title="📊 Spec 状态",
-                    content="当前没有 Spec 任务\n\n发送 `/spec 你的需求` 开始 Spec 模式开发",
-                    engine_name=f"Spec({engine_name})", show_buttons=False,
-                )
-                self.reply_message(message_id, card_content, msg_type=msg_type)
-                return
-
-        status_content = reporter.format_status(engine.project)
-
-        # Surface disk-resume information for better UX
-        meta = getattr(engine, "_resume_meta", None)
-        if meta and isinstance(meta, dict):
-            try:
-                state_path = meta.get("state_path")
-                saved_at = meta.get("saved_at")
-                compact = meta.get("compact")
-                hint_lines = ["💾 **断点恢复信息**"]
-                if state_path:
-                    hint_lines.append(f"- state: `{state_path}`")
-                if saved_at:
-                    hint_lines.append(f"- saved_at: `{saved_at}`")
-                if compact:
-                    hint_lines.append(f"- compact: `{compact}`")
-                status_content = "\n".join(hint_lines) + "\n\n" + status_content
-            except Exception:
-                pass
-        status_title = reporter.get_status_title()
-        progress_info = reporter.get_progress_info(engine.project)
-        engine_name = engine.engine_name
-        msg_type, card_content = CardBuilder.build_deep_card(
-            project=project, title=status_title, content=status_content,
-            progress_bar=progress_info["progress_bar"],
-            is_executing=progress_info["is_running"],
-            engine_name=f"Spec({engine_name})",
-        )
-        self.reply_message(message_id, card_content, msg_type=msg_type)
+        spec_project_id = project.project_id if project else root_path
+        
+        self.renderer.update_ui_state(spec_project_id, view_mode="status", view_context={})
+        
+        self.renderer.render_current_view(message_id, chat_id, project, origin_message_id)
 
     def show_spec_history(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"] = None):
         if project is None:
@@ -618,7 +428,7 @@ class SpecHandler(BaseHandler):
                 engine = paused[0]
 
         if engine and engine.project and engine.project.status in (SpecProjectStatus.PAUSED, SpecProjectStatus.CLARIFYING):
-            callbacks = self._create_spec_callbacks(message_id, chat_id, project, engine_name=engine.engine_name)
+            callbacks = self.renderer.create_spec_callbacks(message_id, chat_id, project, engine_name=engine.engine_name)
 
             def run_resume():
                 engine.resume(callbacks)
@@ -807,14 +617,23 @@ class SpecHandler(BaseHandler):
 
         def run_spec_engine():
             try:
-                callbacks = self._create_spec_callbacks(message_id, chat_id, project, engine_name)
+                callbacks = self.renderer.create_spec_callbacks(message_id, chat_id, project, engine_name)
                 # Use resume() instead of execute() to preserve state
                 # The execute() method re-initializes the project, wiping previous progress.
                 engine.resume(callbacks)
                 delete_task_state(task_id)
             except Exception as e:
                 logger.error("Spec Engine 恢复执行异常: %s", e, exc_info=True)
-                error_content = reporter.format_error(str(e))
+                
+                formatted = fmt_error("", e)
+                if formatted.startswith("❌ 失败: "):
+                    err_msg = formatted[len("❌ 失败: "):]
+                elif formatted == "❌ 失败":
+                    err_msg = "未知错误"
+                else:
+                    err_msg = formatted
+                
+                error_content = reporter.format_error(err_msg)
                 error_title = reporter.get_error_title()
                 err_msg_type, err_card = CardBuilder.build_deep_card(
                     project=project, title=error_title,
@@ -840,3 +659,62 @@ class SpecHandler(BaseHandler):
             self.ctx.message_linker.link_task(message_id, handle.run_id)
         except Exception as e:
             logger.debug("link_task失败(spec_engine_recover): message_id=%s, run_id=%s, err=%s", message_id, handle.run_id, e)
+
+    # ------------------------------------------------------------------
+    # UI Interaction Handlers
+    # ------------------------------------------------------------------
+    def handle_card_action(self, open_message_id: str, open_chat_id: str, action_type: str, value: dict):
+        """Handle spec_* card actions."""
+        project_id = value.get("project_id", "")
+        # Note: Spec engine uses 'deep_project_id' key for compatibility/convention with base templates,
+        # but in Spec context it might be root_path or project_id.
+        spec_project_id = value.get("deep_project_id", "")
+        
+        # Resolve target project
+        target_project = self.project_manager.get_project(project_id) if project_id else None
+        if not target_project and spec_project_id:
+            try:
+                if os.path.isabs(spec_project_id):
+                     target_project = self.project_manager.find_project_by_path(spec_project_id)
+                else:
+                     target_project = self.project_manager.get_project(spec_project_id)
+            except Exception:
+                pass
+
+        if action_type in ("spec_pause", "spec_resume", "spec_stop"):
+            spec_actions = {
+                "spec_pause":  self.pause_spec_engine,
+                "spec_resume": self.resume_spec_engine,
+                "spec_stop":   self.stop_spec_engine,
+            }
+            spec_actions[action_type](open_message_id, open_chat_id, project=target_project)
+            
+        elif action_type in ("spec_expand", "spec_collapse"):
+            expanded = action_type == "spec_expand"
+            self.toggle_spec_log(
+                open_message_id, open_chat_id, 
+                project=target_project,
+                spec_project_id=spec_project_id,
+                expanded=expanded
+            )
+            
+        elif action_type in ("spec_mode_full", "spec_mode_compact"):
+            compact = action_type == "spec_mode_compact"
+            self.switch_spec_card_mode(
+                open_message_id, open_chat_id,
+                project=target_project,
+                spec_project_id=spec_project_id,
+                compact=compact
+            )
+
+    def toggle_spec_log(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, spec_project_id: Optional[str] = None, expanded: bool = False):
+        if spec_project_id:
+            self.renderer.update_ui_state(spec_project_id, expanded=expanded)
+            # Refresh card with new state
+            self.show_spec_status(message_id, chat_id, project, origin_message_id=message_id)
+
+    def switch_spec_card_mode(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, spec_project_id: Optional[str] = None, compact: bool = False):
+        if spec_project_id:
+            self.renderer.update_ui_state(spec_project_id, compact=compact)
+            # Refresh card with new state
+            self.show_spec_status(message_id, chat_id, project, origin_message_id=message_id)

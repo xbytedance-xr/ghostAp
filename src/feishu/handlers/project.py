@@ -37,13 +37,20 @@ class ProjectHandler(BaseHandler):
             msg_type, card_content = CardBuilder.build_error_card(msg)
             self.reply_message(message_id, card_content, msg_type)
 
-    def show_project_board(self, message_id: str, chat_id: str):
+    def show_project_board(self, message_id: str, chat_id: str, origin_message_id: Optional[str] = None):
         projects = self.project_manager.get_all_projects()
         active_project = self.project_manager.get_active_project(chat_id)
         current_id = active_project.project_id if active_project else None
 
         msg_type, content = CardBuilder.build_status_board_card(projects, current_id)
-        response_id = self.reply_message_with_id(message_id, content, msg_type)
+
+        if origin_message_id:
+            if self.patch_message(origin_message_id, content, max_retries=1):
+                if active_project:
+                    self.register_message_project(origin_message_id, active_project)
+                return
+
+        response_id = self.reply_message_with_id(message_id, content, msg_type, origin_message_id=origin_message_id)
 
         if response_id and active_project:
             self.register_message_project(response_id, active_project)
@@ -71,7 +78,7 @@ class ProjectHandler(BaseHandler):
         if response_id:
             self.register_message_project(response_id, project)
 
-    def show_project_status(self, message_id: str, chat_id: str, project: Optional["ProjectContext"]):
+    def show_project_status(self, message_id: str, chat_id: str, project: Optional["ProjectContext"], origin_message_id: Optional[str] = None):
         if not project:
             self.show_project_board(message_id, chat_id)
             return
@@ -98,7 +105,13 @@ class ProjectHandler(BaseHandler):
         msg_type, card_content = CardBuilder.build_project_response_card(
             project, "项目状态", content, show_buttons=True,
         )
-        response_id = self.reply_message_with_id(message_id, card_content, msg_type)
+
+        if origin_message_id:
+            if self.patch_message(origin_message_id, card_content, max_retries=1):
+                self.register_message_project(origin_message_id, project)
+                return
+
+        response_id = self.reply_message_with_id(message_id, card_content, msg_type, origin_message_id=origin_message_id)
         if response_id:
             self.register_message_project(response_id, project)
 

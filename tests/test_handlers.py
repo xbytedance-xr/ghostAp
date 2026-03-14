@@ -675,6 +675,77 @@ class TestProjectHandler:
         h.show_project_board("m1", "c1")
         h.reply_message_with_id.assert_called_once()
 
+    def test_show_project_board_patch_success(self):
+        h, ctx = self._make()
+        ctx.project_manager.get_all_projects.return_value = []
+        ctx.project_manager.get_active_project.return_value = None
+
+        # Mock API client for patch success
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.success.return_value = True
+        mock_client.im.v1.message.patch.return_value = mock_resp
+        ctx.api_client_factory.return_value = mock_client
+
+        with patch('src.feishu.handlers.project.CardBuilder') as mock_cb:
+            mock_cb.build_status_board_card.return_value = ("interactive", "{}")
+
+            h.show_project_board("m1", "c1", origin_message_id="origin1")
+
+            # Verify Patch called
+            mock_client.im.v1.message.patch.assert_called_once()
+            # Verify Reply NOT called
+            h.reply_message_with_id.assert_not_called()
+
+    def test_show_project_board_patch_failure(self):
+        h, ctx = self._make()
+        ctx.project_manager.get_all_projects.return_value = []
+        ctx.project_manager.get_active_project.return_value = None
+
+        # Mock API client for patch failure
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.success.return_value = False
+        mock_resp.msg = "fail"
+        mock_client.im.v1.message.patch.return_value = mock_resp
+        ctx.api_client_factory.return_value = mock_client
+
+        with patch('src.feishu.handlers.project.CardBuilder') as mock_cb:
+            mock_cb.build_status_board_card.return_value = ("interactive", "{}")
+
+            h.show_project_board("m1", "c1", origin_message_id="origin1")
+
+            # Verify Patch called
+            mock_client.im.v1.message.patch.assert_called_once()
+            # Verify Reply called (fallback)
+            h.reply_message_with_id.assert_called_once()
+
+    def test_show_project_status_patch_success(self):
+        h, ctx = self._make()
+        project = MagicMock()
+        project.root_path = "/tmp"
+        project.project_name = "test"
+        project.project_id = "p1"
+        project.last_active = 0
+        project.get_status_emoji.return_value = "🟢"
+
+        # Mock API client for patch success
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.success.return_value = True
+        mock_client.im.v1.message.patch.return_value = mock_resp
+        ctx.api_client_factory.return_value = mock_client
+
+        with patch('src.feishu.handlers.project.CardBuilder') as mock_cb:
+            mock_cb.build_project_response_card.return_value = ("interactive", "{}")
+
+            h.show_project_status("m1", "c1", project, origin_message_id="origin1")
+
+            # Verify Patch called
+            mock_client.im.v1.message.patch.assert_called_once()
+            # Verify Reply NOT called
+            h.reply_message_with_id.assert_not_called()
+
     def test_show_project_status_no_project(self):
         h, ctx = self._make()
         h.show_project_board = MagicMock()
@@ -791,6 +862,84 @@ class TestDeepHandler:
         h.stop_all_deep_engines("m1", "c1")
         h.reply_message.assert_called_once()
         assert "没有" in str(h.reply_message.call_args)
+
+    def test_show_deep_status_patch_success(self):
+        h, ctx = self._make()
+        # Setup mock project and engine
+        project = MagicMock()
+        project.root_path = "/path/to/project"
+        project.project_id = "p1"
+        
+        engine = MagicMock()
+        engine.project = MagicMock()
+        engine.progress = MagicMock()
+        engine.engine_name = "DeepEngine"
+        
+        ctx.deep_engine_manager.get.return_value = engine
+        
+        # Setup mock reporter
+        ctx.progress_reporter.format_status.return_value = "Status Content"
+        ctx.progress_reporter.get_status_title.return_value = "Status Title"
+        ctx.progress_reporter.get_progress_info.return_value = {
+            "progress_bar": "|||",
+            "project_id": "p1",
+            "is_executing": True,
+            "is_paused": False
+        }
+
+        # Setup Patch client
+        h.patch_message = MagicMock(return_value=True)
+
+        # Mock CardBuilder
+        with patch("src.feishu.handlers.deep.CardBuilder") as mock_cb:
+            mock_cb.build_deep_card.return_value = ("interactive", "{}")
+            
+            # Execute
+            h.show_deep_status("msg1", "chat1", project=project, origin_message_id="origin1")
+            
+            # Verify Patch called
+            h.patch_message.assert_called_once()
+            # Verify Reply NOT called
+            h.reply_message.assert_not_called()
+
+    def test_show_deep_status_patch_failure_fallback(self):
+        h, ctx = self._make()
+        # Setup mock project and engine
+        project = MagicMock()
+        project.root_path = "/path/to/project"
+        
+        engine = MagicMock()
+        engine.project = MagicMock()
+        engine.progress = MagicMock()
+        engine.engine_name = "DeepEngine"
+        # Ensure string returns for JSON serialization if Real CardBuilder is used
+        engine.get_status_title.return_value = "Status Title"
+        
+        ctx.deep_engine_manager.get.return_value = engine
+        
+        ctx.progress_reporter.get_progress_info.return_value = {
+            "progress_bar": "|||", "project_id": "p1", "is_executing": True, "is_paused": False
+        }
+
+        # Setup Patch client to fail
+        h.patch_message = MagicMock(return_value=False)
+
+        # Mock the CardBuilder used by DeepRenderer (which is where it's actually called)
+        # OR just rely on the fact that we fixed the engine mock return values.
+        # But to be safe and match the test style, let's mock where it's used.
+        # Since we saw in stack trace it was using real CardBuilder (because patch location was wrong),
+        # let's try to patch the correct location.
+        with patch("src.feishu.renderers.deep_renderer.CardBuilder") as mock_cb:
+            mock_cb.build_deep_card.return_value = ("interactive", "{}")
+            
+            # Execute
+            h.show_deep_status("msg1", "chat1", project=project, origin_message_id="origin1")
+            
+            # Verify Patch called
+            h.patch_message.assert_called_once()
+            # Verify Reply called (Fallback)
+            h.reply_message.assert_called_once()
+
 
 
 # ======================================================================
@@ -939,3 +1088,89 @@ class TestACPSessionManagerProjectIsolation:
         # proj_a session ended, proj_b untouched
         assert mgr.get_session("chat1", project_id="proj_a") is None
         assert mgr.get_session("chat1", project_id="proj_b") is s2
+
+
+# ======================================================================
+# SystemHandler patch tests
+# ======================================================================
+
+class TestHelpCategoryPatch:
+    def _make(self, ctx_overrides=None):
+        if ctx_overrides is None:
+            ctx_overrides = {}
+        ctx = _make_handler_context(**ctx_overrides)
+        h = SystemHandler(ctx)
+        h.reply_message = MagicMock()
+        # Mock get_working_dir to return a valid path string for CardBuilder
+        h.get_working_dir = MagicMock(return_value="/tmp")
+        return h, ctx
+
+    def test_handle_help_category_patch_success(self):
+        h, ctx = self._make()
+        
+        ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
+        
+        # Mock patch_message
+        h.patch_message = MagicMock(return_value=True)
+        
+        with patch("src.card.builder.CardBuilder.build_help_card") as mock_build:
+            mock_build.return_value = ("interactive", "{}")
+            
+            h.handle_help_category("msg1", "chat1", "main", origin_message_id="origin1")
+            
+            # Verify patch called
+            h.patch_message.assert_called_once_with("origin1", "{}")
+            # Verify reply NOT called
+            h.reply_message.assert_not_called()
+
+    def test_handle_help_category_patch_failure_fallback(self):
+        h, ctx = self._make()
+        
+        ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
+        
+        # Mock patch_message failure
+        h.patch_message = MagicMock(return_value=False)
+        
+        with patch("src.card.builder.CardBuilder.build_help_card") as mock_build:
+            mock_build.return_value = ("interactive", "{}")
+            
+            h.handle_help_category("msg1", "chat1", "main", origin_message_id="origin1")
+            
+            # Verify patch called
+            h.patch_message.assert_called_once_with("origin1", "{}")
+            # Verify fallback to reply
+            h.reply_message.assert_called_once()
+
+    def test_handle_help_category_patch_exception_fallback(self):
+        # With the new impl, patch_message handles exceptions internally and returns False
+        # So this test is effectively same as failure fallback
+        h, ctx = self._make()
+        
+        ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
+        
+        h.patch_message = MagicMock(return_value=False)
+        
+        with patch("src.card.builder.CardBuilder.build_help_card") as mock_build:
+            mock_build.return_value = ("interactive", "{}")
+            
+            h.handle_help_category("msg1", "chat1", "main", origin_message_id="origin1")
+            
+            h.patch_message.assert_called_once()
+            h.reply_message.assert_called_once()
+
+    def test_handle_help_category_no_origin_id(self):
+        h, ctx = self._make()
+        
+        ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
+        
+        mock_client = MagicMock()
+        ctx.api_client_factory.return_value = mock_client
+        
+        with patch("src.card.builder.CardBuilder.build_help_card") as mock_build:
+            mock_build.return_value = ("interactive", "{}")
+            
+            h.handle_help_category("msg1", "chat1", "main", origin_message_id=None)
+            
+            h.patch_message = MagicMock()
+            h.patch_message.assert_not_called()
+            h.reply_message.assert_called_once()

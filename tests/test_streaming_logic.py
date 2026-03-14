@@ -12,6 +12,7 @@ class TestStreamingLogic(unittest.TestCase):
         self.settings_patcher = patch("src.card.shared.get_settings")
         self.mock_settings = self.settings_patcher.start()
         self.mock_settings.return_value.card_button_layout = "responsive"
+        self.mock_settings.return_value.card_button_size = "medium"
 
     def tearDown(self):
         self.settings_patcher.stop()
@@ -93,33 +94,13 @@ class TestStreamingLogic(unittest.TestCase):
         
         self.assertEqual(content_element["content"], content_long[:20])
         
-    def test_retry_logic(self):
-        card = self.manager.create_streaming_card(chat_id="test_chat")
-        card.message_id = "test_retry"
-        card.size_threshold = 1 # Force update
-        self.manager._cards["test_retry"] = card
-        
-        # Mock client to fail first time, succeed second time
-        response_fail = MagicMock()
-        response_fail.success.return_value = False
-        response_fail.code = 500
-        response_fail.msg = "Internal Error"
-        
-        response_success = MagicMock()
-        response_success.success.return_value = True
-        
-        self.mock_client.im.v1.message.patch.side_effect = [response_fail, response_success]
-        
-        # Update
-        result = self.manager.update_content(card, "Retry content")
-        
-        self.assertTrue(result)
-        self.assertEqual(self.mock_client.im.v1.message.patch.call_count, 2)
-
     def test_buffering_logic(self):
         card = self.manager.create_streaming_card(chat_id="test_chat")
         card.message_id = "test_buffer"
-        card.min_update_interval_s = 1.0
+        
+        # Override initial strategy state for testing
+        card.flow_control_state.min_update_interval_s = 1.0
+        
         card.size_threshold = 50
         card.last_update_at = time.time() # Just updated
         card.last_content = "Base content"

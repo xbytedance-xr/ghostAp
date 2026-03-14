@@ -105,6 +105,10 @@ class ContinuationPolicy:
     ) -> Optional[str]:
         # Success always stops
         if all_satisfied and review_passed:
+            # Bug fix: don't stop if we have pending work items (backlog)
+            # This allows spec-kit discovery mechanism to drive further iterations.
+            if metrics.backlog_pending > 0:
+                return None
             return "success"
 
         # Infinite mode: never stop due to convergence/early stop
@@ -651,14 +655,33 @@ class SpecEngine:
                     )
                     self._project.abort(msg)
                 elif reason == "max_cycles":
-                    msg = f"达到最大循环次数({max_cycles})仍未满足验收标准或审查未通过"
-                    # Infinite mode: treat max-cycles as a pause point instead of abort
-                    if self._get_bool_setting("spec_infinite_mode", False):
+                    # Check criteria via project tracker
+                    is_all_satisfied = self._project.is_all_satisfied
+                    
+                    # Check review status via last review result
+                    last_review_passed = True
+                    if self.settings.spec_review_enabled:
+                         if self._last_review:
+                             last_review_passed = self._last_review.all_passed
+                         else:
+                             # 只有当 review enabled 但没有 review result 时（比如第一轮就失败），算未通过
+                             last_review_passed = False 
+
+                    if is_all_satisfied and last_review_passed:
+                        # 核心目标达成，但因为 backlog 没跑完导致次数耗尽
+                        msg = f"达到最大循环次数({max_cycles})。核心验收标准已满足，但仍有待办优化项（Backlog）。"
                         self._project.status = SpecProjectStatus.PAUSED
-                        self._project.error = msg + "（已暂停，可继续 /spec_resume 或提升 SPEC_MAX_CYCLES）"
+                        self._project.error = msg + "（已暂停，可使用 /spec_resume 继续执行优化项）"
                         self._project.completed_at = time.time()
                     else:
-                        self._project.abort(msg)
+                        msg = f"达到最大循环次数({max_cycles})仍未满足验收标准或审查未通过"
+                        # Infinite mode: treat max-cycles as a pause point instead of abort
+                        if self._get_bool_setting("spec_infinite_mode", False):
+                            self._project.status = SpecProjectStatus.PAUSED
+                            self._project.error = msg + "（已暂停，可继续 /spec_resume 或提升 SPEC_MAX_CYCLES）"
+                            self._project.completed_at = time.time()
+                        else:
+                            self._project.abort(msg)
                 else:
                     msg = f"终止：{reason}"
                     self._project.abort(msg)

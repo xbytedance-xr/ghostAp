@@ -13,19 +13,10 @@ import logging
 import os
 import time
 import uuid
-from typing import TYPE_CHECKING, Optional
-
-from lark_oapi.api.im.v1 import (
-    CreateMessageReactionRequest,
-    CreateMessageReactionRequestBody,
-    CreateMessageRequest,
-    CreateMessageRequestBody,
-    Emoji,
-    ReplyMessageRequest,
-    ReplyMessageRequestBody,
-)
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from ..message_formatter import FeishuMessageFormatter as fmt
+from ..im_client import FeishuIMClient
 
 if TYPE_CHECKING:
     from ..handler_context import HandlerContext
@@ -40,6 +31,7 @@ class BaseHandler:
 
     def __init__(self, ctx: "HandlerContext") -> None:
         self.ctx = ctx
+        self.im_client = FeishuIMClient(ctx.api_client_factory, ctx.settings)
 
     # ------------------------------------------------------------------
     # Convenience accessors
@@ -64,6 +56,41 @@ class BaseHandler:
     def scheduler(self):
         return self.ctx.scheduler
 
+    def send_error_card(
+        self,
+        chat_id: str,
+        exc: Exception,
+        title: str = "操作失败",
+        origin_message_id: Optional[str] = None,
+        reply_in_thread: Optional[bool] = None,
+    ):
+        """Send a structured error card (schema 2.0) with QuickActions if available."""
+        from ...card import CardBuilder
+
+        try:
+            _, card_json_str = CardBuilder.build_error_card(exc, title=title)
+
+            if origin_message_id:
+                self.reply_message(
+                    origin_message_id,
+                    card_json_str,
+                    msg_type="interactive",
+                    reply_in_thread=reply_in_thread
+                )
+            else:
+                self.send_message(
+                    chat_id,
+                    card_json_str,
+                    msg_type="interactive"
+                )
+        except Exception as e:
+            logger.error("发送错误卡片失败: %s", e, exc_info=True)
+            # Fallback to simple text reply
+            if origin_message_id:
+                self.reply_message(origin_message_id, f"❌ {title}: {exc}")
+            else:
+                self.send_message(chat_id, f"❌ {title}: {exc}")
+
     # ------------------------------------------------------------------
     # Message sending
     # ------------------------------------------------------------------
@@ -78,12 +105,14 @@ class BaseHandler:
         run_id: Optional[str] = None,
         is_smart_mode: bool = False,
         reply_in_thread: Optional[bool] = None,
+        max_retries: Optional[int] = None,
     ):
         """Reply to *message_id*.  Thin wrapper that auto-resolves origin & request."""
         if origin_message_id is None:
             try:
                 origin_message_id = self.ctx.message_linker.resolve_origin(reply_message_id=message_id)
-            except Exception:
+            except Exception as e:
+                logger.debug("Failed to resolve origin for message %s: %s", message_id, e)
                 origin_message_id = None
         origin_message_id = origin_message_id or message_id
         request_id = request_id or self.ensure_request_id(origin_message_id)
@@ -93,7 +122,24 @@ class BaseHandler:
             request_id=request_id, run_id=run_id,
             is_smart_mode=is_smart_mode,
             reply_in_thread=reply_in_thread,
+            max_retries=max_retries,
         )
+
+    def patch_message(self, message_id: str, content: str, max_retries: Optional[int] = None) -> bool:
+        """Update an existing message's content (e.g. updating a card)."""
+        try:
+            response = self.im_client.patch_message(
+                message_id, 
+                content, 
+                max_retries=max_retries
+            )
+            
+            if response and response.success():
+                return True
+            return False
+        except Exception as e:
+            logger.error("更新消息不可恢复异常: %s", e, exc_info=True)
+            return False
 
     def reply_message_with_id(
         self,
@@ -106,15 +152,15 @@ class BaseHandler:
         run_id: Optional[str] = None,
         is_smart_mode: bool = False,
         reply_in_thread: Optional[bool] = None,
+        max_retries: Optional[int] = None,
     ) -> Optional[str]:
         """Reply and return the response message_id (or None on failure)."""
         try:
-            client = self.ctx.api_client_factory()
-
             if origin_message_id is None:
                 try:
                     origin_message_id = self.ctx.message_linker.resolve_origin(reply_message_id=message_id)
-                except Exception:
+                except Exception as e:
+                    logger.debug("Failed to resolve origin inside reply_message_with_id for %s: %s", message_id, e)
                     origin_message_id = None
             origin_message_id = origin_message_id or message_id
             request_id = request_id or self.ensure_request_id(origin_message_id)
@@ -145,29 +191,25 @@ class BaseHandler:
                     reply_in_thread = self.settings.smart_reply_mode == "thread"
                 else:
                     reply_in_thread = self.settings.default_reply_mode == "thread"
-            request = ReplyMessageRequest.builder() \
-                .message_id(message_id) \
-                .request_body(ReplyMessageRequestBody.builder()
-                    .content(content_str)
-                    .msg_type(msg_type)
-                    .reply_in_thread(reply_in_thread)
-                    .build()) \
-                .build()
+            
+            response = self.im_client.reply_message(
+                message_id,
+                content_str,
+                msg_type=msg_type,
+                reply_in_thread=reply_in_thread,
+                max_retries=max_retries
+            )
 
-            for attempt in range(3):
-                response = client.im.v1.message.reply(request)
-                if response.success() and response.data and response.data.message_id:
-                    reply_id = response.data.message_id
-                    try:
-                        self.ctx.message_linker.link_reply(origin_message_id, reply_id)
-                    except Exception:
-                        pass
-                    return reply_id
-                logger.warning("回复消息失败(尝试%d/3): %s - %s", attempt + 1, response.code, response.msg)
-                time.sleep(0.3 * (2 ** attempt))
+            if response and response.success() and response.data and response.data.message_id:
+                reply_id = response.data.message_id
+                try:
+                    self.ctx.message_linker.link_reply(origin_message_id, reply_id)
+                except Exception as e:
+                    logger.warning("Failed to link reply %s to origin %s: %s", reply_id, origin_message_id, e, exc_info=True)
+                return reply_id
             return None
         except Exception as e:
-            logger.error("回复消息异常: %s", e)
+            logger.error("回复消息异常: %s", e, exc_info=True)
             return None
 
     def send_message(
@@ -179,11 +221,10 @@ class BaseHandler:
         origin_message_id: Optional[str] = None,
         request_id: Optional[str] = None,
         run_id: Optional[str] = None,
+        max_retries: Optional[int] = None,
     ) -> Optional[str]:
         """Send a new message to *chat_id* (not a reply)."""
         try:
-            client = self.ctx.api_client_factory()
-
             ref_note = self.format_ref_note(origin_message_id, request_id, run_id)
             content_str = content
             if msg_type == "text" and ref_note:
@@ -199,30 +240,25 @@ class BaseHandler:
             else:
                 content_str = self._inject_ref_note(content_str, msg_type, ref_note)
 
-            request = CreateMessageRequest.builder() \
-                .receive_id_type("chat_id") \
-                .request_body(CreateMessageRequestBody.builder()
-                    .receive_id(chat_id)
-                    .content(content_str)
-                    .msg_type(msg_type)
-                    .build()) \
-                .build()
+            response = self.im_client.send_message(
+                "chat_id",
+                chat_id,
+                content_str,
+                msg_type=msg_type,
+                max_retries=max_retries
+            )
 
-            for attempt in range(3):
-                response = client.im.v1.message.create(request)
-                if response.success() and response.data and response.data.message_id:
-                    mid = response.data.message_id
-                    if origin_message_id:
-                        try:
-                            self.ctx.message_linker.link_reply(origin_message_id, mid)
-                        except Exception:
-                            pass
-                    return mid
-                logger.warning("发送消息失败(尝试%d/3): %s - %s", attempt + 1, response.code, response.msg)
-                time.sleep(0.3 * (2 ** attempt))
+            if response and response.success() and response.data and response.data.message_id:
+                mid = response.data.message_id
+                if origin_message_id:
+                    try:
+                        self.ctx.message_linker.link_reply(origin_message_id, mid)
+                    except Exception as e:
+                        logger.warning("Failed to link new message %s to origin %s: %s", mid, origin_message_id, e, exc_info=True)
+                return mid
             return None
         except Exception as e:
-            logger.error("发送消息异常: %s", e)
+            logger.error("发送消息异常: %s", e, exc_info=True)
             return None
 
     # ------------------------------------------------------------------
@@ -245,8 +281,8 @@ class BaseHandler:
                         "content": ref_note,
                     })
                     return json.dumps(card, ensure_ascii=False)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed to inject ref note into interactive card: %s", e, exc_info=True)
         elif msg_type == "post" and isinstance(content_str, str):
             try:
                 post = json.loads(content_str)
@@ -265,11 +301,11 @@ class BaseHandler:
                                     break
                             if injected:
                                 break
-                        if not injected:
-                            blocks.append([{"tag": "md", "text": f"---\n{ref_note}"}])
-                        return json.dumps(post, ensure_ascii=False)
-            except Exception:
-                pass
+                            if not injected:
+                                blocks.append([{"tag": "md", "text": f"---\n{ref_note}"}])
+                            return json.dumps(post, ensure_ascii=False)
+            except Exception as e:
+                logger.warning("Failed to inject ref note into post content: %s", e, exc_info=True)
 
         return content_str
 
@@ -278,21 +314,56 @@ class BaseHandler:
     # ------------------------------------------------------------------
     def add_reaction(self, message_id: str, emoji_type: str):
         try:
-            client = self.ctx.api_client_factory()
-            request = CreateMessageReactionRequest.builder() \
-                .message_id(message_id) \
-                .request_body(CreateMessageReactionRequestBody.builder()
-                    .reaction_type(Emoji.builder()
-                        .emoji_type(emoji_type)
-                        .build())
-                    .build()) \
-                .build()
-
-            response = client.im.v1.message_reaction.create(request)
-            if not response.success():
-                logger.warning("添加表情失败: %s - %s", response.code, response.msg)
+            self.im_client.add_reaction(message_id, emoji_type)
         except Exception as e:
-            logger.warning("添加表情异常: %s", e)
+            logger.warning("添加表情异常: %s", e, exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Card Action Dispatcher (Template Method)
+    # ------------------------------------------------------------------
+    def _dispatch_standard_card_action(
+        self,
+        open_message_id: str,
+        open_chat_id: str,
+        action_type: str,
+        value: dict,
+        prefix: str,
+        action_map: dict[str, Callable],
+        toggle_log_method: Optional[Callable] = None,
+        switch_mode_method: Optional[Callable] = None,
+        project: Optional["ProjectContext"] = None,
+    ) -> bool:
+        """
+        Dispatch standard card actions (pause, resume, stop, expand, collapse, mode_full, mode_compact).
+        Returns True if action was handled, False otherwise.
+        """
+        # 1. Lifecycle actions (pause, resume, stop)
+        if action_type in action_map:
+            action_map[action_type](open_message_id, open_chat_id, project=project)
+            return True
+
+        # Common extraction for UI state actions
+        # Note: 'deep_project_id' is the convention used in card buttons for both Deep and Loop engines
+        engine_project_id = value.get("deep_project_id", "")
+
+        # 2. Log expansion
+        if action_type in (f"{prefix}_expand", f"{prefix}_collapse"):
+            if toggle_log_method:
+                expanded = (action_type == f"{prefix}_expand")
+                # Call with positional args to support varying param names (deep_project_id vs loop_project_id)
+                # Signature expected: (message_id, chat_id, project, engine_project_id, expanded)
+                toggle_log_method(open_message_id, open_chat_id, project, engine_project_id, expanded)
+                return True
+
+        # 3. View mode
+        if action_type in (f"{prefix}_mode_full", f"{prefix}_mode_compact"):
+            if switch_mode_method:
+                compact = (action_type == f"{prefix}_mode_compact")
+                # Signature expected: (message_id, chat_id, project, engine_project_id, compact)
+                switch_mode_method(open_message_id, open_chat_id, project, engine_project_id, compact)
+                return True
+        
+        return False
 
     # ------------------------------------------------------------------
     # Project ↔ message registration
@@ -334,15 +405,16 @@ class BaseHandler:
         rid = None
         try:
             rid = self.ctx.message_linker.get_request_id(message_id)
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to get existing request_id for message %s: %s", message_id, e)
             rid = None
         if rid:
             return rid
         rid = uuid.uuid4().hex[:10]
         try:
             self.ctx.message_linker.register_origin(message_id, request_id=rid, chat_id=chat_id, project_id=project_id)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to register origin for message %s: %s", message_id, e, exc_info=True)
         return rid
 
     def format_ref_note(self, origin_message_id: Optional[str], request_id: Optional[str], run_id: Optional[str] = None) -> str:
@@ -438,8 +510,8 @@ class BaseHandler:
                     show_buttons=False,
                 )
                 self.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error("Failed to send rate limit notification: %s", e, exc_info=True)
 
         return _on_rate_limit
 

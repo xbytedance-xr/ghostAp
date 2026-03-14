@@ -5,7 +5,8 @@ from typing import Optional
 from ..config import get_settings
 
 
-BUTTON_SIZE = "small"
+def get_button_size() -> str:
+    return get_settings().card_button_size or "medium"
 
 
 @dataclass
@@ -33,7 +34,7 @@ def get_theme(color: str) -> ProjectTheme:
 def apply_compact_style(button: dict) -> dict:
     """Apply compact button styling (small size) for mobile friendliness."""
     if isinstance(button, dict) and button.get("tag") == "button":
-        button.setdefault("size", BUTTON_SIZE)
+        button.setdefault("size", get_button_size())
     return button
 
 
@@ -44,20 +45,21 @@ def build_mode_buttons(
 ) -> list[dict]:
     """Build mode-specific footer buttons (exit/enter mode + switch project)."""
     buttons = []
+    size = get_button_size()
 
     if is_claude_mode:
         buttons.append({
             "tag": "button",
             "text": {"tag": "plain_text", "content": "🚪 退出Claude"},
             "type": "default",
-            "size": BUTTON_SIZE,
+            "size": size,
             "behaviors": [{"type": "callback", "value": {"action": "exit_claude", "project_id": project_id}}],
         })
         buttons.append({
             "tag": "button",
             "text": {"tag": "plain_text", "content": "🔄 切换项目"},
             "type": "default",
-            "size": BUTTON_SIZE,
+            "size": size,
             "behaviors": [{"type": "callback", "value": {"action": "switch_project"}}],
         })
     elif is_coco_mode:
@@ -65,14 +67,14 @@ def build_mode_buttons(
             "tag": "button",
             "text": {"tag": "plain_text", "content": "🚪 退出Coco"},
             "type": "default",
-            "size": BUTTON_SIZE,
+            "size": size,
             "behaviors": [{"type": "callback", "value": {"action": "exit_coco", "project_id": project_id}}],
         })
         buttons.append({
             "tag": "button",
             "text": {"tag": "plain_text", "content": "🔄 切换项目"},
             "type": "default",
-            "size": BUTTON_SIZE,
+            "size": size,
             "behaviors": [{"type": "callback", "value": {"action": "switch_project"}}],
         })
     else:
@@ -80,40 +82,56 @@ def build_mode_buttons(
             "tag": "button",
             "text": {"tag": "plain_text", "content": "🤖 Coco模式"},
             "type": "primary",
-            "size": BUTTON_SIZE,
+            "size": size,
             "behaviors": [{"type": "callback", "value": {"action": "enter_coco", "project_id": project_id}}],
         })
         buttons.append({
             "tag": "button",
             "text": {"tag": "plain_text", "content": "🔮 Claude模式"},
             "type": "default",
-            "size": BUTTON_SIZE,
+            "size": size,
             "behaviors": [{"type": "callback", "value": {"action": "enter_claude", "project_id": project_id}}],
         })
 
     return buttons
 
 
+
 def build_responsive_layout(buttons: list[dict]) -> list[dict]:
     """Build responsive button layout based on config setting.
 
-    - desktop: native action layout
-    - mobile: forced two-column column_set
+    - desktop: native action layout (horizontal)
+    - mobile: forced vertical stack for better touch targets
     - responsive: <=2 buttons use action, >2 use column_set grid
+    - flow: use flow layout
     """
     if not buttons:
         return []
 
-    layout = (get_settings().card_button_layout or "responsive").strip().lower()
+    settings = get_settings()
+    layout = (settings.card_button_layout or "responsive").strip().lower()
+
     if layout == "desktop":
         return _build_button_row_action(buttons)
     if layout == "mobile":
-        return _build_button_grid(buttons)
+        return _build_button_vertical(buttons)
+    if layout == "flow":
+        return _build_button_flow(buttons)
 
     # responsive (default)
+    
+    # Force vertical for >2 buttons if mobile optimization is enabled
+    # This helps avoid clutter on small screens while keeping 2 buttons side-by-side
+    if settings.card_mobile_force_vertical and len(buttons) > 2:
+        mobile_mode = (settings.card_mobile_layout_mode or "vertical").strip().lower()
+        if mobile_mode == "flow":
+            return _build_button_flow(buttons)
+        return _build_button_vertical(buttons)
+
     if len(buttons) <= 2:
         return _build_button_row_action(buttons)
     return _build_button_grid(buttons)
+
 
 
 def resolve_title_and_template(
@@ -198,3 +216,97 @@ def _build_button_grid(buttons: list[dict], columns: int = 2) -> list[dict]:
         })
 
     return rows
+
+def build_quick_actions(actions: list[str], context: dict = None) -> list[dict]:
+    """Build standardized QuickAction buttons.
+
+    Supported actions: confirm, retry, cancel, continue, next, stop
+    """
+    buttons = []
+    context = context or {}
+
+    for action in actions:
+        action = action.lower()
+        if action == "confirm":
+            buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "✅ 确认"},
+                "type": "primary",
+                "value": {"action": "confirm", **context}
+            })
+        elif action == "retry":
+            buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "🔄 重试"},
+                "type": "primary",
+                "value": {"action": "retry", **context}
+            })
+        elif action == "cancel":
+            buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "❌ 取消"},
+                "type": "default",
+                "value": {"action": "cancel", **context}
+            })
+        elif action == "continue":
+            buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "▶️ 继续"},
+                "type": "primary",
+                "value": {"action": "continue", **context}
+            })
+        elif action == "next":
+            buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "⏭️ 下一步"},
+                "type": "primary",
+                "value": {"action": "next", **context}
+            })
+        elif action == "stop":
+            buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "🛑 停止"},
+                "type": "danger",
+                "value": {"action": "stop", **context}
+            })
+
+    return [apply_compact_style(b) for b in buttons]
+
+
+def _build_button_vertical(buttons: list[dict]) -> list[dict]:
+    """Build vertical stack layout for buttons (best for mobile)."""
+    if not buttons:
+        return []
+
+    styled = [apply_compact_style(b) for b in buttons]
+    rows = []
+    for btn in styled:
+        rows.append({
+            "tag": "column_set",
+            "flex_mode": "none",
+            "columns": [{
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "elements": [btn]
+            }]
+        })
+    return rows
+
+
+def _build_button_flow(buttons: list[dict]) -> list[dict]:
+    """Build flow layout for buttons."""
+    if not buttons:
+        return []
+    
+    styled = [apply_compact_style(b) for b in buttons]
+    
+    return [{
+        "tag": "column_set",
+        "flex_mode": "flow",
+        "columns": [{
+            "tag": "column",
+            "width": "auto",
+            "elements": [btn]
+        } for btn in styled]
+    }]

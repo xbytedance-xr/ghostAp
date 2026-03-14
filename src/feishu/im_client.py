@@ -1,0 +1,178 @@
+import logging
+import time
+from typing import Any, Callable, Optional, TYPE_CHECKING
+
+from lark_oapi.api.im.v1 import (
+    CreateMessageReactionRequest,
+    CreateMessageReactionRequestBody,
+    CreateMessageRequest,
+    CreateMessageRequestBody,
+    Emoji,
+    PatchMessageRequest,
+    PatchMessageRequestBody,
+    ReplyMessageRequest,
+    ReplyMessageRequestBody,
+    GetMessageResourceRequest,
+)
+
+from ..utils.errors import LARK_CODE_MESSAGE_NOT_FOUND, LARK_CODE_MESSAGE_RECALLED
+
+if TYPE_CHECKING:
+    from ..config import Settings
+
+logger = logging.getLogger(__name__)
+
+
+class FeishuIMClient:
+    """Client for Feishu IM API interactions with retry logic."""
+
+    def __init__(self, api_client_factory: Callable[[], Any], settings: "Settings") -> None:
+        self.api_client_factory = api_client_factory
+        self.settings = settings
+
+    def _execute_with_retry(
+        self,
+        func: Callable[[], Any],
+        action_name: str,
+        max_retries: Optional[int] = None
+    ) -> Optional[Any]:
+        """Execute an API call with retry logic and error noise reduction."""
+        if max_retries is None:
+            max_retries = self.settings.im_api_max_retries
+
+        for attempt in range(max_retries):
+            try:
+                response = func()
+                # Check for success (lark_oapi response object has success() method)
+                if hasattr(response, "success") and response.success():
+                    return response
+                
+                # Handling for API failures
+                code = getattr(response, "code", None)
+                msg = getattr(response, "msg", "Unknown error")
+
+                # Noise reduction for expected business errors
+                # 230001: Message does not exist
+                # 230020: The message has been recalled
+                if code in (LARK_CODE_MESSAGE_NOT_FOUND, LARK_CODE_MESSAGE_RECALLED):
+                    logger.info("%s中止(消息不存在或已撤回): %s - %s", action_name, code, msg)
+                    # Return the failed response so caller knows it failed but due to expected reasons
+                    return response
+
+                logger.warning("%s失败(尝试%d/%d): %s - %s", action_name, attempt + 1, max_retries, code, msg)
+            except Exception as e:
+                logger.warning("%s异常(尝试%d/%d): %s", action_name, attempt + 1, max_retries, e, exc_info=True)
+            
+            if attempt < max_retries - 1:
+                time.sleep(0.3 * (2 ** attempt))
+        
+        return None
+
+    def send_message(
+        self,
+        receive_id_type: str,
+        receive_id: str,
+        content: str,
+        msg_type: str = "text",
+        max_retries: Optional[int] = None
+    ) -> Optional[Any]:
+        """Send a message."""
+        client = self.api_client_factory()
+        request = CreateMessageRequest.builder() \
+            .receive_id_type(receive_id_type) \
+            .request_body(CreateMessageRequestBody.builder()
+                .receive_id(receive_id)
+                .content(content)
+                .msg_type(msg_type)
+                .build()) \
+            .build()
+
+        return self._execute_with_retry(
+            lambda: client.im.v1.message.create(request),
+            "发送消息",
+            max_retries
+        )
+
+    def reply_message(
+        self,
+        message_id: str,
+        content: str,
+        msg_type: str = "text",
+        reply_in_thread: bool = False,
+        max_retries: Optional[int] = None
+    ) -> Optional[Any]:
+        """Reply to a message."""
+        client = self.api_client_factory()
+        request = ReplyMessageRequest.builder() \
+            .message_id(message_id) \
+            .request_body(ReplyMessageRequestBody.builder()
+                .content(content)
+                .msg_type(msg_type)
+                .reply_in_thread(reply_in_thread)
+                .build()) \
+            .build()
+
+        return self._execute_with_retry(
+            lambda: client.im.v1.message.reply(request),
+            "回复消息",
+            max_retries
+        )
+
+    def patch_message(
+        self,
+        message_id: str,
+        content: str,
+        max_retries: Optional[int] = None
+    ) -> Optional[Any]:
+        """Patch a message."""
+        client = self.api_client_factory()
+        request = PatchMessageRequest.builder() \
+            .message_id(message_id) \
+            .request_body(PatchMessageRequestBody.builder()
+                .content(content)
+                .build()) \
+            .build()
+
+        return self._execute_with_retry(
+            lambda: client.im.v1.message.patch(request),
+            "更新消息",
+            max_retries
+        )
+
+    def add_reaction(self, message_id: str, emoji_type: str) -> None:
+        """Add a reaction to a message."""
+        client = self.api_client_factory()
+        request = CreateMessageReactionRequest.builder() \
+            .message_id(message_id) \
+            .request_body(CreateMessageReactionRequestBody.builder()
+                .reaction_type(Emoji.builder()
+                    .emoji_type(emoji_type)
+                    .build())
+                .build()) \
+            .build()
+
+        self._execute_with_retry(
+            lambda: client.im.v1.message_reaction.create(request),
+            "添加表情"
+        )
+
+    def get_resource(
+        self,
+        message_id: str,
+        file_key: str,
+        resource_type: str,
+        max_retries: Optional[int] = None
+    ) -> Optional[Any]:
+        """Download a resource (image, file, etc.)."""
+        client = self.api_client_factory()
+        request = GetMessageResourceRequest.builder() \
+            .message_id(message_id) \
+            .file_key(file_key) \
+            .type(resource_type) \
+            .build()
+
+        return self._execute_with_retry(
+            lambda: client.im.v1.message_resource.get(request),
+            f"下载资源({resource_type})",
+            max_retries
+        )

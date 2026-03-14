@@ -4,6 +4,7 @@ from unittest.mock import patch, MagicMock
 
 from src.project.context import ProjectContext, ProjectStatus, CocoSessionSnapshot, SessionSnapshot
 from src.card.builder import CardBuilder
+from src.card.models import DeepCardState
 from src.deep_engine.reporter import ProgressReporter
 from src.card.shared import get_theme, THEMES
 from src.config import Settings
@@ -71,13 +72,15 @@ class TestCardBuilder:
                 assert "behaviors" in btn
                 assert btn["behaviors"][0]["type"] == "callback"
                 assert isinstance(btn["behaviors"][0]["value"], dict)
-                assert btn.get("size") == "small"
+                assert btn.get("size") == "medium"
 
     def test_build_project_response_card_mobile_layout_forces_grid(self, sample_project):
         # 强制 mobile 布局：<=2 个按钮也应使用 column_set（避免小屏自动换行堆叠）
         with patch("src.card.shared.get_settings") as mock_get_settings:
             mock_settings = MagicMock()
             mock_settings.card_button_layout = "mobile"
+            mock_settings.card_button_size = "medium"
+            mock_settings.card_mobile_force_vertical = True
             mock_get_settings.return_value = mock_settings
 
             msg_type, content = CardBuilder.build_project_response_card(
@@ -133,11 +136,13 @@ class TestCardBuilder:
         content = f"任务中...\n\n{progress_bar}\n"
         _, card_content = CardBuilder.build_deep_card(
             project=None,
-            title="X",
-            content=content,
-            progress_bar=progress_bar,
-            engine_name="Coco",
-            show_buttons=False,
+            state=DeepCardState(
+                title="X",
+                content=content,
+                progress_bar=progress_bar,
+                engine_name="Coco",
+                show_buttons=False,
+            )
         )
         card = json.loads(card_content)
         progress_elems = [
@@ -275,6 +280,18 @@ class TestCardBuilder:
         assert "/tmp/test" in content_str
         assert "Error message" in content_str
 
+    def test_build_error_card_with_ghost_ap_error(self):
+        from src.utils.errors import GhostAPError
+
+        err = GhostAPError("Business error", quick_actions=["retry", "cancel"])
+        msg_type, content = CardBuilder.build_error_card(err)
+
+        card = json.loads(content)
+        content_str = json.dumps(card, ensure_ascii=False)
+        assert "Business error" in content_str
+        assert "重试" in content_str
+        assert "取消" in content_str
+
     def test_build_project_response_card_with_images(self, sample_project):
         msg_type, content = CardBuilder.build_project_response_card(
             project=sample_project,
@@ -339,27 +356,32 @@ class TestDeepCard:
     def test_build_deep_card_basic(self, sample_project):
         msg_type, content = CardBuilder.build_deep_card(
             project=sample_project,
-            title="Test Title",
-            content="Test content",
-            engine_name="Coco",
+            state=DeepCardState(
+                title="Test Title",
+                content="Test content",
+                engine_name="Coco",
+            )
         )
 
         assert msg_type == "interactive"
         card = json.loads(content)
         header_title = card["header"]["title"]["content"]
-        assert "🧠" in header_title
-        assert "Test Project" in header_title
-        assert "Deep" in header_title
-        assert "Coco" in header_title
+        assert header_title == "Test Title"
+        
+        # Check elements
+        elements = card["body"]["elements"]
+        assert len(elements) >= 3  # Directory + HR + Content
 
     def test_build_deep_card_with_progress_bar(self, sample_project):
         msg_type, content = CardBuilder.build_deep_card(
             project=sample_project,
-            title="Executing",
-            content="Task in progress",
-            progress_bar="[█████░░░░░] 50% (2/4)",
-            is_executing=True,
-            deep_project_id="proj123",
+            state=DeepCardState(
+                title="Executing",
+                content="Task in progress",
+                progress_bar="[█████░░░░░] 50% (2/4)",
+                is_executing=True,
+                deep_project_id="proj123",
+            )
         )
 
         card = json.loads(content)
@@ -371,10 +393,12 @@ class TestDeepCard:
     def test_build_deep_card_paused(self, sample_project):
         msg_type, content = CardBuilder.build_deep_card(
             project=sample_project,
-            title="Paused",
-            content="Execution paused",
-            is_paused=True,
-            deep_project_id="proj123",
+            state=DeepCardState(
+                title="Paused",
+                content="Execution paused",
+                is_paused=True,
+                deep_project_id="proj123",
+            )
         )
 
         card = json.loads(content)
@@ -385,78 +409,83 @@ class TestDeepCard:
     def test_build_deep_card_no_project(self):
         msg_type, content = CardBuilder.build_deep_card(
             project=None,
-            title="Test",
-            content="No project",
-            engine_name="Coco",
+            state=DeepCardState(
+                title="Test",
+                content="No project",
+                engine_name="Coco",
+            )
         )
 
         card = json.loads(content)
         header_title = card["header"]["title"]["content"]
-        assert "Deep Agent" in header_title
-        assert "Coco" in header_title
-        # Deep 卡片按引擎区分颜色：Coco=blue / Claude=purple
-        assert card["header"]["template"] == "blue"
+        assert header_title == "Test"
+        # Deep 卡片按引擎区分颜色：Coco=turquoise (running default) / Claude=purple
+        assert card["header"]["template"] == "turquoise"
 
-    def test_build_deep_card_claude_engine(self, sample_project):
+    def test_build_deep_card_claude(self):
         msg_type, content = CardBuilder.build_deep_card(
-            project=sample_project,
-            title="Test",
-            content="Content",
-            engine_name="Claude",
+            project=None,
+            state=DeepCardState(
+                title="Test",
+                content="No project",
+                engine_name="Claude",
+            )
         )
-
         card = json.loads(content)
-        assert "Claude" in card["header"]["title"]["content"]
+        assert card["header"]["template"] == "purple"
 
-    def test_build_deep_card_no_buttons(self, sample_project):
+    def test_build_deep_card_with_progress(self):
         msg_type, content = CardBuilder.build_deep_card(
-            project=sample_project,
-            title="Title",
-            content="Content",
-            show_buttons=False,
+            project=None,
+            state=DeepCardState(
+                title="Test",
+                content="Doing stuff",
+                progress_bar="[===>   ]",
+                engine_name="Coco",
+            )
         )
-
         card = json.loads(content)
-        column_set_elements = [e for e in card["body"]["elements"] if e.get("tag") == "column_set"]
-        assert len(column_set_elements) == 0
+        found_bar = False
+        for el in card["body"]["elements"]:
+            if "content" in el and "[===>   ]" in el["content"]:
+                found_bar = True
+                break
+        assert found_bar
 
-    def test_build_deep_card_completed_shows_mode_buttons(self, sample_project):
-        msg_type, content = CardBuilder.build_deep_card(
-            project=sample_project,
-            title="Done",
-            content="All done",
-            is_executing=False,
-            is_paused=False,
-            show_buttons=True,
-        )
-
-        card = json.loads(content)
-        content_str = json.dumps(card, ensure_ascii=False)
-        assert "Coco" in content_str or "Claude" in content_str
-
-    def test_build_deep_header_title_with_project(self, sample_project):
-        title = CardBuilder._build_deep_header_title(sample_project, "Coco")
-        assert title == "🧠 Test Project · Deep Agent (Coco)"
-
-    def test_build_deep_header_title_no_project(self):
-        title = CardBuilder._build_deep_header_title(None, "Claude")
-        assert title == "🧠 Deep Agent (Claude)"
-
+    # ------------------------------------------------------------------
+    # _build_deep_buttons tests
+    # ------------------------------------------------------------------
     def test_build_deep_buttons_executing(self):
-        buttons = CardBuilder._build_deep_buttons("proj123", is_executing=True)
-        assert len(buttons) == 2
-        assert buttons[0]["behaviors"][0]["value"]["action"] == "deep_pause"
-        assert buttons[1]["behaviors"][0]["value"]["action"] == "deep_stop"
+        buttons = CardBuilder._build_deep_buttons(DeepCardState(
+            deep_project_id="proj123", is_executing=True
+        ))
+        # Pause, Stop, Mode -> 3 buttons (Expand not shown because compact=False but default truncated content is not checked here)
+        # Wait, _build_deep_buttons logic:
+        # if not compact:
+        #    expand_text = ...
+        #    buttons.append(...)
+        # compact defaults to False in _build_deep_buttons signature.
+        # So Expand button is added.
+        # Pause, Stop, Expand, Mode -> 4 buttons
+        assert len(buttons) == 4
+        texts = [b["text"]["content"] for b in buttons]
+        assert "⏸️ 暂停" in texts
+        assert "🛑 停止" in texts
 
     def test_build_deep_buttons_paused(self):
-        buttons = CardBuilder._build_deep_buttons("proj123", is_paused=True)
-        assert len(buttons) == 2
-        assert buttons[0]["behaviors"][0]["value"]["action"] == "deep_resume"
-        assert buttons[1]["behaviors"][0]["value"]["action"] == "deep_stop"
+        buttons = CardBuilder._build_deep_buttons(DeepCardState(
+            deep_project_id="proj123", is_paused=True
+        ))
+        # Resume, Stop, Expand, Mode -> 4 buttons
+        assert len(buttons) == 4
+        texts = [b["text"]["content"] for b in buttons]
+        assert "▶️ 继续" in texts
+        assert "🛑 停止" in texts
 
     def test_build_deep_buttons_neither(self):
-        buttons = CardBuilder._build_deep_buttons("proj123")
-        assert len(buttons) == 0
+        buttons = CardBuilder._build_deep_buttons(DeepCardState(deep_project_id="proj123"))
+        # Expand, Mode -> 2 buttons
+        assert len(buttons) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -577,7 +606,7 @@ class TestCardSchema20Structure:
 
     def test_deep_card_schema(self, project):
         card = self._parse_card(
-            CardBuilder.build_deep_card(project, "Title", "Content", engine_name="Coco")
+            CardBuilder.build_deep_card(project, DeepCardState(title="Title", content="Content", engine_name="Coco"))
         )
         self._assert_v2_structure(card, "deep")
         self._assert_no_lark_md(card, "deep")
@@ -831,7 +860,13 @@ class TestMarkdownContentRendering:
         content = "## 任务进度\n- [x] 步骤一\n- [ ] 步骤二\n\n```python\nresult = run()\n```"
         card = json.loads(
             CardBuilder.build_deep_card(
-                project, "Deep任务", content, engine_name="Claude", show_buttons=False
+                project,
+                state=DeepCardState(
+                    title="Deep任务",
+                    content=content,
+                    engine_name="Claude",
+                    show_buttons=False
+                )
             )[1]
         )
         elements = card["body"]["elements"]
@@ -989,14 +1024,60 @@ class TestMarkdownEdgeCases:
     # ---- 超长内容 ----
 
     def test_very_long_content(self, project):
-        """超长内容不被截断"""
+        """超长内容被截断（防止 API 报错）"""
         long_line = "A" * 5000
         content = f"开始\n{long_line}\n结束"
         elem = CardBuilder._build_content_element(content)
         assert elem["tag"] == "markdown"
-        assert len(elem["content"]) == len(content)
-        assert elem["content"].startswith("开始")
+        # 新逻辑会截断到约 4000 字符
+        assert len(elem["content"]) < len(content)
+        assert "日志内容过长，已被截断" in elem["content"]
         assert elem["content"].endswith("结束")
+
+    def test_markdown_truncation_smart_closing(self):
+        """测试 Markdown 智能截断闭合逻辑"""
+        # 1. 正常截断，无未闭合标记
+        content = "a" * 5000
+        truncated = CardBuilder._truncate_markdown(content, 1000)
+        assert len(truncated) <= 1000
+        assert "日志内容过长" in truncated
+        
+        # 2. 截断点在代码块内部 -> 应补全 ```
+        # 构造：前缀 + 代码块开始 + 长内容 + 代码块结束
+        # 截断后应该保留 尾部，如果尾部在代码块内，应在尾部前加 ```
+        # 这里的逻辑是保留 TAIL。
+        # 原文: [PRE] ``` [LONG CODE] ```
+        # 截断: 保留 [...CODE] ```
+        # 因为 Cut Point 在 ``` 之后，意味着 Head 里有一个 ```。
+        # 所以 Tail 开始时处于 inside 状态。
+        # _truncate_markdown 应该在 Tail 前加 ```。
+        
+        prefix = "a" * 3000
+        code_content = "code" * 1000 # 4000 chars
+        full = f"{prefix}```\n{code_content}\n```"
+        # total > 7000
+        # max 1000. Keep last ~900.
+        # Cut point is around 6100.
+        # Head has `prefix` (3000) + ``` (3). So Head has 1 marker. Inside code block.
+        # Tail has part of code_content + ```.
+        # Tail should start with ``` to be valid.
+        
+        truncated = CardBuilder._truncate_markdown(full, 1000)
+        # 验证包含补全的 ```
+        # 警告语之后应该是 ```
+        assert "日志内容过长" in truncated
+        assert "```" in truncated
+        # 确保总共是偶数个 ``` (警告语里没有，Tail前补1个，Tail后原有1个 -> 2个)
+        assert truncated.count("```") % 2 == 0
+        
+        # 3. 截断点在加粗内部 -> 应补全 **
+        prefix = "a" * 3000
+        bold_content = "bold" * 1000
+        full = f"{prefix}**{bold_content}**"
+        
+        truncated = CardBuilder._truncate_markdown(full, 1000)
+        assert "**" in truncated
+        assert truncated.count("**") % 2 == 0
 
     def test_many_lines_content(self, project):
         """大量行数的内容"""
@@ -1137,11 +1218,13 @@ class TestMarkdownEdgeCases:
         """Deep 卡片的进度条使用 markdown 标签"""
         _, content = CardBuilder.build_deep_card(
             project=None,
-            title="Test",
-            content="Running",
-            progress_bar="[████░░░░░░] 40%",
-            show_buttons=False,
-            engine_name="Coco",
+            state=DeepCardState(
+                title="Test",
+                content="Running",
+                progress_bar="[████░░░░░░] 40%",
+                show_buttons=False,
+                engine_name="Coco",
+            )
         )
         card = json.loads(content)
         elements = card["body"]["elements"]
@@ -1187,9 +1270,14 @@ class TestBuildDeepCardStructuredParams:
     def test_status_line_renders(self):
         """status_line should appear in card elements."""
         _, card_content = CardBuilder.build_deep_card(
-            project=None, title="Test", content="Body",
-            engine_name="Coco", show_buttons=False,
-            status_line="🔄 循环执行中 · 循环 3 · 标准 1/5",
+            project=None,
+            state=DeepCardState(
+                title="Test",
+                content="Body",
+                engine_name="Coco",
+                show_buttons=False,
+                status_line="🔄 循环执行中 · 循环 3 · 标准 1/5",
+            )
         )
         card = json.loads(card_content)
         elements = card["body"]["elements"]
@@ -1200,10 +1288,15 @@ class TestBuildDeepCardStructuredParams:
     def test_duration_line_renders(self):
         """duration_line should be combined with status_line."""
         _, card_content = CardBuilder.build_deep_card(
-            project=None, title="Test", content="Body",
-            engine_name="Coco", show_buttons=False,
-            status_line="🔄 执行中",
-            duration_line="⏱️ 3分12秒",
+            project=None,
+            state=DeepCardState(
+                title="Test",
+                content="Body",
+                engine_name="Coco",
+                show_buttons=False,
+                status_line="🔄 执行中",
+                duration_line="⏱️ 3分12秒",
+            )
         )
         card = json.loads(card_content)
         elements = card["body"]["elements"]
@@ -1215,9 +1308,14 @@ class TestBuildDeepCardStructuredParams:
     def test_criteria_section_renders(self):
         """criteria_section should be a separate element after content."""
         _, card_content = CardBuilder.build_deep_card(
-            project=None, title="Test", content="Main body",
-            engine_name="Coco", show_buttons=False,
-            criteria_section="📋 **验收标准 (1/3)**\n  ✅ C1\n  🔲 C2\n  🔲 C3",
+            project=None,
+            state=DeepCardState(
+                title="Test",
+                content="Main body",
+                engine_name="Coco",
+                show_buttons=False,
+                criteria_section="📋 **验收标准 (1/3)**\n  ✅ C1\n  🔲 C2\n  🔲 C3",
+            )
         )
         card = json.loads(card_content)
         elements = card["body"]["elements"]
@@ -1227,9 +1325,14 @@ class TestBuildDeepCardStructuredParams:
     def test_footer_note_renders(self):
         """footer_note should appear as notation-sized element."""
         _, card_content = CardBuilder.build_deep_card(
-            project=None, title="Test", content="Body",
-            engine_name="Coco", show_buttons=False,
-            footer_note="Generated by Spec Engine",
+            project=None,
+            state=DeepCardState(
+                title="Test",
+                content="Body",
+                engine_name="Coco",
+                show_buttons=False,
+                footer_note="Generated by Spec Engine",
+            )
         )
         card = json.loads(card_content)
         elements = card["body"]["elements"]
@@ -1240,8 +1343,13 @@ class TestBuildDeepCardStructuredParams:
     def test_no_optional_params_still_works(self):
         """build_deep_card with no optional params should still work."""
         _, card_content = CardBuilder.build_deep_card(
-            project=None, title="Test", content="Body",
-            engine_name="Coco", show_buttons=False,
+            project=None,
+            state=DeepCardState(
+                title="Test",
+                content="Body",
+                engine_name="Coco",
+                show_buttons=False,
+            )
         )
         card = json.loads(card_content)
         assert card["body"]["elements"]
@@ -1249,13 +1357,18 @@ class TestBuildDeepCardStructuredParams:
     def test_all_optional_params_together(self):
         """All new optional params at once."""
         _, card_content = CardBuilder.build_deep_card(
-            project=None, title="Full Card", content="Main content",
-            progress_bar="[████░░] 60% (3/5)",
-            engine_name="Spec(Claude)", show_buttons=False,
-            status_line="🔄 循环执行中",
-            duration_line="⏱️ 5分",
-            criteria_section="📋 标准\n✅ C1\n🔲 C2",
-            footer_note="Powered by Spec",
+            project=None,
+            state=DeepCardState(
+                title="Full Card",
+                content="Main content",
+                progress_bar="[████░░] 60% (3/5)",
+                engine_name="Spec(Claude)",
+                show_buttons=False,
+                status_line="🔄 循环执行中",
+                duration_line="⏱️ 5分",
+                criteria_section="📋 标准\n✅ C1\n🔲 C2",
+                footer_note="Powered by Spec",
+            )
         )
         card = json.loads(card_content)
         elements = card["body"]["elements"]
@@ -1270,9 +1383,14 @@ class TestBuildDeepCardStructuredParams:
     def test_criteria_section_separated_by_hr(self):
         """criteria_section should be preceded by an hr element."""
         _, card_content = CardBuilder.build_deep_card(
-            project=None, title="Test", content="Body",
-            engine_name="Coco", show_buttons=False,
-            criteria_section="📋 标准列表",
+            project=None,
+            state=DeepCardState(
+                title="Test",
+                content="Body",
+                engine_name="Coco",
+                show_buttons=False,
+                criteria_section="📋 标准列表",
+            )
         )
         card = json.loads(card_content)
         elements = card["body"]["elements"]

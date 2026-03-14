@@ -43,7 +43,7 @@ class TestImageDownloadResult:
 class TestParseTextMessage:
     @pytest.fixture
     def handler(self):
-        return FeishuImageHandler(MagicMock())
+        return FeishuImageHandler(MagicMock(), MagicMock())
 
     def test_parse_standard_text(self, handler):
         content = json.dumps({"text": "hello world"})
@@ -71,7 +71,7 @@ class TestParseTextMessage:
 class TestParseImageMessage:
     @pytest.fixture
     def handler(self):
-        return FeishuImageHandler(MagicMock())
+        return FeishuImageHandler(MagicMock(), MagicMock())
 
     def test_parse_single_image(self, handler):
         content = json.dumps({"image_key": "img_v2_abc123"})
@@ -99,7 +99,7 @@ class TestParseImageMessage:
 class TestParsePostMessage:
     @pytest.fixture
     def handler(self):
-        return FeishuImageHandler(MagicMock())
+        return FeishuImageHandler(MagicMock(), MagicMock())
 
     def _build_post(self, content_rows, lang="zh_cn", title=""):
         return json.dumps({
@@ -225,7 +225,7 @@ class TestParsePostMessage:
 class TestParseMessageRouter:
     @pytest.fixture
     def handler(self):
-        return FeishuImageHandler(MagicMock())
+        return FeishuImageHandler(MagicMock(), MagicMock())
 
     def test_unsupported_type(self, handler):
         result = handler.parse_message("audio", '{"key": "val"}')
@@ -245,7 +245,7 @@ class TestDownloadImages:
 
     @pytest.fixture
     def handler(self, mock_client):
-        return FeishuImageHandler(mock_client)
+        return FeishuImageHandler(lambda: mock_client, MagicMock())
 
     def test_download_empty_list(self, handler):
         result = handler.download_images("msg_1", [], "/tmp/test")

@@ -1,5 +1,6 @@
 import logging
-from typing import Optional, Any
+import asyncio
+from typing import Optional, Any, Union
 
 """Unified error formatting and base exception for user-facing messages.
 
@@ -11,6 +12,12 @@ Convention:
     ⚠️  Warning / partial failure (action completed with issues)
     ⏱️  Timeout (action took too long)
 """
+
+# ---------------------------------------------------------------------------
+# Feishu API Error Codes
+# ---------------------------------------------------------------------------
+LARK_CODE_MESSAGE_NOT_FOUND = 230001
+LARK_CODE_MESSAGE_RECALLED = 230020
 
 
 class GhostAPError(Exception):
@@ -51,8 +58,18 @@ class SafetyCheckError(GhostAPError):
 # User-facing message formatters
 # ---------------------------------------------------------------------------
 
-def fmt_error(action: str, detail: str = "") -> str:
+def fmt_error(action: str, detail: Union[str, Exception] = "") -> str:
     """Format a hard-failure message."""
+    if isinstance(detail, Exception):
+        if isinstance(detail, (TimeoutError, asyncio.TimeoutError)):
+            msg = str(detail)
+            if not msg:
+                detail = "操作超时，请稍后重试"
+            else:
+                detail = f"操作超时 ({msg})"
+        else:
+            detail = str(detail)
+            
     if detail:
         return f"❌ {action}失败: {detail}"
     return f"❌ {action}失败"
@@ -60,6 +77,8 @@ def fmt_error(action: str, detail: str = "") -> str:
 
 def fmt_exception(action: str, exc: BaseException) -> str:
     """Format an unexpected exception for the user."""
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return f"❌ {action}超时: 操作耗时过长，请重试"
     return f"❌ {action}异常: {str(exc)}"
 
 

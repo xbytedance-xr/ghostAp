@@ -1,0 +1,460 @@
+
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING, Optional
+
+from ...acp import ACPEvent, ACPEventType, ACPEventRenderer
+from ...card import CardBuilder, DeepCardState
+from ...spec_engine import SpecEngineCallbacks
+from ...spec_engine.models import (
+    SpecProject,
+    SpecProjectStatus,
+    SpecCycle,
+    SpecPhase,
+    ReviewResult,
+)
+from ...utils.text import append_duration_to_title
+from ..emoji import EmojiReaction
+
+if TYPE_CHECKING:
+    from ..handlers.spec import SpecHandler
+    from ...project import ProjectContext
+
+logger = logging.getLogger(__name__)
+
+class SpecRenderer:
+    """
+    Handles UI rendering and state management for Spec Engine interactions.
+    """
+
+    def __init__(self, handler: "SpecHandler") -> None:
+        self.handler = handler
+        self.ctx = handler.ctx
+        self.settings = handler.settings
+        # spec_project_id -> {"compact": bool, "expanded": bool, "view_mode": str, "view_context": dict}
+        self.ui_states: dict[str, dict] = {}
+
+    def get_ui_state(self, spec_project_id: str) -> dict:
+        if not spec_project_id:
+            return {
+                "compact": self.settings.card_deep_compact_default,
+                "expanded": False,
+                "view_mode": "status",
+                "view_context": {},
+            }
+        if spec_project_id not in self.ui_states:
+            self.ui_states[spec_project_id] = {
+                "compact": self.settings.card_deep_compact_default,
+                "expanded": False,
+                "view_mode": "status",
+                "view_context": {},
+            }
+        return self.ui_states[spec_project_id]
+
+    def update_ui_state(self, spec_project_id: str, **kwargs):
+        state = self.get_ui_state(spec_project_id)
+        state.update(kwargs)
+
+    def create_spec_callbacks(self, message_id: str, chat_id: str, project: Optional["ProjectContext"], engine_name: str = "Coco") -> SpecEngineCallbacks:
+        request_id = self.handler.ensure_request_id(message_id, chat_id=chat_id, project_id=(project.project_id if project else None))
+        reporter = self.ctx.spec_reporter
+        
+        thread_root_message_id: list[str | None] = [None]
+        current_status_message_id: list[str | None] = [None]
+        
+        # Calculate spec_project_id once for UI state lookups
+        spec_project_id = project.project_id if project else self.handler.get_working_dir(chat_id)
+
+        def _send_spec_message(card_content: str, msg_type: str = "interactive", is_update: bool = False):
+            # 1. Try update existing card
+            if is_update and current_status_message_id[0]:
+                if self.handler.patch_message(current_status_message_id[0], card_content, max_retries=1):
+                    return
+                # Patch failed, fall through to send new message
+
+            # 2. Create new message
+            use_thread = self.settings.default_reply_mode == "thread"
+            result_id = None
+            if use_thread:
+                reply_to = thread_root_message_id[0] or message_id
+                result_id = self.handler.reply_message(
+                    reply_to, card_content, msg_type=msg_type,
+                    origin_message_id=message_id, request_id=request_id,
+                    reply_in_thread=True,
+                )
+                if thread_root_message_id[0] is None and result_id:
+                    thread_root_message_id[0] = result_id
+            else:
+                result_id = self.handler.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
+            
+            if result_id:
+                current_status_message_id[0] = result_id
+
+        def on_analyzing_done(spec_project: SpecProject):
+            self.update_ui_state(spec_project_id, view_mode="status", view_context={})
+            
+            content = reporter.format_analyzing_done(spec_project)
+            title = reporter.get_analyzing_done_title()
+            msg_type, card_content = CardBuilder.build_deep_card(
+                project=project,
+                state=DeepCardState(
+                    title=title,
+                    content=content,
+                    engine_name=f"Spec({engine_name})",
+                    show_buttons=False,
+                )
+            )
+            _send_spec_message(card_content, msg_type, is_update=False)
+
+        def on_cycle_start(current: int, max_cycles: int):
+            self.update_ui_state(spec_project_id, view_mode="status", view_context={})
+            
+            engine = self.ctx.spec_engine_manager.get(chat_id, project.root_path if project else "")
+            spec_project = engine.project if engine else None
+            
+            criteria_status = ""
+            progress_bar = None
+            status_line = None
+            duration_line = None
+            criteria_section = None
+            
+            if spec_project:
+                criteria_status = reporter.format_criteria_brief(spec_project)
+                progress_bar = reporter._make_progress_bar(spec_project.satisfied_count, spec_project.total_criteria)
+                status_line = reporter.format_status_line(spec_project)
+                duration_line = reporter.format_duration_line(spec_project)
+                criteria_section = reporter.format_criteria_section(spec_project)
+                
+            content = reporter.format_cycle_start(current, max_cycles, criteria_status=criteria_status)
+            title = reporter.get_cycle_start_title(current, max_cycles)
+            title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
+            
+            state = self.get_ui_state(spec_project_id)
+            msg_type, card_content = CardBuilder.build_deep_card(
+                project=project,
+                state=DeepCardState(
+                    title=title,
+                    content=content,
+                    progress_bar=progress_bar,
+                    is_executing=True,
+                    engine_name=f"Spec({engine_name})",
+                    status_line=status_line,
+                    duration_line=duration_line,
+                    criteria_section=criteria_section,
+                    deep_project_id=spec_project_id,
+                    compact=state["compact"],
+                    expanded=state["expanded"],
+                    action_prefix="spec",
+                )
+            )
+            _send_spec_message(card_content, msg_type, is_update=True)
+
+        def on_cycle_done(cycle_num: int, cycle: SpecCycle):
+            self.update_ui_state(spec_project_id, view_mode="cycle_done", view_context={"cycle_num": cycle_num})
+            
+            engine = self.ctx.spec_engine_manager.get(chat_id, project.root_path if project else "")
+            if engine and engine.project:
+                sp = engine.project
+                content = reporter.format_cycle_done(cycle_num, cycle)
+                title = reporter.get_cycle_done_title(cycle_num, cycle.status == "completed")
+                title = append_duration_to_title(title, sp.duration())
+                progress_bar = reporter._make_progress_bar(sp.satisfied_count, sp.total_criteria)
+                status_line = reporter.format_status_line(sp)
+                duration_line = reporter.format_duration_line(sp)
+                criteria_section = reporter.format_criteria_section(sp)
+                
+                state = self.get_ui_state(spec_project_id)
+                msg_type, card_content = CardBuilder.build_deep_card(
+                    project=project,
+                    state=DeepCardState(
+                        title=title,
+                        content=content,
+                        progress_bar=progress_bar,
+                        is_executing=True,
+                        engine_name=f"Spec({engine_name})",
+                        status_line=status_line,
+                        duration_line=duration_line,
+                        criteria_section=criteria_section,
+                        deep_project_id=spec_project_id,
+                        compact=state["compact"],
+                        expanded=state["expanded"],
+                        action_prefix="spec",
+                    )
+                )
+                _send_spec_message(card_content, msg_type, is_update=True)
+
+        def on_review_done(cycle_num: int, review: ReviewResult):
+            self.update_ui_state(spec_project_id, view_mode="review_done", view_context={"cycle_num": cycle_num})
+            
+            content = reporter.format_review_result(review)
+            title = reporter.get_review_title(cycle_num, review.all_passed)
+            
+            engine = self.ctx.spec_engine_manager.get(chat_id, project.root_path if project else "")
+            progress_bar = None
+            status_line = None
+            duration_line = None
+            criteria_section = None
+            if engine and engine.project:
+                sp = engine.project
+                progress_bar = reporter._make_progress_bar(sp.satisfied_count, sp.total_criteria)
+                title = append_duration_to_title(title, sp.duration())
+                status_line = reporter.format_status_line(sp)
+                duration_line = reporter.format_duration_line(sp)
+                criteria_section = reporter.format_criteria_section(sp)
+            
+            state = self.get_ui_state(spec_project_id)
+            msg_type, card_content = CardBuilder.build_deep_card(
+                project=project,
+                state=DeepCardState(
+                    title=title,
+                    content=content,
+                    progress_bar=progress_bar,
+                    is_executing=True,
+                    engine_name=f"Spec({engine_name})",
+                    status_line=status_line,
+                    duration_line=duration_line,
+                    criteria_section=criteria_section,
+                    deep_project_id=spec_project_id,
+                    compact=state["compact"],
+                    expanded=state["expanded"],
+                    action_prefix="spec",
+                )
+            )
+            _send_spec_message(card_content, msg_type, is_update=True)
+
+        def on_project_done(spec_project: SpecProject):
+            self.update_ui_state(spec_project_id, view_mode="status", view_context={})
+            
+            content = reporter.format_project_done(spec_project)
+            title = reporter.get_project_done_title(spec_project)
+            progress_bar = reporter._make_progress_bar(spec_project.satisfied_count, spec_project.total_criteria)
+            duration_line = reporter.format_duration_line(spec_project)
+            
+            state = self.get_ui_state(spec_project_id)
+            msg_type, card_content = CardBuilder.build_deep_card(
+                project=project,
+                state=DeepCardState(
+                    title=title,
+                    content=content,
+                    progress_bar=progress_bar,
+                    engine_name=f"Spec({engine_name})",
+                    duration_line=duration_line,
+                    deep_project_id=spec_project_id,
+                    compact=state["compact"],
+                    expanded=state["expanded"],
+                    action_prefix="spec",
+                )
+            )
+            _send_spec_message(card_content, msg_type, is_update=True)
+            self.handler.add_reaction(message_id, EmojiReaction.on_multi_task_done())
+
+        def on_error(error: str):
+            self.update_ui_state(spec_project_id, view_mode="error", view_context={"error": error})
+            
+            content = reporter.format_error(error)
+            title = reporter.get_error_title()
+            msg_type, card_content = CardBuilder.build_deep_card(
+                project=project,
+                state=DeepCardState(
+                    title=title,
+                    content=content,
+                    engine_name=f"Spec({engine_name})",
+                    show_buttons=False,
+                )
+            )
+            _send_spec_message(card_content, msg_type, is_update=True)
+            self.handler.add_reaction(message_id, EmojiReaction.on_error())
+
+        # For phase events, we might want to show streaming updates?
+        # Spec engine is a bit different as it has explicit phases. 
+        # For now we'll stick to cycle-level updates to keep it clean, 
+        # or we could update on phase_done.
+        
+        def on_phase_done(cycle_num: int, phase: SpecPhase, output: str):
+            # Optional: Update card to show phase completion
+            pass
+
+        return SpecEngineCallbacks(
+            on_analyzing_done=on_analyzing_done,
+            on_cycle_start=on_cycle_start,
+            on_cycle_done=on_cycle_done,
+            on_review_done=on_review_done,
+            on_project_done=on_project_done,
+            on_error=on_error,
+            on_phase_done=on_phase_done,
+        )
+
+    def render_current_view(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, origin_message_id: Optional[str] = None):
+        if project is None:
+            project = self.handler.project_manager.get_active_project(chat_id)
+
+        root_path = project.root_path if project else self.handler.get_working_dir(chat_id)
+        engine = self.ctx.spec_engine_manager.get(chat_id, root_path)
+        
+        spec_project_id = project.project_id if project else root_path
+        state = self.get_ui_state(spec_project_id)
+        
+        view_mode = state.get("view_mode", "status")
+        view_context = state.get("view_context", {})
+        
+        if not engine or not engine.project:
+            running = self.ctx.spec_engine_manager.get_active_engines(chat_id)
+            if len(running) == 1 and running[0].project:
+                engine = running[0]
+            else:
+                engine_name = self.handler.get_engine_name(chat_id, project_id=(project.project_id if project else None))
+                msg_type, card_content = CardBuilder.build_deep_card(
+                    project=project,
+                    state=DeepCardState(
+                        title="📊 Spec 状态",
+                        content="当前没有 Spec 任务\n\n发送 `/spec 你的需求` 开始结构化开发闭环",
+                        engine_name=f"Spec({engine_name})",
+                        show_buttons=False,
+                    )
+                )
+                self.handler.reply_message(message_id, card_content, msg_type=msg_type)
+                return
+
+        reporter = self.ctx.spec_reporter
+        
+        if view_mode == "status":
+            self._render_status_view(message_id, chat_id, project, engine, state, origin_message_id)
+        elif view_mode == "cycle_done":
+            cycle_num = view_context.get("cycle_num")
+            self._render_cycle_view(message_id, chat_id, project, engine, state, cycle_num, origin_message_id)
+        elif view_mode == "review_done":
+            cycle_num = view_context.get("cycle_num")
+            self._render_review_view(message_id, chat_id, project, engine, state, cycle_num, origin_message_id)
+        elif view_mode == "error":
+            error_msg = view_context.get("error", "未知错误")
+            self._render_error_view(message_id, chat_id, project, engine, state, error_msg, origin_message_id)
+        else:
+            self._render_status_view(message_id, chat_id, project, engine, state, origin_message_id)
+
+    def _render_status_view(self, message_id: str, chat_id: str, project, engine, state, origin_message_id):
+        reporter = self.ctx.spec_reporter
+        engine_name = engine.engine_name
+        
+        status_content = reporter.format_status(engine.project)
+        status_title = reporter.get_status_title()
+        progress_info = reporter.get_progress_info(engine.project)
+        
+        msg_type, card_content = CardBuilder.build_deep_card(
+            project=project,
+            state=DeepCardState(
+                title=status_title,
+                content=status_content,
+                progress_bar=progress_info["progress_bar"],
+                is_executing=progress_info["is_running"],
+                engine_name=f"Spec({engine_name})",
+                deep_project_id=project.project_id if project else engine.project.root_path,
+                compact=state["compact"],
+                expanded=state["expanded"],
+                action_prefix="spec",
+            )
+        )
+        self._patch_or_send(message_id, chat_id, card_content, msg_type, origin_message_id)
+
+    def _render_cycle_view(self, message_id: str, chat_id: str, project, engine, state, cycle_num, origin_message_id):
+        reporter = self.ctx.spec_reporter
+        engine_name = engine.engine_name
+        spec_project = engine.project
+        
+        cycle = next((c for c in spec_project.cycles if c.cycle_number == cycle_num), None)
+        if not cycle:
+            self._render_status_view(message_id, chat_id, project, engine, state, origin_message_id)
+            return
+
+        content = reporter.format_cycle_done(cycle_num, cycle)
+        title = reporter.get_cycle_done_title(cycle_num, cycle.status == "completed")
+        title = append_duration_to_title(title, spec_project.duration())
+        progress_bar = reporter._make_progress_bar(spec_project.satisfied_count, spec_project.total_criteria)
+        status_line = reporter.format_status_line(spec_project)
+        duration_line = reporter.format_duration_line(spec_project)
+        criteria_section = reporter.format_criteria_section(spec_project)
+        
+        msg_type, card_content = CardBuilder.build_deep_card(
+            project=project,
+            state=DeepCardState(
+                title=title,
+                content=content,
+                progress_bar=progress_bar,
+                is_executing=True,
+                engine_name=f"Spec({engine_name})",
+                status_line=status_line,
+                duration_line=duration_line,
+                criteria_section=criteria_section,
+                deep_project_id=project.project_id if project else spec_project.root_path,
+                compact=state["compact"],
+                expanded=state["expanded"],
+                action_prefix="spec",
+            )
+        )
+        self._patch_or_send(message_id, chat_id, card_content, msg_type, origin_message_id)
+
+    def _render_review_view(self, message_id: str, chat_id: str, project, engine, state, cycle_num, origin_message_id):
+        reporter = self.ctx.spec_reporter
+        engine_name = engine.engine_name
+        spec_project = engine.project
+        
+        cycle = next((c for c in spec_project.cycles if c.cycle_number == cycle_num), None)
+        if not cycle or not cycle.review_result:
+            self._render_status_view(message_id, chat_id, project, engine, state, origin_message_id)
+            return
+
+        content = reporter.format_review_result(cycle.review_result)
+        title = reporter.get_review_title(cycle_num, cycle.review_result.all_passed)
+        title = append_duration_to_title(title, spec_project.duration())
+        progress_bar = reporter._make_progress_bar(spec_project.satisfied_count, spec_project.total_criteria)
+        status_line = reporter.format_status_line(spec_project)
+        duration_line = reporter.format_duration_line(spec_project)
+        criteria_section = reporter.format_criteria_section(spec_project)
+        
+        msg_type, card_content = CardBuilder.build_deep_card(
+            project=project,
+            state=DeepCardState(
+                title=title,
+                content=content,
+                progress_bar=progress_bar,
+                is_executing=True,
+                engine_name=f"Spec({engine_name})",
+                status_line=status_line,
+                duration_line=duration_line,
+                criteria_section=criteria_section,
+                deep_project_id=project.project_id if project else spec_project.root_path,
+                compact=state["compact"],
+                expanded=state["expanded"],
+                action_prefix="spec",
+            )
+        )
+        self._patch_or_send(message_id, chat_id, card_content, msg_type, origin_message_id)
+
+    def _render_error_view(self, message_id: str, chat_id: str, project, engine, state, error_msg, origin_message_id):
+        reporter = self.ctx.spec_reporter
+        engine_name = engine.engine_name
+        
+        content = reporter.format_error(error_msg)
+        title = reporter.get_error_title()
+        
+        msg_type, card_content = CardBuilder.build_deep_card(
+            project=project,
+            state=DeepCardState(
+                title=title,
+                content=content,
+                engine_name=f"Spec({engine_name})",
+                show_buttons=False,
+                deep_project_id=project.project_id if project else engine.project.root_path,
+                compact=state["compact"],
+                expanded=state["expanded"],
+                action_prefix="spec",
+            )
+        )
+        self._patch_or_send(message_id, chat_id, card_content, msg_type, origin_message_id)
+
+    def _patch_or_send(self, message_id, chat_id, card_content, msg_type, origin_message_id):
+        patched = False
+        if origin_message_id:
+            patched = self.handler.patch_message(origin_message_id, card_content, max_retries=1)
+        if not patched:
+            self.handler.reply_message(message_id, card_content, msg_type=msg_type, origin_message_id=origin_message_id)

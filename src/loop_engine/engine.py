@@ -237,7 +237,17 @@ class LoopEngine:
             return self._project
 
         except Exception as e:
-            error_msg = f"Loop执行异常: {str(e)}"
+            from ..utils.errors import fmt_error
+            # Use fmt_error to robustly format exception
+            formatted = fmt_error("", e)
+            if formatted.startswith("❌ 失败: "):
+                detail = formatted[len("❌ 失败: "):]
+            elif formatted == "❌ 失败":
+                detail = str(e) or "未知错误"
+            else:
+                detail = formatted
+            
+            error_msg = f"Loop执行异常: {detail}"
             logger.error("[Loop:%s] %s", project_name, error_msg)
             if self._project:
                 self._project.status = LoopProjectStatus.ABORTED
@@ -865,7 +875,16 @@ FAIL
                 callbacks.on_project_done(self._project)
 
         except Exception as e:
-            error_msg = f"Loop恢复异常: {str(e)}"
+            from ..utils.errors import fmt_error
+            formatted = fmt_error("", e)
+            if formatted.startswith("❌ 失败: "):
+                detail = formatted[len("❌ 失败: "):]
+            elif formatted == "❌ 失败":
+                detail = str(e) or "未知错误"
+            else:
+                detail = formatted
+
+            error_msg = f"Loop恢复异常: {detail}"
             logger.error("[Loop:%s] %s", project_name, error_msg)
             self._project.status = LoopProjectStatus.ABORTED
             self._project.completed_at = time.time()

@@ -63,6 +63,8 @@ class TestCardActionHandler(unittest.TestCase):
 
             client = FeishuWSClient(MagicMock())
             client._handle_card_enter_coco = MagicMock()
+            # Must re-register because the original registration captured the bound method
+            client._register_action(client._handle_card_enter_coco, exact="enter_coco")
 
             data = SimpleNamespace(
                 event=SimpleNamespace(
@@ -78,7 +80,8 @@ class TestCardActionHandler(unittest.TestCase):
 
             client._process_card_action_async(data)
 
-            client._handle_card_enter_coco.assert_called_once_with("om_1", "oc_1", "p1")
+            # Now expects value dict as 4th argument
+            client._handle_card_enter_coco.assert_called_once_with("om_1", "oc_1", "p1", {"action": "enter_coco", "project_id": "p1"})
 
     def test_process_card_action_routes_refresh_ttadk_models(self):
         """验证 TTADK 模型选择卡的『刷新模型列表』按钮可被正确路由。"""

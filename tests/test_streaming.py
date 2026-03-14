@@ -49,9 +49,9 @@ class TestStreamingCardManager:
         assert buttons[0]["text"]["content"] == "🚪 退出Coco"
         assert buttons[0]["behaviors"][0]["value"]["action"] == "exit_coco"
         assert buttons[0]["behaviors"][0]["value"]["project_id"] == "proj_123"
-        assert buttons[0].get("size") == "small"
+        assert buttons[0].get("size") == "medium"
         assert buttons[1]["text"]["content"] == "🔄 切换项目"
-        assert buttons[1].get("size") == "small"
+        assert buttons[1].get("size") == "medium"
 
     def test_build_buttons_smart_mode(self, manager):
         buttons = manager._build_buttons(is_coco_mode=False, project_id="proj_123")
@@ -59,10 +59,10 @@ class TestStreamingCardManager:
         assert len(buttons) == 2
         assert buttons[0]["text"]["content"] == "🤖 Coco模式"
         assert buttons[0]["behaviors"][0]["value"]["action"] == "enter_coco"
-        assert buttons[0].get("size") == "small"
+        assert buttons[0].get("size") == "medium"
         assert buttons[1]["text"]["content"] == "🔮 Claude模式"
         assert buttons[1]["behaviors"][0]["value"]["action"] == "enter_claude"
-        assert buttons[1].get("size") == "small"
+        assert buttons[1].get("size") == "medium"
 
     def test_create_streaming_card_success(self, manager, mock_client):
         card = manager.create_streaming_card(
@@ -161,8 +161,8 @@ class TestStreamingCardManager:
             header_template="blue",
             message_id="msg_123",
             last_content="old content",
-            min_update_interval_s=0,
         )
+        card.flow_control_state.min_update_interval_s = 0
 
         result = manager.update_content(card, "new content")
 
@@ -182,6 +182,39 @@ class TestStreamingCardManager:
 
         assert result is True
         mock_client.im.v1.message.patch.assert_not_called()
+
+    def test_update_content_adaptive_rate(self, manager, mock_client):
+        card = StreamingCard(
+            chat_id="chat_456",
+            title="🤖 Test",
+            header_template="blue",
+            message_id="msg_123",
+            last_content="start",
+            last_content_len=5,
+        )
+        card.flow_control_state.last_arrival_time = 1000.0
+        card.flow_control_state.content_arrival_rate = 0.0
+        
+        # Simulate high speed: 200 chars in 0.1s => rate = 2000 chars/s
+        with patch("time.time", return_value=1000.1):
+            manager.update_content(card, "start" + "x"*200)
+            
+        # Expect interval to increase towards max (2.0)
+        assert card.flow_control_state.content_arrival_rate > 100
+        assert card.flow_control_state.min_update_interval_s == manager._flow_control.config.max_interval_s
+        
+        # Simulate low speed: 1 char in 1.0s => rate = 1 char/s
+        # Need to reset time/rate to simulate sequence or just jump
+        card.flow_control_state.last_arrival_time = 2000.0
+        card.last_content_len = 205
+        card.flow_control_state.content_arrival_rate = 0.0 # reset for clean test
+        
+        with patch("time.time", return_value=2001.0):
+            manager.update_content(card, "start" + "x"*200 + "y")
+            
+        # Expect interval to be base (0.3)
+        assert card.flow_control_state.content_arrival_rate < 20
+        assert card.flow_control_state.min_update_interval_s == manager._flow_control.config.base_interval_s
 
     def test_close_streaming_success(self, manager, mock_client):
         mock_response = MagicMock()
@@ -532,4 +565,4 @@ class TestStreamingCardManager:
         assert buttons[0]["text"]["content"] == "🚪 退出Claude"
         assert buttons[0]["behaviors"][0]["value"]["action"] == "exit_claude"
         assert buttons[0]["behaviors"][0]["value"]["project_id"] == "proj_123"
-        assert buttons[0].get("size") == "small"
+        assert buttons[0].get("size") == "medium"

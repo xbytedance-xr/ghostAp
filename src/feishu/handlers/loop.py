@@ -4,21 +4,18 @@ from __future__ import annotations
 
 import logging
 import os
+import asyncio
 from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
-from ...loop_engine import LoopEngineCallbacks
-from ...loop_engine.models import (
-    LoopProject,
-    LoopProjectStatus,
-    IterationRecord,
-    ReviewResult,
-)
+from ...card.models import DeepCardState
+from ...loop_engine.models import LoopProjectStatus
 from ...tasking import TaskSpec, TaskPriority
 from ...utils.errors import fmt_error
-from ...utils.text import append_duration_to_title, generate_task_id
+from ...utils.text import generate_task_id
 from ..emoji import EmojiReaction
 from .base import BaseHandler
+from ..renderers.loop_renderer import LoopRenderer
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
@@ -28,6 +25,17 @@ logger = logging.getLogger(__name__)
 
 class LoopHandler(BaseHandler):
     """Manages the full lifecycle of Loop Engine tasks."""
+
+    def __init__(self, ctx: "HandlerContext") -> None:
+        super().__init__(ctx)
+        self.renderer = LoopRenderer(self)
+
+    def _create_loop_callbacks(self, *args, **kwargs):
+        return self.renderer.create_loop_callbacks(*args, **kwargs)
+
+    def _get_ui_state(self, loop_project_id: str) -> dict:
+        """Deprecated: Delegate to renderer"""
+        return self.renderer.get_ui_state(loop_project_id)
 
     # ------------------------------------------------------------------
     # Command router
@@ -67,7 +75,7 @@ class LoopHandler(BaseHandler):
                 if is_new:
                     logger.info("Loop Engine 自动创建项目: %s @ %s", project.project_name, project.root_path)
             except Exception as e:
-                self.reply_message(message_id, fmt_error("创建项目", str(e)))
+                self.reply_message(message_id, fmt_error("创建项目", e))
                 return
 
         root_path = project.root_path if project else self.get_working_dir(chat_id)
@@ -90,9 +98,14 @@ class LoopHandler(BaseHandler):
         content = reporter.format_analyzing_start(requirement)
         title = reporter.get_analyzing_start_title()
         msg_type, card_content = CardBuilder.build_deep_card(
-            project=project, title=title,
-            content=f"{content}\n\n{self.format_ref_note(message_id, request_id)}" if request_id else content,
-            engine_name=f"Loop({engine_name})", show_buttons=False,
+            project=project,
+            state=DeepCardState(
+                title=title,
+                content=f"{content}\n\n{self.format_ref_note(message_id, request_id)}" if request_id else content,
+                engine_name=f"Loop({engine_name})",
+                show_buttons=False,
+                action_prefix="loop",
+            )
         )
         self.reply_message(message_id, card_content, msg_type=msg_type, origin_message_id=message_id, request_id=request_id)
 
@@ -105,16 +118,43 @@ class LoopHandler(BaseHandler):
 
         def run_loop_engine():
             try:
-                callbacks = self._create_loop_callbacks(message_id, chat_id, project, engine_name)
+                callbacks = self.renderer.create_loop_callbacks(message_id, chat_id, project, engine_name)
                 engine.execute(requirement, callbacks, task_id=task_id, on_rate_limit=_on_rate_limit)
             except Exception as e:
                 logger.error("Loop Engine 执行异常: %s", e, exc_info=True)
-                error_content = reporter.format_error(str(e))
+                # 使用增强的 fmt_error 处理异常消息（包含空消息 TimeoutError 的自动兜底）
+                # 注意：fmt_error 返回带 emoji 的完整消息，这里我们只需要提取处理后的 detail
+                # 但为了复用逻辑且保持 reporter 的格式，我们这里模拟 fmt_error 的内部逻辑
+                # 或者更好地，既然 fmt_error 已经增强，我们可以直接用它，但 format_error 会再加一层框。
+                
+                # 为了完全符合"unified call"的要求，我们应该尽量复用 errors.py 中的逻辑。
+                # 但 errors.py 没有暴露 extraction logic。
+                # 考虑到本次优化的核心是"TimeoutError空消息"，我们可以直接利用 fmt_error 的副作用：
+                # 它会把 TimeoutError 变成友好的字符串。
+                
+                # 既然 fmt_error 返回 "❌ {action}失败: {detail}"，我们可以传入 action=""
+                formatted = fmt_error("", e)
+                # formatted is "❌ 失败: 操作超时..." OR "❌ 失败: error msg"
+                
+                # Remove the prefix to get the message content for reporter
+                if formatted.startswith("❌ 失败: "):
+                    err_msg = formatted[len("❌ 失败: "):]
+                elif formatted == "❌ 失败":
+                    err_msg = "未知错误"
+                else:
+                    err_msg = formatted
+                
+                error_content = reporter.format_error(err_msg)
                 error_title = reporter.get_error_title()
                 err_msg_type, err_card = CardBuilder.build_deep_card(
-                    project=project, title=error_title,
-                    content=f"{error_content}\n\n{self.format_ref_note(message_id, request_id)}" if request_id else error_content,
-                    engine_name=f"Loop({engine_name})", show_buttons=False,
+                    project=project,
+                    state=DeepCardState(
+                        title=error_title,
+                        content=f"{error_content}\n\n{self.format_ref_note(message_id, request_id)}" if request_id else error_content,
+                        engine_name=f"Loop({engine_name})",
+                        show_buttons=False,
+                        action_prefix="loop",
+                    )
                 )
                 self.send_message(chat_id, err_card, err_msg_type, origin_message_id=message_id, request_id=request_id)
 
@@ -137,175 +177,19 @@ class LoopHandler(BaseHandler):
             logger.debug("link_task失败(loop_engine_run): message_id=%s, run_id=%s, err=%s", message_id, handle.run_id, e)
 
     # ------------------------------------------------------------------
-    # callbacks factory
-    # ------------------------------------------------------------------
-    def _create_loop_callbacks(self, message_id: str, chat_id: str, project: Optional["ProjectContext"], engine_name: str = "Coco") -> LoopEngineCallbacks:
-        request_id = self.ensure_request_id(message_id, chat_id=chat_id, project_id=(project.project_id if project else None))
-        reporter = self.ctx.loop_reporter
-        thread_root_message_id: list[str | None] = [None]
-
-        def _send_loop_message(card_content: str, msg_type: str = "interactive"):
-            use_thread = self.settings.default_reply_mode == "thread"
-            if use_thread:
-                reply_to = thread_root_message_id[0] or message_id
-                result_id = self.reply_message(
-                    reply_to, card_content, msg_type=msg_type,
-                    origin_message_id=message_id, request_id=request_id,
-                    reply_in_thread=True,
-                )
-                if thread_root_message_id[0] is None and result_id:
-                    thread_root_message_id[0] = result_id
-            else:
-                self.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
-
-        def on_analyzing_done(loop_project: LoopProject):
-            content = reporter.format_analyzing_done(loop_project)
-            title = reporter.get_analyzing_done_title()
-            msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title=title, content=content,
-                engine_name=f"Loop({engine_name})", show_buttons=False,
-            )
-            _send_loop_message(card_content, msg_type)
-
-        def on_iteration_start(current: int, max_iterations: int):
-            engine = self.ctx.loop_engine_manager.get(chat_id, project.root_path if project else "")
-            loop_project = engine.project if engine else None
-            criteria_status = ""
-            progress_bar = None
-            status_line = None
-            duration_line = None
-            criteria_section = None
-            if loop_project:
-                criteria_status = reporter.format_criteria_brief(loop_project)
-                progress_bar = reporter._make_progress_bar(loop_project.satisfied_count, loop_project.total_criteria)
-                status_line = reporter.format_status_line(loop_project)
-                duration_line = reporter.format_duration_line(loop_project)
-                criteria_section = reporter.format_criteria_section(loop_project)
-            content = reporter.format_iteration_start(current, max_iterations, criteria_status=criteria_status)
-            title = reporter.get_iteration_start_title(current, max_iterations)
-            title = append_duration_to_title(title, loop_project.duration() if loop_project else None)
-            msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title=title, content=content,
-                progress_bar=progress_bar,
-                is_executing=True, engine_name=f"Loop({engine_name})",
-                status_line=status_line, duration_line=duration_line,
-                criteria_section=criteria_section,
-            )
-            _send_loop_message(card_content, msg_type)
-
-        def on_iteration_done(iteration: int, record: IterationRecord):
-            engine = self.ctx.loop_engine_manager.get(chat_id, project.root_path if project else "")
-            if engine and engine.project:
-                lp = engine.project
-                iter_content = reporter.format_iteration_done(iteration, record)
-                content = iter_content
-                success = record.status.value == "success"
-                title = reporter.get_iteration_done_title(success, iteration)
-                title = append_duration_to_title(title, lp.duration())
-                progress_bar = reporter._make_progress_bar(lp.satisfied_count, lp.total_criteria)
-                status_line = reporter.format_status_line(lp)
-                duration_line = reporter.format_duration_line(lp)
-                criteria_section = reporter.format_criteria_section(lp)
-                msg_type, card_content = CardBuilder.build_deep_card(
-                    project=project, title=title, content=content,
-                    progress_bar=progress_bar,
-                    is_executing=True, engine_name=f"Loop({engine_name})",
-                    status_line=status_line, duration_line=duration_line,
-                    criteria_section=criteria_section,
-                )
-                _send_loop_message(card_content, msg_type)
-
-        def on_review_done(iteration: int, review: ReviewResult):
-            content = reporter.format_review_result(review)
-            title = reporter.get_review_title(iteration, review.all_passed)
-            engine = self.ctx.loop_engine_manager.get(chat_id, project.root_path if project else "")
-            progress_bar = None
-            status_line = None
-            duration_line = None
-            criteria_section = None
-            if engine and engine.project:
-                progress_bar = reporter._make_progress_bar(engine.project.satisfied_count, engine.project.total_criteria)
-                title = append_duration_to_title(title, engine.project.duration())
-                status_line = reporter.format_status_line(engine.project)
-                duration_line = reporter.format_duration_line(engine.project)
-                criteria_section = reporter.format_criteria_section(engine.project)
-            msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title=title, content=content,
-                progress_bar=progress_bar,
-                is_executing=True, engine_name=f"Loop({engine_name})",
-                status_line=status_line, duration_line=duration_line,
-                criteria_section=criteria_section,
-            )
-            _send_loop_message(card_content, msg_type)
-
-        def on_project_done(loop_project: LoopProject):
-            content = reporter.format_project_done(loop_project)
-            title = reporter.get_project_done_title(loop_project)
-            progress_bar = reporter._make_progress_bar(loop_project.satisfied_count, loop_project.total_criteria)
-            duration_line = reporter.format_duration_line(loop_project)
-            msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title=title, content=content,
-                progress_bar=progress_bar, engine_name=f"Loop({engine_name})",
-                duration_line=duration_line,
-            )
-            _send_loop_message(card_content, msg_type)
-            self.add_reaction(message_id, EmojiReaction.on_multi_task_done())
-
-        def on_error(error: str):
-            content = reporter.format_error(error)
-            title = reporter.get_error_title()
-            msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title=title, content=content,
-                engine_name=f"Loop({engine_name})", show_buttons=False,
-            )
-            _send_loop_message(card_content, msg_type)
-            self.add_reaction(message_id, EmojiReaction.on_error())
-
-        return LoopEngineCallbacks(
-            on_analyzing_done=on_analyzing_done,
-            on_iteration_start=on_iteration_start,
-            on_iteration_done=on_iteration_done,
-            on_review_done=on_review_done,
-            on_project_done=on_project_done,
-            on_error=on_error,
-        )
-
-    # ------------------------------------------------------------------
     # status
     # ------------------------------------------------------------------
-    def show_loop_status(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+    def show_loop_status(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, origin_message_id: Optional[str] = None):
+        # User command "/loop_status" resets to status view
         if project is None:
             project = self.project_manager.get_active_project(chat_id)
-
+        
         root_path = project.root_path if project else self.get_working_dir(chat_id)
-        engine = self.ctx.loop_engine_manager.get(chat_id, root_path)
-        reporter = self.ctx.loop_reporter
-
-        if not engine or not engine.project:
-            running = self.ctx.loop_engine_manager.get_active_engines(chat_id)
-            if len(running) == 1 and running[0].project:
-                engine = running[0]
-            else:
-                engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
-                msg_type, card_content = CardBuilder.build_deep_card(
-                    project=project, title="📊 Loop 状态",
-                    content="当前没有 Loop 任务\n\n发送 `/loop 你的需求` 开始迭代式开发",
-                    engine_name=f"Loop({engine_name})", show_buttons=False,
-                )
-                self.reply_message(message_id, card_content, msg_type=msg_type)
-                return
-
-        status_content = reporter.format_status(engine.project)
-        status_title = reporter.get_status_title()
-        progress_info = reporter.get_progress_info(engine.project)
-        engine_name = engine.engine_name
-        msg_type, card_content = CardBuilder.build_deep_card(
-            project=project, title=status_title, content=status_content,
-            progress_bar=progress_info["progress_bar"],
-            is_executing=progress_info["is_running"],
-            engine_name=f"Loop({engine_name})",
-        )
-        self.reply_message(message_id, card_content, msg_type=msg_type)
+        loop_project_id = project.project_id if project else root_path
+        
+        self.renderer.update_ui_state(loop_project_id, view_mode="status", view_context={})
+        
+        self.renderer.render_current_view(message_id, chat_id, project, origin_message_id)
 
     # ------------------------------------------------------------------
     # pause / resume / stop
@@ -335,7 +219,7 @@ class LoopHandler(BaseHandler):
                 engine = paused[0]
 
         if engine and engine.project and engine.project.status == LoopProjectStatus.PAUSED:
-            callbacks = self._create_loop_callbacks(message_id, chat_id, project, engine_name=engine.engine_name)
+            callbacks = self.renderer.create_loop_callbacks(message_id, chat_id, project, engine_name=engine.engine_name)
 
             def run_resume():
                 engine.resume(callbacks)
@@ -404,7 +288,113 @@ class LoopHandler(BaseHandler):
         engine_name = engine.engine_name
 
         msg_type, card_content = CardBuilder.build_deep_card(
-            project=project, title=title, content=content,
-            engine_name=f"Loop({engine_name})", show_buttons=False,
+            project=project,
+            state=DeepCardState(
+                title=title,
+                content=content,
+                engine_name=f"Loop({engine_name})",
+                show_buttons=False,
+                action_prefix="loop",
+            )
         )
         self.send_message(chat_id, card_content, msg_type)
+
+    # ------------------------------------------------------------------
+    # UI Interaction Handlers
+    # ------------------------------------------------------------------
+    def handle_card_action(self, open_message_id: str, open_chat_id: str, action_type: str, value: dict):
+        """Handle loop_* card actions."""
+        project_id = value.get("project_id", "")
+        # Note: Loop engine uses 'deep_project_id' key for compatibility/convention with base templates,
+        # but in Loop context it might be root_path or project_id.
+        loop_project_id = value.get("deep_project_id", "")
+        
+        # Resolve target project
+        target_project = self.project_manager.get_project(project_id) if project_id else None
+        if not target_project and loop_project_id:
+            try:
+                if os.path.isabs(loop_project_id):
+                     target_project = self.project_manager.find_project_by_path(loop_project_id)
+                else:
+                     target_project = self.project_manager.get_project(loop_project_id)
+            except Exception:
+                pass
+
+        loop_actions = {
+            "loop_pause":  self.pause_loop_engine,
+            "loop_resume": self.resume_loop_engine,
+            "loop_stop":   self.stop_loop_engine,
+        }
+
+        # Try dispatching standard actions first
+        if self._dispatch_standard_card_action(
+            open_message_id,
+            open_chat_id,
+            action_type,
+            value,
+            prefix="loop",
+            action_map=loop_actions,
+            toggle_log_method=self.toggle_loop_log,
+            switch_mode_method=self.switch_loop_card_mode,
+            project=target_project,
+        ):
+            return
+
+        # Handle Loop specific actions
+        if action_type == "loop_history":
+            self.show_loop_history(
+                open_message_id, open_chat_id, 
+                project=target_project,
+                loop_project_id=loop_project_id
+            )
+            
+        elif action_type == "loop_history_page":
+            page = value.get("page", 1)
+            self.handle_loop_history_page(
+                open_message_id, open_chat_id, page,
+                project=target_project,
+                loop_project_id=loop_project_id
+            )
+            
+        elif action_type == "loop_history_item":
+            iteration_id = value.get("iteration_id")
+            self.handle_loop_history_item(
+                open_message_id, open_chat_id, iteration_id,
+                project=target_project,
+                loop_project_id=loop_project_id
+            )
+            
+        elif action_type == "loop_back_to_list":
+            self.show_loop_status(
+                open_message_id, open_chat_id, 
+                project=target_project,
+                origin_message_id=open_message_id
+            )
+
+    def show_loop_history(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, loop_project_id: Optional[str] = None):
+        if loop_project_id:
+            self.renderer.update_ui_state(loop_project_id, view_mode="history", history_page=1)
+            # Refresh card with new state
+            self.renderer.render_current_view(message_id, chat_id, project, origin_message_id=message_id)
+
+    def handle_loop_history_page(self, message_id: str, chat_id: str, page: int, project: Optional["ProjectContext"] = None, loop_project_id: Optional[str] = None):
+        if loop_project_id:
+            self.renderer.update_ui_state(loop_project_id, view_mode="history", history_page=page)
+            self.renderer.render_current_view(message_id, chat_id, project, origin_message_id=message_id)
+
+    def handle_loop_history_item(self, message_id: str, chat_id: str, iteration_id: int, project: Optional["ProjectContext"] = None, loop_project_id: Optional[str] = None):
+        if loop_project_id:
+            self.renderer.update_ui_state(loop_project_id, view_mode="iteration_done", view_context={"iteration_id": iteration_id})
+            self.renderer.render_current_view(message_id, chat_id, project, origin_message_id=message_id)
+
+    def toggle_loop_log(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, loop_project_id: Optional[str] = None, expanded: bool = False):
+        if loop_project_id:
+            self.renderer.update_ui_state(loop_project_id, expanded=expanded)
+            # Refresh card with new state
+            self.renderer.render_current_view(message_id, chat_id, project, origin_message_id=message_id)
+
+    def switch_loop_card_mode(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, loop_project_id: Optional[str] = None, compact: bool = False):
+        if loop_project_id:
+            self.renderer.update_ui_state(loop_project_id, compact=compact)
+            # Refresh card with new state
+            self.renderer.render_current_view(message_id, chat_id, project, origin_message_id=message_id)

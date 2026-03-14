@@ -252,6 +252,18 @@ class Settings(BaseSettings):
     streaming_adaptive_rate_low: float = 20.0      # Low rate threshold (chars/sec)
     streaming_adaptive_rate_high: float = 150.0    # High rate threshold (chars/sec)
 
+    # ------------------------------------------------------------------
+    # IM API / Deep Streaming Control
+    # ------------------------------------------------------------------
+    # Maximum retries for IM API patch operations (default: 3)
+    im_api_max_retries: int = 3
+    
+    # Deep engine streaming update throttling
+    # - interval: minimum seconds between updates (unless forced)
+    # - min_chars: minimum new characters accumulated before updating (unless forced/interval passed)
+    deep_stream_interval: float = 2.5
+    deep_stream_min_chars: int = 350
+
     # Rate limiting handling (auto-pause and retry on API throttling)
     rate_limit_retry_enabled: bool = True
     rate_limit_max_wait: int = 300      # Max seconds to wait for rate limit cooldown

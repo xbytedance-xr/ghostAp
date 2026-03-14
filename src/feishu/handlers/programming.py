@@ -16,7 +16,7 @@ from ...acp.manager import ACPSessionManager
 from ...agent_session import SyncSession
 from ...card import CardBuilder
 from ...project import ContextSourceMode
-from ...utils.errors import fmt_error
+from ...utils.errors import fmt_error, log_exception
 from ..emoji import EmojiReaction
 from ..message_formatter import FeishuMessageFormatter as fmt
 from .base import BaseHandler
@@ -129,7 +129,7 @@ class ProgrammingModeHandler(BaseHandler):
                     logger.info("自动创建项目: %s @ %s", project.project_name, project.root_path)
                 project_id = project.project_id
             except Exception as e:
-                logger.error("自动创建项目失败: %s", e)
+                log_exception(logger, "自动创建项目失败", e)
 
         working_dir = self.get_working_dir(chat_id)
         cwd = project.root_path if project else working_dir
@@ -163,14 +163,21 @@ class ProgrammingModeHandler(BaseHandler):
             )
         except TimeoutError as e:
             if not silent:
-                self.reply_message(message_id, fmt_error(
-                    f"启动 {self.mode_name} 会话超时({startup_timeout}s)",
-                    str(e),
-                ))
+                self.send_error_card(
+                    chat_id, 
+                    e, 
+                    title=f"启动 {self.mode_name} 会话超时", 
+                    origin_message_id=message_id,
+                )
             return
         except Exception as e:
             if not silent:
-                self.reply_message(message_id, fmt_error(f"启动 {self.mode_name} 会话失败", str(e)))
+                self.send_error_card(
+                    chat_id, 
+                    e, 
+                    title=f"启动 {self.mode_name} 会话失败", 
+                    origin_message_id=message_id,
+                )
             return
 
         # TTADK 启动失败降级提示（best-effort）
@@ -350,10 +357,11 @@ class ProgrammingModeHandler(BaseHandler):
             try:
                 result = session.send_prompt(text, on_event=None, timeout=timeout)
                 final_response = renderer.get_final_content() or "✅ 执行完成"
+                response_with_dir = f"{final_response}\n\n---\n📁 工作目录: `{global_working_dir}`"
+                self.reply_message(message_id, response_with_dir)
             except Exception as e:
-                final_response = f"❌ 执行异常: {e}"
-            response_with_dir = f"{final_response}\n\n---\n📁 工作目录: `{global_working_dir}`"
-            self.reply_message(message_id, response_with_dir)
+                msg_type, content = CardBuilder.build_error_card(e, title="执行异常", project=project)
+                self.reply_message(message_id, content, msg_type)
         else:
             update_count = [0]
 
@@ -373,7 +381,11 @@ class ProgrammingModeHandler(BaseHandler):
                     final_response = "✅ 执行完成"
             except Exception as e:
                 final_response = f"❌ 执行异常: {e}"
-                logger.error("%s ACP执行异常: %s", self.mode_name, e)
+                log_exception(logger, f"{self.mode_name} ACP执行异常", e)
+                # If exception has quick actions, send a separate error card
+                from ...utils.errors import GhostAPError
+                if isinstance(e, GhostAPError) and e.quick_actions:
+                    self.send_error_card(chat_id, e, title="执行异常", origin_message_id=message_id)
 
             # Append completion summary (tool calls / modified files)
             summary = renderer.render_summary()
@@ -419,7 +431,7 @@ class ProgrammingModeHandler(BaseHandler):
     # ------------------------------------------------------------------
     # Card actions
     # ------------------------------------------------------------------
-    def handle_card_enter(self, message_id: str, chat_id: str, project_id: str):
+    def handle_card_enter(self, message_id: str, chat_id: str, project_id: str, value: Optional[dict] = None):
         if project_id:
             project = self.project_manager.get_project(project_id)
             if project:
@@ -441,7 +453,7 @@ class ProgrammingModeHandler(BaseHandler):
 
         self.enter_mode(message_id, chat_id)
 
-    def handle_card_exit(self, message_id: str, chat_id: str, project_id: str):
+    def handle_card_exit(self, message_id: str, chat_id: str, project_id: str, value: Optional[dict] = None):
         if project_id:
             project = self.project_manager.get_project(project_id)
             if project:
@@ -476,9 +488,15 @@ class ProgrammingModeHandler(BaseHandler):
                     model_name=model_name,
                 )
             except Exception as e:
-                self.reply_message(message_id, fmt_error("恢复 Claude 会话", str(e)))
+                self.send_error_card(
+                    chat_id, 
+                    e, 
+                    title=f"恢复 Claude 会话失败",
+                    origin_message_id=message_id,
+                )
                 return
             session.is_resumed = True
+
             # Mutual exclusion
             if project and project.coco_mode:
                 project.set_coco_mode(False)
@@ -497,8 +515,14 @@ class ProgrammingModeHandler(BaseHandler):
                     model_name=model_name,
                 )
             except Exception as e:
-                self.reply_message(message_id, fmt_error(f"恢复 {self.mode_name} 会话", str(e)))
+                self.send_error_card(
+                    chat_id, 
+                    e, 
+                    title=f"恢复 {self.mode_name} 会话失败",
+                    origin_message_id=message_id,
+                )
                 return
+
 
         if project:
             self._set_mode_on_project(project, True, session_id)
@@ -516,7 +540,7 @@ class ProgrammingModeHandler(BaseHandler):
         else:
             self.reply_message(message_id, f"🔄 已恢复 {self.mode_name} 会话: `{session_id}`")
 
-    def handle_card_new(self, message_id: str, chat_id: str, project_id: str):
+    def handle_card_new(self, message_id: str, chat_id: str, project_id: str, value: Optional[dict] = None):
         project = self.project_manager.get_project(project_id) if project_id else None
         if project:
             self.project_manager.set_active_project(chat_id, project_id)

@@ -108,6 +108,7 @@ class SystemHandler(BaseHandler):
             "/trace",
             "/ttadk",
             "/ttadk_refresh",
+            "/menu",
         }
         if text_lower in exact_commands:
             return True
@@ -166,8 +167,39 @@ class SystemHandler(BaseHandler):
             self.show_ttadk_info(message_id, chat_id)
         elif text_lower == "/ttadk_refresh":
             self.refresh_ttadk_models(message_id, chat_id, project)
+        elif text_lower == "/menu":
+            self.handle_menu_command(message_id, chat_id, project)
         else:
             self.show_full_help(message_id, chat_id, project)
+
+    def handle_menu_command(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+        msg_type, card_content = CardBuilder.build_command_menu_card(project)
+        self.reply_message(message_id, card_content, msg_type=msg_type)
+
+    def handle_help_category(self, message_id: str, chat_id: str, category: str, project: Optional["ProjectContext"] = None, origin_message_id: Optional[str] = None):
+        from ...mode import InteractionMode
+        current_mode = self.mode_manager.get_mode(chat_id)
+        current_dir = self.get_working_dir(chat_id)
+        
+        mode_emoji = {
+            InteractionMode.SMART: "🧠 智能模式",
+            InteractionMode.COCO: "🤖 Coco 编程模式",
+            InteractionMode.CLAUDE: "🔮 Claude 编程模式",
+            InteractionMode.TTADK: "🎮 TTADK 多工具模式",
+        }
+        current_mode_str = mode_emoji.get(current_mode, "🧠 智能模式")
+        
+        msg_type, card_content = CardBuilder.build_help_card(project, category, current_dir, current_mode_str)
+        
+        if origin_message_id:
+            if self.patch_message(origin_message_id, card_content):
+                return
+
+        self.reply_message(message_id, card_content, msg_type=msg_type)
+
+    def handle_deep_prompt(self, message_id: str, chat_id: str):
+        self.reply_message(message_id, "🧠 启动 Deep Engine\n\n请发送: `/deep <你的需求>`\n\n例如: `/deep 帮我重构 src/feishu 模块`")
+
 
     def refresh_ttadk_models(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         """强制刷新 TTADK 当前工具的真实模型列表（优先 probe），并返回诊断摘要。"""
@@ -353,6 +385,9 @@ class SystemHandler(BaseHandler):
         self.reply_message(message_id, card_content, msg_type=msg_type)
 
     def handle_select_ttadk_model(self, message_id: str, chat_id: str, tool_name: str, model_name: str, project: Optional["ProjectContext"] = None):
+        # 立即给予用户反馈，避免"没反应"
+        self.reply_message(message_id, f"🔄 正在切换到模型: {model_name}...")
+        
         manager = get_ttadk_manager()
         logger.info(
             "[TTADK] 选择模型: chat_id=%s project_id=%s tool=%s model=%s",
@@ -533,71 +568,4 @@ class SystemHandler(BaseHandler):
             self.reply_message(message_id, f"{help_md}{project_help}")
 
     def show_full_help(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
-        from ...mode import InteractionMode
-
-        current_mode = self.mode_manager.get_mode(chat_id)
-        current_dir = self.get_working_dir(chat_id)
-
-        mode_emoji = {
-            InteractionMode.SMART: "🧠 智能模式",
-            InteractionMode.COCO: "🤖 Coco 编程模式",
-            InteractionMode.CLAUDE: "🔮 Claude 编程模式",
-            InteractionMode.TTADK: "🎮 TTADK 多工具模式",
-        }
-        current_mode_str = mode_emoji.get(current_mode, "🧠 智能模式")
-        project_info = f"**{project.project_name}** (`{project.root_path}`)" if project else "无"
-
-        help_card = {
-            "schema": "2.0",
-            "config": {"wide_screen_mode": True},
-            "header": {
-                "title": {"tag": "plain_text", "content": "📖 GhostAP 使用帮助"},
-                "template": "blue",
-            },
-            "body": {
-                "elements": [
-                    {"tag": "markdown", "text_size": "notation",
-                     "content": f"**当前状态**  •  {current_mode_str}  •  `{current_dir}`  •  项目: {project_info}"},
-                    {"tag": "hr"},
-                    {"tag": "markdown", "text_size": "normal",
-                     "content": "**🔄 编程模式切换**\n`/coco` - 进入 Coco 编程模式（字节跳动 AI）\n`/claude` - 进入 Claude 编程模式（Anthropic AI）\n`/ttadk` - 进入 TTADK 多工具编程模式（支持 Coco/Claude/Cursor/Gemini 等）\n`/exit` - 退出当前编程模式\n`/coco_info` - 查看 Coco 会话信息\n`/claude_info` - 查看 Claude 会话信息\n`/ttadk_info` - 查看 TTADK 当前工具和模型"},
-                    {"tag": "hr"},
-                    {"tag": "markdown", "text_size": "normal",
-                     "content": "**📂 项目管理**\n`/projects` - 查看所有项目\n`/new <名称> [路径]` - 创建新项目\n`/switch <名称>` - 切换项目\n`/close <名称>` - 关闭项目\n`/status` - 查看所有引擎任务状态\n`/status <task_id>` - 查看指定任务详情\n`/diff` - 查看最近两次版本变更"},
-                    {"tag": "hr"},
-                    {"tag": "markdown", "text_size": "normal",
-                     "content": "**🧠 Deep Engine（复杂任务）**\n`/deep <需求>` - 启动 Deep Engine\n`/deep_status` - 查看任务进度\n`/stop_deep` - 停止任务"},
-                    {"tag": "hr"},
-                    {"tag": "markdown", "text_size": "normal",
-                     "content": "**🔄 Loop Engine（迭代闭环）**\n`/loop <需求>` - 启动 Loop 模式\n`/loop_status` - 查看迭代进度\n`/loop_guide <引导>` - 注入引导信息\n`/loop_pause` - 暂停迭代\n`/loop_resume` - 恢复迭代\n`/stop_loop` - 停止 Loop"},
-                    {"tag": "hr"},
-                    {"tag": "markdown", "text_size": "normal",
-                     "content": "**📋 Spec Engine（结构化开发闭环）**\n"
-                                "适用：你希望按方法论持续迭代，输出可复盘的 Spec/Plan/Task/Build 产物\n"
-                                "区别：Spec=结构化产物驱动闭环；Deep=一次性深度执行；Loop=验收标准驱动迭代\n\n"
-                                "命令：\n"
-                                "`/spec <需求>` - 启动\n"
-                                "`/spec_status` - 查看进度\n"
-                                "`/spec_guide <引导>` - 补充约束/偏好（下轮生效）\n"
-                                "`/spec_history [N]` - 查看循环与 spec 文件历史（默认20，最多500）\n"
-                                "`/spec_metrics [N]` - 查看目标达成度与指标变化（默认20，最多500）\n"
-                                "`/spec_config` - 查看长程配置（阈值/保留策略）\n"
-                                "`/spec_save` - 立即保存状态（用于断点续传）\n"
-                                "`/spec_recover` - 恢复异常中断的任务（需指定 Task ID）\n"
-                                "`/spec_pause` - 暂停  •  `/spec_resume` - 恢复  •  `/stop_spec` - 停止\n\n"
-                                "最小示例：\n"
-                                "- Web：`/spec 做一个登录页+登录接口`\n"
-                                "- API：`/spec 新增 /v1/users 查询接口`\n"
-                                "- 脚本：`/spec 写一个批量重命名脚本，支持dry-run`"},
-                    {"tag": "hr"},
-                    {"tag": "markdown", "text_size": "normal",
-                     "content": "**🤖 TTADK 管理**\n`/ttadk_refresh` - 强制刷新 TTADK 模型列表（常用于 Invalid model）\n`/ttadk_info` - 查看 TTADK 当前状态"},
-                    {"tag": "hr"},
-                    {"tag": "markdown", "text_size": "normal",
-                     "content": "**💡 使用提示**\n1. 发送 `/coco` 或 `/claude` 进入编程模式\n2. 在编程模式中直接对话，系统命令（如 `/help`）会自动拦截\n3. 智能模式下直接输入 Shell 命令即可执行\n4. 发送 `/help` 或 `/帮助` 随时查看本帮助"},
-                ],
-            },
-        }
-
-        card_content = json.dumps(help_card, ensure_ascii=False)
-        self.reply_message(message_id, card_content, msg_type="interactive")
+        self.handle_help_category(message_id, chat_id, "main", project)

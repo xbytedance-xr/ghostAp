@@ -233,6 +233,38 @@ class LoopReporter:
 
 将在下一轮迭代中生效。"""
 
+    def format_history_list(self, iterations: list[IterationRecord], page: int, page_size: int = 5) -> str:
+        """Format a paginated list of iteration history."""
+        # Sort by iteration descending (newest first)
+        sorted_iterations = sorted(iterations, key=lambda x: x.iteration, reverse=True)
+        
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        
+        page_items = sorted_iterations[start_idx:end_idx]
+        total_items = len(sorted_iterations)
+        total_pages = (total_items + page_size - 1) // page_size if total_items > 0 else 1
+        
+        if not page_items:
+            return "📭 暂无历史记录"
+            
+        lines = []
+        for record in page_items:
+            status_emoji = "✅" if record.status == IterationStatus.SUCCESS else "❌"
+            if record.status == IterationStatus.RUNNING:
+                status_emoji = "🔄"
+                
+            focus = record.focus or "(无摘要)"
+            if len(focus) > 25:
+                focus = focus[:25] + "..."
+                
+            duration = format_duration(record.duration) if record.duration else "--"
+            
+            lines.append(f"#{record.iteration} {status_emoji} **{focus}** ({duration})")
+            
+        summary = f"第 {page}/{total_pages} 页 · 共 {total_items} 条记录"
+        return summary + "\n\n" + "\n".join(lines)
+
     # ------------------------------------------------------------------
     # Title helpers (for card headers)
     # ------------------------------------------------------------------

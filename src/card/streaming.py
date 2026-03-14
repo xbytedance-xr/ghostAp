@@ -17,6 +17,7 @@ from lark_oapi.api.im.v1 import (
 
 from ..config import get_settings
 from .shared import build_mode_buttons, build_responsive_layout, resolve_title_and_template
+from .flow_control import FlowControlConfig, FlowControlState, FlowControlStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,10 @@ class StreamingCard:
     created_at: float = field(default_factory=time.time)
     last_content: str = ""
     last_update_at: float = 0.0
-    min_update_interval_s: float = 0.6
+    
+    # Adaptive Flow Control
+    flow_control_state: FlowControlState = field(default_factory=FlowControlState)
+    
     size_threshold: int = 50  # Character count threshold for updates
     last_content_len: int = 0
     
@@ -47,6 +51,12 @@ class StreamingCard:
     full_content: str = ""  # Complete content storage
     visible_chars: int = 20000  # Current visibility limit (default ~20KB)
     pagination_step: int = 5000  # How much to add on "Load More"
+    
+    # Typing indicator state
+    typing_state: int = 0  # 0-3 for cycling dots
+    is_typing: bool = False
+    last_typing_update: float = 0.0
+
 
 
 def _normalize_streaming_markdown(content: str, *, is_final: bool, max_chars: int) -> str:
@@ -80,6 +90,17 @@ class StreamingCardManager:
         # key 使用 message_id（发送成功后才会写入）
         self._cards: dict[str, StreamingCard] = {}
         self._lock = threading.Lock()
+
+        # Initialize Flow Control Strategy
+        self._flow_control = FlowControlStrategy(
+            FlowControlConfig(
+                base_interval_s=self._settings.streaming_adaptive_interval_base,
+                max_interval_s=self._settings.streaming_adaptive_interval_max,
+                low_rate_threshold=self._settings.streaming_adaptive_rate_low,
+                high_rate_threshold=self._settings.streaming_adaptive_rate_high,
+                ema_alpha=0.3
+            )
+        )
 
         self._max_card_chars = 28000
         self._last_cleanup: float = 0.0
@@ -275,6 +296,9 @@ class StreamingCardManager:
             is_smart_mode=is_smart_mode,
             reply_in_thread=reply_in_thread,
             last_content=initial_content,
+            flow_control_state=FlowControlState(
+                min_update_interval_s=self._settings.streaming_adaptive_interval_base
+            )
         )
 
     # ---- 非流式一次性发送（CardKit schema 2.0 但不开启打字动效） ----
@@ -353,7 +377,7 @@ class StreamingCardManager:
 
             return msg_response.data.message_id
         except Exception as e:
-            logger.error("发送卡片异常: %s", e)
+            logger.error("发送卡片异常: %s", e, exc_info=True)
             return None
 
     # ---- 按钮构建 ----
@@ -451,12 +475,22 @@ class StreamingCardManager:
             logger.error("发送流式卡片异常: %s", e, exc_info=True)
             return None
 
-    def update_content(self, card: StreamingCard, content: str, force: bool = False) -> bool:
+    def update_content(self, card: StreamingCard, content: str, force: bool = False, is_typing: bool = False) -> bool:
         if not card.message_id:
             return False
 
+        # --- Adaptive Flow Control Calculation ---
+        now = time.time()
+        current_len = len(content)
+        
+        # Calculate content arrival rate (based on FULL content length)
+        # We track rate based on data arrival, not rendering frequency
+        delta_c = current_len - card.last_content_len
+        self._flow_control.update_rate(card.flow_control_state, now, delta_c)
+
         # Update full content in memory
         card.full_content = content
+        card.is_typing = is_typing
         
         # Calculate display content based on visible_chars
         display_content = content
@@ -471,21 +505,22 @@ class StreamingCardManager:
             is_final=False,
             max_chars=0, # Disable truncation in normalize since we handled it
         )
+        
+        # Add typing indicator suffix if active
+        if is_typing:
+            if now - card.last_typing_update > 0.4:  # Update dots every 400ms
+                card.typing_state = (card.typing_state + 1) % 4
+                card.last_typing_update = now
+            
+            dots = "." * card.typing_state
+            if normalized.strip():
+                normalized += f"\n\n_对方正在思考{dots}_"
+            else:
+                normalized = f"_对方正在思考{dots}_"
 
-        if normalized == card.last_content and not has_more: # If content same and no pagination change
-             # Need to be careful: if we just switched from no-more to has-more, we need update.
-             # But here we assume visible_chars didn't change (that's a separate action).
-             # If content grew but didn't cross visible_chars (and wasn't truncated before), normalized changes.
-             # If content grew and IS truncated (and was truncated), normalized MIGHT stay same if we are far past limit?
-             # No, if we are truncated at N, normalized is constant prefix.
-             # So if normalized == last_content, we might still need to update IF has_more status changed?
-             # But has_more is derived from len(content) > visible.
-             # If previously we were truncated (len > visible), has_more was True.
-             # Now len grew, has_more is True. Normalized is same.
-             # We don't need update.
+        if normalized == card.last_content and not has_more and not is_typing:
              return True
 
-        now = time.time()
         # Dual buffering strategy: Time OR Size
         # Update if enough time has passed OR enough content has accumulated
         # We compare against the FULL content length for activity, but send truncated.
@@ -497,21 +532,11 @@ class StreamingCardManager:
             force or
             card.last_update_at == 0.0 or
             size_delta >= card.size_threshold or
-            time_delta >= card.min_update_interval_s or
-            # Force update if we just crossed the pagination boundary to show the button?
-            # If we were < visible, now > visible. has_more becomes True.
-            # normalized changes? No, normalized is prefix.
-            # Wait, if content < visible, normalized = content.
-            # If content > visible, normalized = content[:visible].
-            # If content grows from visible-1 to visible+1.
-            # normalized changes from X to X + 1char (then truncated).
-            # So normalized changes.
-            False 
+            time_delta >= card.flow_control_state.min_update_interval_s or
+            (is_typing and time_delta >= 0.8) # Slower update for just typing animation
         )
 
         if not should_update:
-            # Buffer the content but don't send yet
-            # We don't update last_content here to ensure next check compares against sent content
             return True
 
         try:
@@ -538,28 +563,20 @@ class StreamingCardManager:
                 buttons=buttons,
                 streaming_mode=True,
             )
-            req = (
-                PatchMessageRequest.builder()
-                .message_id(card.message_id)
+            
+            req = PatchMessageRequest.builder() \
+                .message_id(card.message_id) \
                 .request_body(
                     PatchMessageRequestBody.builder()
                     .content(json.dumps(card_json, ensure_ascii=False))
                     .build()
-                )
+                ) \
                 .build()
-            )
             
-            # Retry mechanism
-            max_retries = 1
-            for attempt in range(max_retries + 1):
-                resp = self._client.im.v1.message.patch(req)
-                if resp.success():
-                    break
-                
-                if attempt < max_retries:
-                    time.sleep(0.2)  # Short backoff
-                    continue
-                
+            resp = self._client.im.v1.message.patch(req)
+            
+            if not resp.success():
+                # Rate limit handling could go here
                 logger.warning("卡片消息更新失败: code=%s, msg=%s", resp.code, resp.msg)
                 return False
 
@@ -568,7 +585,7 @@ class StreamingCardManager:
             card.last_update_at = now
             return True
         except Exception as e:
-            logger.warning("卡片消息更新异常: %s", e)
+            logger.warning("卡片消息更新异常: %s", e, exc_info=True)
             return False
 
     def close_streaming(self, card: StreamingCard, final_content: Optional[str] = None) -> bool:
@@ -611,7 +628,7 @@ class StreamingCardManager:
                 self._cards.pop(card.message_id, None)
             return True
         except Exception as e:
-            logger.warning("关闭流式异常: %s", e)
+            logger.warning("关闭流式异常: %s", e, exc_info=True)
             return False
 
     # ---- 查询/清理 ----

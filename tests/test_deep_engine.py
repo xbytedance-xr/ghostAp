@@ -493,6 +493,8 @@ def test_create_engine_session_ttadk_invalid_model_autofix(monkeypatch):
     # 避免触碰真实 HOME 文件缓存
     monkeypatch.setattr(TTADKManager, "_load_cache_from_file", lambda self: None)
     monkeypatch.setattr(TTADKManager, "_save_cache_to_file", lambda self: None)
+    # Mock refresh_models to avoid subprocess calls
+    monkeypatch.setattr(TTADKManager, "refresh_models", lambda self, tool_name=None, cwd=None: None)
     monkeypatch.setattr("src.ttadk.get_ttadk_manager", lambda *a, **k: m)
 
     calls = {"n": 0}
@@ -507,6 +509,19 @@ def test_create_engine_session_ttadk_invalid_model_autofix(monkeypatch):
         return sess
 
     monkeypatch.setattr("src.acp.sync_adapter.start_session_with_retry", lambda *a, **k: fake_start_session_with_retry(*a, **k))
+
+    # Mock precheck to avoid potential delays
+    monkeypatch.setattr("src.ttadk.startup_common.precheck_ttadk_startup_model", lambda **kw: {
+        "tool": "codex",
+        "input_model": kw.get("model_intent"),
+        "model": "a",
+        "resolved_model": "a",
+        "validated": True,
+        "source": "mock",
+        "decision": "precheck_mock",
+        "warnings": [],
+        "diagnostics": {},
+    })
 
     # 触发 create_engine_session 的 TTADK 分支
     s = create_engine_session(agent_type="ttadk_coco", cwd="/tmp", model_name="bad")

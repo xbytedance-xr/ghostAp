@@ -1,7 +1,9 @@
 import json
 import time
+from functools import lru_cache
 from typing import Optional
 from ..project.context import ProjectContext, ProjectStatus
+from .models import DeepCardState
 from .shared import (
     get_theme,
     apply_compact_style,
@@ -32,8 +34,251 @@ class CardBuilder:
         return build_responsive_layout(buttons)
 
     @staticmethod
-    def _build_content_element(content: str, with_title: Optional[str] = None) -> dict:
+    def _truncate_markdown(content: str, max_chars: int) -> str:
+        """Truncate markdown content safely, closing code blocks and bold tags."""
+        if len(content) <= max_chars:
+            return content
+
+        # Reserve space for the warning message (approx 100 chars)
+        # We'll use a slightly different warning message strategy:
+        # keep the END of the log, and prepend a warning.
+        warning_msg = "\n> ⚠️ **日志内容过长，已被截断**\n> 🔍 完整日志请查看服务器本地文件\n> (仅显示末尾内容)...\n"
+        keep_chars = max_chars - len(warning_msg) - 20 # buffer
+
+        truncated_content = content[-keep_chars:]
+        
+        # 1. Check code blocks (```)
+        # If the truncated content has an odd number of ```, it means we started inside a code block
+        # (assuming the original content was valid). 
+        # Actually, since we are taking the TAIL, we need to know if the tail *starts* inside a block.
+        # But we don't have the full context easily if we just look at tail.
+        # 
+        # Better approach: Look at the full content to determine state at cut point.
+        # Cut point is: len(content) - keep_chars
+        cut_index = len(content) - keep_chars
+        pre_cut_content = content[:cut_index]
+        
+        # Count ``` in pre-cut content to see if we are inside a code block
+        # We assume ``` always toggle.
+        code_block_markers = pre_cut_content.count("```")
+        is_inside_code_block = (code_block_markers % 2 != 0)
+        
+        # 2. Check bold tags (**)
+        # Similar logic for **
+        bold_markers = pre_cut_content.count("**")
+        is_inside_bold = (bold_markers % 2 != 0)
+        
+        parts = [warning_msg]
+        
+        # If we are inside a code block at the start of our tail, we need to prefix with ```
+        # to "re-open" the block so the tail renders as code.
+        # However, we usually want the previous block to be CLOSED before our warning.
+        # But here we are discarding the head.
+        # So the state is:
+        # [Head (discarded)] <--- cut ---> [Tail]
+        # If Head ended with open ```, then Tail starts "inside" code.
+        # To make Tail render correctly as code, we should prepend ``` to it.
+        # AND to make the warning render correctly (not as code), we should ensure warning is outside.
+        # 
+        # Actually, the warning is prepended to the tail.
+        # So the structure is: [Warning] + [Tail]
+        # If Tail expects to be inside code, we must start [Tail] with ```.
+        
+        # Correct logic:
+        # 1. We insert warning. Warning is markdown, not code.
+        # 2. If we were inside code block at cut point, we must open a code block after warning
+        #    so the rest of the content (Tail) is treated as code.
+        if is_inside_code_block:
+            parts.append("```\n")
+        
+        # If we were inside bold, we must open bold
+        if is_inside_bold:
+            parts.append("**")
+            
+        parts.append(truncated_content)
+        
+        # Now check if we need to close tags at the very end of Tail
+        # We count markers in the (potentially modified) tail?
+        # No, simpler: check the total markers in (Pre-cut + Tail).
+        # Since original content was assumed valid (closed), 
+        # if Pre-cut has odd markers, then Tail MUST have odd markers to close it.
+        # 
+        # Wait, if we added ``` at start of Tail, we added 1 marker.
+        # Original Tail (content[-keep_chars:]) has N markers.
+        # Total in our new string: (1 if added else 0) + N
+        # We want the final result to be closed (even number).
+        # 
+        # Example: 
+        # Original: ```abc...xyz``` (2 markers)
+        # Cut: inside. Pre-cut has 1 (odd). Tail has 1 (odd).
+        # We add ``` prefix to Tail.
+        # New Tail: ``` + xyz```. Markers: 1 + 1 = 2 (Even). Closed.
+        # 
+        # Example 2: 
+        # Original: ```abc... (unclosed error in original?) -> Assume original is valid.
+        # 
+        # So if we prepend ```, the tail is self-contained.
+        # What if original tail has unclosed blocks?
+        # e.g. Original: ... ```code ... (cut) ... code``` ...
+        # If cut is outside, Pre-cut even. Tail even.
+        # We add nothing. Tail is ```code``` (2 markers). Even. Closed.
+        #
+        # What if cut is inside?
+        # Original: ```start ... (cut) ... end```
+        # Pre-cut: 1. Tail: 1.
+        # We add ```. Tail: ```...end```. Markers: 2. Closed.
+        #
+        # What if inside bold?
+        # Original: **bold**
+        # Cut inside. Pre: 1. Tail: 1.
+        # Add **. Tail: **bold**. Markers: 2. Closed.
+        #
+        # So it seems we just need to re-open whatever was open at cut point.
+        # AND we need to ensure the final string is closed.
+        # If the original string was valid, then re-opening matches the "missing" opening from head,
+        # so the existing closing tags in tail should balance it.
+        # 
+        # BUT, what if we cut *inside* a `**` marker? e.g. `*` | `*`
+        # `count("**")` might be tricky.
+        # For robustness, we can just check the *final* string state.
+        
+        result = "".join(parts)
+        
+        # Final safety check: ensure closed
+        if result.count("```") % 2 != 0:
+            result += "\n```"
+        if result.count("**") % 2 != 0:
+            result += "**"
+            
+        return result
+
+    @staticmethod
+    def _truncate_markdown(content: str, max_chars: int) -> str:
+        """Truncate markdown content safely, closing code blocks and bold tags."""
+        if len(content) <= max_chars:
+            return content
+
+        # Reserve space for the warning message (approx 100 chars)
+        # We'll use a slightly different warning message strategy:
+        # keep the END of the log, and prepend a warning.
+        warning_msg = "\n> ⚠️ **日志内容过长，已被截断**\n> 🔍 完整日志请查看服务器本地文件\n> (仅显示末尾内容)...\n"
+        keep_chars = max_chars - len(warning_msg) - 20 # buffer
+
+        truncated_content = content[-keep_chars:]
+        
+        # 1. Check code blocks (```)
+        # If the truncated content has an odd number of ```, it means we started inside a code block
+        # (assuming the original content was valid). 
+        # Actually, since we are taking the TAIL, we need to know if the tail *starts* inside a block.
+        # But we don't have the full context easily if we just look at tail.
+        # 
+        # Better approach: Look at the full content to determine state at cut point.
+        # Cut point is: len(content) - keep_chars
+        cut_index = len(content) - keep_chars
+        pre_cut_content = content[:cut_index]
+        
+        # Count ``` in pre-cut content to see if we are inside a code block
+        # We assume ``` always toggle.
+        code_block_markers = pre_cut_content.count("```")
+        is_inside_code_block = (code_block_markers % 2 != 0)
+        
+        # 2. Check bold tags (**)
+        # Similar logic for **
+        bold_markers = pre_cut_content.count("**")
+        is_inside_bold = (bold_markers % 2 != 0)
+        
+        parts = [warning_msg]
+        
+        # If we are inside a code block at the start of our tail, we need to prefix with ```
+        # to "re-open" the block so the tail renders as code.
+        # However, we usually want the previous block to be CLOSED before our warning.
+        # But here we are discarding the head.
+        # So the state is:
+        # [Head (discarded)] <--- cut ---> [Tail]
+        # If Head ended with open ```, then Tail starts "inside" code.
+        # To make Tail render correctly as code, we should prepend ``` to it.
+        # AND to make the warning render correctly (not as code), we should ensure warning is outside.
+        # 
+        # Actually, the warning is prepended to the tail.
+        # So the structure is: [Warning] + [Tail]
+        # If Tail expects to be inside code, we must start [Tail] with ```.
+        
+        # Correct logic:
+        # 1. We insert warning. Warning is markdown, not code.
+        # 2. If we were inside code block at cut point, we must open a code block after warning
+        #    so the rest of the content (Tail) is treated as code.
+        if is_inside_code_block:
+            parts.append("```\n")
+        
+        # If we were inside bold, we must open bold
+        if is_inside_bold:
+            parts.append("**")
+            
+        parts.append(truncated_content)
+        
+        # Now check if we need to close tags at the very end of Tail
+        # We count markers in the (potentially modified) tail?
+        # No, simpler: check the total markers in (Pre-cut + Tail).
+        # Since original content was assumed valid (closed), 
+        # if Pre-cut has odd markers, then Tail MUST have odd markers to close it.
+        # 
+        # Wait, if we added ``` at start of Tail, we added 1 marker.
+        # Original Tail (content[-keep_chars:]) has N markers.
+        # Total in our new string: (1 if added else 0) + N
+        # We want the final result to be closed (even number).
+        # 
+        # Example: 
+        # Original: ```abc...xyz``` (2 markers)
+        # Cut: inside. Pre-cut has 1 (odd). Tail has 1 (odd).
+        # We add ``` prefix to Tail.
+        # New Tail: ``` + xyz```. Markers: 1 + 1 = 2 (Even). Closed.
+        # 
+        # Example 2: 
+        # Original: ```abc... (unclosed error in original?) -> Assume original is valid.
+        # 
+        # So if we prepend ```, the tail is self-contained.
+        # What if original tail has unclosed blocks?
+        # e.g. Original: ... ```code ... (cut) ... code``` ...
+        # If cut is outside, Pre-cut even. Tail even.
+        # We add nothing. Tail is ```code``` (2 markers). Even. Closed.
+        #
+        # What if cut is inside?
+        # Original: ```start ... (cut) ... end```
+        # Pre-cut: 1. Tail: 1.
+        # We add ```. Tail: ```...end```. Markers: 2. Closed.
+        #
+        # What if inside bold?
+        # Original: **bold**
+        # Cut inside. Pre: 1. Tail: 1.
+        # Add **. Tail: **bold**. Markers: 2. Closed.
+        #
+        # So it seems we just need to re-open whatever was open at cut point.
+        # AND we need to ensure the final string is closed.
+        # If the original string was valid, then re-opening matches the "missing" opening from head,
+        # so the existing closing tags in tail should balance it.
+        # 
+        # BUT, what if we cut *inside* a `**` marker? e.g. `*` | `*`
+        # `count("**")` might be tricky.
+        # For robustness, we can just check the *final* string state.
+        
+        result = "".join(parts)
+        
+        # Final safety check: ensure closed
+        if result.count("```") % 2 != 0:
+            result += "\n```"
+        if result.count("**") % 2 != 0:
+            result += "**"
+            
+        return result
+
+    @staticmethod
+    def _build_content_element(content: str, with_title: Optional[str] = None, max_chars: int = 4000) -> dict:
         full_content = f"**{with_title}**\n\n{content}" if with_title else content
+        
+        # Smart truncation to prevent API errors and render issues
+        if len(full_content) > max_chars:
+            full_content = CardBuilder._truncate_markdown(full_content, max_chars)
+            
         return {
             "tag": "markdown",
             "content": full_content
@@ -596,102 +841,149 @@ class CardBuilder:
         return f"🧠 Deep Agent ({engine_name})"
 
     @staticmethod
-    def _pick_engine_template(engine_name: str) -> str:
+    def _pick_deep_template(engine_name: str, status: str = "running") -> str:
+        """Pick header template color based on engine and status."""
+        status = status.lower()
+        if status == "error":
+            return "red"
+        if status == "completed":
+            return "green"
+        if status == "paused":
+            return "orange"
+        if status == "planning":
+            return "blue"
+        
+        # Default/Executing
         name = (engine_name or "").strip().lower()
+        if name.startswith("loop"):
+            return "indigo"
         if name.startswith("claude"):
             return "purple"
-        if name.startswith("coco"):
-            return "blue"
         if name.startswith("spec"):
             return "green"
         return "turquoise"
 
     @staticmethod
-    def _build_deep_buttons(
-        project_id: Optional[str] = None,
-        deep_project_id: Optional[str] = None,
-        is_executing: bool = False,
-        is_paused: bool = False,
-    ) -> list[dict]:
+    def _build_deep_buttons(state: DeepCardState) -> list[dict]:
         buttons = []
-        if is_executing:
+        # Status Control Buttons
+        if state.is_executing:
             buttons.append({
                 "tag": "button",
                 "text": {"tag": "plain_text", "content": "⏸️ 暂停"},
                 "type": "default",
-                "behaviors": [{
-                    "type": "callback",
-                    "value": {"action": "deep_pause", "project_id": project_id, "deep_project_id": deep_project_id}
-                }]
+                "value": {"action": f"{state.action_prefix}_pause", "project_id": state.deep_project_id, "deep_project_id": state.deep_project_id}
             })
             buttons.append({
                 "tag": "button",
                 "text": {"tag": "plain_text", "content": "🛑 停止"},
                 "type": "danger",
-                "behaviors": [{
-                    "type": "callback",
-                    "value": {"action": "deep_stop", "project_id": project_id, "deep_project_id": deep_project_id}
-                }]
+                "value": {"action": f"{state.action_prefix}_stop", "project_id": state.deep_project_id, "deep_project_id": state.deep_project_id}
             })
-        elif is_paused:
+        elif state.is_paused:
             buttons.append({
                 "tag": "button",
                 "text": {"tag": "plain_text", "content": "▶️ 继续"},
                 "type": "primary",
-                "behaviors": [{
-                    "type": "callback",
-                    "value": {"action": "deep_resume", "project_id": project_id, "deep_project_id": deep_project_id}
-                }]
+                "value": {"action": f"{state.action_prefix}_resume", "project_id": state.deep_project_id, "deep_project_id": state.deep_project_id}
             })
             buttons.append({
                 "tag": "button",
                 "text": {"tag": "plain_text", "content": "🛑 停止"},
                 "type": "danger",
-                "behaviors": [{
-                    "type": "callback",
-                    "value": {"action": "deep_stop", "project_id": project_id, "deep_project_id": deep_project_id}
-                }]
+                "value": {"action": f"{state.action_prefix}_stop", "project_id": state.deep_project_id, "deep_project_id": state.deep_project_id}
             })
+            
+        # Log Expand/Collapse Button (Only in Full mode and when not compact)
+        if not state.compact:
+            expand_text = "🔼 收起日志" if state.expanded else "🔽 展开日志"
+            expand_action = f"{state.action_prefix}_collapse" if state.expanded else f"{state.action_prefix}_expand"
+            buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": expand_text},
+                "type": "default",
+                "value": {
+                    "action": expand_action, 
+                    "project_id": state.deep_project_id, 
+                    "deep_project_id": state.deep_project_id
+                }
+            })
+
+        # Mode Switch Button
+        mode_text = "当前: 精简" if state.compact else "当前: 完整"
+        mode_action = f"{state.action_prefix}_mode_full" if state.compact else f"{state.action_prefix}_mode_compact"
+        buttons.append({
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": f"👁️ {mode_text}"},
+            "type": "default",
+            "value": {
+                "action": mode_action,
+                "project_id": state.deep_project_id,
+                "deep_project_id": state.deep_project_id
+            }
+        })
+        
+        # History Button (Only for Loop Engine in Status View)
+        if state.action_prefix == "loop":
+            buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "📜 历史"},
+                "type": "default",
+                "value": {
+                    "action": "loop_history",
+                    "project_id": state.deep_project_id,
+                    "deep_project_id": state.deep_project_id
+                }
+            })
+            
         return [apply_compact_style(b) for b in buttons]
 
     @staticmethod
     def build_deep_card(
         project: Optional[ProjectContext],
-        title: str,
-        content: str,
-        progress_bar: Optional[str] = None,
-        deep_project_id: Optional[str] = None,
-        is_executing: bool = False,
-        is_paused: bool = False,
-        engine_name: str = "Coco",
-        show_buttons: bool = True,
-        working_dir: Optional[str] = None,
-        status_line: Optional[str] = None,
-        duration_line: Optional[str] = None,
-        criteria_section: Optional[str] = None,
-        footer_note: Optional[str] = None,
-        compact: bool = False,
+        state: DeepCardState,
     ) -> tuple[str, str]:
-        header_template = CardBuilder._pick_engine_template(engine_name)
+        # Determine status for color mapping
+        status_key = "running"
+        title_lower = state.title.lower()
+        if "error" in title_lower or "失败" in state.title:
+            status_key = "error"
+        elif "完成" in state.title or "结束" in state.title or "completed" in title_lower or "finished" in title_lower or "success" in title_lower:
+            status_key = "completed"
+        elif state.is_paused:
+            status_key = "paused"
+        elif "规划" in state.title or "分析" in state.title or "planning" in title_lower or "analyzing" in title_lower:
+            status_key = "planning"
+            
+        header_template = CardBuilder._pick_deep_template(state.engine_name, status_key)
         theme = get_theme(header_template)
-
-        header_title = CardBuilder._build_deep_header_title(project, engine_name)
+        
+        # Optimize Title with Icons based on status if not already present
+        # (This is a simple heuristic, assuming title passed in might already have icons)
+        if not state.title:
+            header_title = CardBuilder._build_deep_header_title(project, state.engine_name)
+        else:
+            header_title = state.title
 
         elements = [
-            CardBuilder._build_directory_element(project, working_dir),
+            CardBuilder._build_directory_element(project, state.working_dir),
             {"tag": "hr"},
         ]
 
         # Progress bar
-        if progress_bar and (not content or progress_bar not in content):
-            elements.append({"tag": "markdown", "content": f"📊 {progress_bar}"})
+        if state.progress_bar and (not state.content or state.progress_bar not in state.content):
+            elements.append({"tag": "markdown", "content": f"📊 {state.progress_bar}"})
 
         # Status + duration line (compact, notation-size)
-        meta_parts = [p for p in (status_line, duration_line) if p]
+        meta_parts = [p for p in (state.status_line, state.duration_line) if p]
         if meta_parts:
+            # Loop engine: separate lines for better readability on mobile
+            is_loop = "loop" in state.engine_name.lower()
+            separator = "\n" if is_loop else " · "
+            
             elements.append({
                 "tag": "markdown",
-                "content": " · ".join(meta_parts),
+                "content": separator.join(meta_parts),
                 "text_size": "notation",
             })
 
@@ -699,61 +991,161 @@ class CardBuilder:
         if meta_parts:
             elements.append({"tag": "hr"})
 
-        # Main content
-        display_content = content
-        if compact:
-            # Compact mode: truncate content and strip heavy markdown if needed
-            if len(display_content) > 300:
-                display_content = display_content[:300] + "...\n(更多内容请点击详情)"
-            elif not display_content:
-                display_content = "正在执行..."
+        # Main content processing
+        display_content = state.content
+        
+        if state.compact:
+            # Error check - show more context for errors
+            is_error = status_key == "error"
+            
+            if is_error:
+                if not display_content:
+                     display_content = "发生错误 (无详细信息)"
+                else:
+                    lines = display_content.split('\n')
+                    # Show first 5 lines for errors instead of hard char limit
+                    if len(lines) > 5:
+                        display_content = "\n".join(lines[:5]) + "\n...(更多错误详情请展开)..."
+            else:
+                # Compact mode: truncate hard
+                if len(display_content) > 200:
+                    display_content = display_content[:200] + "..."
+                elif not display_content:
+                    display_content = "正在执行..."
+        else:
+            # Full mode: Line-based truncation if not expanded
+            if not state.expanded and display_content:
+                lines = display_content.split('\n')
+                MAX_LINES = 10
+                if len(lines) > MAX_LINES:
+                    display_content = "...(已折叠 {} 行)...\n".format(len(lines) - MAX_LINES) + "\n".join(lines[-MAX_LINES:])
 
         elements.append(CardBuilder._build_content_element(display_content))
 
         # Criteria section (independent element) - Skip in compact mode unless very short
-        if criteria_section and not compact:
+        if state.criteria_section and not state.compact:
             elements.append({"tag": "hr"})
-            elements.append({"tag": "markdown", "content": criteria_section})
+            elements.append({"tag": "markdown", "content": state.criteria_section})
 
         # Footer note
-        if footer_note:
+        if state.footer_note:
             elements.append({
                 "tag": "markdown",
-                "content": footer_note,
+                "content": state.footer_note,
                 "text_size": "notation",
             })
 
-        if show_buttons:
+        if state.show_buttons:
             buttons = []
-            if is_executing or is_paused:
-                buttons = CardBuilder._build_deep_buttons(
-                    project.project_id if project else None,
-                    deep_project_id,
-                    is_executing,
-                    is_paused,
-                )
+            if state.is_executing or state.is_paused:
+                buttons = CardBuilder._build_deep_buttons(state)
             else:
-                buttons = CardBuilder._build_footer_buttons(project, is_coco_mode=False, is_claude_mode=False)
-
-            # Add "Show Detail" button if compact and not already present (though unlikely in footer buttons)
-            if compact:
-                # Check if we already have a show detail button
-                has_detail = any(b.get("value", {}).get("action") == "show_deep_status" for b in buttons)
-                if not has_detail:
-                     buttons.insert(0, apply_compact_style({
+                # Finished or not started, still show mode switch
+                base_buttons = CardBuilder._build_footer_buttons(project, is_coco_mode=False, is_claude_mode=False)
+                # Add mode switch button
+                mode_text = "当前: 精简" if state.compact else "当前: 完整"
+                mode_action = f"{state.action_prefix}_mode_full" if state.compact else f"{state.action_prefix}_mode_compact"
+                mode_btn = apply_compact_style({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": f"👁️ {mode_text}"},
+                    "type": "default",
+                    "value": {
+                        "action": mode_action,
+                        "project_id": project.project_id if project else None,
+                        "deep_project_id": state.deep_project_id
+                    }
+                })
+                # If not compact, also add expand/collapse if there is content
+                if not state.compact and len(state.content.split('\n')) > 10:
+                    expand_text = "🔼 收起日志" if state.expanded else "🔽 展开日志"
+                    expand_action = f"{state.action_prefix}_collapse" if state.expanded else f"{state.action_prefix}_expand"
+                    expand_btn = apply_compact_style({
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🔍 查看详情"},
+                        "text": {"tag": "plain_text", "content": expand_text},
                         "type": "default",
                         "value": {
-                            "action": "show_deep_status",
-                            "project_id": project.project_id if project else None,
-                            "deep_project_id": deep_project_id
+                            "action": expand_action, 
+                            "project_id": project.project_id if project else None, 
+                            "deep_project_id": state.deep_project_id
                         }
-                    }))
+                    })
+                    buttons.append(expand_btn)
+                
+                buttons.append(mode_btn)
+                buttons.extend(base_buttons)
 
             if buttons:
                 elements.append({"tag": "hr"})
                 elements.extend(build_responsive_layout(buttons))
+
+        card = CardBuilder._wrap_card(header_title, theme.header_template, elements)
+        return "interactive", json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
+    def build_history_list_card(
+        project: Optional[ProjectContext],
+        title: str,
+        content: str,
+        history_buttons: list[dict],
+        page: int,
+        has_next: bool,
+        deep_project_id: Optional[str] = None,
+    ) -> tuple[str, str]:
+        """Build a history list card with pagination."""
+        theme = get_theme("blue")
+        header_title = f"📜 {project.project_name if project else 'Loop'} · 历史记录"
+        
+        elements = [
+            {"tag": "markdown", "content": f"**{title}**\n\n{content}"},
+            {"tag": "hr"},
+        ]
+        
+        # History Items (as buttons grid)
+        elements.extend(build_responsive_layout(history_buttons))
+        
+        # Pagination Controls
+        nav_buttons = []
+        if page > 1:
+            nav_buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "⬅️ 上一页"},
+                "type": "default",
+                "value": {
+                    "action": "loop_history_page", 
+                    "page": page - 1,
+                    "project_id": project.project_id if project else None,
+                    "deep_project_id": deep_project_id
+                }
+            })
+            
+        if has_next:
+            nav_buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "➡️ 下一页"},
+                "type": "default",
+                "value": {
+                    "action": "loop_history_page",
+                    "page": page + 1,
+                    "project_id": project.project_id if project else None,
+                    "deep_project_id": deep_project_id
+                }
+            })
+            
+        # Back to Status
+        nav_buttons.append({
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "📊 返回状态"},
+            "type": "primary",
+            "value": {
+                "action": "loop_back_to_list", # Reusing generic back action name or specific
+                "project_id": project.project_id if project else None,
+                "deep_project_id": deep_project_id
+            }
+        })
+        
+        if nav_buttons:
+            elements.append({"tag": "hr"})
+            elements.extend(build_responsive_layout([apply_compact_style(b) for b in nav_buttons]))
 
         card = CardBuilder._wrap_card(header_title, theme.header_template, elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
@@ -930,7 +1322,33 @@ class CardBuilder:
     ) -> tuple[str, str]:
         """Build a categorized help card."""
         
-        project_info = f"**{project.project_name}** (`{project.root_path}`)" if project else "无"
+        # Extract primitives for caching
+        project_name = project.project_name if project else None
+        root_path = project.root_path if project else None
+        project_id = project.project_id if project else None
+        
+        return CardBuilder._build_help_card_cached(
+            project_name=project_name,
+            root_path=root_path,
+            project_id=project_id,
+            category=category,
+            working_dir=working_dir,
+            current_mode_str=current_mode_str
+        )
+
+    @staticmethod
+    @lru_cache(maxsize=64)
+    def _build_help_card_cached(
+        project_name: Optional[str],
+        root_path: Optional[str],
+        project_id: Optional[str],
+        category: str,
+        working_dir: Optional[str],
+        current_mode_str: str
+    ) -> tuple[str, str]:
+        """Internal cached builder for help cards using only primitive types."""
+        
+        project_info = f"**{project_name}** (`{root_path}`)" if project_name else "无"
         
         # Categories
         categories = [
@@ -950,7 +1368,7 @@ class CardBuilder:
                 "value": {
                     "action": "help_category",
                     "category": cat["id"],
-                    "project_id": project.project_id if project else None
+                    "project_id": project_id
                 }
             })
 

@@ -1,11 +1,12 @@
 import os
 import json
 import logging
-from typing import Optional
+from typing import Optional, Callable, Any, TYPE_CHECKING
 from dataclasses import dataclass, field
 
-import lark_oapi as lark
-from lark_oapi.api.im.v1 import GetMessageResourceRequest
+if TYPE_CHECKING:
+    from .im_client import FeishuIMClient
+    from ..config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +30,9 @@ class FeishuImageHandler:
 
     IMAGE_DIR_NAME = "picturechat"
 
-    def __init__(self, client: lark.Client):
-        self._client = client
+    def __init__(self, api_client_factory: Callable[[], Any], settings: "Settings"):
+        from .im_client import FeishuIMClient
+        self.im_client = FeishuIMClient(api_client_factory, settings)
 
     def parse_message(self, message_type: str, content_str: str) -> ImageParseResult:
         """根据消息类型解析文本和图片 key
@@ -167,19 +169,13 @@ class FeishuImageHandler:
     ) -> Optional[str]:
         """下载单张图片，返回保存路径或 None"""
         try:
-            request = GetMessageResourceRequest.builder() \
-                .message_id(message_id) \
-                .file_key(image_key) \
-                .type("image") \
-                .build()
+            response = self.im_client.get_resource(
+                message_id=message_id,
+                file_key=image_key,
+                resource_type="image"
+            )
 
-            response = self._client.im.v1.message_resource.get(request)
-
-            if not response.success():
-                logger.warning(
-                    "下载图片失败: %s, code=%s, msg=%s",
-                    image_key, response.code, response.msg,
-                )
+            if not response or not response.success():
                 return None
 
             filename = f"{index}.png"

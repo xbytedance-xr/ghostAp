@@ -204,7 +204,16 @@ class DeepEngine:
             return self._project
 
         except Exception as e:
-            error_msg = f"执行异常: {str(e)}"
+            from ..utils.errors import fmt_error
+            formatted = fmt_error("", e)
+            if formatted.startswith("❌ 失败: "):
+                detail = formatted[len("❌ 失败: "):]
+            elif formatted == "❌ 失败":
+                detail = str(e) or "未知错误"
+            else:
+                detail = formatted
+
+            error_msg = f"执行异常: {detail}"
             logger.error("[Deep:%s] %s", project_name, error_msg)
             if self._project:
                 self._project.fail(error_msg)
@@ -328,7 +337,16 @@ class DeepEngine:
                 callbacks.on_project_done(self._project)
 
         except Exception as e:
-            error_msg = f"恢复执行异常: {str(e)}"
+            from ..utils.errors import fmt_error
+            formatted = fmt_error("", e)
+            if formatted.startswith("❌ 失败: "):
+                detail = formatted[len("❌ 失败: "):]
+            elif formatted == "❌ 失败":
+                detail = str(e) or "未知错误"
+            else:
+                detail = formatted
+
+            error_msg = f"恢复执行异常: {detail}"
             logger.error("[Deep:%s] %s", self._project.name, error_msg)
             self._project.fail(error_msg)
             if callbacks.on_error:
