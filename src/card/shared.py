@@ -24,6 +24,12 @@ THEMES = {
     "orange": ProjectTheme("orange", "orange", "🟠", "orange"),
     "red": ProjectTheme("red", "red", "🔴", "red"),
     "turquoise": ProjectTheme("turquoise", "turquoise", "🩵", "turquoise"),
+    "violet": ProjectTheme("violet", "violet", "🟣", "violet"),
+    "indigo": ProjectTheme("indigo", "indigo", "🟣", "indigo"),
+    "carmine": ProjectTheme("carmine", "carmine", "🔴", "carmine"),
+    "wathet": ProjectTheme("wathet", "wathet", "🔵", "wathet"),
+    "grey": ProjectTheme("grey", "grey", "⚪", "grey"),
+    "yellow": ProjectTheme("yellow", "yellow", "🟡", "yellow"),
 }
 
 

@@ -36,17 +36,17 @@ class TestCardOptimization:
         """Verify Loop engine uses distinct theme color."""
         # Test Loop engine
         color = CardBuilder._pick_deep_template("Loop(Coco)", "running")
-        assert color == "indigo"
+        assert color == "purple"
         
         color = CardBuilder._pick_deep_template("loop", "running")
-        assert color == "indigo"
+        assert color == "purple"
         
         # Test other engines
         color = CardBuilder._pick_deep_template("Coco", "running")
         assert color == "turquoise"
         
         color = CardBuilder._pick_deep_template("Claude", "running")
-        assert color == "purple"
+        assert color == "violet"
         
         # Test status overrides
         color = CardBuilder._pick_deep_template("Loop(Coco)", "error")
@@ -209,7 +209,7 @@ class TestCardOptimization:
         assert "更多错误详情请展开" in content_element["content"]
         
         # Compact mode + Normal status
-        normal_msg = "Normal line 1\n" + "a" * 300
+        normal_msg = "Normal line 1\n" + "a" * 600
         _, card_json = CardBuilder.build_deep_card(
             project=None,
             state=DeepCardState(
@@ -223,10 +223,12 @@ class TestCardOptimization:
         card = json.loads(card_json)
         content_element = None
         for el in card["body"]["elements"]:
-            if el.get("tag") == "markdown" and "Normal line 1" in el.get("content", ""):
+            # Content should be truncated, so "Normal line 1" is gone.
+            # Look for the truncated content (lots of 'a')
+            if el.get("tag") == "markdown" and "aaaaa" in el.get("content", ""):
                 content_element = el
                 break
         
         assert content_element
-        # Should be hard truncated to 200 chars + ...
-        assert len(content_element["content"]) <= 203 + len("**Title**\n\n") # rough check
+        # Should be truncated to last 500 chars (approx)
+        assert len(content_element["content"]) <= 550 + len("**Title**\n\n") # rough check

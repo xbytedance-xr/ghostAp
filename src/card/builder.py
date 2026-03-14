@@ -153,125 +153,6 @@ class CardBuilder:
         return result
 
     @staticmethod
-    def _truncate_markdown(content: str, max_chars: int) -> str:
-        """Truncate markdown content safely, closing code blocks and bold tags."""
-        if len(content) <= max_chars:
-            return content
-
-        # Reserve space for the warning message (approx 100 chars)
-        # We'll use a slightly different warning message strategy:
-        # keep the END of the log, and prepend a warning.
-        warning_msg = "\n> ⚠️ **日志内容过长，已被截断**\n> 🔍 完整日志请查看服务器本地文件\n> (仅显示末尾内容)...\n"
-        keep_chars = max_chars - len(warning_msg) - 20 # buffer
-
-        truncated_content = content[-keep_chars:]
-        
-        # 1. Check code blocks (```)
-        # If the truncated content has an odd number of ```, it means we started inside a code block
-        # (assuming the original content was valid). 
-        # Actually, since we are taking the TAIL, we need to know if the tail *starts* inside a block.
-        # But we don't have the full context easily if we just look at tail.
-        # 
-        # Better approach: Look at the full content to determine state at cut point.
-        # Cut point is: len(content) - keep_chars
-        cut_index = len(content) - keep_chars
-        pre_cut_content = content[:cut_index]
-        
-        # Count ``` in pre-cut content to see if we are inside a code block
-        # We assume ``` always toggle.
-        code_block_markers = pre_cut_content.count("```")
-        is_inside_code_block = (code_block_markers % 2 != 0)
-        
-        # 2. Check bold tags (**)
-        # Similar logic for **
-        bold_markers = pre_cut_content.count("**")
-        is_inside_bold = (bold_markers % 2 != 0)
-        
-        parts = [warning_msg]
-        
-        # If we are inside a code block at the start of our tail, we need to prefix with ```
-        # to "re-open" the block so the tail renders as code.
-        # However, we usually want the previous block to be CLOSED before our warning.
-        # But here we are discarding the head.
-        # So the state is:
-        # [Head (discarded)] <--- cut ---> [Tail]
-        # If Head ended with open ```, then Tail starts "inside" code.
-        # To make Tail render correctly as code, we should prepend ``` to it.
-        # AND to make the warning render correctly (not as code), we should ensure warning is outside.
-        # 
-        # Actually, the warning is prepended to the tail.
-        # So the structure is: [Warning] + [Tail]
-        # If Tail expects to be inside code, we must start [Tail] with ```.
-        
-        # Correct logic:
-        # 1. We insert warning. Warning is markdown, not code.
-        # 2. If we were inside code block at cut point, we must open a code block after warning
-        #    so the rest of the content (Tail) is treated as code.
-        if is_inside_code_block:
-            parts.append("```\n")
-        
-        # If we were inside bold, we must open bold
-        if is_inside_bold:
-            parts.append("**")
-            
-        parts.append(truncated_content)
-        
-        # Now check if we need to close tags at the very end of Tail
-        # We count markers in the (potentially modified) tail?
-        # No, simpler: check the total markers in (Pre-cut + Tail).
-        # Since original content was assumed valid (closed), 
-        # if Pre-cut has odd markers, then Tail MUST have odd markers to close it.
-        # 
-        # Wait, if we added ``` at start of Tail, we added 1 marker.
-        # Original Tail (content[-keep_chars:]) has N markers.
-        # Total in our new string: (1 if added else 0) + N
-        # We want the final result to be closed (even number).
-        # 
-        # Example: 
-        # Original: ```abc...xyz``` (2 markers)
-        # Cut: inside. Pre-cut has 1 (odd). Tail has 1 (odd).
-        # We add ``` prefix to Tail.
-        # New Tail: ``` + xyz```. Markers: 1 + 1 = 2 (Even). Closed.
-        # 
-        # Example 2: 
-        # Original: ```abc... (unclosed error in original?) -> Assume original is valid.
-        # 
-        # So if we prepend ```, the tail is self-contained.
-        # What if original tail has unclosed blocks?
-        # e.g. Original: ... ```code ... (cut) ... code``` ...
-        # If cut is outside, Pre-cut even. Tail even.
-        # We add nothing. Tail is ```code``` (2 markers). Even. Closed.
-        #
-        # What if cut is inside?
-        # Original: ```start ... (cut) ... end```
-        # Pre-cut: 1. Tail: 1.
-        # We add ```. Tail: ```...end```. Markers: 2. Closed.
-        #
-        # What if inside bold?
-        # Original: **bold**
-        # Cut inside. Pre: 1. Tail: 1.
-        # Add **. Tail: **bold**. Markers: 2. Closed.
-        #
-        # So it seems we just need to re-open whatever was open at cut point.
-        # AND we need to ensure the final string is closed.
-        # If the original string was valid, then re-opening matches the "missing" opening from head,
-        # so the existing closing tags in tail should balance it.
-        # 
-        # BUT, what if we cut *inside* a `**` marker? e.g. `*` | `*`
-        # `count("**")` might be tricky.
-        # For robustness, we can just check the *final* string state.
-        
-        result = "".join(parts)
-        
-        # Final safety check: ensure closed
-        if result.count("```") % 2 != 0:
-            result += "\n```"
-        if result.count("**") % 2 != 0:
-            result += "**"
-            
-        return result
-
-    @staticmethod
     def _build_content_element(content: str, with_title: Optional[str] = None, max_chars: int = 4000) -> dict:
         full_content = f"**{with_title}**\n\n{content}" if with_title else content
         
@@ -856,9 +737,9 @@ class CardBuilder:
         # Default/Executing
         name = (engine_name or "").strip().lower()
         if name.startswith("loop"):
-            return "indigo"
+            return "purple"  # Use purple for Loop to distinguish from Deep (turquoise)
         if name.startswith("claude"):
-            return "purple"
+            return "violet"  # Use violet for Claude to distinguish from Loop
         if name.startswith("spec"):
             return "green"
         return "turquoise"
@@ -894,8 +775,11 @@ class CardBuilder:
                 "value": {"action": f"{state.action_prefix}_stop", "project_id": state.deep_project_id, "deep_project_id": state.deep_project_id}
             })
             
-        # Log Expand/Collapse Button (Only in Full mode and when not compact)
-        if not state.compact:
+        # Log Expand/Collapse Button
+        lines = (state.content or "").split('\n')
+        threshold = 5 if state.compact else 10
+        
+        if len(lines) > threshold:
             expand_text = "🔼 收起日志" if state.expanded else "🔽 展开日志"
             expand_action = f"{state.action_prefix}_collapse" if state.expanded else f"{state.action_prefix}_expand"
             buttons.append({
@@ -994,7 +878,10 @@ class CardBuilder:
         # Main content processing
         display_content = state.content
         
-        if state.compact:
+        if state.expanded:
+            # If expanded, show full content regardless of mode
+            pass
+        elif state.compact:
             # Error check - show more context for errors
             is_error = status_key == "error"
             
@@ -1007,14 +894,19 @@ class CardBuilder:
                     if len(lines) > 5:
                         display_content = "\n".join(lines[:5]) + "\n...(更多错误详情请展开)..."
             else:
-                # Compact mode: truncate hard
-                if len(display_content) > 200:
-                    display_content = display_content[:200] + "..."
-                elif not display_content:
+                # Compact mode: show last 5 lines for running/paused to avoid scroll trap
+                if not display_content:
                     display_content = "正在执行..."
+                else:
+                    lines = display_content.split('\n')
+                    if len(lines) > 5:
+                        display_content = "...\n" + "\n".join(lines[-5:]) + "\n(点击展开查看更多)"
+                    elif len(display_content) > 500:
+                        # Fallback for very long lines
+                        display_content = "..." + display_content[-500:]
         else:
             # Full mode: Line-based truncation if not expanded
-            if not state.expanded and display_content:
+            if display_content:
                 lines = display_content.split('\n')
                 MAX_LINES = 10
                 if len(lines) > MAX_LINES:
@@ -1055,8 +947,10 @@ class CardBuilder:
                         "deep_project_id": state.deep_project_id
                     }
                 })
-                # If not compact, also add expand/collapse if there is content
-                if not state.compact and len(state.content.split('\n')) > 10:
+                # Also add expand/collapse if there is enough content
+                lines = state.content.split('\n')
+                threshold = 5 if state.compact else 10
+                if len(lines) > threshold:
                     expand_text = "🔼 收起日志" if state.expanded else "🔽 展开日志"
                     expand_action = f"{state.action_prefix}_collapse" if state.expanded else f"{state.action_prefix}_expand"
                     expand_btn = apply_compact_style({

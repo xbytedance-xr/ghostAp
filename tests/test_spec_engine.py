@@ -1839,7 +1839,7 @@ class TestCardBuilderSpec:
         assert CardBuilder._pick_deep_template("Spec(Coco)") == "green"
         assert CardBuilder._pick_deep_template("spec") == "green"
         assert CardBuilder._pick_deep_template("Coco") == "turquoise"
-        assert CardBuilder._pick_deep_template("Claude") == "purple"
+        assert CardBuilder._pick_deep_template("Claude") == "violet"
 
 
 # ======================================================================
