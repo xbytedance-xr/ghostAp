@@ -246,6 +246,12 @@ class Settings(BaseSettings):
 
     streaming_enabled: bool = True
 
+    # Streaming flow control (Adaptive interval)
+    streaming_adaptive_interval_base: float = 0.3  # Base interval (seconds) for low rate
+    streaming_adaptive_interval_max: float = 2.0   # Max interval (seconds) for high rate
+    streaming_adaptive_rate_low: float = 20.0      # Low rate threshold (chars/sec)
+    streaming_adaptive_rate_high: float = 150.0    # High rate threshold (chars/sec)
+
     # Rate limiting handling (auto-pause and retry on API throttling)
     rate_limit_retry_enabled: bool = True
     rate_limit_max_wait: int = 300      # Max seconds to wait for rate limit cooldown
@@ -272,6 +278,20 @@ class Settings(BaseSettings):
     # - mobile: 强制两列 column_set（手机端更稳定，一行两个按钮）
     # - responsive: 默认值；<=2 个按钮用 action，>2 个按钮用两列 column_set
     card_button_layout: str = "responsive"
+
+    # 卡片按钮尺寸 (medium/small/large)
+    card_button_size: str = "medium"
+    
+    # 移动端强制垂直布局 (true: 移动端忽略 layout 设置，强制垂直堆叠; false: 遵循 layout 设置)
+    card_mobile_force_vertical: bool = True
+
+    # 移动端布局模式 (vertical: 垂直堆叠; flow: 流式自动换行)
+    # 当 card_mobile_force_vertical=True 且按钮数 > 2 时，此配置生效
+    card_mobile_layout_mode: str = "vertical"
+
+    # Deep Card Compact Mode
+    # If True, deep progress cards will default to a compact view (status line + progress bar + truncated content).
+    card_deep_compact_default: bool = True
 
     # 消息回复模式配置
     # - direct: 直接回复（消息显示在被回复消息下方）

@@ -7,12 +7,11 @@ from .shared import (
     apply_compact_style,
     build_mode_buttons,
     build_responsive_layout,
-    BUTTON_SIZE,
+    get_button_size,
 )
 
 
 class CardBuilder:
-    BUTTON_SIZE = BUTTON_SIZE
 
     @staticmethod
     def _apply_compact_button_style(button: dict) -> dict:
@@ -501,18 +500,34 @@ class CardBuilder:
 
     @staticmethod
     def build_error_card(
-        error_message: str,
+        exc: Exception | str,
+        title: str = "操作失败",
         project: Optional[ProjectContext] = None,
     ) -> tuple[str, str]:
+        from ..utils.errors import GhostAPError
+        from .shared import build_quick_actions
+
+        message = str(exc)
+        quick_actions = []
+        context = {}
+
+        if isinstance(exc, GhostAPError):
+            quick_actions = exc.quick_actions
+            context = exc.context
+
         elements = [
-            CardBuilder._build_content_element(f"❌ **错误**\n\n{error_message}")
+            CardBuilder._build_content_element(f"❌ **{title}**\n\n{message}")
         ]
 
         if project:
             elements.insert(0, CardBuilder._build_directory_element(project))
             elements.insert(1, {"tag": "hr"})
 
-        card = CardBuilder._wrap_card("⚠️ 操作失败", "red", elements)
+        if quick_actions:
+            buttons = build_quick_actions(quick_actions, context)
+            elements.extend(build_responsive_layout(buttons))
+
+        card = CardBuilder._wrap_card("⚠️ 错误提示", "red", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
 
     # ---- Shell result card ----
@@ -655,6 +670,7 @@ class CardBuilder:
         duration_line: Optional[str] = None,
         criteria_section: Optional[str] = None,
         footer_note: Optional[str] = None,
+        compact: bool = False,
     ) -> tuple[str, str]:
         header_template = CardBuilder._pick_engine_template(engine_name)
         theme = get_theme(header_template)
@@ -684,10 +700,18 @@ class CardBuilder:
             elements.append({"tag": "hr"})
 
         # Main content
-        elements.append(CardBuilder._build_content_element(content))
+        display_content = content
+        if compact:
+            # Compact mode: truncate content and strip heavy markdown if needed
+            if len(display_content) > 300:
+                display_content = display_content[:300] + "...\n(更多内容请点击详情)"
+            elif not display_content:
+                display_content = "正在执行..."
 
-        # Criteria section (independent element)
-        if criteria_section:
+        elements.append(CardBuilder._build_content_element(display_content))
+
+        # Criteria section (independent element) - Skip in compact mode unless very short
+        if criteria_section and not compact:
             elements.append({"tag": "hr"})
             elements.append({"tag": "markdown", "content": criteria_section})
 
@@ -700,6 +724,7 @@ class CardBuilder:
             })
 
         if show_buttons:
+            buttons = []
             if is_executing or is_paused:
                 buttons = CardBuilder._build_deep_buttons(
                     project.project_id if project else None,
@@ -709,6 +734,22 @@ class CardBuilder:
                 )
             else:
                 buttons = CardBuilder._build_footer_buttons(project, is_coco_mode=False, is_claude_mode=False)
+
+            # Add "Show Detail" button if compact and not already present (though unlikely in footer buttons)
+            if compact:
+                # Check if we already have a show detail button
+                has_detail = any(b.get("value", {}).get("action") == "show_deep_status" for b in buttons)
+                if not has_detail:
+                     buttons.insert(0, apply_compact_style({
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "🔍 查看详情"},
+                        "type": "default",
+                        "value": {
+                            "action": "show_deep_status",
+                            "project_id": project.project_id if project else None,
+                            "deep_project_id": deep_project_id
+                        }
+                    }))
 
             if buttons:
                 elements.append({"tag": "hr"})
@@ -817,4 +858,169 @@ class CardBuilder:
         )
 
         card = CardBuilder._wrap_card(f"🤖 {tool_name} 模型选择", "blue", elements)
+        return "interactive", json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
+    def build_command_menu_card(project: Optional[ProjectContext] = None) -> tuple[str, str]:
+        """Build a mobile-friendly command menu card."""
+        project_id = project.project_id if project else None
+
+        buttons = [
+            {
+                "text": "➕ 新建项目",
+                "type": "primary",
+                "action": "new_project_prompt",
+            },
+            {
+                "text": "🔄 切换项目",
+                "type": "default",
+                "action": "switch_project",
+            },
+            {
+                "text": "🧠 Deep 任务",
+                "type": "primary",
+                "action": "enter_deep_prompt",
+            },
+            {
+                "text": "📊 状态概览",
+                "type": "default",
+                "action": "show_status",
+            },
+            {
+                "text": "🎮 TTADK",
+                "type": "default",
+                "action": "show_ttadk_menu",
+            },
+            {
+                "text": "📖 帮助",
+                "type": "default",
+                "action": "show_help_menu",
+            },
+        ]
+
+        # Convert to actual card buttons
+        card_buttons = []
+        for btn in buttons:
+            card_buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": btn["text"]},
+                "type": btn["type"],
+                "value": {
+                    "action": btn["action"],
+                    "project_id": project_id
+                }
+            })
+
+        elements = [
+            CardBuilder._build_directory_element(project),
+            {"tag": "hr"},
+            {"tag": "markdown", "content": "**📱 常用指令菜单**"},
+        ]
+        elements.extend(build_responsive_layout(card_buttons))
+
+        card = CardBuilder._wrap_card("📱 快捷菜单", "blue", elements)
+        return "interactive", json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
+    def build_help_card(
+        project: Optional[ProjectContext] = None,
+        category: str = "main",
+        working_dir: Optional[str] = None,
+        current_mode_str: str = "智能模式"
+    ) -> tuple[str, str]:
+        """Build a categorized help card."""
+        
+        project_info = f"**{project.project_name}** (`{project.root_path}`)" if project else "无"
+        
+        # Categories
+        categories = [
+            {"name": "编程模式", "id": "coding"},
+            {"name": "Deep 任务", "id": "deep"},
+            {"name": "项目管理", "id": "project"},
+            {"name": "更多...", "id": "more"},
+        ]
+        
+        category_buttons = []
+        for cat in categories:
+            is_active = cat["id"] == category or (category == "main" and cat["id"] == "coding")
+            category_buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": cat["name"]},
+                "type": "primary" if is_active else "default",
+                "value": {
+                    "action": "help_category",
+                    "category": cat["id"],
+                    "project_id": project.project_id if project else None
+                }
+            })
+
+        content = ""
+        # Default to coding if main
+        cat_key = "coding" if category == "main" else category
+        
+        if cat_key == "coding":
+            content = (
+                "**🔄 编程模式切换**\n"
+                "`/coco` - 进入 Coco 编程模式（字节跳动 AI）\n"
+                "`/claude` - 进入 Claude 编程模式（Anthropic AI）\n"
+                "`/ttadk` - 进入 TTADK 多工具编程模式\n"
+                "`/exit` - 退出当前编程模式\n"
+                "`/coco_info` - 查看 Coco 会话信息\n"
+                "`/claude_info` - 查看 Claude 会话信息\n"
+                "`/ttadk_info` - 查看 TTADK 当前工具和模型"
+            )
+        elif cat_key == "deep":
+            content = (
+                "**🧠 Deep Engine（复杂任务）**\n"
+                "`/deep <需求>` - 启动 Deep Engine\n"
+                "`/deep_status` - 查看任务进度\n"
+                "`/stop_deep` - 停止任务\n\n"
+                "**🔄 Loop Engine（迭代闭环）**\n"
+                "`/loop <需求>` - 启动 Loop 模式\n"
+                "`/loop_status` - 查看迭代进度\n"
+                "`/loop_guide <引导>` - 注入引导信息\n"
+                "`/loop_pause` - 暂停迭代\n"
+                "`/loop_resume` - 恢复迭代\n"
+                "`/stop_loop` - 停止 Loop"
+            )
+        elif cat_key == "project":
+            content = (
+                "**📂 项目管理**\n"
+                "`/projects` - 查看所有项目\n"
+                "`/new <名称> [路径]` - 创建新项目\n"
+                "`/switch <名称>` - 切换项目\n"
+                "`/close <名称>` - 关闭项目\n"
+                "`/status` - 查看所有引擎任务状态\n"
+                "`/diff` - 查看最近两次版本变更"
+            )
+        elif cat_key == "more":
+            content = (
+                "**📋 Spec Engine（结构化开发闭环）**\n"
+                "`/spec <需求>` - 启动\n"
+                "`/spec_status` - 查看进度\n"
+                "`/spec_guide <引导>` - 补充约束/偏好\n"
+                "`/spec_history` - 查看历史\n"
+                "`/spec_config` - 查看配置\n"
+                "`/stop_spec` - 停止\n\n"
+                "**🤖 TTADK 管理**\n"
+                "`/ttadk_refresh` - 强制刷新 TTADK 模型列表\n"
+                "`/ttadk_info` - 查看 TTADK 当前状态\n\n"
+                "**💡 使用提示**\n"
+                "1. 发送 `/coco` 或 `/claude` 进入编程模式\n"
+                "2. 智能模式下直接输入 Shell 命令即可执行\n"
+                "3. 发送 `/menu` 打开快捷菜单"
+            )
+
+        elements = [
+            {"tag": "markdown", "text_size": "notation",
+             "content": f"**当前状态**  •  {current_mode_str}  •  `{working_dir or '~'}`  •  项目: {project_info}"},
+            {"tag": "hr"},
+        ]
+        
+        elements.extend(build_responsive_layout(category_buttons))
+        
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "markdown", "text_size": "normal", "content": content})
+
+        card = CardBuilder._wrap_card("📖 GhostAP 使用帮助", "blue", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)

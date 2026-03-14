@@ -157,22 +157,6 @@ class DeepHandler(BaseHandler):
     # ------------------------------------------------------------------
     # callbacks factory
     # ------------------------------------------------------------------
-    def _convert_to_legacy_card(self, card_json_str: str) -> str:
-        """Convert Schema 2.0 card to legacy structure for PATCH API."""
-        try:
-            card = json.loads(card_json_str)
-            if isinstance(card, dict) and card.get("schema") == "2.0":
-                # Convert to legacy structure: lift elements from body, remove schema
-                new_card = {
-                    "config": card.get("config", {}),
-                    "header": card.get("header", {}),
-                    "elements": card.get("body", {}).get("elements", [])
-                }
-                return json.dumps(new_card, ensure_ascii=False)
-            return card_json_str
-        except Exception:
-            return card_json_str
-
     def _create_deep_callbacks(
         self,
         message_id: str,
@@ -199,7 +183,6 @@ class DeepHandler(BaseHandler):
             """发送 deep 任务消息，在话题模式下确保所有消息都回复到同一个话题。"""
             # 1. Try update existing card
             if is_update and current_status_message_id[0]:
-                legacy_content = self._convert_to_legacy_card(card_content)
                 client = self.ctx.api_client_factory()
                 
                 # Simple exponential backoff for patch
@@ -209,7 +192,7 @@ class DeepHandler(BaseHandler):
                         req = PatchMessageRequest.builder() \
                             .message_id(current_status_message_id[0]) \
                             .request_body(PatchMessageRequestBody.builder()
-                                .content(legacy_content)
+                                .content(card_content)
                                 .build()) \
                             .build()
                         resp = client.im.v1.message.patch(req)
@@ -325,6 +308,7 @@ class DeepHandler(BaseHandler):
                 deep_project_id=deep_project_id,
                 is_executing=True,
                 engine_name=engine_name,
+                compact=self.settings.card_deep_compact_default,
             )
             _send_deep_message(card_content, msg_type, is_update=True)
             last_stream_ts = now
@@ -353,6 +337,7 @@ class DeepHandler(BaseHandler):
                         deep_project_id=deep_project_id,
                         is_executing=True,
                         engine_name=engine_name,
+                        compact=self.settings.card_deep_compact_default,
                     )
                     _send_deep_message(card_content, msg_type, is_update=True)
                     last_plan_ts = now
@@ -470,6 +455,7 @@ class DeepHandler(BaseHandler):
             is_executing=progress_info["is_executing"],
             is_paused=progress_info["is_paused"],
             engine_name=engine_name,
+            compact=False,
         )
         self.reply_message(message_id, card_content, msg_type=msg_type)
 

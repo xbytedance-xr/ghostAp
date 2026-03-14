@@ -1,3 +1,6 @@
+import logging
+from typing import Optional, Any
+
 """Unified error formatting and base exception for user-facing messages.
 
 All user-facing error messages should use these helpers to ensure consistent
@@ -15,26 +18,33 @@ class GhostAPError(Exception):
 
     Carries a user-facing message (Chinese) and an optional machine-readable
     ``action`` tag for logging/metrics.
+    
+    Can also carry structured data for QuickAction buttons.
     """
 
-    def __init__(self, message: str, *, action: str = ""):
+    def __init__(self, message: str, *, action: str = "", quick_actions: list[str] = None, context: dict = None):
         super().__init__(message)
         self.action = action
+        self.quick_actions = quick_actions or []
+        self.context = context or {}
 
 
 class SessionExpiredError(GhostAPError):
     """AI session (Coco/Claude) has expired or is unreachable."""
-    pass
+    def __init__(self, message: str = "会话已过期", **kwargs):
+        super().__init__(message, quick_actions=["retry", "stop"], **kwargs)
 
 
 class ProjectNotFoundError(GhostAPError):
     """Requested project does not exist."""
-    pass
+    def __init__(self, message: str = "项目不存在", **kwargs):
+        super().__init__(message, quick_actions=["new_project_prompt", "list_projects"], **kwargs)
 
 
 class SafetyCheckError(GhostAPError):
     """Command blocked by safety checks."""
-    pass
+    def __init__(self, message: str = "操作被安全策略拦截", **kwargs):
+        super().__init__(message, quick_actions=["stop"], **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -42,53 +52,40 @@ class SafetyCheckError(GhostAPError):
 # ---------------------------------------------------------------------------
 
 def fmt_error(action: str, detail: str = "") -> str:
-    """Format a hard-failure message.
-
-    >>> fmt_error("创建项目", "目录不存在")
-    '❌ 创建项目失败: 目录不存在'
-    >>> fmt_error("创建项目")
-    '❌ 创建项目失败'
-    """
+    """Format a hard-failure message."""
     if detail:
         return f"❌ {action}失败: {detail}"
     return f"❌ {action}失败"
 
 
 def fmt_exception(action: str, exc: BaseException) -> str:
-    """Format an unexpected exception for the user.
-
-    >>> fmt_exception("执行命令", ValueError("bad arg"))
-    '❌ 执行命令异常: bad arg'
-    """
+    """Format an unexpected exception for the user."""
     return f"❌ {action}异常: {str(exc)}"
 
 
 def fmt_warning(message: str) -> str:
-    """Format a warning / partial-failure message.
-
-    >>> fmt_warning("部分任务失败")
-    '⚠️ 部分任务失败'
-    """
+    """Format a warning / partial-failure message."""
     return f"⚠️ {message}"
 
 
 def fmt_timeout(action: str, seconds: int) -> str:
-    """Format a timeout message.
-
-    >>> fmt_timeout("命令执行", 30)
-    '⏱️ 命令执行超时（30秒）'
-    """
+    """Format a timeout message."""
     return f"⏱️ {action}超时（{seconds}秒）"
 
 
 def fmt_not_found(resource: str, name: str = "") -> str:
-    """Format a resource-not-found message.
-
-    >>> fmt_not_found("项目", "my_project")
-    '❌ 未找到项目: my_project'
-    >>> fmt_not_found("claude 命令")
-    '❌ 未找到 claude 命令'
-    """
+    """Format a resource-not-found message."""
     if name:
         return f"❌ 未找到{resource}: {name}"
     return f"❌ 未找到 {resource}"
+
+
+def log_exception(logger: logging.Logger, msg: str, exc: Exception, level: int = logging.ERROR):
+    """Log an exception with appropriate level.
+    
+    Downgrades known business logic exceptions (GhostAPError) to WARNING.
+    """
+    if isinstance(exc, GhostAPError):
+        logger.warning(f"{msg}: {exc}")
+    else:
+        logger.log(level, msg, exc_info=exc)
