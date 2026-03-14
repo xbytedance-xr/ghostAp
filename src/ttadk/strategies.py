@@ -264,14 +264,14 @@ class ProbeStrategy(ModelFetchStrategy):
 
         except subprocess.TimeoutExpired as e:
             # 让上层 diagnostics 记录 timeout，而不是静默吞掉
-            logger.error(f"ProbeStrategy timed out for tool {tool_name}: {e}")
+            logger.warning(f"ProbeStrategy timed out for tool {tool_name}: {e}")
             raise
         except TTADKProbeError:
             # 将可诊断错误上抛给 fetcher，便于记录 stderr/stdout 片段
             raise
         except Exception as e:
             # 统一上抛可诊断错误，避免 fetcher 侧出现“ok=False 但无 error_type/rc/snippet”的静默回退。
-            logger.error(f"ProbeStrategy failed for tool {tool_name}: {e}")
+            logger.warning(f"ProbeStrategy failed for tool {tool_name}: {e}")
             raise TTADKProbeError(
                 f"probe_exception:{type(e).__name__}: tool={tool_name}",
                 returncode=rc,
@@ -408,7 +408,7 @@ class InteractiveStrategy(ModelFetchStrategy):
             return models
 
         except Exception as e:
-            logger.error(f"InteractiveStrategy failed for tool {tool_name}: {e}")
+            logger.warning(f"InteractiveStrategy failed for tool {tool_name}: {e}")
             return []
         finally:
             # 清理
