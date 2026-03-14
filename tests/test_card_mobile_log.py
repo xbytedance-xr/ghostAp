@@ -6,11 +6,11 @@ from src.card.models import DeepCardState
 class TestCardMobileLog:
     
     def test_loop_engine_color(self):
-        """Test that Loop engine uses purple color."""
+        """Test that Loop engine uses indigo color."""
         # Using _pick_deep_template directly
-        assert CardBuilder._pick_deep_template("loop") == "purple"
-        assert CardBuilder._pick_deep_template("Loop Engine") == "purple"
-        assert CardBuilder._pick_deep_template("loop_engine") == "purple"
+        assert CardBuilder._pick_deep_template("loop") == "indigo"
+        assert CardBuilder._pick_deep_template("Loop Engine") == "indigo"
+        assert CardBuilder._pick_deep_template("loop_engine") == "indigo"
         
         # Verify in card JSON
         state = DeepCardState(
@@ -26,7 +26,7 @@ class TestCardMobileLog:
         card_json = json.loads(card_json_str)
         
         # Check header template color
-        assert card_json["header"]["template"] == "purple"
+        assert card_json["header"]["template"] == "indigo"
 
     def test_deep_engine_color(self):
         """Test that Deep engine uses turquoise color."""

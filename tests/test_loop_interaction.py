@@ -110,6 +110,12 @@ class TestLoopInteraction(unittest.TestCase):
         # Mock project
         project = LoopProject(name="test_proj", root_path="/tmp", project_id="p1")
         
+        # Mock engine project attributes for renderer
+        mock_engine = mock_ctx.loop_engine_manager.get.return_value
+        mock_engine.project.satisfied_count = 0
+        mock_engine.project.total_criteria = 10
+        mock_engine.project.name = "test_proj"
+        
         # Patch CardBuilder.build_deep_card
         with patch('src.card.CardBuilder.build_deep_card') as mock_build:
             mock_build.return_value = ("interactive", "{}")

@@ -19,6 +19,8 @@ class ProjectHandler(BaseHandler):
     """Handles project CRUD and context preserve/restore."""
 
     def create_project(self, message_id: str, chat_id: str, name: str, path: str):
+        from ...card.styles import UI_TEXT
+        
         project_id = name.lower().replace(" ", "_").replace("-", "_")
 
         success, msg, project = self.project_manager.create_project(
@@ -34,15 +36,14 @@ class ProjectHandler(BaseHandler):
             if response_id:
                 self.register_message_project(response_id, project)
         else:
-            msg_type, card_content = CardBuilder.build_error_card(msg)
-            self.reply_message(message_id, card_content, msg_type)
+            self.reply_error(message_id, UI_TEXT.get("project_create_error", "创建项目失败: {error}").format(error=msg))
 
-    def show_project_board(self, message_id: str, chat_id: str, origin_message_id: Optional[str] = None):
+    def show_project_board(self, message_id: str, chat_id: str, origin_message_id: Optional[str] = None, page: int = 1):
         projects = self.project_manager.get_all_projects()
         active_project = self.project_manager.get_active_project(chat_id)
         current_id = active_project.project_id if active_project else None
 
-        msg_type, content = CardBuilder.build_status_board_card(projects, current_id)
+        msg_type, content = CardBuilder.build_status_board_card(projects, current_id, page=page)
 
         if origin_message_id:
             if self.patch_message(origin_message_id, content, max_retries=1):
@@ -56,8 +57,10 @@ class ProjectHandler(BaseHandler):
             self.register_message_project(response_id, active_project)
 
     def show_current_project(self, message_id: str, chat_id: str, project: Optional["ProjectContext"]):
+        from ...card.styles import UI_TEXT
+        
         if not project:
-            self.reply_message(message_id, "📋 当前没有活跃项目\n\n发送 `/projects` 查看项目列表\n发送 `/new 项目名 路径` 创建新项目")
+            self.reply_message(message_id, UI_TEXT.get("project_board_empty", "当前没有活动项目\n\n发送 `/new 项目名 [路径]` 创建新项目"))
             return
 
         global_working_dir = self.get_working_dir(chat_id)
@@ -176,6 +179,8 @@ class ProjectHandler(BaseHandler):
         *coco_handler* and *claude_handler* are the programming-mode handlers
         used to exit the current mode safely when switching projects.
         """
+        from ...card.styles import UI_TEXT
+        
         project = self.project_manager.find_project_by_name(name)
         if not project:
             results = self.project_manager.search_projects(name)
@@ -183,12 +188,12 @@ class ProjectHandler(BaseHandler):
                 suggestions = "\n".join([f"• {p.project_name}" for p in results[:5]])
                 self.reply_message(message_id, f"❌ 未找到项目: {name}\n\n**相似项目：**\n{suggestions}")
             else:
-                self.reply_message(message_id, f"❌ 未找到项目: {name}\n\n发送 `/projects` 查看所有项目")
+                self.reply_error(message_id, UI_TEXT.get("project_not_found", "未找到项目: {name}\n\n发送 `/projects` 查看所有项目").format(name=name))
             return
 
         valid, path_msg = self.project_manager.validate_project_path(project.project_id)
         if not valid:
-            self.reply_message(message_id, f"⚠️ {path_msg}\n\n请检查项目路径是否存在")
+            self.reply_error(message_id, UI_TEXT.get("project_dir_not_exist", "目录不存在: {path}").format(path=path_msg))
             return
 
         old_project = self.project_manager.get_active_project(chat_id)
@@ -212,7 +217,7 @@ class ProjectHandler(BaseHandler):
 
         success, msg = self.project_manager.set_active_project(chat_id, project.project_id)
         if not success:
-            self.reply_message(message_id, f"❌ {msg}")
+            self.reply_error(message_id, UI_TEXT.get("project_switch_error", "{error}").format(error=msg))
             return
 
         restore_info = self.restore_project_context(project)
@@ -243,13 +248,15 @@ class ProjectHandler(BaseHandler):
                 self.register_message_project(response_id, project)
 
     def close_project(self, message_id: str, chat_id: str, name: str):
+        from ...card.styles import UI_TEXT
+        
         project = self.project_manager.find_project_by_name(name)
         if not project:
-            self.reply_message(message_id, f"❌ 未找到项目: {name}")
+            self.reply_error(message_id, UI_TEXT.get("project_not_found", "未找到项目: {name}").format(name=name))
             return
 
         success, msg = self.project_manager.close_project(project.project_id)
         if success:
-            self.reply_message(message_id, f"✅ {msg}")
+            self.reply_message(message_id, UI_TEXT.get("project_close_success", "✅ {name} 已关闭").format(name=name))
         else:
-            self.reply_message(message_id, f"❌ {msg}")
+            self.reply_error(message_id, UI_TEXT.get("project_close_error", "关闭项目失败: {error}").format(error=msg))

@@ -25,11 +25,13 @@ from ..deep_engine import DeepEngineManager, ProgressReporter
 from ..loop_engine import LoopEngineManager, LoopReporter
 from ..spec_engine import SpecEngineManager, SpecReporter
 from ..tasking import TaskScheduler, TaskSpec, TaskPriority
+from ..utils.trace import TraceContext, configure_logging_with_trace
 from .message_formatter import FeishuMessageFormatter as fmt
 from .emoji import EmojiReaction
 from .message_cache import MessageCache
 from .image_handler import FeishuImageHandler
 from .handler_context import HandlerContext
+from .action_dispatcher import ActionDispatcher
 from .handlers import (
     CocoModeHandler,
     ClaudeModeHandler,
@@ -154,17 +156,57 @@ class FeishuWSClient:
             handler = getattr(self, handler_attr)
             setattr(self, attr_name, getattr(handler, method_name))
 
-        # --- Action Registry ---
-        self._action_registry_exact: dict[str, Callable] = {}
-        self._action_registry_prefix: list[tuple[str, Callable]] = []
+        # --- Action Dispatcher ---
+        self._action_dispatcher = ActionDispatcher()
         self._init_action_registry()
+        
+        # Configure trace logging
+        configure_logging_with_trace()
 
     def _register_action(self, handler: Callable, exact: Optional[str] = None, prefix: Optional[str] = None):
         """Register a card action handler."""
-        if exact:
-            self._action_registry_exact[exact] = handler
-        if prefix:
-            self._action_registry_prefix.append((prefix, handler))
+        self._action_dispatcher.register(handler, exact, prefix)
+
+    def _process_card_action_async(self, data: Any, task_ctx=None):
+        try:
+            event = data.event
+            context = event.context
+            open_message_id = context.open_message_id
+            open_chat_id = context.open_chat_id
+            action = event.action
+            value = action.value
+            
+            # Ensure value is a dict
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except Exception:
+                    value = {}
+            if not isinstance(value, dict):
+                value = {}
+
+            action_type = value.get("action")
+            project_id = value.get("project_id")
+
+            if not action_type:
+                logger.warning("收到未包含 action 字段的卡片动作: %s", value)
+                return
+            
+            # --- Dispatch via ActionDispatcher ---
+            matched = self._action_dispatcher.dispatch(action_type, open_message_id, open_chat_id, project_id, value)
+            
+            if not matched:
+                logger.debug("未注册的卡片动作: %s", action_type)
+            
+        except asyncio.TimeoutError:
+            logger.warning("处理卡片动作超时")
+        except Exception as e:
+            logger.error("处理卡片动作异常: %s", e, exc_info=True)
+            try:
+                if 'open_message_id' in locals():
+                    self._reply_message(open_message_id, "❌ 处理卡片动作时发生错误")
+            except Exception:
+                pass
 
     def _init_action_registry(self):
         """Initialize all card action handlers."""
@@ -185,6 +227,7 @@ class FeishuWSClient:
         self._register_action(lambda mid, cid, pid, val: self._show_project_board(mid, cid, origin_message_id=mid), exact="switch_project")
         self._register_action(lambda mid, cid, pid, val: self._show_project_board(mid, cid, origin_message_id=mid), exact="show_board")
         self._register_action(lambda mid, cid, pid, val: self._show_project_board(mid, cid, origin_message_id=mid), exact="refresh_board")
+        self._register_action(lambda mid, cid, pid, val: self._show_project_board(mid, cid, origin_message_id=mid, page=val.get("page", 1)), exact="switch_board_page")
         self._register_action(lambda mid, cid, pid, val: self._show_project_status(mid, cid, self._project_manager.get_project(pid) if pid else None, origin_message_id=mid), exact="show_detail")
         
         def _handle_switch_to(mid, cid, pid, val):
@@ -584,24 +627,25 @@ class FeishuWSClient:
 
         request_id = self._ensure_request_id(message_id, chat_id=chat_id, project_id=project_id)
 
-        spec = TaskSpec(
-            chat_id=chat_id,
-            name="process_message",
-            task_type="feishu_message",
-            message_id=message_id,
-            project_id=project_id,
-            origin_message_id=message_id,
-            request_id=request_id,
-            priority=TaskPriority.HIGH if is_system else TaskPriority.NORMAL,
-            is_system_command=is_system,
-            queue_key=shell_queue_key,
-        )
-        handle = self._scheduler.submit(spec, lambda ctx, _sf=is_shell_fast: self._process_message_async(data, task_ctx=ctx, shell_fast_tracked=_sf))
-        try:
-            if message_id:
-                self._message_linker.link_task(message_id, handle.run_id)
-        except Exception as e:
-            logger.debug("link_task失败(message): message_id=%s, run_id=%s, err=%s", message_id, handle.run_id, e)
+        with TraceContext(request_id):
+            spec = TaskSpec(
+                chat_id=chat_id,
+                name="process_message",
+                task_type="feishu_message",
+                message_id=message_id,
+                project_id=project_id,
+                origin_message_id=message_id,
+                request_id=request_id,
+                priority=TaskPriority.HIGH if is_system else TaskPriority.NORMAL,
+                is_system_command=is_system,
+                queue_key=shell_queue_key,
+            )
+            handle = self._scheduler.submit(spec, lambda ctx, _sf=is_shell_fast: self._process_message_async(data, task_ctx=ctx, shell_fast_tracked=_sf))
+            try:
+                if message_id:
+                    self._message_linker.link_task(message_id, handle.run_id)
+            except Exception as e:
+                logger.debug("link_task失败(message): message_id=%s, run_id=%s, err=%s", message_id, handle.run_id, e)
 
     def _is_system_command_message(self, data: P2ImMessageReceiveV1) -> bool:
         """Check if the message is a system command that should bypass project queue.
@@ -655,149 +699,49 @@ class FeishuWSClient:
         try:
             event = data.event
             message = event.message
-
             message_id = message.message_id
             chat_id = message.chat_id
-            message_type = message.message_type
-            content_str = message.content
-            create_time = message.create_time
-
-            parent_id = getattr(message, 'parent_id', None)
-            root_id = getattr(message, 'root_id', None)
-
             request_id = self._ensure_request_id(message_id, chat_id=chat_id)
 
-            if create_time and self._is_message_expired(int(create_time)):
-                logger.debug("跳过过期消息: %s (超过%d秒)", message_id, self.MESSAGE_EXPIRE_SECONDS)
+            # 1. Validation
+            if not self._validate_message(message, request_id):
                 return
 
-            if self._is_duplicate_message(message_id):
-                logger.debug("跳过重复消息: %s", message_id)
-                return
-
-            supported_types = {"text", "image", "post"}
-            if message_type not in supported_types:
-                self._reply_message(message_id, "⚠️ 目前仅支持文本、图片和富文本消息", request_id=request_id)
-                return
-
+            # 2. Parse Content
             image_handler = self._get_image_handler()
-            parse_result = image_handler.parse_message(message_type, content_str)
+            parse_result = image_handler.parse_message(message.message_type, message.content)
+            text = self._clean_at_text(parse_result.text)
 
-            text = parse_result.text.strip()
-            if text.startswith("@"):
-                parts = text.split(None, 1)
-                if len(parts) > 1:
-                    text = parts[1].strip()
-                else:
-                    text = ""
-
-            is_image_only = False  # 纯图片消息（无用户文字）
-
+            # 3. Handle Images (if any)
+            is_image_only = False
             if parse_result.image_keys:
-                with self._pending_image_lock:
-                    self._pending_image_keys[message_id] = parse_result.image_keys
-
-                project, auto_enter_mode = self._resolve_project_from_message(
-                    message_id, chat_id, parent_id or root_id
+                project, auto_enter_mode, text, is_image_only = self._handle_image_content(
+                    message, parse_result.image_keys, text, request_id, task_ctx
                 )
-
-                try:
-                    if project:
-                        self._message_linker.register_origin(message_id, request_id=request_id, chat_id=chat_id, project_id=project.project_id)
-                except Exception as e:
-                    logger.debug("register_origin失败(image_msg): message_id=%s, err=%s", message_id, e)
-
-                if task_ctx and project:
-                    try:
-                        self._scheduler.update_project_id(task_ctx.run_id, project.project_id)
-                    except Exception as e:
-                        logger.debug("update_project_id失败(image_msg): run_id=%s, err=%s", task_ctx.run_id, e)
-                save_dir = FeishuImageHandler.get_image_save_dir(
-                    project.root_path if project else None,
-                    self._get_working_dir(chat_id),
-                )
-                download_result = image_handler.download_images(
-                    message_id, parse_result.image_keys, save_dir
-                )
-                if download_result.saved_paths:
-                    is_image_only = not text
-                    ref_text = FeishuImageHandler.build_image_reference_text(
-                        download_result.saved_paths
-                    )
-                    if text:
-                        text += ref_text
-                    else:
-                        text = "请查看并理解以下图片" + ref_text
-                if download_result.failed_keys:
-                    logger.warning("部分图片下载失败: %s", download_result.failed_keys)
-
-                if is_image_only:
-                    with self._pending_image_lock:
-                        self._pending_image_only.add(message_id)
             else:
-                project = None
-                auto_enter_mode = None
+                # 4. Resolve Context (if no images to drive it)
+                project, auto_enter_mode = self._resolve_message_context(message)
 
-            if not text:
-                from ..mode import InteractionMode
-                # Fix NameError: project_id is not defined in this scope.
-                # Try to get from project object, or fallback to task context.
-                _pid = project.project_id if project else None
-                if not _pid and task_ctx and task_ctx.spec.project_id:
-                    _pid = task_ctx.spec.project_id
+            # 5. Handle Context Updates (Task Scheduler)
+            if task_ctx and project:
+                self._update_task_project(task_ctx, project.project_id)
 
-                current_mode = self._mode_manager.get_mode(chat_id, project_id=_pid)
-                if current_mode == InteractionMode.CLAUDE:
-                    if project is None:
-                        project = self._project_manager.get_active_project(chat_id)
-                    self._handle_claude_message(message_id, chat_id, text, project)
-                    return
-                elif current_mode == InteractionMode.COCO:
-                    if project is None:
-                        project = self._project_manager.get_active_project(chat_id)
-                    self._handle_coco_message(message_id, chat_id, text, project)
-                    return
-                self._show_help(message_id, chat_id)
+            # 6. Dispatch Logic
+            if not text and not is_image_only:
+                # Special case: handle empty text (e.g. unsupported content that parsed to empty)
+                # But wait, if image_keys exist, text might be empty but valid (image only).
+                # _handle_image_content handles text augmentation.
+                # If we are here and text is empty, check if we should show help or dispatch to mode.
+                self._dispatch_empty_text(message_id, chat_id, project, task_ctx)
                 return
 
-            if project is None and auto_enter_mode is None:
-                project, auto_enter_mode = self._resolve_project_from_message(
-                    message_id, chat_id, parent_id or root_id
-                )
-
-            if task_ctx and project:
-                try:
-                    self._scheduler.update_project_id(task_ctx.run_id, project.project_id)
-                except Exception as e:
-                    logger.debug("update_project_id失败(text_msg): run_id=%s, err=%s", task_ctx.run_id, e)
-
-            if auto_enter_mode == "claude":
-                self._enter_claude_mode(message_id, chat_id, silent=True, project=project)
-                self._add_reaction(message_id, EmojiReaction.on_coco_mode())
-                self._add_reaction(message_id, EmojiReaction.on_processing())
-                self._handle_claude_message(message_id, chat_id, text, project)
-            elif auto_enter_mode == "coco":
-                self._enter_coco_mode(message_id, chat_id, silent=True, project=project)
-                self._add_reaction(message_id, EmojiReaction.on_coco_mode())
-                self._add_reaction(message_id, EmojiReaction.on_processing())
-                self._handle_coco_message(message_id, chat_id, text, project)
-            else:
-                self._process_with_intent(message_id, chat_id, text, project, shell_fast_tracked=shell_fast_tracked)
+            self._dispatch_message_logic(
+                message_id, chat_id, text, project, auto_enter_mode, 
+                is_image_only=is_image_only, shell_fast_tracked=shell_fast_tracked
+            )
 
         except asyncio.TimeoutError:
-            run_id = task_ctx.run_id if task_ctx else "unknown"
-            _mid = locals().get("message_id", "unknown")
-            _cid = locals().get("chat_id", "unknown")
-            _pid = locals().get("project_id", "unknown")
-            _rid = locals().get("request_id", "unknown")
-            logger.error(
-                "处理消息超时 (asyncio.TimeoutError): message_id=%s, chat_id=%s, project_id=%s, request_id=%s, run_id=%s",
-                _mid, _cid, _pid, _rid, run_id,
-            )
-            try:
-                self._reply_message(_mid, "❌ 请求处理超时，请稍后重试", request_id=_rid)
-            except Exception:
-                pass
+            logger.warning("处理消息超时 (asyncio.TimeoutError)")
         except Exception as e:
             logger.error("处理消息异常: %s", e, exc_info=True)
             try:
@@ -808,6 +752,130 @@ class FeishuWSClient:
             with self._pending_image_lock:
                 self._pending_image_keys.pop(message_id, None)
                 self._pending_image_only.discard(message_id)
+
+    def _validate_message(self, message, request_id: str) -> bool:
+        if message.create_time and self._is_message_expired(int(message.create_time)):
+            logger.debug("跳过过期消息: %s", message.message_id)
+            return False
+
+        if self._is_duplicate_message(message.message_id):
+            logger.debug("跳过重复消息: %s", message.message_id)
+            return False
+
+        supported_types = {"text", "image", "post"}
+        if message.message_type not in supported_types:
+            self._reply_message(message.message_id, "⚠️ 目前仅支持文本、图片和富文本消息", request_id=request_id)
+            return False
+        return True
+
+    def _clean_at_text(self, text: str) -> str:
+        text = text.strip()
+        if text.startswith("@"):
+            parts = text.split(None, 1)
+            if len(parts) > 1:
+                return parts[1].strip()
+            return ""
+        return text
+
+    def _handle_image_content(self, message, image_keys, text, request_id, task_ctx):
+        message_id = message.message_id
+        chat_id = message.chat_id
+        parent_id = getattr(message, 'parent_id', None)
+        root_id = getattr(message, 'root_id', None)
+
+        with self._pending_image_lock:
+            self._pending_image_keys[message_id] = image_keys
+
+        project, auto_enter_mode = self._resolve_project_from_message(
+            message_id, chat_id, parent_id or root_id
+        )
+
+        try:
+            if project:
+                self._message_linker.register_origin(message_id, request_id=request_id, chat_id=chat_id, project_id=project.project_id)
+        except Exception as e:
+            logger.debug("register_origin失败(image_msg): message_id=%s, err=%s", message_id, e)
+
+        if task_ctx and project:
+            self._update_task_project(task_ctx, project.project_id)
+
+        save_dir = FeishuImageHandler.get_image_save_dir(
+            project.root_path if project else None,
+            self._get_working_dir(chat_id),
+        )
+        
+        image_handler = self._get_image_handler()
+        download_result = image_handler.download_images(
+            message_id, image_keys, save_dir
+        )
+        
+        is_image_only = False
+        if download_result.saved_paths:
+            is_image_only = not text
+            ref_text = FeishuImageHandler.build_image_reference_text(
+                download_result.saved_paths
+            )
+            if text:
+                text += ref_text
+            else:
+                text = "请查看并理解以下图片" + ref_text
+        
+        if download_result.failed_keys:
+            logger.warning("部分图片下载失败: %s", download_result.failed_keys)
+
+        if is_image_only:
+            with self._pending_image_lock:
+                self._pending_image_only.add(message_id)
+        
+        return project, auto_enter_mode, text, is_image_only
+
+    def _resolve_message_context(self, message):
+        message_id = message.message_id
+        chat_id = message.chat_id
+        parent_id = getattr(message, 'parent_id', None)
+        root_id = getattr(message, 'root_id', None)
+        return self._resolve_project_from_message(
+            message_id, chat_id, parent_id or root_id
+        )
+
+    def _update_task_project(self, task_ctx, project_id):
+        try:
+            self._scheduler.update_project_id(task_ctx.run_id, project_id)
+        except Exception as e:
+            logger.debug("update_project_id失败: run_id=%s, err=%s", task_ctx.run_id, e)
+
+    def _dispatch_empty_text(self, message_id, chat_id, project, task_ctx):
+        from ..mode import InteractionMode
+        
+        _pid = project.project_id if project else None
+        if not _pid and task_ctx and task_ctx.spec.project_id:
+            _pid = task_ctx.spec.project_id
+
+        current_mode = self._mode_manager.get_mode(chat_id, project_id=_pid)
+        if current_mode == InteractionMode.CLAUDE:
+            if project is None:
+                project = self._project_manager.get_active_project(chat_id)
+            self._handle_claude_message(message_id, chat_id, "", project)
+        elif current_mode == InteractionMode.COCO:
+            if project is None:
+                project = self._project_manager.get_active_project(chat_id)
+            self._handle_coco_message(message_id, chat_id, "", project)
+        else:
+            self._show_help(message_id, chat_id)
+
+    def _dispatch_message_logic(self, message_id, chat_id, text, project, auto_enter_mode, is_image_only=False, shell_fast_tracked=False):
+        if auto_enter_mode == "claude":
+            self._enter_claude_mode(message_id, chat_id, silent=True, project=project)
+            self._add_reaction(message_id, EmojiReaction.on_coco_mode())
+            self._add_reaction(message_id, EmojiReaction.on_processing())
+            self._handle_claude_message(message_id, chat_id, text, project)
+        elif auto_enter_mode == "coco":
+            self._enter_coco_mode(message_id, chat_id, silent=True, project=project)
+            self._add_reaction(message_id, EmojiReaction.on_coco_mode())
+            self._add_reaction(message_id, EmojiReaction.on_processing())
+            self._handle_coco_message(message_id, chat_id, text, project)
+        else:
+            self._process_with_intent(message_id, chat_id, text, project, shell_fast_tracked=shell_fast_tracked)
 
     def _handle_card_action(self, data: P2CardActionTrigger) -> Optional[P2CardActionTriggerResponse]:
         try:
@@ -877,22 +945,23 @@ class FeishuWSClient:
 
         is_system = self._is_system_card_action(data)
 
-        spec = TaskSpec(
-            chat_id=open_chat_id,
-            name="process_card_action",
-            task_type="feishu_card_action",
-            message_id=open_message_id,
-            project_id=project_id,
-            origin_message_id=origin_message_id,
-            request_id=request_id,
-            priority=TaskPriority.HIGH if is_system else TaskPriority.NORMAL,
-            is_system_command=is_system,
-        )
-        handle = self._scheduler.submit(spec, lambda ctx: self._process_card_action_async(data, task_ctx=ctx))
-        try:
-            self._message_linker.link_task(origin_message_id, handle.run_id)
-        except Exception as e:
-            logger.debug("link_task失败(card_action): origin=%s, run_id=%s, err=%s", origin_message_id, handle.run_id, e)
+        with TraceContext(request_id):
+            spec = TaskSpec(
+                chat_id=open_chat_id,
+                name="process_card_action",
+                task_type="feishu_card_action",
+                message_id=open_message_id,
+                project_id=project_id,
+                origin_message_id=origin_message_id,
+                request_id=request_id,
+                priority=TaskPriority.HIGH if is_system else TaskPriority.NORMAL,
+                is_system_command=is_system,
+            )
+            handle = self._scheduler.submit(spec, lambda ctx: self._process_card_action_async(data, task_ctx=ctx))
+            try:
+                self._message_linker.link_task(origin_message_id, handle.run_id)
+            except Exception as e:
+                logger.debug("link_task失败(card_action): origin=%s, run_id=%s, err=%s", origin_message_id, handle.run_id, e)
         return None
 
     def _is_system_card_action(self, data: P2CardActionTrigger) -> bool:
@@ -962,46 +1031,19 @@ class FeishuWSClient:
                 action_type, project_id, list(value.keys()),
             )
 
-            # --- Dispatch via Registry ---
+            # --- Dispatch via ActionDispatcher ---
+            matched = self._action_dispatcher.dispatch(action_type, open_message_id, open_chat_id, project_id, value)
             
-            # 1. Exact match
-            if action_type in self._action_registry_exact:
-                self._action_registry_exact[action_type](open_message_id, open_chat_id, project_id, value)
-            else:
-                # 2. Prefix match
-                matched = False
-                for prefix, handler in self._action_registry_prefix:
-                    if action_type.startswith(prefix):
-                        handler(open_message_id, open_chat_id, project_id, value, type=action_type)
-                        matched = True
-                        break
-                
-                if not matched:
-                    # Fallback or unknown action logging if needed
-                    logger.debug("未注册的卡片动作: %s", action_type)
+            if not matched:
+                logger.debug("未注册的卡片动作: %s", action_type)
             
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
             logger.debug("卡片回调处理耗时: %dms", elapsed_ms)
 
         except asyncio.TimeoutError:
-            run_id = task_ctx.run_id if task_ctx else "unknown"
-            _action = locals().get("action_type", "unknown")
-            _pid = locals().get("project_id", "unknown")
-            _mid = locals().get("open_message_id", "unknown")
-            _cid = locals().get("open_chat_id", "unknown")
-            _rid = task_ctx.spec.request_id if task_ctx else "unknown"
-
-            logger.error(
-                "处理卡片回调超时 (asyncio.TimeoutError): action=%s, project_id=%s, open_message_id=%s, open_chat_id=%s, request_id=%s, run_id=%s",
-                _action, _pid, _mid, _cid, _rid, run_id,
-            )
-            try:
-                self._reply_message(_mid, "❌ 请求处理超时，请稍后重试", request_id=_rid)
-            except Exception:
-                pass
-
+            logger.warning("处理卡片动作超时")
         except Exception as e:
-            logger.error("处理卡片回调异常: %s", e, exc_info=True)
+            logger.error("处理卡片动作异常: %s", e, exc_info=True)
             # 发送错误提示给用户
             _mid = locals().get("open_message_id", "unknown")
             _cid = locals().get("open_chat_id", "unknown")

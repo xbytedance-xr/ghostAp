@@ -15,6 +15,7 @@ from ...utils.errors import fmt_error
 from ...utils.text import generate_task_id
 from ..emoji import EmojiReaction
 from .base import BaseHandler
+from .engine_base import BaseEngineHandler
 from ..renderers.loop_renderer import LoopRenderer
 
 if TYPE_CHECKING:
@@ -23,12 +24,29 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class LoopHandler(BaseHandler):
+class LoopHandler(BaseEngineHandler):
     """Manages the full lifecycle of Loop Engine tasks."""
 
     def __init__(self, ctx: "HandlerContext") -> None:
         super().__init__(ctx)
         self.renderer = LoopRenderer(self)
+
+    def _get_engine_manager(self):
+        return self.ctx.loop_engine_manager
+
+    def _get_engine_name_prefix(self) -> str:
+        return "Loop"
+
+    def _get_task_type(self) -> str:
+        return "loop_engine"
+
+    def _show_status(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+        self.show_loop_status(message_id, chat_id, project)
+
+    def _create_callbacks(self, message_id: str, chat_id: str, project: Optional["ProjectContext"], engine_name: str, root_path: str):
+        return self.renderer.create_loop_callbacks(
+            message_id, chat_id, project, engine_name
+        )
 
     def _create_loop_callbacks(self, *args, **kwargs):
         return self.renderer.create_loop_callbacks(*args, **kwargs)
@@ -55,14 +73,14 @@ class LoopHandler(BaseHandler):
             guide_message = text[len("/loop_guide "):].strip()
             self.update_loop_guidance(message_id, chat_id, guide_message, project)
         elif text_lower == "/loop_guide":
-            self.reply_message(message_id, "📝 请提供引导信息\n\n用法: `/loop_guide <引导描述>`\n\n例如: `/loop_guide 优先实现邮箱注册功能`")
+            self.reply_error(message_id, "请提供引导信息\n\n用法: `/loop_guide <引导描述>`\n\n例如: `/loop_guide 优先实现邮箱注册功能`", title="参数错误")
         elif text_lower.startswith("/loop "):
             requirement = text[6:].strip()
             self.start_loop_engine(message_id, chat_id, requirement, project)
         elif text_lower == "/loop":
-            self.reply_message(message_id, "📝 请提供产品诉求\n\n用法: `/loop <你的需求描述>`\n\n例如: `/loop 实现用户登录注册功能，支持邮箱和手机号`\n\n可用命令:\n• `/loop <需求>` - 启动 Loop 模式\n• `/loop_guide <引导>` - 注入引导信息\n• `/loop_status` - 查看进度\n• `/loop_pause` - 暂停迭代\n• `/loop_resume` - 恢复迭代\n• `/stop_loop` - 停止 Loop")
+            self.reply_error(message_id, "请提供产品诉求\n\n用法: `/loop <你的需求描述>`\n\n例如: `/loop 实现用户登录注册功能，支持邮箱和手机号`\n\n可用命令:\n• `/loop <需求>` - 启动 Loop 模式\n• `/loop_guide <引导>` - 注入引导信息\n• `/loop_status` - 查看进度\n• `/loop_pause` - 暂停迭代\n• `/loop_resume` - 恢复迭代\n• `/stop_loop` - 停止 Loop", title="参数错误")
         else:
-            self.reply_message(message_id, "❓ 未知的 Loop 命令")
+            self.reply_error(message_id, "未知的 Loop 命令", title="未知命令")
 
     # ------------------------------------------------------------------
     # start
@@ -75,17 +93,14 @@ class LoopHandler(BaseHandler):
                 if is_new:
                     logger.info("Loop Engine 自动创建项目: %s @ %s", project.project_name, project.root_path)
             except Exception as e:
-                self.reply_message(message_id, fmt_error("创建项目", e))
+                self.reply_error(message_id, str(e), title="创建项目失败")
                 return
 
         root_path = project.root_path if project else self.get_working_dir(chat_id)
 
         existing = self.ctx.loop_engine_manager.get(chat_id, root_path)
         if existing and existing.is_running:
-            self.reply_message(
-                message_id,
-                "⚠️ 当前项目已有 Loop 任务在执行中\n\n发送 `/loop_status` 查看进度\n发送 `/stop_loop` 停止任务",
-            )
+            self.reply_error(message_id, "当前项目已有 Loop 任务在执行中\n\n发送 `/loop_status` 查看进度\n发送 `/stop_loop` 停止任务", title="任务冲突")
             return
 
         self.add_reaction(message_id, EmojiReaction.on_multi_task_start())
@@ -117,46 +132,21 @@ class LoopHandler(BaseHandler):
         _on_rate_limit = self.create_rate_limit_callback(chat_id, message_id, project, f"Loop({engine_name})", request_id)
 
         def run_loop_engine():
-            try:
+            def _executor():
                 callbacks = self.renderer.create_loop_callbacks(message_id, chat_id, project, engine_name)
                 engine.execute(requirement, callbacks, task_id=task_id, on_rate_limit=_on_rate_limit)
-            except Exception as e:
-                logger.error("Loop Engine 执行异常: %s", e, exc_info=True)
-                # 使用增强的 fmt_error 处理异常消息（包含空消息 TimeoutError 的自动兜底）
-                # 注意：fmt_error 返回带 emoji 的完整消息，这里我们只需要提取处理后的 detail
-                # 但为了复用逻辑且保持 reporter 的格式，我们这里模拟 fmt_error 的内部逻辑
-                # 或者更好地，既然 fmt_error 已经增强，我们可以直接用它，但 format_error 会再加一层框。
-                
-                # 为了完全符合"unified call"的要求，我们应该尽量复用 errors.py 中的逻辑。
-                # 但 errors.py 没有暴露 extraction logic。
-                # 考虑到本次优化的核心是"TimeoutError空消息"，我们可以直接利用 fmt_error 的副作用：
-                # 它会把 TimeoutError 变成友好的字符串。
-                
-                # 既然 fmt_error 返回 "❌ {action}失败: {detail}"，我们可以传入 action=""
-                formatted = fmt_error("", e)
-                # formatted is "❌ 失败: 操作超时..." OR "❌ 失败: error msg"
-                
-                # Remove the prefix to get the message content for reporter
-                if formatted.startswith("❌ 失败: "):
-                    err_msg = formatted[len("❌ 失败: "):]
-                elif formatted == "❌ 失败":
-                    err_msg = "未知错误"
-                else:
-                    err_msg = formatted
-                
-                error_content = reporter.format_error(err_msg)
-                error_title = reporter.get_error_title()
-                err_msg_type, err_card = CardBuilder.build_deep_card(
-                    project=project,
-                    state=DeepCardState(
-                        title=error_title,
-                        content=f"{error_content}\n\n{self.format_ref_note(message_id, request_id)}" if request_id else error_content,
-                        engine_name=f"Loop({engine_name})",
-                        show_buttons=False,
-                        action_prefix="loop",
-                    )
-                )
-                self.send_message(chat_id, err_card, err_msg_type, origin_message_id=message_id, request_id=request_id)
+
+            self._safe_execute_engine(
+                executor_func=_executor,
+                task_id=task_id,
+                chat_id=chat_id,
+                message_id=message_id,
+                project=project,
+                engine_name=engine_name,
+                reporter=reporter,
+                request_id=request_id,
+                action_prefix="loop"
+            )
 
         spec = TaskSpec(
             chat_id=chat_id,
@@ -195,71 +185,31 @@ class LoopHandler(BaseHandler):
     # pause / resume / stop
     # ------------------------------------------------------------------
     def pause_loop_engine(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
-        root_path = project.root_path if project else self.get_working_dir(chat_id)
-        engine = self.ctx.loop_engine_manager.get(chat_id, root_path)
-        if not engine:
-            engine = self.ctx.loop_engine_manager.get_active_engine(chat_id)
-        if engine and engine.is_running:
-            engine.pause()
-            self.show_loop_status(message_id, chat_id, project=project)
-            return
-        self.reply_message(message_id, "当前没有正在执行的 Loop 任务")
+        self._safe_lifecycle_action(
+            lambda: self._pause_engine_generic(message_id, chat_id, project, status_paused_enum=LoopProjectStatus.PAUSED),
+            "pause",
+            chat_id,
+            message_id,
+            project
+        )
 
     def resume_loop_engine(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
-        if project is None:
-            project = self.project_manager.get_active_project(chat_id)
-
-        root_path = project.root_path if project else self.get_working_dir(chat_id)
-        engine = self.ctx.loop_engine_manager.get(chat_id, root_path)
-
-        if not engine:
-            paused = [e for e in self.ctx.loop_engine_manager.list_engines(chat_id)
-                      if e.project and e.project.status == LoopProjectStatus.PAUSED]
-            if len(paused) == 1:
-                engine = paused[0]
-
-        if engine and engine.project and engine.project.status == LoopProjectStatus.PAUSED:
-            callbacks = self.renderer.create_loop_callbacks(message_id, chat_id, project, engine_name=engine.engine_name)
-
-            def run_resume():
-                engine.resume(callbacks)
-
-            request_id = self.ensure_request_id(message_id, chat_id=chat_id, project_id=(project.project_id if project else None))
-            spec = TaskSpec(
-                chat_id=chat_id,
-                queue_key=f"{chat_id}:loop:{project.project_id if project else root_path}",
-                name="loop_engine_resume", task_type="loop_engine",
-                project_id=project.project_id if project else None,
-                message_id=message_id, origin_message_id=message_id,
-                request_id=request_id, priority=TaskPriority.HIGH,
-            )
-            handle = self.scheduler.submit(spec, lambda ctx: run_resume())
-            try:
-                self.ctx.message_linker.link_task(message_id, handle.run_id)
-            except Exception as e:
-                logger.debug("link_task失败(loop_engine_resume): err=%s", e)
-            self.show_loop_status(message_id, chat_id, project=project)
-        else:
-            self.reply_message(message_id, "当前没有可恢复的 Loop 任务")
+        self._safe_lifecycle_action(
+            lambda: self._resume_engine_generic(message_id, chat_id, project, status_paused_enum=LoopProjectStatus.PAUSED),
+            "resume",
+            chat_id,
+            message_id,
+            project
+        )
 
     def stop_loop_engine(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
-        if project is None:
-            project = self.project_manager.get_active_project(chat_id)
-
-        root_path = project.root_path if project else self.get_working_dir(chat_id)
-        engine = self.ctx.loop_engine_manager.get(chat_id, root_path)
-
-        if not engine:
-            running = self.ctx.loop_engine_manager.get_active_engines(chat_id)
-            if len(running) == 1:
-                engine = running[0]
-
-        if not engine or not engine.is_running:
-            self.reply_message(message_id, "📊 当前没有正在执行的 Loop 任务")
-            return
-
-        engine.stop()
-        self.show_loop_status(message_id, chat_id, project=project)
+        self._safe_lifecycle_action(
+            lambda: self._stop_engine_generic(message_id, chat_id, project),
+            "stop",
+            chat_id,
+            message_id,
+            project
+        )
 
     # ------------------------------------------------------------------
     # guidance
@@ -278,7 +228,7 @@ class LoopHandler(BaseHandler):
                 engine = running[0]
 
         if not engine or not engine.is_running:
-            self.reply_message(message_id, "⚠️ 当前没有正在运行的 Loop 任务\n\n请先使用 `/loop <需求>` 启动任务")
+            self.reply_error(message_id, "当前没有正在运行的 Loop 任务\n\n请先使用 `/loop <需求>` 启动任务", title="无活动任务")
             return
 
         engine.inject_guidance(guide_message)
@@ -336,6 +286,7 @@ class LoopHandler(BaseHandler):
             action_map=loop_actions,
             toggle_log_method=self.toggle_loop_log,
             switch_mode_method=self.switch_loop_card_mode,
+            toggle_ac_method=self.toggle_loop_ac,
             project=target_project,
         ):
             return
@@ -390,6 +341,12 @@ class LoopHandler(BaseHandler):
     def toggle_loop_log(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, loop_project_id: Optional[str] = None, expanded: bool = False):
         if loop_project_id:
             self.renderer.update_ui_state(loop_project_id, expanded=expanded)
+            # Refresh card with new state
+            self.renderer.render_current_view(message_id, chat_id, project, origin_message_id=message_id)
+
+    def toggle_loop_ac(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, loop_project_id: Optional[str] = None, expand_ac: bool = False):
+        if loop_project_id:
+            self.renderer.update_ui_state(loop_project_id, expand_ac=expand_ac)
             # Refresh card with new state
             self.renderer.render_current_view(message_id, chat_id, project, origin_message_id=message_id)
 

@@ -13,6 +13,7 @@ import logging
 import os
 import time
 import uuid
+import asyncio
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from ..message_formatter import FeishuMessageFormatter as fmt
@@ -32,6 +33,9 @@ class BaseHandler:
     def __init__(self, ctx: "HandlerContext") -> None:
         self.ctx = ctx
         self.im_client = FeishuIMClient(ctx.api_client_factory, ctx.settings)
+        # Throttling state: message_id -> (content, task)
+        self._pending_patches: dict[str, str] = {}
+        self._patch_tasks: dict[str, asyncio.Task] = {}
 
     # ------------------------------------------------------------------
     # Convenience accessors
@@ -59,7 +63,7 @@ class BaseHandler:
     def send_error_card(
         self,
         chat_id: str,
-        exc: Exception,
+        exc: Exception | str,
         title: str = "操作失败",
         origin_message_id: Optional[str] = None,
         reply_in_thread: Optional[bool] = None,
@@ -91,9 +95,49 @@ class BaseHandler:
             else:
                 self.send_message(chat_id, f"❌ {title}: {exc}")
 
+    def reply_error(
+        self,
+        message_id: str,
+        exc: Exception | str,
+        title: str = "操作失败",
+        chat_id: Optional[str] = None,
+    ):
+        """Convenience wrapper for send_error_card to reply to a message."""
+        self.send_error_card(
+            chat_id=chat_id or "unknown",
+            exc=exc,
+            title=title,
+            origin_message_id=message_id
+        )
+
     # ------------------------------------------------------------------
     # Message sending
     # ------------------------------------------------------------------
+    async def _execute_throttled_patch(self, message_id: str, delay: float = 0.5):
+        """Async worker to execute delayed patch."""
+        try:
+            if delay > 0:
+                await asyncio.sleep(delay)
+            
+            # Remove task ref first to allow new tasks to be scheduled if this one is slow
+            # AND to avoid self-cancellation when calling patch_message below
+            if self._patch_tasks.get(message_id) == asyncio.current_task():
+                self._patch_tasks.pop(message_id, None)
+
+            # Pop content to send
+            content = self._pending_patches.pop(message_id, None)
+            if content:
+                self.patch_message(message_id, content, throttle=False)
+        except asyncio.CancelledError:
+            # Task cancelled, means likely superseded or immediate flush
+            pass
+        except Exception as e:
+            logger.error("异步更新消息异常: %s", e, exc_info=True)
+        finally:
+            # Cleanup task reference if it's still us
+            if self._patch_tasks.get(message_id) == asyncio.current_task():
+                self._patch_tasks.pop(message_id, None)
+
     def reply_message(
         self,
         message_id: str,
@@ -125,8 +169,43 @@ class BaseHandler:
             max_retries=max_retries,
         )
 
-    def patch_message(self, message_id: str, content: str, max_retries: Optional[int] = None) -> bool:
-        """Update an existing message's content (e.g. updating a card)."""
+    def patch_message(self, message_id: str, content: str, max_retries: Optional[int] = None, throttle: bool = False) -> bool:
+        """Update an existing message's content (e.g. updating a card).
+        
+        Args:
+            message_id: ID of the message to patch
+            content: New content (usually JSON string)
+            max_retries: Retry count for API failures
+            throttle: If True, delay sending to merge rapid updates (default 500ms window)
+        """
+        if throttle:
+            # 1. Update pending content
+            self._pending_patches[message_id] = content
+            
+            # 2. If task exists, do nothing (it will pick up latest content)
+            if message_id in self._patch_tasks:
+                return True
+            
+            # 3. Schedule new task
+            try:
+                # We need an event loop. If called from sync context, this might fail unless we have one.
+                # Assuming BaseHandler is running in a process with an event loop (e.g. main loop).
+                loop = asyncio.get_running_loop()
+                task = loop.create_task(self._execute_throttled_patch(message_id))
+                self._patch_tasks[message_id] = task
+                return True
+            except RuntimeError:
+                # No running loop, fallback to immediate
+                logger.warning("No running loop for throttling, falling back to immediate patch")
+                pass
+
+        # If immediate (throttle=False), cancel any pending task to avoid race
+        if message_id in self._patch_tasks:
+            t = self._patch_tasks.pop(message_id)
+            t.cancel()
+        # Also clean pending patches since we are sending now
+        self._pending_patches.pop(message_id, None)
+
         try:
             response = self.im_client.patch_message(
                 message_id, 

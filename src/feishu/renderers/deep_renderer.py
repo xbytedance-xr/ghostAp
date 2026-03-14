@@ -13,6 +13,7 @@ from ...deep_engine.models import DeepProject, DeepProjectStatus
 from ...project import ContextSourceMode
 from ...utils.text import append_duration_to_title
 from ..emoji import EmojiReaction
+from .base import BaseRenderer, SmartSender
 
 if TYPE_CHECKING:
     from ..handlers.deep import DeepHandler
@@ -20,32 +21,23 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-class DeepRenderer:
+class DeepRenderer(BaseRenderer):
     """
     Handles UI rendering and state management for Deep Engine interactions.
     Separated from DeepHandler to improve maintainability.
     """
 
     def __init__(self, handler: "DeepHandler") -> None:
-        self.handler = handler
-        self.ctx = handler.ctx
-        self.settings = handler.settings
-        # deep_project_id -> {"compact": bool, "expanded": bool}
-        self.ui_states: dict[str, dict] = {}
+        super().__init__(handler)
 
-    def get_ui_state(self, deep_project_id: str) -> dict:
-        if not deep_project_id:
-            return {"compact": self.settings.card_deep_compact_default, "expanded": False}
-        if deep_project_id not in self.ui_states:
-            self.ui_states[deep_project_id] = {
-                "compact": self.settings.card_deep_compact_default,
-                "expanded": False
-            }
-        return self.ui_states[deep_project_id]
-
-    def update_ui_state(self, deep_project_id: str, **kwargs):
-        state = self.get_ui_state(deep_project_id)
-        state.update(kwargs)
+    def get_default_ui_state(self) -> dict:
+        return {
+            "compact": self.settings.card_deep_compact_default,
+            "expanded": False,
+            "expand_ac": False,
+            "view_mode": "status",
+            "view_context": {},
+        }
 
     def create_deep_callbacks(
         self,
@@ -59,44 +51,18 @@ class DeepRenderer:
         request_id = self.handler.ensure_request_id(message_id, chat_id=chat_id, project_id=(project.project_id if project else None))
         reporter = self.ctx.progress_reporter
 
-        thread_root_message_id: list[str | None] = [initial_message_id]
-        current_status_message_id: list[str | None] = [initial_message_id]
+        sender = SmartSender(
+            handler=self.handler,
+            message_id=message_id,
+            chat_id=chat_id,
+            initial_message_id=initial_message_id
+        )
+        
         renderer = ACPEventRenderer()
 
-        # Throttle streaming updates to avoid spamming Feishu
-        last_stream_ts: float = 0.0
-        last_stream_text_len: int = 0
-        last_plan_ts: float = 0.0
-        last_plan_content: str = ""
-
-        def _send_deep_message(card_content: str, msg_type: str = "interactive", is_update: bool = False):
-            """发送 deep 任务消息，在话题模式下确保所有消息都回复到同一个话题。"""
-            # 1. Try update existing card
-            if is_update and current_status_message_id[0]:
-                if self.handler.patch_message(current_status_message_id[0], card_content, max_retries=1):
-                    return
-
-                # Patch failed, stop here if it was an update to an existing card
-                logger.error("Failed to patch deep message. Skipping update.")
-                return
-
-            # 2. Create new message (Only if not updating or no existing message)
-            use_thread = self.settings.default_reply_mode == "thread"
-            result_id = None
-            if use_thread:
-                reply_to = thread_root_message_id[0] or message_id
-                result_id = self.handler.reply_message(
-                    reply_to, card_content, msg_type=msg_type,
-                    origin_message_id=message_id, request_id=request_id,
-                    reply_in_thread=True,
-                )
-                if thread_root_message_id[0] is None and result_id:
-                    thread_root_message_id[0] = result_id
-            else:
-                result_id = self.handler.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
-
-            if result_id:
-                current_status_message_id[0] = result_id
+        def _send_deep_message(card_content: str, msg_type: str = "interactive", is_update: bool = False, throttle: bool = False):
+            """发送 deep 任务消息，委托给 SmartSender 处理（含重锚逻辑）。"""
+            sender.send(card_content, msg_type, is_update, throttle, request_id)
 
         def on_planning_done(deep_project: DeepProject):
             content = f"🚀 ACP Deep 执行开始\n\n📂 **{deep_project.name}**\n🔗 路径: `{deep_project.root_path}`"
@@ -110,7 +76,8 @@ class DeepRenderer:
                     show_buttons=False,
                 )
             )
-            _send_deep_message(card_content, msg_type, is_update=True)
+            # Critical state update: flush immediately
+            _send_deep_message(card_content, msg_type, is_update=True, throttle=False)
 
         def _get_engine():
             rp = root_path or (project.root_path if project else "")
@@ -126,28 +93,24 @@ class DeepRenderer:
             return None
 
         def _maybe_stream_update(force: bool = False) -> None:
-            nonlocal last_stream_ts, last_stream_text_len
-
-            engine = _get_engine()
-            deep_project_id = engine.project.project_id if engine and engine.project else None
-            progress = engine.progress if engine else None
-            progress_bar = progress.progress_bar if progress else None
-
-            now = time.monotonic()
             text_len = len(renderer.text_content or "")
-
-            # Emit when forced OR enough time passed + enough new text accumulated
-            min_interval = self.settings.deep_stream_interval
-            min_new_chars = self.settings.deep_stream_min_chars
-            if not force:
-                if (now - last_stream_ts) < min_interval and (text_len - last_stream_text_len) < min_new_chars:
-                    return
+            
+            if not sender.check_throttle(text_len, force):
+                return
 
             plan_view = renderer.render_plan_view()
             recent = renderer.text_content or ""
 
             if not plan_view and not recent:
                 return
+            
+            # Update stream state regardless of whether we actually send (to avoid spam if rendering fails or is skipped)
+            # But here we only update if we proceed.
+            
+            engine = _get_engine()
+            deep_project_id = engine.project.project_id if engine and engine.project else None
+            progress = engine.progress if engine else None
+            progress_bar = progress.progress_bar if progress else None
 
             status = None
             try:
@@ -171,7 +134,17 @@ class DeepRenderer:
             content = "\n\n".join(parts)
             
             # Read UI state
-            state = self.get_ui_state(deep_project_id) if deep_project_id else {"compact": self.settings.card_deep_compact_default, "expanded": False}
+            state = self.get_ui_state(deep_project_id) if deep_project_id else self.get_default_ui_state()
+            
+            # Apply collapsing to content (Thought/Plan chain)
+            # Deep mode content is usually Markdown text, not a list of criteria.
+            # We can use _render_collapsible_section which handles both.
+            # Count items by newlines for text.
+            content = self._render_collapsible_section(
+                content,
+                total_items=len(content.split('\n')),
+                expanded=state.get("expand_ac", False)
+            )
             
             msg_type, card_content = CardBuilder.build_deep_card(
                 project=project,
@@ -184,29 +157,36 @@ class DeepRenderer:
                     engine_name=engine_name,
                     compact=state["compact"],
                     expanded=state["expanded"],
+                    expand_ac=state.get("expand_ac", False),
+                    action_prefix="deep",
                 )
             )
-            _send_deep_message(card_content, msg_type, is_update=True)
-            last_stream_ts = now
-            last_stream_text_len = text_len
+            # Streaming updates: use throttling
+            _send_deep_message(card_content, msg_type, is_update=True, throttle=True)
+            sender.update_stream_state(text_len)
 
         def on_event(event: ACPEvent):
             """Process ACP events and update streaming display."""
             renderer.process_event(event)
-            nonlocal last_plan_ts, last_plan_content
 
             # 1) Plan updates: send plan-only view (throttled)
             if event.event_type == ACPEventType.PLAN_UPDATE and event.plan:
-                now = time.monotonic()
                 plan_content = renderer.render_plan_view()
-                if plan_content and (plan_content != last_plan_content or (now - last_plan_ts) > 1.5):
+                if sender.check_plan_throttle(plan_content):
                     engine = _get_engine()
                     deep_project_id = engine.project.project_id if engine and engine.project else None
                     progress = engine.progress if engine else None
                     progress_bar = progress.progress_bar if progress else None
                     plan_title = append_duration_to_title("📋 执行计划", engine.project.duration() if engine and engine.project else None)
                     
-                    state = self.get_ui_state(deep_project_id) if deep_project_id else {"compact": self.settings.card_deep_compact_default, "expanded": False}
+                    state = self.get_ui_state(deep_project_id) if deep_project_id else self.get_default_ui_state()
+                    
+                    # Apply collapsing to plan content
+                    plan_content = self._render_collapsible_section(
+                        plan_content,
+                        total_items=len(plan_content.split('\n')),
+                        expanded=state.get("expand_ac", False)
+                    )
                     
                     msg_type, card_content = CardBuilder.build_deep_card(
                         project=project,
@@ -219,11 +199,13 @@ class DeepRenderer:
                             engine_name=engine_name,
                             compact=state["compact"],
                             expanded=state["expanded"],
+                            expand_ac=state.get("expand_ac", False),
+                            action_prefix="deep",
                         )
                     )
-                    _send_deep_message(card_content, msg_type, is_update=True)
-                    last_plan_ts = now
-                    last_plan_content = plan_content
+                    # Plan updates: use throttling
+                    _send_deep_message(card_content, msg_type, is_update=True, throttle=True)
+                    sender.update_plan_state(plan_content)
 
             # 2) Stream text/tool progress so users can see "分析→计划→执行" 过程
             if event.event_type in (
@@ -260,7 +242,8 @@ class DeepRenderer:
                     engine_name=engine_name,
                 )
             )
-            _send_deep_message(card_content, msg_type, is_update=True)
+            # Final completion: immediate flush
+            _send_deep_message(card_content, msg_type, is_update=True, throttle=False)
             self.handler.add_reaction(message_id, EmojiReaction.on_multi_task_done())
 
             if project:
@@ -288,7 +271,8 @@ class DeepRenderer:
                     show_buttons=False,
                 )
             )
-            _send_deep_message(card_content, msg_type, is_update=True)
+            # Error state: immediate flush
+            _send_deep_message(card_content, msg_type, is_update=True, throttle=False)
             self.handler.add_reaction(message_id, EmojiReaction.on_error())
 
         return DeepEngineCallbacks(
@@ -344,7 +328,14 @@ class DeepRenderer:
         )
         
         deep_project_id = progress_info["project_id"]
-        state = self.get_ui_state(deep_project_id) if deep_project_id else {"compact": False, "expanded": False}
+        state = self.get_ui_state(deep_project_id) if deep_project_id else self.get_default_ui_state()
+        
+        # Apply collapsing to status content
+        status_content = self._render_collapsible_section(
+            status_content,
+            total_items=len(status_content.split('\n')),
+            expanded=state.get("expand_ac", False)
+        )
         
         msg_type, card_content = CardBuilder.build_deep_card(
             project=project,
@@ -358,13 +349,8 @@ class DeepRenderer:
                 engine_name=engine_name,
                 compact=state["compact"],
                 expanded=state["expanded"],
+                expand_ac=state.get("expand_ac", False),
+                action_prefix="deep",
             )
         )
-
-        # 尝试使用 Patch 更新原消息 (仅当 origin_message_id 存在时)
-        patched = False
-        if origin_message_id:
-            patched = self.handler.patch_message(origin_message_id, card_content, max_retries=1)
-
-        if not patched:
-            self.handler.reply_message(message_id, card_content, msg_type=msg_type, origin_message_id=origin_message_id)
+        self._patch_or_send(message_id, chat_id, card_content, msg_type, origin_message_id)

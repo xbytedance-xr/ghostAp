@@ -36,10 +36,10 @@ class TestCardOptimization:
         """Verify Loop engine uses distinct theme color."""
         # Test Loop engine
         color = CardBuilder._pick_deep_template("Loop(Coco)", "running")
-        assert color == "purple"
+        assert color == "indigo"
         
         color = CardBuilder._pick_deep_template("loop", "running")
-        assert color == "purple"
+        assert color == "indigo"
         
         # Test other engines
         color = CardBuilder._pick_deep_template("Coco", "running")
@@ -179,6 +179,35 @@ class TestCardOptimization:
         assert result.count("```") == 2
         assert result.strip().endswith("```")
 
+    def test_loop_history_theme_color(self):
+        """Verify Loop engine history list uses indigo theme."""
+        _, card_json = CardBuilder.build_history_list_card(
+            project=None,
+            title="History",
+            content="Items",
+            history_buttons=[],
+            page=1,
+            has_next=False,
+            engine_name="Loop(Coco)"
+        )
+        
+        card = json.loads(card_json)
+        assert card["header"]["template"] == "indigo"
+        
+        # Verify default behavior (Coco -> Turquoise)
+        _, card_json = CardBuilder.build_history_list_card(
+            project=None,
+            title="History",
+            content="Items",
+            history_buttons=[],
+            page=1,
+            has_next=False,
+            engine_name="Coco"
+        )
+        
+        card = json.loads(card_json)
+        assert card["header"]["template"] == "turquoise"
+
     def test_error_visibility_compact(self):
         """Verify error details are shown in compact mode."""
         error_msg = "Error line 1\nError line 2\nError line 3\nError line 4\nError line 5\nError line 6"
@@ -206,7 +235,7 @@ class TestCardOptimization:
         # Should show first 5 lines
         assert "Error line 5" in content_element["content"]
         # Should show truncation hint for >5 lines
-        assert "更多错误详情请展开" in content_element["content"]
+        assert "更多错误详情请点击下方“展开日志”按钮" in content_element["content"]
         
         # Compact mode + Normal status
         normal_msg = "Normal line 1\n" + "a" * 600
@@ -232,3 +261,53 @@ class TestCardOptimization:
         assert content_element
         # Should be truncated to last 500 chars (approx)
         assert len(content_element["content"]) <= 550 + len("**Title**\n\n") # rough check
+
+    def test_control_buttons_layout_merging(self):
+        """Verify that Pause and Stop buttons are merged into the same row (ColumnSet)."""
+        # Create a state that has Pause and Stop buttons (running state)
+        state = DeepCardState(
+            title="Running Task",
+            content="Log content",
+            engine_name="Loop(Coco)",
+            is_executing=True, # Should trigger Pause + Stop
+            compact=True, # Should trigger Mode switch
+            expanded=False # Should trigger Expand button
+        )
+        
+        _, card_json = CardBuilder.build_deep_card(project=None, state=state)
+        card = json.loads(card_json)
+        
+        # Find the button section (usually at the end, after hr)
+        # We look for column_set
+        column_sets = [el for el in card["body"]["elements"] if el.get("tag") == "column_set"]
+        
+        # We expect at least one column_set containing buttons
+        assert column_sets
+        
+        # We want to find a column_set that contains BOTH "loop_pause" and "loop_stop" actions
+        # Currently, if they are separate, we might find them in different column_sets 
+        # OR in the same column_set but different rows? No, column_set IS a row.
+        
+        merged_row_found = False
+        for cs in column_sets:
+            actions_in_row = []
+            for col in cs.get("columns", []):
+                for el in col.get("elements", []):
+                    if el.get("tag") == "button":
+                        val = el.get("value", {})
+                        if isinstance(val, dict):
+                            actions_in_row.append(val.get("action"))
+            
+            # Check if both pause and stop are in this row
+            has_pause = any("pause" in a for a in actions_in_row)
+            has_stop = any("stop" in a for a in actions_in_row)
+            
+            if has_pause and has_stop:
+                merged_row_found = True
+                break
+        
+        # This assertion should FAIL currently if the user report is correct (that they are separate)
+        # Or PASS if they are already merged but maybe the user sees something else.
+        # Based on user feedback "各占一行", this implies separate column_sets (vertical stack).
+        assert merged_row_found, "Pause and Stop buttons should be in the same ColumnSet row"
+

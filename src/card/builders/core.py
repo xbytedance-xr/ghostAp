@@ -1,66 +1,68 @@
+
 import json
 import time
 from typing import Optional
-from ...project.context import ProjectContext
+from src.project.context import ProjectContext
 from ..shared import (
     get_theme,
     apply_compact_style,
     build_mode_buttons,
     build_responsive_layout,
-    get_button_size,
+    UI_TEXT,
 )
 
-class CoreCardBuilder:
-    @staticmethod
-    def _apply_compact_button_style(button: dict) -> dict:
-        return apply_compact_style(button)
+
+class CoreBuilder:
+    """Core card building utilities."""
 
     @staticmethod
-    def _build_button_grid(buttons: list[dict], columns: int = 2) -> list[dict]:
-        from ..shared import _build_button_grid
-        return _build_button_grid(buttons, columns)
+    def _truncate_markdown(content: str, max_chars: int) -> str:
+        """Truncate markdown content safely, closing code blocks and bold tags."""
+        if len(content) <= max_chars:
+            return content
 
-    @staticmethod
-    def _build_button_row_action(buttons: list[dict]) -> list[dict]:
-        from ..shared import _build_button_row_action
-        return _build_button_row_action(buttons)
+        warning_msg = UI_TEXT.get("log_truncated_warning", "\n> ⚠️ **日志内容过长，已被截断**...\n")
+        keep_chars = max_chars - len(warning_msg) - 20 # buffer
 
-    @staticmethod
-    def _build_buttons_responsive(buttons: list[dict]) -> list[dict]:
-        return build_responsive_layout(buttons)
+        truncated_content = content[-keep_chars:]
+        
+        # 1. Check code blocks (```)
+        cut_index = len(content) - keep_chars
+        pre_cut_content = content[:cut_index]
+        code_block_markers = pre_cut_content.count("```")
+        is_inside_code_block = (code_block_markers % 2 != 0)
+        
+        # 2. Check bold tags (**)
+        bold_markers = pre_cut_content.count("**")
+        is_inside_bold = (bold_markers % 2 != 0)
+        
+        parts = [warning_msg]
+        
+        if is_inside_code_block:
+            parts.append("```\n")
+        
+        if is_inside_bold:
+            parts.append("**")
+            
+        parts.append(truncated_content)
+        
+        result = "".join(parts)
+        
+        # Final safety check: ensure closed
+        if result.count("```") % 2 != 0:
+            result += "\n```"
+        if result.count("**") % 2 != 0:
+            result += "**"
+            
+        return result
 
     @staticmethod
     def _build_content_element(content: str, with_title: Optional[str] = None, max_chars: int = 4000) -> dict:
         full_content = f"**{with_title}**\n\n{content}" if with_title else content
         
-        # Hard truncation to prevent API errors
+        # Smart truncation to prevent API errors and render issues
         if len(full_content) > max_chars:
-            # Keep the tail as it usually contains the latest logs/status
-            keep_chars = max_chars - 100 # Reserve space for warning
-            
-            # Check context at cut point
-            cut_index = len(full_content) - keep_chars
-            pre_cut_content = full_content[:cut_index]
-            pre_cut_markers = pre_cut_content.count("```")
-            is_inside_code_block = (pre_cut_markers % 2 != 0)
-            
-            truncated_content = full_content[-keep_chars:]
-            
-            parts = [f"...(前文已截断，仅显示最后 {keep_chars} 字符)...\n"]
-            
-            if is_inside_code_block:
-                parts.append("```\n")
-                
-            parts.append(truncated_content)
-            
-            # Check if we need to close the block at the end
-            # Current markers count: (1 if we added start) + markers in truncated
-            current_markers = (1 if is_inside_code_block else 0) + truncated_content.count("```")
-            
-            if current_markers % 2 != 0:
-                parts.append("\n```")
-                
-            full_content = "".join(parts)
+            full_content = CoreBuilder._truncate_markdown(full_content, max_chars)
             
         return {
             "tag": "markdown",
@@ -71,9 +73,9 @@ class CoreCardBuilder:
     def _build_header_title(project: Optional[ProjectContext], is_coco_mode: bool = False, is_claude_mode: bool = False) -> str:
         if not project:
             if is_claude_mode:
-                return "🔮 Claude 编程模式"
+                return UI_TEXT.get("claude_mode_title")
             mode_icon = "🤖" if is_coco_mode else "🧠"
-            mode_name = "编程模式" if is_coco_mode else "智能模式"
+            mode_name = UI_TEXT.get("coco_mode_title") if is_coco_mode else UI_TEXT.get("smart_mode_title")
             return f"{mode_icon} {mode_name}"
 
         if is_claude_mode or project.claude_mode:
@@ -105,9 +107,10 @@ class CoreCardBuilder:
     @staticmethod
     def _build_footer_note(project: Optional[ProjectContext], working_dir: Optional[str] = None) -> Optional[dict]:
         if project:
+            content = UI_TEXT.get("project_dir_label", "📂 项目目录: `{path}`").format(path=project.root_path)
             return {
                 "tag": "markdown",
-                "content": f"📂 项目目录: `{project.root_path}`",
+                "content": content,
                 "text_size": "notation",
             }
         return None
@@ -131,12 +134,13 @@ class CoreCardBuilder:
     def _build_image_elements(image_keys: list[str]) -> list[dict]:
         elements = []
         for i, key in enumerate(image_keys):
+            alt_text = UI_TEXT.get("image_alt_text", "图片 {index}").format(index=i + 1)
             elements.append({
                 "tag": "img",
                 "img_key": key,
                 "alt": {
                     "tag": "plain_text",
-                    "content": f"图片 {i + 1}"
+                    "content": alt_text
                 }
             })
         return elements
@@ -145,13 +149,13 @@ class CoreCardBuilder:
     def _format_time_ago(timestamp: float) -> str:
         diff = time.time() - timestamp
         if diff < 60:
-            return "刚刚"
+            return UI_TEXT.get("time_just_now", "刚刚")
         elif diff < 3600:
             minutes = int(diff / 60)
-            return f"{minutes} 分钟前"
+            return UI_TEXT.get("time_mins_ago", "{minutes} 分钟前").format(minutes=minutes)
         elif diff < 86400:
             hours = int(diff / 3600)
-            return f"{hours} 小时前"
+            return UI_TEXT.get("time_hours_ago", "{hours} 小时前").format(hours=hours)
         else:
             days = int(diff / 86400)
-            return f"{days} 天前"
+            return UI_TEXT.get("time_days_ago", "{days} 天前").format(days=days)

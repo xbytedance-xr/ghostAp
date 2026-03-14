@@ -305,6 +305,12 @@ class Settings(BaseSettings):
     # If True, deep progress cards will default to a compact view (status line + progress bar + truncated content).
     card_deep_compact_default: bool = True
 
+    # UI Optimization Settings
+    # Pagination size for project board and other lists
+    ui_page_size: int = 5
+    # Max output length for logs/shell/details before truncation
+    ui_max_output_len: int = 2000
+
     # 消息回复模式配置
     # - direct: 直接回复（消息显示在被回复消息下方）
     # - thread: 话题回复（使用 reply_in_thread=True，消息会显示在独立话题区域，更整洁）

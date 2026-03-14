@@ -16,6 +16,7 @@ from ...spec_engine.models import (
 )
 from ...utils.text import append_duration_to_title
 from ..emoji import EmojiReaction
+from .base import BaseRenderer, SmartSender
 
 if TYPE_CHECKING:
     from ..handlers.spec import SpecHandler
@@ -23,73 +24,40 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-class SpecRenderer:
+class SpecRenderer(BaseRenderer):
     """
     Handles UI rendering and state management for Spec Engine interactions.
     """
 
     def __init__(self, handler: "SpecHandler") -> None:
-        self.handler = handler
-        self.ctx = handler.ctx
-        self.settings = handler.settings
-        # spec_project_id -> {"compact": bool, "expanded": bool, "view_mode": str, "view_context": dict}
-        self.ui_states: dict[str, dict] = {}
+        super().__init__(handler)
 
-    def get_ui_state(self, spec_project_id: str) -> dict:
-        if not spec_project_id:
-            return {
-                "compact": self.settings.card_deep_compact_default,
-                "expanded": False,
-                "view_mode": "status",
-                "view_context": {},
-            }
-        if spec_project_id not in self.ui_states:
-            self.ui_states[spec_project_id] = {
-                "compact": self.settings.card_deep_compact_default,
-                "expanded": False,
-                "view_mode": "status",
-                "view_context": {},
-            }
-        return self.ui_states[spec_project_id]
+    def get_default_ui_state(self) -> dict:
+        return {
+            "compact": self.settings.card_deep_compact_default,
+            "expanded": False,
+            "expand_ac": False,
+            "view_mode": "status",
+            "view_context": {},
+        }
 
-    def update_ui_state(self, spec_project_id: str, **kwargs):
-        state = self.get_ui_state(spec_project_id)
-        state.update(kwargs)
 
     def create_spec_callbacks(self, message_id: str, chat_id: str, project: Optional["ProjectContext"], engine_name: str = "Coco") -> SpecEngineCallbacks:
         request_id = self.handler.ensure_request_id(message_id, chat_id=chat_id, project_id=(project.project_id if project else None))
         reporter = self.ctx.spec_reporter
         
-        thread_root_message_id: list[str | None] = [None]
-        current_status_message_id: list[str | None] = [None]
+        sender = SmartSender(
+            handler=self.handler,
+            message_id=message_id,
+            chat_id=chat_id,
+            initial_message_id=None
+        )
         
         # Calculate spec_project_id once for UI state lookups
         spec_project_id = project.project_id if project else self.handler.get_working_dir(chat_id)
 
-        def _send_spec_message(card_content: str, msg_type: str = "interactive", is_update: bool = False):
-            # 1. Try update existing card
-            if is_update and current_status_message_id[0]:
-                if self.handler.patch_message(current_status_message_id[0], card_content, max_retries=1):
-                    return
-                # Patch failed, fall through to send new message
-
-            # 2. Create new message
-            use_thread = self.settings.default_reply_mode == "thread"
-            result_id = None
-            if use_thread:
-                reply_to = thread_root_message_id[0] or message_id
-                result_id = self.handler.reply_message(
-                    reply_to, card_content, msg_type=msg_type,
-                    origin_message_id=message_id, request_id=request_id,
-                    reply_in_thread=True,
-                )
-                if thread_root_message_id[0] is None and result_id:
-                    thread_root_message_id[0] = result_id
-            else:
-                result_id = self.handler.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
-            
-            if result_id:
-                current_status_message_id[0] = result_id
+        def _send_spec_message(card_content: str, msg_type: str = "interactive", is_update: bool = False, throttle: bool = False):
+            sender.send(card_content, msg_type, is_update, throttle, request_id)
 
         def on_analyzing_done(spec_project: SpecProject):
             self.update_ui_state(spec_project_id, view_mode="status", view_context={})
@@ -105,7 +73,8 @@ class SpecRenderer:
                     show_buttons=False,
                 )
             )
-            _send_spec_message(card_content, msg_type, is_update=False)
+            # Immediate flush
+            _send_spec_message(card_content, msg_type, is_update=False, throttle=False)
 
         def on_cycle_start(current: int, max_cycles: int):
             self.update_ui_state(spec_project_id, view_mode="status", view_context={})
@@ -121,10 +90,17 @@ class SpecRenderer:
             
             if spec_project:
                 criteria_status = reporter.format_criteria_brief(spec_project)
-                progress_bar = reporter._make_progress_bar(spec_project.satisfied_count, spec_project.total_criteria)
+                progress_bar = self._generate_progress_bar(spec_project.satisfied_count, spec_project.total_criteria)
                 status_line = reporter.format_status_line(spec_project)
                 duration_line = reporter.format_duration_line(spec_project)
                 criteria_section = reporter.format_criteria_section(spec_project)
+                
+                criteria_section = self._render_collapsible_section(
+                    criteria_section,
+                    total_items=spec_project.total_criteria,
+                    expanded=state.get("expand_ac", False),
+                    completed_count=spec_project.satisfied_count,
+                )
                 
             content = reporter.format_cycle_start(current, max_cycles, criteria_status=criteria_status)
             title = reporter.get_cycle_start_title(current, max_cycles)
@@ -145,10 +121,12 @@ class SpecRenderer:
                     deep_project_id=spec_project_id,
                     compact=state["compact"],
                     expanded=state["expanded"],
+                    expand_ac=state.get("expand_ac", False),
                     action_prefix="spec",
                 )
             )
-            _send_spec_message(card_content, msg_type, is_update=True)
+            # Cycle start is significant, immediate flush
+            _send_spec_message(card_content, msg_type, is_update=True, throttle=False)
 
         def on_cycle_done(cycle_num: int, cycle: SpecCycle):
             self.update_ui_state(spec_project_id, view_mode="cycle_done", view_context={"cycle_num": cycle_num})
@@ -159,12 +137,26 @@ class SpecRenderer:
                 content = reporter.format_cycle_done(cycle_num, cycle)
                 title = reporter.get_cycle_done_title(cycle_num, cycle.status == "completed")
                 title = append_duration_to_title(title, sp.duration())
-                progress_bar = reporter._make_progress_bar(sp.satisfied_count, sp.total_criteria)
+                progress_bar = self._generate_progress_bar(sp.satisfied_count, sp.total_criteria)
                 status_line = reporter.format_status_line(sp)
                 duration_line = reporter.format_duration_line(sp)
                 criteria_section = reporter.format_criteria_section(sp)
                 
                 state = self.get_ui_state(spec_project_id)
+
+                criteria_section = self._render_collapsible_section(
+                    criteria_section,
+                    total_items=sp.total_criteria,
+                    expanded=state.get("expand_ac", False),
+                    completed_count=sp.satisfied_count,
+                )
+
+                content = self._render_collapsible_section(
+                    content,
+                    total_items=len(content.split('\n')),
+                    expanded=state.get("expand_ac", False),
+                )
+                
                 msg_type, card_content = CardBuilder.build_deep_card(
                     project=project,
                     state=DeepCardState(
@@ -179,10 +171,12 @@ class SpecRenderer:
                         deep_project_id=spec_project_id,
                         compact=state["compact"],
                         expanded=state["expanded"],
+                        expand_ac=state.get("expand_ac", False),
                         action_prefix="spec",
                     )
                 )
-                _send_spec_message(card_content, msg_type, is_update=True)
+                # Cycle done is significant, immediate flush
+                _send_spec_message(card_content, msg_type, is_update=True, throttle=False)
 
         def on_review_done(cycle_num: int, review: ReviewResult):
             self.update_ui_state(spec_project_id, view_mode="review_done", view_context={"cycle_num": cycle_num})
@@ -218,10 +212,12 @@ class SpecRenderer:
                     deep_project_id=spec_project_id,
                     compact=state["compact"],
                     expanded=state["expanded"],
+                    expand_ac=state.get("expand_ac", False),
                     action_prefix="spec",
                 )
             )
-            _send_spec_message(card_content, msg_type, is_update=True)
+            # Review done is significant, immediate flush
+            _send_spec_message(card_content, msg_type, is_update=True, throttle=False)
 
         def on_project_done(spec_project: SpecProject):
             self.update_ui_state(spec_project_id, view_mode="status", view_context={})
@@ -243,10 +239,12 @@ class SpecRenderer:
                     deep_project_id=spec_project_id,
                     compact=state["compact"],
                     expanded=state["expanded"],
+                    expand_ac=state.get("expand_ac", False),
                     action_prefix="spec",
                 )
             )
-            _send_spec_message(card_content, msg_type, is_update=True)
+            # Project done: immediate flush
+            _send_spec_message(card_content, msg_type, is_update=True, throttle=False)
             self.handler.add_reaction(message_id, EmojiReaction.on_multi_task_done())
 
         def on_error(error: str):
@@ -340,17 +338,26 @@ class SpecRenderer:
         status_title = reporter.get_status_title()
         progress_info = reporter.get_progress_info(engine.project)
         
+        progress_bar = self._generate_progress_bar(progress_info["completed"], progress_info["total"])
+        
+        status_content = self._render_collapsible_section(
+            status_content,
+            total_items=len(status_content.split('\n')),
+            expanded=state.get("expand_ac", False),
+        )
+
         msg_type, card_content = CardBuilder.build_deep_card(
             project=project,
             state=DeepCardState(
                 title=status_title,
                 content=status_content,
-                progress_bar=progress_info["progress_bar"],
+                progress_bar=progress_bar,
                 is_executing=progress_info["is_running"],
                 engine_name=f"Spec({engine_name})",
                 deep_project_id=project.project_id if project else engine.project.root_path,
                 compact=state["compact"],
                 expanded=state["expanded"],
+                expand_ac=state.get("expand_ac", False),
                 action_prefix="spec",
             )
         )
@@ -369,10 +376,23 @@ class SpecRenderer:
         content = reporter.format_cycle_done(cycle_num, cycle)
         title = reporter.get_cycle_done_title(cycle_num, cycle.status == "completed")
         title = append_duration_to_title(title, spec_project.duration())
-        progress_bar = reporter._make_progress_bar(spec_project.satisfied_count, spec_project.total_criteria)
+        progress_bar = self._generate_progress_bar(spec_project.satisfied_count, spec_project.total_criteria)
         status_line = reporter.format_status_line(spec_project)
         duration_line = reporter.format_duration_line(spec_project)
         criteria_section = reporter.format_criteria_section(spec_project)
+
+        criteria_section = self._render_collapsible_section(
+            criteria_section,
+            total_items=spec_project.total_criteria,
+            expanded=state.get("expand_ac", False),
+            completed_count=spec_project.satisfied_count,
+        )
+
+        content = self._render_collapsible_section(
+            content,
+            total_items=len(content.split('\n')),
+            expanded=state.get("expand_ac", False),
+        )
         
         msg_type, card_content = CardBuilder.build_deep_card(
             project=project,
@@ -406,10 +426,17 @@ class SpecRenderer:
         content = reporter.format_review_result(cycle.review_result)
         title = reporter.get_review_title(cycle_num, cycle.review_result.all_passed)
         title = append_duration_to_title(title, spec_project.duration())
-        progress_bar = reporter._make_progress_bar(spec_project.satisfied_count, spec_project.total_criteria)
+        progress_bar = self._generate_progress_bar(spec_project.satisfied_count, spec_project.total_criteria)
         status_line = reporter.format_status_line(spec_project)
         duration_line = reporter.format_duration_line(spec_project)
         criteria_section = reporter.format_criteria_section(spec_project)
+
+        criteria_section = self._render_collapsible_section(
+            criteria_section,
+            total_items=spec_project.total_criteria,
+            expanded=state.get("expand_ac", False),
+            completed_count=spec_project.satisfied_count,
+        )
         
         msg_type, card_content = CardBuilder.build_deep_card(
             project=project,
@@ -425,6 +452,7 @@ class SpecRenderer:
                 deep_project_id=project.project_id if project else spec_project.root_path,
                 compact=state["compact"],
                 expanded=state["expanded"],
+                expand_ac=state.get("expand_ac", False),
                 action_prefix="spec",
             )
         )
@@ -453,8 +481,5 @@ class SpecRenderer:
         self._patch_or_send(message_id, chat_id, card_content, msg_type, origin_message_id)
 
     def _patch_or_send(self, message_id, chat_id, card_content, msg_type, origin_message_id):
-        patched = False
-        if origin_message_id:
-            patched = self.handler.patch_message(origin_message_id, card_content, max_retries=1)
-        if not patched:
-            self.handler.reply_message(message_id, card_content, msg_type=msg_type, origin_message_id=origin_message_id)
+        # This is now inherited from BaseRenderer
+        super()._patch_or_send(message_id, chat_id, card_content, msg_type, origin_message_id)

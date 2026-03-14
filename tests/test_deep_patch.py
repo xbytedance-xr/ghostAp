@@ -133,8 +133,8 @@ class TestDeepHandlerPatch:
                         # Verify sleep NOT called
                         mock_sleep.assert_not_called()
                         
-                        # Verify NO fallback
-                        mock_reply.assert_not_called()
+                        # Verify fallback IS called (SmartSender re-anchors on patch failure)
+                        mock_reply.assert_called_once()
                         mock_send.assert_not_called()
 
 class TestDeepStatusPatch:

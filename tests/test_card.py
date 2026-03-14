@@ -366,7 +366,7 @@ class TestDeepCard:
         assert msg_type == "interactive"
         card = json.loads(content)
         header_title = card["header"]["title"]["content"]
-        assert header_title == "Test Title"
+        assert header_title == "🧠 Test Title"
         
         # Check elements
         elements = card["body"]["elements"]
@@ -418,7 +418,7 @@ class TestDeepCard:
 
         card = json.loads(content)
         header_title = card["header"]["title"]["content"]
-        assert header_title == "Test"
+        assert header_title == "🧠 Test"
         # Deep 卡片按引擎区分颜色：Coco=turquoise (running default) / Claude=purple
         assert card["header"]["template"] == "turquoise"
 

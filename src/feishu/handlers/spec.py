@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import asyncio
 from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
@@ -160,7 +161,10 @@ class SpecHandler(BaseHandler):
                 callbacks = self.renderer.create_spec_callbacks(message_id, chat_id, project, engine_name)
                 engine.execute(requirement, callbacks, task_id=task_id, on_rate_limit=_on_rate_limit)
             except Exception as e:
-                logger.error("Spec Engine 执行异常: %s", e, exc_info=True)
+                if isinstance(e, (TimeoutError, asyncio.TimeoutError)):
+                    logger.warning("Spec Engine 执行超时 (task_id=%s): %s", task_id, e)
+                else:
+                    logger.error("Spec Engine 执行异常: %s", e, exc_info=True)
                 
                 # 使用增强的 fmt_error 处理异常消息
                 formatted = fmt_error("", e)
@@ -623,7 +627,10 @@ class SpecHandler(BaseHandler):
                 engine.resume(callbacks)
                 delete_task_state(task_id)
             except Exception as e:
-                logger.error("Spec Engine 恢复执行异常: %s", e, exc_info=True)
+                if isinstance(e, (TimeoutError, asyncio.TimeoutError)):
+                    logger.warning("Spec Engine 恢复超时 (task_id=%s): %s", task_id, e)
+                else:
+                    logger.error("Spec Engine 恢复执行异常: %s", e, exc_info=True)
                 
                 formatted = fmt_error("", e)
                 if formatted.startswith("❌ 失败: "):
@@ -681,35 +688,36 @@ class SpecHandler(BaseHandler):
             except Exception:
                 pass
 
-        if action_type in ("spec_pause", "spec_resume", "spec_stop"):
-            spec_actions = {
-                "spec_pause":  self.pause_spec_engine,
-                "spec_resume": self.resume_spec_engine,
-                "spec_stop":   self.stop_spec_engine,
-            }
-            spec_actions[action_type](open_message_id, open_chat_id, project=target_project)
-            
-        elif action_type in ("spec_expand", "spec_collapse"):
-            expanded = action_type == "spec_expand"
-            self.toggle_spec_log(
-                open_message_id, open_chat_id, 
-                project=target_project,
-                spec_project_id=spec_project_id,
-                expanded=expanded
-            )
-            
-        elif action_type in ("spec_mode_full", "spec_mode_compact"):
-            compact = action_type == "spec_mode_compact"
-            self.switch_spec_card_mode(
-                open_message_id, open_chat_id,
-                project=target_project,
-                spec_project_id=spec_project_id,
-                compact=compact
-            )
+        spec_actions = {
+            "spec_pause":  self.pause_spec_engine,
+            "spec_resume": self.resume_spec_engine,
+            "spec_stop":   self.stop_spec_engine,
+        }
+
+        # Try dispatching standard actions first
+        if self._dispatch_standard_card_action(
+            open_message_id,
+            open_chat_id,
+            action_type,
+            value,
+            prefix="spec",
+            action_map=spec_actions,
+            toggle_log_method=self.toggle_spec_log,
+            switch_mode_method=self.switch_spec_card_mode,
+            toggle_ac_method=self.toggle_spec_ac,
+            project=target_project,
+        ):
+            return
 
     def toggle_spec_log(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, spec_project_id: Optional[str] = None, expanded: bool = False):
         if spec_project_id:
             self.renderer.update_ui_state(spec_project_id, expanded=expanded)
+            # Refresh card with new state
+            self.show_spec_status(message_id, chat_id, project, origin_message_id=message_id)
+
+    def toggle_spec_ac(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, spec_project_id: Optional[str] = None, expand_ac: bool = False):
+        if spec_project_id:
+            self.renderer.update_ui_state(spec_project_id, expand_ac=expand_ac)
             # Refresh card with new state
             self.show_spec_status(message_id, chat_id, project, origin_message_id=message_id)
 

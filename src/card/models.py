@@ -19,4 +19,5 @@ class DeepCardState:
     footer_note: Optional[str] = None
     compact: bool = False
     expanded: bool = False
+    expand_ac: bool = False
     action_prefix: str = "deep"

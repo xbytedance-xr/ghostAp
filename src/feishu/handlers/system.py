@@ -35,6 +35,65 @@ class SystemHandler(BaseHandler):
     spec_handler = None
     diagnostics_handler = None
 
+    def __init__(self, ctx: "HandlerContext") -> None:
+        super().__init__(ctx)
+        self._init_command_registry()
+
+    def _init_command_registry(self):
+        """Initialize the command dispatch registry."""
+        # Exact match handlers: command -> handler_func(message_id, chat_id, text, project)
+        self._exact_handlers = {
+            "/help": self.show_full_help,
+            "/帮助": self.show_full_help,
+            "/coco_info": lambda m, c, t, p: self.coco_handler.show_info(m, c, p),
+            "/claude_info": lambda m, c, t, p: self.claude_handler.show_info(m, c, p),
+            "/projects": lambda m, c, t, p: self.project_handler.show_project_board(m, c),
+            "/project": lambda m, c, t, p: self.project_handler.show_project_board(m, c),
+            "/switch": lambda m, c, t, p: self.project_handler.show_project_board(m, c),
+            "/ttadk": lambda m, c, t, p: self.handle_ttadk_command(m, c, p),
+            "/ttadk_info": lambda m, c, t, p: self.show_ttadk_info(m, c),
+            "/ttadk_refresh": lambda m, c, t, p: self.refresh_ttadk_models(m, c, p),
+            "/menu": lambda m, c, t, p: self.handle_menu_command(m, c, p),
+        }
+
+        # Prefix match handlers: prefix -> handler_func(message_id, chat_id, text, project)
+        # Note: Order matters if prefixes overlap (not the case here yet)
+        self._prefix_handlers = [
+            ("/status", lambda m, c, t, p: self.diagnostics_handler.show_unified_status(m, c, t, p)),
+            ("/tasks", lambda m, c, t, p: self.diagnostics_handler.show_task_board(m, c, t, p)),
+            ("/diff", lambda m, c, t, p: self.diagnostics_handler.show_context_diff(m, c, t, p)),
+            ("/trace", lambda m, c, t, p: self.diagnostics_handler.show_message_trace(m, c, t, p)),
+            ("/switch ", self._handle_switch_command),
+            ("/new ", self._handle_new_project_command),
+            ("/close ", self._handle_close_command),
+        ]
+
+    def _handle_switch_command(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"]):
+        name = text[8:].strip()
+        if name:
+            self.project_handler.switch_project(
+                message_id, chat_id, name,
+                coco_handler=self.coco_handler,
+                claude_handler=self.claude_handler,
+            )
+        else:
+            self.project_handler.show_project_board(message_id, chat_id)
+
+    def _handle_new_project_command(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"]):
+        from ...card.styles import UI_TEXT
+        parts = text[5:].strip().split(None, 1)
+        name = parts[0] if parts else ""
+        path = parts[1] if len(parts) > 1 else self.get_working_dir(chat_id)
+        if name:
+            self.project_handler.create_project(message_id, chat_id, name, path)
+        else:
+            self.reply_error(message_id, UI_TEXT.get("system_new_project_usage", "用法: `/new 项目名 [路径]`"), title="参数错误")
+
+    def _handle_close_command(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"]):
+        name = text[7:].strip()
+        if name:
+            self.project_handler.close_project(message_id, chat_id, name)
+
     # ------------------------------------------------------------------
     # Command predicates
     # ------------------------------------------------------------------
@@ -121,56 +180,20 @@ class SystemHandler(BaseHandler):
     def handle_intercepted_command(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"] = None):
         text_lower = text.lower().strip()
 
-        if text_lower in ("/help", "/帮助"):
-            self.show_full_help(message_id, chat_id, project)
-        elif text_lower == "/coco_info":
-            self.coco_handler.show_info(message_id, chat_id, project)
-        elif text_lower == "/claude_info":
-            self.claude_handler.show_info(message_id, chat_id, project)
-        elif text_lower in ("/projects", "/project"):
-            self.project_handler.show_project_board(message_id, chat_id)
-        elif text_lower == "/status" or text_lower.startswith("/status "):
-            self.diagnostics_handler.show_unified_status(message_id, chat_id, text, project)
-        elif text_lower == "/switch":
-            self.project_handler.show_project_board(message_id, chat_id)
-        elif text_lower == "/tasks" or text_lower.startswith("/tasks "):
-            self.diagnostics_handler.show_task_board(message_id, chat_id, text, project)
-        elif text_lower == "/diff" or text_lower.startswith("/diff "):
-            self.diagnostics_handler.show_context_diff(message_id, chat_id, text, project)
-        elif text_lower == "/trace" or text_lower.startswith("/trace "):
-            self.diagnostics_handler.show_message_trace(message_id, chat_id, text, project)
-        elif text_lower.startswith("/switch "):
-            name = text[8:].strip()
-            if name:
-                self.project_handler.switch_project(
-                    message_id, chat_id, name,
-                    coco_handler=self.coco_handler,
-                    claude_handler=self.claude_handler,
-                )
-            else:
-                self.project_handler.show_project_board(message_id, chat_id)
-        elif text_lower.startswith("/new "):
-            parts = text[5:].strip().split(None, 1)
-            name = parts[0] if parts else ""
-            path = parts[1] if len(parts) > 1 else self.get_working_dir(chat_id)
-            if name:
-                self.project_handler.create_project(message_id, chat_id, name, path)
-            else:
-                self.reply_message(message_id, "用法: `/new 项目名 [路径]`")
-        elif text_lower.startswith("/close "):
-            name = text[7:].strip()
-            if name:
-                self.project_handler.close_project(message_id, chat_id, name)
-        elif text_lower == "/ttadk":
-            self.handle_ttadk_command(message_id, chat_id, project)
-        elif text_lower == "/ttadk_info":
-            self.show_ttadk_info(message_id, chat_id)
-        elif text_lower == "/ttadk_refresh":
-            self.refresh_ttadk_models(message_id, chat_id, project)
-        elif text_lower == "/menu":
-            self.handle_menu_command(message_id, chat_id, project)
-        else:
-            self.show_full_help(message_id, chat_id, project)
+        # 1. Try exact match
+        handler = self._exact_handlers.get(text_lower)
+        if handler:
+            handler(message_id, chat_id, text, project)
+            return
+
+        # 2. Try prefix match
+        for prefix, handler in self._prefix_handlers:
+            if text_lower.startswith(prefix):
+                handler(message_id, chat_id, text, project)
+                return
+
+        # 3. Fallback to help
+        self.show_full_help(message_id, chat_id, project)
 
     def handle_menu_command(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         msg_type, card_content = CardBuilder.build_command_menu_card(project)
@@ -178,16 +201,18 @@ class SystemHandler(BaseHandler):
 
     def handle_help_category(self, message_id: str, chat_id: str, category: str, project: Optional["ProjectContext"] = None, origin_message_id: Optional[str] = None):
         from ...mode import InteractionMode
+        from ...card.styles import UI_TEXT
+        
         current_mode = self.mode_manager.get_mode(chat_id)
         current_dir = self.get_working_dir(chat_id)
         
         mode_emoji = {
-            InteractionMode.SMART: "🧠 智能模式",
-            InteractionMode.COCO: "🤖 Coco 编程模式",
-            InteractionMode.CLAUDE: "🔮 Claude 编程模式",
-            InteractionMode.TTADK: "🎮 TTADK 多工具模式",
+            InteractionMode.SMART: UI_TEXT.get("system_mode_smart", "🧠 智能模式"),
+            InteractionMode.COCO: UI_TEXT.get("system_mode_coco", "🤖 Coco 编程模式"),
+            InteractionMode.CLAUDE: UI_TEXT.get("system_mode_claude", "🔮 Claude 编程模式"),
+            InteractionMode.TTADK: UI_TEXT.get("system_mode_ttadk", "🎮 TTADK 多工具模式"),
         }
-        current_mode_str = mode_emoji.get(current_mode, "🧠 智能模式")
+        current_mode_str = mode_emoji.get(current_mode, UI_TEXT.get("system_mode_smart", "🧠 智能模式"))
         
         msg_type, card_content = CardBuilder.build_help_card(project, category, current_dir, current_mode_str)
         
@@ -198,11 +223,14 @@ class SystemHandler(BaseHandler):
         self.reply_message(message_id, card_content, msg_type=msg_type)
 
     def handle_deep_prompt(self, message_id: str, chat_id: str):
-        self.reply_message(message_id, "🧠 启动 Deep Engine\n\n请发送: `/deep <你的需求>`\n\n例如: `/deep 帮我重构 src/feishu 模块`")
+        from ...card.styles import UI_TEXT
+        self.reply_message(message_id, UI_TEXT.get("system_help_deep_prompt", "🧠 启动 Deep Engine\n\n请发送: `/deep <你的需求>`\n\n例如: `/deep 帮我重构 src/feishu 模块`"))
 
 
     def refresh_ttadk_models(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         """强制刷新 TTADK 当前工具的真实模型列表（优先 probe），并返回诊断摘要。"""
+        from ...card.styles import UI_TEXT
+        
         manager = get_ttadk_manager()
         cwd = None
         try:
@@ -216,10 +244,10 @@ class SystemHandler(BaseHandler):
         try:
             result = manager.refresh_models(tool_name=tool or None, cwd=cwd)
         except Exception as e:
-            self.reply_message(message_id, fmt.format_error("❌ 刷新 TTADK 模型列表失败", str(e)))
+            self.reply_error(message_id, str(e), title=UI_TEXT.get("system_ttadk_refresh_error", "刷新 TTADK 模型列表失败"))
             return
 
-        lines = ["✅ 已触发 TTADK 模型列表强制刷新"]
+        lines = [UI_TEXT.get("system_ttadk_refresh_success", "✅ 已触发 TTADK 模型列表强制刷新")]
         if tool:
             lines.append(f"工具: `{tool}`")
         if getattr(result, "source", ""):
@@ -238,6 +266,8 @@ class SystemHandler(BaseHandler):
 
     def handle_refresh_ttadk_models(self, message_id: str, chat_id: str, tool_name: str, project_id: Optional[str] = None):
         """卡片按钮入口：强制刷新指定 tool 的模型列表，并重新渲染模型选择卡片。"""
+        from ...card.styles import UI_TEXT
+        
         manager = get_ttadk_manager()
         tool = (tool_name or manager.get_current_tool() or "").strip()
         try:
@@ -248,13 +278,13 @@ class SystemHandler(BaseHandler):
             cwd = None
 
         if not tool:
-            self.reply_message(message_id, "⚠️ 未指定 TTADK 工具，建议先发送 `/ttadk` 选择工具")
+            self.reply_message(message_id, UI_TEXT.get("system_ttadk_no_tool", "⚠️ 未指定 TTADK 工具，建议先发送 `/ttadk` 选择工具"))
             return
 
         try:
             result = manager.refresh_models(tool_name=tool, cwd=cwd)
         except Exception as e:
-            self.reply_message(message_id, fmt.format_error("❌ 刷新 TTADK 模型列表失败", str(e)))
+            self.reply_error(message_id, str(e), title=UI_TEXT.get("system_ttadk_refresh_error", "刷新 TTADK 模型列表失败"))
             return
 
         # 直接复用刷新结果渲染模型选择卡片（force_refresh=True 已经回填缓存）
@@ -310,7 +340,7 @@ class SystemHandler(BaseHandler):
         manager = get_ttadk_manager()
         result = manager.get_tools()
         if result.error:
-            self.reply_message(message_id, f"❌ 获取 TTADK 工具列表失败: {result.error}")
+            self.reply_error(message_id, f"获取 TTADK 工具列表失败: {result.error}")
             return
         msg_type, card_content = CardBuilder.build_ttadk_tool_select_card(result.tools, project_id)
         self.reply_message(message_id, card_content, msg_type=msg_type)
@@ -360,12 +390,12 @@ class SystemHandler(BaseHandler):
         )
         success = manager.set_tool(tool_name)
         if not success:
-            self.reply_message(message_id, f"❌ 设置 TTADK 工具失败: {tool_name}")
+            self.reply_error(message_id, f"设置 TTADK 工具失败: {tool_name}")
             return
 
         result = manager.get_models(cwd=cwd)
         if result.error:
-            self.reply_message(message_id, f"❌ 获取 TTADK 模型列表失败: {result.error}")
+            self.reply_error(message_id, f"获取 TTADK 模型列表失败: {result.error}")
             return
 
         # 只有在模型列表为空且有警告时才发送单独的警告消息
@@ -398,7 +428,7 @@ class SystemHandler(BaseHandler):
         )
         success = manager.set_model(model_name)
         if not success:
-            self.reply_message(message_id, f"❌ 设置 TTADK 模型失败: {model_name}")
+            self.reply_error(message_id, f"设置 TTADK 模型失败: {model_name}")
             return
         
         if self.ttadk_handler:
@@ -406,7 +436,7 @@ class SystemHandler(BaseHandler):
             self.ttadk_handler.current_model = model_name
             self.ttadk_handler.enter_mode(message_id, chat_id, project=project)
         else:
-            self.reply_message(message_id, "❌ TTADK 处理器未初始化")
+            self.reply_error(message_id, "TTADK 处理器未初始化")
 
     # ------------------------------------------------------------------
     # Exit current mode

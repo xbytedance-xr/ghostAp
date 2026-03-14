@@ -1,36 +1,12 @@
 """Shared card element builders used by both CardBuilder and StreamingCardManager."""
 
-from dataclasses import dataclass
 from typing import Optional
 from ..config import get_settings
+from .styles import THEMES, ProjectTheme, BUTTON_CONFIG, UI_TEXT
 
 
 def get_button_size() -> str:
     return get_settings().card_button_size or "medium"
-
-
-@dataclass
-class ProjectTheme:
-    name: str
-    color: str
-    emoji: str
-    header_template: str
-
-
-THEMES = {
-    "green": ProjectTheme("green", "green", "🟢", "green"),
-    "blue": ProjectTheme("blue", "blue", "🔵", "blue"),
-    "purple": ProjectTheme("purple", "purple", "🟣", "purple"),
-    "orange": ProjectTheme("orange", "orange", "🟠", "orange"),
-    "red": ProjectTheme("red", "red", "🔴", "red"),
-    "turquoise": ProjectTheme("turquoise", "turquoise", "🩵", "turquoise"),
-    "violet": ProjectTheme("violet", "violet", "🟣", "violet"),
-    "indigo": ProjectTheme("indigo", "indigo", "🟣", "indigo"),
-    "carmine": ProjectTheme("carmine", "carmine", "🔴", "carmine"),
-    "wathet": ProjectTheme("wathet", "wathet", "🔵", "wathet"),
-    "grey": ProjectTheme("grey", "grey", "⚪", "grey"),
-    "yellow": ProjectTheme("yellow", "yellow", "🟡", "yellow"),
-}
 
 
 def get_theme(color: str) -> ProjectTheme:
@@ -44,6 +20,25 @@ def apply_compact_style(button: dict) -> dict:
     return button
 
 
+def _create_mode_button(key: str, action: str, project_id: Optional[str] = None) -> dict:
+    """Create a button from config with dynamic action value."""
+    config = BUTTON_CONFIG.get(key)
+    if not config:
+        return {}
+    
+    value = {"action": action}
+    if project_id:
+        value["project_id"] = project_id
+        
+    return {
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": config["text"]},
+        "type": config["type"],
+        "size": get_button_size(),
+        "behaviors": [{"type": "callback", "value": value}],
+    }
+
+
 def build_mode_buttons(
     is_coco_mode: bool,
     project_id: Optional[str] = None,
@@ -51,55 +46,19 @@ def build_mode_buttons(
 ) -> list[dict]:
     """Build mode-specific footer buttons (exit/enter mode + switch project)."""
     buttons = []
-    size = get_button_size()
 
     if is_claude_mode:
-        buttons.append({
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": "🚪 退出Claude"},
-            "type": "default",
-            "size": size,
-            "behaviors": [{"type": "callback", "value": {"action": "exit_claude", "project_id": project_id}}],
-        })
-        buttons.append({
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": "🔄 切换项目"},
-            "type": "default",
-            "size": size,
-            "behaviors": [{"type": "callback", "value": {"action": "switch_project"}}],
-        })
+        buttons.append(_create_mode_button("exit_claude", "exit_claude", project_id))
+        buttons.append(_create_mode_button("switch_project", "switch_project"))
     elif is_coco_mode:
-        buttons.append({
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": "🚪 退出Coco"},
-            "type": "default",
-            "size": size,
-            "behaviors": [{"type": "callback", "value": {"action": "exit_coco", "project_id": project_id}}],
-        })
-        buttons.append({
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": "🔄 切换项目"},
-            "type": "default",
-            "size": size,
-            "behaviors": [{"type": "callback", "value": {"action": "switch_project"}}],
-        })
+        buttons.append(_create_mode_button("exit_coco", "exit_coco", project_id))
+        buttons.append(_create_mode_button("switch_project", "switch_project"))
     else:
-        buttons.append({
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": "🤖 Coco模式"},
-            "type": "primary",
-            "size": size,
-            "behaviors": [{"type": "callback", "value": {"action": "enter_coco", "project_id": project_id}}],
-        })
-        buttons.append({
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": "🔮 Claude模式"},
-            "type": "default",
-            "size": size,
-            "behaviors": [{"type": "callback", "value": {"action": "enter_claude", "project_id": project_id}}],
-        })
+        buttons.append(_create_mode_button("enter_coco", "enter_coco", project_id))
+        buttons.append(_create_mode_button("enter_claude", "enter_claude", project_id))
 
-    return buttons
+    # Filter out empty buttons if config missing
+    return [b for b in buttons if b]
 
 
 

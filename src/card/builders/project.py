@@ -1,10 +1,63 @@
+
 import json
 from typing import Optional
-from ...project.context import ProjectContext, ProjectStatus
-from ..shared import get_theme, apply_compact_style, build_responsive_layout
-from .core import CoreCardBuilder
+from src.project.context import ProjectContext, ProjectStatus
+from ..shared import (
+    get_theme,
+    apply_compact_style,
+    build_responsive_layout,
+)
+from .core import CoreBuilder
 
-class ProjectCardBuilder:
+class ProjectBuilder:
+    """Project-related card building utilities."""
+
+    @staticmethod
+    def build_project_response_card(
+        project: ProjectContext,
+        title: str,
+        content: str,
+        show_buttons: bool = True,
+        extra_buttons: Optional[list[dict]] = None,
+        footer: Optional[str] = None,
+        image_keys: Optional[list[str]] = None,
+    ) -> tuple[str, str]:
+        return ProjectBuilder._build_response_card_inner(
+            project, title, content,
+            show_buttons=show_buttons,
+            is_coco_mode=project.coco_mode,
+            is_claude_mode=project.claude_mode,
+            extra_buttons=extra_buttons,
+            footer=footer,
+            image_keys=image_keys,
+        )
+
+    @staticmethod
+    def build_coco_response_card(
+        project: Optional[ProjectContext],
+        title: str,
+        content: str,
+        working_dir: Optional[str] = None,
+        show_buttons: bool = True,
+    ) -> tuple[str, str]:
+        return ProjectBuilder._build_response_card_inner(
+            project, title, content, working_dir, show_buttons,
+            is_coco_mode=True,
+        )
+
+    @staticmethod
+    def build_smart_response_card(
+        project: Optional[ProjectContext],
+        title: str,
+        content: str,
+        working_dir: Optional[str] = None,
+        show_buttons: bool = True,
+    ) -> tuple[str, str]:
+        return ProjectBuilder._build_response_card_inner(
+            project, title, content, working_dir, show_buttons,
+            is_coco_mode=False,
+        )
+
     @staticmethod
     def _build_response_card_inner(
         project: Optional[ProjectContext],
@@ -24,18 +77,18 @@ class ProjectCardBuilder:
         actual_coco = is_coco_mode or (project and project.coco_mode)
         actual_claude = is_claude_mode or (project and project.claude_mode)
 
-        header_title = CoreCardBuilder._build_header_title(project, is_coco_mode=actual_coco, is_claude_mode=actual_claude)
+        header_title = CoreBuilder._build_header_title(project, is_coco_mode=actual_coco, is_claude_mode=actual_claude)
 
         elements = [
-            CoreCardBuilder._build_directory_element(project, working_dir),
+            CoreBuilder._build_directory_element(project, working_dir),
             {"tag": "hr"},
         ]
 
         if image_keys:
-            elements.extend(CoreCardBuilder._build_image_elements(image_keys))
+            elements.extend(CoreBuilder._build_image_elements(image_keys))
             elements.append({"tag": "hr"})
 
-        elements.append(CoreCardBuilder._build_content_element(content, title))
+        elements.append(CoreBuilder._build_content_element(content, title))
 
         if footer:
             elements.append({
@@ -44,69 +97,25 @@ class ProjectCardBuilder:
                 "text_size": "notation",
             })
         else:
-            footer_note = CoreCardBuilder._build_footer_note(project, working_dir)
+            footer_note = CoreBuilder._build_footer_note(project, working_dir)
             if footer_note:
                 elements.append(footer_note)
 
         if show_buttons:
-            buttons = CoreCardBuilder._build_footer_buttons(project, is_coco_mode=actual_coco, is_claude_mode=actual_claude)
+            buttons = CoreBuilder._build_footer_buttons(project, is_coco_mode=actual_coco, is_claude_mode=actual_claude)
             if extra_buttons:
                 buttons.extend([apply_compact_style(b) for b in extra_buttons])
-            elements.extend(CoreCardBuilder._build_buttons_responsive(buttons))
+            elements.extend(build_responsive_layout(buttons))
 
-        card = CoreCardBuilder._wrap_card(header_title, theme.header_template, elements)
+        card = CoreBuilder._wrap_card(header_title, theme.header_template, elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
-
-    @staticmethod
-    def build_coco_response_card(
-        project: Optional[ProjectContext],
-        title: str,
-        content: str,
-        working_dir: Optional[str] = None,
-        show_buttons: bool = True,
-    ) -> tuple[str, str]:
-        return ProjectCardBuilder._build_response_card_inner(
-            project, title, content, working_dir, show_buttons,
-            is_coco_mode=True,
-        )
-
-    @staticmethod
-    def build_smart_response_card(
-        project: Optional[ProjectContext],
-        title: str,
-        content: str,
-        working_dir: Optional[str] = None,
-        show_buttons: bool = True,
-    ) -> tuple[str, str]:
-        return ProjectCardBuilder._build_response_card_inner(
-            project, title, content, working_dir, show_buttons,
-            is_coco_mode=False,
-        )
-
-    @staticmethod
-    def build_project_response_card(
-        project: ProjectContext,
-        title: str,
-        content: str,
-        show_buttons: bool = True,
-        extra_buttons: Optional[list[dict]] = None,
-        footer: Optional[str] = None,
-        image_keys: Optional[list[str]] = None,
-    ) -> tuple[str, str]:
-        return ProjectCardBuilder._build_response_card_inner(
-            project, title, content,
-            show_buttons=show_buttons,
-            is_coco_mode=project.coco_mode,
-            is_claude_mode=project.claude_mode,
-            extra_buttons=extra_buttons,
-            footer=footer,
-            image_keys=image_keys,
-        )
 
     @staticmethod
     def build_status_board_card(
         projects: list[ProjectContext],
         current_project_id: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 5,
     ) -> tuple[str, str]:
         if not projects:
             empty_elements = [
@@ -123,18 +132,34 @@ class ProjectCardBuilder:
                     })
                 ])
             ]
-            card = CoreCardBuilder._wrap_card("📋 项目看板", "blue", empty_elements)
+            card = CoreBuilder._wrap_card("📋 项目看板", "blue", empty_elements)
             return "interactive", json.dumps(card, ensure_ascii=False)
+
+        # Sort: Current project first, then by last_active descending
+        def _sort_key(p):
+            is_cur = (p.project_id == current_project_id)
+            return (not is_cur, -(p.last_active or 0))
+        
+        sorted_projects = sorted(projects, key=_sort_key)
+        total_projects = len(sorted_projects)
+        total_pages = (total_projects + page_size - 1) // page_size
+        
+        # Clamp page
+        page = max(1, min(page, total_pages)) if total_pages > 0 else 1
+        
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        page_projects = sorted_projects[start_idx:end_idx]
 
         elements = [
             {
                 "tag": "markdown",
-                "content": f"共 **{len(projects)}** 个项目"
+                "content": f"共 **{total_projects}** 个项目"
             },
             {"tag": "hr"}
         ]
 
-        for project in projects:
+        for project in page_projects:
             is_current = project.project_id == current_project_id
             status_emoji = project.get_status_emoji()
             current_marker = " (当前)" if is_current else ""
@@ -153,7 +178,7 @@ class ProjectCardBuilder:
             elif project.status == ProjectStatus.BUSY and project.current_task:
                 mode_info = f" | ⏳ {project.current_task.task_type}"
 
-            last_active = CoreCardBuilder._format_time_ago(project.last_active)
+            last_active = CoreBuilder._format_time_ago(project.last_active)
 
             project_content = (
                 f"{status_emoji} **{project.project_name}**{current_marker}\n"
@@ -198,12 +223,45 @@ class ProjectCardBuilder:
                 }
             })
 
-            elements.extend(CoreCardBuilder._build_buttons_responsive(buttons))
+            elements.extend(build_responsive_layout(buttons))
             elements.append({"tag": "hr"})
 
-        elements.pop()
+        # Remove last hr if it's not needed (but we add pagination so maybe keep it)
+        # Actually standard practice is elements.pop() then add footer buttons
+        if elements and elements[-1].get("tag") == "hr":
+            elements.pop()
 
-        elements.extend(CoreCardBuilder._build_buttons_responsive([
+        # Pagination & Global Actions
+        pagination_buttons = []
+        if page > 1:
+            pagination_buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "⬅️ 上一页"},
+                "type": "default",
+                "value": {"action": "switch_board_page", "page": page - 1}
+            })
+        
+        if page < total_pages:
+            pagination_buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "下一页 ➡️"},
+                "type": "default",
+                "value": {"action": "switch_board_page", "page": page + 1}
+            })
+            
+        if pagination_buttons:
+            elements.append({"tag": "hr"})
+            elements.extend(build_responsive_layout(pagination_buttons))
+            if total_pages > 1:
+                elements.append({
+                    "tag": "markdown",
+                    "content": f"第 {page}/{total_pages} 页",
+                    "text_align": "center",
+                    "text_size": "notation"
+                })
+
+        elements.append({"tag": "hr"})
+        elements.extend(build_responsive_layout([
             {
                 "tag": "button",
                 "text": {"tag": "plain_text", "content": "➕ 新建项目"},
@@ -218,7 +276,7 @@ class ProjectCardBuilder:
             }
         ]))
 
-        card = CoreCardBuilder._wrap_card("📋 项目看板", "blue", elements)
+        card = CoreBuilder._wrap_card("📋 项目看板", "blue", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
 
     @staticmethod
@@ -243,9 +301,9 @@ class ProjectCardBuilder:
         header_title = f"{type_emoji} {title}"
 
         elements = [
-            CoreCardBuilder._build_directory_element(project),
+            CoreBuilder._build_directory_element(project),
             {"tag": "hr"},
-            CoreCardBuilder._build_content_element(content)
+            CoreBuilder._build_content_element(content)
         ]
 
         if suggestions:
@@ -256,17 +314,17 @@ class ProjectCardBuilder:
             })
 
         if buttons:
-            elements.extend(CoreCardBuilder._build_buttons_responsive(buttons[:4]))
+            elements.extend(build_responsive_layout(buttons[:4]))
         else:
-            elements.extend(CoreCardBuilder._build_buttons_responsive(
-                CoreCardBuilder._build_footer_buttons(
+            elements.extend(build_responsive_layout(
+                CoreBuilder._build_footer_buttons(
                     project,
                     is_coco_mode=project.coco_mode,
                     is_claude_mode=project.claude_mode,
                 )
             ))
 
-        card = CoreCardBuilder._wrap_card(header_title, theme.header_template, elements)
+        card = CoreBuilder._wrap_card(header_title, theme.header_template, elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
 
     @staticmethod
@@ -274,7 +332,6 @@ class ProjectCardBuilder:
         project: ProjectContext,
         mode: str,
     ) -> tuple[str, str]:
-        """Internal unified resume card builder for coco/claude."""
         theme = get_theme(project.theme_color)
         is_coco = mode == "coco"
         is_claude = mode == "claude"
@@ -282,7 +339,7 @@ class ProjectCardBuilder:
 
         snapshot = project.coco_session_snapshot if is_coco else project.claude_session_snapshot
         if not snapshot:
-            return ProjectCardBuilder.build_project_response_card(
+            return ProjectBuilder.build_project_response_card(
                 project, f"{mode_name} 模式", "没有可恢复的会话", show_buttons=True
             )
 
@@ -318,25 +375,25 @@ class ProjectCardBuilder:
             }),
         ]
 
-        header_title = CoreCardBuilder._build_header_title(project, is_coco_mode=is_coco, is_claude_mode=is_claude)
+        header_title = CoreBuilder._build_header_title(project, is_coco_mode=is_coco, is_claude_mode=is_claude)
 
         elements = [
-            CoreCardBuilder._build_directory_element(project),
+            CoreBuilder._build_directory_element(project),
             {"tag": "hr"},
-            CoreCardBuilder._build_content_element(content),
+            CoreBuilder._build_content_element(content),
         ]
-        elements.extend(CoreCardBuilder._build_buttons_responsive(buttons))
+        elements.extend(build_responsive_layout(buttons))
 
-        card = CoreCardBuilder._wrap_card(header_title, theme.header_template, elements)
+        card = CoreBuilder._wrap_card(header_title, theme.header_template, elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
 
     @staticmethod
     def build_coco_resume_card(project: ProjectContext) -> tuple[str, str]:
-        return ProjectCardBuilder._build_resume_card(project, "coco")
+        return ProjectBuilder._build_resume_card(project, "coco")
 
     @staticmethod
     def build_claude_resume_card(project: ProjectContext) -> tuple[str, str]:
-        return ProjectCardBuilder._build_resume_card(project, "claude")
+        return ProjectBuilder._build_resume_card(project, "claude")
 
     @staticmethod
     def build_project_created_card(
@@ -374,15 +431,14 @@ class ProjectCardBuilder:
                 "tag": "button",
                 "text": {"tag": "plain_text", "content": "📋 项目看板"},
                 "type": "default",
-                "value": {
-                    "action": "show_board"}
+                "value": {"action": "show_board"}
             }),
         ]
 
         elements = [
-            CoreCardBuilder._build_content_element(content),
+            CoreBuilder._build_content_element(content),
         ]
-        elements.extend(CoreCardBuilder._build_buttons_responsive(buttons))
+        elements.extend(build_responsive_layout(buttons))
 
-        card = CoreCardBuilder._wrap_card("🎉 新项目已创建", theme.header_template, elements)
+        card = CoreBuilder._wrap_card("🎉 新项目已创建", theme.header_template, elements)
         return "interactive", json.dumps(card, ensure_ascii=False)

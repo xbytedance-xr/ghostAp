@@ -1,0 +1,151 @@
+import unittest
+from unittest.mock import MagicMock, patch, call
+import logging
+import contextvars
+import json
+import time
+from src.utils.trace import TraceContext, RequestIdFilter, get_request_id
+from src.card.builders.project import ProjectBuilder
+from src.project.context import ProjectContext, ProjectStatus
+from src.feishu.handlers.base import BaseHandler
+from src.feishu.handlers.project import ProjectHandler
+from src.tasking.scheduler import TaskScheduler, TaskSpec, TaskContext
+
+class TestOptimizationTraceUI(unittest.TestCase):
+    def test_trace_context_propagation(self):
+        """Test that request_id is propagated through contextvars."""
+        req_id = "test-req-123"
+        
+        # 1. Basic ContextVar check
+        with TraceContext(req_id):
+            self.assertEqual(get_request_id(), req_id)
+            
+            # 2. Logging Filter check
+            record = logging.LogRecord("name", logging.INFO, "pathname", 1, "msg", (), None)
+            f = RequestIdFilter()
+            f.filter(record)
+            self.assertEqual(record.request_id, req_id)
+            
+        # Context should be cleared
+        self.assertIsNone(get_request_id())
+
+    def test_scheduler_context_propagation(self):
+        """Test that TaskScheduler propagates contextvars."""
+        scheduler = TaskScheduler(max_concurrent=1)
+        req_id = "sched-req-456"
+        
+        result_container = {}
+        
+        def task_fn(ctx: TaskContext):
+            result_container["req_id"] = get_request_id()
+            return "done"
+            
+        with TraceContext(req_id):
+            # submit inside context
+            spec = TaskSpec(chat_id="chat1", name="test_task")
+            handle = scheduler.submit(spec, task_fn)
+            
+        handle.wait()
+        
+        self.assertEqual(result_container.get("req_id"), req_id)
+        scheduler.stop(shutdown_executor=True)
+
+    def test_pagination_logic(self):
+        """Test project board pagination logic in CardBuilder."""
+        # Mock 12 projects
+        projects = []
+        for i in range(12):
+            p = MagicMock(spec=ProjectContext)
+            p.project_id = f"p{i}"
+            p.project_name = f"Project {i}"
+            p.root_path = f"/tmp/p{i}"
+            p.last_active = 1000 + i
+            p.coco_mode = False
+            p.claude_mode = False
+            p.status = ProjectStatus.IDLE
+            p.get_status_emoji.return_value = "📁"
+            projects.append(p)
+            
+        # Page 1 (size 5) -> 0..4
+        # Sorted by last_active desc (so 11..0)
+        # So page 1 should have p11..p7
+        
+        msg_type, content_json = ProjectBuilder.build_status_board_card(projects, page=1, page_size=5)
+        card = json.loads(content_json)
+        
+        # Check title contains count
+        found_count = False
+        for elem in card["body"]["elements"]:
+            if "content" in elem and "共 **12** 个项目" in elem["content"]:
+                found_count = True
+                break
+        self.assertTrue(found_count)
+        
+        # Check content contains Project 11 but not Project 6
+        json_str = json.dumps(card)
+        self.assertIn("Project 11", json_str)
+        self.assertIn("Project 7", json_str)
+        self.assertNotIn("Project 6", json_str)
+        
+        # Check buttons: Should have Next, No Prev
+        self.assertIn("switch_board_page", json_str)
+        self.assertIn('"page": 2', json_str)
+        self.assertNotIn('"page": 0', json_str)
+        
+        # Page 3 (size 5) -> 10..11 (items p1, p0)
+        msg_type, content_json = ProjectBuilder.build_status_board_card(projects, page=3, page_size=5)
+        json_str = json.dumps(json.loads(content_json)) # normalize
+        
+        self.assertIn("Project 1", json_str)
+        self.assertIn("Project 0", json_str)
+        self.assertNotIn("Project 2", json_str)
+        
+        # Check buttons: Should have Prev, No Next
+        self.assertIn('"page": 2', json_str) # Prev
+        self.assertNotIn('"page": 4', json_str) # Next
+
+    def test_reply_error(self):
+        """Test BaseHandler.reply_error."""
+        ctx = MagicMock()
+        handler = BaseHandler(ctx)
+        
+        # Mock send_error_card (it calls CardBuilder internally)
+        # We want to verify it calls reply_message with correct structure
+        
+        with patch("src.card.CardBuilder.build_error_card") as mock_build:
+            mock_build.return_value = ("interactive", '{"card": "error"}')
+            handler.reply_message = MagicMock()
+            
+            handler.reply_error("msg_1", "Something went wrong", title="Error Title")
+            
+            mock_build.assert_called_once()
+            args = mock_build.call_args
+            # args[0] is exc, args[1] is title
+            self.assertEqual(args[0][0], "Something went wrong")
+            self.assertEqual(args[1]["title"], "Error Title")
+            
+            handler.reply_message.assert_called_once_with(
+                "msg_1", 
+                '{"card": "error"}', 
+                msg_type="interactive", 
+                reply_in_thread=None
+            )
+
+    def test_handler_error_refactoring(self):
+        """Verify that ProjectHandler uses reply_error."""
+        ctx = MagicMock()
+        handler = ProjectHandler(ctx)
+        handler.reply_error = MagicMock()
+        
+        # Test case: project not found
+        handler.project_manager.find_project_by_name.return_value = None
+        handler.project_manager.search_projects.return_value = []
+        
+        handler.switch_project("msg_1", "chat_1", "nonexistent")
+        
+        handler.reply_error.assert_called_once()
+        call_args = handler.reply_error.call_args
+        self.assertIn("未找到项目", call_args[0][1])
+
+if __name__ == "__main__":
+    unittest.main()

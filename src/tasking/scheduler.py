@@ -1,6 +1,7 @@
 import time
 import uuid
 import threading
+import contextvars
 from collections import defaultdict, deque
 from dataclasses import replace
 from dataclasses import dataclass, field
@@ -145,6 +146,7 @@ class _QueuedTask:
     run_id: str
     spec: TaskSpec
     fn: Callable[[TaskContext], Any]
+    context: contextvars.Context
 
 
 class TaskHandle:
@@ -244,7 +246,10 @@ class TaskScheduler:
                 self._by_project[str(spec.project_id)].append(run_id)
             key = spec.get_effective_queue_key()
             q = self._queues[key]
-            item = _QueuedTask(run_id=run_id, spec=spec, fn=fn)
+            
+            # Capture current context
+            ctx = contextvars.copy_context()
+            item = _QueuedTask(run_id=run_id, spec=spec, fn=fn, context=ctx)
 
             if spec.priority == TaskPriority.HIGH:
                 q.appendleft(item)
@@ -502,6 +507,10 @@ class TaskScheduler:
         return None
 
     def _run_wrapper(self, task: _QueuedTask):
+        """Wrapper to run the task in its captured context."""
+        return task.context.run(self._do_run, task)
+
+    def _do_run(self, task: _QueuedTask):
         run_id = task.run_id
         spec = task.spec
         state = self.get_state(run_id)
