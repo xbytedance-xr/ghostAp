@@ -1,5 +1,8 @@
 # GhostAP 项目记忆索引
 
+## 2026-03-15
+- **Spec 模式修复与验证** - 修复 SpecReporter 参数错误并补全缺失方法，验证三模式正常工作 → [2026-03-15.md](2026-03-15.md)
+
 ## 2026-03-09
 - **TTADK 模型列表获取问题诊断** - 诊断发现 ttadk 0.3.8 无 models 子命令，coco/trae/cursor 工具 Available models 为空，ProbeStrategy 部分失败，待确定解决方案 → [2026-03-09.md](2026-03-09.md)
 

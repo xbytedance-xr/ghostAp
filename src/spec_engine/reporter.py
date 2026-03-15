@@ -44,8 +44,11 @@ class SpecReporter:
         lines.append("\n🚀 准备开始 Spec 循环...")
         return "\n".join(lines)
 
-    def format_cycle_start(self, cycle_number: int, max_cycles: int) -> str:
-        return f"🔄 **Spec 循环 [{cycle_number}/{max_cycles}]** 开始\n\n阶段: 📋 Spec → 🏗️ Plan → 📝 Task → 🔨 Build → 🔍 Review"
+    def format_cycle_start(self, cycle_number: int, max_cycles: int, criteria_status: str = "") -> str:
+        base = f"🔄 **Spec 循环 [{cycle_number}/{max_cycles}]** 开始\n\n阶段: 📋 Spec → 🏗️ Plan → 📝 Task → 🔨 Build → 🔍 Review"
+        if criteria_status:
+            return f"{base}\n\n{criteria_status}"
+        return base
 
     def format_phase_start(self, cycle: int, phase: SpecPhase) -> str:
         return f"{phase.emoji} **{phase.display_name}** [循环 {cycle}]\n\n⏳ 执行中..."
@@ -57,6 +60,34 @@ class SpecReporter:
 ```
 {body}
 ```"""
+
+    def format_cycle_done(self, cycle_number: int, cycle) -> str:
+        status_emoji = "✅" if cycle.status == "completed" else "❌"
+        status_text = "完成" if cycle.status == "completed" else "失败"
+        
+        # Determine focus/summary from cycle phases
+        summary = "循环执行结束"
+        if cycle.review_result:
+            if cycle.review_result.all_passed:
+                summary = "审查通过"
+            else:
+                summary = f"审查发现 {cycle.review_result.total_suggestions} 条建议"
+        
+        # Build output section (e.g. from build phase)
+        output_section = ""
+        if cycle.build_output:
+            out_preview = cycle.build_output
+            if len(out_preview) > 500:
+                out_preview = out_preview[:500] + "\n...(已截断)"
+            output_section = f"\n\n**构建输出:**\n```\n{out_preview}\n```"
+
+        duration_str = ""
+        if hasattr(cycle, "duration") and cycle.duration:
+            duration_str = f"\n⏱️ 耗时: {format_duration(cycle.duration)}"
+
+        return f"""{status_emoji} **Spec 循环 [{cycle_number}] {status_text}**
+
+🤖 **{summary}**{duration_str}{output_section}"""
 
     def format_review_result(self, review: ReviewResult, cycle: int) -> str:
         lines = [f"🔍 **多视角审查 [循环 {cycle}]**\n"]
@@ -361,6 +392,11 @@ class SpecReporter:
 
     def get_cycle_start_title(self, cycle: int, max_cycles: int) -> str:
         return f"🔄 Spec 循环 [{cycle}/{max_cycles}]"
+
+    def get_cycle_done_title(self, cycle: int, success: bool) -> str:
+        if success:
+            return f"✅ 循环完成 [{cycle}]"
+        return f"❌ 循环失败 [{cycle}]"
 
     def get_phase_title(self, cycle: int, phase: SpecPhase) -> str:
         return f"{phase.emoji} {phase.display_name} [循环 {cycle}]"
