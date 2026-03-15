@@ -471,7 +471,8 @@ class SystemHandler(BaseHandler):
         from ...sandbox import SandboxExecutor
 
         executor = SandboxExecutor()
-        result = executor.execute(cmd, cwd=working_dir)
+        # Smart mode shell execution: disable interactive mode to avoid .bashrc noise and job control errors
+        result = executor.execute(cmd, cwd=working_dir, interactive=False)
         msg_type, card_content = CardBuilder.build_shell_result_card(
             cmd, result, working_dir, project,
         )

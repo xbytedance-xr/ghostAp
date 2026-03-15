@@ -63,7 +63,7 @@ class SandboxExecutor:
         
         return True, None
 
-    def execute(self, command: str, cwd: Optional[str] = None) -> ExecutionResult:
+    def execute(self, command: str, cwd: Optional[str] = None, interactive: bool = True) -> ExecutionResult:
         is_safe, reason = self.is_command_safe(command)
         if not is_safe:
             return ExecutionResult(
@@ -97,7 +97,10 @@ class SandboxExecutor:
 
             # Detect shell and use it in interactive mode to load profiles/aliases
             shell_path = os.environ.get("SHELL", "/bin/bash")
-            cmd_args = [shell_path, "-i", "-c", command]
+            if interactive:
+                cmd_args = [shell_path, "-i", "-c", command]
+            else:
+                cmd_args = [shell_path, "-c", command]
 
             process = subprocess.run(
                 cmd_args,
