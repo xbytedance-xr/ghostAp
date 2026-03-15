@@ -30,7 +30,31 @@ class TestSpecInteraction(unittest.TestCase):
         self.assertIn("spec_resume", call_args[1]["action_map"])
         self.assertIn("spec_stop", call_args[1]["action_map"])
         self.assertEqual(call_args[1]["toggle_log_method"], handler.toggle_spec_log)
+        self.assertEqual(call_args[1]["toggle_ac_method"], handler.toggle_spec_ac)
         self.assertEqual(call_args[1]["switch_mode_method"], handler.switch_spec_card_mode)
+
+    def test_standard_dispatch_handles_expand_ac(self):
+        """验证 BaseHandler 标准分发支持 *_expand_ac / *_collapse_ac"""
+        mock_ctx = MagicMock()
+        mock_ctx.settings.card_deep_compact_default = False
+
+        handler = SpecHandler(mock_ctx)
+        toggle_ac = MagicMock()
+        project = MagicMock()
+
+        handled = handler._dispatch_standard_card_action(
+            "mid",
+            "cid",
+            "spec_expand_ac",
+            {"deep_project_id": "root"},
+            prefix="spec",
+            action_map={},
+            toggle_ac_method=toggle_ac,
+            project=project,
+        )
+
+        self.assertTrue(handled)
+        toggle_ac.assert_called_once_with("mid", "cid", project, "root", True)
 
     def test_ws_client_routes_spec_actions(self):
         """验证 FeishuWSClient 正确路由 spec_pause/resume/stop 动作"""

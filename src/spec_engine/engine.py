@@ -206,10 +206,15 @@ class SpecEngine:
                 return default
             if isinstance(v, int):
                 return v
-            try:
+            # Only accept numeric-ish primitives; avoid unittest.mock (MagicMock is int-castable to 1).
+            if isinstance(v, float):
                 return int(v)
-            except Exception:
-                return default
+            if isinstance(v, str):
+                try:
+                    return int(v.strip())
+                except Exception:
+                    return default
+            return default
         except Exception:
             return default
 
@@ -878,7 +883,9 @@ class SpecEngine:
             infinite_mode=self._get_bool_setting("spec_infinite_mode", False),
             disable_convergence=self._get_bool_setting("spec_disable_convergence", False),
             disable_early_stop=self._get_bool_setting("spec_disable_early_stop", False),
-            min_cycles=2,  # Spec mode defaults to at least 2 cycles to ensure discovery
+            # Spec mode defaults to at least 2 cycles to ensure discovery;
+            # allow overriding via settings for single-cycle tasks/tests.
+            min_cycles=max(1, self._get_int_setting("spec_min_cycles", 2)),
         )
 
         for cycle_num in range(start_cycle, max_cycles + 1):
@@ -1751,18 +1758,31 @@ Schema（字段必须存在；数组元素为字符串）：
         """Build the multi-perspective review prompt (same as loop engine)."""
         perspective_sections = []
         for p in ReviewPerspective:
-            perspective_sections.append(f"- **{p.value.upper()}**: {p.review_focus}")
+            # Spec mode: make PRODUCT perspective more "Apple-like" (tasteful, high bar).
+            if p == ReviewPerspective.PRODUCT:
+                perspective_sections.append(
+                    "- **PRODUCT**: Apple 风格产品审查（高审美/高标准/完美主义）。关注：信息架构与心智模型、关键路径是否一气呵成、默认行为是否聪明、边界与异常是否体面、文案是否克制清晰、细节一致性与打磨程度。"
+                )
+            else:
+                perspective_sections.append(f"- **{p.value.upper()}**: {p.review_focus}")
         perspectives_desc = "\n".join(perspective_sections)
 
         goal = self._project.requirement if self._project else ""
 
-        return f"""请从以下四个视角审查当前的实现质量，并给出结构化的审查结果。
+        return f"""请从以下五个视角审查当前的实现质量，并给出结构化的审查结果。
 
 ## 项目目标
 {goal}
 
 ## 审查视角
 {perspectives_desc}
+
+## PRODUCT 视角加严要求（Apple 风格）
+- 以“少即是多”的审美判断：删繁就简，不为功能堆砌找理由。
+- 以默认体验为王：默认路径必须顺滑、可预期、可解释；拒绝把复杂度转嫁给用户。
+- 以细节一致性为底线：命名/状态/交互/错误提示/边界行为必须统一。
+- 以体面为标准：失败与异常也要有尊严（清晰提示、可恢复、不给用户添堵）。
+- 建议要具体可落地：每条建议最好能对应到 1 个明确改动点（文案/交互/流程/边界/信息层级）。
 
 <output_format>
 严格按照以下格式输出每个视角的审查结果（每个视角占一个区块）。
@@ -2397,7 +2417,8 @@ CRITERIA_2: FAIL
             return False
 
         window = int(self.settings.spec_convergence_window or 0)
-        if window <= 0:
+        # Convergence needs at least 2 cycles to compare progress.
+        if window < 2:
             return False
         if len(self._project.cycles) < window:
             return False

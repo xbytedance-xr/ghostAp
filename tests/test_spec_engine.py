@@ -432,6 +432,9 @@ def test_ttadk_startup_model_log_uses_real_or_auto(caplog):
         s.spec_review_enabled = False
         s.spec_discovery_enabled = False
         s.spec_generated_specs_per_cycle = 0
+        s.ark_api_key = "test-key"
+        s.ark_model = "test-model"
+        s.ark_base_url = "https://test.url"
         mock_engine_settings.return_value = s
 
         engine = SpecEngine(chat_id="c", root_path="/tmp/test", agent_type="ttadk_codex", model_name="gpt-5.2")
@@ -439,7 +442,7 @@ def test_ttadk_startup_model_log_uses_real_or_auto(caplog):
         caplog.set_level(logging.INFO, logger="src.agent_session")
 
         class _S:
-            def __init__(self):
+            def __init__(self, *a, **k):
                 self.session_id = "sid"
                 self.created_at = 0.0
                 self.last_active = 0.0
@@ -486,26 +489,24 @@ def test_ttadk_startup_model_log_uses_real_or_auto(caplog):
 
         with patch("src.agent_session.get_settings", return_value=_SessSettings()), \
              patch("src.ttadk.get_ttadk_manager", return_value=MagicMock()), \
-             patch("src.ttadk.startup.start_agent_session") as mk_start:
-            mk_start.return_value = {
-                "result": _S(),
+             patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck, \
+             patch("src.agent_session.SyncTTADKCLISession", return_value=_S()):
+            mk_precheck.return_value = {
                 "tool": "codex",
                 "input_model": "gpt-5.2",
-                "resolved_model": "gpt-5.2-codex-ttadk",
+                "model": "gpt-5.2-codex-ttadk",
                 "validated": True,
                 "source": "probe",
                 "decision": "precheck_validated",
                 "fail_phase": "",
                 "warnings": [],
-                "degraded": False,
-                "repaired": False,
                 "diagnostics": {"attempts": [{"phase": "precheck"}]},
             }
             caplog.clear()
             engine.execute("do something")
 
         text = "\n".join([r.getMessage() for r in caplog.records])
-        assert "[SessionFactory] ttadk startup:" in text
+        assert "[SessionFactory] ttadk cli startup:" in text
         m = re.search(r"\bmodel=([^\s]+)", text)
         assert m is not None
         assert m.group(1) == "gpt-5.2-codex-ttadk"
@@ -514,82 +515,93 @@ def test_ttadk_startup_model_log_uses_real_or_auto(caplog):
 
 def test_ttadk_resume_model_log_uses_real_or_auto(caplog):
     """恢复路径同样要求：model 字段只能是真实名或 (auto)。"""
-    engine = SpecEngine(chat_id="c", root_path="/tmp/test", agent_type="ttadk_codex", model_name="gpt-5.2")
-    engine._project = SpecProject.create(name="p", root_path="/tmp/test")
-    engine._project.status = SpecProjectStatus.PAUSED
+    with patch("src.spec_engine.engine.get_settings") as mock_engine_settings:
+        s = MagicMock()
+        s.spec_max_cycles = 1
+        s.spec_execution_timeout = 5
+        s.spec_persist_every_phase = False
+        s.spec_review_enabled = False
+        s.spec_discovery_enabled = False
+        s.spec_generated_specs_per_cycle = 0
+        s.ark_api_key = "test-key"
+        s.ark_model = "test-model"
+        s.ark_base_url = "https://test.url"
+        mock_engine_settings.return_value = s
 
-    caplog.set_level(logging.INFO, logger="src.agent_session")
+        engine = SpecEngine(chat_id="c", root_path="/tmp/test", agent_type="ttadk_codex", model_name="gpt-5.2")
+        engine._project = SpecProject.create(name="p", root_path="/tmp/test")
+        engine._project.status = SpecProjectStatus.PAUSED
 
-    class _S:
-        def __init__(self):
-            self.session_id = "sid"
-            self.created_at = 0.0
-            self.last_active = 0.0
-            self.message_count = 0
-            self.last_query = ""
-            self.is_resumed = False
+        caplog.set_level(logging.INFO, logger="src.agent_session")
 
-        def describe_agent(self):
-            return "dummy"
+        class _S:
+            def __init__(self, *a, **k):
+                self.session_id = "sid"
+                self.created_at = 0.0
+                self.last_active = 0.0
+                self.message_count = 0
+                self.last_query = ""
+                self.is_resumed = False
 
-        def start(self, startup_timeout: float = 60, **kwargs):
-            return "sid"
+            def describe_agent(self):
+                return "dummy"
 
-        def load_session(self, session_id: str):
-            return None
+            def start(self, startup_timeout: float = 60, **kwargs):
+                return "sid"
 
-        def load_local_history(self, session_id=None, limit: int = 200):
-            return []
+            def load_session(self, session_id: str):
+                return None
 
-        def cancel(self):
-            return None
+            def load_local_history(self, session_id=None, limit: int = 200):
+                return []
 
-        def close(self):
-            return None
+            def cancel(self):
+                return None
 
-        def to_snapshot(self):
-            return {}
+            def close(self):
+                return None
 
-        def get_session_info(self):
-            return ""
+            def to_snapshot(self):
+                return {}
 
-        def is_server_running(self):
-            return True
+            def get_session_info(self):
+                return ""
 
-        def is_server_healthy(self, healthcheck_timeout: float = 2.0):
-            return True
+            def is_server_running(self):
+                return True
 
-        def send_prompt(self, *a, **k):
-            return MagicMock(stop_reason="end_turn")
+            def is_server_healthy(self, healthcheck_timeout: float = 2.0):
+                return True
 
-    class _SessSettings:
-        acp_startup_timeout = 20
-        rate_limit_retry_enabled = False
+            def send_prompt(self, *a, **k):
+                return MagicMock(stop_reason="end_turn")
 
-    with patch("src.agent_session.get_settings", return_value=_SessSettings()), \
-         patch("src.ttadk.get_ttadk_manager", return_value=MagicMock()), \
-         patch("src.ttadk.startup.start_agent_session") as mk_start:
-        mk_start.return_value = {
-            "result": _S(),
-            "tool": "codex",
-            "input_model": "gpt-5.2",
-            "resolved_model": "(auto)",
-            "validated": False,
-            "source": "defaults",
-            "decision": "precheck_auto",
-            "fail_phase": "",
-            "warnings": ["no_m_passthrough"],
-            "degraded": False,
-            "repaired": False,
-            "diagnostics": {"attempts": [{"phase": "precheck"}]},
-        }
-        caplog.clear()
-        engine.resume()
+        class _SessSettings:
+            acp_startup_timeout = 20
+            rate_limit_retry_enabled = False
 
-    text = "\n".join([r.getMessage() for r in caplog.records])
-    assert "[SessionFactory] ttadk startup:" in text
-    assert "model=(auto)" in text
-    assert re.search(r"\bmodel=gpt-5\.2\b", text) is None
+        with patch("src.agent_session.get_settings", return_value=_SessSettings()), \
+             patch("src.ttadk.get_ttadk_manager", return_value=MagicMock()), \
+             patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck, \
+             patch("src.agent_session.SyncTTADKCLISession", return_value=_S()):
+            mk_precheck.return_value = {
+                "tool": "codex",
+                "input_model": "gpt-5.2",
+                "model": None,  # (auto)
+                "validated": False,
+                "source": "defaults",
+                "decision": "precheck_auto",
+                "fail_phase": "",
+                "warnings": ["no_m_passthrough"],
+                "diagnostics": {"attempts": [{"phase": "precheck"}]},
+            }
+            caplog.clear()
+            engine.resume()
+
+        text = "\n".join([r.getMessage() for r in caplog.records])
+        assert "[SessionFactory] ttadk cli startup:" in text
+        assert "model=(auto)" in text
+        assert re.search(r"\bmodel=gpt-5\.2\b", text) is None
 
 
 # ======================================================================
@@ -1851,9 +1863,9 @@ class TestSpecEngineExecution:
 
     def _mock_settings(self):
         s = MagicMock()
-        s.spec_max_cycles = 3
+        s.spec_max_cycles = 1
         s.spec_max_cycles_limit = 5000
-        s.spec_convergence_window = 2
+        s.spec_convergence_window = 1
         s.spec_execution_timeout = 300
         s.spec_review_enabled = True
         s.spec_cycle_tasks_max = 50
@@ -1884,7 +1896,8 @@ class TestSpecEngineExecution:
             text = responses[idx] if idx < len(responses) else ""
             if on_event and text:
                 on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=text))
-
+            return MagicMock(stop_reason="end_turn")
+        
         session.send_prompt = fake_send_prompt
         return session
 
@@ -1894,7 +1907,7 @@ class TestSpecEngineExecution:
         """Full execute: 1 cycle, all reviews PASS, criteria PASS → COMPLETED."""
         mock_settings.return_value = self._mock_settings()
 
-        review_text = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n"
+        review_text = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n\n[DESIGNER]\nPASS\n"
         criteria_text = "CRITERIA_1: PASS"
         spec_json = """```json\n{\"goals\":[\"G\"],\"functional_spec\":[\"F\"],\"non_functional_requirements\":[\"N\"],\"acceptance_criteria\":[\"实现登录功能\"],\"out_of_scope\":[],\"risks\":[],\"clarification_questions\":[],\"decisions\":[],\"version\":\"1.0\"}\n```"""
         plan_json = """```json\n{\"architecture\":\"A\",\"tech_stack\":[\"T\"],\"steps\":[\"S1\"],\"file_changes\":[\"x.py\"],\"test_plan\":[\"pytest\"],\"risks\":[],\"version\":\"1.0\"}\n```"""
@@ -1909,6 +1922,7 @@ class TestSpecEngineExecution:
         mock_create.return_value = session
 
         engine = SpecEngine(chat_id="c1", root_path="/tmp/test")
+        
         called = {"analyzing_start": False, "project_done": False, "cycles": []}
         callbacks = SpecEngineCallbacks(
             on_analyzing_start=lambda r: called.__setitem__("analyzing_start", True),
@@ -1939,7 +1953,7 @@ class TestSpecEngineExecution:
         """execute() should always close the underlying session in finally."""
         mock_settings.return_value = self._mock_settings()
 
-        review_text = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n"
+        review_text = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n\n[DESIGNER]\nPASS\n"
         criteria_text = "CRITERIA_1: PASS"
         spec_json = """```json\n{\"goals\":[\"G\"],\"functional_spec\":[\"F\"],\"non_functional_requirements\":[],\"acceptance_criteria\":[\"实现登录功能\"],\"out_of_scope\":[],\"risks\":[],\"clarification_questions\":[],\"decisions\":[],\"version\":\"1.0\"}\n```"""
         plan_json = """```json\n{\"architecture\":\"A\",\"tech_stack\":[],\"steps\":[\"S\"],\"file_changes\":[],\"test_plan\":[],\"risks\":[],\"version\":\"1.0\"}\n```"""
@@ -1967,7 +1981,7 @@ class TestSpecEngineExecution:
 
         spec_json = """```json\n{\"goals\":[\"G\"],\"functional_spec\":[\"F\"],\"non_functional_requirements\":[],\"acceptance_criteria\":[\"需要登录\"],\"out_of_scope\":[],\"risks\":[],\"clarification_questions\":[\"是否需要支持手机号登录？\"],\"decisions\":[\"假设仅支持邮箱登录\"],\"version\":\"1.0\"}\n```"""
         plan_json = """```json\n{\"architecture\":\"A\",\"tech_stack\":[],\"steps\":[\"S\"],\"file_changes\":[],\"test_plan\":[],\"risks\":[],\"version\":\"1.0\"}\n```"""
-        review_pass = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n"
+        review_pass = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n\n[DESIGNER]\nPASS\n"
         session = self._make_mock_session([
             spec_json, plan_json, "1. T1 (依赖: 无)", "build done " * 20,
             review_pass, "CRITERIA_1: PASS",
@@ -1990,10 +2004,12 @@ class TestSpecEngineExecution:
     @patch("src.spec_engine.engine.get_settings")
     def test_execute_multi_cycle_then_pass(self, mock_settings, mock_create):
         """Cycle 1 FAIL review → cycle 2 all PASS → COMPLETED in 2 cycles."""
-        mock_settings.return_value = self._mock_settings()
+        s = self._mock_settings()
+        s.spec_max_cycles = 2
+        mock_settings.return_value = s
 
-        review_fail = "[ARCHITECT]\nFAIL\n- Fix issue\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n"
-        review_pass = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n"
+        review_fail = "[ARCHITECT]\nFAIL\n- Fix issue\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n\n[DESIGNER]\nPASS\n"
+        review_pass = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n\n[DESIGNER]\nPASS\n"
         spec1 = """```json\n{\"goals\":[\"G\"],\"functional_spec\":[\"F\"],\"non_functional_requirements\":[],\"acceptance_criteria\":[\"功能要求可用\"],\"out_of_scope\":[],\"risks\":[],\"clarification_questions\":[],\"decisions\":[],\"version\":\"1.0\"}\n```"""
         plan1 = """```json\n{\"architecture\":\"A\",\"tech_stack\":[],\"steps\":[\"S\"],\"file_changes\":[],\"test_plan\":[],\"risks\":[],\"version\":\"1.0\"}\n```"""
         spec2 = spec1
@@ -2069,7 +2085,9 @@ class TestSpecEngineExecution:
     @patch("src.spec_engine.engine.get_settings")
     def test_resume_from_paused(self, mock_settings, mock_create):
         """Resume a paused engine → continues from next cycle."""
-        mock_settings.return_value = self._mock_settings()
+        s = self._mock_settings()
+        s.spec_max_cycles = 2
+        mock_settings.return_value = s
 
         review_pass = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n"
         session = self._make_mock_session([
@@ -2525,9 +2543,9 @@ class TestSpecEngineExecution:
 class TestSpecEngineProjectTypes:
     def _mock_settings(self):
         s = MagicMock()
-        s.spec_max_cycles = 2
+        s.spec_max_cycles = 1
         s.spec_max_cycles_limit = 5000
-        s.spec_convergence_window = 2
+        s.spec_convergence_window = 1
         s.spec_execution_timeout = 300
         s.spec_review_enabled = True
         s.spec_cycle_tasks_max = 50
@@ -2567,7 +2585,7 @@ class TestSpecEngineProjectTypes:
 
         spec_json = """```json\n{\"goals\":[\"Web 登录\"],\"functional_spec\":[\"页面\",\"接口\"],\"non_functional_requirements\":[\"性能\"],\"acceptance_criteria\":[\"Web 登录可用\"],\"out_of_scope\":[],\"risks\":[],\"clarification_questions\":[],\"decisions\":[],\"version\":\"1.0\"}\n```"""
         plan_json = """```json\n{\"architecture\":\"MVC\",\"tech_stack\":[\"FastAPI\",\"React\"],\"steps\":[\"实现 API\",\"实现 UI\"],\"file_changes\":[\"src/app.py\"],\"test_plan\":[\"pytest\"],\"risks\":[],\"version\":\"1.0\"}\n```"""
-        review_text = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n"
+        review_text = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n\n[DESIGNER]\nPASS\n"
         criteria_text = "CRITERIA_1: PASS"
 
         session = self._make_mock_session([
@@ -2591,7 +2609,7 @@ class TestSpecEngineProjectTypes:
 
         spec_json = """```json\n{\"goals\":[\"API 开发\"],\"functional_spec\":[\"REST\"],\"non_functional_requirements\":[],\"acceptance_criteria\":[\"API 返回符合预期\"],\"out_of_scope\":[],\"risks\":[],\"clarification_questions\":[],\"decisions\":[],\"version\":\"1.0\"}\n```"""
         plan_json = """```json\n{\"architecture\":\"HTTP API\",\"tech_stack\":[\"FastAPI\"],\"steps\":[\"实现 endpoint\"],\"file_changes\":[\"src/api.py\"],\"test_plan\":[\"pytest -k api\"],\"risks\":[],\"version\":\"1.0\"}\n```"""
-        review_text = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n"
+        review_text = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n\n[DESIGNER]\nPASS\n"
         criteria_text = "CRITERIA_1: PASS"
 
         session = self._make_mock_session([
@@ -2615,7 +2633,7 @@ class TestSpecEngineProjectTypes:
 
         spec_json = """```json\n{\"goals\":[\"脚本工具\"],\"functional_spec\":[\"CLI\"],\"non_functional_requirements\":[],\"acceptance_criteria\":[\"CLI 可执行并输出正确\"],\"out_of_scope\":[],\"risks\":[],\"clarification_questions\":[],\"decisions\":[],\"version\":\"1.0\"}\n```"""
         plan_json = """```json\n{\"architecture\":\"单文件脚本\",\"tech_stack\":[\"Python\"],\"steps\":[\"实现命令解析\"],\"file_changes\":[\"tools/foo.py\"],\"test_plan\":[\"pytest -k tool\"],\"risks\":[],\"version\":\"1.0\"}\n```"""
-        review_text = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n"
+        review_text = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n\n[DESIGNER]\nPASS\n"
         criteria_text = "CRITERIA_1: PASS"
 
         session = self._make_mock_session([

@@ -1,6 +1,9 @@
 # GhostAP 项目记忆索引
 
 ## 2026-03-15
+- **修复三模式单元测试适配 TTADK 启动逻辑** - 修复 Deep/Loop/Spec 测试 mock 逻辑，解决 Spec 循环策略冲突，全量测试通过 → [2026-03-15.md](2026-03-15.md)
+- **SpecEngine 循环策略与收敛修复** - 增加 `spec_min_cycles` 配置，修复 MagicMock 配置读取漂移与 `spec_convergence_window=1` 误触发收敛 → [2026-03-15.md](2026-03-15.md)
+- **Spec 模式 PRODUCT 审查提示增强** - PRODUCT 视角加入 Apple 风格高标准审查准则（默认体验/一致性/体面失败）→ [2026-03-15.md](2026-03-15.md)
 - **Spec 模式修复与验证** - 修复 SpecReporter 参数错误并补全缺失方法，验证三模式正常工作 → [2026-03-15.md](2026-03-15.md)
 
 ## 2026-03-09

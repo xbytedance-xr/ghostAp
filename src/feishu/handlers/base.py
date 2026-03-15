@@ -409,6 +409,7 @@ class BaseHandler:
         prefix: str,
         action_map: dict[str, Callable],
         toggle_log_method: Optional[Callable] = None,
+        toggle_ac_method: Optional[Callable] = None,
         switch_mode_method: Optional[Callable] = None,
         project: Optional["ProjectContext"] = None,
     ) -> bool:
@@ -440,6 +441,14 @@ class BaseHandler:
                 compact = (action_type == f"{prefix}_mode_compact")
                 # Signature expected: (message_id, chat_id, project, engine_project_id, compact)
                 switch_mode_method(open_message_id, open_chat_id, project, engine_project_id, compact)
+                return True
+
+        # 4. Acceptance-criteria expansion (AC)
+        if action_type in (f"{prefix}_expand_ac", f"{prefix}_collapse_ac"):
+            if toggle_ac_method:
+                expand_ac = (action_type == f"{prefix}_expand_ac")
+                # Signature expected: (message_id, chat_id, project, engine_project_id, expand_ac)
+                toggle_ac_method(open_message_id, open_chat_id, project, engine_project_id, expand_ac)
                 return True
         
         return False

@@ -198,6 +198,7 @@ class Settings(BaseSettings):
     spec_max_cycles_limit: int = 5000
     spec_execution_timeout: int = 7200
     spec_convergence_window: int = 2
+    spec_min_cycles: int = 2
     spec_review_enabled: bool = True
 
     # Spec Engine review failure circuit breaker

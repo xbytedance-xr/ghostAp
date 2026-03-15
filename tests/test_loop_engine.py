@@ -228,7 +228,7 @@ class TestLoopEngine:
         caplog.set_level(logging.INFO, logger="src.agent_session")
 
         class _S:
-            def __init__(self):
+            def __init__(self, *a, **k):
                 self.session_id = "sid"
                 self.created_at = 0.0
                 self.last_active = 0.0
@@ -274,23 +274,18 @@ class TestLoopEngine:
             rate_limit_retry_enabled = False
 
         with patch("src.agent_session.get_settings", return_value=_SessSettings()), \
-             patch("src.ttadk.startup.start_agent_session") as mk_start:
+             patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck, \
+             patch("src.agent_session.SyncTTADKCLISession", return_value=_S()):
             # SSOT：create_engine_session 统一走 start_agent_session；单测不应触发真实 ttadk/codex 探测。
-            mk_start.return_value = {
-                "session": _S(),
-                "session_id": "sid",
+            mk_precheck.return_value = {
                 "tool": "codex",
                 "input_model": "gpt-5.2",
-                "resolved_model": "gpt-5.2-codex-ttadk",
-                "resolved_real_name": "gpt-5.2-codex-ttadk",
-                "passthrough_model": "gpt-5.2-codex-ttadk",
+                "model": "gpt-5.2-codex-ttadk",
                 "validated": True,
                 "source": "probe",
                 "decision": "precheck_validated",
                 "fail_phase": "",
                 "warnings": [],
-                "degraded": False,
-                "repaired": False,
                 "diagnostics": {"attempts": [{"phase": "precheck"}]},
             }
             caplog.clear()
@@ -301,7 +296,7 @@ class TestLoopEngine:
             engine.execute("do something")
 
         text = "\n".join([r.getMessage() for r in caplog.records])
-        assert "[SessionFactory] ttadk startup:" in text
+        assert "[SessionFactory] ttadk cli startup:" in text
         m = re.search(r"\bmodel=([^\s]+)", text)
         assert m is not None
         assert m.group(1) == "gpt-5.2-codex-ttadk"
@@ -317,7 +312,7 @@ class TestLoopEngine:
         caplog.set_level(logging.INFO, logger="src.agent_session")
 
         class _S:
-            def __init__(self):
+            def __init__(self, *a, **k):
                 self.session_id = "sid"
                 self.created_at = 0.0
                 self.last_active = 0.0
@@ -363,29 +358,24 @@ class TestLoopEngine:
             rate_limit_retry_enabled = False
 
         with patch("src.agent_session.get_settings", return_value=_SessSettings()), \
-             patch("src.ttadk.startup.start_agent_session") as mk_start:
-            mk_start.return_value = {
-                "session": _S(),
-                "session_id": "sid",
+             patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck, \
+             patch("src.agent_session.SyncTTADKCLISession", return_value=_S()):
+            mk_precheck.return_value = {
                 "tool": "codex",
                 "input_model": "gpt-5.2",
-                "resolved_model": "(auto)",
-                "resolved_real_name": "(auto)",
-                "passthrough_model": None,
+                "model": None,  # (auto)
                 "validated": False,
                 "source": "defaults",
                 "decision": "precheck_auto",
                 "fail_phase": "",
                 "warnings": ["no_m_passthrough"],
-                "degraded": False,
-                "repaired": False,
                 "diagnostics": {"attempts": [{"phase": "precheck"}]},
             }
             caplog.clear()
             engine.resume()
 
         text = "\n".join([r.getMessage() for r in caplog.records])
-        assert "[SessionFactory] ttadk startup:" in text
+        assert "[SessionFactory] ttadk cli startup:" in text
         assert "model=(auto)" in text
         assert re.search(r"\bmodel=gpt-5\.2\b", text) is None
 
