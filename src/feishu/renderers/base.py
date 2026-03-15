@@ -261,31 +261,81 @@ class BaseRenderer:
             card = json.loads(card_content)
             
             # Helper to recursively truncate strings in the dict
-            def truncate_recursive(obj):
+            # Enhanced to be smarter: prioritize preserving structure
+            def truncate_recursive(obj, depth=0):
+                if depth > 20: # Anti-recursion depth limit
+                    return obj
+                    
                 if isinstance(obj, dict):
                     for k, v in obj.items():
-                        obj[k] = truncate_recursive(v)
+                        # Don't truncate structural keys
+                        if k in ("tag", "type", "actions", "elements", "modules", "columns", "fields"):
+                            obj[k] = truncate_recursive(v, depth + 1)
+                        # Content fields - aggressive truncation if needed
+                        elif k in ("content", "text", "value", "placeholder", "alt"):
+                            if isinstance(v, str) and len(v) > 500:
+                                obj[k] = v[:500] + "...(已截断)"
+                            else:
+                                obj[k] = truncate_recursive(v, depth + 1)
+                        else:
+                            obj[k] = truncate_recursive(v, depth + 1)
                 elif isinstance(obj, list):
+                    # If list is too long, truncate items
+                    if len(obj) > 20:
+                        obj = obj[:20]
+                        # We might need to add a "more" item if possible, but structure varies.
+                        # For now just slice.
+                    
                     for i in range(len(obj)):
-                        obj[i] = truncate_recursive(obj[i])
+                        obj[i] = truncate_recursive(obj[i], depth + 1)
                 elif isinstance(obj, str):
-                    # Truncate long strings, especially likely content fields
-                    # Heuristic: if string is very long, it's likely the culprit
-                    if len(obj) > 2000: 
-                        return obj[:2000] + "...(content truncated due to size limit)"
+                    # Fallback for strings in other locations
+                    if len(obj) > 1000: 
+                        return obj[:1000] + "...(已截断)"
                 return obj
 
-            card = truncate_recursive(card)
-            truncated_content = json.dumps(card, ensure_ascii=False)
+            # First pass: try smart truncation on deep content
+            card_copy = json.loads(json.dumps(card)) # Deep copy
+            truncated_card = truncate_recursive(card_copy)
             
-            # Double check
+            # Add a warning note to the card body if possible
+            warning_element = {
+                "tag": "note",
+                "elements": [{
+                    "tag": "plain_text", 
+                    "content": "⚠️ 内容过长已自动截断，请在电脑端查看完整详情"
+                }]
+            }
+            
+            if "body" in truncated_card and "elements" in truncated_card["body"]:
+                # Append to existing body
+                truncated_card["body"]["elements"].append(warning_element)
+            elif "elements" in truncated_card:
+                 # Root level elements (older schema)
+                truncated_card["elements"].append(warning_element)
+            
+            truncated_content = json.dumps(truncated_card, ensure_ascii=False)
+            
+            # Double check size after smart truncation
             if len(truncated_content.encode('utf-8')) > max_size:
-                # Fallback: drastic truncation
-                return json.dumps({
-                    "config": {"wide_screen_mode": True},
-                    "header": {"title": {"tag": "plain_text", "content": "⚠️ 卡片过大"}},
-                    "body": {"elements": [{"tag": "div", "text": {"tag": "plain_text", "content": "内容超过飞书限制，无法完整展示。"}}]}
-                })
+                # If still too big, try more aggressive truncation
+                # Just keep header and a simple body
+                fallback_card = {
+                    "config": card.get("config", {"wide_screen_mode": True}),
+                    "header": card.get("header", {"title": {"tag": "plain_text", "content": "⚠️ 卡片过大"}}),
+                    "body": {
+                        "elements": [
+                            {
+                                "tag": "div",
+                                "text": {
+                                    "tag": "plain_text", 
+                                    "content": "内容极其庞大，无法展示摘要。请在电脑端查看。"
+                                }
+                            }
+                        ]
+                    }
+                }
+                return json.dumps(fallback_card, ensure_ascii=False)
                 
             return truncated_content
         except Exception as e:

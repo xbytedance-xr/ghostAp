@@ -37,6 +37,72 @@ class TestRefactorRobustness(unittest.TestCase):
         
         self.assertTrue(found_output, "Did not find truncated output in card")
 
+    def test_payload_truncation(self):
+        """Test smart truncation of large payloads."""
+        from src.feishu.renderers.base import BaseRenderer
+        
+        # Create a mock handler for BaseRenderer
+        mock_handler = MagicMock()
+        mock_handler.ctx = MagicMock()
+        mock_handler.settings = MagicMock()
+        mock_handler.settings.card_deep_compact_default = False
+        
+        renderer = BaseRenderer(mock_handler)
+        
+        # Case 1: Small payload, no truncation
+        small_payload = json.dumps({"header": "test", "content": "short"})
+        self.assertEqual(renderer._check_and_truncate_payload(small_payload, max_size=1000), small_payload)
+        
+        # Case 2: Smart truncation of long string
+        long_string = "a" * 2000
+        large_payload = json.dumps({
+            "header": "test", 
+            "elements": [{"tag": "div", "text": {"content": long_string}}]
+        })
+        
+        truncated = renderer._check_and_truncate_payload(large_payload, max_size=1000)
+        truncated_obj = json.loads(truncated)
+        
+        # Verify structure preserved
+        self.assertIn("header", truncated_obj)
+        self.assertIn("elements", truncated_obj)
+        
+        # Verify string truncated
+        content = truncated_obj["elements"][0]["text"]["content"]
+        self.assertLess(len(content), 2000)
+        self.assertIn("...(已截断)", content)
+        
+        # Verify warning added
+        self.assertTrue(any("内容过长" in str(e) for e in truncated_obj["elements"]))
+        
+        # Case 3: Deeply nested truncation
+        nested_payload = json.dumps({
+            "level1": {
+                "level2": {
+                    "level3": {
+                        "content": long_string
+                    }
+                }
+            }
+        })
+        truncated = renderer._check_and_truncate_payload(nested_payload, max_size=1000)
+        truncated_obj = json.loads(truncated)
+        content = truncated_obj["level1"]["level2"]["level3"]["content"]
+        self.assertIn("...(已截断)", content)
+        
+        # Case 4: Fallback for massive structure
+        # Create a structure that is still too big even after string truncation (e.g. huge list)
+        huge_list = [{"content": "a" * 10}] * 1000
+        massive_payload = json.dumps({"elements": huge_list})
+        
+        # Set max_size small to force fallback
+        fallback = renderer._check_and_truncate_payload(massive_payload, max_size=500)
+        fallback_obj = json.loads(fallback)
+        
+        # Verify fallback card structure
+        self.assertIn("header", fallback_obj)
+        self.assertIn("卡片过大", fallback_obj["header"]["title"]["content"])
+
     def test_system_handler_dispatch(self):
         """Test that SystemHandler correctly dispatches commands using the new registry."""
         mock_ctx = MagicMock()

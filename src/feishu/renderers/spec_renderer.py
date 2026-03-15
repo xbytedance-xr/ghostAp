@@ -78,35 +78,35 @@ class SpecRenderer(BaseRenderer):
 
         def on_cycle_start(current: int, max_cycles: int):
             self.update_ui_state(spec_project_id, view_mode="status", view_context={})
-            
+
             engine = self.ctx.spec_engine_manager.get(chat_id, project.root_path if project else "")
             spec_project = engine.project if engine else None
-            
+            state = self.get_ui_state(spec_project_id)
+
             criteria_status = ""
             progress_bar = None
             status_line = None
             duration_line = None
             criteria_section = None
-            
+
             if spec_project:
                 criteria_status = reporter.format_criteria_brief(spec_project)
                 progress_bar = self._generate_progress_bar(spec_project.satisfied_count, spec_project.total_criteria)
                 status_line = reporter.format_status_line(spec_project)
                 duration_line = reporter.format_duration_line(spec_project)
                 criteria_section = reporter.format_criteria_section(spec_project)
-                
+
                 criteria_section = self._render_collapsible_section(
                     criteria_section,
                     total_items=spec_project.total_criteria,
                     expanded=state.get("expand_ac", False),
                     completed_count=spec_project.satisfied_count,
                 )
-                
+
             content = reporter.format_cycle_start(current, max_cycles, criteria_status=criteria_status)
             title = reporter.get_cycle_start_title(current, max_cycles)
             title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
-            
-            state = self.get_ui_state(spec_project_id)
+
             msg_type, card_content = CardBuilder.build_deep_card(
                 project=project,
                 state=DeepCardState(

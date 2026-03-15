@@ -39,7 +39,7 @@ class TestCardPayloadSafety(unittest.TestCase):
         
         # Verify text was truncated
         self.assertTrue(len(truncated_text) < 5000)
-        self.assertTrue(truncated_text.endswith("...(content truncated due to size limit)"))
+        self.assertTrue(truncated_text.endswith("...(已截断)"))
         
         # Verify size constraint met (approx)
         self.assertTrue(len(result.encode('utf-8')) <= max_size + 500) # Allow small buffer for JSON overhead overhead calculation mismatch if any
@@ -61,7 +61,7 @@ class TestCardPayloadSafety(unittest.TestCase):
         
         deep_val = truncated_card["body"]["nested"]["deep"]
         self.assertTrue(len(deep_val) < 5000)
-        self.assertIn("truncated", deep_val)
+        self.assertIn("已截断", deep_val)
 
     def test_fallback_truncation(self):
         """Test drastic fallback if truncation fails to reduce size enough"""

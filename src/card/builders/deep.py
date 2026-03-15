@@ -85,6 +85,38 @@ class DeepBuilder:
         }
 
     @staticmethod
+    def _build_deep_buttons(state: DeepCardState) -> list[dict]:
+        """Build a flat list of deep engine buttons (for backward compatibility with tests)."""
+        buttons = []
+
+        # Control buttons
+        if state.is_executing:
+            buttons.append(DeepBuilder._create_button("pause", state))
+            buttons.append(DeepBuilder._create_button("stop", state))
+        elif state.is_paused:
+            buttons.append(DeepBuilder._create_button("resume", state))
+            buttons.append(DeepBuilder._create_button("stop", state))
+
+        # View buttons
+        lines = (state.content or "").split('\n')
+        threshold = 5 if state.compact else 10
+        if len(lines) > threshold:
+            action_key = "collapse" if state.expanded else "expand"
+            buttons.append(DeepBuilder._create_button(action_key, state))
+
+        # Mode switch
+        mode_key = "mode_full" if state.compact else "mode_compact"
+        buttons.append(DeepBuilder._create_button(mode_key, state))
+
+        # Feature-specific buttons
+        style = DeepBuilder._resolve_style(state.engine_name)
+        features = style.get("features", {})
+        if features.get("history_button"):
+            buttons.append(DeepBuilder._create_button("history", state))
+
+        return [apply_compact_style(b) for b in buttons if b]
+
+    @staticmethod
     def _build_grouped_layout(state: DeepCardState) -> list[dict]:
         """Build layout with grouped control buttons (Pause/Stop side-by-side)."""
         control_buttons = []

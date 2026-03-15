@@ -194,10 +194,15 @@ class TestInteractiveStrategy(unittest.TestCase):
             return_value=type("S", (), {"ttadk_interactive_enabled": True})(),
         )
         self._settings_patcher.start()
+        
+        # Mock sys.stdin.isatty to True for all these tests
+        self._isatty_patcher = patch("sys.stdin.isatty", return_value=True)
+        self._isatty_patcher.start()
 
     def tearDown(self):
         try:
             self._settings_patcher.stop()
+            self._isatty_patcher.stop()
         except Exception:
             pass
 
@@ -527,7 +532,65 @@ class TestModelFetcherDiagnostics(unittest.TestCase):
         self.assertEqual(a.get("fail_reason"), "official_cli_probe_failed")
 
 
-class TestTTADKCLICapabilitiesProbe(unittest.TestCase):
+class TestInteractiveStrategyEnv(unittest.TestCase):
+    
+    def test_non_tty_skips(self):
+        """Test that InteractiveStrategy skips execution when not in TTY environment."""
+        import sys
+        strategy = InteractiveStrategy()
+        
+        # Mock sys.stdin.isatty to return False
+        with patch('sys.stdin.isatty', return_value=False):
+            # Ensure no environment variables force it
+            with patch.dict(os.environ, {}, clear=True):
+                result = strategy.fetch("test_tool")
+                self.assertEqual(result, [])
+    
+    def test_ci_env_skips(self):
+        """Test that InteractiveStrategy skips in CI environment even if TTY says yes (some CIs mimic TTY)."""
+        strategy = InteractiveStrategy()
+        
+        # Mock sys.stdin.isatty to return True (simulating a CI runner with PTY)
+        with patch('sys.stdin.isatty', return_value=True):
+            # Set CI env var
+            with patch.dict(os.environ, {'CI': 'true'}):
+                result = strategy.fetch("test_tool")
+                self.assertEqual(result, [])
+                
+    def test_debian_frontend_skips(self):
+        """Test that InteractiveStrategy skips when DEBIAN_FRONTEND=noninteractive."""
+        strategy = InteractiveStrategy()
+        
+        with patch('sys.stdin.isatty', return_value=True):
+            with patch.dict(os.environ, {'DEBIAN_FRONTEND': 'noninteractive'}):
+                result = strategy.fetch("test_tool")
+                self.assertEqual(result, [])
+
+    def test_force_interactive_env(self):
+        """Test that TTADK_FORCE_INTERACTIVE overrides checks."""
+        strategy = InteractiveStrategy()
+        
+        # Must enable the feature flag first
+        with patch("src.config.get_settings", return_value=type("S", (), {"ttadk_interactive_enabled": True})()):
+            # Should run even if not TTY if forced
+            with patch('sys.stdin.isatty', return_value=False):
+                with patch.dict(os.environ, {'TTADK_FORCE_INTERACTIVE': '1'}):
+                    # Mock _run_interactive to avoid actual execution
+                    # But fetch calls openpty etc directly.
+                    # We need to mock pty.openpty to check if it proceeds past the check
+                    with patch('pty.openpty') as mock_pty:
+                        mock_pty.return_value = (1, 2) # master, slave fds
+                        with patch('os.close'), patch('fcntl.ioctl'), patch('subprocess.Popen'):
+                            # Just ensure it tries to run (mocking enough to not crash)
+                            try:
+                                strategy.fetch("test_tool")
+                            except Exception:
+                                # It might fail later in the function, but we just want to know 
+                                # if it passed the early return check.
+                                # If it returns [] immediately, mock_pty won't be called.
+                                pass
+                            
+                            mock_pty.assert_called()
     def test_cli_capabilities_probe_records_attempt_and_dedupes_concurrency(self):
         """回归：ttadk CLI 能力探测应写入 diagnostics.attempts，并支持并发去重（最多执行一次 run_simple）。"""
         import threading

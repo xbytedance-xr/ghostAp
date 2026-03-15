@@ -43,8 +43,9 @@ class SystemHandler(BaseHandler):
         """Initialize the command dispatch registry."""
         # Exact match handlers: command -> handler_func(message_id, chat_id, text, project)
         self._exact_handlers = {
-            "/help": self.show_full_help,
-            "/帮助": self.show_full_help,
+            "/help": lambda m, c, t, p: self.show_full_help(m, c, p),
+            "/帮助": lambda m, c, t, p: self.show_full_help(m, c, p),
+            "/coco_status": lambda m, c, t, p: self.show_coco_status(m, c),
             "/coco_info": lambda m, c, t, p: self.coco_handler.show_info(m, c, p),
             "/claude_info": lambda m, c, t, p: self.claude_handler.show_info(m, c, p),
             "/projects": lambda m, c, t, p: self.project_handler.show_project_board(m, c),
@@ -599,3 +600,18 @@ class SystemHandler(BaseHandler):
 
     def show_full_help(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         self.handle_help_category(message_id, chat_id, "main", project)
+
+    def show_coco_status(self, message_id: str, chat_id: str):
+        manager = get_coco_model_manager()
+        current_model = manager.get_current_model()
+        models = manager.get_models().models
+        
+        status_lines = ["**🤖 Coco 状态**\n"]
+        status_lines.append(f"当前模型: `{current_model or '未设置 (默认)'}`")
+        
+        status_lines.append("\n**可用模型:**")
+        for m in models:
+             mark = "✅ " if m.name == current_model else "   "
+             status_lines.append(f"{mark}`{m.name}` - {m.description}")
+             
+        self.reply_message(message_id, "\n".join(status_lines))

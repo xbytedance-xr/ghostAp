@@ -130,8 +130,10 @@ class CardBuilder:
     def build_status_board_card(
         projects: list[ProjectContext],
         current_project_id: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 5,
     ) -> tuple[str, str]:
-        return ProjectBuilder.build_status_board_card(projects, current_project_id)
+        return ProjectBuilder.build_status_board_card(projects, current_project_id, page, page_size)
 
     @staticmethod
     def build_notification_card(
@@ -232,7 +234,53 @@ class CardBuilder:
         return DeepBuilder._build_deep_buttons(state)
 
     @staticmethod
-    def build_deep_card(project: Optional[ProjectContext], state: DeepCardState) -> tuple[str, str]:
+    def build_deep_card(
+        project: Optional[ProjectContext],
+        state: Optional[DeepCardState] = None,
+        *,
+        title: str = "",
+        content: str = "",
+        engine_name: str = "Coco",
+        show_buttons: bool = True,
+        working_dir: Optional[str] = None,
+        progress_bar: Optional[str] = None,
+        deep_project_id: Optional[str] = None,
+        is_executing: bool = False,
+        is_paused: bool = False,
+        status_line: Optional[str] = None,
+        duration_line: Optional[str] = None,
+        criteria_section: Optional[str] = None,
+        footer_note: Optional[str] = None,
+        compact: bool = False,
+        expanded: bool = False,
+        expand_ac: bool = False,
+        action_prefix: str = "deep",
+    ) -> tuple[str, str]:
+        """Build a deep engine card.
+
+        Supports both new API (passing DeepCardState) and legacy API
+        (passing individual keyword arguments) for backward compatibility.
+        """
+        if state is None:
+            state = DeepCardState(
+                title=title,
+                content=content,
+                progress_bar=progress_bar,
+                deep_project_id=deep_project_id,
+                is_executing=is_executing,
+                is_paused=is_paused,
+                engine_name=engine_name,
+                show_buttons=show_buttons,
+                working_dir=working_dir,
+                status_line=status_line,
+                duration_line=duration_line,
+                criteria_section=criteria_section,
+                footer_note=footer_note,
+                compact=compact,
+                expanded=expanded,
+                expand_ac=expand_ac,
+                action_prefix=action_prefix,
+            )
         return DeepBuilder.build_deep_card(project, state)
 
     @staticmethod

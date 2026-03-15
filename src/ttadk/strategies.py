@@ -10,6 +10,7 @@ import termios
 import select
 import time
 import json
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -22,6 +23,34 @@ from .models import parse_ttadk_models_from_output
 from .models import parse_ttadk_models_from_output_to_models
 
 logger = logging.getLogger(__name__)
+
+
+def _env_truthy(name: str) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return False
+    s = str(v).strip().lower()
+    return s not in ("", "0", "false", "no", "off")
+
+
+def _in_ci_environment() -> bool:
+    # Common CI markers. Keep this list conservative: false positives are worse
+    # than missing a niche CI.
+    for k in (
+        "CI",
+        "GITHUB_ACTIONS",
+        "GITLAB_CI",
+        "BUILDKITE",
+        "CIRCLECI",
+        "TRAVIS",
+        "TF_BUILD",
+        "TEAMCITY_VERSION",
+        "JENKINS_URL",
+        "BUILD_NUMBER",
+    ):
+        if _env_truthy(k):
+            return True
+    return False
 
 
 class TTADKProbeError(RuntimeError):
@@ -313,6 +342,31 @@ class InteractiveStrategy(ModelFetchStrategy):
                 return []
         except Exception:
             return []
+
+        # 环境预检：非交互式环境直接跳过，避免无效等待。
+        # 允许通过环境变量强制开启：TTADK_FORCE_INTERACTIVE=1
+        if not _env_truthy("TTADK_FORCE_INTERACTIVE"):
+            # 1) stdin TTY 检测（某些 runner 会将 sys.stdin 替换成非标准对象）
+            is_tty = False
+            try:
+                stdin = getattr(sys, "stdin", None)
+                isatty = getattr(stdin, "isatty", None)
+                is_tty = bool(isatty()) if callable(isatty) else False
+            except Exception:
+                is_tty = False
+            if not is_tty:
+                logger.debug("InteractiveStrategy skipped: not a TTY")
+                return []
+
+            # 2) CI / 非交互环境检测
+            try:
+                if _in_ci_environment() or (os.getenv("DEBIAN_FRONTEND") == "noninteractive"):
+                    logger.debug("InteractiveStrategy skipped: detected CI/noninteractive environment")
+                    return []
+            except Exception:
+                # 若环境变量读取异常，保持保守：跳过交互策略
+                logger.debug("InteractiveStrategy skipped: environment detection failed")
+                return []
 
         logger.info(f"InteractiveStrategy starting for tool {tool_name}")
         master, slave = None, None
