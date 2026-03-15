@@ -100,7 +100,9 @@ class SandboxExecutor:
             if interactive:
                 cmd_args = [shell_path, "-i", "-c", command]
             else:
-                cmd_args = [shell_path, "-c", command]
+                # Use login shell (-l) to ensure environment variables (PATH, nvm, etc.) are loaded
+                # even in non-interactive mode. This fixes "command not found" for user-installed tools.
+                cmd_args = [shell_path, "-l", "-c", command]
 
             process = subprocess.run(
                 cmd_args,
@@ -121,7 +123,9 @@ class SandboxExecutor:
                 ignore_patterns = [
                     "no job control in this shell",
                     "cannot set terminal process group",
-                    "Inappropriate ioctl for device"
+                    "Inappropriate ioctl for device",
+                    "bash: cannot set terminal process group",
+                    "The input device is not a TTY",
                 ]
                 stderr = "\n".join([
                     line for line in stderr.splitlines() 

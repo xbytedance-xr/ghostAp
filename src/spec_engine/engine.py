@@ -94,6 +94,7 @@ class ContinuationPolicy:
     infinite_mode: bool = False
     disable_convergence: bool = False
     disable_early_stop: bool = False
+    min_cycles: int = 1
 
     def should_stop(
         self,
@@ -103,6 +104,10 @@ class ContinuationPolicy:
         converged: bool,
         metrics: SpecCycleMetrics,
     ) -> Optional[str]:
+        # Force at least min_cycles if we haven't hit max_cycles
+        if cycle_num < self.min_cycles and cycle_num < self.max_cycles:
+            return None
+
         # Success always stops
         if all_satisfied and review_passed:
             # Bug fix: don't stop if we have pending work items (backlog)
@@ -873,6 +878,7 @@ class SpecEngine:
             infinite_mode=self._get_bool_setting("spec_infinite_mode", False),
             disable_convergence=self._get_bool_setting("spec_disable_convergence", False),
             disable_early_stop=self._get_bool_setting("spec_disable_early_stop", False),
+            min_cycles=2,  # Spec mode defaults to at least 2 cycles to ensure discovery
         )
 
         for cycle_num in range(start_cycle, max_cycles + 1):
@@ -1120,7 +1126,15 @@ class SpecEngine:
             requested = int(requested)
         except Exception:
             requested = 10
-        limit = int(getattr(self.settings, "spec_max_cycles_limit", 5000) or 5000)
+        
+        limit = 5000
+        try:
+            val = getattr(self.settings, "spec_max_cycles_limit", 5000)
+            if val is not None:
+                limit = int(val)
+        except Exception:
+            limit = 5000
+            
         if limit <= 0:
             limit = 5000
         if requested <= 0:

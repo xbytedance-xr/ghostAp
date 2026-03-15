@@ -26,6 +26,7 @@ from .acp.models import ACPEvent, ACPEventType, PromptResult
 from .acp.sync_adapter import SyncACPSession
 from .config import get_settings
 from .ttadk.models import ModelListResult, ResolvedModelResult
+from .ttadk.env_sandbox import build_ttadk_subprocess_env
 
 logger = logging.getLogger(__name__)
 
@@ -373,15 +374,50 @@ class SyncTTADKCLISession:
         cmd.append(text)
 
         chunks: list[str] = []
+        stderr_chunks: list[str] = []
+        
+        # ANSI escape sequence regex
+        ansi_escape = _re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
+        def _strip_ansi(s: str) -> str:
+            return ansi_escape.sub('', s)
+        
+        def _read_stderr(pipe):
+            try:
+                for line in pipe:
+                    stderr_chunks.append(line)
+            except Exception:
+                pass
+
         try:
+            # Use unified environment sandbox for consistency and safety
+            # This ensures PATH, PYTHONPATH, and other critical vars are set correctly
+            # just like in other TTADK components (fetcher, runner).
+            env, _ = build_ttadk_subprocess_env(
+                cwd=self._cwd, 
+                agent_type=self._agent_type, 
+                tool_name=self._tool_name
+            )
+            
+            # Force unbuffered output to ensure real-time streaming
+            env["PYTHONUNBUFFERED"] = "1"
+            # Force no color to simplify output parsing
+            env["NO_COLOR"] = "1"
+            env["TERM"] = "dumb"
+            
             self._proc = subprocess.Popen(
                 cmd,
                 cwd=self._cwd,
+                env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 bufsize=1, # Line buffered
             )
+            
+            # Start stderr reader thread to prevent deadlock
+            stderr_thread = threading.Thread(target=_read_stderr, args=(self._proc.stderr,), daemon=True)
+            stderr_thread.start()
 
             deadline = (time.monotonic() + timeout) if timeout else None
             
@@ -398,13 +434,16 @@ class SyncTTADKCLISession:
                         self._proc.wait(timeout=5)
                         return PromptResult(stop_reason="timeout", text="".join(chunks) + "\n❌ TTADK 执行超时")
 
-                    chunks.append(line)
+                    clean_line = _strip_ansi(line)
+                    chunks.append(clean_line)
                     if on_event:
-                        on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=line))
+                        on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=clean_line))
 
             self._proc.wait(timeout=30)
+            stderr_thread.join(timeout=1)
+
             rc = int(self._proc.returncode or 0)
-            err = (self._proc.stderr.read() or "").strip() if self._proc.stderr else ""
+            err = _strip_ansi("".join(stderr_chunks).strip())
             
             output = "".join(chunks).strip()
             
@@ -1647,9 +1686,8 @@ def create_sync_session(agent_type: str, cwd: str, model_name: Optional[str] = N
             )
         except Exception:
             model_name = None
-        # NOTE: create_sync_session 仅构造会话（不负责启动/重试/PTY）；PTY 重试在启动点处理。
-        # 切换到 ACP backend
-        return SyncACPSession(agent_type=agent_type, cwd=cwd, model_name=model_name, ttadk_use_pty=True)
+        # Switch to CLI backend
+        return SyncTTADKCLISession(agent_type=agent_type, cwd=cwd, model_name=model_name)
 
     return SyncACPSession(agent_type=agent_type or "coco", cwd=cwd, model_name=effective_model)
 
@@ -1709,36 +1747,39 @@ def create_engine_session(
         session: SyncSession = SyncClaudeCLISession(cwd=cwd)
         session.start()
     elif agent_type.startswith("ttadk_"):
-        # Use SSOT startup coordinator which handles precheck, PTY retry, and invalid model auto-repair.
+        # TTADK CLI mode: precheck model then use CLI session
+        # Switch to CLI backend as requested, replacing the previous ACP startup coordinator.
         try:
-            from .ttadk.startup import start_agent_session
+            from .ttadk.startup_common import precheck_ttadk_startup_model
 
-            info = start_agent_session(
+            # 1. Precheck to resolve model name
+            info = precheck_ttadk_startup_model(
                 agent_type=agent_type,
                 cwd=cwd,
-                startup_timeout=settings.acp_startup_timeout,
-                model_name=model_name,
-                log_failures=True,
+                model_intent=model_name
             )
 
-            # Compat: log summary for tests/legacy parsers
-            try:
-                logger.info(
-                    "[SessionFactory] ttadk startup: tool=%s input_model=%s model=%s validated=%s source=%s decision=%s warnings=%s",
-                    info.get("tool") or "",
-                    info.get("input_model") or "",
-                    (info.get("resolved_model") or "(auto)"),
-                    bool(info.get("validated")),
-                    info.get("source") or "unknown",
-                    info.get("decision") or "",
-                    list(info.get("warnings") or []),
-                )
-            except Exception:
-                pass
+            resolved_model = info.get("model")  # Validated model ID or None (auto)
 
-            session = info["session"]
+            logger.info(
+                "[SessionFactory] ttadk cli startup: tool=%s input_model=%s model=%s validated=%s source=%s warnings=%s",
+                info.get("tool") or "",
+                info.get("input_model") or "",
+                (resolved_model or "(auto)"),
+                bool(info.get("validated")),
+                info.get("source") or "unknown",
+                list(info.get("warnings") or []),
+            )
+
+            # 2. Create CLI session
+            session = SyncTTADKCLISession(
+                agent_type=agent_type,
+                cwd=cwd,
+                model_name=resolved_model
+            )
+            session.start()
+
         except Exception:
-            # Fallback (though start_agent_session should handle most cases/downgrades)
             raise
     else:
         effective_model = model_name

@@ -403,11 +403,11 @@ def test_coordinate_ttadk_startup_degrade_attempt_has_context_fields(monkeypatch
 def test_ttadk_startup_ssot_call_chain_create_engine_session(monkeypatch):
     """标注并验证 TTADK 启动链路 SSOT 调用点。
 
-    目标：确认 `src.agent_session.create_engine_session(ttadk_*)` 必经
-    `src.ttadk.startup.start_agent_session()`，且其返回的 `info["session"]`
-    会作为最终 session 返回（不被其它分支绕过）。
+    目标：确认 src.agent_session.create_engine_session(ttadk_*) 必经
+    src.ttadk.startup_common.precheck_ttadk_startup_model()，且返回 SyncTTADKCLISession。
     """
     import src.agent_session as agent_session
+    from src.agent_session import SyncTTADKCLISession
 
     # 关闭 rate limit wrapper，避免影响“返回 session 是否为 SSOT result”的断言
     monkeypatch.setattr(
@@ -419,43 +419,34 @@ def test_ttadk_startup_ssot_call_chain_create_engine_session(monkeypatch):
     # 让 ModelFailureAwareSession 变成 identity，避免包装影响断言
     monkeypatch.setattr(agent_session, "ModelFailureAwareSession", lambda **kw: kw["inner"], raising=False)
 
-    called: list[dict] = []
+    precheck_called: list[dict] = []
 
-    class _DummySess:
-        def __init__(self):
-            self.session_id = "ssot"
-
-    expected_sess = _DummySess()
-
-    def _fake_start_agent_session(**kwargs):
-        called.append(dict(kwargs))
+    def _fake_precheck_ttadk_startup_model(**kwargs):
+        precheck_called.append(dict(kwargs))
         return {
-            "session": expected_sess,
-            "session_id": "ssot",
             "tool": "codex",
-            "input_model": kwargs.get("model_name") or "",
+            "input_model": kwargs.get("model_intent") or "",
             "resolved_real_name": "",
             "passthrough_model": None,
-            "resolved_model": "(auto)",
-            "validated": False,
+            "model": "gpt-5.2-codex-ttadk", # validated model
+            "validated": True,
             "source": "defaults",
-            "warnings": ["no_m_passthrough"],
-            "degraded": False,
-            "repaired": False,
-            "fail_phase": "",
-            "decision": "start_ok",
+            "warnings": [],
+            "decision": "precheck_validated",
             "diagnostics": {"attempts": []},
         }
 
-    monkeypatch.setattr("src.ttadk.startup.start_agent_session", _fake_start_agent_session)
+    monkeypatch.setattr("src.ttadk.startup_common.precheck_ttadk_startup_model", _fake_precheck_ttadk_startup_model)
 
     sess = agent_session.create_engine_session(agent_type="ttadk_codex", cwd="/tmp", model_name="gpt-5.2")
-    assert sess is expected_sess
-    assert len(called) == 1
-    assert called[0]["agent_type"] == "ttadk_codex"
-    assert called[0]["cwd"] == "/tmp"
-    assert called[0]["model_name"] == "gpt-5.2"
-    assert called[0]["startup_timeout"] == 3
+    
+    assert isinstance(sess, SyncTTADKCLISession)
+    assert len(precheck_called) == 1
+    assert precheck_called[0]["agent_type"] == "ttadk_codex"
+    assert precheck_called[0]["cwd"] == "/tmp"
+    assert precheck_called[0]["model_intent"] == "gpt-5.2"
+    # Check if model name was passed to session
+    assert getattr(sess, "_model_name") == "gpt-5.2-codex-ttadk"
 
 
 def test_ttadk_startup_summary_log_fields_success(monkeypatch, caplog):
@@ -1928,16 +1919,17 @@ def test_create_sync_session_ttadk_only_passes_model_when_validated(monkeypatch)
     """create_sync_session(ttadk_*)：仅 validated 才透传 -m，否则传 None。"""
     import src.agent_session as agent_session
     from src.ttadk.models import ResolvedModelResult
+    from src.agent_session import SyncTTADKCLISession
 
     calls: list[dict] = []
 
-    class _DummySession:
+    class _DummyCLISession(SyncTTADKCLISession):
         def __init__(self, agent_type: str, cwd: str, model_name=None, **kwargs):
             calls.append({"agent_type": agent_type, "cwd": cwd, "model_name": model_name})
             self.session_id = "dummy"
 
-    # Patch SyncACPSession used by create_sync_session
-    monkeypatch.setattr(agent_session, "SyncACPSession", _DummySession)
+    # Patch SyncTTADKCLISession used by create_sync_session
+    monkeypatch.setattr(agent_session, "SyncTTADKCLISession", _DummyCLISession)
 
     class _DummyMgr:
         def get_current_model(self):
@@ -1953,13 +1945,49 @@ def test_create_sync_session_ttadk_only_passes_model_when_validated(monkeypatch)
                 warnings=["models_untrusted"],
             )
 
-    # create_sync_session 内部是 `from .ttadk import get_ttadk_manager`
-    # 因此需 patch 到 src.ttadk.get_ttadk_manager
+    # create_sync_session 内部是 `from .ttadk.startup_common import precheck_ttadk_startup_model`
+    # precheck helper 会调用 manager
     monkeypatch.setattr("src.ttadk.get_ttadk_manager", lambda *a, **kw: _DummyMgr())
 
     s = agent_session.create_sync_session(agent_type="ttadk_codex", cwd="/tmp", model_name="gpt-5.2")
     assert getattr(s, "session_id", "") == "dummy"
     assert calls and calls[-1]["model_name"] is None
+
+
+def test_create_sync_session_ttadk_passes_real_model_when_validated(monkeypatch):
+    """create_sync_session(ttadk_*)：validated=True 时透传 real model。"""
+    import src.agent_session as agent_session
+    from src.ttadk.models import ResolvedModelResult
+    from src.agent_session import SyncTTADKCLISession
+
+    calls: list[dict] = []
+
+    class _DummyCLISession(SyncTTADKCLISession):
+        def __init__(self, agent_type: str, cwd: str, model_name=None, **kwargs):
+            calls.append({"agent_type": agent_type, "cwd": cwd, "model_name": model_name})
+            self.session_id = "dummy"
+
+    monkeypatch.setattr(agent_session, "SyncTTADKCLISession", _DummyCLISession)
+
+    class _DummyMgr:
+        def get_current_model(self):
+            return ""
+
+        def resolve_and_ensure_valid_model(self, model_name, tool_name=None, cwd=None):
+            return ResolvedModelResult(
+                tool_name=tool_name or "",
+                input_name=model_name,
+                real_name="gpt-5.2-codex-ttadk",
+                source="probe",
+                validated=True,
+                warnings=[],
+            )
+
+    monkeypatch.setattr("src.ttadk.get_ttadk_manager", lambda *a, **kw: _DummyMgr())
+
+    s = agent_session.create_sync_session(agent_type="ttadk_codex", cwd="/tmp", model_name="gpt-5.2")
+    assert getattr(s, "session_id", "") == "dummy"
+    assert calls and calls[-1]["model_name"] == "gpt-5.2-codex-ttadk"
 
 
 def test_resolve_ttadk_engine_startup_model_delegates_to_precheck(monkeypatch):
@@ -1990,41 +2018,7 @@ def test_resolve_ttadk_engine_startup_model_delegates_to_precheck(monkeypatch):
     assert info["resolved_model"] == "gpt-5.2-codex-ttadk"
 
 
-def test_create_sync_session_ttadk_passes_real_model_when_validated(monkeypatch):
-    """create_sync_session(ttadk_*)：validated=True 时透传 real model。"""
-    import src.agent_session as agent_session
-    from src.ttadk.models import ResolvedModelResult
-
-    calls: list[dict] = []
-
-    class _DummySession:
-        def __init__(self, agent_type: str, cwd: str, model_name=None, **kwargs):
-            calls.append({"agent_type": agent_type, "cwd": cwd, "model_name": model_name})
-            self.session_id = "dummy"
-
-    monkeypatch.setattr(agent_session, "SyncACPSession", _DummySession)
-
-    class _DummyMgr:
-        def get_current_model(self):
-            return ""
-
-        def resolve_and_ensure_valid_model(self, model_name, tool_name=None, cwd=None):
-            return ResolvedModelResult(
-                tool_name=tool_name or "",
-                input_name=model_name,
-                real_name="gpt-5.2-codex-ttadk",
-                source="probe",
-                validated=True,
-                warnings=[],
-            )
-
-    monkeypatch.setattr("src.ttadk.get_ttadk_manager", lambda *a, **kw: _DummyMgr())
-
-    s = agent_session.create_sync_session(agent_type="ttadk_codex", cwd="/tmp", model_name="gpt-5.2")
-    assert getattr(s, "session_id", "") == "dummy"
-    assert calls and calls[-1]["model_name"] == "gpt-5.2-codex-ttadk"
-
-
+@pytest.mark.skip(reason="Outdated: TTADK now uses CLI backend which does not validate model at startup")
 def test_create_engine_session_ttadk_invalid_model_auto_corrects_with_available_models(monkeypatch):
     """端到端夹具：ACP 可用的 TTADK tool（如 coco）启动遇到 Invalid model + Available models 时，应自动纠错并重试成功。"""
     import src.agent_session as agent_session
@@ -2124,6 +2118,7 @@ def test_create_engine_session_ttadk_invalid_model_auto_corrects_with_available_
     assert calls[1]["model_name"] == "gpt-5.2-ttadk"
 
 
+@pytest.mark.skip(reason="Outdated: TTADK now uses CLI backend which does not validate model at startup")
 def test_create_engine_session_ttadk_invalid_model_triggers_force_refresh_when_no_available_models(monkeypatch):
     """端到端夹具：Invalid model 但 Available models 为空时，应触发 force_refresh 并重试到真实名。"""
 
@@ -2222,6 +2217,7 @@ def test_create_engine_session_ttadk_invalid_model_triggers_force_refresh_when_n
     assert calls[1]["model_name"] == "gpt-5.2-ttadk"
 
 
+@pytest.mark.skip(reason="Outdated: TTADK now uses CLI backend which does not use ACP adapter")
 def test_create_engine_session_ttadk_protocol_adapter_failure_degrades_to_coco(monkeypatch):
     """端到端夹具：TTADK 协议适配失败（如 codex/claude 无法 ACP）应直接降级到 coco，不进入长时间等待。"""
     import src.agent_session as agent_session
@@ -2975,6 +2971,7 @@ def test_acp_session_manager_ttadk_coordinator_failure_degrades_to_coco(monkeypa
     assert "acp" in " ".join(created[-1]["agent_args"]).lower()
 
 
+@pytest.mark.skip(reason="Outdated: TTADK now uses CLI backend which does not use ACP adapter")
 def test_create_engine_session_ttadk_claude_adapter_failure_degrades_to_coco(monkeypatch):
     """TTADK tool=claude 若快速探测发现不产出 ACP JSON-RPC，应降级到 coco。"""
     import src.agent_session as agent_session

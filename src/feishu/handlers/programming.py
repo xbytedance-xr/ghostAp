@@ -694,132 +694,19 @@ class TTADKModeHandler(ProgrammingModeHandler):
     def _clear_snapshot_on_project(self, project):
         project.ttadk_session_snapshot = None
 
-    # ------------------------------------------------------------------
-    # enter_mode (Override to avoid starting ACP session)
-    # ------------------------------------------------------------------
-    def enter_mode(self, message_id: str, chat_id: str, silent: bool = False, project: Optional["ProjectContext"] = None):
-        project_id = project.project_id if project else None
+    def _get_agent_type_override(self, project: Optional["ProjectContext"] = None) -> Optional[str]:
+        tool = self._current_tool
+        if not tool:
+             from ...ttadk import get_ttadk_manager
+             tool = get_ttadk_manager().get_current_tool() or "coco"
+        return f"ttadk_{tool}"
 
-        if self._is_in_this_mode(chat_id):
-            if not silent:
-                self.reply_message(
-                    message_id,
-                    fmt.format_warning(f"已经在{self.mode_name}模式中\n\n说「退出模式」或发送 /exit 退出"),
-                )
-            return
-
-        previous_mode = self.mode_manager.get_mode(chat_id)
-
-        # Mutual exclusion
-        if self._is_in_opposite_mode(chat_id):
-            self._exit_opposite_mode(message_id, chat_id, project=project)
-
-        # Switch mode on manager (lightweight, no ACP session)
-        self._enter_mode_on_manager(chat_id, project_id=project_id)
-        
-        # Init default tool/model if not set
-        if not self._current_tool:
-            from ...ttadk import get_ttadk_manager
-            mgr = get_ttadk_manager()
-            self._current_tool = mgr.get_current_tool()
-            self._current_model = mgr.get_current_model()
-
-        if project:
-            self._set_mode_on_project(project, True)
-            if not silent:
-                content = f"{self.mode_emoji} 已进入{self.mode_name}模式\n\n当前工具: `{self._current_tool}`\n当前模型: `{self._current_model}`\n\n发送消息将直接调用 CLI 执行"
-                msg_type, card_content = CardBuilder.build_project_response_card(
-                    project, f"{self.mode_emoji} {self.mode_name}模式", content, show_buttons=True,
-                    footer=f"📂 项目目录: {project.root_path}",
-                )
-                response_id = self.reply_message_with_id(message_id, card_content, msg_type)
-                if response_id:
-                    self.register_message_project(response_id, project)
-            
-            self.record_mode_transition(
-                project.project_id, previous_mode, self._get_interaction_mode(),
-                reason=f"enter_{self.mode_name.lower()}_mode",
-            )
-        else:
-            if not silent:
-                self.reply_message(
-                    message_id, 
-                    f"{self.mode_emoji} 已进入 {self.mode_name} 模式\n\n当前工具: `{self._current_tool}`\n当前模型: `{self._current_model}`\n\n发送消息将直接调用 CLI 执行"
-                )
-
-    # ------------------------------------------------------------------
-    # handle_message (Override to use CLI execution instead of ACP)
-    # ------------------------------------------------------------------
-    def handle_message(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"] = None):
-        from ...ttadk import get_ttadk_manager
-        
-        # Resolve CWD
-        global_working_dir = self.get_working_dir(chat_id)
-        cwd = project.root_path if project else global_working_dir
-        
-        # Resolve tool/model
-        manager = get_ttadk_manager()
-        tool = self._current_tool or manager.get_current_tool() or "coco"
-        model_intent = self._current_model or manager.get_current_model()
-        
-        self.reply_message(message_id, f"⏳ 正在执行: `ttadk code -t {tool} ...`")
-        
-        try:
-            # Execute via CLI wrapper (SSOT: execute_ttadk_code_with_repair)
-            # We pass user text as the last argument
-            result = manager.execute_ttadk_code_with_repair(
-                tool_name=tool,
-                cwd=cwd,
-                input_model=model_intent,
-                extra_args=[text],
-                timeout_s=120.0, # Longer timeout for actual execution
-            )
-            
-            # Format output
-            ok = bool(result.get("ok"))
-            stdout_snip = ""
-            stderr_snip = ""
-            attempts = list(result.get("attempts") or [])
-            if attempts:
-                last = attempts[-1]
-                stdout_snip = last.get("stdout_snippet") or ""
-                stderr_snip = last.get("stderr_snippet") or ""
-            
-            # Build simple result card/text
-            title = "执行成功" if ok else "执行失败"
-            
-            output_blocks = []
-            if stdout_snip:
-                output_blocks.append(f"📤 Output:\n```\n{stdout_snip}\n```")
-            if stderr_snip:
-                output_blocks.append(f"⚠️ Stderr:\n```\n{stderr_snip}\n```")
-            
-            if not ok:
-                fail_reason = result.get("fail_reason") or "unknown"
-                output_blocks.insert(0, f"❌ 失败原因: {fail_reason}")
-                next_steps = result.get("next_steps") or []
-                if next_steps:
-                    output_blocks.append("💡 建议: " + "; ".join(next_steps))
-            
-            response_text = "\n\n".join(output_blocks) if output_blocks else "(无输出)"
-            
-            # Use card for better presentation
-            if project:
-                msg_type, card_content = CardBuilder.build_project_response_card(
-                    project, title, response_text, show_buttons=False
-                )
-                self.reply_message(message_id, card_content, msg_type=msg_type)
-            else:
-                self.reply_message(message_id, f"**{title}**\n\n{response_text}")
-                
-            if ok:
-                self.add_reaction(message_id, EmojiReaction.on_shell_executed())
-            else:
-                self.add_reaction(message_id, EmojiReaction.on_error())
-
-        except Exception as e:
-            log_exception(logger, "TTADK CLI execution failed", e)
-            self.reply_error(message_id, str(e), title="TTADK 执行异常")
+    def _get_model_name_override(self, project: Optional["ProjectContext"] = None) -> Optional[str]:
+        model = self._current_model
+        if not model:
+             from ...ttadk import get_ttadk_manager
+             model = get_ttadk_manager().get_current_model()
+        return model
 
     @property
     def current_tool(self) -> Optional[str]:

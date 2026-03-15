@@ -239,103 +239,57 @@ class ACPSessionManager:
         except Exception:
             pass
 
-        # TTADK: 启动编排/纠错/降级 SSOT 在 `src.ttadk.startup.start_agent_session`。
-        # manager 层只做会话管理与失败诊断统一，不应内嵌 TTADK 专属分支。
+        # TTADK: Use SyncTTADKCLISession directly (CLI backend), avoiding ACP complexity.
         if effective_agent_type.startswith("ttadk_") and (not session or not actual_id):
             try:
-                from ..ttadk.startup import start_agent_session
+                from ..ttadk.startup_common import precheck_ttadk_startup_model
+                from ..ttadk import get_ttadk_manager
+                from ..agent_session import SyncTTADKCLISession
 
-                info = start_agent_session(
+                ttadk_manager = get_ttadk_manager()
+                
+                # Precheck model intent
+                info = precheck_ttadk_startup_model(
                     agent_type=effective_agent_type,
                     cwd=cwd or ".",
-                    startup_timeout=float(startup_timeout or 60),
-                    model_name=model_name,
-                    # 便于测试 monkeypatch（tests 会 patch src.acp.manager.SyncACPSession）
-                    session_cls=SyncACPSession,
-                    log_failures=True,
-                    get_settings_fn=get_settings,
+                    model_intent=model_name,
+                    manager=ttadk_manager,
                 )
-                session = info.get("session")
-                actual_id = str(info.get("session_id") or "")
-                try:
-                    last_spec = session.describe_agent() if session else ""
-                except Exception:
-                    last_spec = ""
+                
+                resolved_model = info.get("model")
+                
+                session = SyncTTADKCLISession(
+                    agent_type=effective_agent_type,
+                    cwd=cwd or ".",
+                    model_name=resolved_model
+                )
+                actual_id = session.start()
+                
+                logger.info(
+                    "[ACP:%s] TTADK CLI Session started: key=%s, session=%s, model=%s",
+                    effective_agent_type.upper(), key[-16:], actual_id[:8], resolved_model
+                )
+                
             except Exception as e:
+                # Best-effort fallback to Coco ACP if CLI startup fails (e.g. binary missing)
+                # This mirrors the old _degrade_ttadk_to_coco_acp logic but simpler.
                 last_err = e
-                # SSOT 入口失败时，仍应 best-effort 降级到 coco ACP（避免直接崩溃）。
                 try:
+                    logger.warning("TTADK CLI startup failed, attempting degrade to Coco: %s", e)
                     session, actual_id = _degrade_ttadk_to_coco_acp(
                         agent_type=effective_agent_type,
                         cwd=cwd or ".",
                         startup_timeout=float(startup_timeout or 60),
                         reason=e,
                     )
-                    logger.warning(
-                        format_startup_failure_log_line(
-                            agent_type=effective_agent_type,
-                            event="TTADK start degraded_to_coco",
-                            attempt=None,
-                            retries=None,
-                            error=e,
-                            diag=getattr(e, "diagnostics", None) if isinstance(getattr(e, "diagnostics", None), dict) else None,
-                            attempts=(getattr(getattr(e, "diagnostics", None), "get", lambda _k, _d=None: None)("attempts") if isinstance(getattr(e, "diagnostics", None), dict) else None),
-                            get_settings_fn=get_settings,
-                        )
-                    )
-                    # 成功降级：跳出 TTADK 分支，继续通用收尾逻辑
-                    try:
-                        last_spec = session.describe_agent() if session else last_spec
-                    except Exception:
-                        pass
-                    # 注意：此处不 raise；继续沿用后续通用收尾逻辑（load_local_history + 写入 sessions）。
+                    logger.warning("TTADK degraded to Coco successfully")
                     last_err = None
-                except Exception:
-                    pass
-                # 关键：无论 TTADK SSOT 如何失败，都要输出稳定 diagnostics，避免线上出现空错误。
-                try:
-                    if session and actual_id:
-                        # 已成功降级：不要再打印 failed/raise（避免“降级成功但仍崩溃”）
-                        pass
-                    else:
-                        diag = getattr(e, "diagnostics", None)
-                        if not isinstance(diag, dict):
-                            diag = build_startup_diagnostics(
-                                agent_type=effective_agent_type,
-                                cwd=cwd or ".",
-                                model_name=model_name,
-                                session=None,
-                                error=e,
-                                attempt=1,
-                                retries=1,
-                                timeout_s=float(startup_timeout or 0),
-                            )
-                        # 兼容：确保后续 `detail=str(last_err)` 不会变成空串。
-                        try:
-                            et = str((diag or {}).get("error_text") or "").strip()
-                            if et and (not (str(e) or "").strip()):
-                                e.args = (et,)
-                        except Exception:
-                            pass
-                        logger.warning(
-                            format_startup_failure_log_line(
-                                agent_type=effective_agent_type,
-                                event="TTADK start failed",
-                                attempt=1,
-                                retries=1,
-                                error=e,
-                                diag=diag if isinstance(diag, dict) else None,
-                                attempts=(diag.get("attempts") if isinstance(diag, dict) else None),
-                                get_settings_fn=get_settings,
-                            )
-                        )
                 except Exception:
                     pass
 
                 if not (session and actual_id):
                     detail = str(last_err) if last_err else "unknown"
-                    spec = f" ({last_spec})" if last_spec else ""
-                    raise RuntimeError(f"启动 {effective_agent_type} ACP Server 失败{spec}: {detail}")
+                    raise RuntimeError(f"启动 {effective_agent_type} CLI 失败: {detail}")
 
         # Retry spawning agent process + handshake, since ACP CLI may be temporarily unavailable.
         if not session or not actual_id:
