@@ -132,6 +132,8 @@ class SpecRenderer(BaseRenderer):
             self.update_ui_state(spec_project_id, view_mode="cycle_done", view_context={"cycle_num": cycle_num})
             
             engine = self.ctx.spec_engine_manager.get(chat_id, project.root_path if project else "")
+            state = self.get_ui_state(spec_project_id)
+            
             if engine and engine.project:
                 sp = engine.project
                 content = reporter.format_cycle_done(cycle_num, cycle)
@@ -142,8 +144,6 @@ class SpecRenderer(BaseRenderer):
                 duration_line = reporter.format_duration_line(sp)
                 criteria_section = reporter.format_criteria_section(sp)
                 
-                state = self.get_ui_state(spec_project_id)
-
                 criteria_section = self._render_collapsible_section(
                     criteria_section,
                     total_items=sp.total_criteria,
