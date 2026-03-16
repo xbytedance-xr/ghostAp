@@ -14,7 +14,12 @@ from typing import Callable, Optional
 
 from .sync_adapter import SyncACPSession
 from .sync_adapter import build_startup_diagnostics, format_startup_diagnostics
-from .diagnostics import format_startup_failure_log_line
+from .diagnostics import (
+    format_startup_failure_log_line,
+    get_diagnostics_config,
+    redact_text,
+    truncate_text,
+)
 from ..agent_session import SyncClaudeCLISession, SyncSession
 from ..config import get_settings
 
@@ -54,6 +59,26 @@ def _format_ttadk_startup_attempts(diagnostics: object, *, per_item_limit: int =
         return format_attempts_summary(attempts, per_item_limit=per_item_limit, total_limit=total_limit, get_settings_fn=get_settings)
     except Exception:
         return ""
+
+
+def _sanitize_startup_detail(text: str) -> str:
+    """Redact and truncate startup detail for safe logging/user-facing errors."""
+    s = str(text or "")
+    if not s:
+        return ""
+    try:
+        cfg = get_diagnostics_config(get_settings_fn=get_settings)
+        if bool(getattr(cfg, "redact_enabled", True)):
+            s = redact_text(
+                s,
+                list(getattr(cfg, "redact_patterns", []) or []),
+                str(getattr(cfg, "redact_replacement", "***REDACTED***") or "***REDACTED***"),
+            )
+        lim = int(getattr(cfg, "snippet_limit", 240) or 240)
+        s = truncate_text(s, max(1, lim))
+    except Exception:
+        pass
+    return s
 
 
 def _coco_acp_args(model_name: Optional[str]) -> list[str]:
@@ -271,25 +296,23 @@ class ACPSessionManager:
                 )
                 
             except Exception as e:
-                # Best-effort fallback to Coco ACP if CLI startup fails (e.g. binary missing)
-                # This mirrors the old _degrade_ttadk_to_coco_acp logic but simpler.
                 last_err = e
-                try:
-                    logger.warning("TTADK CLI startup failed, attempting degrade to Coco: %s", e)
-                    session, actual_id = _degrade_ttadk_to_coco_acp(
-                        agent_type=effective_agent_type,
-                        cwd=cwd or ".",
-                        startup_timeout=float(startup_timeout or 60),
-                        reason=e,
-                    )
-                    logger.warning("TTADK degraded to Coco successfully")
-                    last_err = None
-                except Exception:
-                    pass
-
-                if not (session and actual_id):
-                    detail = str(last_err) if last_err else "unknown"
-                    raise RuntimeError(f"启动 {effective_agent_type} CLI 失败: {detail}")
+                detail = str(last_err or "").strip() if last_err else ""
+                if not detail and last_err is not None:
+                    for k in ("stderr_snippet", "stdout_snippet", "stderr", "stdout"):
+                        try:
+                            v = str(getattr(last_err, k, "") or "").strip()
+                            if v:
+                                detail = v
+                                break
+                        except Exception:
+                            continue
+                if not detail:
+                    _, err_repr = _format_error_type_and_repr(last_err)
+                    detail = err_repr or "unknown"
+                safe_detail = _sanitize_startup_detail(detail) or "start_failed"
+                logger.warning("TTADK CLI startup failed: %s", safe_detail)
+                raise RuntimeError(f"启动 {effective_agent_type} CLI 失败: {safe_detail}")
 
         # Retry spawning agent process + handshake, since ACP CLI may be temporarily unavailable.
         if not session or not actual_id:

@@ -12,6 +12,7 @@ rendering and streaming cards can be reused.
 
 from __future__ import annotations
 
+import json as _json
 import logging
 import os
 import shutil
@@ -373,8 +374,12 @@ class SyncTTADKCLISession:
         # Append prompt as the last argument
         cmd.append(text)
 
-        chunks: list[str] = []
+        raw_chunks: list[str] = []
+        visible_chunks: list[str] = []
+        json_chunks: list[str] = []
         stderr_chunks: list[str] = []
+        json_mode = False
+        json_extractor = _JSONTextExtractor()
         
         # ANSI escape sequence regex
         ansi_escape = _re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
@@ -427,15 +432,36 @@ class SyncTTADKCLISession:
                     if self._cancel_event.is_set():
                         self._proc.terminate()
                         self._proc.wait(timeout=5)
-                        return PromptResult(stop_reason="cancelled", text="".join(chunks))
+                        current = "".join(json_chunks if json_mode else (visible_chunks or raw_chunks))
+                        return PromptResult(stop_reason="cancelled", text=current)
                     
                     if deadline and time.monotonic() > deadline:
                         self._proc.terminate()
                         self._proc.wait(timeout=5)
-                        return PromptResult(stop_reason="timeout", text="".join(chunks) + "\n❌ TTADK 执行超时")
+                        current = "".join(json_chunks if json_mode else (visible_chunks or raw_chunks))
+                        return PromptResult(stop_reason="timeout", text=(current + "\n❌ TTADK 执行超时").strip())
 
                     clean_line = _strip_ansi(line)
-                    chunks.append(clean_line)
+                    raw_chunks.append(clean_line)
+
+                    fragments = json_extractor.feed(clean_line)
+                    if fragments:
+                        json_mode = True
+                        for frag in fragments:
+                            payload = frag if frag.endswith("\n") else (frag + "\n")
+                            json_chunks.append(payload)
+                            if on_event:
+                                on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=payload))
+                        continue
+
+                    if json_mode:
+                        # 已进入 JSON 输出模式后，仅输出可解析 JSON，避免前后缀噪声混入。
+                        continue
+
+                    if _is_ttadk_preamble_line(clean_line):
+                        continue
+
+                    visible_chunks.append(clean_line)
                     if on_event:
                         on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=clean_line))
 
@@ -445,7 +471,12 @@ class SyncTTADKCLISession:
             rc = int(self._proc.returncode or 0)
             err = _strip_ansi("".join(stderr_chunks).strip())
             
-            output = "".join(chunks).strip()
+            if json_mode:
+                output = "".join(json_chunks).strip()
+            else:
+                output = "".join(visible_chunks).strip()
+                if not output:
+                    output = "".join(raw_chunks).strip()
             
             if rc != 0:
                 if err:
@@ -465,6 +496,80 @@ class SyncTTADKCLISession:
 
 
 import re as _re
+
+_TTADK_PREAMBLE_PATTERNS = [
+    _re.compile(r"^[\s_/\\|.-]{6,}$"),
+    _re.compile(r"^TikTok AI-Driven Development Kit$", _re.IGNORECASE),
+    _re.compile(r"^Version\s+\d+\.\d+\.\d+", _re.IGNORECASE),
+    _re.compile(r"^Team:\s+", _re.IGNORECASE),
+    _re.compile(r"^(?:🚀|👋|✔)\s"),
+    _re.compile(r"^\?\s+Select a model", _re.IGNORECASE),
+    _re.compile(r"^↑↓\s+navigate", _re.IGNORECASE),
+]
+
+
+def _is_ttadk_preamble_line(text: str) -> bool:
+    s = str(text or "").strip()
+    if not s:
+        return True
+    for p in _TTADK_PREAMBLE_PATTERNS:
+        try:
+            if p.search(s):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+class _JSONTextExtractor:
+    """Extract complete JSON values from mixed text output."""
+
+    def __init__(self, max_buffer: int = 512_000):
+        self._decoder = _json.JSONDecoder()
+        self._buffer = ""
+        try:
+            self._max_buffer = max(4096, int(max_buffer or 0))
+        except Exception:
+            self._max_buffer = 512_000
+
+    @staticmethod
+    def _find_json_start(text: str, start: int = 0) -> int:
+        p_obj = text.find("{", start)
+        p_arr = text.find("[", start)
+        if p_obj < 0:
+            return p_arr
+        if p_arr < 0:
+            return p_obj
+        return min(p_obj, p_arr)
+
+    def feed(self, chunk: str) -> list[str]:
+        if chunk:
+            self._buffer += str(chunk)
+        return self._drain()
+
+    def _drain(self) -> list[str]:
+        out: list[str] = []
+        while True:
+            start = self._find_json_start(self._buffer, 0)
+            if start < 0:
+                if len(self._buffer) > self._max_buffer:
+                    self._buffer = self._buffer[-self._max_buffer :]
+                return out
+
+            try:
+                _, end = self._decoder.raw_decode(self._buffer, start)
+            except _json.JSONDecodeError:
+                tail = self._buffer[start:]
+                if len(tail) > self._max_buffer:
+                    tail = tail[-self._max_buffer :]
+                self._buffer = tail
+                return out
+            except Exception:
+                return out
+
+            out.append(self._buffer[start:end])
+            self._buffer = self._buffer[end:]
+
 
 _RATE_LIMIT_PATTERNS = [
     _re.compile(r"rate.?limit", _re.IGNORECASE),

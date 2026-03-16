@@ -53,5 +53,36 @@ class TestCLISession(unittest.TestCase):
         self.assertEqual(env.get("NO_COLOR"), "1")
         self.assertEqual(env.get("TERM"), "dumb")
 
+    @patch("src.agent_session.subprocess.Popen")
+    def test_cli_session_filters_preamble_and_keeps_json(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter([
+            "  _____ _____  _    ____  _  __\n",
+            "TikTok AI-Driven Development Kit\n",
+            "Version 0.3.9\n",
+            "{\"type\":\"chunk\",\"text\":\"hello\"}\n",
+            "{\"type\":\"done\"}\n",
+        ])
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
+        mock_popen.return_value = mock_proc
+
+        session = SyncTTADKCLISession(agent_type="ttadk_coco", cwd="/tmp")
+        events = []
+        result = session.send_prompt("hi", on_event=lambda e: events.append(e))
+
+        self.assertEqual(
+            result.text,
+            "{\"type\":\"chunk\",\"text\":\"hello\"}\n{\"type\":\"done\"}",
+        )
+        self.assertEqual(
+            [e.text for e in events],
+            [
+                "{\"type\":\"chunk\",\"text\":\"hello\"}\n",
+                "{\"type\":\"done\"}\n",
+            ],
+        )
+
 if __name__ == "__main__":
     unittest.main()

@@ -73,23 +73,23 @@ def test_acp_manager_retries_start_failure(monkeypatch, caplog):
     assert "\"stderr_snippet\"" in joined
 
 
-def test_acp_manager_ttadk_fallback_to_coco_on_start_failure(monkeypatch, caplog):
-    """TTADK 启动失败时应确定性降级到 coco，不直接抛错。"""
+def test_acp_manager_ttadk_start_failure_no_coco_acp_fallback(monkeypatch, caplog):
+    """TTADK 必须坚持 CLI 路径：启动失败时直接报错，不降级到 Coco ACP。"""
     import time as _time
     from types import SimpleNamespace
     from src.acp import manager as mgr
 
-    class FakeFailSession:
+    class FakeFailCLISession:
         def __init__(self, agent_type: str, cwd: str, **kwargs):
             self.session_id = ""
             self.last_active = _time.time()
             self.message_count = 0
 
         def describe_agent(self):
-            return "cmd=fake args=acp serve cwd=."
+            return "tool=coco backend=cli cwd=."
 
         def start(self, startup_timeout: float = 60):
-            raise RuntimeError("boom")
+            raise RuntimeError("boom_cli")
 
         def load_session(self, session_id: str):
             self.session_id = session_id
@@ -106,63 +106,22 @@ def test_acp_manager_ttadk_fallback_to_coco_on_start_failure(monkeypatch, caplog
         def is_server_healthy(self, healthcheck_timeout: float = 2.0) -> bool:
             return False
 
-    class FakeOkCocoSession:
-        def __init__(self, agent_type: str, cwd: str, agent_cmd=None, agent_args=None, **kwargs):
-            # 断言降级时使用 coco 覆盖
-            assert agent_cmd == "coco"
-            assert isinstance(agent_args, list)
-            self.session_id = ""
-            self.last_active = _time.time()
-            self.message_count = 0
-
-        def describe_agent(self):
-            return "cmd=coco args=acp serve cwd=."
-
-        def start(self, startup_timeout: float = 60):
-            self.session_id = "s_coco"
-            return self.session_id
-
-        def load_session(self, session_id: str):
-            self.session_id = session_id
-
-        def load_local_history(self, *a, **kw):
-            return []
-
-        def to_snapshot(self):
-            return {"session_id": self.session_id}
-
-        def close(self):
-            return None
-
-        def is_server_healthy(self, healthcheck_timeout: float = 2.0) -> bool:
-            return True
-
-    # 让第一次构造的 session（正常 ttadk_*）失败；降级构造时成功
-    calls = {"n": 0}
-
-    def _factory(**kwargs):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return FakeFailSession(**kwargs)
-        return FakeOkCocoSession(**kwargs)
-
-    monkeypatch.setattr(mgr, "SyncACPSession", lambda **kw: _factory(**kw))
+    # 若走到 ACP fallback，此断言会失败。
+    monkeypatch.setattr(mgr, "SyncACPSession", lambda **kw: (_ for _ in ()).throw(AssertionError("unexpected_acp_fallback")))
+    monkeypatch.setattr("src.agent_session.SyncTTADKCLISession", FakeFailCLISession)
+    monkeypatch.setattr(
+        "src.ttadk.startup_common.precheck_ttadk_startup_model",
+        lambda **kw: {"model": None, "validated": False, "tool": "coco", "input_model": ""},
+    )
     monkeypatch.setattr(mgr, "get_settings", lambda: SimpleNamespace(acp_startup_retries=1, acp_healthcheck_timeout=0.01, ttadk_preheat_enabled=False))
 
     caplog.set_level(logging.WARNING)
     m = mgr.ACPSessionManager("ttadk", session_timeout=999999)
-    s = m.start_session("chat1", cwd=".", startup_timeout=0.01, agent_type_override="ttadk_coco")
-    assert s.session_id == "s_coco"
-    assert getattr(s, "_degraded_to", "") == "coco"
+    with pytest.raises(RuntimeError, match="启动 ttadk_coco CLI 失败"):
+        m.start_session("chat1", cwd=".", startup_timeout=0.01, agent_type_override="ttadk_coco")
 
     joined = "\n".join(r.getMessage() for r in caplog.records)
-    # TTADK 启动失败路径同样应输出稳定字段（避免出现日志空白）
-    assert "Engine session start failed" in joined or "Session start failed" in joined or "TTADK coordinator failed" in joined
-    assert "\"cmd\"" in joined
-    assert "\"args\"" in joined
-    assert "\"rc\"" in joined
-    assert "\"stdout_snippet\"" in joined
-    assert "\"stderr_snippet\"" in joined
+    assert "TTADK CLI startup failed" in joined
 
 
 def test_supports_acp_serve_unsets_claudecode(monkeypatch):
