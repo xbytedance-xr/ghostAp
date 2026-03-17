@@ -1,5 +1,9 @@
 # GhostAP 项目记忆索引
 
+## 2026-03-17
+- **修复 Spec Engine 交互异常与 KeyError** - 修复在异步刷新卡片由于字典键错误引发整个执行循环失败的 bug，以及补充遗漏的 action 转发映射 `_toggle_spec_ac`，全量测试通过 → [2026-03-17.md](2026-03-17.md)
+- **TTADK 状态面板体验优化** - 实现富交互卡片 `build_ttadk_info_card`，根据 Product 审查移除冗余提示与手动刷新按钮，实现模型获取失败时的优雅降级 (Graceful Degradation)，+4测试全通过 → [2026-03-17.md](2026-03-17.md)
+
 ## 2026-03-15
 - **修复三模式单元测试适配 TTADK 启动逻辑** - 修复 Deep/Loop/Spec 测试 mock 逻辑，解决 Spec 循环策略冲突，全量测试通过 → [2026-03-15.md](2026-03-15.md)
 - **SpecEngine 循环策略与收敛修复** - 增加 `spec_min_cycles` 配置，修复 MagicMock 配置读取漂移与 `spec_convergence_window=1` 误触发收敛 → [2026-03-15.md](2026-03-15.md)

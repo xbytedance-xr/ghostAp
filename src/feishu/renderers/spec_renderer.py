@@ -181,7 +181,7 @@ class SpecRenderer(BaseRenderer):
         def on_review_done(cycle_num: int, review: ReviewResult):
             self.update_ui_state(spec_project_id, view_mode="review_done", view_context={"cycle_num": cycle_num})
             
-            content = reporter.format_review_result(review)
+            content = reporter.format_review_result(review, cycle_num)
             title = reporter.get_review_title(cycle_num, review.all_passed)
             
             engine = self.ctx.spec_engine_manager.get(chat_id, project.root_path if project else "")
@@ -338,7 +338,7 @@ class SpecRenderer(BaseRenderer):
         status_title = reporter.get_status_title()
         progress_info = reporter.get_progress_info(engine.project)
         
-        progress_bar = self._generate_progress_bar(progress_info["completed"], progress_info["total"])
+        progress_bar = self._generate_progress_bar(progress_info["satisfied_count"], progress_info["total_criteria"])
         
         status_content = self._render_collapsible_section(
             status_content,
@@ -423,7 +423,7 @@ class SpecRenderer(BaseRenderer):
             self._render_status_view(message_id, chat_id, project, engine, state, origin_message_id)
             return
 
-        content = reporter.format_review_result(cycle.review_result)
+        content = reporter.format_review_result(cycle.review_result, cycle_num)
         title = reporter.get_review_title(cycle_num, cycle.review_result.all_passed)
         title = append_duration_to_title(title, spec_project.duration())
         progress_bar = self._generate_progress_bar(spec_project.satisfied_count, spec_project.total_criteria)

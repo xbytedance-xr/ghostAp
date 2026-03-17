@@ -489,6 +489,7 @@ class FeishuWSClient:
         "_update_spec_guidance":     ("_spec_handler", "update_spec_guidance"),
         "_toggle_spec_log":          ("_spec_handler", "toggle_spec_log"),
         "_switch_spec_card_mode":    ("_spec_handler", "switch_spec_card_mode"),
+        "_toggle_spec_ac":           ("_spec_handler", "toggle_spec_ac"),
         # --- Project ---
         "_create_project":           ("_project_handler", "create_project"),
         "_show_project_board":       ("_project_handler", "show_project_board"),
