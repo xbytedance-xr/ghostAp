@@ -22,6 +22,10 @@ class SpecTaskState:
     current_phase: str
     last_error: str
     retry_count: int
+    # 任务状态（用于恢复列表/详情展示）
+    status: str = "失败"
+    # 失败原因（面向用户/验收的稳定字段），例如："Phase build 失败: Internal error"
+    failure_reason: str = ""
     models_tried: list[str] = field(default_factory=list)
     project_snapshot: Optional[dict] = None
 
@@ -29,6 +33,8 @@ class SpecTaskState:
         return {
             "task_id": self.task_id,
             "created_at": self.created_at,
+            "status": self.status,
+            "failure_reason": self.failure_reason,
             "requirement": self.requirement,
             "project_path": self.project_path,
             "chat_id": self.chat_id,
@@ -43,19 +49,43 @@ class SpecTaskState:
 
     @classmethod
     def from_dict(cls, data: dict) -> "SpecTaskState":
+        task_id = data["task_id"]
+        created_at = data["created_at"]
+        requirement = data.get("requirement", "")
+        project_path = data.get("project_path", "")
+        chat_id = data.get("chat_id", "")
+        agent_type = data.get("agent_type", "")
+        current_cycle = int(data.get("current_cycle") or 0)
+        current_phase = data.get("current_phase", "")
+        last_error = data.get("last_error", "")
+        retry_count = int(data.get("retry_count") or 0)
+        models_tried = data.get("models_tried") or []
+        project_snapshot = data.get("project_snapshot")
+
+        status = (data.get("status") or "").strip() or "失败"
+        failure_reason = (data.get("failure_reason") or "").strip()
+        if not failure_reason:
+            phase = (str(current_phase or "").strip() or "")
+            err = (str(last_error or "").strip() or "")
+            if phase and err:
+                # Backward compat: older snapshots only have current_phase/last_error.
+                failure_reason = f"Phase {phase} 失败: {err}"
+
         return cls(
-            task_id=data["task_id"],
-            created_at=data["created_at"],
-            requirement=data.get("requirement", ""),
-            project_path=data.get("project_path", ""),
-            chat_id=data.get("chat_id", ""),
-            agent_type=data.get("agent_type", ""),
-            current_cycle=int(data.get("current_cycle") or 0),
-            current_phase=data.get("current_phase", ""),
-            last_error=data.get("last_error", ""),
-            retry_count=int(data.get("retry_count") or 0),
-            models_tried=data.get("models_tried", []),
-            project_snapshot=data.get("project_snapshot"),
+            task_id=task_id,
+            created_at=created_at,
+            requirement=requirement,
+            project_path=project_path,
+            chat_id=chat_id,
+            agent_type=agent_type,
+            current_cycle=current_cycle,
+            current_phase=current_phase,
+            last_error=last_error,
+            retry_count=retry_count,
+            status=status,
+            failure_reason=failure_reason,
+            models_tried=models_tried,
+            project_snapshot=project_snapshot,
         )
 
 

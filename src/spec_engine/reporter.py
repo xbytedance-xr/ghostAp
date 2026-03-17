@@ -1,5 +1,7 @@
 """Spec Engine 进度报告器 — 格式化进度信息供 Feishu 卡片展示。"""
 
+import re
+
 from ..utils.text import format_duration, make_progress_bar
 from .models import (
     SpecProject,
@@ -234,10 +236,30 @@ class SpecReporter:
         return "\n".join(lines)
 
     def format_error(self, error: str) -> str:
-        return f"""❌ **Spec Agent 错误**
+        err = (error or "").strip() or "未知错误"
+
+        # Best-effort: make key fields visible/stable for users (and acceptance checks).
+        # Keep the raw error in code block for debugging.
+        phase_hit = re.search(r"Phase\s+([a-zA-Z0-9_\-]+)\s+失败", err)
+        task_hit = re.search(r"task_id=([a-zA-Z0-9_\-]+)", err)
+        internal = "Internal error" if "internal error" in err.lower() else ""
+
+        summary_parts: list[str] = []
+        if phase_hit:
+            summary_parts.append(f"Phase {phase_hit.group(1)} 失败")
+        if internal:
+            summary_parts.append(internal)
+        if task_hit:
+            summary_parts.append(f"任务ID {task_hit.group(1)}")
+
+        summary_line = ""
+        if summary_parts:
+            summary_line = "\n" + ("\n".join([f"- {p}" for p in summary_parts])) + "\n"
+
+        return f"""❌ **Spec Agent 错误**{summary_line}
 
 ```
-{error}
+{err}
 ```
 
 请检查错误信息后重试。"""

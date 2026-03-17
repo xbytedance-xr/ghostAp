@@ -7,6 +7,9 @@ from src.card.models import DeepCardState
 from src.feishu.handlers.spec import SpecHandler
 from src.feishu.ws_client import FeishuWSClient
 from src.spec_engine.models import SpecProject, SpecProjectStatus
+from src.feishu.renderers.spec_renderer import SpecRenderer
+from src.spec_engine.engine import SpecEngineCallbacks
+from src.spec_engine.reporter import SpecReporter
 
 class TestSpecInteraction(unittest.TestCase):
 
@@ -109,3 +112,63 @@ class TestSpecInteraction(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_spec_error_card_contains_keywords_and_retry_button():
+    """验收：错误提示含关键字且错误卡片包含可用的重试按钮（携带 task_id）。"""
+    mock_handler = MagicMock()
+    mock_handler.ctx = MagicMock()
+    mock_handler.ctx.spec_reporter = SpecReporter()
+    mock_handler.settings = MagicMock()
+    mock_handler.settings.card_deep_compact_default = False
+    mock_handler.settings.default_reply_mode = "chat"
+    mock_handler.settings.deep_stream_interval = 0
+    mock_handler.settings.deep_stream_min_chars = 0
+    mock_handler.ensure_request_id = MagicMock(return_value=None)
+    mock_handler.get_working_dir = MagicMock(return_value="/tmp")
+
+    sent = {}
+
+    def _send_message(chat_id, card_content, msg_type, origin_message_id=None, request_id=None):
+        sent["card"] = card_content
+        sent["msg_type"] = msg_type
+        return "m2"
+
+    mock_handler.send_message = MagicMock(side_effect=_send_message)
+    mock_handler.reply_message = MagicMock(return_value="m2")
+    mock_handler.patch_message = MagicMock(return_value=False)
+    mock_handler.add_reaction = MagicMock()
+
+    renderer = SpecRenderer(mock_handler)
+    callbacks: SpecEngineCallbacks = renderer.create_spec_callbacks(
+        message_id="mid",
+        chat_id="cid",
+        project=None,
+        engine_name="Coco",
+    )
+
+    error = "Spec执行异常: Phase build 失败，任务已保存(task_id=f5f3dcb4): Internal error"
+    callbacks.on_error(error)
+
+    assert "card" in sent
+    assert "Phase build 失败" in sent["card"]
+    assert "Internal error" in sent["card"]
+    assert "f5f3dcb4" in sent["card"]
+
+    payload = json.loads(sent["card"])
+
+    def _walk(x):
+        if isinstance(x, dict):
+            yield x
+            for v in x.values():
+                yield from _walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                yield from _walk(v)
+
+    hits = [
+        d for d in _walk(payload)
+        if d.get("tag") == "button" and (d.get("value") or {}).get("action") == "spec_retry"
+    ]
+    assert hits, "missing spec_retry button"
+    assert (hits[0].get("value") or {}).get("task_id") == "f5f3dcb4"

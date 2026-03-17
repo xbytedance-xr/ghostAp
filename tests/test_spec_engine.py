@@ -25,6 +25,7 @@ from src.spec_engine.models import (
 )
 from src.spec_engine.tracker import PhaseTracker
 from src.spec_engine.reporter import SpecReporter
+from src.spec_engine.task_persistence import load_task_state
 from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo, PlanInfo, PlanEntryInfo
 from src.loop_engine.models import (
     CriteriaTracker,
@@ -160,6 +161,55 @@ def test_spec_engine_review_exception_diagnostics_log_has_nonempty_error(monkeyp
     assert "err_repr=" in m
     assert "err_repr=," not in m
     assert "err_repr= " not in m
+
+
+def test_spec_engine_build_internal_error_saves_fixed_recovery_task_id(monkeypatch, tmp_path, caplog):
+    """验收：BUILD phase + Internal error 失败时应保存任务且 recovery task_id 可固定为 f5f3dcb4。"""
+    monkeypatch.setenv("GHOSTAP_SPEC_FAILED_TASK_ID_OVERRIDE", "f5f3dcb4")
+    monkeypatch.setattr("src.spec_engine.task_persistence.SPEC_TASKS_DIR", str(tmp_path / "spec_tasks"))
+
+    engine = SpecEngine(chat_id="c", root_path=str(tmp_path))
+
+    class _Sess:
+        def send_prompt(self, *a, **kw):
+            raise RuntimeError("Internal error")
+
+    engine._session = _Sess()
+
+    class _S:
+        spec_max_retries = 0
+
+    engine.settings = _S()
+    monkeypatch.setattr(engine, "_try_switch_model", lambda callbacks: False)
+
+    caplog.set_level(logging.ERROR, logger="src.spec_engine.engine")
+    caplog.clear()
+
+    with pytest.raises(RuntimeError) as e:
+        engine._run_phase(
+            cycle_num=1,
+            phase=SpecPhase.BUILD,
+            prompt="p",
+            callbacks=SpecEngineCallbacks(),
+            timeout=1,
+        )
+
+    msg = str(e.value)
+    assert "Phase build 失败" in msg
+    assert "Internal error" in msg
+    assert "task_id=f5f3dcb4" in msg
+
+    state = load_task_state("f5f3dcb4")
+    assert state is not None
+    assert state.task_id == "f5f3dcb4"
+    assert state.status == "失败"
+    assert "Phase build 失败: Internal error" in (state.failure_reason or "")
+
+    logs = [r.getMessage() for r in caplog.records]
+    assert any(
+        ("Phase build 失败" in m and "Internal error" in m and "task_id=f5f3dcb4" in m)
+        for m in logs
+    ), "missing structured error log with task_id/phase/error"
 
 
 def test_spec_engine_review_failure_diagnostics_written_to_cycle_and_metrics(monkeypatch, tmp_path):

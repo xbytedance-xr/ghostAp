@@ -709,6 +709,16 @@ class SpecHandler(BaseHandler):
         ):
             return
 
+        # Custom actions (non-standard)
+        if action_type == "spec_retry":
+            task_id = (value.get("task_id") or "").strip()
+            if not task_id:
+                self.reply_message(open_message_id, "❌ 重试失败：缺少 task_id")
+                return
+            # Reuse /spec_recover flow to resume from persisted failed-task snapshot.
+            self.recover_spec_task(open_message_id, open_chat_id, task_id, project=target_project)
+            return
+
     def toggle_spec_log(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, spec_project_id: Optional[str] = None, expanded: bool = False):
         if spec_project_id:
             self.renderer.update_ui_state(spec_project_id, expanded=expanded)

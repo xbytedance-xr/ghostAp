@@ -21,3 +21,5 @@ class DeepCardState:
     expanded: bool = False
     expand_ac: bool = False
     action_prefix: str = "deep"
+    # Optional additional buttons (e.g., retry/recover). Each item should be a Feishu button element.
+    extra_buttons: Optional[list[dict]] = None

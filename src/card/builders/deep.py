@@ -114,6 +114,12 @@ class DeepBuilder:
         if features.get("history_button"):
             buttons.append(DeepBuilder._create_button("history", state))
 
+        # Extra buttons (custom actions like retry)
+        if state.extra_buttons:
+            for b in state.extra_buttons:
+                if b:
+                    buttons.append(b)
+
         return [apply_compact_style(b) for b in buttons if b]
 
     @staticmethod
@@ -154,6 +160,12 @@ class DeepBuilder:
         # Feature-specific Buttons (History)
         if features.get("history_button"):
             other_buttons.append(DeepBuilder._create_button("history", state))
+
+        # Extra buttons (custom actions like retry)
+        if state.extra_buttons:
+            for b in state.extra_buttons:
+                if b:
+                    other_buttons.append(b)
             
         # 3. Build Layout Elements
         elements = []
@@ -329,6 +341,13 @@ class DeepBuilder:
                 
                 if mode_btn:
                     buttons.append(mode_btn)
+
+                # Custom extra buttons (e.g. retry/recover)
+                if state.extra_buttons:
+                    for b in state.extra_buttons:
+                        if b:
+                            buttons.append(apply_compact_style(b))
+
                 buttons.extend(base_buttons)
 
                 if buttons:

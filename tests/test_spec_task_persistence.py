@@ -30,12 +30,16 @@ class TestSpecTaskState:
             current_phase="build",
             last_error="timeout",
             retry_count=1,
+            status="失败",
+            failure_reason="Phase build 失败: timeout",
             models_tried=["model1", "model2"],
             project_snapshot={"key": "value"},
         )
         d = state.to_dict()
         assert d["task_id"] == "abc12345"
         assert d["created_at"] == 1700000000.0
+        assert d["status"] == "失败"
+        assert d["failure_reason"] == "Phase build 失败: timeout"
         assert d["requirement"] == "Build a feature"
         assert d["project_path"] == "/path/to/project"
         assert d["chat_id"] == "chat123"
@@ -84,6 +88,18 @@ class TestSpecTaskState:
         assert state.current_cycle == 0
         assert state.models_tried == []
         assert state.project_snapshot is None
+
+    def test_from_dict_back_compat_fills_failure_reason(self):
+        """旧快照无 status/failure_reason 时，应从 phase + last_error 补齐。"""
+        data = {
+            "task_id": "old00001",
+            "created_at": 123.0,
+            "current_phase": "build",
+            "last_error": "Internal error",
+        }
+        state = SpecTaskState.from_dict(data)
+        assert state.status == "失败"
+        assert "Phase build 失败: Internal error" in (state.failure_reason or "")
 
     def test_roundtrip(self):
         original = SpecTaskState(

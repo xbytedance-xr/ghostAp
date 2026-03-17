@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Optional
 
 from ...acp import ACPEvent, ACPEventType, ACPEventRenderer
@@ -252,13 +253,44 @@ class SpecRenderer(BaseRenderer):
             
             content = reporter.format_error(error)
             title = reporter.get_error_title()
+            state = self.get_ui_state(spec_project_id)
+
+            # Best-effort extract recovery task_id from error for retry button.
+            saved_task_id = None
+            try:
+                m = re.search(r"task_id=([a-zA-Z0-9_\-]+)", str(error or ""))
+                saved_task_id = m.group(1) if m else None
+            except Exception:
+                saved_task_id = None
+
+            extra_buttons = None
+            if saved_task_id:
+                extra_buttons = [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "🔁 重试"},
+                        "type": "primary",
+                        "value": {
+                            "action": "spec_retry",
+                            "task_id": saved_task_id,
+                            "project_id": project.project_id if project else spec_project_id,
+                            "deep_project_id": spec_project_id,
+                        },
+                    }
+                ]
             msg_type, card_content = CardBuilder.build_deep_card(
                 project=project,
                 state=DeepCardState(
                     title=title,
                     content=content,
                     engine_name=f"Spec({engine_name})",
-                    show_buttons=False,
+                    show_buttons=True,
+                    deep_project_id=spec_project_id,
+                    compact=state.get("compact", False),
+                    expanded=state.get("expanded", False),
+                    expand_ac=state.get("expand_ac", False),
+                    action_prefix="spec",
+                    extra_buttons=extra_buttons,
                 )
             )
             _send_spec_message(card_content, msg_type, is_update=True)
@@ -464,6 +496,30 @@ class SpecRenderer(BaseRenderer):
         
         content = reporter.format_error(error_msg)
         title = reporter.get_error_title()
+
+        saved_task_id = None
+        try:
+            m = re.search(r"task_id=([a-zA-Z0-9_\-]+)", str(error_msg or ""))
+            saved_task_id = m.group(1) if m else None
+        except Exception:
+            saved_task_id = None
+
+        extra_buttons = None
+        if saved_task_id:
+            spec_project_id = project.project_id if project else engine.project.root_path
+            extra_buttons = [
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "🔁 重试"},
+                    "type": "primary",
+                    "value": {
+                        "action": "spec_retry",
+                        "task_id": saved_task_id,
+                        "project_id": project.project_id if project else spec_project_id,
+                        "deep_project_id": spec_project_id,
+                    },
+                }
+            ]
         
         msg_type, card_content = CardBuilder.build_deep_card(
             project=project,
@@ -471,11 +527,12 @@ class SpecRenderer(BaseRenderer):
                 title=title,
                 content=content,
                 engine_name=f"Spec({engine_name})",
-                show_buttons=False,
+                show_buttons=True,
                 deep_project_id=project.project_id if project else engine.project.root_path,
                 compact=state["compact"],
                 expanded=state["expanded"],
                 action_prefix="spec",
+                extra_buttons=extra_buttons,
             )
         )
         self._patch_or_send(message_id, chat_id, card_content, msg_type, origin_message_id)
