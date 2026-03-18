@@ -527,6 +527,7 @@ class BaseHandler:
             InteractionMode.SMART: ContextSourceMode.SMART,
             InteractionMode.COCO: ContextSourceMode.COCO,
             InteractionMode.CLAUDE: ContextSourceMode.CLAUDE,
+            InteractionMode.TTADK: ContextSourceMode.TTADK,
         }
         return mapping.get(mode, ContextSourceMode.SMART)
 

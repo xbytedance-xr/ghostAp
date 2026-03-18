@@ -1086,6 +1086,11 @@ class FeishuWSClient:
             self._add_reaction(message_id, EmojiReaction.on_coco_mode())
             self._add_reaction(message_id, EmojiReaction.on_processing())
             self._handle_coco_message(message_id, chat_id, text, project)
+        elif auto_enter_mode == "ttadk":
+            self._enter_ttadk_mode(message_id, chat_id, silent=True, project=project)
+            self._add_reaction(message_id, EmojiReaction.on_coco_mode())
+            self._add_reaction(message_id, EmojiReaction.on_processing())
+            self._ttadk_handler.handle_message(message_id, chat_id, text, project)
         else:
             self._process_with_intent(message_id, chat_id, text, project, shell_fast_tracked=shell_fast_tracked)
 
@@ -1303,7 +1308,7 @@ class FeishuWSClient:
 
         _pid = project.project_id if project else None
         current_mode = self._mode_manager.get_mode(chat_id, project_id=_pid)
-        is_in_programming = current_mode in (InteractionMode.COCO, InteractionMode.CLAUDE)
+        is_in_programming = self._mode_manager.is_programming_mode(chat_id, project_id=_pid)
 
         # Control-plane commands: handle consistently in all modes
         if self._is_deep_command(text):
@@ -1328,7 +1333,7 @@ class FeishuWSClient:
             self._handle_intercepted_command(message_id, chat_id, text, project)
             return
 
-        # Programming mode (Coco / Claude): exit or forward to active session
+        # Programming mode (Coco / Claude / TTADK): exit or forward to active session
         if is_in_programming:
             if self._is_exit_command(text):
                 self._add_reaction(message_id, EmojiReaction.on_coco_mode())
@@ -1339,6 +1344,8 @@ class FeishuWSClient:
             self._add_reaction(message_id, EmojiReaction.on_processing())
             if current_mode == InteractionMode.COCO:
                 self._handle_coco_message(message_id, chat_id, text, project)
+            elif current_mode == InteractionMode.TTADK:
+                self._ttadk_handler.handle_message(message_id, chat_id, text, project)
             else:
                 self._handle_claude_message(message_id, chat_id, text, project)
             return
