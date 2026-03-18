@@ -1,13 +1,10 @@
-import json
 import os
 import tempfile
 import time
+from contextlib import contextmanager
 from unittest.mock import patch
 
-import pytest
-
 from src.spec_engine.task_persistence import (
-    SPEC_TASKS_DIR,
     SpecTaskState,
     delete_task_state,
     generate_task_id,
@@ -15,6 +12,14 @@ from src.spec_engine.task_persistence import (
     load_task_state,
     save_task_state,
 )
+
+
+@contextmanager
+def patched_task_dirs(primary: str, fallback: str):
+    with patch("src.spec_engine.task_persistence.SPEC_TASKS_DIR", primary), patch(
+        "src.spec_engine.task_persistence.SPEC_TASKS_DIR_FALLBACK", fallback
+    ):
+        yield
 
 
 class TestSpecTaskState:
@@ -135,7 +140,7 @@ class TestGenerateTaskId:
 class TestSaveLoadDelete:
     def test_save_and_load(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("src.spec_engine.task_persistence.SPEC_TASKS_DIR", tmpdir):
+            with patched_task_dirs(tmpdir, os.path.join(tmpdir, "fallback")):
                 state = SpecTaskState(
                     task_id="save1234",
                     created_at=time.time(),
@@ -158,13 +163,13 @@ class TestSaveLoadDelete:
 
     def test_load_nonexistent(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("src.spec_engine.task_persistence.SPEC_TASKS_DIR", tmpdir):
+            with patched_task_dirs(tmpdir, os.path.join(tmpdir, "fallback")):
                 result = load_task_state("nonexistent")
                 assert result is None
 
     def test_load_corrupted_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("src.spec_engine.task_persistence.SPEC_TASKS_DIR", tmpdir):
+            with patched_task_dirs(tmpdir, os.path.join(tmpdir, "fallback")):
                 filepath = os.path.join(tmpdir, "corrupt.json")
                 with open(filepath, "w") as f:
                     f.write("{invalid json")
@@ -173,7 +178,7 @@ class TestSaveLoadDelete:
 
     def test_delete_existing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("src.spec_engine.task_persistence.SPEC_TASKS_DIR", tmpdir):
+            with patched_task_dirs(tmpdir, os.path.join(tmpdir, "fallback")):
                 state = SpecTaskState(
                     task_id="del12345",
                     created_at=time.time(),
@@ -193,13 +198,13 @@ class TestSaveLoadDelete:
 
     def test_delete_nonexistent(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("src.spec_engine.task_persistence.SPEC_TASKS_DIR", tmpdir):
+            with patched_task_dirs(tmpdir, os.path.join(tmpdir, "fallback")):
                 result = delete_task_state("nosuchid")
                 assert result is False
 
     def test_atomic_write_cleanup_on_success(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("src.spec_engine.task_persistence.SPEC_TASKS_DIR", tmpdir):
+            with patched_task_dirs(tmpdir, os.path.join(tmpdir, "fallback")):
                 state = SpecTaskState(
                     task_id="atomic12",
                     created_at=time.time(),
@@ -220,18 +225,18 @@ class TestSaveLoadDelete:
 class TestListPendingTasks:
     def test_list_empty_directory(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("src.spec_engine.task_persistence.SPEC_TASKS_DIR", tmpdir):
+            with patched_task_dirs(tmpdir, os.path.join(tmpdir, "fallback")):
                 tasks = list_pending_tasks()
                 assert tasks == []
 
     def test_list_nonexistent_directory(self):
-        with patch("src.spec_engine.task_persistence.SPEC_TASKS_DIR", "/nonexistent/path"):
+        with patched_task_dirs("/nonexistent/path", "/nonexistent/fallback"):
             tasks = list_pending_tasks()
             assert tasks == []
 
     def test_list_multiple_tasks(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("src.spec_engine.task_persistence.SPEC_TASKS_DIR", tmpdir):
+            with patched_task_dirs(tmpdir, os.path.join(tmpdir, "fallback")):
                 for i in range(3):
                     state = SpecTaskState(
                         task_id=f"list{i:04d}",
@@ -254,7 +259,7 @@ class TestListPendingTasks:
 
     def test_list_skips_non_json_files(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("src.spec_engine.task_persistence.SPEC_TASKS_DIR", tmpdir):
+            with patched_task_dirs(tmpdir, os.path.join(tmpdir, "fallback")):
                 state = SpecTaskState(
                     task_id="validtsk",
                     created_at=time.time(),
@@ -277,7 +282,7 @@ class TestListPendingTasks:
 
     def test_list_skips_corrupted_files(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            with patch("src.spec_engine.task_persistence.SPEC_TASKS_DIR", tmpdir):
+            with patched_task_dirs(tmpdir, os.path.join(tmpdir, "fallback")):
                 state = SpecTaskState(
                     task_id="goodfile",
                     created_at=time.time(),

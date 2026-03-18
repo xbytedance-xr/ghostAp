@@ -1,38 +1,37 @@
 """Tests for spec_engine — ACP-driven SpecEngine with structured methodology."""
 
 import json
+import logging
 import os
 import re
-import time
 import threading
-from unittest.mock import patch, MagicMock
+import time
+from unittest.mock import MagicMock, patch
 
 import pytest
-import logging
-import re
 
+from src.acp.models import ACPEvent, ACPEventType, PlanInfo, ToolCallInfo
 from src.deep_engine.models import EngineRunState
-from src.spec_engine.engine import SpecEngine, SpecEngineManager, SpecEngineCallbacks
-from src.spec_engine.models import (
-    SpecProject,
-    SpecProjectStatus,
-    SpecPhase,
-    SpecCycle,
-    SpecTask,
-    SpecTaskStatus,
-    SpecArtifact,
-    PlanArtifact,
-)
-from src.spec_engine.tracker import PhaseTracker
-from src.spec_engine.reporter import SpecReporter
-from src.spec_engine.task_persistence import load_task_state
-from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo, PlanInfo, PlanEntryInfo
 from src.loop_engine.models import (
-    CriteriaTracker,
-    ReviewPerspective,
     PerspectiveReview,
+    ReviewPerspective,
     ReviewResult,
 )
+from src.spec_engine.engine import SpecEngine, SpecEngineCallbacks, SpecEngineManager
+from src.spec_engine.models import (
+    PlanArtifact,
+    SpecArtifact,
+    SpecCycle,
+    SpecPhase,
+    SpecProject,
+    SpecProjectStatus,
+    SpecTask,
+    SpecTaskStatus,
+)
+from src.spec_engine.reporter import SpecReporter
+from src.spec_engine.task_persistence import load_task_state
+from src.spec_engine.tracker import PhaseTracker
+from src.utils.spec_utils import parse_review_output_loose
 
 
 def test_spec_engine_review_error_empty_message_uses_snippets(monkeypatch):
@@ -44,7 +43,7 @@ def test_spec_engine_review_error_empty_message_uses_snippets(monkeypatch):
             return ""
 
     err = _EmptyErr()
-    setattr(err, "stderr_snippet", "E: invalid params")
+    err.stderr_snippet = "E: invalid params"
 
     class _DummySession:
         def send_prompt(self, *a, **kw):
@@ -68,7 +67,7 @@ def test_spec_engine_review_error_snippet_is_redacted(monkeypatch, caplog):
 
     err = _EmptyErr()
     # 命中默认 redact pattern：token=...
-    setattr(err, "stderr_snippet", "token=SECRET_TOKEN")
+    err.stderr_snippet = "token=SECRET_TOKEN"
 
     class _DummySession:
         def send_prompt(self, *a, **kw):
@@ -96,7 +95,7 @@ def test_spec_engine_review_error_snippet_is_truncated(monkeypatch, caplog):
             return ""
 
     err = _EmptyErr()
-    setattr(err, "stderr_snippet", "X" * 10000)
+    err.stderr_snippet = "X" * 10000
 
     class _DummySession:
         def send_prompt(self, *a, **kw):
@@ -167,6 +166,7 @@ def test_spec_engine_build_internal_error_saves_fixed_recovery_task_id(monkeypat
     """验收：BUILD phase + Internal error 失败时应保存任务且 recovery task_id 可固定为 f5f3dcb4。"""
     monkeypatch.setenv("GHOSTAP_SPEC_FAILED_TASK_ID_OVERRIDE", "f5f3dcb4")
     monkeypatch.setattr("src.spec_engine.task_persistence.SPEC_TASKS_DIR", str(tmp_path / "spec_tasks"))
+    monkeypatch.setattr("src.spec_engine.task_persistence.SPEC_TASKS_DIR_FALLBACK", str(tmp_path / "spec_tasks_fb"))
 
     engine = SpecEngine(chat_id="c", root_path=str(tmp_path))
 
@@ -206,10 +206,9 @@ def test_spec_engine_build_internal_error_saves_fixed_recovery_task_id(monkeypat
     assert "Phase build 失败: Internal error" in (state.failure_reason or "")
 
     logs = [r.getMessage() for r in caplog.records]
-    assert any(
-        ("Phase build 失败" in m and "Internal error" in m and "task_id=f5f3dcb4" in m)
-        for m in logs
-    ), "missing structured error log with task_id/phase/error"
+    assert any(("Phase build 失败" in m and "Internal error" in m and "task_id=f5f3dcb4" in m) for m in logs), (
+        "missing structured error log with task_id/phase/error"
+    )
 
 
 def test_spec_engine_review_failure_diagnostics_written_to_cycle_and_metrics(monkeypatch, tmp_path):
@@ -262,7 +261,9 @@ def test_spec_engine_review_failure_diagnostics_written_to_cycle_and_metrics(mon
 
     # Patch create_engine_session so execute() doesn't overwrite our _session
     monkeypatch.setattr("src.spec_engine.engine.create_engine_session", lambda **kw: engine._session)
-    monkeypatch.setattr("src.spec_engine.engine.get_coco_model_manager", lambda: type("M", (), {"get_current_model": lambda self: ""})())
+    monkeypatch.setattr(
+        "src.spec_engine.engine.get_coco_model_manager", lambda: type("M", (), {"get_current_model": lambda self: ""})()
+    )
 
     p = engine.execute("req")
     assert p is not None
@@ -316,7 +317,17 @@ def test_spec_engine_format_review_exception_log_line_contains_stable_keys():
     }
     line = SpecEngine._format_review_exception_log_line(diag, diag_json="{}").strip()
     assert line.startswith("[Spec] review_exception")
-    for key in ("phase=", "role=", "cycle=", "decision=", "fail_reason=", "err_type=", "err_repr=", "error_text=", "diag="):
+    for key in (
+        "phase=",
+        "role=",
+        "cycle=",
+        "decision=",
+        "fail_reason=",
+        "err_type=",
+        "err_repr=",
+        "error_text=",
+        "diag=",
+    ):
         assert key in line
     assert "error_text=," not in line
     assert "error_text= " not in line
@@ -373,7 +384,9 @@ def test_spec_engine_review_failure_circuit_breaker_skips_review(monkeypatch, ca
     sess = _Sess()
     engine._session = sess
     monkeypatch.setattr("src.spec_engine.engine.create_engine_session", lambda **kw: engine._session)
-    monkeypatch.setattr("src.spec_engine.engine.get_coco_model_manager", lambda: type("M", (), {"get_current_model": lambda self: ""})())
+    monkeypatch.setattr(
+        "src.spec_engine.engine.get_coco_model_manager", lambda: type("M", (), {"get_current_model": lambda self: ""})()
+    )
 
     caplog.set_level(logging.WARNING, logger="src.spec_engine.engine")
     caplog.clear()
@@ -455,7 +468,9 @@ def test_spec_engine_review_circuit_skip_does_not_block_main_loop(monkeypatch, t
     sess = _Sess()
     engine._session = sess
     monkeypatch.setattr("src.spec_engine.engine.create_engine_session", lambda **kw: engine._session)
-    monkeypatch.setattr("src.spec_engine.engine.get_coco_model_manager", lambda: type("M", (), {"get_current_model": lambda self: ""})())
+    monkeypatch.setattr(
+        "src.spec_engine.engine.get_coco_model_manager", lambda: type("M", (), {"get_current_model": lambda self: ""})()
+    )
 
     p = engine.execute("req")
     assert p and p.cycles and len(p.cycles) == 2
@@ -537,10 +552,12 @@ def test_ttadk_startup_model_log_uses_real_or_auto(caplog):
             acp_startup_timeout = 20
             rate_limit_retry_enabled = False
 
-        with patch("src.agent_session.get_settings", return_value=_SessSettings()), \
-             patch("src.ttadk.get_ttadk_manager", return_value=MagicMock()), \
-             patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck, \
-             patch("src.agent_session.SyncTTADKCLISession", return_value=_S()):
+        with (
+            patch("src.agent_session.get_settings", return_value=_SessSettings()),
+            patch("src.ttadk.get_ttadk_manager", return_value=MagicMock()),
+            patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck,
+            patch("src.agent_session.SyncTTADKCLISession", return_value=_S()),
+        ):
             mk_precheck.return_value = {
                 "tool": "codex",
                 "input_model": "gpt-5.2",
@@ -630,10 +647,12 @@ def test_ttadk_resume_model_log_uses_real_or_auto(caplog):
             acp_startup_timeout = 20
             rate_limit_retry_enabled = False
 
-        with patch("src.agent_session.get_settings", return_value=_SessSettings()), \
-             patch("src.ttadk.get_ttadk_manager", return_value=MagicMock()), \
-             patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck, \
-             patch("src.agent_session.SyncTTADKCLISession", return_value=_S()):
+        with (
+            patch("src.agent_session.get_settings", return_value=_SessSettings()),
+            patch("src.ttadk.get_ttadk_manager", return_value=MagicMock()),
+            patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck,
+            patch("src.agent_session.SyncTTADKCLISession", return_value=_S()),
+        ):
             mk_precheck.return_value = {
                 "tool": "codex",
                 "input_model": "gpt-5.2",
@@ -657,6 +676,7 @@ def test_ttadk_resume_model_log_uses_real_or_auto(caplog):
 # ======================================================================
 # TestSpecModels — enums, creation, serialization, lifecycle
 # ======================================================================
+
 
 class TestSpecModels:
     def test_spec_phase_values(self):
@@ -696,7 +716,9 @@ class TestSpecModels:
         assert task.output == ""
 
     def test_spec_task_to_dict_from_dict(self):
-        task = SpecTask(task_id=2, description="Add tests", dependencies=[1], status=SpecTaskStatus.COMPLETED, output="ok")
+        task = SpecTask(
+            task_id=2, description="Add tests", dependencies=[1], status=SpecTaskStatus.COMPLETED, output="ok"
+        )
         d = task.to_dict()
         assert d["task_id"] == 2
         assert d["dependencies"] == [1]
@@ -839,6 +861,7 @@ class TestSpecModels:
 # TestPhaseTracker — event processing
 # ======================================================================
 
+
 class TestPhaseTracker:
     def test_text_chunk(self):
         tracker = PhaseTracker()
@@ -896,6 +919,7 @@ class TestPhaseTracker:
 # ======================================================================
 # TestSpecReporter — content formatters and title helpers
 # ======================================================================
+
 
 class TestSpecReporter:
     def _make_project(self, **kwargs):
@@ -956,26 +980,32 @@ class TestSpecReporter:
 
     def test_format_review_result_all_passed(self):
         r = SpecReporter()
-        review = ReviewResult(reviews=[
-            PerspectiveReview(perspective=p, passed=True, suggestions=[], summary="通过")
-            for p in ReviewPerspective
-        ], iteration=1)
+        review = ReviewResult(
+            reviews=[
+                PerspectiveReview(perspective=p, passed=True, suggestions=[], summary="通过") for p in ReviewPerspective
+            ],
+            iteration=1,
+        )
         result = r.format_review_result(review, 1)
         assert "PASS" in result
         assert "无改进建议" in result
 
     def test_format_review_result_with_suggestions(self):
         r = SpecReporter()
-        review = ReviewResult(reviews=[
-            PerspectiveReview(perspective=ReviewPerspective.ARCHITECT, passed=False,
-                              suggestions=["Fix security issue"], summary="1条建议"),
-            PerspectiveReview(perspective=ReviewPerspective.PRODUCT, passed=True,
-                              suggestions=[], summary="通过"),
-            PerspectiveReview(perspective=ReviewPerspective.USER, passed=True,
-                              suggestions=[], summary="通过"),
-            PerspectiveReview(perspective=ReviewPerspective.TESTER, passed=True,
-                              suggestions=[], summary="通过"),
-        ], iteration=2)
+        review = ReviewResult(
+            reviews=[
+                PerspectiveReview(
+                    perspective=ReviewPerspective.ARCHITECT,
+                    passed=False,
+                    suggestions=["Fix security issue"],
+                    summary="1条建议",
+                ),
+                PerspectiveReview(perspective=ReviewPerspective.PRODUCT, passed=True, suggestions=[], summary="通过"),
+                PerspectiveReview(perspective=ReviewPerspective.USER, passed=True, suggestions=[], summary="通过"),
+                PerspectiveReview(perspective=ReviewPerspective.TESTER, passed=True, suggestions=[], summary="通过"),
+            ],
+            iteration=2,
+        )
         result = r.format_review_result(review, 2)
         assert "Fix security issue" in result
         assert "改进建议: 1 条" in result
@@ -1111,6 +1141,7 @@ class TestSpecReporter:
 # ======================================================================
 # TestSpecEngine — core engine behavior
 # ======================================================================
+
 
 class TestSpecEngine:
     @patch("src.spec_engine.engine.get_settings")
@@ -1291,7 +1322,7 @@ class TestSpecEngine:
         assert "Build a login system" in prompt
         assert "/tmp/test" in prompt
         assert "```json" in prompt
-        assert "\"acceptance_criteria\"" in prompt
+        assert '"acceptance_criteria"' in prompt
         assert "clarification_questions" in prompt
 
     def test_build_plan_prompt(self):
@@ -1337,24 +1368,35 @@ class TestSpecEngine:
         engine._project.acceptance_criteria = ["Criterion A"]
         engine._project.criteria_tracker.init_criteria(["Criterion A"])
 
-        engine._last_review = ReviewResult(reviews=[
-            PerspectiveReview(
-                perspective=ReviewPerspective.ARCHITECT, passed=False,
-                suggestions=["Fix security"], summary="1条建议",
-            ),
-            PerspectiveReview(
-                perspective=ReviewPerspective.PRODUCT, passed=True,
-                suggestions=[], summary="通过",
-            ),
-            PerspectiveReview(
-                perspective=ReviewPerspective.USER, passed=True,
-                suggestions=[], summary="通过",
-            ),
-            PerspectiveReview(
-                perspective=ReviewPerspective.TESTER, passed=True,
-                suggestions=[], summary="通过",
-            ),
-        ], iteration=1)
+        engine._last_review = ReviewResult(
+            reviews=[
+                PerspectiveReview(
+                    perspective=ReviewPerspective.ARCHITECT,
+                    passed=False,
+                    suggestions=["Fix security"],
+                    summary="1条建议",
+                ),
+                PerspectiveReview(
+                    perspective=ReviewPerspective.PRODUCT,
+                    passed=True,
+                    suggestions=[],
+                    summary="通过",
+                ),
+                PerspectiveReview(
+                    perspective=ReviewPerspective.USER,
+                    passed=True,
+                    suggestions=[],
+                    summary="通过",
+                ),
+                PerspectiveReview(
+                    perspective=ReviewPerspective.TESTER,
+                    passed=True,
+                    suggestions=[],
+                    summary="通过",
+                ),
+            ],
+            iteration=1,
+        )
 
         result = engine._build_refinement_input("Build auth")
         assert "Build auth" in result
@@ -1373,18 +1415,21 @@ class TestSpecEngine:
 
         # 2 cycles, criteria satisfied count stays the same (0), review suggestions stay the same (1)
         def _make_review(iteration):
-            return ReviewResult(reviews=[
-                PerspectiveReview(
-                    perspective=ReviewPerspective.ARCHITECT, passed=False,
-                    suggestions=["S1"], summary="1条建议"
-                ),
-                PerspectiveReview(perspective=ReviewPerspective.PRODUCT, passed=True,
-                                  suggestions=[], summary="通过"),
-                PerspectiveReview(perspective=ReviewPerspective.USER, passed=True,
-                                  suggestions=[], summary="通过"),
-                PerspectiveReview(perspective=ReviewPerspective.TESTER, passed=True,
-                                  suggestions=[], summary="通过"),
-            ], iteration=iteration)
+            return ReviewResult(
+                reviews=[
+                    PerspectiveReview(
+                        perspective=ReviewPerspective.ARCHITECT, passed=False, suggestions=["S1"], summary="1条建议"
+                    ),
+                    PerspectiveReview(
+                        perspective=ReviewPerspective.PRODUCT, passed=True, suggestions=[], summary="通过"
+                    ),
+                    PerspectiveReview(perspective=ReviewPerspective.USER, passed=True, suggestions=[], summary="通过"),
+                    PerspectiveReview(
+                        perspective=ReviewPerspective.TESTER, passed=True, suggestions=[], summary="通过"
+                    ),
+                ],
+                iteration=iteration,
+            )
 
         engine._project.cycles = [
             SpecCycle(cycle_number=1, build_output="x" * 100, review_result=_make_review(1)),
@@ -1401,10 +1446,12 @@ class TestSpecEngine:
         engine._project.criteria_tracker.update(0, True, 1)
         engine._project.criteria_tracker.update(1, True, 2)
 
-        review_pass = ReviewResult(reviews=[
-            PerspectiveReview(perspective=p, passed=True, suggestions=[], summary="通过")
-            for p in ReviewPerspective
-        ], iteration=1)
+        review_pass = ReviewResult(
+            reviews=[
+                PerspectiveReview(perspective=p, passed=True, suggestions=[], summary="通过") for p in ReviewPerspective
+            ],
+            iteration=1,
+        )
 
         engine._project.cycles = [
             SpecCycle(cycle_number=1, build_output="x" * 100, review_result=review_pass),
@@ -1544,6 +1591,7 @@ PASS
 # ======================================================================
 # TestSpecEngineManager — get_or_create, active, cleanup
 # ======================================================================
+
 
 class TestSpecEngineManager:
     @patch("src.spec_engine.engine.get_settings")
@@ -1703,7 +1751,7 @@ class TestSpecEngineManager:
 
         mgr = SpecEngineManager()
         e1 = mgr.get_or_create("c1", "/tmp/a")
-        e2 = mgr.get_or_create("c1", "/tmp/b")
+        mgr.get_or_create("c1", "/tmp/b")
         e1._run_state = EngineRunState.RUNNING
         active = mgr.get_active_engines("c1")
         assert len(active) == 1
@@ -1714,14 +1762,17 @@ class TestSpecEngineManager:
 # TestSpecHandler — command routing
 # ======================================================================
 
+
 class TestSpecHandler:
     def _make_handler(self):
         from src.feishu.handlers.spec import SpecHandler
+
         ctx = self._make_handler_context()
         return SpecHandler(ctx)
 
     def _make_handler_context(self):
         from src.feishu.handler_context import HandlerContext
+
         return HandlerContext(
             settings=MagicMock(),
             api_client_factory=MagicMock(),
@@ -1831,9 +1882,11 @@ class TestSpecHandler:
 # TestSystemHandler — is_spec_command predicate
 # ======================================================================
 
+
 class TestSystemHandlerSpec:
     def test_is_spec_command(self):
         from src.feishu.handlers.system import SystemHandler
+
         assert SystemHandler.is_spec_command("/spec build auth")
         assert SystemHandler.is_spec_command("/spec_status")
         assert SystemHandler.is_spec_command("/stop_spec")
@@ -1850,9 +1903,11 @@ class TestSystemHandlerSpec:
 # TestIntentRecognizer — spec intents
 # ======================================================================
 
+
 class TestIntentRecognizerSpec:
     def test_spec_intent_types_exist(self):
         from src.agent.intent_recognizer import IntentType
+
         assert hasattr(IntentType, "ENTER_SPEC")
         assert hasattr(IntentType, "SPEC_STATUS")
         assert hasattr(IntentType, "STOP_SPEC")
@@ -1862,14 +1917,17 @@ class TestIntentRecognizerSpec:
 
     def test_spec_exact_commands(self):
         from src.agent.intent_recognizer import IntentRecognizer
+
         recognizer = IntentRecognizer()
         # Quick match: /spec_status
         result = recognizer.recognize("/spec_status", "smart")
         from src.agent.intent_recognizer import IntentType
+
         assert result.primary_intent == IntentType.SPEC_STATUS
 
     def test_spec_guide_quick_match(self):
         from src.agent.intent_recognizer import IntentRecognizer, IntentType
+
         recognizer = IntentRecognizer()
         result = recognizer.recognize("/spec_guide focus on tests", "smart")
         assert result.primary_intent == IntentType.SPEC_GUIDE
@@ -1879,9 +1937,11 @@ class TestIntentRecognizerSpec:
 # TestConfig — spec engine settings
 # ======================================================================
 
+
 class TestConfigSpec:
     def test_spec_settings_defaults(self):
         from src.config import Settings
+
         s = Settings(app_id="", app_secret="")
         assert s.spec_max_cycles == 500
         assert s.spec_max_cycles_limit >= 5000
@@ -1895,9 +1955,11 @@ class TestConfigSpec:
 # TestCardBuilder — spec color
 # ======================================================================
 
+
 class TestCardBuilderSpec:
     def test_pick_engine_template_spec(self):
         from src.card.builder import CardBuilder
+
         assert CardBuilder._pick_deep_template("Spec(Coco)") == "green"
         assert CardBuilder._pick_deep_template("spec") == "green"
         assert CardBuilder._pick_deep_template("Coco") == "turquoise"
@@ -1907,6 +1969,7 @@ class TestCardBuilderSpec:
 # ======================================================================
 # TestSpecEngineExecution — integration tests for execute/resume/review
 # ======================================================================
+
 
 class TestSpecEngineExecution:
     """Integration tests for execute, resume, review, criteria evaluation."""
@@ -1947,7 +2010,7 @@ class TestSpecEngineExecution:
             if on_event and text:
                 on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=text))
             return MagicMock(stop_reason="end_turn")
-        
+
         session.send_prompt = fake_send_prompt
         return session
 
@@ -1963,16 +2026,20 @@ class TestSpecEngineExecution:
         plan_json = """```json\n{\"architecture\":\"A\",\"tech_stack\":[\"T\"],\"steps\":[\"S1\"],\"file_changes\":[\"x.py\"],\"test_plan\":[\"pytest\"],\"risks\":[],\"version\":\"1.0\"}\n```"""
 
         # Order: spec, plan, task, build, review, criteria_eval
-        session = self._make_mock_session([
-            spec_json, plan_json,
-            "1. Task one (依赖: 无)",
-            "build done " * 20,
-            review_text, criteria_text,
-        ])
+        session = self._make_mock_session(
+            [
+                spec_json,
+                plan_json,
+                "1. Task one (依赖: 无)",
+                "build done " * 20,
+                review_text,
+                criteria_text,
+            ]
+        )
         mock_create.return_value = session
 
         engine = SpecEngine(chat_id="c1", root_path="/tmp/test")
-        
+
         called = {"analyzing_start": False, "project_done": False, "cycles": []}
         callbacks = SpecEngineCallbacks(
             on_analyzing_start=lambda r: called.__setitem__("analyzing_start", True),
@@ -1985,8 +2052,8 @@ class TestSpecEngineExecution:
         assert project.status == SpecProjectStatus.COMPLETED
         assert len(project.cycles) == 1
         assert project.cycles[0].status == "completed"
-        assert "\"acceptance_criteria\"" in project.cycles[0].spec_content
-        assert "\"file_changes\"" in project.cycles[0].plan_content
+        assert '"acceptance_criteria"' in project.cycles[0].spec_content
+        assert '"file_changes"' in project.cycles[0].plan_content
         assert project.cycles[0].spec_artifact is not None
         assert project.cycles[0].plan_artifact is not None
         assert len(project.cycles[0].tasks) == 1
@@ -2008,12 +2075,16 @@ class TestSpecEngineExecution:
         spec_json = """```json\n{\"goals\":[\"G\"],\"functional_spec\":[\"F\"],\"non_functional_requirements\":[],\"acceptance_criteria\":[\"实现登录功能\"],\"out_of_scope\":[],\"risks\":[],\"clarification_questions\":[],\"decisions\":[],\"version\":\"1.0\"}\n```"""
         plan_json = """```json\n{\"architecture\":\"A\",\"tech_stack\":[],\"steps\":[\"S\"],\"file_changes\":[],\"test_plan\":[],\"risks\":[],\"version\":\"1.0\"}\n```"""
 
-        session = self._make_mock_session([
-            spec_json, plan_json,
-            "1. Task one (依赖: 无)",
-            "build done " * 20,
-            review_text, criteria_text,
-        ])
+        session = self._make_mock_session(
+            [
+                spec_json,
+                plan_json,
+                "1. Task one (依赖: 无)",
+                "build done " * 20,
+                review_text,
+                criteria_text,
+            ]
+        )
         mock_create.return_value = session
 
         engine = SpecEngine(chat_id="c1", root_path="/tmp/test")
@@ -2032,10 +2103,16 @@ class TestSpecEngineExecution:
         spec_json = """```json\n{\"goals\":[\"G\"],\"functional_spec\":[\"F\"],\"non_functional_requirements\":[],\"acceptance_criteria\":[\"需要登录\"],\"out_of_scope\":[],\"risks\":[],\"clarification_questions\":[\"是否需要支持手机号登录？\"],\"decisions\":[\"假设仅支持邮箱登录\"],\"version\":\"1.0\"}\n```"""
         plan_json = """```json\n{\"architecture\":\"A\",\"tech_stack\":[],\"steps\":[\"S\"],\"file_changes\":[],\"test_plan\":[],\"risks\":[],\"version\":\"1.0\"}\n```"""
         review_pass = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n\n[DESIGNER]\nPASS\n"
-        session = self._make_mock_session([
-            spec_json, plan_json, "1. T1 (依赖: 无)", "build done " * 20,
-            review_pass, "CRITERIA_1: PASS",
-        ])
+        session = self._make_mock_session(
+            [
+                spec_json,
+                plan_json,
+                "1. T1 (依赖: 无)",
+                "build done " * 20,
+                review_pass,
+                "CRITERIA_1: PASS",
+            ]
+        )
         mock_create.return_value = session
 
         engine = SpecEngine(chat_id="c1", root_path="/tmp/test")
@@ -2058,20 +2135,32 @@ class TestSpecEngineExecution:
         s.spec_max_cycles = 2
         mock_settings.return_value = s
 
-        review_fail = "[ARCHITECT]\nFAIL\n- Fix issue\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n\n[DESIGNER]\nPASS\n"
+        review_fail = (
+            "[ARCHITECT]\nFAIL\n- Fix issue\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n\n[DESIGNER]\nPASS\n"
+        )
         review_pass = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n\n[DESIGNER]\nPASS\n"
         spec1 = """```json\n{\"goals\":[\"G\"],\"functional_spec\":[\"F\"],\"non_functional_requirements\":[],\"acceptance_criteria\":[\"功能要求可用\"],\"out_of_scope\":[],\"risks\":[],\"clarification_questions\":[],\"decisions\":[],\"version\":\"1.0\"}\n```"""
         plan1 = """```json\n{\"architecture\":\"A\",\"tech_stack\":[],\"steps\":[\"S\"],\"file_changes\":[],\"test_plan\":[],\"risks\":[],\"version\":\"1.0\"}\n```"""
         spec2 = spec1
         plan2 = plan1
-        session = self._make_mock_session([
-            # Cycle 1
-            spec1, plan1, "1. T1 (依赖: 无)", "build1 " * 20,
-            review_fail, "CRITERIA_1: FAIL",
-            # Cycle 2
-            spec2, plan2, "1. T1 (依赖: 无)", "build2 " * 20,
-            review_pass, "CRITERIA_1: PASS",
-        ])
+        session = self._make_mock_session(
+            [
+                # Cycle 1
+                spec1,
+                plan1,
+                "1. T1 (依赖: 无)",
+                "build1 " * 20,
+                review_fail,
+                "CRITERIA_1: FAIL",
+                # Cycle 2
+                spec2,
+                plan2,
+                "1. T1 (依赖: 无)",
+                "build2 " * 20,
+                review_pass,
+                "CRITERIA_1: PASS",
+            ]
+        )
         mock_create.return_value = session
 
         engine = SpecEngine(chat_id="c1", root_path="/tmp/test")
@@ -2100,10 +2189,12 @@ class TestSpecEngineExecution:
 
         # Stop after first phase completes
         original = engine._run_phase
+
         def stop_after_first(cycle_num, phase, prompt, callbacks, timeout):
             result = original(cycle_num, phase, prompt, callbacks, timeout)
             engine._run_state = EngineRunState.STOPPING
             return result
+
         engine._run_phase = stop_after_first
 
         project = engine.execute("- test requirement")
@@ -2140,10 +2231,16 @@ class TestSpecEngineExecution:
         mock_settings.return_value = s
 
         review_pass = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n"
-        session = self._make_mock_session([
-            "spec_r", "plan_r", "1. T1 (依赖: 无)", "build_r " * 20,
-            review_pass, "CRITERIA_1: PASS",
-        ])
+        session = self._make_mock_session(
+            [
+                "spec_r",
+                "plan_r",
+                "1. T1 (依赖: 无)",
+                "build_r " * 20,
+                review_pass,
+                "CRITERIA_1: PASS",
+            ]
+        )
         mock_create.return_value = session
 
         engine = SpecEngine(chat_id="c1", root_path="/tmp/test")
@@ -2189,10 +2286,12 @@ class TestSpecEngineExecution:
 
         # Stop after first phase
         original = engine._run_phase
+
         def stop_after_first(cycle_num, phase, prompt, callbacks, timeout):
             result = original(cycle_num, phase, prompt, callbacks, timeout)
             engine._run_state = EngineRunState.STOPPING
             return result
+
         engine._run_phase = stop_after_first
 
         project = engine.resume()
@@ -2352,24 +2451,30 @@ class TestSpecEngineExecution:
 
             # 2 cycles with same non-zero suggestion count → converge
             def _make_review(n_suggestions, iteration):
-                return ReviewResult(reviews=[
-                    PerspectiveReview(
-                        perspective=ReviewPerspective.ARCHITECT, passed=False,
-                        suggestions=[f"S{i}" for i in range(n_suggestions)],
-                        summary=f"{n_suggestions}条建议"),
-                    PerspectiveReview(perspective=ReviewPerspective.PRODUCT, passed=True,
-                                      suggestions=[], summary="通过"),
-                    PerspectiveReview(perspective=ReviewPerspective.USER, passed=True,
-                                      suggestions=[], summary="通过"),
-                    PerspectiveReview(perspective=ReviewPerspective.TESTER, passed=True,
-                                      suggestions=[], summary="通过"),
-                ], iteration=iteration)
+                return ReviewResult(
+                    reviews=[
+                        PerspectiveReview(
+                            perspective=ReviewPerspective.ARCHITECT,
+                            passed=False,
+                            suggestions=[f"S{i}" for i in range(n_suggestions)],
+                            summary=f"{n_suggestions}条建议",
+                        ),
+                        PerspectiveReview(
+                            perspective=ReviewPerspective.PRODUCT, passed=True, suggestions=[], summary="通过"
+                        ),
+                        PerspectiveReview(
+                            perspective=ReviewPerspective.USER, passed=True, suggestions=[], summary="通过"
+                        ),
+                        PerspectiveReview(
+                            perspective=ReviewPerspective.TESTER, passed=True, suggestions=[], summary="通过"
+                        ),
+                    ],
+                    iteration=iteration,
+                )
 
             engine._project.cycles = [
-                SpecCycle(cycle_number=1, build_output="x" * 100,
-                         review_result=_make_review(1, 1)),
-                SpecCycle(cycle_number=2, build_output="y" * 100,
-                         review_result=_make_review(1, 2)),
+                SpecCycle(cycle_number=1, build_output="x" * 100, review_result=_make_review(1, 1)),
+                SpecCycle(cycle_number=2, build_output="y" * 100, review_result=_make_review(1, 2)),
             ]
             assert engine._detect_convergence()
 
@@ -2387,24 +2492,30 @@ class TestSpecEngineExecution:
             engine._project.criteria_tracker.init_criteria(["C1", "C2"])
 
             def _make_review(n_suggestions, iteration):
-                return ReviewResult(reviews=[
-                    PerspectiveReview(
-                        perspective=ReviewPerspective.ARCHITECT, passed=False,
-                        suggestions=[f"S{i}" for i in range(n_suggestions)],
-                        summary=f"{n_suggestions}条建议"),
-                    PerspectiveReview(perspective=ReviewPerspective.PRODUCT, passed=True,
-                                      suggestions=[], summary="通过"),
-                    PerspectiveReview(perspective=ReviewPerspective.USER, passed=True,
-                                      suggestions=[], summary="通过"),
-                    PerspectiveReview(perspective=ReviewPerspective.TESTER, passed=True,
-                                      suggestions=[], summary="通过"),
-                ], iteration=iteration)
+                return ReviewResult(
+                    reviews=[
+                        PerspectiveReview(
+                            perspective=ReviewPerspective.ARCHITECT,
+                            passed=False,
+                            suggestions=[f"S{i}" for i in range(n_suggestions)],
+                            summary=f"{n_suggestions}条建议",
+                        ),
+                        PerspectiveReview(
+                            perspective=ReviewPerspective.PRODUCT, passed=True, suggestions=[], summary="通过"
+                        ),
+                        PerspectiveReview(
+                            perspective=ReviewPerspective.USER, passed=True, suggestions=[], summary="通过"
+                        ),
+                        PerspectiveReview(
+                            perspective=ReviewPerspective.TESTER, passed=True, suggestions=[], summary="通过"
+                        ),
+                    ],
+                    iteration=iteration,
+                )
 
             engine._project.cycles = [
-                SpecCycle(cycle_number=1, build_output="x" * 100,
-                         review_result=_make_review(3, 1)),
-                SpecCycle(cycle_number=2, build_output="y" * 100,
-                         review_result=_make_review(1, 2)),
+                SpecCycle(cycle_number=1, build_output="x" * 100, review_result=_make_review(3, 1)),
+                SpecCycle(cycle_number=2, build_output="y" * 100, review_result=_make_review(1, 2)),
             ]
             assert not engine._detect_convergence()
 
@@ -2420,12 +2531,15 @@ class TestSpecEngineExecution:
         plan_json = """```json\n{\"architecture\":\"A\",\"tech_stack\":[],\"steps\":[\"S\"],\"file_changes\":[],\"test_plan\":[],\"risks\":[],\"version\":\"1.0\"}\n```"""
         # Only need 5 prompts (spec, plan, task, build, criteria) — no review
         criteria_text = "CRITERIA_1: PASS"
-        session = self._make_mock_session([
-            spec_json, plan_json,
-            "1. Task one (依赖: 无)",
-            "build done " * 20,
-            criteria_text,
-        ])
+        session = self._make_mock_session(
+            [
+                spec_json,
+                plan_json,
+                "1. Task one (依赖: 无)",
+                "build done " * 20,
+                criteria_text,
+            ]
+        )
         mock_create.return_value = session
 
         engine = SpecEngine(chat_id="c1", root_path="/tmp/test")
@@ -2459,25 +2573,34 @@ class TestSpecEngineExecution:
 
         spec_json = """```json\n{\"goals\":[\"G\"],\"functional_spec\":[\"F\"],\"non_functional_requirements\":[],\"acceptance_criteria\":[\"实现登录功能\"],\"out_of_scope\":[],\"risks\":[],\"clarification_questions\":[],\"decisions\":[],\"version\":\"1.0\"}\n```"""
         plan_json = """```json\n{\"architecture\":\"A\",\"tech_stack\":[],\"steps\":[\"S\"],\"file_changes\":[],\"test_plan\":[],\"risks\":[],\"version\":\"1.0\"}\n```"""
-        discovery1 = """```json\n[{"id":"Q-1","question":"如何提升错误提示可用性？","why":"用户体验","priority":"P1"}]\n```"""
+        discovery1 = (
+            """```json\n[{"id":"Q-1","question":"如何提升错误提示可用性？","why":"用户体验","priority":"P1"}]\n```"""
+        )
         gen1 = """```json\n[{"id":"Q-1","spec":{"goals":["提升错误提示"],"functional_spec":["完善错误提示"],"non_functional_requirements":[],"acceptance_criteria":["错误提示清晰可读"],"out_of_scope":[],"risks":[],"clarification_questions":[],"decisions":[],"version":"1.0"}}]\n```"""
-        discovery2 = """```json\n[{"id":"Q-2","question":"如何补齐关键测试覆盖？","why":"质量保证","priority":"P1"}]\n```"""
+        discovery2 = (
+            """```json\n[{"id":"Q-2","question":"如何补齐关键测试覆盖？","why":"质量保证","priority":"P1"}]\n```"""
+        )
         gen2 = """```json\n[{"id":"Q-2","spec":{"goals":["补齐测试"],"functional_spec":["新增单元测试"],"non_functional_requirements":[],"acceptance_criteria":["关键路径有单测"],"out_of_scope":[],"risks":[],"clarification_questions":[],"decisions":[],"version":"1.0"}}]\n```"""
 
         # Cycle 1: spec, plan, task, build, criteria, discovery, gen
         # Cycle 2: (spec loaded from file), plan, task, build, criteria, discovery, gen
-        session = self._make_mock_session([
-            spec_json, plan_json,
-            "1. T1 (依赖: 无)",
-            "build ok",
-            "CRITERIA_1: FAIL",
-            discovery1, gen1,
-            plan_json,
-            "1. T2 (依赖: 无)",
-            "build ok 2",
-            "CRITERIA_1: PASS",
-            discovery2, gen2,
-        ])
+        session = self._make_mock_session(
+            [
+                spec_json,
+                plan_json,
+                "1. T1 (依赖: 无)",
+                "build ok",
+                "CRITERIA_1: FAIL",
+                discovery1,
+                gen1,
+                plan_json,
+                "1. T2 (依赖: 无)",
+                "build ok 2",
+                "CRITERIA_1: PASS",
+                discovery2,
+                gen2,
+            ]
+        )
         mock_create.return_value = session
 
         engine = SpecEngine(chat_id="c1", root_path=str(tmp_path))
@@ -2530,7 +2653,7 @@ class TestSpecEngineExecution:
                 out = ""
                 if "请使用 spec-kit 风格产出“规格（Spec）”" in p:
                     out = """```json\n{"goals":["G"],"functional_spec":["F"],"non_functional_requirements":[],"acceptance_criteria":["永不完成"],"out_of_scope":[],"risks":[],"clarification_questions":[],"decisions":[],"version":"1.0"}\n```"""
-                elif "产出 Plan（规划）" in p and "\"file_changes\"" in p:
+                elif "产出 Plan（规划）" in p and '"file_changes"' in p:
                     out = """```json\n{"architecture":"A","tech_stack":[],"steps":["S"],"file_changes":[],"test_plan":[],"risks":[],"version":"1.0"}\n```"""
                 elif "格式（严格遵循）" in p and "任务编号" in p:
                     out = "1. T (依赖: 无)"
@@ -2540,23 +2663,29 @@ class TestSpecEngineExecution:
                     out = "CRITERIA_1: FAIL"
                 elif "自动发现与目标相关的“可优化问题”" in p:
                     self.disc_n += 1
-                    out = f"```json\n[{{\"id\":\"Q-{self.disc_n}\",\"question\":\"优化点 {self.disc_n}\",\"why\":\"why\",\"priority\":\"P1\"}}]\n```"
+                    out = f'```json\n[{{"id":"Q-{self.disc_n}","question":"优化点 {self.disc_n}","why":"why","priority":"P1"}}]\n```'
                 elif "spec-kit 规格生成器" in p:
                     m = re.search(r'"id"\s*:\s*"(Q-[^"]+)"', p)
                     qid = m.group(1) if m else "Q-X"
                     out = (
                         "```json\n["
-                        + json.dumps({"id": qid, "spec": {
-                            "goals": [f"解决 {qid}"],
-                            "functional_spec": ["F"],
-                            "non_functional_requirements": [],
-                            "acceptance_criteria": ["永不完成"],
-                            "out_of_scope": [],
-                            "risks": [],
-                            "clarification_questions": [],
-                            "decisions": [],
-                            "version": "1.0",
-                        }}, ensure_ascii=False)
+                        + json.dumps(
+                            {
+                                "id": qid,
+                                "spec": {
+                                    "goals": [f"解决 {qid}"],
+                                    "functional_spec": ["F"],
+                                    "non_functional_requirements": [],
+                                    "acceptance_criteria": ["永不完成"],
+                                    "out_of_scope": [],
+                                    "risks": [],
+                                    "clarification_questions": [],
+                                    "decisions": [],
+                                    "version": "1.0",
+                                },
+                            },
+                            ensure_ascii=False,
+                        )
                         + "]\n```"
                     )
                 else:
@@ -2638,12 +2767,16 @@ class TestSpecEngineProjectTypes:
         review_text = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n\n[DESIGNER]\nPASS\n"
         criteria_text = "CRITERIA_1: PASS"
 
-        session = self._make_mock_session([
-            spec_json, plan_json,
-            "1. 实现 Web 登录 (依赖: 无)",
-            "build ok " * 10,
-            review_text, criteria_text,
-        ])
+        session = self._make_mock_session(
+            [
+                spec_json,
+                plan_json,
+                "1. 实现 Web 登录 (依赖: 无)",
+                "build ok " * 10,
+                review_text,
+                criteria_text,
+            ]
+        )
         mock_create.return_value = session
 
         engine = SpecEngine(chat_id="c1", root_path="/tmp/test")
@@ -2662,12 +2795,16 @@ class TestSpecEngineProjectTypes:
         review_text = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n\n[DESIGNER]\nPASS\n"
         criteria_text = "CRITERIA_1: PASS"
 
-        session = self._make_mock_session([
-            spec_json, plan_json,
-            "1. 实现 API (依赖: 无)",
-            "build ok " * 10,
-            review_text, criteria_text,
-        ])
+        session = self._make_mock_session(
+            [
+                spec_json,
+                plan_json,
+                "1. 实现 API (依赖: 无)",
+                "build ok " * 10,
+                review_text,
+                criteria_text,
+            ]
+        )
         mock_create.return_value = session
 
         engine = SpecEngine(chat_id="c1", root_path="/tmp/test")
@@ -2686,12 +2823,16 @@ class TestSpecEngineProjectTypes:
         review_text = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n\n[DESIGNER]\nPASS\n"
         criteria_text = "CRITERIA_1: PASS"
 
-        session = self._make_mock_session([
-            spec_json, plan_json,
-            "1. 实现脚本工具 (依赖: 无)",
-            "build ok " * 10,
-            review_text, criteria_text,
-        ])
+        session = self._make_mock_session(
+            [
+                spec_json,
+                plan_json,
+                "1. 实现脚本工具 (依赖: 无)",
+                "build ok " * 10,
+                review_text,
+                criteria_text,
+            ]
+        )
         mock_create.return_value = session
 
         engine = SpecEngine(chat_id="c1", root_path="/tmp/test")
@@ -2704,8 +2845,6 @@ class TestSpecEngineProjectTypes:
 # ======================================================================
 # TestLooseReviewParsing — parse_review_output_loose
 # ======================================================================
-
-from src.utils.spec_utils import parse_review_output_loose
 
 
 class TestLooseReviewParsing:
@@ -2853,6 +2992,7 @@ TESTER FAIL
 # ======================================================================
 # TestSpecReporterNewMethods — status_line, duration_line, criteria_section
 # ======================================================================
+
 
 class TestSpecReporterNewMethods:
     def _make_project(self, criteria=None):

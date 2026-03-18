@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import tempfile
 import uuid
 from dataclasses import dataclass, field
 from typing import Optional
@@ -8,6 +9,15 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 SPEC_TASKS_DIR = os.path.expanduser("~/.ghostap/spec_tasks")
+SPEC_TASKS_DIR_FALLBACK = os.path.join(tempfile.gettempdir(), "ghostap_spec_tasks")
+
+
+def _iter_task_dirs() -> list[str]:
+    dirs = []
+    for d in (SPEC_TASKS_DIR, SPEC_TASKS_DIR_FALLBACK):
+        if d and d not in dirs:
+            dirs.append(d)
+    return dirs
 
 
 @dataclass
@@ -65,8 +75,8 @@ class SpecTaskState:
         status = (data.get("status") or "").strip() or "失败"
         failure_reason = (data.get("failure_reason") or "").strip()
         if not failure_reason:
-            phase = (str(current_phase or "").strip() or "")
-            err = (str(last_error or "").strip() or "")
+            phase = str(current_phase or "").strip() or ""
+            err = str(last_error or "").strip() or ""
             if phase and err:
                 # Backward compat: older snapshots only have current_phase/last_error.
                 failure_reason = f"Phase {phase} 失败: {err}"
@@ -94,58 +104,75 @@ def generate_task_id() -> str:
 
 
 def save_task_state(state: SpecTaskState) -> str:
-    os.makedirs(SPEC_TASKS_DIR, exist_ok=True)
-    filepath = os.path.join(SPEC_TASKS_DIR, f"{state.task_id}.json")
-    tmp_path = filepath + ".tmp"
-    try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(state.to_dict(), f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, filepath)
-        logger.debug("保存任务状态: %s", filepath)
-        return filepath
-    finally:
-        if os.path.exists(tmp_path):
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+    last_err: Optional[Exception] = None
+    for root in _iter_task_dirs():
+        filepath = os.path.join(root, f"{state.task_id}.json")
+        tmp_path = filepath + ".tmp"
+        try:
+            os.makedirs(root, exist_ok=True)
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(state.to_dict(), f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, filepath)
+            logger.debug("保存任务状态: %s", filepath)
+            return filepath
+        except Exception as e:
+            last_err = e
+            logger.warning("保存任务状态失败 %s: %s", root, e)
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+    if last_err:
+        logger.warning("保存任务状态失败: %s", last_err)
+    return ""
 
 
 def load_task_state(task_id: str) -> Optional[SpecTaskState]:
-    filepath = os.path.join(SPEC_TASKS_DIR, f"{task_id}.json")
-    if not os.path.exists(filepath):
-        return None
-    try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return SpecTaskState.from_dict(data)
-    except Exception as e:
-        logger.warning("加载任务状态失败 %s: %s", task_id, e)
-        return None
+    for root in _iter_task_dirs():
+        filepath = os.path.join(root, f"{task_id}.json")
+        if not os.path.exists(filepath):
+            continue
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return SpecTaskState.from_dict(data)
+        except Exception as e:
+            logger.warning("加载任务状态失败 %s: %s", task_id, e)
+            continue
+    return None
 
 
 def delete_task_state(task_id: str) -> bool:
-    filepath = os.path.join(SPEC_TASKS_DIR, f"{task_id}.json")
-    if not os.path.exists(filepath):
-        return False
-    try:
-        os.unlink(filepath)
-        logger.debug("删除任务状态: %s", filepath)
-        return True
-    except OSError as e:
-        logger.warning("删除任务状态失败 %s: %s", task_id, e)
-        return False
+    deleted = False
+    for root in _iter_task_dirs():
+        filepath = os.path.join(root, f"{task_id}.json")
+        if not os.path.exists(filepath):
+            continue
+        try:
+            os.unlink(filepath)
+            logger.debug("删除任务状态: %s", filepath)
+            deleted = True
+        except OSError as e:
+            logger.warning("删除任务状态失败 %s: %s", task_id, e)
+    return deleted
 
 
 def list_pending_tasks() -> list[SpecTaskState]:
-    if not os.path.isdir(SPEC_TASKS_DIR):
-        return []
     tasks = []
-    for filename in os.listdir(SPEC_TASKS_DIR):
-        if not filename.endswith(".json"):
+    seen: set[str] = set()
+    for root in _iter_task_dirs():
+        if not os.path.isdir(root):
             continue
-        task_id = filename[:-5]
-        state = load_task_state(task_id)
-        if state:
-            tasks.append(state)
+        for filename in os.listdir(root):
+            if not filename.endswith(".json"):
+                continue
+            task_id = filename[:-5]
+            if task_id in seen:
+                continue
+            state = load_task_state(task_id)
+            if state:
+                tasks.append(state)
+                seen.add(task_id)
     return tasks
