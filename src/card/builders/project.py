@@ -98,6 +98,11 @@ class ProjectBuilder:
             CoreBuilder._build_directory_element(project, working_dir),
             {"tag": "hr"},
         ]
+        if actual_ttadk:
+            ttadk_status = CoreBuilder._build_ttadk_status_element(project)
+            if ttadk_status:
+                elements.append(ttadk_status)
+                elements.append({"tag": "hr"})
 
         if image_keys:
             elements.extend(CoreBuilder._build_image_elements(image_keys))
@@ -407,8 +412,13 @@ class ProjectBuilder:
         elements = [
             CoreBuilder._build_directory_element(project),
             {"tag": "hr"},
-            CoreBuilder._build_content_element(content),
         ]
+        if is_ttadk:
+            ttadk_status = CoreBuilder._build_ttadk_status_element(project)
+            if ttadk_status:
+                elements.append(ttadk_status)
+                elements.append({"tag": "hr"})
+        elements.append(CoreBuilder._build_content_element(content))
         elements.extend(build_responsive_layout(buttons))
 
         card = CoreBuilder._wrap_card(header_title, theme.header_template, elements)

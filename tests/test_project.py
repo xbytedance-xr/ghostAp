@@ -110,12 +110,16 @@ class TestProjectContext:
             emoji_prefix="🔵",
         )
         ctx.set_coco_mode(True, "session_456", 10)
+        ctx.ttadk_tool_name = "codex"
+        ctx.ttadk_model_name = "gpt-5.2"
 
         snapshot = ctx.to_snapshot()
 
         assert snapshot["project_id"] == "test"
         assert snapshot["project_name"] == "Test Project"
         assert snapshot["coco_session_snapshot"]["session_id"] == "session_456"
+        assert snapshot["ttadk_tool_name"] == "codex"
+        assert snapshot["ttadk_model_name"] == "gpt-5.2"
 
         restored = ProjectContext.from_snapshot(snapshot)
 
@@ -123,6 +127,8 @@ class TestProjectContext:
         assert restored.project_name == ctx.project_name
         assert restored.theme_color == ctx.theme_color
         assert restored.coco_session_snapshot.session_id == "session_456"
+        assert restored.ttadk_tool_name == "codex"
+        assert restored.ttadk_model_name == "gpt-5.2"
 
 
 class TestProjectManager:

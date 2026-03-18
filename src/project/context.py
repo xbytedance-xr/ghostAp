@@ -67,6 +67,8 @@ class ProjectContext:
 
     ttadk_session_snapshot: Optional[SessionSnapshot] = None
     ttadk_mode: bool = False
+    ttadk_tool_name: Optional[str] = None
+    ttadk_model_name: Optional[str] = None
 
     task_queue: list[Task] = field(default_factory=list)
     current_task: Optional[Task] = None
@@ -179,6 +181,8 @@ class ProjectContext:
             if self.claude_session_snapshot
             else None,
             "ttadk_mode": self.ttadk_mode,
+            "ttadk_tool_name": self.ttadk_tool_name,
+            "ttadk_model_name": self.ttadk_model_name,
             "ttadk_session_snapshot": {
                 "session_id": self.ttadk_session_snapshot.session_id,
                 "query_count": self.ttadk_session_snapshot.query_count,
@@ -214,6 +218,8 @@ class ProjectContext:
             coco_mode=data.get("coco_mode", False),
             claude_mode=data.get("claude_mode", False),
             ttadk_mode=data.get("ttadk_mode", False),
+            ttadk_tool_name=data.get("ttadk_tool_name"),
+            ttadk_model_name=data.get("ttadk_model_name"),
             theme_color=data.get("theme_color", "green"),
             emoji_prefix=data.get("emoji_prefix", "🟢"),
             env_vars=data.get("env_vars", {}),

@@ -72,10 +72,11 @@ BUTTON_CONFIG = {
     # Mode Switch & Project Buttons
     "exit_claude": {"text": "🚪 退出Claude", "type": "default"},
     "exit_coco": {"text": "🚪 退出Coco", "type": "default"},
-    "exit_ttadk": {"text": "🚪 退出TTADK", "type": "default"},
+    "exit_ttadk": {"text": "🚪 /exit 退到智能模式", "type": "default"},
     "enter_coco": {"text": "🤖 Coco模式", "type": "primary"},
     "enter_claude": {"text": "🔮 Claude模式", "type": "default"},
     "enter_ttadk": {"text": "🎮 TTADK模式", "type": "default"},
+    "switch_ttadk_tool": {"text": "🔧 切换TTADK工具", "type": "primary"},
     "switch_project": {"text": "🔄 切换项目", "type": "default"},
 }
 

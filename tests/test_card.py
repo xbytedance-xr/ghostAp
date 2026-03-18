@@ -174,6 +174,23 @@ class TestCardBuilder:
         assert "🔮" in card["header"]["title"]["content"]
         assert "Claude" in card["header"]["title"]["content"]
 
+    def test_build_project_response_card_ttadk_status_bar(self, sample_project):
+        sample_project.ttadk_mode = True
+        sample_project.ttadk_tool_name = "codex"
+        sample_project.ttadk_model_name = "gpt-5.2"
+
+        msg_type, content = CardBuilder.build_project_response_card(
+            project=sample_project,
+            title="TTADK",
+            content="执行中",
+        )
+
+        assert msg_type == "interactive"
+        content_str = json.dumps(json.loads(content), ensure_ascii=False)
+        assert "TTADK 状态" in content_str
+        assert "工具: `codex`" in content_str
+        assert "模型: `gpt-5.2`" in content_str
+
     def test_build_project_response_card_no_buttons(self, sample_project):
         msg_type, content = CardBuilder.build_project_response_card(
             project=sample_project,
@@ -246,6 +263,24 @@ class TestCardBuilder:
 
         assert "session_123" in content_str
         assert "恢复会话" in content_str
+
+    def test_build_ttadk_resume_card_includes_status_bar(self, sample_project):
+        sample_project.ttadk_tool_name = "claude"
+        sample_project.ttadk_model_name = "gpt-5.2-ttadk"
+        sample_project.ttadk_session_snapshot = CocoSessionSnapshot(
+            session_id="session_ttadk",
+            query_count=3,
+            last_query="继续重构",
+            is_resumable=True,
+        )
+
+        msg_type, content = CardBuilder.build_ttadk_resume_card(sample_project)
+
+        assert msg_type == "interactive"
+        content_str = json.dumps(json.loads(content), ensure_ascii=False)
+        assert "TTADK 状态" in content_str
+        assert "工具: `claude`" in content_str
+        assert "模型: `gpt-5.2-ttadk`" in content_str
 
     def test_build_project_created_card(self, sample_project):
         msg_type, content = CardBuilder.build_project_created_card(sample_project)

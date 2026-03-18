@@ -459,6 +459,7 @@ class SystemHandler(BaseHandler):
 
     def handle_select_ttadk_tool(self, message_id: str, chat_id: str, tool_name: str, project_id: Optional[str] = None):
         manager = get_ttadk_manager()
+        project = self.project_manager.get_project(project_id) if project_id else self.project_manager.get_active_project(chat_id)
         try:
             raw_cwd = self._resolve_ttadk_cwd(chat_id, project_id=project_id)
             cwd = normalize_ttadk_cwd(raw_cwd)
@@ -478,6 +479,11 @@ class SystemHandler(BaseHandler):
         if not success:
             self.reply_error(message_id, f"设置 TTADK 工具失败: {tool_name}")
             return
+        if project:
+            project.ttadk_tool_name = tool_name
+            current_model = manager.get_current_model()
+            if current_model:
+                project.ttadk_model_name = current_model
 
         result = manager.get_models(cwd=cwd)
         if result.error:
@@ -519,10 +525,15 @@ class SystemHandler(BaseHandler):
             self.reply_error(message_id, f"设置 TTADK 模型失败: {model_name}")
             return
 
+        target_project = project or self.project_manager.get_active_project(chat_id)
+        if target_project:
+            target_project.ttadk_tool_name = tool_name or manager.get_current_tool()
+            target_project.ttadk_model_name = model_name
+
         if self.ttadk_handler:
             self.ttadk_handler.current_tool = tool_name
             self.ttadk_handler.current_model = model_name
-            self.ttadk_handler.enter_mode(message_id, chat_id, project=project)
+            self.ttadk_handler.enter_mode(message_id, chat_id, project=target_project)
         else:
             self.reply_error(message_id, "TTADK 处理器未初始化")
 

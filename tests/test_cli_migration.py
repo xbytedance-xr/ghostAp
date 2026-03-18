@@ -87,6 +87,68 @@ class TestCLISession(unittest.TestCase):
             ],
         )
 
+    @patch("src.agent_session.subprocess.Popen")
+    def test_cli_session_skips_invalid_braces_and_extracts_later_json(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter(
+            [
+                "prefix {not-json}\n",
+                "still noise\n",
+                '{"type":"chunk","text":"ok"}\n',
+                '{"type":"done"}\n',
+            ]
+        )
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
+        mock_popen.return_value = mock_proc
+
+        session = SyncTTADKCLISession(agent_type="ttadk_coco", cwd="/tmp")
+        events = []
+        result = session.send_prompt("hi", on_event=lambda e: events.append(e))
+
+        self.assertEqual(result.text, '{"type":"chunk","text":"ok"}\n{"type":"done"}')
+        self.assertEqual(
+            [e.text for e in events],
+            [
+                '{"type":"chunk","text":"ok"}\n',
+                '{"type":"done"}\n',
+            ],
+        )
+
+    @patch("src.agent_session.subprocess.Popen")
+    def test_cli_session_extracts_jsonl_from_mixed_lines(self, mock_popen):
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter(
+            [
+                'noise -> {"type":"chunk","text":"first"}\n',
+                'more noise {"type":"chunk","text":"second"} tail\n',
+                "not-json-line\n",
+                '{"type":"done"}\n',
+            ]
+        )
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
+        mock_popen.return_value = mock_proc
+
+        session = SyncTTADKCLISession(agent_type="ttadk_coco", cwd="/tmp")
+        events = []
+        result = session.send_prompt("hi", on_event=lambda e: events.append(e))
+
+        self.assertEqual(
+            result.text,
+            '{"type":"chunk","text":"first"}\n{"type":"chunk","text":"second"}\n{"type":"done"}',
+        )
+        self.assertEqual(
+            [e.text for e in events],
+            [
+                '{"type":"chunk","text":"first"}\n',
+                '{"type":"chunk","text":"second"}\n',
+                '{"type":"done"}\n',
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

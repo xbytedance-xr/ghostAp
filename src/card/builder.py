@@ -93,6 +93,7 @@ class CardBuilder:
         show_buttons: bool = True,
         is_coco_mode: bool = False,
         is_claude_mode: bool = False,
+        is_ttadk_mode: bool = False,
         extra_buttons: Optional[list[dict]] = None,
         footer: Optional[str] = None,
         image_keys: Optional[list[str]] = None,
@@ -105,6 +106,7 @@ class CardBuilder:
             show_buttons,
             is_coco_mode,
             is_claude_mode,
+            is_ttadk_mode,
             extra_buttons,
             footer,
             image_keys,
@@ -175,6 +177,10 @@ class CardBuilder:
     @staticmethod
     def build_claude_resume_card(project: ProjectContext) -> tuple[str, str]:
         return ProjectBuilder.build_claude_resume_card(project)
+
+    @staticmethod
+    def build_ttadk_resume_card(project: ProjectContext) -> tuple[str, str]:
+        return ProjectBuilder.build_ttadk_resume_card(project)
 
     @staticmethod
     def build_project_created_card(project: ProjectContext) -> tuple[str, str]:

@@ -456,6 +456,9 @@ class SyncTTADKCLISession:
                         # 已进入 JSON 输出模式后，仅输出可解析 JSON，避免前后缀噪声混入。
                         continue
 
+                    if json_extractor.has_json_candidate():
+                        continue
+
                     if _is_ttadk_preamble_line(clean_line):
                         continue
 
@@ -543,10 +546,53 @@ class _JSONTextExtractor:
             self._buffer += str(chunk)
         return self._drain()
 
+    def has_json_candidate(self) -> bool:
+        return self._find_json_start(self._buffer, 0) >= 0
+
+    @staticmethod
+    def _looks_incomplete_json(text: str) -> bool:
+        s = str(text or "").lstrip()
+        if not s or s[0] not in "{[":
+            return False
+
+        in_string = False
+        escaped = False
+        curly = 0
+        square = 0
+        for ch in s:
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\":
+                escaped = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                curly += 1
+            elif ch == "}":
+                curly = max(0, curly - 1)
+            elif ch == "[":
+                square += 1
+            elif ch == "]":
+                square = max(0, square - 1)
+
+        if in_string or curly > 0 or square > 0:
+            return True
+
+        tail = s.rstrip()
+        if not tail:
+            return True
+        return tail[-1] in (",", ":", "{", "[")
+
     def _drain(self) -> list[str]:
         out: list[str] = []
+        scan_from = 0
         while True:
-            start = self._find_json_start(self._buffer, 0)
+            start = self._find_json_start(self._buffer, scan_from)
             if start < 0:
                 if len(self._buffer) > self._max_buffer:
                     self._buffer = self._buffer[-self._max_buffer :]
@@ -555,16 +601,20 @@ class _JSONTextExtractor:
             try:
                 _, end = self._decoder.raw_decode(self._buffer, start)
             except _json.JSONDecodeError:
-                tail = self._buffer[start:]
-                if len(tail) > self._max_buffer:
-                    tail = tail[-self._max_buffer :]
-                self._buffer = tail
-                return out
+                candidate = self._buffer[start:]
+                if self._looks_incomplete_json(candidate):
+                    if len(candidate) > self._max_buffer:
+                        candidate = candidate[-self._max_buffer :]
+                    self._buffer = candidate
+                    return out
+                scan_from = start + 1
+                continue
             except Exception:
                 return out
 
             out.append(self._buffer[start:end])
             self._buffer = self._buffer[end:]
+            scan_from = 0
 
 
 _RATE_LIMIT_PATTERNS = [

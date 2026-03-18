@@ -97,6 +97,14 @@ class CoreBuilder:
         return {"tag": "markdown", "content": f"📁 `{path}`"}
 
     @staticmethod
+    def _build_ttadk_status_element(project: Optional[ProjectContext]) -> Optional[dict]:
+        if not project:
+            return None
+        tool = str(getattr(project, "ttadk_tool_name", "") or "").strip() or "未设置"
+        model = str(getattr(project, "ttadk_model_name", "") or "").strip() or "自动"
+        return {"tag": "markdown", "content": f"🎮 **TTADK 状态** · 工具: `{tool}` · 模型: `{model}`", "text_size": "notation"}
+
+    @staticmethod
     def _build_footer_buttons(
         project: Optional[ProjectContext], is_coco_mode: bool = False, is_claude_mode: bool = False, is_ttadk_mode: bool = False
     ) -> list[dict]:

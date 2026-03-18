@@ -207,11 +207,14 @@ class ProgrammingModeHandler(BaseHandler):
         if project and snapshot and snapshot.is_resumable:
             self._set_mode_on_project(project, True, snapshot.session_id, snapshot.query_count)
             if not silent:
+                mode_hint = "继续之前的对话吧！"
+                if self.mode_name == "TTADK":
+                    mode_hint = "当前模式：🎮 TTADK（可点「切换TTADK工具」，或发送 `/exit` 退回智能模式）"
                 content = (
                     f"🔄 已恢复 {self.mode_name} 会话\n\n"
                     f"• 会话 ID: `{session.session_id}`\n"
                     f"• 历史对话: {snapshot.query_count} 条\n\n"
-                    f"继续之前的对话吧！"
+                    f"{mode_hint}"
                 )
                 msg_type, card_content = CardBuilder.build_project_response_card(
                     project,
@@ -226,7 +229,13 @@ class ProgrammingModeHandler(BaseHandler):
         elif project:
             self._set_mode_on_project(project, True, session.session_id)
             if not silent:
-                content = f"{self.mode_emoji} 已进入{self.mode_name}编程模式\n\n现在可以用自然语言描述你的需求\n\n说「退出模式」或发送 `/exit` 退出"
+                content = (
+                    f"{self.mode_emoji} 已进入{self.mode_name}编程模式\n\n"
+                    "现在可以用自然语言描述你的需求\n\n"
+                    "说「退出模式」或发送 `/exit` 退出"
+                )
+                if self.mode_name == "TTADK":
+                    content += "\n\n可点击「切换TTADK工具」重新选择工具链"
                 msg_type, card_content = CardBuilder.build_project_response_card(
                     project,
                     f"{self.mode_emoji} {self.mode_name}编程模式",
@@ -730,6 +739,8 @@ class TTADKModeHandler(ProgrammingModeHandler):
 
     def _set_mode_on_project(self, project, active, session_id="", count=0):
         if active:
+            project.set_coco_mode(False)
+            project.set_claude_mode(False)
             project.set_ttadk_mode(True, session_id, count)
         else:
             project.set_ttadk_mode(False)
@@ -741,7 +752,7 @@ class TTADKModeHandler(ProgrammingModeHandler):
         project.ttadk_session_snapshot = None
 
     def _get_agent_type_override(self, project: Optional["ProjectContext"] = None) -> Optional[str]:
-        tool = self._current_tool
+        tool = (project.ttadk_tool_name if project else None) or self._current_tool
         if not tool:
             from ...ttadk import get_ttadk_manager
 
@@ -749,7 +760,7 @@ class TTADKModeHandler(ProgrammingModeHandler):
         return f"ttadk_{tool}"
 
     def _get_model_name_override(self, project: Optional["ProjectContext"] = None) -> Optional[str]:
-        model = self._current_model
+        model = (project.ttadk_model_name if project else None) or self._current_model
         if not model:
             from ...ttadk import get_ttadk_manager
 

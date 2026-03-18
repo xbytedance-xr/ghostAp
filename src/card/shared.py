@@ -56,6 +56,7 @@ def build_mode_buttons(
         buttons.append(_create_mode_button("exit_coco", "exit_coco", project_id))
         buttons.append(_create_mode_button("switch_project", "switch_project"))
     elif is_ttadk_mode:
+        buttons.append(_create_mode_button("switch_ttadk_tool", "show_ttadk_menu", project_id))
         buttons.append(_create_mode_button("exit_ttadk", "exit_ttadk", project_id))
         buttons.append(_create_mode_button("switch_project", "switch_project"))
     else:
