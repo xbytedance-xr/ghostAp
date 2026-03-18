@@ -15,12 +15,12 @@
 """
 
 import logging
+import threading
 import time
 import uuid
-import threading
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, Any
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +29,10 @@ logger = logging.getLogger(__name__)
 # 枚举
 # ---------------------------------------------------------------------------
 
+
 class ContextEntryType(Enum):
     """上下文条目的数据类型"""
+
     CONVERSATION = "conversation"
     SESSION_SNAPSHOT = "session_snapshot"
     MODE_TRANSITION = "mode_transition"
@@ -41,6 +43,7 @@ class ContextEntryType(Enum):
 
 class ContextSourceMode(Enum):
     """产生该条目的编程模式"""
+
     SMART = "smart"
     COCO = "coco"
     CLAUDE = "claude"
@@ -52,6 +55,7 @@ class ContextSourceMode(Enum):
 # ---------------------------------------------------------------------------
 # 核心数据结构
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class ContextEntry:
@@ -66,6 +70,7 @@ class ContextEntry:
         metadata:     类型特定的结构化附加数据（如 role/message_id/session_id 等）
         created_at:   创建时间戳
     """
+
     entry_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     # 单调递增的序号（用于跨滚动窗口的增量 diff）
     seq: int = 0
@@ -116,6 +121,7 @@ class ContextVersion:
         entry_count:     版本创建时 entries 列表的长度（用于 diff 计算）
         created_at:      创建时间戳
     """
+
     version_id: str = field(default_factory=lambda: uuid.uuid4().hex[:8])
     version_number: int = 0
     reason: str = ""
@@ -164,6 +170,7 @@ class ContextBridgeSummary:
     这是唯一可行的跨模式上下文传递方式，因为 AI 对话状态
     存储在 CLI 子进程的服务端，GhostAP 只能通过 prompt 文本传递信息。
     """
+
     from_mode: ContextSourceMode = ContextSourceMode.SMART
     to_mode: ContextSourceMode = ContextSourceMode.SMART
     summary_text: str = ""
@@ -215,6 +222,7 @@ class ContextBridgeSummary:
 # ---------------------------------------------------------------------------
 # 顶层上下文容器
 # ---------------------------------------------------------------------------
+
 
 class UnifiedContext:
     """
@@ -286,7 +294,7 @@ class UnifiedContext:
 
         if self.max_entries > 0 and len(self._entries) > self.max_entries:
             evicted = len(self._entries) - self.max_entries
-            self._entries = self._entries[-self.max_entries:]
+            self._entries = self._entries[-self.max_entries :]
             self._rebuild_index()
             logger.debug("[Context:%s] 淘汰 %d 条旧条目，当前 %d 条", self.project_id, evicted, len(self._entries))
 
@@ -403,8 +411,7 @@ class UnifiedContext:
 
     # ---- Update: 更新条目 ----
 
-    def update_entry(self, entry_id: str, content: Optional[str] = None,
-                     metadata: Optional[dict] = None) -> bool:
+    def update_entry(self, entry_id: str, content: Optional[str] = None, metadata: Optional[dict] = None) -> bool:
         """按 entry_id 更新条目的 content 或 metadata"""
         entry = self.get_entry(entry_id)
         if entry is None:
@@ -472,7 +479,7 @@ class UnifiedContext:
         )
         self._versions.append(version)
         if len(self._versions) > self.max_versions:
-            self._versions = self._versions[-self.max_versions:]
+            self._versions = self._versions[-self.max_versions :]
         self.updated_at = time.time()
         logger.debug("[Context:%s] 创建版本 v%d: %s", self.project_id, version.version_number, reason)
         return version
@@ -507,7 +514,7 @@ class UnifiedContext:
         # 此处做安全处理：如果当前总数 <= 版本时的 entry_count，说明版本之后可能没有新增
         if len(self._entries) <= version.entry_count:
             return []
-        return list(self._entries[version.entry_count:])
+        return list(self._entries[version.entry_count :])
 
     # ---- 跨模式桥接 ----
 
@@ -550,9 +557,7 @@ class UnifiedContext:
                 tasks = entry.metadata.get("tasks", [])
                 for t in tasks:
                     if t.get("status") == "completed" and t.get("result"):
-                        conversation_lines.append(
-                            f"[completed task] {t.get('title', '')}: {t['result'][:150]}"
-                        )
+                        conversation_lines.append(f"[completed task] {t.get('title', '')}: {t['result'][:150]}")
             elif entry.entry_type == ContextEntryType.FILE_CHANGE:
                 files_modified.append(entry.content)
 
@@ -566,8 +571,11 @@ class UnifiedContext:
         self.updated_at = time.time()
         logger.info(
             "[Context:%s] 构建桥接摘要: %s -> %s, %d 条对话, %d 个文件变更",
-            self.project_id, from_mode.value, to_mode.value,
-            len(conversation_lines), len(files_modified),
+            self.project_id,
+            from_mode.value,
+            to_mode.value,
+            len(conversation_lines),
+            len(files_modified),
         )
         return bridge
 
@@ -576,7 +584,9 @@ class UnifiedContext:
         bridge = self._last_bridge
         self._last_bridge = None
         if bridge:
-            logger.info("[Context:%s] 消费桥接摘要: %s -> %s", self.project_id, bridge.from_mode.value, bridge.to_mode.value)
+            logger.info(
+                "[Context:%s] 消费桥接摘要: %s -> %s", self.project_id, bridge.from_mode.value, bridge.to_mode.value
+            )
         return bridge
 
     # ---- 序列化 ----
@@ -629,6 +639,7 @@ class UnifiedContext:
 # ---------------------------------------------------------------------------
 # 内存存储管理器
 # ---------------------------------------------------------------------------
+
 
 class UnifiedContextStore:
     """
@@ -716,6 +727,7 @@ class UnifiedContextStore:
 # 标准化响应
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ContextResult:
     """
@@ -730,6 +742,7 @@ class ContextResult:
         data:       操作返回的数据（类型取决于具体操作）
         project_id: 操作涉及的项目 ID
     """
+
     success: bool
     message: str
     data: Optional[Any] = None
@@ -739,6 +752,7 @@ class ContextResult:
 # ---------------------------------------------------------------------------
 # 项目级上下文管理接口
 # ---------------------------------------------------------------------------
+
 
 class ProjectContextManager:
     """

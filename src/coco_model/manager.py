@@ -28,9 +28,7 @@ class CocoModelManager:
         self._cached_models: Optional[list[CocoModel]] = None
         self._cache_time: float = 0
         self._current_model: Optional[str] = None
-        self._config_path = (
-            Path.home() / "Library" / "Application Support" / "coco" / "coco.yaml"
-        )
+        self._config_path = Path.home() / "Library" / "Application Support" / "coco" / "coco.yaml"
         self._initialized = False
 
     def _ensure_initialized(self) -> None:
@@ -56,10 +54,7 @@ class CocoModelManager:
         return None
 
     def _is_cache_valid(self) -> bool:
-        return (
-            self._cached_models is not None
-            and (time.time() - self._cache_time) < CACHE_TTL_SECONDS
-        )
+        return self._cached_models is not None and (time.time() - self._cache_time) < CACHE_TTL_SECONDS
 
     def get_models(self) -> ModelListResult:
         self._ensure_initialized()

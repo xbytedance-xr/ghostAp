@@ -1,8 +1,7 @@
-import time
 import threading
+import time
 
-
-from src.tasking import TaskScheduler, TaskSpec, TaskPriority, TaskStatus
+from src.tasking import TaskPriority, TaskScheduler, TaskSpec, TaskStatus
 
 
 def test_scheduler_respects_global_concurrency_limit():
@@ -22,6 +21,7 @@ def test_scheduler_respects_global_concurrency_limit():
             with lock:
                 active -= 1
             return i
+
         return _fn
 
     handles = []
@@ -52,10 +52,7 @@ def test_scheduler_serializes_tasks_with_same_queue_key():
         return "ok"
 
     chat_id = "chat_same"
-    handles = [
-        scheduler.submit(TaskSpec(chat_id=chat_id, queue_key=chat_id, name=f"s{i}"), _fn)
-        for i in range(5)
-    ]
+    handles = [scheduler.submit(TaskSpec(chat_id=chat_id, queue_key=chat_id, name=f"s{i}"), _fn) for i in range(5)]
     for h in handles:
         r = h.wait(timeout=3)
         assert r.status == TaskStatus.SUCCEEDED
@@ -167,15 +164,9 @@ def test_system_queue_has_higher_concurrency():
 
     handles = []
     for i in range(5):
-        handles.append(scheduler.submit(
-            TaskSpec(chat_id="chat1", name=f"sys{i}", is_system_command=True),
-            system_task
-        ))
+        handles.append(scheduler.submit(TaskSpec(chat_id="chat1", name=f"sys{i}", is_system_command=True), system_task))
     for i in range(5):
-        handles.append(scheduler.submit(
-            TaskSpec(chat_id="chat1", name=f"norm{i}"),
-            normal_task
-        ))
+        handles.append(scheduler.submit(TaskSpec(chat_id="chat1", name=f"norm{i}"), normal_task))
 
     for h in handles:
         r = h.wait(timeout=5)
@@ -208,18 +199,17 @@ def test_different_projects_can_run_concurrently():
                 active_by_project[proj_id] -= 1
                 total_concurrent -= 1
             return proj_id
+
         return _fn
 
     handles = []
     for i in range(3):
-        handles.append(scheduler.submit(
-            TaskSpec(chat_id="chat1", name=f"p1_{i}", project_id="proj1"),
-            make_task("proj1")
-        ))
-        handles.append(scheduler.submit(
-            TaskSpec(chat_id="chat1", name=f"p2_{i}", project_id="proj2"),
-            make_task("proj2")
-        ))
+        handles.append(
+            scheduler.submit(TaskSpec(chat_id="chat1", name=f"p1_{i}", project_id="proj1"), make_task("proj1"))
+        )
+        handles.append(
+            scheduler.submit(TaskSpec(chat_id="chat1", name=f"p2_{i}", project_id="proj2"), make_task("proj2"))
+        )
 
     for h in handles:
         r = h.wait(timeout=5)

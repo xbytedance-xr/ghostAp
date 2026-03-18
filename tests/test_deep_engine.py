@@ -1,17 +1,18 @@
 """Tests for deep_engine — ACP-driven DeepEngine."""
 
-import pytest
-from unittest.mock import patch, MagicMock, PropertyMock
 import io
-import os
 import logging
+import os
 import re
+from unittest.mock import MagicMock, patch
 
-from src.deep_engine.models import EngineRunState, DeepProject, DeepProjectStatus
-from src.deep_engine.engine import DeepEngine, DeepEngineManager, DeepEngineCallbacks
-from src.deep_engine.progress import DeepProgress
+import pytest
+
 from src.acp.models import PlanEntryInfo, PlanInfo, ToolCallInfo
-from src.agent_session import SyncClaudeCLISession, ClaudeCLIConfig, create_engine_session
+from src.agent_session import ClaudeCLIConfig, SyncClaudeCLISession, create_engine_session
+from src.deep_engine.engine import DeepEngine, DeepEngineManager
+from src.deep_engine.models import DeepProject, DeepProjectStatus, EngineRunState
+from src.deep_engine.progress import DeepProgress
 
 
 class TestDeepEngine:
@@ -137,9 +138,11 @@ class TestDeepEngine:
             acp_startup_timeout = 20
             rate_limit_retry_enabled = False
 
-        with patch("src.agent_session.get_settings", return_value=_SessSettings()), \
-             patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck, \
-             patch("src.agent_session.SyncTTADKCLISession", return_value=_S()):
+        with (
+            patch("src.agent_session.get_settings", return_value=_SessSettings()),
+            patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck,
+            patch("src.agent_session.SyncTTADKCLISession", return_value=_S()),
+        ):
             # SSOT：create_engine_session 统一走 start_agent_session；单测不应触发真实 ttadk/codex 探测。
             mk_precheck.return_value = {
                 "tool": "codex",
@@ -216,9 +219,11 @@ class TestDeepEngine:
             acp_startup_timeout = 20
             rate_limit_retry_enabled = False
 
-        with patch("src.agent_session.get_settings", return_value=_SessSettings()), \
-             patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck, \
-             patch("src.agent_session.SyncTTADKCLISession", return_value=_S()):
+        with (
+            patch("src.agent_session.get_settings", return_value=_SessSettings()),
+            patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck,
+            patch("src.agent_session.SyncTTADKCLISession", return_value=_S()),
+        ):
             mk_precheck.return_value = {
                 "tool": "codex",
                 "input_model": "gpt-5.2",
@@ -242,6 +247,7 @@ class TestDeepEngine:
 def test_ttadk_startup_log_semantics_consistent_between_create_sync_and_engine(monkeypatch, caplog):
     """跨入口一致性：create_sync_session 与 create_engine_session 的 TTADK 启动语义日志一致。"""
     import logging
+
     import src.agent_session as agent_session
 
     caplog.set_level(logging.INFO, logger="src.agent_session")
@@ -310,18 +316,21 @@ def test_ttadk_startup_log_semantics_consistent_between_create_sync_and_engine(m
     monkeypatch.setattr(agent_session, "get_settings", lambda: _SessSettings())
     monkeypatch.setattr("src.ttadk.get_ttadk_manager", lambda *a, **k: MagicMock())
     monkeypatch.setattr("src.ttadk.manager.start_ttadk_engine_session", lambda **kw: dict(info_ok))
-    monkeypatch.setattr("src.ttadk.startup_common.precheck_ttadk_startup_model", lambda **kw: {
-        "tool": "codex",
-        "input_model": "gpt-5.2",
-        "resolved_real_name": "gpt-5.2-codex-ttadk",
-        "model": "gpt-5.2-codex-ttadk",
-        "validated": True,
-        "source": "probe",
-        "decision": "precheck_validated",
-        "fail_phase": "",
-        "warnings": [],
-        "diagnostics": {},
-    })
+    monkeypatch.setattr(
+        "src.ttadk.startup_common.precheck_ttadk_startup_model",
+        lambda **kw: {
+            "tool": "codex",
+            "input_model": "gpt-5.2",
+            "resolved_real_name": "gpt-5.2-codex-ttadk",
+            "model": "gpt-5.2-codex-ttadk",
+            "validated": True,
+            "source": "probe",
+            "decision": "precheck_validated",
+            "fail_phase": "",
+            "warnings": [],
+            "diagnostics": {},
+        },
+    )
 
     # 避免触发真实 resolve_agent_spec 探测（codex 在本仓默认会抛 AgentSpecResolveError）。
     monkeypatch.setattr(agent_session, "SyncACPSession", lambda *a, **k: _DummySession())
@@ -395,19 +404,20 @@ class TestDeepProgress:
 
     def test_update_plan(self):
         p = DeepProgress()
-        plan = PlanInfo(entries=[
-            PlanEntryInfo(content="s1", status="completed"),
-            PlanEntryInfo(content="s2", status="in_progress"),
-            PlanEntryInfo(content="s3", status="pending"),
-        ])
+        plan = PlanInfo(
+            entries=[
+                PlanEntryInfo(content="s1", status="completed"),
+                PlanEntryInfo(content="s2", status="in_progress"),
+                PlanEntryInfo(content="s3", status="pending"),
+            ]
+        )
         p.update_plan(plan)
         assert p.total_steps == 3
         assert p.completed_steps == 1
 
     def test_record_tool(self):
         p = DeepProgress()
-        tc = ToolCallInfo(id="t1", title="Edit", kind="edit", status="completed",
-                          locations=["/a.py"])
+        tc = ToolCallInfo(id="t1", title="Edit", kind="edit", status="completed", locations=["/a.py"])
         p.record_tool(tc)
         assert len(p.tool_calls) == 1
         assert "/a.py" in p.modified_files
@@ -420,12 +430,14 @@ class TestDeepProgress:
 
     def test_progress_bar(self):
         p = DeepProgress()
-        plan = PlanInfo(entries=[
-            PlanEntryInfo(content="s1", status="completed"),
-            PlanEntryInfo(content="s2", status="completed"),
-            PlanEntryInfo(content="s3", status="pending"),
-            PlanEntryInfo(content="s4", status="pending"),
-        ])
+        plan = PlanInfo(
+            entries=[
+                PlanEntryInfo(content="s1", status="completed"),
+                PlanEntryInfo(content="s2", status="completed"),
+                PlanEntryInfo(content="s3", status="pending"),
+                PlanEntryInfo(content="s4", status="pending"),
+            ]
+        )
         p.update_plan(plan)
         bar = p.progress_bar
         assert "50%" in bar
@@ -463,9 +475,11 @@ class TestClaudeCLISession:
             assert "CLAUDECODE" not in env
             return procs.pop(0)
 
-        with patch.dict(os.environ, {"CLAUDECODE": "1"}), \
-             patch("src.agent_session.subprocess.Popen", side_effect=fake_popen), \
-             patch("src.agent_session.uuid.uuid4", return_value="sid_new"):
+        with (
+            patch.dict(os.environ, {"CLAUDECODE": "1"}),
+            patch("src.agent_session.subprocess.Popen", side_effect=fake_popen),
+            patch("src.agent_session.uuid.uuid4", return_value="sid_new"),
+        ):
             events = []
             res = s.send_prompt("hi", on_event=lambda e: events.append(e), timeout=5)
 
@@ -481,6 +495,7 @@ class TestClaudeCLISession:
 def test_create_engine_session_ttadk_invalid_model_autofix(monkeypatch):
     """当 TTADK ACP 启动因 Invalid model 失败时，应自动刷新并重试一次。"""
     from src.ttadk.manager import TTADKManager
+
     # 使用 ACP 可用的 tool（coco）覆盖 Invalid model 自动纠错闭环
     m = TTADKManager(default_tool="coco", default_model="bad")
     # 避免触碰真实 HOME 文件缓存
@@ -501,20 +516,25 @@ def test_create_engine_session_ttadk_invalid_model_autofix(monkeypatch):
         sess._model_name = model_name
         return sess
 
-    monkeypatch.setattr("src.acp.sync_adapter.start_session_with_retry", lambda *a, **k: fake_start_session_with_retry(*a, **k))
+    monkeypatch.setattr(
+        "src.acp.sync_adapter.start_session_with_retry", lambda *a, **k: fake_start_session_with_retry(*a, **k)
+    )
 
     # Mock precheck to avoid potential delays
-    monkeypatch.setattr("src.ttadk.startup_common.precheck_ttadk_startup_model", lambda **kw: {
-        "tool": "codex",
-        "input_model": kw.get("model_intent"),
-        "model": "a",
-        "resolved_model": "a",
-        "validated": True,
-        "source": "mock",
-        "decision": "precheck_mock",
-        "warnings": [],
-        "diagnostics": {},
-    })
+    monkeypatch.setattr(
+        "src.ttadk.startup_common.precheck_ttadk_startup_model",
+        lambda **kw: {
+            "tool": "codex",
+            "input_model": kw.get("model_intent"),
+            "model": "a",
+            "resolved_model": "a",
+            "validated": True,
+            "source": "mock",
+            "decision": "precheck_mock",
+            "warnings": [],
+            "diagnostics": {},
+        },
+    )
 
     # 触发 create_engine_session 的 TTADK 分支
     s = create_engine_session(agent_type="ttadk_coco", cwd="/tmp", model_name="bad")
@@ -596,7 +616,13 @@ def test_resolve_ttadk_engine_startup_model_includes_models_phase_diagnostics(mo
             diag = {
                 "attempts": [
                     {"phase": "quick", "validated": False, "source": "defaults"},
-                    {"phase": "models", "ok": False, "source": "defaults", "count": 0, "warnings": ["models_untrusted"]},
+                    {
+                        "phase": "models",
+                        "ok": False,
+                        "source": "defaults",
+                        "count": 0,
+                        "warnings": ["models_untrusted"],
+                    },
                 ]
             }
             return resolved, diag

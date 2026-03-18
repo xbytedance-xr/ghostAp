@@ -16,8 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from ..config import get_settings
 from ..acp.diagnostics import get_diagnostics_config, redact_text
+from ..config import get_settings
 from .models import (
     extract_invalid_model_diagnostics,
     is_invalid_model_error,
@@ -168,7 +168,9 @@ class TTADKCommandRunner:
         )
 
 
-def _build_ttadk_code_args(*, tool_name: str, model_name: Optional[str], extra_args: Optional[list[str]] = None) -> list[str]:
+def _build_ttadk_code_args(
+    *, tool_name: str, model_name: Optional[str], extra_args: Optional[list[str]] = None
+) -> list[str]:
     tool = (tool_name or "").strip().lower()
     xs: list[str] = ["ttadk", "code", "-t", tool]
     m = (model_name or "").strip()
@@ -221,10 +223,10 @@ def execute_ttadk_code_with_repair(
     attempts: list[dict] = []
 
     # manager methods (best-effort typing)
-    resolve_startup = getattr(manager, "resolve_startup_model_with_diagnostics")
+    resolve_startup = manager.resolve_startup_model_with_diagnostics
     seed_runtime = getattr(manager, "seed_models_from_invalid_model_runtime", None)
-    get_models = getattr(manager, "get_models")
-    resolve_real = getattr(manager, "resolve_real_model_name")
+    get_models = manager.get_models
+    resolve_real = manager.resolve_real_model_name
 
     resolved, diag = resolve_startup(intent, tool_name=tool, cwd=cwd)
     passthrough = getattr(resolved, "real_name", "") if bool(getattr(resolved, "validated", False)) else ""
@@ -399,4 +401,3 @@ def format_ttadk_code_user_message(result: dict) -> str:
         pass
 
     return "\n".join([x for x in lines if x])
-

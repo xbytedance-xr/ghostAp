@@ -1,7 +1,7 @@
 import json
 import logging
-import time
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -16,8 +16,8 @@ from lark_oapi.api.im.v1 import (
 )
 
 from ..config import get_settings
-from .shared import build_mode_buttons, build_responsive_layout, resolve_title_and_template
 from .flow_control import FlowControlConfig, FlowControlState, FlowControlStrategy
+from .shared import build_mode_buttons, build_responsive_layout, resolve_title_and_template
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,7 @@ class StreamingCard:
     image_keys: Optional[list[str]] = None
     is_coco_mode: bool = True
     is_claude_mode: bool = False
+    is_ttadk_mode: bool = False
     is_smart_mode: bool = False
     reply_in_thread: Optional[bool] = None  # 显式指定时优先使用
 
@@ -40,23 +41,22 @@ class StreamingCard:
     created_at: float = field(default_factory=time.time)
     last_content: str = ""
     last_update_at: float = 0.0
-    
+
     # Adaptive Flow Control
     flow_control_state: FlowControlState = field(default_factory=FlowControlState)
-    
+
     size_threshold: int = 50  # Character count threshold for updates
     last_content_len: int = 0
-    
+
     # Pagination support
     full_content: str = ""  # Complete content storage
     visible_chars: int = 20000  # Current visibility limit (default ~20KB)
     pagination_step: int = 5000  # How much to add on "Load More"
-    
+
     # Typing indicator state
     typing_state: int = 0  # 0-3 for cycling dots
     is_typing: bool = False
     last_typing_update: float = 0.0
-
 
 
 def _normalize_streaming_markdown(content: str, *, is_final: bool, max_chars: int) -> str:
@@ -98,7 +98,7 @@ class StreamingCardManager:
                 max_interval_s=self._settings.streaming_adaptive_interval_max,
                 low_rate_threshold=self._settings.streaming_adaptive_rate_low,
                 high_rate_threshold=self._settings.streaming_adaptive_rate_high,
-                ema_alpha=0.3
+                ema_alpha=0.3,
             )
         )
 
@@ -141,17 +141,21 @@ class StreamingCardManager:
                 text_size="notation",
             ),
             {"tag": "hr"},
-            *([
-                *[
-                    {
-                        "tag": "img",
-                        "img_key": key,
-                        "alt": {"tag": "plain_text", "content": f"图片 {i + 1}"},
-                    }
-                    for i, key in enumerate(image_keys)
-                ],
-                {"tag": "hr"},
-            ] if image_keys else []),
+            *(
+                [
+                    *[
+                        {
+                            "tag": "img",
+                            "img_key": key,
+                            "alt": {"tag": "plain_text", "content": f"图片 {i + 1}"},
+                        }
+                        for i, key in enumerate(image_keys)
+                    ],
+                    {"tag": "hr"},
+                ]
+                if image_keys
+                else []
+            ),
             _maybe_attach(
                 {"tag": "markdown", "content": initial_content},
                 element_id=element_id,
@@ -257,9 +261,10 @@ class StreamingCardManager:
         project_name: Optional[str],
         is_coco_mode: bool,
         is_claude_mode: bool,
+        is_ttadk_mode: bool = False,
     ) -> tuple[str, str]:
         """根据模式和项目名生成标题与头部颜色模板。"""
-        return resolve_title_and_template(project_name, is_coco_mode, is_claude_mode)
+        return resolve_title_and_template(project_name, is_coco_mode, is_claude_mode, is_ttadk_mode=is_ttadk_mode)
 
     # ---- 创建流式卡片 ----
 
@@ -273,14 +278,13 @@ class StreamingCardManager:
         element_id: str = "content_md",
         is_coco_mode: bool = True,
         is_claude_mode: bool = False,
+        is_ttadk_mode: bool = False,
         is_smart_mode: bool = False,
         reply_to_message_id: Optional[str] = None,
         image_keys: Optional[list[str]] = None,
         reply_in_thread: Optional[bool] = None,
     ) -> Optional[StreamingCard]:
-        title, header_template = self._resolve_title_and_template(
-            project_name, is_coco_mode, is_claude_mode
-        )
+        title, header_template = self._resolve_title_and_template(project_name, is_coco_mode, is_claude_mode, is_ttadk_mode=is_ttadk_mode)
 
         # "创建"阶段不做任何远端调用：先把卡片所需的元信息封装起来
         return StreamingCard(
@@ -293,12 +297,11 @@ class StreamingCardManager:
             image_keys=image_keys,
             is_coco_mode=is_coco_mode,
             is_claude_mode=is_claude_mode,
+            is_ttadk_mode=is_ttadk_mode,
             is_smart_mode=is_smart_mode,
             reply_in_thread=reply_in_thread,
             last_content=initial_content,
-            flow_control_state=FlowControlState(
-                min_update_interval_s=self._settings.streaming_adaptive_interval_base
-            )
+            flow_control_state=FlowControlState(min_update_interval_s=self._settings.streaming_adaptive_interval_base),
         )
 
     # ---- 非流式一次性发送（CardKit schema 2.0 但不开启打字动效） ----
@@ -312,16 +315,15 @@ class StreamingCardManager:
         project_id: Optional[str] = None,
         is_coco_mode: bool = True,
         is_claude_mode: bool = False,
+        is_ttadk_mode: bool = False,
         is_smart_mode: bool = False,
         reply_to_message_id: Optional[str] = None,
         image_keys: Optional[list[str]] = None,
         reply_in_thread: Optional[bool] = None,
     ) -> Optional[str]:
         """非流式发送：直接发送 schema 2.0 card JSON（不依赖 CardKit 卡片实体）。"""
-        title, header_template = self._resolve_title_and_template(
-            project_name, is_coco_mode, is_claude_mode
-        )
-        buttons = self._build_buttons(is_coco_mode, project_id, is_claude_mode)
+        title, header_template = self._resolve_title_and_template(project_name, is_coco_mode, is_claude_mode, is_ttadk_mode=is_ttadk_mode)
+        buttons = self._build_buttons(is_coco_mode, project_id, is_claude_mode, is_ttadk_mode)
         card_json = self._build_card_json(
             title=title,
             header_template=header_template,
@@ -382,8 +384,10 @@ class StreamingCardManager:
 
     # ---- 按钮构建 ----
 
-    def _build_buttons(self, is_coco_mode: bool, project_id: Optional[str] = None, is_claude_mode: bool = False) -> list[dict]:
-        return build_mode_buttons(is_coco_mode, project_id, is_claude_mode)
+    def _build_buttons(
+        self, is_coco_mode: bool, project_id: Optional[str] = None, is_claude_mode: bool = False, is_ttadk_mode: bool = False
+    ) -> list[dict]:
+        return build_mode_buttons(is_coco_mode, project_id, is_claude_mode, is_ttadk_mode)
 
     def _build_button_elements(self, buttons: list[dict], layout: str = "responsive") -> list[dict]:
         """为卡片生成按钮区。Delegates to shared.build_responsive_layout."""
@@ -404,7 +408,7 @@ class StreamingCardManager:
     def send_streaming_card(self, card: StreamingCard) -> Optional[str]:
         self._maybe_cleanup()
         try:
-            buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode)
+            buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode, card.is_ttadk_mode)
             initial = _normalize_streaming_markdown(
                 card.last_content,
                 is_final=False,
@@ -482,7 +486,7 @@ class StreamingCardManager:
         # --- Adaptive Flow Control Calculation ---
         now = time.time()
         current_len = len(content)
-        
+
         # Calculate content arrival rate (based on FULL content length)
         # We track rate based on data arrival, not rendering frequency
         delta_c = current_len - card.last_content_len
@@ -491,27 +495,27 @@ class StreamingCardManager:
         # Update full content in memory
         card.full_content = content
         card.is_typing = is_typing
-        
+
         # Calculate display content based on visible_chars
         display_content = content
         has_more = False
-        
+
         if len(content) > card.visible_chars:
-            display_content = content[:card.visible_chars]
+            display_content = content[: card.visible_chars]
             has_more = True
-            
+
         normalized = _normalize_streaming_markdown(
             display_content,
             is_final=False,
-            max_chars=0, # Disable truncation in normalize since we handled it
+            max_chars=0,  # Disable truncation in normalize since we handled it
         )
-        
+
         # Add typing indicator suffix if active
         if is_typing:
             if now - card.last_typing_update > 0.4:  # Update dots every 400ms
                 card.typing_state = (card.typing_state + 1) % 4
                 card.last_typing_update = now
-            
+
             dots = "." * card.typing_state
             if normalized.strip():
                 normalized += f"\n\n_对方正在思考{dots}_"
@@ -519,7 +523,7 @@ class StreamingCardManager:
                 normalized = f"_对方正在思考{dots}_"
 
         if normalized == card.last_content and not has_more and not is_typing:
-             return True
+            return True
 
         # Dual buffering strategy: Time OR Size
         # Update if enough time has passed OR enough content has accumulated
@@ -527,33 +531,32 @@ class StreamingCardManager:
         content_len = len(content)
         size_delta = abs(content_len - card.last_content_len)
         time_delta = now - card.last_update_at
-        
+
         should_update = (
-            force or
-            card.last_update_at == 0.0 or
-            size_delta >= card.size_threshold or
-            time_delta >= card.flow_control_state.min_update_interval_s or
-            (is_typing and time_delta >= 0.8) # Slower update for just typing animation
+            force
+            or card.last_update_at == 0.0
+            or size_delta >= card.size_threshold
+            or time_delta >= card.flow_control_state.min_update_interval_s
+            or (is_typing and time_delta >= 0.8)  # Slower update for just typing animation
         )
 
         if not should_update:
             return True
 
         try:
-            buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode)
-            
+            buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode, card.is_ttadk_mode)
+
             # Inject Load More button if needed
             if has_more:
-                buttons.append({
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": "⬇️ 加载更多"},
-                    "type": "primary",
-                    "value": {
-                        "action": "load_more",
-                        "message_id": card.message_id
+                buttons.append(
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "⬇️ 加载更多"},
+                        "type": "primary",
+                        "value": {"action": "load_more", "message_id": card.message_id},
                     }
-                })
-            
+                )
+
             card_json = self._build_update_card_json(
                 title=card.title,
                 header_template=card.header_template,
@@ -563,25 +566,25 @@ class StreamingCardManager:
                 buttons=buttons,
                 streaming_mode=True,
             )
-            
-            req = PatchMessageRequest.builder() \
-                .message_id(card.message_id) \
+
+            req = (
+                PatchMessageRequest.builder()
+                .message_id(card.message_id)
                 .request_body(
-                    PatchMessageRequestBody.builder()
-                    .content(json.dumps(card_json, ensure_ascii=False))
-                    .build()
-                ) \
+                    PatchMessageRequestBody.builder().content(json.dumps(card_json, ensure_ascii=False)).build()
+                )
                 .build()
-            
+            )
+
             resp = self._client.im.v1.message.patch(req)
-            
+
             if not resp.success():
                 # Rate limit handling could go here
                 logger.warning("卡片消息更新失败: code=%s, msg=%s", resp.code, resp.msg)
                 return False
 
             card.last_content = normalized
-            card.last_content_len = len(content) # Track FULL content length
+            card.last_content_len = len(content)  # Track FULL content length
             card.last_update_at = now
             return True
         except Exception as e:
@@ -599,7 +602,7 @@ class StreamingCardManager:
                 is_final=True,
                 max_chars=0,  # final card: no truncation
             )
-            buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode)
+            buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode, card.is_ttadk_mode)
             card_json = self._build_update_card_json(
                 title=card.title,
                 header_template=card.header_template,
@@ -613,9 +616,7 @@ class StreamingCardManager:
                 PatchMessageRequest.builder()
                 .message_id(card.message_id)
                 .request_body(
-                    PatchMessageRequestBody.builder()
-                    .content(json.dumps(card_json, ensure_ascii=False))
-                    .build()
+                    PatchMessageRequestBody.builder().content(json.dumps(card_json, ensure_ascii=False)).build()
                 )
                 .build()
             )
@@ -640,10 +641,7 @@ class StreamingCardManager:
     def cleanup_expired_cards(self, max_age_seconds: int = 3600):
         now = time.time()
         with self._lock:
-            expired = [
-                card_id for card_id, card in self._cards.items()
-                if now - card.created_at > max_age_seconds
-            ]
+            expired = [card_id for card_id, card in self._cards.items() if now - card.created_at > max_age_seconds]
             for card_id in expired:
                 del self._cards[card_id]
                 logger.info("清理过期卡片: %s", card_id)
@@ -654,12 +652,12 @@ class StreamingCardManager:
             card = self._cards.get(card_id)
             if not card:
                 return False
-            
+
             # Increase limit
             card.visible_chars += card.pagination_step
-            
+
             # Force update via normal flow
             # We use the cached full_content
             content_to_render = card.full_content
-            
+
         return self.update_content(card, content_to_render, force=True)

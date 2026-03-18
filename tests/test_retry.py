@@ -1,11 +1,11 @@
 import pytest
 
 from src.spec_engine.retry import (
-    RETRYABLE_ERROR_PATTERNS,
     NON_RETRYABLE_ERROR_PATTERNS,
+    RETRYABLE_ERROR_PATTERNS,
     RetryPolicy,
-    should_retry,
     get_retry_delay,
+    should_retry,
 )
 
 
@@ -32,26 +32,32 @@ class TestRetryPolicy:
 
 
 class TestShouldRetry:
-    @pytest.mark.parametrize("error_msg", [
-        "Invalid params: xyz",
-        "Connection timeout",
-        "connection reset by peer",
-        "rate limit exceeded",
-        "ratelimit hit",
-        "too many requests",
-        "server is overloaded",
-        "server error 500",
-        "internal error occurred",
-    ])
+    @pytest.mark.parametrize(
+        "error_msg",
+        [
+            "Invalid params: xyz",
+            "Connection timeout",
+            "connection reset by peer",
+            "rate limit exceeded",
+            "ratelimit hit",
+            "too many requests",
+            "server is overloaded",
+            "server error 500",
+            "internal error occurred",
+        ],
+    )
     def test_retryable_errors(self, error_msg):
         assert should_retry(error_msg) is True
 
-    @pytest.mark.parametrize("error_msg", [
-        "directory /tmp/xyz not found",
-        "directory does not exist",
-        "Permission denied: /etc/passwd",
-        "Authentication failed for user",
-    ])
+    @pytest.mark.parametrize(
+        "error_msg",
+        [
+            "directory /tmp/xyz not found",
+            "directory does not exist",
+            "Permission denied: /etc/passwd",
+            "Authentication failed for user",
+        ],
+    )
     def test_non_retryable_errors(self, error_msg):
         assert should_retry(error_msg) is False
 

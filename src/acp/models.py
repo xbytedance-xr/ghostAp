@@ -14,6 +14,7 @@ from typing import Optional
 
 class ACPEventType(Enum):
     """Event types produced from ACP session_update notifications."""
+
     TEXT_CHUNK = "text_chunk"
     THOUGHT_CHUNK = "thought_chunk"
     TOOL_CALL_START = "tool_call_start"
@@ -25,6 +26,7 @@ class ACPEventType(Enum):
 @dataclass
 class ToolCallInfo:
     """Simplified tool call representation."""
+
     id: str
     title: str
     kind: str  # read/edit/delete/execute/think/search/fetch/other
@@ -38,6 +40,7 @@ class ToolCallInfo:
 @dataclass
 class PlanEntryInfo:
     """Simplified plan entry."""
+
     content: str
     priority: str = "medium"  # high/medium/low
     status: str = "pending"  # pending/in_progress/completed
@@ -46,12 +49,14 @@ class PlanEntryInfo:
 @dataclass
 class PlanInfo:
     """Simplified plan."""
+
     entries: list[PlanEntryInfo] = field(default_factory=list)
 
 
 @dataclass
 class ACPEvent:
     """Unified ACP event, parsed from session_update notifications."""
+
     event_type: ACPEventType
     text: Optional[str] = None
     tool_call: Optional[ToolCallInfo] = None
@@ -62,6 +67,7 @@ class ACPEvent:
 @dataclass
 class ACPSessionState:
     """ACP session state (serializable for persistence)."""
+
     session_id: str
     agent_type: str  # "coco" / "claude"
     cwd: str
@@ -97,6 +103,7 @@ class ACPSessionState:
 @dataclass
 class PromptResult:
     """Result of a prompt sent via ACP."""
+
     stop_reason: str  # end_turn/max_tokens/max_turn_requests/refusal/cancelled
     text: str = ""
     tool_calls: list[ToolCallInfo] = field(default_factory=list)
@@ -114,7 +121,7 @@ class PromptResult:
         if not tool_call:
             return
         self.tool_calls.append(tool_call)
-        for p in (tool_call.locations or []):
+        for p in tool_call.locations or []:
             if p:
                 self.modified_files.add(p)
 
@@ -200,7 +207,7 @@ class PromptResult:
         # Modified files
         if self.modified_files:
             parts.append("\n**🗂️ 改动文件**")
-            for p in list(sorted(self.modified_files))[:max_items]:
+            for p in sorted(self.modified_files)[:max_items]:
                 parts.append(f"- `{p}`")
 
         return "\n".join(parts).strip() + "\n"

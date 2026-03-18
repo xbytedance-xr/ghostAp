@@ -13,15 +13,15 @@ Queue key routing:
 """
 
 from .scheduler import (
-    TaskScheduler,
-    TaskPriority,
-    TaskStatus,
-    TaskSpec,
-    TaskHandle,
-    TaskEvent,
-    TaskResult,
-    SYSTEM_QUEUE_SUFFIX,
     DEFAULT_QUEUE_SUFFIX,
+    SYSTEM_QUEUE_SUFFIX,
+    TaskEvent,
+    TaskHandle,
+    TaskPriority,
+    TaskResult,
+    TaskScheduler,
+    TaskSpec,
+    TaskStatus,
 )
 
 __all__ = [
@@ -35,4 +35,3 @@ __all__ = [
     "SYSTEM_QUEUE_SUFFIX",
     "DEFAULT_QUEUE_SUFFIX",
 ]
-

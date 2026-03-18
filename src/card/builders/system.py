@@ -1,14 +1,20 @@
+from __future__ import annotations
 
 import json
 from functools import lru_cache
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
 from src.project.context import ProjectContext
+from src.utils.errors import GhostAPError
+
 from ..shared import (
-    apply_compact_style,
     build_responsive_layout,
 )
-from src.utils.errors import GhostAPError
 from .core import CoreBuilder
+
+if TYPE_CHECKING:
+    from src.sandbox.executor import ExecutionResult
+
 
 class SystemBuilder:
     """System-related card building utilities."""
@@ -29,9 +35,7 @@ class SystemBuilder:
             quick_actions = exc.quick_actions
             context = exc.context
 
-        elements = [
-            CoreBuilder._build_content_element(f"❌ **{title}**\n\n{message}")
-        ]
+        elements = [CoreBuilder._build_content_element(f"❌ **{title}**\n\n{message}")]
 
         if project:
             elements.insert(0, CoreBuilder._build_directory_element(project))
@@ -66,68 +70,71 @@ class SystemBuilder:
         ]
 
         if result.error_message:
-            elements.append({
-                "tag": "markdown",
-                "content": f"🚫 **{result.error_message}**",
-            })
+            elements.append(
+                {
+                    "tag": "markdown",
+                    "content": f"🚫 **{result.error_message}**",
+                }
+            )
         elif result.stdout or result.stderr:
             MAX_OUTPUT_LEN = 2000
-            
+
             if result.stdout:
                 stdout_content = result.stdout
                 if len(stdout_content) > MAX_OUTPUT_LEN:
                     stdout_content = stdout_content[:MAX_OUTPUT_LEN] + "\n...(truncated)..."
-                elements.append({
-                    "tag": "markdown",
-                    "content": f"```BASH\n{stdout_content}\n```",
-                })
+                elements.append(
+                    {
+                        "tag": "markdown",
+                        "content": f"```BASH\n{stdout_content}\n```",
+                    }
+                )
             if result.stderr:
                 stderr_content = result.stderr
                 if len(stderr_content) > MAX_OUTPUT_LEN:
                     stderr_content = stderr_content[:MAX_OUTPUT_LEN] + "\n...(truncated)..."
-                elements.append({
-                    "tag": "markdown",
-                    "content": f"⚠️ **错误输出**:\n```BASH\n{stderr_content}\n```",
-                })
+                elements.append(
+                    {
+                        "tag": "markdown",
+                        "content": f"⚠️ **错误输出**:\n```BASH\n{stderr_content}\n```",
+                    }
+                )
         else:
-            elements.append({
-                "tag": "markdown",
-                "content": "✅ 命令执行成功（无输出）",
-            })
+            elements.append(
+                {
+                    "tag": "markdown",
+                    "content": "✅ 命令执行成功（无输出）",
+                }
+            )
 
-        elements.append({
-            "tag": "markdown",
-            "content": f"返回码: `{result.return_code}`",
-            "text_size": "notation",
-        })
+        elements.append(
+            {
+                "tag": "markdown",
+                "content": f"返回码: `{result.return_code}`",
+                "text_size": "notation",
+            }
+        )
 
         card = CoreBuilder._wrap_card(header_title, header_template, elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
 
     @staticmethod
     def build_ttadk_tool_select_card(tools: list, project_id: Optional[str] = None) -> tuple[str, str]:
-        elements = [
-            {
-                "tag": "markdown",
-                "content": "请选择要使用的 TTADK 工具："
-            }
-        ]
+        elements = [{"tag": "markdown", "content": "请选择要使用的 TTADK 工具："}]
 
         buttons = []
         for tool in tools:
             btn_text = f"{tool.name}"
             if tool.description:
                 btn_text += f" ({tool.description})"
-            buttons.append({
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": btn_text},
-                "type": "primary" if tool.is_default else "default",
-                "value": {
-                    "action": "select_ttadk_tool",
-                    "tool_name": tool.name,
-                    "project_id": project_id
+            buttons.append(
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": btn_text},
+                    "type": "primary" if tool.is_default else "default",
+                    "value": {"action": "select_ttadk_tool", "tool_name": tool.name, "project_id": project_id},
                 }
-            })
+            )
 
         elements.extend(build_responsive_layout(buttons))
 
@@ -136,9 +143,7 @@ class SystemBuilder:
 
     @staticmethod
     def build_ttadk_model_select_card(
-        models: list,
-        tool_name: str,
-        project_id: Optional[str] = None
+        models: list, tool_name: str, project_id: Optional[str] = None
     ) -> tuple[str, str]:
         elements = [
             {
@@ -146,7 +151,7 @@ class SystemBuilder:
                 "content": (
                     f"请为 **{tool_name}** 选择要使用的模型：\n"
                     "（若列表为空/不全，可点击下方『🔄 刷新模型列表』强制拉取）"
-                )
+                ),
             }
         ]
 
@@ -155,17 +160,19 @@ class SystemBuilder:
             btn_text = f"{model.name}"
             if model.description:
                 btn_text += f" ({model.description})"
-            buttons.append({
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": btn_text},
-                "type": "primary" if model.is_default else "default",
-                "value": {
-                    "action": "select_ttadk_model",
-                    "tool_name": tool_name,
-                    "model_name": model.name,
-                    "project_id": project_id
+            buttons.append(
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": btn_text},
+                    "type": "primary" if model.is_default else "default",
+                    "value": {
+                        "action": "select_ttadk_model",
+                        "tool_name": tool_name,
+                        "model_name": model.name,
+                        "project_id": project_id,
+                    },
                 }
-            })
+            )
 
         elements.extend(build_responsive_layout(buttons))
 
@@ -232,15 +239,14 @@ class SystemBuilder:
         # Convert to actual card buttons
         card_buttons = []
         for btn in buttons:
-            card_buttons.append({
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": btn["text"]},
-                "type": btn["type"],
-                "value": {
-                    "action": btn["action"],
-                    "project_id": project_id
+            card_buttons.append(
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": btn["text"]},
+                    "type": btn["type"],
+                    "value": {"action": btn["action"], "project_id": project_id},
                 }
-            })
+            )
 
         elements = [
             CoreBuilder._build_directory_element(project),
@@ -257,22 +263,22 @@ class SystemBuilder:
         project: Optional[ProjectContext] = None,
         category: str = "main",
         working_dir: Optional[str] = None,
-        current_mode_str: str = "智能模式"
+        current_mode_str: str = "智能模式",
     ) -> tuple[str, str]:
         """Build a categorized help card."""
-        
+
         # Extract primitives for caching
         project_name = project.project_name if project else None
         root_path = project.root_path if project else None
         project_id = project.project_id if project else None
-        
+
         return SystemBuilder._build_help_card_cached(
             project_name=project_name,
             root_path=root_path,
             project_id=project_id,
             category=category,
             working_dir=working_dir,
-            current_mode_str=current_mode_str
+            current_mode_str=current_mode_str,
         )
 
     @staticmethod
@@ -283,12 +289,12 @@ class SystemBuilder:
         project_id: Optional[str],
         category: str,
         working_dir: Optional[str],
-        current_mode_str: str
+        current_mode_str: str,
     ) -> tuple[str, str]:
         """Internal cached builder for help cards using only primitive types."""
-        
+
         project_info = f"**{project_name}** (`{root_path}`)" if project_name else "无"
-        
+
         # Categories
         categories = [
             {"name": "编程模式", "id": "coding"},
@@ -296,25 +302,23 @@ class SystemBuilder:
             {"name": "项目管理", "id": "project"},
             {"name": "更多...", "id": "more"},
         ]
-        
+
         category_buttons = []
         for cat in categories:
             is_active = cat["id"] == category or (category == "main" and cat["id"] == "coding")
-            category_buttons.append({
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": cat["name"]},
-                "type": "primary" if is_active else "default",
-                "value": {
-                    "action": "help_category",
-                    "category": cat["id"],
-                    "project_id": project_id
+            category_buttons.append(
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": cat["name"]},
+                    "type": "primary" if is_active else "default",
+                    "value": {"action": "help_category", "category": cat["id"], "project_id": project_id},
                 }
-            })
+            )
 
         content = ""
         # Default to coding if main
         cat_key = "coding" if category == "main" else category
-        
+
         if cat_key == "coding":
             content = (
                 "**🔄 编程模式切换**\n"
@@ -369,13 +373,16 @@ class SystemBuilder:
             )
 
         elements = [
-            {"tag": "markdown", "text_size": "notation",
-             "content": f"**当前状态**  •  {current_mode_str}  •  `{working_dir or '~'}`  •  项目: {project_info}"},
+            {
+                "tag": "markdown",
+                "text_size": "notation",
+                "content": f"**当前状态**  •  {current_mode_str}  •  `{working_dir or '~'}`  •  项目: {project_info}",
+            },
             {"tag": "hr"},
         ]
-        
+
         elements.extend(build_responsive_layout(category_buttons))
-        
+
         elements.append({"tag": "hr"})
         elements.append({"tag": "markdown", "text_size": "normal", "content": content})
 

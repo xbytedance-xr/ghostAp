@@ -104,8 +104,7 @@ class ProgressReporter:
     def get_status_title(self) -> str:
         return "📊 任务状态"
 
-    def get_progress_info(self, project: DeepProject,
-                          completed: int = 0, total: int = 0) -> dict:
+    def get_progress_info(self, project: DeepProject, completed: int = 0, total: int = 0) -> dict:
         return {
             "progress_bar": self._make_progress_bar(completed, total),
             "completed_count": completed,

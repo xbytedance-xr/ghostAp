@@ -57,9 +57,10 @@ def test_ttadk_cache_load_from_broken_file_recovers(monkeypatch, tmp_path: Path)
 
 def test_ttadk_cache_project_path_ssot_no_home_write(monkeypatch, tmp_path: Path):
     """硬门槛：给定 cwd 时只能写入项目目录，不得回退写入真实 HOME。"""
+    from pathlib import Path as _Path
+
     from src.ttadk.cache import TTADKModelCache
     from src.ttadk.models import TTADKModel
-    from pathlib import Path as _Path
 
     fake_home = tmp_path / "REAL_HOME"
     fake_home.mkdir(parents=True, exist_ok=True)
@@ -74,7 +75,9 @@ def test_ttadk_cache_project_path_ssot_no_home_write(monkeypatch, tmp_path: Path
         ttadk_models_cache_read_legacy_home = False
         ttadk_models_cache_migrate_from_legacy_home = False
 
-    c = TTADKModelCache(default_models=[TTADKModel(name="d")], cache_file_path=None, cache_ttl_s=300, get_settings_fn=lambda: _S())
+    c = TTADKModelCache(
+        default_models=[TTADKModel(name="d")], cache_file_path=None, cache_ttl_s=300, get_settings_fn=lambda: _S()
+    )
     # 写入内存并触发项目落盘
     c.seed_models_from_invalid_model_runtime(tool_name="codex", available_models=["m1"], source="x")
     r = c.get_models(tool_name="codex", cwd=str(project_abs))
@@ -92,10 +95,11 @@ def test_ttadk_cache_project_path_ssot_no_home_write(monkeypatch, tmp_path: Path
 
 def test_ttadk_cache_can_read_legacy_home_and_migrate(monkeypatch, tmp_path: Path):
     """兼容性：项目 cache 不存在时允许读取 legacy HOME cache，并迁移写入项目 cache。"""
+    import json
+    from pathlib import Path as _Path
+
     from src.ttadk.cache import TTADKModelCache
     from src.ttadk.models import TTADKModel
-    from pathlib import Path as _Path
-    import json
 
     fake_home = tmp_path / "REAL_HOME"
     (fake_home / ".ttadk").mkdir(parents=True, exist_ok=True)
@@ -113,7 +117,9 @@ def test_ttadk_cache_can_read_legacy_home_and_migrate(monkeypatch, tmp_path: Pat
         ttadk_models_cache_read_legacy_home = True
         ttadk_models_cache_migrate_from_legacy_home = True
 
-    c = TTADKModelCache(default_models=[TTADKModel(name="d")], cache_file_path=None, cache_ttl_s=300, get_settings_fn=lambda: _S())
+    c = TTADKModelCache(
+        default_models=[TTADKModel(name="d")], cache_file_path=None, cache_ttl_s=300, get_settings_fn=lambda: _S()
+    )
     # 触发按项目加载
     r = c.get_models(tool_name="codex", cwd=str(project_abs))
     assert "m-legacy" in [m.name for m in r.models]

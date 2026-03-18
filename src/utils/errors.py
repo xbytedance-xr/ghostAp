@@ -1,6 +1,6 @@
-import logging
 import asyncio
-from typing import Optional, Any, Union
+import logging
+from typing import Union
 
 """Unified error formatting and base exception for user-facing messages.
 
@@ -25,7 +25,7 @@ class GhostAPError(Exception):
 
     Carries a user-facing message (Chinese) and an optional machine-readable
     ``action`` tag for logging/metrics.
-    
+
     Can also carry structured data for QuickAction buttons.
     """
 
@@ -38,18 +38,21 @@ class GhostAPError(Exception):
 
 class SessionExpiredError(GhostAPError):
     """AI session (Coco/Claude) has expired or is unreachable."""
+
     def __init__(self, message: str = "会话已过期", **kwargs):
         super().__init__(message, quick_actions=["retry", "stop"], **kwargs)
 
 
 class ProjectNotFoundError(GhostAPError):
     """Requested project does not exist."""
+
     def __init__(self, message: str = "项目不存在", **kwargs):
         super().__init__(message, quick_actions=["new_project_prompt", "list_projects"], **kwargs)
 
 
 class SafetyCheckError(GhostAPError):
     """Command blocked by safety checks."""
+
     def __init__(self, message: str = "操作被安全策略拦截", **kwargs):
         super().__init__(message, quick_actions=["stop"], **kwargs)
 
@@ -57,6 +60,7 @@ class SafetyCheckError(GhostAPError):
 # ---------------------------------------------------------------------------
 # User-facing message formatters
 # ---------------------------------------------------------------------------
+
 
 def fmt_error(action: str, detail: Union[str, Exception] = "") -> str:
     """Format a hard-failure message."""
@@ -69,10 +73,45 @@ def fmt_error(action: str, detail: Union[str, Exception] = "") -> str:
                 detail = f"操作超时 ({msg})"
         else:
             detail = str(detail)
-            
+
     if detail:
         return f"❌ {action}失败: {detail}"
     return f"❌ {action}失败"
+
+
+def unwrap_fmt_error(formatted: str, exc: Exception | None = None, *, default: str = "未知错误") -> str:
+    """从 `fmt_error("", exc)` 的输出中提取可展示的 detail。
+
+    历史上多处调用会：
+    1) `formatted = fmt_error("", e)`
+    2) 手动剥离 "❌ 失败: " 前缀
+
+    本函数把该逻辑下沉到 `src/utils/errors.py`，避免重复实现。
+    """
+    s = str(formatted or "")
+
+    # 典型输出："❌ 失败: xxx" / "❌ 失败"
+    if s.startswith("❌ "):
+        if "失败: " in s:
+            tail = s.split("失败: ", 1)[1]
+            tail = str(tail or "").strip()
+            if tail:
+                return tail
+        if s.endswith("失败"):
+            msg = str(exc or "").strip()
+            return msg or default
+
+    # 非标准格式：保持原样
+    return s
+
+
+def get_error_detail(exc: Exception, *, default: str = "未知错误") -> str:
+    """统一把异常转成可展示的 detail（不含 "❌ 失败" 前缀）。"""
+    try:
+        formatted = fmt_error("", exc)
+    except Exception:
+        formatted = ""
+    return unwrap_fmt_error(formatted, exc, default=default)
 
 
 def fmt_exception(action: str, exc: BaseException) -> str:
@@ -101,7 +140,7 @@ def fmt_not_found(resource: str, name: str = "") -> str:
 
 def log_exception(logger: logging.Logger, msg: str, exc: Exception, level: int = logging.ERROR):
     """Log an exception with appropriate level.
-    
+
     Downgrades known business logic exceptions (GhostAPError) to WARNING.
     """
     if isinstance(exc, GhostAPError):

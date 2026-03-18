@@ -1,16 +1,16 @@
-from .context import ProjectContext, ProjectStatus, SessionSnapshot, ClaudeSessionSnapshot, CocoSessionSnapshot
+from .context import ClaudeSessionSnapshot, CocoSessionSnapshot, ProjectContext, ProjectStatus, SessionSnapshot
 from .manager import ProjectManager
-from .mapper import MessageProjectMapper, MessageLinker
+from .mapper import MessageLinker, MessageProjectMapper
 from .unified_context import (
+    ContextBridgeSummary,
     ContextEntry,
     ContextEntryType,
+    ContextResult,
     ContextSourceMode,
     ContextVersion,
-    ContextBridgeSummary,
-    ContextResult,
+    ProjectContextManager,
     UnifiedContext,
     UnifiedContextStore,
-    ProjectContextManager,
 )
 
 __all__ = [

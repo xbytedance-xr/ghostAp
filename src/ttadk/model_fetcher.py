@@ -6,30 +6,27 @@
 
 import json
 import logging
-import time
-import threading
-from pathlib import Path
-from dataclasses import dataclass, field
-from typing import Optional
 import re
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
 
-from ..config import get_settings
 from ..acp.diagnostics import get_diagnostics_config, redact_text, truncate_text
-
+from ..config import get_settings
 from .env_sandbox import build_ttadk_subprocess_env
-
-from .models import TTADKModel, truncate_snippet, parse_models_cache_json
-from .models import is_invalid_model_error
+from .models import TTADKModel, is_invalid_model_error, parse_models_cache_json
 from .strategies import (
-    ModelFetchStrategy,
-    ProbeStrategy,
     InteractiveStrategy,
-    OfficialCLIModelsStrategy,
     LocalConfigModelsStrategy,
+    ModelFetchStrategy,
+    OfficialCLIModelsStrategy,
+    ProbeStrategy,
     ProjectMetaModelsStrategy,
-    TTADKProbeError,
-    TTADKOfficialCLIError,
     TTADKLocalConfigError,
+    TTADKOfficialCLIError,
+    TTADKProbeError,
     TTADKProjectMetaError,
 )
 
@@ -120,6 +117,7 @@ class FetchResult:
                 self.diagnostics.tool_name = self.tool_name
         except Exception:
             pass
+
 
 class TTADKModelFetcher:
     """通过多种策略获取 TTADK 工具的模型列表"""
@@ -328,7 +326,9 @@ class TTADKModelFetcher:
                             "ok": bool(commands),
                             "cached": False,
                             "count": len(commands),
-                            "error_type": None if bool(commands) else ("NonZeroExit" if (rc_i not in (None, 0)) else None),
+                            "error_type": None
+                            if bool(commands)
+                            else ("NonZeroExit" if (rc_i not in (None, 0)) else None),
                             "exit_code": rc_i,
                             "raw_cmd": ["ttadk", "--help"],
                             "stdout_snippet": _redacted_snippet(out_s),
@@ -388,12 +388,18 @@ class TTADKModelFetcher:
                                 "count": 1 if bool(ok) else 0,
                                 "exit_code": (probe_last or {}).get("rc") if isinstance(probe_last, dict) else None,
                                 "raw_cmd": raw_cmd or ["ttadk", "models", "--help"],
-                                "stderr_snippet": _redacted_snippet((probe_last or {}).get("stderr") if isinstance(probe_last, dict) else ""),
-                                "stdout_snippet": _redacted_snippet((probe_last or {}).get("stdout") if isinstance(probe_last, dict) else ""),
+                                "stderr_snippet": _redacted_snippet(
+                                    (probe_last or {}).get("stderr") if isinstance(probe_last, dict) else ""
+                                ),
+                                "stdout_snippet": _redacted_snippet(
+                                    (probe_last or {}).get("stdout") if isinstance(probe_last, dict) else ""
+                                ),
                                 "warnings": list(probe_warnings or []),
                                 "detail": {"cmd_prefix": list(cmd_prefix or [])},
                                 "duration_ms": 0,
-                                "timeout_ms": int(min(2.0, float(getattr(self._official_cli, "timeout_s", 4.0) or 4.0)) * 1000),
+                                "timeout_ms": int(
+                                    min(2.0, float(getattr(self._official_cli, "timeout_s", 4.0) or 4.0)) * 1000
+                                ),
                             }
                         )
                 except Exception:
@@ -473,7 +479,9 @@ class TTADKModelFetcher:
                 if not s:
                     continue
                 if name == "official_cli":
-                    if self._is_official_cli_enabled(tool_name=tool_name, cwd=cwd, diag=diag, force_refresh=force_refresh):
+                    if self._is_official_cli_enabled(
+                        tool_name=tool_name, cwd=cwd, diag=diag, force_refresh=force_refresh
+                    ):
                         ordered.append(s)
                     else:
                         try:
@@ -505,7 +513,9 @@ class TTADKModelFetcher:
                 if not s:
                     continue
                 if name == "official_cli":
-                    if self._is_official_cli_enabled(tool_name=tool_name, cwd=cwd, diag=diag, force_refresh=force_refresh):
+                    if self._is_official_cli_enabled(
+                        tool_name=tool_name, cwd=cwd, diag=diag, force_refresh=force_refresh
+                    ):
                         ordered.append(s)
                     else:
                         try:
@@ -524,7 +534,9 @@ class TTADKModelFetcher:
             if "official_cli" not in by_name:
                 return
             try:
-                enabled = self._is_official_cli_enabled(tool_name=tool_name, cwd=cwd, diag=diag, force_refresh=force_refresh)
+                enabled = self._is_official_cli_enabled(
+                    tool_name=tool_name, cwd=cwd, diag=diag, force_refresh=force_refresh
+                )
             except Exception:
                 enabled = False
             if enabled:
@@ -728,7 +740,9 @@ class TTADKModelFetcher:
                     timeout_ms = None
                 stderr_snip = _redacted_snippet(getattr(e, "stderr", "") or "")
                 stdout_snip = _redacted_snippet(getattr(e, "stdout", "") or "")
-                if isinstance(e, (TTADKProbeError, TTADKOfficialCLIError, TTADKLocalConfigError, TTADKProjectMetaError)):
+                if isinstance(
+                    e, (TTADKProbeError, TTADKOfficialCLIError, TTADKLocalConfigError, TTADKProjectMetaError)
+                ):
                     # 可诊断失败：携带 stdout/stderr/rc
                     stderr_snip = _redacted_snippet(getattr(e, "stderr", "") or "")
                     stdout_snip = _redacted_snippet(getattr(e, "stdout", "") or "")
@@ -842,7 +856,9 @@ class TTADKModelFetcher:
             self._cache_time.clear()
 
     # ---- sync json parsing helpers ----
-    def _extract_models_from_sync(self, data: object, tool_name: Optional[str], current_model: Optional[str] = None) -> list[TTADKModel]:
+    def _extract_models_from_sync(
+        self, data: object, tool_name: Optional[str], current_model: Optional[str] = None
+    ) -> list[TTADKModel]:
         if isinstance(data, dict) and tool_name:
             for key in self.TOOL_KEYS:
                 container = data.get(key)
@@ -851,10 +867,14 @@ class TTADKModelFetcher:
                     return models
         return self._extract_models_from_container(data, current_model, under_model_key=False)
 
-    def _extract_models_from_tool_container(self, container: object, tool_name: str, current_model: Optional[str]) -> list[TTADKModel]:
+    def _extract_models_from_tool_container(
+        self, container: object, tool_name: str, current_model: Optional[str]
+    ) -> list[TTADKModel]:
         if isinstance(container, dict):
             if tool_name in container:
-                return self._extract_models_from_container(container.get(tool_name), current_model, under_model_key=False)
+                return self._extract_models_from_container(
+                    container.get(tool_name), current_model, under_model_key=False
+                )
         elif isinstance(container, list):
             for item in container:
                 if isinstance(item, dict):
@@ -863,7 +883,9 @@ class TTADKModelFetcher:
                         return self._extract_models_from_container(item, current_model, under_model_key=False)
         return []
 
-    def _extract_models_from_container(self, container: object, current_model: Optional[str], under_model_key: bool) -> list[TTADKModel]:
+    def _extract_models_from_container(
+        self, container: object, current_model: Optional[str], under_model_key: bool
+    ) -> list[TTADKModel]:
         if isinstance(container, dict):
             for key in self.MODEL_KEYS:
                 if key in container:
@@ -952,7 +974,10 @@ class FileCacheStrategy(ModelFetchStrategy):
 
     def get_attempt_detail(self) -> dict:
         try:
-            return {"file_hit": str(getattr(self._path, "name", "models_cache.json") or "models_cache.json"), "scope": "home"}
+            return {
+                "file_hit": str(getattr(self._path, "name", "models_cache.json") or "models_cache.json"),
+                "scope": "home",
+            }
         except Exception:
             return {"file_hit": "models_cache.json", "scope": "home"}
 

@@ -1,10 +1,7 @@
-import threading
-import time
-from unittest.mock import patch, MagicMock
-from pathlib import Path
 import tempfile
-
-import pytest
+import threading
+from pathlib import Path
+from unittest.mock import patch
 
 from src.coco_model import (
     CocoModel,
@@ -12,7 +9,7 @@ from src.coco_model import (
     ModelListResult,
     get_coco_model_manager,
 )
-from src.coco_model.manager import DEFAULT_MODELS, CACHE_TTL_SECONDS
+from src.coco_model.manager import DEFAULT_MODELS
 
 
 class TestCocoModel:
@@ -129,6 +126,7 @@ class TestCocoModelManager:
 class TestGetCocoModelManager:
     def test_returns_singleton(self):
         import src.coco_model.manager as mgr
+
         mgr._manager = None
         m1 = get_coco_model_manager()
         m2 = get_coco_model_manager()

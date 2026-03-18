@@ -12,10 +12,12 @@ dependencies = [
     "agent-client-protocol>=0.8.0",
     "pydantic-settings>=2.6.0",
     "python-dotenv>=1.0.0",
+    "psutil>=7.2.2",
 ]
 
 [dependency-groups]
 dev = [
+    "interrogate>=1.7.0",
     "mypy>=1.19.1",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
@@ -37,3 +39,72 @@ filterwarnings = [
     "ignore::DeprecationWarning:lark_oapi.*",
     "ignore::DeprecationWarning:websockets.*"
 ]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = [
+    "scripts/archive",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+]
+ignore = [
+    "E501", # keep line-length enforcement in formatter (ruff format); do not fail lint
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.interrogate]
+ignore-init-method = true
+ignore-init-module = true
+ignore-magic = true
+ignore-semimajor = false
+ignore-private = true
+ignore-property-decorators = true
+ignore-nested-functions = true
+ignore-setters = true
+fail-under = 80
+exclude = [
+    "setup.py",
+    "docs",
+    "tests",
+    "scripts",
+    # 聚焦核心流转模块：调度 / 模式 / WS 路由
+    "src/agent_session.py",
+    "src/config.py",
+    "src/main.py",
+    "src/acp",
+    "src/agent",
+    "src/card",
+    "src/coco_model",
+    "src/deep_engine",
+    "src/loop_engine",
+    "src/project",
+    "src/sandbox",
+    "src/spec_engine",
+    "src/ttadk",
+    "src/utils",
+    # feishu 子模块暂不纳入 docstring 覆盖率（保留 ws_client.py）
+    "src/feishu/handlers",
+    "src/feishu/renderers",
+    "src/feishu/action_dispatcher.py",
+    "src/feishu/emoji.py",
+    "src/feishu/handler_context.py",
+    "src/feishu/im_client.py",
+    "src/feishu/image_handler.py",
+    "src/feishu/message_cache.py",
+    "src/feishu/message_formatter.py",
+]
+ignore-regex = ["^get$", "^mock_.*", ".*BaseClass.*"]
+verbose = 1
+quiet = false
+whitelist-regex = []
+color = true

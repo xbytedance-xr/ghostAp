@@ -179,17 +179,14 @@ def test_acp_session_manager_ttadk_startup_fail_log_has_non_empty_error_blob(mon
         )
 
     logs = "\n".join([r.getMessage() for r in caplog.records])
-    assert (
-        "TTADK CLI startup failed" in logs
-        or "启动 ttadk_codex CLI 失败" in logs
-    )
+    assert "TTADK CLI startup failed" in logs or "启动 ttadk_codex CLI 失败" in logs
     # The new logic just raises "启动 ... CLI 失败: ", it might not do complex formatting unless fallback fails
     # But fallback to coco is attempted.
-    
+
     # We might need to adjust assertions because the new logic is simpler.
-    # It catches exception, logs warning, tries degrade (which fails here because we didn't mock it well?), 
+    # It catches exception, logs warning, tries degrade (which fails here because we didn't mock it well?),
     # then raises RuntimeError.
-    
+
     # Actually, if degrade succeeds (it mocks SyncACPSession elsewhere?), then no raise.
     # But here we only mocked SyncTTADKCLISession. _degrade_ttadk_to_coco_acp uses SyncACPSession.
     # We need to ensure _degrade_ttadk_to_coco_acp ALSO fails or returns nothing if we want to test raise.
@@ -297,7 +294,7 @@ def test_acp_session_manager_ttadk_startup_fail_diagnostics_summary_is_redacted(
         def start(self, startup_timeout: float = 60) -> str:
             e = _EmptyStrErr()
             # Provide raw snippet fields for diagnostics builder (if fallback used it)
-            setattr(e, "stderr", "token=abc123 api_key=sk-secret-1234567890 " + ("x" * 1000))
+            e.stderr = "token=abc123 api_key=sk-secret-1234567890 " + "x" * 1000
             raise e
 
         def load_session(self, session_id: str) -> None:
@@ -338,10 +335,10 @@ def test_acp_session_manager_ttadk_startup_fail_diagnostics_summary_is_redacted(
     # The new implementation logs the exception str() which is empty for _EmptyStrErr
     # But it also logs "TTADK CLI startup failed, attempting degrade to Coco: "
     # Since degrade fails (unmocked SyncACPSession likely fails), it raises RuntimeError.
-    
+
     # We just want to ensure sensitive info isn't logged if it was in the exception.
     assert "abc123" not in logs
     assert "sk-secret" not in logs
     # assert "***REDACTED***" in logs # Maybe not, if simple str() is empty.
-    
+
     pass

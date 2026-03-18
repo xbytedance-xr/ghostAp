@@ -1,7 +1,7 @@
-import time
 import threading
-from typing import Optional
+import time
 from collections import OrderedDict
+from typing import Optional
 
 
 class MessageProjectMapper:

@@ -1,10 +1,11 @@
-import pytest
-import sys
 import os
+import sys
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.sandbox.executor import SandboxExecutor, ExecutionResult
+from src.sandbox.executor import ExecutionResult, SandboxExecutor
 
 
 class TestSandboxExecutor:
@@ -66,24 +67,13 @@ class TestSandboxExecutor:
         assert reason is not None
 
     def test_execution_result_to_message(self):
-        result = ExecutionResult(
-            success=True,
-            stdout="test output",
-            stderr="",
-            return_code=0
-        )
+        result = ExecutionResult(success=True, stdout="test output", stderr="", return_code=0)
         message = result.to_message()
         assert "test output" in message
         assert "返回码: 0" in message
 
     def test_execution_result_error_message(self):
-        result = ExecutionResult(
-            success=False,
-            stdout="",
-            stderr="",
-            return_code=-1,
-            error_message="测试错误"
-        )
+        result = ExecutionResult(success=False, stdout="", stderr="", return_code=-1, error_message="测试错误")
         message = result.to_message()
         assert "执行失败" in message
         assert "测试错误" in message
@@ -115,7 +105,7 @@ class TestSandboxExecutor:
 
     def test_git_pager_env_disabled(self):
         """Test that GIT_PAGER environment variable is set to cat."""
-        result = self.executor.execute("echo \"GIT_PAGER=[$GIT_PAGER]\"")
+        result = self.executor.execute('echo "GIT_PAGER=[$GIT_PAGER]"')
         assert result.success is True
         assert "GIT_PAGER=[cat]" in result.stdout
 

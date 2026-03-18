@@ -9,15 +9,16 @@ from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
 from ...coco_model import get_coco_model_manager
+from ...tasking import TaskPriority, TaskSpec
 from ...ttadk import get_ttadk_manager
 from ...utils.path import normalize_ttadk_cwd
-from ...tasking import TaskSpec, TaskPriority
 from ..emoji import EmojiReaction
 from ..message_formatter import FeishuMessageFormatter as fmt
 from .base import BaseHandler
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
+    from ..handler_context import HandlerContext
 
 logger = logging.getLogger(__name__)
 
@@ -73,22 +74,29 @@ class SystemHandler(BaseHandler):
         name = text[8:].strip()
         if name:
             self.project_handler.switch_project(
-                message_id, chat_id, name,
+                message_id,
+                chat_id,
+                name,
                 coco_handler=self.coco_handler,
                 claude_handler=self.claude_handler,
             )
         else:
             self.project_handler.show_project_board(message_id, chat_id)
 
-    def _handle_new_project_command(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"]):
+    def _handle_new_project_command(
+        self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"]
+    ):
         from ...card.styles import UI_TEXT
+
         parts = text[5:].strip().split(None, 1)
         name = parts[0] if parts else ""
         path = parts[1] if len(parts) > 1 else self.get_working_dir(chat_id)
         if name:
             self.project_handler.create_project(message_id, chat_id, name, path)
         else:
-            self.reply_error(message_id, UI_TEXT.get("system_new_project_usage", "用法: `/new 项目名 [路径]`"), title="参数错误")
+            self.reply_error(
+                message_id, UI_TEXT.get("system_new_project_usage", "用法: `/new 项目名 [路径]`"), title="参数错误"
+            )
 
     def _handle_close_command(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"]):
         name = text[7:].strip()
@@ -121,9 +129,18 @@ class SystemHandler(BaseHandler):
     def is_spec_command(text: str) -> bool:
         text_lower = text.lower().strip()
         spec_prefixes = (
-            "/spec", "/stop_spec", "/spec_status", "/spec_history",
-            "/spec_metrics", "/spec_config", "/spec_save", "/spec_pause",
-            "/spec_resume", "/spec_recover", "/spec_guide", "/spec_export"
+            "/spec",
+            "/stop_spec",
+            "/spec_status",
+            "/spec_history",
+            "/spec_metrics",
+            "/spec_config",
+            "/spec_save",
+            "/spec_pause",
+            "/spec_resume",
+            "/spec_recover",
+            "/spec_guide",
+            "/spec_export",
         )
         return any(text_lower == cmd or text_lower.startswith(f"{cmd} ") for cmd in spec_prefixes)
 
@@ -140,18 +157,54 @@ class SystemHandler(BaseHandler):
         first_word = text_lower.split()[0].lower()
         # Single-word commands that are almost certainly shell
         shell_exact = {
-            "ls", "pwd", "whoami", "date", "uptime", "df", "du",
-            "ps", "top", "htop", "free", "uname", "env", "id",
-            "hostname", "which", "file", "wc", "tree",
+            "ls",
+            "pwd",
+            "whoami",
+            "date",
+            "uptime",
+            "df",
+            "du",
+            "ps",
+            "top",
+            "htop",
+            "free",
+            "uname",
+            "env",
+            "id",
+            "hostname",
+            "which",
+            "file",
+            "wc",
+            "tree",
         }
         if first_word in shell_exact:
             return True
         # Prefix patterns for parameterized shell commands
         shell_prefixes = {
-            "ls", "cat", "head", "tail", "wc",
-            "git", "find", "grep", "mkdir", "rm", "cp", "mv",
-            "chmod", "chown", "touch", "echo", "curl", "wget",
-            "pip", "npm", "yarn", "docker", "make", "tree",
+            "ls",
+            "cat",
+            "head",
+            "tail",
+            "wc",
+            "git",
+            "find",
+            "grep",
+            "mkdir",
+            "rm",
+            "cp",
+            "mv",
+            "chmod",
+            "chown",
+            "touch",
+            "echo",
+            "curl",
+            "wget",
+            "pip",
+            "npm",
+            "yarn",
+            "docker",
+            "make",
+            "tree",
         }
         return first_word in shell_prefixes
 
@@ -159,9 +212,14 @@ class SystemHandler(BaseHandler):
     def is_interceptable_command(text: str) -> bool:
         text_lower = text.lower().strip()
         exact_commands = {
-            "/help", "/帮助",
-            "/coco_info", "/claude_info", "/ttadk_info",
-            "/projects", "/status", "/project",
+            "/help",
+            "/帮助",
+            "/coco_info",
+            "/claude_info",
+            "/ttadk_info",
+            "/projects",
+            "/status",
+            "/project",
             "/switch",
             "/tasks",
             "/diff",
@@ -178,7 +236,9 @@ class SystemHandler(BaseHandler):
     # ------------------------------------------------------------------
     # Intercepted command router
     # ------------------------------------------------------------------
-    def handle_intercepted_command(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"] = None):
+    def handle_intercepted_command(
+        self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"] = None
+    ):
         text_lower = text.lower().strip()
 
         # 1. Try exact match
@@ -200,13 +260,20 @@ class SystemHandler(BaseHandler):
         msg_type, card_content = CardBuilder.build_command_menu_card(project)
         self.reply_message(message_id, card_content, msg_type=msg_type)
 
-    def handle_help_category(self, message_id: str, chat_id: str, category: str, project: Optional["ProjectContext"] = None, origin_message_id: Optional[str] = None):
-        from ...mode import InteractionMode
+    def handle_help_category(
+        self,
+        message_id: str,
+        chat_id: str,
+        category: str,
+        project: Optional["ProjectContext"] = None,
+        origin_message_id: Optional[str] = None,
+    ):
         from ...card.styles import UI_TEXT
-        
+        from ...mode import InteractionMode
+
         current_mode = self.mode_manager.get_mode(chat_id)
         current_dir = self.get_working_dir(chat_id)
-        
+
         mode_emoji = {
             InteractionMode.SMART: UI_TEXT.get("system_mode_smart", "🧠 智能模式"),
             InteractionMode.COCO: UI_TEXT.get("system_mode_coco", "🤖 Coco 编程模式"),
@@ -214,9 +281,9 @@ class SystemHandler(BaseHandler):
             InteractionMode.TTADK: UI_TEXT.get("system_mode_ttadk", "🎮 TTADK 多工具模式"),
         }
         current_mode_str = mode_emoji.get(current_mode, UI_TEXT.get("system_mode_smart", "🧠 智能模式"))
-        
+
         msg_type, card_content = CardBuilder.build_help_card(project, category, current_dir, current_mode_str)
-        
+
         if origin_message_id:
             if self.patch_message(origin_message_id, card_content):
                 return
@@ -225,13 +292,19 @@ class SystemHandler(BaseHandler):
 
     def handle_deep_prompt(self, message_id: str, chat_id: str):
         from ...card.styles import UI_TEXT
-        self.reply_message(message_id, UI_TEXT.get("system_help_deep_prompt", "🧠 启动 Deep Engine\n\n请发送: `/deep <你的需求>`\n\n例如: `/deep 帮我重构 src/feishu 模块`"))
 
+        self.reply_message(
+            message_id,
+            UI_TEXT.get(
+                "system_help_deep_prompt",
+                "🧠 启动 Deep Engine\n\n请发送: `/deep <你的需求>`\n\n例如: `/deep 帮我重构 src/feishu 模块`",
+            ),
+        )
 
     def refresh_ttadk_models(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         """强制刷新 TTADK 当前工具的真实模型列表（优先 probe），并返回诊断摘要。"""
         from ...card.styles import UI_TEXT
-        
+
         manager = get_ttadk_manager()
         cwd = None
         try:
@@ -245,7 +318,9 @@ class SystemHandler(BaseHandler):
         try:
             result = manager.refresh_models(tool_name=tool or None, cwd=cwd)
         except Exception as e:
-            self.reply_error(message_id, str(e), title=UI_TEXT.get("system_ttadk_refresh_error", "刷新 TTADK 模型列表失败"))
+            self.reply_error(
+                message_id, str(e), title=UI_TEXT.get("system_ttadk_refresh_error", "刷新 TTADK 模型列表失败")
+            )
             return
 
         lines = [UI_TEXT.get("system_ttadk_refresh_success", "✅ 已触发 TTADK 模型列表强制刷新")]
@@ -265,27 +340,35 @@ class SystemHandler(BaseHandler):
         lines.append("\n最短修复路径：若仍不可用，请确认在项目目录执行过 `ttadk init`，或切换 tool 后重试。")
         self.reply_message(message_id, "\n".join(lines))
 
-    def handle_refresh_ttadk_models(self, message_id: str, chat_id: str, tool_name: str, project_id: Optional[str] = None):
+    def handle_refresh_ttadk_models(
+        self, message_id: str, chat_id: str, tool_name: str, project_id: Optional[str] = None
+    ):
         """卡片按钮入口：强制刷新指定 tool 的模型列表，并重新渲染模型选择卡片。"""
         from ...card.styles import UI_TEXT
-        
+
         manager = get_ttadk_manager()
         tool = (tool_name or manager.get_current_tool() or "").strip()
         try:
             raw_cwd = self._resolve_ttadk_cwd(chat_id, project_id=(project_id or None))
             cwd = normalize_ttadk_cwd(raw_cwd)
-            self._maybe_log_ttadk_cwd(where="SystemHandler.handle_refresh_ttadk_models", raw_cwd=raw_cwd, normalized_cwd=cwd)
+            self._maybe_log_ttadk_cwd(
+                where="SystemHandler.handle_refresh_ttadk_models", raw_cwd=raw_cwd, normalized_cwd=cwd
+            )
         except Exception:
             cwd = None
 
         if not tool:
-            self.reply_message(message_id, UI_TEXT.get("system_ttadk_no_tool", "⚠️ 未指定 TTADK 工具，建议先发送 `/ttadk` 选择工具"))
+            self.reply_message(
+                message_id, UI_TEXT.get("system_ttadk_no_tool", "⚠️ 未指定 TTADK 工具，建议先发送 `/ttadk` 选择工具")
+            )
             return
 
         try:
             result = manager.refresh_models(tool_name=tool, cwd=cwd)
         except Exception as e:
-            self.reply_error(message_id, str(e), title=UI_TEXT.get("system_ttadk_refresh_error", "刷新 TTADK 模型列表失败"))
+            self.reply_error(
+                message_id, str(e), title=UI_TEXT.get("system_ttadk_refresh_error", "刷新 TTADK 模型列表失败")
+            )
             return
 
         # 直接复用刷新结果渲染模型选择卡片（force_refresh=True 已经回填缓存）
@@ -345,7 +428,7 @@ class SystemHandler(BaseHandler):
             return
         msg_type, card_content = CardBuilder.build_ttadk_tool_select_card(result.tools, project_id)
         self.reply_message(message_id, card_content, msg_type=msg_type)
-    
+
     def show_ttadk_info(self, message_id: str, chat_id: str):
         manager = get_ttadk_manager()
         current_tool = manager.get_current_tool()
@@ -357,29 +440,31 @@ class SystemHandler(BaseHandler):
         models_result = manager.get_models(cwd=norm_cwd)
         tool_desc = {t.name: t.description for t in (tools_result.tools or [])}
         model_desc = {m.name: m.description for m in (models_result.models or [])}
-        
+
         lines = ["**🎮 TTADK 当前状态**\n"]
-        
+
         if current_tool:
             lines.append(f"🔧 **当前工具**: `{current_tool}` - {tool_desc.get(current_tool, 'AI Tool')}")
         else:
             lines.append("🔧 **当前工具**: 未设置")
-        
+
         if current_model:
             lines.append(f"🤖 **当前模型**: `{current_model}` - {model_desc.get(current_model, current_model)}")
         else:
             lines.append("🤖 **当前模型**: 未设置")
-        
+
         lines.append("\n使用 `/ttadk` 切换工具或模型")
-        
+
         self.reply_message(message_id, "\n".join(lines))
-    
+
     def handle_select_ttadk_tool(self, message_id: str, chat_id: str, tool_name: str, project_id: Optional[str] = None):
         manager = get_ttadk_manager()
         try:
             raw_cwd = self._resolve_ttadk_cwd(chat_id, project_id=project_id)
             cwd = normalize_ttadk_cwd(raw_cwd)
-            self._maybe_log_ttadk_cwd(where="SystemHandler.handle_select_ttadk_tool", raw_cwd=raw_cwd, normalized_cwd=cwd)
+            self._maybe_log_ttadk_cwd(
+                where="SystemHandler.handle_select_ttadk_tool", raw_cwd=raw_cwd, normalized_cwd=cwd
+            )
         except Exception:
             cwd = None
         logger.info(
@@ -415,10 +500,12 @@ class SystemHandler(BaseHandler):
         msg_type, card_content = CardBuilder.build_ttadk_model_select_card(result.models, tool_name, project_id)
         self.reply_message(message_id, card_content, msg_type=msg_type)
 
-    def handle_select_ttadk_model(self, message_id: str, chat_id: str, tool_name: str, model_name: str, project: Optional["ProjectContext"] = None):
+    def handle_select_ttadk_model(
+        self, message_id: str, chat_id: str, tool_name: str, model_name: str, project: Optional["ProjectContext"] = None
+    ):
         # 立即给予用户反馈，避免"没反应"
         self.reply_message(message_id, f"🔄 正在切换到模型: {model_name}...")
-        
+
         manager = get_ttadk_manager()
         logger.info(
             "[TTADK] 选择模型: chat_id=%s project_id=%s tool=%s model=%s",
@@ -431,7 +518,7 @@ class SystemHandler(BaseHandler):
         if not success:
             self.reply_error(message_id, f"设置 TTADK 模型失败: {model_name}")
             return
-        
+
         if self.ttadk_handler:
             self.ttadk_handler.current_tool = tool_name
             self.ttadk_handler.current_model = model_name
@@ -474,7 +561,10 @@ class SystemHandler(BaseHandler):
         # Smart mode shell execution: disable interactive mode to avoid .bashrc noise and job control errors
         result = executor.execute(cmd, cwd=working_dir, interactive=False)
         msg_type, card_content = CardBuilder.build_shell_result_card(
-            cmd, result, working_dir, project,
+            cmd,
+            result,
+            working_dir,
+            project,
         )
         self.reply_message(message_id, card_content, msg_type=msg_type)
         if result.success:
@@ -528,12 +618,12 @@ class SystemHandler(BaseHandler):
         if not path:
             self.add_reaction(message_id, EmojiReaction.on_dir_changed())
             if project:
-                content = (
-                    f"📂 **项目目录**: `{project.root_path}`\n"
-                    f"📁 **工作目录**: `{current_dir}`"
-                )
+                content = f"📂 **项目目录**: `{project.root_path}`\n📁 **工作目录**: `{current_dir}`"
                 msg_type, card_content = CardBuilder.build_project_response_card(
-                    project, "目录信息", content, show_buttons=True,
+                    project,
+                    "目录信息",
+                    content,
+                    show_buttons=True,
                 )
                 response_id = self.reply_message_with_id(message_id, card_content, msg_type)
                 if response_id:
@@ -548,7 +638,10 @@ class SystemHandler(BaseHandler):
             if project:
                 content = f"✅ 已切换到: `{result}`"
                 msg_type, card_content = CardBuilder.build_project_response_card(
-                    project, "目录已切换", content, show_buttons=True,
+                    project,
+                    "目录已切换",
+                    content,
+                    show_buttons=True,
                 )
                 response_id = self.reply_message_with_id(message_id, card_content, msg_type)
                 if response_id:
@@ -606,13 +699,13 @@ class SystemHandler(BaseHandler):
         manager = get_coco_model_manager()
         current_model = manager.get_current_model()
         models = manager.get_models().models
-        
+
         status_lines = ["**🤖 Coco 状态**\n"]
         status_lines.append(f"当前模型: `{current_model or '未设置 (默认)'}`")
-        
+
         status_lines.append("\n**可用模型:**")
         for m in models:
-             mark = "✅ " if m.name == current_model else "   "
-             status_lines.append(f"{mark}`{m.name}` - {m.description}")
-             
+            mark = "✅ " if m.name == current_model else "   "
+            status_lines.append(f"{mark}`{m.name}` - {m.description}")
+
         self.reply_message(message_id, "\n".join(status_lines))

@@ -14,15 +14,16 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 
 if TYPE_CHECKING:
     import lark_oapi as lark
+
     from ..acp.manager import ACPSessionManager
     from ..agent.intent_recognizer import IntentRecognizer
     from ..card.streaming import StreamingCardManager
     from ..deep_engine import DeepEngineManager, ProgressReporter
     from ..loop_engine import LoopEngineManager, LoopReporter
-    from ..spec_engine import SpecEngineManager, SpecReporter
     from ..mode import ModeManager
     from ..project import MessageProjectMapper, ProjectContextManager, ProjectManager
     from ..project.mapper import MessageLinker
+    from ..spec_engine import SpecEngineManager, SpecReporter
     from ..tasking import TaskScheduler
     from .image_handler import FeishuImageHandler
 

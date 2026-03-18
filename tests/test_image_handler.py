@@ -1,15 +1,15 @@
-import pytest
-import os
 import json
+import os
 import tempfile
 from io import BytesIO
-from unittest.mock import MagicMock, patch
-from dataclasses import dataclass
+from unittest.mock import MagicMock
+
+import pytest
 
 from src.feishu.image_handler import (
     FeishuImageHandler,
-    ImageParseResult,
     ImageDownloadResult,
+    ImageParseResult,
 )
 
 
@@ -102,92 +102,98 @@ class TestParsePostMessage:
         return FeishuImageHandler(MagicMock(), MagicMock())
 
     def _build_post(self, content_rows, lang="zh_cn", title=""):
-        return json.dumps({
-            lang: {
-                "title": title,
-                "content": content_rows,
+        return json.dumps(
+            {
+                lang: {
+                    "title": title,
+                    "content": content_rows,
+                }
             }
-        })
+        )
 
     def test_parse_text_only(self, handler):
-        content = self._build_post([
-            [{"tag": "text", "text": "hello world"}]
-        ])
+        content = self._build_post([[{"tag": "text", "text": "hello world"}]])
         result = handler.parse_message("post", content)
         assert result.text == "hello world"
         assert result.image_keys == []
 
     def test_parse_images_only(self, handler):
-        content = self._build_post([
-            [{"tag": "img", "image_key": "img_v2_abc"}]
-        ])
+        content = self._build_post([[{"tag": "img", "image_key": "img_v2_abc"}]])
         result = handler.parse_message("post", content)
         assert result.text == ""
         assert result.image_keys == ["img_v2_abc"]
 
     def test_parse_mixed_text_and_images(self, handler):
-        content = self._build_post([
+        content = self._build_post(
             [
-                {"tag": "text", "text": "请看这张图"},
-                {"tag": "img", "image_key": "img_v2_abc"},
+                [
+                    {"tag": "text", "text": "请看这张图"},
+                    {"tag": "img", "image_key": "img_v2_abc"},
+                ]
             ]
-        ])
+        )
         result = handler.parse_message("post", content)
         assert result.text == "请看这张图"
         assert result.image_keys == ["img_v2_abc"]
 
     def test_parse_multiple_rows(self, handler):
-        content = self._build_post([
-            [{"tag": "text", "text": "第一行"}],
-            [{"tag": "text", "text": "第二行"}, {"tag": "img", "image_key": "img_1"}],
-            [{"tag": "img", "image_key": "img_2"}],
-        ])
+        content = self._build_post(
+            [
+                [{"tag": "text", "text": "第一行"}],
+                [{"tag": "text", "text": "第二行"}, {"tag": "img", "image_key": "img_1"}],
+                [{"tag": "img", "image_key": "img_2"}],
+            ]
+        )
         result = handler.parse_message("post", content)
         assert result.text == "第一行 第二行"
         assert result.image_keys == ["img_1", "img_2"]
 
     def test_parse_multiple_images(self, handler):
-        content = self._build_post([
+        content = self._build_post(
             [
-                {"tag": "img", "image_key": "img_a"},
-                {"tag": "img", "image_key": "img_b"},
-                {"tag": "img", "image_key": "img_c"},
+                [
+                    {"tag": "img", "image_key": "img_a"},
+                    {"tag": "img", "image_key": "img_b"},
+                    {"tag": "img", "image_key": "img_c"},
+                ]
             ]
-        ])
+        )
         result = handler.parse_message("post", content)
         assert len(result.image_keys) == 3
 
     def test_parse_at_mentions_skipped(self, handler):
-        content = self._build_post([
+        content = self._build_post(
             [
-                {"tag": "at", "user_id": "u123"},
-                {"tag": "text", "text": "请帮我看看"},
+                [
+                    {"tag": "at", "user_id": "u123"},
+                    {"tag": "text", "text": "请帮我看看"},
+                ]
             ]
-        ])
+        )
         result = handler.parse_message("post", content)
         assert result.text == "请帮我看看"
 
     def test_parse_en_us_fallback(self, handler):
-        content = json.dumps({
-            "en_us": {
-                "title": "",
-                "content": [
-                    [{"tag": "text", "text": "english text"}]
-                ],
+        content = json.dumps(
+            {
+                "en_us": {
+                    "title": "",
+                    "content": [[{"tag": "text", "text": "english text"}]],
+                }
             }
-        })
+        )
         result = handler.parse_message("post", content)
         assert result.text == "english text"
 
     def test_parse_first_available_lang(self, handler):
-        content = json.dumps({
-            "ja_jp": {
-                "title": "",
-                "content": [
-                    [{"tag": "text", "text": "日本語"}]
-                ],
+        content = json.dumps(
+            {
+                "ja_jp": {
+                    "title": "",
+                    "content": [[{"tag": "text", "text": "日本語"}]],
+                }
             }
-        })
+        )
         result = handler.parse_message("post", content)
         assert result.text == "日本語"
 
@@ -208,16 +214,12 @@ class TestParsePostMessage:
         assert result.image_keys == []
 
     def test_empty_text_elements_ignored(self, handler):
-        content = self._build_post([
-            [{"tag": "text", "text": ""}, {"tag": "text", "text": "有效内容"}]
-        ])
+        content = self._build_post([[{"tag": "text", "text": ""}, {"tag": "text", "text": "有效内容"}]])
         result = handler.parse_message("post", content)
         assert result.text == "有效内容"
 
     def test_empty_image_key_ignored(self, handler):
-        content = self._build_post([
-            [{"tag": "img", "image_key": ""}, {"tag": "img", "image_key": "valid_key"}]
-        ])
+        content = self._build_post([[{"tag": "img", "image_key": ""}, {"tag": "img", "image_key": "valid_key"}]])
         result = handler.parse_message("post", content)
         assert result.image_keys == ["valid_key"]
 
@@ -279,9 +281,7 @@ class TestDownloadImages:
         mock_client.im.v1.message_resource.get.side_effect = responses
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            result = handler.download_images(
-                "msg_abcd1234", ["img_1", "img_2", "img_3"], tmpdir
-            )
+            result = handler.download_images("msg_abcd1234", ["img_1", "img_2", "img_3"], tmpdir)
             assert len(result.saved_paths) == 3
             assert result.failed_keys == []
             # 验证序号命名
@@ -342,14 +342,10 @@ class TestDownloadImages:
         success_resp2.success.return_value = True
         success_resp2.file = BytesIO(b"ok2")
 
-        mock_client.im.v1.message_resource.get.side_effect = [
-            success_resp1, fail_resp, success_resp2
-        ]
+        mock_client.im.v1.message_resource.get.side_effect = [success_resp1, fail_resp, success_resp2]
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            result = handler.download_images(
-                "msg_1234", ["img_ok1", "img_fail", "img_ok2"], tmpdir
-            )
+            result = handler.download_images("msg_1234", ["img_ok1", "img_fail", "img_ok2"], tmpdir)
             assert len(result.saved_paths) == 2
             assert result.failed_keys == ["img_fail"]
             # 序号跳过失败的: 成功的是 1.png 和 3.png

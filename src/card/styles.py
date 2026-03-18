@@ -1,11 +1,13 @@
 from dataclasses import dataclass
 
+
 @dataclass
 class ProjectTheme:
     name: str
     color: str
     emoji: str
     header_template: str
+
 
 THEMES = {
     "green": ProjectTheme("green", "green", "🟢", "green"),
@@ -29,37 +31,29 @@ ENGINE_STYLES = {
         "icon": "♾️",
         "label_static": "Loop Engine",
         "meta_separator": "\n",
-        "features": {
-            "history_button": True
-        }
+        "features": {"history_button": True},
     },
     "spec": {
         "color": "green",
         "icon": "🧠",
         "label_format": "Deep Agent ({name})",
         "meta_separator": " · ",
-        "features": {
-            "history_button": False
-        }
+        "features": {"history_button": False},
     },
     "claude": {
         "color": "violet",
         "icon": "🧠",
         "label_format": "Deep Agent ({name})",
         "meta_separator": " · ",
-        "features": {
-            "history_button": False
-        }
+        "features": {"history_button": False},
     },
     "default": {
         "color": "turquoise",
         "icon": "🧠",
         "label_format": "Deep Agent ({name})",
         "meta_separator": " · ",
-        "features": {
-            "history_button": False
-        }
-    }
+        "features": {"history_button": False},
+    },
 }
 
 # Button Configuration
@@ -75,12 +69,13 @@ BUTTON_CONFIG = {
     "mode_full": {"text": "👁️ 当前: 完整", "type": "default"},
     "mode_compact": {"text": "👁️ 当前: 精简", "type": "default"},
     "history": {"text": "📜 历史", "type": "default"},
-    
     # Mode Switch & Project Buttons
     "exit_claude": {"text": "🚪 退出Claude", "type": "default"},
     "exit_coco": {"text": "🚪 退出Coco", "type": "default"},
+    "exit_ttadk": {"text": "🚪 退出TTADK", "type": "default"},
     "enter_coco": {"text": "🤖 Coco模式", "type": "primary"},
     "enter_claude": {"text": "🔮 Claude模式", "type": "default"},
+    "enter_ttadk": {"text": "🎮 TTADK模式", "type": "default"},
     "switch_project": {"text": "🔄 切换项目", "type": "default"},
 }
 
@@ -97,7 +92,6 @@ UI_TEXT = {
     "time_mins_ago": "{minutes} 分钟前",
     "time_hours_ago": "{hours} 小时前",
     "time_days_ago": "{days} 天前",
-    
     # Deep Engine
     "deep_cmd_help_usage": "📝 请提供需求描述\n\n用法: `/deep <你的需求描述>`\n\n例如: `/deep 帮我写一个 Python 爬虫，爬取豆瓣电影 Top250`",
     "deep_cmd_update_usage": "📝 请提供上下文信息\n\n用法: `/deep_update <上下文描述>`\n\n例如: `/deep_update 数据库改用 PostgreSQL 而不是 SQLite`",
@@ -107,7 +101,6 @@ UI_TEXT = {
     "deep_board_empty": "当前没有 Deep Agent 任务\n\n发送 `/deep <需求>` 开始一个复杂任务",
     "deep_stop_all_success": "🛑 已发送停止信号：{count} 个 Deep Agent 任务将在当前步骤完成后停止",
     "deep_no_active_tasks": "📊 当前没有正在执行的 Deep Agent 任务",
-    
     # Loop Engine
     "loop_cmd_help_usage": "📝 请提供产品诉求\n\n用法: `/loop <你的需求描述>`\n\n例如: `/loop 实现用户登录注册功能，支持邮箱和手机号`\n\n可用命令:\n• `/loop <需求>` - 启动 Loop 模式\n• `/loop_guide <引导>` - 注入引导信息\n• `/loop_status` - 查看进度\n• `/loop_pause` - 暂停迭代\n• `/loop_resume` - 恢复迭代\n• `/stop_loop` - 停止 Loop",
     "loop_cmd_guide_usage": "📝 请提供引导信息\n\n用法: `/loop_guide <引导描述>`\n\n例如: `/loop_guide 优先实现邮箱注册功能`",
@@ -115,14 +108,12 @@ UI_TEXT = {
     "loop_task_exists": "⚠️ 当前项目已有 Loop 任务在执行中\n\n发送 `/loop_status` 查看进度\n发送 `/stop_loop` 停止任务",
     "loop_no_task_running": "⚠️ 当前没有正在运行的 Loop 任务\n\n请先使用 `/loop <需求>` 启动任务",
     "loop_status_empty": "当前没有 Loop 任务\n\n发送 `/loop 你的需求` 开始迭代式开发",
-    
     # Generic Engine Lifecycle
     "engine_no_active_task": "当前没有正在执行的 {engine_prefix} 任务",
     "engine_multi_resume_conflict": "⚠️ 有多个项目存在可恢复的 {engine_prefix} 任务，请查看状态后切换项目再恢复",
     "engine_no_resumable_task": "当前没有可恢复的 {engine_prefix} 任务",
     "engine_multi_stop_conflict": "⚠️ 有多个项目正在执行 {engine_prefix} 任务，请先切换项目再停止",
     "engine_stop_no_active": "📊 当前没有正在执行的 {engine_prefix} 任务",
-
     # System Commands
     "system_help_deep_prompt": "🧠 启动 Deep Engine\n\n请发送: `/deep <你的需求>`\n\n例如: `/deep 帮我重构 src/feishu 模块`",
     "system_help_project_section": "\n\n📋 **项目管理命令**\n• `/projects` - 查看项目看板\n• `/new 名称 路径` - 创建新项目\n• `/switch 名称` - 切换项目\n• `/status` - 查看所有引擎任务状态（Deep/Loop/Spec）\n• `/status <task_id>` - 查看指定任务详情\n• `/diff` - 查看最近两次版本变更（Diff 报告）",
@@ -145,7 +136,6 @@ UI_TEXT = {
     "system_already_in_mode": "🧠 当前已经在智能模式中",
     "system_ttadk_info_header": "**🎮 TTADK 当前状态**\n",
     "system_ttadk_info_footer": "\n使用 `/ttadk` 切换工具或模型",
-    
     # Project Commands
     "project_create_success": "✅ 项目 **{name}** 创建成功\n\n📁 路径: `{path}`",
     "project_create_error": "❌ 创建项目失败: {error}",

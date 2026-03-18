@@ -20,7 +20,7 @@ class ProjectHandler(BaseHandler):
 
     def create_project(self, message_id: str, chat_id: str, name: str, path: str):
         from ...card.styles import UI_TEXT
-        
+
         project_id = name.lower().replace(" ", "_").replace("-", "_")
 
         success, msg, project = self.project_manager.create_project(
@@ -58,9 +58,12 @@ class ProjectHandler(BaseHandler):
 
     def show_current_project(self, message_id: str, chat_id: str, project: Optional["ProjectContext"]):
         from ...card.styles import UI_TEXT
-        
+
         if not project:
-            self.reply_message(message_id, UI_TEXT.get("project_board_empty", "当前没有活动项目\n\n发送 `/new 项目名 [路径]` 创建新项目"))
+            self.reply_message(
+                message_id,
+                UI_TEXT.get("project_board_empty", "当前没有活动项目\n\n发送 `/new 项目名 [路径]` 创建新项目"),
+            )
             return
 
         global_working_dir = self.get_working_dir(chat_id)
@@ -75,13 +78,22 @@ class ProjectHandler(BaseHandler):
         )
 
         msg_type, card_content = CardBuilder.build_project_response_card(
-            project, "当前项目", content, show_buttons=True,
+            project,
+            "当前项目",
+            content,
+            show_buttons=True,
         )
         response_id = self.reply_message_with_id(message_id, card_content, msg_type)
         if response_id:
             self.register_message_project(response_id, project)
 
-    def show_project_status(self, message_id: str, chat_id: str, project: Optional["ProjectContext"], origin_message_id: Optional[str] = None):
+    def show_project_status(
+        self,
+        message_id: str,
+        chat_id: str,
+        project: Optional["ProjectContext"],
+        origin_message_id: Optional[str] = None,
+    ):
         if not project:
             self.show_project_board(message_id, chat_id)
             return
@@ -106,7 +118,10 @@ class ProjectHandler(BaseHandler):
         )
 
         msg_type, card_content = CardBuilder.build_project_response_card(
-            project, "项目状态", content, show_buttons=True,
+            project,
+            "项目状态",
+            content,
+            show_buttons=True,
         )
 
         if origin_message_id:
@@ -114,7 +129,9 @@ class ProjectHandler(BaseHandler):
                 self.register_message_project(origin_message_id, project)
                 return
 
-        response_id = self.reply_message_with_id(message_id, card_content, msg_type, origin_message_id=origin_message_id)
+        response_id = self.reply_message_with_id(
+            message_id, card_content, msg_type, origin_message_id=origin_message_id
+        )
         if response_id:
             self.register_message_project(response_id, project)
 
@@ -126,7 +143,12 @@ class ProjectHandler(BaseHandler):
 
         pid = project.project_id
         current_mode = self.mode_manager.get_mode(chat_id, project_id=pid)
-        logger.info("[%s] 保留项目上下文: project=%s, mode=%s", chat_id, project.project_name, current_mode.value if hasattr(current_mode, 'value') else current_mode)
+        logger.info(
+            "[%s] 保留项目上下文: project=%s, mode=%s",
+            chat_id,
+            project.project_name,
+            current_mode.value if hasattr(current_mode, "value") else current_mode,
+        )
 
         if current_mode == InteractionMode.COCO:
             session = self.ctx.coco_manager.get_session(chat_id, project_id=pid)
@@ -139,7 +161,9 @@ class ProjectHandler(BaseHandler):
         elif current_mode == InteractionMode.CLAUDE:
             session = self.ctx.claude_manager.get_session(chat_id, project_id=pid)
             if session:
-                project.update_claude_snapshot(query=session.last_query, query_count=session.message_count, session_id=session.session_id)
+                project.update_claude_snapshot(
+                    query=session.last_query, query_count=session.message_count, session_id=session.session_id
+                )
                 self.context_manager.update_context(
                     pid,
                     session_snapshot={"data": session.to_snapshot(), "source_mode": ContextSourceMode.CLAUDE.value},
@@ -164,23 +188,35 @@ class ProjectHandler(BaseHandler):
             "last_mode": last_mode,
             "has_bridge": ctx.last_bridge_summary is not None,
         }
-        logger.info("[恢复上下文] 项目 %s: %d 条记录, %d 版本, 上次模式=%s, 有桥接=%s",
-                     project.project_name, info["entry_count"], info["version_count"],
-                     info["last_mode"], info["has_bridge"])
+        logger.info(
+            "[恢复上下文] 项目 %s: %d 条记录, %d 版本, 上次模式=%s, 有桥接=%s",
+            project.project_name,
+            info["entry_count"],
+            info["version_count"],
+            info["last_mode"],
+            info["has_bridge"],
+        )
         return info
 
     # ------------------------------------------------------------------
     # Switch / Close
     # ------------------------------------------------------------------
-    def switch_project(self, message_id: str, chat_id: str, name: str, auto_enter_coco: bool = True,
-                       coco_handler=None, claude_handler=None):
+    def switch_project(
+        self,
+        message_id: str,
+        chat_id: str,
+        name: str,
+        auto_enter_coco: bool = True,
+        coco_handler=None,
+        claude_handler=None,
+    ):
         """Switch active project.
 
         *coco_handler* and *claude_handler* are the programming-mode handlers
         used to exit the current mode safely when switching projects.
         """
         from ...card.styles import UI_TEXT
-        
+
         project = self.project_manager.find_project_by_name(name)
         if not project:
             results = self.project_manager.search_projects(name)
@@ -188,12 +224,19 @@ class ProjectHandler(BaseHandler):
                 suggestions = "\n".join([f"• {p.project_name}" for p in results[:5]])
                 self.reply_message(message_id, f"❌ 未找到项目: {name}\n\n**相似项目：**\n{suggestions}")
             else:
-                self.reply_error(message_id, UI_TEXT.get("project_not_found", "未找到项目: {name}\n\n发送 `/projects` 查看所有项目").format(name=name))
+                self.reply_error(
+                    message_id,
+                    UI_TEXT.get("project_not_found", "未找到项目: {name}\n\n发送 `/projects` 查看所有项目").format(
+                        name=name
+                    ),
+                )
             return
 
         valid, path_msg = self.project_manager.validate_project_path(project.project_id)
         if not valid:
-            self.reply_error(message_id, UI_TEXT.get("project_dir_not_exist", "目录不存在: {path}").format(path=path_msg))
+            self.reply_error(
+                message_id, UI_TEXT.get("project_dir_not_exist", "目录不存在: {path}").format(path=path_msg)
+            )
             return
 
         old_project = self.project_manager.get_active_project(chat_id)
@@ -201,6 +244,7 @@ class ProjectHandler(BaseHandler):
             self.preserve_project_context(chat_id, old_project)
 
             from ...mode import InteractionMode
+
             current_mode = self.mode_manager.get_mode(chat_id, project_id=old_project.project_id)
             if current_mode == InteractionMode.COCO and coco_handler:
                 coco_handler.exit_mode(message_id, chat_id, project=old_project)
@@ -240,7 +284,10 @@ class ProjectHandler(BaseHandler):
                 msg_type, card_content = CardBuilder.build_claude_resume_card(project)
             else:
                 msg_type, card_content = CardBuilder.build_project_response_card(
-                    project, "🔄 项目已切换", content, show_buttons=True,
+                    project,
+                    "🔄 项目已切换",
+                    content,
+                    show_buttons=True,
                 )
 
             response_id = self.reply_message_with_id(message_id, card_content, msg_type)
@@ -249,7 +296,7 @@ class ProjectHandler(BaseHandler):
 
     def close_project(self, message_id: str, chat_id: str, name: str):
         from ...card.styles import UI_TEXT
-        
+
         project = self.project_manager.find_project_by_name(name)
         if not project:
             self.reply_error(message_id, UI_TEXT.get("project_not_found", "未找到项目: {name}").format(name=name))

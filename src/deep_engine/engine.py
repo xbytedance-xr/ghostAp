@@ -5,15 +5,16 @@ the new Deep Engine sends a single comprehensive prompt to the agent and
 monitors its plan/tool-call/text progress via ACP events.
 """
 
+import gc
+import json
 import logging
+import os
 import threading
 import time
-import json
-import os
-from typing import Optional, Callable
 from dataclasses import dataclass
+from typing import Callable, Optional
 
-from ..acp import ACPEvent, ACPEventType, ACPEventRenderer
+from ..acp import ACPEvent, ACPEventRenderer, ACPEventType
 from ..agent_session import SyncSession, close_session_safely, create_engine_session
 from ..config import get_settings
 from .models import (
@@ -32,6 +33,7 @@ _STATUS_ICONS = {"pending": "⏳", "in_progress": "🔄", "completed": "✅"}
 @dataclass
 class DeepEngineCallbacks:
     """Callbacks for deep engine lifecycle events."""
+
     on_planning_start: Optional[Callable[[str], None]] = None
     on_planning_done: Optional[Callable[[DeepProject], None]] = None
     on_event: Optional[Callable[[ACPEvent], None]] = None
@@ -43,7 +45,14 @@ class DeepEngineCallbacks:
 class DeepEngine:
     """ACP-driven Deep Engine — the agent plans and executes autonomously."""
 
-    def __init__(self, chat_id: str, root_path: str, agent_type: str = "coco", engine_name: str = "Coco", model_name: Optional[str] = None):
+    def __init__(
+        self,
+        chat_id: str,
+        root_path: str,
+        agent_type: str = "coco",
+        engine_name: str = "Coco",
+        model_name: Optional[str] = None,
+    ):
         self.chat_id = chat_id
         self.root_path = os.path.expanduser(root_path)
         self.settings = get_settings()
@@ -78,6 +87,7 @@ class DeepEngine:
 
     def _make_on_event(self, callbacks: DeepEngineCallbacks) -> Callable[[ACPEvent], None]:
         """Create the on_event callback shared by plan_and_execute and resume."""
+
         def on_event(event: ACPEvent):
             if self._run_state == EngineRunState.STOPPING:
                 if self._session:
@@ -127,6 +137,7 @@ class DeepEngine:
                 callbacks.on_event(event)
             if event.event_type == ACPEventType.TEXT_CHUNK and callbacks.on_text:
                 callbacks.on_text(event.text or "")
+
         return on_event
 
     def _close_session_safely(self) -> None:
@@ -156,8 +167,13 @@ class DeepEngine:
         if callbacks.on_planning_start:
             callbacks.on_planning_start(requirement_text)
 
-        logger.info("[Deep:%s] ACP执行开始, 需求长度=%d, 路径=%s, agent=%s",
-                     project_name, len(requirement_text), self.root_path, self._agent_type)
+        logger.info(
+            "[Deep:%s] ACP执行开始, 需求长度=%d, 路径=%s, agent=%s",
+            project_name,
+            len(requirement_text),
+            self.root_path,
+            self._agent_type,
+        )
 
         try:
             # Create session
@@ -177,7 +193,11 @@ class DeepEngine:
             if self._agent_type.startswith("ttadk_"):
                 timeout = self.settings.coco_execution_timeout
             else:
-                timeout = self.settings.coco_execution_timeout if self._agent_type == "coco" else self.settings.claude_execution_timeout
+                timeout = (
+                    self.settings.coco_execution_timeout
+                    if self._agent_type == "coco"
+                    else self.settings.claude_execution_timeout
+                )
             result = self._session.send_prompt(prompt, on_event=on_event, timeout=timeout)
 
             # Process pending context injections as follow-up prompts
@@ -189,10 +209,13 @@ class DeepEngine:
                 logger.info("[Deep:%s] 执行已暂停", project_name)
             elif result.stop_reason in ("end_turn", "max_turn_requests"):
                 self._project.complete()
-                logger.info("[Deep:%s] 执行完成, 工具调用=%d, 修改文件=%d, 总耗时=%.1fs",
-                             project_name, len(self._progress.tool_calls),
-                             len(self._progress.modified_files),
-                             self._project.duration() or 0)
+                logger.info(
+                    "[Deep:%s] 执行完成, 工具调用=%d, 修改文件=%d, 总耗时=%.1fs",
+                    project_name,
+                    len(self._progress.tool_calls),
+                    len(self._progress.modified_files),
+                    self._project.duration() or 0,
+                )
             elif result.stop_reason == "cancelled":
                 self._project.pause()
             else:
@@ -204,14 +227,9 @@ class DeepEngine:
             return self._project
 
         except Exception as e:
-            from ..utils.errors import fmt_error
-            formatted = fmt_error("", e)
-            if formatted.startswith("❌ 失败: "):
-                detail = formatted[len("❌ 失败: "):]
-            elif formatted == "❌ 失败":
-                detail = str(e) or "未知错误"
-            else:
-                detail = formatted
+            from ..utils.errors import get_error_detail
+
+            detail = get_error_detail(e)
 
             error_msg = f"执行异常: {detail}"
             logger.error("[Deep:%s] %s", project_name, error_msg)
@@ -223,6 +241,7 @@ class DeepEngine:
 
         finally:
             self._run_state = EngineRunState.IDLE
+            gc.collect()
 
     def _drain_pending_context(self, on_event, timeout, last_result):
         """Send any pending context injections as follow-up prompts in the same session."""
@@ -322,7 +341,11 @@ class DeepEngine:
             if self._agent_type.startswith("ttadk_"):
                 timeout = self.settings.coco_execution_timeout
             else:
-                timeout = self.settings.coco_execution_timeout if self._agent_type == "coco" else self.settings.claude_execution_timeout
+                timeout = (
+                    self.settings.coco_execution_timeout
+                    if self._agent_type == "coco"
+                    else self.settings.claude_execution_timeout
+                )
             result = self._session.send_prompt(resume_prompt, on_event=on_event, timeout=timeout)
             result = self._drain_pending_context(on_event, timeout, result)
 
@@ -337,14 +360,9 @@ class DeepEngine:
                 callbacks.on_project_done(self._project)
 
         except Exception as e:
-            from ..utils.errors import fmt_error
-            formatted = fmt_error("", e)
-            if formatted.startswith("❌ 失败: "):
-                detail = formatted[len("❌ 失败: "):]
-            elif formatted == "❌ 失败":
-                detail = str(e) or "未知错误"
-            else:
-                detail = formatted
+            from ..utils.errors import get_error_detail
+
+            detail = get_error_detail(e)
 
             error_msg = f"恢复执行异常: {detail}"
             logger.error("[Deep:%s] %s", self._project.name, error_msg)
@@ -354,6 +372,7 @@ class DeepEngine:
 
         finally:
             self._run_state = EngineRunState.IDLE
+            gc.collect()
 
         return self._project
 
@@ -458,6 +477,7 @@ class DeepEngine:
             self._session = None
         self._project = None
         self._run_state = EngineRunState.IDLE
+        gc.collect()
 
 
 class DeepEngineManager:
@@ -484,8 +504,9 @@ class DeepEngineManager:
 
     def get_or_create(self, chat_id: str, root_path: str, engine_name: str = "Coco") -> DeepEngine:
         key = f"{chat_id}:{root_path}"
-        
+
         from ..ttadk import get_ttadk_manager
+
         if engine_name.lower() == "ttadk":
             ttadk_manager = get_ttadk_manager()
             current_tool = ttadk_manager.get_current_tool()

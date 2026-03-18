@@ -1,7 +1,8 @@
-import subprocess
 import re
+import subprocess
 from dataclasses import dataclass
 from typing import Optional
+
 from ..config import get_settings
 from ..utils.text import truncate_output
 
@@ -17,7 +18,7 @@ class ExecutionResult:
     def to_message(self) -> str:
         if self.error_message:
             return f"❌ 执行失败: {self.error_message}"
-        
+
         parts = []
         if self.stdout:
             parts.append(f"📤 输出:\n```\n{self.stdout}\n```")
@@ -25,7 +26,7 @@ class ExecutionResult:
             parts.append(f"⚠️ 错误输出:\n```\n{self.stderr}\n```")
         if not parts:
             parts.append("✅ 命令执行成功（无输出）")
-        
+
         parts.append(f"🔢 返回码: {self.return_code}")
         return "\n".join(parts)
 
@@ -56,22 +57,18 @@ class SandboxExecutor:
         for pattern in self._compiled_patterns:
             if pattern.search(command):
                 return False, f"命令包含危险操作模式: {pattern.pattern}"
-        
+
         for blacklisted in self.settings.command_blacklist:
             if blacklisted in command:
                 return False, f"命令包含黑名单内容: {blacklisted}"
-        
+
         return True, None
 
     def execute(self, command: str, cwd: Optional[str] = None, interactive: bool = True) -> ExecutionResult:
         is_safe, reason = self.is_command_safe(command)
         if not is_safe:
             return ExecutionResult(
-                success=False,
-                stdout="",
-                stderr="",
-                return_code=-1,
-                error_message=f"安全检查未通过: {reason}"
+                success=False, stdout="", stderr="", return_code=-1, error_message=f"安全检查未通过: {reason}"
             )
 
         try:
@@ -80,20 +77,23 @@ class SandboxExecutor:
 
             # 2) 构建环境变量：禁用各种 pager，避免命令阻塞
             import os
+
             env = os.environ.copy()
-            env.update({
-                # git / man / systemd 等常见 pager
-                "GIT_PAGER": "cat",
-                "PAGER": "cat",
-                "MANPAGER": "cat",
-                "SYSTEMD_PAGER": "cat",
-                # less：F(一屏退出) R(支持颜色) X(不清屏)
-                "LESS": "FRX",
-                # 禁用 git 交互式提示（例如需要输入用户名密码时）
-                "GIT_TERMINAL_PROMPT": "0",
-                # 终端类型设为 dumb，尽量减少交互/控制序列
-                "TERM": "dumb",
-            })
+            env.update(
+                {
+                    # git / man / systemd 等常见 pager
+                    "GIT_PAGER": "cat",
+                    "PAGER": "cat",
+                    "MANPAGER": "cat",
+                    "SYSTEMD_PAGER": "cat",
+                    # less：F(一屏退出) R(支持颜色) X(不清屏)
+                    "LESS": "FRX",
+                    # 禁用 git 交互式提示（例如需要输入用户名密码时）
+                    "GIT_TERMINAL_PROMPT": "0",
+                    # 终端类型设为 dumb，尽量减少交互/控制序列
+                    "TERM": "dumb",
+                }
+            )
 
             # Detect shell and use it in interactive mode to load profiles/aliases
             shell_path = os.environ.get("SHELL", "/bin/bash")
@@ -127,10 +127,9 @@ class SandboxExecutor:
                     "bash: cannot set terminal process group",
                     "The input device is not a TTY",
                 ]
-                stderr = "\n".join([
-                    line for line in stderr.splitlines() 
-                    if not any(p in line for p in ignore_patterns)
-                ])
+                stderr = "\n".join(
+                    [line for line in stderr.splitlines() if not any(p in line for p in ignore_patterns)]
+                )
 
             stdout = truncate_output(stdout, max_len)
             stderr = truncate_output(stderr, max_len, label="错误输出被截断")
@@ -148,15 +147,11 @@ class SandboxExecutor:
                 stdout="",
                 stderr="",
                 return_code=-1,
-                error_message=f"命令执行超时（{self.settings.sandbox_timeout}秒）"
+                error_message=f"命令执行超时（{self.settings.sandbox_timeout}秒）",
             )
         except Exception as e:
             return ExecutionResult(
-                success=False,
-                stdout="",
-                stderr="",
-                return_code=-1,
-                error_message=f"执行异常: {str(e)}"
+                success=False, stdout="", stderr="", return_code=-1, error_message=f"执行异常: {str(e)}"
             )
 
     def _sanitize_command_for_noninteractive(self, command: str) -> str:

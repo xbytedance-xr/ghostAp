@@ -72,18 +72,20 @@ def start_agent_session(
         raise ValueError("start_agent_session only supports ttadk_* agent_type")
 
     # 延迟 import：避免 module import-time 引入 ACP 层导致循环依赖
-    from . import get_ttadk_manager
+    from src.acp.sync_adapter import SyncACPSession as _DefaultSession
 
     # ACP 启动依赖（延迟导入）
-    from src.acp.sync_adapter import start_ttadk_session_with_pty_retry
-    from src.acp.sync_adapter import _call_start_session_with_retry_compat
-    from src.acp.sync_adapter import SyncACPSession as _DefaultSession
+    from src.acp.sync_adapter import _call_start_session_with_retry_compat, start_ttadk_session_with_pty_retry
+
+    from . import get_ttadk_manager
 
     # 可选：用于日志格式兼容（避免 acp.manager 持有该格式）
     try:
         from .manager import TTADK_STARTUP_LOG_FMT
     except Exception:
-        TTADK_STARTUP_LOG_FMT = "tool=%s input_model=%s model=%s validated=%s source=%s fail_phase=%s decision=%s warnings=%s"
+        TTADK_STARTUP_LOG_FMT = (
+            "tool=%s input_model=%s model=%s validated=%s source=%s fail_phase=%s decision=%s warnings=%s"
+        )
 
     tool_name = at.replace("ttadk_", "", 1)
     ttadk_manager = get_ttadk_manager()
@@ -141,7 +143,6 @@ def start_agent_session(
     def _fallback_to_coco(err: Exception):
         # TTADK tool 不可用时的确定性降级：切到 coco ACP。
         # 关键约束：保留 session 的 `_agent_type=ttadk_*`，避免 ACPSessionManager 的 agent_type mismatch 触发抖动重启。
-        from src.acp.sync_adapter import start_session_with_retry
         from src.coco_model import get_coco_model_manager
 
         fallback_model = get_coco_model_manager().get_current_model()
@@ -160,11 +161,11 @@ def start_agent_session(
         sid = str(getattr(s, "session_id", "") or "")
         # best-effort: 标记降级，并将 agent_type 伪装回 ttadk_*（避免上层抖动）
         try:
-            setattr(s, "_degraded_to", "coco")
+            s._degraded_to = "coco"
         except Exception:
             pass
         try:
-            setattr(s, "_agent_type", at)
+            s._agent_type = at
         except Exception:
             pass
         # Best-effort: keep a non-empty, user-facing reason summary.
@@ -179,12 +180,17 @@ def start_agent_session(
                 error=err,
                 timeout_s=float(startup_timeout or 0),
             )
-            fr = str((d or {}).get("fail_reason") or (d or {}).get("fail_phase") or "start_failed").strip() or "start_failed"
-            et = str((d or {}).get("error_text") or (d or {}).get("stderr_snippet") or (d or {}).get("error") or "").strip()
+            fr = (
+                str((d or {}).get("fail_reason") or (d or {}).get("fail_phase") or "start_failed").strip()
+                or "start_failed"
+            )
+            et = str(
+                (d or {}).get("error_text") or (d or {}).get("stderr_snippet") or (d or {}).get("error") or ""
+            ).strip()
             if not et:
-                et = (repr(err) if err is not None else "<Exception> (empty)")
+                et = repr(err) if err is not None else "<Exception> (empty)"
             try:
-                setattr(s, "_degraded_reason", f"{fr}: {et}")
+                s._degraded_reason = f"{fr}: {et}"
             except Exception:
                 pass
         except Exception:
@@ -212,7 +218,9 @@ def start_agent_session(
                 info.get("passthrough_model")
                 or (
                     (str(info.get("resolved_model") or "").strip())
-                    if bool(info.get("validated")) and str(info.get("resolved_model") or "").strip() and not str(info.get("resolved_model") or "").strip().startswith("(")
+                    if bool(info.get("validated"))
+                    and str(info.get("resolved_model") or "").strip()
+                    and not str(info.get("resolved_model") or "").strip().startswith("(")
                     else None
                 )
                 or "(auto)"
@@ -271,10 +279,15 @@ def coordinate_ttadk_startup(
     """
     # 延迟 import，避免在模块 import 时引入重依赖
     import time as _time
+
     from ..config import get_settings as _get_settings
+
     # Avoid importing `src.ttadk.manager` at module import time to prevent cycles.
-    from .startup_common import precheck_ttadk_startup_model
-    from .startup_common import _runtime_invalid_model_stub_get_last_ts, _runtime_invalid_model_stub_set_last_ts
+    from .startup_common import (
+        _runtime_invalid_model_stub_get_last_ts,
+        _runtime_invalid_model_stub_set_last_ts,
+        precheck_ttadk_startup_model,
+    )
 
     if get_settings_fn is None:
         get_settings_fn = _get_settings
@@ -392,7 +405,9 @@ def coordinate_ttadk_startup(
     # 安全策略：若 precheck 明确标记模型列表不可信/为空/错误，则禁止透传 -m（即强制走 (auto)）。
     try:
         ws = list(pre.get("warnings") or [])
-        if any(w in ("models_untrusted", "models_empty", "models_error") or str(w).startswith("models_error") for w in ws):
+        if any(
+            w in ("models_untrusted", "models_empty", "models_error") or str(w).startswith("models_error") for w in ws
+        ):
             passthrough_model = None
             pre["validated"] = False
             pre["decision"] = "precheck_auto"
@@ -416,11 +431,27 @@ def coordinate_ttadk_startup(
             "passthrough_model": passthrough_model,
             "precheck_diagnostics": dict(pre.get("diagnostics") or {}),
             # SSOT：将模型列表诊断关键字段提升到启动 attempts，便于日志与验收
-            "models_source": (dict(pre.get("diagnostics") or {}).get("source") if isinstance(pre.get("diagnostics"), dict) else None),
-            "models_raw_cmd": (dict(pre.get("diagnostics") or {}).get("raw_cmd") if isinstance(pre.get("diagnostics"), dict) else None),
-            "models_exit_code": (dict(pre.get("diagnostics") or {}).get("exit_code") if isinstance(pre.get("diagnostics"), dict) else None),
-            "models_stderr_snippet": (dict(pre.get("diagnostics") or {}).get("stderr_snippet") if isinstance(pre.get("diagnostics"), dict) else None),
-            "models_freshness": (dict(pre.get("diagnostics") or {}).get("freshness") if isinstance(pre.get("diagnostics"), dict) else None),
+            "models_source": (
+                dict(pre.get("diagnostics") or {}).get("source") if isinstance(pre.get("diagnostics"), dict) else None
+            ),
+            "models_raw_cmd": (
+                dict(pre.get("diagnostics") or {}).get("raw_cmd") if isinstance(pre.get("diagnostics"), dict) else None
+            ),
+            "models_exit_code": (
+                dict(pre.get("diagnostics") or {}).get("exit_code")
+                if isinstance(pre.get("diagnostics"), dict)
+                else None
+            ),
+            "models_stderr_snippet": (
+                dict(pre.get("diagnostics") or {}).get("stderr_snippet")
+                if isinstance(pre.get("diagnostics"), dict)
+                else None
+            ),
+            "models_freshness": (
+                dict(pre.get("diagnostics") or {}).get("freshness")
+                if isinstance(pre.get("diagnostics"), dict)
+                else None
+            ),
         }
     )
 

@@ -1,13 +1,16 @@
+from typing import TYPE_CHECKING, Optional
 
-import json
-from typing import Optional
 from ..project.context import ProjectContext
+from .builders.core import CoreBuilder
+from .builders.deep import DeepBuilder
+from .builders.project import ProjectBuilder
+from .builders.system import SystemBuilder
 from .models import DeepCardState
 from .shared import apply_compact_style
-from .builders.core import CoreBuilder
-from .builders.project import ProjectBuilder
-from .builders.deep import DeepBuilder
-from .builders.system import SystemBuilder
+
+if TYPE_CHECKING:
+    from ..sandbox.executor import ExecutionResult
+
 
 class CardBuilder:
     """
@@ -24,16 +27,19 @@ class CardBuilder:
     @staticmethod
     def _build_button_grid(buttons: list[dict], columns: int = 2) -> list[dict]:
         from .shared import _build_button_grid
+
         return _build_button_grid(buttons, columns)
 
     @staticmethod
     def _build_button_row_action(buttons: list[dict]) -> list[dict]:
         from .shared import _build_button_row_action
+
         return _build_button_row_action(buttons)
 
     @staticmethod
     def _build_buttons_responsive(buttons: list[dict]) -> list[dict]:
         from .shared import build_responsive_layout
+
         return build_responsive_layout(buttons)
 
     @staticmethod
@@ -45,7 +51,9 @@ class CardBuilder:
         return CoreBuilder._build_content_element(content, with_title, max_chars)
 
     @staticmethod
-    def _build_header_title(project: Optional[ProjectContext], is_coco_mode: bool = False, is_claude_mode: bool = False) -> str:
+    def _build_header_title(
+        project: Optional[ProjectContext], is_coco_mode: bool = False, is_claude_mode: bool = False
+    ) -> str:
         return CoreBuilder._build_header_title(project, is_coco_mode, is_claude_mode)
 
     @staticmethod
@@ -53,7 +61,9 @@ class CardBuilder:
         return CoreBuilder._build_directory_element(project, working_dir)
 
     @staticmethod
-    def _build_footer_buttons(project: Optional[ProjectContext], is_coco_mode: bool = False, is_claude_mode: bool = False) -> list[dict]:
+    def _build_footer_buttons(
+        project: Optional[ProjectContext], is_coco_mode: bool = False, is_claude_mode: bool = False
+    ) -> list[dict]:
         return CoreBuilder._build_footer_buttons(project, is_coco_mode, is_claude_mode)
 
     @staticmethod
@@ -88,8 +98,16 @@ class CardBuilder:
         image_keys: Optional[list[str]] = None,
     ) -> tuple[str, str]:
         return ProjectBuilder._build_response_card_inner(
-            project, title, content, working_dir, show_buttons,
-            is_coco_mode, is_claude_mode, extra_buttons, footer, image_keys
+            project,
+            title,
+            content,
+            working_dir,
+            show_buttons,
+            is_coco_mode,
+            is_claude_mode,
+            extra_buttons,
+            footer,
+            image_keys,
         )
 
     @staticmethod
@@ -187,9 +205,7 @@ class CardBuilder:
 
     @staticmethod
     def build_ttadk_model_select_card(
-        models: list,
-        tool_name: str,
-        project_id: Optional[str] = None
+        models: list, tool_name: str, project_id: Optional[str] = None
     ) -> tuple[str, str]:
         return SystemBuilder.build_ttadk_model_select_card(models, tool_name, project_id)
 
@@ -202,10 +218,10 @@ class CardBuilder:
         project: Optional[ProjectContext] = None,
         category: str = "main",
         working_dir: Optional[str] = None,
-        current_mode_str: str = "智能模式"
+        current_mode_str: str = "智能模式",
     ) -> tuple[str, str]:
         return SystemBuilder.build_help_card(project, category, working_dir, current_mode_str)
-        
+
     @staticmethod
     def _build_help_card_cached(
         project_name: Optional[str],
@@ -213,7 +229,7 @@ class CardBuilder:
         project_id: Optional[str],
         category: str,
         working_dir: Optional[str],
-        current_mode_str: str
+        current_mode_str: str,
     ) -> tuple[str, str]:
         return SystemBuilder._build_help_card_cached(
             project_name, root_path, project_id, category, working_dir, current_mode_str

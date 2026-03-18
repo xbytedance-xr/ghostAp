@@ -1,22 +1,23 @@
 import time
+
 import pytest
 
 from src.project.unified_context import (
+    ContextBridgeSummary,
     ContextEntry,
     ContextEntryType,
+    ContextResult,
     ContextSourceMode,
     ContextVersion,
-    ContextBridgeSummary,
-    ContextResult,
+    ProjectContextManager,
     UnifiedContext,
     UnifiedContextStore,
-    ProjectContextManager,
 )
-
 
 # ---------------------------------------------------------------------------
 # ContextEntry
 # ---------------------------------------------------------------------------
+
 
 class TestContextEntry:
     def test_create_default(self):
@@ -94,6 +95,7 @@ class TestContextEntry:
 # ContextVersion
 # ---------------------------------------------------------------------------
 
+
 class TestContextVersion:
     def test_create_default(self):
         v = ContextVersion()
@@ -134,6 +136,7 @@ class TestContextVersion:
 # ---------------------------------------------------------------------------
 # ContextBridgeSummary
 # ---------------------------------------------------------------------------
+
 
 class TestContextBridgeSummary:
     def test_create_default(self):
@@ -193,6 +196,7 @@ class TestContextBridgeSummary:
 # UnifiedContext — CRUD
 # ---------------------------------------------------------------------------
 
+
 class TestUnifiedContextCRUD:
     @pytest.fixture
     def ctx(self):
@@ -224,9 +228,7 @@ class TestUnifiedContextCRUD:
         assert entry.metadata["query_count"] == 10
 
     def test_add_mode_transition(self, ctx):
-        entry = ctx.add_mode_transition(
-            ContextSourceMode.COCO, ContextSourceMode.CLAUDE, reason="user requested"
-        )
+        entry = ctx.add_mode_transition(ContextSourceMode.COCO, ContextSourceMode.CLAUDE, reason="user requested")
         assert entry.entry_type == ContextEntryType.MODE_TRANSITION
         assert entry.metadata["from_mode"] == "coco"
         assert entry.metadata["to_mode"] == "claude"
@@ -375,6 +377,7 @@ class TestUnifiedContextCRUD:
 # UnifiedContext — 滚动窗口
 # ---------------------------------------------------------------------------
 
+
 class TestUnifiedContextRollingWindow:
     def test_entries_eviction(self):
         ctx = UnifiedContext(project_id="test", max_entries=5)
@@ -406,6 +409,7 @@ class TestUnifiedContextRollingWindow:
 # ---------------------------------------------------------------------------
 # UnifiedContext — 版本控制
 # ---------------------------------------------------------------------------
+
 
 class TestUnifiedContextVersioning:
     @pytest.fixture
@@ -494,6 +498,7 @@ class TestUnifiedContextVersioning:
 # UnifiedContext — 跨模式桥接
 # ---------------------------------------------------------------------------
 
+
 class TestUnifiedContextBridge:
     @pytest.fixture
     def ctx(self):
@@ -515,22 +520,22 @@ class TestUnifiedContextBridge:
         for i in range(20):
             ctx.add_conversation("user", f"message_{i}", ContextSourceMode.COCO)
 
-        bridge = ctx.build_bridge_summary(
-            ContextSourceMode.COCO, ContextSourceMode.CLAUDE, max_items=3
-        )
+        bridge = ctx.build_bridge_summary(ContextSourceMode.COCO, ContextSourceMode.CLAUDE, max_items=3)
 
         # summary_text 应只包含最近 3 条中的内容（再截取最后 8 行）
-        lines = [l for l in bridge.summary_text.split("\n") if l.strip()]
+        lines = [line for line in bridge.summary_text.split("\n") if line.strip()]
         assert len(lines) <= 3
 
     def test_build_bridge_includes_deep_results(self, ctx):
-        ctx.add_deep_engine_result({
-            "name": "refactor",
-            "tasks": [
-                {"title": "Create JWT module", "status": "completed", "result": "Created auth/jwt.py"},
-                {"title": "Update tests", "status": "failed", "result": None},
-            ],
-        })
+        ctx.add_deep_engine_result(
+            {
+                "name": "refactor",
+                "tasks": [
+                    {"title": "Create JWT module", "status": "completed", "result": "Created auth/jwt.py"},
+                    {"title": "Update tests", "status": "failed", "result": None},
+                ],
+            }
+        )
         bridge = ctx.build_bridge_summary(ContextSourceMode.DEEP_ENGINE, ContextSourceMode.COCO)
         assert "Create JWT module" in bridge.summary_text
 
@@ -570,6 +575,7 @@ class TestUnifiedContextBridge:
 # ---------------------------------------------------------------------------
 # UnifiedContext — 序列化
 # ---------------------------------------------------------------------------
+
 
 class TestUnifiedContextSerialization:
     def test_to_dict(self):
@@ -626,6 +632,7 @@ class TestUnifiedContextSerialization:
 # UnifiedContext — updated_at 跟踪
 # ---------------------------------------------------------------------------
 
+
 class TestUnifiedContextTimestamps:
     def test_updated_at_changes_on_add(self):
         ctx = UnifiedContext(project_id="test")
@@ -661,6 +668,7 @@ class TestUnifiedContextTimestamps:
 # ---------------------------------------------------------------------------
 # UnifiedContextStore
 # ---------------------------------------------------------------------------
+
 
 class TestUnifiedContextStore:
     @pytest.fixture
@@ -784,6 +792,7 @@ class TestUnifiedContextStore:
 # UnifiedContextStore — 线程安全
 # ---------------------------------------------------------------------------
 
+
 class TestUnifiedContextStoreThreadSafety:
     def test_concurrent_get_or_create(self):
         import threading
@@ -838,6 +847,7 @@ class TestUnifiedContextStoreThreadSafety:
 # ContextResult
 # ---------------------------------------------------------------------------
 
+
 class TestContextResult:
     def test_success_result(self):
         r = ContextResult(success=True, message="ok", data={"key": 1}, project_id="p1")
@@ -856,6 +866,7 @@ class TestContextResult:
 # ---------------------------------------------------------------------------
 # ProjectContextManager — createContext
 # ---------------------------------------------------------------------------
+
 
 class TestProjectContextManagerCreate:
     @pytest.fixture
@@ -905,6 +916,7 @@ class TestProjectContextManagerCreate:
 # ---------------------------------------------------------------------------
 # ProjectContextManager — getContext
 # ---------------------------------------------------------------------------
+
 
 class TestProjectContextManagerGet:
     @pytest.fixture
@@ -984,6 +996,7 @@ class TestProjectContextManagerGet:
 # ProjectContextManager — updateContext
 # ---------------------------------------------------------------------------
 
+
 class TestProjectContextManagerUpdate:
     @pytest.fixture
     def mgr(self):
@@ -1003,12 +1016,15 @@ class TestProjectContextManagerUpdate:
         assert r.data["total_count"] == 3
 
     def test_update_with_conversation(self, mgr):
-        r = mgr.update_context("proj_a", conversation={
-            "role": "user",
-            "content": "help me refactor",
-            "source_mode": "coco",
-            "message_id": "msg_123",
-        })
+        r = mgr.update_context(
+            "proj_a",
+            conversation={
+                "role": "user",
+                "content": "help me refactor",
+                "source_mode": "coco",
+                "message_id": "msg_123",
+            },
+        )
         assert r.success is True
         assert r.data["added_count"] == 1
 
@@ -1020,21 +1036,27 @@ class TestProjectContextManagerUpdate:
         assert entry.source_mode == ContextSourceMode.COCO
 
     def test_update_with_session_snapshot(self, mgr):
-        r = mgr.update_context("proj_a", session_snapshot={
-            "data": {"session_id": "s1", "query_count": 5},
-            "source_mode": "claude",
-        })
+        r = mgr.update_context(
+            "proj_a",
+            session_snapshot={
+                "data": {"session_id": "s1", "query_count": 5},
+                "source_mode": "claude",
+            },
+        )
         assert r.success is True
         ctx = mgr.store.get("proj_a")
         assert ctx.entries[0].entry_type == ContextEntryType.SESSION_SNAPSHOT
         assert ctx.entries[0].source_mode == ContextSourceMode.CLAUDE
 
     def test_update_with_mode_transition(self, mgr):
-        r = mgr.update_context("proj_a", mode_transition={
-            "from_mode": "coco",
-            "to_mode": "claude",
-            "reason": "user requested",
-        })
+        r = mgr.update_context(
+            "proj_a",
+            mode_transition={
+                "from_mode": "coco",
+                "to_mode": "claude",
+                "reason": "user requested",
+            },
+        )
         assert r.success is True
         ctx = mgr.store.get("proj_a")
         entry = ctx.entries[0]
@@ -1043,9 +1065,12 @@ class TestProjectContextManagerUpdate:
         assert entry.metadata["to_mode"] == "claude"
 
     def test_update_with_deep_result(self, mgr):
-        r = mgr.update_context("proj_a", deep_result={
-            "data": {"name": "task_x", "tasks": []},
-        })
+        r = mgr.update_context(
+            "proj_a",
+            deep_result={
+                "data": {"name": "task_x", "tasks": []},
+            },
+        )
         assert r.success is True
         ctx = mgr.store.get("proj_a")
         assert ctx.entries[0].entry_type == ContextEntryType.DEEP_ENGINE_RESULT
@@ -1065,9 +1090,14 @@ class TestProjectContextManagerUpdate:
         assert "未提供" in r.message
 
     def test_update_nonexistent_auto_creates(self, mgr):
-        r = mgr.update_context("new_project", conversation={
-            "role": "user", "content": "first msg", "source_mode": "smart",
-        })
+        r = mgr.update_context(
+            "new_project",
+            conversation={
+                "role": "user",
+                "content": "first msg",
+                "source_mode": "smart",
+            },
+        )
         assert r.success is True
         assert mgr.store.has("new_project")
 
@@ -1081,15 +1111,21 @@ class TestProjectContextManagerUpdate:
         assert "不存在" in r.message
 
     def test_update_empty_id_fails(self, mgr):
-        r = mgr.update_context("", conversation={
-            "role": "user", "content": "x", "source_mode": "smart",
-        })
+        r = mgr.update_context(
+            "",
+            conversation={
+                "role": "user",
+                "content": "x",
+                "source_mode": "smart",
+            },
+        )
         assert r.success is False
 
 
 # ---------------------------------------------------------------------------
 # ProjectContextManager — deleteContext
 # ---------------------------------------------------------------------------
+
 
 class TestProjectContextManagerDelete:
     @pytest.fixture
@@ -1154,6 +1190,7 @@ class TestProjectContextManagerDelete:
 # ProjectContextManager — contextExists
 # ---------------------------------------------------------------------------
 
+
 class TestProjectContextManagerExists:
     @pytest.fixture
     def mgr(self):
@@ -1189,6 +1226,7 @@ class TestProjectContextManagerExists:
 # ProjectContextManager — 端到端流程
 # ---------------------------------------------------------------------------
 
+
 class TestProjectContextManagerEndToEnd:
     def test_full_lifecycle(self):
         """create -> update -> get -> exists -> delete -> exists"""
@@ -1199,23 +1237,42 @@ class TestProjectContextManagerEndToEnd:
         assert r.success is True
 
         # 2. update: 模拟 Coco 会话
-        mgr.update_context("my_app", conversation={
-            "role": "user", "content": "help me refactor auth", "source_mode": "coco",
-        })
-        mgr.update_context("my_app", conversation={
-            "role": "assistant", "content": "I'll create a plan...", "source_mode": "coco",
-        })
+        mgr.update_context(
+            "my_app",
+            conversation={
+                "role": "user",
+                "content": "help me refactor auth",
+                "source_mode": "coco",
+            },
+        )
+        mgr.update_context(
+            "my_app",
+            conversation={
+                "role": "assistant",
+                "content": "I'll create a plan...",
+                "source_mode": "coco",
+            },
+        )
 
         # 3. update: 模式切换
-        mgr.update_context("my_app", mode_transition={
-            "from_mode": "coco", "to_mode": "claude", "reason": "user requested",
-        })
+        mgr.update_context(
+            "my_app",
+            mode_transition={
+                "from_mode": "coco",
+                "to_mode": "claude",
+                "reason": "user requested",
+            },
+        )
 
         # 4. update: Claude 会话
-        mgr.update_context("my_app", conversation={
-            "role": "user", "content": "continue from where coco left off",
-            "source_mode": "claude",
-        })
+        mgr.update_context(
+            "my_app",
+            conversation={
+                "role": "user",
+                "content": "continue from where coco left off",
+                "source_mode": "claude",
+            },
+        )
 
         # 5. get: 查询全部
         r = mgr.get_context("my_app")
@@ -1258,15 +1315,30 @@ class TestProjectContextManagerEndToEnd:
         mgr.create_context("frontend")
         mgr.create_context("backend")
 
-        mgr.update_context("frontend", conversation={
-            "role": "user", "content": "React question", "source_mode": "claude",
-        })
-        mgr.update_context("backend", conversation={
-            "role": "user", "content": "Django question", "source_mode": "coco",
-        })
-        mgr.update_context("backend", conversation={
-            "role": "user", "content": "Another Django question", "source_mode": "coco",
-        })
+        mgr.update_context(
+            "frontend",
+            conversation={
+                "role": "user",
+                "content": "React question",
+                "source_mode": "claude",
+            },
+        )
+        mgr.update_context(
+            "backend",
+            conversation={
+                "role": "user",
+                "content": "Django question",
+                "source_mode": "coco",
+            },
+        )
+        mgr.update_context(
+            "backend",
+            conversation={
+                "role": "user",
+                "content": "Another Django question",
+                "source_mode": "coco",
+            },
+        )
 
         r_fe = mgr.get_context("frontend")
         r_be = mgr.get_context("backend")
@@ -1283,6 +1355,7 @@ class TestProjectContextManagerEndToEnd:
 # ---------------------------------------------------------------------------
 # 项目切换时的上下文保留与恢复
 # ---------------------------------------------------------------------------
+
 
 class TestProjectSwitchContextPreservation:
     """测试项目切换时旧项目的上下文被完整保留"""
@@ -1828,13 +1901,15 @@ class TestProjectSwitchEndToEnd:
         ctx_a = mgr.store.get("proj_A")
 
         # Deep Engine 完成
-        ctx_a.add_deep_engine_result({
-            "name": "auth_refactor",
-            "tasks": [
-                {"title": "create middleware", "status": "completed", "result": "done"},
-                {"title": "write tests", "status": "completed", "result": "15 tests pass"},
-            ],
-        })
+        ctx_a.add_deep_engine_result(
+            {
+                "name": "auth_refactor",
+                "tasks": [
+                    {"title": "create middleware", "status": "completed", "result": "done"},
+                    {"title": "write tests", "status": "completed", "result": "15 tests pass"},
+                ],
+            }
+        )
         ctx_a.create_version(
             reason="deep_engine_done: auth_refactor",
             source_mode=ContextSourceMode.DEEP_ENGINE,
@@ -1858,12 +1933,14 @@ class TestProjectSwitchEndToEnd:
         mgr.create_context("proj_A")
         ctx = mgr.store.get("proj_A")
 
-        ctx.add_deep_engine_result({
-            "name": "feature_x",
-            "tasks": [
-                {"title": "implement API", "status": "completed", "result": "REST endpoints created"},
-            ],
-        })
+        ctx.add_deep_engine_result(
+            {
+                "name": "feature_x",
+                "tasks": [
+                    {"title": "implement API", "status": "completed", "result": "REST endpoints created"},
+                ],
+            }
+        )
 
         bridge = ctx.build_bridge_summary(ContextSourceMode.DEEP_ENGINE, ContextSourceMode.COCO)
         prompt = bridge.to_injection_prompt()
@@ -1876,6 +1953,7 @@ class TestProjectSwitchEndToEnd:
 # ---------------------------------------------------------------------------
 # 补充 CRUD 操作测试
 # ---------------------------------------------------------------------------
+
 
 class TestCRUDAdvanced:
     """补充 CRUD 操作的高级场景"""
@@ -1891,24 +1969,28 @@ class TestCRUDAdvanced:
     # ---- Create: FILE_CHANGE 类型 ----
 
     def test_add_file_change_entry(self, ctx):
-        entry = ctx.add_entry(ContextEntry(
-            entry_type=ContextEntryType.FILE_CHANGE,
-            source_mode=ContextSourceMode.COCO,
-            content="src/auth/jwt.py",
-            metadata={"action": "modified", "lines_changed": 42},
-        ))
+        entry = ctx.add_entry(
+            ContextEntry(
+                entry_type=ContextEntryType.FILE_CHANGE,
+                source_mode=ContextSourceMode.COCO,
+                content="src/auth/jwt.py",
+                metadata={"action": "modified", "lines_changed": 42},
+            )
+        )
         assert entry.entry_type == ContextEntryType.FILE_CHANGE
         assert entry.metadata["action"] == "modified"
         found = ctx.get_entries_by_type(ContextEntryType.FILE_CHANGE)
         assert len(found) == 1
 
     def test_add_ai_summary_entry(self, ctx):
-        entry = ctx.add_entry(ContextEntry(
-            entry_type=ContextEntryType.AI_SUMMARY,
-            source_mode=ContextSourceMode.COCO,
-            content="Completed auth module refactoring with JWT tokens",
-            metadata={"tokens_used": 1500},
-        ))
+        entry = ctx.add_entry(
+            ContextEntry(
+                entry_type=ContextEntryType.AI_SUMMARY,
+                source_mode=ContextSourceMode.COCO,
+                content="Completed auth module refactoring with JWT tokens",
+                metadata={"tokens_used": 1500},
+            )
+        )
         assert entry.entry_type == ContextEntryType.AI_SUMMARY
         summaries = ctx.get_entries_by_type(ContextEntryType.AI_SUMMARY)
         assert len(summaries) == 1
@@ -2065,6 +2147,7 @@ class TestCRUDAdvanced:
 # 多编程模式之间的上下文共享
 # ---------------------------------------------------------------------------
 
+
 class TestCrossModeContextSharing:
     """
     测试多个编程模式之间的上下文共享。
@@ -2139,12 +2222,14 @@ class TestCrossModeContextSharing:
         ctx.add_conversation("user", "pytest tests/", ContextSourceMode.SHELL)
 
         # Phase 5: Deep Engine 任务
-        ctx.add_deep_engine_result({
-            "name": "test_coverage",
-            "tasks": [
-                {"title": "run all tests", "status": "completed", "result": "42 passed"},
-            ],
-        })
+        ctx.add_deep_engine_result(
+            {
+                "name": "test_coverage",
+                "tasks": [
+                    {"title": "run all tests", "status": "completed", "result": "42 passed"},
+                ],
+            }
+        )
 
         # 总计：1 SMART + 3 transitions + 2 COCO + 2 CLAUDE + 1 SHELL + 1 DEEP = 10
         assert ctx.entry_count == 10
@@ -2215,9 +2300,9 @@ class TestCrossModeContextSharing:
 
     def test_cross_mode_conversations_ordered_chronologically(self, ctx):
         """不同模式的对话按时间顺序排列"""
-        e1 = ctx.add_conversation("user", "first (smart)", ContextSourceMode.SMART)
-        e2 = ctx.add_conversation("user", "second (coco)", ContextSourceMode.COCO)
-        e3 = ctx.add_conversation("user", "third (claude)", ContextSourceMode.CLAUDE)
+        ctx.add_conversation("user", "first (smart)", ContextSourceMode.SMART)
+        ctx.add_conversation("user", "second (coco)", ContextSourceMode.COCO)
+        ctx.add_conversation("user", "third (claude)", ContextSourceMode.CLAUDE)
 
         recent = ctx.get_recent_entries(10)
         assert recent[0].content == "first (smart)"
@@ -2244,21 +2329,43 @@ class TestCrossModeContextSharing:
         mgr.create_context("proj")
 
         # 添加多个模式的数据
-        mgr.update_context("proj", conversation={
-            "role": "user", "content": "coco question", "source_mode": "coco",
-        })
-        mgr.update_context("proj", conversation={
-            "role": "assistant", "content": "coco answer", "source_mode": "coco",
-        })
-        mgr.update_context("proj", mode_transition={
-            "from_mode": "coco", "to_mode": "claude",
-        })
-        mgr.update_context("proj", conversation={
-            "role": "user", "content": "claude question", "source_mode": "claude",
-        })
-        mgr.update_context("proj", deep_result={
-            "data": {"name": "deep_task", "tasks": []},
-        })
+        mgr.update_context(
+            "proj",
+            conversation={
+                "role": "user",
+                "content": "coco question",
+                "source_mode": "coco",
+            },
+        )
+        mgr.update_context(
+            "proj",
+            conversation={
+                "role": "assistant",
+                "content": "coco answer",
+                "source_mode": "coco",
+            },
+        )
+        mgr.update_context(
+            "proj",
+            mode_transition={
+                "from_mode": "coco",
+                "to_mode": "claude",
+            },
+        )
+        mgr.update_context(
+            "proj",
+            conversation={
+                "role": "user",
+                "content": "claude question",
+                "source_mode": "claude",
+            },
+        )
+        mgr.update_context(
+            "proj",
+            deep_result={
+                "data": {"name": "deep_task", "tasks": []},
+            },
+        )
 
         # 查询全部
         r = mgr.get_context("proj")
@@ -2277,16 +2384,20 @@ class TestCrossModeContextSharing:
     def test_bridge_summary_collects_file_changes(self, ctx):
         """FILE_CHANGE 在 bridgeable_types 中，桥接摘要会收集文件变更"""
         ctx.add_conversation("user", "refactor auth", ContextSourceMode.COCO)
-        ctx.add_entry(ContextEntry(
-            entry_type=ContextEntryType.FILE_CHANGE,
-            source_mode=ContextSourceMode.COCO,
-            content="src/auth/handler.py",
-        ))
-        ctx.add_entry(ContextEntry(
-            entry_type=ContextEntryType.FILE_CHANGE,
-            source_mode=ContextSourceMode.COCO,
-            content="src/auth/jwt.py",
-        ))
+        ctx.add_entry(
+            ContextEntry(
+                entry_type=ContextEntryType.FILE_CHANGE,
+                source_mode=ContextSourceMode.COCO,
+                content="src/auth/handler.py",
+            )
+        )
+        ctx.add_entry(
+            ContextEntry(
+                entry_type=ContextEntryType.FILE_CHANGE,
+                source_mode=ContextSourceMode.COCO,
+                content="src/auth/jwt.py",
+            )
+        )
 
         bridge = ctx.build_bridge_summary(ContextSourceMode.COCO, ContextSourceMode.CLAUDE)
         # FILE_CHANGE 在 bridgeable_types 中，文件变更会被收集
@@ -2300,39 +2411,66 @@ class TestCrossModeContextSharing:
         ctx = mgr.store.get("webapp")
 
         # Coco 会话
-        mgr.update_context("webapp", conversation={
-            "role": "user", "content": "build user registration", "source_mode": "coco",
-        })
-        mgr.update_context("webapp", conversation={
-            "role": "assistant", "content": "created register endpoint", "source_mode": "coco",
-        })
+        mgr.update_context(
+            "webapp",
+            conversation={
+                "role": "user",
+                "content": "build user registration",
+                "source_mode": "coco",
+            },
+        )
+        mgr.update_context(
+            "webapp",
+            conversation={
+                "role": "assistant",
+                "content": "created register endpoint",
+                "source_mode": "coco",
+            },
+        )
 
         # 模式切换 + 桥接
-        mgr.update_context("webapp", mode_transition={
-            "from_mode": "coco", "to_mode": "claude", "reason": "need claude for complex logic",
-        })
+        mgr.update_context(
+            "webapp",
+            mode_transition={
+                "from_mode": "coco",
+                "to_mode": "claude",
+                "reason": "need claude for complex logic",
+            },
+        )
         bridge = ctx.build_bridge_summary(ContextSourceMode.COCO, ContextSourceMode.CLAUDE)
         prompt = bridge.to_injection_prompt()
         assert "build user registration" in prompt
 
         # Claude 会话
-        mgr.update_context("webapp", conversation={
-            "role": "user", "content": "add email verification", "source_mode": "claude",
-        })
+        mgr.update_context(
+            "webapp",
+            conversation={
+                "role": "user",
+                "content": "add email verification",
+                "source_mode": "claude",
+            },
+        )
 
         # 再次切换 + Deep Engine
-        mgr.update_context("webapp", mode_transition={
-            "from_mode": "claude", "to_mode": "deep_engine",
-        })
-        mgr.update_context("webapp", deep_result={
-            "data": {
-                "name": "verification_flow",
-                "tasks": [
-                    {"title": "send email", "status": "completed", "result": "SMTP configured"},
-                    {"title": "verify token", "status": "completed", "result": "token validation done"},
-                ],
+        mgr.update_context(
+            "webapp",
+            mode_transition={
+                "from_mode": "claude",
+                "to_mode": "deep_engine",
             },
-        })
+        )
+        mgr.update_context(
+            "webapp",
+            deep_result={
+                "data": {
+                    "name": "verification_flow",
+                    "tasks": [
+                        {"title": "send email", "status": "completed", "result": "SMTP configured"},
+                        {"title": "verify token", "status": "completed", "result": "token validation done"},
+                    ],
+                },
+            },
+        )
 
         # 验证全部
         r = mgr.get_context("webapp")
@@ -2349,6 +2487,7 @@ class TestCrossModeContextSharing:
 # ---------------------------------------------------------------------------
 # 项目切换的补充测试
 # ---------------------------------------------------------------------------
+
 
 class TestProjectSwitchAdvanced:
     """项目切换的补充测试场景"""
@@ -2369,15 +2508,15 @@ class TestProjectSwitchAdvanced:
 
         # Round 1: 在 B 中工作
         ctx_b.add_conversation("user", "B round1", ContextSourceMode.CLAUDE)
-        v_b1 = ctx_b.create_version("switch B->C", ContextSourceMode.SMART)
+        ctx_b.create_version("switch B->C", ContextSourceMode.SMART)
 
         # Round 1: 在 C 中工作
         ctx_c.add_conversation("user", "C round1", ContextSourceMode.SHELL)
-        v_c1 = ctx_c.create_version("switch C->A", ContextSourceMode.SMART)
+        ctx_c.create_version("switch C->A", ContextSourceMode.SMART)
 
         # Round 2: 回到 A
         ctx_a.add_conversation("user", "A round2", ContextSourceMode.CLAUDE)
-        v_a2 = ctx_a.create_version("switch A->B again", ContextSourceMode.SMART)
+        ctx_a.create_version("switch A->B again", ContextSourceMode.SMART)
 
         # 验证：A 有 2 条对话，2 个版本
         assert ctx_a.entry_count == 2
@@ -2446,6 +2585,7 @@ class TestProjectSwitchAdvanced:
 # 边界情况测试
 # ---------------------------------------------------------------------------
 
+
 class TestEdgeCases:
     """边界情况测试"""
 
@@ -2480,10 +2620,12 @@ class TestEdgeCases:
 
     def test_newlines_in_metadata(self):
         ctx = UnifiedContext(project_id="test")
-        entry = ctx.add_entry(ContextEntry(
-            content="test",
-            metadata={"code": "def foo():\n    return 42\n"},
-        ))
+        entry = ctx.add_entry(
+            ContextEntry(
+                content="test",
+                metadata={"code": "def foo():\n    return 42\n"},
+            )
+        )
         assert ctx.get_entry(entry.entry_id).metadata["code"] == "def foo():\n    return 42\n"
 
     # ---- 容量极限边界 ----
@@ -2500,9 +2642,9 @@ class TestEdgeCases:
 
     def test_max_versions_equals_one(self):
         ctx = UnifiedContext(project_id="test", max_entries=100, max_versions=1)
-        v1 = ctx.create_version("v1", ContextSourceMode.SMART)
-        v2 = ctx.create_version("v2", ContextSourceMode.COCO)
-        v3 = ctx.create_version("v3", ContextSourceMode.CLAUDE)
+        ctx.create_version("v1", ContextSourceMode.SMART)
+        ctx.create_version("v2", ContextSourceMode.COCO)
+        ctx.create_version("v3", ContextSourceMode.CLAUDE)
 
         assert len(ctx.versions) == 1
         assert ctx.versions[0].reason == "v3"
@@ -2592,7 +2734,7 @@ class TestEdgeCases:
         lines = bridge.summary_text.split("\n")
         for line in lines:
             if line.startswith("user:"):
-                content_part = line[len("user: "):]
+                content_part = line[len("user: ") :]
                 assert len(content_part) <= 300
 
     def test_bridge_summary_max_8_lines(self):
@@ -2602,7 +2744,7 @@ class TestEdgeCases:
             ctx.add_conversation("user", f"message_{i}", ContextSourceMode.COCO)
 
         bridge = ctx.build_bridge_summary(ContextSourceMode.COCO, ContextSourceMode.CLAUDE)
-        lines = [l for l in bridge.summary_text.split("\n") if l.strip()]
+        lines = [line for line in bridge.summary_text.split("\n") if line.strip()]
         assert len(lines) <= 8
 
     # ---- 序列化边界 ----
@@ -2635,16 +2777,20 @@ class TestEdgeCases:
         ctx.add_session_snapshot({"session_id": "s1"}, ContextSourceMode.COCO)
         ctx.add_mode_transition(ContextSourceMode.COCO, ContextSourceMode.CLAUDE)
         ctx.add_deep_engine_result({"name": "task1", "tasks": []})
-        ctx.add_entry(ContextEntry(
-            entry_type=ContextEntryType.AI_SUMMARY,
-            source_mode=ContextSourceMode.COCO,
-            content="summary text",
-        ))
-        ctx.add_entry(ContextEntry(
-            entry_type=ContextEntryType.FILE_CHANGE,
-            source_mode=ContextSourceMode.CLAUDE,
-            content="src/main.py",
-        ))
+        ctx.add_entry(
+            ContextEntry(
+                entry_type=ContextEntryType.AI_SUMMARY,
+                source_mode=ContextSourceMode.COCO,
+                content="summary text",
+            )
+        )
+        ctx.add_entry(
+            ContextEntry(
+                entry_type=ContextEntryType.FILE_CHANGE,
+                source_mode=ContextSourceMode.CLAUDE,
+                content="src/main.py",
+            )
+        )
 
         restored = UnifiedContext.from_dict(ctx.to_dict())
         assert restored.entry_count == 6
@@ -2781,9 +2927,14 @@ class TestEdgeCases:
 
     def test_mgr_update_context_none_project_id(self):
         mgr = ProjectContextManager()
-        r = mgr.update_context(None, conversation={
-            "role": "user", "content": "x", "source_mode": "smart",
-        })
+        r = mgr.update_context(
+            None,
+            conversation={
+                "role": "user",
+                "content": "x",
+                "source_mode": "smart",
+            },
+        )
         assert r.success is False
 
     def test_mgr_delete_context_none_project_id(self):
@@ -2801,7 +2952,7 @@ class TestEdgeCases:
         """Store 交叉操作不会互相影响"""
         store = UnifiedContextStore()
         ctx_a = store.get_or_create("a")
-        ctx_b = store.get_or_create("b")
+        store.get_or_create("b")
 
         ctx_a.add_conversation("user", "a_msg", ContextSourceMode.COCO)
         store.remove("b")

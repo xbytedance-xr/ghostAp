@@ -2,12 +2,11 @@
 
 from ..utils.text import format_duration, make_progress_bar
 from .models import (
-    LoopProject,
-    LoopProjectStatus,
     IterationRecord,
     IterationStatus,
+    LoopProject,
+    LoopProjectStatus,
     ReviewResult,
-    ReviewPerspective,
 )
 
 
@@ -50,10 +49,8 @@ class LoopReporter:
         lines.append("\n🚀 准备开始迭代执行...")
         return "\n".join(lines)
 
-    def format_iteration_start(self, iteration: int, max_iterations: int,
-                               criteria_status: str = "") -> str:
-        parts = [f"🔄 **迭代 [{iteration}/{max_iterations}]**\n",
-                 "🤖 **Agent 执行中...**"]
+    def format_iteration_start(self, iteration: int, max_iterations: int, criteria_status: str = "") -> str:
+        parts = [f"🔄 **迭代 [{iteration}/{max_iterations}]**\n", "🤖 **Agent 执行中...**"]
         if criteria_status:
             parts.append(f"\n{criteria_status}")
         parts.append("\n⏳ 正在执行...")
@@ -104,9 +101,7 @@ class LoopReporter:
             else:
                 lines.append(f"  🔲 {i + 1}. {criterion}")
 
-        progress_bar = self._make_progress_bar(
-            tracker.satisfied_count, tracker.total_count
-        )
+        progress_bar = self._make_progress_bar(tracker.satisfied_count, tracker.total_count)
         lines.append(f"\n{progress_bar}")
 
         return "\n".join(lines)
@@ -126,7 +121,7 @@ class LoopReporter:
                 lines.append(f"{pr.perspective.emoji} **{pr.perspective.display_name}**: {status_text}")
                 for s in pr.suggestions:
                     lines.append(f"  - {s}")
-            
+
             if count < total_reviews:
                 lines.append("\n---")
             else:
@@ -210,9 +205,7 @@ class LoopReporter:
         if project.iterations:
             lines.append("\n**最近迭代:**")
             for record in project.iterations[-5:]:
-                status_emoji = (
-                    "✅" if record.status == IterationStatus.SUCCESS else "❌"
-                )
+                status_emoji = "✅" if record.status == IterationStatus.SUCCESS else "❌"
                 focus_text = record.focus[:60] if record.focus else ""
                 lines.append(f"  {status_emoji} #{record.iteration} {focus_text}")
 
@@ -237,31 +230,31 @@ class LoopReporter:
         """Format a paginated list of iteration history."""
         # Sort by iteration descending (newest first)
         sorted_iterations = sorted(iterations, key=lambda x: x.iteration, reverse=True)
-        
+
         start_idx = (page - 1) * page_size
         end_idx = start_idx + page_size
-        
+
         page_items = sorted_iterations[start_idx:end_idx]
         total_items = len(sorted_iterations)
         total_pages = (total_items + page_size - 1) // page_size if total_items > 0 else 1
-        
+
         if not page_items:
             return "📭 暂无历史记录"
-            
+
         lines = []
         for record in page_items:
             status_emoji = "✅" if record.status == IterationStatus.SUCCESS else "❌"
             if record.status == IterationStatus.RUNNING:
                 status_emoji = "🔄"
-                
+
             focus = record.focus or "(无摘要)"
             if len(focus) > 25:
                 focus = focus[:25] + "..."
-                
+
             duration = format_duration(record.duration) if record.duration else "--"
-            
+
             lines.append(f"#{record.iteration} {status_emoji} **{focus}** ({duration})")
-            
+
         summary = f"第 {page}/{total_pages} 页 · 共 {total_items} 条记录"
         return summary + "\n\n" + "\n".join(lines)
 
@@ -346,9 +339,7 @@ class LoopReporter:
 
     def get_progress_info(self, project: LoopProject) -> dict:
         return {
-            "progress_bar": self._make_progress_bar(
-                project.satisfied_count, project.total_criteria
-            ),
+            "progress_bar": self._make_progress_bar(project.satisfied_count, project.total_criteria),
             "satisfied_count": project.satisfied_count,
             "total_criteria": project.total_criteria,
             "iteration_count": project.current_iteration,

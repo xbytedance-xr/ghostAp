@@ -1,7 +1,6 @@
 import re
-import time
 import threading
-import uuid
+import time
 
 _TASK_ID_LOCK = threading.Lock()
 _TASK_ID_SEQ = 0
@@ -61,9 +60,9 @@ def make_progress_bar(completed: int, total: int) -> str:
 
 def clean_terminal_output(output: str) -> str:
     """去除 ANSI 转义序列和 OSC 序列"""
-    output = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', output)
-    output = re.sub(r'\x1b\][^\x07]*\x07', '', output)
-    output = re.sub(r'\x1b[\[\]\\^][^\x07\x1b]*', '', output)
+    output = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", output)
+    output = re.sub(r"\x1b\][^\x07]*\x07", "", output)
+    output = re.sub(r"\x1b[\[\]\\^][^\x07\x1b]*", "", output)
     return output.strip()
 
 

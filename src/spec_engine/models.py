@@ -316,7 +316,9 @@ class SpecCycle:
             review_result=ReviewResult.from_dict(review_data) if review_data else None,
             review_path=data.get("review_path"),
             review_decision=str(data.get("review_decision") or ""),
-            review_diagnostics=(data.get("review_diagnostics") if isinstance(data.get("review_diagnostics"), dict) else None),
+            review_diagnostics=(
+                data.get("review_diagnostics") if isinstance(data.get("review_diagnostics"), dict) else None
+            ),
             discovery_path=data.get("discovery_path"),
             metrics_path=data.get("metrics_path"),
             status=data.get("status", "running"),

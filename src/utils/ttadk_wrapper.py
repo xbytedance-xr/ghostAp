@@ -1,10 +1,10 @@
-import sys
-import subprocess
-import threading
-import shutil
 import os
 import re
 import select
+import shutil
+import subprocess
+import sys
+import threading
 from dataclasses import dataclass, field
 from typing import BinaryIO, Optional
 
@@ -15,7 +15,6 @@ except Exception:  # pragma: no cover
     pty = None
 
 import argparse
-
 
 # ANSI/control sequences may appear in PTY mode. We strip them before checking JSON start.
 _ANSI_ESCAPE_RE = re.compile(rb"\x1b\[[\?0-9;]*[a-zA-Z]|\x1b\].*?\x07|\x1b[()][AB012]")
@@ -29,8 +28,6 @@ IMPORTANT:
 
 The cwd normalization SSOT lives in `src.utils.path.normalize_ttadk_cwd`.
 """
-
-from .path import normalize_ttadk_cwd  # deprecated re-export (compat)
 
 
 @dataclass
@@ -231,7 +228,7 @@ def pump_filtered_stream(reader: object, writer: BinaryIO, state: WrapperState, 
         if not state.json_started:
             line = b""
             try:
-                line = getattr(reader, "readline")()
+                line = reader.readline()
             except Exception:
                 line = b""
             if not line:
@@ -252,7 +249,7 @@ def pump_filtered_stream(reader: object, writer: BinaryIO, state: WrapperState, 
 
         # JSON started: pipe bytes
         try:
-            chunk = getattr(reader, "read")(chunk_size)
+            chunk = reader.read(chunk_size)
         except Exception:
             chunk = b""
         if not chunk:
@@ -264,7 +261,9 @@ def pump_filtered_stream(reader: object, writer: BinaryIO, state: WrapperState, 
             pass
 
 
-def emit_failure_diagnostics(returncode: int, cmd: list[str], state: WrapperState, *, stderr: Optional[object] = None) -> None:
+def emit_failure_diagnostics(
+    returncode: int, cmd: list[str], state: WrapperState, *, stderr: Optional[object] = None
+) -> None:
     """在失败且未开始输出 JSON 时打印 banner_tail 诊断信息。"""
     err = stderr if stderr is not None else sys.stderr
     try:
@@ -281,7 +280,7 @@ def emit_failure_diagnostics(returncode: int, cmd: list[str], state: WrapperStat
 
     try:
         if state.banner_tail:
-            tail = b"".join(state.banner_tail[-int(state.banner_tail_max or 8):])
+            tail = b"".join(state.banner_tail[-int(state.banner_tail_max or 8) :])
             s = tail.decode("utf-8", errors="ignore").strip("\n")
             if s:
                 err.write(f"[ttadk_wrapper] banner_tail:\n{s}\n")
@@ -291,6 +290,7 @@ def emit_failure_diagnostics(returncode: int, cmd: list[str], state: WrapperStat
         err.write(f"[ttadk_wrapper] child exited rc={returncode} cmd={cmd}\n")
     except Exception:
         pass
+
 
 def forward_stdin(proc):
     """Forward wrapper's stdin to subprocess's stdin."""
@@ -307,8 +307,9 @@ def forward_stdin(proc):
     finally:
         try:
             proc.stdin.close()
-        except:
+        except Exception:
             pass
+
 
 def forward_stdout(proc, state: WrapperState):
     """兼容旧调用：透传 stdout 并更新 state。"""
@@ -394,13 +395,14 @@ def _pump_stdin_to_fd(
         # best-effort: 不主动关闭 fd（由主流程统一收尾），避免与 stdout reader 竞争关闭
         return
 
+
 def main():
     # `python3 ttadk_wrapper.py [--pty] <command> [args...]`
     use_pty, cmd = _parse_args(sys.argv[1:])
     if len(cmd) < 1:
         sys.stderr.write("Usage: ttadk_wrapper.py [--pty] <command> [args...]\n")
         sys.exit(1)
-    
+
     # Resolve executable path if it's just a name
     if os.path.sep not in cmd[0]:
         resolved = shutil.which(cmd[0])
@@ -458,14 +460,14 @@ def main():
     else:
         t_in = threading.Thread(target=forward_stdin, args=(proc,), daemon=True)
         t_out = threading.Thread(target=forward_stdout, args=(proc, state), daemon=True)
-    
+
     if t_in is not None:
         try:
             t_in.start()
         except Exception:
             t_in = None
     t_out.start()
-    
+
     # Wait for process to exit
     try:
         proc.wait()
@@ -473,7 +475,7 @@ def main():
         # Pass signal to child
         proc.terminate()
         proc.wait()
-    
+
     # Ensure pump thread had a chance to drain outputs.
     # In PTY mode, proactively close master_fd after process exit to unblock reader.
     if use_pty and master_fd is not None:
@@ -498,5 +500,7 @@ def main():
         pass
 
     sys.exit(proc.returncode)
+
+
 if __name__ == "__main__":
     main()

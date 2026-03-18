@@ -6,17 +6,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.acp.models import ACPEvent, ACPEventType, PromptResult
+from src.acp.models import PromptResult
 from src.agent_session import (
-    RateLimitAwareSession,
-    _detect_rate_limit,
-    classify_model_failure,
-    _replace_model_in_agent_args,
-    _extract_model_from_agent_args,
-    _apply_compaction_once,
     ModelFailureAwareSession,
+    RateLimitAwareSession,
+    _apply_compaction_once,
+    _detect_rate_limit,
+    _extract_model_from_agent_args,
+    _replace_model_in_agent_args,
+    classify_model_failure,
 )
-
 
 # ======================================================================
 # _detect_rate_limit() tests
@@ -706,6 +705,7 @@ class TestCreateEngineSession:
         MockCLI.return_value = mock_session
 
         from src.agent_session import create_engine_session
+
         result = create_engine_session("claude", "/tmp")
 
         from src.agent_session import ModelFailureAwareSession
@@ -726,6 +726,7 @@ class TestCreateEngineSession:
         MockCLI.return_value = mock_session
 
         from src.agent_session import create_engine_session
+
         result = create_engine_session("claude", "/tmp")
 
         from src.agent_session import ModelFailureAwareSession

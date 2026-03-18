@@ -1,8 +1,9 @@
 import unittest
+
 from src.utils.command_parser import CommandParser
 
+
 class TestCommandParser(unittest.TestCase):
-    
     def test_empty_command(self):
         cmd = CommandParser.parse_basic("")
         self.assertFalse(cmd.is_valid)
@@ -47,5 +48,6 @@ class TestCommandParser(unittest.TestCase):
         # Flags should be empty because it's not ONLY flags
         self.assertFalse(cmd.flags)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()

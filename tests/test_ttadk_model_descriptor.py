@@ -2,7 +2,13 @@ def test_resolve_model_id_maps_display_and_alias_to_model_id():
     from src.ttadk.models import ModelDescriptor, resolve_model_id
 
     desc = [
-        ModelDescriptor(model_id="gpt-5.2-codex-ttadk", display_name="GPT 5.2 Codex", aliases=["gpt-5.2", "GPT 5.2"], source="probe", verified=True),
+        ModelDescriptor(
+            model_id="gpt-5.2-codex-ttadk",
+            display_name="GPT 5.2 Codex",
+            aliases=["gpt-5.2", "GPT 5.2"],
+            source="probe",
+            verified=True,
+        ),
         ModelDescriptor(model_id="glm-5-ttadk", display_name="GLM 5", aliases=["glm-5"], source="probe", verified=True),
     ]
 
@@ -19,8 +25,16 @@ def test_resolve_model_id_unknown_returns_candidates_without_passthrough():
     from src.ttadk.models import ModelDescriptor, resolve_model_id
 
     desc = [
-        ModelDescriptor(model_id="gpt-5.2-codex-ttadk", display_name="GPT 5.2 Codex", aliases=["gpt-5.2"], source="probe", verified=True),
-        ModelDescriptor(model_id="gpt-4.1-ttadk", display_name="GPT 4.1", aliases=["gpt-4"], source="probe", verified=True),
+        ModelDescriptor(
+            model_id="gpt-5.2-codex-ttadk",
+            display_name="GPT 5.2 Codex",
+            aliases=["gpt-5.2"],
+            source="probe",
+            verified=True,
+        ),
+        ModelDescriptor(
+            model_id="gpt-4.1-ttadk", display_name="GPT 4.1", aliases=["gpt-4"], source="probe", verified=True
+        ),
     ]
 
     r, d = resolve_model_id(tool_name="codex", input_name="gpt", descriptors=desc)
@@ -30,4 +44,3 @@ def test_resolve_model_id_unknown_returns_candidates_without_passthrough():
     if r.source == "unknown":
         assert "unknown_model_input" in (r.warnings or [])
         assert isinstance((d or {}).get("candidates"), list)
-

@@ -1,6 +1,7 @@
 import asyncio
-import pytest
+
 from src.utils.errors import fmt_error
+
 
 class TestErrorFormatting:
     def test_fmt_error_with_string(self):
@@ -28,7 +29,7 @@ class TestErrorFormatting:
 
     def test_fmt_error_with_timeout_custom_message(self):
         """Test formatting a TimeoutError with a custom message (should be preserved)."""
-        # Note: asyncio.TimeoutError() doesn't usually take args in older python, 
+        # Note: asyncio.TimeoutError() doesn't usually take args in older python,
         # but built-in TimeoutError does. asyncio.TimeoutError is an alias in 3.11+.
         # Let's test with built-in TimeoutError which is compatible.
         exc = TimeoutError("连接超时")

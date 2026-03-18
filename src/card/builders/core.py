@@ -1,15 +1,12 @@
-
-import json
 import time
 from typing import Optional
+
 from src.project.context import ProjectContext
+
 from ..shared import (
-    get_theme,
-    apply_compact_style,
     build_mode_buttons,
-    build_responsive_layout,
-    UI_TEXT,
 )
+from ..styles import UI_TEXT
 
 
 class CoreBuilder:
@@ -22,64 +19,67 @@ class CoreBuilder:
             return content
 
         warning_msg = UI_TEXT.get("log_truncated_warning", "\n> ⚠️ **日志内容过长，已被截断**...\n")
-        keep_chars = max_chars - len(warning_msg) - 20 # buffer
+        keep_chars = max_chars - len(warning_msg) - 20  # buffer
 
         truncated_content = content[-keep_chars:]
-        
+
         # 1. Check code blocks (```)
         cut_index = len(content) - keep_chars
         pre_cut_content = content[:cut_index]
         code_block_markers = pre_cut_content.count("```")
-        is_inside_code_block = (code_block_markers % 2 != 0)
-        
+        is_inside_code_block = code_block_markers % 2 != 0
+
         # 2. Check bold tags (**)
         bold_markers = pre_cut_content.count("**")
-        is_inside_bold = (bold_markers % 2 != 0)
-        
+        is_inside_bold = bold_markers % 2 != 0
+
         parts = [warning_msg]
-        
+
         if is_inside_code_block:
             parts.append("```\n")
-        
+
         if is_inside_bold:
             parts.append("**")
-            
+
         parts.append(truncated_content)
-        
+
         result = "".join(parts)
-        
+
         # Final safety check: ensure closed
         if result.count("```") % 2 != 0:
             result += "\n```"
         if result.count("**") % 2 != 0:
             result += "**"
-            
+
         return result
 
     @staticmethod
     def _build_content_element(content: str, with_title: Optional[str] = None, max_chars: int = 4000) -> dict:
         full_content = f"**{with_title}**\n\n{content}" if with_title else content
-        
+
         # Smart truncation to prevent API errors and render issues
         if len(full_content) > max_chars:
             full_content = CoreBuilder._truncate_markdown(full_content, max_chars)
-            
-        return {
-            "tag": "markdown",
-            "content": full_content
-        }
+
+        return {"tag": "markdown", "content": full_content}
 
     @staticmethod
-    def _build_header_title(project: Optional[ProjectContext], is_coco_mode: bool = False, is_claude_mode: bool = False) -> str:
+    def _build_header_title(
+        project: Optional[ProjectContext], is_coco_mode: bool = False, is_claude_mode: bool = False, is_ttadk_mode: bool = False
+    ) -> str:
         if not project:
             if is_claude_mode:
                 return UI_TEXT.get("claude_mode_title")
+            elif is_ttadk_mode:
+                return UI_TEXT.get("system_mode_ttadk", "🎮 TTADK 多工具模式")
             mode_icon = "🤖" if is_coco_mode else "🧠"
             mode_name = UI_TEXT.get("coco_mode_title") if is_coco_mode else UI_TEXT.get("smart_mode_title")
             return f"{mode_icon} {mode_name}"
 
         if is_claude_mode or project.claude_mode:
             return f"🔮 {project.project_name} · Claude"
+        elif is_ttadk_mode or project.ttadk_mode:
+            return f"🎮 {project.project_name} · TTADK"
         elif is_coco_mode or project.coco_mode:
             return f"🤖 {project.project_name} · Coco"
         else:
@@ -94,15 +94,14 @@ class CoreBuilder:
         else:
             path = "~"
 
-        return {
-            "tag": "markdown",
-            "content": f"📁 `{path}`"
-        }
+        return {"tag": "markdown", "content": f"📁 `{path}`"}
 
     @staticmethod
-    def _build_footer_buttons(project: Optional[ProjectContext], is_coco_mode: bool = False, is_claude_mode: bool = False) -> list[dict]:
+    def _build_footer_buttons(
+        project: Optional[ProjectContext], is_coco_mode: bool = False, is_claude_mode: bool = False, is_ttadk_mode: bool = False
+    ) -> list[dict]:
         project_id = project.project_id if project else None
-        return build_mode_buttons(is_coco_mode, project_id, is_claude_mode)
+        return build_mode_buttons(is_coco_mode, project_id, is_claude_mode, is_ttadk_mode)
 
     @staticmethod
     def _build_footer_note(project: Optional[ProjectContext], working_dir: Optional[str] = None) -> Optional[dict]:
@@ -135,14 +134,7 @@ class CoreBuilder:
         elements = []
         for i, key in enumerate(image_keys):
             alt_text = UI_TEXT.get("image_alt_text", "图片 {index}").format(index=i + 1)
-            elements.append({
-                "tag": "img",
-                "img_key": key,
-                "alt": {
-                    "tag": "plain_text",
-                    "content": alt_text
-                }
-            })
+            elements.append({"tag": "img", "img_key": key, "alt": {"tag": "plain_text", "content": alt_text}})
         return elements
 
     @staticmethod

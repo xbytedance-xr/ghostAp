@@ -1,25 +1,26 @@
 """Tests for loop_engine — ACP-driven LoopEngine."""
 
-import pytest
-from unittest.mock import patch, MagicMock
 import logging
 import re
+from unittest.mock import MagicMock, patch
 
+import pytest
+
+from src.acp.models import ACPEvent, ACPEventType, PlanEntryInfo, PlanInfo, ToolCallInfo
 from src.deep_engine.models import EngineRunState
-from src.loop_engine.engine import LoopEngine, LoopEngineManager, LoopEngineCallbacks
+from src.loop_engine.engine import LoopEngine, LoopEngineCallbacks, LoopEngineManager
 from src.loop_engine.models import (
+    IterationRecord,
+    IterationStatus,
     LoopProject,
     LoopProjectStatus,
     LoopRequirement,
-    IterationRecord,
-    IterationStatus,
-    ReviewPerspective,
     PerspectiveReview,
+    ReviewPerspective,
     ReviewResult,
 )
-from src.loop_engine.tracker import IterationTracker
 from src.loop_engine.reporter import LoopReporter
-from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo, PlanInfo, PlanEntryInfo
+from src.loop_engine.tracker import IterationTracker
 
 
 class TestLoopEngine:
@@ -163,7 +164,9 @@ class TestLoopEngine:
     def test_build_initial_prompt(self):
         engine = self._make_engine()
         req = LoopRequirement(
-            goal="add login", acceptance_criteria=["email login", "phone login"], raw_text="test",
+            goal="add login",
+            acceptance_criteria=["email login", "phone login"],
+            raw_text="test",
         )
         prompt = engine._build_initial_prompt(req)
         assert "add login" in prompt
@@ -173,7 +176,9 @@ class TestLoopEngine:
     def test_build_iteration_prompt(self):
         engine = self._make_engine()
         req = LoopRequirement(
-            goal="add login", acceptance_criteria=["email login"], raw_text="test",
+            goal="add login",
+            acceptance_criteria=["email login"],
+            raw_text="test",
         )
         prompt = engine._build_iteration_prompt(2, req)
         assert "第 2 轮" in prompt
@@ -183,7 +188,9 @@ class TestLoopEngine:
         engine = self._make_engine()
         engine.inject_guidance("prioritize email")
         req = LoopRequirement(
-            goal="login", acceptance_criteria=["c1"], raw_text="test",
+            goal="login",
+            acceptance_criteria=["c1"],
+            raw_text="test",
         )
         prompt = engine._build_iteration_prompt(3, req)
         assert "prioritize email" in prompt
@@ -198,18 +205,14 @@ class TestLoopEngine:
         engine = self._make_engine()
         engine._project = LoopProject.create(name="test", root_path="/tmp")
         for i in range(3):
-            engine._project.iterations.append(
-                IterationRecord(iteration=i+1, output="ok")
-            )
+            engine._project.iterations.append(IterationRecord(iteration=i + 1, output="ok"))
         assert engine._detect_convergence()
 
     def test_detect_convergence_long_output_no_convergence(self):
         engine = self._make_engine()
         engine._project = LoopProject.create(name="test", root_path="/tmp")
         for i in range(3):
-            engine._project.iterations.append(
-                IterationRecord(iteration=i+1, output="x" * 100)
-            )
+            engine._project.iterations.append(IterationRecord(iteration=i + 1, output="x" * 100))
         assert not engine._detect_convergence()
 
     def test_save_state_no_project(self):
@@ -273,9 +276,11 @@ class TestLoopEngine:
             acp_startup_timeout = 20
             rate_limit_retry_enabled = False
 
-        with patch("src.agent_session.get_settings", return_value=_SessSettings()), \
-             patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck, \
-             patch("src.agent_session.SyncTTADKCLISession", return_value=_S()):
+        with (
+            patch("src.agent_session.get_settings", return_value=_SessSettings()),
+            patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck,
+            patch("src.agent_session.SyncTTADKCLISession", return_value=_S()),
+        ):
             # SSOT：create_engine_session 统一走 start_agent_session；单测不应触发真实 ttadk/codex 探测。
             mk_precheck.return_value = {
                 "tool": "codex",
@@ -357,9 +362,11 @@ class TestLoopEngine:
             acp_startup_timeout = 20
             rate_limit_retry_enabled = False
 
-        with patch("src.agent_session.get_settings", return_value=_SessSettings()), \
-             patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck, \
-             patch("src.agent_session.SyncTTADKCLISession", return_value=_S()):
+        with (
+            patch("src.agent_session.get_settings", return_value=_SessSettings()),
+            patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck,
+            patch("src.agent_session.SyncTTADKCLISession", return_value=_S()),
+        ):
             mk_precheck.return_value = {
                 "tool": "codex",
                 "input_model": "gpt-5.2",
@@ -456,15 +463,13 @@ class TestIterationTracker:
 
     def test_process_tool_call_start(self):
         tracker = IterationTracker()
-        tc = ToolCallInfo(id="t1", title="Edit", kind="edit", status="in_progress",
-                          locations=["/a.py"])
+        tc = ToolCallInfo(id="t1", title="Edit", kind="edit", status="in_progress", locations=["/a.py"])
         tracker.process(ACPEvent(event_type=ACPEventType.TOOL_CALL_START, tool_call=tc))
         assert "/a.py" in tracker.modified_files
 
     def test_process_tool_call_done(self):
         tracker = IterationTracker()
-        tc = ToolCallInfo(id="t1", title="Edit", kind="edit", status="completed",
-                          locations=["/a.py"])
+        tc = ToolCallInfo(id="t1", title="Edit", kind="edit", status="completed", locations=["/a.py"])
         tracker.process(ACPEvent(event_type=ACPEventType.TOOL_CALL_DONE, tool_call=tc))
         assert len(tracker.tool_calls) == 1
         assert "/a.py" in tracker.modified_files
@@ -487,11 +492,13 @@ class TestIterationTracker:
 class TestLoopReporter:
     def _make_project(self) -> LoopProject:
         project = LoopProject.create(name="test_project", root_path="/tmp/test")
-        project.set_requirement(LoopRequirement(
-            goal="implement login",
-            acceptance_criteria=["email login", "phone login"],
-            raw_text="test",
-        ))
+        project.set_requirement(
+            LoopRequirement(
+                goal="implement login",
+                acceptance_criteria=["email login", "phone login"],
+                raw_text="test",
+            )
+        )
         return project
 
     def test_format_analyzing_start(self):
@@ -663,10 +670,7 @@ class TestPerspectiveReview:
 class TestReviewResult:
     def _make_all_pass(self) -> ReviewResult:
         return ReviewResult(
-            reviews=[
-                PerspectiveReview(perspective=p, passed=True)
-                for p in ReviewPerspective
-            ],
+            reviews=[PerspectiveReview(perspective=p, passed=True) for p in ReviewPerspective],
             iteration=3,
         )
 
@@ -1148,8 +1152,9 @@ PASS
   {"perspective": "USER", "verdict": "PASS", "suggestions": []},
   {"perspective": "TESTER", "verdict": "FAIL", "suggestions": ["缺少集成测试", "覆盖率不足"]}
 ]"""
-        with patch.object(engine, "_parse_review_with_llm",
-                          return_value=engine._extract_reviews_from_llm_response(llm_json)):
+        with patch.object(
+            engine, "_parse_review_with_llm", return_value=engine._extract_reviews_from_llm_response(llm_json)
+        ):
             result = engine._parse_review_output("totally unstructured free text", 5)
         assert len(result.reviews) == 4
         assert not result.all_passed
@@ -1210,9 +1215,13 @@ class TestBuildReviewPrompt:
     def test_build_review_prompt_contains_perspectives(self):
         engine = self._make_engine()
         engine._project = LoopProject.create(name="test", root_path="/tmp")
-        engine._project.set_requirement(LoopRequirement(
-            goal="implement login", acceptance_criteria=["email", "phone"], raw_text="test",
-        ))
+        engine._project.set_requirement(
+            LoopRequirement(
+                goal="implement login",
+                acceptance_criteria=["email", "phone"],
+                raw_text="test",
+            )
+        )
         prompt = engine._build_review_prompt()
         assert "[ARCHITECT]" in prompt
         assert "[PRODUCT]" in prompt
@@ -1224,9 +1233,13 @@ class TestBuildReviewPrompt:
     def test_build_review_prompt_includes_goal(self):
         engine = self._make_engine()
         engine._project = LoopProject.create(name="test", root_path="/tmp")
-        engine._project.set_requirement(LoopRequirement(
-            goal="build authentication system", acceptance_criteria=["c1"], raw_text="test",
-        ))
+        engine._project.set_requirement(
+            LoopRequirement(
+                goal="build authentication system",
+                acceptance_criteria=["c1"],
+                raw_text="test",
+            )
+        )
         prompt = engine._build_review_prompt()
         assert "build authentication system" in prompt
 
@@ -1248,7 +1261,9 @@ class TestIterationPromptWithReview:
         engine._project = LoopProject.create(name="test", root_path="/tmp")
         engine._last_review = ReviewResult(
             reviews=[
-                PerspectiveReview(perspective=ReviewPerspective.ARCHITECT, passed=False, suggestions=["use DI pattern"]),
+                PerspectiveReview(
+                    perspective=ReviewPerspective.ARCHITECT, passed=False, suggestions=["use DI pattern"]
+                ),
                 PerspectiveReview(perspective=ReviewPerspective.PRODUCT, passed=True),
                 PerspectiveReview(perspective=ReviewPerspective.USER, passed=True),
                 PerspectiveReview(perspective=ReviewPerspective.TESTER, passed=False, suggestions=["add unit tests"]),
@@ -1324,9 +1339,13 @@ class TestConductReview:
         engine = self._make_engine()
         engine._session = None
         engine._project = LoopProject.create(name="test", root_path="/tmp")
-        engine._project.set_requirement(LoopRequirement(
-            goal="test", acceptance_criteria=["c1"], raw_text="test",
-        ))
+        engine._project.set_requirement(
+            LoopRequirement(
+                goal="test",
+                acceptance_criteria=["c1"],
+                raw_text="test",
+            )
+        )
         callbacks = LoopEngineCallbacks()
         result = engine._conduct_review(1, callbacks)
         assert result.reviews == []
@@ -1334,9 +1353,13 @@ class TestConductReview:
     def test_conduct_review_calls_session(self):
         engine = self._make_engine()
         engine._project = LoopProject.create(name="test", root_path="/tmp")
-        engine._project.set_requirement(LoopRequirement(
-            goal="test", acceptance_criteria=["c1"], raw_text="test",
-        ))
+        engine._project.set_requirement(
+            LoopRequirement(
+                goal="test",
+                acceptance_criteria=["c1"],
+                raw_text="test",
+            )
+        )
 
         mock_session = MagicMock()
         review_output = """[ARCHITECT]
@@ -1351,6 +1374,7 @@ PASS
 [TESTER]
 PASS
 """
+
         def mock_send(prompt, on_event=None, timeout=None):
             if on_event:
                 on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=review_output))
@@ -1371,9 +1395,13 @@ PASS
     def test_conduct_review_session_exception(self):
         engine = self._make_engine()
         engine._project = LoopProject.create(name="test", root_path="/tmp")
-        engine._project.set_requirement(LoopRequirement(
-            goal="test", acceptance_criteria=["c1"], raw_text="test",
-        ))
+        engine._project.set_requirement(
+            LoopRequirement(
+                goal="test",
+                acceptance_criteria=["c1"],
+                raw_text="test",
+            )
+        )
 
         mock_session = MagicMock()
         mock_session.send_prompt.side_effect = RuntimeError("timeout")
@@ -1424,10 +1452,7 @@ class TestReviewReporter:
     def test_format_review_result_all_fail(self):
         reporter = LoopReporter()
         review = ReviewResult(
-            reviews=[
-                PerspectiveReview(perspective=p, passed=False, suggestions=["issue"])
-                for p in ReviewPerspective
-            ],
+            reviews=[PerspectiveReview(perspective=p, passed=False, suggestions=["issue"]) for p in ReviewPerspective],
             iteration=1,
         )
         result = reporter.format_review_result(review)

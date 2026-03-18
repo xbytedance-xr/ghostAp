@@ -1,17 +1,16 @@
-import unittest
-from unittest.mock import MagicMock, patch, call
-import os
-import signal
 import json
+import os
 import subprocess
+import unittest
+from unittest.mock import MagicMock, patch
+
 from src.ttadk.strategies import (
-    ProbeStrategy,
     InteractiveStrategy,
     OfficialCLIModelsStrategy,
-    TTADKProbeError,
+    ProbeStrategy,
     TTADKOfficialCLIError,
+    TTADKProbeError,
 )
-from src.ttadk.models import TTADKModel
 
 
 class TestModelTokenHeuristics(unittest.TestCase):
@@ -92,7 +91,6 @@ class TestTTADKEnvSandboxInjection(unittest.TestCase):
         assert "XDG_CONFIG_HOME" in env
         assert env.get("CLAUDECODE") is None
 
-
     def test_official_cli_models_strategy_subprocess_run_injects_sandbox_env(self):
         """回归：OfficialCLIModelsStrategy 必须注入隔离 env。"""
         from src.ttadk.strategies import OfficialCLIModelsStrategy
@@ -121,7 +119,6 @@ class TestTTADKEnvSandboxInjection(unittest.TestCase):
         assert env.get("HOME")
         assert "XDG_CONFIG_HOME" in env
 
-
     def test_sandbox_env_can_be_disabled_by_settings(self):
         """回归：关闭开关后不应覆盖 HOME/XDG_CONFIG_HOME。"""
         from src.ttadk.env_sandbox import build_ttadk_subprocess_env
@@ -140,6 +137,7 @@ class TestTTADKEnvSandboxInjection(unittest.TestCase):
         assert root == ""
         assert env.get("HOME") == "/real_home"
         assert env.get("XDG_CONFIG_HOME") == "/real_xdg"
+
 
 class TestProbeStrategy(unittest.TestCase):
     def setUp(self):
@@ -194,7 +192,7 @@ class TestInteractiveStrategy(unittest.TestCase):
             return_value=type("S", (), {"ttadk_interactive_enabled": True})(),
         )
         self._settings_patcher.start()
-        
+
         # Mock sys.stdin.isatty to True for all these tests
         self._isatty_patcher = patch("sys.stdin.isatty", return_value=True)
         self._isatty_patcher.start()
@@ -278,8 +276,9 @@ class TestInteractiveStrategy(unittest.TestCase):
     @patch("select.select")
     @patch("os.read")
     @patch("os.write")
-    def test_fetch_process_cleanup(self, mock_write, mock_read, mock_select,
-                                  mock_close, mock_killpg, mock_popen, mock_ioctl, mock_openpty):
+    def test_fetch_process_cleanup(
+        self, mock_write, mock_read, mock_select, mock_close, mock_killpg, mock_popen, mock_ioctl, mock_openpty
+    ):
         # Setup mocks
         mock_openpty.return_value = (1, 2)  # master, slave
 
@@ -287,31 +286,28 @@ class TestInteractiveStrategy(unittest.TestCase):
         p.pid = 12345
         p.wait.return_value = 0
         mock_popen.return_value = p
-        
-        # Mock interaction: 
+
+        # Mock interaction:
         # 1. Prompt
         # 2. Model details
-        
+
         # We need to simulate the read loop returning data
         # First call to read returns prompt
         # Second call returns model details
         # Third call returns empty to stop
-        
-        prompt_output = b"? Select a model:\n  GPT 5.2\n"
-        details_output = b"model: gpt-5.2-real\n"
-        
+
         # Mock select to return ready
         mock_select.return_value = ([1], [], [])
-        
+
         # Mock os.read side effects
         # We need careful orchestration here because fetch calls read multiple times
         # 1. _read_until_prompt -> reads prompt_output
         # 2. _select_and_extract -> _read_until_model_display -> reads details_output
-        
+
         # Let's simplify and make it raise exception to trigger finally block immediately
         # to verify cleanup logic specifically
         mock_select.side_effect = Exception("Force cleanup")
-        
+
         # Run fetch
         self.strategy.fetch("codex")
 
@@ -326,21 +322,24 @@ class TestInteractiveStrategy(unittest.TestCase):
     @patch("select.select")
     @patch("os.read")
     @patch("os.write")
-    def test_fetch_process_force_kill(self, mock_write, mock_read, mock_select,
-                                     mock_close, mock_killpg, mock_popen, mock_ioctl, mock_openpty):
+    def test_fetch_process_force_kill(
+        self, mock_write, mock_read, mock_select, mock_close, mock_killpg, mock_popen, mock_ioctl, mock_openpty
+    ):
         # Setup mocks
         mock_openpty.return_value = (1, 2)
 
         p = MagicMock()
         p.pid = 12345
+
         # Simulate wait timeout to trigger kill
         def _wait(timeout=None):
             raise TimeoutError("timeout")
+
         p.wait.side_effect = _wait
         mock_popen.return_value = p
-        
+
         mock_select.side_effect = Exception("Force cleanup")
-        
+
         # Run fetch
         self.strategy.fetch("codex")
 
@@ -456,6 +455,7 @@ class TestOfficialCLIModelsStrategy(unittest.TestCase):
 
     def test_list_text_success(self):
         """JSON 不可用时应降级文本解析。"""
+
         def runner(args, cwd, timeout):
             if args[:3] == ["ttadk", "models", "--help"]:
                 return (0, "Usage: ttadk models ...", "")
@@ -493,6 +493,7 @@ class TestOfficialCLIModelsStrategy(unittest.TestCase):
 
     def test_unstable_raises_diagnostics_error(self):
         """全部超时/异常时也应抛出可诊断异常，而不是静默空列表。"""
+
         def runner(args, cwd, timeout):
             if args[:3] == ["ttadk", "models", "--help"]:
                 return (0, "Usage: ttadk models ...", "")
@@ -533,64 +534,63 @@ class TestModelFetcherDiagnostics(unittest.TestCase):
 
 
 class TestInteractiveStrategyEnv(unittest.TestCase):
-    
     def test_non_tty_skips(self):
         """Test that InteractiveStrategy skips execution when not in TTY environment."""
-        import sys
         strategy = InteractiveStrategy()
-        
+
         # Mock sys.stdin.isatty to return False
-        with patch('sys.stdin.isatty', return_value=False):
+        with patch("sys.stdin.isatty", return_value=False):
             # Ensure no environment variables force it
             with patch.dict(os.environ, {}, clear=True):
                 result = strategy.fetch("test_tool")
                 self.assertEqual(result, [])
-    
+
     def test_ci_env_skips(self):
         """Test that InteractiveStrategy skips in CI environment even if TTY says yes (some CIs mimic TTY)."""
         strategy = InteractiveStrategy()
-        
+
         # Mock sys.stdin.isatty to return True (simulating a CI runner with PTY)
-        with patch('sys.stdin.isatty', return_value=True):
+        with patch("sys.stdin.isatty", return_value=True):
             # Set CI env var
-            with patch.dict(os.environ, {'CI': 'true'}):
+            with patch.dict(os.environ, {"CI": "true"}):
                 result = strategy.fetch("test_tool")
                 self.assertEqual(result, [])
-                
+
     def test_debian_frontend_skips(self):
         """Test that InteractiveStrategy skips when DEBIAN_FRONTEND=noninteractive."""
         strategy = InteractiveStrategy()
-        
-        with patch('sys.stdin.isatty', return_value=True):
-            with patch.dict(os.environ, {'DEBIAN_FRONTEND': 'noninteractive'}):
+
+        with patch("sys.stdin.isatty", return_value=True):
+            with patch.dict(os.environ, {"DEBIAN_FRONTEND": "noninteractive"}):
                 result = strategy.fetch("test_tool")
                 self.assertEqual(result, [])
 
     def test_force_interactive_env(self):
         """Test that TTADK_FORCE_INTERACTIVE overrides checks."""
         strategy = InteractiveStrategy()
-        
+
         # Must enable the feature flag first
         with patch("src.config.get_settings", return_value=type("S", (), {"ttadk_interactive_enabled": True})()):
             # Should run even if not TTY if forced
-            with patch('sys.stdin.isatty', return_value=False):
-                with patch.dict(os.environ, {'TTADK_FORCE_INTERACTIVE': '1'}):
+            with patch("sys.stdin.isatty", return_value=False):
+                with patch.dict(os.environ, {"TTADK_FORCE_INTERACTIVE": "1"}):
                     # Mock _run_interactive to avoid actual execution
                     # But fetch calls openpty etc directly.
                     # We need to mock pty.openpty to check if it proceeds past the check
-                    with patch('pty.openpty') as mock_pty:
-                        mock_pty.return_value = (1, 2) # master, slave fds
-                        with patch('os.close'), patch('fcntl.ioctl'), patch('subprocess.Popen'):
+                    with patch("pty.openpty") as mock_pty:
+                        mock_pty.return_value = (1, 2)  # master, slave fds
+                        with patch("os.close"), patch("fcntl.ioctl"), patch("subprocess.Popen"):
                             # Just ensure it tries to run (mocking enough to not crash)
                             try:
                                 strategy.fetch("test_tool")
                             except Exception:
-                                # It might fail later in the function, but we just want to know 
+                                # It might fail later in the function, but we just want to know
                                 # if it passed the early return check.
                                 # If it returns [] immediately, mock_pty won't be called.
                                 pass
-                            
+
                             mock_pty.assert_called()
+
     def test_cli_capabilities_probe_records_attempt_and_dedupes_concurrency(self):
         """回归：ttadk CLI 能力探测应写入 diagnostics.attempts，并支持并发去重（最多执行一次 run_simple）。"""
         import threading

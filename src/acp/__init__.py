@@ -4,6 +4,7 @@ Provides structured communication with AI agents (Coco/Claude) via JSON-RPC 2.0
 over stdio, replacing the previous subprocess-based CLI interaction.
 """
 
+from .client import GhostAPClient
 from .models import (
     ACPEvent,
     ACPEventType,
@@ -13,10 +14,9 @@ from .models import (
     PromptResult,
     ToolCallInfo,
 )
-from .client import GhostAPClient
+from .renderer import ACPEventRenderer
 from .session import ACPSession
 from .sync_adapter import SyncACPSession, start_session_with_retry
-from .renderer import ACPEventRenderer
 
 __all__ = [
     "ACPEvent",

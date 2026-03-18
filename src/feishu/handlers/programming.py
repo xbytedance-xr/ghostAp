@@ -16,7 +16,7 @@ from ...acp.manager import ACPSessionManager
 from ...agent_session import SyncSession
 from ...card import CardBuilder
 from ...project import ContextSourceMode
-from ...utils.errors import fmt_error, log_exception
+from ...utils.errors import log_exception
 from ..emoji import EmojiReaction
 from ..message_formatter import FeishuMessageFormatter as fmt
 from .base import BaseHandler
@@ -31,26 +31,23 @@ class ProgrammingModeHandler(BaseHandler):
     """Template-method base for Coco / Claude programming modes."""
 
     # Subclass must set these
-    mode_name: str          # "Coco" / "Claude"
-    mode_emoji: str         # "🤖" / "🔮"
-    is_coco: bool           # True for Coco, False for Claude
+    mode_name: str  # "Coco" / "Claude"
+    mode_emoji: str  # "🤖" / "🔮"
+    is_coco: bool  # True for Coco, False for Claude
     context_source: ContextSourceMode
-    thinking_text: str      # "🤔 Coco 正在思考..." / "🔮 Claude 正在思考..."
+    thinking_text: str  # "🤔 Coco 正在思考..." / "🔮 Claude 正在思考..."
 
     # ------------------------------------------------------------------
     # Hooks — subclass implements
     # ------------------------------------------------------------------
     @abstractmethod
-    def _get_session_manager(self) -> ACPSessionManager:
-        ...
+    def _get_session_manager(self) -> ACPSessionManager: ...
 
     @abstractmethod
-    def _is_in_this_mode(self, chat_id: str) -> bool:
-        ...
+    def _is_in_this_mode(self, chat_id: str) -> bool: ...
 
     @abstractmethod
-    def _is_in_opposite_mode(self, chat_id: str) -> bool:
-        ...
+    def _is_in_opposite_mode(self, chat_id: str) -> bool: ...
 
     @abstractmethod
     def _exit_opposite_mode(self, message_id: str, chat_id: str, project: Optional["ProjectContext"]):
@@ -102,8 +99,9 @@ class ProgrammingModeHandler(BaseHandler):
     # ------------------------------------------------------------------
     # enter_mode
     # ------------------------------------------------------------------
-    def enter_mode(self, message_id: str, chat_id: str, silent: bool = False, project: Optional["ProjectContext"] = None):
-
+    def enter_mode(
+        self, message_id: str, chat_id: str, silent: bool = False, project: Optional["ProjectContext"] = None
+    ):
         project_id = project.project_id if project else None
 
         if self._is_in_this_mode(chat_id):
@@ -111,7 +109,9 @@ class ProgrammingModeHandler(BaseHandler):
                 info = self._get_session_manager().get_session_info(chat_id, project_id=project_id)
                 self.reply_message(
                     message_id,
-                    fmt.format_warning(f"已经在{self.mode_name}编程模式中\n\n{info}\n\n说「退出模式」或发送 /exit 退出"),
+                    fmt.format_warning(
+                        f"已经在{self.mode_name}编程模式中\n\n{info}\n\n说「退出模式」或发送 /exit 退出"
+                    ),
                 )
             return
 
@@ -164,18 +164,18 @@ class ProgrammingModeHandler(BaseHandler):
         except TimeoutError as e:
             if not silent:
                 self.send_error_card(
-                    chat_id, 
-                    e, 
-                    title=f"启动 {self.mode_name} 会话超时", 
+                    chat_id,
+                    e,
+                    title=f"启动 {self.mode_name} 会话超时",
                     origin_message_id=message_id,
                 )
             return
         except Exception as e:
             if not silent:
                 self.send_error_card(
-                    chat_id, 
-                    e, 
-                    title=f"启动 {self.mode_name} 会话失败", 
+                    chat_id,
+                    e,
+                    title=f"启动 {self.mode_name} 会话失败",
                     origin_message_id=message_id,
                 )
             return
@@ -214,7 +214,10 @@ class ProgrammingModeHandler(BaseHandler):
                     f"继续之前的对话吧！"
                 )
                 msg_type, card_content = CardBuilder.build_project_response_card(
-                    project, f"{self.mode_name} 会话已恢复", content, show_buttons=True,
+                    project,
+                    f"{self.mode_name} 会话已恢复",
+                    content,
+                    show_buttons=True,
                     footer=f"📂 项目目录: {project.root_path}",
                 )
                 response_id = self.reply_message_with_id(message_id, card_content, msg_type)
@@ -225,7 +228,10 @@ class ProgrammingModeHandler(BaseHandler):
             if not silent:
                 content = f"{self.mode_emoji} 已进入{self.mode_name}编程模式\n\n现在可以用自然语言描述你的需求\n\n说「退出模式」或发送 `/exit` 退出"
                 msg_type, card_content = CardBuilder.build_project_response_card(
-                    project, f"{self.mode_emoji} {self.mode_name}编程模式", content, show_buttons=True,
+                    project,
+                    f"{self.mode_emoji} {self.mode_name}编程模式",
+                    content,
+                    show_buttons=True,
                     footer=f"📂 项目目录: {project.root_path}",
                 )
                 response_id = self.reply_message_with_id(message_id, card_content, msg_type)
@@ -236,12 +242,17 @@ class ProgrammingModeHandler(BaseHandler):
                 if self.is_coco:
                     self.reply_message(message_id, fmt.format_coco_enter())
                 else:
-                    self.reply_message(message_id, f"{self.mode_emoji} 已进入 {self.mode_name} 编程模式\n\n现在可以用自然语言描述你的需求\n\n说「退出模式」或发送 `/exit` 退出")
+                    self.reply_message(
+                        message_id,
+                        f"{self.mode_emoji} 已进入 {self.mode_name} 编程模式\n\n现在可以用自然语言描述你的需求\n\n说「退出模式」或发送 `/exit` 退出",
+                    )
 
         # Unified context: record mode transition
         if project:
             self.record_mode_transition(
-                project.project_id, previous_mode, self._get_interaction_mode(),
+                project.project_id,
+                previous_mode,
+                self._get_interaction_mode(),
                 reason=f"enter_{self.mode_name.lower()}_mode",
             )
 
@@ -277,7 +288,10 @@ class ProgrammingModeHandler(BaseHandler):
             if project:
                 content = f"👋 已退出{self.mode_name}编程模式\n\n会话已保存，下次可以恢复\n\n当前为 🧠 智能模式"
                 msg_type, card_content = CardBuilder.build_project_response_card(
-                    project, f"已退出{self.mode_name}编程模式", content, show_buttons=True,
+                    project,
+                    f"已退出{self.mode_name}编程模式",
+                    content,
+                    show_buttons=True,
                 )
                 response_id = self.reply_message_with_id(message_id, card_content, msg_type)
                 if response_id:
@@ -301,7 +315,10 @@ class ProgrammingModeHandler(BaseHandler):
                 if not session:
                     return
             else:
-                self.reply_message(message_id, fmt.format_warning(f"{self.mode_name} 会话已过期，请发送 /{self.mode_name.lower()} 重新开始"))
+                self.reply_message(
+                    message_id,
+                    fmt.format_warning(f"{self.mode_name} 会话已过期，请发送 /{self.mode_name.lower()} 重新开始"),
+                )
                 return
 
         text = self.inject_bridge_context(text, project)
@@ -312,8 +329,11 @@ class ProgrammingModeHandler(BaseHandler):
     # ------------------------------------------------------------------
     # handle_response (streaming / non-streaming)
     # ------------------------------------------------------------------
-    def handle_response(self, message_id: str, chat_id: str, text: str, session: SyncSession, project, cwd: str, global_working_dir: str):
+    def handle_response(
+        self, message_id: str, chat_id: str, text: str, session: SyncSession, project, cwd: str, global_working_dir: str
+    ):
         from ...acp.models import ACPEvent
+
         streaming_manager = self.get_streaming_manager()
 
         project_name = project.project_name if project else None
@@ -331,7 +351,8 @@ class ProgrammingModeHandler(BaseHandler):
             project_id=project_id,
             initial_content=self.thinking_text,
             is_coco_mode=self.is_coco,
-            is_claude_mode=not self.is_coco,
+            is_claude_mode=not self.is_coco and self.mode_name != "TTADK",
+            is_ttadk_mode=self.mode_name == "TTADK",
             reply_to_message_id=message_id,
             image_keys=image_keys,
         )
@@ -343,10 +364,17 @@ class ProgrammingModeHandler(BaseHandler):
         if card_message_id:
             try:
                 rid = self.ensure_request_id(message_id, chat_id=chat_id, project_id=project_id)
-                self.ctx.message_linker.register_origin(message_id, request_id=rid, chat_id=chat_id, project_id=project_id)
+                self.ctx.message_linker.register_origin(
+                    message_id, request_id=rid, chat_id=chat_id, project_id=project_id
+                )
                 self.ctx.message_linker.link_reply(message_id, card_message_id)
             except Exception as e:
-                logger.debug("link消息失败(programming): message_id=%s, card_message_id=%s, err=%s", message_id, card_message_id, e)
+                logger.debug(
+                    "link消息失败(programming): message_id=%s, card_message_id=%s, err=%s",
+                    message_id,
+                    card_message_id,
+                    e,
+                )
 
         # Event-driven rendering (ACP backend emits rich events; CLI backend emits TEXT_CHUNK only)
         renderer = ACPEventRenderer()
@@ -384,6 +412,7 @@ class ProgrammingModeHandler(BaseHandler):
                 log_exception(logger, f"{self.mode_name} ACP执行异常", e)
                 # If exception has quick actions, send a separate error card
                 from ...utils.errors import GhostAPError
+
                 if isinstance(e, GhostAPError) and e.quick_actions:
                     self.send_error_card(chat_id, e, title="执行异常", origin_message_id=message_id)
 
@@ -401,8 +430,13 @@ class ProgrammingModeHandler(BaseHandler):
             project.add_conversation("user", text, message_id)
             project.add_conversation("assistant", final_response)
             source = self.mode_name.lower()
-            self.context_manager.update_context(project.project_id, conversation={"role": "user", "content": text, "source_mode": source, "message_id": message_id})
-            self.context_manager.update_context(project.project_id, conversation={"role": "assistant", "content": final_response, "source_mode": source})
+            self.context_manager.update_context(
+                project.project_id,
+                conversation={"role": "user", "content": text, "source_mode": source, "message_id": message_id},
+            )
+            self.context_manager.update_context(
+                project.project_id, conversation={"role": "assistant", "content": final_response, "source_mode": source}
+            )
 
         self.add_reaction(message_id, EmojiReaction.on_coco_response())
 
@@ -418,7 +452,10 @@ class ProgrammingModeHandler(BaseHandler):
         if info:
             if project:
                 msg_type, card_content = CardBuilder.build_project_response_card(
-                    project, f"{self.mode_name} 会话信息", info, show_buttons=True,
+                    project,
+                    f"{self.mode_name} 会话信息",
+                    info,
+                    show_buttons=True,
                 )
                 response_id = self.reply_message_with_id(message_id, card_content, msg_type)
                 if response_id:
@@ -441,8 +478,10 @@ class ProgrammingModeHandler(BaseHandler):
                 if snapshot and snapshot.is_resumable:
                     if self.is_coco:
                         msg_type, card_content = CardBuilder.build_coco_resume_card(project)
-                    else:
+                    elif self.mode_name == "Claude":
                         msg_type, card_content = CardBuilder.build_claude_resume_card(project)
+                    else:
+                        msg_type, card_content = CardBuilder.build_ttadk_resume_card(project)
                     response_id = self.reply_message_with_id(message_id, card_content, msg_type)
                     if response_id:
                         self.register_message_project(response_id, project)
@@ -463,7 +502,6 @@ class ProgrammingModeHandler(BaseHandler):
         self.exit_mode(message_id, chat_id)
 
     def handle_card_resume(self, message_id: str, chat_id: str, project_id: str, session_id: str):
-
         project = self.project_manager.get_project(project_id) if project_id else None
         pid = project.project_id if project else None
         if project:
@@ -489,9 +527,9 @@ class ProgrammingModeHandler(BaseHandler):
                 )
             except Exception as e:
                 self.send_error_card(
-                    chat_id, 
-                    e, 
-                    title=f"恢复 Claude 会话失败",
+                    chat_id,
+                    e,
+                    title="恢复 Claude 会话失败",
                     origin_message_id=message_id,
                 )
                 return
@@ -516,23 +554,27 @@ class ProgrammingModeHandler(BaseHandler):
                 )
             except Exception as e:
                 self.send_error_card(
-                    chat_id, 
-                    e, 
+                    chat_id,
+                    e,
                     title=f"恢复 {self.mode_name} 会话失败",
                     origin_message_id=message_id,
                 )
                 return
 
-
         if project:
             self._set_mode_on_project(project, True, session_id)
             self.record_mode_transition(
-                project.project_id, previous_mode, self._get_interaction_mode(),
+                project.project_id,
+                previous_mode,
+                self._get_interaction_mode(),
                 reason=f"resume_{self.mode_name.lower()}_session",
             )
             content = f"🔄 已恢复 {self.mode_name} 会话\n\n会话 ID: `{session_id}`\n\n现在可以继续之前的对话了"
             msg_type, card_content = CardBuilder.build_project_response_card(
-                project, f"{self.mode_name} 会话已恢复", content, show_buttons=True,
+                project,
+                f"{self.mode_name} 会话已恢复",
+                content,
+                show_buttons=True,
             )
             response_id = self.reply_message_with_id(message_id, card_content, msg_type)
             if response_id:
@@ -554,6 +596,7 @@ class ProgrammingModeHandler(BaseHandler):
 # Concrete subclasses
 # ======================================================================
 
+
 class CocoModeHandler(ProgrammingModeHandler):
     mode_name = "Coco"
     mode_emoji = "🤖"
@@ -573,7 +616,7 @@ class CocoModeHandler(ProgrammingModeHandler):
     def _exit_opposite_mode(self, message_id, chat_id, project=None):
         # We need the ClaudeModeHandler — but to avoid circular deps, delegate via ws_client
         # The ws_client wires this up after handler creation.
-        if hasattr(self, '_opposite_handler'):
+        if hasattr(self, "_opposite_handler"):
             self._opposite_handler.exit_mode(message_id, chat_id, project=project)
 
     def _enter_mode_on_manager(self, chat_id, project_id=None):
@@ -581,6 +624,7 @@ class CocoModeHandler(ProgrammingModeHandler):
 
     def _get_interaction_mode(self):
         from ...mode import InteractionMode
+
         return InteractionMode.COCO
 
     def _get_snapshot(self, project):
@@ -616,7 +660,7 @@ class ClaudeModeHandler(ProgrammingModeHandler):
         return self.mode_manager.is_coco_mode(chat_id)
 
     def _exit_opposite_mode(self, message_id, chat_id, project=None):
-        if hasattr(self, '_opposite_handler'):
+        if hasattr(self, "_opposite_handler"):
             self._opposite_handler.exit_mode(message_id, chat_id, project=project)
 
     def _enter_mode_on_manager(self, chat_id, project_id=None):
@@ -624,6 +668,7 @@ class ClaudeModeHandler(ProgrammingModeHandler):
 
     def _get_interaction_mode(self):
         from ...mode import InteractionMode
+
         return InteractionMode.CLAUDE
 
     def _get_snapshot(self, project):
@@ -667,9 +712,9 @@ class TTADKModeHandler(ProgrammingModeHandler):
         return self.mode_manager.is_coco_mode(chat_id) or self.mode_manager.is_claude_mode(chat_id)
 
     def _exit_opposite_mode(self, message_id, chat_id, project=None):
-        if hasattr(self, '_coco_handler'):
+        if hasattr(self, "_coco_handler"):
             self._coco_handler.exit_mode(message_id, chat_id, project=project)
-        if hasattr(self, '_claude_handler'):
+        if hasattr(self, "_claude_handler"):
             self._claude_handler.exit_mode(message_id, chat_id, project=project)
 
     def _enter_mode_on_manager(self, chat_id, project_id=None):
@@ -677,6 +722,7 @@ class TTADKModeHandler(ProgrammingModeHandler):
 
     def _get_interaction_mode(self):
         from ...mode import InteractionMode
+
         return InteractionMode.TTADK
 
     def _get_snapshot(self, project):
@@ -697,15 +743,17 @@ class TTADKModeHandler(ProgrammingModeHandler):
     def _get_agent_type_override(self, project: Optional["ProjectContext"] = None) -> Optional[str]:
         tool = self._current_tool
         if not tool:
-             from ...ttadk import get_ttadk_manager
-             tool = get_ttadk_manager().get_current_tool() or "coco"
+            from ...ttadk import get_ttadk_manager
+
+            tool = get_ttadk_manager().get_current_tool() or "coco"
         return f"ttadk_{tool}"
 
     def _get_model_name_override(self, project: Optional["ProjectContext"] = None) -> Optional[str]:
         model = self._current_model
         if not model:
-             from ...ttadk import get_ttadk_manager
-             model = get_ttadk_manager().get_current_model()
+            from ...ttadk import get_ttadk_manager
+
+            model = get_ttadk_manager().get_current_model()
         return model
 
     @property

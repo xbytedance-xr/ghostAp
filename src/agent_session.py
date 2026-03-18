@@ -15,6 +15,7 @@ from __future__ import annotations
 import json as _json
 import logging
 import os
+import re as _re
 import shutil
 import subprocess
 import threading
@@ -26,13 +27,12 @@ from typing import Callable, Optional, Protocol
 from .acp.models import ACPEvent, ACPEventType, PromptResult
 from .acp.sync_adapter import SyncACPSession
 from .config import get_settings
-from .ttadk.models import ModelListResult, ResolvedModelResult
 from .ttadk.env_sandbox import build_ttadk_subprocess_env
 
 logger = logging.getLogger(__name__)
 
 
-TTADKStartupError = None  # legacy alias; do not use
+TTADK_STARTUP_ERROR = None  # legacy alias; do not use
 
 
 class SyncSession(Protocol):
@@ -49,7 +49,9 @@ class SyncSession(Protocol):
     def start(self, startup_timeout: float = 60) -> str: ...
     def load_session(self, session_id: str) -> None: ...
     def load_local_history(self, session_id: Optional[str] = None, limit: int = 200) -> list[dict]: ...
-    def send_prompt(self, text: str, on_event: Optional[Callable[[ACPEvent], None]] = None, timeout: Optional[int] = None) -> PromptResult: ...
+    def send_prompt(
+        self, text: str, on_event: Optional[Callable[[ACPEvent], None]] = None, timeout: Optional[int] = None
+    ) -> PromptResult: ...
     def cancel(self) -> None: ...
     def close(self) -> None: ...
     def to_snapshot(self) -> dict: ...
@@ -284,7 +286,7 @@ class SyncTTADKCLISession:
         self._cwd = cwd
         self._model_name = model_name
         self._tool_name = agent_type.replace("ttadk_", "", 1) if agent_type.startswith("ttadk_") else "unknown"
-        
+
         self.session_id: str = ""
         self.created_at: float = time.time()
         self.last_active: float = time.time()
@@ -380,13 +382,13 @@ class SyncTTADKCLISession:
         stderr_chunks: list[str] = []
         json_mode = False
         json_extractor = _JSONTextExtractor()
-        
+
         # ANSI escape sequence regex
-        ansi_escape = _re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        ansi_escape = _re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
         def _strip_ansi(s: str) -> str:
-            return ansi_escape.sub('', s)
-        
+            return ansi_escape.sub("", s)
+
         def _read_stderr(pipe):
             try:
                 for line in pipe:
@@ -398,18 +400,14 @@ class SyncTTADKCLISession:
             # Use unified environment sandbox for consistency and safety
             # This ensures PATH, PYTHONPATH, and other critical vars are set correctly
             # just like in other TTADK components (fetcher, runner).
-            env, _ = build_ttadk_subprocess_env(
-                cwd=self._cwd, 
-                agent_type=self._agent_type, 
-                tool_name=self._tool_name
-            )
-            
+            env, _ = build_ttadk_subprocess_env(cwd=self._cwd, agent_type=self._agent_type, tool_name=self._tool_name)
+
             # Force unbuffered output to ensure real-time streaming
             env["PYTHONUNBUFFERED"] = "1"
             # Force no color to simplify output parsing
             env["NO_COLOR"] = "1"
             env["TERM"] = "dumb"
-            
+
             self._proc = subprocess.Popen(
                 cmd,
                 cwd=self._cwd,
@@ -417,15 +415,15 @@ class SyncTTADKCLISession:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                bufsize=1, # Line buffered
+                bufsize=1,  # Line buffered
             )
-            
+
             # Start stderr reader thread to prevent deadlock
             stderr_thread = threading.Thread(target=_read_stderr, args=(self._proc.stderr,), daemon=True)
             stderr_thread.start()
 
             deadline = (time.monotonic() + timeout) if timeout else None
-            
+
             # Read stdout line by line for streaming
             if self._proc.stdout:
                 for line in self._proc.stdout:
@@ -434,7 +432,7 @@ class SyncTTADKCLISession:
                         self._proc.wait(timeout=5)
                         current = "".join(json_chunks if json_mode else (visible_chunks or raw_chunks))
                         return PromptResult(stop_reason="cancelled", text=current)
-                    
+
                     if deadline and time.monotonic() > deadline:
                         self._proc.terminate()
                         self._proc.wait(timeout=5)
@@ -470,14 +468,14 @@ class SyncTTADKCLISession:
 
             rc = int(self._proc.returncode or 0)
             err = _strip_ansi("".join(stderr_chunks).strip())
-            
+
             if json_mode:
                 output = "".join(json_chunks).strip()
             else:
                 output = "".join(visible_chunks).strip()
                 if not output:
                     output = "".join(raw_chunks).strip()
-            
+
             if rc != 0:
                 if err:
                     output = (output + "\n" + err).strip()
@@ -494,8 +492,6 @@ class SyncTTADKCLISession:
         finally:
             self._proc = None
 
-
-import re as _re
 
 _TTADK_PREAMBLE_PATTERNS = [
     _re.compile(r"^[\s_/\\|.-]{6,}$"),
@@ -863,6 +859,7 @@ def _apply_compaction_once(
 
     builder = session_builder
     if builder is None:
+
         def builder(**kwargs):
             return SyncACPSession(**kwargs)
 
@@ -1023,7 +1020,10 @@ class RateLimitAwareSession:
 
                 logger.warning(
                     "[RateLimit] 限速检测，等待 %ds 后重试 (attempt=%d/%d): %s",
-                    wait_time, attempt + 1, max_retries, e,
+                    wait_time,
+                    attempt + 1,
+                    max_retries,
+                    e,
                 )
 
                 # Interruptible sleep: check cancel_event every second
@@ -1089,7 +1089,9 @@ class ModelFailureAwareSession:
             # window<=0: 认为每次都在窗口内
             self._compaction_loop_events.append(now)
         else:
-            self._compaction_loop_events = [t for t in self._compaction_loop_events if (now - float(t or 0.0)) <= window_s]
+            self._compaction_loop_events = [
+                t for t in self._compaction_loop_events if (now - float(t or 0.0)) <= window_s
+            ]
             self._compaction_loop_events.append(now)
         n = len(self._compaction_loop_events)
         return (n >= max_count, n)
@@ -1168,7 +1170,9 @@ class ModelFailureAwareSession:
             base = getattr(inner, "_inner", None) or inner
 
             def _rewrap(new_base: SyncSession) -> SyncSession:
-                return RateLimitAwareSession(inner=new_base, on_rate_limit=self._on_rate_limit, cancel_event=self._cancel_event)
+                return RateLimitAwareSession(
+                    inner=new_base, on_rate_limit=self._on_rate_limit, cancel_event=self._cancel_event
+                )
 
             return base, _rewrap
 
@@ -1182,7 +1186,8 @@ class ModelFailureAwareSession:
         action = self._compaction_action
         if action is None:
             # 默认行为：重建同 cmd/args 的 ACP session
-            action = lambda s: _default_compaction_action(session=s)
+            def action(s):
+                return _default_compaction_action(session=s)
 
         base, rewrap = self._unwrap_rate_limit()
         try:
@@ -1310,7 +1315,9 @@ class ModelFailureAwareSession:
         cooldown_s = max(0.0, cooldown_s)
         return enabled, allow_autoswitch, max_retries, cooldown_s
 
-    def _pick_best_ttadk_retry_model(self, *, tool_name: str, input_model: str, available_models: list[str], allow_autoswitch: bool) -> str | None:
+    def _pick_best_ttadk_retry_model(
+        self, *, tool_name: str, input_model: str, available_models: list[str], allow_autoswitch: bool
+    ) -> str | None:
         """从 available_models 中选择候选真实 model（best-effort）。"""
         try:
             cands = [str(x).strip() for x in (available_models or []) if str(x).strip()]
@@ -1398,7 +1405,7 @@ class ModelFailureAwareSession:
 
         try:
             # best-effort 标记
-            setattr(new_base, "_degraded_to", "coco")
+            new_base._degraded_to = "coco"
         except Exception:
             pass
         self._inner = rewrap(new_base)
@@ -1426,7 +1433,16 @@ class ModelFailureAwareSession:
             except Exception:
                 pass
 
-        def _record_attempt(step: str, *, ok: bool, tool: str = "", input_model: str = "", passthrough_model: str | None = None, error: Exception | None = None, extra: Optional[dict] = None):
+        def _record_attempt(
+            step: str,
+            *,
+            ok: bool,
+            tool: str = "",
+            input_model: str = "",
+            passthrough_model: str | None = None,
+            error: Exception | None = None,
+            extra: Optional[dict] = None,
+        ):
             d: dict = {
                 "phase": "runtime_invalid_model",
                 "step": str(step or ""),
@@ -1462,8 +1478,8 @@ class ModelFailureAwareSession:
                     enabled, allow_autoswitch, max_retries, cooldown_s = self._runtime_invalid_model_settings()
                     if enabled and max_retries > 0:
                         try:
-                            from .ttadk.models import build_invalid_model_context
                             from .ttadk import get_ttadk_manager
+                            from .ttadk.models import build_invalid_model_context
 
                             ctx = build_invalid_model_context(e, get_settings_fn=get_settings, limit=1600)
                             is_invalid = bool(ctx.get("is_invalid_model"))
@@ -1486,7 +1502,10 @@ class ModelFailureAwareSession:
                                 ok=True,
                                 tool=tool,
                                 input_model=input_model,
-                                extra={"available_models_count": len(available_models), "retry_count": int(invalid_real_tried) + int(invalid_auto_tried)},
+                                extra={
+                                    "available_models_count": len(available_models),
+                                    "retry_count": int(invalid_real_tried) + int(invalid_auto_tried),
+                                },
                             )
 
                             # cooldown gate
@@ -1521,7 +1540,9 @@ class ModelFailureAwareSession:
                                 candidate = str(candidate or "").strip() or None
                                 if candidate and candidate != str(input_model or "").strip():
                                     invalid_real_tried = True
-                                    ok = self._do_failover(from_model=str(input_model or ""), to_model=str(candidate or ""))
+                                    ok = self._do_failover(
+                                        from_model=str(input_model or ""), to_model=str(candidate or "")
+                                    )
                                     _record_attempt(
                                         "retry_real_model",
                                         ok=bool(ok),
@@ -1571,7 +1592,10 @@ class ModelFailureAwareSession:
                                     ok=bool(ok),
                                     tool=tool,
                                     input_model=input_model,
-                                    extra={"retry_count": int(invalid_real_tried) + int(invalid_auto_tried), "degraded": bool(ok)},
+                                    extra={
+                                        "retry_count": int(invalid_real_tried) + int(invalid_auto_tried),
+                                        "degraded": bool(ok),
+                                    },
                                 )
                                 logger.warning(
                                     "[TTADK:RuntimeInvalidModel] action=degrade_to_coco ok=%s tool=%s input_model=%s",
@@ -1587,10 +1611,10 @@ class ModelFailureAwareSession:
                             try:
                                 err = RuntimeError("ttadk_runtime_invalid_model_unrecoverable")
                                 try:
-                                    setattr(err, "tool_name", tool)
-                                    setattr(err, "input_model", input_model)
-                                    setattr(err, "available_models_count", len(available_models))
-                                    setattr(err, "attempts", list(runtime_attempts))
+                                    err.tool_name = tool
+                                    err.input_model = input_model
+                                    err.available_models_count = len(available_models)
+                                    err.attempts = list(runtime_attempts)
                                 except Exception:
                                     pass
                                 raise err from e
@@ -1602,7 +1626,9 @@ class ModelFailureAwareSession:
                 # 1) loop detected: attempt failover once
                 if info.get("reason") == "loop_detected" and not failover_tried:
                     failover_tried = True
-                    failed = info.get("failed_model") or _extract_model_from_agent_args(list(getattr(getattr(self._inner, "_inner", self._inner), "_agent_args", []) or []))
+                    failed = info.get("failed_model") or _extract_model_from_agent_args(
+                        list(getattr(getattr(self._inner, "_inner", self._inner), "_agent_args", []) or [])
+                    )
                     fmap = self._parse_failover_map()
                     target = fmap.get(str(failed or "").strip()) or fmap.get("gpt-5.2")
                     ok = self._do_failover(from_model=str(failed or ""), to_model=str(target or ""))
@@ -1730,7 +1756,12 @@ def resolve_ttadk_engine_startup_model(
     cwd = norm_cwd or raw_cwd
     try:
         if bool(getattr(get_settings(), "ttadk_cwd_debug_enabled", False)):
-            logger.debug("[TTADK:CWD] where=%s raw_cwd=%r normalized_cwd=%r", "agent_session.resolve_ttadk_engine_startup_model", raw_cwd, norm_cwd)
+            logger.debug(
+                "[TTADK:CWD] where=%s raw_cwd=%r normalized_cwd=%r",
+                "agent_session.resolve_ttadk_engine_startup_model",
+                raw_cwd,
+                norm_cwd,
+            )
     except Exception:
         pass
 
@@ -1761,7 +1792,12 @@ def create_sync_session(agent_type: str, cwd: str, model_name: Optional[str] = N
     cwd = norm_cwd or raw_cwd
     try:
         if bool(getattr(get_settings(), "ttadk_cwd_debug_enabled", False)):
-            logger.debug("[TTADK:CWD] where=%s raw_cwd=%r normalized_cwd=%r", "agent_session.create_sync_session", raw_cwd, norm_cwd)
+            logger.debug(
+                "[TTADK:CWD] where=%s raw_cwd=%r normalized_cwd=%r",
+                "agent_session.create_sync_session",
+                raw_cwd,
+                norm_cwd,
+            )
     except Exception:
         pass
     if agent_type == "claude":
@@ -1826,7 +1862,12 @@ def create_engine_session(
     cwd = norm_cwd or raw_cwd
     try:
         if bool(getattr(get_settings(), "ttadk_cwd_debug_enabled", False)):
-            logger.debug("[TTADK:CWD] where=%s raw_cwd=%r normalized_cwd=%r", "agent_session.create_engine_session", raw_cwd, norm_cwd)
+            logger.debug(
+                "[TTADK:CWD] where=%s raw_cwd=%r normalized_cwd=%r",
+                "agent_session.create_engine_session",
+                raw_cwd,
+                norm_cwd,
+            )
     except Exception:
         pass
 
@@ -1858,11 +1899,7 @@ def create_engine_session(
             from .ttadk.startup_common import precheck_ttadk_startup_model
 
             # 1. Precheck to resolve model name
-            info = precheck_ttadk_startup_model(
-                agent_type=agent_type,
-                cwd=cwd,
-                model_intent=model_name
-            )
+            info = precheck_ttadk_startup_model(agent_type=agent_type, cwd=cwd, model_intent=model_name)
 
             resolved_model = info.get("model")  # Validated model ID or None (auto)
 
@@ -1877,11 +1914,7 @@ def create_engine_session(
             )
 
             # 2. Create CLI session
-            session = SyncTTADKCLISession(
-                agent_type=agent_type,
-                cwd=cwd,
-                model_name=resolved_model
-            )
+            session = SyncTTADKCLISession(agent_type=agent_type, cwd=cwd, model_name=resolved_model)
             session.start()
 
         except Exception:

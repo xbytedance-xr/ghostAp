@@ -1,6 +1,6 @@
-import time
-import pytest
 import threading
+import time
+
 from src.feishu.message_cache import MessageCache
 
 
@@ -57,23 +57,23 @@ class TestMessageCache:
     def test_thread_safety(self):
         cache = MessageCache(ttl=300, max_size=1000)
         results = []
-        
+
         def add_messages(prefix: str, count: int):
             for i in range(count):
                 result = cache.is_duplicate(f"{prefix}_{i}")
                 results.append((f"{prefix}_{i}", result))
-        
+
         threads = [
             threading.Thread(target=add_messages, args=("thread1", 100)),
             threading.Thread(target=add_messages, args=("thread2", 100)),
             threading.Thread(target=add_messages, args=("thread3", 100)),
         ]
-        
+
         for t in threads:
             t.start()
         for t in threads:
             t.join()
-        
+
         assert cache.size() == 300
         first_occurrences = [r for r in results if r[1] is False]
         assert len(first_occurrences) == 300

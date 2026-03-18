@@ -1,9 +1,8 @@
-
 import logging
-from typing import Callable, Optional, Any, Dict, List, Tuple
-from ..project import ProjectManager
+from typing import Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
 
 class ActionDispatcher:
     """
@@ -22,17 +21,19 @@ class ActionDispatcher:
         if prefix:
             self._action_registry_prefix.append((prefix, handler))
 
-    def dispatch(self, action_type: str, open_message_id: str, open_chat_id: str, project_id: Optional[str], value: dict) -> bool:
+    def dispatch(
+        self, action_type: str, open_message_id: str, open_chat_id: str, project_id: Optional[str], value: dict
+    ) -> bool:
         """
         分发卡片动作。
-        
+
         Args:
             action_type: 动作类型字符串 (e.g. "loop_pause")
             open_message_id: 消息ID
             open_chat_id: 会话ID
             project_id: 项目ID (可能为空)
             value: 动作携带的完整数据字典
-            
+
         Returns:
             bool: 是否找到并执行了对应的 handler
         """
@@ -46,7 +47,7 @@ class ActionDispatcher:
                 # 但目前约定是 (mid, cid, pid, value)
                 logger.error(f"Action handler for '{action_type}' signature mismatch: {e}")
                 raise e
-        
+
         # 2. Prefix match
         for prefix, handler in self._action_registry_prefix:
             if action_type.startswith(prefix):
@@ -56,5 +57,5 @@ class ActionDispatcher:
                 except TypeError as e:
                     logger.error(f"Prefix handler for '{prefix}' signature mismatch: {e}")
                     raise e
-                
+
         return False

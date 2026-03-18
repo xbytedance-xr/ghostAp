@@ -1,4 +1,4 @@
-from .engine import DeepEngine, DeepEngineManager, DeepEngineCallbacks
+from .engine import DeepEngine, DeepEngineCallbacks, DeepEngineManager
 from .models import (
     DeepProject,
     DeepProjectStatus,

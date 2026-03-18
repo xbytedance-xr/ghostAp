@@ -12,16 +12,15 @@ import threading
 import time
 from typing import Callable, Optional
 
-from .sync_adapter import SyncACPSession
-from .sync_adapter import build_startup_diagnostics, format_startup_diagnostics
+from ..agent_session import SyncClaudeCLISession, SyncSession
+from ..config import get_settings
 from .diagnostics import (
     format_startup_failure_log_line,
     get_diagnostics_config,
     redact_text,
     truncate_text,
 )
-from ..agent_session import SyncClaudeCLISession, SyncSession
-from ..config import get_settings
+from .sync_adapter import SyncACPSession, build_startup_diagnostics
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +55,9 @@ def _format_ttadk_startup_attempts(diagnostics: object, *, per_item_limit: int =
 
         diag = diagnostics if isinstance(diagnostics, dict) else {}
         attempts = (diag.get("attempts") or []) if isinstance(diag, dict) else []
-        return format_attempts_summary(attempts, per_item_limit=per_item_limit, total_limit=total_limit, get_settings_fn=get_settings)
+        return format_attempts_summary(
+            attempts, per_item_limit=per_item_limit, total_limit=total_limit, get_settings_fn=get_settings
+        )
     except Exception:
         return ""
 
@@ -109,7 +110,7 @@ def _degrade_ttadk_to_coco_acp(
         agent_args=_coco_acp_args(fallback_model),
     )
     sid = s.start(startup_timeout=float(startup_timeout or 60))
-    setattr(s, "_degraded_to", "coco")
+    s._degraded_to = "coco"
     # Best-effort: keep a non-empty, user-facing reason summary.
     # Prefer structured diagnostics (fail_reason + error_text/stderr_snippet), fall back to repr.
     try:
@@ -125,9 +126,9 @@ def _degrade_ttadk_to_coco_acp(
         et = str((d or {}).get("error_text") or (d or {}).get("stderr_snippet") or (d or {}).get("error") or "")
         fr = (fr or "").strip() or "start_failed"
         et = (et or "").strip() or (repr(reason) if reason is not None else "<Exception> (empty)")
-        setattr(s, "_degraded_reason", f"{fr}: {et}")
+        s._degraded_reason = f"{fr}: {et}"
     except Exception:
-        setattr(s, "_degraded_reason", str(reason) or (repr(reason) if reason is not None else ""))
+        s._degraded_reason = str(reason) or (repr(reason) if reason is not None else "")
     return (s, sid)
 
 
@@ -164,6 +165,7 @@ def _build_startup_diagnostics(
             "stdout_snippet": "",
             "stderr_snippet": "",
         }
+
 
 _DEFAULT_PROJECT = "_default_"
 
@@ -258,7 +260,12 @@ class ACPSessionManager:
             cwd = norm_cwd or raw_cwd
             try:
                 if bool(getattr(get_settings(), "ttadk_cwd_debug_enabled", False)):
-                    logger.debug("[TTADK:CWD] where=%s raw_cwd=%r normalized_cwd=%r", "acp.manager.ensure_session", raw_cwd, norm_cwd)
+                    logger.debug(
+                        "[TTADK:CWD] where=%s raw_cwd=%r normalized_cwd=%r",
+                        "acp.manager.ensure_session",
+                        raw_cwd,
+                        norm_cwd,
+                    )
             except Exception:
                 pass
         except Exception:
@@ -267,12 +274,12 @@ class ACPSessionManager:
         # TTADK: Use SyncTTADKCLISession directly (CLI backend), avoiding ACP complexity.
         if effective_agent_type.startswith("ttadk_") and (not session or not actual_id):
             try:
-                from ..ttadk.startup_common import precheck_ttadk_startup_model
-                from ..ttadk import get_ttadk_manager
                 from ..agent_session import SyncTTADKCLISession
+                from ..ttadk import get_ttadk_manager
+                from ..ttadk.startup_common import precheck_ttadk_startup_model
 
                 ttadk_manager = get_ttadk_manager()
-                
+
                 # Precheck model intent
                 info = precheck_ttadk_startup_model(
                     agent_type=effective_agent_type,
@@ -280,21 +287,22 @@ class ACPSessionManager:
                     model_intent=model_name,
                     manager=ttadk_manager,
                 )
-                
+
                 resolved_model = info.get("model")
-                
+
                 session = SyncTTADKCLISession(
-                    agent_type=effective_agent_type,
-                    cwd=cwd or ".",
-                    model_name=resolved_model
+                    agent_type=effective_agent_type, cwd=cwd or ".", model_name=resolved_model
                 )
                 actual_id = session.start()
-                
+
                 logger.info(
                     "[ACP:%s] TTADK CLI Session started: key=%s, session=%s, model=%s",
-                    effective_agent_type.upper(), key[-16:], actual_id[:8], resolved_model
+                    effective_agent_type.upper(),
+                    key[-16:],
+                    actual_id[:8],
+                    resolved_model,
                 )
-                
+
             except Exception as e:
                 last_err = e
                 detail = str(last_err or "").strip() if last_err else ""
@@ -345,7 +353,11 @@ class ACPSessionManager:
                     actual_id = session.start(startup_timeout=effective_timeout)
                     logger.info(
                         "[ACP:%s] Session started: key=%s, session=%s (attempt=%d/%d)",
-                        effective_agent_type.upper(), key[-16:], actual_id[:8], attempt, retries,
+                        effective_agent_type.upper(),
+                        key[-16:],
+                        actual_id[:8],
+                        attempt,
+                        retries,
                     )
                     break
                 except Exception as e:
@@ -416,8 +428,9 @@ class ACPSessionManager:
                 session.session_id = session_id
                 session.is_resumed = True
             except Exception as e:
-                logger.warning("[ACP:%s] Failed to load session %s, using new: %s",
-                               effective_agent_type.upper(), session_id[:8], e)
+                logger.warning(
+                    "[ACP:%s] Failed to load session %s, using new: %s", effective_agent_type.upper(), session_id[:8], e
+                )
 
         # Load local persisted history (best-effort)
         try:
@@ -450,8 +463,7 @@ class ACPSessionManager:
         if existing:
             # Timeout check (reuse get_session semantics)
             if time.time() - existing.last_active > self._session_timeout:
-                logger.info("[ACP:%s] Session timeout before ensure: key=%s",
-                            self._agent_type.upper(), key[-16:])
+                logger.info("[ACP:%s] Session timeout before ensure: key=%s", self._agent_type.upper(), key[-16:])
                 self.end_session(chat_id, project_id=project_id)
                 existing = None
 
@@ -522,7 +534,9 @@ class ACPSessionManager:
             if not existing.is_server_running():
                 logger.warning(
                     "[ACP:%s] Detected dead ACP server, restarting: key=%s session=%s",
-                    self._agent_type.upper(), key[-16:], (existing.session_id or "none")[:8],
+                    self._agent_type.upper(),
+                    key[-16:],
+                    (existing.session_id or "none")[:8],
                 )
                 self.end_session(chat_id, project_id=project_id)
                 existing = None
@@ -531,7 +545,9 @@ class ACPSessionManager:
                 if not existing.is_server_healthy(healthcheck_timeout=health_to):
                     logger.warning(
                         "[ACP:%s] Detected unhealthy ACP server, restarting: key=%s session=%s",
-                        self._agent_type.upper(), key[-16:], (existing.session_id or "none")[:8],
+                        self._agent_type.upper(),
+                        key[-16:],
+                        (existing.session_id or "none")[:8],
                     )
                     self.end_session(chat_id, project_id=project_id)
                     existing = None
@@ -554,7 +570,9 @@ class ACPSessionManager:
             model_name=model_name,
         )
 
-    def resume_session(self, chat_id: str, session_id: str, cwd: str = "", project_id: Optional[str] = None) -> SyncSession:
+    def resume_session(
+        self, chat_id: str, session_id: str, cwd: str = "", project_id: Optional[str] = None
+    ) -> SyncSession:
         """Resume an existing session by session_id."""
         return self.start_session(chat_id, cwd=cwd, session_id=session_id, project_id=project_id)
 
@@ -571,8 +589,7 @@ class ACPSessionManager:
             now = time.time()
             idle = now - session.last_active
             if idle > self._session_timeout:
-                logger.info("[ACP:%s] Session timeout: key=%s",
-                             self._agent_type.upper(), key[-16:])
+                logger.info("[ACP:%s] Session timeout: key=%s", self._agent_type.upper(), key[-16:])
                 self.end_session(chat_id, project_id=project_id)
                 return None
             # Only do expensive RPC health check after prolonged idle (>30s).
@@ -581,7 +598,9 @@ class ACPSessionManager:
                 if not session.is_server_running():
                     logger.warning(
                         "[ACP:%s] Session server dead: key=%s session=%s",
-                        self._agent_type.upper(), key[-16:], (session.session_id or "none")[:8],
+                        self._agent_type.upper(),
+                        key[-16:],
+                        (session.session_id or "none")[:8],
                     )
                     self.end_session(chat_id, project_id=project_id)
                     return None
@@ -591,10 +610,13 @@ class ACPSessionManager:
         """End a session without acquiring lock (caller must hold _lock)."""
         if key in self._sessions:
             session = self._sessions[key]
-            logger.info("[ACP:%s] Session ended: key=%s, session=%s, msgs=%d",
-                         self._agent_type.upper(), key[-16:],
-                         session.session_id[:8] if session.session_id else "none",
-                         session.message_count)
+            logger.info(
+                "[ACP:%s] Session ended: key=%s, session=%s, msgs=%d",
+                self._agent_type.upper(),
+                key[-16:],
+                session.session_id[:8] if session.session_id else "none",
+                session.message_count,
+            )
             snapshot = session.to_snapshot()
             try:
                 session.close()

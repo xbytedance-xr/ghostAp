@@ -1,5 +1,6 @@
-from typing import Optional
 import shlex
+from typing import Optional
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,7 +20,9 @@ class Settings(BaseSettings):
 
     sandbox_timeout: int = 30
     sandbox_max_output_length: int = 4000
-    sandbox_command_blacklist: str = "rm -rf /,rm -rf /*,mkfs,dd if=,shutdown,reboot,halt,poweroff,init 0,init 6,:(){ :|:& };:"
+    sandbox_command_blacklist: str = (
+        "rm -rf /,rm -rf /*,mkfs,dd if=,shutdown,reboot,halt,poweroff,init 0,init 6,:(){ :|:& };:"
+    )
 
     coco_execution_timeout: int = 7200
     coco_session_timeout: int = 86400
@@ -249,16 +252,16 @@ class Settings(BaseSettings):
 
     # Streaming flow control (Adaptive interval)
     streaming_adaptive_interval_base: float = 0.3  # Base interval (seconds) for low rate
-    streaming_adaptive_interval_max: float = 2.0   # Max interval (seconds) for high rate
-    streaming_adaptive_rate_low: float = 20.0      # Low rate threshold (chars/sec)
-    streaming_adaptive_rate_high: float = 150.0    # High rate threshold (chars/sec)
+    streaming_adaptive_interval_max: float = 2.0  # Max interval (seconds) for high rate
+    streaming_adaptive_rate_low: float = 20.0  # Low rate threshold (chars/sec)
+    streaming_adaptive_rate_high: float = 150.0  # High rate threshold (chars/sec)
 
     # ------------------------------------------------------------------
     # IM API / Deep Streaming Control
     # ------------------------------------------------------------------
     # Maximum retries for IM API patch operations (default: 3)
     im_api_max_retries: int = 3
-    
+
     # Deep engine streaming update throttling
     # - interval: minimum seconds between updates (unless forced)
     # - min_chars: minimum new characters accumulated before updating (unless forced/interval passed)
@@ -267,9 +270,9 @@ class Settings(BaseSettings):
 
     # Rate limiting handling (auto-pause and retry on API throttling)
     rate_limit_retry_enabled: bool = True
-    rate_limit_max_wait: int = 300      # Max seconds to wait for rate limit cooldown
-    rate_limit_base_wait: int = 30      # Default wait if no retry-after header
-    rate_limit_max_retries: int = 5     # Max consecutive rate limit retries
+    rate_limit_max_wait: int = 300  # Max seconds to wait for rate limit cooldown
+    rate_limit_base_wait: int = 30  # Default wait if no retry-after header
+    rate_limit_max_retries: int = 5  # Max consecutive rate limit retries
 
     # ------------------------------------------------------------------
     # Model failure self-healing (send_prompt-time)
@@ -294,7 +297,7 @@ class Settings(BaseSettings):
 
     # 卡片按钮尺寸 (medium/small/large)
     card_button_size: str = "medium"
-    
+
     # 移动端强制垂直布局 (true: 移动端忽略 layout 设置，强制垂直堆叠; false: 遵循 layout 设置)
     card_mobile_force_vertical: bool = True
 
@@ -323,11 +326,7 @@ class Settings(BaseSettings):
 
     @property
     def command_blacklist(self) -> list[str]:
-        return [
-            cmd.strip()
-            for cmd in self.sandbox_command_blacklist.split(",")
-            if cmd.strip()
-        ]
+        return [cmd.strip() for cmd in self.sandbox_command_blacklist.split(",") if cmd.strip()]
 
     def validate_feishu_config(self) -> bool:
         return bool(self.app_id and self.app_secret)

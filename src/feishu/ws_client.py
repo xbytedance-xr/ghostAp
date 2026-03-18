@@ -1,54 +1,85 @@
+"""Feishu WebSocket 客户端（核心路由枢纽）。
+
+职责概览：
+- 接收飞书 WS 事件（消息、卡片动作、反应等）并做基础校验/去重。
+- 将用户消息路由到不同 handler（SMART/COCO/CLAUDE/SHELL/TTADK 以及 Deep/Loop/Spec 引擎）。
+- 通过 `TaskScheduler` 提供：按项目串行、全局并发限制、系统命令快通道、背压与熔断。
+
+关键设计点：
+- `_FORWARDING_MAP` + `__getattr__`：把不同 mode 的实现解耦到 handlers 中，同时保持 ws_client 的调用面稳定。
+- 兼容性：部分 lark-oapi 版本不包含完整的 callback model 类型；这里对仅用于类型标注的符号做了降级处理。
+"""
+
+import asyncio
 import json
 import logging
-import time
 import os
-import asyncio
-import lark_oapi as lark
-from lark_oapi.api.im.v1 import *
-from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTrigger, P2CardActionTriggerResponse
-from typing import Callable, Optional, Any
 import threading
-from ..config import get_settings
-from ..acp.manager import ACPSessionManager
-from ..agent.intent_recognizer import IntentRecognizer, IntentType, IntentResult, TaskStep
-from ..project import (
-    ProjectManager,
-    ProjectContext,
-    MessageProjectMapper,
-    MessageLinker,
-    ProjectContextManager,
-    ContextSourceMode,
-)
-from ..card import CardBuilder
-from ..card.streaming import StreamingCardManager
-from ..deep_engine import DeepEngineManager, ProgressReporter
-from ..loop_engine import LoopEngineManager, LoopReporter
-from ..spec_engine import SpecEngineManager, SpecReporter
-from ..tasking import TaskScheduler, TaskSpec, TaskPriority
-from ..utils.trace import TraceContext, configure_logging_with_trace
-from .message_formatter import FeishuMessageFormatter as fmt
-from .emoji import EmojiReaction
-from .message_cache import MessageCache
-from .image_handler import FeishuImageHandler
-from .handler_context import HandlerContext
-from .action_dispatcher import ActionDispatcher
-from .handlers import (
-    CocoModeHandler,
-    ClaudeModeHandler,
-    TTADKModeHandler,
-    DeepHandler,
-    LoopHandler,
-    SpecHandler,
-    ProjectHandler,
-    SystemHandler,
-    DiagnosticsHandler,
+import time
+from typing import Any, Callable, Optional
+
+import lark_oapi as lark
+from lark_oapi.event.callback.model.p2_card_action_trigger import (
+    P2CardActionTrigger,
+    P2CardActionTriggerResponse,
 )
 
+# NOTE: lark-oapi 的 event callback models 在不同版本中并不完整。
+# 本项目仅将 P2ImMessageReceiveV1 用于类型标注；运行时缺失不应导致 import 失败。
+try:  # pragma: no cover
+    from lark_oapi.event.callback.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1  # type: ignore
+except Exception:  # pragma: no cover
+    P2ImMessageReceiveV1 = Any  # type: ignore
+
+from ..acp.manager import ACPSessionManager
+from ..agent.intent_recognizer import IntentRecognizer, IntentResult, IntentType, TaskStep
+from ..card import CardBuilder
+from ..card.streaming import StreamingCardManager
+from ..config import get_settings
+from ..deep_engine import DeepEngineManager, ProgressReporter
+from ..loop_engine import LoopEngineManager, LoopReporter
+from ..project import (
+    ContextSourceMode,
+    MessageLinker,
+    MessageProjectMapper,
+    ProjectContext,
+    ProjectContextManager,
+    ProjectManager,
+)
+from ..spec_engine import SpecEngineManager, SpecReporter
+from ..tasking import TaskPriority, TaskScheduler, TaskSpec
+from ..utils.circuit_breaker import CircuitBreaker, CircuitBreakerOpenException
+from ..utils.rate_limit import RateLimiter, RateLimitExceededException
+from ..utils.trace import TraceContext, configure_logging_with_trace
+from .action_dispatcher import ActionDispatcher
+from .emoji import EmojiReaction
+from .handler_context import HandlerContext
+from .handlers import (
+    ClaudeModeHandler,
+    CocoModeHandler,
+    DeepHandler,
+    DiagnosticsHandler,
+    LoopHandler,
+    ProjectHandler,
+    SpecHandler,
+    SystemHandler,
+    TTADKModeHandler,
+)
+from .image_handler import FeishuImageHandler
+from .message_cache import MessageCache
+from .message_formatter import FeishuMessageFormatter as fmt
 
 logger = logging.getLogger(__name__)
 
 
 class FeishuWSClient:
+    """Feishu WS Client 的服务端运行态。
+
+    该类面向“长连接服务”场景：
+    - 内部会初始化 scheduler / handler / cache，并在 `start()` 后进入事件循环。
+    - `close()` 提供 best-effort 资源回收（线程/缓存/调度器等）。
+    """
+
     MESSAGE_EXPIRE_SECONDS = 30
 
     def __init__(self, message_callback: Callable[[str, str, str, Optional[str]], None]):
@@ -68,6 +99,12 @@ class FeishuWSClient:
             system_concurrency=10,
             thread_name_prefix="ghost_worker",
         )
+        # Spec Engine limits: e.g. 50 calls per second, max 100 capacity
+        self._scheduler.register_policy(
+            "spec_command",
+            rate_limiter=RateLimiter(capacity=100, fill_rate=50.0),
+            circuit_breaker=CircuitBreaker(failure_threshold=10, recovery_timeout=5.0),
+        )
         self._working_dirs: dict[str, str] = {}
         self._working_dir_lock = threading.Lock()
 
@@ -76,6 +113,7 @@ class FeishuWSClient:
         self._message_linker = MessageLinker()
 
         from ..mode import ModeManager
+
         self._mode_manager = ModeManager()
 
         self._streaming_manager: Optional[StreamingCardManager] = None
@@ -159,7 +197,7 @@ class FeishuWSClient:
         # --- Action Dispatcher ---
         self._action_dispatcher = ActionDispatcher()
         self._init_action_registry()
-        
+
         # Configure trace logging
         configure_logging_with_trace()
 
@@ -168,6 +206,12 @@ class FeishuWSClient:
         self._action_dispatcher.register(handler, exact, prefix)
 
     def _process_card_action_async(self, data: Any, task_ctx=None):
+        """异步处理卡片回调（由 scheduler 调用）。
+
+        约定：
+        - `value` 可能是 dict 或 JSON 字符串；这里统一 normalize。
+        - 通过 `ActionDispatcher` 做 exact/prefix 路由。
+        """
         try:
             event = data.event
             context = event.context
@@ -175,7 +219,7 @@ class FeishuWSClient:
             open_chat_id = context.open_chat_id
             action = event.action
             value = action.value
-            
+
             # Ensure value is a dict
             if isinstance(value, str):
                 try:
@@ -191,19 +235,19 @@ class FeishuWSClient:
             if not action_type:
                 logger.warning("收到未包含 action 字段的卡片动作: %s", value)
                 return
-            
+
             # --- Dispatch via ActionDispatcher ---
             matched = self._action_dispatcher.dispatch(action_type, open_message_id, open_chat_id, project_id, value)
-            
+
             if not matched:
                 logger.debug("未注册的卡片动作: %s", action_type)
-            
+
         except asyncio.TimeoutError:
             logger.warning("处理卡片动作超时")
         except Exception as e:
             logger.error("处理卡片动作异常: %s", e, exc_info=True)
             try:
-                if 'open_message_id' in locals():
+                if "open_message_id" in locals():
                     self._reply_message(open_message_id, "❌ 处理卡片动作时发生错误")
             except Exception:
                 pass
@@ -213,30 +257,58 @@ class FeishuWSClient:
         # Coco
         self._register_action(self._handle_card_enter_coco, exact="enter_coco")
         self._register_action(self._handle_card_exit_coco, exact="exit_coco")
-        self._register_action(lambda mid, cid, pid, val: self._handle_card_resume_coco(mid, cid, pid, val.get("session_id", "")), exact="resume_coco")
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_card_resume_coco(mid, cid, pid, val.get("session_id", "")),
+            exact="resume_coco",
+        )
         self._register_action(self._handle_card_new_coco, exact="new_coco")
-        
+
         # Claude
         self._register_action(self._handle_card_enter_claude, exact="enter_claude")
         self._register_action(self._handle_card_exit_claude, exact="exit_claude")
-        self._register_action(lambda mid, cid, pid, val: self._handle_card_resume_claude(mid, cid, pid, val.get("session_id", "")), exact="resume_claude")
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_card_resume_claude(mid, cid, pid, val.get("session_id", "")),
+            exact="resume_claude",
+        )
         self._register_action(self._handle_card_new_claude, exact="new_claude")
-        
+
         # Project
-        self._register_action(lambda mid, cid, pid, val: self._show_project_status(mid, cid, self._project_manager.get_project(pid) if pid else None), exact="show_status")
-        self._register_action(lambda mid, cid, pid, val: self._show_project_board(mid, cid, origin_message_id=mid), exact="switch_project")
-        self._register_action(lambda mid, cid, pid, val: self._show_project_board(mid, cid, origin_message_id=mid), exact="show_board")
-        self._register_action(lambda mid, cid, pid, val: self._show_project_board(mid, cid, origin_message_id=mid), exact="refresh_board")
-        self._register_action(lambda mid, cid, pid, val: self._show_project_board(mid, cid, origin_message_id=mid, page=val.get("page", 1)), exact="switch_board_page")
-        self._register_action(lambda mid, cid, pid, val: self._show_project_status(mid, cid, self._project_manager.get_project(pid) if pid else None, origin_message_id=mid), exact="show_detail")
-        
+        self._register_action(
+            lambda mid, cid, pid, val: self._show_project_status(
+                mid, cid, self._project_manager.get_project(pid) if pid else None
+            ),
+            exact="show_status",
+        )
+        self._register_action(
+            lambda mid, cid, pid, val: self._show_project_board(mid, cid, origin_message_id=mid), exact="switch_project"
+        )
+        self._register_action(
+            lambda mid, cid, pid, val: self._show_project_board(mid, cid, origin_message_id=mid), exact="show_board"
+        )
+        self._register_action(
+            lambda mid, cid, pid, val: self._show_project_board(mid, cid, origin_message_id=mid), exact="refresh_board"
+        )
+        self._register_action(
+            lambda mid, cid, pid, val: self._show_project_board(
+                mid, cid, origin_message_id=mid, page=val.get("page", 1)
+            ),
+            exact="switch_board_page",
+        )
+        self._register_action(
+            lambda mid, cid, pid, val: self._show_project_status(
+                mid, cid, self._project_manager.get_project(pid) if pid else None, origin_message_id=mid
+            ),
+            exact="show_detail",
+        )
+
         def _handle_switch_to(mid, cid, pid, val):
             if pid:
                 project = self._project_manager.get_project(pid)
                 if project:
                     self._switch_project(mid, cid, project.project_name)
+
         self._register_action(_handle_switch_to, exact="switch_to")
-        
+
         def _handle_continue_dev(mid, cid, pid, val):
             project = self._project_manager.get_project(pid) if pid else None
             if project:
@@ -248,45 +320,109 @@ class FeishuWSClient:
                 response_id = self._reply_message_with_id(mid, card_content, msg_type)
                 if response_id:
                     self._register_message_project(response_id, project)
+
         self._register_action(_handle_continue_dev, exact="continue_dev")
-        
+
         def _handle_list_files(mid, cid, pid, val):
             project = self._project_manager.get_project(pid) if pid else None
             if project:
                 self._project_manager.set_active_project(cid, pid)
                 self._submit_shell_command(mid, cid, "ls -la", project.root_path, project)
+
         self._register_action(_handle_list_files, exact="list_files")
-        
-        self._register_action(lambda mid, cid, pid, val: self._reply_message(mid, "📝 创建新项目\n\n请发送: `/new 项目名 路径`\n\n例如: `/new myApp ~/workspace/myApp`"), exact="new_project_prompt")
+
+        self._register_action(
+            lambda mid, cid, pid, val: self._reply_message(
+                mid, "📝 创建新项目\n\n请发送: `/new 项目名 路径`\n\n例如: `/new myApp ~/workspace/myApp`"
+            ),
+            exact="new_project_prompt",
+        )
 
         # TTADK
-        self._register_action(lambda mid, cid, pid, val: self._handle_select_ttadk_tool(mid, cid, val.get("tool_name", ""), pid), exact="select_ttadk_tool")
-        self._register_action(lambda mid, cid, pid, val: self._handle_select_ttadk_model(mid, cid, val.get("tool_name", ""), val.get("model_name", ""), self._project_manager.get_project(pid) if pid else None), exact="select_ttadk_model")
-        self._register_action(lambda mid, cid, pid, val: self._handle_refresh_ttadk_models(mid, cid, val.get("tool_name", ""), pid), exact="refresh_ttadk_models")
-        self._register_action(lambda mid, cid, pid, val: self._handle_ttadk_command(mid, cid, self._project_manager.get_project(pid) if pid else None), exact="show_ttadk_menu")
-        
+        self._register_action(self._handle_card_enter_ttadk, exact="enter_ttadk")
+        self._register_action(self._handle_card_exit_ttadk, exact="exit_ttadk")
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_card_resume_ttadk(mid, cid, pid, val.get("session_id", "")),
+            exact="resume_ttadk",
+        )
+        self._register_action(self._handle_card_new_ttadk, exact="new_ttadk")
+
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_select_ttadk_tool(mid, cid, val.get("tool_name", ""), pid),
+            exact="select_ttadk_tool",
+        )
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_select_ttadk_model(
+                mid,
+                cid,
+                val.get("tool_name", ""),
+                val.get("model_name", ""),
+                self._project_manager.get_project(pid) if pid else None,
+            ),
+            exact="select_ttadk_model",
+        )
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_refresh_ttadk_models(mid, cid, val.get("tool_name", ""), pid),
+            exact="refresh_ttadk_models",
+        )
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_ttadk_command(
+                mid, cid, self._project_manager.get_project(pid) if pid else None
+            ),
+            exact="show_ttadk_menu",
+        )
+
         # System
-        self._register_action(lambda mid, cid, pid, val: self._show_full_help(mid, cid, self._project_manager.get_project(pid) if pid else None), exact="show_help_menu")
+        self._register_action(
+            lambda mid, cid, pid, val: self._show_full_help(
+                mid, cid, self._project_manager.get_project(pid) if pid else None
+            ),
+            exact="show_help_menu",
+        )
         self._register_action(lambda mid, cid, pid, val: self._handle_deep_prompt(mid, cid), exact="enter_deep_prompt")
-        self._register_action(lambda mid, cid, pid, val: self._handle_help_category(mid, cid, val.get("category", "main"), self._project_manager.get_project(pid) if pid else None, origin_message_id=mid), exact="help_category")
-        
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_help_category(
+                mid,
+                cid,
+                val.get("category", "main"),
+                self._project_manager.get_project(pid) if pid else None,
+                origin_message_id=mid,
+            ),
+            exact="help_category",
+        )
+
         # Streaming
         def _handle_load_more(mid, cid, pid, val):
             msg_id = val.get("message_id", "")
             if msg_id:
                 manager = self._get_streaming_manager()
                 manager.increase_pagination(msg_id)
+
         self._register_action(_handle_load_more, exact="load_more")
-        
+
         # Deep Engine
-        self._register_action(lambda mid, cid, pid, val: self._show_deep_status(mid, cid, self._project_manager.get_project(pid) if pid else None, origin_message_id=mid), exact="show_deep_status")
-        self._register_action(lambda mid, cid, pid, val, type=None: self._deep_handler.handle_card_action(mid, cid, type, val), prefix="deep_")
-        
+        self._register_action(
+            lambda mid, cid, pid, val: self._show_deep_status(
+                mid, cid, self._project_manager.get_project(pid) if pid else None, origin_message_id=mid
+            ),
+            exact="show_deep_status",
+        )
+        self._register_action(
+            lambda mid, cid, pid, val, type=None: self._deep_handler.handle_card_action(mid, cid, type, val),
+            prefix="deep_",
+        )
+
         # Loop Engine
-        self._register_action(lambda mid, cid, pid, val, type=None: self._loop_handler.handle_card_action(mid, cid, type, val), prefix="loop_")
-        
+        self._register_action(
+            lambda mid, cid, pid, val, type=None: self._loop_handler.handle_card_action(mid, cid, type, val),
+            prefix="loop_",
+        )
+
         # Spec Engine
-        self._register_action(lambda mid, cid, pid, val, type=None: self._spec_handler.handle_card_action(mid, cid, type, val), prefix="spec_")
+        self._register_action(
+            lambda mid, cid, pid, val, type=None: self._spec_handler.handle_card_action(mid, cid, type, val),
+            prefix="spec_",
+        )
 
     def close(self):
         """Best-effort cleanup for background resources."""
@@ -368,6 +504,11 @@ class FeishuWSClient:
             logger.debug("停止scheduler失败: %s", e)
 
     def _is_message_expired(self, create_time: int) -> bool:
+        """判断消息是否过期。
+
+        飞书历史消息可能会被 WS 重放；这里通过 `create_time` 过滤掉过旧消息，
+        避免触发重复执行（尤其是 shell/编程任务）。
+        """
         if not create_time:
             return False
         current_time = int(time.time() * 1000)
@@ -375,23 +516,29 @@ class FeishuWSClient:
         return message_age_ms > self.MESSAGE_EXPIRE_SECONDS * 1000
 
     def _is_duplicate_message(self, message_id: str) -> bool:
+        """消息去重：基于 `MessageCache` 判断是否重复处理。"""
         return self._message_cache.is_duplicate(message_id)
 
     def _get_api_client(self) -> lark.Client:
+        """延迟构造 `lark_oapi.Client`（用于调用消息/卡片 API）。"""
         if self._api_client is None:
-            self._api_client = lark.Client.builder() \
-                .app_id(self.settings.app_id) \
-                .app_secret(self.settings.app_secret) \
-                .log_level(lark.LogLevel.INFO) \
+            self._api_client = (
+                lark.Client.builder()
+                .app_id(self.settings.app_id)
+                .app_secret(self.settings.app_secret)
+                .log_level(lark.LogLevel.INFO)
                 .build()
+            )
         return self._api_client
 
     def _get_streaming_manager(self) -> StreamingCardManager:
+        """获取/创建流式卡片管理器（用于增量 patch 卡片）。"""
         if self._streaming_manager is None:
             self._streaming_manager = StreamingCardManager(self._get_api_client())
         return self._streaming_manager
 
     def _get_image_handler(self) -> FeishuImageHandler:
+        """获取/创建图片处理器（解析 + 下载 + 生成引用文本）。"""
         if self._image_handler is None:
             self._image_handler = FeishuImageHandler(self._get_api_client, self.settings)
         return self._image_handler
@@ -408,109 +555,109 @@ class FeishuWSClient:
     # Dispatch table: _method_name -> (handler_attr, handler_method_name)
     _FORWARDING_MAP: dict[str, tuple[str, str]] = {
         # --- shared base handler helpers (delegate via _coco_handler) ---
-        "_add_reaction":             ("_coco_handler", "add_reaction"),
-        "_get_working_dir":          ("_coco_handler", "get_working_dir"),
-        "_set_working_dir":          ("_coco_handler", "set_working_dir"),
-        "_ensure_request_id":        ("_coco_handler", "ensure_request_id"),
-        "_format_ref_note":          ("_coco_handler", "format_ref_note"),
+        "_add_reaction": ("_coco_handler", "add_reaction"),
+        "_get_working_dir": ("_coco_handler", "get_working_dir"),
+        "_set_working_dir": ("_coco_handler", "set_working_dir"),
+        "_ensure_request_id": ("_coco_handler", "ensure_request_id"),
+        "_format_ref_note": ("_coco_handler", "format_ref_note"),
         "_register_message_project": ("_coco_handler", "register_message_project"),
-        "_reply_message":            ("_coco_handler", "reply_message"),
-        "_reply_message_with_id":    ("_coco_handler", "reply_message_with_id"),
-        "send_message":              ("_coco_handler", "send_message"),
-        "_get_engine_name":          ("_coco_handler", "get_engine_name"),
-        "_record_mode_transition":   ("_coco_handler", "record_mode_transition"),
-        "_inject_bridge_context":    ("_coco_handler", "inject_bridge_context"),
+        "_reply_message": ("_coco_handler", "reply_message"),
+        "_reply_message_with_id": ("_coco_handler", "reply_message_with_id"),
+        "send_message": ("_coco_handler", "send_message"),
+        "_get_engine_name": ("_coco_handler", "get_engine_name"),
+        "_record_mode_transition": ("_coco_handler", "record_mode_transition"),
+        "_inject_bridge_context": ("_coco_handler", "inject_bridge_context"),
         # --- Coco mode ---
-        "_enter_coco_mode":          ("_coco_handler", "enter_mode"),
-        "_exit_coco_mode":           ("_coco_handler", "exit_mode"),
-        "_handle_coco_message":      ("_coco_handler", "handle_message"),
-        "_handle_coco_response":     ("_coco_handler", "handle_response"),
-        "_show_coco_info":           ("_coco_handler", "show_info"),
-        "_handle_card_enter_coco":   ("_coco_handler", "handle_card_enter"),
-        "_handle_card_exit_coco":    ("_coco_handler", "handle_card_exit"),
-        "_handle_card_resume_coco":  ("_coco_handler", "handle_card_resume"),
-        "_handle_card_new_coco":     ("_coco_handler", "handle_card_new"),
+        "_enter_coco_mode": ("_coco_handler", "enter_mode"),
+        "_exit_coco_mode": ("_coco_handler", "exit_mode"),
+        "_handle_coco_message": ("_coco_handler", "handle_message"),
+        "_handle_coco_response": ("_coco_handler", "handle_response"),
+        "_show_coco_info": ("_coco_handler", "show_info"),
+        "_handle_card_enter_coco": ("_coco_handler", "handle_card_enter"),
+        "_handle_card_exit_coco": ("_coco_handler", "handle_card_exit"),
+        "_handle_card_resume_coco": ("_coco_handler", "handle_card_resume"),
+        "_handle_card_new_coco": ("_coco_handler", "handle_card_new"),
         # --- Claude mode ---
-        "_enter_claude_mode":        ("_claude_handler", "enter_mode"),
-        "_exit_claude_mode":         ("_claude_handler", "exit_mode"),
-        "_handle_claude_message":    ("_claude_handler", "handle_message"),
-        "_handle_claude_response":   ("_claude_handler", "handle_response"),
-        "_show_claude_info":         ("_claude_handler", "show_info"),
+        "_enter_claude_mode": ("_claude_handler", "enter_mode"),
+        "_exit_claude_mode": ("_claude_handler", "exit_mode"),
+        "_handle_claude_message": ("_claude_handler", "handle_message"),
+        "_handle_claude_response": ("_claude_handler", "handle_response"),
+        "_show_claude_info": ("_claude_handler", "show_info"),
         "_handle_card_enter_claude": ("_claude_handler", "handle_card_enter"),
-        "_handle_card_exit_claude":  ("_claude_handler", "handle_card_exit"),
-        "_handle_card_resume_claude":("_claude_handler", "handle_card_resume"),
-        "_handle_card_new_claude":   ("_claude_handler", "handle_card_new"),
+        "_handle_card_exit_claude": ("_claude_handler", "handle_card_exit"),
+        "_handle_card_resume_claude": ("_claude_handler", "handle_card_resume"),
+        "_handle_card_new_claude": ("_claude_handler", "handle_card_new"),
         # --- TTADK mode ---
-        "_enter_ttadk_mode":         ("_ttadk_handler", "enter_mode"),
-        "_exit_ttadk_mode":          ("_ttadk_handler", "exit_mode"),
-        "_handle_ttadk_message":     ("_ttadk_handler", "handle_message"),
-        "_handle_ttadk_response":    ("_ttadk_handler", "handle_response"),
-        "_show_ttadk_info":          ("_ttadk_handler", "show_info"),
-        "_handle_card_enter_ttadk":  ("_ttadk_handler", "handle_card_enter"),
-        "_handle_card_exit_ttadk":   ("_ttadk_handler", "handle_card_exit"),
+        "_enter_ttadk_mode": ("_ttadk_handler", "enter_mode"),
+        "_exit_ttadk_mode": ("_ttadk_handler", "exit_mode"),
+        "_handle_ttadk_message": ("_ttadk_handler", "handle_message"),
+        "_handle_ttadk_response": ("_ttadk_handler", "handle_response"),
+        "_show_ttadk_info": ("_ttadk_handler", "show_info"),
+        "_handle_card_enter_ttadk": ("_ttadk_handler", "handle_card_enter"),
+        "_handle_card_exit_ttadk": ("_ttadk_handler", "handle_card_exit"),
         "_handle_card_resume_ttadk": ("_ttadk_handler", "handle_card_resume"),
-        "_handle_card_new_ttadk":    ("_ttadk_handler", "handle_card_new"),
-        "_handle_ttadk_command":     ("_system_handler", "handle_ttadk_command"),
+        "_handle_card_new_ttadk": ("_ttadk_handler", "handle_card_new"),
+        "_handle_ttadk_command": ("_system_handler", "handle_ttadk_command"),
         "_handle_select_ttadk_tool": ("_system_handler", "handle_select_ttadk_tool"),
-        "_handle_select_ttadk_model":("_system_handler", "handle_select_ttadk_model"),
+        "_handle_select_ttadk_model": ("_system_handler", "handle_select_ttadk_model"),
         "_handle_refresh_ttadk_models": ("_system_handler", "handle_refresh_ttadk_models"),
-        "_handle_help_category":     ("_system_handler", "handle_help_category"),
-        "_handle_deep_prompt":       ("_system_handler", "handle_deep_prompt"),
+        "_handle_help_category": ("_system_handler", "handle_help_category"),
+        "_handle_deep_prompt": ("_system_handler", "handle_deep_prompt"),
         # --- Deep Engine ---
-        "_handle_deep_command":      ("_deep_handler", "handle_deep_command"),
-        "_start_deep_engine":        ("_deep_handler", "start_deep_engine"),
-        "_create_deep_callbacks":    ("_deep_handler", "_create_deep_callbacks"),
-        "_show_deep_status":         ("_deep_handler", "show_deep_status"),
-        "_show_deep_board":          ("_deep_handler", "show_deep_board"),
-        "_pause_deep_engine":        ("_deep_handler", "pause_deep_engine"),
-        "_resume_deep_engine":       ("_deep_handler", "resume_deep_engine"),
-        "_stop_deep_engine":         ("_deep_handler", "stop_deep_engine"),
-        "_stop_all_deep_engines":    ("_deep_handler", "stop_all_deep_engines"),
-        "_update_deep_context":      ("_deep_handler", "update_deep_context"),
-        "_toggle_deep_log":          ("_deep_handler", "toggle_deep_log"),
-        "_switch_deep_card_mode":    ("_deep_handler", "switch_deep_card_mode"),
+        "_handle_deep_command": ("_deep_handler", "handle_deep_command"),
+        "_start_deep_engine": ("_deep_handler", "start_deep_engine"),
+        "_create_deep_callbacks": ("_deep_handler", "_create_deep_callbacks"),
+        "_show_deep_status": ("_deep_handler", "show_deep_status"),
+        "_show_deep_board": ("_deep_handler", "show_deep_board"),
+        "_pause_deep_engine": ("_deep_handler", "pause_deep_engine"),
+        "_resume_deep_engine": ("_deep_handler", "resume_deep_engine"),
+        "_stop_deep_engine": ("_deep_handler", "stop_deep_engine"),
+        "_stop_all_deep_engines": ("_deep_handler", "stop_all_deep_engines"),
+        "_update_deep_context": ("_deep_handler", "update_deep_context"),
+        "_toggle_deep_log": ("_deep_handler", "toggle_deep_log"),
+        "_switch_deep_card_mode": ("_deep_handler", "switch_deep_card_mode"),
         # --- Loop Engine ---
-        "_handle_loop_command":       ("_loop_handler", "handle_loop_command"),
-        "_start_loop_engine":        ("_loop_handler", "start_loop_engine"),
-        "_show_loop_status":         ("_loop_handler", "show_loop_status"),
-        "_pause_loop_engine":        ("_loop_handler", "pause_loop_engine"),
-        "_resume_loop_engine":       ("_loop_handler", "resume_loop_engine"),
-        "_stop_loop_engine":         ("_loop_handler", "stop_loop_engine"),
-        "_update_loop_guidance":     ("_loop_handler", "update_loop_guidance"),
-        "_toggle_loop_log":          ("_loop_handler", "toggle_loop_log"),
-        "_switch_loop_card_mode":    ("_loop_handler", "switch_loop_card_mode"),
+        "_handle_loop_command": ("_loop_handler", "handle_loop_command"),
+        "_start_loop_engine": ("_loop_handler", "start_loop_engine"),
+        "_show_loop_status": ("_loop_handler", "show_loop_status"),
+        "_pause_loop_engine": ("_loop_handler", "pause_loop_engine"),
+        "_resume_loop_engine": ("_loop_handler", "resume_loop_engine"),
+        "_stop_loop_engine": ("_loop_handler", "stop_loop_engine"),
+        "_update_loop_guidance": ("_loop_handler", "update_loop_guidance"),
+        "_toggle_loop_log": ("_loop_handler", "toggle_loop_log"),
+        "_switch_loop_card_mode": ("_loop_handler", "switch_loop_card_mode"),
         # --- Spec Engine ---
-        "_handle_spec_command":       ("_spec_handler", "handle_spec_command"),
-        "_start_spec_engine":        ("_spec_handler", "start_spec_engine"),
-        "_show_spec_status":         ("_spec_handler", "show_spec_status"),
-        "_pause_spec_engine":        ("_spec_handler", "pause_spec_engine"),
-        "_resume_spec_engine":       ("_spec_handler", "resume_spec_engine"),
-        "_stop_spec_engine":         ("_spec_handler", "stop_spec_engine"),
-        "_update_spec_guidance":     ("_spec_handler", "update_spec_guidance"),
-        "_toggle_spec_log":          ("_spec_handler", "toggle_spec_log"),
-        "_switch_spec_card_mode":    ("_spec_handler", "switch_spec_card_mode"),
-        "_toggle_spec_ac":           ("_spec_handler", "toggle_spec_ac"),
+        "_handle_spec_command": ("_spec_handler", "handle_spec_command"),
+        "_start_spec_engine": ("_spec_handler", "start_spec_engine"),
+        "_show_spec_status": ("_spec_handler", "show_spec_status"),
+        "_pause_spec_engine": ("_spec_handler", "pause_spec_engine"),
+        "_resume_spec_engine": ("_spec_handler", "resume_spec_engine"),
+        "_stop_spec_engine": ("_spec_handler", "stop_spec_engine"),
+        "_update_spec_guidance": ("_spec_handler", "update_spec_guidance"),
+        "_toggle_spec_log": ("_spec_handler", "toggle_spec_log"),
+        "_switch_spec_card_mode": ("_spec_handler", "switch_spec_card_mode"),
+        "_toggle_spec_ac": ("_spec_handler", "toggle_spec_ac"),
         # --- Project ---
-        "_create_project":           ("_project_handler", "create_project"),
-        "_show_project_board":       ("_project_handler", "show_project_board"),
-        "_show_current_project":     ("_project_handler", "show_current_project"),
-        "_show_project_status":      ("_project_handler", "show_project_status"),
+        "_create_project": ("_project_handler", "create_project"),
+        "_show_project_board": ("_project_handler", "show_project_board"),
+        "_show_current_project": ("_project_handler", "show_current_project"),
+        "_show_project_status": ("_project_handler", "show_project_status"),
         "_preserve_project_context": ("_project_handler", "preserve_project_context"),
-        "_restore_project_context":  ("_project_handler", "restore_project_context"),
-        "_close_project":            ("_project_handler", "close_project"),
+        "_restore_project_context": ("_project_handler", "restore_project_context"),
+        "_close_project": ("_project_handler", "close_project"),
         # --- System ---
-        "_show_help":                ("_system_handler", "show_help"),
-        "_show_full_help":           ("_system_handler", "show_full_help"),
-        "_exit_current_mode":        ("_system_handler", "exit_current_mode"),
-        "_submit_shell_command":     ("_system_handler", "submit_shell_command"),
-        "_change_directory":         ("_system_handler", "change_directory"),
+        "_show_help": ("_system_handler", "show_help"),
+        "_show_full_help": ("_system_handler", "show_full_help"),
+        "_exit_current_mode": ("_system_handler", "exit_current_mode"),
+        "_submit_shell_command": ("_system_handler", "submit_shell_command"),
+        "_change_directory": ("_system_handler", "change_directory"),
         "_handle_intercepted_command": ("_system_handler", "handle_intercepted_command"),
         # --- Diagnostics ---
-        "_show_task_board":          ("_diagnostics_handler", "show_task_board"),
-        "_show_context_diff":        ("_diagnostics_handler", "show_context_diff"),
-        "_build_context_diff_report":("_diagnostics_handler", "_build_context_diff_report"),
-        "_submit_diff_report":       ("_diagnostics_handler", "_submit_diff_report"),
-        "_show_message_trace":       ("_diagnostics_handler", "show_message_trace"),
+        "_show_task_board": ("_diagnostics_handler", "show_task_board"),
+        "_show_context_diff": ("_diagnostics_handler", "show_context_diff"),
+        "_build_context_diff_report": ("_diagnostics_handler", "_build_context_diff_report"),
+        "_submit_diff_report": ("_diagnostics_handler", "_submit_diff_report"),
+        "_show_message_trace": ("_diagnostics_handler", "show_message_trace"),
     }
 
     def __getattr__(self, name: str):
@@ -521,40 +668,54 @@ class FeishuWSClient:
 
     # Thin wrappers that cannot be expressed as simple delegation
     def reply(self, message_id: str, content, msg_type: str = "text", chat_id: Optional[str] = None):
+        """轻量回复封装：兼容旧调用路径，实际委托到 handler 的 `_reply_message`。"""
         self._reply_message(message_id, content, msg_type)
 
     def add_reaction(self, message_id: str, emoji_type: str):
+        """轻量表情反馈封装：委托到 handler 的 `add_reaction`。"""
         self._add_reaction(message_id, emoji_type)
 
     def _switch_project(self, message_id: str, chat_id: str, name: str, auto_enter_coco: bool = True):
+        """切换当前 chat 的 active project，并可选自动进入 Coco 模式。"""
         self._project_handler.switch_project(
-            message_id, chat_id, name, auto_enter_coco=auto_enter_coco,
-            coco_handler=self._coco_handler, claude_handler=self._claude_handler,
+            message_id,
+            chat_id,
+            name,
+            auto_enter_coco=auto_enter_coco,
+            coco_handler=self._coco_handler,
+            claude_handler=self._claude_handler,
         )
 
     @staticmethod
     def _is_exit_command(text: str) -> bool:
+        """判断是否为“退出当前编程模式”的命令（跨模式一致）。"""
         return SystemHandler.is_exit_command(text)
 
     @staticmethod
     def _is_deep_command(text: str) -> bool:
+        """判断是否为 Deep Engine 命令。"""
         return SystemHandler.is_deep_command(text)
 
     @staticmethod
     def _is_loop_command(text: str) -> bool:
+        """判断是否为 Loop Engine 命令。"""
         return SystemHandler.is_loop_command(text)
 
     @staticmethod
     def _is_spec_command(text: str) -> bool:
+        """判断是否为 Spec Engine 命令。"""
         return SystemHandler.is_spec_command(text)
 
     @staticmethod
     def _is_interceptable_command(text: str) -> bool:
+        """判断是否为需要系统层拦截的命令（帮助/项目/状态等）。"""
         return SystemHandler.is_interceptable_command(text)
 
     @staticmethod
     def _mode_to_context_source(mode) -> ContextSourceMode:
+        """将 `InteractionMode` 映射到 `ContextSourceMode`（用于统一上下文记录）。"""
         from ..mode import InteractionMode
+
         mapping = {
             InteractionMode.SMART: ContextSourceMode.SMART,
             InteractionMode.COCO: ContextSourceMode.COCO,
@@ -566,7 +727,15 @@ class FeishuWSClient:
     # Core routing — these remain in ws_client.py
     # ==================================================================
 
-    def _resolve_project_from_message(self, message_id: str, chat_id: str, parent_id: Optional[str] = None) -> tuple[Optional[ProjectContext], Optional[str]]:
+    def _resolve_project_from_message(
+        self, message_id: str, chat_id: str, parent_id: Optional[str] = None
+    ) -> tuple[Optional[ProjectContext], Optional[str]]:
+        """根据消息引用（parent/root）解析项目上下文。
+
+        返回：
+        - `project`: 最终解析到的 ProjectContext（或当前 active project）。
+        - `auto_enter_mode`: 若该消息是回复某个编程会话/项目卡片，允许自动进入 `coco/claude`。
+        """
         auto_enter_mode = None
 
         if parent_id:
@@ -589,6 +758,7 @@ class FeishuWSClient:
         return self._project_manager.get_active_project(chat_id), None
 
     def _handle_message(self, data: P2ImMessageReceiveV1):
+        """飞书消息事件入口：只做轻量前置判断，然后交给 scheduler 异步处理。"""
         try:
             msg = data.event.message
             message_id = msg.message_id
@@ -599,8 +769,8 @@ class FeishuWSClient:
 
         project_id = None
         try:
-            parent_id = getattr(data.event.message, 'parent_id', None)
-            root_id = getattr(data.event.message, 'root_id', None)
+            parent_id = getattr(data.event.message, "parent_id", None)
+            root_id = getattr(data.event.message, "root_id", None)
             for ref in (parent_id, root_id):
                 if ref:
                     project_id = self._message_mapper.get_project_id(ref)
@@ -619,6 +789,18 @@ class FeishuWSClient:
         is_system = self._is_system_command_message(data)
         is_shell_fast = False if is_system else self._is_likely_shell_command_message(data)
 
+        is_spec = False
+        try:
+            content_str = data.event.message.content
+            if content_str:
+                import json
+
+                content_dict = json.loads(content_str)
+                text = content_dict.get("text", "").strip()
+                is_spec = self._is_spec_command(text)
+        except Exception:
+            pass
+
         # For likely shell commands, route to a separate shell queue so they
         # don't block behind long-running programming tasks on the project queue.
         shell_queue_key = None
@@ -632,7 +814,7 @@ class FeishuWSClient:
             spec = TaskSpec(
                 chat_id=chat_id,
                 name="process_message",
-                task_type="feishu_message",
+                task_type="spec_command" if is_spec else "feishu_message",
                 message_id=message_id,
                 project_id=project_id,
                 origin_message_id=message_id,
@@ -641,7 +823,20 @@ class FeishuWSClient:
                 is_system_command=is_system,
                 queue_key=shell_queue_key,
             )
-            handle = self._scheduler.submit(spec, lambda ctx, _sf=is_shell_fast: self._process_message_async(data, task_ctx=ctx, shell_fast_tracked=_sf))
+            try:
+                handle = self._scheduler.submit(
+                    spec,
+                    lambda ctx, _sf=is_shell_fast: self._process_message_async(
+                        data, task_ctx=ctx, shell_fast_tracked=_sf
+                    ),
+                )
+            except (RateLimitExceededException, CircuitBreakerOpenException) as e:
+                logger.warning(f"Backpressure applied: {e}")
+                if is_spec:
+                    self._send_text_reply(message_id, "⚠️ 系统繁忙 (Spec 模式)，请稍后再试。")
+                else:
+                    self._send_text_reply(message_id, "⚠️ 当前服务繁忙，请稍后再试。")
+                return
             try:
                 if message_id:
                     self._message_linker.link_task(message_id, handle.run_id)
@@ -661,6 +856,7 @@ class FeishuWSClient:
             if not content_str:
                 return False
             import json
+
             content = json.loads(content_str)
             text = content.get("text", "").strip()
             if text.startswith("@"):
@@ -697,6 +893,10 @@ class FeishuWSClient:
         return SystemHandler.is_likely_shell_command(text) if text else False
 
     def _process_message_async(self, data: P2ImMessageReceiveV1, task_ctx=None, shell_fast_tracked: bool = False):
+        """消息处理主逻辑（运行在 scheduler 线程池中）。
+
+        大致流程：校验 → 解析文本/图片 → 解析项目上下文 → 路由到对应模式/引擎。
+        """
         try:
             event = data.event
             message = event.message
@@ -737,8 +937,13 @@ class FeishuWSClient:
                 return
 
             self._dispatch_message_logic(
-                message_id, chat_id, text, project, auto_enter_mode, 
-                is_image_only=is_image_only, shell_fast_tracked=shell_fast_tracked
+                message_id,
+                chat_id,
+                text,
+                project,
+                auto_enter_mode,
+                is_image_only=is_image_only,
+                shell_fast_tracked=shell_fast_tracked,
             )
 
         except asyncio.TimeoutError:
@@ -755,6 +960,7 @@ class FeishuWSClient:
                 self._pending_image_only.discard(message_id)
 
     def _validate_message(self, message, request_id: str) -> bool:
+        """校验消息是否需要处理（过期/重复/类型不支持等）。"""
         if message.create_time and self._is_message_expired(int(message.create_time)):
             logger.debug("跳过过期消息: %s", message.message_id)
             return False
@@ -770,6 +976,7 @@ class FeishuWSClient:
         return True
 
     def _clean_at_text(self, text: str) -> str:
+        """移除 '@机器人' 前缀，得到用户真实输入文本。"""
         text = text.strip()
         if text.startswith("@"):
             parts = text.split(None, 1)
@@ -779,21 +986,25 @@ class FeishuWSClient:
         return text
 
     def _handle_image_content(self, message, image_keys, text, request_id, task_ctx):
+        """处理图片消息：下载并把图片引用文本拼接回 prompt。
+
+        返回 `(project, auto_enter_mode, text, is_image_only)`。
+        """
         message_id = message.message_id
         chat_id = message.chat_id
-        parent_id = getattr(message, 'parent_id', None)
-        root_id = getattr(message, 'root_id', None)
+        parent_id = getattr(message, "parent_id", None)
+        root_id = getattr(message, "root_id", None)
 
         with self._pending_image_lock:
             self._pending_image_keys[message_id] = image_keys
 
-        project, auto_enter_mode = self._resolve_project_from_message(
-            message_id, chat_id, parent_id or root_id
-        )
+        project, auto_enter_mode = self._resolve_project_from_message(message_id, chat_id, parent_id or root_id)
 
         try:
             if project:
-                self._message_linker.register_origin(message_id, request_id=request_id, chat_id=chat_id, project_id=project.project_id)
+                self._message_linker.register_origin(
+                    message_id, request_id=request_id, chat_id=chat_id, project_id=project.project_id
+                )
         except Exception as e:
             logger.debug("register_origin失败(image_msg): message_id=%s, err=%s", message_id, e)
 
@@ -804,50 +1015,47 @@ class FeishuWSClient:
             project.root_path if project else None,
             self._get_working_dir(chat_id),
         )
-        
+
         image_handler = self._get_image_handler()
-        download_result = image_handler.download_images(
-            message_id, image_keys, save_dir
-        )
-        
+        download_result = image_handler.download_images(message_id, image_keys, save_dir)
+
         is_image_only = False
         if download_result.saved_paths:
             is_image_only = not text
-            ref_text = FeishuImageHandler.build_image_reference_text(
-                download_result.saved_paths
-            )
+            ref_text = FeishuImageHandler.build_image_reference_text(download_result.saved_paths)
             if text:
                 text += ref_text
             else:
                 text = "请查看并理解以下图片" + ref_text
-        
+
         if download_result.failed_keys:
             logger.warning("部分图片下载失败: %s", download_result.failed_keys)
 
         if is_image_only:
             with self._pending_image_lock:
                 self._pending_image_only.add(message_id)
-        
+
         return project, auto_enter_mode, text, is_image_only
 
     def _resolve_message_context(self, message):
+        """从 message 的 parent/root 引用恢复项目上下文。"""
         message_id = message.message_id
         chat_id = message.chat_id
-        parent_id = getattr(message, 'parent_id', None)
-        root_id = getattr(message, 'root_id', None)
-        return self._resolve_project_from_message(
-            message_id, chat_id, parent_id or root_id
-        )
+        parent_id = getattr(message, "parent_id", None)
+        root_id = getattr(message, "root_id", None)
+        return self._resolve_project_from_message(message_id, chat_id, parent_id or root_id)
 
     def _update_task_project(self, task_ctx, project_id):
+        """将调度任务与 project_id 关联（便于任务看板/诊断）。"""
         try:
             self._scheduler.update_project_id(task_ctx.run_id, project_id)
         except Exception as e:
             logger.debug("update_project_id失败: run_id=%s, err=%s", task_ctx.run_id, e)
 
     def _dispatch_empty_text(self, message_id, chat_id, project, task_ctx):
+        """处理“文本为空”的情况：在编程模式下仍转发（保持会话），否则展示帮助。"""
         from ..mode import InteractionMode
-        
+
         _pid = project.project_id if project else None
         if not _pid and task_ctx and task_ctx.spec.project_id:
             _pid = task_ctx.spec.project_id
@@ -864,7 +1072,10 @@ class FeishuWSClient:
         else:
             self._show_help(message_id, chat_id)
 
-    def _dispatch_message_logic(self, message_id, chat_id, text, project, auto_enter_mode, is_image_only=False, shell_fast_tracked=False):
+    def _dispatch_message_logic(
+        self, message_id, chat_id, text, project, auto_enter_mode, is_image_only=False, shell_fast_tracked=False
+    ):
+        """根据 auto-enter 与当前模式，将消息路由到 Coco/Claude/SMART 的处理路径。"""
         if auto_enter_mode == "claude":
             self._enter_claude_mode(message_id, chat_id, silent=True, project=project)
             self._add_reaction(message_id, EmojiReaction.on_coco_mode())
@@ -879,6 +1090,7 @@ class FeishuWSClient:
             self._process_with_intent(message_id, chat_id, text, project, shell_fast_tracked=shell_fast_tracked)
 
     def _handle_card_action(self, data: P2CardActionTrigger) -> Optional[P2CardActionTriggerResponse]:
+        """飞书卡片回调入口：做去重 + 任务入队（system action 走快通道）。"""
         try:
             header = data.header
             event_id = header.event_id
@@ -900,9 +1112,13 @@ class FeishuWSClient:
             logger.debug(
                 "卡片回调收到: event_id=%s, event_type=%s, open_message_id=%s, open_chat_id=%s, "
                 "action_tag=%s, action_name=%s, value_type=%s, value_preview=%s",
-                header.event_id, header.event_type,
-                context.open_message_id, context.open_chat_id,
-                action.tag, action.name, type(action.value).__name__,
+                header.event_id,
+                header.event_type,
+                context.open_message_id,
+                context.open_chat_id,
+                action.tag,
+                action.name,
+                type(action.value).__name__,
                 value_preview,
             )
         except Exception as e:
@@ -962,7 +1178,9 @@ class FeishuWSClient:
             try:
                 self._message_linker.link_task(origin_message_id, handle.run_id)
             except Exception as e:
-                logger.debug("link_task失败(card_action): origin=%s, run_id=%s, err=%s", origin_message_id, handle.run_id, e)
+                logger.debug(
+                    "link_task失败(card_action): origin=%s, run_id=%s, err=%s", origin_message_id, handle.run_id, e
+                )
         return None
 
     def _is_system_card_action(self, data: P2CardActionTrigger) -> bool:
@@ -973,6 +1191,7 @@ class FeishuWSClient:
                 action_type = value_raw.get("action", "")
             elif isinstance(value_raw, str):
                 import json
+
                 try:
                     parsed = json.loads(value_raw)
                     action_type = parsed.get("action", "") if isinstance(parsed, dict) else ""
@@ -981,18 +1200,31 @@ class FeishuWSClient:
             else:
                 action_type = ""
             system_actions = {
-                "show_status", "switch_project", "show_board", "refresh_board",
-                "show_detail", "new_project_prompt",
-                "select_ttadk_tool", "select_ttadk_model",
+                "show_status",
+                "switch_project",
+                "show_board",
+                "refresh_board",
+                "show_detail",
+                "new_project_prompt",
+                "select_ttadk_tool",
+                "select_ttadk_model",
                 "refresh_ttadk_models",
                 "load_more",
-                "show_ttadk_menu", "show_help_menu", "enter_deep_prompt", "help_category",
+                "show_ttadk_menu",
+                "show_help_menu",
+                "enter_deep_prompt",
+                "help_category",
             }
             return action_type in system_actions
         except Exception:
             return False
 
     def _process_card_action_async(self, data: Any, task_ctx=None):
+        """卡片动作处理逻辑（第二阶段实现）。
+
+        该方法会把 `action.value` normalize 为 dict，提取 `action/project_id`，并通过
+        `ActionDispatcher` 做 exact/prefix 路由。
+        """
         try:
             start_time = time.perf_counter()
             action = data.event.action
@@ -1002,8 +1234,8 @@ class FeishuWSClient:
             open_chat_id = data.event.context.open_chat_id
             logger.debug(
                 "卡片回调上下文: operator_open_id=%s, operator_user_id=%s, value_raw_type=%s",
-                getattr(operator, 'open_id', None),
-                getattr(operator, 'user_id', None),
+                getattr(operator, "open_id", None),
+                getattr(operator, "user_id", None),
                 type(value_raw).__name__,
             )
 
@@ -1029,15 +1261,17 @@ class FeishuWSClient:
 
             logger.info(
                 "卡片按钮点击: action=%s, project_id=%s, value_keys=%s",
-                action_type, project_id, list(value.keys()),
+                action_type,
+                project_id,
+                list(value.keys()),
             )
 
             # --- Dispatch via ActionDispatcher ---
             matched = self._action_dispatcher.dispatch(action_type, open_message_id, open_chat_id, project_id, value)
-            
+
             if not matched:
                 logger.debug("未注册的卡片动作: %s", action_type)
-            
+
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
             logger.debug("卡片回调处理耗时: %dms", elapsed_ms)
 
@@ -1055,7 +1289,16 @@ class FeishuWSClient:
             except Exception:
                 pass
 
-    def _process_with_intent(self, message_id: str, chat_id: str, text: str, project: Optional[ProjectContext] = None, *, shell_fast_tracked: bool = False):
+    def _process_with_intent(
+        self,
+        message_id: str,
+        chat_id: str,
+        text: str,
+        project: Optional[ProjectContext] = None,
+        *,
+        shell_fast_tracked: bool = False,
+    ):
+        """SMART 模式下的主路由：控制命令优先，其次进入意图识别/多任务执行。"""
         from ..mode import InteractionMode
 
         _pid = project.project_id if project else None
@@ -1121,14 +1364,29 @@ class FeishuWSClient:
             self._submit_shell_command(message_id, chat_id, text, working_dir, project)
             return
 
-        logger.info("意图识别: %s (置信度: %.2f, 任务数: %d)", intent_result.primary_intent.value, intent_result.confidence, len(intent_result.tasks))
+        logger.info(
+            "意图识别: %s (置信度: %.2f, 任务数: %d)",
+            intent_result.primary_intent.value,
+            intent_result.confidence,
+            len(intent_result.tasks),
+        )
 
         if intent_result.is_multi_task:
             self._execute_multi_tasks(message_id, chat_id, intent_result, project)
         else:
-            self._execute_single_task(message_id, chat_id, intent_result.tasks[0] if intent_result.tasks else None, text, project, shell_fast_tracked=shell_fast_tracked)
+            self._execute_single_task(
+                message_id,
+                chat_id,
+                intent_result.tasks[0] if intent_result.tasks else None,
+                text,
+                project,
+                shell_fast_tracked=shell_fast_tracked,
+            )
 
-    def _execute_multi_tasks(self, message_id: str, chat_id: str, intent_result: IntentResult, project: Optional[ProjectContext] = None):
+    def _execute_multi_tasks(
+        self, message_id: str, chat_id: str, intent_result: IntentResult, project: Optional[ProjectContext] = None
+    ):
+        """执行多任务计划（逐步执行；遇到失败停止后续步骤）。"""
         tasks = intent_result.tasks
 
         task_list = [{"description": task.description or self._get_task_description(task)} for task in tasks]
@@ -1139,7 +1397,9 @@ class FeishuWSClient:
 
         all_success = True
         for i, task in enumerate(tasks, 1):
-            success = self._execute_task_step(message_id, chat_id, task, step_num=i, total_steps=len(tasks), project=project)
+            success = self._execute_task_step(
+                message_id, chat_id, task, step_num=i, total_steps=len(tasks), project=project
+            )
 
             if task.intent == IntentType.ENTER_COCO:
                 break
@@ -1154,7 +1414,17 @@ class FeishuWSClient:
         else:
             self._add_reaction(message_id, EmojiReaction.on_error())
 
-    def _execute_single_task(self, message_id: str, chat_id: str, task: Optional[TaskStep], original_text: str, project: Optional[ProjectContext] = None, *, shell_fast_tracked: bool = False):
+    def _execute_single_task(
+        self,
+        message_id: str,
+        chat_id: str,
+        task: Optional[TaskStep],
+        original_text: str,
+        project: Optional[ProjectContext] = None,
+        *,
+        shell_fast_tracked: bool = False,
+    ):
+        """执行单一任务步骤（模式切换/系统命令/引擎命令/执行 shell 等）。"""
         if not task:
             self._reply_message(message_id, "🤔 无法理解你的意图")
             return
@@ -1313,12 +1583,27 @@ class FeishuWSClient:
 
             if project:
                 project.add_conversation("user", cmd, message_id)
-                self._context_manager.update_context(project.project_id, conversation={"role": "user", "content": cmd, "source_mode": "shell", "message_id": message_id})
+                self._context_manager.update_context(
+                    project.project_id,
+                    conversation={"role": "user", "content": cmd, "source_mode": "shell", "message_id": message_id},
+                )
 
         elif intent == IntentType.UNKNOWN:
             self._reply_message(message_id, fmt.format_unknown_intent())
 
-    def _execute_task_step(self, message_id: str, chat_id: str, task: TaskStep, step_num: int, total_steps: int, project: Optional[ProjectContext] = None) -> bool:
+    def _execute_task_step(
+        self,
+        message_id: str,
+        chat_id: str,
+        task: TaskStep,
+        step_num: int,
+        total_steps: int,
+        project: Optional[ProjectContext] = None,
+    ) -> bool:
+        """执行一个 TaskStep，并返回是否成功。
+
+        主要用于 multi-task 场景的逐步执行。
+        """
         intent = task.intent
         data = task.data
         desc = task.description or self._get_task_description(task)
@@ -1360,10 +1645,7 @@ class FeishuWSClient:
                     path = self._get_working_dir(chat_id)
                 project_id = name.lower().replace(" ", "_").replace("-", "_")
                 success, msg, new_project = self._project_manager.create_project(
-                    project_id=project_id,
-                    project_name=name,
-                    root_path=path,
-                    chat_id=chat_id
+                    project_id=project_id, project_name=name, root_path=path, chat_id=chat_id
                 )
                 if success:
                     self._reply_message(message_id, f"✅ 步骤 {step_num}: 已创建项目 {name}")
@@ -1398,6 +1680,7 @@ class FeishuWSClient:
             return False
 
     def _get_task_description(self, task: TaskStep) -> str:
+        """为 TaskStep 生成可读描述（用于多任务计划展示）。"""
         intent = task.intent
         data = task.data
 
@@ -1430,31 +1713,37 @@ class FeishuWSClient:
     # Event stubs (no-op)
     # ==================================================================
     def _handle_reaction_created(self, data):
+        """飞书 reaction 事件回调（当前无需处理，保留占位）。"""
         pass
 
     def _handle_chat_entered(self, data):
+        """飞书 chat entered 事件回调（当前无需处理，保留占位）。"""
         pass
 
     def _handle_message_read(self, data):
+        """飞书 message read 事件回调（当前无需处理，保留占位）。"""
         pass
 
     # ==================================================================
     # WebSocket lifecycle
     # ==================================================================
     def start(self):
-        event_handler = lark.EventDispatcherHandler.builder("", "") \
-            .register_p2_im_message_receive_v1(self._handle_message) \
-            .register_p2_im_message_reaction_created_v1(self._handle_reaction_created) \
-            .register_p2_im_chat_access_event_bot_p2p_chat_entered_v1(self._handle_chat_entered) \
-            .register_p2_im_message_message_read_v1(self._handle_message_read) \
-            .register_p2_card_action_trigger(self._handle_card_action) \
+        """启动 WS 长连接并进入重连循环。
+
+        注意：该方法是阻塞的；通常在主线程调用。
+        """
+        event_handler = (
+            lark.EventDispatcherHandler.builder("", "")
+            .register_p2_im_message_receive_v1(self._handle_message)
+            .register_p2_im_message_reaction_created_v1(self._handle_reaction_created)
+            .register_p2_im_chat_access_event_bot_p2p_chat_entered_v1(self._handle_chat_entered)
+            .register_p2_im_message_message_read_v1(self._handle_message_read)
+            .register_p2_card_action_trigger(self._handle_card_action)
             .build()
+        )
 
         self._client = lark.ws.Client(
-            self.settings.app_id,
-            self.settings.app_secret,
-            event_handler=event_handler,
-            log_level=lark.LogLevel.DEBUG
+            self.settings.app_id, self.settings.app_secret, event_handler=event_handler, log_level=lark.LogLevel.DEBUG
         )
 
         self._message_cache.start_cleanup_thread()
@@ -1462,4 +1751,10 @@ class FeishuWSClient:
 
         logger.info("正在建立飞书长连接...")
         logger.info("多项目管理已启用")
-        self._client.start()
+        # Wrapping start in a loop to handle arbitrary disconnects and ensure 72h+ stability
+        while True:
+            try:
+                self._client.start()
+            except Exception as e:
+                logger.error(f"WebSocket client disconnected with error: {e}. Reconnecting in 5s...")
+                time.sleep(5)

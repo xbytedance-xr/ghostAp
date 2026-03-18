@@ -2,7 +2,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, Any
+from typing import Any, Optional
 
 
 class ProjectStatus(Enum):
@@ -92,17 +92,14 @@ class ProjectContext:
         item = ConversationItem(role=role, content=content, message_id=message_id)
         self.conversation_history.append(item)
         if len(self.conversation_history) > self.max_history_size:
-            self.conversation_history = self.conversation_history[-self.max_history_size:]
+            self.conversation_history = self.conversation_history[-self.max_history_size :]
         self.touch()
 
     def set_coco_mode(self, enabled: bool, session_id: Optional[str] = None, query_count: int = 0):
         self.coco_mode = enabled
         if enabled and session_id:
             self.coco_session_snapshot = CocoSessionSnapshot(
-                session_id=session_id,
-                query_count=query_count,
-                last_query="",
-                is_resumable=True
+                session_id=session_id, query_count=query_count, last_query="", is_resumable=True
             )
         elif not enabled and self.coco_session_snapshot:
             self.coco_session_snapshot.is_resumable = True
@@ -116,10 +113,7 @@ class ProjectContext:
         self.claude_mode = enabled
         if enabled and session_id:
             self.claude_session_snapshot = ClaudeSessionSnapshot(
-                session_id=session_id,
-                query_count=query_count,
-                last_query="",
-                is_resumable=True
+                session_id=session_id, query_count=query_count, last_query="", is_resumable=True
             )
         elif not enabled and self.claude_session_snapshot:
             self.claude_session_snapshot.is_resumable = True
@@ -135,10 +129,7 @@ class ProjectContext:
         self.ttadk_mode = enabled
         if enabled and session_id:
             self.ttadk_session_snapshot = TtadkSessionSnapshot(
-                session_id=session_id,
-                query_count=query_count,
-                last_query="",
-                is_resumable=True
+                session_id=session_id, query_count=query_count, last_query="", is_resumable=True
             )
         elif not enabled and self.ttadk_session_snapshot:
             self.ttadk_session_snapshot.is_resumable = True
@@ -175,21 +166,27 @@ class ProjectContext:
                 "query_count": self.coco_session_snapshot.query_count,
                 "last_query": self.coco_session_snapshot.last_query,
                 "is_resumable": self.coco_session_snapshot.is_resumable,
-            } if self.coco_session_snapshot else None,
+            }
+            if self.coco_session_snapshot
+            else None,
             "claude_mode": self.claude_mode,
             "claude_session_snapshot": {
                 "session_id": self.claude_session_snapshot.session_id,
                 "query_count": self.claude_session_snapshot.query_count,
                 "last_query": self.claude_session_snapshot.last_query,
                 "is_resumable": self.claude_session_snapshot.is_resumable,
-            } if self.claude_session_snapshot else None,
+            }
+            if self.claude_session_snapshot
+            else None,
             "ttadk_mode": self.ttadk_mode,
             "ttadk_session_snapshot": {
                 "session_id": self.ttadk_session_snapshot.session_id,
                 "query_count": self.ttadk_session_snapshot.query_count,
                 "last_query": self.ttadk_session_snapshot.last_query,
                 "is_resumable": self.ttadk_session_snapshot.is_resumable,
-            } if self.ttadk_session_snapshot else None,
+            }
+            if self.ttadk_session_snapshot
+            else None,
             "theme_color": self.theme_color,
             "emoji_prefix": self.emoji_prefix,
             "env_vars": self.env_vars,
@@ -246,10 +243,12 @@ class ProjectContext:
                 is_resumable=snap.get("is_resumable", True),
             )
         for item_data in data.get("conversation_history", []):
-            ctx.conversation_history.append(ConversationItem(
-                role=item_data["role"],
-                content=item_data["content"],
-                timestamp=item_data.get("timestamp", time.time()),
-                message_id=item_data.get("message_id"),
-            ))
+            ctx.conversation_history.append(
+                ConversationItem(
+                    role=item_data["role"],
+                    content=item_data["content"],
+                    timestamp=item_data.get("timestamp", time.time()),
+                    message_id=item_data.get("message_id"),
+                )
+            )
         return ctx

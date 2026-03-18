@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
 from ...project import ContextEntryType
-from ...tasking import TaskSpec, TaskPriority
+from ...tasking import TaskPriority, TaskSpec
 from ...utils.text import format_duration
 from .base import BaseHandler
 
@@ -39,7 +39,9 @@ class DiagnosticsHandler(BaseHandler):
 
         def _status_emoji(st) -> str:
             val = getattr(st, "value", st)
-            return {"queued": "⏳", "running": "🔄", "succeeded": "✅", "failed": "❌", "canceled": "⛔"}.get(str(val), "❓")
+            return {"queued": "⏳", "running": "🔄", "succeeded": "✅", "failed": "❌", "canceled": "⛔"}.get(
+                str(val), "❓"
+            )
 
         if arg in ("all", "-a", "--all"):
             tasks = self.scheduler.list_tasks(chat_id=chat_id, include_done=False, limit=50)
@@ -73,9 +75,11 @@ class DiagnosticsHandler(BaseHandler):
                         lines.append(f"- {emoji} `{st.run_id}` {st.spec.name} ({st.spec.task_type}){pct}{msg}")
 
             msg_type, card_content = CardBuilder.build_smart_response_card(
-                project=None, title="📋 任务看板",
+                project=None,
+                title="📋 任务看板",
                 content="\n".join(lines) if lines else "暂无任务",
-                working_dir=self.get_working_dir(chat_id), show_buttons=True,
+                working_dir=self.get_working_dir(chat_id),
+                show_buttons=True,
             )
             self.reply_message(message_id, card_content, msg_type=msg_type)
             return
@@ -103,7 +107,10 @@ class DiagnosticsHandler(BaseHandler):
                 lines.append(f"- {emoji} `{st.run_id}` {st.spec.name} ({st.spec.task_type}){pct}{msg}")
 
         msg_type, card_content = CardBuilder.build_project_response_card(
-            project, "📋 任务看板", "\n".join(lines), show_buttons=True,
+            project,
+            "📋 任务看板",
+            "\n".join(lines),
+            show_buttons=True,
         )
         self.reply_message(message_id, card_content, msg_type=msg_type)
 
@@ -135,7 +142,9 @@ class DiagnosticsHandler(BaseHandler):
         lines: list[str] = []
 
         # Collect engines across all three types
-        entries: list[tuple[str, str, str, str, str, Optional[float]]] = []  # (mode, task_id, name, status, info, started_at)
+        entries: list[
+            tuple[str, str, str, str, str, Optional[float]]
+        ] = []  # (mode, task_id, name, status, info, started_at)
 
         # Deep engines
         for engine in self.ctx.deep_engine_manager.list_engines(chat_id):
@@ -198,11 +207,15 @@ class DiagnosticsHandler(BaseHandler):
             content = "当前没有 Deep/Loop/Spec 引擎任务\n\n"
             if proj_name:
                 content += f"📂 当前项目: **{proj_name}**\n\n"
-            content += "启动任务:\n• `/deep <需求>` — 单次深度执行\n• `/loop <需求>` — 迭代闭环\n• `/spec <需求>` — 结构化开发"
+            content += (
+                "启动任务:\n• `/deep <需求>` — 单次深度执行\n• `/loop <需求>` — 迭代闭环\n• `/spec <需求>` — 结构化开发"
+            )
             msg_type, card_content = CardBuilder.build_smart_response_card(
-                project=project, title="📊 统一状态",
+                project=project,
+                title="📊 统一状态",
                 content=content,
-                working_dir=self.get_working_dir(chat_id), show_buttons=True,
+                working_dir=self.get_working_dir(chat_id),
+                show_buttons=True,
             )
             self.reply_message(message_id, card_content, msg_type=msg_type)
             return
@@ -216,9 +229,16 @@ class DiagnosticsHandler(BaseHandler):
         entries.sort(key=_sort_key)
 
         status_emoji_map = {
-            "idle": "⏳", "planning": "🧠", "executing": "🔄", "running": "🔄",
-            "analyzing": "🧠", "paused": "⏸️", "completed": "✅",
-            "failed": "❌", "aborted": "⚠️", "clarifying": "❓",
+            "idle": "⏳",
+            "planning": "🧠",
+            "executing": "🔄",
+            "running": "🔄",
+            "analyzing": "🧠",
+            "paused": "⏸️",
+            "completed": "✅",
+            "failed": "❌",
+            "aborted": "⚠️",
+            "clarifying": "❓",
         }
 
         lines.append(f"**引擎任务 ({len(entries)})**\n")
@@ -231,53 +251,72 @@ class DiagnosticsHandler(BaseHandler):
             lines.append("\n_发送 `/status all` 查看包括已完成的任务_")
 
         msg_type, card_content = CardBuilder.build_smart_response_card(
-            project=project, title="📊 统一状态",
+            project=project,
+            title="📊 统一状态",
             content="\n".join(lines),
-            working_dir=self.get_working_dir(chat_id), show_buttons=True,
+            working_dir=self.get_working_dir(chat_id),
+            show_buttons=True,
         )
         self.reply_message(message_id, card_content, msg_type=msg_type)
 
-    def _show_task_detail(self, message_id: str, chat_id: str, task_id: str, project: Optional["ProjectContext"] = None):
+    def _show_task_detail(
+        self, message_id: str, chat_id: str, task_id: str, project: Optional["ProjectContext"] = None
+    ):
         """Show detailed status for a specific task by task_id."""
         # Search across all engine managers
         for engine in self.ctx.deep_engine_manager.list_engines(chat_id):
-            if engine.project and engine.project.task_id and (
-                engine.project.task_id == task_id or task_id in engine.project.task_id
+            if (
+                engine.project
+                and engine.project.task_id
+                and (engine.project.task_id == task_id or task_id in engine.project.task_id)
             ):
                 content = self.ctx.progress_reporter.format_status(engine.project)
                 title = "📊 Deep 任务详情"
                 engine_name = engine.engine_name
                 msg_type, card_content = CardBuilder.build_deep_card(
-                    project=project, title=title, content=content,
-                    engine_name=engine_name, show_buttons=False,
+                    project=project,
+                    title=title,
+                    content=content,
+                    engine_name=engine_name,
+                    show_buttons=False,
                 )
                 self.reply_message(message_id, card_content, msg_type=msg_type)
                 return
 
         for engine in self.ctx.loop_engine_manager.list_engines(chat_id):
-            if engine.project and engine.project.task_id and (
-                engine.project.task_id == task_id or task_id in engine.project.task_id
+            if (
+                engine.project
+                and engine.project.task_id
+                and (engine.project.task_id == task_id or task_id in engine.project.task_id)
             ):
                 content = self.ctx.loop_reporter.format_status(engine.project)
                 title = "📊 Loop 任务详情"
                 engine_name = engine.engine_name
                 msg_type, card_content = CardBuilder.build_deep_card(
-                    project=project, title=title, content=content,
-                    engine_name=f"Loop({engine_name})", show_buttons=False,
+                    project=project,
+                    title=title,
+                    content=content,
+                    engine_name=f"Loop({engine_name})",
+                    show_buttons=False,
                 )
                 self.reply_message(message_id, card_content, msg_type=msg_type)
                 return
 
         for engine in self.ctx.spec_engine_manager.list_engines(chat_id):
-            if engine.project and engine.project.task_id and (
-                engine.project.task_id == task_id or task_id in engine.project.task_id
+            if (
+                engine.project
+                and engine.project.task_id
+                and (engine.project.task_id == task_id or task_id in engine.project.task_id)
             ):
                 content = self.ctx.spec_reporter.format_status(engine.project)
                 title = "📊 Spec 任务详情"
                 engine_name = engine.engine_name
                 msg_type, card_content = CardBuilder.build_deep_card(
-                    project=project, title=title, content=content,
-                    engine_name=f"Spec({engine_name})", show_buttons=False,
+                    project=project,
+                    title=title,
+                    content=content,
+                    engine_name=f"Spec({engine_name})",
+                    show_buttons=False,
                 )
                 self.reply_message(message_id, card_content, msg_type=msg_type)
                 return
@@ -299,9 +338,11 @@ class DiagnosticsHandler(BaseHandler):
             if state.progress_message:
                 lines.append(f"**进度**: {state.progress_message}")
             msg_type, card_content = CardBuilder.build_smart_response_card(
-                project=project, title="📊 任务详情",
+                project=project,
+                title="📊 任务详情",
                 content="\n".join(lines),
-                working_dir=self.get_working_dir(chat_id), show_buttons=False,
+                working_dir=self.get_working_dir(chat_id),
+                show_buttons=False,
             )
             self.reply_message(message_id, card_content, msg_type=msg_type)
             return
@@ -314,7 +355,9 @@ class DiagnosticsHandler(BaseHandler):
     def show_context_diff(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"] = None):
         self._submit_diff_report(message_id, chat_id, text, project)
 
-    def _build_context_diff_report(self, chat_id: str, text: str, project: "ProjectContext") -> tuple[bool, str, Optional[str]]:
+    def _build_context_diff_report(
+        self, chat_id: str, text: str, project: "ProjectContext"
+    ) -> tuple[bool, str, Optional[str]]:
         ctx = self.context_manager.store.get(project.project_id)
         if not ctx:
             return False, "", "该项目暂无上下文记录，无法生成 Diff 报告。"
@@ -353,7 +396,11 @@ class DiagnosticsHandler(BaseHandler):
                 from_vnum = versions[-1].version_number
                 show_current = True
             else:
-                return False, "", "该项目尚无版本书签。\n\n提示：版本书签会在模式切换、项目切换、Deep 完成等关键节点自动创建。"
+                return (
+                    False,
+                    "",
+                    "该项目尚无版本书签。\n\n提示：版本书签会在模式切换、项目切换、Deep 完成等关键节点自动创建。",
+                )
         elif arg_lower in ("current", "now"):
             if not versions:
                 return False, "", "该项目尚无版本书签，无法计算 `current` diff。"
@@ -410,7 +457,7 @@ class DiagnosticsHandler(BaseHandler):
 
         def _short(s: str, n: int = 180) -> str:
             s = (s or "").replace("\r", " ").replace("\n", " ")
-            return s if len(s) <= n else (s[:n - 1] + "…")
+            return s if len(s) <= n else (s[: n - 1] + "…")
 
         header_lines = ["## 🧾 Diff 报告"]
         header_lines.append(f"**项目**: {project.project_name} (`{project.project_id}`)")
@@ -508,9 +555,13 @@ class DiagnosticsHandler(BaseHandler):
         initial = f"🧾 正在生成 Diff 报告...\n\n{ref_note}" if ref_note else "🧾 正在生成 Diff 报告..."
 
         card = streaming_manager.create_streaming_card(
-            chat_id=chat_id, project_name=project.project_name,
-            project_path=project.root_path, project_id=project.project_id,
-            initial_content=initial, is_coco_mode=False, is_claude_mode=False,
+            chat_id=chat_id,
+            project_name=project.project_name,
+            project_path=project.root_path,
+            project_id=project.project_id,
+            initial_content=initial,
+            is_coco_mode=False,
+            is_claude_mode=False,
             reply_to_message_id=message_id,
         )
         card_message_id = streaming_manager.send_streaming_card(card) if card else None
@@ -520,7 +571,9 @@ class DiagnosticsHandler(BaseHandler):
             except Exception:
                 pass
             try:
-                self.ctx.message_linker.register_origin(message_id, request_id=request_id, chat_id=chat_id, project_id=project.project_id)
+                self.ctx.message_linker.register_origin(
+                    message_id, request_id=request_id, chat_id=chat_id, project_id=project.project_id
+                )
                 self.ctx.message_linker.link_reply(message_id, card_message_id)
             except Exception:
                 pass
@@ -528,10 +581,13 @@ class DiagnosticsHandler(BaseHandler):
         spec = TaskSpec(
             chat_id=chat_id,
             queue_key=f"{chat_id}:diff:{project.project_id}",
-            name="diff_report", task_type="diff_report",
+            name="diff_report",
+            task_type="diff_report",
             project_id=project.project_id,
-            message_id=message_id, origin_message_id=message_id,
-            request_id=request_id, priority=TaskPriority.NORMAL,
+            message_id=message_id,
+            origin_message_id=message_id,
+            request_id=request_id,
+            priority=TaskPriority.NORMAL,
         )
 
         def _run(task_ctx):
@@ -546,7 +602,10 @@ class DiagnosticsHandler(BaseHandler):
                 task_ctx.progress("解析参数", 5)
                 if card and card_message_id:
                     try:
-                        streaming_manager.update_content(card, f"🧾 解析参数中（5%）...\n\n{self.format_ref_note(message_id, request_id, run_id=task_ctx.run_id)}")
+                        streaming_manager.update_content(
+                            card,
+                            f"🧾 解析参数中（5%）...\n\n{self.format_ref_note(message_id, request_id, run_id=task_ctx.run_id)}",
+                        )
                     except Exception:
                         pass
 
@@ -564,7 +623,10 @@ class DiagnosticsHandler(BaseHandler):
                 task_ctx.progress("生成报告", 80)
                 if card and card_message_id:
                     try:
-                        streaming_manager.update_content(card, f"🧾 生成报告中（80%）...\n\n{self.format_ref_note(message_id, request_id, run_id=task_ctx.run_id)}")
+                        streaming_manager.update_content(
+                            card,
+                            f"🧾 生成报告中（80%）...\n\n{self.format_ref_note(message_id, request_id, run_id=task_ctx.run_id)}",
+                        )
                     except Exception:
                         pass
 
@@ -574,16 +636,21 @@ class DiagnosticsHandler(BaseHandler):
                     streaming_manager.close_streaming(card, final_content=final)
                 else:
                     msg_type, card_content = CardBuilder.build_project_response_card(
-                        project, "🧾 Diff 报告", final, show_buttons=False,
+                        project,
+                        "🧾 Diff 报告",
+                        final,
+                        show_buttons=False,
                         footer="用法：`/diff`（最近两版） • `/diff current`（到当前） • `/diff N` • `/diff A..B`",
                     )
-                    rid = self.reply_message_with_id(message_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
+                    rid = self.reply_message_with_id(
+                        message_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id
+                    )
                     if rid:
                         self.register_message_project(rid, project)
                 task_ctx.progress("完成", 100)
             except Exception as e:
                 msg = f"Diff 报告生成异常: {e}"
-                final_ref = self.format_ref_note(message_id, request_id, run_id=getattr(task_ctx, 'run_id', None))
+                final_ref = self.format_ref_note(message_id, request_id, run_id=getattr(task_ctx, "run_id", None))
                 final = f"❌ {msg}\n\n{final_ref}" if final_ref else f"❌ {msg}"
                 try:
                     if card and card_message_id:
@@ -663,11 +730,18 @@ class DiagnosticsHandler(BaseHandler):
         footer = "提示：`/trace <id>` 支持 origin/reply/run_id/request_id"
         if project:
             msg_type, card_content = CardBuilder.build_project_response_card(
-                project, "🔎 关联查询", "\n".join(lines), show_buttons=False, footer=footer,
+                project,
+                "🔎 关联查询",
+                "\n".join(lines),
+                show_buttons=False,
+                footer=footer,
             )
         else:
             msg_type, card_content = CardBuilder.build_smart_response_card(
-                project=None, title="🔎 关联查询", content="\n".join(lines),
-                working_dir=self.get_working_dir(chat_id), show_buttons=False,
+                project=None,
+                title="🔎 关联查询",
+                content="\n".join(lines),
+                working_dir=self.get_working_dir(chat_id),
+                show_buttons=False,
             )
         self.reply_message(message_id, card_content, msg_type=msg_type)

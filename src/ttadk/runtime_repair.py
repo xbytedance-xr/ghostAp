@@ -13,14 +13,20 @@ from __future__ import annotations
 import time
 from typing import Any, Callable, Optional
 
-from .models import TTADKModel
-from .models import build_invalid_model_context as _build_invalid_model_context_ssot
-from .models import choose_best_available_model, extract_available_models, is_invalid_model_error
-from .models import resolve_model_id
 from ..config import get_settings
+from .models import (
+    TTADKModel,
+    choose_best_available_model,
+    extract_available_models,
+    is_invalid_model_error,
+    resolve_model_id,
+)
+from .models import build_invalid_model_context as _build_invalid_model_context_ssot
 
 
-def _redact_and_truncate(text: object, *, limit: int = 1600, get_settings_fn: Callable[[], object] = get_settings) -> str:
+def _redact_and_truncate(
+    text: object, *, limit: int = 1600, get_settings_fn: Callable[[], object] = get_settings
+) -> str:
     """对诊断文本做 best-effort 脱敏与截断（复用 ACP diagnostics 配置，失败则仅截断）。"""
     try:
         from ..acp.diagnostics import get_diagnostics_config, redact_text, truncate_text
@@ -136,7 +142,7 @@ def _cooldown_gate(
     # 优先走 manager gate
     if hasattr(manager, "check_and_mark_runtime_invalid_model_repair"):
         try:
-            allowed, _last = getattr(manager, "check_and_mark_runtime_invalid_model_repair")(
+            allowed, _last = manager.check_and_mark_runtime_invalid_model_repair(
                 tool_name=tool,
                 cooldown_s=cooldown_s,
                 now_ts=now,
@@ -198,7 +204,7 @@ def _seed_models(
     # 优先走 manager seed
     if hasattr(manager, "seed_models_from_error"):
         try:
-            names = list(getattr(manager, "seed_models_from_error")(tool, error_blob) or [])
+            names = list(manager.seed_models_from_error(tool, error_blob) or [])
         except Exception:
             names = []
 
@@ -241,7 +247,7 @@ def _seed_models(
                 known.update(names)
             try:
                 if hasattr(manager, "_save_cache_to_file"):
-                    getattr(manager, "_save_cache_to_file")()
+                    manager._save_cache_to_file()
             except Exception:
                 pass
     except Exception:
@@ -315,7 +321,7 @@ def _force_refresh_with_cooldown(
 
     if hasattr(manager, "refresh_models"):
         try:
-            getattr(manager, "refresh_models")(tool_name=tool, cwd=cwd)
+            manager.refresh_models(tool_name=tool, cwd=cwd)
             ok = True
         except Exception:
             ok = False
@@ -361,7 +367,7 @@ def _pick_retry_model(
     """选择要透传给 start_fn 的 retry_model，并写入 resolve_after_repair attempts。"""
     retry_model: Optional[str] = fixed.get("model") if bool(fixed.get("validated")) else None
     try:
-        retry_model_norm = (str(retry_model or "").strip() if retry_model is not None else "")
+        retry_model_norm = str(retry_model or "").strip() if retry_model is not None else ""
     except Exception:
         retry_model_norm = ""
 
@@ -379,11 +385,19 @@ def _pick_retry_model(
             # 规则优先级（保持历史语义，避免行为漂移）：
             # 1) 先走既有 tool-aware 选模规则（select_retry_model），确保同前缀时优先命中 tool token 子集
             # 2) 仅当选模失败（None）时，再用 resolver 做 display/alias → model_id 的映射兜底
-            retry_model = select_retry_model(tool_name=tool, input_model=intent, seeded=list(seeded), allow_autoswitch=allow_autoswitch)
+            retry_model = select_retry_model(
+                tool_name=tool, input_model=intent, seeded=list(seeded), allow_autoswitch=allow_autoswitch
+            )
             if retry_model is None:
                 try:
-                    desc = [TTADKModel(name=str(x), description=str(x), friendly_name=str(x)) for x in (seeded or []) if str(x).strip()]
-                    r, _diag = resolve_model_id(tool_name=tool, input_name=str(intent or ""), descriptors=desc, allow_unknown_passthrough=False)
+                    desc = [
+                        TTADKModel(name=str(x), description=str(x), friendly_name=str(x))
+                        for x in (seeded or [])
+                        if str(x).strip()
+                    ]
+                    r, _diag = resolve_model_id(
+                        tool_name=tool, input_name=str(intent or ""), descriptors=desc, allow_unknown_passthrough=False
+                    )
                     cand = str(getattr(r, "real_name", "") or "").strip()
                     if cand and str(getattr(r, "source", "") or "") != "unknown":
                         retry_model = cand
@@ -400,11 +414,31 @@ def _pick_retry_model(
             "warnings": list(fixed.get("warnings") or []),
             "passthrough_model": retry_model,
             # SSOT：透传模型列表诊断（来自 precheck_fn 的 diagnostics）
-            "models_source": (dict(fixed.get("diagnostics") or {}).get("source") if isinstance(fixed.get("diagnostics"), dict) else None),
-            "models_raw_cmd": (dict(fixed.get("diagnostics") or {}).get("raw_cmd") if isinstance(fixed.get("diagnostics"), dict) else None),
-            "models_exit_code": (dict(fixed.get("diagnostics") or {}).get("exit_code") if isinstance(fixed.get("diagnostics"), dict) else None),
-            "models_stderr_snippet": (dict(fixed.get("diagnostics") or {}).get("stderr_snippet") if isinstance(fixed.get("diagnostics"), dict) else None),
-            "models_freshness": (dict(fixed.get("diagnostics") or {}).get("freshness") if isinstance(fixed.get("diagnostics"), dict) else None),
+            "models_source": (
+                dict(fixed.get("diagnostics") or {}).get("source")
+                if isinstance(fixed.get("diagnostics"), dict)
+                else None
+            ),
+            "models_raw_cmd": (
+                dict(fixed.get("diagnostics") or {}).get("raw_cmd")
+                if isinstance(fixed.get("diagnostics"), dict)
+                else None
+            ),
+            "models_exit_code": (
+                dict(fixed.get("diagnostics") or {}).get("exit_code")
+                if isinstance(fixed.get("diagnostics"), dict)
+                else None
+            ),
+            "models_stderr_snippet": (
+                dict(fixed.get("diagnostics") or {}).get("stderr_snippet")
+                if isinstance(fixed.get("diagnostics"), dict)
+                else None
+            ),
+            "models_freshness": (
+                dict(fixed.get("diagnostics") or {}).get("freshness")
+                if isinstance(fixed.get("diagnostics"), dict)
+                else None
+            ),
         }
     )
 
@@ -522,9 +556,8 @@ def select_retry_model(
     input_model: str,
     seeded: list[str],
     allow_autoswitch: bool,
-    choose_best_fn: Callable[[str, list[str]], Optional[str]] = lambda input_model, available_models: choose_best_available_model(
-        input_model=input_model, available_models=available_models
-    ),
+    choose_best_fn: Callable[[str, list[str]], Optional[str]] = lambda input_model,
+    available_models: choose_best_available_model(input_model=input_model, available_models=available_models),
 ) -> Optional[str]:
     """从 seeded（Invalid model 输出解析出的可用模型列表）中选择要重试的真实模型名。
 
@@ -649,5 +682,15 @@ def repair_invalid_model_startup(
         )
 
     fixed = _resolve_after_repair(precheck_fn=precheck_fn, intent=intent)
-    retry_model = _pick_retry_model(tool=tool, intent=intent, fixed=fixed, seeded=list(seeded), attempts=attempts, get_settings_fn=get_settings_fn)
-    return _run_retry_flow(tool=tool, intent=intent, fixed=fixed, retry_model=retry_model, start_fn=start_fn, fallback_fn=fallback_fn, attempts=attempts)
+    retry_model = _pick_retry_model(
+        tool=tool, intent=intent, fixed=fixed, seeded=list(seeded), attempts=attempts, get_settings_fn=get_settings_fn
+    )
+    return _run_retry_flow(
+        tool=tool,
+        intent=intent,
+        fixed=fixed,
+        retry_model=retry_model,
+        start_fn=start_fn,
+        fallback_fn=fallback_fn,
+        attempts=attempts,
+    )

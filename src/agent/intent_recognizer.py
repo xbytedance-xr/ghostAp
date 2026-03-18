@@ -2,11 +2,13 @@ import json
 import logging
 import os
 import re
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
-from dataclasses import dataclass, field
-from langchain_openai import ChatOpenAI
+
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
+
 from ..config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -74,14 +76,20 @@ class IntentResult:
         return self.tasks[0].data if self.tasks else {}
 
     @classmethod
-    def single(cls, intent: IntentType, confidence: float = 0.0,
-               data: dict = None, original_text: str = "", reasoning: str = "",
-               description: str = "") -> "IntentResult":
+    def single(
+        cls,
+        intent: IntentType,
+        confidence: float = 0.0,
+        data: dict = None,
+        original_text: str = "",
+        reasoning: str = "",
+        description: str = "",
+    ) -> "IntentResult":
         return cls(
             tasks=[TaskStep(intent=intent, description=description, data=data or {})],
             confidence=confidence,
             original_text=original_text,
-            reasoning=reasoning
+            reasoning=reasoning,
         )
 
 
@@ -209,7 +217,6 @@ class IntentRecognizer:
 6. "在当前目录创建项目"时，path 设为空字符串，由系统使用当前工作目录
 7. 退出相关的短语（如"退出"、"结束"）在编程模式下优先判断为 exit_coco"""
 
-
     INTENT_MAP = {
         "enter_coco": IntentType.ENTER_COCO,
         "exit_coco": IntentType.EXIT_COCO,
@@ -279,27 +286,155 @@ class IntentRecognizer:
     }
 
     SHELL_COMMANDS = {
-        "ls", "pwd", "cd", "cat", "head", "tail", "grep", "find", "echo",
-        "mkdir", "touch", "rm", "cp", "mv", "chmod", "chown", "ln",
-        "git", "npm", "yarn", "pnpm", "python", "pip", "uv", "node",
-        "docker", "kubectl", "curl", "wget", "ssh", "scp", "rsync",
-        "ps", "top", "kill", "df", "du", "free", "whoami", "date", "uname",
-        "tar", "zip", "unzip", "gzip", "gunzip", "xz",
-        "vim", "nano", "less", "more", "wc", "sort", "uniq", "awk", "sed",
-        "brew", "apt", "yum", "pacman", "make", "cmake", "cargo", "go",
-        "which", "whereis", "man", "env", "export", "source", "alias",
-        "ping", "netstat", "ifconfig", "ip", "nc", "telnet", "nslookup",
+        "ls",
+        "pwd",
+        "cd",
+        "cat",
+        "head",
+        "tail",
+        "grep",
+        "find",
+        "echo",
+        "mkdir",
+        "touch",
+        "rm",
+        "cp",
+        "mv",
+        "chmod",
+        "chown",
+        "ln",
+        "git",
+        "npm",
+        "yarn",
+        "pnpm",
+        "python",
+        "pip",
+        "uv",
+        "node",
+        "docker",
+        "kubectl",
+        "curl",
+        "wget",
+        "ssh",
+        "scp",
+        "rsync",
+        "ps",
+        "top",
+        "kill",
+        "df",
+        "du",
+        "free",
+        "whoami",
+        "date",
+        "uname",
+        "tar",
+        "zip",
+        "unzip",
+        "gzip",
+        "gunzip",
+        "xz",
+        "vim",
+        "nano",
+        "less",
+        "more",
+        "wc",
+        "sort",
+        "uniq",
+        "awk",
+        "sed",
+        "brew",
+        "apt",
+        "yum",
+        "pacman",
+        "make",
+        "cmake",
+        "cargo",
+        "go",
+        "which",
+        "whereis",
+        "man",
+        "env",
+        "export",
+        "source",
+        "alias",
+        "ping",
+        "netstat",
+        "ifconfig",
+        "ip",
+        "nc",
+        "telnet",
+        "nslookup",
     }
 
     COMMON_WORDS = {
-        "ok", "yes", "no", "hi", "hello", "hey", "thanks", "thank", "good",
-        "nice", "great", "cool", "fine", "sure", "please", "sorry", "wow",
-        "test", "testing", "done", "ready", "start", "stop", "wait", "check",
-        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-        "have", "has", "had", "do", "does", "did", "will", "would", "could",
-        "should", "may", "might", "must", "can", "need", "want", "like",
-        "this", "that", "these", "those", "it", "its", "my", "your", "our",
-        "what", "how", "why", "when", "where", "who", "which",
+        "ok",
+        "yes",
+        "no",
+        "hi",
+        "hello",
+        "hey",
+        "thanks",
+        "thank",
+        "good",
+        "nice",
+        "great",
+        "cool",
+        "fine",
+        "sure",
+        "please",
+        "sorry",
+        "wow",
+        "test",
+        "testing",
+        "done",
+        "ready",
+        "start",
+        "stop",
+        "wait",
+        "check",
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "must",
+        "can",
+        "need",
+        "want",
+        "like",
+        "this",
+        "that",
+        "these",
+        "those",
+        "it",
+        "its",
+        "my",
+        "your",
+        "our",
+        "what",
+        "how",
+        "why",
+        "when",
+        "where",
+        "who",
+        "which",
     }
 
     def __init__(self):
@@ -320,13 +455,13 @@ class IntentRecognizer:
     PROJECT_SWITCH_KEYWORDS = {"切换项目", "换项目", "换到项目", "去项目", "打开项目"}
     PROJECT_LIST_KEYWORDS = {"项目列表", "所有项目", "有哪些项目", "看看项目"}
     DIR_KEYWORDS = {"切换目录", "去目录", "进入目录", "当前目录", "上级目录", "cd "}
-    
+
     ENTER_COCO_KEYWORDS = {"进入编程模式", "编程模式", "开始编程", "进入coco", "coco模式"}
     ENTER_CLAUDE_KEYWORDS = {"进入claude模式", "claude模式", "进入claude", "使用claude"}
     EXIT_MODE_KEYWORDS = {"退出模式", "退出编程模式"}
-    
+
     DEEP_MODE_KEYWORDS = {"deep模式", "深度模式", "deep agent", "复杂任务", "大任务"}
-    
+
     HELP_KEYWORDS = {"帮助", "help", "使用说明", "怎么用", "如何使用"}
 
     COMMAND_TYPO_MAP = {
@@ -358,7 +493,7 @@ class IntentRecognizer:
                     confidence=0.95,
                     original_text=text,
                     reasoning=f"纠正拼写错误: {text_lower} -> {corrected}",
-                    description=f"{desc}（已纠正拼写）"
+                    description=f"{desc}（已纠正拼写）",
                 )
 
         if text_lower in self.EXACT_COMMANDS:
@@ -368,7 +503,7 @@ class IntentRecognizer:
                 confidence=1.0,
                 original_text=text,
                 reasoning=f"精确匹配命令: {text_lower}",
-                description=desc
+                description=desc,
             )
 
         if text_lower == "/coco_info":
@@ -378,7 +513,7 @@ class IntentRecognizer:
                 data={"command": "info"},
                 original_text=text,
                 reasoning="精确匹配: /coco_info",
-                description="查看 Coco 会话信息"
+                description="查看 Coco 会话信息",
             )
 
         if text_lower.startswith("/new "):
@@ -391,7 +526,7 @@ class IntentRecognizer:
                 data={"name": name, "path": path},
                 original_text=text,
                 reasoning="精确匹配: /new 命令",
-                description=f"创建项目: {name}"
+                description=f"创建项目: {name}",
             )
 
         if text_lower.startswith("/switch "):
@@ -402,7 +537,7 @@ class IntentRecognizer:
                 data={"name": name},
                 original_text=text,
                 reasoning="精确匹配: /switch 命令",
-                description=f"切换到项目: {name}"
+                description=f"切换到项目: {name}",
             )
 
         if text_lower.startswith("/close "):
@@ -413,18 +548,18 @@ class IntentRecognizer:
                 data={"name": name},
                 original_text=text,
                 reasoning="精确匹配: /close 命令",
-                description=f"关闭项目: {name}"
+                description=f"关闭项目: {name}",
             )
 
         if text_lower.startswith("/deep_update "):
-            update_message = text[len("/deep_update "):].strip()
+            update_message = text[len("/deep_update ") :].strip()
             return IntentResult.single(
                 intent=IntentType.DEEP_UPDATE,
                 confidence=1.0,
                 data={"message": update_message},
                 original_text=text,
                 reasoning="精确匹配: /deep_update 命令",
-                description="更新 Deep Engine 上下文"
+                description="更新 Deep Engine 上下文",
             )
 
         if text_lower.startswith("/deep_status "):
@@ -432,10 +567,10 @@ class IntentRecognizer:
             return IntentResult.single(
                 intent=IntentType.DEEP_STATUS,
                 confidence=1.0,
-                data={"arg": text[len("/deep_status "):].strip()},
+                data={"arg": text[len("/deep_status ") :].strip()},
                 original_text=text,
                 reasoning="前缀匹配: /deep_status 命令",
-                description="查看 Deep Agent 任务状态"
+                description="查看 Deep Agent 任务状态",
             )
 
         if text_lower.startswith("/stop_deep "):
@@ -443,10 +578,10 @@ class IntentRecognizer:
             return IntentResult.single(
                 intent=IntentType.STOP_DEEP,
                 confidence=1.0,
-                data={"arg": text[len("/stop_deep "):].strip()},
+                data={"arg": text[len("/stop_deep ") :].strip()},
                 original_text=text,
                 reasoning="前缀匹配: /stop_deep 命令",
-                description="停止 Deep Agent 任务"
+                description="停止 Deep Agent 任务",
             )
 
         if text_lower.startswith("/deep "):
@@ -457,18 +592,18 @@ class IntentRecognizer:
                 data={"requirement": requirement},
                 original_text=text,
                 reasoning="精确匹配: /deep 命令",
-                description="启动 Deep Engine"
+                description="启动 Deep Engine",
             )
 
         if text_lower.startswith("/loop_guide "):
-            guide_message = text[len("/loop_guide "):].strip()
+            guide_message = text[len("/loop_guide ") :].strip()
             return IntentResult.single(
                 intent=IntentType.LOOP_GUIDE,
                 confidence=1.0,
                 data={"message": guide_message},
                 original_text=text,
                 reasoning="精确匹配: /loop_guide 命令",
-                description="注入 Loop 引导信息"
+                description="注入 Loop 引导信息",
             )
 
         if text_lower.startswith("/loop "):
@@ -479,18 +614,18 @@ class IntentRecognizer:
                 data={"requirement": requirement},
                 original_text=text,
                 reasoning="精确匹配: /loop 命令",
-                description="启动 Loop Engine"
+                description="启动 Loop Engine",
             )
 
         if text_lower.startswith("/spec_guide "):
-            guide_message = text[len("/spec_guide "):].strip()
+            guide_message = text[len("/spec_guide ") :].strip()
             return IntentResult.single(
                 intent=IntentType.SPEC_GUIDE,
                 confidence=1.0,
                 data={"message": guide_message},
                 original_text=text,
                 reasoning="精确匹配: /spec_guide 命令",
-                description="注入 Spec 引导信息"
+                description="注入 Spec 引导信息",
             )
 
         if text_lower.startswith("/spec "):
@@ -501,7 +636,7 @@ class IntentRecognizer:
                 data={"requirement": requirement},
                 original_text=text,
                 reasoning="精确匹配: /spec 命令",
-                description="启动 Spec Engine"
+                description="启动 Spec Engine",
             )
 
         if any(kw in text_lower for kw in self.EXIT_MODE_KEYWORDS):
@@ -510,7 +645,7 @@ class IntentRecognizer:
                 confidence=0.95,
                 original_text=text,
                 reasoning="检测到退出模式关键词",
-                description="退出当前模式"
+                description="退出当前模式",
             )
 
         if any(kw in text_lower for kw in self.ENTER_COCO_KEYWORDS):
@@ -519,7 +654,7 @@ class IntentRecognizer:
                 confidence=0.95,
                 original_text=text,
                 reasoning="检测到进入 Coco 编程模式关键词",
-                description="进入 Coco 编程模式"
+                description="进入 Coco 编程模式",
             )
 
         if any(kw in text_lower for kw in self.ENTER_CLAUDE_KEYWORDS):
@@ -528,7 +663,7 @@ class IntentRecognizer:
                 confidence=0.95,
                 original_text=text,
                 reasoning="检测到进入 Claude 编程模式关键词",
-                description="进入 Claude 编程模式"
+                description="进入 Claude 编程模式",
             )
 
         if text_lower == "/claude_info":
@@ -538,7 +673,7 @@ class IntentRecognizer:
                 data={"command": "info"},
                 original_text=text,
                 reasoning="精确匹配: /claude_info",
-                description="查看 Claude 会话信息"
+                description="查看 Claude 会话信息",
             )
 
         is_programming = current_mode in ("coco", "claude")
@@ -549,7 +684,7 @@ class IntentRecognizer:
                     confidence=0.95,
                     original_text=text,
                     reasoning=f"{current_mode}模式下检测到退出关键词",
-                    description="退出当前编程模式"
+                    description="退出当前编程模式",
                 )
 
         if any(kw in text_lower for kw in self.PROJECT_LIST_KEYWORDS):
@@ -558,7 +693,7 @@ class IntentRecognizer:
                 confidence=0.9,
                 original_text=text,
                 reasoning="检测到项目列表关键词",
-                description="查看项目列表"
+                description="查看项目列表",
             )
 
         first_word = text_lower.split()[0] if text_lower else ""
@@ -572,7 +707,7 @@ class IntentRecognizer:
                 data={"path": path},
                 original_text=text,
                 reasoning="cd 命令匹配为目录切换",
-                description=f"切换目录: {path}" if path else "查看当前目录"
+                description=f"切换目录: {path}" if path else "查看当前目录",
             )
 
         if first_word in self.SHELL_COMMANDS:
@@ -581,30 +716,32 @@ class IntentRecognizer:
                 confidence=0.95,
                 original_text=text,
                 reasoning=f"Shell命令白名单匹配: {first_word}",
-                description=f"执行命令: {text}"
+                description=f"执行命令: {text}",
             )
 
         if first_word in self.COMMON_WORDS:
             return None
 
-        if (re.match(r'^[a-z][a-z0-9_.-]*$', first_word) and
-            2 <= len(first_word) <= 15 and
-            not any(kw in text_lower for kw in ['帮', '请', '能', '可以', '想', '吗', '呢'])):
+        if (
+            re.match(r"^[a-z][a-z0-9_.-]*$", first_word)
+            and 2 <= len(first_word) <= 15
+            and not any(kw in text_lower for kw in ["帮", "请", "能", "可以", "想", "吗", "呢"])
+        ):
             return IntentResult.single(
                 intent=IntentType.SHELL_COMMAND,
                 confidence=0.7,
                 original_text=text,
                 reasoning=f"可能是命令: {first_word}",
-                description=f"执行命令: {text}"
+                description=f"执行命令: {text}",
             )
 
         return None
 
     def _parse_response(self, content: str) -> tuple[dict, str]:
-        thought_match = re.search(r'###?\s*Thought[^#]*?(?=###|\Z)', content, re.DOTALL | re.IGNORECASE)
+        thought_match = re.search(r"###?\s*Thought[^#]*?(?=###|\Z)", content, re.DOTALL | re.IGNORECASE)
         reasoning = thought_match.group().strip() if thought_match else ""
 
-        json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
+        json_match = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
         if json_match:
             try:
                 return json.loads(json_match.group(1)), reasoning
@@ -623,12 +760,14 @@ class IntentRecognizer:
             try:
                 old_format = json.loads(json_match.group())
                 return {
-                    "tasks": [{
-                        "intent": old_format.get("intent", "unknown"),
-                        "description": "",
-                        "data": old_format.get("data", {})
-                    }],
-                    "confidence": old_format.get("confidence", 0.5)
+                    "tasks": [
+                        {
+                            "intent": old_format.get("intent", "unknown"),
+                            "description": "",
+                            "data": old_format.get("data", {}),
+                        }
+                    ],
+                    "confidence": old_format.get("confidence", 0.5),
                 }, reasoning
             except json.JSONDecodeError:
                 pass
@@ -674,7 +813,7 @@ class IntentRecognizer:
 
             messages = [
                 SystemMessage(content=prompt),
-                HumanMessage(content=f"请分析以下用户输入的意图：\n\n\"{text}\""),
+                HumanMessage(content=f'请分析以下用户输入的意图：\n\n"{text}"'),
             ]
 
             response = llm.invoke(messages)
@@ -690,7 +829,7 @@ class IntentRecognizer:
                     confidence=0.5,
                     original_text=text,
                     reasoning=f"LLM解析失败，默认{fallback.value}: {reasoning}",
-                    description=f"执行: {text}"
+                    description=f"执行: {text}",
                 )
 
             tasks = []
@@ -707,11 +846,7 @@ class IntentRecognizer:
                 if intent == IntentType.CHANGE_DIR and "path" in data:
                     data["path"] = self._normalize_path(data["path"])
 
-                tasks.append(TaskStep(
-                    intent=intent,
-                    description=task_data.get("description", ""),
-                    data=data
-                ))
+                tasks.append(TaskStep(intent=intent, description=task_data.get("description", ""), data=data))
 
             if not tasks:
                 fallback = self._get_fallback_intent(current_mode)
@@ -720,14 +855,11 @@ class IntentRecognizer:
                     confidence=0.5,
                     original_text=text,
                     reasoning="无任务，使用默认意图",
-                    description=f"执行: {text}"
+                    description=f"执行: {text}",
                 )
 
             return IntentResult(
-                tasks=tasks,
-                confidence=result.get("confidence", 0.5),
-                original_text=text,
-                reasoning=reasoning
+                tasks=tasks, confidence=result.get("confidence", 0.5), original_text=text, reasoning=reasoning
             )
 
         except Exception as e:
@@ -738,5 +870,5 @@ class IntentRecognizer:
                 confidence=0.3,
                 original_text=text,
                 reasoning=f"异常回退: {e}",
-                description=f"执行: {text}"
+                description=f"执行: {text}",
             )

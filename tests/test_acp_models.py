@@ -1,7 +1,6 @@
 """Tests for acp.models — data models and enums."""
 
 import time
-import pytest
 
 from src.acp.models import (
     ACPEvent,
@@ -39,8 +38,9 @@ class TestToolCallInfo:
         assert tc.locations == []
 
     def test_with_locations(self):
-        tc = ToolCallInfo(id="tc2", title="Edit", kind="edit", status="in_progress",
-                          locations=["/tmp/a.py", "/tmp/b.py"])
+        tc = ToolCallInfo(
+            id="tc2", title="Edit", kind="edit", status="in_progress", locations=["/tmp/a.py", "/tmp/b.py"]
+        )
         assert len(tc.locations) == 2
 
 
@@ -50,11 +50,13 @@ class TestPlanInfo:
         assert plan.entries == []
 
     def test_plan_with_entries(self):
-        plan = PlanInfo(entries=[
-            PlanEntryInfo(content="step 1", status="completed"),
-            PlanEntryInfo(content="step 2", status="in_progress"),
-            PlanEntryInfo(content="step 3"),
-        ])
+        plan = PlanInfo(
+            entries=[
+                PlanEntryInfo(content="step 1", status="completed"),
+                PlanEntryInfo(content="step 2", status="in_progress"),
+                PlanEntryInfo(content="step 3"),
+            ]
+        )
         assert len(plan.entries) == 3
         assert plan.entries[0].status == "completed"
         assert plan.entries[2].status == "pending"
@@ -109,8 +111,7 @@ class TestACPSessionState:
         assert not state.is_active
 
     def test_roundtrip(self):
-        state = ACPSessionState(session_id="s1", agent_type="claude", cwd="/home",
-                                message_count=3, is_active=True)
+        state = ACPSessionState(session_id="s1", agent_type="claude", cwd="/home", message_count=3, is_active=True)
         d = state.to_dict()
         state2 = ACPSessionState.from_dict(d)
         assert state2.session_id == state.session_id
@@ -129,8 +130,7 @@ class TestPromptResult:
         assert result.modified_files == set()
 
     def test_with_tools(self):
-        tc = ToolCallInfo(id="t1", title="Edit", kind="edit", status="completed",
-                          locations=["/tmp/f.py"])
+        tc = ToolCallInfo(id="t1", title="Edit", kind="edit", status="completed", locations=["/tmp/f.py"])
         result = PromptResult(
             stop_reason="end_turn",
             tool_calls=[tc],
@@ -141,11 +141,13 @@ class TestPromptResult:
 
     def test_ingest_history_tracks_files(self):
         result = PromptResult(stop_reason="end_turn")
-        result.ingest_history([
-            {"kind": "write_file", "data": {"path": "/a.py"}, "ts": time.time()},
-            {"kind": "execute", "data": {"command": "echo hi", "exit_code": 0}, "ts": time.time()},
-            "bad",
-        ])
+        result.ingest_history(
+            [
+                {"kind": "write_file", "data": {"path": "/a.py"}, "ts": time.time()},
+                {"kind": "execute", "data": {"command": "echo hi", "exit_code": 0}, "ts": time.time()},
+                "bad",
+            ]
+        )
         assert "/a.py" in result.modified_files
         assert any(e.get("kind") == "execute" for e in result.tool_results)
 

@@ -3,15 +3,9 @@ from typing import Optional
 
 
 class FeishuMessageFormatter:
-
     @staticmethod
     def _build_post_content(title: str, content_blocks: list) -> dict:
-        return {
-            "zh_cn": {
-                "title": title,
-                "content": content_blocks
-            }
-        }
+        return {"zh_cn": {"title": title, "content": content_blocks}}
 
     @staticmethod
     def _text(text: str, styles: list = None) -> dict:
@@ -48,7 +42,7 @@ class FeishuMessageFormatter:
         stderr: str,
         return_code: int,
         success: bool,
-        error_message: Optional[str] = None
+        error_message: Optional[str] = None,
     ) -> tuple[str, str]:
         title = "✅ 执行成功" if success else "❌ 执行失败"
 
@@ -85,12 +79,7 @@ class FeishuMessageFormatter:
 
         content = [[{"tag": "md", "text": "\n".join(md_parts)}]]
 
-        post_content = {
-            "zh_cn": {
-                "title": title,
-                "content": content
-            }
-        }
+        post_content = {"zh_cn": {"title": title, "content": content}}
 
         return "post", json.dumps(post_content)
 
@@ -104,12 +93,7 @@ class FeishuMessageFormatter:
 
         content = [[{"tag": "md", "text": md_text}]]
 
-        post_content = {
-            "zh_cn": {
-                "title": "🚫 命令被安全检查拦截",
-                "content": content
-            }
-        }
+        post_content = {"zh_cn": {"title": "🚫 命令被安全检查拦截", "content": content}}
 
         return "post", json.dumps(post_content)
 
@@ -140,12 +124,7 @@ class FeishuMessageFormatter:
 
         content = [[{"tag": "md", "text": md_text}]]
 
-        post_content = {
-            "zh_cn": {
-                "title": title,
-                "content": content
-            }
-        }
+        post_content = {"zh_cn": {"title": title, "content": content}}
 
         return "post", json.dumps(post_content)
 
@@ -159,12 +138,7 @@ class FeishuMessageFormatter:
 
         content = [[{"tag": "md", "text": md_text}]]
 
-        post_content = {
-            "zh_cn": {
-                "title": "🤖 已进入 Coco 模式",
-                "content": content
-            }
-        }
+        post_content = {"zh_cn": {"title": "🤖 已进入 Coco 模式", "content": content}}
 
         return "post", json.dumps(post_content)
 
@@ -172,12 +146,7 @@ class FeishuMessageFormatter:
     def format_coco_response(response: str) -> tuple[str, str]:
         content = [[{"tag": "md", "text": response}]]
 
-        post_content = {
-            "zh_cn": {
-                "title": "🤖 Coco",
-                "content": content
-            }
-        }
+        post_content = {"zh_cn": {"title": "🤖 Coco", "content": content}}
 
         return "post", json.dumps(post_content)
 
@@ -203,12 +172,7 @@ class FeishuMessageFormatter:
 
         content = [[{"tag": "md", "text": "\n".join(lines)}]]
 
-        post_content = {
-            "zh_cn": {
-                "title": "📋 执行计划",
-                "content": content
-            }
-        }
+        post_content = {"zh_cn": {"title": "📋 执行计划", "content": content}}
 
         return "post", json.dumps(post_content)
 
@@ -221,12 +185,7 @@ class FeishuMessageFormatter:
 
         content = [[{"tag": "md", "text": md_text}]]
 
-        post_content = {
-            "zh_cn": {
-                "title": "🤔 无法理解你的意图",
-                "content": content
-            }
-        }
+        post_content = {"zh_cn": {"title": "🤔 无法理解你的意图", "content": content}}
 
         return "post", json.dumps(post_content)
 

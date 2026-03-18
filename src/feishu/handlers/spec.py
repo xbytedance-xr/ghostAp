@@ -2,30 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
-import asyncio
 from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
-from ...spec_engine import SpecEngineCallbacks
-from ...spec_engine.task_persistence import list_pending_tasks, load_task_state, delete_task_state
 from ...spec_engine.models import (
     SpecProject,
     SpecProjectStatus,
-    SpecPhase,
-    ReviewResult,
 )
-from ...tasking import TaskSpec, TaskPriority
+from ...spec_engine.task_persistence import delete_task_state, list_pending_tasks, load_task_state
+from ...tasking import TaskPriority, TaskSpec
 from ...utils.errors import fmt_error
-from ...utils.text import append_duration_to_title, generate_task_id
+from ...utils.text import generate_task_id
 from ..emoji import EmojiReaction
-from .base import BaseHandler
 from ..renderers.spec_renderer import SpecRenderer
+from .base import BaseHandler
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
+    from ..handler_context import HandlerContext
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +48,7 @@ class SpecHandler(BaseHandler):
         if text_lower == "/spec_recover":
             self.show_recoverable_tasks(message_id, chat_id)
         elif text_lower.startswith("/spec_recover "):
-            task_id = text[len("/spec_recover "):].strip()
+            task_id = text[len("/spec_recover ") :].strip()
             self.recover_spec_task(message_id, chat_id, task_id, project)
         elif text_lower == "/spec_status" or text_lower.startswith("/spec_status "):
             self.show_spec_status(message_id, chat_id, project)
@@ -71,10 +69,13 @@ class SpecHandler(BaseHandler):
         elif text_lower == "/spec_resume":
             self.resume_spec_engine(message_id, chat_id, project)
         elif text_lower.startswith("/spec_guide "):
-            guide_message = text[len("/spec_guide "):].strip()
+            guide_message = text[len("/spec_guide ") :].strip()
             self.update_spec_guidance(message_id, chat_id, guide_message, project)
         elif text_lower == "/spec_guide":
-            self.reply_message(message_id, "📝 请提供引导信息\n\n用法: `/spec_guide <引导描述>`\n\n例如: `/spec_guide 优先考虑性能优化`")
+            self.reply_message(
+                message_id,
+                "📝 请提供引导信息\n\n用法: `/spec_guide <引导描述>`\n\n例如: `/spec_guide 优先考虑性能优化`",
+            )
         elif text_lower.startswith("/spec "):
             requirement = text[6:].strip()
             self.start_spec_engine(message_id, chat_id, requirement, project)
@@ -104,7 +105,7 @@ class SpecHandler(BaseHandler):
                 "- `/spec_pause`：暂停\n"
                 "- `/spec_resume`：恢复\n"
                 "- `/spec_recover`：列出或恢复异常中断的任务（需指定 Task ID）\n"
-                "- `/stop_spec`：停止\n"
+                "- `/stop_spec`：停止\n",
             )
         else:
             self.reply_message(message_id, "❓ 未知的 Spec 命令")
@@ -112,7 +113,9 @@ class SpecHandler(BaseHandler):
     # ------------------------------------------------------------------
     # start
     # ------------------------------------------------------------------
-    def start_spec_engine(self, message_id: str, chat_id: str, requirement: str, project: Optional["ProjectContext"] = None):
+    def start_spec_engine(
+        self, message_id: str, chat_id: str, requirement: str, project: Optional["ProjectContext"] = None
+    ):
         if not project:
             working_dir = self.get_working_dir(chat_id)
             try:
@@ -135,7 +138,9 @@ class SpecHandler(BaseHandler):
 
         self.add_reaction(message_id, EmojiReaction.on_multi_task_start())
 
-        request_id = self.ensure_request_id(message_id, chat_id=chat_id, project_id=(project.project_id if project else None))
+        request_id = self.ensure_request_id(
+            message_id, chat_id=chat_id, project_id=(project.project_id if project else None)
+        )
         engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
         reporter = self.ctx.spec_reporter
 
@@ -143,18 +148,24 @@ class SpecHandler(BaseHandler):
         content = reporter.format_analyzing_start(requirement)
         title = reporter.get_analyzing_start_title()
         msg_type, card_content = CardBuilder.build_deep_card(
-            project=project, title=title,
+            project=project,
+            title=title,
             content=f"{content}\n\n{self.format_ref_note(message_id, request_id)}" if request_id else content,
-            engine_name=f"Spec({engine_name})", show_buttons=False,
+            engine_name=f"Spec({engine_name})",
+            show_buttons=False,
         )
-        self.reply_message(message_id, card_content, msg_type=msg_type, origin_message_id=message_id, request_id=request_id)
+        self.reply_message(
+            message_id, card_content, msg_type=msg_type, origin_message_id=message_id, request_id=request_id
+        )
 
         engine = self.ctx.spec_engine_manager.get_or_create(chat_id, root_path, engine_name=engine_name)
 
         project_name = project.project_name if project else os.path.basename(root_path) or "spec"
         task_id = generate_task_id(project_name)
 
-        _on_rate_limit = self.create_rate_limit_callback(chat_id, message_id, project, f"Spec({engine_name})", request_id)
+        _on_rate_limit = self.create_rate_limit_callback(
+            chat_id, message_id, project, f"Spec({engine_name})", request_id
+        )
 
         def run_spec_engine():
             try:
@@ -165,22 +176,22 @@ class SpecHandler(BaseHandler):
                     logger.warning("Spec Engine 执行超时 (task_id=%s): %s", task_id, e)
                 else:
                     logger.error("Spec Engine 执行异常: %s", e, exc_info=True)
-                
+
                 # 使用增强的 fmt_error 处理异常消息
-                formatted = fmt_error("", e)
-                if formatted.startswith("❌ 失败: "):
-                    err_msg = formatted[len("❌ 失败: "):]
-                elif formatted == "❌ 失败":
-                    err_msg = "未知错误"
-                else:
-                    err_msg = formatted
-                
+                from ...utils.errors import get_error_detail
+
+                err_msg = get_error_detail(e)
+
                 error_content = reporter.format_error(err_msg)
                 error_title = reporter.get_error_title()
                 err_msg_type, err_card = CardBuilder.build_deep_card(
-                    project=project, title=error_title,
-                    content=f"{error_content}\n\n{self.format_ref_note(message_id, request_id)}" if request_id else error_content,
-                    engine_name=f"Spec({engine_name})", show_buttons=False,
+                    project=project,
+                    title=error_title,
+                    content=f"{error_content}\n\n{self.format_ref_note(message_id, request_id)}"
+                    if request_id
+                    else error_content,
+                    engine_name=f"Spec({engine_name})",
+                    show_buttons=False,
                 )
                 self.send_message(chat_id, err_card, err_msg_type, origin_message_id=message_id, request_id=request_id)
 
@@ -200,7 +211,9 @@ class SpecHandler(BaseHandler):
         try:
             self.ctx.message_linker.link_task(message_id, handle.run_id)
         except Exception as e:
-            logger.debug("link_task失败(spec_engine_run): message_id=%s, run_id=%s, err=%s", message_id, handle.run_id, e)
+            logger.debug(
+                "link_task失败(spec_engine_run): message_id=%s, run_id=%s, err=%s", message_id, handle.run_id, e
+            )
 
     # ------------------------------------------------------------------
     # callbacks factory
@@ -212,16 +225,22 @@ class SpecHandler(BaseHandler):
     # ------------------------------------------------------------------
     # status
     # ------------------------------------------------------------------
-    def show_spec_status(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, origin_message_id: Optional[str] = None):
+    def show_spec_status(
+        self,
+        message_id: str,
+        chat_id: str,
+        project: Optional["ProjectContext"] = None,
+        origin_message_id: Optional[str] = None,
+    ):
         # User command "/spec_status" resets to status view
         if project is None:
             project = self.project_manager.get_active_project(chat_id)
-        
+
         root_path = project.root_path if project else self.get_working_dir(chat_id)
         spec_project_id = project.project_id if project else root_path
-        
+
         self.renderer.update_ui_state(spec_project_id, view_mode="status", view_context={})
-        
+
         self.renderer.render_current_view(message_id, chat_id, project, origin_message_id)
 
     def show_spec_history(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"] = None):
@@ -235,9 +254,11 @@ class SpecHandler(BaseHandler):
             engine = self.ctx.spec_engine_manager.get(chat_id, root_path)
         if not engine or not engine.project:
             msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title="🗂️ Spec 历史",
+                project=project,
+                title="🗂️ Spec 历史",
                 content="当前没有可查询的 Spec 历史（未运行过或未落盘）\n\n发送 `/spec <需求>` 启动后会自动生成历史。",
-                engine_name=f"Spec({engine_name})", show_buttons=False,
+                engine_name=f"Spec({engine_name})",
+                show_buttons=False,
             )
             self.reply_message(message_id, card_content, msg_type=msg_type)
             return
@@ -251,8 +272,11 @@ class SpecHandler(BaseHandler):
             tail = 20
         content = self.ctx.spec_reporter.format_history(engine.project, tail=tail)
         msg_type, card_content = CardBuilder.build_deep_card(
-            project=project, title="🗂️ Spec 历史", content=content,
-            engine_name=f"Spec({engine.engine_name})", show_buttons=False,
+            project=project,
+            title="🗂️ Spec 历史",
+            content=content,
+            engine_name=f"Spec({engine.engine_name})",
+            show_buttons=False,
         )
         self.reply_message(message_id, card_content, msg_type=msg_type)
 
@@ -267,9 +291,11 @@ class SpecHandler(BaseHandler):
             engine = self.ctx.spec_engine_manager.get(chat_id, root_path)
         if not engine or not engine.project:
             msg_type, card_content = CardBuilder.build_deep_card(
-                project=project, title="📈 Spec 指标",
+                project=project,
+                title="📈 Spec 指标",
                 content="当前没有可查询的 Spec 指标（未运行过或未落盘）\n\n发送 `/spec <需求>` 启动后会自动记录指标。",
-                engine_name=f"Spec({engine_name})", show_buttons=False,
+                engine_name=f"Spec({engine_name})",
+                show_buttons=False,
             )
             self.reply_message(message_id, card_content, msg_type=msg_type)
             return
@@ -283,8 +309,11 @@ class SpecHandler(BaseHandler):
             tail = 20
         content = self.ctx.spec_reporter.format_metrics(engine.project, tail=tail)
         msg_type, card_content = CardBuilder.build_deep_card(
-            project=project, title="📈 Spec 指标", content=content,
-            engine_name=f"Spec({engine.engine_name})", show_buttons=False,
+            project=project,
+            title="📈 Spec 指标",
+            content=content,
+            engine_name=f"Spec({engine.engine_name})",
+            show_buttons=False,
         )
         self.reply_message(message_id, card_content, msg_type=msg_type)
 
@@ -307,23 +336,28 @@ class SpecHandler(BaseHandler):
         )
         engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
         msg_type, card_content = CardBuilder.build_deep_card(
-            project=project, title="🧩 Spec 配置", content=content,
-            engine_name=f"Spec({engine_name})", show_buttons=False,
+            project=project,
+            title="🧩 Spec 配置",
+            content=content,
+            engine_name=f"Spec({engine_name})",
+            show_buttons=False,
         )
         self.reply_message(message_id, card_content, msg_type=msg_type)
 
     def export_spec_report(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         if project is None:
             project = self.project_manager.get_active_project(chat_id)
-        
+
         root_path = project.root_path if project else self.get_working_dir(chat_id)
         engine = self.ctx.spec_engine_manager.get(chat_id, root_path)
-        
+
         # Try to load from disk if not in memory
         if not engine:
             try:
                 engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
-                engine = self.ctx.spec_engine_manager.load_or_create_from_disk(chat_id, root_path, engine_name=engine_name)
+                engine = self.ctx.spec_engine_manager.load_or_create_from_disk(
+                    chat_id, root_path, engine_name=engine_name
+                )
             except Exception:
                 pass
 
@@ -348,12 +382,12 @@ class SpecHandler(BaseHandler):
         latest_cycle = spec_project.current_cycle
         if latest_cycle:
             lines.append(f"## Latest Cycle (Cycle {latest_cycle.cycle_number})")
-            
+
             if latest_cycle.spec_content:
                 lines.append("### Functional Spec")
                 lines.append(latest_cycle.spec_content)
                 lines.append("")
-            
+
             if latest_cycle.plan_content:
                 lines.append("### Implementation Plan")
                 lines.append(latest_cycle.plan_content)
@@ -361,7 +395,9 @@ class SpecHandler(BaseHandler):
 
             if latest_cycle.review_result:
                 lines.append("### Review Result")
-                lines.append(self.ctx.spec_reporter.format_review_result(latest_cycle.review_result, latest_cycle.cycle_number))
+                lines.append(
+                    self.ctx.spec_reporter.format_review_result(latest_cycle.review_result, latest_cycle.cycle_number)
+                )
                 lines.append("")
 
         # Save to file
@@ -421,30 +457,46 @@ class SpecHandler(BaseHandler):
             # 断点续传：尝试从磁盘加载
             try:
                 engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
-                engine = self.ctx.spec_engine_manager.load_or_create_from_disk(chat_id, root_path, engine_name=engine_name)
+                engine = self.ctx.spec_engine_manager.load_or_create_from_disk(
+                    chat_id, root_path, engine_name=engine_name
+                )
             except Exception:
                 pass
 
         if not engine:
-            paused = [e for e in self.ctx.spec_engine_manager.list_engines(chat_id)
-                      if e.project and e.project.status in (SpecProjectStatus.PAUSED, SpecProjectStatus.CLARIFYING)]
+            paused = [
+                e
+                for e in self.ctx.spec_engine_manager.list_engines(chat_id)
+                if e.project and e.project.status in (SpecProjectStatus.PAUSED, SpecProjectStatus.CLARIFYING)
+            ]
             if len(paused) == 1:
                 engine = paused[0]
 
-        if engine and engine.project and engine.project.status in (SpecProjectStatus.PAUSED, SpecProjectStatus.CLARIFYING):
-            callbacks = self.renderer.create_spec_callbacks(message_id, chat_id, project, engine_name=engine.engine_name)
+        if (
+            engine
+            and engine.project
+            and engine.project.status in (SpecProjectStatus.PAUSED, SpecProjectStatus.CLARIFYING)
+        ):
+            callbacks = self.renderer.create_spec_callbacks(
+                message_id, chat_id, project, engine_name=engine.engine_name
+            )
 
             def run_resume():
                 engine.resume(callbacks)
 
-            request_id = self.ensure_request_id(message_id, chat_id=chat_id, project_id=(project.project_id if project else None))
+            request_id = self.ensure_request_id(
+                message_id, chat_id=chat_id, project_id=(project.project_id if project else None)
+            )
             spec = TaskSpec(
                 chat_id=chat_id,
                 queue_key=f"{chat_id}:spec:{project.project_id if project else root_path}",
-                name="spec_engine_resume", task_type="spec_engine",
+                name="spec_engine_resume",
+                task_type="spec_engine",
                 project_id=project.project_id if project else None,
-                message_id=message_id, origin_message_id=message_id,
-                request_id=request_id, priority=TaskPriority.HIGH,
+                message_id=message_id,
+                origin_message_id=message_id,
+                request_id=request_id,
+                priority=TaskPriority.HIGH,
             )
             handle = self.scheduler.submit(spec, lambda ctx: run_resume())
             try:
@@ -482,7 +534,9 @@ class SpecHandler(BaseHandler):
     # ------------------------------------------------------------------
     # guidance
     # ------------------------------------------------------------------
-    def update_spec_guidance(self, message_id: str, chat_id: str, guide_message: str, project: Optional["ProjectContext"] = None):
+    def update_spec_guidance(
+        self, message_id: str, chat_id: str, guide_message: str, project: Optional["ProjectContext"] = None
+    ):
         if project is None:
             project = self.project_manager.get_active_project(chat_id)
 
@@ -493,8 +547,11 @@ class SpecHandler(BaseHandler):
         if not engine:
             # Fallback: if there's exactly one runnable engine in the chat
             candidates = [
-                e for e in self.ctx.spec_engine_manager.list_engines(chat_id)
-                if e.project and e.project.status in (
+                e
+                for e in self.ctx.spec_engine_manager.list_engines(chat_id)
+                if e.project
+                and e.project.status
+                in (
                     SpecProjectStatus.RUNNING,
                     SpecProjectStatus.PAUSED,
                     SpecProjectStatus.CLARIFYING,
@@ -518,8 +575,7 @@ class SpecHandler(BaseHandler):
         ):
             self.reply_message(
                 message_id,
-                "⚠️ 当前 Spec 任务状态不支持注入引导（仅支持：运行中/已暂停/待澄清）\n\n"
-                "发送 `/spec_status` 查看状态",
+                "⚠️ 当前 Spec 任务状态不支持注入引导（仅支持：运行中/已暂停/待澄清）\n\n发送 `/spec_status` 查看状态",
             )
             return
 
@@ -530,8 +586,11 @@ class SpecHandler(BaseHandler):
         engine_name = engine.engine_name
 
         msg_type, card_content = CardBuilder.build_deep_card(
-            project=project, title=title, content=content,
-            engine_name=f"Spec({engine_name})", show_buttons=False,
+            project=project,
+            title=title,
+            content=content,
+            engine_name=f"Spec({engine_name})",
+            show_buttons=False,
         )
         self.send_message(chat_id, card_content, msg_type)
 
@@ -547,6 +606,7 @@ class SpecHandler(BaseHandler):
         lines = ["📋 **可恢复的 Spec 任务**\n"]
         for t in tasks:
             import time as _time
+
             created_str = _time.strftime("%Y-%m-%d %H:%M", _time.localtime(t.created_at))
             req_summary = t.requirement[:50] + "..." if len(t.requirement) > 50 else t.requirement
             lines.append(f"**{t.task_id}**")
@@ -560,7 +620,9 @@ class SpecHandler(BaseHandler):
         lines.append("使用 `/spec_recover <任务ID>` 恢复指定任务")
         self.reply_message(message_id, "\n".join(lines))
 
-    def recover_spec_task(self, message_id: str, chat_id: str, task_id: str, project: Optional["ProjectContext"] = None):
+    def recover_spec_task(
+        self, message_id: str, chat_id: str, task_id: str, project: Optional["ProjectContext"] = None
+    ):
         state = load_task_state(task_id)
         if not state:
             self.reply_message(message_id, f"❌ 未找到任务: {task_id}")
@@ -588,18 +650,24 @@ class SpecHandler(BaseHandler):
 
         self.add_reaction(message_id, EmojiReaction.on_multi_task_start())
 
-        request_id = self.ensure_request_id(message_id, chat_id=chat_id, project_id=(project.project_id if project else None))
+        request_id = self.ensure_request_id(
+            message_id, chat_id=chat_id, project_id=(project.project_id if project else None)
+        )
         engine_name = state.agent_type.capitalize() if state.agent_type else "Coco"
         reporter = self.ctx.spec_reporter
 
         content = reporter.format_analyzing_start(state.requirement)
         title = f"🔄 恢复任务 {task_id}"
         msg_type, card_content = CardBuilder.build_deep_card(
-            project=project, title=title,
+            project=project,
+            title=title,
             content=f"{content}\n\n{self.format_ref_note(message_id, request_id)}" if request_id else content,
-            engine_name=f"Spec({engine_name})", show_buttons=False,
+            engine_name=f"Spec({engine_name})",
+            show_buttons=False,
         )
-        self.reply_message(message_id, card_content, msg_type=msg_type, origin_message_id=message_id, request_id=request_id)
+        self.reply_message(
+            message_id, card_content, msg_type=msg_type, origin_message_id=message_id, request_id=request_id
+        )
 
         engine = self.ctx.spec_engine_manager.get_or_create(chat_id, project_path, engine_name=engine_name)
 
@@ -610,14 +678,15 @@ class SpecHandler(BaseHandler):
                 engine._project.status = SpecProjectStatus.PAUSED
                 # Force update total cycle count from snapshot if needed
                 if engine._project.cycles:
-                     engine._project.cycle_count_total = max(
-                         engine._project.cycle_count_total, 
-                         engine._project.cycles[-1].cycle_number
-                     )
+                    engine._project.cycle_count_total = max(
+                        engine._project.cycle_count_total, engine._project.cycles[-1].cycle_number
+                    )
             except Exception as e:
                 logger.warning("恢复 project_snapshot 失败: %s", e)
 
-        _on_rate_limit = self.create_rate_limit_callback(chat_id, message_id, project, f"Spec({engine_name})", request_id)
+        _on_rate_limit = self.create_rate_limit_callback(
+            chat_id, message_id, project, f"Spec({engine_name})", request_id
+        )
 
         def run_spec_engine():
             try:
@@ -631,21 +700,21 @@ class SpecHandler(BaseHandler):
                     logger.warning("Spec Engine 恢复超时 (task_id=%s): %s", task_id, e)
                 else:
                     logger.error("Spec Engine 恢复执行异常: %s", e, exc_info=True)
-                
-                formatted = fmt_error("", e)
-                if formatted.startswith("❌ 失败: "):
-                    err_msg = formatted[len("❌ 失败: "):]
-                elif formatted == "❌ 失败":
-                    err_msg = "未知错误"
-                else:
-                    err_msg = formatted
-                
+
+                from ...utils.errors import get_error_detail
+
+                err_msg = get_error_detail(e)
+
                 error_content = reporter.format_error(err_msg)
                 error_title = reporter.get_error_title()
                 err_msg_type, err_card = CardBuilder.build_deep_card(
-                    project=project, title=error_title,
-                    content=f"{error_content}\n\n{self.format_ref_note(message_id, request_id)}" if request_id else error_content,
-                    engine_name=f"Spec({engine_name})", show_buttons=False,
+                    project=project,
+                    title=error_title,
+                    content=f"{error_content}\n\n{self.format_ref_note(message_id, request_id)}"
+                    if request_id
+                    else error_content,
+                    engine_name=f"Spec({engine_name})",
+                    show_buttons=False,
                 )
                 self.send_message(chat_id, err_card, err_msg_type, origin_message_id=message_id, request_id=request_id)
 
@@ -665,7 +734,9 @@ class SpecHandler(BaseHandler):
         try:
             self.ctx.message_linker.link_task(message_id, handle.run_id)
         except Exception as e:
-            logger.debug("link_task失败(spec_engine_recover): message_id=%s, run_id=%s, err=%s", message_id, handle.run_id, e)
+            logger.debug(
+                "link_task失败(spec_engine_recover): message_id=%s, run_id=%s, err=%s", message_id, handle.run_id, e
+            )
 
     # ------------------------------------------------------------------
     # UI Interaction Handlers
@@ -676,22 +747,22 @@ class SpecHandler(BaseHandler):
         # Note: Spec engine uses 'deep_project_id' key for compatibility/convention with base templates,
         # but in Spec context it might be root_path or project_id.
         spec_project_id = value.get("deep_project_id", "")
-        
+
         # Resolve target project
         target_project = self.project_manager.get_project(project_id) if project_id else None
         if not target_project and spec_project_id:
             try:
                 if os.path.isabs(spec_project_id):
-                     target_project = self.project_manager.find_project_by_path(spec_project_id)
+                    target_project = self.project_manager.find_project_by_path(spec_project_id)
                 else:
-                     target_project = self.project_manager.get_project(spec_project_id)
+                    target_project = self.project_manager.get_project(spec_project_id)
             except Exception:
                 pass
 
         spec_actions = {
-            "spec_pause":  self.pause_spec_engine,
+            "spec_pause": self.pause_spec_engine,
             "spec_resume": self.resume_spec_engine,
-            "spec_stop":   self.stop_spec_engine,
+            "spec_stop": self.stop_spec_engine,
         }
 
         # Try dispatching standard actions first
@@ -719,19 +790,40 @@ class SpecHandler(BaseHandler):
             self.recover_spec_task(open_message_id, open_chat_id, task_id, project=target_project)
             return
 
-    def toggle_spec_log(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, spec_project_id: Optional[str] = None, expanded: bool = False):
+    def toggle_spec_log(
+        self,
+        message_id: str,
+        chat_id: str,
+        project: Optional["ProjectContext"] = None,
+        spec_project_id: Optional[str] = None,
+        expanded: bool = False,
+    ):
         if spec_project_id:
             self.renderer.update_ui_state(spec_project_id, expanded=expanded)
             # Refresh card with new state
             self.show_spec_status(message_id, chat_id, project, origin_message_id=message_id)
 
-    def toggle_spec_ac(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, spec_project_id: Optional[str] = None, expand_ac: bool = False):
+    def toggle_spec_ac(
+        self,
+        message_id: str,
+        chat_id: str,
+        project: Optional["ProjectContext"] = None,
+        spec_project_id: Optional[str] = None,
+        expand_ac: bool = False,
+    ):
         if spec_project_id:
             self.renderer.update_ui_state(spec_project_id, expand_ac=expand_ac)
             # Refresh card with new state
             self.show_spec_status(message_id, chat_id, project, origin_message_id=message_id)
 
-    def switch_spec_card_mode(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, spec_project_id: Optional[str] = None, compact: bool = False):
+    def switch_spec_card_mode(
+        self,
+        message_id: str,
+        chat_id: str,
+        project: Optional["ProjectContext"] = None,
+        spec_project_id: Optional[str] = None,
+        compact: bool = False,
+    ):
         if spec_project_id:
             self.renderer.update_ui_state(spec_project_id, compact=compact)
             # Refresh card with new state

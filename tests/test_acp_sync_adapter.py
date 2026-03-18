@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from unittest.mock import patch
-from pathlib import Path
 import re
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from src.acp import sync_adapter as sa
 from src.acp import diagnostics as diag
+from src.acp import sync_adapter as sa
 
 
 def test_sync_adapter_startup_fail_log_has_err_type_and_err_repr(monkeypatch, caplog):
@@ -86,7 +85,7 @@ def test_sync_adapter_startup_fail_diagnostics_summary_redacted_and_truncated(mo
 
         def start(self, startup_timeout: float = 60, **kwargs):
             e = _EmptyStrErr()
-            setattr(e, "stderr", "token=abc123 api_key=sk-secret-1234567890 " + ("x" * 1000))
+            e.stderr = "token=abc123 api_key=sk-secret-1234567890 " + "x" * 1000
             raise e
 
         def describe_agent(self):
@@ -133,7 +132,7 @@ def test_build_startup_diagnostics_has_error_text_and_fail_reason(monkeypatch):
 
     e = _EmptyStrErr()
     # Ensure classification sees invalid_model
-    setattr(e, "stderr", "Invalid model: foo. Model must be one of: bar,baz")
+    e.stderr = "Invalid model: foo. Model must be one of: bar,baz"
 
     d = sa.build_startup_diagnostics(
         agent_type="ttadk_codex",
@@ -193,12 +192,14 @@ def test_normalize_startup_diagnostics_redacts_and_truncates(monkeypatch):
         "fail_reason": "invalid_model",
     }
     out = diag.normalize_startup_diagnostics(raw, get_settings_fn=lambda: _Cfg())
-    blob = "\n".join([
-        str(out.get("cmd") or ""),
-        " ".join([str(x) for x in (out.get("args") or [])]),
-        str(out.get("stderr_snippet") or ""),
-        str(out.get("error_text") or ""),
-    ])
+    blob = "\n".join(
+        [
+            str(out.get("cmd") or ""),
+            " ".join([str(x) for x in (out.get("args") or [])]),
+            str(out.get("stderr_snippet") or ""),
+            str(out.get("error_text") or ""),
+        ]
+    )
     assert "abc123" not in blob
     assert "sk-secret" not in blob
     assert "***REDACTED***" in blob
@@ -455,7 +456,8 @@ class TestAutoUpdateAgent:
         """Auto-update returns True when subprocess exits 0."""
         monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
         monkeypatch.setattr(
-            sa.subprocess, "run",
+            sa.subprocess,
+            "run",
             lambda *a, **kw: SimpleNamespace(returncode=0, stdout="Updated to v1.2.3", stderr=""),
         )
         assert sa._auto_update_agent("coco") is True
@@ -464,7 +466,8 @@ class TestAutoUpdateAgent:
         """Auto-update returns False when subprocess exits non-zero."""
         monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
         monkeypatch.setattr(
-            sa.subprocess, "run",
+            sa.subprocess,
+            "run",
             lambda *a, **kw: SimpleNamespace(returncode=1, stdout="", stderr="network error"),
         )
         assert sa._auto_update_agent("coco") is False
@@ -473,7 +476,8 @@ class TestAutoUpdateAgent:
         """Auto-update returns False when subprocess raises."""
         monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
         monkeypatch.setattr(
-            sa.subprocess, "run",
+            sa.subprocess,
+            "run",
             lambda *a, **kw: (_ for _ in ()).throw(FileNotFoundError("coco not found")),
         )
         assert sa._auto_update_agent("coco") is False
@@ -528,7 +532,7 @@ class TestResolveWithAutoUpdate:
 
     def test_update_fixes_support(self, monkeypatch):
         """After auto-update, re-probe succeeds."""
-        probe_results = iter([False, True])  # first call False, second True
+        iter([False, True])  # first call False, second True
 
         # Need to work with the lru_cache-decorated function
         monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
@@ -551,7 +555,8 @@ class TestResolveWithAutoUpdate:
         """Auto-update fails → returns False."""
         monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
         monkeypatch.setattr(
-            sa.subprocess, "run",
+            sa.subprocess,
+            "run",
             lambda cmd, **kw: SimpleNamespace(returncode=1, stdout="", stderr="fail"),
         )
         assert sa._resolve_with_auto_update("coco") is False

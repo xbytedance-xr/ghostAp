@@ -5,6 +5,7 @@ acceptance criteria are satisfied. Each iteration sends a prompt,
 tracks tool calls/plan progress, then evaluates criteria.
 """
 
+import gc
 import json
 import logging
 import os
@@ -12,41 +13,44 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from typing import Optional, Callable
+from typing import Callable, Optional
 
-from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
 
-from ..acp import ACPEvent, ACPEventType, ACPEventRenderer
+from ..acp import ACPEvent, ACPEventRenderer, ACPEventType
 from ..agent_session import SyncSession, close_session_safely, create_engine_session
 from ..config import get_settings
 from ..deep_engine.models import EngineRunState
-
+from ..spec_engine.retry import RetryPolicy, get_retry_delay, should_retry
+from ..utils.spec_utils import (
+    CRITERIA_PATTERNS as _CRITERIA_PATTERNS,
+)
+from ..utils.spec_utils import (
+    PERSPECTIVE_TAG_MAP as _PERSPECTIVE_TAG_MAP,
+)
+from ..utils.spec_utils import (
+    parse_review_output_loose as _parse_review_output_loose,
+)
 from .models import (
+    IterationRecord,
+    IterationStatus,
     LoopProject,
     LoopProjectStatus,
     LoopRequirement,
-    IterationRecord,
-    IterationStatus,
-    ReviewPerspective,
     PerspectiveReview,
+    ReviewPerspective,
     ReviewResult,
 )
 from .tracker import IterationTracker
 
 logger = logging.getLogger(__name__)
 
-# 下沉到 utils：review/criteria 解析能力层（避免引擎间私有符号依赖）
-from ..utils.spec_utils import (
-    CRITERIA_PATTERNS as _CRITERIA_PATTERNS,
-    PERSPECTIVE_TAG_MAP as _PERSPECTIVE_TAG_MAP,
-    parse_review_output_loose as _parse_review_output_loose,
-)
-
 
 @dataclass
 class LoopEngineCallbacks:
     """Loop Engine event callbacks."""
+
     on_analyzing_start: Optional[Callable[[str], None]] = None
     on_analyzing_done: Optional[Callable[[LoopProject], None]] = None
     on_iteration_start: Optional[Callable[[int, int], None]] = None  # (current, max)
@@ -60,9 +64,14 @@ class LoopEngineCallbacks:
 class LoopEngine:
     """ACP-driven iterative closed-loop engine."""
 
-    def __init__(self, chat_id: str, root_path: str,
-                 agent_type: str = "coco", engine_name: str = "Coco",
-                 model_name: Optional[str] = None):
+    def __init__(
+        self,
+        chat_id: str,
+        root_path: str,
+        agent_type: str = "coco",
+        engine_name: str = "Coco",
+        model_name: Optional[str] = None,
+    ):
         self.chat_id = chat_id
         self.root_path = os.path.expanduser(root_path)
         self.settings = get_settings()
@@ -120,8 +129,13 @@ class LoopEngine:
         if callbacks.on_analyzing_start:
             callbacks.on_analyzing_start(requirement_text)
 
-        logger.info("[Loop:%s] ACP迭代开始, 需求长度=%d, 路径=%s, agent=%s",
-                     project_name, len(requirement_text), self.root_path, self._agent_type)
+        logger.info(
+            "[Loop:%s] ACP迭代开始, 需求长度=%d, 路径=%s, agent=%s",
+            project_name,
+            len(requirement_text),
+            self.root_path,
+            self._agent_type,
+        )
 
         try:
             # Parse requirement — extract acceptance criteria
@@ -169,7 +183,25 @@ class LoopEngine:
                 # Track events for this iteration
                 iter_tracker = IterationTracker()
                 on_event = self._make_on_event(iter_tracker, iteration, callbacks)
-                result = self._session.send_prompt(prompt, on_event=on_event, timeout=timeout)
+
+                # Retry logic with exponential backoff
+                retry_policy = RetryPolicy(max_retries=3, retry_delay=2.0)
+                attempt = 0
+                result = None
+                while attempt <= retry_policy.max_retries:
+                    try:
+                        result = self._session.send_prompt(prompt, on_event=on_event, timeout=timeout)
+                        break
+                    except Exception as e:
+                        if attempt < retry_policy.max_retries and should_retry(e):
+                            delay = get_retry_delay(attempt, retry_policy)
+                            logger.warning(
+                                f"[Loop] send_prompt 失败: {e}. 正在进行第 {attempt + 1} 次重试，等待 {delay:.1f}s"
+                            )
+                            time.sleep(delay)
+                            attempt += 1
+                        else:
+                            raise
 
                 # Record iteration — full output, proper duration, extract focus
                 iter_end = time.time()
@@ -185,10 +217,14 @@ class LoopEngine:
                     completed_at=iter_end,
                 )
 
-                logger.info("[Loop:%s] 迭代 %d/%d 完成, 工具=%d, 文件=%d",
-                             project_name, iteration, max_iterations,
-                             len(iter_tracker.tool_calls),
-                             len(iter_tracker.modified_files))
+                logger.info(
+                    "[Loop:%s] 迭代 %d/%d 完成, 工具=%d, 文件=%d",
+                    project_name,
+                    iteration,
+                    max_iterations,
+                    len(iter_tracker.tool_calls),
+                    len(iter_tracker.modified_files),
+                )
 
                 # Multi-perspective review phase
                 if review_enabled and self._run_state == EngineRunState.RUNNING:
@@ -200,6 +236,12 @@ class LoopEngine:
 
                 if callbacks.on_iteration_done:
                     callbacks.on_iteration_done(iteration, record)
+
+                # Save state precisely after each iteration finishes to support fine-grained recovery
+                try:
+                    self.save_state()
+                except Exception as e:
+                    logger.warning("[Loop:%s] 细粒度状态保存失败: %s", project_name, e)
 
                 # Evaluate acceptance criteria in the same session
                 criteria_result = self._evaluate_criteria(requirement.acceptance_criteria, iteration)
@@ -213,11 +255,19 @@ class LoopEngine:
                     # Criteria satisfied but review has suggestions — allow extra iterations
                     self._review_extra_used += 1
                     if self._review_extra_used > review_extra_max:
-                        logger.info("[Loop:%s] 验收标准已满足，审查额外迭代超限(%d), 迭代 %d 轮",
-                                     project_name, review_extra_max, iteration)
+                        logger.info(
+                            "[Loop:%s] 验收标准已满足，审查额外迭代超限(%d), 迭代 %d 轮",
+                            project_name,
+                            review_extra_max,
+                            iteration,
+                        )
                         break
-                    logger.info("[Loop:%s] 验收标准已满足但审查有建议, 额外迭代 %d/%d",
-                                 project_name, self._review_extra_used, review_extra_max)
+                    logger.info(
+                        "[Loop:%s] 验收标准已满足但审查有建议, 额外迭代 %d/%d",
+                        project_name,
+                        self._review_extra_used,
+                        review_extra_max,
+                    )
 
                 # Convergence detection
                 if self._detect_convergence():
@@ -237,16 +287,10 @@ class LoopEngine:
             return self._project
 
         except Exception as e:
-            from ..utils.errors import fmt_error
-            # Use fmt_error to robustly format exception
-            formatted = fmt_error("", e)
-            if formatted.startswith("❌ 失败: "):
-                detail = formatted[len("❌ 失败: "):]
-            elif formatted == "❌ 失败":
-                detail = str(e) or "未知错误"
-            else:
-                detail = formatted
-            
+            from ..utils.errors import get_error_detail
+
+            detail = get_error_detail(e)
+
             error_msg = f"Loop执行异常: {detail}"
             logger.error("[Loop:%s] %s", project_name, error_msg)
             if self._project:
@@ -258,6 +302,7 @@ class LoopEngine:
 
         finally:
             self._run_state = EngineRunState.IDLE
+            gc.collect()
 
     def _make_on_event(
         self,
@@ -266,11 +311,13 @@ class LoopEngine:
         callbacks: LoopEngineCallbacks,
     ) -> Callable[[ACPEvent], None]:
         """Create the on_event callback shared by execute and resume loops."""
+
         def on_event(event: ACPEvent, _it=iteration):
             iter_tracker.process(event)
             self._renderer.process_event(event)
             if callbacks.on_iteration_event:
                 callbacks.on_iteration_event(_it, event)
+
         return on_event
 
     def _parse_requirement(self, text: str) -> LoopRequirement:
@@ -337,10 +384,12 @@ class LoopEngine:
                 model=settings.ark_model,
                 temperature=0.1,
             )
-            response = llm.invoke([
-                SystemMessage(content="你是一个需求分析助手，擅长将口语化的产品需求拆解为结构化的验收标准。"),
-                HumanMessage(content=prompt),
-            ])
+            response = llm.invoke(
+                [
+                    SystemMessage(content="你是一个需求分析助手，擅长将口语化的产品需求拆解为结构化的验收标准。"),
+                    HumanMessage(content=prompt),
+                ]
+            )
             return self._extract_criteria_from_llm_response(response.content)
         except Exception as e:
             logger.warning("[Loop] LLM 需求拆解失败: %s, 将使用原始文本", e)
@@ -436,7 +485,7 @@ class LoopEngine:
         if not self._session:
             return {"all_satisfied": False}
 
-        criteria_list = "\n".join(f"CRITERIA_{i+1}: {c}" for i, c in enumerate(criteria))
+        criteria_list = "\n".join(f"CRITERIA_{i + 1}: {c}" for i, c in enumerate(criteria))
         eval_prompt = f"""请评估以下验收标准是否已满足：
 {criteria_list}
 
@@ -458,10 +507,14 @@ CRITERIA_2: FAIL
             # Parse per-criteria results: look for "CRITERIA_N: PASS" or "CRITERIA_N: FAIL"
             per_criteria: dict[int, bool] = {}
             for i in range(len(criteria)):
-                pat = _CRITERIA_PATTERNS[i] if i < len(_CRITERIA_PATTERNS) else re.compile(rf"CRITERIA_{i+1}\s*:\s*(PASS|FAIL)")
+                pat = (
+                    _CRITERIA_PATTERNS[i]
+                    if i < len(_CRITERIA_PATTERNS)
+                    else re.compile(rf"CRITERIA_{i + 1}\s*:\s*(PASS|FAIL)")
+                )
                 match = pat.search(full_text)
                 if match:
-                    per_criteria[i] = (match.group(1) == "PASS")
+                    per_criteria[i] = match.group(1) == "PASS"
 
             # Update CriteriaTracker
             if self._project:
@@ -561,6 +614,7 @@ FAIL
 
         # 1) strict/tolerant parsing (shared utils)
         from ..utils.spec_utils import parse_review_output_strict_tolerant
+
         reviews = parse_review_output_strict_tolerant(raw, iteration)
 
         # 2.5) loose parsing: keyword-pair / JSON / table formats
@@ -577,11 +631,14 @@ FAIL
         if not reviews:
             logger.warning("[Loop] 审查输出解析失败(含LLM兜底), 将视为有改进建议继续迭代")
             for p in ReviewPerspective:
-                reviews.append(PerspectiveReview(
-                    perspective=p, passed=False,
-                    suggestions=["审查输出解析失败，请检查实现质量"],
-                    summary="解析失败",
-                ))
+                reviews.append(
+                    PerspectiveReview(
+                        perspective=p,
+                        passed=False,
+                        suggestions=["审查输出解析失败，请检查实现质量"],
+                        summary="解析失败",
+                    )
+                )
 
         return ReviewResult(reviews=reviews, iteration=iteration)
 
@@ -619,10 +676,12 @@ FAIL
                 model=settings.ark_model,
                 temperature=0.0,
             )
-            response = llm.invoke([
-                SystemMessage(content="你是一个文本解析助手。从审查文本中提取结构化的审查结果，只输出JSON。"),
-                HumanMessage(content=prompt),
-            ])
+            response = llm.invoke(
+                [
+                    SystemMessage(content="你是一个文本解析助手。从审查文本中提取结构化的审查结果，只输出JSON。"),
+                    HumanMessage(content=prompt),
+                ]
+            )
             return self._extract_reviews_from_llm_response(response.content)
         except Exception as e:
             logger.warning("[Loop] LLM 兜底审查解析失败: %s", e)
@@ -651,7 +710,7 @@ FAIL
             return []
 
         try:
-            data = json.loads(cleaned[start:end + 1])
+            data = json.loads(cleaned[start : end + 1])
         except json.JSONDecodeError:
             return []
 
@@ -678,12 +737,14 @@ FAIL
             if passed:
                 suggestions = []
 
-            reviews.append(PerspectiveReview(
-                perspective=perspective,
-                passed=passed,
-                suggestions=suggestions,
-                summary=f"{'通过' if passed else f'{len(suggestions)}条建议'}",
-            ))
+            reviews.append(
+                PerspectiveReview(
+                    perspective=perspective,
+                    passed=passed,
+                    suggestions=suggestions,
+                    summary=f"{'通过' if passed else f'{len(suggestions)}条建议'}",
+                )
+            )
 
         return reviews
 
@@ -712,13 +773,18 @@ FAIL
             review_result = self._parse_review_output(combined_text, iteration)
         except Exception as e:
             logger.warning("[Loop] 多视角审查异常: %s, 将继续迭代", e)
-            review_result = ReviewResult(reviews=[
-                PerspectiveReview(
-                    perspective=p, passed=False,
-                    suggestions=[f"审查执行异常: {e}"],
-                    summary="异常",
-                ) for p in ReviewPerspective
-            ], iteration=iteration)
+            review_result = ReviewResult(
+                reviews=[
+                    PerspectiveReview(
+                        perspective=p,
+                        passed=False,
+                        suggestions=[f"审查执行异常: {e}"],
+                        summary="异常",
+                    )
+                    for p in ReviewPerspective
+                ],
+                iteration=iteration,
+            )
 
         if callbacks.on_review_done:
             callbacks.on_review_done(iteration, review_result)
@@ -848,6 +914,12 @@ FAIL
                 if callbacks.on_iteration_done:
                     callbacks.on_iteration_done(iteration, record)
 
+                # Save state precisely after each iteration finishes to support fine-grained recovery
+                try:
+                    self.save_state()
+                except Exception as e:
+                    logger.warning("[Loop:%s] 细粒度状态保存失败: %s", project_name, e)
+
                 criteria_result = self._evaluate_criteria(requirement.acceptance_criteria, iteration)
                 all_criteria_satisfied = criteria_result.get("all_satisfied", False)
 
@@ -857,8 +929,12 @@ FAIL
                         break
                     self._review_extra_used += 1
                     if self._review_extra_used > review_extra_max:
-                        logger.info("[Loop:%s] 恢复后验收标准已满足，审查额外迭代超限(%d), 迭代 %d 轮",
-                                     project_name, review_extra_max, iteration)
+                        logger.info(
+                            "[Loop:%s] 恢复后验收标准已满足，审查额外迭代超限(%d), 迭代 %d 轮",
+                            project_name,
+                            review_extra_max,
+                            iteration,
+                        )
                         break
 
                 if self._detect_convergence():
@@ -875,14 +951,9 @@ FAIL
                 callbacks.on_project_done(self._project)
 
         except Exception as e:
-            from ..utils.errors import fmt_error
-            formatted = fmt_error("", e)
-            if formatted.startswith("❌ 失败: "):
-                detail = formatted[len("❌ 失败: "):]
-            elif formatted == "❌ 失败":
-                detail = str(e) or "未知错误"
-            else:
-                detail = formatted
+            from ..utils.errors import get_error_detail
+
+            detail = get_error_detail(e)
 
             error_msg = f"Loop恢复异常: {detail}"
             logger.error("[Loop:%s] %s", project_name, error_msg)
@@ -893,6 +964,7 @@ FAIL
 
         finally:
             self._run_state = EngineRunState.IDLE
+            gc.collect()
 
         return self._project
 
@@ -925,6 +997,7 @@ FAIL
             self._session = None
         self._project = None
         self._run_state = EngineRunState.IDLE
+        gc.collect()
 
 
 class LoopEngineManager:
@@ -950,8 +1023,9 @@ class LoopEngineManager:
 
     def get_or_create(self, chat_id: str, root_path: str, engine_name: str = "Coco") -> LoopEngine:
         key = f"{chat_id}:{root_path}"
-        
+
         from ..ttadk import get_ttadk_manager
+
         if engine_name.lower() == "ttadk":
             ttadk_manager = get_ttadk_manager()
             current_tool = ttadk_manager.get_current_tool()

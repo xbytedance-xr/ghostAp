@@ -1,15 +1,15 @@
+import fcntl
+import json
 import logging
 import os
-import json
-import time
 import threading
-import fcntl
+import time
 from contextlib import contextmanager
-from typing import Optional
 from pathlib import Path
+from typing import Optional
 
-from .context import ProjectContext, ProjectStatus
 from ..card.shared import THEMES
+from .context import ProjectContext, ProjectStatus
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +128,7 @@ class ProjectManager:
         chat_id: Optional[str] = None,
     ) -> tuple[ProjectContext, bool]:
         expanded = os.path.expanduser(os.path.abspath(path))
-        
+
         existing = self.find_project_by_path(expanded)
         if existing:
             if chat_id:
@@ -136,25 +136,25 @@ class ProjectManager:
             existing.touch()
             self._save_projects()
             return existing, False
-        
+
         basename = os.path.basename(expanded.rstrip(os.sep))
         if not basename:
             basename = "root"
-        
+
         project_id = basename.lower().replace(" ", "_").replace("-", "_")
         original_id = project_id
         counter = 1
         while project_id in self._projects:
             project_id = f"{original_id}_{counter}"
             counter += 1
-        
+
         success, msg, ctx = self.create_project(
             project_id=project_id,
             project_name=basename,
             root_path=expanded,
             chat_id=chat_id,
         )
-        
+
         if success and ctx:
             return ctx, True
         else:
@@ -164,9 +164,11 @@ class ProjectManager:
         query_lower = query.lower()
         results = []
         for ctx in self._projects.values():
-            if (query_lower in ctx.project_name.lower() or 
-                query_lower in ctx.project_id.lower() or
-                query_lower in ctx.root_path.lower()):
+            if (
+                query_lower in ctx.project_name.lower()
+                or query_lower in ctx.project_id.lower()
+                or query_lower in ctx.root_path.lower()
+            ):
                 results.append(ctx)
         results.sort(key=lambda p: p.last_active, reverse=True)
         return results
@@ -175,10 +177,10 @@ class ProjectManager:
         ctx = self._projects.get(project_id)
         if not ctx:
             return False, f"项目 {project_id} 不存在"
-        
+
         if not os.path.isdir(ctx.root_path):
             return False, f"项目路径不存在: {ctx.root_path}"
-        
+
         return True, ctx.root_path
 
     def get_active_project(self, chat_id: str) -> Optional[ProjectContext]:
@@ -222,9 +224,7 @@ class ProjectManager:
             self._save_projects()
             return True, f"项目 {ctx.project_name} 已关闭"
 
-    def update_working_dir(
-        self, project_id: str, new_dir: str
-    ) -> tuple[bool, str]:
+    def update_working_dir(self, project_id: str, new_dir: str) -> tuple[bool, str]:
         with self._lock:
             ctx = self._projects.get(project_id)
             if not ctx:

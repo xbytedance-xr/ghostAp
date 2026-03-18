@@ -1,11 +1,10 @@
-import os
 import json
 import logging
-from typing import Optional, Callable, Any, TYPE_CHECKING
+import os
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 if TYPE_CHECKING:
-    from .im_client import FeishuIMClient
     from ..config import Settings
 
 logger = logging.getLogger(__name__)
@@ -14,6 +13,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ImageParseResult:
     """飞书消息解析结果：文本 + 图片 key 列表"""
+
     text: str
     image_keys: list[str] = field(default_factory=list)
 
@@ -21,6 +21,7 @@ class ImageParseResult:
 @dataclass
 class ImageDownloadResult:
     """图片下载结果：成功路径 + 失败 key"""
+
     saved_paths: list[str] = field(default_factory=list)
     failed_keys: list[str] = field(default_factory=list)
 
@@ -32,6 +33,7 @@ class FeishuImageHandler:
 
     def __init__(self, api_client_factory: Callable[[], Any], settings: "Settings"):
         from .im_client import FeishuIMClient
+
         self.im_client = FeishuIMClient(api_client_factory, settings)
 
     def parse_message(self, message_type: str, content_str: str) -> ImageParseResult:
@@ -151,7 +153,10 @@ class FeishuImageHandler:
 
         for index, image_key in enumerate(image_keys, 1):
             saved_path = self._download_single_image(
-                message_id, image_key, msg_dir, index,
+                message_id,
+                image_key,
+                msg_dir,
+                index,
             )
             if saved_path:
                 result.saved_paths.append(saved_path)
@@ -169,11 +174,7 @@ class FeishuImageHandler:
     ) -> Optional[str]:
         """下载单张图片，返回保存路径或 None"""
         try:
-            response = self.im_client.get_resource(
-                message_id=message_id,
-                file_key=image_key,
-                resource_type="image"
-            )
+            response = self.im_client.get_resource(message_id=message_id, file_key=image_key, resource_type="image")
 
             if not response or not response.success():
                 return None

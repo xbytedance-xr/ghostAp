@@ -15,17 +15,14 @@ import json
 import re
 from typing import Optional
 
-from ..loop_engine.models import ReviewPerspective, PerspectiveReview
-
+from ..loop_engine.models import PerspectiveReview, ReviewPerspective
 
 # ---------------------------------------------------------------------------
 # Criteria patterns
 # ---------------------------------------------------------------------------
 
 
-CRITERIA_PATTERNS: list[re.Pattern] = [
-    re.compile(rf"CRITERIA_{i}\s*:\s*(PASS|FAIL)") for i in range(1, 101)
-]
+CRITERIA_PATTERNS: list[re.Pattern] = [re.compile(rf"CRITERIA_{i}\s*:\s*(PASS|FAIL)") for i in range(1, 101)]
 
 
 # ---------------------------------------------------------------------------
@@ -63,7 +60,7 @@ def extract_json_blob(text: str) -> Optional[str]:
     start = raw.find("{")
     end = raw.rfind("}")
     if start != -1 and end != -1 and end > start:
-        return raw[start:end + 1]
+        return raw[start : end + 1]
     return None
 
 
@@ -140,7 +137,9 @@ REVIEW_SECTION_PATTERN = re.compile(
 
 REVIEW_HEADER_EN_PATTERNS: list[re.Pattern] = [
     re.compile(r"(?im)^\s*(?:#+\s*)?\[\s*(ARCHITECT|PRODUCT|USER|TESTER|DESIGNER)\s*\]\s*(?:[:：]?\s*(.*))?$"),
-    re.compile(r"(?im)^\s*(?:#+\s*)?\*{1,2}\[\s*(ARCHITECT|PRODUCT|USER|TESTER|DESIGNER)\s*\]\*{1,2}\s*(?:[:：]?\s*(.*))?$"),
+    re.compile(
+        r"(?im)^\s*(?:#+\s*)?\*{1,2}\[\s*(ARCHITECT|PRODUCT|USER|TESTER|DESIGNER)\s*\]\*{1,2}\s*(?:[:：]?\s*(.*))?$"
+    ),
     re.compile(r"(?im)^\s*(?:#+\s*)?\*{1,2}(ARCHITECT|PRODUCT|USER|TESTER|DESIGNER)\*{1,2}\s*(?:[:：]?\s*(.*))?$"),
     re.compile(r"(?im)^\s*#+\s*(ARCHITECT|PRODUCT|USER|TESTER|DESIGNER)\s*(?:[:：]?\s*(.*))?$"),
     re.compile(r"(?im)^\s*(ARCHITECT|PRODUCT|USER|TESTER|DESIGNER)\s*[:：]\s*(.*)$"),
@@ -232,7 +231,7 @@ def split_review_sections(text: str) -> list[tuple[str, str]]:
         return []
     hits.sort(key=lambda x: x[0])
     sections: list[tuple[str, str]] = []
-    for i, (start, end, tag, header_tail) in enumerate(hits):
+    for i, (_start, end, tag, header_tail) in enumerate(hits):
         next_start = hits[i + 1][0] if i + 1 < len(hits) else len(normalized)
         block = normalized[end:next_start].strip("\n")
         # Preserve same-line verdicts like "[ARCHITECT] FAIL" by injecting
@@ -262,12 +261,14 @@ def parse_review_output_strict_tolerant(text: str, iteration: int) -> list[Persp
         found.add(perspective)
         passed = verdict == "PASS"
         suggestions = extract_suggestions_from_body(body) if not passed else []
-        reviews.append(PerspectiveReview(
-            perspective=perspective,
-            passed=passed,
-            suggestions=suggestions,
-            summary=f"{'通过' if passed else f'{len(suggestions)}条建议'}",
-        ))
+        reviews.append(
+            PerspectiveReview(
+                perspective=perspective,
+                passed=passed,
+                suggestions=suggestions,
+                summary=f"{'通过' if passed else f'{len(suggestions)}条建议'}",
+            )
+        )
 
     if reviews:
         return reviews
@@ -299,12 +300,14 @@ def parse_review_output_strict_tolerant(text: str, iteration: int) -> list[Persp
                 if len(tail_candidates) >= 3:
                     break
             suggestions = tail_candidates
-        reviews.append(PerspectiveReview(
-            perspective=perspective,
-            passed=passed,
-            suggestions=suggestions,
-            summary=f"{'通过' if passed else f'{len(suggestions)}条建议'}",
-        ))
+        reviews.append(
+            PerspectiveReview(
+                perspective=perspective,
+                passed=passed,
+                suggestions=suggestions,
+                summary=f"{'通过' if passed else f'{len(suggestions)}条建议'}",
+            )
+        )
 
     return reviews
 
@@ -334,11 +337,7 @@ _LOOSE_PERSPECTIVE_KEYWORDS: dict[str, ReviewPerspective] = {
 _LOOSE_PASS_KEYWORDS = {"pass", "通过"}
 _LOOSE_FAIL_KEYWORDS = {"fail", "不通过", "未通过", "失败"}
 
-_LOOSE_LINE_PATTERN = re.compile(
-    r"(?i)\b("
-    + "|".join(re.escape(k) for k in _LOOSE_PERSPECTIVE_KEYWORDS)
-    + r")\b"
-)
+_LOOSE_LINE_PATTERN = re.compile(r"(?i)\b(" + "|".join(re.escape(k) for k in _LOOSE_PERSPECTIVE_KEYWORDS) + r")\b")
 
 
 def _match_verdict_in_text(text: str) -> Optional[bool]:
@@ -361,7 +360,7 @@ def _try_parse_json_reviews(text: str) -> list[PerspectiveReview]:
     if start == -1 or end == -1 or end <= start:
         return []
     try:
-        data = json.loads(text[start:end + 1])
+        data = json.loads(text[start : end + 1])
     except json.JSONDecodeError:
         return []
     if not isinstance(data, list):
@@ -398,12 +397,14 @@ def _try_parse_json_reviews(text: str) -> list[PerspectiveReview]:
             suggestions_raw = []
         suggestions = [str(s) for s in suggestions_raw if s] if not passed else []
 
-        reviews.append(PerspectiveReview(
-            perspective=perspective,
-            passed=passed,
-            suggestions=suggestions,
-            summary=f"{'通过' if passed else f'{len(suggestions)}条建议'}",
-        ))
+        reviews.append(
+            PerspectiveReview(
+                perspective=perspective,
+                passed=passed,
+                suggestions=suggestions,
+                summary=f"{'通过' if passed else f'{len(suggestions)}条建议'}",
+            )
+        )
     return reviews
 
 
@@ -468,12 +469,14 @@ def parse_review_output_loose(text: str, iteration: int) -> list[PerspectiveRevi
                     elif not next_line:
                         continue
 
-            reviews.append(PerspectiveReview(
-                perspective=perspective,
-                passed=verdict,
-                suggestions=suggestions,
-                summary=f"{'通过' if verdict else f'{len(suggestions)}条建议'}",
-            ))
+            reviews.append(
+                PerspectiveReview(
+                    perspective=perspective,
+                    passed=verdict,
+                    suggestions=suggestions,
+                    summary=f"{'通过' if verdict else f'{len(suggestions)}条建议'}",
+                )
+            )
             break  # Move to next line after finding a match
 
     # Strategy 3: Table format (| 架构师 | PASS |)
@@ -492,11 +495,13 @@ def parse_review_output_loose(text: str, iteration: int) -> list[PerspectiveRevi
             passed = _match_verdict_in_text(verdict_text)
             if passed is None:
                 passed = True
-            reviews.append(PerspectiveReview(
-                perspective=perspective,
-                passed=passed,
-                suggestions=[],
-                summary=f"{'通过' if passed else '有建议'}",
-            ))
+            reviews.append(
+                PerspectiveReview(
+                    perspective=perspective,
+                    passed=passed,
+                    suggestions=[],
+                    summary=f"{'通过' if passed else '有建议'}",
+                )
+            )
 
     return reviews

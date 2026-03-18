@@ -4,12 +4,11 @@ import re
 
 from ..utils.text import format_duration, make_progress_bar
 from .models import (
+    ReviewResult,
+    SpecPhase,
     SpecProject,
     SpecProjectStatus,
-    SpecPhase,
-    ReviewResult,
     SpecWorkItemStatus,
-    ReviewPerspective,
 )
 
 
@@ -66,7 +65,7 @@ class SpecReporter:
     def format_cycle_done(self, cycle_number: int, cycle) -> str:
         status_emoji = "✅" if cycle.status == "completed" else "❌"
         status_text = "完成" if cycle.status == "completed" else "失败"
-        
+
         # Determine focus/summary from cycle phases
         summary = "循环执行结束"
         if cycle.review_result:
@@ -74,7 +73,7 @@ class SpecReporter:
                 summary = "审查通过"
             else:
                 summary = f"审查发现 {cycle.review_result.total_suggestions} 条建议"
-        
+
         # Build output section (e.g. from build phase)
         output_section = ""
         if cycle.build_output:
@@ -106,7 +105,7 @@ class SpecReporter:
                 lines.append(f"{pr.perspective.emoji} **{pr.perspective.display_name}**: {status_text}")
                 for s in pr.suggestions:
                     lines.append(f"  - {s}")
-            
+
             if count < total_reviews:
                 lines.append("\n---")
             else:
@@ -143,9 +142,7 @@ class SpecReporter:
             else:
                 lines.append(f"  🔲 {i + 1}. {criterion}")
 
-        progress_bar = self._make_progress_bar(
-            tracker.satisfied_count, tracker.total_count
-        )
+        progress_bar = self._make_progress_bar(tracker.satisfied_count, tracker.total_count)
         lines.append(f"\n{progress_bar}")
 
         return "\n".join(lines)
@@ -190,18 +187,22 @@ class SpecReporter:
 
             # Actionable next steps
             tips: list[str] = []
-            err = (project.error or "")
+            err = project.error or ""
             if "收敛终止" in err:
-                tips.extend([
-                    "使用 `/spec_guide <补充信息>` 注入更多上下文/约束，帮助继续推进",
-                    "补充缺失的需求澄清点（尤其是 Spec 里出现 NEEDS CLARIFICATION 的内容）",
-                    "必要时提高 `spec_max_cycles` 或暂时关闭 `spec_review_enabled` 以定位阻塞",
-                ])
+                tips.extend(
+                    [
+                        "使用 `/spec_guide <补充信息>` 注入更多上下文/约束，帮助继续推进",
+                        "补充缺失的需求澄清点（尤其是 Spec 里出现 NEEDS CLARIFICATION 的内容）",
+                        "必要时提高 `spec_max_cycles` 或暂时关闭 `spec_review_enabled` 以定位阻塞",
+                    ]
+                )
             elif "最大循环" in err:
-                tips.extend([
-                    "使用 `/spec_guide` 提供更明确的目标与边界，减少反复试错",
-                    "提高 `spec_max_cycles` 并再次运行，或拆分需求缩小范围",
-                ])
+                tips.extend(
+                    [
+                        "使用 `/spec_guide` 提供更明确的目标与边界，减少反复试错",
+                        "提高 `spec_max_cycles` 并再次运行，或拆分需求缩小范围",
+                    ]
+                )
             if tips:
                 lines.append("\n**下一步建议：**")
                 for t in tips:
@@ -386,7 +387,9 @@ class SpecReporter:
         lines.append(
             f"当前: 循环 {last.cycle_number}  •  目标达成度={last.goal_attainment:.2f}  •  优化空间={last.improvement_space:.2f}"
         )
-        lines.append(f"验收标准: {last.satisfied_count}/{last.total_criteria}  •  backlog 待办: {last.backlog_pending}\n")
+        lines.append(
+            f"验收标准: {last.satisfied_count}/{last.total_criteria}  •  backlog 待办: {last.backlog_pending}\n"
+        )
 
         lines.append("**最近变化:**")
         for m in project.metrics_history[-tail:]:
@@ -486,9 +489,7 @@ class SpecReporter:
 
     def get_progress_info(self, project: SpecProject) -> dict:
         return {
-            "progress_bar": self._make_progress_bar(
-                project.satisfied_count, project.total_criteria
-            ),
+            "progress_bar": self._make_progress_bar(project.satisfied_count, project.total_criteria),
             "satisfied_count": project.satisfied_count,
             "total_criteria": project.total_criteria,
             "cycle_count": project.current_cycle_number,

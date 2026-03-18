@@ -7,9 +7,10 @@ from typing import Optional
 
 class EngineRunState(Enum):
     """DeepEngine 运行时状态，替代 _is_running/_should_stop 布尔组合。"""
-    IDLE = "idle"           # 未运行
-    RUNNING = "running"     # 正在执行
-    STOPPING = "stopping"   # 已请求停止，等待当前任务完成
+
+    IDLE = "idle"  # 未运行
+    RUNNING = "running"  # 正在执行
+    STOPPING = "stopping"  # 已请求停止，等待当前任务完成
 
 
 class DeepProjectStatus(Enum):

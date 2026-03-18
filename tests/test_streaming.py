@@ -1,7 +1,7 @@
 import json
-import pytest
 from unittest.mock import MagicMock, patch
-from dataclasses import dataclass
+
+import pytest
 
 from src.card.streaming import StreamingCard, StreamingCardManager
 
@@ -56,13 +56,11 @@ class TestStreamingCardManager:
     def test_build_buttons_smart_mode(self, manager):
         buttons = manager._build_buttons(is_coco_mode=False, project_id="proj_123")
 
-        assert len(buttons) == 2
-        assert buttons[0]["text"]["content"] == "🤖 Coco模式"
-        assert buttons[0]["behaviors"][0]["value"]["action"] == "enter_coco"
-        assert buttons[0].get("size") == "medium"
-        assert buttons[1]["text"]["content"] == "🔮 Claude模式"
-        assert buttons[1]["behaviors"][0]["value"]["action"] == "enter_claude"
-        assert buttons[1].get("size") == "medium"
+        assert len(buttons) == 3
+        actions = [b["behaviors"][0]["value"]["action"] for b in buttons]
+        assert "enter_coco" in actions
+        assert "enter_claude" in actions
+        assert "enter_ttadk" in actions
 
     def test_create_streaming_card_success(self, manager, mock_client):
         card = manager.create_streaming_card(
@@ -109,10 +107,7 @@ class TestStreamingCardManager:
         assert card.header_template == "purple"
 
     def test_create_streaming_card_failure(self, manager, mock_client):
-        card = manager.create_streaming_card(
-            chat_id="chat_123",
-            project_name="TestProject"
-        )
+        card = manager.create_streaming_card(chat_id="chat_123", project_name="TestProject")
 
         assert card is not None
 
@@ -175,7 +170,7 @@ class TestStreamingCardManager:
             title="🤖 Test",
             header_template="blue",
             message_id="msg_123",
-            last_content="same content"
+            last_content="same content",
         )
 
         result = manager.update_content(card, "same content")
@@ -194,24 +189,24 @@ class TestStreamingCardManager:
         )
         card.flow_control_state.last_arrival_time = 1000.0
         card.flow_control_state.content_arrival_rate = 0.0
-        
+
         # Simulate high speed: 200 chars in 0.1s => rate = 2000 chars/s
         with patch("time.time", return_value=1000.1):
-            manager.update_content(card, "start" + "x"*200)
-            
+            manager.update_content(card, "start" + "x" * 200)
+
         # Expect interval to increase towards max (2.0)
         assert card.flow_control_state.content_arrival_rate > 100
         assert card.flow_control_state.min_update_interval_s == manager._flow_control.config.max_interval_s
-        
+
         # Simulate low speed: 1 char in 1.0s => rate = 1 char/s
         # Need to reset time/rate to simulate sequence or just jump
         card.flow_control_state.last_arrival_time = 2000.0
         card.last_content_len = 205
-        card.flow_control_state.content_arrival_rate = 0.0 # reset for clean test
-        
+        card.flow_control_state.content_arrival_rate = 0.0  # reset for clean test
+
         with patch("time.time", return_value=2001.0):
-            manager.update_content(card, "start" + "x"*200 + "y")
-            
+            manager.update_content(card, "start" + "x" * 200 + "y")
+
         # Expect interval to be base (0.3)
         assert card.flow_control_state.content_arrival_rate < 20
         assert card.flow_control_state.min_update_interval_s == manager._flow_control.config.base_interval_s

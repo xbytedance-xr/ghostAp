@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
@@ -325,7 +324,7 @@ class CriteriaTracker:
 
     def init_criteria(self, criteria: list[str]):
         self.criteria = criteria
-        self.satisfied = {i: False for i in range(len(criteria))}
+        self.satisfied = dict.fromkeys(range(len(criteria)), False)
         self.satisfied_at_iteration = {}
 
     def update(self, criteria_id: int, is_satisfied: bool, iteration_id: int):
@@ -376,9 +375,7 @@ class CriteriaTracker:
         tracker.criteria = data.get("criteria", [])
         # JSON keys are strings, convert to int
         tracker.satisfied = {int(k): v for k, v in data.get("satisfied", {}).items()}
-        tracker.satisfied_at_iteration = {
-            int(k): v for k, v in data.get("satisfied_at_iteration", {}).items()
-        }
+        tracker.satisfied_at_iteration = {int(k): v for k, v in data.get("satisfied_at_iteration", {}).items()}
         return tracker
 
 
@@ -423,9 +420,7 @@ class LoopProject:
     task_id: Optional[str] = None  # Human-readable task ID
 
     @classmethod
-    def create(
-        cls, name: str = "", root_path: str = "", chat_id: str = ""
-    ) -> "LoopProject":
+    def create(cls, name: str = "", root_path: str = "", chat_id: str = "") -> "LoopProject":
         if not name:
             name = os.path.basename(root_path) or "loop_project"
         return cls(
@@ -535,13 +530,9 @@ class LoopProject:
         if data.get("requirement"):
             project.requirement = LoopRequirement.from_dict(data["requirement"])
         if data.get("iterations"):
-            project.iterations = [
-                IterationRecord.from_dict(it) for it in data["iterations"]
-            ]
+            project.iterations = [IterationRecord.from_dict(it) for it in data["iterations"]]
         if data.get("criteria_tracker"):
-            project.criteria_tracker = CriteriaTracker.from_dict(
-                data["criteria_tracker"]
-            )
+            project.criteria_tracker = CriteriaTracker.from_dict(data["criteria_tracker"])
         return project
 
 
@@ -606,9 +597,7 @@ class LoopContextManager:
 
             if distance_from_end < recent_full:
                 # 最新轮: 完整输出
-                lines.append(
-                    f"### 第{record.iteration}轮 [{role_label}] {status_emoji}"
-                )
+                lines.append(f"### 第{record.iteration}轮 [{role_label}] {status_emoji}")
                 if record.summary:
                     lines.append(f"摘要: {record.summary}")
                 if record.output:
@@ -617,9 +606,7 @@ class LoopContextManager:
             elif distance_from_end < recent_full + recent_brief:
                 # 近期: 简要摘要
                 summary = record.summary or "(无摘要)"
-                lines.append(
-                    f"- 第{record.iteration}轮 [{role_label}] {status_emoji}: {summary}"
-                )
+                lines.append(f"- 第{record.iteration}轮 [{role_label}] {status_emoji}: {summary}")
             else:
                 # 远期: 一行摘要
                 brief = (

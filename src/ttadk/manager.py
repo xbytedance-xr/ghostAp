@@ -10,24 +10,43 @@
 
 import json
 import logging
-import subprocess
 import shutil
 import threading
 import time
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from .cache import TTADKModelCache
-from .models import TTADKTool, TTADKModel, ToolListResult, ModelListResult, ResolvedModelResult
-from .models import resolve_model_id
-from .models import is_invalid_model_error
-from .models import build_model_list_diagnostics
-from .models import extract_invalid_model_diagnostics, is_stdin_not_tty_error
-from .model_fetcher import TTADKModelFetcher
-from ..config import get_settings
 from ..acp.diagnostics import get_diagnostics_config, redact_text
+from ..config import get_settings
+from .cache import TTADKModelCache
+
+# ---------------------------------------------------------------------------
+# deprecated_* Runtime invalid-model cooldown (compat only)
+# ---------------------------------------------------------------------------
+#
+# 说明：compat 实现已下沉到 `src.ttadk.compat`，本文件仅 re-export 以维持旧导入路径与 monkeypatch 钩子。
+from .compat import _LEGACY_STUB_COOLDOWN_STORE as _LEGACY_STUB_COOLDOWN_STORE
+from .compat import _STUB_COOLDOWN as _STUB_COOLDOWN
+from .compat import _runtime_invalid_model_stub_get_last_ts as _runtime_invalid_model_stub_get_last_ts
+from .compat import _runtime_invalid_model_stub_key as _runtime_invalid_model_stub_key
+from .compat import _runtime_invalid_model_stub_limits as _runtime_invalid_model_stub_limits
+from .compat import _runtime_invalid_model_stub_set_last_ts as _runtime_invalid_model_stub_set_last_ts
+from .compat import _runtime_invalid_model_stub_store as _runtime_invalid_model_stub_store
+from .compat import _runtime_invalid_model_stub_store_unlocked as _runtime_invalid_model_stub_store_unlocked
+from .compat import _StubCooldownStore as _StubCooldownStore
+from .model_fetcher import TTADKModelFetcher
+from .models import (
+    ModelListResult,
+    ResolvedModelResult,
+    ToolListResult,
+    TTADKModel,
+    TTADKTool,
+    build_model_list_diagnostics,
+    is_invalid_model_error,
+    is_stdin_not_tty_error,
+    resolve_model_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -311,8 +330,8 @@ def start_ttadk_engine_session(
                 model_name=fallback_model,
             )
             try:
-                setattr(s, "_degraded_to", "coco")
-                setattr(s, "_degraded_reason", str(err) or "")
+                s._degraded_to = "coco"
+                s._degraded_reason = str(err) or ""
             except Exception:
                 pass
             return s
@@ -377,7 +396,9 @@ def start_ttadk_engine_session(
             quick_timeout_s = max(0.1, quick_timeout_s)
 
             if not enabled:
-                raise TTADKStartupError("ttadk_claude_acp_ready_check_disabled", tool_name=tool_name, input_model=intent)
+                raise TTADKStartupError(
+                    "ttadk_claude_acp_ready_check_disabled", tool_name=tool_name, input_model=intent
+                )
             try:
                 from .startup_probe import ttadk_acp_ready_quickcheck
 
@@ -418,15 +439,22 @@ def start_ttadk_engine_session(
             )
         except TypeError:
             # 兼容旧签名/测试桩
-            return start_ttadk_session_fn(agent_type=agent_type, cwd=cwd, startup_timeout=float(startup_timeout or 60), model_name=passthrough_model)  # type: ignore[misc]
+            return start_ttadk_session_fn(
+                agent_type=agent_type,
+                cwd=cwd,
+                startup_timeout=float(startup_timeout or 60),
+                model_name=passthrough_model,
+            )  # type: ignore[misc]
 
     if precheck_fn is None:
-        precheck_fn = lambda x: precheck_ttadk_startup_model(
-            agent_type=agent_type,
-            cwd=cwd,
-            model_intent=x,
-            manager=mgr,
-        )
+
+        def precheck_fn(x):
+            return precheck_ttadk_startup_model(
+                agent_type=agent_type,
+                cwd=cwd,
+                model_intent=x,
+                manager=mgr,
+            )
 
     # 统一：fail_phase/decision/diagnostics 的 SSOT 由 startup.coordinator 输出。
     # 这里确保 protocol_adapter/timeout/invalid_model/start_failed 的分类输入信息充分。
@@ -442,23 +470,6 @@ def start_ttadk_engine_session(
         precheck_fn=precheck_fn,
         startup_probe_timeout_s=None,
     )
-
-
-# ---------------------------------------------------------------------------
-# deprecated_* Runtime invalid-model cooldown (compat only)
-# ---------------------------------------------------------------------------
-#
-# 说明：compat 实现已下沉到 `src.ttadk.compat`，本文件仅 re-export 以维持旧导入路径与 monkeypatch 钩子。
-
-from .compat import _LEGACY_STUB_COOLDOWN_STORE as _LEGACY_STUB_COOLDOWN_STORE
-from .compat import _StubCooldownStore as _StubCooldownStore
-from .compat import _STUB_COOLDOWN as _STUB_COOLDOWN
-from .compat import _runtime_invalid_model_stub_limits as _runtime_invalid_model_stub_limits
-from .compat import _runtime_invalid_model_stub_key as _runtime_invalid_model_stub_key
-from .compat import _runtime_invalid_model_stub_store_unlocked as _runtime_invalid_model_stub_store_unlocked
-from .compat import _runtime_invalid_model_stub_store as _runtime_invalid_model_stub_store
-from .compat import _runtime_invalid_model_stub_get_last_ts as _runtime_invalid_model_stub_get_last_ts
-from .compat import _runtime_invalid_model_stub_set_last_ts as _runtime_invalid_model_stub_set_last_ts
 
 
 # ---------------------------------------------------------------------------
@@ -509,9 +520,7 @@ TTADK_PRECHECK_FAIL_PHASES = {
 TTADK_STARTUP_LOG_FMT = (
     "ttadk startup model: tool=%s input_model=%s model=%s validated=%s source=%s fail_phase=%s decision=%s warnings=%s"
 )
-TTADK_STARTUP_LOG_RESUME_FMT = (
-    "ttadk startup model(resume): tool=%s input_model=%s model=%s validated=%s source=%s fail_phase=%s decision=%s warnings=%s"
-)
+TTADK_STARTUP_LOG_RESUME_FMT = "ttadk startup model(resume): tool=%s input_model=%s model=%s validated=%s source=%s fail_phase=%s decision=%s warnings=%s"
 
 
 def precheck_ttadk_startup_model(
@@ -532,6 +541,7 @@ def precheck_ttadk_startup_model(
         manager=manager,
         startup_probe_timeout_s=startup_probe_timeout_s,
     )
+
 
 DEFAULT_TOOLS = [
     TTADKTool(name="claude", description="Claude AI Assistant"),
@@ -632,7 +642,9 @@ class TTADKManager:
         except Exception:
             return
 
-    def _build_ttadk_code_args(self, *, tool_name: str, model_name: Optional[str], extra_args: Optional[list[str]] = None) -> list[str]:
+    def _build_ttadk_code_args(
+        self, *, tool_name: str, model_name: Optional[str], extra_args: Optional[list[str]] = None
+    ) -> list[str]:
         """构造最小可测的 `ttadk code` 命令参数。
 
         约定：
@@ -856,7 +868,6 @@ class TTADKManager:
         self._ensure_initialized()
         return self._cache.seed_models_from_error(tool_name, error_text)
 
-
     def seed_models_from_invalid_model_runtime(
         self,
         *,
@@ -872,7 +883,9 @@ class TTADKManager:
         - 标记 meta.source=runtime_invalid_model_seed，便于诊断
         """
         self._ensure_initialized()
-        return self._cache.seed_models_from_invalid_model_runtime(tool_name=tool_name, available_models=available_models, source=source)
+        return self._cache.seed_models_from_invalid_model_runtime(
+            tool_name=tool_name, available_models=available_models, source=source
+        )
 
     def resolve_startup_model(
         self,
@@ -955,7 +968,6 @@ class TTADKManager:
             warnings=warnings,
         )
 
-
     def resolve_startup_model_with_diagnostics(
         self,
         model_name: str,
@@ -987,7 +999,10 @@ class TTADKManager:
             # - low_confidence: 低置信来源（通常与 source_cross_project 绑定），必须由更可信来源（official_cli/probe/structured）验证后才允许透传。
             if (src or "") == "defaults":
                 return True
-            if any(w in ("models_untrusted", "models_empty", "models_error") or str(w).startswith("models_error") for w in (ws or [])):
+            if any(
+                w in ("models_untrusted", "models_empty", "models_error") or str(w).startswith("models_error")
+                for w in (ws or [])
+            ):
                 return True
             # 低置信来源：跨项目缓存（例如 ~/.ttadk/models_cache.json）必须先通过更可信来源验证
             if any(w in ("low_confidence", "source_cross_project") for w in (ws or [])):
@@ -1123,13 +1138,17 @@ class TTADKManager:
             attempts.append({"phase": "force_refresh", "ok": False, "reason": "cooldown", "cooldown_s": cooldown_s})
         if fail_cooldown_s and last_fail and (now - last_fail) < fail_cooldown_s:
             allow_refresh = False
-            attempts.append({"phase": "force_refresh", "ok": False, "reason": "fail_cooldown", "cooldown_s": fail_cooldown_s})
+            attempts.append(
+                {"phase": "force_refresh", "ok": False, "reason": "fail_cooldown", "cooldown_s": fail_cooldown_s}
+            )
 
         if untrusted and allow_refresh:
             self._startup_refresh_last_attempt[tool] = now
             try:
                 refreshed = self.refresh_models(tool_name=tool, cwd=cwd)
-                attempts.append({"phase": "force_refresh", "ok": True, "source": getattr(refreshed, "source", "") or "unknown"})
+                attempts.append(
+                    {"phase": "force_refresh", "ok": True, "source": getattr(refreshed, "source", "") or "unknown"}
+                )
             except Exception as e:
                 self._startup_refresh_last_failure[tool] = time.time()
                 attempts.append({"phase": "force_refresh", "ok": False, "error_type": type(e).__name__})
@@ -1361,7 +1380,9 @@ class TTADKManager:
         current_tool = tool_name or self._current_tool
 
         if not current_tool:
-            return ModelListResult(models=list(DEFAULT_MODELS), source="defaults", warnings=["models_untrusted", "missing_tool"])
+            return ModelListResult(
+                models=list(DEFAULT_MODELS), source="defaults", warnings=["models_untrusted", "missing_tool"]
+            )
 
         result = self._cache.get_models(tool_name=current_tool, cwd=cwd, force_refresh=force_refresh)
         # 统一：当模型列表降级为 defaults 时，输出结构化摘要（便于排障与验收）。
@@ -1399,7 +1420,9 @@ class TTADKManager:
         tool = (tool_name or "").strip().lower()
         intent = (model_intent or "").strip()
         if not tool:
-            mr = ModelListResult(models=list(DEFAULT_MODELS), source="defaults", warnings=["models_untrusted", "missing_tool"])
+            mr = ModelListResult(
+                models=list(DEFAULT_MODELS), source="defaults", warnings=["models_untrusted", "missing_tool"]
+            )
             # 兜底：补齐 diagnostics（不依赖 cache 内部状态）
             try:
                 mr.diagnostics = build_model_list_diagnostics(
@@ -1407,8 +1430,22 @@ class TTADKManager:
                     cached=bool(getattr(mr, "cached", False)),
                     cache_ts=None,
                     ttl_s=0.0,
-                    chosen_strategy=str(((getattr(mr, "diagnostics", None) or {}) if isinstance(getattr(mr, "diagnostics", None), dict) else {}).get("chosen_strategy") or ""),
-                    attempts=list(((getattr(mr, "diagnostics", None) or {}) if isinstance(getattr(mr, "diagnostics", None), dict) else {}).get("attempts") or []),
+                    chosen_strategy=str(
+                        (
+                            (getattr(mr, "diagnostics", None) or {})
+                            if isinstance(getattr(mr, "diagnostics", None), dict)
+                            else {}
+                        ).get("chosen_strategy")
+                        or ""
+                    ),
+                    attempts=list(
+                        (
+                            (getattr(mr, "diagnostics", None) or {})
+                            if isinstance(getattr(mr, "diagnostics", None), dict)
+                            else {}
+                        ).get("attempts")
+                        or []
+                    ),
                 )
             except Exception:
                 pass
@@ -1497,7 +1534,7 @@ class TTADKManager:
             pass
 
         return resolved, mr
-    
+
     def resolve_real_model_name(
         self,
         model_name: str,
@@ -1824,10 +1861,7 @@ class TTADKManager:
     def _normalize_models(self, raw: object, current_model: Optional[str]) -> list[TTADKModel]:
         if isinstance(raw, list):
             if raw and all(isinstance(x, str) for x in raw):
-                return [
-                    TTADKModel(name=name, description=name, is_default=(name == current_model))
-                    for name in raw
-                ]
+                return [TTADKModel(name=name, description=name, is_default=(name == current_model)) for name in raw]
             models: list[TTADKModel] = []
             for item in raw:
                 if isinstance(item, dict):
@@ -1882,7 +1916,9 @@ class TTADKManager:
             except Exception:
                 descriptors = []
 
-            resolved, diag = resolve_model_id(tool_name=target_tool, input_name=str(model_name or ""), descriptors=descriptors)
+            resolved, diag = resolve_model_id(
+                tool_name=target_tool, input_name=str(model_name or ""), descriptors=descriptors
+            )
             mid = str(getattr(resolved, "real_name", "") or "").strip()
             if not mid:
                 logger.warning("Unknown model: %s", model_name)

@@ -6,20 +6,19 @@ for starting sessions, sending prompts, and receiving structured events.
 
 from __future__ import annotations
 
-import logging
-import time
 import asyncio
+import logging
 import os
+import time
 from typing import Any, Callable, Optional
 
-from acp.stdio import spawn_agent_process
 from acp.helpers import text_block
 from acp.schema import PromptResponse
+from acp.stdio import spawn_agent_process
 
-from .client import GhostAPClient
-from .client import ACPHistoryStore
-from .models import ACPEvent, ACPEventType, ACPSessionState, PromptResult
 from ..config import get_settings
+from .client import ACPHistoryStore, GhostAPClient
+from .models import ACPEvent, ACPEventType, ACPSessionState, PromptResult
 
 logger = logging.getLogger(__name__)
 
@@ -253,11 +252,15 @@ class ACPSession:
             try:
                 if ev.event_type == ACPEventType.TEXT_CHUNK:
                     result.add_text(ev.text or "")
-                elif ev.event_type in (ACPEventType.TOOL_CALL_START, ACPEventType.TOOL_CALL_UPDATE, ACPEventType.TOOL_CALL_DONE):
+                elif ev.event_type in (
+                    ACPEventType.TOOL_CALL_START,
+                    ACPEventType.TOOL_CALL_UPDATE,
+                    ACPEventType.TOOL_CALL_DONE,
+                ):
                     if ev.tool_call:
                         # Keep the latest state per tool_call_id
                         collected_tool_calls[ev.tool_call.id] = ev.tool_call
-                        for p in (ev.tool_call.locations or []):
+                        for p in ev.tool_call.locations or []:
                             if p:
                                 result.add_modified_file(p)
                 elif ev.event_type == ACPEventType.PLAN_UPDATE:
@@ -308,7 +311,11 @@ class ACPSession:
             store = ACPHistoryStore()
             entries = store.load(self._session_id, limit=2000)
             end_ts = time.time()
-            windowed = [e for e in entries if isinstance(e, dict) and (e.get("ts") or 0) >= start_ts and (e.get("ts") or 0) <= end_ts]
+            windowed = [
+                e
+                for e in entries
+                if isinstance(e, dict) and (e.get("ts") or 0) >= start_ts and (e.get("ts") or 0) <= end_ts
+            ]
             result.ingest_history(windowed)
         except Exception:
             pass
@@ -331,9 +338,7 @@ class ACPSession:
             self._ctx_manager = None
             self._conn = None
             self._proc = None
-        logger.info("[ACP:%s] Session closed: %s",
-                     self._agent_cmd,
-                     (self._session_id or "none")[:8])
+        logger.info("[ACP:%s] Session closed: %s", self._agent_cmd, (self._session_id or "none")[:8])
 
     def _dispatch_event(self, event: ACPEvent) -> None:
         """Dispatch event to the current handler."""

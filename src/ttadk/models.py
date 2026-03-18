@@ -1,9 +1,7 @@
-from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
-
 import json
 import re
-
+from dataclasses import dataclass, field
+from typing import Callable, Optional
 
 _INVALID_MODEL_RE = re.compile(r"\binvalid\s+model\b", re.IGNORECASE)
 _AVAILABLE_MODELS_RE = re.compile(r"Available models\s*:?\s*(.*)", re.IGNORECASE | re.DOTALL)
@@ -169,7 +167,7 @@ def extract_available_models(text: str) -> list[str]:
     # - 单行列表（常见）只取第一行
     # - 多行 bullet 列表保留连续 bullet 行，遇到 header-like 行则停止
     normalized_raw = raw.replace("\r", "\n")
-    lines = [ln for ln in normalized_raw.split("\n")]
+    lines = list(normalized_raw.split("\n"))
     # 去掉首尾空行
     while lines and not (lines[0] or "").strip():
         lines.pop(0)
@@ -370,13 +368,7 @@ def parse_ttadk_models_from_output_to_models(text: str) -> list["TTADKModel"]:
                     continue
 
                 # 真实模型 ID（优先级固定，避免 name 字段语义漂移）
-                rid = (
-                    x.get("id")
-                    or x.get("model_id")
-                    or x.get("model")
-                    or x.get("model_name")
-                    or x.get("real_name")
-                )
+                rid = x.get("id") or x.get("model_id") or x.get("model") or x.get("model_name") or x.get("real_name")
 
                 name_field = x.get("name")
                 if rid is None and isinstance(name_field, str) and is_model_token(name_field):
@@ -389,12 +381,7 @@ def parse_ttadk_models_from_output_to_models(text: str) -> list["TTADKModel"]:
                     continue
 
                 # 友好名字段：优先使用明确的 display/friendly 字段
-                friendly = (
-                    x.get("friendly_name")
-                    or x.get("display_name")
-                    or x.get("label")
-                    or x.get("title")
-                )
+                friendly = x.get("friendly_name") or x.get("display_name") or x.get("label") or x.get("title")
                 if not isinstance(friendly, str) or not friendly.strip():
                     # 当 name 不是 token 时，更像显示名（保持历史策略行为）
                     if isinstance(name_field, str) and name_field.strip() and not is_model_token(name_field):
@@ -454,7 +441,7 @@ def parse_ttadk_models_from_output(text: str) -> list[str]:
         models = []
     out: list[str] = []
     seen: set[str] = set()
-    for m in (models or []):
+    for m in models or []:
         try:
             n = str(getattr(m, "name", "") or "").strip()
         except Exception:
@@ -729,7 +716,9 @@ def choose_best_available_model(*, input_model: str, available_models: list[str]
     return None
 
 
-def parse_models_cache_json(payload: object, *, tool_name: str, allow_cross_tool_fallback: bool = False) -> tuple[list[str], bool]:
+def parse_models_cache_json(
+    payload: object, *, tool_name: str, allow_cross_tool_fallback: bool = False
+) -> tuple[list[str], bool]:
     """解析 `models_cache.json` 的通用 helper。
 
     返回 (model_names, exact_tool_hit)。
@@ -844,7 +833,7 @@ def build_model_id_index(descriptors: list[object]) -> tuple[dict[str, str], lis
     idx: dict[str, str] = {}
     warnings: list[str] = []
 
-    for d in (descriptors or []):
+    for d in descriptors or []:
         # 兼容：允许直接传 TTADKModel
         model_id = ""
         display_name = ""
@@ -922,7 +911,7 @@ def resolve_model_id(
 
     def _iter_descriptor_items() -> list[tuple[str, str]]:
         items: list[tuple[str, str]] = []
-        for d in (descriptors or []):
+        for d in descriptors or []:
             try:
                 if isinstance(d, ModelDescriptor):
                     mid = str(d.model_id or "").strip()
@@ -941,7 +930,7 @@ def resolve_model_id(
         mid = str(mid or "").strip()
         if not mid:
             return ""
-        for d in (descriptors or []):
+        for d in descriptors or []:
             try:
                 if isinstance(d, ModelDescriptor):
                     if str(d.model_id or "").strip() == mid:
@@ -1038,7 +1027,9 @@ def resolve_model_id(
         # prefix
         for mid, disp in items:
             try:
-                if _normalize_model_key(mid).startswith(raw_l) or (disp and _normalize_model_key(disp).startswith(raw_l)):
+                if _normalize_model_key(mid).startswith(raw_l) or (
+                    disp and _normalize_model_key(disp).startswith(raw_l)
+                ):
                     r = ResolvedModelResult(
                         tool_name=tool,
                         input_name=raw,

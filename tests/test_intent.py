@@ -1,10 +1,9 @@
 import pytest
-from unittest.mock import patch, MagicMock
 
 from src.agent.intent_recognizer import (
     IntentRecognizer,
-    IntentType,
     IntentResult,
+    IntentType,
     TaskStep,
 )
 
@@ -131,9 +130,9 @@ class TestIntentRecognizerQuickMatch:
         assert result is None
 
 
-
 class TestIntentRecognizerASR:
     """测试 ASR 容错识别功能"""
+
     @pytest.fixture
     def recognizer(self):
         return IntentRecognizer()
@@ -151,11 +150,12 @@ class TestIntentRecognizerASR:
         result = recognizer._quick_match("/claud")
         assert result is not None
         assert result.primary_intent == IntentType.ENTER_CLAUDE
-        
+
         # /coc -> /coco
         result = recognizer._quick_match("/coc")
         assert result is not None
         assert result.primary_intent == IntentType.ENTER_COCO
+
 
 class TestIntentRecognizerContextHint:
     @pytest.fixture
@@ -193,10 +193,7 @@ class TestIntentRecognizerContextHint:
 class TestIntentResult:
     def test_single_task(self):
         result = IntentResult.single(
-            intent=IntentType.ENTER_COCO,
-            confidence=0.9,
-            original_text="帮我写代码",
-            description="进入编程模式"
+            intent=IntentType.ENTER_COCO, confidence=0.9, original_text="帮我写代码", description="进入编程模式"
         )
         assert result.primary_intent == IntentType.ENTER_COCO
         assert result.confidence == 0.9
@@ -210,17 +207,14 @@ class TestIntentResult:
                 TaskStep(intent=IntentType.ENTER_COCO, description="进入编程模式", data={}),
             ],
             confidence=0.85,
-            original_text="去workspace目录然后帮我写代码"
+            original_text="去workspace目录然后帮我写代码",
         )
         assert result.is_multi_task is True
         assert len(result.tasks) == 2
         assert result.primary_intent == IntentType.CHANGE_DIR
 
     def test_primary_data(self):
-        result = IntentResult.single(
-            intent=IntentType.CREATE_PROJECT,
-            data={"name": "myapp", "path": "~/workspace"}
-        )
+        result = IntentResult.single(intent=IntentType.CREATE_PROJECT, data={"name": "myapp", "path": "~/workspace"})
         assert result.primary_data.get("name") == "myapp"
         assert result.primary_data.get("path") == "~/workspace"
 
@@ -232,9 +226,17 @@ class TestIntentTypeMapping:
 
     def test_all_intents_mapped(self, recognizer):
         expected_intents = [
-            "enter_coco", "exit_coco", "coco_message", "change_dir",
-            "shell", "create_project", "switch_project", "list_projects",
-            "close_project", "project_status", "unknown"
+            "enter_coco",
+            "exit_coco",
+            "coco_message",
+            "change_dir",
+            "shell",
+            "create_project",
+            "switch_project",
+            "list_projects",
+            "close_project",
+            "project_status",
+            "unknown",
         ]
         for intent_str in expected_intents:
             assert intent_str in recognizer.INTENT_MAP
@@ -257,6 +259,7 @@ class TestNormalizePath:
 
     def test_tilde_expansion(self, recognizer):
         import os
+
         result = recognizer._normalize_path("~/workspace")
         assert result.startswith(os.path.expanduser("~"))
         assert "workspace" in result

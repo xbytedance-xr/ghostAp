@@ -9,29 +9,27 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import subprocess
 import threading
 import time
-import json
 from functools import lru_cache
 from typing import Any, Callable, Optional
 
-from .models import ACPEvent, PromptResult
-from .session import ACPSession, ACPStartupError
-from .client import ACPHistoryStore
 from ..config import get_settings
+from ..ttadk.env_sandbox import build_ttadk_subprocess_env
+from .client import ACPHistoryStore
 from .diagnostics import (
     get_diagnostics_config,
+    normalize_startup_diagnostics,
     redact_text,
-    truncate_args,
     safe_str,
     truncate_text,
-    normalize_startup_diagnostics,
 )
-
-from ..ttadk.env_sandbox import build_ttadk_subprocess_env
+from .models import ACPEvent, PromptResult
+from .session import ACPSession, ACPStartupError
 
 logger = logging.getLogger(__name__)
 
@@ -119,8 +117,6 @@ def classify_startup_fail_phase(*, error: Exception, error_blob: str) -> str:
         return "start_failed"
 
 
-
-
 def build_startup_diagnostics(
     *,
     agent_type: str,
@@ -144,7 +140,7 @@ def build_startup_diagnostics(
     # New SSOT for non-empty fallbacks/redaction/truncation is
     # `src.acp.diagnostics.normalize_startup_diagnostics`.
     cfg = get_diagnostics_config(get_settings_fn=get_settings)
-    args_limit = int(cfg.args_limit or 0)
+    int(cfg.args_limit or 0)
     snippet_limit_cfg = int(cfg.snippet_limit or 0)
     try:
         snippet_limit_eff = int(snippet_limit_cfg or 0) if snippet_limit_cfg is not None else int(snippet_limit or 0)
@@ -472,7 +468,7 @@ def format_startup_diagnostics(diag: object, *, total_limit: int = 2000) -> str:
         try:
             s = safe_str(base)
         except Exception:
-            s = "{\"error\":\"diagnostics_unavailable\"}"
+            s = '{"error":"diagnostics_unavailable"}'
 
     if enabled:
         try:
@@ -549,8 +545,8 @@ def _probe_acp_serve_help(command: str) -> tuple[bool, Optional[int], str, str]:
             timeout=2,
             env=env,
         )
-        out = (p.stdout or "")
-        err = (p.stderr or "")
+        out = p.stdout or ""
+        err = p.stderr or ""
         blob = (out + "\n" + err).lower()
         ok = bool(p.returncode == 0 and "acp serve" in blob and "usage" in blob)
         # 片段截断，避免日志/异常过大
@@ -702,7 +698,12 @@ def _auto_update_agent(command: str) -> bool:
             logger.info("[ACP] %s auto-update succeeded. stdout=%s", command, stdout[-200:] if stdout else "(empty)")
             return True
         else:
-            logger.warning("[ACP] %s auto-update failed (rc=%d). stderr=%s", command, p.returncode, stderr[-200:] if stderr else "(empty)")
+            logger.warning(
+                "[ACP] %s auto-update failed (rc=%d). stderr=%s",
+                command,
+                p.returncode,
+                stderr[-200:] if stderr else "(empty)",
+            )
             return False
     except Exception as e:
         logger.warning("[ACP] %s auto-update error: %s", command, e)
@@ -725,7 +726,9 @@ def _resolve_with_auto_update(command: str) -> bool:
     return False
 
 
-def resolve_agent_spec(agent_type: str, model_name: Optional[str] = None, *, ttadk_use_pty: bool = False) -> tuple[str, list[str]]:
+def resolve_agent_spec(
+    agent_type: str, model_name: Optional[str] = None, *, ttadk_use_pty: bool = False
+) -> tuple[str, list[str]]:
     """Resolve (command, args) for spawning an ACP agent process over stdio."""
     agent_type = (agent_type or "").lower()
 
@@ -735,7 +738,7 @@ def resolve_agent_spec(agent_type: str, model_name: Optional[str] = None, *, tta
         return override_cmd, override_args
 
     if agent_type.startswith("ttadk_"):
-        tool_name = agent_type[len("ttadk_"):]
+        tool_name = agent_type[len("ttadk_") :]
 
         # Use wrapper module to filter out TTADK banner (which breaks JSON-RPC).
         # IMPORTANT: use `-m` to avoid script/relative-import drift.
@@ -750,8 +753,8 @@ def resolve_agent_spec(agent_type: str, model_name: Optional[str] = None, *, tta
         if input_model:
             try:
                 from ..ttadk import get_ttadk_manager
-                from ..ttadk.models import resolve_model_id as _resolve_model_id
                 from ..ttadk.models import is_model_token as _is_model_token
+                from ..ttadk.models import resolve_model_id as _resolve_model_id
 
                 # 关键约束：resolve_agent_spec 必须是“纯函数/无外部副作用”。
                 # 因此这里只读取内存缓存（不触发 fetch/probe/磁盘 I/O），防止单测/启动路径被阻塞。
@@ -830,8 +833,7 @@ def resolve_agent_spec(agent_type: str, model_name: Optional[str] = None, *, tta
                 args.extend(["-c", f"model.name={model_name}"])
             return "coco", args
         raise RuntimeError(
-            "coco does not appear to support ACP server mode. "
-            "Please upgrade coco or set COCO_ACP_CMD/COCO_ACP_ARGS."
+            "coco does not appear to support ACP server mode. Please upgrade coco or set COCO_ACP_CMD/COCO_ACP_ARGS."
         )
 
     if agent_type == "claude":
@@ -846,8 +848,7 @@ def resolve_agent_spec(agent_type: str, model_name: Optional[str] = None, *, tta
     if _resolve_with_auto_update(agent_type):
         return agent_type, ["acp", "serve"]
     raise RuntimeError(
-        f"{agent_type} does not appear to support ACP server mode. "
-        "Please set *_ACP_CMD/*_ACP_ARGS overrides."
+        f"{agent_type} does not appear to support ACP server mode. Please set *_ACP_CMD/*_ACP_ARGS overrides."
     )
 
 
@@ -880,7 +881,9 @@ def start_session_with_retry(
             # Backward-compatible construction: allow fakes/older signatures without model_name kw.
             if model_name:
                 try:
-                    session = session_cls(agent_type=agent_type, cwd=cwd, model_name=model_name, ttadk_use_pty=bool(ttadk_use_pty))
+                    session = session_cls(
+                        agent_type=agent_type, cwd=cwd, model_name=model_name, ttadk_use_pty=bool(ttadk_use_pty)
+                    )
                 except TypeError:
                     # 兼容旧签名 / 测试桩：不支持 ttadk_use_pty 时仍应保留 model_name 透传
                     try:
@@ -891,8 +894,7 @@ def start_session_with_retry(
                 session = session_cls(agent_type=agent_type, cwd=cwd, ttadk_use_pty=bool(ttadk_use_pty))
             effective_timeout = float(startup_timeout) * (1.0 + 0.5 * (attempt - 1))
             session.start(startup_timeout=effective_timeout)
-            logger.info("[ACP:%s] Engine session started (attempt=%d/%d)",
-                        agent_type.upper(), attempt, retries)
+            logger.info("[ACP:%s] Engine session started (attempt=%d/%d)", agent_type.upper(), attempt, retries)
             return session
         except AgentSpecResolveError:
             # 解析 agent spec 失败（例如 TTADK tool 不支持 `acp serve`）时重试无意义，直接交给上层降级。
@@ -919,7 +921,7 @@ def start_session_with_retry(
             # 补充：保留可读 spec 以便快速复现
             if spec and not diag.get("spec"):
                 try:
-                    diag["spec"] = _truncate_text(spec, 400)
+                    diag["spec"] = truncate_text(spec, 400)
                 except Exception:
                     pass
 
@@ -1001,12 +1003,16 @@ def start_session_with_retry(
     # 最后兜底：若 snippet 为空，尽量从异常上提取一点点（不做全量输出）
     if not stdout_snip:
         try:
-            stdout_snip = truncate_text(safe_str(getattr(last_err, "stdout_snippet", "") or getattr(last_err, "stdout", "") or ""), 240)
+            stdout_snip = truncate_text(
+                safe_str(getattr(last_err, "stdout_snippet", "") or getattr(last_err, "stdout", "") or ""), 240
+            )
         except Exception:
             stdout_snip = ""
     if not stderr_snip:
         try:
-            stderr_snip = truncate_text(safe_str(getattr(last_err, "stderr_snippet", "") or getattr(last_err, "stderr", "") or ""), 240)
+            stderr_snip = truncate_text(
+                safe_str(getattr(last_err, "stderr_snippet", "") or getattr(last_err, "stderr", "") or ""), 240
+            )
         except Exception:
             stderr_snip = ""
 
@@ -1085,7 +1091,7 @@ def start_agent_session_with_diagnostics(
         except Exception:
             d = {"error_text": str(e) or "(empty)", "fail_reason": "start_failed"}
         try:
-            setattr(e, "diagnostics", d)
+            e.diagnostics = d
         except Exception:
             pass
         raise
@@ -1180,7 +1186,7 @@ def start_ttadk_session_with_pty_retry(
         _last = getattr(start_ttadk_session_with_pty_retry, "_last_retry_ts", None)
         if not isinstance(_last, dict):
             _last = {}
-            setattr(start_ttadk_session_with_pty_retry, "_last_retry_ts", _last)
+            start_ttadk_session_with_pty_retry._last_retry_ts = _last
     except Exception:
         _last = {}
     if not pty_enabled:
@@ -1266,8 +1272,12 @@ def start_ttadk_session_with_pty_retry(
                 agent_args=[str(x) for x in (getattr(e2, "agent_args", None) or [])] or ["(unknown)"],
                 cwd=cwd,
                 returncode=getattr(e2, "returncode", None),
-                stdout_snippet=truncate_text(safe_str(getattr(e2, "stdout_snippet", "") or getattr(e2, "stdout", "") or ""), 240),
-                stderr_snippet=truncate_text(safe_str(getattr(e2, "stderr_snippet", "") or getattr(e2, "stderr", "") or blob), 240),
+                stdout_snippet=truncate_text(
+                    safe_str(getattr(e2, "stdout_snippet", "") or getattr(e2, "stdout", "") or ""), 240
+                ),
+                stderr_snippet=truncate_text(
+                    safe_str(getattr(e2, "stderr_snippet", "") or getattr(e2, "stderr", "") or blob), 240
+                ),
                 fail_phase="pty_retry",
                 cause=e2,
             ) from e2
@@ -1392,7 +1402,11 @@ class SyncACPSession:
             return False
         try:
             # Run a lightweight RPC (list_sessions) with a short timeout.
-            return bool(self._run_async(self._acp_session.health_check(timeout=healthcheck_timeout), timeout=healthcheck_timeout + 1.0))
+            return bool(
+                self._run_async(
+                    self._acp_session.health_check(timeout=healthcheck_timeout), timeout=healthcheck_timeout + 1.0
+                )
+            )
         except Exception:
             return False
 
@@ -1401,11 +1415,15 @@ class SyncACPSession:
         try:
             if (self._agent_type or "").lower().startswith("ttadk_"):
                 tool = (self._agent_type or "").lower().replace("ttadk_", "", 1)
-                env_override, _ = build_ttadk_subprocess_env(cwd=self._cwd or ".", agent_type=self._agent_type, tool_name=tool)
+                env_override, _ = build_ttadk_subprocess_env(
+                    cwd=self._cwd or ".", agent_type=self._agent_type, tool_name=tool
+                )
         except Exception:
             env_override = None
 
-        self._acp_session = ACPSession(agent_cmd=self._agent_cmd, agent_args=self._agent_args, cwd=self._cwd, env=env_override)
+        self._acp_session = ACPSession(
+            agent_cmd=self._agent_cmd, agent_args=self._agent_args, cwd=self._cwd, env=env_override
+        )
         return await self._acp_session.start()
 
     def load_session(self, session_id: str) -> None:
@@ -1442,12 +1460,13 @@ class SyncACPSession:
                 if fut is None or fut.done():
                     continue
                 if not self.is_server_running():
-                    logger.warning("[ACP:%s] Agent process died mid-prompt, cancelling",
-                                   self._agent_type)
+                    logger.warning("[ACP:%s] Agent process died mid-prompt, cancelling", self._agent_type)
                     fut.cancel()
 
         self._watchdog_thread = threading.Thread(
-            target=_watchdog_loop, daemon=True, name=f"acp-watchdog-{self._agent_type}",
+            target=_watchdog_loop,
+            daemon=True,
+            name=f"acp-watchdog-{self._agent_type}",
         )
         self._watchdog_thread.start()
 

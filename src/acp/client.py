@@ -6,17 +6,17 @@ updates into ACPEvent objects, forwarding them to the registered event handler.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-import json
-import time
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from acp.interfaces import Client, Agent
+from acp.interfaces import Agent, Client
 from acp.schema import (
     AgentMessageChunk,
     AgentPlanUpdate,
@@ -38,7 +38,6 @@ from acp.schema import (
 )
 
 from ..sandbox.executor import SandboxExecutor
-
 from .models import (
     ACPEvent,
     ACPEventType,
@@ -293,25 +292,31 @@ class GhostAPClient(Client):
     def _handle_message_chunk(self, update: AgentMessageChunk) -> None:
         content = update.content
         if isinstance(content, TextContentBlock):
-            self._on_event(ACPEvent(
-                event_type=ACPEventType.TEXT_CHUNK,
-                text=content.text,
-            ))
+            self._on_event(
+                ACPEvent(
+                    event_type=ACPEventType.TEXT_CHUNK,
+                    text=content.text,
+                )
+            )
 
     def _handle_thought_chunk(self, update: AgentThoughtChunk) -> None:
         content = update.content
         if isinstance(content, TextContentBlock):
-            self._on_event(ACPEvent(
-                event_type=ACPEventType.THOUGHT_CHUNK,
-                text=content.text,
-            ))
+            self._on_event(
+                ACPEvent(
+                    event_type=ACPEventType.THOUGHT_CHUNK,
+                    text=content.text,
+                )
+            )
 
     def _handle_tool_call_start(self, update: ToolCallStart) -> None:
         tool_info = _parse_tool_call(update)
-        self._on_event(ACPEvent(
-            event_type=ACPEventType.TOOL_CALL_START,
-            tool_call=tool_info,
-        ))
+        self._on_event(
+            ACPEvent(
+                event_type=ACPEventType.TOOL_CALL_START,
+                tool_call=tool_info,
+            )
+        )
 
     def _handle_tool_call_progress(self, update: ToolCallProgress) -> None:
         tool_info = _parse_tool_call(update)
@@ -320,17 +325,21 @@ class GhostAPClient(Client):
             event_type = ACPEventType.TOOL_CALL_DONE
         else:
             event_type = ACPEventType.TOOL_CALL_UPDATE
-        self._on_event(ACPEvent(
-            event_type=event_type,
-            tool_call=tool_info,
-        ))
+        self._on_event(
+            ACPEvent(
+                event_type=event_type,
+                tool_call=tool_info,
+            )
+        )
 
     def _handle_plan_update(self, update: AgentPlanUpdate) -> None:
         plan = _parse_plan(update)
-        self._on_event(ACPEvent(
-            event_type=ACPEventType.PLAN_UPDATE,
-            plan=plan,
-        ))
+        self._on_event(
+            ACPEvent(
+                event_type=ACPEventType.PLAN_UPDATE,
+                plan=plan,
+            )
+        )
 
     # ------------------------------------------------------------------
     # Permission handling
@@ -353,23 +362,23 @@ class GhostAPClient(Client):
                 raw_input = getattr(tool_call, "raw_input", None)
                 command: Optional[str] = None
                 if isinstance(raw_input, dict):
-                    command = (
-                        raw_input.get("command")
-                        or raw_input.get("cmd")
-                        or raw_input.get("shell_command")
-                    )
+                    command = raw_input.get("command") or raw_input.get("cmd") or raw_input.get("shell_command")
                 elif isinstance(raw_input, str):
                     command = raw_input
                 if command:
                     ok, reason = self._sandbox.is_command_safe(command)
                     if not ok:
                         logger.info("[ACP] Reject unsafe command: %s (%s)", command, reason)
-                        self._record(session_id, "permission", {
-                            "outcome": "cancelled",
-                            "reason": "unsafe_execute",
-                            "command": command,
-                            "detail": reason,
-                        })
+                        self._record(
+                            session_id,
+                            "permission",
+                            {
+                                "outcome": "cancelled",
+                                "reason": "unsafe_execute",
+                                "command": command,
+                                "detail": reason,
+                            },
+                        )
                         return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
         except Exception as e:
             # Fail open to avoid breaking agent flows; runtime handlers still enforce.
@@ -395,7 +404,9 @@ class GhostAPClient(Client):
             content = resolved.read_text(encoding="utf-8")
             if len(content) > _MAX_FILE_CHARS:
                 content = content[:_MAX_FILE_CHARS]
-                self._record(session_id, "read_file", {"path": str(resolved), "truncated": True, "max_chars": _MAX_FILE_CHARS})
+                self._record(
+                    session_id, "read_file", {"path": str(resolved), "truncated": True, "max_chars": _MAX_FILE_CHARS}
+                )
                 return ReadTextFileResponse(
                     content=content,
                     field_meta={"truncated": True, "path": str(resolved), "max_chars": _MAX_FILE_CHARS},
@@ -407,7 +418,9 @@ class GhostAPClient(Client):
             self._record(session_id, "read_file", {"path": path, "error": str(e)})
             return ReadTextFileResponse(content="", field_meta={"error": str(e), "path": path})
 
-    async def write_text_file(self, content: str, path: str, session_id: str, **kwargs: Any) -> Optional[WriteTextFileResponse]:
+    async def write_text_file(
+        self, content: str, path: str, session_id: str, **kwargs: Any
+    ) -> Optional[WriteTextFileResponse]:
         try:
             resolved = _safe_resolve_path(self._root_dir, path)
             resolved.parent.mkdir(parents=True, exist_ok=True)
@@ -453,13 +466,17 @@ class GhostAPClient(Client):
         # Persist a capped copy of output for recovery/debug UI.
         cap = 8000
         output_cap = output if len(output) <= cap else (output[:cap] + "\n... (truncated)")
-        self._record(session_id, "execute", {
-            "command": command,
-            "cwd": self._root_dir,
-            "exit_code": result.return_code,
-            "truncated": truncated,
-            "output": output_cap,
-        })
+        self._record(
+            session_id,
+            "execute",
+            {
+                "command": command,
+                "cwd": self._root_dir,
+                "exit_code": result.return_code,
+                "truncated": truncated,
+                "output": output_cap,
+            },
+        )
 
         term_id = f"term_{uuid.uuid4().hex[:8]}"
         self._terminals[term_id] = _TerminalRecord(
@@ -483,7 +500,7 @@ class GhostAPClient(Client):
         rec = self._terminals.get(terminal_id)
         if not rec:
             return TerminalOutputResponse(output="", truncated=False, field_meta={"error": "unknown_terminal"})
-        chunk = rec.output[rec.cursor:]
+        chunk = rec.output[rec.cursor :]
         rec.cursor = len(rec.output)
         return TerminalOutputResponse(
             output=chunk,
@@ -491,17 +508,23 @@ class GhostAPClient(Client):
             exit_status=TerminalExitStatus(exit_code=rec.exit_code),
         )
 
-    async def wait_for_terminal_exit(self, session_id: str, terminal_id: str, **kwargs: Any) -> WaitForTerminalExitResponse:
+    async def wait_for_terminal_exit(
+        self, session_id: str, terminal_id: str, **kwargs: Any
+    ) -> WaitForTerminalExitResponse:
         rec = self._terminals.get(terminal_id)
         if not rec:
             return WaitForTerminalExitResponse(exit_code=None, signal=None, field_meta={"error": "unknown_terminal"})
         return WaitForTerminalExitResponse(exit_code=rec.exit_code, signal=None)
 
-    async def kill_terminal(self, session_id: str, terminal_id: str, **kwargs: Any) -> Optional[KillTerminalCommandResponse]:
+    async def kill_terminal(
+        self, session_id: str, terminal_id: str, **kwargs: Any
+    ) -> Optional[KillTerminalCommandResponse]:
         self._terminals.pop(terminal_id, None)
         return KillTerminalCommandResponse()
 
-    async def release_terminal(self, session_id: str, terminal_id: str, **kwargs: Any) -> Optional[ReleaseTerminalResponse]:
+    async def release_terminal(
+        self, session_id: str, terminal_id: str, **kwargs: Any
+    ) -> Optional[ReleaseTerminalResponse]:
         self._terminals.pop(terminal_id, None)
         return ReleaseTerminalResponse()
 

@@ -5,10 +5,10 @@ import time
 
 from src.utils.text import append_duration_to_title, format_duration, generate_task_id
 
-
 # ──────────────────────────────────────────────────────────────────────
 # format_duration
 # ──────────────────────────────────────────────────────────────────────
+
 
 class TestFormatDuration:
     def test_zero(self):
@@ -51,6 +51,7 @@ class TestFormatDuration:
 # append_duration_to_title
 # ──────────────────────────────────────────────────────────────────────
 
+
 class TestAppendDurationToTitle:
     def test_none_returns_title_unchanged(self):
         assert append_duration_to_title("🔄 执行中", None) == "🔄 执行中"
@@ -80,6 +81,7 @@ class TestAppendDurationToTitle:
 # generate_task_id
 # ──────────────────────────────────────────────────────────────────────
 
+
 class TestGenerateTaskId:
     def test_format_structure(self):
         tid = generate_task_id("myproject")
@@ -99,7 +101,7 @@ class TestGenerateTaskId:
     def test_special_chars_sanitized(self):
         tid = generate_task_id("my-project/v2.0")
         name_part = tid.split("_")[0]
-        assert re.match(r'^[a-zA-Z0-9_]+$', name_part), f"Name contains invalid chars: {name_part}"
+        assert re.match(r"^[a-zA-Z0-9_]+$", name_part), f"Name contains invalid chars: {name_part}"
 
     def test_long_name_truncated(self):
         long_name = "a" * 100

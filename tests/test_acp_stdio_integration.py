@@ -20,7 +20,6 @@ import pytest
 
 from src.acp.session import ACPSession
 
-
 _FAKE_AGENT_CODE = textwrap.dedent(
     r"""
     import asyncio
@@ -111,6 +110,7 @@ async def test_acp_stdio_prompt_and_health_check(tmp_path):
 def test_start_session_with_retry_logs_diagnostics_on_empty_error(monkeypatch, caplog):
     """回归：启动失败但异常 message 为空时，日志仍应包含 error_type/上下文，避免线上不可定位。"""
     import logging
+
     from src.acp.sync_adapter import start_session_with_retry
 
     class _EmptyError(RuntimeError):
@@ -155,6 +155,7 @@ def test_acp_manager_ensure_session_start_failure_empty_exc_has_non_empty_detail
     """
 
     import logging
+
     import pytest
 
     from src.acp.manager import ACPSessionManager
@@ -204,6 +205,7 @@ def test_acp_manager_ensure_session_start_failure_empty_exc_has_non_empty_detail
     )
 
     caplog.set_level(logging.WARNING)
+
     # 注入 fake starter：冻结“可注入启动器”接口形状，避免未来解耦重构时回归。
     def _starter(**kw):
         assert kw.get("agent_type") == "coco"
@@ -240,22 +242,35 @@ def test_resolve_agent_spec_ttadk_adds_pty_flag_when_enabled(monkeypatch):
 def test_start_ttadk_session_with_pty_retry_on_stdin_not_tty(monkeypatch, caplog):
     """TTADK 启动：首次遇到 stdin-not-tty 应触发 PTY 重试一次。"""
     import logging
+
     from src.acp import sync_adapter
 
     calls: list[dict] = []
 
-    def _fake_start_session_with_retry(*, agent_type, cwd, startup_timeout, model_name, session_cls=None, ttadk_use_pty=False, log_failures=True, **kwargs):
-        calls.append({
-            "agent_type": agent_type,
-            "cwd": cwd,
-            "model_name": model_name,
-            "pty": bool(ttadk_use_pty),
-            "log_failures": bool(log_failures),
-        })
+    def _fake_start_session_with_retry(
+        *,
+        agent_type,
+        cwd,
+        startup_timeout,
+        model_name,
+        session_cls=None,
+        ttadk_use_pty=False,
+        log_failures=True,
+        **kwargs,
+    ):
+        calls.append(
+            {
+                "agent_type": agent_type,
+                "cwd": cwd,
+                "model_name": model_name,
+                "pty": bool(ttadk_use_pty),
+                "log_failures": bool(log_failures),
+            }
+        )
         # 第一次失败：stdin is not a terminal
         if not ttadk_use_pty:
             e = RuntimeError("stdin is not a terminal")
-            setattr(e, "stderr_snippet", "stdin is not a terminal")
+            e.stderr_snippet = "stdin is not a terminal"
             raise e
 
         # 第二次（PTY）成功：返回一个最小 session
@@ -268,11 +283,19 @@ def test_start_ttadk_session_with_pty_retry_on_stdin_not_tty(monkeypatch, caplog
         return _S()
 
     monkeypatch.setattr(sync_adapter, "start_session_with_retry", _fake_start_session_with_retry)
-    monkeypatch.setattr(sync_adapter, "get_settings", lambda: type("S", (), {
-        "ttadk_pty_enabled": True,
-        "ttadk_pty_retry_once": True,
-        "ttadk_pty_retry_cooldown_s": 0.0,
-    })())
+    monkeypatch.setattr(
+        sync_adapter,
+        "get_settings",
+        lambda: type(
+            "S",
+            (),
+            {
+                "ttadk_pty_enabled": True,
+                "ttadk_pty_retry_once": True,
+                "ttadk_pty_retry_cooldown_s": 0.0,
+            },
+        )(),
+    )
 
     caplog.set_level(logging.WARNING)
     s = sync_adapter.start_ttadk_session_with_pty_retry(
@@ -319,12 +342,14 @@ def test_ttadk_start_session_with_pty_retry_compat_downgrade_kw_only(monkeypatch
 
     # 仅接受最老的一组关键参数（不支持 log_failures / ttadk_use_pty / session_cls）
     def kw_only_legacy_start_session_with_retry(*, agent_type, cwd, startup_timeout, model_name):
-        calls.append({
-            "agent_type": agent_type,
-            "cwd": cwd,
-            "startup_timeout": startup_timeout,
-            "model_name": model_name,
-        })
+        calls.append(
+            {
+                "agent_type": agent_type,
+                "cwd": cwd,
+                "startup_timeout": startup_timeout,
+                "model_name": model_name,
+            }
+        )
 
         class _S:
             session_id = "sid"
@@ -359,7 +384,11 @@ def test_ttadk_start_session_with_pty_retry_compat_downgrade_kw_only(monkeypatch
         return kw_only_legacy_start_session_with_retry(**kw)
 
     monkeypatch.setattr(sync_adapter, "start_session_with_retry", start_session_with_retry_probe)
-    monkeypatch.setattr(sync_adapter, "get_settings", lambda: type("S", (), {"ttadk_pty_enabled": True, "ttadk_pty_retry_once": False})())
+    monkeypatch.setattr(
+        sync_adapter,
+        "get_settings",
+        lambda: type("S", (), {"ttadk_pty_enabled": True, "ttadk_pty_retry_once": False})(),
+    )
 
     s = sync_adapter.start_ttadk_session_with_pty_retry(
         agent_type="ttadk_codex",
@@ -416,7 +445,7 @@ def test_ttadk_wrapper_state_does_not_leak_between_runs():
     s1 = ttadk_wrapper.WrapperState()
     s2 = ttadk_wrapper.WrapperState()
 
-    r1 = _Reader([b"BANNER\n", b"{\"jsonrpc\":\"2.0\"}\n"])
+    r1 = _Reader([b"BANNER\n", b'{"jsonrpc":"2.0"}\n'])
     r2 = _Reader([b"ONLY_BANNER\n"])
 
     import io

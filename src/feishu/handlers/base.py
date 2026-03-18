@@ -8,21 +8,20 @@ duplicating the underlying Feishu API calls.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
-import time
 import uuid
-import asyncio
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
-from ..message_formatter import FeishuMessageFormatter as fmt
 from ..im_client import FeishuIMClient
+from ..message_formatter import FeishuMessageFormatter as fmt
 
 if TYPE_CHECKING:
-    from ..handler_context import HandlerContext
     from ...card.streaming import StreamingCardManager
-    from ...project import ProjectContext
+    from ...project import ContextSourceMode, ProjectContext
+    from ..handler_context import HandlerContext
 
 logger = logging.getLogger(__name__)
 
@@ -76,17 +75,10 @@ class BaseHandler:
 
             if origin_message_id:
                 self.reply_message(
-                    origin_message_id,
-                    card_json_str,
-                    msg_type="interactive",
-                    reply_in_thread=reply_in_thread
+                    origin_message_id, card_json_str, msg_type="interactive", reply_in_thread=reply_in_thread
                 )
             else:
-                self.send_message(
-                    chat_id,
-                    card_json_str,
-                    msg_type="interactive"
-                )
+                self.send_message(chat_id, card_json_str, msg_type="interactive")
         except Exception as e:
             logger.error("发送错误卡片失败: %s", e, exc_info=True)
             # Fallback to simple text reply
@@ -103,12 +95,7 @@ class BaseHandler:
         chat_id: Optional[str] = None,
     ):
         """Convenience wrapper for send_error_card to reply to a message."""
-        self.send_error_card(
-            chat_id=chat_id or "unknown",
-            exc=exc,
-            title=title,
-            origin_message_id=message_id
-        )
+        self.send_error_card(chat_id=chat_id or "unknown", exc=exc, title=title, origin_message_id=message_id)
 
     # ------------------------------------------------------------------
     # Message sending
@@ -118,7 +105,7 @@ class BaseHandler:
         try:
             if delay > 0:
                 await asyncio.sleep(delay)
-            
+
             # Remove task ref first to allow new tasks to be scheduled if this one is slow
             # AND to avoid self-cancellation when calling patch_message below
             if self._patch_tasks.get(message_id) == asyncio.current_task():
@@ -161,17 +148,22 @@ class BaseHandler:
         origin_message_id = origin_message_id or message_id
         request_id = request_id or self.ensure_request_id(origin_message_id)
         return self.reply_message_with_id(
-            message_id, content, msg_type=msg_type,
+            message_id,
+            content,
+            msg_type=msg_type,
             origin_message_id=origin_message_id,
-            request_id=request_id, run_id=run_id,
+            request_id=request_id,
+            run_id=run_id,
             is_smart_mode=is_smart_mode,
             reply_in_thread=reply_in_thread,
             max_retries=max_retries,
         )
 
-    def patch_message(self, message_id: str, content: str, max_retries: Optional[int] = None, throttle: bool = False) -> bool:
+    def patch_message(
+        self, message_id: str, content: str, max_retries: Optional[int] = None, throttle: bool = False
+    ) -> bool:
         """Update an existing message's content (e.g. updating a card).
-        
+
         Args:
             message_id: ID of the message to patch
             content: New content (usually JSON string)
@@ -181,11 +173,11 @@ class BaseHandler:
         if throttle:
             # 1. Update pending content
             self._pending_patches[message_id] = content
-            
+
             # 2. If task exists, do nothing (it will pick up latest content)
             if message_id in self._patch_tasks:
                 return True
-            
+
             # 3. Schedule new task
             try:
                 # We need an event loop. If called from sync context, this might fail unless we have one.
@@ -207,12 +199,8 @@ class BaseHandler:
         self._pending_patches.pop(message_id, None)
 
         try:
-            response = self.im_client.patch_message(
-                message_id, 
-                content, 
-                max_retries=max_retries
-            )
-            
+            response = self.im_client.patch_message(message_id, content, max_retries=max_retries)
+
             if response and response.success():
                 return True
             return False
@@ -270,13 +258,9 @@ class BaseHandler:
                     reply_in_thread = self.settings.smart_reply_mode == "thread"
                 else:
                     reply_in_thread = self.settings.default_reply_mode == "thread"
-            
+
             response = self.im_client.reply_message(
-                message_id,
-                content_str,
-                msg_type=msg_type,
-                reply_in_thread=reply_in_thread,
-                max_retries=max_retries
+                message_id, content_str, msg_type=msg_type, reply_in_thread=reply_in_thread, max_retries=max_retries
             )
 
             if response and response.success() and response.data and response.data.message_id:
@@ -284,7 +268,9 @@ class BaseHandler:
                 try:
                     self.ctx.message_linker.link_reply(origin_message_id, reply_id)
                 except Exception as e:
-                    logger.warning("Failed to link reply %s to origin %s: %s", reply_id, origin_message_id, e, exc_info=True)
+                    logger.warning(
+                        "Failed to link reply %s to origin %s: %s", reply_id, origin_message_id, e, exc_info=True
+                    )
                 return reply_id
             return None
         except Exception as e:
@@ -320,11 +306,7 @@ class BaseHandler:
                 content_str = self._inject_ref_note(content_str, msg_type, ref_note)
 
             response = self.im_client.send_message(
-                "chat_id",
-                chat_id,
-                content_str,
-                msg_type=msg_type,
-                max_retries=max_retries
+                "chat_id", chat_id, content_str, msg_type=msg_type, max_retries=max_retries
             )
 
             if response and response.success() and response.data and response.data.message_id:
@@ -333,7 +315,9 @@ class BaseHandler:
                     try:
                         self.ctx.message_linker.link_reply(origin_message_id, mid)
                     except Exception as e:
-                        logger.warning("Failed to link new message %s to origin %s: %s", mid, origin_message_id, e, exc_info=True)
+                        logger.warning(
+                            "Failed to link new message %s to origin %s: %s", mid, origin_message_id, e, exc_info=True
+                        )
                 return mid
             return None
         except Exception as e:
@@ -354,11 +338,13 @@ class BaseHandler:
                 card = json.loads(content_str)
                 body = card.get("body") if isinstance(card, dict) else None
                 if isinstance(body, dict) and isinstance(body.get("elements"), list):
-                    body["elements"].append({
-                        "tag": "markdown",
-                        "text_size": "notation",
-                        "content": ref_note,
-                    })
+                    body["elements"].append(
+                        {
+                            "tag": "markdown",
+                            "text_size": "notation",
+                            "content": ref_note,
+                        }
+                    )
                     return json.dumps(card, ensure_ascii=False)
             except Exception as e:
                 logger.warning("Failed to inject ref note into interactive card: %s", e, exc_info=True)
@@ -374,7 +360,11 @@ class BaseHandler:
                             if not isinstance(row, list):
                                 continue
                             for node in reversed(row):
-                                if isinstance(node, dict) and node.get("tag") == "md" and isinstance(node.get("text"), str):
+                                if (
+                                    isinstance(node, dict)
+                                    and node.get("tag") == "md"
+                                    and isinstance(node.get("text"), str)
+                                ):
                                     node["text"] = f"{node['text']}\n\n---\n{ref_note}"
                                     injected = True
                                     break
@@ -429,7 +419,7 @@ class BaseHandler:
         # 2. Log expansion
         if action_type in (f"{prefix}_expand", f"{prefix}_collapse"):
             if toggle_log_method:
-                expanded = (action_type == f"{prefix}_expand")
+                expanded = action_type == f"{prefix}_expand"
                 # Call with positional args to support varying param names (deep_project_id vs loop_project_id)
                 # Signature expected: (message_id, chat_id, project, engine_project_id, expanded)
                 toggle_log_method(open_message_id, open_chat_id, project, engine_project_id, expanded)
@@ -438,7 +428,7 @@ class BaseHandler:
         # 3. View mode
         if action_type in (f"{prefix}_mode_full", f"{prefix}_mode_compact"):
             if switch_mode_method:
-                compact = (action_type == f"{prefix}_mode_compact")
+                compact = action_type == f"{prefix}_mode_compact"
                 # Signature expected: (message_id, chat_id, project, engine_project_id, compact)
                 switch_mode_method(open_message_id, open_chat_id, project, engine_project_id, compact)
                 return True
@@ -446,11 +436,11 @@ class BaseHandler:
         # 4. Acceptance-criteria expansion (AC)
         if action_type in (f"{prefix}_expand_ac", f"{prefix}_collapse_ac"):
             if toggle_ac_method:
-                expand_ac = (action_type == f"{prefix}_expand_ac")
+                expand_ac = action_type == f"{prefix}_expand_ac"
                 # Signature expected: (message_id, chat_id, project, engine_project_id, expand_ac)
                 toggle_ac_method(open_message_id, open_chat_id, project, engine_project_id, expand_ac)
                 return True
-        
+
         return False
 
     # ------------------------------------------------------------------
@@ -487,7 +477,9 @@ class BaseHandler:
     # ------------------------------------------------------------------
     # Request-id / ref-note helpers
     # ------------------------------------------------------------------
-    def ensure_request_id(self, message_id: Optional[str], chat_id: Optional[str] = None, project_id: Optional[str] = None) -> Optional[str]:
+    def ensure_request_id(
+        self, message_id: Optional[str], chat_id: Optional[str] = None, project_id: Optional[str] = None
+    ) -> Optional[str]:
         if not message_id:
             return None
         rid = None
@@ -505,7 +497,9 @@ class BaseHandler:
             logger.warning("Failed to register origin for message %s: %s", message_id, e, exc_info=True)
         return rid
 
-    def format_ref_note(self, origin_message_id: Optional[str], request_id: Optional[str], run_id: Optional[str] = None) -> str:
+    def format_ref_note(
+        self, origin_message_id: Optional[str], request_id: Optional[str], run_id: Optional[str] = None
+    ) -> str:
         origin_message_id = origin_message_id or ""
         request_id = request_id or ""
         run_id = run_id or ""
@@ -528,6 +522,7 @@ class BaseHandler:
         """Map InteractionMode → ContextSourceMode."""
         from ...mode import InteractionMode
         from ...project import ContextSourceMode
+
         mapping = {
             InteractionMode.SMART: ContextSourceMode.SMART,
             InteractionMode.COCO: ContextSourceMode.COCO,
@@ -539,8 +534,9 @@ class BaseHandler:
         """Record a mode switch into the unified context and build a bridge summary."""
         from_source = self.mode_to_context_source(from_mode)
         to_source = self.mode_to_context_source(to_mode)
-        logger.info("[模式切换] project=%s: %s -> %s, reason=%s",
-                     project_id, from_source.value, to_source.value, reason)
+        logger.info(
+            "[模式切换] project=%s: %s -> %s, reason=%s", project_id, from_source.value, to_source.value, reason
+        )
         self.ctx.context_manager.update_context(
             project_id,
             mode_transition={
@@ -570,8 +566,13 @@ class BaseHandler:
         injection = bridge.to_injection_prompt()
         if not injection:
             return text
-        logger.info("[Bridge注入] project=%s: %s -> %s, 注入 %d 字符到 prompt",
-                     project.project_name, bridge.from_mode.value, bridge.to_mode.value, len(injection))
+        logger.info(
+            "[Bridge注入] project=%s: %s -> %s, 注入 %d 字符到 prompt",
+            project.project_name,
+            bridge.from_mode.value,
+            bridge.to_mode.value,
+            len(injection),
+        )
         return f"{injection}\n\n{text}"
 
     # ------------------------------------------------------------------
@@ -609,6 +610,7 @@ class BaseHandler:
     def get_engine_name(self, chat_id: str, project_id: str | None = None) -> str:
         """Return 'Coco' or 'Claude' or 'TTADK' based on current interaction mode."""
         from ...mode import InteractionMode
+
         current_mode = self.ctx.mode_manager.get_mode(chat_id, project_id=project_id)
         if current_mode == InteractionMode.CLAUDE:
             return "Claude"

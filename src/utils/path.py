@@ -27,4 +27,3 @@ def normalize_ttadk_cwd(cwd: Optional[str]) -> Optional[str]:
         return str(Path(raw).expanduser().resolve())
     except Exception:
         return None
-

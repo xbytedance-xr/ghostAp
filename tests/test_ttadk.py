@@ -1,17 +1,17 @@
-import pytest
 import time
-from unittest.mock import MagicMock, patch
-from src.ttadk import TTADKManager, get_ttadk_manager, TTADKTool, TTADKModel, TTADKModelFetcher
-from src.ttadk.strategies import InteractiveStrategy
+from unittest.mock import MagicMock
+
+import pytest
+
+from src.ttadk import TTADKManager, TTADKModel, TTADKModelFetcher, TTADKTool, get_ttadk_manager
 from src.ttadk.models import is_stdin_not_tty_error
+from src.ttadk.strategies import InteractiveStrategy
 
 # Real-world ttadk outputs sampled from local environment (ttadk 0.3.8)
 _SAMPLE_INVALID_MODEL_CODEX = (
     "✗ Error: Invalid model 'gpt-5.2'. Available models: gpt-5.2-codex-ttadk, gpt-5.2-ttadk, gpt-5.3-codex"
 )
-_SAMPLE_INVALID_MODEL_CLAUDE = (
-    "✗ Error: Invalid model 'gpt-5.2'. Available models: glm-5-ttadk, kimi-k2.5, glm-4.7-ttadk, gpt-5.2-codex-ttadk, gpt-5.2-ttadk"
-)
+_SAMPLE_INVALID_MODEL_CLAUDE = "✗ Error: Invalid model 'gpt-5.2'. Available models: glm-5-ttadk, kimi-k2.5, glm-4.7-ttadk, gpt-5.2-codex-ttadk, gpt-5.2-ttadk"
 _SAMPLE_INVALID_MODEL_COCO_EMPTY = "✗ Error: Invalid model 'gpt-5.2'. Available models:"
 
 _SAMPLE_INVALID_MODEL_ANSI = (
@@ -19,10 +19,7 @@ _SAMPLE_INVALID_MODEL_ANSI = (
     "<id>abc</id>"
 )
 _SAMPLE_INVALID_MODEL_MULTILINE = (
-    "Error: Invalid model 'x'. Available models:\n"
-    "  - gpt-5.2-codex-ttadk\n"
-    "  - gpt-5.2-ttadk\n"
-    "  - gpt-5.3-codex\n"
+    "Error: Invalid model 'x'. Available models:\n  - gpt-5.2-codex-ttadk\n  - gpt-5.2-ttadk\n  - gpt-5.3-codex\n"
 )
 _SAMPLE_INVALID_MODEL_MUST_ONE_OF = "model must be one of: gpt-5.2-codex-ttadk, gpt-5.2-ttadk"
 
@@ -72,6 +69,7 @@ def clean_ttadk_manager(monkeypatch, tmp_path):
     """确保每个测试隔离 TTADKManager 单例，并将文件缓存重定向到临时目录。"""
     # Reset global singleton
     import src.ttadk.manager
+
     monkeypatch.setattr(src.ttadk.manager, "_manager", None)
 
     # Reset stub cooldown singleton to avoid cross-test interference.
@@ -259,8 +257,8 @@ def _assert_ttadk_startup_result_contract(info: dict) -> None:
 
 def test_ttadk_startup_acceptance_checklist_contract_smoke(monkeypatch):
     """固化验收口径：用单测表达可检查清单。"""
-    from src.ttadk.startup import coordinate_ttadk_startup
     from src.ttadk.manager import TTADKStartupError
+    from src.ttadk.startup import coordinate_ttadk_startup
 
     class _Sess:
         pass
@@ -428,7 +426,7 @@ def test_ttadk_startup_ssot_call_chain_create_engine_session(monkeypatch):
             "input_model": kwargs.get("model_intent") or "",
             "resolved_real_name": "",
             "passthrough_model": None,
-            "model": "gpt-5.2-codex-ttadk", # validated model
+            "model": "gpt-5.2-codex-ttadk",  # validated model
             "validated": True,
             "source": "defaults",
             "warnings": [],
@@ -439,19 +437,20 @@ def test_ttadk_startup_ssot_call_chain_create_engine_session(monkeypatch):
     monkeypatch.setattr("src.ttadk.startup_common.precheck_ttadk_startup_model", _fake_precheck_ttadk_startup_model)
 
     sess = agent_session.create_engine_session(agent_type="ttadk_codex", cwd="/tmp", model_name="gpt-5.2")
-    
+
     assert isinstance(sess, SyncTTADKCLISession)
     assert len(precheck_called) == 1
     assert precheck_called[0]["agent_type"] == "ttadk_codex"
     assert precheck_called[0]["cwd"] == "/tmp"
     assert precheck_called[0]["model_intent"] == "gpt-5.2"
     # Check if model name was passed to session
-    assert getattr(sess, "_model_name") == "gpt-5.2-codex-ttadk"
+    assert sess._model_name == "gpt-5.2-codex-ttadk"
 
 
 def test_ttadk_startup_summary_log_fields_success(monkeypatch, caplog):
     """TTADK CLI 启动成功路径：应返回会话并记录 startup 摘要日志。"""
     import logging
+
     import src.agent_session as agent_session
 
     monkeypatch.setattr(
@@ -498,6 +497,7 @@ def test_ttadk_startup_summary_log_fields_success(monkeypatch, caplog):
 def test_ttadk_startup_summary_log_fields_degraded(monkeypatch, caplog):
     """TTADK CLI 启动失败时应直接报错（不降级到 ACP）。"""
     import logging
+
     import src.agent_session as agent_session
 
     monkeypatch.setattr(
@@ -653,8 +653,14 @@ def test_ttadk_cache_get_models_uses_model_fetcher_only(monkeypatch, tmp_path):
     monkeypatch.setattr(mgr._cache._model_fetcher, "fetch_tool_models_with_diagnostics", _fake_fetch, raising=True)
 
     # 若有旁路直接调用 subprocess（不经 fetcher stub），应直接失败
-    monkeypatch.setattr(subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("subprocess.run should not be called")))
-    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(AssertionError("subprocess.Popen should not be called")))
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("subprocess.run should not be called"))
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("subprocess.Popen should not be called")),
+    )
 
     r = mgr.get_models(cwd=str(tmp_path), tool_name="codex", force_refresh=False)
     assert [m.name for m in (r.models or [])] == ["real-model"]
@@ -908,8 +914,6 @@ def test_precheck_ttadk_startup_model_uses_with_diagnostics(monkeypatch):
 def test_ttadk_sandbox_env_does_not_write_real_home_setting_json(monkeypatch, tmp_path):
     """回归：启用 sandbox 后，ttadk 子进程 env 应指向项目隔离目录，不应改写真实 HOME 下的 ~/.ttadk/setting.json。"""
     import json
-    import os
-    from pathlib import Path
 
     # 1) 构造一个“真实 HOME”与其 setting.json
     real_home = tmp_path / "real_home"
@@ -971,7 +975,7 @@ def test_ttadk_sandbox_env_does_not_write_real_home_setting_json(monkeypatch, tm
 
 def test_ttadk_code_execute_success_with_validated_real_model(monkeypatch, tmp_path):
     """用户路径：validated 真名 → ttadk code 执行成功。"""
-    from src.ttadk.manager import get_ttadk_manager, TTADKCommandRunner
+    from src.ttadk.manager import TTADKCommandRunner, get_ttadk_manager
     from src.ttadk.models import ResolvedModelResult
 
     mgr = get_ttadk_manager(default_tool="codex", default_model="gpt-5.2")
@@ -1009,7 +1013,7 @@ def test_ttadk_code_execute_success_with_validated_real_model(monkeypatch, tmp_p
 
 def test_ttadk_code_execute_invalid_model_then_refresh_and_retry_ok(monkeypatch, tmp_path):
     """用户路径：首次 invalid_model → force_refresh + 重新选真名 → 重试成功。"""
-    from src.ttadk.manager import get_ttadk_manager, TTADKCommandRunner
+    from src.ttadk.manager import TTADKCommandRunner, get_ttadk_manager
     from src.ttadk.models import ResolvedModelResult
 
     mgr = get_ttadk_manager(default_tool="codex", default_model="gpt-5.2")
@@ -1072,7 +1076,7 @@ def test_ttadk_code_execute_invalid_model_then_refresh_and_retry_ok(monkeypatch,
 
 def test_ttadk_code_execute_invalid_model_refresh_fail_then_auto_then_fail(monkeypatch, tmp_path):
     """用户路径：invalid_model → refresh 失败/无法重选 → auto 重试失败 → 返回明确失败与 next_steps。"""
-    from src.ttadk.manager import get_ttadk_manager, TTADKCommandRunner
+    from src.ttadk.manager import TTADKCommandRunner, get_ttadk_manager
     from src.ttadk.models import ResolvedModelResult
 
     mgr = get_ttadk_manager(default_tool="codex", default_model="gpt-5.2")
@@ -1095,10 +1099,17 @@ def test_ttadk_code_execute_invalid_model_refresh_fail_then_auto_then_fail(monke
     )
 
     # refresh 失败
-    monkeypatch.setattr(mgr, "get_models", lambda *, tool_name, cwd=None, force_refresh=False: (_ for _ in ()).throw(RuntimeError("refresh_fail")), raising=True)
+    monkeypatch.setattr(
+        mgr,
+        "get_models",
+        lambda *, tool_name, cwd=None, force_refresh=False: (_ for _ in ()).throw(RuntimeError("refresh_fail")),
+        raising=True,
+    )
 
     # re_resolve 失败（无真名）
-    monkeypatch.setattr(mgr, "resolve_real_model_name", lambda **kw: (_ for _ in ()).throw(RuntimeError("resolve_fail")), raising=True)
+    monkeypatch.setattr(
+        mgr, "resolve_real_model_name", lambda **kw: (_ for _ in ()).throw(RuntimeError("resolve_fail")), raising=True
+    )
 
     # runner：run=invalid_model；auto=not_initialized
     seq = _SequenceRunner([(1, "", _SAMPLE_INVALID_MODEL_CODEX), (1, "", "please initialize the project first")])
@@ -1377,8 +1388,8 @@ def test_runtime_invalid_model_stub_cooldown_key_normalizes_tool_name(monkeypatc
 def test_startup_common_stub_cooldown_works_without_manager_import(monkeypatch):
     """防回归：startup_common 在不依赖 `src.ttadk.manager` 导入的情况下也能工作（显式 provider 注入）。"""
     import sys
-    import types
     import time as _time
+    import types
 
     import src.ttadk.startup_common as sc
 
@@ -1445,8 +1456,8 @@ def test_ttadk_compat_import_has_no_side_effect_install(monkeypatch):
 
 def test_ttadk_compat_has_no_sys_modules_dependency(monkeypatch):
     """防回归：compat 不应通过 sys.modules 读取/回写 manager（显式 provider 注入）。"""
-    import importlib
     import builtins
+    import importlib
 
     import src.ttadk.compat as compat
 
@@ -1467,9 +1478,9 @@ def test_ttadk_manager_import_has_no_side_effect_install(monkeypatch):
     """防回归：仅 import/reload `src.ttadk.manager` 不应触发 provider 安装副作用。"""
     import importlib
 
-    import src.ttadk.startup_common as sc
     import src.ttadk.compat as compat
     import src.ttadk.manager as mgr
+    import src.ttadk.startup_common as sc
 
     calls = {"n": 0}
     orig = sc.install_stub_cooldown_providers
@@ -1488,9 +1499,9 @@ def test_ttadk_manager_import_has_no_side_effect_install(monkeypatch):
 
 def test_get_ttadk_manager_installs_compat_providers_once(monkeypatch):
     """回归：调用 `get_ttadk_manager()` 触发一次 provider 安装，且重复调用幂等。"""
-    import src.ttadk.startup_common as sc
     import src.ttadk.compat as compat
     import src.ttadk.manager as mgr
+    import src.ttadk.startup_common as sc
 
     calls = {"n": 0}
     orig = sc.install_stub_cooldown_providers
@@ -1516,9 +1527,9 @@ def test_get_ttadk_manager_concurrent_installs_only_once(monkeypatch):
     """并发回归：多线程并发调用 get_ttadk_manager 时 provider 安装应最多一次且无异常。"""
     import threading
 
-    import src.ttadk.startup_common as sc
     import src.ttadk.compat as compat
     import src.ttadk.manager as mgr
+    import src.ttadk.startup_common as sc
 
     calls = {"n": 0}
     orig = sc.install_stub_cooldown_providers
@@ -1618,12 +1629,12 @@ def test_no_ttadk_startup_model_bypass_in_upper_layers():
     ]
 
     banned = [
-        re.compile(r"\.resolve_and_ensure_valid_model\(") ,
-        re.compile(r"\.resolve_real_model_name\(") ,
+        re.compile(r"\.resolve_and_ensure_valid_model\("),
+        re.compile(r"\.resolve_real_model_name\("),
         # 禁止上层手动拼装 `-m` 参数（启动透传必须完全由 TTADK SSOT 决策后下沉到 ACP adapter）。
-        re.compile(r"args\.extend\(\[\s*\"-m\"\s*,") ,
-        re.compile(r"args\s*\+=\s*\[\s*\"-m\"\s*,") ,
-        re.compile(r"\[\s*\"-m\"\s*,\s*model_name\b") ,
+        re.compile(r"args\.extend\(\[\s*\"-m\"\s*,"),
+        re.compile(r"args\s*\+=\s*\[\s*\"-m\"\s*,"),
+        re.compile(r"\[\s*\"-m\"\s*,\s*model_name\b"),
     ]
 
     offenders: list[str] = []
@@ -1645,8 +1656,8 @@ def _scan_invalid_model_ssot_offenders() -> list[str]:
     - 当前阶段：仅做“盘点/可运行”的 smoke（不做强断言），避免在重构落地前阻塞。
     - 后续阶段：将把扫描规则升级为硬性断言（除 SSOT 模块外不允许出现重复解析）。
     """
-    from pathlib import Path
     import re
+    from pathlib import Path
 
     root = Path(__file__).resolve().parents[1]
     agent_session_py = root / "src" / "agent_session.py"
@@ -1655,10 +1666,10 @@ def _scan_invalid_model_ssot_offenders() -> list[str]:
     # 这些模式代表“直接在上层/编排层做 invalid-model 解析/提取”。
     # 注意：这里只做盘点，不做强断言。
     banned = [
-        re.compile(r"\bextract_available_models\(") ,
-        re.compile(r"\bis_invalid_model_error\(") ,
-        re.compile(r"Available models") ,
-        re.compile(r"_AVAILABLE_MODELS_RE") ,
+        re.compile(r"\bextract_available_models\("),
+        re.compile(r"\bis_invalid_model_error\("),
+        re.compile(r"Available models"),
+        re.compile(r"_AVAILABLE_MODELS_RE"),
     ]
 
     offenders: list[str] = []
@@ -1716,9 +1727,7 @@ def test_build_invalid_model_context_uses_total_limit_for_err_blob_and_snippet_l
 
     class _Err(RuntimeError):
         def __init__(self):
-            super().__init__(
-                "✗ Error: Invalid model 'gpt-5.2'. Available models: gpt-5.2-ttadk, gpt-4.1-ttadk"
-            )
+            super().__init__("✗ Error: Invalid model 'gpt-5.2'. Available models: gpt-5.2-ttadk, gpt-4.1-ttadk")
             # 让 snippet 足够长以触发截断
             self.stderr_snippet = "Authorization: Bearer SECRET_TOKEN\n" + ("x" * 200)
             self.stdout_snippet = "y" * 200
@@ -1793,9 +1802,9 @@ def test_build_invalid_model_context_parses_from_tail_even_when_err_blob_is_trun
 
 def test_ttadk_manager_legacy_store_monkeypatch_still_effective(monkeypatch):
     """回归：manager 侧 monkeypatch legacy store 仍能影响 startup_common 的生效 store。"""
+    import src.ttadk.compat as compat
     import src.ttadk.manager as m
     import src.ttadk.startup_common as sc
-    import src.ttadk.compat as compat
 
     injected = {("m", "q", "codex"): 321.0}
     monkeypatch.setattr(m, "_LEGACY_STUB_COOLDOWN_STORE", injected, raising=False)
@@ -1812,9 +1821,9 @@ def test_ttadk_manager_legacy_store_monkeypatch_still_effective(monkeypatch):
 
 def test_runtime_invalid_model_stub_cooldown_migrates_from_manager_coordinate_fn_attr(monkeypatch):
     """stub cooldown: 显式迁移可从 src.ttadk.manager.coordinate_ttadk_startup 函数属性迁移 legacy store。"""
-    import src.ttadk.startup_common as sc
-    import src.ttadk.manager as m
     import src.ttadk.compat as compat
+    import src.ttadk.manager as m
+    import src.ttadk.startup_common as sc
 
     legacy = {("legacy", "fn", "codex"): 111.0}
     monkeypatch.setattr(sc, "_LEGACY_STUB_COOLDOWN_STORE", None, raising=False)
@@ -1847,9 +1856,9 @@ def test_runtime_invalid_model_stub_cooldown_migrates_from_manager_coordinate_fn
 
 def test_runtime_invalid_model_stub_cooldown_respects_manager_legacy_store_and_can_be_cleared(monkeypatch):
     """stub cooldown: 若通过 src.ttadk.manager._LEGACY_STUB_COOLDOWN_STORE 注入，应被 startup_common 使用；清空时应解除引用。"""
+    import src.ttadk.compat as compat
     import src.ttadk.manager as m
     import src.ttadk.startup_common as sc
-    import src.ttadk.compat as compat
 
     injected = {("m", "q", "codex"): 123.0}
     monkeypatch.setattr(m, "_LEGACY_STUB_COOLDOWN_STORE", injected, raising=False)
@@ -1917,8 +1926,8 @@ def test_ttadk_package_exports_startup_coordinate(monkeypatch):
 def test_create_sync_session_ttadk_only_passes_model_when_validated(monkeypatch):
     """create_sync_session(ttadk_*)：仅 validated 才透传 -m，否则传 None。"""
     import src.agent_session as agent_session
-    from src.ttadk.models import ResolvedModelResult
     from src.agent_session import SyncTTADKCLISession
+    from src.ttadk.models import ResolvedModelResult
 
     calls: list[dict] = []
 
@@ -1956,8 +1965,8 @@ def test_create_sync_session_ttadk_only_passes_model_when_validated(monkeypatch)
 def test_create_sync_session_ttadk_passes_real_model_when_validated(monkeypatch):
     """create_sync_session(ttadk_*)：validated=True 时透传 real model。"""
     import src.agent_session as agent_session
-    from src.ttadk.models import ResolvedModelResult
     from src.agent_session import SyncTTADKCLISession
+    from src.ttadk.models import ResolvedModelResult
 
     calls: list[dict] = []
 
@@ -2029,16 +2038,14 @@ def test_create_engine_session_ttadk_invalid_model_auto_corrects_with_available_
             self.stderr_snippet = stderr_snippet
 
     # 1) 准备模拟的 Invalid model 输出（带 Available models）
-    invalid_out = (
-        "✗ Error: Invalid model 'gpt-5.2'. Available models: "
-        "gpt-5.2-ttadk, gpt-4.1-ttadk"
-    )
+    invalid_out = "✗ Error: Invalid model 'gpt-5.2'. Available models: gpt-5.2-ttadk, gpt-4.1-ttadk"
     assert extract_available_models(invalid_out) == ["gpt-5.2-ttadk", "gpt-4.1-ttadk"]
 
     # 2) Dummy TTADKManager：首轮 precheck 误认为 gpt-5.2 可用；纠错后基于缓存返回真实模型
     class _DummyTTADKMgr:
         def __init__(self):
             import threading
+
             self._lock = threading.Lock()
             self._tool_models_cache: dict[str, list[TTADKModel]] = {}
             self._cache_time: dict[str, float] = {}
@@ -2053,6 +2060,7 @@ def test_create_engine_session_ttadk_invalid_model_auto_corrects_with_available_
 
         def resolve_and_ensure_valid_model(self, model_name: str, tool_name=None, cwd=None):
             from src.ttadk.models import ResolvedModelResult
+
             tool = (tool_name or "").strip().lower()
             with self._lock:
                 models = list(self._tool_models_cache.get(tool, []) or [])
@@ -2106,7 +2114,9 @@ def test_create_engine_session_ttadk_invalid_model_auto_corrects_with_available_
             raise _InvalidModelErr("startup failed", stderr_snippet=invalid_out)
         return _DummySession("ok")
 
-    monkeypatch.setattr("src.acp.sync_adapter.start_session_with_retry", lambda *a, **k: _fake_start_session_with_retry(*a, **k))
+    monkeypatch.setattr(
+        "src.acp.sync_adapter.start_session_with_retry", lambda *a, **k: _fake_start_session_with_retry(*a, **k)
+    )
 
     sess = agent_session.create_engine_session(agent_type="ttadk_coco", cwd="/tmp", model_name="gpt-5.2")
     assert getattr(sess, "session_id", "") == "ok"
@@ -2135,6 +2145,7 @@ def test_create_engine_session_ttadk_invalid_model_triggers_force_refresh_when_n
     class _DummyTTADKMgr:
         def __init__(self):
             import threading
+
             self._lock = threading.Lock()
             self._tool_models_cache: dict[str, list[TTADKModel]] = {}
             self._cache_time: dict[str, float] = {}
@@ -2207,7 +2218,9 @@ def test_create_engine_session_ttadk_invalid_model_triggers_force_refresh_when_n
             raise _InvalidModelErr("startup failed", stderr_snippet=invalid_out)
         return _DummySession("ok")
 
-    monkeypatch.setattr("src.acp.sync_adapter.start_ttadk_session_with_pty_retry", _fake_start_ttadk_session_with_pty_retry)
+    monkeypatch.setattr(
+        "src.acp.sync_adapter.start_ttadk_session_with_pty_retry", _fake_start_ttadk_session_with_pty_retry
+    )
 
     sess = agent_session.create_engine_session(agent_type="ttadk_coco", cwd="/tmp", model_name="gpt-5.2")
     assert getattr(sess, "session_id", "") == "ok"
@@ -2255,17 +2268,24 @@ def test_create_engine_session_ttadk_protocol_adapter_failure_degrades_to_coco(m
         calls.append({"agent_type": agent_type, "cwd": cwd, "timeout": startup_timeout, "model_name": model_name})
         return _DummySession()
 
-    monkeypatch.setattr("src.acp.sync_adapter.start_session_with_retry", lambda *a, **k: _fake_start_session_with_retry(*a, **k))
+    monkeypatch.setattr(
+        "src.acp.sync_adapter.start_session_with_retry", lambda *a, **k: _fake_start_session_with_retry(*a, **k)
+    )
 
     # 让 start_agent_session 直接走 fallback（冻结降级行为，不依赖真实探测）
     def _fake_start_agent_session(**kw):
-        from src.coco_model import get_coco_model_manager
         from src.acp.sync_adapter import start_session_with_retry
+        from src.coco_model import get_coco_model_manager
 
         coco_model = get_coco_model_manager().get_current_model()
-        s2 = start_session_with_retry(agent_type="coco", cwd=kw.get("cwd") or "/tmp", startup_timeout=kw.get("startup_timeout") or 1, model_name=coco_model)
-        setattr(s2, "_degraded_to", "coco")
-        setattr(s2, "_agent_type", "ttadk_codex")
+        s2 = start_session_with_retry(
+            agent_type="coco",
+            cwd=kw.get("cwd") or "/tmp",
+            startup_timeout=kw.get("startup_timeout") or 1,
+            model_name=coco_model,
+        )
+        s2._degraded_to = "coco"
+        s2._agent_type = "ttadk_codex"
         return {
             "session": s2,
             "session_id": getattr(s2, "session_id", ""),
@@ -2396,8 +2416,8 @@ def test_coordinate_ttadk_startup_validated_true_but_empty_model_forces_auto(mon
 
 def test_coordinate_ttadk_startup_manager_compat_delegates_invalid_model_branch(monkeypatch):
     """回归：manager.coordinate_ttadk_startup 必须是 startup SSOT 的薄封装（invalid_model→repair 分支也一致）。"""
-    import src.ttadk.startup as ssot
     import src.ttadk.manager as compat
+    import src.ttadk.startup as ssot
 
     # 让 repair 路径可控，避免依赖 runtime_repair 的复杂内部细节
     calls: list[dict] = []
@@ -2479,8 +2499,8 @@ def test_coordinate_ttadk_startup_manager_compat_delegates_invalid_model_branch(
 
 def test_coordinate_ttadk_startup_manager_compat_delegates_degrade_branch(monkeypatch):
     """回归：manager.coordinate_ttadk_startup 必须与 startup SSOT 在 degrade/fallback 分支一致。"""
-    import src.ttadk.startup as ssot
     import src.ttadk.manager as compat
+    import src.ttadk.startup as ssot
 
     fb_calls: list[str] = []
 
@@ -2551,8 +2571,9 @@ def test_acp_startup_failure_logs_have_stable_diagnostics_fields(monkeypatch, ca
     """防回归：ACP/TTADK 启动失败日志必须包含稳定字段，避免出现“日志为空/极少”。"""
     import logging
     from types import SimpleNamespace
-    from src.acp.manager import ACPSessionManager
+
     import src.acp.manager as mgr
+    from src.acp.manager import ACPSessionManager
 
     # Fake session always fails to start with an exception whose str() 可能为空
     class _EmptyStrError(Exception):
@@ -2582,7 +2603,9 @@ def test_acp_startup_failure_logs_have_stable_diagnostics_fields(monkeypatch, ca
 
     # ensure start_session uses retry=1 to hit logging once
     monkeypatch.setattr(mgr, "SyncACPSession", _FailSession)
-    monkeypatch.setattr(mgr, "get_settings", lambda: SimpleNamespace(acp_startup_retries=1, acp_healthcheck_timeout=0.01))
+    monkeypatch.setattr(
+        mgr, "get_settings", lambda: SimpleNamespace(acp_startup_retries=1, acp_healthcheck_timeout=0.01)
+    )
 
     caplog.set_level(logging.WARNING)
     m = ACPSessionManager("coco", session_timeout=999999)
@@ -2592,11 +2615,11 @@ def test_acp_startup_failure_logs_have_stable_diagnostics_fields(monkeypatch, ca
     joined = "\n".join(r.getMessage() for r in caplog.records)
     assert "Session start failed" in joined
     # stable diagnostics keys must exist in log
-    assert "\"cmd\"" in joined
-    assert "\"args\"" in joined
-    assert "\"rc\"" in joined
-    assert "\"stdout_snippet\"" in joined
-    assert "\"stderr_snippet\"" in joined
+    assert '"cmd"' in joined
+    assert '"args"' in joined
+    assert '"rc"' in joined
+    assert '"stdout_snippet"' in joined
+    assert '"stderr_snippet"' in joined
 
 
 def test_ttadk_claude_startup_failure_logs_have_diagnostics_and_fail_phase(monkeypatch, caplog):
@@ -2636,7 +2659,9 @@ def test_ttadk_claude_startup_failure_logs_have_diagnostics_and_fail_phase(monke
             "diagnostics": {},
         },
     )
-    monkeypatch.setattr("src.acp.manager.get_settings", lambda: SimpleNamespace(acp_startup_retries=1, acp_healthcheck_timeout=0.01))
+    monkeypatch.setattr(
+        "src.acp.manager.get_settings", lambda: SimpleNamespace(acp_startup_retries=1, acp_healthcheck_timeout=0.01)
+    )
 
     caplog.set_level(logging.WARNING)
 
@@ -2699,7 +2724,9 @@ def test_startup_diagnostics_redacts_token_like_text(monkeypatch):
         ("start_failed", RuntimeError("boom"), "some other failure", "start_failed"),
     ],
 )
-def test_startup_fail_phase_classification_and_diagnostics_consistent(monkeypatch, name, error_obj, error_blob, expected):
+def test_startup_fail_phase_classification_and_diagnostics_consistent(
+    monkeypatch, name, error_obj, error_blob, expected
+):
     """fail_phase 分类：分类函数与 build_startup_diagnostics 输出应一致，且稳定存在。"""
     import src.acp.sync_adapter as sa
 
@@ -2707,7 +2734,7 @@ def test_startup_fail_phase_classification_and_diagnostics_consistent(monkeypatc
     assert phase == expected
 
     # 让 diagnostics 从 snippet 里拿到 error_blob（模拟真实错误输出）
-    setattr(error_obj, "stderr_snippet", error_blob)
+    error_obj.stderr_snippet = error_blob
     diag = sa.build_startup_diagnostics(agent_type="ttadk_coco", cwd="/tmp", model_name="", error=error_obj)
     assert diag.get("fail_phase") == expected
 
@@ -2715,6 +2742,7 @@ def test_startup_fail_phase_classification_and_diagnostics_consistent(monkeypatc
 def test_startup_fail_phase_best_effort_import_failure_falls_back_start_failed(monkeypatch):
     """best-effort：TTADK 模块不可导入时不应抛异常，并回退为 start_failed。"""
     import importlib
+
     import src.acp.sync_adapter as sa
 
     orig = importlib.import_module
@@ -2735,6 +2763,7 @@ def test_startup_fail_phase_best_effort_matcher_raises_falls_back_to_start_faile
     """best-effort：TTADK 识别函数抛异常时不应影响分类，最终回退 start_failed。"""
     import importlib
     import types
+
     import src.acp.sync_adapter as sa
 
     orig = importlib.import_module
@@ -2763,6 +2792,7 @@ def test_startup_fail_phase_best_effort_matcher_raises_falls_back_to_start_faile
 def test_acp_manager_startup_diagnostics_uses_ssot_builder(monkeypatch):
     """防回归：manager 的诊断构造必须走 sync_adapter.build_startup_diagnostics（SSOT）。"""
     from types import SimpleNamespace
+
     import src.acp.manager as mgr
     import src.acp.sync_adapter as sa
 
@@ -2811,7 +2841,9 @@ def test_acp_manager_startup_diagnostics_uses_ssot_builder(monkeypatch):
             return False
 
     monkeypatch.setattr(mgr, "SyncACPSession", _FailSession)
-    monkeypatch.setattr(mgr, "get_settings", lambda: SimpleNamespace(acp_startup_retries=1, acp_healthcheck_timeout=0.01))
+    monkeypatch.setattr(
+        mgr, "get_settings", lambda: SimpleNamespace(acp_startup_retries=1, acp_healthcheck_timeout=0.01)
+    )
 
     m = mgr.ACPSessionManager("coco", session_timeout=999999)
     with pytest.raises(RuntimeError):
@@ -2823,8 +2855,8 @@ def test_acp_manager_startup_diagnostics_uses_ssot_builder(monkeypatch):
 
 def test_acp_session_manager_ttadk_start_session_uses_coordinator(monkeypatch):
     """ACPSessionManager.start_session(ttadk_*)：应走 CLI 会话并透传 precheck 后模型。"""
-    from src.acp.manager import ACPSessionManager
     import src.agent_session as agent_session
+    from src.acp.manager import ACPSessionManager
 
     monkeypatch.setattr(
         "src.ttadk.startup_common.precheck_ttadk_startup_model",
@@ -2895,9 +2927,9 @@ def test_acp_session_manager_ttadk_start_session_uses_coordinator(monkeypatch):
 
 def test_acp_session_manager_ttadk_coordinator_failure_degrades_to_coco(monkeypatch):
     """ACPSessionManager.start_session(ttadk_*)：CLI 启动异常应直接失败，不降级到 Coco ACP。"""
-    from src.acp.manager import ACPSessionManager
     import src.acp.manager as acp_manager_mod
     import src.agent_session as agent_session
+    from src.acp.manager import ACPSessionManager
 
     monkeypatch.setattr(
         "src.ttadk.startup_common.precheck_ttadk_startup_model",
@@ -2923,7 +2955,9 @@ def test_acp_session_manager_ttadk_coordinator_failure_degrades_to_coco(monkeypa
             raise RuntimeError("boom")
 
     monkeypatch.setattr(agent_session, "SyncTTADKCLISession", _FailCLISession, raising=False)
-    monkeypatch.setattr(acp_manager_mod, "SyncACPSession", lambda **kw: (_ for _ in ()).throw(AssertionError("unexpected_acp_fallback")))
+    monkeypatch.setattr(
+        acp_manager_mod, "SyncACPSession", lambda **kw: (_ for _ in ()).throw(AssertionError("unexpected_acp_fallback"))
+    )
 
     m = ACPSessionManager(agent_type="coco")
     with pytest.raises(RuntimeError, match="启动 ttadk_codex CLI 失败"):
@@ -2964,7 +2998,9 @@ def test_create_engine_session_ttadk_claude_adapter_failure_degrades_to_coco(mon
         calls.append({"agent_type": agent_type, "cwd": cwd, "timeout": startup_timeout, "model_name": model_name})
         return _DummySession()
 
-    monkeypatch.setattr("src.acp.sync_adapter.start_session_with_retry", lambda *a, **k: _fake_start_session_with_retry(*a, **k))
+    monkeypatch.setattr(
+        "src.acp.sync_adapter.start_session_with_retry", lambda *a, **k: _fake_start_session_with_retry(*a, **k)
+    )
 
     # 让 quickcheck 失败，触发降级：resolve_agent_spec 返回一个不会输出 JSON 的长睡眠进程
     monkeypatch.setattr(
@@ -2975,13 +3011,18 @@ def test_create_engine_session_ttadk_claude_adapter_failure_degrades_to_coco(mon
     # 让 start_agent_session 快速走 fallback：不依赖真实 ttadk 二进制探测
     def _fake_start_agent_session(**kw):
         # fallback 应调用 coco 的 start_session_with_retry
-        from src.coco_model import get_coco_model_manager
         from src.acp.sync_adapter import start_session_with_retry
+        from src.coco_model import get_coco_model_manager
 
         coco_model = get_coco_model_manager().get_current_model()
-        s2 = start_session_with_retry(agent_type="coco", cwd=kw.get("cwd") or "/tmp", startup_timeout=kw.get("startup_timeout") or 1, model_name=coco_model)
-        setattr(s2, "_degraded_to", "coco")
-        setattr(s2, "_agent_type", "ttadk_claude")
+        s2 = start_session_with_retry(
+            agent_type="coco",
+            cwd=kw.get("cwd") or "/tmp",
+            startup_timeout=kw.get("startup_timeout") or 1,
+            model_name=coco_model,
+        )
+        s2._degraded_to = "coco"
+        s2._agent_type = "ttadk_claude"
         return {
             "session": s2,
             "session_id": getattr(s2, "session_id", ""),
@@ -3150,6 +3191,7 @@ def test_start_ttadk_engine_session_contract_protocol_adapter_failed_degrades(mo
 def test_start_ttadk_engine_session_claude_acp_not_ready_degrades_and_has_diagnostics(monkeypatch):
     """ACP 不产出 JSON：claude quickcheck 失败应降级，且 attempts 诊断字段不为空。"""
     import time
+
     from src.ttadk.manager import start_ttadk_engine_session
 
     class _Sess:
@@ -3218,6 +3260,7 @@ def test_start_ttadk_engine_session_claude_acp_not_ready_degrades_and_has_diagno
 def test_start_ttadk_engine_session_claude_start_timeout_degrades_and_has_diagnostics(monkeypatch):
     """启动超时：quickcheck 通过但 start_fn 超时，应归类 timeout 并降级，且 attempts 诊断字段不为空。"""
     import time
+
     from src.ttadk.manager import start_ttadk_engine_session
 
     class _Sess:
@@ -3462,7 +3505,7 @@ def test_ttadk_wrapper_fdreader_read_consumes_buffer_first(monkeypatch):
 
 def test_ttadk_tool_model_basic_fields():
     """基础数据模型字段防回归（避免被误改）。"""
-    from src.ttadk import TTADKTool, TTADKModel
+    from src.ttadk import TTADKModel, TTADKTool
 
     tool = TTADKTool(name="test_tool", description="Test Tool", is_default=True)
     assert tool.name == "test_tool"
@@ -3593,7 +3636,9 @@ def test_ttadk_wrapper_pump_error_keeps_failure_diagnostics(monkeypatch, capsys)
     monkeypatch.setattr(ttadk_wrapper, "_spawn_with_pty", lambda cmd: (_DummyProc(), 77))
 
     # 强制 pump_filtered_stream 抛异常，触发 banner_tail 记录 pump_error
-    monkeypatch.setattr(ttadk_wrapper, "pump_filtered_stream", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(
+        ttadk_wrapper, "pump_filtered_stream", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
 
     # 避免真实 close 行为干扰测试
     monkeypatch.setattr(ttadk_wrapper, "_close_fd_quietly", lambda fd: None)
@@ -3790,7 +3835,7 @@ def test_extract_available_models_variants():
 
 
 def test_extract_invalid_model_diagnostics_and_choose_best_available_model():
-    from src.ttadk.models import extract_invalid_model_diagnostics, choose_best_available_model
+    from src.ttadk.models import choose_best_available_model, extract_invalid_model_diagnostics
 
     diag = extract_invalid_model_diagnostics(stdout="", stderr=_SAMPLE_INVALID_MODEL_CODEX)
     assert diag["invalid_model"] is True
@@ -3832,7 +3877,7 @@ def test_build_invalid_model_context_never_raises_even_if_str_raises():
 
     ctx = build_invalid_model_context(_BadStr(), limit=120)
     assert isinstance(ctx, dict)
-    assert (ctx.get("err_blob") or "")
+    assert ctx.get("err_blob") or ""
     assert "available_models" in ctx
     assert "is_invalid_model" in ctx
 
@@ -3881,14 +3926,14 @@ def test_is_invalid_model_error_variants():
 
 def test_ttadk_manager():
     manager = TTADKManager(default_tool="coco", default_model="claude-3.5-sonnet")
-    
+
     assert manager.get_current_tool() == "coco"
     assert manager.get_current_model() == "claude-3.5-sonnet"
-    
+
     tools_result = manager.get_tools()
     assert tools_result.error is None
     assert len(tools_result.tools) > 0
-    
+
     models_result = manager.get_models()
     assert models_result.error is None
     assert len(models_result.models) > 0
@@ -3920,7 +3965,7 @@ def test_ttadk_manager_set_tool_and_model():
 def test_get_ttadk_manager():
     manager1 = get_ttadk_manager(default_tool="trae", default_model="doubao-1.5-pro")
     manager2 = get_ttadk_manager()
-    
+
     assert manager1 is manager2
     assert manager1.get_current_tool() == "trae"
     assert manager1.get_current_model() == "doubao-1.5-pro"
@@ -4007,7 +4052,8 @@ def test_get_models_from_sync_output(monkeypatch):
         manager._model_fetcher._structured,
         "fetch",
         lambda tool_name, cwd=None: [TTADKModel(name="real-model-a"), TTADKModel(name="real-model-b")]
-        if tool_name == "coco" else [],
+        if tool_name == "coco"
+        else [],
     )
 
     result = manager.get_models(cwd=".")
@@ -4027,14 +4073,14 @@ def test_set_model_accepts_synced_model(monkeypatch):
 
     # Force cache update
     manager.get_models(cwd=".")
-    
+
     # We need to ensure the manager knows about the synced models
-    # The previous test failed because manager.set_model checks against 
+    # The previous test failed because manager.set_model checks against
     # DEFAULT_MODELS and self._known_models
-    
+
     # Let's verify known models contains our synced model
     assert "real-model" in manager._known_models
-    
+
     assert manager.set_model("real-model") is True
     assert manager.get_current_model() == "real-model"
 
@@ -4074,6 +4120,7 @@ provider:  openai"""
 def test_ttadk_model_fetcher_cache():
     """测试模型获取器缓存"""
     import time
+
     fetcher = TTADKModelFetcher()
     # 缓存应该为空
     assert fetcher._is_cache_valid("codex") is False
@@ -4099,7 +4146,7 @@ def test_ttadk_model_fetcher_diagnostics_cache_hit():
 
 def test_fetcher_structured_sync_config_missing_warns_and_falls_back_to_probe(monkeypatch):
     """SSOT：probe 优先于 structured_sync；即使 structured_sync 在未 init 时失败，也不应影响 probe 命中。"""
-    from src.ttadk.model_fetcher import TTADKModelFetcher, TTADKCommandError
+    from src.ttadk.model_fetcher import TTADKCommandError, TTADKModelFetcher
     from src.ttadk.models import TTADKModel
 
     fetcher = TTADKModelFetcher(runner=_FakeRunner())
@@ -4113,7 +4160,9 @@ def test_fetcher_structured_sync_config_missing_warns_and_falls_back_to_probe(mo
         )
 
     monkeypatch.setattr(fetcher._structured, "fetch", _structured_fail)
-    monkeypatch.setattr(fetcher._probe, "fetch", lambda tool_name, cwd=None: [TTADKModel(name="m1"), TTADKModel(name="m2")])
+    monkeypatch.setattr(
+        fetcher._probe, "fetch", lambda tool_name, cwd=None: [TTADKModel(name="m1"), TTADKModel(name="m2")]
+    )
 
     r = fetcher.fetch_tool_models_with_diagnostics("codex", cwd="/not-init", force_refresh=False)
     assert r.source == "probe"
@@ -4124,7 +4173,6 @@ def test_fetcher_structured_sync_config_missing_warns_and_falls_back_to_probe(mo
 def test_fetcher_official_cli_disabled_when_models_command_missing(monkeypatch):
     """ttadk 0.3.8 行为模型：无 models/model 子命令时应禁用 official_cli，并在 warnings 记录原因。"""
     from src.ttadk.model_fetcher import TTADKModelFetcher
-    from src.ttadk.models import TTADKModel
 
     class _Runner:
         def run(self, args, cwd=None, timeout=8.0):
@@ -4150,7 +4198,7 @@ def test_fetcher_official_cli_disabled_when_models_command_missing(monkeypatch):
 
             # structured_sync 失败（模拟未 init），probe 成功返回 m1
             if args[:2] == ["ttadk", "sync"]:
-                return (1, "", "Config file not found. Please initialize the project first using \"ttadk init\"")
+                return (1, "", 'Config file not found. Please initialize the project first using "ttadk init"')
             if args[:2] == ["ttadk", "code"]:
                 return (1, "", "✗ Error: Invalid model 'INVALID_PROBE_FOR_DISCOVERY'. Available models: m1")
             return (1, "", "unexpected")
@@ -4187,7 +4235,7 @@ def test_fetcher_file_cache_reads_home_models_cache_before_probe(monkeypatch):
             self.calls.append(list(args))
             # structured_sync 失败（模拟未 init）
             if args[:2] == ["ttadk", "sync"]:
-                return (1, "", "Config file not found. Please initialize the project first using \"ttadk init\"")
+                return (1, "", 'Config file not found. Please initialize the project first using "ttadk init"')
             # probe 若被调用则判为失败（这里期望 local_config 直接命中）
             if args[:2] == ["ttadk", "code"]:
                 return (1, "", "Invalid model")
@@ -4234,7 +4282,7 @@ def test_structured_sync_strips_banner_and_parses_json(monkeypatch):
             payload = (
                 "_____ TTADK BANNER_____\n"
                 "TikTok AI-Driven Development Kit\n"
-                "{\"tools\": {\"codex\": {\"models\": [\"m1\", \"m2\"]}}}\n"
+                '{"tools": {"codex": {"models": ["m1", "m2"]}}}\n'
             )
             return TTADKRunResult(returncode=0, stdout=payload, stderr="")
 
@@ -4268,8 +4316,14 @@ def test_engine_session_invalid_model_auto_refresh_and_retry_success(monkeypatch
             raise RuntimeError("✗ Error: Invalid model 'gpt-5.2'. Available models: gpt-5.2-ttadk, gpt-4.1-ttadk")
         return _DummySession()
 
-    monkeypatch.setattr(agent_session, "get_settings", lambda: type("S", (), {"acp_startup_timeout": 1, "rate_limit_retry_enabled": False})())
-    monkeypatch.setattr("src.acp.sync_adapter.start_session_with_retry", lambda *a, **k: _fake_start_session_with_retry(*a, **k))
+    monkeypatch.setattr(
+        agent_session,
+        "get_settings",
+        lambda: type("S", (), {"acp_startup_timeout": 1, "rate_limit_retry_enabled": False})(),
+    )
+    monkeypatch.setattr(
+        "src.acp.sync_adapter.start_session_with_retry", lambda *a, **k: _fake_start_session_with_retry(*a, **k)
+    )
 
     # TTADK model fetcher probe：从错误中解析即可，这里不需要真的跑；但 refresh_models(force_refresh) 会触发 fetcher
     # 用 SequenceRunner 返回一次“Invalid model”样式输出，确保 probe 能提取到可用模型
@@ -4315,21 +4369,23 @@ def test_engine_session_invalid_model_retry_then_fallback_to_auto_model(monkeypa
         calls.append({"agent_type": agent_type, "cwd": cwd, "model_name": model_name})
         # 第一次：invalid model
         if len(calls) == 1:
-            raise RuntimeError(
-                "✗ Error: Invalid model 'gpt-5.2'. Available models: gpt-5.2-ttadk"
-            )
+            raise RuntimeError("✗ Error: Invalid model 'gpt-5.2'. Available models: gpt-5.2-ttadk")
         # 第二次：带 real model 仍失败（模拟账号/环境不可用）
         if len(calls) == 2:
             raise RuntimeError("some other failure")
         # 第三次：auto 模型成功
         return _DummySession()
 
-    monkeypatch.setattr(agent_session, "get_settings", lambda: type("S", (), {"acp_startup_timeout": 1, "rate_limit_retry_enabled": False})())
-    monkeypatch.setattr("src.acp.sync_adapter.start_session_with_retry", lambda *a, **k: _fake_start_session_with_retry(*a, **k))
-
-    runner = _SequenceRunner(
-        [(1, "", "✗ Error: Invalid model 'INVALID_PROBE'. Available models: gpt-5.2-ttadk")]
+    monkeypatch.setattr(
+        agent_session,
+        "get_settings",
+        lambda: type("S", (), {"acp_startup_timeout": 1, "rate_limit_retry_enabled": False})(),
     )
+    monkeypatch.setattr(
+        "src.acp.sync_adapter.start_session_with_retry", lambda *a, **k: _fake_start_session_with_retry(*a, **k)
+    )
+
+    runner = _SequenceRunner([(1, "", "✗ Error: Invalid model 'INVALID_PROBE'. Available models: gpt-5.2-ttadk")])
     fetcher = TTADKModelFetcher(runner=runner)
     from src.ttadk import get_ttadk_manager
 
@@ -4370,8 +4426,14 @@ def test_engine_session_invalid_model_no_available_models_degrades_to_coco(monke
         # 降级到 coco 成功
         return _DummySession()
 
-    monkeypatch.setattr(agent_session, "get_settings", lambda: type("S", (), {"acp_startup_timeout": 1, "rate_limit_retry_enabled": False})())
-    monkeypatch.setattr("src.acp.sync_adapter.start_session_with_retry", lambda *a, **k: _fake_start_session_with_retry(*a, **k))
+    monkeypatch.setattr(
+        agent_session,
+        "get_settings",
+        lambda: type("S", (), {"acp_startup_timeout": 1, "rate_limit_retry_enabled": False})(),
+    )
+    monkeypatch.setattr(
+        "src.acp.sync_adapter.start_session_with_retry", lambda *a, **k: _fake_start_session_with_retry(*a, **k)
+    )
 
     # refresh_models(force_refresh) 会走 probe，这里让 probe 也拿不到 Available models
     runner = _SequenceRunner([(1, "", "✗ Error: Invalid model 'INVALID_PROBE'.")])
@@ -4406,8 +4468,7 @@ def test_engine_session_invalid_model_with_ansi_still_recovers(monkeypatch):
             return
 
     ansi_err = (
-        "\x1b[31m✗ Error:\x1b[0m Invalid model 'gpt-5.2'. Available models: "
-        "gpt-5.2-ttadk, gpt-4.1-ttadk\n<id>abc</id>"
+        "\x1b[31m✗ Error:\x1b[0m Invalid model 'gpt-5.2'. Available models: gpt-5.2-ttadk, gpt-4.1-ttadk\n<id>abc</id>"
     )
 
     def _fake_start_session_with_retry(agent_type, cwd, startup_timeout=60, model_name=None, **kwargs):
@@ -4416,8 +4477,14 @@ def test_engine_session_invalid_model_with_ansi_still_recovers(monkeypatch):
             raise RuntimeError(ansi_err)
         return _DummySession()
 
-    monkeypatch.setattr(agent_session, "get_settings", lambda: type("S", (), {"acp_startup_timeout": 1, "rate_limit_retry_enabled": False})())
-    monkeypatch.setattr("src.acp.sync_adapter.start_session_with_retry", lambda *a, **k: _fake_start_session_with_retry(*a, **k))
+    monkeypatch.setattr(
+        agent_session,
+        "get_settings",
+        lambda: type("S", (), {"acp_startup_timeout": 1, "rate_limit_retry_enabled": False})(),
+    )
+    monkeypatch.setattr(
+        "src.acp.sync_adapter.start_session_with_retry", lambda *a, **k: _fake_start_session_with_retry(*a, **k)
+    )
 
     # refresh_models(force_refresh) 会触发 probe；用 runner 返回一次 invalid model（含可用模型）
     runner = _SequenceRunner(
@@ -4462,16 +4529,20 @@ def test_engine_session_empty_message_error_uses_stderr_to_recover(monkeypatch):
         calls.append({"agent_type": agent_type, "cwd": cwd, "model_name": model_name})
         if len(calls) == 1:
             e = _EmptyMsgErr()
-            setattr(e, "stderr", "✗ Error: Invalid model 'gpt-5.2'. Available models: gpt-5.2-ttadk")
+            e.stderr = "✗ Error: Invalid model 'gpt-5.2'. Available models: gpt-5.2-ttadk"
             raise e
         return _DummySession()
 
-    monkeypatch.setattr(agent_session, "get_settings", lambda: type("S", (), {"acp_startup_timeout": 1, "rate_limit_retry_enabled": False})())
-    monkeypatch.setattr("src.acp.sync_adapter.start_session_with_retry", lambda *a, **k: _fake_start_session_with_retry(*a, **k))
-
-    runner = _SequenceRunner(
-        [(1, "", "✗ Error: Invalid model 'INVALID_PROBE'. Available models: gpt-5.2-ttadk")]
+    monkeypatch.setattr(
+        agent_session,
+        "get_settings",
+        lambda: type("S", (), {"acp_startup_timeout": 1, "rate_limit_retry_enabled": False})(),
     )
+    monkeypatch.setattr(
+        "src.acp.sync_adapter.start_session_with_retry", lambda *a, **k: _fake_start_session_with_retry(*a, **k)
+    )
+
+    runner = _SequenceRunner([(1, "", "✗ Error: Invalid model 'INVALID_PROBE'. Available models: gpt-5.2-ttadk")])
     fetcher = TTADKModelFetcher(runner=runner)
     from src.ttadk import get_ttadk_manager
 
@@ -4492,6 +4563,7 @@ def test_engine_session_empty_message_error_uses_stderr_to_recover(monkeypatch):
 def test_fetcher_file_cache_strategy_loads_models(monkeypatch, tmp_path):
     """第二来源：file_cache 应能从 ~/.ttadk/models_cache.json 读取真实模型列表。"""
     from pathlib import Path
+
     from src.ttadk.model_fetcher import TTADKModelFetcher
 
     # 构造临时 home/.ttadk/models_cache.json
@@ -4510,10 +4582,11 @@ def test_fetcher_file_cache_strategy_loads_models(monkeypatch, tmp_path):
 
 def test_preheat_first_use_failure_cooldown_skips_reprobe(monkeypatch):
     """预热失败后应有退避，避免短时间内反复启动 probe 子进程（best-effort 不阻塞主流程）。"""
-    from types import SimpleNamespace
-    from src.ttadk.manager import TTADKManager
-    import src.ttadk.manager as ttadk_manager_mod
     import shutil
+    from types import SimpleNamespace
+
+    import src.ttadk.manager as ttadk_manager_mod
+    from src.ttadk.manager import TTADKManager
 
     manager = TTADKManager(default_tool="coco")
 
@@ -4543,10 +4616,11 @@ def test_preheat_first_use_failure_cooldown_skips_reprobe(monkeypatch):
 
 def test_preheat_common_models_respects_on_startup_switch(monkeypatch):
     """maybe_preheat_common_models 应尊重 on_startup 开关，并避免无效时抢先 set once 标志。"""
-    from types import SimpleNamespace
-    from src.ttadk.manager import TTADKManager
-    import src.ttadk.manager as ttadk_manager_mod
     import shutil
+    from types import SimpleNamespace
+
+    import src.ttadk.manager as ttadk_manager_mod
+    from src.ttadk.manager import TTADKManager
 
     manager = TTADKManager(default_tool="coco")
 
@@ -4576,8 +4650,8 @@ def test_preheat_common_models_respects_on_startup_switch(monkeypatch):
 def test_resolve_and_ensure_valid_model_marks_defaults_untrusted_and_refreshes(monkeypatch):
     """当 get_models 返回 defaults 时，应视为不可信并触发一次 refresh(force_refresh=True)。"""
     from src.ttadk.manager import TTADKManager
+    from src.ttadk.model_fetcher import FetchDiagnostics, FetchResult
     from src.ttadk.models import TTADKModel
-    from src.ttadk.model_fetcher import FetchResult, FetchDiagnostics
 
     m = TTADKManager(default_tool="codex")
     m._initialized = True
@@ -4611,8 +4685,9 @@ def test_resolve_and_ensure_valid_model_marks_defaults_untrusted_and_refreshes(m
 def test_kickoff_preheat_common_models_skips_when_once_is_set(monkeypatch):
     """kickoff_preheat_common_models 在 once 已 set 时应直接返回，避免重复创建线程。"""
     from types import SimpleNamespace
-    from src.ttadk.manager import TTADKManager
+
     import src.ttadk.manager as ttadk_manager_mod
+    from src.ttadk.manager import TTADKManager
 
     manager = TTADKManager(default_tool="coco")
     manager._preheat_once.set()
@@ -4650,10 +4725,11 @@ def test_kickoff_preheat_common_models_skips_when_once_is_set(monkeypatch):
 
 def test_kickoff_preheat_tool_models_skips_thread_when_preheat_disabled(monkeypatch):
     """kickoff_preheat_tool_models 在预热关闭时不应创建后台线程。"""
-    from types import SimpleNamespace
-    from src.ttadk.manager import TTADKManager
-    import src.ttadk.manager as ttadk_manager_mod
     import shutil
+    from types import SimpleNamespace
+
+    import src.ttadk.manager as ttadk_manager_mod
+    from src.ttadk.manager import TTADKManager
 
     manager = TTADKManager(default_tool="coco")
 
@@ -4687,10 +4763,11 @@ def test_kickoff_preheat_tool_models_skips_thread_when_preheat_disabled(monkeypa
 
 def test_kickoff_preheat_tool_models_skips_thread_when_inflight(monkeypatch):
     """kickoff_preheat_tool_models 在 inflight 时应跳过，避免重复线程。"""
-    from types import SimpleNamespace
-    from src.ttadk.manager import TTADKManager
-    import src.ttadk.manager as ttadk_manager_mod
     import shutil
+    from types import SimpleNamespace
+
+    import src.ttadk.manager as ttadk_manager_mod
+    from src.ttadk.manager import TTADKManager
 
     manager = TTADKManager(default_tool="coco")
 
@@ -4731,7 +4808,11 @@ def test_agent_session_ttadk_precheck_uses_real_model_when_valid(monkeypatch):
 
     calls: list[dict] = []
 
-    monkeypatch.setattr(agent_session, "get_settings", lambda: type("S", (), {"acp_startup_timeout": 1, "rate_limit_retry_enabled": False})())
+    monkeypatch.setattr(
+        agent_session,
+        "get_settings",
+        lambda: type("S", (), {"acp_startup_timeout": 1, "rate_limit_retry_enabled": False})(),
+    )
 
     monkeypatch.setattr(
         "src.ttadk.startup_common.precheck_ttadk_startup_model",
@@ -4831,7 +4912,7 @@ def test_start_session_with_retry_logs_stderr_when_error_message_empty(monkeypat
 
     def _fail_start(self, startup_timeout=60):
         e = _EmptyMsgErr()
-        setattr(e, "stderr", "Invalid model gpt-5.2 ...")
+        e.stderr = "Invalid model gpt-5.2 ..."
         raise e
 
     # 构造一个假的 SyncACPSession，start 总是抛空 message 异常，但带 stderr
@@ -4857,7 +4938,9 @@ def test_start_session_with_retry_logs_stderr_when_error_message_empty(monkeypat
     from src.acp.session import ACPStartupError
 
     with pytest.raises(ACPStartupError) as ctx:
-        sync_adapter.start_session_with_retry(agent_type="ttadk_codex", cwd="/tmp", startup_timeout=1, model_name="gpt-5.2")
+        sync_adapter.start_session_with_retry(
+            agent_type="ttadk_codex", cwd="/tmp", startup_timeout=1, model_name="gpt-5.2"
+        )
 
     assert getattr(ctx.value, "fail_phase", "") in ("retry_exhausted", "")
 
@@ -4869,7 +4952,7 @@ def test_extract_models_ignores_unrelated_string_list(monkeypatch):
     manager = TTADKManager(default_tool="claude")
 
     # Mock fetch_tool_models_with_diagnostics 返回指定的模型列表
-    from src.ttadk.model_fetcher import FetchResult, FetchDiagnostics
+    from src.ttadk.model_fetcher import FetchDiagnostics, FetchResult
 
     def mock_fetch(tool_name, cwd=None, force_refresh=False, prefer_probe=False):
         if tool_name == "claude":
@@ -4882,7 +4965,9 @@ def test_extract_models_ignores_unrelated_string_list(monkeypatch):
                 source="mock",
                 diagnostics=FetchDiagnostics(tool_name=tool_name),
             )
-        return FetchResult(tool_name=tool_name, models=[], source="mock", diagnostics=FetchDiagnostics(tool_name=tool_name))
+        return FetchResult(
+            tool_name=tool_name, models=[], source="mock", diagnostics=FetchDiagnostics(tool_name=tool_name)
+        )
 
     monkeypatch.setattr(
         manager._model_fetcher,
@@ -4904,7 +4989,7 @@ def test_extract_models_not_from_generic_string_list(monkeypatch):
             "metadata": {"tags": ["dev", "ops"]},
         },
     )
-    
+
     # Mock strategies to return empty (new API uses diagnostics wrapper)
     from src.ttadk.model_fetcher import FetchDiagnostics, FetchResult
 
@@ -4931,7 +5016,7 @@ def test_extract_models_not_from_generic_string_list(monkeypatch):
 def test_get_real_model_name_resolution():
     """测试模型名称解析逻辑（精确、友好名、模糊匹配）"""
     manager = TTADKManager(default_tool="test-tool")
-    
+
     # Mock cache
     mock_models = [
         TTADKModel(name="gpt-5.2-codex-ttadk", description="GPT 5.2", friendly_name="GPT 5.2"),
@@ -4941,20 +5026,20 @@ def test_get_real_model_name_resolution():
     manager._tool_models_cache["test-tool"] = mock_models
     # 标记缓存有效，避免触发真实拉取逻辑
     manager._cache_time["test-tool"] = time.time()
-    
+
     # 1. 精确匹配
     assert manager.get_real_model_name("gpt-5.2-codex-ttadk") == "gpt-5.2-codex-ttadk"
-    
+
     # 2. 友好名称匹配
     assert manager.get_real_model_name("GPT 5.2") == "gpt-5.2-codex-ttadk"
-    
+
     # 3. 前缀模糊匹配
     assert manager.get_real_model_name("gpt-5.2") == "gpt-5.2-codex-ttadk"
     assert manager.get_real_model_name("claude-3-opus") == "claude-3-opus-20240229"
-    
+
     # 4. 包含匹配 (Partial match)
     assert manager.get_real_model_name("codex") == "gpt-5.2-codex-ttadk"
-    
+
     # 5. 无匹配 (返回原值)
     assert manager.get_real_model_name("non-existent") == "non-existent"
 
@@ -5057,7 +5142,7 @@ def test_require_valid_defaults_triggers_refresh_probe(monkeypatch):
 def test_resolve_and_ensure_valid_model_refreshes_when_untrusted(monkeypatch):
     manager = TTADKManager(default_tool="coco")
 
-    from src.ttadk.models import ResolvedModelResult, ModelListResult
+    from src.ttadk.models import ModelListResult, ResolvedModelResult
 
     # 通过 mock refresh_models 让第二次解析附加 refreshed:* 标记
     monkeypatch.setattr(
@@ -5105,7 +5190,10 @@ def test_low_confidence_cache_does_not_mark_validated(monkeypatch):
     # 模拟从文件缓存加载后的状态：有模型但标记 low_confidence
     manager._tool_models_cache["codex"] = [TTADKModel(name="real-a", description="A", friendly_name="A")]
     manager._cache_time["codex"] = time.time()
-    manager._tool_models_meta["codex"] = {"source": "file_cache", "warnings": ["source_cross_project", "low_confidence"]}
+    manager._tool_models_meta["codex"] = {
+        "source": "file_cache",
+        "warnings": ["source_cross_project", "low_confidence"],
+    }
 
     r = manager.resolve_real_model_name("real-a", tool_name="codex", cwd=".")
     assert r.real_name == "real-a"
@@ -5462,8 +5550,8 @@ def test_ttadk_runtime_stub_cooldown_legacy_store_sync(monkeypatch):
 
 def test_ttadk_runtime_stub_cooldown_migrates_once_from_function_attr(monkeypatch):
     """legacy 函数属性 store 存在时：仅在显式初始化路径迁移一次，之后不再反复读取函数属性。"""
-    from src.ttadk import manager as m
     import src.ttadk.compat as compat
+    from src.ttadk import manager as m
 
     # 禁用 TTL/max_keys 干扰
     monkeypatch.setattr(
@@ -5508,7 +5596,7 @@ def test_ttadk_runtime_stub_cooldown_migrates_once_from_function_attr(monkeypatc
 
     # 迁移后：即使函数属性被替换，模块级 SSOT 也不应被覆盖
     new_fn_store: dict = {}
-    setattr(fn, "_runtime_invalid_model_last_ts_by_stub", new_fn_store)
+    fn._runtime_invalid_model_last_ts_by_stub = new_fn_store
     m._runtime_invalid_model_stub_set_last_ts(mgr, "k2", 2.0)
     assert m._runtime_invalid_model_stub_store() is fn_store
     assert m._LEGACY_STUB_COOLDOWN_STORE is fn_store
@@ -5590,7 +5678,11 @@ def test_ttadk_runtime_repair_seeded_prefers_best_model_and_retry_ok(monkeypatch
         get_settings_fn=lambda: type(
             "S",
             (),
-            {"ttadk_runtime_retry_enabled": True, "ttadk_runtime_retry_cooldown_s": 0.0, "ttadk_runtime_retry_allow_autoswitch": True},
+            {
+                "ttadk_runtime_retry_enabled": True,
+                "ttadk_runtime_retry_cooldown_s": 0.0,
+                "ttadk_runtime_retry_allow_autoswitch": True,
+            },
         )(),
         time_fn=lambda: 100.0,
     )
@@ -5628,7 +5720,11 @@ def test_ttadk_runtime_repair_cooldown_gate_blocks_and_degrades(monkeypatch):
         get_settings_fn=lambda: type(
             "S",
             (),
-            {"ttadk_runtime_retry_enabled": True, "ttadk_runtime_retry_cooldown_s": 120.0, "ttadk_runtime_retry_allow_autoswitch": True},
+            {
+                "ttadk_runtime_retry_enabled": True,
+                "ttadk_runtime_retry_cooldown_s": 120.0,
+                "ttadk_runtime_retry_allow_autoswitch": True,
+            },
         )(),
         time_fn=lambda: 100.0,
         stub_get_last_ts_fn=lambda _mgr, _tool: 90.0,
@@ -5674,7 +5770,11 @@ def test_ttadk_runtime_repair_retry_model_not_in_seeded_fallbacks_to_seeded(monk
         get_settings_fn=lambda: type(
             "S",
             (),
-            {"ttadk_runtime_retry_enabled": True, "ttadk_runtime_retry_cooldown_s": 0.0, "ttadk_runtime_retry_allow_autoswitch": False},
+            {
+                "ttadk_runtime_retry_enabled": True,
+                "ttadk_runtime_retry_cooldown_s": 0.0,
+                "ttadk_runtime_retry_allow_autoswitch": False,
+            },
         )(),
         time_fn=lambda: 100.0,
     )
@@ -5757,10 +5857,7 @@ def test_ttadk_select_retry_model_best_match_exception_falls_back_first():
 def test_ttadk_select_retry_model_empty_seeded_returns_none():
     from src.ttadk.runtime_repair import select_retry_model
 
-    assert (
-        select_retry_model(tool_name="codex", input_model="x", seeded=[], allow_autoswitch=True)
-        is None
-    )
+    assert select_retry_model(tool_name="codex", input_model="x", seeded=[], allow_autoswitch=True) is None
 
 
 def test_ttadk_runtime_repair_cooldown_gate_stub_blocks(monkeypatch):
@@ -5776,7 +5873,9 @@ def test_ttadk_runtime_repair_cooldown_gate_stub_blocks(monkeypatch):
         manager=_Mgr(),
         tool="codex",
         attempts=attempts,
-        get_settings_fn=lambda: type("S", (), {"ttadk_runtime_retry_enabled": True, "ttadk_runtime_retry_cooldown_s": 120.0})(),
+        get_settings_fn=lambda: type(
+            "S", (), {"ttadk_runtime_retry_enabled": True, "ttadk_runtime_retry_cooldown_s": 120.0}
+        )(),
         time_fn=lambda: 100.0,
         stub_get_last_ts_fn=lambda _mgr, _tool: 90.0,
         stub_set_last_ts_fn=lambda _mgr, _tool, _ts: None,
@@ -5842,8 +5941,8 @@ def test_ttadk_runtime_repair_run_retry_flow_retry_auto_ok(monkeypatch):
 
 def test_ttadk_runtime_stub_limits_invalid_values_fallback(monkeypatch):
     """stub 冷却限额：非法配置值应回退默认且不抛异常。"""
-    from src.ttadk import manager as m
     import src.ttadk.compat as compat
+    from src.ttadk import manager as m
 
     # reset limits cache to avoid cross-test interference
     monkeypatch.setattr(m._STUB_COOLDOWN, "_limits_cache", None, raising=False)
@@ -5881,8 +5980,8 @@ def test_ttadk_runtime_stub_limits_invalid_values_fallback(monkeypatch):
 
 def test_ttadk_runtime_stub_limits_negative_values_clamped(monkeypatch):
     """stub 冷却限额：负值应被 clamp 到 0。"""
-    from src.ttadk import manager as m
     import src.ttadk.compat as compat
+    from src.ttadk import manager as m
 
     # reset limits cache to avoid cross-test interference
     monkeypatch.setattr(m._STUB_COOLDOWN, "_limits_cache", None, raising=False)
@@ -5913,8 +6012,8 @@ def test_ttadk_runtime_stub_limits_negative_values_clamped(monkeypatch):
 
 def test_ttadk_runtime_stub_limits_cached_by_gc_interval(monkeypatch):
     """gc_interval_s>0 时，limits 在一个周期内应命中缓存并减少 get_settings 调用。"""
-    from src.ttadk import manager as m
     import src.ttadk.compat as compat
+    from src.ttadk import manager as m
 
     # reset cache
     monkeypatch.setattr(m._STUB_COOLDOWN, "_limits_cache", None, raising=False)
@@ -5955,8 +6054,8 @@ def test_ttadk_runtime_stub_limits_cached_by_gc_interval(monkeypatch):
 
 def test_ttadk_runtime_stub_limits_no_cache_when_interval_zero(monkeypatch):
     """gc_interval_s=0 时不缓存：每次调用都会读取 settings。"""
-    from src.ttadk import manager as m
     import src.ttadk.compat as compat
+    from src.ttadk import manager as m
 
     monkeypatch.setattr(m._STUB_COOLDOWN, "_limits_cache", None, raising=False)
     monkeypatch.setattr(m._STUB_COOLDOWN, "_limits_cache_ts", 0.0, raising=False)
@@ -5991,7 +6090,10 @@ def test_resolve_and_ensure_valid_model_refreshes_when_low_confidence_cache(monk
 
     manager._tool_models_cache["codex"] = [TTADKModel(name="real-a", description="A", friendly_name="A")]
     manager._cache_time["codex"] = time.time()
-    manager._tool_models_meta["codex"] = {"source": "file_cache", "warnings": ["source_cross_project", "low_confidence"]}
+    manager._tool_models_meta["codex"] = {
+        "source": "file_cache",
+        "warnings": ["source_cross_project", "low_confidence"],
+    }
 
     def _refresh(tool_name=None, cwd=None):
         # 刷新后视为来自可信来源（例如 probe），并清除 low_confidence
@@ -6018,7 +6120,10 @@ def test_startup_resolve_rejects_low_confidence_cache_even_if_quick_validated(mo
     manager._tool_models_cache["codex"] = [TTADKModel(name="real-a", description="A", friendly_name="A")]
     manager._cache_time["codex"] = time.time()
     # 但 models 列表来源标记为 low_confidence
-    manager._tool_models_meta["codex"] = {"source": "file_cache", "warnings": ["source_cross_project", "low_confidence"]}
+    manager._tool_models_meta["codex"] = {
+        "source": "file_cache",
+        "warnings": ["source_cross_project", "low_confidence"],
+    }
 
     def _refresh_fail(tool_name=None, cwd=None):
         raise RuntimeError("refresh blocked")

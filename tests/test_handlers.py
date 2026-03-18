@@ -4,31 +4,29 @@ Each handler is tested with a fully-mocked HandlerContext so that no real
 Feishu API calls or sessions are required.
 """
 
-import json
 import threading
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.feishu.handler_context import HandlerContext
 from src.feishu.handlers.base import BaseHandler
-from src.feishu.handlers.programming import (
-    CocoModeHandler,
-    ClaudeModeHandler,
-    ProgrammingModeHandler,
-    TTADKModeHandler,
-)
-from src.feishu.handlers.system import SystemHandler
-from src.feishu.handlers.project import ProjectHandler
 from src.feishu.handlers.deep import DeepHandler
 from src.feishu.handlers.diagnostics import DiagnosticsHandler
-from src.mode.manager import ModeManager, InteractionMode
-
+from src.feishu.handlers.programming import (
+    ClaudeModeHandler,
+    CocoModeHandler,
+    TTADKModeHandler,
+)
+from src.feishu.handlers.project import ProjectHandler
+from src.feishu.handlers.system import SystemHandler
+from src.mode.manager import InteractionMode
 
 # ======================================================================
 # Shared fixture: mock HandlerContext
 # ======================================================================
+
 
 def _make_handler_context(**overrides) -> HandlerContext:
     """Build a HandlerContext with all dependencies mocked."""
@@ -69,6 +67,7 @@ def _make_handler_context(**overrides) -> HandlerContext:
 # BaseHandler tests
 # ======================================================================
 
+
 class TestBaseHandler:
     def _make(self, **ctx_overrides):
         ctx = _make_handler_context(**ctx_overrides)
@@ -86,6 +85,7 @@ class TestBaseHandler:
     def test_get_working_dir_default(self):
         h, ctx = self._make()
         import os
+
         assert h.get_working_dir("chat1") == os.getcwd()
 
     def test_set_and_get_working_dir(self, tmp_path):
@@ -158,6 +158,7 @@ class TestBaseHandler:
 
     def test_mode_to_context_source(self):
         from src.project import ContextSourceMode
+
         assert BaseHandler.mode_to_context_source(InteractionMode.SMART) == ContextSourceMode.SMART
         assert BaseHandler.mode_to_context_source(InteractionMode.COCO) == ContextSourceMode.COCO
         assert BaseHandler.mode_to_context_source(InteractionMode.CLAUDE) == ContextSourceMode.CLAUDE
@@ -188,6 +189,7 @@ class TestBaseHandler:
 # ======================================================================
 # SystemHandler tests
 # ======================================================================
+
 
 class TestSystemHandlerPredicates:
     def test_exit_commands(self):
@@ -292,7 +294,9 @@ class TestSystemHandlerRouting:
         h = self._make()
         h.handle_intercepted_command("m1", "c1", "/switch myproject", None)
         h.project_handler.switch_project.assert_called_once_with(
-            "m1", "c1", "myproject",
+            "m1",
+            "c1",
+            "myproject",
             coco_handler=h.coco_handler,
             claude_handler=h.claude_handler,
         )
@@ -334,6 +338,7 @@ class TestSystemHandlerRouting:
 # ======================================================================
 # ProgrammingModeHandler (CocoModeHandler / ClaudeModeHandler) tests
 # ======================================================================
+
 
 class TestCocoModeHandler:
     def _make(self, **ctx_overrides):
@@ -631,14 +636,13 @@ class TestTTADKModeDegradeWarning:
 
         h.enter_mode("m1", "c1", project=project)
 
-        assert any(
-            "TTADK 后端暂不可用" in str(call) for call in h.reply_message.call_args_list
-        )
+        assert any("TTADK 后端暂不可用" in str(call) for call in h.reply_message.call_args_list)
 
 
 # ======================================================================
 # ProjectHandler tests
 # ======================================================================
+
 
 class TestProjectHandler:
     def _make(self):
@@ -657,7 +661,7 @@ class TestProjectHandler:
         project.project_id = "test"
         project.root_path = "/tmp"
         ctx.project_manager.create_project.return_value = (True, "ok", project)
-        with patch('src.feishu.handlers.project.CardBuilder') as mock_cb:
+        with patch("src.feishu.handlers.project.CardBuilder") as mock_cb:
             mock_cb.build_project_created_card.return_value = ("interactive", "{}")
             h.create_project("m1", "c1", "test", "/tmp")
             h.reply_message_with_id.assert_called_once()
@@ -687,7 +691,7 @@ class TestProjectHandler:
         mock_client.im.v1.message.patch.return_value = mock_resp
         ctx.api_client_factory.return_value = mock_client
 
-        with patch('src.feishu.handlers.project.CardBuilder') as mock_cb:
+        with patch("src.feishu.handlers.project.CardBuilder") as mock_cb:
             mock_cb.build_status_board_card.return_value = ("interactive", "{}")
 
             h.show_project_board("m1", "c1", origin_message_id="origin1")
@@ -710,7 +714,7 @@ class TestProjectHandler:
         mock_client.im.v1.message.patch.return_value = mock_resp
         ctx.api_client_factory.return_value = mock_client
 
-        with patch('src.feishu.handlers.project.CardBuilder') as mock_cb:
+        with patch("src.feishu.handlers.project.CardBuilder") as mock_cb:
             mock_cb.build_status_board_card.return_value = ("interactive", "{}")
 
             h.show_project_board("m1", "c1", origin_message_id="origin1")
@@ -736,7 +740,7 @@ class TestProjectHandler:
         mock_client.im.v1.message.patch.return_value = mock_resp
         ctx.api_client_factory.return_value = mock_client
 
-        with patch('src.feishu.handlers.project.CardBuilder') as mock_cb:
+        with patch("src.feishu.handlers.project.CardBuilder") as mock_cb:
             mock_cb.build_project_response_card.return_value = ("interactive", "{}")
 
             h.show_project_status("m1", "c1", project, origin_message_id="origin1")
@@ -793,6 +797,7 @@ class TestProjectHandler:
 # ======================================================================
 # DeepHandler tests
 # ======================================================================
+
 
 class TestDeepHandler:
     def _make(self):
@@ -869,14 +874,14 @@ class TestDeepHandler:
         project = MagicMock()
         project.root_path = "/path/to/project"
         project.project_id = "p1"
-        
+
         engine = MagicMock()
         engine.project = MagicMock()
         engine.progress = MagicMock()
         engine.engine_name = "DeepEngine"
-        
+
         ctx.deep_engine_manager.get.return_value = engine
-        
+
         # Setup mock reporter
         ctx.progress_reporter.format_status.return_value = "Status Content"
         ctx.progress_reporter.get_status_title.return_value = "Status Title"
@@ -884,7 +889,7 @@ class TestDeepHandler:
             "progress_bar": "|||",
             "project_id": "p1",
             "is_executing": True,
-            "is_paused": False
+            "is_paused": False,
         }
 
         # Setup Patch client
@@ -893,10 +898,10 @@ class TestDeepHandler:
         # Mock CardBuilder
         with patch("src.feishu.handlers.deep.CardBuilder") as mock_cb:
             mock_cb.build_deep_card.return_value = ("interactive", "{}")
-            
+
             # Execute
             h.show_deep_status("msg1", "chat1", project=project, origin_message_id="origin1")
-            
+
             # Verify Patch called
             h.patch_message.assert_called_once()
             # Verify Reply NOT called
@@ -907,18 +912,21 @@ class TestDeepHandler:
         # Setup mock project and engine
         project = MagicMock()
         project.root_path = "/path/to/project"
-        
+
         engine = MagicMock()
         engine.project = MagicMock()
         engine.progress = MagicMock()
         engine.engine_name = "DeepEngine"
         # Ensure string returns for JSON serialization if Real CardBuilder is used
         engine.get_status_title.return_value = "Status Title"
-        
+
         ctx.deep_engine_manager.get.return_value = engine
-        
+
         ctx.progress_reporter.get_progress_info.return_value = {
-            "progress_bar": "|||", "project_id": "p1", "is_executing": True, "is_paused": False
+            "progress_bar": "|||",
+            "project_id": "p1",
+            "is_executing": True,
+            "is_paused": False,
         }
 
         # Setup Patch client to fail
@@ -931,20 +939,20 @@ class TestDeepHandler:
         # let's try to patch the correct location.
         with patch("src.feishu.renderers.deep_renderer.CardBuilder") as mock_cb:
             mock_cb.build_deep_card.return_value = ("interactive", "{}")
-            
+
             # Execute
             h.show_deep_status("msg1", "chat1", project=project, origin_message_id="origin1")
-            
+
             # Verify Patch called
             h.patch_message.assert_called_once()
             # Verify Reply called (Fallback)
             h.reply_message.assert_called_once()
 
 
-
 # ======================================================================
 # DiagnosticsHandler tests
 # ======================================================================
+
 
 class TestDiagnosticsHandler:
     def _make(self):
@@ -968,7 +976,7 @@ class TestDiagnosticsHandler:
         """When /tasks all is used, shows all-project task board."""
         h, ctx = self._make()
         ctx.scheduler.get_all_tasks.return_value = []
-        with patch('src.feishu.handlers.diagnostics.CardBuilder') as mock_cb:
+        with patch("src.feishu.handlers.diagnostics.CardBuilder") as mock_cb:
             mock_cb.build_smart_response_card.return_value = ("interactive", "{}")
             h.show_task_board("m1", "c1", "/tasks all", None)
         h.reply_message.assert_called()
@@ -991,22 +999,42 @@ class TestDiagnosticsHandler:
 # Bug fix: Shell command fast-track heuristic
 # ======================================================================
 
+
 class TestShellCommandHeuristic:
     """Tests for SystemHandler.is_likely_shell_command()."""
 
-    @pytest.mark.parametrize("cmd", [
-        "ls", "pwd", "whoami", "date", "uptime",
-        "ls -la", "git status", "cat foo.txt", "grep pattern file",
-        "docker ps", "make build", "tree src/",
-    ])
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "ls",
+            "pwd",
+            "whoami",
+            "date",
+            "uptime",
+            "ls -la",
+            "git status",
+            "cat foo.txt",
+            "grep pattern file",
+            "docker ps",
+            "make build",
+            "tree src/",
+        ],
+    )
     def test_detects_shell_commands(self, cmd):
         assert SystemHandler.is_likely_shell_command(cmd) is True
 
-    @pytest.mark.parametrize("cmd", [
-        "/help", "/coco", "/deep implement X", "/exit",
-        "帮我写一个函数", "请解释这段代码",
-        "",
-    ])
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "/help",
+            "/coco",
+            "/deep implement X",
+            "/exit",
+            "帮我写一个函数",
+            "请解释这段代码",
+            "",
+        ],
+    )
     def test_ignores_non_shell(self, cmd):
         assert SystemHandler.is_likely_shell_command(cmd) is False
 
@@ -1019,16 +1047,19 @@ class TestShellCommandHeuristic:
 # Bug fix: ACP Session Manager project isolation
 # ======================================================================
 
+
 class TestACPSessionManagerProjectIsolation:
     """Tests for ACPSessionManager keyed by (chat_id, project_id)."""
 
     def test_session_key_with_project(self):
         from src.acp.manager import ACPSessionManager
+
         key = ACPSessionManager._session_key("chat1", "proj_a")
         assert key == "chat1:proj_a"
 
     def test_session_key_without_project(self):
         from src.acp.manager import ACPSessionManager
+
         key = ACPSessionManager._session_key("chat1")
         assert key == "chat1:_default_"
         key2 = ACPSessionManager._session_key("chat1", None)
@@ -1036,6 +1067,7 @@ class TestACPSessionManagerProjectIsolation:
 
     def test_different_projects_get_different_keys(self):
         from src.acp.manager import ACPSessionManager
+
         k1 = ACPSessionManager._session_key("chat1", "proj_a")
         k2 = ACPSessionManager._session_key("chat1", "proj_b")
         k3 = ACPSessionManager._session_key("chat1")
@@ -1045,10 +1077,12 @@ class TestACPSessionManagerProjectIsolation:
 
     def test_get_session_isolated_by_project(self):
         from src.acp.manager import ACPSessionManager
+
         mgr = ACPSessionManager("coco", session_timeout=999999)
 
         # Manually insert two sessions for same chat, different projects
         import time
+
         s1 = MagicMock()
         s1.last_active = time.time()
         s1.session_id = "s1"
@@ -1067,8 +1101,10 @@ class TestACPSessionManagerProjectIsolation:
         assert mgr.get_session("chat1") is None
 
     def test_end_session_does_not_affect_other_projects(self):
-        from src.acp.manager import ACPSessionManager
         import time
+
+        from src.acp.manager import ACPSessionManager
+
         mgr = ACPSessionManager("coco", session_timeout=999999)
 
         s1 = MagicMock()
@@ -1094,6 +1130,7 @@ class TestACPSessionManagerProjectIsolation:
 # SystemHandler patch tests
 # ======================================================================
 
+
 class TestHelpCategoryPatch:
     def _make(self, ctx_overrides=None):
         if ctx_overrides is None:
@@ -1107,17 +1144,17 @@ class TestHelpCategoryPatch:
 
     def test_handle_help_category_patch_success(self):
         h, ctx = self._make()
-        
+
         ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
-        
+
         # Mock patch_message
         h.patch_message = MagicMock(return_value=True)
-        
+
         with patch("src.card.builder.CardBuilder.build_help_card") as mock_build:
             mock_build.return_value = ("interactive", "{}")
-            
+
             h.handle_help_category("msg1", "chat1", "main", origin_message_id="origin1")
-            
+
             # Verify patch called
             h.patch_message.assert_called_once_with("origin1", "{}")
             # Verify reply NOT called
@@ -1125,17 +1162,17 @@ class TestHelpCategoryPatch:
 
     def test_handle_help_category_patch_failure_fallback(self):
         h, ctx = self._make()
-        
+
         ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
-        
+
         # Mock patch_message failure
         h.patch_message = MagicMock(return_value=False)
-        
+
         with patch("src.card.builder.CardBuilder.build_help_card") as mock_build:
             mock_build.return_value = ("interactive", "{}")
-            
+
             h.handle_help_category("msg1", "chat1", "main", origin_message_id="origin1")
-            
+
             # Verify patch called
             h.patch_message.assert_called_once_with("origin1", "{}")
             # Verify fallback to reply
@@ -1145,32 +1182,32 @@ class TestHelpCategoryPatch:
         # With the new impl, patch_message handles exceptions internally and returns False
         # So this test is effectively same as failure fallback
         h, ctx = self._make()
-        
+
         ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
-        
+
         h.patch_message = MagicMock(return_value=False)
-        
+
         with patch("src.card.builder.CardBuilder.build_help_card") as mock_build:
             mock_build.return_value = ("interactive", "{}")
-            
+
             h.handle_help_category("msg1", "chat1", "main", origin_message_id="origin1")
-            
+
             h.patch_message.assert_called_once()
             h.reply_message.assert_called_once()
 
     def test_handle_help_category_no_origin_id(self):
         h, ctx = self._make()
-        
+
         ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
-        
+
         mock_client = MagicMock()
         ctx.api_client_factory.return_value = mock_client
-        
+
         with patch("src.card.builder.CardBuilder.build_help_card") as mock_build:
             mock_build.return_value = ("interactive", "{}")
-            
+
             h.handle_help_category("msg1", "chat1", "main", origin_message_id=None)
-            
+
             h.patch_message = MagicMock()
             h.patch_message.assert_not_called()
             h.reply_message.assert_called_once()

@@ -513,12 +513,14 @@ class TTADKModelCache:
                                     desc = ""
                                 is_default = bool(m.get("is_default", False))
 
-                                mm = TTADKModel(name=mid, description=desc, is_default=is_default, friendly_name=str(friendly or ""))
+                                mm = TTADKModel(
+                                    name=mid, description=desc, is_default=is_default, friendly_name=str(friendly or "")
+                                )
                                 # best-effort：保留 aliases（供 resolver 使用，TTADKModel 不声明该字段）
                                 try:
                                     als = m.get("aliases")
                                     if isinstance(als, list):
-                                        setattr(mm, "aliases", [str(x) for x in als if str(x).strip()])
+                                        mm.aliases = [str(x) for x in als if str(x).strip()]
                                 except Exception:
                                     pass
                                 models.append(mm)
@@ -564,7 +566,9 @@ class TTADKModelCache:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 _apply_loaded(data, low_confidence=False)
-                logger.info("Loaded TTADK models from project cache: path=%s tools=%d", str(path), len(self._tool_models_cache))
+                logger.info(
+                    "Loaded TTADK models from project cache: path=%s tools=%d", str(path), len(self._tool_models_cache)
+                )
                 return
             except Exception as e:
                 logger.warning("Failed to load TTADK models cache from project file: path=%s err=%s", str(path), e)
@@ -616,7 +620,7 @@ class TTADKModelCache:
                 tools: dict[str, dict] = {}
                 for tool, models in self._tool_models_cache.items():
                     xs: list[dict] = []
-                    for m in (models or []):
+                    for m in models or []:
                         try:
                             aliases = list(getattr(m, "aliases", []) or [])
                         except Exception:
@@ -796,7 +800,9 @@ class TTADKModelCache:
                     prefer_probe=bool(force_refresh),
                 )
             except TypeError:
-                fetch_result = self._model_fetcher.fetch_tool_models_with_diagnostics(tool, cwd=cwd, force_refresh=force_refresh)
+                fetch_result = self._model_fetcher.fetch_tool_models_with_diagnostics(
+                    tool, cwd=cwd, force_refresh=force_refresh
+                )
         except Exception as e:
             diag = build_model_list_diagnostics(
                 source="defaults",

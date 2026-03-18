@@ -41,4 +41,4 @@ def should_retry(error: Exception | str) -> bool:
 
 
 def get_retry_delay(attempt: int, policy: RetryPolicy) -> float:
-    return policy.retry_delay * (policy.backoff_multiplier ** attempt)
+    return policy.retry_delay * (policy.backoff_multiplier**attempt)

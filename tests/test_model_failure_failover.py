@@ -1,7 +1,5 @@
 import logging
 
-import pytest
-
 
 def test_e2e_model_failure_need_compaction_then_loop_then_failover(monkeypatch, caplog):
     """端到端回归夹具：need compaction -> loop -> failover 到 gpt-5.1 后成功。

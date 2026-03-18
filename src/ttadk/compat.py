@@ -19,13 +19,12 @@ legacy_store_provider 返回约定：
 
 from __future__ import annotations
 
-import time
 import threading
+import time
 from typing import Callable, Optional
 
-from . import startup_common as _startup_common
 from ..config import get_settings as _get_settings
-
+from . import startup_common as _startup_common
 
 # ---------------------------------------------------------------------------
 # deprecated_* Runtime invalid-model cooldown (compat only)

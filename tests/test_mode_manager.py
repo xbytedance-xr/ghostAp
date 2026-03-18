@@ -1,7 +1,8 @@
 """Tests for ModeManager state machine."""
 
 import threading
-from src.mode.manager import ModeManager, InteractionMode, ModeState
+
+from src.mode.manager import InteractionMode, ModeManager
 
 
 class TestModeManagerBasics:

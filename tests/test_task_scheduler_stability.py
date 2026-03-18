@@ -1,7 +1,7 @@
-import time
 import threading
+import time
 
-from src.tasking import TaskScheduler, TaskSpec, TaskPriority, TaskStatus
+from src.tasking import TaskPriority, TaskScheduler, TaskSpec, TaskStatus
 
 
 def test_scheduler_isolates_queue_keys_within_same_chat():
@@ -192,4 +192,3 @@ def test_scheduler_stress_no_deadlock_or_conflict():
 
     # 每个 key 内必须串行（per_key_concurrency=1 实际按 queue_key 生效）
     assert all(v <= 1 for v in max_active_by_key.values())
-

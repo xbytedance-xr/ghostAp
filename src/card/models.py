@@ -1,9 +1,11 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
+
 
 @dataclass
 class DeepCardState:
     """State object for building deep engine cards, avoiding parameter explosion."""
+
     title: str = ""
     content: str = ""
     progress_bar: Optional[str] = None

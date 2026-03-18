@@ -1,17 +1,18 @@
 import logging
-import sys
-import signal
-import threading
 import os
+import signal
+import sys
+import threading
 from typing import Optional
+
 try:
     from config import get_settings
-    from feishu.ws_client import FeishuWSClient, EmojiReaction
     from feishu.message_formatter import FeishuMessageFormatter as fmt
+    from feishu.ws_client import EmojiReaction, FeishuWSClient
 except ImportError:
     from .config import get_settings
-    from .feishu.ws_client import FeishuWSClient, EmojiReaction
     from .feishu.message_formatter import FeishuMessageFormatter as fmt
+    from .feishu.ws_client import EmojiReaction, FeishuWSClient
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,10 @@ class Application:
         """Legacy callback — executes shell command directly via SandboxExecutor."""
         try:
             self.feishu_client._system_handler.execute_shell_and_reply(
-                message_id, chat_id, command, working_dir,
+                message_id,
+                chat_id,
+                command,
+                working_dir,
             )
         except Exception as e:
             logger.error("处理命令异常: %s", e)
@@ -75,9 +79,8 @@ class Application:
 
         # TTADK 常用工具模型预热（后台 best-effort）
         try:
-            if (
-                getattr(self.settings, "ttadk_preheat_enabled", True)
-                and getattr(self.settings, "ttadk_preheat_on_startup", True)
+            if getattr(self.settings, "ttadk_preheat_enabled", True) and getattr(
+                self.settings, "ttadk_preheat_on_startup", True
             ):
                 from ttadk import get_ttadk_manager
 

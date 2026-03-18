@@ -1,26 +1,29 @@
 import abc
+import fcntl
+import json
 import logging
-import re
-import subprocess
 import os
 import pty
-import struct
-import fcntl
-import termios
+import re
 import select
-import time
-import json
+import struct
+import subprocess
 import sys
+import termios
+import time
 from pathlib import Path
 from typing import Optional
 
 from .env_sandbox import build_ttadk_subprocess_env
-
-from .models import TTADKModel
-from .models import is_invalid_model_error, extract_available_models
-from .models import truncate_snippet, strip_ansi, is_model_token
-from .models import parse_ttadk_models_from_output
-from .models import parse_ttadk_models_from_output_to_models
+from .models import (
+    TTADKModel,
+    extract_available_models,
+    is_invalid_model_error,
+    is_model_token,
+    parse_ttadk_models_from_output_to_models,
+    strip_ansi,
+    truncate_snippet,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,12 +73,15 @@ class TTADKProbeError(RuntimeError):
             self.stderr = ""
 
 
-_TTY_ERROR_RE = re.compile(r"could\s+not\s+open\s+a\s+new\s+tty|/dev/tty|no\s+such\s+device\s+or\s+address", re.IGNORECASE)
+_TTY_ERROR_RE = re.compile(
+    r"could\s+not\s+open\s+a\s+new\s+tty|/dev/tty|no\s+such\s+device\s+or\s+address", re.IGNORECASE
+)
 _PANIC_RE = re.compile(r"program\s+experienced\s+a\s+panic|\bpanic\b", re.IGNORECASE)
+
 
 class ModelFetchStrategy(abc.ABC):
     """模型获取策略基类"""
-    
+
     @abc.abstractmethod
     def fetch(self, tool_name: str, cwd: Optional[str] = None) -> list[TTADKModel]:
         """获取指定工具的模型列表"""
@@ -238,9 +244,9 @@ class ProbeStrategy(ModelFetchStrategy):
                 }
             except Exception:
                 self._detail = {}
-            
+
             logger.debug(f"Executing probe command: {' '.join(cmd)}")
-            
+
             # 执行命令并捕获输出
             # 注意：ttadk 的错误信息通常输出到 stderr，但也可能在 stdout。
             # 该 probe 的目标是触发 TTADK 自身的 Invalid model 校验（通常在启动下游 tool 前发生）。
@@ -278,11 +284,11 @@ class ProbeStrategy(ModelFetchStrategy):
 
             names = extract_available_models(output)
             models = [TTADKModel(name=n, description=n, friendly_name=n) for n in names]
-            
+
             if models:
                 logger.info(f"ProbeStrategy found {len(models)} models for {tool_name}")
                 return models
-            
+
             # Invalid model 已命中，但 Available models 为空：记录为可诊断失败
             raise TTADKProbeError(
                 f"available_models_empty: tool={tool_name}",
@@ -308,7 +314,6 @@ class ProbeStrategy(ModelFetchStrategy):
                 stderr=truncate_snippet(err or str(e) or ""),
             )
 
-
     # 旧的正则/ANSI 处理已下沉到 models.py（extract_available_models / is_invalid_model_error）
 
 
@@ -321,12 +326,12 @@ class InteractiveStrategy(ModelFetchStrategy):
 
     # 模型选择界面提示
     MODEL_SELECTION_PROMPT = "Select a model:"
-    
+
     # 模型名称提取正则（从工具界面）
-    MODEL_NAME_PATTERN = re.compile(r'model:\s*([^\s]+)')
+    MODEL_NAME_PATTERN = re.compile(r"model:\s*([^\s]+)")
 
     # 移除 ANSI 颜色码
-    ANSI_ESCAPE = re.compile(r'\x1b\[[\?0-9;]*[a-zA-Z]|\x1b\].*?\x07|\x1b[()][AB012]')
+    ANSI_ESCAPE = re.compile(r"\x1b\[[\?0-9;]*[a-zA-Z]|\x1b\].*?\x07|\x1b[()][AB012]")
 
     @property
     def name(self) -> str:
@@ -374,7 +379,7 @@ class InteractiveStrategy(ModelFetchStrategy):
         try:
             # 创建 pty 并设置终端大小
             master, slave = pty.openpty()
-            winsize = struct.pack('HHHH', 40, 120, 0, 0)
+            winsize = struct.pack("HHHH", 40, 120, 0, 0)
             fcntl.ioctl(master, termios.TIOCSWINSZ, winsize)
 
             # 启动 ttadk code 进程（使用 subprocess + PTY，避免 fork 在多线程服务中的风险）
@@ -512,7 +517,6 @@ class InteractiveStrategy(ModelFetchStrategy):
                 except Exception as e:
                     logger.warning(f"Failed to cleanup ttadk interactive process {getattr(proc, 'pid', None)}: {e}")
 
-
     def _select_and_extract_current_model(self, fd: int, timeout: float = 6) -> Optional[str]:
         """选择当前高亮项并提取 real model id，然后返回菜单。"""
         try:
@@ -550,7 +554,7 @@ class InteractiveStrategy(ModelFetchStrategy):
 
     def _strip_ansi(self, text: str) -> str:
         """移除 ANSI 颜色码"""
-        return self.ANSI_ESCAPE.sub('', text)
+        return self.ANSI_ESCAPE.sub("", text)
 
     def _parse_model_selection_menu(self, output: str) -> list[str]:
         """
@@ -562,7 +566,7 @@ class InteractiveStrategy(ModelFetchStrategy):
         clean_output = self._strip_ansi(output)
 
         # 查找 "Select a model:" 之后的内容
-        lines = clean_output.split('\n')
+        lines = clean_output.split("\n")
         in_menu = False
 
         for line in lines:
@@ -573,25 +577,25 @@ class InteractiveStrategy(ModelFetchStrategy):
 
             if in_menu:
                 # 检查是否已经离开菜单区域（遇到空行或其他提示）
-                if not stripped or stripped.startswith('?') or stripped.startswith('Press'):
+                if not stripped or stripped.startswith("?") or stripped.startswith("Press"):
                     # 跳过空行和提示行，但不结束菜单解析
                     if not stripped:
                         continue
                     # 遇到新的提示符，结束菜单解析
-                    if stripped.startswith('?'):
+                    if stripped.startswith("?"):
                         break
 
                 # 匹配菜单项：以 ❯ 或空格开头
                 # 格式: "❯ GPT 5.2 Codex (Recommended)" 或 "  GPT 4.1 Codex"
-                if stripped.startswith('❯'):
+                if stripped.startswith("❯"):
                     # 提取模型名称
-                    name = stripped.lstrip('❯').strip()
-                    if name and not name.startswith('('):
+                    name = stripped.lstrip("❯").strip()
+                    if name and not name.startswith("("):
                         names.append(name)
-                elif stripped and not stripped.startswith('('):
+                elif stripped and not stripped.startswith("("):
                     # 普通菜单项
-                    if stripped: # 确保不是空字符串
-                         names.append(stripped)
+                    if stripped:  # 确保不是空字符串
+                        names.append(stripped)
 
         return names
 
@@ -609,11 +613,11 @@ class InteractiveStrategy(ModelFetchStrategy):
             # 移动到目标模型位置
             # 第一个模型已经是选中状态，不需要移动
             for _ in range(model_index):
-                os.write(fd, b'\x1b[B')  # 下箭头
+                os.write(fd, b"\x1b[B")  # 下箭头
                 time.sleep(0.05)
 
             # 按 Enter 选择
-            os.write(fd, b'\r')
+            os.write(fd, b"\r")
             time.sleep(0.1)
 
             # 读取输出直到进入工具界面
@@ -629,7 +633,7 @@ class InteractiveStrategy(ModelFetchStrategy):
 
             # 按 Escape 返回模型选择界面（如果还有更多模型需要获取）
             if model_index < total_models - 1:
-                os.write(fd, b'\x1b')  # Escape
+                os.write(fd, b"\x1b")  # Escape
                 time.sleep(0.1)
 
             return real_name
@@ -665,22 +669,22 @@ class InteractiveStrategy(ModelFetchStrategy):
         clean_output = self._strip_ansi(output)
 
         # 查找 model: 行
-        for line in clean_output.split('\n'):
+        for line in clean_output.split("\n"):
             line = line.strip()
             match = self.MODEL_NAME_PATTERN.match(line)
             if match:
                 return match.group(1)
 
         # 备用模式：查找包含 model 的行
-        for line in clean_output.split('\n'):
+        for line in clean_output.split("\n"):
             lower_line = line.lower()
-            if 'model' in lower_line and ':' in lower_line:
+            if "model" in lower_line and ":" in lower_line:
                 # 提取冒号后的内容
-                parts = line.split(':', 1)
+                parts = line.split(":", 1)
                 if len(parts) == 2:
                     name = parts[1].strip()
                     # 验证是否像模型名称
-                    if name and re.match(r'^[a-zA-Z0-9_\-.]+$', name):
+                    if name and re.match(r"^[a-zA-Z0-9_\-.]+$", name):
                         return name
         return None
 
@@ -996,9 +1000,15 @@ class TTADKModelsListStrategy(ModelFetchStrategy):
         blob = blob.strip()
         if blob:
             # 1) 命令确实运行且有输出：要么解析失败，要么非 0 退出
-            msg = "official_cli_nonzero_exit" if (last_rc is not None and int(last_rc) != 0) else "official_cli_no_models"
+            msg = (
+                "official_cli_nonzero_exit" if (last_rc is not None and int(last_rc) != 0) else "official_cli_no_models"
+            )
             try:
-                phase = "json" if ("-f" in [str(x) for x in (last_cmd or [])] and "json" in [str(x) for x in (last_cmd or [])]) else "text"
+                phase = (
+                    "json"
+                    if ("-f" in [str(x) for x in (last_cmd or [])] and "json" in [str(x) for x in (last_cmd or [])])
+                    else "text"
+                )
             except Exception:
                 phase = ""
             raise TTADKOfficialCLIError(
@@ -1096,7 +1106,9 @@ class ProjectMetaModelsStrategy(ModelFetchStrategy):
             rc, out, err = self._runner(cmd, cwd, float(self.timeout_s or 3.0))
         else:
             env, _ = build_ttadk_subprocess_env(cwd=cwd or ".", agent_type="ttadk", tool_name=tool)
-            p = subprocess.run(cmd, capture_output=True, text=True, timeout=float(self.timeout_s or 3.0), cwd=cwd, env=env)
+            p = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=float(self.timeout_s or 3.0), cwd=cwd, env=env
+            )
             rc, out, err = int(getattr(p, "returncode", 0) or 0), (p.stdout or ""), (p.stderr or "")
 
         if int(rc or 0) != 0:
@@ -1212,7 +1224,7 @@ class LocalConfigModelsStrategy(ModelFetchStrategy):
             return []
 
         # JSON 解析
-        if text.lstrip().startswith(('{', '[')):
+        if text.lstrip().startswith(("{", "[")):
             try:
                 json.loads(text)
                 # 当前策略不解析 models_cache.json（由 FileCacheStrategy 统一处理）。
@@ -1249,7 +1261,7 @@ class LocalConfigModelsStrategy(ModelFetchStrategy):
             file_tried += 1
             try:
                 names = self._try_one_file(p)
-            except TTADKLocalConfigError as e:
+            except TTADKLocalConfigError:
                 # 继续下一个候选
                 continue
             if not names:

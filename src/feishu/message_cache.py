@@ -1,6 +1,6 @@
 import logging
-import time
 import threading
+import time
 from collections import OrderedDict
 from typing import Optional
 
@@ -27,11 +27,7 @@ class MessageCache:
         if self._cleanup_thread is not None:
             return
         self._running = True
-        self._cleanup_thread = threading.Thread(
-            target=self._cleanup_loop,
-            daemon=True,
-            name="message_cache_cleanup"
-        )
+        self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True, name="message_cache_cleanup")
         self._cleanup_thread.start()
 
     def stop_cleanup_thread(self):
@@ -49,7 +45,7 @@ class MessageCache:
     def _do_cleanup(self):
         current_time = time.time()
         expired_count = 0
-        
+
         with self._lock:
             expired_ids = []
             for msg_id, timestamp in self._cache.items():
@@ -57,17 +53,17 @@ class MessageCache:
                     expired_ids.append(msg_id)
                 else:
                     break
-            
+
             for msg_id in expired_ids:
                 del self._cache[msg_id]
                 expired_count += 1
-        
+
         if expired_count > 0:
             logger.debug("清理过期消息缓存: %d 条", expired_count)
 
     def is_duplicate(self, message_id: str) -> bool:
         current_time = time.time()
-        
+
         with self._lock:
             if current_time - self._last_cleanup > self._cleanup_interval:
                 self._quick_cleanup(current_time)
@@ -86,7 +82,7 @@ class MessageCache:
     def _quick_cleanup(self, current_time: float):
         cleanup_count = 0
         max_cleanup = 100
-        
+
         while self._cache and cleanup_count < max_cleanup:
             oldest_id, timestamp = next(iter(self._cache.items()))
             if current_time - timestamp > self._ttl:

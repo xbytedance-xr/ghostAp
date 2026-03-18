@@ -1,3 +1,3 @@
-from .manager import ModeManager, InteractionMode, ModeState
+from .manager import InteractionMode, ModeManager, ModeState
 
 __all__ = ["ModeManager", "InteractionMode", "ModeState"]

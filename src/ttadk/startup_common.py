@@ -15,7 +15,6 @@ from typing import Callable, Optional
 
 from ..config import get_settings
 
-
 # ---------------------------------------------------------------------------
 # Provider injection (explicit deps; no sys.modules coupling)
 # ---------------------------------------------------------------------------
@@ -144,14 +143,18 @@ class _StubCooldownStore:
 
             # ttl
             try:
-                ttl = float(getattr(s, "ttadk_runtime_stub_cooldown_ttl_s", ttl_default) if s is not None else ttl_default)
+                ttl = float(
+                    getattr(s, "ttadk_runtime_stub_cooldown_ttl_s", ttl_default) if s is not None else ttl_default
+                )
             except Exception:
                 ttl = ttl_default
             ttl = max(0.0, ttl)
 
             # max_keys
             try:
-                max_keys = int(getattr(s, "ttadk_runtime_stub_cooldown_max_keys", max_default) if s is not None else max_default)
+                max_keys = int(
+                    getattr(s, "ttadk_runtime_stub_cooldown_max_keys", max_default) if s is not None else max_default
+                )
             except Exception:
                 max_keys = max_default
             max_keys = max(0, max_keys)
@@ -396,7 +399,7 @@ def precheck_ttadk_startup_model(
             # 注意：测试里经常 monkeypatch `src.ttadk.get_ttadk_manager`。
             # 这里通过 importlib 从 package 侧取函数，确保 patch 生效。
             pkg = importlib.import_module(__package__ or "src.ttadk")
-            manager = getattr(pkg, "get_ttadk_manager")()
+            manager = pkg.get_ttadk_manager()
 
         input_model = (model_intent or getattr(manager, "get_current_model", lambda: "")() or "").strip()
 

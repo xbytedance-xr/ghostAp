@@ -15,11 +15,13 @@ Callers may inject a `get_settings_fn` for testing.
 
 from __future__ import annotations
 
-import re
 import numbers
+import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Callable, Optional
+
+from ..config import get_settings as _default_get_settings
 
 __all__ = [
     # Public API (stable)
@@ -62,7 +64,14 @@ def normalize_startup_diagnostics(
         snippet_limit = int(cfg.snippet_limit or 0) if int(cfg.snippet_limit or 0) > 0 else 240
         total_limit = int(cfg.total_limit or 0) if int(cfg.total_limit or 0) > 0 else 2000
     except Exception:
-        enabled, patterns, repl, args_limit, snippet_limit, total_limit = True, list(_DEFAULT_REDACT_PATTERNS), "***REDACTED***", 600, 240, 2000
+        enabled, patterns, repl, args_limit, snippet_limit, total_limit = (
+            True,
+            list(_DEFAULT_REDACT_PATTERNS),
+            "***REDACTED***",
+            600,
+            240,
+            2000,
+        )
 
     # Base container (ensure stable keys always exist)
     out: dict = {
@@ -180,11 +189,19 @@ def normalize_startup_diagnostics(
     except Exception:
         pass
     try:
-        out["error_text"] = _truncate_text(_safe_str(out.get("error_text") or ""), min(400, snippet_limit) if snippet_limit > 0 else 240) or "(empty)"
+        out["error_text"] = (
+            _truncate_text(
+                _safe_str(out.get("error_text") or ""), min(400, snippet_limit) if snippet_limit > 0 else 240
+            )
+            or "(empty)"
+        )
     except Exception:
         out["error_text"] = _safe_str(out.get("error_text") or "") or "(empty)"
     try:
-        out["error"] = _truncate_text(_safe_str(out.get("error") or ""), min(400, snippet_limit) if snippet_limit > 0 else 240) or out["error_text"]
+        out["error"] = (
+            _truncate_text(_safe_str(out.get("error") or ""), min(400, snippet_limit) if snippet_limit > 0 else 240)
+            or out["error_text"]
+        )
     except Exception:
         out["error"] = _safe_str(out.get("error") or "") or out.get("error_text") or "(empty)"
     try:
@@ -193,12 +210,16 @@ def normalize_startup_diagnostics(
         out["fail_reason"] = _safe_str(out.get("fail_reason") or "") or "start_failed"
     # spec / agent_spec can be a bit longer but bounded
     try:
-        out["spec"] = _truncate_text(_safe_str(out.get("spec") or ""), min(400, total_limit) if total_limit > 0 else 400)
+        out["spec"] = _truncate_text(
+            _safe_str(out.get("spec") or ""), min(400, total_limit) if total_limit > 0 else 400
+        )
     except Exception:
         out["spec"] = _safe_str(out.get("spec") or "")
     try:
         if "agent_spec" in out:
-            out["agent_spec"] = _truncate_text(_safe_str(out.get("agent_spec") or ""), min(400, total_limit) if total_limit > 0 else 400)
+            out["agent_spec"] = _truncate_text(
+                _safe_str(out.get("agent_spec") or ""), min(400, total_limit) if total_limit > 0 else 400
+            )
     except Exception:
         pass
 
@@ -212,6 +233,7 @@ def normalize_startup_diagnostics(
         out["fail_reason"] = "start_failed"
     return out
 
+
 _DEFAULT_REDACT_PATTERNS: list[str] = [
     r"(?i)authorization\s*:\s*[^\s]+",
     r"(?i)bearer\s+[^\s]+",
@@ -221,9 +243,6 @@ _DEFAULT_REDACT_PATTERNS: list[str] = [
     r"(?i)secret\s*[:=]\s*[^\s]+",
     r"(?i)token\s*[:=]\s*[^\s]+",
 ]
-
-
-from ..config import get_settings as _default_get_settings
 
 
 @dataclass(frozen=True)
@@ -820,7 +839,7 @@ def _truncate_args(args: list[str], limit: int) -> list[str]:
         return list(args or [])
     out: list[str] = []
     used = 0
-    for a in (args or []):
+    for a in args or []:
         a = _safe_str(a)
         if not a:
             continue

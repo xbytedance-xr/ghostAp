@@ -4,23 +4,20 @@ from __future__ import annotations
 
 import logging
 import os
-import asyncio
 from typing import TYPE_CHECKING, Optional
-
 
 from ...card import CardBuilder
 from ...deep_engine.models import DeepProjectStatus
-from ...tasking import TaskSpec, TaskPriority
-from ...utils.errors import fmt_error
-from ...utils.text import generate_task_id
+from ...tasking import TaskPriority, TaskSpec
 from ...utils.command_parser import CommandParser
+from ...utils.text import generate_task_id
 from ..emoji import EmojiReaction
-from .base import BaseHandler
-from .engine_base import BaseEngineHandler
 from ..renderers.deep_renderer import DeepRenderer
+from .engine_base import BaseEngineHandler
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
+    from ..handler_context import HandlerContext
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +41,10 @@ class DeepHandler(BaseEngineHandler):
     def _show_status(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         self.show_deep_status(message_id, chat_id, project)
 
-    def _create_callbacks(self, message_id: str, chat_id: str, project: Optional["ProjectContext"], engine_name: str, root_path: str):
-        return self.renderer.create_deep_callbacks(
-            message_id, chat_id, project, engine_name, root_path
-        )
+    def _create_callbacks(
+        self, message_id: str, chat_id: str, project: Optional["ProjectContext"], engine_name: str, root_path: str
+    ):
+        return self.renderer.create_deep_callbacks(message_id, chat_id, project, engine_name, root_path)
 
     def _create_deep_callbacks(self, *args, **kwargs):
         return self.renderer.create_deep_callbacks(*args, **kwargs)
@@ -73,7 +70,7 @@ class DeepHandler(BaseEngineHandler):
             elif arg in ("all", "-a", "--all"):
                 # Fallback for manual check if parser didn't catch mixed case or single token
                 is_all = True
-                
+
             if is_all:
                 self.show_deep_board(message_id, chat_id)
             else:
@@ -84,7 +81,7 @@ class DeepHandler(BaseEngineHandler):
                 is_all = True
             elif arg in ("all", "-a", "--all"):
                 is_all = True
-                
+
             if is_all:
                 self.stop_all_deep_engines(message_id, chat_id)
             else:
@@ -93,19 +90,33 @@ class DeepHandler(BaseEngineHandler):
             if arg:
                 self.update_deep_context(message_id, chat_id, arg, project)
             else:
-                self.reply_error(message_id, "请提供上下文信息\n\n用法: `/deep_update <上下文描述>`\n\n例如: `/deep_update 数据库改用 PostgreSQL 而不是 SQLite`", title="参数错误")
+                self.reply_error(
+                    message_id,
+                    "请提供上下文信息\n\n用法: `/deep_update <上下文描述>`\n\n例如: `/deep_update 数据库改用 PostgreSQL 而不是 SQLite`",
+                    title="参数错误",
+                )
         elif command == "/deep":
             if arg:
                 self.start_deep_engine(message_id, chat_id, arg, project)
             else:
-                self.reply_error(message_id, "请提供需求描述\n\n用法: `/deep <你的需求描述>`\n\n例如: `/deep 帮我写一个 Python 爬虫，爬取豆瓣电影 Top250`", title="参数错误")
+                self.reply_error(
+                    message_id,
+                    "请提供需求描述\n\n用法: `/deep <你的需求描述>`\n\n例如: `/deep 帮我写一个 Python 爬虫，爬取豆瓣电影 Top250`",
+                    title="参数错误",
+                )
         else:
-            self.reply_error(message_id, "未知的 Deep 命令\n\n可用命令:\n• `/deep <需求>` - 启动 Deep Agent\n• `/deep_update <上下文>` - 注入执行上下文\n• `/deep_status` - 查看当前项目进度\n• `/deep_status --all` - 查看所有项目 Deep Agent 看板\n• `/stop_deep` - 停止当前项目任务\n• `/stop_deep --all` - 停止所有项目任务", title="未知命令")
+            self.reply_error(
+                message_id,
+                "未知的 Deep 命令\n\n可用命令:\n• `/deep <需求>` - 启动 Deep Agent\n• `/deep_update <上下文>` - 注入执行上下文\n• `/deep_status` - 查看当前项目进度\n• `/deep_status --all` - 查看所有项目 Deep Agent 看板\n• `/stop_deep` - 停止当前项目任务\n• `/stop_deep --all` - 停止所有项目任务",
+                title="未知命令",
+            )
 
     # ------------------------------------------------------------------
     # start
     # ------------------------------------------------------------------
-    def start_deep_engine(self, message_id: str, chat_id: str, requirement: str, project: Optional["ProjectContext"] = None):
+    def start_deep_engine(
+        self, message_id: str, chat_id: str, requirement: str, project: Optional["ProjectContext"] = None
+    ):
         if not project:
             working_dir = self.get_working_dir(chat_id)
             try:
@@ -120,12 +131,18 @@ class DeepHandler(BaseEngineHandler):
 
         existing = self.ctx.deep_engine_manager.get(chat_id, root_path)
         if existing and existing.is_running:
-            self.reply_error(message_id, "当前项目已有 Deep Agent 任务在执行中\n\n发送 `/deep_status` 查看进度\n发送 `/stop_deep` 停止任务", title="任务冲突")
+            self.reply_error(
+                message_id,
+                "当前项目已有 Deep Agent 任务在执行中\n\n发送 `/deep_status` 查看进度\n发送 `/stop_deep` 停止任务",
+                title="任务冲突",
+            )
             return
 
         self.add_reaction(message_id, EmojiReaction.on_multi_task_start())
 
-        request_id = self.ensure_request_id(message_id, chat_id=chat_id, project_id=(project.project_id if project else None))
+        request_id = self.ensure_request_id(
+            message_id, chat_id=chat_id, project_id=(project.project_id if project else None)
+        )
         engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
         reporter = self.ctx.progress_reporter
 
@@ -134,11 +151,15 @@ class DeepHandler(BaseEngineHandler):
         msg_type, card_content = CardBuilder.build_deep_card(
             project=project,
             title=planning_title,
-            content=f"{planning_content}\n\n{self.format_ref_note(message_id, request_id)}" if request_id else planning_content,
+            content=f"{planning_content}\n\n{self.format_ref_note(message_id, request_id)}"
+            if request_id
+            else planning_content,
             engine_name=engine_name,
             show_buttons=False,
         )
-        initial_msg_id = self.reply_message(message_id, card_content, msg_type=msg_type, origin_message_id=message_id, request_id=request_id)
+        initial_msg_id = self.reply_message(
+            message_id, card_content, msg_type=msg_type, origin_message_id=message_id, request_id=request_id
+        )
 
         engine = self.ctx.deep_engine_manager.get_or_create(chat_id, root_path, engine_name=engine_name)
 
@@ -168,7 +189,7 @@ class DeepHandler(BaseEngineHandler):
                 engine_name=engine_name,
                 reporter=reporter,
                 request_id=request_id,
-                action_prefix="deep"
+                action_prefix="deep",
             )
 
         spec = TaskSpec(
@@ -187,12 +208,20 @@ class DeepHandler(BaseEngineHandler):
         try:
             self.ctx.message_linker.link_task(message_id, handle.run_id)
         except Exception as e:
-            logger.debug("link_task失败(deep_engine_run): message_id=%s, run_id=%s, err=%s", message_id, handle.run_id, e)
+            logger.debug(
+                "link_task失败(deep_engine_run): message_id=%s, run_id=%s, err=%s", message_id, handle.run_id, e
+            )
 
     # ------------------------------------------------------------------
     # status / board
     # ------------------------------------------------------------------
-    def show_deep_status(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, origin_message_id: Optional[str] = None):
+    def show_deep_status(
+        self,
+        message_id: str,
+        chat_id: str,
+        project: Optional["ProjectContext"] = None,
+        origin_message_id: Optional[str] = None,
+    ):
         self.renderer.render_deep_status(message_id, chat_id, project, origin_message_id)
 
     def show_deep_board(self, message_id: str, chat_id: str):
@@ -207,9 +236,11 @@ class DeepHandler(BaseEngineHandler):
         if not candidates:
             engine_name = self.get_engine_name(chat_id, project_id=None)
             msg_type, card_content = CardBuilder.build_deep_card(
-                project=None, title="📊 Deep Agent 看板",
+                project=None,
+                title="📊 Deep Agent 看板",
                 content="当前没有 Deep Agent 任务\n\n发送 `/deep <需求>` 开始一个复杂任务",
-                engine_name=engine_name, show_buttons=False,
+                engine_name=engine_name,
+                show_buttons=False,
             )
             self.reply_message(message_id, card_content, msg_type=msg_type)
             return
@@ -239,8 +270,11 @@ class DeepHandler(BaseEngineHandler):
             lines.append(f"- 🧠 **{proj_name}** · `{status}` · {info['progress_bar']} · `{root}`")
 
         msg_type, card_content = CardBuilder.build_smart_response_card(
-            project=None, title="📊 Deep Agent 看板", content="\n".join(lines),
-            working_dir=self.get_working_dir(chat_id), show_buttons=True,
+            project=None,
+            title="📊 Deep Agent 看板",
+            content="\n".join(lines),
+            working_dir=self.get_working_dir(chat_id),
+            show_buttons=True,
         )
         self.reply_message(message_id, card_content, msg_type=msg_type)
 
@@ -249,55 +283,62 @@ class DeepHandler(BaseEngineHandler):
     # ------------------------------------------------------------------
     def pause_deep_engine(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         self._safe_lifecycle_action(
-            lambda: self._pause_engine_generic(message_id, chat_id, project, status_paused_enum=DeepProjectStatus.PAUSED),
+            lambda: self._pause_engine_generic(
+                message_id, chat_id, project, status_paused_enum=DeepProjectStatus.PAUSED
+            ),
             "pause",
             chat_id,
             message_id,
-            project
+            project,
         )
 
     def resume_deep_engine(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         self._safe_lifecycle_action(
-            lambda: self._resume_engine_generic(message_id, chat_id, project, status_paused_enum=DeepProjectStatus.PAUSED),
+            lambda: self._resume_engine_generic(
+                message_id, chat_id, project, status_paused_enum=DeepProjectStatus.PAUSED
+            ),
             "resume",
             chat_id,
             message_id,
-            project
+            project,
         )
 
     def stop_deep_engine(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         self._safe_lifecycle_action(
-            lambda: self._stop_engine_generic(message_id, chat_id, project),
-            "stop",
-            chat_id,
-            message_id,
-            project
+            lambda: self._stop_engine_generic(message_id, chat_id, project), "stop", chat_id, message_id, project
         )
 
     def stop_all_deep_engines(self, message_id: str, chat_id: str):
         from ...card.styles import UI_TEXT
-        
+
         engines = self.ctx.deep_engine_manager.get_active_engines(chat_id)
         if not engines:
-            self.reply_error(message_id, UI_TEXT.get("deep_no_active_tasks", "当前没有正在执行的 Deep Agent 任务").format(engine_prefix="Deep Agent"), title="无活动任务")
+            self.reply_error(
+                message_id,
+                UI_TEXT.get("deep_no_active_tasks", "当前没有正在执行的 Deep Agent 任务").format(
+                    engine_prefix="Deep Agent"
+                ),
+                title="无活动任务",
+            )
             return
-        
+
         for e in engines:
             try:
                 e.stop()
             except Exception as ex:
                 logger.debug("停止deep engine失败: %s", ex)
-        
+
         msg = UI_TEXT.get(
-            "deep_stop_all_success", 
-            "🛑 已发送停止信号：{count} 个 Deep Agent 任务将在当前步骤完成后停止"
+            "deep_stop_all_success", "🛑 已发送停止信号：{count} 个 Deep Agent 任务将在当前步骤完成后停止"
         ).format(count=len(engines))
         self.reply_message(message_id, msg)
 
     # ------------------------------------------------------------------
     # update context
     # ------------------------------------------------------------------
-    def update_deep_context(self, message_id: str, chat_id: str, update_message: str, project: Optional["ProjectContext"] = None):
+    def update_deep_context(
+        self, message_id: str, chat_id: str, update_message: str, project: Optional["ProjectContext"] = None
+    ):
         if project is None:
             project = self.project_manager.get_active_project(chat_id)
 
@@ -315,7 +356,11 @@ class DeepHandler(BaseEngineHandler):
             engine = self.ctx.deep_engine_manager.get(chat_id, root_path)
 
         if not engine or not engine.is_running:
-            self.reply_error(message_id, "当前没有正在运行的 Deep Agent 任务\n\n请先使用 `/deep <需求>` 启动任务，或使用 `/deep_status all` 查看所有项目任务", title="无活动任务")
+            self.reply_error(
+                message_id,
+                "当前没有正在运行的 Deep Agent 任务\n\n请先使用 `/deep <需求>` 启动任务，或使用 `/deep_status all` 查看所有项目任务",
+                title="无活动任务",
+            )
             return
 
         engine.inject_context(update_message)
@@ -331,8 +376,11 @@ class DeepHandler(BaseEngineHandler):
                 project = None
 
         msg_type, card_content = CardBuilder.build_deep_card(
-            project=project, title=title, content=content,
-            engine_name=engine_name, show_buttons=False,
+            project=project,
+            title=title,
+            content=content,
+            engine_name=engine_name,
+            show_buttons=False,
         )
         self.send_message(chat_id, card_content, msg_type)
 
@@ -343,7 +391,7 @@ class DeepHandler(BaseEngineHandler):
         """Handle deep_* card actions."""
         project_id = value.get("project_id", "")
         deep_project_id = value.get("deep_project_id", "")
-        
+
         # Resolve target project
         target_project = self.project_manager.get_project(project_id) if project_id else None
         if not target_project and deep_project_id:
@@ -356,9 +404,9 @@ class DeepHandler(BaseEngineHandler):
                 target_project = None
 
         deep_actions = {
-            "deep_pause":  self.pause_deep_engine,
+            "deep_pause": self.pause_deep_engine,
             "deep_resume": self.resume_deep_engine,
-            "deep_stop":   self.stop_deep_engine,
+            "deep_stop": self.stop_deep_engine,
         }
 
         self._dispatch_standard_card_action(
@@ -374,19 +422,40 @@ class DeepHandler(BaseEngineHandler):
             project=target_project,
         )
 
-    def toggle_deep_log(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, deep_project_id: Optional[str] = None, expanded: bool = False):
+    def toggle_deep_log(
+        self,
+        message_id: str,
+        chat_id: str,
+        project: Optional["ProjectContext"] = None,
+        deep_project_id: Optional[str] = None,
+        expanded: bool = False,
+    ):
         if deep_project_id:
             self.renderer.update_ui_state(deep_project_id, expanded=expanded)
             # Refresh card with new state
             self.show_deep_status(message_id, chat_id, project, origin_message_id=message_id)
 
-    def toggle_deep_ac(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, deep_project_id: Optional[str] = None, expand_ac: bool = False):
+    def toggle_deep_ac(
+        self,
+        message_id: str,
+        chat_id: str,
+        project: Optional["ProjectContext"] = None,
+        deep_project_id: Optional[str] = None,
+        expand_ac: bool = False,
+    ):
         if deep_project_id:
             self.renderer.update_ui_state(deep_project_id, expand_ac=expand_ac)
             # Refresh card with new state
             self.show_deep_status(message_id, chat_id, project, origin_message_id=message_id)
 
-    def switch_deep_card_mode(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, deep_project_id: Optional[str] = None, compact: bool = False):
+    def switch_deep_card_mode(
+        self,
+        message_id: str,
+        chat_id: str,
+        project: Optional["ProjectContext"] = None,
+        deep_project_id: Optional[str] = None,
+        compact: bool = False,
+    ):
         if deep_project_id:
             self.renderer.update_ui_state(deep_project_id, compact=compact)
             # Refresh card with new state
