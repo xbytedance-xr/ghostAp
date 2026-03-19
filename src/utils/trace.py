@@ -3,42 +3,70 @@ import logging
 import uuid
 from typing import Optional
 
-# Global context variable for request_id
+# Global context variable for trace_id (preferred over request_id for internal tracing)
+_trace_id_ctx_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("trace_id", default=None)
 _request_id_ctx_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("request_id", default=None)
 
 
-def get_request_id() -> Optional[str]:
-    """Get the current request_id from context."""
-    return _request_id_ctx_var.get()
+def get_trace_id() -> Optional[str]:
+    """Get the current trace_id from context."""
+    return _trace_id_ctx_var.get() or _request_id_ctx_var.get()
 
 
-def set_request_id(request_id: str):
-    """Set the current request_id in context."""
-    return _request_id_ctx_var.set(request_id)
+def set_trace_id(trace_id: str):
+    """Set the current trace_id in context."""
+    return _trace_id_ctx_var.set(trace_id)
+
+
+class TraceManager:
+    """Manager for Trace ID generation and context propagation."""
+    
+    @staticmethod
+    def generate_trace_id() -> str:
+        return str(uuid.uuid4())
+        
+    @classmethod
+    def get_current_trace_id(cls) -> str:
+        tid = get_trace_id()
+        if not tid:
+            tid = cls.generate_trace_id()
+            set_trace_id(tid)
+        return tid
+        
+    @classmethod
+    def context(cls, trace_id: Optional[str] = None):
+        """Context manager for a trace scope."""
+        return TraceContext(request_id=trace_id)
 
 
 class TraceContext:
-    """Context manager to set and clear request_id."""
+    """Context manager to set and clear request_id/trace_id."""
 
-    def __init__(self, request_id: Optional[str] = None):
-        self.request_id = request_id or str(uuid.uuid4())
-        self.token = None
+    def __init__(self, request_id: Optional[str] = None, trace_id: Optional[str] = None):
+        # Prefer trace_id if provided, otherwise use request_id, otherwise generate new
+        self.trace_id = trace_id or request_id or str(uuid.uuid4())
+        self.req_token = None
+        self.trace_token = None
 
     def __enter__(self):
-        self.token = _request_id_ctx_var.set(self.request_id)
-        return self.request_id
+        self.req_token = _request_id_ctx_var.set(self.trace_id)
+        self.trace_token = _trace_id_ctx_var.set(self.trace_id)
+        return self.trace_id
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.token:
-            _request_id_ctx_var.reset(self.token)
+        if self.req_token:
+            _request_id_ctx_var.reset(self.req_token)
+        if self.trace_token:
+            _trace_id_ctx_var.reset(self.trace_token)
 
 
 class RequestIdFilter(logging.Filter):
-    """Logging filter to inject request_id into log records."""
+    """Logging filter to inject request_id/trace_id into log records."""
 
     def filter(self, record):
-        request_id = get_request_id()
-        record.request_id = request_id if request_id else "-"
+        trace_id = get_trace_id()
+        record.request_id = trace_id if trace_id else "-"
+        record.trace_id = trace_id if trace_id else "-"
         return True
 
 

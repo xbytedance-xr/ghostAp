@@ -123,3 +123,32 @@ class TestLoopRenderer:
 
         # So handler.reply_message should be called.
         assert mock_handler.reply_message.called
+        
+        # Test error callback and its retry button logic
+        import json
+        mock_handler.reply_message.reset_mock()
+        mock_handler.patch_message.reset_mock()
+        mock_handler.patch_message.return_value = False
+        
+        # Setup mock reporter to return string for format_error
+        mock_handler.ctx.loop_reporter.format_error.return_value = "Test Loop Error Content"
+        mock_handler.ctx.loop_reporter.get_error_title.return_value = "Test Error Title"
+        
+        # In loop renderer, project is checked. Here proj is provided.
+        # But we need to make sure loop_project_id is properly evaluated in the closure
+        
+        callbacks.on_error("Test Loop Error")
+        
+        assert mock_handler.reply_message.called
+        args, kwargs = mock_handler.reply_message.call_args
+        card_content = args[1]
+        
+        # Parse JSON and verify the extra_buttons (retry button) were added
+        card_dict = json.loads(card_content)
+        # Look through elements for the "重试" button in the loop_resume action
+        card_elements_str = json.dumps(card_dict.get("elements", []))
+        
+        assert "Test Loop Error" in card_elements_str or "Test Loop Error" in card_content
+        assert "loop_resume" in card_elements_str
+        assert "重试" in card_elements_str
+        assert "p1" in card_elements_str  # project_id should be included in the action

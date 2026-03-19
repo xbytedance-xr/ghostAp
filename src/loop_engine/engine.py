@@ -5,7 +5,6 @@ acceptance criteria are satisfied. Each iteration sends a prompt,
 tracks tool calls/plan progress, then evaluates criteria.
 """
 
-import gc
 import json
 import logging
 import os
@@ -22,7 +21,8 @@ from ..acp import ACPEvent, ACPEventRenderer, ACPEventType
 from ..agent_session import SyncSession, close_session_safely, create_engine_session
 from ..config import get_settings
 from ..deep_engine.models import EngineRunState
-from ..spec_engine.retry import RetryPolicy, get_retry_delay, should_retry
+from ..utils.gc_monitor import get_gc_monitor
+from ..utils.retry import RetryPolicy, get_retry_delay, should_retry
 from ..utils.spec_utils import (
     CRITERIA_PATTERNS as _CRITERIA_PATTERNS,
 )
@@ -32,6 +32,7 @@ from ..utils.spec_utils import (
 from ..utils.spec_utils import (
     parse_review_output_loose as _parse_review_output_loose,
 )
+from ..utils.trace import TraceContext
 from .models import (
     IterationRecord,
     IterationStatus,
@@ -86,18 +87,23 @@ class LoopEngine:
         self._user_guidance: list[str] = []
         self._last_review: Optional[ReviewResult] = None
         self._review_extra_used: int = 0
+        self._lock = threading.RLock()
+        self._last_heartbeat: float = 0.0
 
     @property
     def project(self) -> Optional[LoopProject]:
-        return self._project
+        with self._lock:
+            return self._project
 
     @property
     def run_state(self) -> EngineRunState:
-        return self._run_state
+        with self._lock:
+            return self._run_state
 
     @property
     def is_running(self) -> bool:
-        return self._run_state != EngineRunState.IDLE
+        with self._lock:
+            return self._run_state != EngineRunState.IDLE
 
     def _close_session_safely(self) -> None:
         """Close existing ACP session, ignoring errors."""
@@ -113,18 +119,20 @@ class LoopEngine:
     ) -> LoopProject:
         """Iterate until acceptance criteria are satisfied."""
         callbacks = callbacks or LoopEngineCallbacks()
-        self._run_state = EngineRunState.RUNNING
+        with self._lock:
+            self._run_state = EngineRunState.RUNNING
         self._on_rate_limit = on_rate_limit
         max_iterations = self.settings.loop_max_iterations
 
         # Create project
         project_name = os.path.basename(self.root_path) or "loop_project"
-        self._project = LoopProject.create(
-            name=project_name,
-            root_path=self.root_path,
-        )
-        self._project.task_id = task_id
-        self._project.status = LoopProjectStatus.ANALYZING
+        with self._lock:
+            self._project = LoopProject.create(
+                name=project_name,
+                root_path=self.root_path,
+            )
+            self._project.task_id = task_id
+            self._project.status = LoopProjectStatus.ANALYZING
 
         if callbacks.on_analyzing_start:
             callbacks.on_analyzing_start(requirement_text)
@@ -137,154 +145,165 @@ class LoopEngine:
             self._agent_type,
         )
 
+        # Initialize TraceContext
+        trace_ctx = TraceContext(trace_id=task_id or f"loop-{int(time.time())}")
+
         try:
-            # Parse requirement — extract acceptance criteria
-            requirement = self._parse_requirement(requirement_text)
-            self._project.set_requirement(requirement)  # initializes CriteriaTracker
-            self._project.status = LoopProjectStatus.RUNNING
-
-            if callbacks.on_analyzing_done:
-                callbacks.on_analyzing_done(self._project)
-
-            # Create session
-            from ..utils.path import normalize_ttadk_cwd
-
-            self._session = create_engine_session(
-                agent_type=self._agent_type,
-                cwd=normalize_ttadk_cwd(self.root_path) or self.root_path,
-                on_rate_limit=on_rate_limit,
-                model_name=self._model_name,
-            )
-
-            # Build initial prompt
-            initial_prompt = self._build_initial_prompt(requirement)
-            timeout = self.settings.loop_execution_timeout
-
-            review_enabled = self.settings.loop_review_enabled
-            review_extra_max = self.settings.loop_review_extra_iterations
-            self._review_extra_used = 0
-            self._last_review = None
-
-            for iteration in range(1, max_iterations + 1):
-                if self._run_state != EngineRunState.RUNNING:
-                    break
-
-                iter_start = time.time()
-
-                if callbacks.on_iteration_start:
-                    callbacks.on_iteration_start(iteration, max_iterations)
-
-                # Build prompt for this iteration
-                if iteration == 1:
-                    prompt = initial_prompt
-                else:
-                    prompt = self._build_iteration_prompt(iteration, requirement)
-
-                # Track events for this iteration
-                iter_tracker = IterationTracker()
-                on_event = self._make_on_event(iter_tracker, iteration, callbacks)
-
-                # Retry logic with exponential backoff
-                retry_policy = RetryPolicy(max_retries=3, retry_delay=2.0)
-                attempt = 0
-                result = None
-                while attempt <= retry_policy.max_retries:
-                    try:
-                        result = self._session.send_prompt(prompt, on_event=on_event, timeout=timeout)
-                        break
-                    except Exception as e:
-                        if attempt < retry_policy.max_retries and should_retry(e):
-                            delay = get_retry_delay(attempt, retry_policy)
-                            logger.warning(
-                                f"[Loop] send_prompt 失败: {e}. 正在进行第 {attempt + 1} 次重试，等待 {delay:.1f}s"
-                            )
-                            time.sleep(delay)
-                            attempt += 1
-                        else:
-                            raise
-
-                # Record iteration — full output, proper duration, extract focus
-                iter_end = time.time()
-                focus = self._extract_focus(iter_tracker.text_buffer) or f"迭代 {iteration}"
-                record = IterationRecord(
-                    iteration=iteration,
-                    role=None,
-                    focus=focus,
-                    output=iter_tracker.text_buffer,
-                    status=IterationStatus.SUCCESS if result.stop_reason == "end_turn" else IterationStatus.FAILED,
-                    started_at=iter_start,
-                    duration=iter_end - iter_start,
-                    completed_at=iter_end,
+            with trace_ctx:
+                # Parse requirement — extract acceptance criteria
+                requirement = self._parse_requirement(requirement_text)
+                with self._lock:
+                    self._project.set_requirement(requirement)  # initializes CriteriaTracker
+                    self._project.status = LoopProjectStatus.RUNNING
+    
+                if callbacks.on_analyzing_done:
+                    callbacks.on_analyzing_done(self._project)
+    
+                # Create session
+                from ..utils.path import normalize_ttadk_cwd
+    
+                self._session = create_engine_session(
+                    agent_type=self._agent_type,
+                    cwd=normalize_ttadk_cwd(self.root_path) or self.root_path,
+                    on_rate_limit=on_rate_limit,
+                    model_name=self._model_name,
                 )
-
-                logger.info(
-                    "[Loop:%s] 迭代 %d/%d 完成, 工具=%d, 文件=%d",
-                    project_name,
-                    iteration,
-                    max_iterations,
-                    len(iter_tracker.tool_calls),
-                    len(iter_tracker.modified_files),
-                )
-
-                # Multi-perspective review phase
-                if review_enabled and self._run_state == EngineRunState.RUNNING:
-                    review_result = self._conduct_review(iteration, callbacks)
-                    record.review_result = review_result
-                    self._last_review = review_result
-
-                self._project.iterations.append(record)
-
-                if callbacks.on_iteration_done:
-                    callbacks.on_iteration_done(iteration, record)
-
-                # Save state precisely after each iteration finishes to support fine-grained recovery
-                try:
-                    self.save_state()
-                except Exception as e:
-                    logger.warning("[Loop:%s] 细粒度状态保存失败: %s", project_name, e)
-
-                # Evaluate acceptance criteria in the same session
-                criteria_result = self._evaluate_criteria(requirement.acceptance_criteria, iteration)
-                all_criteria_satisfied = criteria_result.get("all_satisfied", False)
-
-                # Termination logic: criteria + review
-                if all_criteria_satisfied:
-                    if not review_enabled or (self._last_review and self._last_review.all_passed):
-                        logger.info("[Loop:%s] 所有验收标准+审查通过, 迭代 %d 轮", project_name, iteration)
-                        break
-                    # Criteria satisfied but review has suggestions — allow extra iterations
-                    self._review_extra_used += 1
-                    if self._review_extra_used > review_extra_max:
-                        logger.info(
-                            "[Loop:%s] 验收标准已满足，审查额外迭代超限(%d), 迭代 %d 轮",
-                            project_name,
-                            review_extra_max,
-                            iteration,
-                        )
-                        break
-                    logger.info(
-                        "[Loop:%s] 验收标准已满足但审查有建议, 额外迭代 %d/%d",
-                        project_name,
-                        self._review_extra_used,
-                        review_extra_max,
+    
+                # Build initial prompt
+                initial_prompt = self._build_initial_prompt(requirement)
+                timeout = self.settings.loop_execution_timeout
+    
+                review_enabled = self.settings.loop_review_enabled
+                review_extra_max = self.settings.loop_review_extra_iterations
+                self._review_extra_used = 0
+                self._last_review = None
+    
+                for iteration in range(1, max_iterations + 1):
+                    with self._lock:
+                        if self._run_state != EngineRunState.RUNNING:
+                            break
+    
+                    iter_start = time.time()
+    
+                    if callbacks.on_iteration_start:
+                        callbacks.on_iteration_start(iteration, max_iterations)
+    
+                    # Build prompt for this iteration
+                    if iteration == 1:
+                        prompt = initial_prompt
+                    else:
+                        prompt = self._build_iteration_prompt(iteration, requirement)
+    
+                    # Track events for this iteration
+                    iter_tracker = IterationTracker()
+                    on_event = self._make_on_event(iter_tracker, iteration, callbacks)
+    
+                    # Retry logic with exponential backoff
+                    retry_policy = RetryPolicy(max_retries=3, retry_delay=2.0)
+                    attempt = 0
+                    result = None
+                    while attempt <= retry_policy.max_retries:
+                        try:
+                            result = self._session.send_prompt(prompt, on_event=on_event, timeout=timeout)
+                            break
+                        except Exception as e:
+                            if attempt < retry_policy.max_retries and (isinstance(e, TimeoutError) or should_retry(e)):
+                                delay = get_retry_delay(attempt, retry_policy)
+                                logger.warning(
+                                    f"[Loop] send_prompt 失败: {e}. 正在进行第 {attempt + 1} 次重试，等待 {delay:.1f}s"
+                                )
+                                time.sleep(delay)
+                                attempt += 1
+                            else:
+                                raise
+    
+                    # Record iteration — full output, proper duration, extract focus
+                    iter_end = time.time()
+                    focus = self._extract_focus(iter_tracker.text_buffer) or f"迭代 {iteration}"
+                    record = IterationRecord(
+                        iteration=iteration,
+                        role=None,
+                        focus=focus,
+                        output=iter_tracker.text_buffer,
+                        status=IterationStatus.SUCCESS if result.stop_reason == "end_turn" else IterationStatus.FAILED,
+                        started_at=iter_start,
+                        duration=iter_end - iter_start,
+                        completed_at=iter_end,
                     )
-
-                # Convergence detection
-                if self._detect_convergence():
-                    logger.info("[Loop:%s] 收敛检测触发, 迭代 %d 轮", project_name, iteration)
-                    break
-
-            # Determine final status
-            if self._run_state == EngineRunState.STOPPING:
-                self._project.status = LoopProjectStatus.PAUSED
-            else:
-                self._project.status = LoopProjectStatus.COMPLETED
-                self._project.completed_at = time.time()
-
-            if callbacks.on_project_done:
-                callbacks.on_project_done(self._project)
-
-            return self._project
+    
+                    logger.info(
+                        "[Loop:%s] 迭代 %d/%d 完成, 工具=%d, 文件=%d",
+                        project_name,
+                        iteration,
+                        max_iterations,
+                        len(iter_tracker.tool_calls),
+                        len(iter_tracker.modified_files),
+                    )
+    
+                    # Multi-perspective review phase
+                    with self._lock:
+                        is_running = self._run_state == EngineRunState.RUNNING
+                    
+                    if review_enabled and is_running:
+                        review_result = self._conduct_review(iteration, callbacks)
+                        record.review_result = review_result
+                        self._last_review = review_result
+    
+                    with self._lock:
+                        self._project.iterations.append(record)
+    
+                    if callbacks.on_iteration_done:
+                        callbacks.on_iteration_done(iteration, record)
+    
+                    # Save state precisely after each iteration finishes to support fine-grained recovery
+                    try:
+                        self.save_state()
+                    except Exception as e:
+                        logger.warning("[Loop:%s] 细粒度状态保存失败: %s", project_name, e)
+    
+                    # Evaluate acceptance criteria in the same session
+                    criteria_result = self._evaluate_criteria(requirement.acceptance_criteria, iteration)
+                    all_criteria_satisfied = criteria_result.get("all_satisfied", False)
+    
+                    # Termination logic: criteria + review
+                    if all_criteria_satisfied:
+                        if not review_enabled or (self._last_review and self._last_review.all_passed):
+                            logger.info("[Loop:%s] 所有验收标准+审查通过, 迭代 %d 轮", project_name, iteration)
+                            break
+                        # Criteria satisfied but review has suggestions — allow extra iterations
+                        self._review_extra_used += 1
+                        if self._review_extra_used > review_extra_max:
+                            logger.info(
+                                "[Loop:%s] 验收标准已满足，审查额外迭代超限(%d), 迭代 %d 轮",
+                                project_name,
+                                review_extra_max,
+                                iteration,
+                            )
+                            break
+                        logger.info(
+                            "[Loop:%s] 验收标准已满足但审查有建议, 额外迭代 %d/%d",
+                            project_name,
+                            self._review_extra_used,
+                            review_extra_max,
+                        )
+    
+                    # Convergence detection
+                    if self._detect_convergence():
+                        logger.info("[Loop:%s] 收敛检测触发, 迭代 %d 轮", project_name, iteration)
+                        break
+    
+                # Determine final status
+                with self._lock:
+                    if self._run_state == EngineRunState.STOPPING:
+                        self._project.status = LoopProjectStatus.PAUSED
+                    else:
+                        self._project.status = LoopProjectStatus.COMPLETED
+                        self._project.completed_at = time.time()
+    
+                if callbacks.on_project_done:
+                    callbacks.on_project_done(self._project)
+    
+                return self._project
 
         except Exception as e:
             from ..utils.errors import get_error_detail
@@ -302,7 +321,7 @@ class LoopEngine:
 
         finally:
             self._run_state = EngineRunState.IDLE
-            gc.collect()
+            get_gc_monitor(memory_threshold_percent=self.settings.loop_memory_threshold if hasattr(self.settings, 'loop_memory_threshold') else 85.0).check_and_collect(label="Loop")
 
     def _make_on_event(
         self,
@@ -313,6 +332,8 @@ class LoopEngine:
         """Create the on_event callback shared by execute and resume loops."""
 
         def on_event(event: ACPEvent, _it=iteration):
+            with self._lock:
+                self._last_heartbeat = time.time()
             iter_tracker.process(event)
             self._renderer.process_event(event)
             if callbacks.on_iteration_event:
@@ -763,28 +784,64 @@ FAIL
             elif event.event_type == ACPEventType.THOUGHT_CHUNK and event.text:
                 thought_text.append(event.text)
 
-        try:
-            self._session.send_prompt(review_prompt, on_event=on_review_event, timeout=120)
-            full_text = "".join(review_text)
-            # Combine text + thought for parsing (some agents put verdicts in thinking)
-            combined_text = full_text
-            if thought_text:
-                combined_text = full_text + "\n" + "".join(thought_text)
-            review_result = self._parse_review_output(combined_text, iteration)
-        except Exception as e:
-            logger.warning("[Loop] 多视角审查异常: %s, 将继续迭代", e)
-            review_result = ReviewResult(
-                reviews=[
-                    PerspectiveReview(
-                        perspective=p,
-                        passed=False,
-                        suggestions=[f"审查执行异常: {e}"],
-                        summary="异常",
+        # Retry logic with exponential backoff for review
+        retry_policy = RetryPolicy(max_retries=2, retry_delay=2.0)
+        attempt = 0
+        review_result = None
+        last_error = None
+
+        while attempt <= retry_policy.max_retries:
+            try:
+                # Clear text buffers for retry
+                if attempt > 0:
+                    review_text.clear()
+                    thought_text.clear()
+                    
+                self._session.send_prompt(review_prompt, on_event=on_review_event, timeout=120)
+                full_text = "".join(review_text)
+                # Combine text + thought for parsing (some agents put verdicts in thinking)
+                combined_text = full_text
+                if thought_text:
+                    combined_text = full_text + "\n" + "".join(thought_text)
+                review_result = self._parse_review_output(combined_text, iteration)
+                break
+            except Exception as e:
+                from ..utils.errors import get_error_detail
+                last_error = e
+                detail = get_error_detail(e)
+                if attempt < retry_policy.max_retries and (isinstance(e, TimeoutError) or should_retry(e)):
+                    delay = get_retry_delay(attempt, retry_policy)
+                    logger.warning(
+                        f"[Loop] 多视角审查请求失败: {detail}. 正在进行第 {attempt + 1} 次重试，等待 {delay:.1f}s"
                     )
-                    for p in ReviewPerspective
-                ],
-                iteration=iteration,
-            )
+                    time.sleep(delay)
+                    attempt += 1
+                else:
+                    logger.warning(f"[Loop] 多视角审查异常: {detail}, 将视为有改进建议继续迭代")
+                    
+                    # Convert to friendly error message
+                    if isinstance(e, TimeoutError) or "timeout" in detail.lower():
+                        err_msg = "多视角审查请求超时，请检查网络"
+                    else:
+                        err_msg = f"审查执行异常: {detail}"
+                        
+                    review_result = ReviewResult(
+                        reviews=[
+                            PerspectiveReview(
+                                perspective=p,
+                                passed=False,
+                                suggestions=[err_msg],
+                                summary="异常",
+                            )
+                            for p in ReviewPerspective
+                        ],
+                        iteration=iteration,
+                    )
+                    break
+
+        if review_result is None:
+            # Fallback if somehow loop exits without setting result
+            review_result = ReviewResult(iteration=iteration)
 
         if callbacks.on_review_done:
             callbacks.on_review_done(iteration, review_result)
@@ -829,24 +886,40 @@ FAIL
 
         Multiple calls accumulate; all pending guidance is consumed together.
         """
-        self._user_guidance.append(message)
+        with self._lock:
+            self._user_guidance.append(message)
         logger.info("[Loop] 用户引导已注入(队列=%d): %s...", len(self._user_guidance), message[:100])
 
+    def check_stalled(self, threshold: Optional[float] = None) -> bool:
+        """Check if the engine is stalled (no activity for threshold seconds)."""
+        if threshold is None:
+            threshold = self.settings.loop_watchdog_timeout
+
+        with self._lock:
+            if self._run_state != EngineRunState.RUNNING:
+                return False
+            # If never started heartbeat, use start time or ignore
+            if self._last_heartbeat == 0.0:
+                return False
+            return (time.time() - self._last_heartbeat) > threshold
+
     def stop(self):
-        self._run_state = EngineRunState.STOPPING
-        if self._session:
-            self._session.cancel()
+        with self._lock:
+            self._run_state = EngineRunState.STOPPING
+            if self._session:
+                self._session.cancel()
 
     def pause(self):
-        if self._project:
-            self._project.status = LoopProjectStatus.PAUSED
-        self._run_state = EngineRunState.STOPPING
-        if self._session:
-            self._session.cancel()
+        with self._lock:
+            if self._project:
+                self._project.status = LoopProjectStatus.PAUSED
+            self._run_state = EngineRunState.STOPPING
+            if self._session:
+                self._session.cancel()
 
     def resume(self, callbacks: Optional[LoopEngineCallbacks] = None) -> Optional[LoopProject]:
         """Resume a paused loop execution — continue iterating from where we left off."""
-        if not self._project or self._project.status != LoopProjectStatus.PAUSED:
+        if not self._project or self._project.status not in (LoopProjectStatus.PAUSED, LoopProjectStatus.ABORTED):
             return self._project
         if not self._project.requirement:
             return self._project
@@ -904,12 +977,16 @@ FAIL
                 )
 
                 # Multi-perspective review phase
-                if review_enabled and self._run_state == EngineRunState.RUNNING:
+                with self._lock:
+                    is_running = self._run_state == EngineRunState.RUNNING
+                
+                if review_enabled and is_running:
                     review_result = self._conduct_review(iteration, callbacks)
                     record.review_result = review_result
                     self._last_review = review_result
 
-                self._project.iterations.append(record)
+                with self._lock:
+                    self._project.iterations.append(record)
 
                 if callbacks.on_iteration_done:
                     callbacks.on_iteration_done(iteration, record)
@@ -941,11 +1018,12 @@ FAIL
                     logger.info("[Loop:%s] 恢复后收敛检测触发, 迭代 %d 轮", project_name, iteration)
                     break
 
-            if self._run_state == EngineRunState.STOPPING:
-                self._project.status = LoopProjectStatus.PAUSED
-            else:
-                self._project.status = LoopProjectStatus.COMPLETED
-                self._project.completed_at = time.time()
+            with self._lock:
+                if self._run_state == EngineRunState.STOPPING:
+                    self._project.status = LoopProjectStatus.PAUSED
+                else:
+                    self._project.status = LoopProjectStatus.COMPLETED
+                    self._project.completed_at = time.time()
 
             if callbacks.on_project_done:
                 callbacks.on_project_done(self._project)
@@ -964,7 +1042,7 @@ FAIL
 
         finally:
             self._run_state = EngineRunState.IDLE
-            gc.collect()
+            get_gc_monitor(memory_threshold_percent=self.settings.loop_memory_threshold if hasattr(self.settings, 'loop_memory_threshold') else 85.0).check_and_collect(label="Loop")
 
         return self._project
 
@@ -997,7 +1075,7 @@ FAIL
             self._session = None
         self._project = None
         self._run_state = EngineRunState.IDLE
-        gc.collect()
+        get_gc_monitor(memory_threshold_percent=self.settings.loop_memory_threshold if hasattr(self.settings, 'loop_memory_threshold') else 85.0).check_and_collect(label="Loop")
 
 
 class LoopEngineManager:

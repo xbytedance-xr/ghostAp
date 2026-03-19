@@ -1,6 +1,6 @@
 import pytest
 
-from src.spec_engine.retry import (
+from src.utils.retry import (
     NON_RETRYABLE_ERROR_PATTERNS,
     RETRYABLE_ERROR_PATTERNS,
     RetryPolicy,

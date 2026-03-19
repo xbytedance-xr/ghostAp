@@ -277,6 +277,8 @@ class CardBuilder:
         expanded: bool = False,
         expand_ac: bool = False,
         action_prefix: str = "deep",
+        extra_buttons: Optional[list[dict]] = None,
+        warning_banner: Optional[str] = None,
     ) -> tuple[str, str]:
         """Build a deep engine card.
 
@@ -302,6 +304,8 @@ class CardBuilder:
                 expanded=expanded,
                 expand_ac=expand_ac,
                 action_prefix=action_prefix,
+                extra_buttons=extra_buttons,
+                warning_banner=warning_banner,
             )
         return DeepBuilder.build_deep_card(project, state)
 

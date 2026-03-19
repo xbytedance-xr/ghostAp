@@ -112,3 +112,30 @@ class TestDeepRenderer:
         callbacks.on_project_done(engine.project)
 
         assert mock_handler.add_reaction.called
+        
+        # Test error callback and its retry button logic
+        import json
+        mock_handler.reply_message.reset_mock()
+        mock_handler.patch_message.reset_mock()
+        mock_handler.patch_message.return_value = False
+        
+        # Setup mock reporter to return string for format_error
+        mock_handler.ctx.progress_reporter.format_error.return_value = "Test Error Content"
+        mock_handler.ctx.progress_reporter.get_error_title.return_value = "Test Error Title"
+        
+        callbacks.on_error("Test Error")
+        
+        # When error occurs, we should format the error card with retry button
+        assert mock_handler.reply_message.called
+        args, kwargs = mock_handler.reply_message.call_args
+        card_content = args[1]
+        
+        # Parse JSON and verify the extra_buttons (retry button) were added
+        card_dict = json.loads(card_content)
+        # Look through elements for the "重试" button in the deep_resume action
+        card_elements_str = json.dumps(card_dict.get("elements", []))
+        
+        assert "Test Error" in card_elements_str or "Test Error" in card_content
+        assert "deep_resume" in card_elements_str
+        assert "重试" in card_elements_str
+        assert "p1" in card_elements_str  # project_id should be included in the action

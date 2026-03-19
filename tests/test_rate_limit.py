@@ -10,6 +10,7 @@ from src.acp.models import PromptResult
 from src.agent_session import (
     ModelFailureAwareSession,
     RateLimitAwareSession,
+    SyncClaudeCLISession,
     _apply_compaction_once,
     _detect_rate_limit,
     _extract_model_from_agent_args,
@@ -742,3 +743,74 @@ def test_model_failure_failover_map_default_in_settings(monkeypatch):
     s = Settings()
     assert "gpt-5.2" in (s.model_failure_failover_map or "")
     assert "gpt-5.1" in (s.model_failure_failover_map or "")
+
+
+def test_model_failure_aware_session_send_prompt_with_retry_success_after_retry(monkeypatch):
+    class _Inner:
+        def __init__(self):
+            self.session_id = "sid"
+            self.created_at = 0.0
+            self.last_active = 0.0
+            self.message_count = 0
+            self.last_query = ""
+            self.is_resumed = False
+            self.calls = 0
+
+        def describe_agent(self):
+            return "dummy"
+
+        def start(self, startup_timeout: float = 60):
+            return "sid"
+
+        def load_session(self, session_id: str):
+            return None
+
+        def load_local_history(self, session_id=None, limit: int = 200):
+            return []
+
+        def cancel(self):
+            return None
+
+        def close(self):
+            return None
+
+        def to_snapshot(self):
+            return {}
+
+        def get_session_info(self):
+            return ""
+
+        def is_server_running(self):
+            return True
+
+        def is_server_healthy(self, healthcheck_timeout: float = 2.0):
+            return True
+
+        def send_prompt(self, text: str, on_event=None, timeout=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("internal error")
+            return PromptResult(stop_reason="end_turn", text="ok")
+
+    class _S:
+        model_failure_compaction_enabled = False
+
+    monkeypatch.setattr("src.agent_session.get_settings", lambda: _S())
+    s = ModelFailureAwareSession(inner=_Inner())
+    out = s.send_prompt_with_retry("hello")
+    assert out.text == "ok"
+
+
+def test_sync_claude_cli_send_prompt_with_retry_uses_retry_policy():
+    s = SyncClaudeCLISession(cwd="/tmp")
+    calls = {"n": 0}
+
+    def _flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("internal error")
+        return PromptResult(stop_reason="end_turn", text="done")
+
+    s.send_prompt = _flaky  # type: ignore[assignment]
+    out = s.send_prompt_with_retry("hello")
+    assert out.text == "done"

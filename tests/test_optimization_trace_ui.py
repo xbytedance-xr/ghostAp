@@ -8,7 +8,7 @@ from src.feishu.handlers.base import BaseHandler
 from src.feishu.handlers.project import ProjectHandler
 from src.project.context import ProjectContext, ProjectStatus
 from src.tasking.scheduler import TaskContext, TaskScheduler, TaskSpec
-from src.utils.trace import RequestIdFilter, TraceContext, get_request_id
+from src.utils.trace import RequestIdFilter, TraceContext, get_trace_id
 
 
 class TestOptimizationTraceUI(unittest.TestCase):
@@ -18,7 +18,7 @@ class TestOptimizationTraceUI(unittest.TestCase):
 
         # 1. Basic ContextVar check
         with TraceContext(req_id):
-            self.assertEqual(get_request_id(), req_id)
+            self.assertEqual(get_trace_id(), req_id)
 
             # 2. Logging Filter check
             record = logging.LogRecord("name", logging.INFO, "pathname", 1, "msg", (), None)
@@ -27,7 +27,7 @@ class TestOptimizationTraceUI(unittest.TestCase):
             self.assertEqual(record.request_id, req_id)
 
         # Context should be cleared
-        self.assertIsNone(get_request_id())
+        self.assertIsNone(get_trace_id())
 
     def test_scheduler_context_propagation(self):
         """Test that TaskScheduler propagates contextvars."""
@@ -37,7 +37,7 @@ class TestOptimizationTraceUI(unittest.TestCase):
         result_container = {}
 
         def task_fn(ctx: TaskContext):
-            result_container["req_id"] = get_request_id()
+            result_container["req_id"] = get_trace_id()
             return "done"
 
         with TraceContext(req_id):

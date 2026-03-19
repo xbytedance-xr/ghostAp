@@ -109,6 +109,11 @@ class LoopRenderer(BaseRenderer):
 
             content = reporter.format_iteration_start(current, max_iterations, criteria_status=criteria_status)
             title = reporter.get_iteration_start_title(current, max_iterations)
+
+            warning_banner = None
+            if loop_project and loop_project.duration() and loop_project.duration() > self.settings.engine_timeout_warning_seconds:
+                warning_banner = "执行耗时较长，若无响应可尝试停止后重试"
+
             msg_type, card_content = CardBuilder.build_deep_card(
                 project=project,
                 state=DeepCardState(
@@ -125,6 +130,7 @@ class LoopRenderer(BaseRenderer):
                     expanded=state["expanded"],
                     expand_ac=state.get("expand_ac", False),
                     action_prefix="loop",
+                    warning_banner=warning_banner,
                 ),
             )
             # Iteration start: updates existing card, can be throttled or immediate.
@@ -267,13 +273,30 @@ class LoopRenderer(BaseRenderer):
 
             content = reporter.format_error(error)
             title = reporter.get_error_title()
+            
+            extra_buttons = [
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "🔁 重试"},
+                    "type": "primary",
+                    "value": {
+                        "action": "loop_resume",
+                        "project_id": project.project_id if project else loop_project_id,
+                        "deep_project_id": loop_project_id,
+                    },
+                }
+            ]
+            
             msg_type, card_content = CardBuilder.build_deep_card(
                 project=project,
                 state=DeepCardState(
                     title=title,
                     content=content,
                     engine_name=f"Loop({engine_name})",
-                    show_buttons=False,
+                    show_buttons=True,
+                    extra_buttons=extra_buttons,
+                    action_prefix="loop",
+                    deep_project_id=loop_project_id,
                 ),
             )
             _send_loop_message(card_content, msg_type, is_update=True)
@@ -365,6 +388,10 @@ class LoopRenderer(BaseRenderer):
         status_title = reporter.get_status_title()
         progress_info = reporter.get_progress_info(engine.project)
 
+        warning_banner = None
+        if progress_info["is_running"] and engine.project.duration() and engine.project.duration() > self.settings.engine_timeout_warning_seconds:
+            warning_banner = "执行耗时较长，若无响应可尝试停止后重试"
+
         msg_type, card_content = CardBuilder.build_deep_card(
             project=project,
             state=DeepCardState(
@@ -378,6 +405,7 @@ class LoopRenderer(BaseRenderer):
                 expanded=state["expanded"],
                 expand_ac=state.get("expand_ac", False),
                 action_prefix="loop",
+                warning_banner=warning_banner,
             ),
         )
         self._patch_or_send(message_id, chat_id, card_content, msg_type, origin_message_id)

@@ -41,13 +41,28 @@ class ProgressReporter:
         return "\n".join(line for line in lines if line)
 
     def format_error(self, error: str) -> str:
-        return f"""❌ **Deep Agent 错误**
+        err = (error or "").strip() or "未知错误"
+        is_timeout = "TimeoutError" in err or "操作耗时过长" in err or "timeout" in err.lower()
+        internal = "Internal error" if "internal error" in err.lower() else ""
 
+        summary_parts: list[str] = []
+        if is_timeout:
+            summary_parts.append("⏱️ 操作超时，请检查网络或稍后重试")
+        if internal:
+            summary_parts.append(internal)
+            
+        summary_line = ""
+        if summary_parts:
+            summary_line = "\n\n" + "\n".join([f"- {p}" for p in summary_parts]) + "\n"
+            
+        advice = "建议您稍后点击重试。" if is_timeout else "请检查错误信息后重试。"
+        
+        return f"""❌ **Deep Agent 错误**{summary_line}
 ```
-{error}
+{err}
 ```
 
-请检查错误信息后重试。"""
+{advice}"""
 
     def format_status(self, project: DeepProject) -> str:
         status_text = {

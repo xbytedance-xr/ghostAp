@@ -5,7 +5,6 @@ the new Deep Engine sends a single comprehensive prompt to the agent and
 monitors its plan/tool-call/text progress via ACP events.
 """
 
-import gc
 import json
 import logging
 import os
@@ -17,6 +16,9 @@ from typing import Callable, Optional
 from ..acp import ACPEvent, ACPEventRenderer, ACPEventType
 from ..agent_session import SyncSession, close_session_safely, create_engine_session
 from ..config import get_settings
+from ..utils.debug_utils import MemorySnapshot
+from ..utils.gc_monitor import get_gc_monitor
+from ..utils.trace import TraceContext
 from .models import (
     DeepProject,
     DeepProjectStatus,
@@ -68,6 +70,8 @@ class DeepEngine:
         self._pending_context: list[str] = []
         self._context_lock = threading.Lock()
         self._planning_done_fired: bool = False
+        self._last_mem_check: float = 0.0
+        self._mem_snapshot = MemorySnapshot()
 
     @property
     def project(self) -> Optional[DeepProject]:
@@ -87,8 +91,11 @@ class DeepEngine:
 
     def _make_on_event(self, callbacks: DeepEngineCallbacks) -> Callable[[ACPEvent], None]:
         """Create the on_event callback shared by plan_and_execute and resume."""
+        gc_monitor = get_gc_monitor(memory_threshold_percent=self.settings.deep_memory_threshold)
 
         def on_event(event: ACPEvent):
+            gc_monitor.check_and_collect(label="Deep", mem_snapshot=self._mem_snapshot)
+
             if self._run_state == EngineRunState.STOPPING:
                 if self._session:
                     self._session.cancel()
@@ -175,56 +182,73 @@ class DeepEngine:
             self._agent_type,
         )
 
+        # Initialize TraceContext for the execution
+        trace_ctx = TraceContext(trace_id=task_id or f"deep-{int(time.time())}")
+        
         try:
-            # Create session
-            from ..utils.path import normalize_ttadk_cwd
+            with trace_ctx:
+                # Create session
+                from ..utils.path import normalize_ttadk_cwd
 
-            self._session = create_engine_session(
-                agent_type=self._agent_type,
-                cwd=normalize_ttadk_cwd(self.root_path) or self.root_path,
-                on_rate_limit=on_rate_limit,
-                model_name=self._model_name,
-            )
-
-            # Build deep prompt — let agent plan and execute autonomously
-            prompt = self._build_deep_prompt(requirement_text)
-
-            on_event = self._make_on_event(callbacks)
-            if self._agent_type.startswith("ttadk_"):
-                timeout = self.settings.coco_execution_timeout
-            else:
-                timeout = (
-                    self.settings.coco_execution_timeout
-                    if self._agent_type == "coco"
-                    else self.settings.claude_execution_timeout
+                self._session = create_engine_session(
+                    agent_type=self._agent_type,
+                    cwd=normalize_ttadk_cwd(self.root_path) or self.root_path,
+                    on_rate_limit=on_rate_limit,
+                    model_name=self._model_name,
                 )
-            result = self._session.send_prompt(prompt, on_event=on_event, timeout=timeout)
 
-            # Process pending context injections as follow-up prompts
-            result = self._drain_pending_context(on_event, timeout, result)
+                # Build deep prompt — let agent plan and execute autonomously
+                prompt = self._build_deep_prompt(requirement_text)
 
-            # Determine final status
-            if self._run_state == EngineRunState.STOPPING:
-                self._project.pause()
-                logger.info("[Deep:%s] 执行已暂停", project_name)
-            elif result.stop_reason in ("end_turn", "max_turn_requests"):
-                self._project.complete()
-                logger.info(
-                    "[Deep:%s] 执行完成, 工具调用=%d, 修改文件=%d, 总耗时=%.1fs",
-                    project_name,
-                    len(self._progress.tool_calls),
-                    len(self._progress.modified_files),
-                    self._project.duration() or 0,
+                on_event = self._make_on_event(callbacks)
+                if self._agent_type.startswith("ttadk_"):
+                    timeout = self.settings.coco_execution_timeout
+                else:
+                    timeout = (
+                        self.settings.coco_execution_timeout
+                        if self._agent_type == "coco"
+                        else self.settings.claude_execution_timeout
+                    )
+                def _before_retry(attempt: int, error: Exception):
+                    # For Deep Engine, we clear the renderer and progress to avoid duplicated rendering
+                    self._renderer.reset()
+                    # Cannot fully reset self._progress since we might lose some previous steps,
+                    # but typically deep engine retry happens early or we just append to text.
+                    # Best effort clear for a fresh retry
+                    self._planning_done_fired = False
+
+                from ..utils.retry import RetryPolicy
+                result = self._session.send_prompt_with_retry(
+                    prompt, on_event=on_event, timeout=timeout,
+                    retry_policy=RetryPolicy(max_retries=2, retry_delay=2.0),
+                    before_retry=_before_retry
                 )
-            elif result.stop_reason == "cancelled":
-                self._project.pause()
-            else:
-                self._project.fail(f"意外停止: {result.stop_reason}")
 
-            if callbacks.on_project_done:
-                callbacks.on_project_done(self._project)
+                # Process pending context injections as follow-up prompts
+                result = self._drain_pending_context(on_event, timeout, result)
 
-            return self._project
+                # Determine final status
+                if self._run_state == EngineRunState.STOPPING:
+                    self._project.pause()
+                    logger.info("[Deep:%s] 执行已暂停", project_name)
+                elif result.stop_reason in ("end_turn", "max_turn_requests"):
+                    self._project.complete()
+                    logger.info(
+                        "[Deep:%s] 执行完成, 工具调用=%d, 修改文件=%d, 总耗时=%.1fs",
+                        project_name,
+                        len(self._progress.tool_calls),
+                        len(self._progress.modified_files),
+                        self._project.duration() or 0,
+                    )
+                elif result.stop_reason == "cancelled":
+                    self._project.pause()
+                else:
+                    self._project.fail(f"意外停止: {result.stop_reason}")
+
+                if callbacks.on_project_done:
+                    callbacks.on_project_done(self._project)
+
+                return self._project
 
         except Exception as e:
             from ..utils.errors import get_error_detail
@@ -241,7 +265,7 @@ class DeepEngine:
 
         finally:
             self._run_state = EngineRunState.IDLE
-            gc.collect()
+            get_gc_monitor(memory_threshold_percent=self.settings.deep_memory_threshold).check_and_collect(label="Deep", mem_snapshot=self._mem_snapshot)
 
     def _drain_pending_context(self, on_event, timeout, last_result):
         """Send any pending context injections as follow-up prompts in the same session."""
@@ -258,7 +282,11 @@ class DeepEngine:
 {ctx}
 
 请根据以上信息调整你的执行方案并继续。"""
-            last_result = self._session.send_prompt(follow_up, on_event=on_event, timeout=timeout)
+            from ..utils.retry import RetryPolicy
+            last_result = self._session.send_prompt_with_retry(
+                follow_up, on_event=on_event, timeout=timeout,
+                retry_policy=RetryPolicy(max_retries=1, retry_delay=2.0)
+            )
         return last_result
 
     def _build_deep_prompt(self, requirement: str) -> str:
@@ -313,7 +341,7 @@ class DeepEngine:
 
     def resume(self, callbacks: Optional[DeepEngineCallbacks] = None) -> Optional[DeepProject]:
         """Resume a paused deep execution by loading the ACP session and sending a continuation prompt."""
-        if not self._project or self._project.status != DeepProjectStatus.PAUSED:
+        if not self._project or self._project.status not in (DeepProjectStatus.PAUSED, DeepProjectStatus.FAILED):
             return self._project
 
         callbacks = callbacks or DeepEngineCallbacks()
@@ -346,7 +374,11 @@ class DeepEngine:
                     if self._agent_type == "coco"
                     else self.settings.claude_execution_timeout
                 )
-            result = self._session.send_prompt(resume_prompt, on_event=on_event, timeout=timeout)
+            from ..utils.retry import RetryPolicy
+            result = self._session.send_prompt_with_retry(
+                resume_prompt, on_event=on_event, timeout=timeout,
+                retry_policy=RetryPolicy(max_retries=2, retry_delay=2.0)
+            )
             result = self._drain_pending_context(on_event, timeout, result)
 
             if self._run_state == EngineRunState.STOPPING:
@@ -372,7 +404,7 @@ class DeepEngine:
 
         finally:
             self._run_state = EngineRunState.IDLE
-            gc.collect()
+            get_gc_monitor(memory_threshold_percent=self.settings.deep_memory_threshold).check_and_collect(label="Deep", mem_snapshot=self._mem_snapshot)
 
         return self._project
 
@@ -477,7 +509,7 @@ class DeepEngine:
             self._session = None
         self._project = None
         self._run_state = EngineRunState.IDLE
-        gc.collect()
+        get_gc_monitor(memory_threshold_percent=self.settings.deep_memory_threshold).check_and_collect(label="Deep", mem_snapshot=self._mem_snapshot)
 
 
 class DeepEngineManager:

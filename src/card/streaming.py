@@ -58,6 +58,15 @@ class StreamingCard:
     is_typing: bool = False
     last_typing_update: float = 0.0
 
+    # Status and Metrics
+    status_color: str = "blue"  # green, red, blue, grey
+    error_count: int = 0
+    progress_text: str = ""
+
+    # Sticky Message
+    sticky_message: Optional[str] = None
+    sticky_expires_at: float = 0.0
+
 
 def _normalize_streaming_markdown(content: str, *, is_final: bool, max_chars: int) -> str:
     """让卡片在“增量渲染”时更稳定。
@@ -117,6 +126,10 @@ class StreamingCardManager:
         buttons: Optional[list[dict]],
         *,
         legacy: bool = False,
+        status_color: str = "blue",
+        error_count: int = 0,
+        progress_text: str = "",
+        sticky_message: Optional[str] = None,
     ) -> list[dict]:
         """构建卡片内容元素列表。
 
@@ -134,35 +147,56 @@ class StreamingCardManager:
                     target[k] = v
             return target
 
-        return [
+        # Status Bar
+        status_icon = {"green": "🟢", "red": "🔴", "blue": "🔵", "grey": "⚪"}.get(status_color, "🔵")
+        status_info = f"{status_icon} **状态**: {status_color.upper()}"
+        if error_count > 0:
+            status_info += f" | ❌ 错误: {error_count}"
+        if progress_text:
+            status_info += f" | {progress_text}"
+
+        elements = [
             _maybe_attach(
-                {"tag": "markdown", "content": f"📁 `{path_display}`"},
+                {"tag": "markdown", "content": f"📁 `{path_display}`\n{status_info}"},
                 element_id="path_md",
                 text_size="notation",
             ),
-            {"tag": "hr"},
-            *(
-                [
-                    *[
-                        {
-                            "tag": "img",
-                            "img_key": key,
-                            "alt": {"tag": "plain_text", "content": f"图片 {i + 1}"},
-                        }
-                        for i, key in enumerate(image_keys)
-                    ],
-                    {"tag": "hr"},
-                ]
-                if image_keys
-                else []
-            ),
+        ]
+
+        if sticky_message:
+            elements.append(
+                {
+                    "tag": "note",
+                    "elements": [{"tag": "plain_text", "content": f"⚠️ {sticky_message}"}],
+                }
+            )
+
+        elements.append({"tag": "hr"})
+
+        if image_keys:
+            for i, key in enumerate(image_keys):
+                elements.append(
+                    {
+                        "tag": "img",
+                        "img_key": key,
+                        "alt": {"tag": "plain_text", "content": f"图片 {i + 1}"},
+                    }
+                )
+            elements.append({"tag": "hr"})
+
+        elements.append(
             _maybe_attach(
                 {"tag": "markdown", "content": initial_content},
                 element_id=element_id,
                 text_size="normal",
-            ),
-            *([{"tag": "hr"}, *button_elements] if button_elements else []),
-        ]
+            )
+        )
+
+        if button_elements:
+            elements.append({"tag": "hr"})
+            elements.extend(button_elements)
+
+        return elements
 
     def _build_card_json(
         self,
@@ -174,6 +208,10 @@ class StreamingCardManager:
         image_keys: Optional[list[str]] = None,
         buttons: Optional[list[dict]] = None,
         streaming_mode: bool = True,
+        status_color: str = "blue",
+        error_count: int = 0,
+        progress_text: str = "",
+        sticky_message: Optional[str] = None,
     ) -> dict:
         """构建 schema 2.0 卡片 JSON（用于 create/reply）。"""
         elements = self._build_elements(
@@ -183,6 +221,10 @@ class StreamingCardManager:
             image_keys,
             buttons,
             legacy=False,
+            status_color=status_color,
+            error_count=error_count,
+            progress_text=progress_text,
+            sticky_message=sticky_message,
         )
 
         config: dict = {
@@ -219,6 +261,10 @@ class StreamingCardManager:
         image_keys: Optional[list[str]] = None,
         buttons: Optional[list[dict]] = None,
         streaming_mode: bool = True,
+        status_color: str = "blue",
+        error_count: int = 0,
+        progress_text: str = "",
+        sticky_message: Optional[str] = None,
     ) -> dict:
         """构建 legacy 格式卡片 JSON。
 
@@ -233,6 +279,10 @@ class StreamingCardManager:
             image_keys,
             buttons,
             legacy=True,
+            status_color=status_color,
+            error_count=error_count,
+            progress_text=progress_text,
+            sticky_message=sticky_message,
         )
 
         config: dict = {
@@ -425,6 +475,10 @@ class StreamingCardManager:
                 image_keys=card.image_keys,
                 buttons=buttons,
                 streaming_mode=True,
+                status_color=card.status_color,
+                error_count=card.error_count,
+                progress_text=card.progress_text,
+                sticky_message=card.sticky_message,
             )
             content = json.dumps(card_json, ensure_ascii=False)
 
@@ -479,12 +533,30 @@ class StreamingCardManager:
             logger.error("发送流式卡片异常: %s", e, exc_info=True)
             return None
 
+    def set_sticky_message(self, card_id: str, message: str, duration: float = 5.0):
+        """Set a sticky message that persists for at least `duration` seconds."""
+        with self._lock:
+            card = self._cards.get(card_id)
+            if not card:
+                return
+            card.sticky_message = message
+            card.sticky_expires_at = time.time() + duration
+            # Force update to show the message
+            self.update_content(card, card.full_content, force=True)
+
     def update_content(self, card: StreamingCard, content: str, force: bool = False, is_typing: bool = False) -> bool:
         if not card.message_id:
             return False
 
         # --- Adaptive Flow Control Calculation ---
         now = time.time()
+
+        # Check sticky expiration
+        if card.sticky_message and card.sticky_expires_at > 0 and now > card.sticky_expires_at:
+            card.sticky_message = None
+            card.sticky_expires_at = 0.0
+            force = True  # Force update to remove sticky message
+
         current_len = len(content)
 
         # Calculate content arrival rate (based on FULL content length)
@@ -565,6 +637,10 @@ class StreamingCardManager:
                 image_keys=card.image_keys,
                 buttons=buttons,
                 streaming_mode=True,
+                status_color=card.status_color,
+                error_count=card.error_count,
+                progress_text=card.progress_text,
+                sticky_message=card.sticky_message,
             )
 
             req = (
@@ -611,6 +687,10 @@ class StreamingCardManager:
                 image_keys=card.image_keys,
                 buttons=buttons,
                 streaming_mode=False,
+                status_color=card.status_color,
+                error_count=card.error_count,
+                progress_text=card.progress_text,
+                sticky_message=card.sticky_message,
             )
             req = (
                 PatchMessageRequest.builder()

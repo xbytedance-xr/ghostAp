@@ -245,7 +245,11 @@ class SpecReporter:
         task_hit = re.search(r"task_id=([a-zA-Z0-9_\-]+)", err)
         internal = "Internal error" if "internal error" in err.lower() else ""
 
+        is_timeout = "TimeoutError" in err or "操作耗时过长" in err or "timeout" in err.lower()
+
         summary_parts: list[str] = []
+        if is_timeout:
+            summary_parts.append("⏱️ 操作超时，请检查网络或稍后重试")
         if phase_hit:
             summary_parts.append(f"Phase {phase_hit.group(1)} 失败")
         if internal:
@@ -257,13 +261,14 @@ class SpecReporter:
         if summary_parts:
             summary_line = "\n" + ("\n".join([f"- {p}" for p in summary_parts])) + "\n"
 
-        return f"""❌ **Spec Agent 错误**{summary_line}
+        advice = "建议您稍后点击重试。" if is_timeout else "请检查错误信息后重试。"
 
+        return f"""❌ **Spec Agent 错误**{summary_line}
 ```
 {err}
 ```
 
-请检查错误信息后重试。"""
+{advice}"""
 
     def format_status(self, project: SpecProject) -> str:
         status_text = {

@@ -144,6 +144,10 @@ class DeepRenderer(BaseRenderer):
                 content, total_items=len(content.split("\n")), expanded=state.get("expand_ac", False)
             )
 
+            warning_banner = None
+            if status != DeepProjectStatus.PLANNING and engine and engine.project.duration() and engine.project.duration() > self.settings.engine_timeout_warning_seconds:
+                warning_banner = "执行耗时较长，若无响应可尝试停止后重试"
+
             msg_type, card_content = CardBuilder.build_deep_card(
                 project=project,
                 state=DeepCardState(
@@ -157,6 +161,7 @@ class DeepRenderer(BaseRenderer):
                     expanded=state["expanded"],
                     expand_ac=state.get("expand_ac", False),
                     action_prefix="deep",
+                    warning_banner=warning_banner,
                 ),
             )
             # Streaming updates: use throttling
@@ -186,6 +191,10 @@ class DeepRenderer(BaseRenderer):
                         plan_content, total_items=len(plan_content.split("\n")), expanded=state.get("expand_ac", False)
                     )
 
+                    warning_banner = None
+                    if engine and engine.project.duration() and engine.project.duration() > self.settings.engine_timeout_warning_seconds:
+                        warning_banner = "执行耗时较长，若无响应可尝试停止后重试"
+
                     msg_type, card_content = CardBuilder.build_deep_card(
                         project=project,
                         state=DeepCardState(
@@ -199,6 +208,7 @@ class DeepRenderer(BaseRenderer):
                             expanded=state["expanded"],
                             expand_ac=state.get("expand_ac", False),
                             action_prefix="deep",
+                            warning_banner=warning_banner,
                         ),
                     )
                     # Plan updates: use throttling
@@ -260,13 +270,33 @@ class DeepRenderer(BaseRenderer):
         def on_error(error: str):
             content = reporter.format_error(error)
             title = reporter.get_error_title()
+            
+            engine = _get_engine()
+            deep_project_id = engine.project.project_id if engine and engine.project else (project.project_id if project else None)
+            
+            extra_buttons = [
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "🔁 重试"},
+                    "type": "primary",
+                    "value": {
+                        "action": "deep_resume",
+                        "project_id": project.project_id if project else deep_project_id,
+                        "deep_project_id": deep_project_id,
+                    },
+                }
+            ]
+            
             msg_type, card_content = CardBuilder.build_deep_card(
                 project=project,
                 state=DeepCardState(
                     title=title,
                     content=content,
                     engine_name=engine_name,
-                    show_buttons=False,
+                    show_buttons=True,
+                    extra_buttons=extra_buttons,
+                    action_prefix="deep",
+                    deep_project_id=deep_project_id,
                 ),
             )
             # Error state: immediate flush
@@ -343,6 +373,10 @@ class DeepRenderer(BaseRenderer):
             status_content, total_items=len(status_content.split("\n")), expanded=state.get("expand_ac", False)
         )
 
+        warning_banner = None
+        if progress_info["is_executing"] and engine.project.duration() and engine.project.duration() > self.settings.engine_timeout_warning_seconds:
+            warning_banner = "执行耗时较长，若无响应可尝试停止后重试"
+
         msg_type, card_content = CardBuilder.build_deep_card(
             project=project,
             state=DeepCardState(
@@ -357,6 +391,7 @@ class DeepRenderer(BaseRenderer):
                 expanded=state["expanded"],
                 expand_ac=state.get("expand_ac", False),
                 action_prefix="deep",
+                warning_banner=warning_banner,
             ),
         )
         self._patch_or_send(message_id, chat_id, card_content, msg_type, origin_message_id)

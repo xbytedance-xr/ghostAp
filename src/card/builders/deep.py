@@ -140,33 +140,36 @@ class DeepBuilder:
             control_buttons.append(DeepBuilder._create_button("stop", state))
 
         # 2. Collect View/Mode Buttons
-        # Log Expand/Collapse
-        lines = (state.content or "").split("\n")
-        threshold = 5 if state.compact else 10
-        if len(lines) > threshold:
-            action_key = "collapse" if state.expanded else "expand"
-            other_buttons.append(DeepBuilder._create_button(action_key, state))
+        # Only show these auxiliary buttons if we don't have high-priority extra buttons (like Retry)
+        # This keeps the user focused on the recovery action when an error occurs
+        if not state.extra_buttons:
+            # Log Expand/Collapse
+            lines = (state.content or "").split("\n")
+            threshold = 5 if state.compact else 10
+            if len(lines) > threshold:
+                action_key = "collapse" if state.expanded else "expand"
+                other_buttons.append(DeepBuilder._create_button(action_key, state))
 
-        # AC Expand/Collapse
-        if state.criteria_section:
-            ac_lines = state.criteria_section.split("\n")
-            if len(ac_lines) > 3:
-                ac_action_key = "collapse_ac" if state.expand_ac else "expand_ac"
-                other_buttons.append(DeepBuilder._create_button(ac_action_key, state))
+            # AC Expand/Collapse
+            if state.criteria_section:
+                ac_lines = state.criteria_section.split("\n")
+                if len(ac_lines) > 3:
+                    ac_action_key = "collapse_ac" if state.expand_ac else "expand_ac"
+                    other_buttons.append(DeepBuilder._create_button(ac_action_key, state))
 
-        # Mode Switch
-        mode_key = "mode_full" if state.compact else "mode_compact"
-        other_buttons.append(DeepBuilder._create_button(mode_key, state))
+            # Mode Switch
+            mode_key = "mode_full" if state.compact else "mode_compact"
+            other_buttons.append(DeepBuilder._create_button(mode_key, state))
 
         # Feature-specific Buttons (History)
         if features.get("history_button"):
             other_buttons.append(DeepBuilder._create_button("history", state))
 
-        # Extra buttons (custom actions like retry)
+        # Extra buttons (custom actions like retry) - priority high
         if state.extra_buttons:
-            for b in state.extra_buttons:
+            for b in reversed(state.extra_buttons): # Insert at beginning of other_buttons
                 if b:
-                    other_buttons.append(b)
+                    other_buttons.insert(0, b)
 
         # 3. Build Layout Elements
         elements = []
@@ -256,6 +259,15 @@ class DeepBuilder:
         if meta_parts:
             elements.append({"tag": "hr"})
 
+        # Warning banner
+        if state.warning_banner:
+            elements.append(
+                {
+                    "tag": "markdown",
+                    "content": f"<font color='red'>**⚠️ {state.warning_banner}**</font>",
+                }
+            )
+
         # Main content processing
         display_content = state.content
 
@@ -332,26 +344,28 @@ class DeepBuilder:
                 buttons = []
                 # Finished or not started, still show mode switch
                 base_buttons = CoreBuilder._build_footer_buttons(project, is_coco_mode=False, is_claude_mode=False)
-                # Add mode switch button
-                mode_key = "mode_full" if state.compact else "mode_compact"
-                mode_btn = apply_compact_style(DeepBuilder._create_button(mode_key, state))
 
-                # Also add expand/collapse if there is enough content
-                lines = (state.content or "").split("\n")
-                threshold = 5 if state.compact else 10
-                if len(lines) > threshold:
-                    action_key = "collapse" if state.expanded else "expand"
-                    expand_btn = apply_compact_style(DeepBuilder._create_button(action_key, state))
-                    buttons.append(expand_btn)
-
-                if mode_btn:
-                    buttons.append(mode_btn)
-
-                # Custom extra buttons (e.g. retry/recover)
+                # Custom extra buttons (e.g. retry/recover) should be first
                 if state.extra_buttons:
                     for b in state.extra_buttons:
                         if b:
                             buttons.append(apply_compact_style(b))
+
+                # If we have extra buttons (like Retry), hide the noise like expand/collapse and mode switch
+                if not state.extra_buttons:
+                    # Also add expand/collapse if there is enough content
+                    lines = (state.content or "").split("\n")
+                    threshold = 5 if state.compact else 10
+                    if len(lines) > threshold:
+                        action_key = "collapse" if state.expanded else "expand"
+                        expand_btn = apply_compact_style(DeepBuilder._create_button(action_key, state))
+                        buttons.append(expand_btn)
+
+                    # Add mode switch button
+                    mode_key = "mode_full" if state.compact else "mode_compact"
+                    mode_btn = apply_compact_style(DeepBuilder._create_button(mode_key, state))
+                    if mode_btn:
+                        buttons.append(mode_btn)
 
                 buttons.extend(base_buttons)
 

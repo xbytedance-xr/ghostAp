@@ -25,3 +25,5 @@ class DeepCardState:
     action_prefix: str = "deep"
     # Optional additional buttons (e.g., retry/recover). Each item should be a Feishu button element.
     extra_buttons: Optional[list[dict]] = None
+    # Optional warning banner content (e.g., long running task warning)
+    warning_banner: Optional[str] = None

@@ -106,6 +106,10 @@ class SpecRenderer(BaseRenderer):
             title = reporter.get_cycle_start_title(current, max_cycles)
             title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
 
+            warning_banner = None
+            if spec_project and spec_project.duration() and spec_project.duration() > self.settings.engine_timeout_warning_seconds:
+                warning_banner = "执行耗时较长，若无响应可点击下方【停止】按钮后重试"
+
             msg_type, card_content = CardBuilder.build_deep_card(
                 project=project,
                 state=DeepCardState(
@@ -122,6 +126,7 @@ class SpecRenderer(BaseRenderer):
                     expanded=state["expanded"],
                     expand_ac=state.get("expand_ac", False),
                     action_prefix="spec",
+                    warning_banner=warning_banner,
                 ),
             )
             # Cycle start is significant, immediate flush
@@ -382,6 +387,10 @@ class SpecRenderer(BaseRenderer):
             expanded=state.get("expand_ac", False),
         )
 
+        warning_banner = None
+        if progress_info["is_running"] and engine.project.duration() and engine.project.duration() > self.settings.engine_timeout_warning_seconds:
+            warning_banner = "执行耗时较长，若无响应可点击下方【停止】按钮后重试"
+
         msg_type, card_content = CardBuilder.build_deep_card(
             project=project,
             state=DeepCardState(
@@ -395,6 +404,7 @@ class SpecRenderer(BaseRenderer):
                 expanded=state["expanded"],
                 expand_ac=state.get("expand_ac", False),
                 action_prefix="spec",
+                warning_banner=warning_banner,
             ),
         )
         self._patch_or_send(message_id, chat_id, card_content, msg_type, origin_message_id)

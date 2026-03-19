@@ -193,6 +193,9 @@ class Settings(BaseSettings):
     # Loop Engine multi-perspective review (Ralph Loop)
     loop_review_enabled: bool = True
     loop_review_extra_iterations: int = 3
+    
+    # Loop Watchdog
+    loop_watchdog_timeout: float = 300.0
 
     # Spec Engine settings
     spec_max_cycles: int = 500
@@ -267,12 +270,18 @@ class Settings(BaseSettings):
     # - min_chars: minimum new characters accumulated before updating (unless forced/interval passed)
     deep_stream_interval: float = 2.5
     deep_stream_min_chars: int = 350
+    
+    # Deep engine memory monitoring (percentage)
+    deep_memory_threshold: float = 80.0
 
     # Rate limiting handling (auto-pause and retry on API throttling)
     rate_limit_retry_enabled: bool = True
     rate_limit_max_wait: int = 300  # Max seconds to wait for rate limit cooldown
     rate_limit_base_wait: int = 30  # Default wait if no retry-after header
     rate_limit_max_retries: int = 5  # Max consecutive rate limit retries
+
+    # Engine timeout warning threshold (seconds) for long-running tasks
+    engine_timeout_warning_seconds: int = 600
 
     # ------------------------------------------------------------------
     # Model failure self-healing (send_prompt-time)
