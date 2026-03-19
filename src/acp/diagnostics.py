@@ -797,35 +797,6 @@ def _safe_str_list(value: object, default: list[str]) -> list[str]:
     return list(default)
 
 
-def _get_diagnostics_redaction_config(
-    *,
-    get_settings_fn: Optional[Callable[[], object]] = None,
-) -> tuple[bool, list[str], str, int, int, int]:
-    """兼容层：请改用公共 API `get_diagnostics_config()`。
-
-    注意：该函数保留仅用于老代码/过渡期。
-    移除条件：仓内不再存在对本模块 `_get_diagnostics_redaction_config` 的跨模块导入，
-    且连续回归稳定后可删除。
-    """
-    cfg = get_diagnostics_config(get_settings_fn=get_settings_fn)
-    return (
-        bool(cfg.redact_enabled),
-        list(cfg.redact_patterns or []),
-        str(cfg.redact_replacement or "***REDACTED***"),
-        int(cfg.args_limit or 0),
-        int(cfg.snippet_limit or 0),
-        int(cfg.total_limit or 0),
-    )
-
-
-def _redact_text(text: str, patterns: list[str], replacement: str) -> str:
-    """兼容层：请改用公共 API `redact_text()`。
-
-    移除条件：仓内不再存在对本模块 `_redact_text` 的跨模块导入，且连续回归稳定后可删除。
-    """
-    return redact_text(text, patterns, replacement)
-
-
 def _truncate_args(args: list[str], limit: int) -> list[str]:
     """兼容层：请改用公共 API `truncate_args()`。
 

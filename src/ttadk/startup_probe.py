@@ -76,7 +76,6 @@ def ttadk_acp_ready_quickcheck(
 
         fd = p.stdout.fileno()
         pending = bytearray()
-        buf = bytearray()
 
         while (float(time_fn()) - start) < deadline_s:
             alive = p.poll() is None
@@ -106,11 +105,6 @@ def ttadk_acp_ready_quickcheck(
                 if not alive:
                     break
                 continue
-
-            # 只保留最近 64KB，避免极端 banner 导致内存增长
-            buf.extend(chunk)
-            if len(buf) > 65536:
-                buf = buf[-65536:]
 
             pending.extend(chunk)
             while True:

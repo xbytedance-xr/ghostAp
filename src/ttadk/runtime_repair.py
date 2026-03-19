@@ -24,46 +24,6 @@ from .models import (
 from .models import build_invalid_model_context as _build_invalid_model_context_ssot
 
 
-def _redact_and_truncate(
-    text: object, *, limit: int = 1600, get_settings_fn: Callable[[], object] = get_settings
-) -> str:
-    """对诊断文本做 best-effort 脱敏与截断（复用 ACP diagnostics 配置，失败则仅截断）。"""
-    try:
-        from ..acp.diagnostics import get_diagnostics_config, redact_text, truncate_text
-
-        cfg = get_diagnostics_config(get_settings_fn=get_settings_fn)
-        enabled = bool(getattr(cfg, "redact_enabled", True))
-        patterns = list(getattr(cfg, "redact_patterns", []) or [])
-        repl = str(getattr(cfg, "redact_replacement", "***REDACTED***") or "***REDACTED***")
-        # 优先使用 diagnostics 的 snippet_limit，其次使用入参 limit
-        try:
-            lim = int(getattr(cfg, "snippet_limit", 0) or 0) or int(limit or 1600)
-        except Exception:
-            lim = int(limit or 1600)
-    except Exception:
-        enabled, patterns, repl, lim = True, [], "***REDACTED***", int(limit or 1600)
-
-    try:
-        s = str(text or "")
-    except Exception:
-        s = ""
-    try:
-        from ..acp.diagnostics import truncate_text
-
-        s = truncate_text(s, int(lim or 1600))
-    except Exception:
-        if lim > 0 and len(s) > lim:
-            s = s[:lim]
-    if enabled:
-        try:
-            from ..acp.diagnostics import redact_text
-
-            s = redact_text(s, patterns, repl)
-        except Exception:
-            pass
-    return s
-
-
 def build_invalid_model_context(
     err: Exception,
     *,
