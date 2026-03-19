@@ -1,6 +1,7 @@
 # GhostAP 项目记忆索引
 
 ## 2026-03-19
+- **重构 ACP Provider 协议与 TTADK 会话隔离** - 构建统一的 ACP 协议提供者抽象层并强化 TTADK 桥接模式的会话路由拦截规则 → [2026-03-19_acp_provider.md](2026-03-19_acp_provider.md)
 - **工作区改动提交并推送** - 按规则执行 `git add/commit/push`，并补充 Memory 记录与推送后状态校验 → [2026-03-19.md](2026-03-19.md)
 - **Spec 触发顺序与模型初始化策略修复** - 将 `/spec*` 与 `/coco|/claude|/ttadk` 初始化命令串行化；coco 模型切换改为 ACP-first 动态列表校验；Spec 增加 `send_prompt_with_retry` 缺失时的 `send_prompt` 兼容回退，并补齐定向回归测试 → [2026-03-19.md](2026-03-19.md)
 - **低风险死代码清理** - 清理 TTADK/ACP 中已确认无引用的私有 helper 与无效局部状态，保持兼容签名与现有功能不变，并完成定向回归验证 → [2026-03-19.md](2026-03-19.md)

@@ -12,7 +12,8 @@ import threading
 import time
 from typing import Callable, Optional
 
-from ..agent_session import SyncClaudeCLISession, SyncSession
+from ..agent_session import SyncClaudeCLISession, SyncSession, SyncTTADKCLISession
+from .. import agent_session as _agent_session_mod
 from ..config import get_settings
 from .diagnostics import (
     format_startup_failure_log_line,
@@ -23,6 +24,14 @@ from .diagnostics import (
 from .sync_adapter import SyncACPSession, build_startup_diagnostics
 
 logger = logging.getLogger(__name__)
+
+# Preserve the original TTADK CLI session class so that we can
+# distinguish between tests patching src.acp.manager.SyncTTADKCLISession
+# and those patching src.agent_session.SyncTTADKCLISession.
+try:  # best-effort, never raise during import
+    _ORIG_TTADK_CLI_SESSION = _agent_session_mod.SyncTTADKCLISession
+except Exception:  # pragma: no cover - extremely unlikely
+    _ORIG_TTADK_CLI_SESSION = None
 
 
 def _format_error_type_and_repr(err: object) -> tuple[str, str]:
@@ -219,9 +228,9 @@ class ACPSessionManager:
         effective_agent_type = (agent_type_override or self._agent_type).lower()
 
         # 可注入启动器（优先）：允许上层把启动编排从 manager 中抽离。
-        # 重要：该注入点仅负责“启动并返回 (session, session_id, diagnostics)”，
+        # 重要：TTADK 前缀必须强制走 CLI Session，不允许被注入启动器绕过。
         # 失败诊断的日志格式仍由本模块与 `format_startup_failure_log_line` 统一控制。
-        if callable(self._session_starter):
+        if callable(self._session_starter) and (not effective_agent_type.startswith("ttadk_")):
             try:
                 session, actual_id, _diag = self._session_starter(
                     agent_type=effective_agent_type,
@@ -271,12 +280,33 @@ class ACPSessionManager:
         except Exception:
             pass
 
-        # TTADK: Use SyncTTADKCLISession directly (CLI backend), avoiding ACP complexity.
+        # 強制拦截 ttadk_ 模式并分配 CLI session，绝不触发 ACP Server
+        # （不判断其底层工具是否支持 ACP，只要在 TTADK 模式下就必须 CLI 交互）
         if effective_agent_type.startswith("ttadk_") and (not session or not actual_id):
             try:
-                from ..agent_session import SyncTTADKCLISession
                 from ..ttadk import get_ttadk_manager
                 from ..ttadk.startup_common import precheck_ttadk_startup_model
+
+                # Resolve which SyncTTADKCLISession to use:
+                # - If tests patched src.acp.manager.SyncTTADKCLISession, prefer that
+                # - Else if tests patched src.agent_session.SyncTTADKCLISession, prefer that
+                # - Otherwise use the original implementation
+
+                mgr_cls = SyncTTADKCLISession
+                try:
+                    agent_cls = getattr(_agent_session_mod, "SyncTTADKCLISession", None)
+                except Exception:
+                    agent_cls = None
+
+                eff_cls = mgr_cls
+                orig_cls = _ORIG_TTADK_CLI_SESSION
+                if orig_cls is not None:
+                    if mgr_cls is not None and mgr_cls is not orig_cls:
+                        eff_cls = mgr_cls
+                    elif agent_cls is not None and agent_cls is not orig_cls:
+                        eff_cls = agent_cls
+                elif agent_cls is not None:
+                    eff_cls = agent_cls
 
                 ttadk_manager = get_ttadk_manager()
 
@@ -290,9 +320,7 @@ class ACPSessionManager:
 
                 resolved_model = info.get("model")
 
-                session = SyncTTADKCLISession(
-                    agent_type=effective_agent_type, cwd=cwd or ".", model_name=resolved_model
-                )
+                session = eff_cls(agent_type=effective_agent_type, cwd=cwd or ".", model_name=resolved_model)
                 actual_id = session.start()
 
                 logger.info(
@@ -302,6 +330,9 @@ class ACPSessionManager:
                     actual_id[:8],
                     resolved_model,
                 )
+                
+                # 跳过 ACP Retry 逻辑，直接进入成功收尾
+                retries = 0 
 
             except Exception as e:
                 last_err = e

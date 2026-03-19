@@ -1964,7 +1964,7 @@ def create_sync_session(agent_type: str, cwd: str, model_name: Optional[str] = N
 
     - coco/default: ACP backend
     - claude: CLI backend
-    - ttadk_*: ACP backend (direct agent type)
+    - ttadk_*: CLI backend（强隔离：TTADK 前缀不允许拉起 ACP Server）
     """
     from .coco_model import get_coco_model_manager
     from .utils.path import normalize_ttadk_cwd
@@ -2059,7 +2059,7 @@ def create_engine_session(
     # - 非 TTADK: 依旧输出 `model=` 便于排障。
     if agent_type.startswith("ttadk_"):
         logger.info(
-            "[SessionFactory] create_engine_session: agent=%s cwd=%s input_model=%s (ACP mode)",
+            "[SessionFactory] create_engine_session: agent=%s cwd=%s input_model=%s (CLI mode)",
             agent_type or "coco",
             cwd,
             model_name,

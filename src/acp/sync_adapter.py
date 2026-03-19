@@ -826,30 +826,25 @@ def resolve_agent_spec(
         )
         return "python3", args
 
-    if agent_type == "coco":
-        if _resolve_with_auto_update("coco"):
-            args = ["acp", "serve"]
-            if model_name:
-                args.extend(["-c", f"model.name={model_name}"])
-            return "coco", args
-        raise RuntimeError(
-            "coco does not appear to support ACP server mode. Please upgrade coco or set COCO_ACP_CMD/COCO_ACP_ARGS."
-        )
+    # Delegate to ToolRegistry for registered tools, or fallback.
+    # NOTE: this also triggers a best-effort async preheat so that common
+    # tools (coco/aiden) are probed in the background instead of blocking
+    # the first real session startup.
+    try:
+        from .providers import tool_registry
 
-    if agent_type == "claude":
-        if _resolve_with_auto_update("claude"):
-            return "claude", ["acp", "serve"]
-        raise RuntimeError(
-            "claude does not appear to support ACP server mode. "
-            "Please set CLAUDE_ACP_CMD/CLAUDE_ACP_ARGS to an ACP-capable agent binary."
-        )
+        try:
+            # Best-effort: warms availability cache via a daemon thread.
+            # Safe to call multiple times and safe to ignore all failures.
+            tool_registry.preheat_async()
+        except Exception:
+            pass
 
-    # Default: treat agent_type as command and try `acp serve` first.
-    if _resolve_with_auto_update(agent_type):
-        return agent_type, ["acp", "serve"]
-    raise RuntimeError(
-        f"{agent_type} does not appear to support ACP server mode. Please set *_ACP_CMD/*_ACP_ARGS overrides."
-    )
+        return tool_registry.get_serve_command(agent_type, model_name)
+    except Exception as e:
+        raise RuntimeError(
+            f"{agent_type} does not appear to support ACP server mode. Please set *_ACP_CMD/*_ACP_ARGS overrides. Details: {e}"
+        )
 
 
 def start_session_with_retry(
