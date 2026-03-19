@@ -34,6 +34,28 @@ from src.spec_engine.tracker import PhaseTracker
 from src.utils.spec_utils import parse_review_output_loose
 
 
+def test_spec_engine_run_phase_fallback_to_send_prompt_when_retry_method_missing():
+    """回归：session 缺少 send_prompt_with_retry 时，_run_phase 应回退到 send_prompt。"""
+    engine = SpecEngine(chat_id="c", root_path="/tmp")
+
+    class _DummySession:
+        def send_prompt(self, prompt: str, on_event=None, timeout: int = 0):
+            if on_event:
+                on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="ok"))
+            return MagicMock(stop_reason="end_turn")
+
+    engine._session = _DummySession()
+
+    output = engine._run_phase(
+        cycle_num=1,
+        phase=SpecPhase.SPEC,
+        prompt="p",
+        callbacks=SpecEngineCallbacks(),
+        timeout=1,
+    )
+    assert output == "ok"
+
+
 def test_spec_engine_review_error_empty_message_uses_snippets(monkeypatch):
     """回归：多视角审查异常 message 为空时，应从 stderr/stdout_snippet 补齐 error_text，避免日志空白。"""
     engine = SpecEngine(chat_id="c", root_path="/tmp")
@@ -47,6 +69,8 @@ def test_spec_engine_review_error_empty_message_uses_snippets(monkeypatch):
 
     class _DummySession:
         def send_prompt(self, *a, **kw):
+            raise err
+        def send_prompt_with_retry(self, *a, **kw):
             raise err
 
     engine._session = _DummySession()
@@ -71,6 +95,8 @@ def test_spec_engine_review_error_snippet_is_redacted(monkeypatch, caplog):
 
     class _DummySession:
         def send_prompt(self, *a, **kw):
+            raise err
+        def send_prompt_with_retry(self, *a, **kw):
             raise err
 
     engine._session = _DummySession()
@@ -99,6 +125,8 @@ def test_spec_engine_review_error_snippet_is_truncated(monkeypatch, caplog):
 
     class _DummySession:
         def send_prompt(self, *a, **kw):
+            raise err
+        def send_prompt_with_retry(self, *a, **kw):
             raise err
 
     engine._session = _DummySession()
@@ -136,6 +164,8 @@ def test_spec_engine_review_exception_diagnostics_log_has_nonempty_error(monkeyp
 
     class _DummySession:
         def send_prompt(self, *a, **kw):
+            raise err
+        def send_prompt_with_retry(self, *a, **kw):
             raise err
 
     engine._session = _DummySession()
@@ -218,6 +248,9 @@ def test_spec_engine_review_failure_diagnostics_written_to_cycle_and_metrics(mon
     class _Sess:
         # phase runner uses send_prompt to produce outputs; we return empty ok responses
         def send_prompt(self, prompt: str, on_event=None, timeout: int = 0, **kw):
+            pass
+
+        def send_prompt_with_retry(self, prompt: str, on_event=None, timeout: int = 0, **kw):
             # review phase prompt: contains structured tags like [ARCHITECT]
             if "[ARCHITECT]" in (prompt or "") and "审查视角" in (prompt or ""):
                 raise RuntimeError("")
@@ -256,6 +289,20 @@ def test_spec_engine_review_failure_diagnostics_written_to_cycle_and_metrics(mon
         ark_model = ""
         ark_base_url = ""
         spec_convergence_window = 3
+        # Add missing attributes for ContinuationPolicy
+        spec_infinite_mode = False
+        spec_disable_convergence = False
+        spec_disable_early_stop = False
+        spec_min_cycles = 1
+        # Add for _save_failed_task
+        spec_artifacts_dirname = ".spec_engine"
+        spec_history_log_filename = "history.jsonl"
+        spec_state_filename = ".spec_engine_state.json"
+        spec_phase_output_persist_max_chars = 20000
+        # Add for review circuit breaker
+        spec_review_failure_circuit_enabled = False
+        spec_review_failure_max_consecutive = 3
+        spec_review_failure_cooldown_cycles = 3
 
     engine.settings = _S()
 
@@ -358,6 +405,22 @@ def test_spec_engine_review_failure_circuit_breaker_skips_review(monkeypatch, ca
         spec_review_failure_max_consecutive = 1
         spec_review_failure_cooldown_cycles = 10
 
+        # review llm fallback disabled
+        ark_api_key = ""
+        ark_model = ""
+        ark_base_url = ""
+        
+        # Add missing attributes for ContinuationPolicy
+        spec_infinite_mode = False
+        spec_disable_convergence = False
+        spec_disable_early_stop = False
+        spec_min_cycles = 1
+        # Add for _save_failed_task
+        spec_artifacts_dirname = ".spec_engine"
+        spec_history_log_filename = "history.jsonl"
+        spec_state_filename = ".spec_engine_state.json"
+        spec_phase_output_persist_max_chars = 20000
+
     engine.settings = _S()
 
     class _Sess:
@@ -365,6 +428,9 @@ def test_spec_engine_review_failure_circuit_breaker_skips_review(monkeypatch, ca
             self.calls = 0
 
         def send_prompt(self, prompt: str, on_event=None, timeout: int = 0, **kw):
+            pass
+
+        def send_prompt_with_retry(self, prompt: str, on_event=None, timeout: int = 0, **kw):
             # review prompt: trigger failure
             if "[ARCHITECT]" in (prompt or "") and "审查视角" in (prompt or ""):
                 self.calls += 1
@@ -437,6 +503,17 @@ def test_spec_engine_review_circuit_skip_does_not_block_main_loop(monkeypatch, t
         ark_api_key = ""
         ark_model = ""
         ark_base_url = ""
+        
+        # Add missing attributes for ContinuationPolicy
+        spec_infinite_mode = False
+        spec_disable_convergence = False
+        spec_disable_early_stop = False
+        spec_min_cycles = 1
+        # Add for _save_failed_task
+        spec_artifacts_dirname = ".spec_engine"
+        spec_history_log_filename = "history.jsonl"
+        spec_state_filename = ".spec_engine_state.json"
+        spec_phase_output_persist_max_chars = 20000
 
     engine.settings = _S()
 
@@ -446,6 +523,9 @@ def test_spec_engine_review_circuit_skip_does_not_block_main_loop(monkeypatch, t
             self.total_calls = 0
 
         def send_prompt(self, prompt: str, on_event=None, timeout: int = 0, **kw):
+            pass
+
+        def send_prompt_with_retry(self, prompt: str, on_event=None, timeout: int = 0, **kw):
             self.total_calls += 1
             # review prompt: trigger failure on first cycle only
             if "[ARCHITECT]" in (prompt or "") and "审查视角" in (prompt or ""):
@@ -500,6 +580,7 @@ def test_ttadk_startup_model_log_uses_real_or_auto(caplog):
         s.ark_api_key = "test-key"
         s.ark_model = "test-model"
         s.ark_base_url = "https://test.url"
+        s.spec_max_cycles_limit = 5000
         mock_engine_settings.return_value = s
 
         engine = SpecEngine(chat_id="c", root_path="/tmp/test", agent_type="ttadk_codex", model_name="gpt-5.2")
@@ -593,6 +674,7 @@ def test_ttadk_resume_model_log_uses_real_or_auto(caplog):
         s.ark_api_key = "test-key"
         s.ark_model = "test-model"
         s.ark_base_url = "https://test.url"
+        s.spec_max_cycles_limit = 5000
         mock_engine_settings.return_value = s
 
         engine = SpecEngine(chat_id="c", root_path="/tmp/test", agent_type="ttadk_codex", model_name="gpt-5.2")
@@ -671,6 +753,17 @@ def test_ttadk_resume_model_log_uses_real_or_auto(caplog):
         assert "[SessionFactory] ttadk cli startup:" in text
         assert "model=(auto)" in text
         assert re.search(r"\bmodel=gpt-5\.2\b", text) is None
+
+
+def test_try_switch_model_claude_returns_false_without_switch(monkeypatch, tmp_path):
+    from src.spec_engine.engine import SpecEngine
+
+    engine = SpecEngine(chat_id="c1", root_path=str(tmp_path), agent_type="claude")
+    engine._models_tried = []
+    engine._current_model = None
+
+    # claude CLI 模式不应进入 coco/ttadk 的模型切换分支
+    assert engine._try_switch_model(callbacks=MagicMock()) is False
 
 
 # ======================================================================
@@ -1165,6 +1258,10 @@ class TestSpecEngine:
         s.spec_allow_resume_from_disk = True
         s.ark_api_key = ""
         s.ark_model = ""
+        s.spec_infinite_mode = False
+        s.spec_disable_convergence = False
+        s.spec_disable_early_stop = False
+        s.spec_min_cycles = 1
         mock_settings.return_value = s
         return SpecEngine(chat_id="c1", root_path="/tmp/test", **kwargs)
 
@@ -1701,6 +1798,7 @@ class TestSpecEngineManager:
         s.spec_infinite_mode = False
         s.spec_disable_convergence = False
         s.spec_disable_early_stop = False
+        s.spec_min_cycles = 1
         s.ark_api_key = ""
         s.ark_model = ""
         mock_settings.return_value = s
@@ -1981,6 +2079,11 @@ class TestSpecEngineExecution:
         s.spec_convergence_window = 1
         s.spec_execution_timeout = 300
         s.spec_review_enabled = True
+        s.spec_infinite_mode = False
+        s.spec_disable_convergence = False
+        s.spec_disable_early_stop = False
+        s.spec_min_cycles = 1
+        s.spec_max_retries = 1
         s.spec_cycle_tasks_max = 50
         s.spec_cycle_output_max_chars = 4000
         s.spec_state_filename = ".spec_engine_state.json"
@@ -1995,6 +2098,21 @@ class TestSpecEngineExecution:
         s.spec_allow_resume_from_disk = True
         s.ark_api_key = ""
         s.ark_model = ""
+        s.spec_infinite_mode = False
+        s.spec_disable_convergence = False
+        s.spec_disable_early_stop = False
+        s.spec_min_cycles = 1
+        s.spec_history_log_filename = "history.jsonl"
+        s.spec_phase_output_persist_max_chars = 20000
+        s.spec_cycle_artifact_retention = 50
+        s.spec_generated_specs_retention = 1000
+        s.spec_review_failure_circuit_enabled = False
+        s.spec_review_failure_max_consecutive = 3
+        s.spec_review_failure_cooldown_cycles = 3
+        s.spec_state_cycles_tail = 50
+        s.spec_state_work_items_tail = 200
+        s.spec_state_metrics_tail = 200
+        s.ark_base_url = "https://ark-cn-beijing.bytedance.net/api/v3"
         return s
 
     def _make_mock_session(self, text_responses):
@@ -2003,7 +2121,7 @@ class TestSpecEngineExecution:
         call_index = [0]
         responses = list(text_responses)
 
-        def fake_send_prompt(prompt, on_event=None, timeout=None):
+        def fake_send_prompt(prompt, on_event=None, timeout=None, **kwargs):
             idx = call_index[0]
             call_index[0] += 1
             text = responses[idx] if idx < len(responses) else ""
@@ -2012,6 +2130,7 @@ class TestSpecEngineExecution:
             return MagicMock(stop_reason="end_turn")
 
         session.send_prompt = fake_send_prompt
+        session.send_prompt_with_retry = fake_send_prompt
         return session
 
     @patch("src.spec_engine.engine.create_engine_session")
@@ -2177,12 +2296,13 @@ class TestSpecEngineExecution:
         """Stop during SPEC phase → cycle saved as failed, project PAUSED."""
         mock_settings.return_value = self._mock_settings()
 
-        def fake_send_prompt(prompt, on_event=None, timeout=None):
+        def fake_send_prompt(prompt, on_event=None, timeout=None, **kwargs):
             if on_event:
                 on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="partial"))
 
         session = MagicMock()
         session.send_prompt = fake_send_prompt
+        session.send_prompt_with_retry = fake_send_prompt
         mock_create.return_value = session
 
         engine = SpecEngine(chat_id="c1", root_path="/tmp/test")
@@ -2268,12 +2388,13 @@ class TestSpecEngineExecution:
         """Resume with stop → failed cycle is saved (bug fix from review)."""
         mock_settings.return_value = self._mock_settings()
 
-        def fake_send_prompt(prompt, on_event=None, timeout=None):
+        def fake_send_prompt(prompt, on_event=None, timeout=None, **kwargs):
             if on_event:
                 on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="partial"))
 
         session = MagicMock()
         session.send_prompt = fake_send_prompt
+        session.send_prompt_with_retry = fake_send_prompt
         mock_create.return_value = session
 
         engine = SpecEngine(chat_id="c1", root_path="/tmp/test")
@@ -2362,6 +2483,7 @@ class TestSpecEngineExecution:
         mock_settings.return_value = self._mock_settings()
 
         session = MagicMock()
+        session.send_prompt_with_retry.side_effect = RuntimeError("timeout")
         session.send_prompt.side_effect = RuntimeError("timeout")
 
         engine = SpecEngine(chat_id="c1", root_path="/tmp/test")
@@ -2426,6 +2548,7 @@ class TestSpecEngineExecution:
         mock_settings.return_value = self._mock_settings()
 
         session = MagicMock()
+        session.send_prompt_with_retry.side_effect = RuntimeError("oops")
         session.send_prompt.side_effect = RuntimeError("oops")
 
         engine = SpecEngine(chat_id="c1", root_path="/tmp/test")
@@ -2642,6 +2765,12 @@ class TestSpecEngineExecution:
         s.spec_allow_resume_from_disk = True
         s.ark_api_key = ""
         s.ark_model = ""
+        s.spec_infinite_mode = False
+        s.spec_disable_convergence = False
+        s.spec_disable_early_stop = False
+        s.spec_min_cycles = 1
+        s.spec_history_log_filename = "history.jsonl"
+        s.spec_generated_specs_retention = 1000
         mock_settings.return_value = s
 
         class DynamicSession:
@@ -2649,6 +2778,8 @@ class TestSpecEngineExecution:
                 self.disc_n = 0
 
             def send_prompt(self, prompt, on_event=None, timeout=None):
+                return self.send_prompt_with_retry(prompt, on_event, timeout)
+            def send_prompt_with_retry(self, prompt, on_event=None, timeout=None, **kw):
                 p = prompt or ""
                 out = ""
                 if "请使用 spec-kit 风格产出“规格（Spec）”" in p:
@@ -2727,6 +2858,11 @@ class TestSpecEngineProjectTypes:
         s.spec_convergence_window = 1
         s.spec_execution_timeout = 300
         s.spec_review_enabled = True
+        s.spec_infinite_mode = False
+        s.spec_disable_convergence = False
+        s.spec_disable_early_stop = False
+        s.spec_min_cycles = 1
+        s.spec_max_retries = 1
         s.spec_cycle_tasks_max = 50
         s.spec_cycle_output_max_chars = 4000
         s.spec_state_filename = ".spec_engine_state.json"
@@ -2740,6 +2876,21 @@ class TestSpecEngineProjectTypes:
         s.spec_allow_resume_from_disk = True
         s.ark_api_key = ""
         s.ark_model = ""
+        s.spec_infinite_mode = False
+        s.spec_disable_convergence = False
+        s.spec_disable_early_stop = False
+        s.spec_min_cycles = 1
+        s.spec_history_log_filename = "history.jsonl"
+        s.spec_phase_output_persist_max_chars = 20000
+        s.spec_cycle_artifact_retention = 50
+        s.spec_generated_specs_retention = 1000
+        s.spec_review_failure_circuit_enabled = False
+        s.spec_review_failure_max_consecutive = 3
+        s.spec_review_failure_cooldown_cycles = 3
+        s.spec_state_cycles_tail = 50
+        s.spec_state_work_items_tail = 200
+        s.spec_state_metrics_tail = 200
+        s.ark_base_url = "https://ark-cn-beijing.bytedance.net/api/v3"
         return s
 
     def _make_mock_session(self, text_responses):
@@ -2747,7 +2898,7 @@ class TestSpecEngineProjectTypes:
         idx = [0]
         responses = list(text_responses)
 
-        def fake_send_prompt(prompt, on_event=None, timeout=None):
+        def fake_send_prompt(prompt, on_event=None, timeout=None, **kwargs):
             i = idx[0]
             idx[0] += 1
             text = responses[i] if i < len(responses) else ""
@@ -2755,6 +2906,7 @@ class TestSpecEngineProjectTypes:
                 on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=text))
 
         session.send_prompt = fake_send_prompt
+        session.send_prompt_with_retry = fake_send_prompt
         return session
 
     @patch("src.spec_engine.engine.create_engine_session")
@@ -3032,3 +3184,43 @@ class TestSpecReporterNewMethods:
         result = r.format_criteria_section(project)
         assert "C1" in result
         assert "C2" in result
+
+def test_save_failed_task_idempotency(monkeypatch):
+    from src.spec_engine.engine import SpecEngine, SpecEngineCallbacks
+    from src.spec_engine.models import SpecPhase, SpecProject
+    import time
+    
+    mock_settings = type("MockSettings", (), {
+        "spec_max_retries": 1,
+        "spec_allow_resume_from_disk": False,
+        "spec_state_filename": ".spec_state"
+    })()
+    
+    engine = SpecEngine("chat1", "/tmp", "coco", mock_settings)
+    engine._project = SpecProject(project_id="test_proj_id", name="test", root_path="/tmp", task_id="test-task-123")
+    
+    call_count = 0
+    
+    def mock_save_task_state(state):
+        nonlocal call_count
+        call_count += 1
+        return f"/tmp/saved_{call_count}.json"
+        
+    monkeypatch.setattr("src.spec_engine.engine.save_task_state", mock_save_task_state)
+    
+    callbacks = SpecEngineCallbacks()
+    
+    # First save
+    task_id1 = engine._save_failed_task("Error 1", 1, SpecPhase.BUILD, callbacks)
+    assert call_count == 1
+    assert task_id1 == "test-task-123"
+    
+    # Second save, same cycle, phase, and task_id (from project), but different error
+    task_id2 = engine._save_failed_task("Error 2 - different", 1, SpecPhase.BUILD, callbacks)
+    assert call_count == 1 # Should be idempotent, so no new save
+    assert task_id2 == task_id1
+    
+    # Third save, different phase
+    task_id3 = engine._save_failed_task("Error 1", 1, SpecPhase.REVIEW, callbacks)
+    assert call_count == 2
+    assert task_id3 == "test-task-123"

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
+from acp.stdio import spawn_agent_process
 
 from .models import CocoModel, ModelListResult
 
@@ -79,6 +80,12 @@ class CocoModelManager:
 
     def _load_models(self) -> list[CocoModel]:
         current = self._current_model or self._read_model_from_config()
+
+        # ACP-first: use protocol-provided available models when possible.
+        models_from_acp = self._load_models_via_acp(current_model=current)
+        if models_from_acp:
+            return models_from_acp
+
         models = []
         for m in DEFAULT_MODELS:
             models.append(
@@ -90,6 +97,58 @@ class CocoModelManager:
             )
         return models
 
+    def _load_models_via_acp(self, current_model: Optional[str]) -> list[CocoModel]:
+        """Best-effort ACP model discovery for coco.
+
+        For ACP-capable backends, model capabilities are exposed in new/load session
+        responses (`SessionModelState.available_models`). We query once and map to
+        CocoModel entries.
+        """
+        try:
+            import asyncio
+            import os
+
+            from src.acp.client import GhostAPClient
+
+            async def _probe() -> list[CocoModel]:
+                env = os.environ.copy()
+                env.pop("CLAUDECODE", None)
+
+                client = GhostAPClient(on_event=lambda _ev: None, auto_approve=True)
+                async with spawn_agent_process(client, "coco", "acp", "serve", env=env, cwd=str(Path.cwd())) as (
+                    conn,
+                    _proc,
+                ):
+                    await conn.initialize(protocol_version=1)
+                    resp = await conn.new_session(cwd=str(Path.cwd()))
+                    models_state = getattr(resp, "models", None)
+                    available = list(getattr(models_state, "available_models", []) or [])
+                    current_id = str(
+                        getattr(models_state, "current_model_id", "") or getattr(models_state, "currentModelId", "")
+                    )
+
+                    out: list[CocoModel] = []
+                    for item in available:
+                        model_id = str(
+                            getattr(item, "model_id", "") or getattr(item, "modelId", "") or getattr(item, "name", "")
+                        ).strip()
+                        if not model_id:
+                            continue
+                        desc = str(getattr(item, "description", "") or getattr(item, "name", "") or model_id)
+                        out.append(
+                            CocoModel(
+                                name=model_id,
+                                description=desc,
+                                is_default=(model_id == (current_model or current_id)),
+                            )
+                        )
+                    return out
+
+            return asyncio.run(_probe())
+        except Exception as e:
+            logger.debug("Failed to load coco models via ACP: %s", e)
+            return []
+
     def get_current_model(self) -> Optional[str]:
         self._ensure_initialized()
         with self._lock:
@@ -97,16 +156,29 @@ class CocoModelManager:
 
     def set_model(self, model_name: str) -> bool:
         self._ensure_initialized()
-        with self._lock:
+        normalized = (model_name or "").strip()
+        if not normalized:
+            logger.warning("Unknown model: %s", model_name)
+            return False
+
+        # ACP-first: validate against runtime-discovered model list.
+        # Keep a DEFAULT_MODELS fallback for offline/failed discovery scenarios.
+        result = self.get_models()
+        known_names = {m.name for m in (result.models or []) if getattr(m, "name", "")}
+        if not known_names:
             known_names = {m.name for m in DEFAULT_MODELS}
-            if model_name not in known_names:
-                logger.warning("Unknown model: %s", model_name)
-                return False
-            self._current_model = model_name
+
+        if normalized not in known_names:
+            logger.warning("Unknown model: %s", normalized)
+            return False
+
+        with self._lock:
+            self._current_model = normalized
             self._cached_models = None
             self._cache_time = 0
-            logger.info("Switched coco model to: %s", model_name)
-            return True
+
+        logger.info("Switched coco model to: %s", normalized)
+        return True
 
     def invalidate_cache(self) -> None:
         with self._lock:

@@ -786,20 +786,10 @@ class FeishuWSClient:
             except Exception:
                 project_id = None
 
+        text = self._extract_text_from_message(data)
         is_system = self._is_system_command_message(data)
         is_shell_fast = False if is_system else self._is_likely_shell_command_message(data)
-
-        is_spec = False
-        try:
-            content_str = data.event.message.content
-            if content_str:
-                import json
-
-                content_dict = json.loads(content_str)
-                text = content_dict.get("text", "").strip()
-                is_spec = self._is_spec_command(text)
-        except Exception:
-            pass
+        is_spec = self._is_spec_command(text) if text else False
 
         # For likely shell commands, route to a separate shell queue so they
         # don't block behind long-running programming tasks on the project queue.
@@ -807,6 +797,10 @@ class FeishuWSClient:
         if is_shell_fast:
             queue_suffix = project_id or "default"
             shell_queue_key = f"{chat_id}:shell:{queue_suffix}"
+
+        # 串行化控制面命令：确保编程初始化（/coco|/claude|/ttadk）与 /spec* 按先后顺序执行。
+        control_queue_key = self._build_control_queue_key(chat_id=chat_id, project_id=project_id, text=text)
+        queue_key = shell_queue_key or control_queue_key
 
         request_id = self._ensure_request_id(message_id, chat_id=chat_id, project_id=project_id)
 
@@ -821,7 +815,7 @@ class FeishuWSClient:
                 request_id=request_id,
                 priority=TaskPriority.HIGH if is_system else TaskPriority.NORMAL,
                 is_system_command=is_system,
-                queue_key=shell_queue_key,
+                queue_key=queue_key,
             )
             try:
                 handle = self._scheduler.submit(
@@ -886,6 +880,28 @@ class FeishuWSClient:
             return text
         except Exception:
             return ""
+
+    @staticmethod
+    def _is_programming_entry_command(text: str) -> bool:
+        """是否为编程模式初始化命令（用于与 /spec 串行化控制面执行）。"""
+        text_lower = (text or "").strip().lower()
+        return text_lower in {
+            "/coco",
+            "/enter_coco",
+            "/claude",
+            "/enter_claude",
+            "/ttadk",
+        }
+
+    def _build_control_queue_key(self, *, chat_id: str, project_id: Optional[str], text: str) -> Optional[str]:
+        """为编程初始化与 spec 命令构造串行控制队列 key。"""
+        normalized = (text or "").strip()
+        if not normalized:
+            return None
+        if not (self._is_spec_command(normalized) or self._is_programming_entry_command(normalized)):
+            return None
+        queue_suffix = project_id or "default"
+        return f"{chat_id}:control:{queue_suffix}"
 
     def _is_likely_shell_command_message(self, data: P2ImMessageReceiveV1) -> bool:
         """Check if the message looks like a shell command for early routing."""

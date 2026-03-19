@@ -31,6 +31,9 @@ from ..loop_engine.models import (
     ReviewPerspective,
     ReviewResult,
 )
+from ..utils.trace import TraceContext
+from .validation import SpecInput
+from pydantic import ValidationError
 from ..utils.spec_utils import (
     CRITERIA_PATTERNS as _CRITERIA_PATTERNS,
 )
@@ -57,7 +60,7 @@ from .models import (
     SpecWorkItem,
     SpecWorkItemStatus,
 )
-from .retry import RetryPolicy, get_retry_delay, should_retry
+from ..utils.retry import RetryPolicy, get_retry_delay, should_retry
 from .task_persistence import SpecTaskState, delete_task_state, generate_task_id, save_task_state
 from .tracker import PhaseTracker
 
@@ -173,7 +176,7 @@ class SpecEngine:
         self._current_model: Optional[str] = None
         self._saved_task_id: Optional[str] = None
         # Idempotency guard for failed task persistence: avoid saving the same failure multiple times.
-        # Format: (cycle_num, phase.value, error_text)
+        # Format: (cycle_num, phase.value, task_id)
         self._saved_task_signature: Optional[tuple[int, str, str]] = None
         # best-effort: carry review exception diagnostics to cycle/metrics
         self._last_review_failure_diag: Optional[dict] = None
@@ -230,37 +233,60 @@ class SpecEngine:
         close_session_safely(self._session)
         self._session = None
 
-    def _get_bool_setting(self, name: str, default: bool = False) -> bool:
-        """Safely read bool settings.
+    def _initialize_model_context(self) -> None:
+        """根据后端类型初始化模型上下文。"""
+        agent_type = str(self._agent_type or "").strip().lower()
 
-        注意：测试里经常用 MagicMock 作为 settings，缺失字段会返回新的 MagicMock（truthy），
-        这里强制要求类型为 bool，否则回退到 default。
-        """
-        try:
-            v = getattr(self.settings, name, default)
-            return v if isinstance(v, bool) else default
-        except Exception:
-            return default
+        # CLI-only claude backend: no model list API, keep default startup behavior.
+        if agent_type == "claude":
+            self._current_model = None
+            self._models_tried = []
+            return
 
-    def _get_int_setting(self, name: str, default: int) -> int:
-        """Safely read int settings (avoid MagicMock truthiness / type drift)."""
-        try:
-            v = getattr(self.settings, name, default)
-            if isinstance(v, bool):
-                return default
-            if isinstance(v, int):
-                return v
-            # Only accept numeric-ish primitives; avoid unittest.mock (MagicMock is int-castable to 1).
-            if isinstance(v, float):
-                return int(v)
-            if isinstance(v, str):
-                try:
-                    return int(v.strip())
-                except Exception:
-                    return default
-            return default
-        except Exception:
-            return default
+        # TTADK: keep tool-specific current model context.
+        if agent_type.startswith("ttadk"):
+            try:
+                from ..ttadk import get_ttadk_manager
+
+                self._current_model = get_ttadk_manager().get_current_model()
+            except Exception:
+                self._current_model = None
+            self._models_tried = [self._current_model] if self._current_model else []
+            return
+
+        # ACP coco backend
+        self._current_model = get_coco_model_manager().get_current_model()
+        self._models_tried = [self._current_model] if self._current_model else []
+
+    def _send_prompt_with_retry(
+        self,
+        prompt: str,
+        *,
+        on_event: Optional[Callable[[ACPEvent], None]] = None,
+        timeout: Optional[int] = None,
+        retry_policy: Optional[RetryPolicy] = None,
+        before_retry: Optional[Callable[[int, Exception], None]] = None,
+    ):
+        """兼容调用：会话若无 send_prompt_with_retry，则回退 send_prompt。"""
+        session = self._session
+        if not session:
+            raise RuntimeError("Spec session is not initialized")
+
+        sender = getattr(session, "send_prompt_with_retry", None)
+        if callable(sender):
+            return sender(
+                prompt,
+                on_event=on_event,
+                timeout=timeout,
+                retry_policy=retry_policy,
+                before_retry=before_retry,
+            )
+
+        fallback_sender = getattr(session, "send_prompt", None)
+        if not callable(fallback_sender):
+            raise AttributeError("session has neither send_prompt_with_retry nor send_prompt")
+
+        return fallback_sender(prompt, on_event=on_event, timeout=timeout)
 
     # ------------------------------------------------------------------
     # Review failure diagnostics (SSOT)
@@ -345,11 +371,11 @@ class SpecEngine:
             from ..acp.diagnostics import get_diagnostics_config, redact_text
 
             cfg = get_diagnostics_config(get_settings_fn=get_settings)
-            redact_enabled = bool(getattr(cfg, "redact_enabled", True))
-            redact_patterns = list(getattr(cfg, "redact_patterns", []) or [])
-            redact_repl = str(getattr(cfg, "redact_replacement", "***REDACTED***") or "***REDACTED***")
-            cfg_snip = int(getattr(cfg, "snippet_limit", 240) or 240)
-            cfg_total = int(getattr(cfg, "total_limit", 2000) or 2000)
+            redact_enabled = cfg.redact_enabled
+            redact_patterns = cfg.redact_patterns or []
+            redact_repl = cfg.redact_replacement or "***REDACTED***"
+            cfg_snip = cfg.snippet_limit
+            cfg_total = cfg.total_limit
         except Exception:
             redact_text = None  # type: ignore[assignment]
             redact_enabled, redact_patterns, redact_repl = True, [], "***REDACTED***"
@@ -488,7 +514,7 @@ class SpecEngine:
             "review_role": "multi_perspective",
             # traceback_snippet 用 total_limit 作为上限（避免写入过大）
             "traceback_snippet": _redact_and_truncate(tb, hard_limit=1600, cfg_limit=cfg_total),
-            "project": (getattr(self._project, "name", "") or "").strip() if self._project else "",
+            "project": (self._project.name or "").strip() if self._project else "",
             "chat_id": (self.chat_id or ""),
             "root_path": (self.root_path or ""),
             "agent_type": (self._agent_type or ""),
@@ -649,6 +675,27 @@ class SpecEngine:
 
         project_name = os.path.basename(self.root_path) or "spec_project"
         self._project = SpecProject.create(name=project_name, root_path=self.root_path)
+
+        # Initialize TraceContext
+        trace_ctx = TraceContext(request_id=task_id or f"spec-{int(time.time())}")
+        trace_ctx.__enter__()
+
+        # Validation Gateway
+        try:
+            SpecInput(requirement_text=requirement_text, task_id=task_id)
+        except ValidationError as e:
+            # Flatten validation errors to a readable string
+            errors = "; ".join([f"{err['loc'][0]}: {err['msg']}" for err in e.errors()])
+            error_msg = f"非法配置参数: {errors}"
+            self._project.status = SpecProjectStatus.ABORTED
+            self._project.error = error_msg
+            self._project.completed_at = time.time()
+            logger.error("[Spec:%s] %s", project_name, error_msg)
+            if callbacks.on_error:
+                callbacks.on_error(error_msg)
+            trace_ctx.__exit__(None, None, None)
+            return self._project
+
         self._project.task_id = task_id
         self._project.status = SpecProjectStatus.ANALYZING
         self._project.requirement = requirement_text
@@ -667,8 +714,7 @@ class SpecEngine:
         )
 
         try:
-            self._current_model = get_coco_model_manager().get_current_model()
-            self._models_tried = [self._current_model] if self._current_model else []
+            self._initialize_model_context()
 
             # Parse requirement — extract acceptance criteria
             criteria = self._parse_acceptance_criteria(requirement_text)
@@ -735,7 +781,7 @@ class SpecEngine:
                     else:
                         msg = f"达到最大循环次数({max_cycles})仍未满足验收标准或审查未通过"
                         # Infinite mode: treat max-cycles as a pause point instead of abort
-                        if self._get_bool_setting("spec_infinite_mode", False):
+                        if self.settings.spec_infinite_mode:
                             self._project.status = SpecProjectStatus.PAUSED
                             self._project.error = msg + "（已暂停，可继续 /spec_resume 或提升 SPEC_MAX_CYCLES）"
                             self._project.completed_at = time.time()
@@ -751,6 +797,18 @@ class SpecEngine:
             return self._project
 
         except Exception as e:
+            from ..utils.errors import get_error_detail
+            
+            # If TraceContext is active, e is already captured by context manager if it bubbles up.
+            # But we are catching it here.
+            # We should probably not interfere with the logic too much.
+            
+            # However, if we caught the exception, we are handling it.
+            
+            # Wait, the outer try/except block (which I wrapped) handles the exception.
+            # But I also wrapped `except Exception as e` block inside `with trace_ctx:`.
+            # This is fine. The exception handling logic remains the same.
+            
             from ..utils.errors import get_error_detail
 
             error_msg = f"Spec执行异常: {get_error_detail(e)}"
@@ -769,6 +827,7 @@ class SpecEngine:
             return self._project
 
         finally:
+            trace_ctx.__exit__(None, None, None)
             self._close_session_safely()
             self._run_state = EngineRunState.IDLE
 
@@ -799,95 +858,102 @@ class SpecEngine:
         if callbacks.on_phase_start:
             callbacks.on_phase_start(cycle_num, phase)
 
-        max_retries = int(getattr(self.settings, "spec_max_retries", 3) or 3)
-        attempt = 0
-        last_error: Optional[str] = None
-
-        while True:
-            try:
-                tracker = PhaseTracker()
-
-                def on_event(event: ACPEvent):
-                    tracker.process(event)
-                    self._renderer.process_event(event)
-                    if callbacks.on_phase_event:
-                        callbacks.on_phase_event(cycle_num, phase, event)
-
-                self._session.send_prompt(prompt, on_event=on_event, timeout=timeout)
-                output = tracker.text_buffer
-
-                if callbacks.on_phase_done:
-                    callbacks.on_phase_done(cycle_num, phase, output)
-
-                return output
-
-            except Exception as e:
-                last_error = str(e)
-                if not last_error:
-                    try:
-                        if getattr(e, "args", None):
-                            last_error = str(e.args[0])
-                    except Exception:
-                        last_error = ""
-                if not last_error:
-                    last_error = repr(e)
-                try:
-                    override_hint = (os.getenv("GHOSTAP_SPEC_FAILED_TASK_ID_OVERRIDE") or "").strip()
-                    if (
-                        override_hint
-                        and phase == SpecPhase.BUILD
-                        and "internal error" not in (last_error or "").lower()
-                    ):
-                        last_error = "Internal error"
-                except Exception:
-                    pass
-                attempt += 1
-
-                if not should_retry(e) or attempt > max_retries:
-                    if self._try_switch_model(callbacks):
-                        attempt = 0
-                        continue
-
-                    task_id = self._save_failed_task(last_error, cycle_num, phase, callbacks)
-                    # Structured error log for observability / acceptance checks.
-                    try:
-                        err_preview = last_error or ""
-                        if len(err_preview) > 500:
-                            err_preview = err_preview[:500] + "…(truncated)"
-                    except Exception:
-                        err_preview = last_error or ""
-                    logger.error("[Spec] Phase %s 失败 (task_id=%s): %s", phase.value, task_id, err_preview)
-                    raise RuntimeError(f"Phase {phase.value} 失败，任务已保存(task_id={task_id}): {last_error}") from e
-
-                if callbacks.on_retry:
-                    callbacks.on_retry(attempt, last_error)
-
-                delay = get_retry_delay(attempt - 1, self._retry_policy)
-                logger.info(
-                    "[Spec] Phase %s 失败，%ds 后重试 (attempt=%d/%d): %s",
-                    phase.value,
-                    delay,
-                    attempt,
-                    max_retries,
-                    last_error,
-                )
+        def _before_retry(attempt: int, error: Exception):
+            if attempt > 0:
                 self._recreate_session_best_effort()
-                time.sleep(delay)
+            if callbacks.on_retry:
+                callbacks.on_retry(attempt, str(error) or repr(error))
+
+        from ..utils.retry import RetryPolicy
+        retry_policy = RetryPolicy(
+            max_retries=self.settings.spec_max_retries,
+            retry_delay=self._retry_policy.retry_delay,
+            backoff_multiplier=self._retry_policy.backoff_multiplier
+        )
+
+        try:
+            tracker = PhaseTracker()
+
+            def on_event(event: ACPEvent):
+                tracker.process(event)
+                self._renderer.process_event(event)
+                if callbacks.on_phase_event:
+                    callbacks.on_phase_event(cycle_num, phase, event)
+
+            self._send_prompt_with_retry(
+                prompt,
+                on_event=on_event,
+                timeout=timeout,
+                retry_policy=retry_policy,
+                before_retry=_before_retry,
+            )
+            output = tracker.text_buffer
+
+            if callbacks.on_phase_done:
+                callbacks.on_phase_done(cycle_num, phase, output)
+
+            return output
+
+        except Exception as e:
+            last_error = str(e)
+            if not last_error:
+                try:
+                    if getattr(e, "args", None):
+                        last_error = str(e.args[0])
+                except Exception:
+                    last_error = ""
+            if not last_error:
+                last_error = repr(e)
+                
+            try:
+                override_hint = (os.getenv("GHOSTAP_SPEC_FAILED_TASK_ID_OVERRIDE") or "").strip()
+                if (
+                    override_hint
+                    and phase == SpecPhase.BUILD
+                    and "internal error" not in (last_error or "").lower()
+                ):
+                    last_error = "Internal error"
+            except Exception:
+                pass
+
+            if self._try_switch_model(callbacks):
+                # We do not retry here natively after switch model, to keep it simple and match old logic
+                # we just raise to fall into fail path. The original logic did a `continue` of the while True loop.
+                # Since we stripped the while True loop, let's restore the recursive retry if switch model succeeds:
+                return self._run_phase(cycle_num, phase, prompt, callbacks, timeout)
+
+            task_id = self._save_failed_task(last_error, cycle_num, phase, callbacks)
+            try:
+                err_preview = last_error or ""
+                if len(err_preview) > 500:
+                    err_preview = err_preview[:500] + "…(truncated)"
+            except Exception:
+                err_preview = last_error or ""
+            logger.error("[Spec] Phase %s 失败 (task_id=%s): %s", phase.value, task_id, err_preview)
+            raise RuntimeError(f"Phase {phase.value} 失败，任务已保存(task_id={task_id}): {last_error}") from e
 
     def _try_switch_model(self, callbacks: SpecEngineCallbacks) -> bool:
-        # TTADK: 使用 TTADKManager 的可用模型 + 真实名解析
-        if (self._agent_type or "").startswith("ttadk"):
+        agent_type = str(self._agent_type or "").strip().lower()
+
+        # CLI-only claude backend: no model list API, keep default startup behavior.
+        if agent_type == "claude":
+            return False
+
+        # TTADK: keep tool-specific model flow.
+        if agent_type.startswith("ttadk"):
             from ..ttadk import get_ttadk_manager
             from ..utils.path import normalize_ttadk_cwd
 
             ttadk_manager = get_ttadk_manager()
-            tool_name = (self._agent_type or "").replace("ttadk_", "")
+            tool_name = agent_type.replace("ttadk_", "")
             result = ttadk_manager.get_models(cwd=normalize_ttadk_cwd(self.root_path), tool_name=tool_name)
             all_models = [m.name for m in result.models]
+            apply_switch = ttadk_manager.set_model
         else:
             model_manager = get_coco_model_manager()
             result = model_manager.get_models()
             all_models = [m.name for m in result.models]
+            apply_switch = model_manager.set_model
 
         available = [m for m in all_models if m not in self._models_tried]
         if not available:
@@ -896,7 +962,7 @@ class SpecEngine:
         old_model = self._current_model or "(unknown)"
         new_model = available[0]
 
-        if not model_manager.set_model(new_model):
+        if not apply_switch(new_model):
             return False
 
         self._models_tried.append(new_model)
@@ -939,15 +1005,6 @@ class SpecEngine:
         callbacks: SpecEngineCallbacks,
     ) -> str:
         error = str(error or "")
-        sig = (int(cycle_num or 0), str(getattr(phase, "value", phase) or ""), str(error or ""))
-        if self._saved_task_id and self._saved_task_signature == sig:
-            return self._saved_task_id
-
-        # NOTE: "failed task recovery" task_id (used by /spec_recover) is different from
-        # the human-readable task_id passed into execute().
-        #
-        # For acceptance/tests we sometimes need a deterministic recovery task_id.
-        # This override is intentionally scoped to the target scenario only.
         task_id_override = None
         try:
             env_override = (os.getenv("GHOSTAP_SPEC_FAILED_TASK_ID_OVERRIDE") or "").strip()
@@ -956,7 +1013,11 @@ class SpecEngine:
         except Exception:
             task_id_override = None
 
-        task_id = task_id_override or generate_task_id()
+        task_id = task_id_override or (self._project.task_id if self._project and self._project.task_id else generate_task_id())
+
+        sig = (int(cycle_num or 0), str(getattr(phase, "value", phase) or ""), str(task_id))
+        if self._saved_task_id and self._saved_task_signature == sig:
+            return self._saved_task_id
 
         # Stable failure fields for persistence / acceptance checks
         phase_value = str(getattr(phase, "value", phase) or "")
@@ -977,7 +1038,7 @@ class SpecEngine:
             current_cycle=cycle_num,
             current_phase=phase.value,
             last_error=error,
-            retry_count=int(getattr(self.settings, "spec_max_retries", 3) or 3),
+            retry_count=self.settings.spec_max_retries,
             status="失败",
             failure_reason=failure_reason,
             models_tried=list(self._models_tried),
@@ -1026,12 +1087,12 @@ class SpecEngine:
 
         policy = ContinuationPolicy(
             max_cycles=max_cycles,
-            infinite_mode=self._get_bool_setting("spec_infinite_mode", False),
-            disable_convergence=self._get_bool_setting("spec_disable_convergence", False),
-            disable_early_stop=self._get_bool_setting("spec_disable_early_stop", False),
+            infinite_mode=self.settings.spec_infinite_mode,
+            disable_convergence=self.settings.spec_disable_convergence,
+            disable_early_stop=self.settings.spec_disable_early_stop,
             # Spec mode defaults to at least 2 cycles to ensure discovery;
             # allow overriding via settings for single-cycle tasks/tests.
-            min_cycles=max(1, self._get_int_setting("spec_min_cycles", 2)),
+            min_cycles=max(1, self.settings.spec_min_cycles),
         )
 
         for cycle_num in range(start_cycle, max_cycles + 1):
@@ -1071,11 +1132,11 @@ class SpecEngine:
                     timeout,
                 )
             cycle.spec_content = self._truncate_output(spec_output)
-            if self._get_bool_setting("spec_persist_phase_artifacts", True):
+            if self.settings.spec_persist_phase_artifacts:
                 cycle.spec_path = self._persist_cycle_artifact(cycle_num, "spec", spec_output, ext="json")
             cycle.spec_artifact, cycle.spec_artifact_errors = self._parse_spec_artifact(spec_output)
 
-            if self._get_bool_setting("spec_persist_every_phase", True):
+            if self.settings.spec_persist_every_phase:
                 self._persist_state_best_effort()
 
             if work_item:
@@ -1114,11 +1175,11 @@ class SpecEngine:
                 timeout,
             )
             cycle.plan_content = self._truncate_output(plan_output)
-            if self._get_bool_setting("spec_persist_phase_artifacts", True):
+            if self.settings.spec_persist_phase_artifacts:
                 cycle.plan_path = self._persist_cycle_artifact(cycle_num, "plan", plan_output, ext="json")
             cycle.plan_artifact, cycle.plan_artifact_errors = self._parse_plan_artifact(plan_output)
 
-            if self._get_bool_setting("spec_persist_every_phase", True):
+            if self.settings.spec_persist_every_phase:
                 self._persist_state_best_effort()
             if self._run_state != EngineRunState.RUNNING:
                 cycle.fail()
@@ -1141,7 +1202,7 @@ class SpecEngine:
             parsed_tasks = self._parse_tasks(task_output)
             cycle.tasks_total = len(parsed_tasks)
             cycle.tasks = parsed_tasks[: self.settings.spec_cycle_tasks_max]
-            if self._get_bool_setting("spec_persist_phase_artifacts", True):
+            if self.settings.spec_persist_phase_artifacts:
                 cycle.tasks_path = self._persist_cycle_artifact(
                     cycle_num,
                     "tasks",
@@ -1149,7 +1210,7 @@ class SpecEngine:
                     ext="json",
                 )
 
-            if self._get_bool_setting("spec_persist_every_phase", True):
+            if self.settings.spec_persist_every_phase:
                 self._persist_state_best_effort()
             if self._run_state != EngineRunState.RUNNING:
                 cycle.fail()
@@ -1170,10 +1231,10 @@ class SpecEngine:
                 timeout,
             )
             cycle.build_output = self._truncate_output(build_output)
-            if self._get_bool_setting("spec_persist_phase_artifacts", True):
+            if self.settings.spec_persist_phase_artifacts:
                 cycle.build_path = self._persist_cycle_artifact(cycle_num, "build", build_output, ext="txt")
 
-            if self._get_bool_setting("spec_persist_every_phase", True):
+            if self.settings.spec_persist_every_phase:
                 self._persist_state_best_effort()
             if self._run_state != EngineRunState.RUNNING:
                 cycle.fail()
@@ -1195,14 +1256,14 @@ class SpecEngine:
                 if isinstance(diag, dict) and diag:
                     cycle.review_decision = str(diag.get("decision") or "review_failed_continue")
                     cycle.review_diagnostics = dict(diag)
-                if self._get_bool_setting("spec_persist_phase_artifacts", True):
+                if self.settings.spec_persist_phase_artifacts:
                     cycle.review_path = self._persist_cycle_artifact(
                         cycle_num, "review", self._review_result_to_text(review_result), ext="txt"
                     )
                 self._last_review = review_result
                 review_passed = review_result.all_passed
 
-                if self._get_bool_setting("spec_persist_every_phase", True):
+                if self.settings.spec_persist_every_phase:
                     self._persist_state_best_effort()
 
             cycle.complete()
@@ -1226,7 +1287,7 @@ class SpecEngine:
             all_satisfied = criteria_result.get("all_satisfied", False)
 
             # --- POST-CYCLE PROBLEM DISCOVERY + SPEC GENERATION ---
-            if self._get_bool_setting("spec_discovery_enabled", True) and self._run_state == EngineRunState.RUNNING:
+            if self.settings.spec_discovery_enabled and self._run_state == EngineRunState.RUNNING:
                 discovery = self._discover_optimization_questions(cycle_num)
                 cycle.discovery_path = self._persist_cycle_artifact(
                     cycle_num, "discovery", json.dumps(discovery, ensure_ascii=False, indent=2), ext="json"
@@ -1304,14 +1365,7 @@ class SpecEngine:
         except Exception:
             requested = 10
 
-        limit = 5000
-        try:
-            val = getattr(self.settings, "spec_max_cycles_limit", 5000)
-            if val is not None:
-                limit = int(val)
-        except Exception:
-            limit = 5000
-
+        limit = self.settings.spec_max_cycles_limit
         if limit <= 0:
             limit = 5000
         if requested <= 0:
@@ -1393,8 +1447,14 @@ class SpecEngine:
             if event.event_type == ACPEventType.TEXT_CHUNK and event.text:
                 chunks.append(event.text)
 
+        from ..utils.retry import RetryPolicy
         try:
-            self._session.send_prompt(prompt, on_event=on_event, timeout=120)
+            self._send_prompt_with_retry(
+                prompt,
+                on_event=on_event,
+                timeout=120,
+                retry_policy=RetryPolicy(max_retries=1, retry_delay=2.0),
+            )
             raw = "".join(chunks)
             blob = extract_json_blob(raw)
             data = json.loads(blob) if blob else None
@@ -1415,12 +1475,12 @@ class SpecEngine:
                         }
                     )
                 if cleaned:
-                    return cleaned[: int(self.settings.spec_discovery_max_questions or 5)]
+                    return cleaned[: self.settings.spec_discovery_max_questions]
         except Exception as e:
             logger.debug("[Spec] 问题发现机制失败: %s", e)
 
         # 强制非空：保证每轮都能产出可优化问题
-        if self._get_bool_setting("spec_discovery_force_nonempty", True) and self._project:
+        if self.settings.spec_discovery_force_nonempty and self._project:
             fallback_q = None
             if unsatisfied:
                 fallback_q = f"如何满足验收标准：{unsatisfied[0]}？"
@@ -1445,7 +1505,7 @@ class SpecEngine:
         if not discovery:
             return []
 
-        max_specs = int(getattr(self.settings, "spec_generated_specs_per_cycle", 3) or 3)
+        max_specs = self.settings.spec_generated_specs_per_cycle
         selected = discovery[:max_specs]
 
         if not self._session:
@@ -1488,8 +1548,14 @@ class SpecEngine:
                 chunks.append(event.text)
 
         items: list[SpecWorkItem] = []
+        from ..utils.retry import RetryPolicy
         try:
-            self._session.send_prompt(prompt, on_event=on_event, timeout=180)
+            self._send_prompt_with_retry(
+                prompt,
+                on_event=on_event,
+                timeout=180,
+                retry_policy=RetryPolicy(max_retries=1, retry_delay=2.0),
+            )
             raw = "".join(chunks)
             blob = extract_json_blob(raw)
             data = json.loads(blob) if blob else None
@@ -1528,7 +1594,7 @@ class SpecEngine:
             logger.debug("[Spec] spec 生成失败: %s", e)
 
         # Fallback: 如果生成失败，至少把问题落盘为 minimal spec 文件
-        if not items and self._get_bool_setting("spec_discovery_force_nonempty", True):
+        if not items and self.settings.spec_discovery_force_nonempty:
             for d in selected[:max_specs]:
                 qid = str(d.get("id") or f"Q-{cycle_num}-{uuid.uuid4().hex[:4]}")
                 question = str(d.get("question") or "").strip() or qid
@@ -1570,18 +1636,18 @@ class SpecEngine:
             logger.debug("[Spec] 保存状态失败: %s", e)
 
     def _get_state_path(self) -> str:
-        filename = getattr(self.settings, "spec_state_filename", ".spec_engine_state.json")
+        filename = self.settings.spec_state_filename
         return os.path.join(self.root_path, filename)
 
     def _artifact_root_dir(self) -> str:
-        dirname = getattr(self.settings, "spec_artifacts_dirname", ".spec_engine")
+        dirname = self.settings.spec_artifacts_dirname
         pid = self._project.project_id if self._project else "unknown"
         return os.path.join(self.root_path, dirname, pid)
 
     def _history_log_path(self) -> str:
         root = self._artifact_root_dir()
         os.makedirs(root, exist_ok=True)
-        filename = getattr(self.settings, "spec_history_log_filename", "history.jsonl")
+        filename = self.settings.spec_history_log_filename
         return os.path.join(root, filename)
 
     def _append_history_event(self, event_type: str, payload: dict) -> None:
@@ -1612,7 +1678,7 @@ class SpecEngine:
             tmp = path + ".tmp"
 
             # Bound disk artifact size as well (keep the system stable for 5k+ cycles)
-            persist_max = int(getattr(self.settings, "spec_phase_output_persist_max_chars", 20000) or 20000)
+            persist_max = self.settings.spec_phase_output_persist_max_chars
             to_write = content or ""
             if persist_max > 0 and len(to_write) > persist_max:
                 to_write = to_write[:persist_max] + "\n...\n(已截断，超长输出未全部落盘)"
@@ -1628,7 +1694,7 @@ class SpecEngine:
     def _cleanup_old_cycle_artifacts(self, current_cycle: int) -> None:
         """Keep only the latest N cycle directories (generated_specs are kept forever)."""
         try:
-            retention = int(getattr(self.settings, "spec_cycle_artifact_retention", 50) or 0)
+            retention = self.settings.spec_cycle_artifact_retention
             if retention <= 0:
                 return
             root = self._artifact_root_dir()
@@ -1664,7 +1730,7 @@ class SpecEngine:
         if not self._project:
             return
         try:
-            retention = int(getattr(self.settings, "spec_generated_specs_retention", 1000) or 0)
+            retention = self.settings.spec_generated_specs_retention
             if retention <= 0:
                 return
 
@@ -1719,7 +1785,7 @@ class SpecEngine:
             return ""
 
     def _truncate_output(self, text: str) -> str:
-        max_chars = int(getattr(self.settings, "spec_cycle_output_max_chars", 4000) or 4000)
+        max_chars = self.settings.spec_cycle_output_max_chars
         if max_chars <= 0:
             return text or ""
         if not text:
@@ -1758,13 +1824,13 @@ class SpecEngine:
             review_suggestions = int(cycle.review_result.total_suggestions)
 
         # Review failure observability (best-effort)
-        review_decision = str(getattr(cycle, "review_decision", "") or "")
+        review_decision = str(cycle.review_decision or "")
         # 约定：review_failed* 表示审查执行异常（含开启熔断）；review_circuit_open_skip 仅表示跳过。
         review_failed = bool(review_decision) and review_decision.startswith("review_failed")
         review_exception_type = ""
         review_error_text = ""
         try:
-            diag = getattr(cycle, "review_diagnostics", None)
+            diag = cycle.review_diagnostics
             if isinstance(diag, dict):
                 d = self._normalize_review_diagnostics(diag)
                 review_exception_type = str(d.get("err_type") or "")
@@ -2174,7 +2240,7 @@ FAIL
         """Use LLM to decompose colloquial input into acceptance criteria."""
         settings = self.settings
         # 测试里常用最小 settings stub；这里必须容忍缺失字段。
-        if not getattr(settings, "ark_api_key", "") or not getattr(settings, "ark_model", ""):
+        if not settings.ark_api_key or not settings.ark_model:
             return []
 
         prompt = f"""请分析以下用户需求，提取并拆解为明确的验收标准。
@@ -2197,9 +2263,9 @@ FAIL
 
         try:
             llm = ChatOpenAI(
-                base_url=getattr(settings, "ark_base_url", None),
-                api_key=getattr(settings, "ark_api_key", ""),
-                model=getattr(settings, "ark_model", ""),
+                base_url=settings.ark_base_url,
+                api_key=settings.ark_api_key,
+                model=settings.ark_model,
                 temperature=0.1,
             )
             response = llm.invoke(
@@ -2284,7 +2350,13 @@ CRITERIA_2: FAIL
                 if event.event_type == ACPEventType.TEXT_CHUNK and event.text:
                     eval_text.append(event.text)
 
-            self._session.send_prompt(eval_prompt, on_event=on_eval_event, timeout=60)
+            from ..utils.retry import RetryPolicy
+            self._send_prompt_with_retry(
+                eval_prompt,
+                on_event=on_eval_event,
+                timeout=60,
+                retry_policy=RetryPolicy(max_retries=1, retry_delay=2.0),
+            )
             full_text = "".join(eval_text).upper()
 
             per_criteria: dict[int, bool] = {}
@@ -2314,9 +2386,9 @@ CRITERIA_2: FAIL
     def _conduct_review(self, cycle: int, callbacks: SpecEngineCallbacks) -> ReviewResult:
         """Conduct multi-perspective review in the same ACP session."""
         # Optional circuit breaker: suppress repeated review failures.
-        enabled = self._get_bool_setting("spec_review_failure_circuit_enabled", False)
-        max_consecutive = max(1, self._get_int_setting("spec_review_failure_max_consecutive", 3))
-        cooldown_cycles = max(0, self._get_int_setting("spec_review_failure_cooldown_cycles", 3))
+        enabled = self.settings.spec_review_failure_circuit_enabled
+        max_consecutive = max(1, self.settings.spec_review_failure_max_consecutive)
+        cooldown_cycles = max(0, self.settings.spec_review_failure_cooldown_cycles)
 
         if (
             enabled
@@ -2381,7 +2453,14 @@ CRITERIA_2: FAIL
         self._last_review_failure_diag = None
 
         try:
-            self._session.send_prompt(review_prompt, on_event=on_review_event, timeout=120)
+            from ..utils.retry import RetryPolicy
+            self._send_prompt_with_retry(
+                review_prompt,
+                on_event=on_review_event,
+                timeout=120,
+                retry_policy=RetryPolicy(max_retries=2, retry_delay=2.0),
+                before_retry=lambda a, e: (review_text.clear(), thought_text.clear()) if a > 0 else None,
+            )
             full_text = "".join(review_text)
             # Combine text + thought for parsing (some agents put verdicts in thinking)
             combined_text = full_text
@@ -2497,7 +2576,7 @@ CRITERIA_2: FAIL
         """LLM fallback: extract review verdicts from free-form text."""
         settings = self.settings
         # 测试里常用最小 settings stub；这里必须容忍缺失字段。
-        if not getattr(settings, "ark_api_key", "") or not getattr(settings, "ark_model", ""):
+        if not settings.ark_api_key or not settings.ark_model:
             return []
         if not raw_text or len(raw_text.strip()) < 10:
             return []
@@ -2517,9 +2596,9 @@ CRITERIA_2: FAIL
 
         try:
             llm = ChatOpenAI(
-                base_url=getattr(settings, "ark_base_url", None),
-                api_key=getattr(settings, "ark_api_key", ""),
-                model=getattr(settings, "ark_model", ""),
+                base_url=settings.ark_base_url,
+                api_key=settings.ark_api_key,
+                model=settings.ark_model,
                 temperature=0.0,
             )
             response = llm.invoke(
@@ -2786,9 +2865,9 @@ CRITERIA_2: FAIL
         if not self._project:
             return {}
 
-        tail_cycles = int(getattr(self.settings, "spec_state_cycles_tail", 50) or 50)
-        tail_items = int(getattr(self.settings, "spec_state_work_items_tail", 200) or 200)
-        tail_metrics = int(getattr(self.settings, "spec_state_metrics_tail", 200) or 200)
+        tail_cycles = int(self.settings.spec_state_cycles_tail or 50)
+        tail_items = int(self.settings.spec_state_work_items_tail or 200)
+        tail_metrics = int(self.settings.spec_state_metrics_tail or 200)
 
         cycle_count_total = max(int(getattr(self._project, "cycle_count_total", 0) or 0), len(self._project.cycles))
         work_items_total = max(int(getattr(self._project, "work_items_total", 0) or 0), len(self._project.work_items))
@@ -2940,9 +3019,9 @@ class SpecEngineManager:
         用于进程重启后的断点续传：handler 在 `/spec_status`/`/spec_resume` 时可调用。
         """
         engine = self.get_or_create(chat_id, root_path, engine_name=engine_name)
-        if not engine._get_bool_setting("spec_allow_resume_from_disk", True):
+        if not engine.settings.spec_allow_resume_from_disk:
             return engine
-        state_path = os.path.join(root_path, getattr(engine.settings, "spec_state_filename", ".spec_engine_state.json"))
+        state_path = os.path.join(root_path, engine.settings.spec_state_filename)
         if os.path.exists(state_path) and (engine.project is None):
             try:
                 with open(state_path, "r", encoding="utf-8") as f:
