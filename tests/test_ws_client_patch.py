@@ -345,5 +345,59 @@ class TestCardActionHandler(unittest.TestCase):
             assert client._build_control_queue_key(chat_id="c1", project_id=None, text="/spec_status") == "c1:control:default"
             assert client._build_control_queue_key(chat_id="c1", project_id="p1", text="ls -la") is None
 
+    def test_close_waits_engine_shutdown_before_cleanup(self):
+        """close() 应先 stop 长任务，再短暂等待停稳后执行 cleanup_all。"""
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+            patch("src.feishu.ws_client.time.sleep") as mock_sleep,
+        ):
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+
+            class _Engine:
+                def __init__(self):
+                    self.stop_called = False
+                    self._poll = 0
+
+                def stop(self):
+                    self.stop_called = True
+
+                @property
+                def is_running(self):
+                    if not self.stop_called:
+                        return True
+                    self._poll += 1
+                    return self._poll < 2
+
+            deep_engine = _Engine()
+            client._deep_engine_manager.list_engines = MagicMock(return_value=[deep_engine])
+            client._loop_engine_manager.list_engines = MagicMock(return_value=[])
+            client._spec_engine_manager.list_engines = MagicMock(return_value=[])
+            client._deep_engine_manager.cleanup_all = MagicMock()
+            client._loop_engine_manager.cleanup_all = MagicMock()
+            client._spec_engine_manager.cleanup_all = MagicMock()
+
+            client.close()
+
+            assert deep_engine.stop_called is True
+            assert mock_sleep.called
+            client._deep_engine_manager.cleanup_all.assert_called_once()
+            client._loop_engine_manager.cleanup_all.assert_called_once()
+            client._spec_engine_manager.cleanup_all.assert_called_once()
+
 if __name__ == "__main__":
     unittest.main()

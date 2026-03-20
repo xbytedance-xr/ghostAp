@@ -1296,6 +1296,55 @@ class TestSpecEngine:
         assert engine._project is None
         assert engine.run_state == EngineRunState.IDLE
 
+    @pytest.mark.parametrize("state", [EngineRunState.RUNNING, EngineRunState.STOPPING])
+    def test_cleanup_while_active_only_requests_stop(self, state):
+        engine = self._make_engine()
+        engine._run_state = state
+        engine._session = MagicMock()
+        project = MagicMock()
+        engine._project = project
+
+        engine.cleanup()
+
+        assert engine.run_state == EngineRunState.STOPPING
+        engine._session.cancel.assert_called_once()
+        # 活跃态 cleanup 不应立即清空 project，避免并发线程访问 self._project 失败
+        assert engine._project is project
+
+    def test_run_phase_when_stopping_skips_model_switch_and_failed_task(self, monkeypatch):
+        engine = self._make_engine()
+        engine._run_state = EngineRunState.STOPPING
+
+        class _Sess:
+            def send_prompt(self, *a, **kw):
+                raise RuntimeError("ACP agent 进程在执行过程中意外终止")
+
+        engine._session = _Sess()
+
+        try_switch = MagicMock(side_effect=AssertionError("should not switch model when stopping"))
+        save_failed = MagicMock(side_effect=AssertionError("should not save failed task when stopping"))
+        monkeypatch.setattr(engine, "_try_switch_model", try_switch)
+        monkeypatch.setattr(engine, "_save_failed_task", save_failed)
+
+        out = engine._run_phase(
+            cycle_num=1,
+            phase=SpecPhase.SPEC,
+            prompt="p",
+            callbacks=SpecEngineCallbacks(),
+            timeout=1,
+        )
+
+        assert out == ""
+        try_switch.assert_not_called()
+        save_failed.assert_not_called()
+
+    def test_try_switch_model_returns_false_when_not_running(self):
+        engine = self._make_engine()
+        engine._run_state = EngineRunState.STOPPING
+
+        callbacks = SpecEngineCallbacks()
+        assert engine._try_switch_model(callbacks) is False
+
     def test_inject_guidance(self):
         engine = self._make_engine()
         engine.inject_guidance("focus on login")

@@ -426,9 +426,30 @@ class FeishuWSClient:
 
     def close(self):
         """Best-effort cleanup for background resources."""
+
+        def _wait_engines_stopped(engines: list[Any], timeout_s: float = 2.0, interval_s: float = 0.05) -> None:
+            deadline = time.time() + max(0.1, timeout_s)
+            while time.time() < deadline:
+                any_running = False
+                for e in engines:
+                    try:
+                        if e and getattr(e, "is_running", False):
+                            any_running = True
+                            break
+                    except Exception:
+                        continue
+                if not any_running:
+                    return
+                time.sleep(interval_s)
+
         # 1) Stop long-running engines first (they may hold ACP subprocesses)
+        deep_engines: list[Any] = []
+        loop_engines: list[Any] = []
+        spec_engines: list[Any] = []
+
         try:
-            for engine in self._deep_engine_manager.list_engines():
+            deep_engines = list(self._deep_engine_manager.list_engines())
+            for engine in deep_engines:
                 try:
                     if engine and getattr(engine, "is_running", False):
                         engine.stop()
@@ -438,7 +459,8 @@ class FeishuWSClient:
             pass
 
         try:
-            for engine in self._loop_engine_manager.list_engines():
+            loop_engines = list(self._loop_engine_manager.list_engines())
+            for engine in loop_engines:
                 try:
                     if engine and getattr(engine, "is_running", False):
                         engine.stop()
@@ -448,7 +470,8 @@ class FeishuWSClient:
             pass
 
         try:
-            for engine in self._spec_engine_manager.list_engines():
+            spec_engines = list(self._spec_engine_manager.list_engines())
+            for engine in spec_engines:
                 try:
                     if engine and getattr(engine, "is_running", False):
                         engine.stop()
@@ -456,6 +479,11 @@ class FeishuWSClient:
                     pass
         except Exception:
             pass
+
+        # Give running engines a short grace period to exit run loops before hard cleanup.
+        _wait_engines_stopped(deep_engines)
+        _wait_engines_stopped(loop_engines)
+        _wait_engines_stopped(spec_engines)
 
         try:
             self._message_cache.stop_cleanup_thread()

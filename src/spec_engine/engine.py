@@ -916,6 +916,18 @@ class SpecEngine:
             except Exception:
                 pass
 
+            # 停止态下（例如服务关闭触发 cancel），phase 异常通常是 session cancel 或进程退出导致，
+            # 不应继续触发模型切换或失败任务持久化。
+            if self._run_state == EngineRunState.STOPPING:
+                reason = last_error or type(e).__name__
+                try:
+                    if len(reason) > 200:
+                        reason = reason[:200] + "…(truncated)"
+                except Exception:
+                    reason = last_error or type(e).__name__
+                logger.info("[Spec] Phase %s 中断（引擎停止中）: %s", phase.value, reason)
+                return ""
+
             if self._try_switch_model(callbacks):
                 # We do not retry here natively after switch model, to keep it simple and match old logic
                 # we just raise to fall into fail path. The original logic did a `continue` of the while True loop.
@@ -933,6 +945,10 @@ class SpecEngine:
             raise RuntimeError(f"Phase {phase.value} 失败，任务已保存(task_id={task_id}): {last_error}") from e
 
     def _try_switch_model(self, callbacks: SpecEngineCallbacks) -> bool:
+        # Stop/pause path must not trigger model failover.
+        if self._run_state != EngineRunState.RUNNING:
+            return False
+
         agent_type = str(self._agent_type or "").strip().lower()
 
         # CLI-only claude backend: no model list API, keep default startup behavior.
@@ -2945,6 +2961,17 @@ CRITERIA_2: FAIL
             return None
 
     def cleanup(self):
+        # 只要引擎尚未回到 IDLE，都可能仍有执行线程在访问 self._project；
+        # 此时只能请求停止，不能立即清空状态。
+        if self._run_state != EngineRunState.IDLE:
+            self._run_state = EngineRunState.STOPPING
+            if self._session:
+                try:
+                    self._session.cancel()
+                except Exception:
+                    pass
+            return
+
         if self._session:
             try:
                 self._session.close()

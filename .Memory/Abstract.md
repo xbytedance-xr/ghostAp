@@ -1,5 +1,8 @@
 # GhostAP 项目记忆索引
 
+## 2026-03-20
+- **Spec 停机并发导致模型失败与崩溃修复** - 修复停机阶段 Spec 仍触发模型切换与并发 cleanup 导致 `NoneType.cycles` 崩溃；补充 Spec/ws_client 回归测试并完成定向验证 → [2026-03-20.md](2026-03-20.md)
+
 ## 2026-03-19
 - **重构 ACP Provider 协议与 TTADK 会话隔离** - 构建统一的 ACP 协议提供者抽象层并强化 TTADK 桥接模式的会话路由拦截规则 → [2026-03-19_acp_provider.md](2026-03-19_acp_provider.md)
 - **工作区改动提交并推送** - 按规则执行 `git add/commit/push`，并补充 Memory 记录与推送后状态校验 → [2026-03-19.md](2026-03-19.md)
