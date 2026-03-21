@@ -9,6 +9,7 @@ class DeepCardState:
     title: str = ""
     content: str = ""
     progress_bar: Optional[str] = None
+    project_id: Optional[str] = None
     deep_project_id: Optional[str] = None
     is_executing: bool = False
     is_paused: bool = False

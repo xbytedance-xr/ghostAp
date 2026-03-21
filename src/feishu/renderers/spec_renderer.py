@@ -121,6 +121,7 @@ class SpecRenderer(BaseRenderer):
                     status_line=status_line,
                     duration_line=duration_line,
                     criteria_section=criteria_section,
+                    project_id=spec_project.project_id if spec_project else (project.project_id if project else None),
                     deep_project_id=spec_project_id,
                     compact=state["compact"],
                     expanded=state["expanded"],
@@ -172,6 +173,7 @@ class SpecRenderer(BaseRenderer):
                         status_line=status_line,
                         duration_line=duration_line,
                         criteria_section=criteria_section,
+                        project_id=sp.project_id,
                         deep_project_id=spec_project_id,
                         compact=state["compact"],
                         expanded=state["expanded"],
@@ -213,6 +215,7 @@ class SpecRenderer(BaseRenderer):
                     status_line=status_line,
                     duration_line=duration_line,
                     criteria_section=criteria_section,
+                    project_id=sp.project_id if engine and engine.project else (project.project_id if project else None),
                     deep_project_id=spec_project_id,
                     compact=state["compact"],
                     expanded=state["expanded"],
@@ -238,6 +241,7 @@ class SpecRenderer(BaseRenderer):
                     title=title,
                     content=content,
                     progress_bar=progress_bar,
+                    project_id=spec_project.project_id,
                     engine_name=f"Spec({engine_name})",
                     duration_line=duration_line,
                     deep_project_id=spec_project_id,
@@ -254,47 +258,18 @@ class SpecRenderer(BaseRenderer):
         def on_error(error: str):
             self.update_ui_state(spec_project_id, view_mode="error", view_context={"error": error})
 
-            content = reporter.format_error(error)
-            title = reporter.get_error_title()
             state = self.get_ui_state(spec_project_id)
-
-            # Best-effort extract recovery task_id from error for retry button.
-            saved_task_id = None
-            try:
-                m = re.search(r"task_id=([a-zA-Z0-9_\-]+)", str(error or ""))
-                saved_task_id = m.group(1) if m else None
-            except Exception:
-                saved_task_id = None
-
-            extra_buttons = None
-            if saved_task_id:
-                extra_buttons = [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🔁 重试"},
-                        "type": "primary",
-                        "value": {
-                            "action": "spec_retry",
-                            "task_id": saved_task_id,
-                            "project_id": project.project_id if project else spec_project_id,
-                            "deep_project_id": spec_project_id,
-                        },
-                    }
-                ]
-            msg_type, card_content = CardBuilder.build_deep_card(
+            active_engine = None if project else self.ctx.spec_engine_manager.get_active_engine(chat_id)
+            resolved_project_id = project.project_id if project else (
+                active_engine.project.project_id if active_engine and active_engine.project else None
+            )
+            msg_type, card_content = self.build_error_card(
                 project=project,
-                state=DeepCardState(
-                    title=title,
-                    content=content,
-                    engine_name=f"Spec({engine_name})",
-                    show_buttons=True,
-                    deep_project_id=spec_project_id,
-                    compact=state.get("compact", False),
-                    expanded=state.get("expanded", False),
-                    expand_ac=state.get("expand_ac", False),
-                    action_prefix="spec",
-                    extra_buttons=extra_buttons,
-                ),
+                engine_name=engine_name,
+                error_msg=error,
+                state=state,
+                project_id=resolved_project_id,
+                deep_project_id=spec_project_id,
             )
             _send_spec_message(card_content, msg_type, is_update=True)
             self.handler.add_reaction(message_id, EmojiReaction.on_error())
@@ -397,7 +372,9 @@ class SpecRenderer(BaseRenderer):
                 title=status_title,
                 content=status_content,
                 progress_bar=progress_bar,
+                project_id=project.project_id if project else engine.project.project_id,
                 is_executing=progress_info["is_running"],
+                is_paused=progress_info["is_paused"],
                 engine_name=f"Spec({engine_name})",
                 deep_project_id=project.project_id if project else engine.project.root_path,
                 compact=state["compact"],
@@ -451,6 +428,7 @@ class SpecRenderer(BaseRenderer):
                 status_line=status_line,
                 duration_line=duration_line,
                 criteria_section=criteria_section,
+                project_id=project.project_id if project else spec_project.project_id,
                 deep_project_id=project.project_id if project else spec_project.root_path,
                 compact=state["compact"],
                 expanded=state["expanded"],
@@ -495,6 +473,7 @@ class SpecRenderer(BaseRenderer):
                 status_line=status_line,
                 duration_line=duration_line,
                 criteria_section=criteria_section,
+                project_id=project.project_id if project else spec_project.project_id,
                 deep_project_id=project.project_id if project else spec_project.root_path,
                 compact=state["compact"],
                 expanded=state["expanded"],
@@ -504,9 +483,26 @@ class SpecRenderer(BaseRenderer):
         )
         self._patch_or_send(message_id, chat_id, card_content, msg_type, origin_message_id)
 
-    def _render_error_view(self, message_id: str, chat_id: str, project, engine, state, error_msg, origin_message_id):
+    def build_error_card(
+        self,
+        *,
+        project,
+        engine_name: str,
+        error_msg: str,
+        state: Optional[dict] = None,
+        project_id: Optional[str] = None,
+        deep_project_id: Optional[str] = None,
+        footer_note: Optional[str] = None,
+    ) -> tuple[str, str]:
         reporter = self.ctx.spec_reporter
-        engine_name = engine.engine_name
+        ui_state = state or self.get_default_ui_state()
+        resolved_project_id = project.project_id if project else project_id
+        resolved_deep_project_id = deep_project_id or resolved_project_id
+
+        if not isinstance(resolved_project_id, (str, int)):
+            resolved_project_id = None
+        if not isinstance(resolved_deep_project_id, (str, int)):
+            resolved_deep_project_id = resolved_project_id
 
         content = reporter.format_error(error_msg)
         title = reporter.get_error_title()
@@ -520,7 +516,6 @@ class SpecRenderer(BaseRenderer):
 
         extra_buttons = None
         if saved_task_id:
-            spec_project_id = project.project_id if project else engine.project.root_path
             extra_buttons = [
                 {
                     "tag": "button",
@@ -529,25 +524,37 @@ class SpecRenderer(BaseRenderer):
                     "value": {
                         "action": "spec_retry",
                         "task_id": saved_task_id,
-                        "project_id": project.project_id if project else spec_project_id,
-                        "deep_project_id": spec_project_id,
+                        "project_id": resolved_project_id or resolved_deep_project_id,
+                        "deep_project_id": resolved_deep_project_id,
                     },
                 }
             ]
 
-        msg_type, card_content = CardBuilder.build_deep_card(
+        return CardBuilder.build_deep_card(
             project=project,
             state=DeepCardState(
                 title=title,
                 content=content,
+                project_id=resolved_project_id,
                 engine_name=f"Spec({engine_name})",
                 show_buttons=True,
-                deep_project_id=project.project_id if project else engine.project.root_path,
-                compact=state["compact"],
-                expanded=state["expanded"],
+                deep_project_id=resolved_deep_project_id,
+                compact=ui_state["compact"],
+                expanded=ui_state["expanded"],
                 action_prefix="spec",
                 extra_buttons=extra_buttons,
+                footer_note=footer_note,
             ),
+        )
+
+    def _render_error_view(self, message_id: str, chat_id: str, project, engine, state, error_msg, origin_message_id):
+        msg_type, card_content = self.build_error_card(
+            project=project,
+            engine_name=engine.engine_name,
+            error_msg=error_msg,
+            state=state,
+            project_id=project.project_id if project else engine.project.project_id,
+            deep_project_id=project.project_id if project else engine.project.root_path,
         )
         self._patch_or_send(message_id, chat_id, card_content, msg_type, origin_message_id)
 

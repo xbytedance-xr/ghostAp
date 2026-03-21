@@ -39,6 +39,7 @@ class TestSpecTaskState:
             failure_reason="Phase build 失败: timeout",
             models_tried=["model1", "model2"],
             project_snapshot={"key": "value"},
+            runtime_context={"engine_name": "Coco", "current_model": "model2"},
         )
         d = state.to_dict()
         assert d["task_id"] == "abc12345"
@@ -55,6 +56,7 @@ class TestSpecTaskState:
         assert d["retry_count"] == 1
         assert d["models_tried"] == ["model1", "model2"]
         assert d["project_snapshot"] == {"key": "value"}
+        assert d["runtime_context"] == {"engine_name": "Coco", "current_model": "model2"}
 
     def test_from_dict(self):
         data = {
@@ -70,6 +72,7 @@ class TestSpecTaskState:
             "retry_count": 0,
             "models_tried": ["m1"],
             "project_snapshot": None,
+            "runtime_context": {"agent_type": "ttadk_codex", "engine_name": "TTADK", "current_model": "gpt-5.2"},
         }
         state = SpecTaskState.from_dict(data)
         assert state.task_id == "xyz99999"
@@ -84,6 +87,10 @@ class TestSpecTaskState:
         assert state.retry_count == 0
         assert state.models_tried == ["m1"]
         assert state.project_snapshot is None
+        assert state.runtime_context == {"agent_type": "ttadk_codex", "engine_name": "TTADK", "current_model": "gpt-5.2"}
+        assert state.resolved_engine_name() == "TTADK"
+        assert state.normalized_agent_type() == "ttadk_codex"
+        assert state.resolved_model_name() == "gpt-5.2"
 
     def test_from_dict_with_defaults(self):
         data = {"task_id": "min", "created_at": 123.0}
@@ -120,11 +127,34 @@ class TestSpecTaskState:
             retry_count=2,
             models_tried=["a", "b"],
             project_snapshot={"nested": {"data": [1, 2, 3]}},
+            runtime_context={"agent_type": "coco", "engine_name": "Coco", "current_model": "b", "models_tried": ["a", "b"]},
         )
         restored = SpecTaskState.from_dict(original.to_dict())
         assert restored.task_id == original.task_id
         assert restored.requirement == original.requirement
         assert restored.project_snapshot == original.project_snapshot
+        assert restored.runtime_context == original.runtime_context
+
+    def test_resolved_runtime_context_backfills_from_legacy_fields(self):
+        state = SpecTaskState(
+            task_id="legacy01",
+            created_at=1.0,
+            requirement="legacy",
+            project_path="/tmp/legacy",
+            chat_id="chat",
+            agent_type="ttadk_cursor",
+            current_cycle=1,
+            current_phase="build",
+            last_error="boom",
+            retry_count=1,
+            models_tried=["claude-3.7-sonnet", "gpt-5.2"],
+        )
+
+        runtime = state.resolved_runtime_context()
+        assert runtime["engine_name"] == "TTADK"
+        assert runtime["agent_type"] == "ttadk_cursor"
+        assert runtime["current_model"] == "gpt-5.2"
+        assert runtime["model_name"] == "gpt-5.2"
 
 
 class TestGenerateTaskId:

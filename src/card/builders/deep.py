@@ -80,7 +80,7 @@ class DeepBuilder:
             "type": config["type"],
             "value": {
                 "action": action_name,
-                "project_id": state.deep_project_id,
+                "project_id": state.project_id or state.deep_project_id,
                 "deep_project_id": state.deep_project_id,
             },
         }
@@ -269,7 +269,7 @@ class DeepBuilder:
             )
 
         # Main content processing
-        display_content = state.content
+        display_content = state.content if isinstance(state.content, str) else str(state.content or "")
 
         if state.expanded:
             # If expanded, show full content regardless of mode

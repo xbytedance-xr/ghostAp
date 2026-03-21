@@ -218,3 +218,84 @@ def test_different_projects_can_run_concurrently():
     assert max_active_by_project["proj1"] == 1
     assert max_active_by_project["proj2"] == 1
     assert max_total_concurrent == 2
+
+
+def test_update_project_id_requeues_queued_task_to_project_queue():
+    scheduler = TaskScheduler(max_concurrent=1, per_key_concurrency=1)
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocker(ctx):
+        started.set()
+        release.wait(timeout=2)
+        return "blocker"
+
+    scheduler.submit(TaskSpec(chat_id="chat1", name="blocker", project_id="p1"), blocker)
+    assert started.wait(timeout=1)
+
+    h = scheduler.submit(TaskSpec(chat_id="chat1", name="target"), lambda ctx: "ok")
+    state_before = scheduler.get_state(h.run_id)
+    assert state_before is not None
+    assert state_before.status == TaskStatus.QUEUED
+    assert state_before.assigned_queue_key == "chat1:DEFAULT"
+
+    assert scheduler.update_project_id(h.run_id, "p1") is True
+
+    state_after = scheduler.get_state(h.run_id)
+    assert state_after is not None
+    assert state_after.assigned_queue_key == "chat1:p1"
+    assert state_after.project_serial_key == "chat1:p1"
+
+    release.set()
+    assert h.wait(timeout=3).status == TaskStatus.SUCCEEDED
+
+
+def test_stop_cancels_all_queued_tasks_with_terminal_timestamps():
+    scheduler = TaskScheduler(max_concurrent=1, per_key_concurrency=1)
+    started = threading.Event()
+    release = threading.Event()
+
+    def long_task(ctx):
+        started.set()
+        release.wait(timeout=2)
+        return "long"
+
+    h_running = scheduler.submit(TaskSpec(chat_id="c", name="running"), long_task)
+    assert started.wait(timeout=1)
+
+    hq1 = scheduler.submit(TaskSpec(chat_id="c", name="q1", project_id="p1"), lambda ctx: "q1")
+    hq2 = scheduler.submit(TaskSpec(chat_id="c", name="q2", project_id="p2"), lambda ctx: "q2")
+
+    scheduler.stop(wait=True)
+
+    s1 = scheduler.get_state(hq1.run_id)
+    s2 = scheduler.get_state(hq2.run_id)
+    assert s1 is not None and s1.status == TaskStatus.CANCELED and s1.ended_at is not None
+    assert s2 is not None and s2.status == TaskStatus.CANCELED and s2.ended_at is not None
+
+    release.set()
+    assert h_running.wait(timeout=3).status == TaskStatus.SUCCEEDED
+
+
+def test_dispatch_submit_failure_rolls_back_running_and_sets_failed():
+    scheduler = TaskScheduler(max_concurrent=1, per_key_concurrency=1)
+
+    original_submit = scheduler._executor.submit
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("submit failed")
+
+    try:
+        scheduler._executor.submit = boom
+        h = scheduler.submit(TaskSpec(chat_id="c", name="t", project_id="p1"), lambda ctx: "ok")
+
+        result = h.wait(timeout=2)
+        assert result.status == TaskStatus.FAILED
+        st = h.get_state()
+        assert st.error == "submit failed"
+        assert scheduler._running_total == 0
+        assert scheduler._running_by_key[st.assigned_queue_key] == 0
+        assert scheduler._running_by_project[st.project_serial_key] == 0
+    finally:
+        scheduler._executor.submit = original_submit
+

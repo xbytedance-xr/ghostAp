@@ -502,5 +502,5 @@ class SpecReporter:
             "project_name": project.name,
             "project_id": project.project_id,
             "is_running": project.status == SpecProjectStatus.RUNNING,
-            "is_paused": project.status == SpecProjectStatus.PAUSED,
+            "is_paused": project.status in (SpecProjectStatus.PAUSED, SpecProjectStatus.CLARIFYING),
         }

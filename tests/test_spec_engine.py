@@ -29,7 +29,7 @@ from src.spec_engine.models import (
     SpecTaskStatus,
 )
 from src.spec_engine.reporter import SpecReporter
-from src.spec_engine.task_persistence import load_task_state
+from src.spec_engine.task_persistence import SpecTaskState, load_task_state
 from src.spec_engine.tracker import PhaseTracker
 from src.utils.spec_utils import parse_review_output_loose
 
@@ -1856,13 +1856,106 @@ class TestSpecEngineManager:
         engine = SpecEngine(chat_id="c1", root_path=str(tmp_path))
         engine._project = SpecProject.create(root_path=str(tmp_path))
         engine._project.requirement = "req"
+        engine._agent_type = "ttadk_codex"
+        engine.engine_name = "TTADK"
+        engine._current_model = "gpt-5.2"
+        engine._model_name = "gpt-5.2"
+        engine._models_tried = ["claude-3.7-sonnet", "gpt-5.2"]
         engine.save_state()  # default state path
 
         mgr = SpecEngineManager()
         e2 = mgr.load_or_create_from_disk("c1", str(tmp_path), engine_name="Coco")
         assert e2.project is not None
         assert e2.project.requirement == "req"
+        assert e2.engine_name == "TTADK"
+        assert e2._agent_type == "ttadk_codex"
+        assert e2._current_model == "gpt-5.2"
+        assert e2._models_tried == ["claude-3.7-sonnet", "gpt-5.2"]
         assert getattr(e2, "_resume_meta", None)
+
+    @patch("src.spec_engine.engine.get_settings")
+    def test_get_or_create_preserves_explicit_ttadk_identity(self, mock_settings):
+        s = MagicMock()
+        s.spec_max_cycles = 10
+        s.spec_convergence_window = 2
+        s.spec_execution_timeout = 300
+        mock_settings.return_value = s
+
+        mgr = SpecEngineManager()
+        engine = mgr.get_or_create(
+            "chat1",
+            "/tmp/a",
+            engine_name="TTADK",
+            agent_type="ttadk_codex",
+            model_name="gpt-5.2",
+        )
+        assert engine.engine_name == "TTADK"
+        assert engine._agent_type == "ttadk_codex"
+        assert engine._model_name == "gpt-5.2"
+
+    @patch("src.spec_engine.engine.delete_task_state")
+    @patch("src.spec_engine.engine.create_engine_session")
+    @patch("src.spec_engine.engine.get_settings")
+    def test_resume_completed_recovery_deletes_saved_task(self, mock_settings, mock_create_session, mock_delete_task_state):
+        s = MagicMock()
+        s.spec_max_cycles = 10
+        s.spec_max_cycles_limit = 5000
+        s.spec_execution_timeout = 300
+        s.spec_convergence_window = 2
+        s.spec_review_enabled = False
+        s.spec_cycle_tasks_max = 5
+        s.spec_cycle_output_max_chars = 200
+        s.spec_state_filename = ".spec_engine_state.json"
+        s.spec_artifacts_dirname = ".spec_engine"
+        s.spec_history_log_filename = "history.jsonl"
+        s.spec_persist_every_phase = False
+        s.spec_persist_phase_artifacts = False
+        s.spec_allow_resume_from_disk = True
+        s.spec_state_cycles_tail = 3
+        s.spec_state_work_items_tail = 10
+        s.spec_state_metrics_tail = 10
+        s.spec_generated_specs_retention = 10
+        s.spec_infinite_mode = False
+        s.spec_disable_convergence = False
+        s.spec_disable_early_stop = False
+        s.spec_min_cycles = 1
+        mock_settings.return_value = s
+        mock_create_session.return_value = MagicMock()
+
+        engine = SpecEngine(chat_id="chat1", root_path="/tmp/a")
+        project = SpecProject.create(root_path="/tmp/a")
+        project.requirement = "recover me"
+        project.status = SpecProjectStatus.PAUSED
+        project.task_id = "task123"
+        state = SpecTaskState(
+            task_id="task123",
+            created_at=time.time(),
+            requirement="recover me",
+            project_path="/tmp/a",
+            chat_id="chat1",
+            agent_type="ttadk_codex",
+            current_cycle=2,
+            current_phase="build",
+            last_error="boom",
+            retry_count=1,
+            models_tried=["claude-3.7-sonnet", "gpt-5.2"],
+            project_snapshot=project.to_dict(),
+            runtime_context={
+                "agent_type": "ttadk_codex",
+                "engine_name": "TTADK",
+                "model_name": "gpt-5.2",
+                "current_model": "gpt-5.2",
+                "models_tried": ["claude-3.7-sonnet", "gpt-5.2"],
+            },
+        )
+        engine.restore_from_task_state(state)
+        engine._run_cycle_loop = MagicMock(return_value="success")
+
+        resumed = engine.resume(SpecEngineCallbacks())
+
+        assert resumed is engine.project
+        assert engine.project.status == SpecProjectStatus.COMPLETED
+        mock_delete_task_state.assert_called_once_with("task123")
 
     @patch("src.spec_engine.engine.get_settings")
     def test_get_none_for_missing(self, mock_settings):
@@ -1926,6 +2019,8 @@ class TestSpecHandler:
             message_callback=MagicMock(),
             coco_manager=MagicMock(),
             claude_manager=MagicMock(),
+            aiden_manager=MagicMock(),
+            codex_manager=MagicMock(),
             ttadk_manager=MagicMock(),
             intent_recognizer=MagicMock(),
             scheduler=MagicMock(),

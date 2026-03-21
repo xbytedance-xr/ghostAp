@@ -2164,7 +2164,15 @@ class TestCrossModeContextSharing:
         return ProjectContextManager()
 
     def test_all_modes_entries_coexist(self, ctx):
-        """所有 6 种模式的条目在同一上下文中共存"""
+        """已写入的多模式条目在同一上下文中共存"""
+        modes = [
+            ContextSourceMode.SMART,
+            ContextSourceMode.COCO,
+            ContextSourceMode.CLAUDE,
+            ContextSourceMode.SHELL,
+            ContextSourceMode.TTADK,
+        ]
+
         ctx.add_conversation("user", "smart cmd", ContextSourceMode.SMART)
         ctx.add_conversation("user", "coco msg", ContextSourceMode.COCO)
         ctx.add_conversation("user", "claude msg", ContextSourceMode.CLAUDE)
@@ -2172,10 +2180,10 @@ class TestCrossModeContextSharing:
         ctx.add_conversation("user", "ttadk msg", ContextSourceMode.TTADK)
         ctx.add_deep_engine_result({"name": "task1", "tasks": []})
 
-        assert ctx.entry_count == 6
+        assert ctx.entry_count == len(modes) + 1
 
-        # 所有模式的条目均可查询
-        for mode in ContextSourceMode:
+        # 仅校验本用例写入过的模式；新增模式（如 aiden/codex）不应破坏该断言。
+        for mode in modes + [ContextSourceMode.DEEP_ENGINE]:
             entries = ctx.get_entries_by_mode(mode)
             assert len(entries) == 1, f"Mode {mode.value} should have exactly 1 entry"
 

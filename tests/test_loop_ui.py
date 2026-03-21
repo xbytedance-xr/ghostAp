@@ -15,6 +15,8 @@ def _make_handler_context(**overrides) -> HandlerContext:
         message_callback=MagicMock(),
         coco_manager=MagicMock(),
         claude_manager=MagicMock(),
+        aiden_manager=MagicMock(),
+        codex_manager=MagicMock(),
         ttadk_manager=MagicMock(),
         intent_recognizer=MagicMock(),
         scheduler=MagicMock(),

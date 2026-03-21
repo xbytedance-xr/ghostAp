@@ -150,5 +150,5 @@ class TestLoopRenderer:
         
         assert "Test Loop Error" in card_elements_str or "Test Loop Error" in card_content
         assert "loop_resume" in card_elements_str
-        assert "重试" in card_elements_str
+        assert ("重试" in card_elements_str) or ("\\u91cd\\u8bd5" in card_elements_str)
         assert "p1" in card_elements_str  # project_id should be included in the action

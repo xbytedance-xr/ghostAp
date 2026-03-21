@@ -15,15 +15,21 @@ def normalize_ttadk_cwd(cwd: Optional[str]) -> Optional[str]:
 
     约束：best-effort，不抛异常。
     - None/空串 -> None
-    - 其他 -> Path(cwd).expanduser().resolve() 的字符串形式
+    - 其他 -> `expanduser` + `absolute`（不做 realpath/symlink 展开）
 
-    说明：TTADKModelCache 仅对“绝对路径 cwd”启用项目级落盘。
-    上层入口统一归一化可避免传入 "." 导致只走内存不落盘。
+    说明：
+    - TTADKModelCache 仅对“绝对路径 cwd”启用项目级落盘，上层入口统一归一化可避免传入
+      "." 导致只走内存不落盘。
+    - 这里刻意不做 `resolve()`，避免把 `/tmp` 折叠为 `/private/tmp`，导致上层日志/断言
+      与传入值语义不一致。
     """
     raw = (cwd or "").strip()
     if not raw:
         return None
     try:
-        return str(Path(raw).expanduser().resolve())
+        p = Path(raw).expanduser()
+        if not p.is_absolute():
+            p = Path.cwd() / p
+        return str(p.absolute())
     except Exception:
         return None

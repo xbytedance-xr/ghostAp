@@ -1,4 +1,5 @@
 import json
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -7,6 +8,7 @@ from src.feishu.handlers.spec import SpecHandler
 from src.feishu.renderers.spec_renderer import SpecRenderer
 from src.feishu.ws_client import FeishuWSClient
 from src.spec_engine.engine import SpecEngineCallbacks
+from src.spec_engine.models import SpecProject, SpecProjectStatus
 from src.spec_engine.reporter import SpecReporter
 
 
@@ -117,6 +119,8 @@ def test_spec_error_card_contains_keywords_and_retry_button():
     mock_handler = MagicMock()
     mock_handler.ctx = MagicMock()
     mock_handler.ctx.spec_reporter = SpecReporter()
+    mock_handler.ctx.spec_engine_manager = MagicMock()
+    mock_handler.ctx.spec_engine_manager.get_active_engine.return_value = None
     mock_handler.settings = MagicMock()
     mock_handler.settings.card_deep_compact_default = False
     mock_handler.settings.default_reply_mode = "chat"
@@ -169,3 +173,94 @@ def test_spec_error_card_contains_keywords_and_retry_button():
     ]
     assert hits, "missing spec_retry button"
     assert (hits[0].get("value") or {}).get("task_id") == "f5f3dcb4"
+
+
+def test_spec_status_card_shows_resume_when_paused():
+    mock_handler = MagicMock()
+    mock_handler.ctx = MagicMock()
+    mock_handler.ctx.spec_reporter = SpecReporter()
+    mock_handler.settings = MagicMock()
+    mock_handler.settings.card_deep_compact_default = False
+    mock_handler.settings.engine_timeout_warning_seconds = 999999
+    mock_handler.patch_message = MagicMock(return_value=False)
+    mock_handler.reply_message = MagicMock()
+    mock_handler.send_message = MagicMock()
+
+    sent = {}
+
+    renderer = SpecRenderer(mock_handler)
+    renderer._patch_or_send = lambda message_id, chat_id, card_content, msg_type, origin_message_id: sent.update(
+        card=card_content, msg_type=msg_type
+    )
+
+    project = SimpleNamespace(project_id="proj_1", root_path="/tmp/spec")
+    spec_project = SpecProject.create(root_path="/tmp/spec")
+    spec_project.status = SpecProjectStatus.PAUSED
+    spec_project.started_at = time.time() - 5
+    engine = SimpleNamespace(engine_name="Coco", project=spec_project)
+
+    renderer._render_status_view("mid", "cid", project, engine, renderer.get_default_ui_state(), None)
+
+    payload = json.loads(sent["card"])
+
+    def _walk(x):
+        if isinstance(x, dict):
+            yield x
+            for v in x.values():
+                yield from _walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                yield from _walk(v)
+
+    actions = {
+        (d.get("value") or {}).get("action")
+        for d in _walk(payload)
+        if d.get("tag") == "button" and (d.get("value") or {}).get("action")
+    }
+    assert "spec_resume" in actions
+    assert "spec_stop" in actions
+    assert "spec_pause" not in actions
+
+
+def test_spec_card_buttons_keep_project_id_separate_from_ui_state_key():
+    state = {
+        "compact": False,
+        "expanded": False,
+        "expand_ac": False,
+    }
+    renderer_handler = MagicMock()
+    renderer_handler.ctx = MagicMock()
+    renderer_handler.ctx.spec_reporter = SpecReporter()
+    renderer_handler.settings = MagicMock()
+    renderer_handler.settings.card_deep_compact_default = False
+    renderer_handler.settings.engine_timeout_warning_seconds = 999999
+    renderer = SpecRenderer(renderer_handler)
+
+    spec_project = SpecProject.create(root_path="/tmp/spec")
+    spec_project.project_id = "proj_123"
+    spec_project.status = SpecProjectStatus.RUNNING
+    spec_project.started_at = time.time() - 5
+    engine = SimpleNamespace(engine_name="Coco", project=spec_project)
+
+    sent = {}
+    renderer._patch_or_send = lambda message_id, chat_id, card_content, msg_type, origin_message_id: sent.update(
+        card=card_content
+    )
+    renderer._render_status_view("mid", "cid", None, engine, state, None)
+
+    payload = json.loads(sent["card"])
+
+    def _walk(x):
+        if isinstance(x, dict):
+            yield x
+            for v in x.values():
+                yield from _walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                yield from _walk(v)
+
+    button = next(
+        d for d in _walk(payload) if d.get("tag") == "button" and (d.get("value") or {}).get("action") == "spec_pause"
+    )
+    assert button["value"]["project_id"] == "proj_123"
+    assert button["value"]["deep_project_id"] == "/tmp/spec"

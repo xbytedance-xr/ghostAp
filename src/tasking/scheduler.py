@@ -147,6 +147,8 @@ class TaskRunState:
 
     spec: TaskSpec
     run_id: str
+    assigned_queue_key: str = ""
+    project_serial_key: Optional[str] = None
     status: TaskStatus = TaskStatus.QUEUED
     created_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
@@ -288,6 +290,7 @@ class TaskScheduler:
         self._cv = threading.Condition(self._lock)
         self._queues: dict[str, Deque[_QueuedTask]] = defaultdict(deque)  # queue_key -> queue
         self._running_by_key: dict[str, int] = defaultdict(int)
+        self._running_by_project: dict[str, int] = defaultdict(int)
         self._running_total = 0
         self._states: dict[str, TaskRunState] = {}
         self._listeners: list[Callable[[TaskEvent], None]] = []
@@ -340,6 +343,32 @@ class TaskScheduler:
         """lowerCamelCase 兼容别名：`add_listener()`。"""
         return self.add_listener(listener)
 
+    @staticmethod
+    def _build_project_serial_key(chat_id: str, project_id: Optional[str]) -> Optional[str]:
+        if not project_id:
+            return None
+        return f"{chat_id}:{project_id}"
+
+    def _requeue_item_unlocked(self, queue_key: str, item: _QueuedTask) -> None:
+        q = self._queues[queue_key]
+        if item.spec.priority == TaskPriority.HIGH:
+            q.appendleft(item)
+        else:
+            q.append(item)
+
+    def _drain_queued_tasks_unlocked(self) -> None:
+        now = time.time()
+        for key, q in list(self._queues.items()):
+            while q:
+                item = q.popleft()
+                st = self._states.get(item.run_id)
+                if not st or st.status != TaskStatus.QUEUED:
+                    continue
+                st.status = TaskStatus.CANCELED
+                st.ended_at = now
+                self._emit(item.run_id, TaskStatus.CANCELED)
+            self._queues[key] = deque()
+
     def submit(self, spec: TaskSpec, fn: Callable[[TaskContext], Any]) -> TaskHandle:
         """提交任务（入队）并返回 `TaskHandle`。
 
@@ -360,7 +389,13 @@ class TaskScheduler:
                 raise RateLimitExceededException(f"Rate limit exceeded for task type {spec.task_type}")
 
         run_id = str(uuid.uuid4())[:10]
-        state = TaskRunState(spec=spec, run_id=run_id)
+        key = spec.get_effective_queue_key()
+        state = TaskRunState(
+            spec=spec,
+            run_id=run_id,
+            assigned_queue_key=key,
+            project_serial_key=self._build_project_serial_key(spec.chat_id, spec.project_id),
+        )
 
         with self._cv:
             if self._stopped:
@@ -371,17 +406,13 @@ class TaskScheduler:
             self._by_chat[spec.chat_id].append(run_id)
             if spec.project_id:
                 self._by_project[str(spec.project_id)].append(run_id)
-            key = spec.get_effective_queue_key()
             q = self._queues[key]
 
             # Capture current context
             ctx = contextvars.copy_context()
             item = _QueuedTask(run_id=run_id, spec=spec, fn=fn, context=ctx)
 
-            if spec.priority == TaskPriority.HIGH:
-                q.appendleft(item)
-            else:
-                q.append(item)
+            self._requeue_item_unlocked(key, item)
 
             self._emit(run_id, TaskStatus.QUEUED)
             self._cv.notify_all()
@@ -409,8 +440,26 @@ class TaskScheduler:
             if old_project == project_id:
                 return True
 
-            # replace frozen TaskSpec
-            state.spec = replace(state.spec, project_id=str(project_id))
+            new_spec = replace(state.spec, project_id=str(project_id))
+            new_queue_key = new_spec.get_effective_queue_key()
+            new_project_key = self._build_project_serial_key(new_spec.chat_id, new_spec.project_id)
+
+            if state.status == TaskStatus.QUEUED and state.assigned_queue_key != new_queue_key:
+                item = self._pop_queued_item_unlocked(run_id, state.assigned_queue_key)
+                if item:
+                    item = _QueuedTask(run_id=item.run_id, spec=new_spec, fn=item.fn, context=item.context)
+                    self._requeue_item_unlocked(new_queue_key, item)
+                    state.assigned_queue_key = new_queue_key
+            elif state.status == TaskStatus.RUNNING and state.project_serial_key != new_project_key:
+                if state.project_serial_key:
+                    self._running_by_project[state.project_serial_key] = max(
+                        0, self._running_by_project[state.project_serial_key] - 1
+                    )
+                if new_project_key:
+                    self._running_by_project[new_project_key] += 1
+
+            state.spec = new_spec
+            state.project_serial_key = new_project_key
 
             # update indexes
             if old_project:
@@ -422,6 +471,7 @@ class TaskScheduler:
             self._emit(
                 run_id, state.status, progress_message=state.progress_message, progress_percent=state.progress_percent
             )
+            self._cv.notify_all()
             return True
 
     def updateProjectId(self, runId: str, projectId: Optional[str]) -> bool:
@@ -444,7 +494,7 @@ class TaskScheduler:
             state.cancellation.cancel()
 
             if state.status == TaskStatus.QUEUED:
-                self._remove_from_queue_unlocked(run_id, state.spec.get_effective_queue_key())
+                self._remove_from_queue_unlocked(run_id, state.assigned_queue_key or state.spec.get_effective_queue_key())
                 state.status = TaskStatus.CANCELED
                 state.ended_at = time.time()
                 self._emit(run_id, TaskStatus.CANCELED)
@@ -611,8 +661,9 @@ class TaskScheduler:
         """
         with self._cv:
             self._stopped = True
+            self._drain_queued_tasks_unlocked()
             self._cv.notify_all()
-        if wait:
+        if wait or shutdown_executor:
             self._dispatcher.join(timeout=2)
         if shutdown_executor:
             try:
@@ -642,16 +693,34 @@ class TaskScheduler:
                     continue
 
                 self._running_total += 1
-                key = task.spec.get_effective_queue_key()
-                self._running_by_key[key] += 1
                 state = self._states.get(task.run_id)
+                key = state.assigned_queue_key if state and state.assigned_queue_key else task.spec.get_effective_queue_key()
+                self._running_by_key[key] += 1
+                if state and state.project_serial_key:
+                    self._running_by_project[state.project_serial_key] += 1
                 if state:
                     state.status = TaskStatus.RUNNING
                     state.started_at = time.time()
                     self._emit(task.run_id, TaskStatus.RUNNING)
                 self._cv.notify_all()
 
-                fut = self._executor.submit(self._run_wrapper, task)
+                try:
+                    fut = self._executor.submit(self._run_wrapper, task)
+                except Exception as e:
+                    # rollback running counters and converge to terminal state
+                    self._running_total = max(0, self._running_total - 1)
+                    self._running_by_key[key] = max(0, self._running_by_key[key] - 1)
+                    if state and state.project_serial_key:
+                        self._running_by_project[state.project_serial_key] = max(
+                            0, self._running_by_project[state.project_serial_key] - 1
+                        )
+                    if state:
+                        state.status = TaskStatus.FAILED
+                        state.error = str(e)
+                        state.ended_at = time.time()
+                        self._emit(task.run_id, TaskStatus.FAILED, error=str(e))
+                    self._cv.notify_all()
+                    continue
                 if state:
                     state.future = fut
 
@@ -686,9 +755,17 @@ class TaskScheduler:
                     st.ended_at = time.time()
                     self._emit(item.run_id, TaskStatus.CANCELED)
                     continue
+                if st and st.project_serial_key and self._running_by_project.get(st.project_serial_key, 0) >= 1:
+                    # keep queue order; try other queues first
+                    break
                 break
 
             if not q:
+                continue
+
+            head = q[0]
+            head_state = self._states.get(head.run_id)
+            if head_state and head_state.project_serial_key and self._running_by_project.get(head_state.project_serial_key, 0) >= 1:
                 continue
             return q.popleft()
 
@@ -750,8 +827,11 @@ class TaskScheduler:
         finally:
             with self._cv:
                 self._running_total = max(0, self._running_total - 1)
-                key = spec.get_effective_queue_key()
+                st = self._states.get(run_id)
+                key = st.assigned_queue_key if st and st.assigned_queue_key else spec.get_effective_queue_key()
                 self._running_by_key[key] = max(0, self._running_by_key[key] - 1)
+                if st and st.project_serial_key:
+                    self._running_by_project[st.project_serial_key] = max(0, self._running_by_project[st.project_serial_key] - 1)
                 self._cv.notify_all()
 
     def _emit(
@@ -790,13 +870,23 @@ class TaskScheduler:
                 # listeners must never break scheduler
                 pass
 
-    def _remove_from_queue_unlocked(self, run_id: str, key: str):
-        """从某个队列中移除指定 run_id（调用方需持锁）。"""
+    def _pop_queued_item_unlocked(self, run_id: str, key: str) -> Optional[_QueuedTask]:
         q = self._queues.get(key)
         if not q:
-            return
-        new_q = deque(item for item in q if item.run_id != run_id)
+            return None
+        new_q: Deque[_QueuedTask] = deque()
+        found: Optional[_QueuedTask] = None
+        for item in q:
+            if found is None and item.run_id == run_id:
+                found = item
+                continue
+            new_q.append(item)
         self._queues[key] = new_q
+        return found
+
+    def _remove_from_queue_unlocked(self, run_id: str, key: str):
+        """从某个队列中移除指定 run_id（调用方需持锁）。"""
+        self._pop_queued_item_unlocked(run_id, key)
 
     def _remove_from_index_unlocked(self, index: dict[str, Deque[str]], key: str, run_id: str):
         """从索引（by_chat/by_project）中移除 run_id（调用方需持锁）。"""

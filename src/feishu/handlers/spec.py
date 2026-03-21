@@ -9,11 +9,8 @@ import time
 from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
-from ...spec_engine.models import (
-    SpecProject,
-    SpecProjectStatus,
-)
-from ...spec_engine.task_persistence import delete_task_state, list_pending_tasks, load_task_state
+from ...spec_engine.models import SpecProjectStatus
+from ...spec_engine.task_persistence import list_pending_tasks, load_task_state
 from ...tasking import TaskPriority, TaskSpec
 from ...utils.errors import fmt_error
 from ...utils.text import generate_task_id
@@ -182,16 +179,13 @@ class SpecHandler(BaseHandler):
 
                 err_msg = get_error_detail(e)
 
-                error_content = reporter.format_error(err_msg)
-                error_title = reporter.get_error_title()
-                err_msg_type, err_card = CardBuilder.build_deep_card(
+                err_msg_type, err_card = self.renderer.build_error_card(
                     project=project,
-                    title=error_title,
-                    content=f"{error_content}\n\n{self.format_ref_note(message_id, request_id)}"
-                    if request_id
-                    else error_content,
-                    engine_name=f"Spec({engine_name})",
-                    show_buttons=False,
+                    engine_name=engine_name,
+                    error_msg=err_msg,
+                    project_id=project.project_id if project else None,
+                    deep_project_id=project.project_id if project else root_path,
+                    footer_note=self.format_ref_note(message_id, request_id) if request_id else None,
                 )
                 self.send_message(chat_id, err_card, err_msg_type, origin_message_id=message_id, request_id=request_id)
 
@@ -653,7 +647,8 @@ class SpecHandler(BaseHandler):
         request_id = self.ensure_request_id(
             message_id, chat_id=chat_id, project_id=(project.project_id if project else None)
         )
-        engine_name = state.agent_type.capitalize() if state.agent_type else "Coco"
+        runtime = state.resolved_runtime_context()
+        engine_name = state.resolved_engine_name()
         reporter = self.ctx.spec_reporter
 
         content = reporter.format_analyzing_start(state.requirement)
@@ -669,24 +664,23 @@ class SpecHandler(BaseHandler):
             message_id, card_content, msg_type=msg_type, origin_message_id=message_id, request_id=request_id
         )
 
-        engine = self.ctx.spec_engine_manager.get_or_create(chat_id, project_path, engine_name=engine_name)
+        engine = self.ctx.spec_engine_manager.get_or_create(
+            chat_id,
+            project_path,
+            engine_name=engine_name,
+            agent_type=runtime.get("agent_type"),
+            model_name=runtime.get("model_name") or runtime.get("current_model"),
+        )
 
-        if state.project_snapshot:
-            try:
-                engine._project = SpecProject.from_dict(state.project_snapshot)
-                # Ensure status is PAUSED so resume() accepts it
-                engine._project.status = SpecProjectStatus.PAUSED
-                # Force update total cycle count from snapshot if needed
-                if engine._project.cycles:
-                    engine._project.cycle_count_total = max(
-                        engine._project.cycle_count_total, engine._project.cycles[-1].cycle_number
-                    )
-            except Exception as e:
-                logger.warning("恢复 project_snapshot 失败: %s", e)
-
-        _on_rate_limit = self.create_rate_limit_callback(
+        on_rate_limit = self.create_rate_limit_callback(
             chat_id, message_id, project, f"Spec({engine_name})", request_id
         )
+        try:
+            engine.restore_from_task_state(state, on_rate_limit=on_rate_limit)
+        except Exception as e:
+            logger.warning("恢复任务上下文失败(task_id=%s): %s", task_id, e, exc_info=True)
+            self.reply_message(message_id, fmt_error("恢复任务上下文", str(e)))
+            return
 
         def run_spec_engine():
             try:
@@ -694,7 +688,6 @@ class SpecHandler(BaseHandler):
                 # Use resume() instead of execute() to preserve state
                 # The execute() method re-initializes the project, wiping previous progress.
                 engine.resume(callbacks)
-                delete_task_state(task_id)
             except Exception as e:
                 if isinstance(e, (TimeoutError, asyncio.TimeoutError)):
                     logger.warning("Spec Engine 恢复超时 (task_id=%s): %s", task_id, e)
@@ -705,16 +698,13 @@ class SpecHandler(BaseHandler):
 
                 err_msg = get_error_detail(e)
 
-                error_content = reporter.format_error(err_msg)
-                error_title = reporter.get_error_title()
-                err_msg_type, err_card = CardBuilder.build_deep_card(
+                err_msg_type, err_card = self.renderer.build_error_card(
                     project=project,
-                    title=error_title,
-                    content=f"{error_content}\n\n{self.format_ref_note(message_id, request_id)}"
-                    if request_id
-                    else error_content,
-                    engine_name=f"Spec({engine_name})",
-                    show_buttons=False,
+                    engine_name=engine_name,
+                    error_msg=err_msg,
+                    project_id=project.project_id if project else None,
+                    deep_project_id=project.project_id if project else project_path,
+                    footer_note=self.format_ref_note(message_id, request_id) if request_id else None,
                 )
                 self.send_message(chat_id, err_card, err_msg_type, origin_message_id=message_id, request_id=request_id)
 

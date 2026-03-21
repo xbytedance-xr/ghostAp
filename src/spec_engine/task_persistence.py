@@ -38,6 +38,7 @@ class SpecTaskState:
     failure_reason: str = ""
     models_tried: list[str] = field(default_factory=list)
     project_snapshot: Optional[dict] = None
+    runtime_context: Optional[dict] = None
 
     def to_dict(self) -> dict:
         return {
@@ -55,6 +56,7 @@ class SpecTaskState:
             "retry_count": self.retry_count,
             "models_tried": self.models_tried,
             "project_snapshot": self.project_snapshot,
+            "runtime_context": self.runtime_context,
         }
 
     @classmethod
@@ -71,6 +73,7 @@ class SpecTaskState:
         retry_count = int(data.get("retry_count") or 0)
         models_tried = data.get("models_tried") or []
         project_snapshot = data.get("project_snapshot")
+        runtime_context = data.get("runtime_context") if isinstance(data.get("runtime_context"), dict) else None
 
         status = (data.get("status") or "").strip() or "失败"
         failure_reason = (data.get("failure_reason") or "").strip()
@@ -96,7 +99,46 @@ class SpecTaskState:
             failure_reason=failure_reason,
             models_tried=models_tried,
             project_snapshot=project_snapshot,
+            runtime_context=runtime_context,
         )
+
+    def resolved_runtime_context(self) -> dict:
+        ctx = dict(self.runtime_context or {})
+        agent_type = str(ctx.get("agent_type") or self.agent_type or "coco").strip().lower() or "coco"
+        engine_name = str(ctx.get("engine_name") or "").strip()
+        if not engine_name:
+            if agent_type.startswith("ttadk_"):
+                engine_name = "TTADK"
+            elif agent_type == "claude":
+                engine_name = "Claude"
+            else:
+                engine_name = "Coco"
+
+        models_tried = [str(model).strip() for model in (ctx.get("models_tried") or self.models_tried or []) if str(model).strip()]
+        current_model = str(ctx.get("current_model") or "").strip()
+        if not current_model and models_tried:
+            current_model = models_tried[-1]
+
+        model_name = str(ctx.get("model_name") or "").strip()
+        if not model_name:
+            model_name = current_model
+
+        return {
+            "agent_type": agent_type,
+            "engine_name": engine_name,
+            "model_name": model_name or None,
+            "current_model": current_model or None,
+            "models_tried": models_tried,
+        }
+
+    def resolved_engine_name(self) -> str:
+        return str(self.resolved_runtime_context().get("engine_name") or "Coco")
+
+    def resolved_model_name(self) -> Optional[str]:
+        return self.resolved_runtime_context().get("model_name")
+
+    def normalized_agent_type(self) -> str:
+        return str(self.resolved_runtime_context().get("agent_type") or "coco")
 
 
 def generate_task_id() -> str:

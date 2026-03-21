@@ -111,7 +111,11 @@ class LoopRenderer(BaseRenderer):
             title = reporter.get_iteration_start_title(current, max_iterations)
 
             warning_banner = None
-            if loop_project and loop_project.duration() and loop_project.duration() > self.settings.engine_timeout_warning_seconds:
+            duration_raw = loop_project.duration() if loop_project else 0
+            timeout_raw = getattr(self.settings, "engine_timeout_warning_seconds", 0)
+            duration_s = duration_raw if isinstance(duration_raw, (int, float)) else 0
+            timeout_s = timeout_raw if isinstance(timeout_raw, (int, float)) else 0
+            if duration_s and duration_s > timeout_s:
                 warning_banner = "执行耗时较长，若无响应可尝试停止后重试"
 
             msg_type, card_content = CardBuilder.build_deep_card(
@@ -389,7 +393,11 @@ class LoopRenderer(BaseRenderer):
         progress_info = reporter.get_progress_info(engine.project)
 
         warning_banner = None
-        if progress_info["is_running"] and engine.project.duration() and engine.project.duration() > self.settings.engine_timeout_warning_seconds:
+        duration_raw = engine.project.duration()
+        timeout_raw = getattr(self.settings, "engine_timeout_warning_seconds", 0)
+        duration_s = duration_raw if isinstance(duration_raw, (int, float)) else 0
+        timeout_s = timeout_raw if isinstance(timeout_raw, (int, float)) else 0
+        if progress_info["is_running"] and duration_s and duration_s > timeout_s:
             warning_banner = "执行耗时较长，若无响应可尝试停止后重试"
 
         msg_type, card_content = CardBuilder.build_deep_card(

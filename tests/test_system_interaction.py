@@ -122,6 +122,20 @@ class TestSystemInteraction(unittest.TestCase):
         content = args[0][1]
         self.assertIn("项目管理", content)
 
+    def test_help_more_category_lists_full_spec_commands(self):
+        self.handler.patch_message.return_value = True
+
+        self.handler.handle_help_category("msg_5", "chat_1", "more", origin_message_id="origin_msg_id")
+
+        args = self.handler.patch_message.call_args
+        content = args[0][1]
+        self.assertIn("/spec_pause", content)
+        self.assertIn("/spec_resume", content)
+        self.assertIn("/spec_metrics", content)
+        self.assertIn("/spec_save", content)
+        self.assertIn("/spec_export", content)
+        self.assertIn("/spec_recover", content)
+
 
 if __name__ == "__main__":
     unittest.main()

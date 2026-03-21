@@ -108,7 +108,8 @@ class CoreBuilder:
     def _build_footer_buttons(
         project: Optional[ProjectContext], is_coco_mode: bool = False, is_claude_mode: bool = False, is_ttadk_mode: bool = False
     ) -> list[dict]:
-        project_id = project.project_id if project else None
+        project_id_raw = getattr(project, "project_id", None) if project else None
+        project_id = str(project_id_raw) if isinstance(project_id_raw, (str, int)) else None
         return build_mode_buttons(is_coco_mode, project_id, is_claude_mode, is_ttadk_mode)
 
     @staticmethod
@@ -132,6 +133,8 @@ class CoreBuilder:
                 "title": {"tag": "plain_text", "content": header_title},
                 "template": header_template,
             },
+            # Backward compatibility: some callers/tests still read top-level `elements`.
+            "elements": elements,
             "body": {
                 "elements": elements,
             },

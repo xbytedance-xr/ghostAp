@@ -174,6 +174,7 @@ class SpecEngine:
         self._retry_policy = RetryPolicy()
         self._models_tried: list[str] = []
         self._current_model: Optional[str] = None
+        self._on_rate_limit: Optional[Callable[[int], None]] = None
         self._saved_task_id: Optional[str] = None
         # Idempotency guard for failed task persistence: avoid saving the same failure multiple times.
         # Format: (cycle_num, phase.value, task_id)
@@ -257,6 +258,84 @@ class SpecEngine:
         # ACP coco backend
         self._current_model = get_coco_model_manager().get_current_model()
         self._models_tried = [self._current_model] if self._current_model else []
+
+    @staticmethod
+    def _infer_engine_name(agent_type: Optional[str]) -> str:
+        normalized = str(agent_type or "").strip().lower()
+        if normalized.startswith("ttadk_"):
+            return "TTADK"
+        if normalized == "claude":
+            return "Claude"
+        return "Coco"
+
+    def _build_runtime_context(self) -> dict:
+        return {
+            "agent_type": str(self._agent_type or "").strip().lower() or "coco",
+            "engine_name": self.engine_name or self._infer_engine_name(self._agent_type),
+            "model_name": self._model_name,
+            "current_model": self._current_model,
+            "models_tried": list(self._models_tried),
+        }
+
+    def _restore_runtime_context(
+        self,
+        runtime_context: Optional[dict],
+        *,
+        saved_task_id: Optional[str] = None,
+        on_rate_limit: Optional[Callable[[int], None]] = None,
+    ) -> None:
+        runtime = dict(runtime_context or {})
+        self._agent_type = str(runtime.get("agent_type") or self._agent_type or "coco").strip().lower() or "coco"
+        self.engine_name = str(runtime.get("engine_name") or self.engine_name or self._infer_engine_name(self._agent_type)).strip() or self._infer_engine_name(self._agent_type)
+
+        restored_models = [
+            str(model).strip() for model in (runtime.get("models_tried") or []) if str(model).strip()
+        ]
+        restored_current_model = str(runtime.get("current_model") or "").strip() or None
+        restored_model_name = str(runtime.get("model_name") or "").strip() or None
+
+        self._model_name = restored_model_name or restored_current_model or self._model_name
+        self._current_model = restored_current_model or self._current_model
+        self._models_tried = restored_models
+
+        if self._current_model and self._current_model not in self._models_tried:
+            self._models_tried.append(self._current_model)
+        if not self._current_model and self._models_tried:
+            self._current_model = self._models_tried[-1]
+        if not self._model_name:
+            self._model_name = self._current_model
+
+        if not self._models_tried and self._agent_type != "claude":
+            self._initialize_model_context()
+
+        self._on_rate_limit = on_rate_limit
+        self._saved_task_id = saved_task_id or self._saved_task_id
+        self._saved_task_signature = None
+        if self._project and self._saved_task_id:
+            self._project.task_id = self._saved_task_id
+
+    def restore_from_task_state(
+        self,
+        state: SpecTaskState,
+        *,
+        on_rate_limit: Optional[Callable[[int], None]] = None,
+    ) -> SpecProject:
+        if not state.project_snapshot:
+            raise ValueError("恢复失败：缺少 project_snapshot")
+
+        project = SpecProject.from_dict(state.project_snapshot)
+        project.status = SpecProjectStatus.PAUSED
+        project.task_id = state.task_id
+        if project.cycles:
+            project.cycle_count_total = max(project.cycle_count_total, project.cycles[-1].cycle_number)
+
+        self._project = project
+        self._restore_runtime_context(
+            state.resolved_runtime_context(),
+            saved_task_id=state.task_id,
+            on_rate_limit=on_rate_limit,
+        )
+        return project
 
     def _send_prompt_with_retry(
         self,
@@ -670,6 +749,8 @@ class SpecEngine:
         callbacks = self._wrap_callbacks(callbacks or SpecEngineCallbacks())
         self._run_state = EngineRunState.RUNNING
         self._on_rate_limit = on_rate_limit
+        self._saved_task_id = None
+        self._saved_task_signature = None
         max_cycles = self._resolve_max_cycles(self.settings.spec_max_cycles)
         self._termination_reason = None
 
@@ -837,6 +918,7 @@ class SpecEngine:
             if self._project and self._project.status == SpecProjectStatus.COMPLETED and self._saved_task_id:
                 delete_task_state(self._saved_task_id)
                 self._saved_task_id = None
+                self._saved_task_signature = None
 
             # Explicit memory cleanup to prevent leaks under high load
             import gc
@@ -1059,6 +1141,7 @@ class SpecEngine:
             failure_reason=failure_reason,
             models_tried=list(self._models_tried),
             project_snapshot=self._project_to_compact_dict() if self._project else None,
+            runtime_context=self._build_runtime_context(),
         )
         saved_path = ""
         try:
@@ -1381,7 +1464,10 @@ class SpecEngine:
         except Exception:
             requested = 10
 
-        limit = self.settings.spec_max_cycles_limit
+        try:
+            limit = int(getattr(self.settings, "spec_max_cycles_limit", 5000))
+        except Exception:
+            limit = 5000
         if limit <= 0:
             limit = 5000
         if requested <= 0:
@@ -2866,6 +2952,10 @@ CRITERIA_2: FAIL
             import gc
 
             gc.collect()
+            if self._project and self._project.status == SpecProjectStatus.COMPLETED and self._saved_task_id:
+                delete_task_state(self._saved_task_id)
+                self._saved_task_id = None
+                self._saved_task_signature = None
 
         return self._project
 
@@ -2939,6 +3029,7 @@ CRITERIA_2: FAIL
             "chat_id": self.chat_id,
             "root_path": self.root_path,
             "project": self._project_to_compact_dict(),
+            "runtime_context": self._build_runtime_context(),
             "saved_at": time.time(),
         }
         tmp_path = filepath + ".tmp"
@@ -3002,42 +3093,78 @@ class SpecEngineManager:
             if engine:
                 yield engine
 
-    def get_or_create(self, chat_id: str, root_path: str, engine_name: str = "Coco") -> SpecEngine:
-        key = f"{chat_id}:{root_path}"
+    def _resolve_engine_identity(
+        self,
+        *,
+        engine_name: str = "Coco",
+        agent_type: Optional[str] = None,
+        model_name: Optional[str] = None,
+    ) -> tuple[str, str, Optional[str]]:
+        normalized_agent = str(agent_type or "").strip().lower()
+        normalized_name = str(engine_name or "").strip() or "Coco"
+
+        if normalized_agent.startswith("ttadk_"):
+            return "TTADK", normalized_agent, model_name
+        if normalized_agent == "claude":
+            return "Claude", "claude", None
+        if normalized_agent:
+            return SpecEngine._infer_engine_name(normalized_agent), normalized_agent, model_name
 
         from ..ttadk import get_ttadk_manager
 
-        if engine_name.lower() == "ttadk":
+        if normalized_name.lower() == "ttadk":
             ttadk_manager = get_ttadk_manager()
             current_tool = ttadk_manager.get_current_tool()
             current_model = ttadk_manager.get_current_model()
-            agent_type = f"ttadk_{current_tool}" if current_tool else "ttadk_coco"
-            model_name = current_model
-        else:
-            agent_type = "claude" if engine_name.lower().startswith("claude") else "coco"
-            model_name = None
+            resolved_agent = f"ttadk_{current_tool}" if current_tool else "ttadk_coco"
+            return "TTADK", resolved_agent, model_name or current_model
+
+        if normalized_name.lower().startswith("claude"):
+            return "Claude", "claude", None
+
+        return "Coco", "coco", model_name
+
+    def get_or_create(
+        self,
+        chat_id: str,
+        root_path: str,
+        engine_name: str = "Coco",
+        *,
+        agent_type: Optional[str] = None,
+        model_name: Optional[str] = None,
+    ) -> SpecEngine:
+        key = f"{chat_id}:{root_path}"
+        resolved_engine_name, resolved_agent_type, resolved_model_name = self._resolve_engine_identity(
+            engine_name=engine_name,
+            agent_type=agent_type,
+            model_name=model_name,
+        )
 
         with self._lock:
-            if key not in self._engines:
+            existing = self._engines.get(key)
+            should_replace = False
+            if existing:
+                should_replace = (
+                    not existing.is_running
+                    and (
+                        existing.engine_name.lower() != resolved_engine_name.lower()
+                        or existing._agent_type != resolved_agent_type
+                        or existing._model_name != resolved_model_name
+                    )
+                )
+
+            if existing is None or should_replace:
+                if existing is not None:
+                    existing.cleanup()
                 self._engines[key] = SpecEngine(
                     chat_id=chat_id,
                     root_path=root_path,
-                    agent_type=agent_type,
-                    engine_name=engine_name,
-                    model_name=model_name,
+                    agent_type=resolved_agent_type,
+                    engine_name=resolved_engine_name,
+                    model_name=resolved_model_name,
                 )
                 self._add_index(chat_id, key)
-            else:
-                existing = self._engines[key]
-                if existing.engine_name.lower() != engine_name.lower() and not existing.is_running:
-                    existing.cleanup()
-                    self._engines[key] = SpecEngine(
-                        chat_id=chat_id,
-                        root_path=root_path,
-                        agent_type=agent_type,
-                        engine_name=engine_name,
-                        model_name=model_name,
-                    )
+
             return self._engines[key]
 
     def load_or_create_from_disk(self, chat_id: str, root_path: str, engine_name: str = "Coco") -> SpecEngine:
@@ -3045,22 +3172,48 @@ class SpecEngineManager:
 
         用于进程重启后的断点续传：handler 在 `/spec_status`/`/spec_resume` 时可调用。
         """
-        engine = self.get_or_create(chat_id, root_path, engine_name=engine_name)
-        if not engine.settings.spec_allow_resume_from_disk:
-            return engine
-        state_path = os.path.join(root_path, engine.settings.spec_state_filename)
-        if os.path.exists(state_path) and (engine.project is None):
+        seed_engine = self.get_or_create(chat_id, root_path, engine_name=engine_name)
+        if not seed_engine.settings.spec_allow_resume_from_disk:
+            return seed_engine
+
+        state_path = os.path.join(root_path, seed_engine.settings.spec_state_filename)
+        persisted_project = None
+        persisted_runtime = None
+        persisted_saved_at = None
+        persisted_compact = None
+
+        if os.path.exists(state_path):
             try:
                 with open(state_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 proj = data.get("project")
                 if isinstance(proj, dict):
-                    engine._project = SpecProject.from_dict(proj)
-                    engine._resume_meta = {
-                        "state_path": state_path,
-                        "saved_at": data.get("saved_at"),
-                        "compact": proj.get("_compact"),
-                    }
+                    persisted_project = proj
+                    persisted_runtime = data.get("runtime_context") if isinstance(data.get("runtime_context"), dict) else None
+                    persisted_saved_at = data.get("saved_at")
+                    persisted_compact = proj.get("_compact")
+            except Exception:
+                persisted_project = None
+                persisted_runtime = None
+
+        runtime = dict(persisted_runtime or {})
+        engine = self.get_or_create(
+            chat_id,
+            root_path,
+            engine_name=runtime.get("engine_name") or engine_name,
+            agent_type=runtime.get("agent_type"),
+            model_name=runtime.get("model_name") or runtime.get("current_model"),
+        )
+
+        if persisted_project is not None and engine.project is None:
+            try:
+                engine._project = SpecProject.from_dict(persisted_project)
+                engine._restore_runtime_context(runtime)
+                engine._resume_meta = {
+                    "state_path": state_path,
+                    "saved_at": persisted_saved_at,
+                    "compact": persisted_compact,
+                }
             except Exception:
                 pass
         return engine
