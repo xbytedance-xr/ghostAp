@@ -324,10 +324,14 @@ class SystemBuilder:
                 "**🔄 编程模式切换**\n"
                 "`/coco` - 进入 Coco 编程模式（字节跳动 AI）\n"
                 "`/claude` - 进入 Claude 编程模式（Anthropic AI）\n"
+                "`/aiden` - 进入 Aiden 编程模式\n"
+                "`/codex` - 进入 Codex 编程模式\n"
                 "`/ttadk` - 进入 TTADK 多工具编程模式\n"
                 "`/exit` - 退出当前编程模式\n"
                 "`/coco_info` - 查看 Coco 会话信息\n"
                 "`/claude_info` - 查看 Claude 会话信息\n"
+                "`/aiden_info` - 查看 Aiden 会话信息\n"
+                "`/codex_info` - 查看 Codex 会话信息\n"
                 "`/ttadk_info` - 查看 TTADK 当前工具和模型"
             )
         elif cat_key == "deep":
@@ -367,9 +371,10 @@ class SystemBuilder:
                 "`/ttadk_refresh` - 强制刷新 TTADK 模型列表\n"
                 "`/ttadk_info` - 查看 TTADK 当前状态\n\n"
                 "**💡 使用提示**\n"
-                "1. 发送 `/coco` 或 `/claude` 进入编程模式\n"
-                "2. 智能模式下直接输入 Shell 命令即可执行\n"
-                "3. 发送 `/menu` 打开快捷菜单"
+                "1. 发送 `/coco`、`/claude`、`/aiden` 或 `/codex` 进入编程模式\n"
+                "2. 发送 `/tools` 查看所有可用工具\n"
+                "3. 智能模式下直接输入 Shell 命令即可执行\n"
+                "4. 发送 `/menu` 打开快捷菜单"
             )
 
         elements = [
@@ -387,4 +392,117 @@ class SystemBuilder:
         elements.append({"tag": "markdown", "text_size": "normal", "content": content})
 
         card = CoreBuilder._wrap_card("📖 GhostAP 使用帮助", "blue", elements)
+        return "interactive", json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
+    def build_tools_list_card(
+        tools: list[dict],
+        project: Optional[ProjectContext] = None,
+    ) -> tuple[str, str]:
+        """Build a card showing all available ACP tools."""
+        elements = []
+
+        if project:
+            elements.append(CoreBuilder._build_directory_element(project))
+            elements.append({"tag": "hr"})
+
+        elements.append({"tag": "markdown", "content": "**🔧 可用工具列表**"})
+
+        # Add tool buttons
+        buttons = []
+        for tool in tools:
+            tool_name = tool["name"]
+            emoji = tool.get("emoji", "🤖")
+            description = tool.get("description", "")
+            is_available = tool.get("available", False)
+
+            btn_text = f"{emoji} {tool_name.capitalize()}"
+            if description:
+                btn_text += f" ({description})"
+            if not is_available:
+                btn_text += " ⚠️"
+
+            buttons.append(
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": btn_text},
+                    "type": "primary" if is_available else "default",
+                    "disabled": not is_available,
+                    "value": {"action": f"enter_{tool_name}", "project_id": project.project_id if project else None},
+                }
+            )
+
+        elements.extend(build_responsive_layout(buttons))
+
+        # Add status indicator
+        available_count = sum(1 for t in tools if t.get("available", False))
+        elements.append({"tag": "hr"})
+        elements.append(
+            {
+                "tag": "markdown",
+                "text_size": "notation",
+                "content": f"可用工具: {available_count}/{len(tools)} • 点击按钮进入对应模式 • 灰色按钮表示工具不可用",
+            }
+        )
+
+        card = CoreBuilder._wrap_card("🛠️ 工具选择", "blue", elements)
+        return "interactive", json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
+    def build_tools_status_card(
+        tools: list[dict],
+        active_sessions: dict[str, dict] = None,
+        project: Optional[ProjectContext] = None,
+    ) -> tuple[str, str]:
+        """Build a card showing detailed status of all tools."""
+        active_sessions = active_sessions or {}
+        elements = []
+
+        if project:
+            elements.append(CoreBuilder._build_directory_element(project))
+            elements.append({"tag": "hr"})
+
+        elements.append({"tag": "markdown", "content": "**📊 工具状态详情**"})
+
+        for tool in tools:
+            tool_name = tool["name"]
+            emoji = tool.get("emoji", "🤖")
+            is_available = tool.get("available", False)
+            last_used = tool.get("last_used", "从未使用")
+
+            status_text = "✅ 可用" if is_available else "❌ 不可用"
+            active_info = ""
+            if tool_name in active_sessions:
+                session_info = active_sessions[tool_name]
+                active_info = f"\n   🔴 活跃会话: {session_info.get('chat_id', 'N/A')}"
+
+            elements.append(
+                {
+                    "tag": "markdown",
+                    "content": f"{emoji} **{tool_name.capitalize()}**\n"
+                    f"   状态: {status_text}\n"
+                    f"   最后使用: {last_used}"
+                    f"{active_info}",
+                }
+            )
+
+        elements.append({"tag": "hr"})
+
+        # Quick actions
+        action_buttons = []
+        for tool in tools:
+            if tool.get("available", False):
+                action_buttons.append(
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": f"进入 {tool['name'].capitalize()}"},
+                        "type": "default",
+                        "value": {"action": f"enter_{tool['name']}", "project_id": project.project_id if project else None},
+                    }
+                )
+
+        if action_buttons:
+            elements.extend(build_responsive_layout(action_buttons))
+
+        card = CoreBuilder._wrap_card("📋 工具状态", "blue", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)

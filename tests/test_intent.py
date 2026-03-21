@@ -189,6 +189,18 @@ class TestIntentRecognizerContextHint:
         fallback = recognizer._get_fallback_intent(current_mode="smart")
         assert fallback == IntentType.SHELL_COMMAND
 
+    def test_exact_command_tools(self, recognizer):
+        result = recognizer._quick_match("/tools")
+        assert result is not None
+        assert result.primary_intent == IntentType.SHOW_TOOLS
+        assert result.confidence == 1.0
+
+    def test_exact_command_tools_status(self, recognizer):
+        result = recognizer._quick_match("/tools_status")
+        assert result is not None
+        assert result.primary_intent == IntentType.TOOLS_STATUS
+        assert result.confidence == 1.0
+
 
 class TestIntentResult:
     def test_single_task(self):
@@ -229,6 +241,15 @@ class TestIntentTypeMapping:
             "enter_coco",
             "exit_coco",
             "coco_message",
+            "enter_claude",
+            "exit_claude",
+            "claude_message",
+            "enter_aiden",
+            "exit_aiden",
+            "aiden_message",
+            "enter_codex",
+            "exit_codex",
+            "codex_message",
             "change_dir",
             "shell",
             "create_project",
@@ -236,6 +257,26 @@ class TestIntentTypeMapping:
             "list_projects",
             "close_project",
             "project_status",
+            "enter_deep",
+            "deep_status",
+            "stop_deep",
+            "deep_update",
+            "enter_loop",
+            "loop_status",
+            "stop_loop",
+            "loop_pause",
+            "loop_resume",
+            "loop_guide",
+            "enter_spec",
+            "spec_status",
+            "stop_spec",
+            "spec_pause",
+            "spec_resume",
+            "spec_guide",
+            "show_help",
+            "show_tools",
+            "tools_status",
+            "exit_mode",
             "unknown",
         ]
         for intent_str in expected_intents:
@@ -247,6 +288,8 @@ class TestIntentTypeMapping:
         assert recognizer.INTENT_MAP["coco_message"] == IntentType.COCO_MESSAGE
         assert recognizer.INTENT_MAP["shell"] == IntentType.SHELL_COMMAND
         assert recognizer.INTENT_MAP["unknown"] == IntentType.UNKNOWN
+        assert recognizer.INTENT_MAP["show_tools"] == IntentType.SHOW_TOOLS
+        assert recognizer.INTENT_MAP["tools_status"] == IntentType.TOOLS_STATUS
 
 
 class TestNormalizePath:

@@ -47,6 +47,8 @@ class ContextSourceMode(Enum):
     SMART = "smart"
     COCO = "coco"
     CLAUDE = "claude"
+    AIDEN = "aiden"
+    CODEX = "codex"
     SHELL = "shell"
     DEEP_ENGINE = "deep_engine"
     TTADK = "ttadk"

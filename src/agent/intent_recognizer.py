@@ -19,11 +19,17 @@ class IntentType(Enum):
     EXIT_COCO = "exit_coco"
     ENTER_CLAUDE = "enter_claude"
     EXIT_CLAUDE = "exit_claude"
+    ENTER_AIDEN = "enter_aiden"
+    EXIT_AIDEN = "exit_aiden"
+    ENTER_CODEX = "enter_codex"
+    EXIT_CODEX = "exit_codex"
     EXIT_MODE = "exit_mode"
     CHANGE_DIR = "change_dir"
     SHELL_COMMAND = "shell"
     COCO_MESSAGE = "coco_message"
     CLAUDE_MESSAGE = "claude_message"
+    AIDEN_MESSAGE = "aiden_message"
+    CODEX_MESSAGE = "codex_message"
     CREATE_PROJECT = "create_project"
     SWITCH_PROJECT = "switch_project"
     LIST_PROJECTS = "list_projects"
@@ -46,6 +52,8 @@ class IntentType(Enum):
     SPEC_RESUME = "spec_resume"
     SPEC_GUIDE = "spec_guide"
     SHOW_HELP = "show_help"
+    SHOW_TOOLS = "show_tools"
+    TOOLS_STATUS = "tools_status"
     UNKNOWN = "unknown"
 
 
@@ -222,9 +230,15 @@ class IntentRecognizer:
         "exit_coco": IntentType.EXIT_COCO,
         "enter_claude": IntentType.ENTER_CLAUDE,
         "exit_claude": IntentType.EXIT_CLAUDE,
+        "enter_aiden": IntentType.ENTER_AIDEN,
+        "exit_aiden": IntentType.EXIT_AIDEN,
+        "enter_codex": IntentType.ENTER_CODEX,
+        "exit_codex": IntentType.EXIT_CODEX,
         "exit_mode": IntentType.EXIT_MODE,
         "coco_message": IntentType.COCO_MESSAGE,
         "claude_message": IntentType.CLAUDE_MESSAGE,
+        "aiden_message": IntentType.AIDEN_MESSAGE,
+        "codex_message": IntentType.CODEX_MESSAGE,
         "change_dir": IntentType.CHANGE_DIR,
         "shell": IntentType.SHELL_COMMAND,
         "create_project": IntentType.CREATE_PROJECT,
@@ -249,6 +263,8 @@ class IntentRecognizer:
         "spec_resume": IntentType.SPEC_RESUME,
         "spec_guide": IntentType.SPEC_GUIDE,
         "show_help": IntentType.SHOW_HELP,
+        "show_tools": IntentType.SHOW_TOOLS,
+        "tools_status": IntentType.TOOLS_STATUS,
         "unknown": IntentType.UNKNOWN,
     }
 
@@ -261,6 +277,14 @@ class IntentRecognizer:
         "/enter_claude": (IntentType.ENTER_CLAUDE, "进入 Claude 编程模式"),
         "/end_claude": (IntentType.EXIT_CLAUDE, "退出 Claude 编程模式"),
         "/exit_claude": (IntentType.EXIT_CLAUDE, "退出 Claude 编程模式"),
+        "/aiden": (IntentType.ENTER_AIDEN, "进入 Aiden 编程模式"),
+        "/enter_aiden": (IntentType.ENTER_AIDEN, "进入 Aiden 编程模式"),
+        "/end_aiden": (IntentType.EXIT_AIDEN, "退出 Aiden 编程模式"),
+        "/exit_aiden": (IntentType.EXIT_AIDEN, "退出 Aiden 编程模式"),
+        "/codex": (IntentType.ENTER_CODEX, "进入 Codex 编程模式"),
+        "/enter_codex": (IntentType.ENTER_CODEX, "进入 Codex 编程模式"),
+        "/end_codex": (IntentType.EXIT_CODEX, "退出 Codex 编程模式"),
+        "/exit_codex": (IntentType.EXIT_CODEX, "退出 Codex 编程模式"),
         "/exit": (IntentType.EXIT_MODE, "退出当前模式"),
         "/quit": (IntentType.EXIT_MODE, "退出当前模式"),
         "/projects": (IntentType.LIST_PROJECTS, "查看项目列表"),
@@ -283,6 +307,8 @@ class IntentRecognizer:
         "/spec_resume": (IntentType.SPEC_RESUME, "恢复 Spec 任务"),
         "/help": (IntentType.SHOW_HELP, "显示帮助信息"),
         "/帮助": (IntentType.SHOW_HELP, "显示帮助信息"),
+        "/tools": (IntentType.SHOW_TOOLS, "查看所有可用工具"),
+        "/tools_status": (IntentType.TOOLS_STATUS, "查看工具状态"),
     }
 
     SHELL_COMMANDS = {
@@ -458,6 +484,8 @@ class IntentRecognizer:
 
     ENTER_COCO_KEYWORDS = {"进入编程模式", "编程模式", "开始编程", "进入coco", "coco模式"}
     ENTER_CLAUDE_KEYWORDS = {"进入claude模式", "claude模式", "进入claude", "使用claude"}
+    ENTER_AIDEN_KEYWORDS = {"进入aiden模式", "aiden模式", "进入aiden", "使用aiden"}
+    ENTER_CODEX_KEYWORDS = {"进入codex模式", "codex模式", "进入codex", "使用codex"}
     EXIT_MODE_KEYWORDS = {"退出模式", "退出编程模式"}
 
     DEEP_MODE_KEYWORDS = {"deep模式", "深度模式", "deep agent", "复杂任务", "大任务"}
@@ -676,7 +704,45 @@ class IntentRecognizer:
                 description="查看 Claude 会话信息",
             )
 
-        is_programming = current_mode in ("coco", "claude")
+        if text_lower == "/aiden_info":
+            return IntentResult.single(
+                intent=IntentType.AIDEN_MESSAGE,
+                confidence=1.0,
+                data={"command": "info"},
+                original_text=text,
+                reasoning="精确匹配: /aiden_info",
+                description="查看 Aiden 会话信息",
+            )
+
+        if text_lower == "/codex_info":
+            return IntentResult.single(
+                intent=IntentType.CODEX_MESSAGE,
+                confidence=1.0,
+                data={"command": "info"},
+                original_text=text,
+                reasoning="精确匹配: /codex_info",
+                description="查看 Codex 会话信息",
+            )
+
+        if any(kw in text_lower for kw in self.ENTER_AIDEN_KEYWORDS):
+            return IntentResult.single(
+                intent=IntentType.ENTER_AIDEN,
+                confidence=0.95,
+                original_text=text,
+                reasoning="检测到进入 Aiden 编程模式关键词",
+                description="进入 Aiden 编程模式",
+            )
+
+        if any(kw in text_lower for kw in self.ENTER_CODEX_KEYWORDS):
+            return IntentResult.single(
+                intent=IntentType.ENTER_CODEX,
+                confidence=0.95,
+                original_text=text,
+                reasoning="检测到进入 Codex 编程模式关键词",
+                description="进入 Codex 编程模式",
+            )
+
+        is_programming = current_mode in ("coco", "claude", "aiden", "codex")
         if is_programming and len(text) < 20:
             if any(kw in text_lower for kw in self.EXIT_KEYWORDS):
                 return IntentResult.single(
@@ -787,14 +853,22 @@ class IntentRecognizer:
             return "用户当前处于 **Coco 编程模式** 中。编程相关的消息应该判断为 coco_message，而不是 enter_coco。"
         elif current_mode == "claude":
             return "用户当前处于 **Claude 编程模式** 中。编程相关的消息应该判断为 claude_message，而不是 enter_claude。"
+        elif current_mode == "aiden":
+            return "用户当前处于 **Aiden 编程模式** 中。编程相关的消息应该判断为 aiden_message，而不是 enter_aiden。"
+        elif current_mode == "codex":
+            return "用户当前处于 **Codex 编程模式** 中。编程相关的消息应该判断为 codex_message，而不是 enter_codex。"
         else:
-            return "用户当前处于 **智能模式**（默认模式）。如果用户想要编程，应该判断为 enter_coco 或 enter_claude。"
+            return "用户当前处于 **智能模式**（默认模式）。如果用户想要编程，应该判断为 enter_coco、enter_claude、enter_aiden 或 enter_codex。"
 
     def _get_fallback_intent(self, current_mode: str) -> IntentType:
         if current_mode == "coco":
             return IntentType.COCO_MESSAGE
         elif current_mode == "claude":
             return IntentType.CLAUDE_MESSAGE
+        elif current_mode == "aiden":
+            return IntentType.AIDEN_MESSAGE
+        elif current_mode == "codex":
+            return IntentType.CODEX_MESSAGE
         else:
             return IntentType.SHELL_COMMAND
 
@@ -805,6 +879,8 @@ class IntentRecognizer:
 
         is_in_coco = current_mode == "coco"
         is_in_claude = current_mode == "claude"
+        is_in_aiden = current_mode == "aiden"
+        is_in_codex = current_mode == "codex"
 
         try:
             llm = self._get_llm()
@@ -841,6 +917,10 @@ class IntentRecognizer:
                     intent = IntentType.COCO_MESSAGE
                 if intent == IntentType.ENTER_CLAUDE and is_in_claude:
                     intent = IntentType.CLAUDE_MESSAGE
+                if intent == IntentType.ENTER_AIDEN and is_in_aiden:
+                    intent = IntentType.AIDEN_MESSAGE
+                if intent == IntentType.ENTER_CODEX and is_in_codex:
+                    intent = IntentType.CODEX_MESSAGE
 
                 data = task_data.get("data", {})
                 if intent == IntentType.CHANGE_DIR and "path" in data:

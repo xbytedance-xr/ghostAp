@@ -57,6 +57,8 @@ from .handler_context import HandlerContext
 from .handlers import (
     ClaudeModeHandler,
     CocoModeHandler,
+    AidenModeHandler,
+    CodexModeHandler,
     DeepHandler,
     DiagnosticsHandler,
     LoopHandler,
@@ -89,6 +91,8 @@ class FeishuWSClient:
         self._api_client: Optional[lark.Client] = None
         self._coco_manager = ACPSessionManager("coco", session_timeout=self.settings.coco_session_timeout)
         self._claude_manager = ACPSessionManager("claude", session_timeout=self.settings.claude_session_timeout)
+        self._aiden_manager = ACPSessionManager("aiden", session_timeout=self.settings.coco_session_timeout)
+        self._codex_manager = ACPSessionManager("codex", session_timeout=self.settings.coco_session_timeout)
         self._ttadk_manager = ACPSessionManager("ttadk", session_timeout=self.settings.coco_session_timeout)
         self._intent_recognizer = IntentRecognizer()
         self._message_cache = MessageCache(ttl=300, max_size=1000, cleanup_interval=60)
@@ -141,6 +145,8 @@ class FeishuWSClient:
             message_callback=self.message_callback,
             coco_manager=self._coco_manager,
             claude_manager=self._claude_manager,
+            aiden_manager=self._aiden_manager,
+            codex_manager=self._codex_manager,
             ttadk_manager=self._ttadk_manager,
             intent_recognizer=self._intent_recognizer,
             scheduler=self._scheduler,
@@ -167,6 +173,8 @@ class FeishuWSClient:
         # Instantiate handlers
         self._coco_handler = CocoModeHandler(self._handler_ctx)
         self._claude_handler = ClaudeModeHandler(self._handler_ctx)
+        self._aiden_handler = AidenModeHandler(self._handler_ctx)
+        self._codex_handler = CodexModeHandler(self._handler_ctx)
         self._ttadk_handler = TTADKModeHandler(self._handler_ctx)
         self._deep_handler = DeepHandler(self._handler_ctx)
         self._loop_handler = LoopHandler(self._handler_ctx)
@@ -178,10 +186,22 @@ class FeishuWSClient:
         # Wire cross-references
         self._coco_handler._opposite_handler = self._claude_handler
         self._claude_handler._opposite_handler = self._coco_handler
+        self._aiden_handler._coco_handler = self._coco_handler
+        self._aiden_handler._claude_handler = self._claude_handler
+        self._aiden_handler._codex_handler = self._codex_handler
+        self._aiden_handler._ttadk_handler = self._ttadk_handler
+        self._codex_handler._coco_handler = self._coco_handler
+        self._codex_handler._claude_handler = self._claude_handler
+        self._codex_handler._aiden_handler = self._aiden_handler
+        self._codex_handler._ttadk_handler = self._ttadk_handler
         self._ttadk_handler._coco_handler = self._coco_handler
         self._ttadk_handler._claude_handler = self._claude_handler
+        self._ttadk_handler._aiden_handler = self._aiden_handler
+        self._ttadk_handler._codex_handler = self._codex_handler
         self._system_handler.coco_handler = self._coco_handler
         self._system_handler.claude_handler = self._claude_handler
+        self._system_handler.aiden_handler = self._aiden_handler
+        self._system_handler.codex_handler = self._codex_handler
         self._system_handler.ttadk_handler = self._ttadk_handler
         self._system_handler.project_handler = self._project_handler
         self._system_handler.deep_handler = self._deep_handler
@@ -271,6 +291,24 @@ class FeishuWSClient:
             exact="resume_claude",
         )
         self._register_action(self._handle_card_new_claude, exact="new_claude")
+
+        # Aiden
+        self._register_action(self._handle_card_enter_aiden, exact="enter_aiden")
+        self._register_action(self._handle_card_exit_aiden, exact="exit_aiden")
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_card_resume_aiden(mid, cid, pid, val.get("session_id", "")),
+            exact="resume_aiden",
+        )
+        self._register_action(self._handle_card_new_aiden, exact="new_aiden")
+
+        # Codex
+        self._register_action(self._handle_card_enter_codex, exact="enter_codex")
+        self._register_action(self._handle_card_exit_codex, exact="exit_codex")
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_card_resume_codex(mid, cid, pid, val.get("session_id", "")),
+            exact="resume_codex",
+        )
+        self._register_action(self._handle_card_new_codex, exact="new_codex")
 
         # Project
         self._register_action(
@@ -615,6 +653,26 @@ class FeishuWSClient:
         "_handle_card_exit_claude": ("_claude_handler", "handle_card_exit"),
         "_handle_card_resume_claude": ("_claude_handler", "handle_card_resume"),
         "_handle_card_new_claude": ("_claude_handler", "handle_card_new"),
+        # --- Aiden mode ---
+        "_enter_aiden_mode": ("_aiden_handler", "enter_mode"),
+        "_exit_aiden_mode": ("_aiden_handler", "exit_mode"),
+        "_handle_aiden_message": ("_aiden_handler", "handle_message"),
+        "_handle_aiden_response": ("_aiden_handler", "handle_response"),
+        "_show_aiden_info": ("_aiden_handler", "show_info"),
+        "_handle_card_enter_aiden": ("_aiden_handler", "handle_card_enter"),
+        "_handle_card_exit_aiden": ("_aiden_handler", "handle_card_exit"),
+        "_handle_card_resume_aiden": ("_aiden_handler", "handle_card_resume"),
+        "_handle_card_new_aiden": ("_aiden_handler", "handle_card_new"),
+        # --- Codex mode ---
+        "_enter_codex_mode": ("_codex_handler", "enter_mode"),
+        "_exit_codex_mode": ("_codex_handler", "exit_mode"),
+        "_handle_codex_message": ("_codex_handler", "handle_message"),
+        "_handle_codex_response": ("_codex_handler", "handle_response"),
+        "_show_codex_info": ("_codex_handler", "show_info"),
+        "_handle_card_enter_codex": ("_codex_handler", "handle_card_enter"),
+        "_handle_card_exit_codex": ("_codex_handler", "handle_card_exit"),
+        "_handle_card_resume_codex": ("_codex_handler", "handle_card_resume"),
+        "_handle_card_new_codex": ("_codex_handler", "handle_card_new"),
         # --- TTADK mode ---
         "_enter_ttadk_mode": ("_ttadk_handler", "enter_mode"),
         "_exit_ttadk_mode": ("_ttadk_handler", "exit_mode"),
@@ -1514,8 +1572,38 @@ class FeishuWSClient:
             else:
                 self._handle_claude_message(message_id, chat_id, original_text, project)
 
+        elif intent == IntentType.ENTER_AIDEN:
+            self._enter_aiden_mode(message_id, chat_id, project=project)
+
+        elif intent == IntentType.EXIT_AIDEN:
+            self._exit_aiden_mode(message_id, chat_id, project=project)
+
+        elif intent == IntentType.AIDEN_MESSAGE:
+            if data.get("command") == "info":
+                self._show_aiden_info(message_id, chat_id, project)
+            else:
+                self._handle_aiden_message(message_id, chat_id, original_text, project)
+
+        elif intent == IntentType.ENTER_CODEX:
+            self._enter_codex_mode(message_id, chat_id, project=project)
+
+        elif intent == IntentType.EXIT_CODEX:
+            self._exit_codex_mode(message_id, chat_id, project=project)
+
+        elif intent == IntentType.CODEX_MESSAGE:
+            if data.get("command") == "info":
+                self._show_codex_info(message_id, chat_id, project)
+            else:
+                self._handle_codex_message(message_id, chat_id, original_text, project)
+
         elif intent == IntentType.SHOW_HELP:
             self._show_full_help(message_id, chat_id, project)
+
+        elif intent == IntentType.SHOW_TOOLS:
+            self._system_handler.show_tools_list(message_id, chat_id, project)
+
+        elif intent == IntentType.TOOLS_STATUS:
+            self._system_handler.show_tools_status(message_id, chat_id, project)
 
         elif intent == IntentType.CREATE_PROJECT:
             name = data.get("name", "")

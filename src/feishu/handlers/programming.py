@@ -699,6 +699,116 @@ class ClaudeModeHandler(ProgrammingModeHandler):
         return True
 
 
+class AidenModeHandler(ProgrammingModeHandler):
+    mode_name = "Aiden"
+    mode_emoji = "🎯"
+    is_coco = False
+    context_source = ContextSourceMode.AIDEN
+    thinking_text = "🎯 Aiden 正在思考..."
+
+    def _get_session_manager(self):
+        return self.ctx.aiden_manager
+
+    def _is_in_this_mode(self, chat_id):
+        return self.mode_manager.is_aiden_mode(chat_id)
+
+    def _is_in_opposite_mode(self, chat_id):
+        return (
+            self.mode_manager.is_coco_mode(chat_id)
+            or self.mode_manager.is_claude_mode(chat_id)
+            or self.mode_manager.is_codex_mode(chat_id)
+            or self.mode_manager.is_ttadk_mode(chat_id)
+        )
+
+    def _exit_opposite_mode(self, message_id, chat_id, project=None):
+        if hasattr(self, "_coco_handler"):
+            self._coco_handler.exit_mode(message_id, chat_id, project=project)
+        if hasattr(self, "_claude_handler"):
+            self._claude_handler.exit_mode(message_id, chat_id, project=project)
+        if hasattr(self, "_codex_handler"):
+            self._codex_handler.exit_mode(message_id, chat_id, project=project)
+        if hasattr(self, "_ttadk_handler"):
+            self._ttadk_handler.exit_mode(message_id, chat_id, project=project)
+
+    def _enter_mode_on_manager(self, chat_id, project_id=None):
+        self.mode_manager.enter_aiden_mode(chat_id, project_id=project_id)
+
+    def _get_interaction_mode(self):
+        from ...mode import InteractionMode
+
+        return InteractionMode.AIDEN
+
+    def _get_snapshot(self, project):
+        return project.aiden_session_snapshot
+
+    def _set_mode_on_project(self, project, active, session_id="", count=0):
+        if active:
+            project.set_aiden_mode(True, session_id, count)
+        else:
+            project.set_aiden_mode(False)
+
+    def _update_snapshot_on_project(self, project, query, count, session_id=""):
+        project.update_aiden_snapshot(query=query, query_count=count, session_id=session_id)
+
+    def _clear_snapshot_on_project(self, project):
+        project.aiden_session_snapshot = None
+
+
+class CodexModeHandler(ProgrammingModeHandler):
+    mode_name = "Codex"
+    mode_emoji = "⚡"
+    is_coco = False
+    context_source = ContextSourceMode.CODEX
+    thinking_text = "⚡ Codex 正在思考..."
+
+    def _get_session_manager(self):
+        return self.ctx.codex_manager
+
+    def _is_in_this_mode(self, chat_id):
+        return self.mode_manager.is_codex_mode(chat_id)
+
+    def _is_in_opposite_mode(self, chat_id):
+        return (
+            self.mode_manager.is_coco_mode(chat_id)
+            or self.mode_manager.is_claude_mode(chat_id)
+            or self.mode_manager.is_aiden_mode(chat_id)
+            or self.mode_manager.is_ttadk_mode(chat_id)
+        )
+
+    def _exit_opposite_mode(self, message_id, chat_id, project=None):
+        if hasattr(self, "_coco_handler"):
+            self._coco_handler.exit_mode(message_id, chat_id, project=project)
+        if hasattr(self, "_claude_handler"):
+            self._claude_handler.exit_mode(message_id, chat_id, project=project)
+        if hasattr(self, "_aiden_handler"):
+            self._aiden_handler.exit_mode(message_id, chat_id, project=project)
+        if hasattr(self, "_ttadk_handler"):
+            self._ttadk_handler.exit_mode(message_id, chat_id, project=project)
+
+    def _enter_mode_on_manager(self, chat_id, project_id=None):
+        self.mode_manager.enter_codex_mode(chat_id, project_id=project_id)
+
+    def _get_interaction_mode(self):
+        from ...mode import InteractionMode
+
+        return InteractionMode.CODEX
+
+    def _get_snapshot(self, project):
+        return project.codex_session_snapshot
+
+    def _set_mode_on_project(self, project, active, session_id="", count=0):
+        if active:
+            project.set_codex_mode(True, session_id, count)
+        else:
+            project.set_codex_mode(False)
+
+    def _update_snapshot_on_project(self, project, query, count, session_id=""):
+        project.update_codex_snapshot(query=query, query_count=count, session_id=session_id)
+
+    def _clear_snapshot_on_project(self, project):
+        project.codex_session_snapshot = None
+
+
 class TTADKModeHandler(ProgrammingModeHandler):
     mode_name = "TTADK"
     mode_emoji = "🎮"

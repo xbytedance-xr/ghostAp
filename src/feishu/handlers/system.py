@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
+from ...card.builders.system import SystemBuilder
 from ...coco_model import get_coco_model_manager
 from ...tasking import TaskPriority, TaskSpec
 from ...ttadk import get_ttadk_manager
@@ -29,6 +30,8 @@ class SystemHandler(BaseHandler):
     # Reference to programming handlers set by ws_client after construction
     coco_handler = None
     claude_handler = None
+    aiden_handler = None
+    codex_handler = None
     ttadk_handler = None
     project_handler = None
     deep_handler = None
@@ -49,6 +52,8 @@ class SystemHandler(BaseHandler):
             "/coco_status": lambda m, c, t, p: self.show_coco_status(m, c),
             "/coco_info": lambda m, c, t, p: self.coco_handler.show_info(m, c, p),
             "/claude_info": lambda m, c, t, p: self.claude_handler.show_info(m, c, p),
+            "/aiden_info": lambda m, c, t, p: self.aiden_handler.show_info(m, c, p),
+            "/codex_info": lambda m, c, t, p: self.codex_handler.show_info(m, c, p),
             "/projects": lambda m, c, t, p: self.project_handler.show_project_board(m, c),
             "/project": lambda m, c, t, p: self.project_handler.show_project_board(m, c),
             "/switch": lambda m, c, t, p: self.project_handler.show_project_board(m, c),
@@ -56,6 +61,8 @@ class SystemHandler(BaseHandler):
             "/ttadk_info": lambda m, c, t, p: self.show_ttadk_info(m, c),
             "/ttadk_refresh": lambda m, c, t, p: self.refresh_ttadk_models(m, c, p),
             "/menu": lambda m, c, t, p: self.handle_menu_command(m, c, p),
+            "/tools": lambda m, c, t, p: self.show_tools_list(m, c, p),
+            "/tools_status": lambda m, c, t, p: self.show_tools_status(m, c, p),
         }
 
         # Prefix match handlers: prefix -> handler_func(message_id, chat_id, text, project)
@@ -278,6 +285,8 @@ class SystemHandler(BaseHandler):
             InteractionMode.SMART: UI_TEXT.get("system_mode_smart", "🧠 智能模式"),
             InteractionMode.COCO: UI_TEXT.get("system_mode_coco", "🤖 Coco 编程模式"),
             InteractionMode.CLAUDE: UI_TEXT.get("system_mode_claude", "🔮 Claude 编程模式"),
+            InteractionMode.AIDEN: UI_TEXT.get("system_mode_aiden", "🎯 Aiden 编程模式"),
+            InteractionMode.CODEX: UI_TEXT.get("system_mode_codex", "💻 Codex 编程模式"),
             InteractionMode.TTADK: UI_TEXT.get("system_mode_ttadk", "🎮 TTADK 多工具模式"),
         }
         current_mode_str = mode_emoji.get(current_mode, UI_TEXT.get("system_mode_smart", "🧠 智能模式"))
@@ -720,3 +729,68 @@ class SystemHandler(BaseHandler):
             status_lines.append(f"{mark}`{m.name}` - {m.description}")
 
         self.reply_message(message_id, "\n".join(status_lines))
+
+    def show_tools_list(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+        """Show a list of all available ACP tools with quick access buttons."""
+        from ...acp.providers import tool_registry
+
+        # Define tool metadata
+        tool_metadata = [
+            {"name": "coco", "emoji": "🤖", "description": "字节跳动 AI"},
+            {"name": "claude", "emoji": "🔮", "description": "Anthropic AI"},
+            {"name": "aiden", "emoji": "🎯", "description": ""},
+            {"name": "codex", "emoji": "💻", "description": ""},
+        ]
+
+        # Check availability for each tool
+        tools = []
+        for meta in tool_metadata:
+            provider = tool_registry.get_provider(meta["name"])
+            is_available = provider.check_availability() if provider else False
+            tools.append(
+                {
+                    "name": meta["name"],
+                    "emoji": meta["emoji"],
+                    "description": meta["description"],
+                    "available": is_available,
+                }
+            )
+
+        msg_type, card = SystemBuilder.build_tools_list_card(tools, project)
+        self.reply_interactive_card(message_id, card, msg_type=msg_type)
+
+    def show_tools_status(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+        """Show detailed status of all tools with availability and session info."""
+        from ...acp.providers import tool_registry
+        from ...mode import get_mode_manager
+
+        mode_manager = get_mode_manager()
+
+        # Define tool metadata
+        tool_metadata = [
+            {"name": "coco", "emoji": "🤖"},
+            {"name": "claude", "emoji": "🔮"},
+            {"name": "aiden", "emoji": "🎯"},
+            {"name": "codex", "emoji": "💻"},
+        ]
+
+        # Check availability and last used time for each tool
+        tools = []
+        for meta in tool_metadata:
+            provider = tool_registry.get_provider(meta["name"])
+            is_available = provider.check_availability() if provider else False
+            tools.append(
+                {
+                    "name": meta["name"],
+                    "emoji": meta["emoji"],
+                    "available": is_available,
+                    "last_used": "从未使用",  # TODO: Track actual last used time
+                }
+            )
+
+        # Get active sessions (from mode manager)
+        active_sessions = {}
+        # TODO: Get actual active session info from session managers
+
+        msg_type, card = SystemBuilder.build_tools_status_card(tools, active_sessions, project)
+        self.reply_interactive_card(message_id, card, msg_type=msg_type)

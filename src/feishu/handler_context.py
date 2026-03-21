@@ -39,6 +39,8 @@ class HandlerContext:
     # Session managers (ACP-based)
     coco_manager: "ACPSessionManager"
     claude_manager: "ACPSessionManager"
+    aiden_manager: "ACPSessionManager"
+    codex_manager: "ACPSessionManager"
     ttadk_manager: "ACPSessionManager"
 
     # Core services

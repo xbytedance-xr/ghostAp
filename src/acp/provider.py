@@ -161,7 +161,7 @@ class ToolRegistry:
             # Performance: 对 coco/aiden 这类启动链路敏感的工具，避免在解析阶段做阻塞探活。
             # - 若缓存命中则按缓存裁决
             # - 若缓存未命中：先返回启动命令（乐观），并在后台异步探活填充缓存
-            hot_tools = {"coco", "aiden"}
+            hot_tools = {"coco", "aiden", "codex"}
             if tool_name in hot_tools:
                 # cached decision (best-effort)
                 now = time.time()
@@ -214,7 +214,7 @@ class ToolRegistry:
                 self._preheated = True
             import threading
 
-            targets = [n.lower() for n in (names or ["coco", "aiden"])]
+            targets = [n.lower() for n in (names or ["coco", "aiden", "codex"])]
             # fan-out probes
             for n in targets:
                 try:

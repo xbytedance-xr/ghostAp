@@ -47,6 +47,8 @@ class SessionSnapshot:
 CocoSessionSnapshot = SessionSnapshot
 ClaudeSessionSnapshot = SessionSnapshot
 TtadkSessionSnapshot = SessionSnapshot
+AidenSessionSnapshot = SessionSnapshot
+CodexSessionSnapshot = SessionSnapshot
 
 
 @dataclass
@@ -64,6 +66,12 @@ class ProjectContext:
 
     claude_session_snapshot: Optional[SessionSnapshot] = None
     claude_mode: bool = False
+
+    aiden_session_snapshot: Optional[SessionSnapshot] = None
+    aiden_mode: bool = False
+
+    codex_session_snapshot: Optional[SessionSnapshot] = None
+    codex_mode: bool = False
 
     ttadk_session_snapshot: Optional[SessionSnapshot] = None
     ttadk_mode: bool = False
@@ -127,6 +135,38 @@ class ProjectContext:
             if session_id:
                 self.claude_session_snapshot.session_id = session_id
 
+    def set_aiden_mode(self, enabled: bool, session_id: Optional[str] = None, query_count: int = 0):
+        self.aiden_mode = enabled
+        if enabled and session_id:
+            self.aiden_session_snapshot = AidenSessionSnapshot(
+                session_id=session_id, query_count=query_count, last_query="", is_resumable=True
+            )
+        elif not enabled and self.aiden_session_snapshot:
+            self.aiden_session_snapshot.is_resumable = True
+
+    def update_aiden_snapshot(self, query: str, query_count: int, session_id: Optional[str] = None):
+        if self.aiden_session_snapshot:
+            self.aiden_session_snapshot.last_query = query
+            self.aiden_session_snapshot.query_count = query_count
+            if session_id:
+                self.aiden_session_snapshot.session_id = session_id
+
+    def set_codex_mode(self, enabled: bool, session_id: Optional[str] = None, query_count: int = 0):
+        self.codex_mode = enabled
+        if enabled and session_id:
+            self.codex_session_snapshot = CodexSessionSnapshot(
+                session_id=session_id, query_count=query_count, last_query="", is_resumable=True
+            )
+        elif not enabled and self.codex_session_snapshot:
+            self.codex_session_snapshot.is_resumable = True
+
+    def update_codex_snapshot(self, query: str, query_count: int, session_id: Optional[str] = None):
+        if self.codex_session_snapshot:
+            self.codex_session_snapshot.last_query = query
+            self.codex_session_snapshot.query_count = query_count
+            if session_id:
+                self.codex_session_snapshot.session_id = session_id
+
     def set_ttadk_mode(self, enabled: bool, session_id: Optional[str] = None, query_count: int = 0):
         self.ttadk_mode = enabled
         if enabled and session_id:
@@ -180,6 +220,24 @@ class ProjectContext:
             }
             if self.claude_session_snapshot
             else None,
+            "aiden_mode": self.aiden_mode,
+            "aiden_session_snapshot": {
+                "session_id": self.aiden_session_snapshot.session_id,
+                "query_count": self.aiden_session_snapshot.query_count,
+                "last_query": self.aiden_session_snapshot.last_query,
+                "is_resumable": self.aiden_session_snapshot.is_resumable,
+            }
+            if self.aiden_session_snapshot
+            else None,
+            "codex_mode": self.codex_mode,
+            "codex_session_snapshot": {
+                "session_id": self.codex_session_snapshot.session_id,
+                "query_count": self.codex_session_snapshot.query_count,
+                "last_query": self.codex_session_snapshot.last_query,
+                "is_resumable": self.codex_session_snapshot.is_resumable,
+            }
+            if self.codex_session_snapshot
+            else None,
             "ttadk_mode": self.ttadk_mode,
             "ttadk_tool_name": self.ttadk_tool_name,
             "ttadk_model_name": self.ttadk_model_name,
@@ -217,6 +275,8 @@ class ProjectContext:
             last_active=data.get("last_active", time.time()),
             coco_mode=data.get("coco_mode", False),
             claude_mode=data.get("claude_mode", False),
+            aiden_mode=data.get("aiden_mode", False),
+            codex_mode=data.get("codex_mode", False),
             ttadk_mode=data.get("ttadk_mode", False),
             ttadk_tool_name=data.get("ttadk_tool_name"),
             ttadk_model_name=data.get("ttadk_model_name"),
@@ -235,6 +295,22 @@ class ProjectContext:
         if data.get("claude_session_snapshot"):
             snap = data["claude_session_snapshot"]
             ctx.claude_session_snapshot = ClaudeSessionSnapshot(
+                session_id=snap["session_id"],
+                query_count=snap["query_count"],
+                last_query=snap["last_query"],
+                is_resumable=snap.get("is_resumable", True),
+            )
+        if data.get("aiden_session_snapshot"):
+            snap = data["aiden_session_snapshot"]
+            ctx.aiden_session_snapshot = AidenSessionSnapshot(
+                session_id=snap["session_id"],
+                query_count=snap["query_count"],
+                last_query=snap["last_query"],
+                is_resumable=snap.get("is_resumable", True),
+            )
+        if data.get("codex_session_snapshot"):
+            snap = data["codex_session_snapshot"]
+            ctx.codex_session_snapshot = CodexSessionSnapshot(
                 session_id=snap["session_id"],
                 query_count=snap["query_count"],
                 last_query=snap["last_query"],

@@ -5,11 +5,13 @@ from typing import Optional
 
 
 class InteractionMode(Enum):
-    """交互模式枚举（SMART/COCO/CLAUDE/SHELL/TTADK）。"""
+    """交互模式枚举（SMART/COCO/CLAUDE/SHELL/TTADK/AIDEN/CODEX）。"""
 
     SMART = "smart"
     COCO = "coco"
     CLAUDE = "claude"
+    AIDEN = "aiden"
+    CODEX = "codex"
     SHELL = "shell"
     TTADK = "ttadk"
 
@@ -152,6 +154,22 @@ class ModeManager:
         """lowerCamelCase 兼容别名：`enter_claude_mode()`。"""
         return self.enter_claude_mode(chatId, auto=auto, project_id=projectId)
 
+    def enter_aiden_mode(self, chat_id: str, auto: bool = False, project_id: Optional[str] = None) -> InteractionMode:
+        """进入 Aiden 编程模式。"""
+        return self.set_mode(chat_id, InteractionMode.AIDEN, auto_entered=auto, project_id=project_id)
+
+    def enterAidenMode(self, chatId: str, auto: bool = False, projectId: Optional[str] = None) -> InteractionMode:
+        """lowerCamelCase 兼容别名：`enter_aiden_mode()`。"""
+        return self.enter_aiden_mode(chatId, auto=auto, project_id=projectId)
+
+    def enter_codex_mode(self, chat_id: str, auto: bool = False, project_id: Optional[str] = None) -> InteractionMode:
+        """进入 Codex 编程模式。"""
+        return self.set_mode(chat_id, InteractionMode.CODEX, auto_entered=auto, project_id=project_id)
+
+    def enterCodexMode(self, chatId: str, auto: bool = False, projectId: Optional[str] = None) -> InteractionMode:
+        """lowerCamelCase 兼容别名：`enter_codex_mode()`。"""
+        return self.enter_codex_mode(chatId, auto=auto, project_id=projectId)
+
     def enter_ttadk_mode(self, chat_id: str, auto: bool = False, project_id: Optional[str] = None) -> InteractionMode:
         """进入 TTADK 编程模式。"""
         return self.set_mode(chat_id, InteractionMode.TTADK, auto_entered=auto, project_id=project_id)
@@ -192,6 +210,22 @@ class ModeManager:
         """lowerCamelCase 兼容别名：`is_claude_mode()`。"""
         return self.is_claude_mode(chatId, project_id=projectId)
 
+    def is_aiden_mode(self, chat_id: str, project_id: Optional[str] = None) -> bool:
+        """判断当前是否为 Aiden 模式。"""
+        return self.get_mode(chat_id, project_id) == InteractionMode.AIDEN
+
+    def isAidenMode(self, chatId: str, projectId: Optional[str] = None) -> bool:
+        """lowerCamelCase 兼容别名：`is_aiden_mode()`。"""
+        return self.is_aiden_mode(chatId, project_id=projectId)
+
+    def is_codex_mode(self, chat_id: str, project_id: Optional[str] = None) -> bool:
+        """判断当前是否为 Codex 模式。"""
+        return self.get_mode(chat_id, project_id) == InteractionMode.CODEX
+
+    def isCodexMode(self, chatId: str, projectId: Optional[str] = None) -> bool:
+        """lowerCamelCase 兼容别名：`is_codex_mode()`。"""
+        return self.is_codex_mode(chatId, project_id=projectId)
+
     def is_ttadk_mode(self, chat_id: str, project_id: Optional[str] = None) -> bool:
         """判断当前是否为 TTADK 模式。"""
         return self.get_mode(chat_id, project_id) == InteractionMode.TTADK
@@ -217,9 +251,9 @@ class ModeManager:
         return self.is_shell_mode(chatId, project_id=projectId)
 
     def is_programming_mode(self, chat_id: str, project_id: Optional[str] = None) -> bool:
-        """判断是否处于编程模式（COCO/CLAUDE/TTADK）。"""
+        """判断是否处于编程模式（COCO/CLAUDE/AIDEN/CODEX/TTADK）。"""
         mode = self.get_mode(chat_id, project_id)
-        return mode in (InteractionMode.COCO, InteractionMode.CLAUDE, InteractionMode.TTADK)
+        return mode in (InteractionMode.COCO, InteractionMode.CLAUDE, InteractionMode.AIDEN, InteractionMode.CODEX, InteractionMode.TTADK)
 
     def isProgrammingMode(self, chatId: str, projectId: Optional[str] = None) -> bool:
         """lowerCamelCase 兼容别名：`is_programming_mode()`。"""
@@ -232,6 +266,8 @@ class ModeManager:
             InteractionMode.SMART: "🧠 智能模式",
             InteractionMode.COCO: "🤖 Coco 编程模式",
             InteractionMode.CLAUDE: "🔮 Claude 编程模式",
+            InteractionMode.AIDEN: "🎯 Aiden 编程模式",
+            InteractionMode.CODEX: "⚡ Codex 编程模式",
             InteractionMode.SHELL: "💻 Shell 模式",
             InteractionMode.TTADK: "🎮 TTADK 编程模式",
         }.get(mode, "未知模式")
