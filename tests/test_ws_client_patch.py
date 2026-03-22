@@ -318,6 +318,121 @@ class TestCardActionHandler(unittest.TestCase):
                 "msg_1", "chat_1", "hello ttadk", mock_project
             )
 
+    def test_process_with_intent_routes_gemini(self):
+        """Test that _process_with_intent routes to Gemini handler in GEMINI mode."""
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+            client._mode_manager = MagicMock()
+            client._mode_manager.is_programming_mode.return_value = True
+            client._mode_manager.get_mode.return_value = InteractionMode.GEMINI
+
+            client._is_deep_command = MagicMock(return_value=False)
+            client._is_loop_command = MagicMock(return_value=False)
+            client._is_spec_command = MagicMock(return_value=False)
+            client._is_interceptable_command = MagicMock(return_value=False)
+            client._is_exit_command = MagicMock(return_value=False)
+
+            client._handle_gemini_message = MagicMock()
+            client._add_reaction = MagicMock()
+
+            mock_project = MagicMock()
+
+            client._process_with_intent(
+                message_id="msg_1",
+                chat_id="chat_1",
+                text="hello gemini",
+                project=mock_project,
+            )
+
+            client._handle_gemini_message.assert_called_once_with(
+                "msg_1", "chat_1", "hello gemini", mock_project
+            )
+
+    def test_dispatch_empty_text_routes_gemini_mode(self):
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+            client._mode_manager.get_mode.return_value = InteractionMode.GEMINI
+            client._project_manager.get_active_project.return_value = MagicMock()
+            client._handle_gemini_message = MagicMock()
+
+            client._dispatch_empty_text("msg_1", "chat_1", project=None, task_ctx=None)
+
+            client._handle_gemini_message.assert_called_once()
+            args = client._handle_gemini_message.call_args.args
+            self.assertEqual(args[:3], ("msg_1", "chat_1", ""))
+
+    def test_resolve_project_from_message_auto_enters_gemini(self):
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+            project = MagicMock(
+                project_name="demo",
+                ttadk_mode=False,
+                gemini_mode=True,
+                codex_mode=False,
+                aiden_mode=False,
+                claude_mode=False,
+                coco_mode=False,
+            )
+            client._message_mapper.get_project_id.return_value = "p1"
+            client._project_manager.get_project.return_value = project
+
+            resolved_project, auto_enter_mode = client._resolve_project_from_message("msg_1", "chat_1", "parent_1")
+
+            self.assertIs(resolved_project, project)
+            self.assertEqual(auto_enter_mode, "gemini")
+            client._project_manager.set_active_project.assert_called_once_with("chat_1", "p1")
+
     def test_build_control_queue_key_for_programming_and_spec_commands(self):
         """/coco 与 /spec* 应落在同一控制队列，确保先后顺序执行。"""
         with (

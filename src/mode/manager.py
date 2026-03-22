@@ -5,13 +5,14 @@ from typing import Optional
 
 
 class InteractionMode(Enum):
-    """交互模式枚举（SMART/COCO/CLAUDE/SHELL/TTADK/AIDEN/CODEX）。"""
+    """交互模式枚举（SMART/COCO/CLAUDE/SHELL/TTADK/AIDEN/CODEX/GEMINI）。"""
 
     SMART = "smart"
     COCO = "coco"
     CLAUDE = "claude"
     AIDEN = "aiden"
     CODEX = "codex"
+    GEMINI = "gemini"
     SHELL = "shell"
     TTADK = "ttadk"
 
@@ -174,6 +175,14 @@ class ModeManager:
         """进入 TTADK 编程模式。"""
         return self.set_mode(chat_id, InteractionMode.TTADK, auto_entered=auto, project_id=project_id)
 
+    def enter_gemini_mode(self, chat_id: str, auto: bool = False, project_id: Optional[str] = None) -> InteractionMode:
+        """进入 Gemini 编程模式。"""
+        return self.set_mode(chat_id, InteractionMode.GEMINI, auto_entered=auto, project_id=project_id)
+
+    def enterGeminiMode(self, chatId: str, auto: bool = False, projectId: Optional[str] = None) -> InteractionMode:
+        """lowerCamelCase 兼容别名：`enter_gemini_mode()`。"""
+        return self.enter_gemini_mode(chatId, auto=auto, project_id=projectId)
+
     def enterTtadkMode(self, chatId: str, auto: bool = False, projectId: Optional[str] = None) -> InteractionMode:
         """lowerCamelCase 兼容别名：`enter_ttadk_mode()`。"""
         return self.enter_ttadk_mode(chatId, auto=auto, project_id=projectId)
@@ -234,6 +243,14 @@ class ModeManager:
         """lowerCamelCase 兼容别名：`is_ttadk_mode()`。"""
         return self.is_ttadk_mode(chatId, project_id=projectId)
 
+    def is_gemini_mode(self, chat_id: str, project_id: Optional[str] = None) -> bool:
+        """判断当前是否为 Gemini 模式。"""
+        return self.get_mode(chat_id, project_id) == InteractionMode.GEMINI
+
+    def isGeminiMode(self, chatId: str, projectId: Optional[str] = None) -> bool:
+        """lowerCamelCase 兼容别名：`is_gemini_mode()`。"""
+        return self.is_gemini_mode(chatId, project_id=projectId)
+
     def is_smart_mode(self, chat_id: str, project_id: Optional[str] = None) -> bool:
         """判断当前是否为 SMART 模式。"""
         return self.get_mode(chat_id, project_id) == InteractionMode.SMART
@@ -251,9 +268,16 @@ class ModeManager:
         return self.is_shell_mode(chatId, project_id=projectId)
 
     def is_programming_mode(self, chat_id: str, project_id: Optional[str] = None) -> bool:
-        """判断是否处于编程模式（COCO/CLAUDE/AIDEN/CODEX/TTADK）。"""
+        """判断是否处于编程模式（COCO/CLAUDE/AIDEN/CODEX/GEMINI/TTADK）。"""
         mode = self.get_mode(chat_id, project_id)
-        return mode in (InteractionMode.COCO, InteractionMode.CLAUDE, InteractionMode.AIDEN, InteractionMode.CODEX, InteractionMode.TTADK)
+        return mode in (
+            InteractionMode.COCO,
+            InteractionMode.CLAUDE,
+            InteractionMode.AIDEN,
+            InteractionMode.CODEX,
+            InteractionMode.GEMINI,
+            InteractionMode.TTADK,
+        )
 
     def isProgrammingMode(self, chatId: str, projectId: Optional[str] = None) -> bool:
         """lowerCamelCase 兼容别名：`is_programming_mode()`。"""
@@ -268,6 +292,7 @@ class ModeManager:
             InteractionMode.CLAUDE: "🔮 Claude 编程模式",
             InteractionMode.AIDEN: "🎯 Aiden 编程模式",
             InteractionMode.CODEX: "⚡ Codex 编程模式",
+            InteractionMode.GEMINI: "✨ Gemini 编程模式",
             InteractionMode.SHELL: "💻 Shell 模式",
             InteractionMode.TTADK: "🎮 TTADK 编程模式",
         }.get(mode, "未知模式")

@@ -104,6 +104,8 @@ class TestModeManagerDisplayName:
         assert "Coco" in mgr.get_mode_display_name("chat1")
         mgr.set_mode("chat1", InteractionMode.CLAUDE)
         assert "Claude" in mgr.get_mode_display_name("chat1")
+        mgr.set_mode("chat1", InteractionMode.GEMINI)
+        assert "Gemini" in mgr.get_mode_display_name("chat1")
         mgr.set_mode("chat1", InteractionMode.TTADK)
         assert "TTADK" in mgr.get_mode_display_name("chat1")
         mgr.enter_shell_mode("chat1")
@@ -213,3 +215,4 @@ class TestModeManagerProjectLevel:
         mgr.enter_coco_mode("chat1", project_id="proj1")
         mgr.exit_to_smart("chat1", project_id="proj1")
         assert mgr.get_mode("chat1", project_id="proj1") == InteractionMode.SMART
+

@@ -172,6 +172,11 @@ class TestIntentRecognizerContextHint:
         assert "Claude 编程模式" in hint
         assert "claude_message" in hint
 
+    def test_context_hint_gemini_mode(self, recognizer):
+        hint = recognizer._get_context_hint(current_mode="gemini")
+        assert "Gemini 编程模式" in hint
+        assert "gemini_message" in hint
+
     def test_context_hint_smart_mode(self, recognizer):
         hint = recognizer._get_context_hint(current_mode="smart")
         assert "智能模式" in hint
@@ -184,6 +189,10 @@ class TestIntentRecognizerContextHint:
     def test_fallback_intent_claude_mode(self, recognizer):
         fallback = recognizer._get_fallback_intent(current_mode="claude")
         assert fallback == IntentType.CLAUDE_MESSAGE
+
+    def test_fallback_intent_gemini_mode(self, recognizer):
+        fallback = recognizer._get_fallback_intent(current_mode="gemini")
+        assert fallback == IntentType.GEMINI_MESSAGE
 
     def test_fallback_intent_smart_mode(self, recognizer):
         fallback = recognizer._get_fallback_intent(current_mode="smart")

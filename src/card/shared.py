@@ -45,6 +45,7 @@ def build_mode_buttons(
     project_id: Optional[str] = None,
     is_claude_mode: bool = False,
     is_ttadk_mode: bool = False,
+    is_gemini_mode: bool = False,
 ) -> list[dict]:
     """Build mode-specific footer buttons (exit/enter mode + switch project)."""
     buttons = []
@@ -55,6 +56,9 @@ def build_mode_buttons(
     elif is_coco_mode:
         buttons.append(_create_mode_button("exit_coco", "exit_coco", project_id))
         buttons.append(_create_mode_button("switch_project", "switch_project"))
+    elif is_gemini_mode:
+        buttons.append(_create_mode_button("exit_gemini", "exit_gemini", project_id))
+        buttons.append(_create_mode_button("switch_project", "switch_project"))
     elif is_ttadk_mode:
         buttons.append(_create_mode_button("switch_ttadk_tool", "show_ttadk_menu", project_id))
         buttons.append(_create_mode_button("exit_ttadk", "exit_ttadk", project_id))
@@ -62,6 +66,7 @@ def build_mode_buttons(
     else:
         buttons.append(_create_mode_button("enter_coco", "enter_coco", project_id))
         buttons.append(_create_mode_button("enter_claude", "enter_claude", project_id))
+        buttons.append(_create_mode_button("enter_gemini", "enter_gemini", project_id))
         buttons.append(_create_mode_button("enter_ttadk", "enter_ttadk", project_id))
 
     # Filter out empty buttons if config missing
@@ -110,19 +115,22 @@ def resolve_title_and_template(
     is_claude_mode: bool,
     theme_color: Optional[str] = None,
     is_ttadk_mode: bool = False,
+    is_gemini_mode: bool = False,
 ) -> tuple[str, str]:
     """Resolve card title and header template based on mode and project name."""
     if is_claude_mode:
         mode_icon, header_template = "🔮", "purple"
     elif is_coco_mode:
         mode_icon, header_template = "🤖", "blue"
+    elif is_gemini_mode:
+        mode_icon, header_template = "✨", "turquoise"
     elif is_ttadk_mode:
         mode_icon, header_template = "🎮", "orange"
     else:
         mode_icon, header_template = "🧠", "turquoise"
 
     # If a theme_color is provided (from project), use it for the template
-    if theme_color and not is_claude_mode and not is_coco_mode and not is_ttadk_mode:
+    if theme_color and not is_claude_mode and not is_coco_mode and not is_gemini_mode and not is_ttadk_mode:
         header_template = get_theme(theme_color).header_template
 
     if project_name:
@@ -130,6 +138,8 @@ def resolve_title_and_template(
             title = f"🔮 {project_name} · Claude"
         elif is_coco_mode:
             title = f"🤖 {project_name} · Coco"
+        elif is_gemini_mode:
+            title = f"✨ {project_name} · Gemini"
         elif is_ttadk_mode:
             title = f"🎮 {project_name} · TTADK"
         else:
@@ -139,6 +149,8 @@ def resolve_title_and_template(
             mode_name = "Claude 编程模式"
         elif is_coco_mode:
             mode_name = "编程模式"
+        elif is_gemini_mode:
+            mode_name = "Gemini 编程模式"
         elif is_ttadk_mode:
             mode_name = "TTADK 多工具模式"
         else:

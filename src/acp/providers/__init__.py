@@ -8,6 +8,7 @@ from .aiden import AidenProvider
 from .claude import ClaudeProvider
 from .coco import CocoProvider
 from .codex import CodexProvider
+from .gemini import GeminiProvider
 from ..provider import ToolRegistry, tool_registry
 
 # Register standard providers
@@ -15,6 +16,7 @@ tool_registry.register(CocoProvider(), is_default=True)
 tool_registry.register(ClaudeProvider())
 tool_registry.register(AidenProvider())
 tool_registry.register(CodexProvider())
+tool_registry.register(GeminiProvider())
 
 __all__ = [
     "ToolRegistry",
@@ -23,4 +25,5 @@ __all__ = [
     "ClaudeProvider",
     "AidenProvider",
     "CodexProvider",
+    "GeminiProvider",
 ]

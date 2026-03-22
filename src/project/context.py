@@ -49,6 +49,7 @@ ClaudeSessionSnapshot = SessionSnapshot
 TtadkSessionSnapshot = SessionSnapshot
 AidenSessionSnapshot = SessionSnapshot
 CodexSessionSnapshot = SessionSnapshot
+GeminiSessionSnapshot = SessionSnapshot
 
 
 @dataclass
@@ -73,10 +74,16 @@ class ProjectContext:
     codex_session_snapshot: Optional[SessionSnapshot] = None
     codex_mode: bool = False
 
+    gemini_session_snapshot: Optional[SessionSnapshot] = None
+    gemini_mode: bool = False
+
     ttadk_session_snapshot: Optional[SessionSnapshot] = None
     ttadk_mode: bool = False
     ttadk_tool_name: Optional[str] = None
     ttadk_model_name: Optional[str] = None
+
+    acp_tool_name: Optional[str] = None
+    acp_model_name: Optional[str] = None
 
     task_queue: list[Task] = field(default_factory=list)
     current_task: Optional[Task] = None
@@ -167,6 +174,22 @@ class ProjectContext:
             if session_id:
                 self.codex_session_snapshot.session_id = session_id
 
+    def set_gemini_mode(self, enabled: bool, session_id: Optional[str] = None, query_count: int = 0):
+        self.gemini_mode = enabled
+        if enabled and session_id:
+            self.gemini_session_snapshot = GeminiSessionSnapshot(
+                session_id=session_id, query_count=query_count, last_query="", is_resumable=True
+            )
+        elif not enabled and self.gemini_session_snapshot:
+            self.gemini_session_snapshot.is_resumable = True
+
+    def update_gemini_snapshot(self, query: str, query_count: int, session_id: Optional[str] = None):
+        if self.gemini_session_snapshot:
+            self.gemini_session_snapshot.last_query = query
+            self.gemini_session_snapshot.query_count = query_count
+            if session_id:
+                self.gemini_session_snapshot.session_id = session_id
+
     def set_ttadk_mode(self, enabled: bool, session_id: Optional[str] = None, query_count: int = 0):
         self.ttadk_mode = enabled
         if enabled and session_id:
@@ -238,9 +261,20 @@ class ProjectContext:
             }
             if self.codex_session_snapshot
             else None,
+            "gemini_mode": self.gemini_mode,
+            "gemini_session_snapshot": {
+                "session_id": self.gemini_session_snapshot.session_id,
+                "query_count": self.gemini_session_snapshot.query_count,
+                "last_query": self.gemini_session_snapshot.last_query,
+                "is_resumable": self.gemini_session_snapshot.is_resumable,
+            }
+            if self.gemini_session_snapshot
+            else None,
             "ttadk_mode": self.ttadk_mode,
             "ttadk_tool_name": self.ttadk_tool_name,
             "ttadk_model_name": self.ttadk_model_name,
+            "acp_tool_name": self.acp_tool_name,
+            "acp_model_name": self.acp_model_name,
             "ttadk_session_snapshot": {
                 "session_id": self.ttadk_session_snapshot.session_id,
                 "query_count": self.ttadk_session_snapshot.query_count,
@@ -277,9 +311,12 @@ class ProjectContext:
             claude_mode=data.get("claude_mode", False),
             aiden_mode=data.get("aiden_mode", False),
             codex_mode=data.get("codex_mode", False),
+            gemini_mode=data.get("gemini_mode", False),
             ttadk_mode=data.get("ttadk_mode", False),
             ttadk_tool_name=data.get("ttadk_tool_name"),
             ttadk_model_name=data.get("ttadk_model_name"),
+            acp_tool_name=data.get("acp_tool_name"),
+            acp_model_name=data.get("acp_model_name"),
             theme_color=data.get("theme_color", "green"),
             emoji_prefix=data.get("emoji_prefix", "🟢"),
             env_vars=data.get("env_vars", {}),
@@ -311,6 +348,14 @@ class ProjectContext:
         if data.get("codex_session_snapshot"):
             snap = data["codex_session_snapshot"]
             ctx.codex_session_snapshot = CodexSessionSnapshot(
+                session_id=snap["session_id"],
+                query_count=snap["query_count"],
+                last_query=snap["last_query"],
+                is_resumable=snap.get("is_resumable", True),
+            )
+        if data.get("gemini_session_snapshot"):
+            snap = data["gemini_session_snapshot"]
+            ctx.gemini_session_snapshot = GeminiSessionSnapshot(
                 session_id=snap["session_id"],
                 query_count=snap["query_count"],
                 last_query=snap["last_query"],

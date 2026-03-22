@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
+
+from acp.stdio import spawn_agent_process
 
 from ...card import CardBuilder
 from ...card.builders.system import SystemBuilder
@@ -24,6 +28,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class _ACPToolOption:
+    name: str
+    description: str = ""
+    is_default: bool = False
+
+
+@dataclass
+class _ACPModelOption:
+    name: str
+    description: str = ""
+    is_default: bool = False
+
+
 class SystemHandler(BaseHandler):
     """Help, exit, shell, directory, and intercepted-command handling."""
 
@@ -32,6 +50,7 @@ class SystemHandler(BaseHandler):
     claude_handler = None
     aiden_handler = None
     codex_handler = None
+    gemini_handler = None
     ttadk_handler = None
     project_handler = None
     deep_handler = None
@@ -54,10 +73,12 @@ class SystemHandler(BaseHandler):
             "/claude_info": lambda m, c, t, p: self.claude_handler.show_info(m, c, p),
             "/aiden_info": lambda m, c, t, p: self.aiden_handler.show_info(m, c, p),
             "/codex_info": lambda m, c, t, p: self.codex_handler.show_info(m, c, p),
+            "/gemini_info": lambda m, c, t, p: self.gemini_handler.show_info(m, c, p),
             "/projects": lambda m, c, t, p: self.project_handler.show_project_board(m, c),
             "/project": lambda m, c, t, p: self.project_handler.show_project_board(m, c),
             "/switch": lambda m, c, t, p: self.project_handler.show_project_board(m, c),
             "/ttadk": lambda m, c, t, p: self.handle_ttadk_command(m, c, p),
+            "/acp": lambda m, c, t, p: self.handle_acp_command(m, c, p),
             "/ttadk_info": lambda m, c, t, p: self.show_ttadk_info(m, c),
             "/ttadk_refresh": lambda m, c, t, p: self.refresh_ttadk_models(m, c, p),
             "/menu": lambda m, c, t, p: self.handle_menu_command(m, c, p),
@@ -223,6 +244,9 @@ class SystemHandler(BaseHandler):
             "/帮助",
             "/coco_info",
             "/claude_info",
+            "/aiden_info",
+            "/codex_info",
+            "/gemini_info",
             "/ttadk_info",
             "/projects",
             "/status",
@@ -232,6 +256,7 @@ class SystemHandler(BaseHandler):
             "/diff",
             "/trace",
             "/ttadk",
+            "/acp",
             "/ttadk_refresh",
             "/menu",
         }
@@ -287,6 +312,7 @@ class SystemHandler(BaseHandler):
             InteractionMode.CLAUDE: UI_TEXT.get("system_mode_claude", "🔮 Claude 编程模式"),
             InteractionMode.AIDEN: UI_TEXT.get("system_mode_aiden", "🎯 Aiden 编程模式"),
             InteractionMode.CODEX: UI_TEXT.get("system_mode_codex", "💻 Codex 编程模式"),
+            InteractionMode.GEMINI: UI_TEXT.get("system_mode_gemini", "✨ Gemini 编程模式"),
             InteractionMode.TTADK: UI_TEXT.get("system_mode_ttadk", "🎮 TTADK 多工具模式"),
         }
         current_mode_str = mode_emoji.get(current_mode, UI_TEXT.get("system_mode_smart", "🧠 智能模式"))
@@ -407,6 +433,190 @@ class SystemHandler(BaseHandler):
             normalized_cwd,
             bool(is_abs),
         )
+
+    # ------------------------------------------------------------------
+    # ACP command handling
+    # ------------------------------------------------------------------
+    def _list_acp_tools(self) -> list[_ACPToolOption]:
+        from ...acp.providers import tool_registry
+
+        names = ["coco", "claude", "aiden", "codex", "gemini"]
+        desc = {
+            "coco": "字节跳动 AI",
+            "claude": "Anthropic AI",
+            "aiden": "Aiden CLI",
+            "codex": "OpenAI Codex",
+            "gemini": "Google Gemini CLI",
+        }
+        out: list[_ACPToolOption] = []
+        for name in names:
+            provider = tool_registry.get_provider(name)
+            if not provider:
+                continue
+            try:
+                available = bool(provider.check_availability())
+            except Exception:
+                available = False
+            if available:
+                out.append(_ACPToolOption(name=name, description=desc.get(name, ""), is_default=(name == "coco")))
+        return out
+
+    def _fetch_acp_models(self, tool_name: str, cwd: Optional[str], current_model: Optional[str] = None) -> list[_ACPModelOption]:
+        from ...acp.client import GhostAPClient
+        from ...acp.providers import tool_registry
+
+        provider = tool_registry.get_provider(tool_name)
+        if not provider:
+            return []
+
+        cmd, args = provider.get_serve_command(None)
+
+        async def _probe() -> list[_ACPModelOption]:
+            import os
+
+            env = os.environ.copy()
+            env.pop("CLAUDECODE", None)
+            client = GhostAPClient(on_event=lambda _ev: None, auto_approve=True)
+
+            async with spawn_agent_process(client, cmd, *args, env=env, cwd=(cwd or str(Path.cwd()))) as (conn, _proc):
+                await conn.initialize(protocol_version=1)
+                resp = await conn.new_session(cwd=(cwd or str(Path.cwd())))
+                models_state = getattr(resp, "models", None)
+                available = list(getattr(models_state, "available_models", []) or [])
+                current_id = str(
+                    getattr(models_state, "current_model_id", "") or getattr(models_state, "currentModelId", "")
+                )
+                target_default = str((current_model or current_id or "")).strip()
+
+                items: list[_ACPModelOption] = []
+                seen: set[str] = set()
+                for item in available:
+                    model_id = str(
+                        getattr(item, "model_id", "") or getattr(item, "modelId", "") or getattr(item, "name", "")
+                    ).strip()
+                    if not model_id or model_id in seen:
+                        continue
+                    seen.add(model_id)
+                    description = str(getattr(item, "description", "") or getattr(item, "name", "") or model_id).strip()
+                    items.append(
+                        _ACPModelOption(
+                            name=model_id,
+                            description=description,
+                            is_default=(model_id == target_default),
+                        )
+                    )
+                return items
+
+        try:
+            models = asyncio.run(_probe())
+        except Exception as e:
+            logger.info("[ACP] fetch models failed: tool=%s err=%s", tool_name, e)
+            models = []
+
+        if models:
+            return models
+
+        if tool_name == "coco":
+            try:
+                fallback = get_coco_model_manager().get_models().models
+                return [
+                    _ACPModelOption(name=m.name, description=m.description, is_default=bool(getattr(m, "is_default", False)))
+                    for m in (fallback or [])
+                    if getattr(m, "name", "")
+                ]
+            except Exception:
+                pass
+
+        if current_model:
+            return [_ACPModelOption(name=str(current_model), description=str(current_model), is_default=True)]
+
+        return []
+
+    def _enter_mode_with_acp_model(
+        self,
+        message_id: str,
+        chat_id: str,
+        tool_name: str,
+        model_name: str,
+        project: Optional["ProjectContext"] = None,
+    ) -> None:
+        target_project = project or self.project_manager.get_active_project(chat_id)
+        if target_project:
+            target_project.acp_tool_name = tool_name
+            target_project.acp_model_name = model_name
+
+        if tool_name == "coco" and self.coco_handler:
+            self.coco_handler.current_model = model_name
+            self.coco_handler.enter_mode(message_id, chat_id, project=target_project)
+            return
+        if tool_name == "claude" and self.claude_handler:
+            self.claude_handler.current_model = model_name
+            self.claude_handler.enter_mode(message_id, chat_id, project=target_project)
+            return
+        if tool_name == "aiden" and self.aiden_handler:
+            self.aiden_handler.current_model = model_name
+            self.aiden_handler.enter_mode(message_id, chat_id, project=target_project)
+            return
+        if tool_name == "codex" and self.codex_handler:
+            self.codex_handler.current_model = model_name
+            self.codex_handler.enter_mode(message_id, chat_id, project=target_project)
+            return
+        if tool_name == "gemini" and self.gemini_handler:
+            self.gemini_handler.current_model = model_name
+            self.gemini_handler.enter_mode(message_id, chat_id, project=target_project)
+            return
+
+        self.reply_error(message_id, f"不支持的 ACP 工具: {tool_name}")
+
+    def handle_acp_command(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+        project_id = project.project_id if project else None
+        tools = self._list_acp_tools()
+        if not tools:
+            self.reply_error(message_id, "未检测到可用 ACP 工具")
+            return
+        msg_type, card_content = CardBuilder.build_acp_tool_select_card(tools, project_id)
+        self.reply_message(message_id, card_content, msg_type=msg_type)
+
+    def handle_select_acp_tool(self, message_id: str, chat_id: str, tool_name: str, project_id: Optional[str] = None):
+        tool = (tool_name or "").strip().lower()
+        if not tool:
+            self.reply_error(message_id, "请选择 ACP 工具")
+            return
+
+        project = self.project_manager.get_project(project_id) if project_id else self.project_manager.get_active_project(chat_id)
+        cwd = (project.root_path if project else None) or self.get_working_dir(chat_id)
+
+        current_model = None
+        if project and getattr(project, "acp_tool_name", "") == tool:
+            current_model = getattr(project, "acp_model_name", None)
+
+        models = self._fetch_acp_models(tool, cwd=cwd, current_model=current_model)
+        if not models:
+            self.reply_error(message_id, f"获取 {tool} 模型列表失败，请稍后重试")
+            return
+
+        msg_type, card_content = CardBuilder.build_acp_model_select_card(models, tool, project_id)
+        self.reply_message(message_id, card_content, msg_type=msg_type)
+
+    def handle_refresh_acp_models(self, message_id: str, chat_id: str, tool_name: str, project_id: Optional[str] = None):
+        self.handle_select_acp_tool(message_id, chat_id, tool_name, project_id)
+
+    def handle_select_acp_model(
+        self,
+        message_id: str,
+        chat_id: str,
+        tool_name: str,
+        model_name: str,
+        project: Optional["ProjectContext"] = None,
+    ):
+        tool = (tool_name or "").strip().lower()
+        model = (model_name or "").strip()
+        if not tool or not model:
+            self.reply_error(message_id, "请选择 ACP 模型")
+            return
+
+        self.reply_message(message_id, f"🔄 正在切换到 {tool} / {model}...")
+        self._enter_mode_with_acp_model(message_id, chat_id, tool, model, project)
 
     # ------------------------------------------------------------------
     # TTADK command handling
@@ -558,6 +768,12 @@ class SystemHandler(BaseHandler):
             self.coco_handler.exit_mode(message_id, chat_id, project)
         elif current_mode == InteractionMode.CLAUDE:
             self.claude_handler.exit_mode(message_id, chat_id, project)
+        elif current_mode == InteractionMode.AIDEN:
+            self.aiden_handler.exit_mode(message_id, chat_id, project)
+        elif current_mode == InteractionMode.CODEX:
+            self.codex_handler.exit_mode(message_id, chat_id, project)
+        elif current_mode == InteractionMode.GEMINI:
+            self.gemini_handler.exit_mode(message_id, chat_id, project)
         elif current_mode == InteractionMode.TTADK:
             self.ttadk_handler.exit_mode(message_id, chat_id, project)
         else:
@@ -740,6 +956,7 @@ class SystemHandler(BaseHandler):
             {"name": "claude", "emoji": "🔮", "description": "Anthropic AI"},
             {"name": "aiden", "emoji": "🎯", "description": ""},
             {"name": "codex", "emoji": "💻", "description": ""},
+            {"name": "gemini", "emoji": "✨", "description": "Google Gemini CLI"},
         ]
 
         # Check availability for each tool
@@ -772,6 +989,7 @@ class SystemHandler(BaseHandler):
             {"name": "claude", "emoji": "🔮"},
             {"name": "aiden", "emoji": "🎯"},
             {"name": "codex", "emoji": "💻"},
+            {"name": "gemini", "emoji": "✨"},
         ]
 
         # Check availability and last used time for each tool

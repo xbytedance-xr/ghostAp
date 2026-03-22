@@ -59,6 +59,7 @@ from .handlers import (
     CocoModeHandler,
     AidenModeHandler,
     CodexModeHandler,
+    GeminiModeHandler,
     DeepHandler,
     DiagnosticsHandler,
     LoopHandler,
@@ -93,6 +94,7 @@ class FeishuWSClient:
         self._claude_manager = ACPSessionManager("claude", session_timeout=self.settings.claude_session_timeout)
         self._aiden_manager = ACPSessionManager("aiden", session_timeout=self.settings.coco_session_timeout)
         self._codex_manager = ACPSessionManager("codex", session_timeout=self.settings.coco_session_timeout)
+        self._gemini_manager = ACPSessionManager("gemini", session_timeout=self.settings.coco_session_timeout)
         self._ttadk_manager = ACPSessionManager("ttadk", session_timeout=self.settings.coco_session_timeout)
         self._intent_recognizer = IntentRecognizer()
         self._message_cache = MessageCache(ttl=300, max_size=1000, cleanup_interval=60)
@@ -147,6 +149,7 @@ class FeishuWSClient:
             claude_manager=self._claude_manager,
             aiden_manager=self._aiden_manager,
             codex_manager=self._codex_manager,
+            gemini_manager=self._gemini_manager,
             ttadk_manager=self._ttadk_manager,
             intent_recognizer=self._intent_recognizer,
             scheduler=self._scheduler,
@@ -175,6 +178,7 @@ class FeishuWSClient:
         self._claude_handler = ClaudeModeHandler(self._handler_ctx)
         self._aiden_handler = AidenModeHandler(self._handler_ctx)
         self._codex_handler = CodexModeHandler(self._handler_ctx)
+        self._gemini_handler = GeminiModeHandler(self._handler_ctx)
         self._ttadk_handler = TTADKModeHandler(self._handler_ctx)
         self._deep_handler = DeepHandler(self._handler_ctx)
         self._loop_handler = LoopHandler(self._handler_ctx)
@@ -189,19 +193,28 @@ class FeishuWSClient:
         self._aiden_handler._coco_handler = self._coco_handler
         self._aiden_handler._claude_handler = self._claude_handler
         self._aiden_handler._codex_handler = self._codex_handler
+        self._aiden_handler._gemini_handler = self._gemini_handler
         self._aiden_handler._ttadk_handler = self._ttadk_handler
         self._codex_handler._coco_handler = self._coco_handler
         self._codex_handler._claude_handler = self._claude_handler
         self._codex_handler._aiden_handler = self._aiden_handler
+        self._codex_handler._gemini_handler = self._gemini_handler
         self._codex_handler._ttadk_handler = self._ttadk_handler
+        self._gemini_handler._coco_handler = self._coco_handler
+        self._gemini_handler._claude_handler = self._claude_handler
+        self._gemini_handler._aiden_handler = self._aiden_handler
+        self._gemini_handler._codex_handler = self._codex_handler
+        self._gemini_handler._ttadk_handler = self._ttadk_handler
         self._ttadk_handler._coco_handler = self._coco_handler
         self._ttadk_handler._claude_handler = self._claude_handler
         self._ttadk_handler._aiden_handler = self._aiden_handler
         self._ttadk_handler._codex_handler = self._codex_handler
+        self._ttadk_handler._gemini_handler = self._gemini_handler
         self._system_handler.coco_handler = self._coco_handler
         self._system_handler.claude_handler = self._claude_handler
         self._system_handler.aiden_handler = self._aiden_handler
         self._system_handler.codex_handler = self._codex_handler
+        self._system_handler.gemini_handler = self._gemini_handler
         self._system_handler.ttadk_handler = self._ttadk_handler
         self._system_handler.project_handler = self._project_handler
         self._system_handler.deep_handler = self._deep_handler
@@ -300,6 +313,15 @@ class FeishuWSClient:
             exact="resume_aiden",
         )
         self._register_action(self._handle_card_new_aiden, exact="new_aiden")
+
+        # Gemini
+        self._register_action(self._handle_card_enter_gemini, exact="enter_gemini")
+        self._register_action(self._handle_card_exit_gemini, exact="exit_gemini")
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_card_resume_gemini(mid, cid, pid, val.get("session_id", "")),
+            exact="resume_gemini",
+        )
+        self._register_action(self._handle_card_new_gemini, exact="new_gemini")
 
         # Codex
         self._register_action(self._handle_card_enter_codex, exact="enter_codex")
@@ -408,6 +430,32 @@ class FeishuWSClient:
                 mid, cid, self._project_manager.get_project(pid) if pid else None
             ),
             exact="show_ttadk_menu",
+        )
+
+        # ACP
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_acp_command(
+                mid, cid, self._project_manager.get_project(pid) if pid else None
+            ),
+            exact="show_acp_menu",
+        )
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_select_acp_tool(mid, cid, val.get("tool_name", ""), pid),
+            exact="select_acp_tool",
+        )
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_select_acp_model(
+                mid,
+                cid,
+                val.get("tool_name", ""),
+                val.get("model_name", ""),
+                self._project_manager.get_project(pid) if pid else None,
+            ),
+            exact="select_acp_model",
+        )
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_refresh_acp_models(mid, cid, val.get("tool_name", ""), pid),
+            exact="refresh_acp_models",
         )
 
         # System
@@ -663,6 +711,16 @@ class FeishuWSClient:
         "_handle_card_exit_aiden": ("_aiden_handler", "handle_card_exit"),
         "_handle_card_resume_aiden": ("_aiden_handler", "handle_card_resume"),
         "_handle_card_new_aiden": ("_aiden_handler", "handle_card_new"),
+        # --- Gemini mode ---
+        "_enter_gemini_mode": ("_gemini_handler", "enter_mode"),
+        "_exit_gemini_mode": ("_gemini_handler", "exit_mode"),
+        "_handle_gemini_message": ("_gemini_handler", "handle_message"),
+        "_handle_gemini_response": ("_gemini_handler", "handle_response"),
+        "_show_gemini_info": ("_gemini_handler", "show_info"),
+        "_handle_card_enter_gemini": ("_gemini_handler", "handle_card_enter"),
+        "_handle_card_exit_gemini": ("_gemini_handler", "handle_card_exit"),
+        "_handle_card_resume_gemini": ("_gemini_handler", "handle_card_resume"),
+        "_handle_card_new_gemini": ("_gemini_handler", "handle_card_new"),
         # --- Codex mode ---
         "_enter_codex_mode": ("_codex_handler", "enter_mode"),
         "_exit_codex_mode": ("_codex_handler", "exit_mode"),
@@ -687,6 +745,10 @@ class FeishuWSClient:
         "_handle_select_ttadk_tool": ("_system_handler", "handle_select_ttadk_tool"),
         "_handle_select_ttadk_model": ("_system_handler", "handle_select_ttadk_model"),
         "_handle_refresh_ttadk_models": ("_system_handler", "handle_refresh_ttadk_models"),
+        "_handle_acp_command": ("_system_handler", "handle_acp_command"),
+        "_handle_select_acp_tool": ("_system_handler", "handle_select_acp_tool"),
+        "_handle_select_acp_model": ("_system_handler", "handle_select_acp_model"),
+        "_handle_refresh_acp_models": ("_system_handler", "handle_refresh_acp_models"),
         "_handle_help_category": ("_system_handler", "handle_help_category"),
         "_handle_deep_prompt": ("_system_handler", "handle_deep_prompt"),
         # --- Deep Engine ---
@@ -806,6 +868,10 @@ class FeishuWSClient:
             InteractionMode.SMART: ContextSourceMode.SMART,
             InteractionMode.COCO: ContextSourceMode.COCO,
             InteractionMode.CLAUDE: ContextSourceMode.CLAUDE,
+            InteractionMode.AIDEN: ContextSourceMode.AIDEN,
+            InteractionMode.CODEX: ContextSourceMode.CODEX,
+            InteractionMode.GEMINI: ContextSourceMode.GEMINI,
+            InteractionMode.TTADK: ContextSourceMode.TTADK,
         }
         return mapping.get(mode, ContextSourceMode.SMART)
 
@@ -820,7 +886,7 @@ class FeishuWSClient:
 
         返回：
         - `project`: 最终解析到的 ProjectContext（或当前 active project）。
-        - `auto_enter_mode`: 若该消息是回复某个编程会话/项目卡片，允许自动进入 `coco/claude`。
+        - `auto_enter_mode`: 若该消息是回复某个编程会话/项目卡片，允许自动进入对应编程模式。
         """
         auto_enter_mode = None
 
@@ -832,12 +898,21 @@ class FeishuWSClient:
                     self._project_manager.set_active_project(chat_id, project_id)
                     logger.info("通过消息引用切换到项目: %s", project.project_name)
 
-                    if project.claude_mode:
+                    if project.ttadk_mode:
+                        auto_enter_mode = "ttadk"
+                    elif project.gemini_mode:
+                        auto_enter_mode = "gemini"
+                    elif project.codex_mode:
+                        auto_enter_mode = "codex"
+                    elif project.aiden_mode:
+                        auto_enter_mode = "aiden"
+                    elif project.claude_mode:
                         auto_enter_mode = "claude"
-                        logger.info("自动进入 Claude 模式 (回复编程消息)")
                     elif project.coco_mode:
                         auto_enter_mode = "coco"
-                        logger.info("自动进入编程模式 (回复编程消息)")
+
+                    if auto_enter_mode:
+                        logger.info("自动进入 %s 模式 (回复编程消息)", auto_enter_mode)
 
                     return project, auto_enter_mode
 
@@ -976,7 +1051,14 @@ class FeishuWSClient:
             "/enter_coco",
             "/claude",
             "/enter_claude",
+            "/aiden",
+            "/enter_aiden",
+            "/codex",
+            "/enter_codex",
+            "/gemini",
+            "/enter_gemini",
             "/ttadk",
+            "/acp",
         }
 
     def _build_control_queue_key(self, *, chat_id: str, project_id: Optional[str], text: str) -> Optional[str]:
@@ -1163,21 +1245,36 @@ class FeishuWSClient:
             _pid = task_ctx.spec.project_id
 
         current_mode = self._mode_manager.get_mode(chat_id, project_id=_pid)
-        if current_mode == InteractionMode.CLAUDE:
+        if current_mode in {
+            InteractionMode.COCO,
+            InteractionMode.CLAUDE,
+            InteractionMode.AIDEN,
+            InteractionMode.CODEX,
+            InteractionMode.GEMINI,
+            InteractionMode.TTADK,
+        }:
             if project is None:
                 project = self._project_manager.get_active_project(chat_id)
-            self._handle_claude_message(message_id, chat_id, "", project)
-        elif current_mode == InteractionMode.COCO:
-            if project is None:
-                project = self._project_manager.get_active_project(chat_id)
-            self._handle_coco_message(message_id, chat_id, "", project)
+
+            if current_mode == InteractionMode.COCO:
+                self._handle_coco_message(message_id, chat_id, "", project)
+            elif current_mode == InteractionMode.CLAUDE:
+                self._handle_claude_message(message_id, chat_id, "", project)
+            elif current_mode == InteractionMode.AIDEN:
+                self._handle_aiden_message(message_id, chat_id, "", project)
+            elif current_mode == InteractionMode.CODEX:
+                self._handle_codex_message(message_id, chat_id, "", project)
+            elif current_mode == InteractionMode.GEMINI:
+                self._handle_gemini_message(message_id, chat_id, "", project)
+            else:
+                self._ttadk_handler.handle_message(message_id, chat_id, "", project)
         else:
             self._show_help(message_id, chat_id)
 
     def _dispatch_message_logic(
         self, message_id, chat_id, text, project, auto_enter_mode, is_image_only=False, shell_fast_tracked=False
     ):
-        """根据 auto-enter 与当前模式，将消息路由到 Coco/Claude/SMART 的处理路径。"""
+        """根据 auto-enter 与当前模式，将消息路由到对应编程模式或 SMART 处理路径。"""
         if auto_enter_mode == "claude":
             self._enter_claude_mode(message_id, chat_id, silent=True, project=project)
             self._add_reaction(message_id, EmojiReaction.on_coco_mode())
@@ -1188,6 +1285,21 @@ class FeishuWSClient:
             self._add_reaction(message_id, EmojiReaction.on_coco_mode())
             self._add_reaction(message_id, EmojiReaction.on_processing())
             self._handle_coco_message(message_id, chat_id, text, project)
+        elif auto_enter_mode == "aiden":
+            self._enter_aiden_mode(message_id, chat_id, silent=True, project=project)
+            self._add_reaction(message_id, EmojiReaction.on_coco_mode())
+            self._add_reaction(message_id, EmojiReaction.on_processing())
+            self._handle_aiden_message(message_id, chat_id, text, project)
+        elif auto_enter_mode == "codex":
+            self._enter_codex_mode(message_id, chat_id, silent=True, project=project)
+            self._add_reaction(message_id, EmojiReaction.on_coco_mode())
+            self._add_reaction(message_id, EmojiReaction.on_processing())
+            self._handle_codex_message(message_id, chat_id, text, project)
+        elif auto_enter_mode == "gemini":
+            self._enter_gemini_mode(message_id, chat_id, silent=True, project=project)
+            self._add_reaction(message_id, EmojiReaction.on_coco_mode())
+            self._add_reaction(message_id, EmojiReaction.on_processing())
+            self._handle_gemini_message(message_id, chat_id, text, project)
         elif auto_enter_mode == "ttadk":
             self._enter_ttadk_mode(message_id, chat_id, silent=True, project=project)
             self._add_reaction(message_id, EmojiReaction.on_coco_mode())
@@ -1316,8 +1428,12 @@ class FeishuWSClient:
                 "select_ttadk_tool",
                 "select_ttadk_model",
                 "refresh_ttadk_models",
+                "select_acp_tool",
+                "select_acp_model",
+                "refresh_acp_models",
                 "load_more",
                 "show_ttadk_menu",
+                "show_acp_menu",
                 "show_help_menu",
                 "enter_deep_prompt",
                 "help_category",
@@ -1446,10 +1562,18 @@ class FeishuWSClient:
             self._add_reaction(message_id, EmojiReaction.on_processing())
             if current_mode == InteractionMode.COCO:
                 self._handle_coco_message(message_id, chat_id, text, project)
+            elif current_mode == InteractionMode.CLAUDE:
+                self._handle_claude_message(message_id, chat_id, text, project)
+            elif current_mode == InteractionMode.AIDEN:
+                self._handle_aiden_message(message_id, chat_id, text, project)
+            elif current_mode == InteractionMode.CODEX:
+                self._handle_codex_message(message_id, chat_id, text, project)
+            elif current_mode == InteractionMode.GEMINI:
+                self._handle_gemini_message(message_id, chat_id, text, project)
             elif current_mode == InteractionMode.TTADK:
                 self._ttadk_handler.handle_message(message_id, chat_id, text, project)
             else:
-                self._handle_claude_message(message_id, chat_id, text, project)
+                self._show_help(message_id, chat_id)
             return
 
         # SMART mode: image-only messages bypass intent recognition
@@ -1510,7 +1634,13 @@ class FeishuWSClient:
                 message_id, chat_id, task, step_num=i, total_steps=len(tasks), project=project
             )
 
-            if task.intent == IntentType.ENTER_COCO:
+            if task.intent in {
+                IntentType.ENTER_COCO,
+                IntentType.ENTER_CLAUDE,
+                IntentType.ENTER_AIDEN,
+                IntentType.ENTER_CODEX,
+                IntentType.ENTER_GEMINI,
+            }:
                 break
 
             if not success:
@@ -1587,14 +1717,26 @@ class FeishuWSClient:
         elif intent == IntentType.ENTER_CODEX:
             self._enter_codex_mode(message_id, chat_id, project=project)
 
+        elif intent == IntentType.ENTER_GEMINI:
+            self._enter_gemini_mode(message_id, chat_id, project=project)
+
         elif intent == IntentType.EXIT_CODEX:
             self._exit_codex_mode(message_id, chat_id, project=project)
+
+        elif intent == IntentType.EXIT_GEMINI:
+            self._exit_gemini_mode(message_id, chat_id, project=project)
 
         elif intent == IntentType.CODEX_MESSAGE:
             if data.get("command") == "info":
                 self._show_codex_info(message_id, chat_id, project)
             else:
                 self._handle_codex_message(message_id, chat_id, original_text, project)
+
+        elif intent == IntentType.GEMINI_MESSAGE:
+            if data.get("command") == "info":
+                self._show_gemini_info(message_id, chat_id, project)
+            else:
+                self._handle_gemini_message(message_id, chat_id, original_text, project)
 
         elif intent == IntentType.SHOW_HELP:
             self._show_full_help(message_id, chat_id, project)
@@ -1825,8 +1967,24 @@ class FeishuWSClient:
 
         if intent == IntentType.ENTER_COCO:
             return "进入 Coco 编程模式"
+        elif intent == IntentType.ENTER_CLAUDE:
+            return "进入 Claude 编程模式"
+        elif intent == IntentType.ENTER_AIDEN:
+            return "进入 Aiden 编程模式"
+        elif intent == IntentType.ENTER_CODEX:
+            return "进入 Codex 编程模式"
+        elif intent == IntentType.ENTER_GEMINI:
+            return "进入 Gemini 编程模式"
         elif intent == IntentType.EXIT_COCO:
             return "退出 Coco 模式"
+        elif intent == IntentType.EXIT_CLAUDE:
+            return "退出 Claude 模式"
+        elif intent == IntentType.EXIT_AIDEN:
+            return "退出 Aiden 模式"
+        elif intent == IntentType.EXIT_CODEX:
+            return "退出 Codex 模式"
+        elif intent == IntentType.EXIT_GEMINI:
+            return "退出 Gemini 模式"
         elif intent == IntentType.CHANGE_DIR:
             path = data.get("path", "")
             return f"切换到目录: {path}" if path else "查看当前目录"

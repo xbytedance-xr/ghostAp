@@ -4,6 +4,7 @@ Each handler is tested with a fully-mocked HandlerContext so that no real
 Feishu API calls or sessions are required.
 """
 
+import json
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -40,6 +41,7 @@ def _make_handler_context(**overrides) -> HandlerContext:
         claude_manager=MagicMock(),
         aiden_manager=MagicMock(),
         codex_manager=MagicMock(),
+        gemini_manager=MagicMock(),
         ttadk_manager=MagicMock(),
         intent_recognizer=MagicMock(),
         scheduler=MagicMock(),
@@ -167,6 +169,23 @@ class TestBaseHandler:
         assert BaseHandler.mode_to_context_source(InteractionMode.COCO) == ContextSourceMode.COCO
         assert BaseHandler.mode_to_context_source(InteractionMode.CLAUDE) == ContextSourceMode.CLAUDE
 
+    def test_normalize_interactive_card_content_removes_schema2_root_elements(self):
+        card_json = json.dumps(
+            {
+                "schema": "2.0",
+                "header": {"title": {"tag": "plain_text", "content": "title"}},
+                "elements": [{"tag": "markdown", "content": "hello"}],
+                "body": {"elements": [{"tag": "markdown", "content": "hello"}]},
+            },
+            ensure_ascii=False,
+        )
+
+        normalized = BaseHandler._normalize_interactive_card_content(card_json)
+        card = json.loads(normalized)
+
+        assert "elements" not in card
+        assert card["body"]["elements"][0]["content"] == "hello"
+
     def test_inject_bridge_context_no_project(self):
         h, _ = self._make()
         assert h.inject_bridge_context("hello", None) == "hello"
@@ -218,6 +237,7 @@ class TestSystemHandlerPredicates:
         assert SystemHandler.is_interceptable_command("/帮助") is True
         assert SystemHandler.is_interceptable_command("/coco_info") is True
         assert SystemHandler.is_interceptable_command("/claude_info") is True
+        assert SystemHandler.is_interceptable_command("/gemini_info") is True
         assert SystemHandler.is_interceptable_command("/projects") is True
         assert SystemHandler.is_interceptable_command("/status") is True
         assert SystemHandler.is_interceptable_command("/switch foo") is True

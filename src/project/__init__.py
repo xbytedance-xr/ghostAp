@@ -1,4 +1,4 @@
-from .context import ClaudeSessionSnapshot, CocoSessionSnapshot, AidenSessionSnapshot, CodexSessionSnapshot, ProjectContext, ProjectStatus, SessionSnapshot
+from .context import ClaudeSessionSnapshot, CocoSessionSnapshot, AidenSessionSnapshot, CodexSessionSnapshot, GeminiSessionSnapshot, ProjectContext, ProjectStatus, SessionSnapshot
 from .manager import ProjectManager
 from .mapper import MessageLinker, MessageProjectMapper
 from .unified_context import (
@@ -21,6 +21,7 @@ __all__ = [
     "CocoSessionSnapshot",
     "AidenSessionSnapshot",
     "CodexSessionSnapshot",
+    "GeminiSessionSnapshot",
     "ProjectManager",
     "MessageProjectMapper",
     "MessageLinker",

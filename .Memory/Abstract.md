@@ -1,5 +1,10 @@
 # GhostAP 项目记忆索引
 
+## 2026-03-22
+- **飞书卡片 schema 2.0 根级 `elements` 发送失败修复** - 在 `BaseHandler` 发送层统一规范化 interactive card，移除 schema 2.0 非法根级 `elements`，修复 `ErrCode: 200621`，并完成全量验证（`1653 passed, 10 skipped`）→ [2026-03-22.md](2026-03-22.md)
+- **Gemini CLI ACP 接入收口与全量验证** - 补齐 Gemini 的意图识别、ws_client 自动进入/空文本/编程态路由、`/gemini_info` 系统命令与流式卡片测试适配，完成全量 `uv run pytest -x -q` 验证（`1652 passed, 10 skipped`）→ [2026-03-22.md](2026-03-22.md)
+- **ACP 统一入口交互实现（/acp 工具/模型选择）** - 新增 `/acp` 两段式交互（选工具→选模型）、基于 ACP `new_session.available_models` 的实时模型拉取、快捷菜单入口与动作路由，并将选择结果持久化到项目快照 → [2026-03-22.md](2026-03-22.md)
+
 ## 2026-03-21
 - **全量测试收敛补丁（1647 passed）** - 清理四批次后暴露的剩余失败（deep/loop/spec/card/unified_context），全量 `uv run pytest -x -q` 达成 1647 passed → [2026-03-21.md](2026-03-21.md)
 - **全项目四批次收敛修复（批次1~4）** - 完成调度器状态收敛、项目串行一致性、TTADK cwd 归一化根因修复与四批次合并回归（646 passed）→ [2026-03-21.md](2026-03-21.md)

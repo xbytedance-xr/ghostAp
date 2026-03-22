@@ -23,6 +23,8 @@ class IntentType(Enum):
     EXIT_AIDEN = "exit_aiden"
     ENTER_CODEX = "enter_codex"
     EXIT_CODEX = "exit_codex"
+    ENTER_GEMINI = "enter_gemini"
+    EXIT_GEMINI = "exit_gemini"
     EXIT_MODE = "exit_mode"
     CHANGE_DIR = "change_dir"
     SHELL_COMMAND = "shell"
@@ -30,6 +32,7 @@ class IntentType(Enum):
     CLAUDE_MESSAGE = "claude_message"
     AIDEN_MESSAGE = "aiden_message"
     CODEX_MESSAGE = "codex_message"
+    GEMINI_MESSAGE = "gemini_message"
     CREATE_PROJECT = "create_project"
     SWITCH_PROJECT = "switch_project"
     LIST_PROJECTS = "list_projects"
@@ -234,11 +237,14 @@ class IntentRecognizer:
         "exit_aiden": IntentType.EXIT_AIDEN,
         "enter_codex": IntentType.ENTER_CODEX,
         "exit_codex": IntentType.EXIT_CODEX,
+        "enter_gemini": IntentType.ENTER_GEMINI,
+        "exit_gemini": IntentType.EXIT_GEMINI,
         "exit_mode": IntentType.EXIT_MODE,
         "coco_message": IntentType.COCO_MESSAGE,
         "claude_message": IntentType.CLAUDE_MESSAGE,
         "aiden_message": IntentType.AIDEN_MESSAGE,
         "codex_message": IntentType.CODEX_MESSAGE,
+        "gemini_message": IntentType.GEMINI_MESSAGE,
         "change_dir": IntentType.CHANGE_DIR,
         "shell": IntentType.SHELL_COMMAND,
         "create_project": IntentType.CREATE_PROJECT,
@@ -285,6 +291,10 @@ class IntentRecognizer:
         "/enter_codex": (IntentType.ENTER_CODEX, "进入 Codex 编程模式"),
         "/end_codex": (IntentType.EXIT_CODEX, "退出 Codex 编程模式"),
         "/exit_codex": (IntentType.EXIT_CODEX, "退出 Codex 编程模式"),
+        "/gemini": (IntentType.ENTER_GEMINI, "进入 Gemini 编程模式"),
+        "/enter_gemini": (IntentType.ENTER_GEMINI, "进入 Gemini 编程模式"),
+        "/end_gemini": (IntentType.EXIT_GEMINI, "退出 Gemini 编程模式"),
+        "/exit_gemini": (IntentType.EXIT_GEMINI, "退出 Gemini 编程模式"),
         "/exit": (IntentType.EXIT_MODE, "退出当前模式"),
         "/quit": (IntentType.EXIT_MODE, "退出当前模式"),
         "/projects": (IntentType.LIST_PROJECTS, "查看项目列表"),
@@ -486,6 +496,7 @@ class IntentRecognizer:
     ENTER_CLAUDE_KEYWORDS = {"进入claude模式", "claude模式", "进入claude", "使用claude"}
     ENTER_AIDEN_KEYWORDS = {"进入aiden模式", "aiden模式", "进入aiden", "使用aiden"}
     ENTER_CODEX_KEYWORDS = {"进入codex模式", "codex模式", "进入codex", "使用codex"}
+    ENTER_GEMINI_KEYWORDS = {"进入gemini模式", "gemini模式", "进入gemini", "使用gemini"}
     EXIT_MODE_KEYWORDS = {"退出模式", "退出编程模式"}
 
     DEEP_MODE_KEYWORDS = {"deep模式", "深度模式", "deep agent", "复杂任务", "大任务"}
@@ -724,6 +735,16 @@ class IntentRecognizer:
                 description="查看 Codex 会话信息",
             )
 
+        if text_lower == "/gemini_info":
+            return IntentResult.single(
+                intent=IntentType.GEMINI_MESSAGE,
+                confidence=1.0,
+                data={"command": "info"},
+                original_text=text,
+                reasoning="精确匹配: /gemini_info",
+                description="查看 Gemini 会话信息",
+            )
+
         if any(kw in text_lower for kw in self.ENTER_AIDEN_KEYWORDS):
             return IntentResult.single(
                 intent=IntentType.ENTER_AIDEN,
@@ -742,7 +763,16 @@ class IntentRecognizer:
                 description="进入 Codex 编程模式",
             )
 
-        is_programming = current_mode in ("coco", "claude", "aiden", "codex")
+        if any(kw in text_lower for kw in self.ENTER_GEMINI_KEYWORDS):
+            return IntentResult.single(
+                intent=IntentType.ENTER_GEMINI,
+                confidence=0.95,
+                original_text=text,
+                reasoning="检测到进入 Gemini 编程模式关键词",
+                description="进入 Gemini 编程模式",
+            )
+
+        is_programming = current_mode in ("coco", "claude", "aiden", "codex", "gemini")
         if is_programming and len(text) < 20:
             if any(kw in text_lower for kw in self.EXIT_KEYWORDS):
                 return IntentResult.single(
@@ -857,8 +887,10 @@ class IntentRecognizer:
             return "用户当前处于 **Aiden 编程模式** 中。编程相关的消息应该判断为 aiden_message，而不是 enter_aiden。"
         elif current_mode == "codex":
             return "用户当前处于 **Codex 编程模式** 中。编程相关的消息应该判断为 codex_message，而不是 enter_codex。"
+        elif current_mode == "gemini":
+            return "用户当前处于 **Gemini 编程模式** 中。编程相关的消息应该判断为 gemini_message，而不是 enter_gemini。"
         else:
-            return "用户当前处于 **智能模式**（默认模式）。如果用户想要编程，应该判断为 enter_coco、enter_claude、enter_aiden 或 enter_codex。"
+            return "用户当前处于 **智能模式**（默认模式）。如果用户想要编程，应该判断为 enter_coco、enter_claude、enter_aiden、enter_codex 或 enter_gemini。"
 
     def _get_fallback_intent(self, current_mode: str) -> IntentType:
         if current_mode == "coco":
@@ -869,6 +901,8 @@ class IntentRecognizer:
             return IntentType.AIDEN_MESSAGE
         elif current_mode == "codex":
             return IntentType.CODEX_MESSAGE
+        elif current_mode == "gemini":
+            return IntentType.GEMINI_MESSAGE
         else:
             return IntentType.SHELL_COMMAND
 
@@ -881,6 +915,7 @@ class IntentRecognizer:
         is_in_claude = current_mode == "claude"
         is_in_aiden = current_mode == "aiden"
         is_in_codex = current_mode == "codex"
+        is_in_gemini = current_mode == "gemini"
 
         try:
             llm = self._get_llm()

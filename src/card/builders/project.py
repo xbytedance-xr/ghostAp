@@ -32,6 +32,7 @@ class ProjectBuilder:
             is_coco_mode=project.coco_mode,
             is_claude_mode=project.claude_mode,
             is_ttadk_mode=project.ttadk_mode,
+            is_gemini_mode=getattr(project, "gemini_mode", False),
             extra_buttons=extra_buttons,
             footer=footer,
             image_keys=image_keys,
@@ -81,18 +82,26 @@ class ProjectBuilder:
         is_coco_mode: bool = False,
         is_claude_mode: bool = False,
         is_ttadk_mode: bool = False,
+        is_gemini_mode: bool = False,
         extra_buttons: Optional[list[dict]] = None,
         footer: Optional[str] = None,
         image_keys: Optional[list[str]] = None,
     ) -> tuple[str, str]:
-        theme = get_theme(project.theme_color if project else ("orange" if is_ttadk_mode else "blue"))
+        theme = get_theme(project.theme_color if project else ("orange" if is_ttadk_mode else "turquoise" if is_gemini_mode else "blue"))
 
         # Determine actual mode from project if available
         actual_coco = is_coco_mode or (project and project.coco_mode)
         actual_claude = is_claude_mode or (project and project.claude_mode)
         actual_ttadk = is_ttadk_mode or (project and project.ttadk_mode)
+        actual_gemini = is_gemini_mode or (project and getattr(project, "gemini_mode", False))
 
-        header_title = CoreBuilder._build_header_title(project, is_coco_mode=actual_coco, is_claude_mode=actual_claude, is_ttadk_mode=actual_ttadk)
+        header_title = CoreBuilder._build_header_title(
+            project,
+            is_coco_mode=actual_coco,
+            is_claude_mode=actual_claude,
+            is_ttadk_mode=actual_ttadk,
+            is_gemini_mode=actual_gemini,
+        )
 
         elements = [
             CoreBuilder._build_directory_element(project, working_dir),
@@ -124,7 +133,13 @@ class ProjectBuilder:
                 elements.append(footer_note)
 
         if show_buttons:
-            buttons = CoreBuilder._build_footer_buttons(project, is_coco_mode=actual_coco, is_claude_mode=actual_claude, is_ttadk_mode=actual_ttadk)
+            buttons = CoreBuilder._build_footer_buttons(
+                project,
+                is_coco_mode=actual_coco,
+                is_claude_mode=actual_claude,
+                is_ttadk_mode=actual_ttadk,
+                is_gemini_mode=actual_gemini,
+            )
             if extra_buttons:
                 buttons.extend([apply_compact_style(b) for b in extra_buttons])
             elements.extend(build_responsive_layout(buttons))

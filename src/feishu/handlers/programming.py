@@ -613,6 +613,10 @@ class CocoModeHandler(ProgrammingModeHandler):
     context_source = ContextSourceMode.COCO
     thinking_text = "🤔 Coco 正在思考..."
 
+    def __init__(self, ctx):
+        super().__init__(ctx)
+        self._current_model: Optional[str] = None
+
     def _get_session_manager(self):
         return self.ctx.coco_manager
 
@@ -630,6 +634,11 @@ class CocoModeHandler(ProgrammingModeHandler):
 
     def _enter_mode_on_manager(self, chat_id, project_id=None):
         self.mode_manager.enter_coco_mode(chat_id, project_id=project_id)
+
+    def _get_model_name_override(self, project: Optional["ProjectContext"] = None) -> Optional[str]:
+        if project and getattr(project, "acp_tool_name", "") == "coco":
+            return getattr(project, "acp_model_name", None)
+        return self._current_model
 
     def _get_interaction_mode(self):
         from ...mode import InteractionMode
@@ -651,6 +660,14 @@ class CocoModeHandler(ProgrammingModeHandler):
     def _clear_snapshot_on_project(self, project):
         project.coco_session_snapshot = None
 
+    @property
+    def current_model(self) -> Optional[str]:
+        return self._current_model
+
+    @current_model.setter
+    def current_model(self, value: Optional[str]):
+        self._current_model = value
+
 
 class ClaudeModeHandler(ProgrammingModeHandler):
     mode_name = "Claude"
@@ -658,6 +675,10 @@ class ClaudeModeHandler(ProgrammingModeHandler):
     is_coco = False
     context_source = ContextSourceMode.CLAUDE
     thinking_text = "🔮 Claude 正在思考..."
+
+    def __init__(self, ctx):
+        super().__init__(ctx)
+        self._current_model: Optional[str] = None
 
     def _get_session_manager(self):
         return self.ctx.claude_manager
@@ -674,6 +695,11 @@ class ClaudeModeHandler(ProgrammingModeHandler):
 
     def _enter_mode_on_manager(self, chat_id, project_id=None):
         self.mode_manager.enter_claude_mode(chat_id, project_id=project_id)
+
+    def _get_model_name_override(self, project: Optional["ProjectContext"] = None) -> Optional[str]:
+        if project and getattr(project, "acp_tool_name", "") == "claude":
+            return getattr(project, "acp_model_name", None)
+        return self._current_model
 
     def _get_interaction_mode(self):
         from ...mode import InteractionMode
@@ -698,6 +724,14 @@ class ClaudeModeHandler(ProgrammingModeHandler):
     def _uses_claude_cli(self) -> bool:
         return True
 
+    @property
+    def current_model(self) -> Optional[str]:
+        return self._current_model
+
+    @current_model.setter
+    def current_model(self, value: Optional[str]):
+        self._current_model = value
+
 
 class AidenModeHandler(ProgrammingModeHandler):
     mode_name = "Aiden"
@@ -705,6 +739,10 @@ class AidenModeHandler(ProgrammingModeHandler):
     is_coco = False
     context_source = ContextSourceMode.AIDEN
     thinking_text = "🎯 Aiden 正在思考..."
+
+    def __init__(self, ctx):
+        super().__init__(ctx)
+        self._current_model: Optional[str] = None
 
     def _get_session_manager(self):
         return self.ctx.aiden_manager
@@ -717,6 +755,7 @@ class AidenModeHandler(ProgrammingModeHandler):
             self.mode_manager.is_coco_mode(chat_id)
             or self.mode_manager.is_claude_mode(chat_id)
             or self.mode_manager.is_codex_mode(chat_id)
+            or self.mode_manager.is_gemini_mode(chat_id)
             or self.mode_manager.is_ttadk_mode(chat_id)
         )
 
@@ -727,11 +766,18 @@ class AidenModeHandler(ProgrammingModeHandler):
             self._claude_handler.exit_mode(message_id, chat_id, project=project)
         if hasattr(self, "_codex_handler"):
             self._codex_handler.exit_mode(message_id, chat_id, project=project)
+        if hasattr(self, "_gemini_handler"):
+            self._gemini_handler.exit_mode(message_id, chat_id, project=project)
         if hasattr(self, "_ttadk_handler"):
             self._ttadk_handler.exit_mode(message_id, chat_id, project=project)
 
     def _enter_mode_on_manager(self, chat_id, project_id=None):
         self.mode_manager.enter_aiden_mode(chat_id, project_id=project_id)
+
+    def _get_model_name_override(self, project: Optional["ProjectContext"] = None) -> Optional[str]:
+        if project and getattr(project, "acp_tool_name", "") == "aiden":
+            return getattr(project, "acp_model_name", None)
+        return self._current_model
 
     def _get_interaction_mode(self):
         from ...mode import InteractionMode
@@ -753,6 +799,14 @@ class AidenModeHandler(ProgrammingModeHandler):
     def _clear_snapshot_on_project(self, project):
         project.aiden_session_snapshot = None
 
+    @property
+    def current_model(self) -> Optional[str]:
+        return self._current_model
+
+    @current_model.setter
+    def current_model(self, value: Optional[str]):
+        self._current_model = value
+
 
 class CodexModeHandler(ProgrammingModeHandler):
     mode_name = "Codex"
@@ -760,6 +814,10 @@ class CodexModeHandler(ProgrammingModeHandler):
     is_coco = False
     context_source = ContextSourceMode.CODEX
     thinking_text = "⚡ Codex 正在思考..."
+
+    def __init__(self, ctx):
+        super().__init__(ctx)
+        self._current_model: Optional[str] = None
 
     def _get_session_manager(self):
         return self.ctx.codex_manager
@@ -772,6 +830,7 @@ class CodexModeHandler(ProgrammingModeHandler):
             self.mode_manager.is_coco_mode(chat_id)
             or self.mode_manager.is_claude_mode(chat_id)
             or self.mode_manager.is_aiden_mode(chat_id)
+            or self.mode_manager.is_gemini_mode(chat_id)
             or self.mode_manager.is_ttadk_mode(chat_id)
         )
 
@@ -782,11 +841,18 @@ class CodexModeHandler(ProgrammingModeHandler):
             self._claude_handler.exit_mode(message_id, chat_id, project=project)
         if hasattr(self, "_aiden_handler"):
             self._aiden_handler.exit_mode(message_id, chat_id, project=project)
+        if hasattr(self, "_gemini_handler"):
+            self._gemini_handler.exit_mode(message_id, chat_id, project=project)
         if hasattr(self, "_ttadk_handler"):
             self._ttadk_handler.exit_mode(message_id, chat_id, project=project)
 
     def _enter_mode_on_manager(self, chat_id, project_id=None):
         self.mode_manager.enter_codex_mode(chat_id, project_id=project_id)
+
+    def _get_model_name_override(self, project: Optional["ProjectContext"] = None) -> Optional[str]:
+        if project and getattr(project, "acp_tool_name", "") == "codex":
+            return getattr(project, "acp_model_name", None)
+        return self._current_model
 
     def _get_interaction_mode(self):
         from ...mode import InteractionMode
@@ -808,6 +874,89 @@ class CodexModeHandler(ProgrammingModeHandler):
     def _clear_snapshot_on_project(self, project):
         project.codex_session_snapshot = None
 
+    @property
+    def current_model(self) -> Optional[str]:
+        return self._current_model
+
+    @current_model.setter
+    def current_model(self, value: Optional[str]):
+        self._current_model = value
+
+
+class GeminiModeHandler(ProgrammingModeHandler):
+    mode_name = "Gemini"
+    mode_emoji = "✨"
+    is_coco = False
+    context_source = ContextSourceMode.GEMINI
+    thinking_text = "✨ Gemini 正在思考..."
+
+    def __init__(self, ctx):
+        super().__init__(ctx)
+        self._current_model: Optional[str] = None
+
+    def _get_session_manager(self):
+        return self.ctx.gemini_manager
+
+    def _is_in_this_mode(self, chat_id):
+        return self.mode_manager.is_gemini_mode(chat_id)
+
+    def _is_in_opposite_mode(self, chat_id):
+        return (
+            self.mode_manager.is_coco_mode(chat_id)
+            or self.mode_manager.is_claude_mode(chat_id)
+            or self.mode_manager.is_aiden_mode(chat_id)
+            or self.mode_manager.is_codex_mode(chat_id)
+            or self.mode_manager.is_ttadk_mode(chat_id)
+        )
+
+    def _exit_opposite_mode(self, message_id, chat_id, project=None):
+        if hasattr(self, "_coco_handler"):
+            self._coco_handler.exit_mode(message_id, chat_id, project=project)
+        if hasattr(self, "_claude_handler"):
+            self._claude_handler.exit_mode(message_id, chat_id, project=project)
+        if hasattr(self, "_aiden_handler"):
+            self._aiden_handler.exit_mode(message_id, chat_id, project=project)
+        if hasattr(self, "_codex_handler"):
+            self._codex_handler.exit_mode(message_id, chat_id, project=project)
+        if hasattr(self, "_ttadk_handler"):
+            self._ttadk_handler.exit_mode(message_id, chat_id, project=project)
+
+    def _enter_mode_on_manager(self, chat_id, project_id=None):
+        self.mode_manager.enter_gemini_mode(chat_id, project_id=project_id)
+
+    def _get_model_name_override(self, project: Optional["ProjectContext"] = None) -> Optional[str]:
+        if project and getattr(project, "acp_tool_name", "") == "gemini":
+            return getattr(project, "acp_model_name", None)
+        return self._current_model
+
+    def _get_interaction_mode(self):
+        from ...mode import InteractionMode
+
+        return InteractionMode.GEMINI
+
+    def _get_snapshot(self, project):
+        return project.gemini_session_snapshot
+
+    def _set_mode_on_project(self, project, active, session_id="", count=0):
+        if active:
+            project.set_gemini_mode(True, session_id, count)
+        else:
+            project.set_gemini_mode(False)
+
+    def _update_snapshot_on_project(self, project, query, count, session_id=""):
+        project.update_gemini_snapshot(query=query, query_count=count, session_id=session_id)
+
+    def _clear_snapshot_on_project(self, project):
+        project.gemini_session_snapshot = None
+
+    @property
+    def current_model(self) -> Optional[str]:
+        return self._current_model
+
+    @current_model.setter
+    def current_model(self, value: Optional[str]):
+        self._current_model = value
+
 
 class TTADKModeHandler(ProgrammingModeHandler):
     mode_name = "TTADK"
@@ -828,13 +977,19 @@ class TTADKModeHandler(ProgrammingModeHandler):
         return self.mode_manager.is_ttadk_mode(chat_id)
 
     def _is_in_opposite_mode(self, chat_id):
-        return self.mode_manager.is_coco_mode(chat_id) or self.mode_manager.is_claude_mode(chat_id)
+        return (
+            self.mode_manager.is_coco_mode(chat_id)
+            or self.mode_manager.is_claude_mode(chat_id)
+            or self.mode_manager.is_gemini_mode(chat_id)
+        )
 
     def _exit_opposite_mode(self, message_id, chat_id, project=None):
         if hasattr(self, "_coco_handler"):
             self._coco_handler.exit_mode(message_id, chat_id, project=project)
         if hasattr(self, "_claude_handler"):
             self._claude_handler.exit_mode(message_id, chat_id, project=project)
+        if hasattr(self, "_gemini_handler"):
+            self._gemini_handler.exit_mode(message_id, chat_id, project=project)
 
     def _enter_mode_on_manager(self, chat_id, project_id=None):
         self.mode_manager.enter_ttadk_mode(chat_id, project_id=project_id)

@@ -56,10 +56,11 @@ class TestStreamingCardManager:
     def test_build_buttons_smart_mode(self, manager):
         buttons = manager._build_buttons(is_coco_mode=False, project_id="proj_123")
 
-        assert len(buttons) == 3
+        assert len(buttons) == 4
         actions = [b["behaviors"][0]["value"]["action"] for b in buttons]
         assert "enter_coco" in actions
         assert "enter_claude" in actions
+        assert "enter_gemini" in actions
         assert "enter_ttadk" in actions
 
     def test_create_streaming_card_success(self, manager, mock_client):

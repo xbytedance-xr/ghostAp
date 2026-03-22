@@ -328,8 +328,40 @@ class BaseHandler:
     # Ref-note injection (shared by reply_message_with_id and send_message)
     # ------------------------------------------------------------------
     @staticmethod
+    def _normalize_interactive_card_content(content_str: str) -> str:
+        """Normalize outgoing interactive card JSON to Feishu-accepted shape."""
+        if not isinstance(content_str, str):
+            return content_str
+        try:
+            card = json.loads(content_str)
+        except Exception:
+            return content_str
+
+        if not isinstance(card, dict):
+            return content_str
+        if str(card.get("schema") or "").strip() != "2.0":
+            return content_str
+
+        root_elements = card.get("elements")
+        if not isinstance(root_elements, list):
+            return content_str
+
+        body = card.get("body")
+        if not isinstance(body, dict):
+            body = {}
+            card["body"] = body
+        if not isinstance(body.get("elements"), list):
+            body["elements"] = root_elements
+
+        card.pop("elements", None)
+        return json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
     def _inject_ref_note(content_str: str, msg_type: str, ref_note: str) -> str:
         """Best-effort inject ref_note into interactive/post content. Returns modified content_str."""
+        if msg_type == "interactive":
+            content_str = BaseHandler._normalize_interactive_card_content(content_str)
+
         if not ref_note:
             return content_str
 
@@ -527,6 +559,9 @@ class BaseHandler:
             InteractionMode.SMART: ContextSourceMode.SMART,
             InteractionMode.COCO: ContextSourceMode.COCO,
             InteractionMode.CLAUDE: ContextSourceMode.CLAUDE,
+            InteractionMode.AIDEN: ContextSourceMode.AIDEN,
+            InteractionMode.CODEX: ContextSourceMode.CODEX,
+            InteractionMode.GEMINI: ContextSourceMode.GEMINI,
             InteractionMode.TTADK: ContextSourceMode.TTADK,
         }
         return mapping.get(mode, ContextSourceMode.SMART)
@@ -615,6 +650,8 @@ class BaseHandler:
         current_mode = self.ctx.mode_manager.get_mode(chat_id, project_id=project_id)
         if current_mode == InteractionMode.CLAUDE:
             return "Claude"
+        if current_mode == InteractionMode.GEMINI:
+            return "Gemini"
         if current_mode == InteractionMode.TTADK:
             return "TTADK"
         return "Coco"

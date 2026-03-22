@@ -2021,6 +2021,7 @@ class TestSpecHandler:
             claude_manager=MagicMock(),
             aiden_manager=MagicMock(),
             codex_manager=MagicMock(),
+            gemini_manager=MagicMock(),
             ttadk_manager=MagicMock(),
             intent_recognizer=MagicMock(),
             scheduler=MagicMock(),

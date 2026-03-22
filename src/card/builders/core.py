@@ -65,11 +65,17 @@ class CoreBuilder:
 
     @staticmethod
     def _build_header_title(
-        project: Optional[ProjectContext], is_coco_mode: bool = False, is_claude_mode: bool = False, is_ttadk_mode: bool = False
+        project: Optional[ProjectContext],
+        is_coco_mode: bool = False,
+        is_claude_mode: bool = False,
+        is_ttadk_mode: bool = False,
+        is_gemini_mode: bool = False,
     ) -> str:
         if not project:
             if is_claude_mode:
                 return UI_TEXT.get("claude_mode_title")
+            elif is_gemini_mode:
+                return "✨ Gemini 编程模式"
             elif is_ttadk_mode:
                 return UI_TEXT.get("system_mode_ttadk", "🎮 TTADK 多工具模式")
             mode_icon = "🤖" if is_coco_mode else "🧠"
@@ -78,6 +84,8 @@ class CoreBuilder:
 
         if is_claude_mode or project.claude_mode:
             return f"🔮 {project.project_name} · Claude"
+        elif is_gemini_mode or getattr(project, "gemini_mode", False):
+            return f"✨ {project.project_name} · Gemini"
         elif is_ttadk_mode or project.ttadk_mode:
             return f"🎮 {project.project_name} · TTADK"
         elif is_coco_mode or project.coco_mode:
@@ -106,11 +114,15 @@ class CoreBuilder:
 
     @staticmethod
     def _build_footer_buttons(
-        project: Optional[ProjectContext], is_coco_mode: bool = False, is_claude_mode: bool = False, is_ttadk_mode: bool = False
+        project: Optional[ProjectContext],
+        is_coco_mode: bool = False,
+        is_claude_mode: bool = False,
+        is_ttadk_mode: bool = False,
+        is_gemini_mode: bool = False,
     ) -> list[dict]:
         project_id_raw = getattr(project, "project_id", None) if project else None
         project_id = str(project_id_raw) if isinstance(project_id_raw, (str, int)) else None
-        return build_mode_buttons(is_coco_mode, project_id, is_claude_mode, is_ttadk_mode)
+        return build_mode_buttons(is_coco_mode, project_id, is_claude_mode, is_ttadk_mode, is_gemini_mode)
 
     @staticmethod
     def _build_footer_note(project: Optional[ProjectContext], working_dir: Optional[str] = None) -> Optional[dict]:
