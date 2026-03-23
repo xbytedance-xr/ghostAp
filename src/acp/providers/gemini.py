@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import functools
+import os
 import re
+import subprocess
 from typing import Optional
 
 from ..provider import ACPProvider
@@ -11,15 +13,28 @@ from ..provider import ACPProvider
 
 @functools.lru_cache(maxsize=1)
 def _get_gemini_acp_serve_help_blob() -> str:
-    """Best-effort 获取 `gemini acp serve --help` 输出摘要（缓存）。"""
+    """Best-effort 获取 `gemini --help` 输出摘要（缓存）。"""
     try:
-        from ..sync_adapter import _probe_acp_serve_help
-
-        ok, _rc, out_snip, err_snip = _probe_acp_serve_help("gemini")
-        blob = (out_snip or "") + "\n" + (err_snip or "")
-        return blob
+        env = os.environ.copy()
+        env.pop("CLAUDECODE", None)
+        p = subprocess.run(
+            ["gemini", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env=env,
+        )
+        return ((p.stdout or "") + "\n" + (p.stderr or "")).strip()
     except Exception:
         return ""
+
+
+def _load_gemini_acp_help_blob() -> str:
+    blob = _get_gemini_acp_serve_help_blob()
+    if blob:
+        return blob
+    _get_gemini_acp_serve_help_blob.cache_clear()
+    return _get_gemini_acp_serve_help_blob()
 
 
 def _detect_model_arg_style(help_blob: str) -> str:
@@ -41,20 +56,15 @@ class GeminiProvider(ACPProvider):
         return "gemini"
 
     def check_availability(self) -> bool:
-        try:
-            from ..sync_adapter import _probe_acp_serve_help
-
-            ok, _rc, _out, _err = _probe_acp_serve_help("gemini")
-            return bool(ok)
-        except Exception:
-            return False
+        blob = _load_gemini_acp_help_blob().lower()
+        return bool(blob and "usage:" in blob and "--acp" in blob)
 
     def get_serve_command(self, model_name: Optional[str] = None) -> tuple[str, list[str]]:
-        args: list[str] = ["acp", "serve"]
+        args: list[str] = ["--acp"]
 
         m = (model_name or "").strip()
         if m:
-            style = _detect_model_arg_style(_get_gemini_acp_serve_help_blob())
+            style = _detect_model_arg_style(_load_gemini_acp_help_blob())
             if style == "model_long":
                 args.extend(["--model", m])
             elif style == "model_short":

@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 ## 2026-03-22
+- **`/acp` 无响应根因修复** - 修正 ACP 工具发现与真实 CLI 协议漂移：coco 探测超时放宽、Aiden 改为 `aiden acp`、Gemini 改为 `gemini --acp`、热工具负缓存支持同步复探，恢复 `/acp` 交互入口并完成全量验证（`1660 passed, 10 skipped`）→ [2026-03-22.md](2026-03-22.md)
+- **飞书 WS 长连接静默失活根因修复** - 追到 `lark_oapi.ws.Client` 仅处理显式断连、未处理 half-open/stale socket，导致进程存活但不再收消息；在 `ws_client` 增加连接活动观测与 watchdog 主动断连重连，完成全量验证（`1655 passed, 10 skipped`）→ [2026-03-22.md](2026-03-22.md)
 - **飞书卡片 schema 2.0 根级 `elements` 发送失败修复** - 在 `BaseHandler` 发送层统一规范化 interactive card，移除 schema 2.0 非法根级 `elements`，修复 `ErrCode: 200621`，并完成全量验证（`1653 passed, 10 skipped`）→ [2026-03-22.md](2026-03-22.md)
 - **Gemini CLI ACP 接入收口与全量验证** - 补齐 Gemini 的意图识别、ws_client 自动进入/空文本/编程态路由、`/gemini_info` 系统命令与流式卡片测试适配，完成全量 `uv run pytest -x -q` 验证（`1652 passed, 10 skipped`）→ [2026-03-22.md](2026-03-22.md)
 - **ACP 统一入口交互实现（/acp 工具/模型选择）** - 新增 `/acp` 两段式交互（选工具→选模型）、基于 ACP `new_session.available_models` 的实时模型拉取、快捷菜单入口与动作路由，并将选择结果持久化到项目快照 → [2026-03-22.md](2026-03-22.md)

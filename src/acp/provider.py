@@ -165,6 +165,7 @@ class ToolRegistry:
             if tool_name in hot_tools:
                 # cached decision (best-effort)
                 now = time.time()
+                cached_negative = False
                 with self._lock:
                     v = self._availability_cache.get(tool_name)
                     if v is not None:
@@ -176,10 +177,21 @@ class ToolRegistry:
                                 pass
                             if bool(ok):
                                 return provider.get_serve_command(model_name)
-                            fb = provider.get_fallback_command(model_name)
-                            if fb:
-                                return fb
-                            raise RuntimeError(f"Tool '{name}' is registered but not available for ACP mode.")
+                            cached_negative = True
+
+                if cached_negative:
+                    # Negative cache can be stale (e.g. transient probe failure,
+                    # tool upgraded after startup, or prior background probe ran in a
+                    # degraded environment). Re-check once synchronously before failing.
+                    fresh_ok = bool(provider.check_availability())
+                    self._set_availability_cache(tool_name, fresh_ok)
+                    if fresh_ok:
+                        return provider.get_serve_command(model_name)
+
+                    fb = provider.get_fallback_command(model_name)
+                    if fb:
+                        return fb
+                    raise RuntimeError(f"Tool '{name}' is registered but not available for ACP mode.")
 
                 # cache miss: schedule probe and return optimistic serve command
                 self._probe_availability_async(tool_name)

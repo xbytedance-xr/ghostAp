@@ -14,12 +14,26 @@ async def _benchmark_provider_startup(provider_name: str, iterations: int = 10) 
     with patch('subprocess.run') as mock_run:
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = "Usage: acp serve [OPTIONS]"
+        if provider_name == "aiden":
+            mock_result.stdout = "Usage: aiden acp [options]\nRun Aiden CLI as an ACP agent for editors like Zed\n"
+        elif provider_name == "coco":
+            mock_result.stdout = "Start the ACP server\nUsage:\n  coco acp serve [flags]\n"
+        else:
+            mock_result.stdout = "Usage: acp serve [OPTIONS]"
         mock_result.stderr = ""
         mock_run.return_value = mock_result
         
         # Clear cache for testing
         tool_registry._availability_cache.clear()
+        if provider_name == "aiden":
+            from src.acp.providers.aiden import _get_aiden_acp_serve_help_blob
+
+            _get_aiden_acp_serve_help_blob.cache_clear()
+        elif provider_name == "coco":
+            from src.acp.sync_adapter import _probe_acp_serve_help, _supports_acp_serve
+
+            _probe_acp_serve_help.cache_clear()
+            _supports_acp_serve.cache_clear()
         
         for i in range(iterations):
             start = time.time()

@@ -57,6 +57,17 @@ def test_registry_get_serve_command_fallback():
     assert args == ["fallback"]
 
 
+def test_registry_rechecks_stale_negative_cache_for_hot_tool():
+    registry = ToolRegistry()
+    provider = MockProvider("coco", available=True)
+    registry.register(provider)
+    registry._set_availability_cache("coco", False)
+
+    cmd, args = registry.get_serve_command("coco", model_name="gpt-4")
+    assert cmd == "coco"
+    assert args == ["mock", "serve", "-m", "gpt-4"]
+
+
 def test_registry_get_serve_command_unregistered_fallback():
     registry = ToolRegistry()
     

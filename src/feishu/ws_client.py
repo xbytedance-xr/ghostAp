@@ -23,6 +23,9 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
     P2CardActionTrigger,
     P2CardActionTriggerResponse,
 )
+from lark_oapi.ws import client as lark_ws_client_impl
+from lark_oapi.ws.const import HEADER_TYPE
+from lark_oapi.ws.enum import MessageType
 
 # NOTE: lark-oapi 的 event callback models 在不同版本中并不完整。
 # 本项目仅将 P2ImMessageReceiveV1 用于类型标注；运行时缺失不应导致 import 失败。
@@ -73,6 +76,51 @@ from .message_cache import MessageCache
 from .message_formatter import FeishuMessageFormatter as fmt
 
 logger = logging.getLogger(__name__)
+
+
+def _frame_header_value(frame: Any, key: str) -> Optional[str]:
+    for header in getattr(frame, "headers", []) or []:
+        if getattr(header, "key", None) == key:
+            return getattr(header, "value", None)
+    return None
+
+
+class _ObservedLarkWSClient(lark.ws.Client):
+    """Wrap lark-oapi WS client to expose connection activity hooks.
+
+    lark-oapi only reconnects after explicit read/write failures. If the socket
+    becomes half-open, its recv loop can stay blocked forever and the service
+    stops receiving new Feishu events without emitting any error. We observe
+    connect/data/pong/disconnect to drive an external watchdog.
+    """
+
+    def __init__(self, *args, on_activity: Callable[[str], None], **kwargs):
+        super().__init__(*args, **kwargs)
+        self._on_activity = on_activity
+
+    async def _connect(self) -> None:
+        await super()._connect()
+        self._on_activity("connected")
+
+    async def _disconnect(self):
+        try:
+            return await super()._disconnect()
+        finally:
+            self._on_activity("disconnected")
+
+    async def _handle_control_frame(self, frame):
+        message_type = _frame_header_value(frame, HEADER_TYPE)
+        if message_type == MessageType.PONG.value:
+            self._on_activity("pong")
+        elif message_type == MessageType.PING.value:
+            self._on_activity("ping")
+        else:
+            self._on_activity("control")
+        return await super()._handle_control_frame(frame)
+
+    async def _handle_data_frame(self, frame):
+        self._on_activity("data")
+        return await super()._handle_data_frame(frame)
 
 
 class FeishuWSClient:
@@ -128,6 +176,14 @@ class FeishuWSClient:
         self._pending_image_only: set[str] = set()  # message_ids that are image-only (no user text)
         self._pending_image_lock = threading.Lock()
         self._enable_streaming = self.settings.streaming_enabled
+
+        self._ws_health_lock = threading.Lock()
+        self._ws_last_connect_at = 0.0
+        self._ws_last_frame_at = 0.0
+        self._ws_last_pong_at = 0.0
+        self._ws_reconnect_requested_at = 0.0
+        self._ws_watchdog_stop = threading.Event()
+        self._ws_watchdog_thread: Optional[threading.Thread] = None
 
         self._deep_engine_manager = DeepEngineManager()
         self._progress_reporter = ProgressReporter()
@@ -510,8 +566,120 @@ class FeishuWSClient:
             prefix="spec_",
         )
 
+    def _record_ws_activity(self, kind: str) -> None:
+        now = time.time()
+        with self._ws_health_lock:
+            if kind == "connected":
+                self._ws_last_connect_at = now
+                self._ws_last_frame_at = now
+                self._ws_last_pong_at = now
+                self._ws_reconnect_requested_at = 0.0
+                return
+            if kind in {"pong", "ping", "control", "data"}:
+                self._ws_last_frame_at = now
+                if kind == "pong":
+                    self._ws_last_pong_at = now
+                return
+            if kind == "disconnected" and self._ws_reconnect_requested_at <= 0.0:
+                self._ws_reconnect_requested_at = now
+
+    def _get_ws_watchdog_interval(self) -> float:
+        value = getattr(self.settings, "feishu_ws_watchdog_interval", 15.0)
+        try:
+            return max(1.0, float(value))
+        except Exception:
+            return 15.0
+
+    def _get_ws_stale_timeout(self) -> float:
+        configured = getattr(self.settings, "feishu_ws_stale_timeout", 300.0)
+        try:
+            configured_timeout = max(60.0, float(configured))
+        except Exception:
+            configured_timeout = 300.0
+
+        ping_interval = 120.0
+        client = self._client
+        if client is not None:
+            try:
+                ping_interval = max(1.0, float(getattr(client, "_ping_interval", 120.0) or 120.0))
+            except Exception:
+                ping_interval = 120.0
+
+        grace = getattr(self.settings, "feishu_ws_stale_grace_seconds", 30.0)
+        try:
+            grace_seconds = max(5.0, float(grace))
+        except Exception:
+            grace_seconds = 30.0
+
+        return max(configured_timeout, ping_interval * 2 + grace_seconds)
+
+    def _trigger_ws_disconnect(self, *, reason: str) -> bool:
+        client = self._client
+        if client is None or getattr(client, "_conn", None) is None:
+            return False
+
+        try:
+            fut = asyncio.run_coroutine_threadsafe(client._disconnect(), lark_ws_client_impl.loop)
+            fut.result(timeout=5)
+            logger.warning("飞书长连接 watchdog 已触发重连: %s", reason)
+            return True
+        except Exception as e:
+            logger.warning("飞书长连接 watchdog 触发重连失败: reason=%s err=%s", reason, e)
+            return False
+
+    def _check_ws_health_once(self, now: Optional[float] = None) -> bool:
+        client = self._client
+        if client is None or getattr(client, "_conn", None) is None:
+            return False
+
+        current_time = now if now is not None else time.time()
+        stale_timeout = self._get_ws_stale_timeout()
+
+        with self._ws_health_lock:
+            last_seen = max(self._ws_last_pong_at, self._ws_last_frame_at, self._ws_last_connect_at)
+            if last_seen <= 0.0:
+                return False
+            idle_for = current_time - last_seen
+            if idle_for <= stale_timeout:
+                return False
+
+            requested_at = self._ws_reconnect_requested_at
+            if requested_at > 0.0 and (current_time - requested_at) < 30.0:
+                return False
+
+            self._ws_reconnect_requested_at = current_time
+
+        return self._trigger_ws_disconnect(reason=f"idle_for={idle_for:.1f}s > timeout={stale_timeout:.1f}s")
+
+    def _ws_watchdog_loop(self) -> None:
+        interval = self._get_ws_watchdog_interval()
+        while not self._ws_watchdog_stop.wait(interval):
+            try:
+                self._check_ws_health_once()
+            except Exception as e:
+                logger.debug("飞书长连接 watchdog 检查失败: %s", e)
+
+    def _start_ws_watchdog(self) -> None:
+        if self._ws_watchdog_thread and self._ws_watchdog_thread.is_alive():
+            return
+        self._ws_watchdog_stop.clear()
+        self._ws_watchdog_thread = threading.Thread(
+            target=self._ws_watchdog_loop,
+            name="feishu_ws_watchdog",
+            daemon=True,
+        )
+        self._ws_watchdog_thread.start()
+
+    def _stop_ws_watchdog(self) -> None:
+        self._ws_watchdog_stop.set()
+        if self._ws_watchdog_thread and self._ws_watchdog_thread.is_alive():
+            self._ws_watchdog_thread.join(timeout=2)
+        self._ws_watchdog_thread = None
+
     def close(self):
         """Best-effort cleanup for background resources."""
+
+        self._stop_ws_watchdog()
 
         def _wait_engines_stopped(engines: list[Any], timeout_s: float = 2.0, interval_s: float = 0.05) -> None:
             deadline = time.time() + max(0.1, timeout_s)
@@ -2039,19 +2207,18 @@ class FeishuWSClient:
             .build()
         )
 
-        self._client = lark.ws.Client(
-            self.settings.app_id, self.settings.app_secret, event_handler=event_handler, log_level=lark.LogLevel.DEBUG
+        self._client = _ObservedLarkWSClient(
+            self.settings.app_id,
+            self.settings.app_secret,
+            event_handler=event_handler,
+            log_level=lark.LogLevel.DEBUG,
+            on_activity=self._record_ws_activity,
         )
 
         self._message_cache.start_cleanup_thread()
         self._card_event_cache.start_cleanup_thread()
+        self._start_ws_watchdog()
 
         logger.info("正在建立飞书长连接...")
         logger.info("多项目管理已启用")
-        # Wrapping start in a loop to handle arbitrary disconnects and ensure 72h+ stability
-        while True:
-            try:
-                self._client.start()
-            except Exception as e:
-                logger.error(f"WebSocket client disconnected with error: {e}. Reconnecting in 5s...")
-                time.sleep(5)
+        self._client.start()

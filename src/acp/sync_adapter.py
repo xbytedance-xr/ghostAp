@@ -542,13 +542,16 @@ def _probe_acp_serve_help(command: str) -> tuple[bool, Optional[int], str, str]:
             [cmd, "acp", "serve", "--help"],
             capture_output=True,
             text=True,
-            timeout=2,
+            timeout=5,
             env=env,
         )
         out = p.stdout or ""
         err = p.stderr or ""
         blob = (out + "\n" + err).lower()
-        ok = bool(p.returncode == 0 and "acp serve" in blob and "usage" in blob)
+        ok = bool(
+            p.returncode == 0
+            and (("acp serve" in blob and "usage" in blob) or ("acp" in blob and "server" in blob))
+        )
         # 片段截断，避免日志/异常过大
         return ok, int(p.returncode), (out or "")[-200:], (err or "")[-200:]
     except Exception as e:
@@ -574,7 +577,7 @@ def _supports_acp_serve(command: str) -> bool:
             [command, "acp", "serve", "--help"],
             capture_output=True,
             text=True,
-            timeout=2,
+            timeout=5,
             env=env,
         )
         out = (getattr(p, "stdout", "") or "") + "\n" + (getattr(p, "stderr", "") or "")

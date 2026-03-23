@@ -514,5 +514,103 @@ class TestCardActionHandler(unittest.TestCase):
             client._loop_engine_manager.cleanup_all.assert_called_once()
             client._spec_engine_manager.cleanup_all.assert_called_once()
 
+    def test_ws_watchdog_triggers_disconnect_on_stale_connection(self):
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+            client._client = SimpleNamespace(_conn=object(), _ping_interval=120)
+            client._trigger_ws_disconnect = MagicMock(return_value=True)
+
+            now = 1_000.0
+            with client._ws_health_lock:
+                client._ws_last_connect_at = now - 400.0
+                client._ws_last_frame_at = now - 400.0
+                client._ws_last_pong_at = now - 400.0
+                client._ws_reconnect_requested_at = 0.0
+
+            triggered = client._check_ws_health_once(now=now)
+
+            self.assertTrue(triggered)
+            client._trigger_ws_disconnect.assert_called_once()
+
+    def test_ws_watchdog_does_not_reconnect_when_recent_pong_exists(self):
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+            client._client = SimpleNamespace(_conn=object(), _ping_interval=120)
+            client._trigger_ws_disconnect = MagicMock(return_value=True)
+
+            now = 1_000.0
+            with client._ws_health_lock:
+                client._ws_last_connect_at = now - 400.0
+                client._ws_last_frame_at = now - 400.0
+                client._ws_last_pong_at = now - 10.0
+                client._ws_reconnect_requested_at = 0.0
+
+            triggered = client._check_ws_health_once(now=now)
+
+            self.assertFalse(triggered)
+            client._trigger_ws_disconnect.assert_not_called()
+
+    def test_process_with_intent_routes_acp_command_to_system_handler(self):
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+            client._mode_manager.get_mode.return_value = InteractionMode.SMART
+            client._mode_manager.is_programming_mode.return_value = False
+            client._system_handler.handle_acp_command = MagicMock()
+
+            client._process_with_intent("m1", "c1", "/acp", project=None)
+
+            client._system_handler.handle_acp_command.assert_called_once_with("m1", "c1", None)
+
 if __name__ == "__main__":
     unittest.main()
