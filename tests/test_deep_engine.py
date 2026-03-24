@@ -16,7 +16,7 @@ from src.deep_engine.progress import DeepProgress
 
 
 class TestDeepEngine:
-    @patch("src.deep_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def _make_engine(self, mock_settings, **kwargs):
         s = MagicMock()
         s.coco_execution_timeout = 300
@@ -352,7 +352,7 @@ def test_ttadk_startup_log_semantics_consistent_between_create_sync_and_engine(m
 
 class TestDeepEngineManager:
     def test_get_or_create(self):
-        with patch("src.deep_engine.engine.get_settings") as mock:
+        with patch("src.engine_base.get_settings") as mock:
             mock.return_value = MagicMock(coco_execution_timeout=300, claude_execution_timeout=600)
             mgr = DeepEngineManager()
             engine = mgr.get_or_create("c1", "/tmp/test")
@@ -365,7 +365,7 @@ class TestDeepEngineManager:
         assert mgr.get("nonexistent", "/tmp") is None
 
     def test_get_active_engine(self):
-        with patch("src.deep_engine.engine.get_settings") as mock:
+        with patch("src.engine_base.get_settings") as mock:
             mock.return_value = MagicMock(coco_execution_timeout=300, claude_execution_timeout=600)
             mgr = DeepEngineManager()
             engine = mgr.get_or_create("c1", "/tmp/test")
@@ -374,7 +374,7 @@ class TestDeepEngineManager:
             assert mgr.get_active_engine("c1") is engine
 
     def test_engine_name_switch(self):
-        with patch("src.deep_engine.engine.get_settings") as mock:
+        with patch("src.engine_base.get_settings") as mock:
             mock.return_value = MagicMock(coco_execution_timeout=300, claude_execution_timeout=600)
             mgr = DeepEngineManager()
             e1 = mgr.get_or_create("c1", "/tmp/test", engine_name="Coco")
@@ -384,7 +384,7 @@ class TestDeepEngineManager:
             assert e1 is not e2
 
     def test_cleanup_all(self):
-        with patch("src.deep_engine.engine.get_settings") as mock:
+        with patch("src.engine_base.get_settings") as mock:
             mock.return_value = MagicMock(coco_execution_timeout=300, claude_execution_timeout=600)
             mgr = DeepEngineManager()
             mgr.get_or_create("c1", "/tmp/test")
@@ -393,7 +393,7 @@ class TestDeepEngineManager:
             assert mgr.get("c1", "/tmp/test") is None
 
     def test_cleanup_all_keeps_running_engine(self):
-        with patch("src.deep_engine.engine.get_settings") as mock:
+        with patch("src.engine_base.get_settings") as mock:
             mock.return_value = MagicMock(coco_execution_timeout=300, claude_execution_timeout=600)
             mgr = DeepEngineManager()
             engine = mgr.get_or_create("c1", "/tmp/test")

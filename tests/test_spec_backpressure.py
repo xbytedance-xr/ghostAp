@@ -18,9 +18,8 @@ def test_spec_backpressure(mock_scheduler_cls):
     mock_scheduler.submit.side_effect = mock_submit
 
     client = FeishuWSClient(message_callback=lambda x: None)
-    client._send_text_reply = MagicMock()
+    client._reply_message = MagicMock()
 
-    # Create a mock message event
     data = MagicMock()
     data.event.message.message_id = "msg1"
     data.event.message.chat_id = "chat1"
@@ -28,7 +27,6 @@ def test_spec_backpressure(mock_scheduler_cls):
 
     client._handle_message(data)
 
-    # Should have sent a reply about backpressure
-    client._send_text_reply.assert_called_once()
-    args = client._send_text_reply.call_args[0]
+    client._reply_message.assert_called_once()
+    args = client._reply_message.call_args[0]
     assert "系统繁忙 (Spec 模式)" in args[1]

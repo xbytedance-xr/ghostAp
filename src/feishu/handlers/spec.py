@@ -16,7 +16,7 @@ from ...utils.errors import fmt_error
 from ...utils.text import generate_task_id
 from ..emoji import EmojiReaction
 from ..renderers.spec_renderer import SpecRenderer
-from .base import BaseHandler
+from .engine_base import BaseEngineHandler
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
@@ -25,12 +25,29 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class SpecHandler(BaseHandler):
+class SpecHandler(BaseEngineHandler):
     """Manages the full lifecycle of Spec Engine tasks."""
 
     def __init__(self, ctx: "HandlerContext") -> None:
         super().__init__(ctx)
         self.renderer = SpecRenderer(self)
+
+    def _get_engine_manager(self):
+        return self.ctx.spec_engine_manager
+
+    def _get_engine_name_prefix(self) -> str:
+        return "Spec"
+
+    def _get_task_type(self) -> str:
+        return "spec_engine"
+
+    def _show_status(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+        self.show_spec_status(message_id, chat_id, project)
+
+    def _create_callbacks(
+        self, message_id: str, chat_id: str, project: Optional["ProjectContext"], engine_name: str, root_path: str
+    ):
+        return self.renderer.create_spec_callbacks(message_id, chat_id, project, engine_name=engine_name)
 
     def _get_ui_state(self, spec_project_id: str) -> dict:
         """Deprecated: Delegate to renderer"""
@@ -425,105 +442,116 @@ class SpecHandler(BaseHandler):
     # pause / resume / stop
     # ------------------------------------------------------------------
     def pause_spec_engine(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
-        root_path = project.root_path if project else self.get_working_dir(chat_id)
-        engine = self.ctx.spec_engine_manager.get(chat_id, root_path)
-        if not engine:
-            engine = self.ctx.spec_engine_manager.get_active_engine(chat_id)
-        if engine and engine.is_running:
-            engine.pause()
-            try:
-                if engine.project:
+        def _pause():
+            self._pause_engine_generic(
+                message_id, chat_id, project, status_paused_enum=SpecProjectStatus.PAUSED
+            )
+            root_path = project.root_path if project else self.get_working_dir(chat_id)
+            engine = self._get_engine_manager().get(chat_id, root_path)
+            if not engine:
+                engine = self._get_engine_manager().get_active_engine(chat_id)
+            if engine and engine.project:
+                try:
                     engine.save_state()
-            except Exception:
-                pass
-            self.show_spec_status(message_id, chat_id, project=project)
-            return
-        self.reply_message(message_id, "当前没有正在执行的 Spec 任务")
+                except Exception:
+                    pass
+
+        self._safe_lifecycle_action(_pause, "pause", chat_id, message_id, project)
 
     def resume_spec_engine(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
-        if project is None:
-            project = self.project_manager.get_active_project(chat_id)
+        def _resume():
+            if project is None:
+                proj = self.project_manager.get_active_project(chat_id)
+            else:
+                proj = project
 
-        root_path = project.root_path if project else self.get_working_dir(chat_id)
-        engine = self.ctx.spec_engine_manager.get(chat_id, root_path)
+            root_path = proj.root_path if proj else self.get_working_dir(chat_id)
+            manager = self._get_engine_manager()
+            engine = manager.get(chat_id, root_path)
 
-        if not engine or not engine.project:
-            # 断点续传：尝试从磁盘加载
-            try:
-                engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
-                engine = self.ctx.spec_engine_manager.load_or_create_from_disk(
-                    chat_id, root_path, engine_name=engine_name
+            if not engine or not engine.project:
+                try:
+                    engine_name = self.get_engine_name(chat_id, project_id=(proj.project_id if proj else None))
+                    engine = manager.load_or_create_from_disk(
+                        chat_id, root_path, engine_name=engine_name
+                    )
+                except Exception:
+                    pass
+
+            if not engine:
+                paused = [
+                    e
+                    for e in manager.list_engines(chat_id)
+                    if e.project and e.project.status in (SpecProjectStatus.PAUSED, SpecProjectStatus.CLARIFYING)
+                ]
+                if len(paused) == 1:
+                    engine = paused[0]
+
+            if (
+                engine
+                and engine.project
+                and engine.project.status in (SpecProjectStatus.PAUSED, SpecProjectStatus.CLARIFYING)
+            ):
+                callbacks = self._create_callbacks(
+                    message_id, chat_id, proj, engine.engine_name, engine.root_path
                 )
-            except Exception:
-                pass
 
-        if not engine:
-            paused = [
-                e
-                for e in self.ctx.spec_engine_manager.list_engines(chat_id)
-                if e.project and e.project.status in (SpecProjectStatus.PAUSED, SpecProjectStatus.CLARIFYING)
-            ]
-            if len(paused) == 1:
-                engine = paused[0]
+                def run_resume():
+                    engine.resume(callbacks)
 
-        if (
-            engine
-            and engine.project
-            and engine.project.status in (SpecProjectStatus.PAUSED, SpecProjectStatus.CLARIFYING)
-        ):
-            callbacks = self.renderer.create_spec_callbacks(
-                message_id, chat_id, project, engine_name=engine.engine_name
-            )
+                request_id = self.ensure_request_id(
+                    message_id, chat_id=chat_id, project_id=(proj.project_id if proj else None)
+                )
+                queue_key = f"{chat_id}:{self._get_task_type()}:{proj.project_id if proj else root_path}"
 
-            def run_resume():
-                engine.resume(callbacks)
+                spec = TaskSpec(
+                    chat_id=chat_id,
+                    queue_key=queue_key,
+                    name=f"{self._get_task_type()}_resume",
+                    task_type=self._get_task_type(),
+                    project_id=proj.project_id if proj else None,
+                    message_id=message_id,
+                    origin_message_id=message_id,
+                    request_id=request_id,
+                    priority=TaskPriority.HIGH,
+                )
+                handle = self.scheduler.submit(spec, lambda ctx: run_resume())
+                try:
+                    self.ctx.message_linker.link_task(message_id, handle.run_id)
+                except Exception as e:
+                    logger.debug(
+                        "link_task失败(%s_resume): message_id=%s, run_id=%s, err=%s",
+                        self._get_task_type(),
+                        message_id,
+                        handle.run_id,
+                        e,
+                    )
+                self._show_status(message_id, chat_id, project=proj)
+            else:
+                self.reply_message(message_id, f"当前没有可恢复的 {self._get_engine_name_prefix()} 任务")
 
-            request_id = self.ensure_request_id(
-                message_id, chat_id=chat_id, project_id=(project.project_id if project else None)
-            )
-            spec = TaskSpec(
-                chat_id=chat_id,
-                queue_key=f"{chat_id}:spec:{project.project_id if project else root_path}",
-                name="spec_engine_resume",
-                task_type="spec_engine",
-                project_id=project.project_id if project else None,
-                message_id=message_id,
-                origin_message_id=message_id,
-                request_id=request_id,
-                priority=TaskPriority.HIGH,
-            )
-            handle = self.scheduler.submit(spec, lambda ctx: run_resume())
-            try:
-                self.ctx.message_linker.link_task(message_id, handle.run_id)
-            except Exception as e:
-                logger.debug("link_task失败(spec_engine_resume): err=%s", e)
-            self.show_spec_status(message_id, chat_id, project=project)
-        else:
-            self.reply_message(message_id, "当前没有可恢复的 Spec 任务")
+        self._safe_lifecycle_action(_resume, "resume", chat_id, message_id, project)
 
     def stop_spec_engine(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
-        if project is None:
-            project = self.project_manager.get_active_project(chat_id)
+        def _stop():
+            self._stop_engine_generic(message_id, chat_id, project)
+            if project is None:
+                proj = self.project_manager.get_active_project(chat_id)
+            else:
+                proj = project
+            root_path = proj.root_path if proj else self.get_working_dir(chat_id)
+            engine = self._get_engine_manager().get(chat_id, root_path)
+            if not engine:
+                active = self._get_engine_manager().get_active_engines(chat_id)
+                if len(active) == 1:
+                    engine = active[0]
+            if engine and engine.project:
+                try:
+                    engine.save_state()
+                except Exception:
+                    pass
 
-        root_path = project.root_path if project else self.get_working_dir(chat_id)
-        engine = self.ctx.spec_engine_manager.get(chat_id, root_path)
-
-        if not engine:
-            running = self.ctx.spec_engine_manager.get_active_engines(chat_id)
-            if len(running) == 1:
-                engine = running[0]
-
-        if not engine or not engine.is_running:
-            self.reply_message(message_id, "📊 当前没有正在执行的 Spec 任务")
-            return
-
-        engine.stop()
-        try:
-            if engine.project:
-                engine.save_state()
-        except Exception:
-            pass
-        self.show_spec_status(message_id, chat_id, project=project)
+        self._safe_lifecycle_action(_stop, "stop", chat_id, message_id, project)
 
     # ------------------------------------------------------------------
     # guidance

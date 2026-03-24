@@ -1,6 +1,5 @@
 from src.acp.provider import ACPProvider, ToolRegistry
-from src.acp.providers.coco import CocoProvider
-from src.acp.providers.claude import ClaudeProvider
+from src.acp.providers import CocoProvider, ClaudeProvider
 
 
 class MockProvider(ACPProvider):

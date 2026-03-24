@@ -24,7 +24,7 @@ from src.loop_engine.tracker import IterationTracker
 
 
 class TestLoopEngine:
-    @patch("src.loop_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def _make_engine(self, mock_settings, **kwargs):
         s = MagicMock()
         s.loop_max_iterations = 15
@@ -388,7 +388,7 @@ class TestLoopEngine:
 
 
 class TestLoopEngineManager:
-    @patch("src.loop_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def _make_manager(self, mock_settings):
         s = MagicMock()
         s.loop_max_iterations = 15
@@ -786,7 +786,7 @@ class TestIterationRecordReview:
 
 
 class TestReviewParsing:
-    @patch("src.loop_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def _make_engine(self, mock_settings):
         s = MagicMock()
         s.loop_max_iterations = 15
@@ -1138,7 +1138,7 @@ PASS
         assert len(result.reviews) == 4
         assert not result.all_passed
 
-    @patch("src.loop_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_parse_llm_fallback_json(self, mock_settings):
         """When regex fails, LLM fallback extracts from JSON."""
         s = MagicMock()
@@ -1209,7 +1209,7 @@ PASS
 
 
 class TestBuildReviewPrompt:
-    @patch("src.loop_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def _make_engine(self, mock_settings):
         s = MagicMock()
         s.loop_max_iterations = 15
@@ -1253,7 +1253,7 @@ class TestBuildReviewPrompt:
 
 
 class TestIterationPromptWithReview:
-    @patch("src.loop_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def _make_engine(self, mock_settings):
         s = MagicMock()
         s.loop_max_iterations = 15
@@ -1306,7 +1306,7 @@ class TestIterationPromptWithReview:
 
 
 class TestInitialPromptReviewNote:
-    @patch("src.loop_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def _make_engine(self, mock_settings, review_enabled=True):
         s = MagicMock()
         s.loop_max_iterations = 15
@@ -1332,7 +1332,7 @@ class TestInitialPromptReviewNote:
 
 
 class TestConductReview:
-    @patch("src.loop_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def _make_engine(self, mock_settings):
         s = MagicMock()
         s.loop_max_iterations = 15

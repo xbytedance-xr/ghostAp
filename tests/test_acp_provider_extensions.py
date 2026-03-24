@@ -1,16 +1,21 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from src.acp.providers.aiden import AidenProvider, _get_aiden_acp_serve_help_blob
-from src.acp.providers.codex import CodexProvider, _get_codex_acp_serve_help_blob
-from src.acp.providers.gemini import GeminiProvider, _get_gemini_acp_serve_help_blob
+from src.acp.providers import (
+    AidenProvider,
+    CodexProvider,
+    GeminiProvider,
+    _get_aiden_acp_serve_help_blob,
+    _get_codex_acp_serve_help_blob,
+    _get_gemini_acp_serve_help_blob,
+)
 
 
 def test_aiden_provider_name():
     assert AidenProvider().name == "aiden"
 
 
-@patch("src.acp.providers.aiden.subprocess.run")
+@patch("src.acp.providers.subprocess.run")
 def test_aiden_provider_availability(mock_run):
     _get_aiden_acp_serve_help_blob.cache_clear()
     mock_run.return_value = SimpleNamespace(
@@ -24,7 +29,7 @@ def test_aiden_provider_availability(mock_run):
     assert AidenProvider().check_availability() is False
 
 
-@patch("src.acp.providers.aiden.subprocess.run")
+@patch("src.acp.providers.subprocess.run")
 def test_aiden_provider_serve_command_model_style_long(mock_run):
     _get_aiden_acp_serve_help_blob.cache_clear()
     mock_run.return_value = SimpleNamespace(stdout="Usage: aiden acp --model MODEL", stderr="")
@@ -33,7 +38,7 @@ def test_aiden_provider_serve_command_model_style_long(mock_run):
     assert args == ["acp", "--model", "gpt-4"]
 
 
-@patch("src.acp.providers.aiden.subprocess.run")
+@patch("src.acp.providers.subprocess.run")
 def test_aiden_provider_serve_command_model_style_short(mock_run):
     _get_aiden_acp_serve_help_blob.cache_clear()
     mock_run.return_value = SimpleNamespace(stdout="Usage: aiden acp -m MODEL", stderr="")
@@ -77,7 +82,7 @@ def test_gemini_provider_name():
     assert GeminiProvider().name == "gemini"
 
 
-@patch("src.acp.providers.gemini.subprocess.run")
+@patch("src.acp.providers.subprocess.run")
 def test_gemini_provider_availability(mock_run):
     _get_gemini_acp_serve_help_blob.cache_clear()
     mock_run.return_value = SimpleNamespace(stdout="Usage: gemini [options]\n  --acp  Starts the agent in ACP mode\n", stderr="")
@@ -88,7 +93,7 @@ def test_gemini_provider_availability(mock_run):
     assert GeminiProvider().check_availability() is False
 
 
-@patch("src.acp.providers.gemini.subprocess.run")
+@patch("src.acp.providers.subprocess.run")
 def test_gemini_provider_serve_command_model_style_long(mock_run):
     _get_gemini_acp_serve_help_blob.cache_clear()
     mock_run.return_value = SimpleNamespace(stdout="Usage: gemini [options]\n  --model MODEL\n  --acp\n", stderr="")
@@ -97,7 +102,7 @@ def test_gemini_provider_serve_command_model_style_long(mock_run):
     assert args == ["--acp", "--model", "gemini-2.5-pro"]
 
 
-@patch("src.acp.providers.gemini.subprocess.run")
+@patch("src.acp.providers.subprocess.run")
 def test_gemini_provider_serve_command_model_style_short(mock_run):
     _get_gemini_acp_serve_help_blob.cache_clear()
     mock_run.return_value = SimpleNamespace(stdout="Usage: gemini [options]\n  -m MODEL\n  --acp\n", stderr="")

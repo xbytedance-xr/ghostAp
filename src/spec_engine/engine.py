@@ -11,7 +11,6 @@ import logging
 import os
 import re
 import shutil
-import threading
 import time
 import traceback
 import uuid
@@ -21,11 +20,12 @@ from typing import Callable, Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
-from ..acp import ACPEvent, ACPEventRenderer, ACPEventType
-from ..agent_session import SyncSession, close_session_safely, create_engine_session
+from ..acp import ACPEvent, ACPEventType
+from ..agent_session import create_engine_session
 from ..coco_model import get_coco_model_manager
 from ..config import get_settings
 from ..deep_engine.models import EngineRunState
+from ..engine_base import BaseEngine, BaseEngineManager
 from ..loop_engine.models import (
     PerspectiveReview,
     ReviewPerspective,
@@ -145,7 +145,7 @@ class ContinuationPolicy:
         return None
 
 
-class SpecEngine:
+class SpecEngine(BaseEngine):
     """ACP-driven structured development engine with iterative review cycles."""
 
     def __init__(
@@ -156,17 +156,8 @@ class SpecEngine:
         engine_name: str = "Coco",
         model_name: Optional[str] = None,
     ):
-        self.chat_id = chat_id
-        self.root_path = os.path.expanduser(root_path)
-        self.settings = get_settings()
-        self.engine_name = engine_name
-        self._agent_type = agent_type
-        self._model_name = model_name
-
-        self._session: Optional[SyncSession] = None
+        super().__init__(chat_id, root_path, agent_type, engine_name, model_name)
         self._project: Optional[SpecProject] = None
-        self._renderer = ACPEventRenderer()
-        self._run_state = EngineRunState.IDLE
         self._user_guidance: list[str] = []
         self._last_review: Optional[ReviewResult] = None
         # success / paused / converged / max_cycles / stopped
@@ -188,7 +179,6 @@ class SpecEngine:
         # last known cycle/phase for failure persistence
         self._last_cycle_num: int = 0
         self._last_phase: SpecPhase = SpecPhase.SPEC
-        self._state_lock = threading.Lock()
 
     def _wrap_callbacks(self, callbacks: SpecEngineCallbacks) -> SpecEngineCallbacks:
         def _wrap(fn: Optional[Callable[..., None]], name: str) -> Optional[Callable[..., None]]:
@@ -219,25 +209,6 @@ class SpecEngine:
             on_model_switch=_wrap(callbacks.on_model_switch, "on_model_switch"),
             on_task_saved=_wrap(callbacks.on_task_saved, "on_task_saved"),
         )
-
-    @property
-    def project(self) -> Optional[SpecProject]:
-        with self._state_lock:
-            return self._project
-
-    @property
-    def run_state(self) -> EngineRunState:
-        with self._state_lock:
-            return self._run_state
-
-    @property
-    def is_running(self) -> bool:
-        with self._state_lock:
-            return self._run_state != EngineRunState.IDLE
-
-    def _close_session_safely(self) -> None:
-        close_session_safely(self._session)
-        self._session = None
 
     def _initialize_model_context(self) -> None:
         """根据后端类型初始化模型上下文。"""
@@ -2865,11 +2836,6 @@ CRITERIA_2: FAIL
         self._user_guidance.append(message)
         logger.info("[Spec] 用户引导已注入(队列=%d): %s...", len(self._user_guidance), message[:100])
 
-    def stop(self):
-        self._run_state = EngineRunState.STOPPING
-        if self._session:
-            self._session.cancel()
-
     def pause(self):
         if self._project:
             self._project.status = SpecProjectStatus.PAUSED
@@ -2963,9 +2929,6 @@ CRITERIA_2: FAIL
                 self._saved_task_signature = None
 
         return self._project
-
-    def get_rendered_content(self) -> str:
-        return self._renderer.get_final_content()
 
     def _project_to_compact_dict(self) -> dict:
         """Build a compact project dict for state persistence.
@@ -3078,25 +3041,27 @@ CRITERIA_2: FAIL
         self._run_state = EngineRunState.IDLE
 
 
-class SpecEngineManager:
+class SpecEngineManager(BaseEngineManager["SpecEngine"]):
     """Manages SpecEngine instances per chat.
 
     Uses a secondary index (_chat_keys) to avoid O(n) full-table scans.
     """
 
-    def __init__(self):
-        self._engines: dict[str, SpecEngine] = {}
-        self._chat_keys: dict[str, set[str]] = {}
-        self._lock = threading.Lock()
-
-    def _add_index(self, chat_id: str, key: str) -> None:
-        self._chat_keys.setdefault(chat_id, set()).add(key)
-
-    def _iter_chat_engines(self, chat_id: str):
-        for key in self._chat_keys.get(chat_id, ()):
-            engine = self._engines.get(key)
-            if engine:
-                yield engine
+    def _create_engine(
+        self,
+        chat_id: str,
+        root_path: str,
+        agent_type: str,
+        engine_name: str,
+        model_name: Optional[str],
+    ) -> "SpecEngine":
+        return SpecEngine(
+            chat_id=chat_id,
+            root_path=root_path,
+            agent_type=agent_type,
+            engine_name=engine_name,
+            model_name=model_name,
+        )
 
     def _resolve_engine_identity(
         self,
@@ -3167,7 +3132,7 @@ class SpecEngineManager:
         *,
         agent_type: Optional[str] = None,
         model_name: Optional[str] = None,
-    ) -> SpecEngine:
+    ) -> "SpecEngine":
         key = f"{chat_id}:{root_path}"
         resolved_engine_name, resolved_agent_type, resolved_model_name = self._resolve_engine_identity(
             engine_name=engine_name,
@@ -3202,7 +3167,7 @@ class SpecEngineManager:
 
             return self._engines[key]
 
-    def load_or_create_from_disk(self, chat_id: str, root_path: str, engine_name: str = "Coco") -> SpecEngine:
+    def load_or_create_from_disk(self, chat_id: str, root_path: str, engine_name: str = "Coco") -> "SpecEngine":
         """Create engine and hydrate project state from disk if present.
 
         用于进程重启后的断点续传：handler 在 `/spec_status`/`/spec_resume` 时可调用。
@@ -3252,34 +3217,3 @@ class SpecEngineManager:
             except Exception:
                 pass
         return engine
-
-    def get(self, chat_id: str, root_path: str) -> Optional[SpecEngine]:
-        key = f"{chat_id}:{root_path}"
-        return self._engines.get(key)
-
-    def get_active_engine(self, chat_id: str) -> Optional[SpecEngine]:
-        for engine in self._iter_chat_engines(chat_id):
-            if engine.is_running:
-                return engine
-        return None
-
-    def get_active_engines(self, chat_id: str) -> list[SpecEngine]:
-        return [e for e in self._iter_chat_engines(chat_id) if e.is_running]
-
-    def list_engines(self, chat_id: Optional[str] = None) -> list[SpecEngine]:
-        if chat_id is None:
-            return list(self._engines.values())
-        return list(self._iter_chat_engines(chat_id))
-
-    def cleanup_all(self):
-        with self._lock:
-            next_engines: dict[str, SpecEngine] = {}
-            for key, engine in self._engines.items():
-                engine.cleanup()
-                if engine.is_running:
-                    next_engines[key] = engine
-            self._engines = next_engines
-            self._chat_keys.clear()
-            for key in next_engines:
-                chat_id = key.partition(":")[0]
-                self._chat_keys.setdefault(chat_id, set()).add(key)

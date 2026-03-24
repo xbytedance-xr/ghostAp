@@ -292,53 +292,6 @@ class FeishuWSClient:
         """Register a card action handler."""
         self._action_dispatcher.register(handler, exact, prefix)
 
-    def _process_card_action_async(self, data: Any, task_ctx=None):
-        """异步处理卡片回调（由 scheduler 调用）。
-
-        约定：
-        - `value` 可能是 dict 或 JSON 字符串；这里统一 normalize。
-        - 通过 `ActionDispatcher` 做 exact/prefix 路由。
-        """
-        try:
-            event = data.event
-            context = event.context
-            open_message_id = context.open_message_id
-            open_chat_id = context.open_chat_id
-            action = event.action
-            value = action.value
-
-            # Ensure value is a dict
-            if isinstance(value, str):
-                try:
-                    value = json.loads(value)
-                except Exception:
-                    value = {}
-            if not isinstance(value, dict):
-                value = {}
-
-            action_type = value.get("action")
-            project_id = value.get("project_id")
-
-            if not action_type:
-                logger.warning("收到未包含 action 字段的卡片动作: %s", value)
-                return
-
-            # --- Dispatch via ActionDispatcher ---
-            matched = self._action_dispatcher.dispatch(action_type, open_message_id, open_chat_id, project_id, value)
-
-            if not matched:
-                logger.debug("未注册的卡片动作: %s", action_type)
-
-        except asyncio.TimeoutError:
-            logger.warning("处理卡片动作超时")
-        except Exception as e:
-            logger.error("处理卡片动作异常: %s", e, exc_info=True)
-            try:
-                if "open_message_id" in locals():
-                    self._reply_message(open_message_id, "❌ 处理卡片动作时发生错误")
-            except Exception:
-                pass
-
     def _init_action_registry(self):
         """Initialize all card action handlers."""
         self._register_programming_mode_actions()
@@ -1134,9 +1087,9 @@ class FeishuWSClient:
             except (RateLimitExceededException, CircuitBreakerOpenException) as e:
                 logger.warning(f"Backpressure applied: {e}")
                 if is_spec:
-                    self._send_text_reply(message_id, "⚠️ 系统繁忙 (Spec 模式)，请稍后再试。")
+                    self._reply_message(message_id, "⚠️ 系统繁忙 (Spec 模式)，请稍后再试。")
                 else:
-                    self._send_text_reply(message_id, "⚠️ 当前服务繁忙，请稍后再试。")
+                    self._reply_message(message_id, "⚠️ 当前服务繁忙，请稍后再试。")
                 return
             try:
                 if message_id:

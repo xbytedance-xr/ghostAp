@@ -47,7 +47,7 @@ class TestTraceIntegration:
         mock_trace_ctx_instance.__exit__.assert_called_once()
 
     @patch("src.loop_engine.engine.TraceContext")
-    @patch("src.loop_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     @patch("src.loop_engine.engine.create_engine_session")
     def test_loop_engine_trace_integration(self, mock_create_session, mock_get_settings, mock_trace_context):
         # Setup
@@ -81,7 +81,7 @@ class TestTraceIntegration:
         mock_trace_ctx_instance.__exit__.assert_called_once()
 
     @patch("src.deep_engine.engine.TraceContext")
-    @patch("src.deep_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     @patch("src.deep_engine.engine.create_engine_session")
     def test_deep_engine_trace_integration(self, mock_create_session, mock_get_settings, mock_trace_context):
         # Setup

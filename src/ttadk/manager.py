@@ -13,13 +13,20 @@ import logging
 import shutil
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from ..acp.diagnostics import get_diagnostics_config, redact_text
 from ..config import get_settings
 from .cache import TTADKModelCache
+from .command_exec import (
+    TTADKCommandRunResult,
+    TTADKCommandRunner,
+    _build_ttadk_code_args,
+    _next_steps_for_fail_reason,
+    _redact_and_truncate_snippet,
+    _strict_truncate,
+    format_ttadk_code_user_message,
+)
 
 # ---------------------------------------------------------------------------
 # deprecated_* Runtime invalid-model cooldown (compat only)
@@ -43,159 +50,10 @@ from .models import (
     TTADKModel,
     TTADKTool,
     build_model_list_diagnostics,
-    is_invalid_model_error,
-    is_stdin_not_tty_error,
     resolve_model_id,
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _strict_truncate(s: str, lim: int) -> str:
-    """严格截断：保证返回长度不超过 lim（best-effort）。"""
-    try:
-        lim = int(lim or 0)
-    except Exception:
-        lim = 0
-    if lim <= 0:
-        return ""
-    try:
-        ss = str(s or "")
-    except Exception:
-        ss = ""
-    if len(ss) <= lim:
-        return ss
-    suffix = "…(truncated)"
-    if lim <= len(suffix):
-        return ss[:lim]
-    return ss[: max(0, lim - len(suffix))] + suffix
-
-
-def _redact_and_truncate_snippet(text: object, *, hard_limit: int = 240, get_settings_fn=get_settings) -> str:
-    """复用 ACP diagnostics 的脱敏配置，并严格截断（best-effort）。"""
-    try:
-        cfg = get_diagnostics_config(get_settings_fn=get_settings_fn)
-        enabled = bool(getattr(cfg, "redact_enabled", True))
-        patterns = list(getattr(cfg, "redact_patterns", []) or [])
-        repl = str(getattr(cfg, "redact_replacement", "***REDACTED***") or "***REDACTED***")
-        try:
-            cfg_lim = int(getattr(cfg, "snippet_limit", 0) or 0)
-        except Exception:
-            cfg_lim = 0
-        lim = int(hard_limit or 240)
-        if cfg_lim > 0:
-            lim = min(cfg_lim, lim) if lim > 0 else cfg_lim
-        lim = max(1, lim)
-    except Exception:
-        enabled, patterns, repl, lim = True, [], "***REDACTED***", max(1, int(hard_limit or 240))
-
-    try:
-        s = str(text or "")
-    except Exception:
-        s = ""
-    if enabled:
-        try:
-            s = redact_text(s, patterns, repl)
-        except Exception:
-            pass
-    return _strict_truncate(s, int(lim))
-
-
-@dataclass
-class TTADKCommandRunResult:
-    ok: bool
-    returncode: int
-    stdout: str
-    stderr: str
-    fail_reason: str
-    cmd: str
-    args: list[str]
-    stdout_snippet: str
-    stderr_snippet: str
-
-
-class TTADKCommandRunner:
-    """可注入/可 mock 的 ttadk 命令执行器。
-
-    设计目标：
-    - 只负责执行命令并采集 rc/stdout/stderr（不做模型决策）
-    - 默认通过 `TTADKModelFetcher` 同款 runner（env sandbox）执行，测试可注入 runner
-    """
-
-    def __init__(self, *, runner: Optional[object] = None, get_settings_fn=get_settings) -> None:
-        # runner 需提供 run_simple(args, cwd, timeout) -> (rc, out, err)
-        self._runner = runner
-        self._get_settings_fn = get_settings_fn
-
-    def run(self, *, args: list[str], cwd: Optional[str], timeout_s: float) -> TTADKCommandRunResult:
-        cmd = str(args[0] if args else "")
-        xs = [str(x) for x in (args or [])]
-        try:
-            timeout = float(timeout_s or 0.0)
-        except Exception:
-            timeout = 0.0
-        timeout = max(0.1, timeout)
-
-        r = self._runner
-        if r is None:
-            from .model_fetcher import TTADKRunner
-
-            r = TTADKRunner()
-        try:
-            rc, out, err = r.run_simple(xs, cwd, timeout)  # type: ignore[attr-defined]
-        except Exception as e:
-            # best-effort：异常也要产出可诊断信息
-            et = type(e).__name__
-            msg = str(e) or "(empty)"
-            err = f"{et}: {msg}"
-            rc, out = 1, ""
-        try:
-            rc_i = int(rc or 0)
-        except Exception:
-            rc_i = 1
-        out_s = str(out or "")
-        err_s = str(err or "")
-        blob = (out_s + "\n" + err_s).strip()
-
-        fail_reason = ""
-        if rc_i == 0:
-            ok = True
-        else:
-            ok = False
-            try:
-                if is_stdin_not_tty_error(blob):
-                    fail_reason = "stdin_not_tty"
-                elif is_invalid_model_error(blob):
-                    fail_reason = "invalid_model"
-            except Exception:
-                fail_reason = ""
-            if not fail_reason:
-                lower = blob.lower()
-                # ttadk init / not initialized
-                if "permission denied" in lower:
-                    fail_reason = "permission"
-                elif "not initialized" in lower or "ttadk init" in lower or "initialize the project" in lower:
-                    fail_reason = "not_initialized"
-                # binary missing
-                elif "not found" in lower and "ttadk" in lower:
-                    fail_reason = "binary_missing"
-                # timeout-ish text (subprocess may stringify)
-                elif "timed out" in lower or "timeout" in lower:
-                    fail_reason = "timeout"
-                else:
-                    fail_reason = "unknown"
-
-        return TTADKCommandRunResult(
-            ok=bool(ok),
-            returncode=rc_i,
-            stdout=out_s,
-            stderr=err_s,
-            fail_reason=str(fail_reason or ""),
-            cmd=cmd,
-            args=list(xs),
-            stdout_snippet=_redact_and_truncate_snippet(out_s, hard_limit=240, get_settings_fn=self._get_settings_fn),
-            stderr_snippet=_redact_and_truncate_snippet(err_s, hard_limit=240, get_settings_fn=self._get_settings_fn),
-        )
 
 
 class TTADKStartupError(RuntimeError):
@@ -645,37 +503,10 @@ class TTADKManager:
     def _build_ttadk_code_args(
         self, *, tool_name: str, model_name: Optional[str], extra_args: Optional[list[str]] = None
     ) -> list[str]:
-        """构造最小可测的 `ttadk code` 命令参数。
-
-        约定：
-        - validated=True 时传 `-m <real_model>`
-        - (auto) 模式不传 -m
-        """
-        tool = (tool_name or "").strip().lower()
-        xs: list[str] = ["ttadk", "code", "-t", tool]
-        m = (model_name or "").strip()
-        if m:
-            xs.extend(["-m", m])
-        # 可选附加参数（默认无需，用于 e2e/本机扩展）
-        for a in list(extra_args or []):
-            aa = str(a or "").strip()
-            if aa:
-                xs.append(aa)
-        return xs
+        return _build_ttadk_code_args(tool_name=tool_name, model_name=model_name, extra_args=extra_args)
 
     def _next_steps_for_fail_reason(self, fail_reason: str) -> list[str]:
-        r = (fail_reason or "").strip()
-        if r == "not_initialized":
-            return ["在项目目录执行 ttadk init", "执行 ttadk sync（如需要）", "重试命令"]
-        if r == "binary_missing":
-            return ["确认机器已安装 ttadk 并在 PATH 中可用", "或切换到 coco/claude 模式"]
-        if r == "permission":
-            return ["检查当前目录/二进制执行权限", "检查网络/登录态（如需要）", "重试命令"]
-        if r == "stdin_not_tty":
-            return ["尝试开启 PTY 模式或在终端环境执行", "或降级到 (auto) 重试"]
-        if r == "invalid_model":
-            return ["强制刷新模型列表", "选择真实模型名重试", "必要时降级为 (auto) 或 coco"]
-        return ["查看日志中的 stderr_snippet/attempts", "必要时切换工具或降级到 coco"]
+        return _next_steps_for_fail_reason(fail_reason)
 
     def execute_ttadk_code_with_repair(
         self,
@@ -705,50 +536,7 @@ class TTADKManager:
         )
 
     def format_ttadk_code_user_message(self, result: dict) -> str:
-        """将 execute_ttadk_code_with_repair 的结果格式化为用户可读提示（用于 handler/卡片）。"""
-        r = dict(result or {})
-        ok = bool(r.get("ok"))
-        tool = str(r.get("tool") or "")
-        input_model = str(r.get("input_model") or "")
-        model = str(r.get("model") or "(auto)")
-        validated = bool(r.get("validated"))
-        source = str(r.get("source") or "")
-        decision = str(r.get("decision") or "")
-        warnings = [str(w) for w in (r.get("warnings") or []) if w]
-        fail_reason = str(r.get("fail_reason") or "")
-        next_steps = [str(x) for x in (r.get("next_steps") or []) if x]
-
-        head = "TTADK 命令执行成功" if ok else "TTADK 命令执行失败"
-        lines = [
-            head,
-            f"tool={tool} input_model={input_model}",
-            f"model={model} validated={validated} source={source}",
-        ]
-        if decision:
-            lines.append(f"decision={decision}")
-        if warnings:
-            lines.append(f"warnings={warnings}")
-        if not ok and fail_reason:
-            lines.append(f"fail_reason={fail_reason}")
-        if not ok and next_steps:
-            lines.append("下一步建议：" + "；".join(next_steps))
-
-        # 尽量附带一次关键 stderr 片段（不泄露敏感信息，已脱敏+截断）
-        try:
-            atts = list(r.get("attempts") or [])
-            err_snips = []
-            for a in reversed(atts):
-                s = str(a.get("stderr_snippet") or "").strip()
-                if s:
-                    err_snips.append(s)
-                if len(err_snips) >= 1:
-                    break
-            if err_snips:
-                lines.append("stderr_snippet=" + err_snips[0])
-        except Exception:
-            pass
-
-        return "\n".join([x for x in lines if x])
+        return format_ttadk_code_user_message(result)
 
     def _get_runtime_invalid_model_last_ts(self, tool_name: str) -> float:
         tool = (tool_name or "").strip().lower()

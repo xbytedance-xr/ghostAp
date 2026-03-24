@@ -1,7 +1,15 @@
 # GhostAP 项目记忆索引
 
 ## 2026-03-24
+- **全局优化精简（Phase 1+2）** - 修复 `_send_text_reply` 运行时 bug、删除死代码（scripts/archive/ 13 文件 + sys_monitor.py + 重复定义 + 23 个 camelCase 别名）、提取 BaseEngine/BaseEngineManager 基类消除三引擎重复、TTADK 去重、ACP Provider 表驱动合并、SpecHandler 继承 BaseEngineHandler；净减 532 行 5 个文件，1687 tests passed → [2026-03-24.md](2026-03-24.md)
+- **ACP Provider 表驱动合并** - 5 个独立 provider 文件合并为 `providers/__init__.py` 表驱动系统（`_ProviderConfig` + `GenericACPProvider`），新增 provider 只需添加一项配置，1447 tests passed → [2026-03-24.md](2026-03-24.md)
+- **SpecHandler 继承 BaseEngineHandler 重构** - SpecHandler 从 BaseHandler 改为继承 BaseEngineHandler，实现 5 个抽象方法，pause/stop 复用 generic 后追加 save_state，resume 保留磁盘恢复+多状态特化逻辑，1447 tests passed → [2026-03-24.md](2026-03-24.md)
+- **提取 BaseEngine / BaseEngineManager 基类** - 从 Deep/Loop/Spec 三引擎提取共同模式到 `src/engine_base.py`，含 __init__/properties/stop/cleanup/save_state/get_rendered_content 及泛型 Manager 基类 → [2026-03-24.md](2026-03-24.md)
+- **LoopEngine/LoopEngineManager 继承 BaseEngine/BaseEngineManager 重构** - LoopEngine 继承 BaseEngine 消除重复属性/方法，LoopEngineManager 继承 BaseEngineManager 仅保留工厂方法，115 tests passed → [2026-03-24.md](2026-03-24.md)
+- **DeepEngine/DeepEngineManager 继承 BaseEngine/BaseEngineManager 重构** - DeepEngine 继承 BaseEngine 消除重复属性/方法/`_context_lock`→`_lock`，DeepEngineManager 继承 BaseEngineManager 仅保留工厂/remove/find_by_deep_project_id，142 tests passed → [2026-03-24.md](2026-03-24.md)
+- **SpecEngine/SpecEngineManager 继承 BaseEngine/BaseEngineManager 重构** - SpecEngine 继承 BaseEngine 消除重复属性/方法/`_state_lock`→`_lock`，SpecEngineManager 继承 BaseEngineManager 保留工厂/resolve_engine_identity/get_or_create/load_or_create_from_disk，166 tests passed → [2026-03-24.md](2026-03-24.md)
 - **崩溃/卡住风险修复（会话恢复一致性 + 引擎清理竞态）** - 修复 resume 先切模式后建会话不一致、Deep/Loop/Spec cleanup_all 运行中引擎引用丢失、close 链路会话清理覆盖不足，新增回归并全量验证通过（`1681 passed, 10 skipped`）→ [2026-03-24.md](2026-03-24.md)
+- **TTADK manager.py / command_exec.py 代码去重** - 消除 7 处重复定义，command_exec.py 为 SSOT，manager.py 通过导入+委托消除重复代码约 150 行，183 tests passed → [2026-03-24.md](2026-03-24.md)
 
 ## 2026-03-23
 - **全量治理续做计划落地（A/B/C/D）** - 完成编程模式互斥全量收口、ModeManager 统一编程入口、`AgentSessionManager` 语义别名导出与文档一致性修正，新增/更新回归测试并通过全量验证（`1677 passed, 10 skipped`）→ [2026-03-23.md](2026-03-23.md)

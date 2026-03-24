@@ -74,9 +74,9 @@ class TestModeManagerProgrammingEntry:
         with pytest.raises(ValueError):
             mgr.enter_programming_mode("chat1", InteractionMode.SHELL)
 
-    def test_enter_programming_mode_camel_alias(self):
+    def test_enter_programming_mode_with_project(self):
         mgr = ModeManager()
-        old = mgr.enterProgrammingMode("chat1", InteractionMode.GEMINI, projectId="proj2")
+        old = mgr.enter_programming_mode("chat1", InteractionMode.GEMINI, project_id="proj2")
         assert old == InteractionMode.SMART
         assert mgr.get_mode("chat1", project_id="proj2") == InteractionMode.GEMINI
 

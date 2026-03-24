@@ -9,7 +9,6 @@ import gc
 import json
 import logging
 import os
-import threading
 import time
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -19,11 +18,10 @@ try:
 except Exception:  # pragma: no cover
     psutil = None  # type: ignore[assignment]
 
-from ..acp import ACPEvent, ACPEventRenderer, ACPEventType
-from ..agent_session import SyncSession, close_session_safely, create_engine_session
-from ..config import get_settings
+from ..acp import ACPEvent, ACPEventType
+from ..agent_session import create_engine_session
+from ..engine_base import BaseEngine, BaseEngineManager
 from ..utils.debug_utils import MemorySnapshot
-from ..utils.engine_identity import resolve_engine_identity
 from ..utils.gc_monitor import get_gc_monitor
 from ..utils.trace import TraceContext
 from .models import (
@@ -51,8 +49,12 @@ class DeepEngineCallbacks:
     on_error: Optional[Callable[[str], None]] = None
 
 
-class DeepEngine:
+class DeepEngine(BaseEngine):
     """ACP-driven Deep Engine — the agent plans and executes autonomously."""
+
+    _state_filename = ".deep_engine_state.json"
+    _gc_label = "Deep"
+    _gc_threshold_default = 80.0
 
     def __init__(
         self,
@@ -62,37 +64,12 @@ class DeepEngine:
         engine_name: str = "Coco",
         model_name: Optional[str] = None,
     ):
-        self.chat_id = chat_id
-        self.root_path = os.path.expanduser(root_path)
-        self.settings = get_settings()
-        self.engine_name = engine_name
-        self._agent_type = agent_type
-        self._model_name = model_name
-
-        self._session: Optional[SyncSession] = None
-        self._project: Optional[DeepProject] = None
+        super().__init__(chat_id, root_path, agent_type, engine_name, model_name)
         self._progress = DeepProgress()
-        self._renderer = ACPEventRenderer()
-        self._run_state = EngineRunState.IDLE
         self._pending_context: list[str] = []
-        self._context_lock = threading.Lock()
         self._planning_done_fired: bool = False
         self._last_mem_check: float = 0.0
         self._mem_snapshot = MemorySnapshot()
-
-    @property
-    def project(self) -> Optional[DeepProject]:
-        with self._context_lock:
-            return self._project
-
-    @property
-    def run_state(self) -> EngineRunState:
-        with self._context_lock:
-            return self._run_state
-
-    @property
-    def is_running(self) -> bool:
-        return self._run_state != EngineRunState.IDLE
 
     @property
     def progress(self) -> DeepProgress:
@@ -176,11 +153,6 @@ class DeepEngine:
                 callbacks.on_text(event.text or "")
 
         return on_event
-
-    def _close_session_safely(self) -> None:
-        """Close existing ACP session, ignoring errors."""
-        close_session_safely(self._session)
-        self._session = None
 
     def plan_and_execute(
         self,
@@ -300,7 +272,7 @@ class DeepEngine:
     def _drain_pending_context(self, on_event, timeout, last_result):
         """Send any pending context injections as follow-up prompts in the same session."""
         while self._run_state == EngineRunState.RUNNING:
-            with self._context_lock:
+            with self._lock:
                 batch = list(self._pending_context)
                 self._pending_context.clear()
             if not batch:
@@ -353,14 +325,9 @@ class DeepEngine:
 
         Multiple calls accumulate; all pending messages are drained together.
         """
-        with self._context_lock:
+        with self._lock:
             self._pending_context.append(message)
         logger.info("[Deep] 上下文已注入(待发送, 队列=%d): %s...", len(self._pending_context), message[:100])
-
-    def stop(self):
-        self._run_state = EngineRunState.STOPPING
-        if self._session:
-            self._session.cancel()
 
     def pause(self):
         if self._project:
@@ -447,7 +414,7 @@ class DeepEngine:
     }
 
     def get_progress(self) -> Optional[ProgressUpdate]:
-        with self._context_lock:
+        with self._lock:
             if not self._project:
                 return None
 
@@ -468,7 +435,7 @@ class DeepEngine:
         )
 
     def get_task_summary(self) -> str:
-        with self._context_lock:
+        with self._lock:
             if not self._project:
                 return "暂无任务"
 
@@ -491,34 +458,9 @@ class DeepEngine:
 
         return "\n".join(lines)
 
-    def get_rendered_content(self) -> str:
-        """Return the current rendered output from the ACP event renderer."""
-        return self._renderer.get_final_content()
-
-    def save_state(self, filepath: Optional[str] = None) -> str:
-        if not self._project:
-            raise ValueError("没有项目状态可保存")
-
-        if not filepath:
-            filepath = os.path.join(self.root_path, ".deep_engine_state.json")
-
-        state = {
-            "chat_id": self.chat_id,
-            "root_path": self.root_path,
-            "project": self._project.to_dict(),
-            "saved_at": time.time(),
-        }
-
-        tmp_path = filepath + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, filepath)
-
-        return filepath
-
     def load_state(self, filepath: Optional[str] = None) -> bool:
         if not filepath:
-            filepath = os.path.join(self.root_path, ".deep_engine_state.json")
+            filepath = os.path.join(self.root_path, self._state_filename)
 
         if not os.path.exists(filepath):
             return False
@@ -552,89 +494,28 @@ class DeepEngine:
         get_gc_monitor(memory_threshold_percent=self.settings.deep_memory_threshold).check_and_collect(label="Deep", mem_snapshot=self._mem_snapshot)
 
 
-class DeepEngineManager:
+class DeepEngineManager(BaseEngineManager["DeepEngine"]):
     """Manages DeepEngine instances per chat+project.
 
     Thread-safe: all dict mutations are protected by _lock.
     Uses a secondary index (_chat_keys) to avoid O(n) full-table scans.
     """
 
-    def __init__(self):
-        self._engines: dict[str, DeepEngine] = {}
-        self._chat_keys: dict[str, set[str]] = {}  # chat_id → set of keys
-        self._lock = threading.Lock()
-
-    def _add_index(self, chat_id: str, key: str) -> None:
-        self._chat_keys.setdefault(chat_id, set()).add(key)
-
-    def _remove_index(self, chat_id: str, key: str) -> None:
-        keys = self._chat_keys.get(chat_id)
-        if keys:
-            keys.discard(key)
-            if not keys:
-                del self._chat_keys[chat_id]
-
-    def get_or_create(self, chat_id: str, root_path: str, engine_name: str = "Coco") -> DeepEngine:
-        key = f"{chat_id}:{root_path}"
-        from ..mode import InteractionMode
-        from ..ttadk import get_ttadk_manager
-
-        normalized = (engine_name or "").strip().lower()
-        ttadk_tool = None
-        ttadk_model = None
-        if normalized == "ttadk":
-            mode = InteractionMode.TTADK
-            try:
-                ttadk_manager = get_ttadk_manager()
-                ttadk_tool = ttadk_manager.get_current_tool()
-                ttadk_model = ttadk_manager.get_current_model()
-            except Exception:
-                ttadk_tool = None
-                ttadk_model = None
-        elif normalized.startswith("claude"):
-            mode = InteractionMode.CLAUDE
-        elif normalized.startswith("aiden"):
-            mode = InteractionMode.AIDEN
-        elif normalized.startswith("codex"):
-            mode = InteractionMode.CODEX
-        elif normalized.startswith("gemini"):
-            mode = InteractionMode.GEMINI
-        else:
-            mode = InteractionMode.COCO
-
-        identity = resolve_engine_identity(mode=mode, ttadk_tool_name=ttadk_tool, ttadk_model_name=ttadk_model)
-        agent_type = identity.agent_type
-        model_name = identity.model_name
-        resolved_engine_name = identity.engine_name
-
-        with self._lock:
-            if key not in self._engines:
-                engine = DeepEngine(
-                    chat_id=chat_id,
-                    root_path=root_path,
-                    agent_type=agent_type,
-                    engine_name=resolved_engine_name,
-                    model_name=model_name,
-                )
-                self._engines[key] = engine
-                self._add_index(chat_id, key)
-            else:
-                existing = self._engines[key]
-                if existing.engine_name.lower() != resolved_engine_name.lower() and not existing.is_running:
-                    existing.cleanup()
-                    engine = DeepEngine(
-                        chat_id=chat_id,
-                        root_path=root_path,
-                        agent_type=agent_type,
-                        engine_name=resolved_engine_name,
-                        model_name=model_name,
-                    )
-                    self._engines[key] = engine
-            return self._engines[key]
-
-    def get(self, chat_id: str, root_path: str) -> Optional[DeepEngine]:
-        key = f"{chat_id}:{root_path}"
-        return self._engines.get(key)
+    def _create_engine(
+        self,
+        chat_id: str,
+        root_path: str,
+        agent_type: str,
+        engine_name: str,
+        model_name: Optional[str],
+    ) -> "DeepEngine":
+        return DeepEngine(
+            chat_id=chat_id,
+            root_path=root_path,
+            agent_type=agent_type,
+            engine_name=engine_name,
+            model_name=model_name,
+        )
 
     def remove(self, chat_id: str, root_path: str):
         key = f"{chat_id}:{root_path}"
@@ -644,31 +525,9 @@ class DeepEngineManager:
                 del self._engines[key]
                 self._remove_index(chat_id, key)
 
-    def _iter_chat_engines(self, chat_id: str):
-        """Yield engines belonging to a chat (O(k) where k = engines per chat)."""
-        for key in self._chat_keys.get(chat_id, ()):
-            engine = self._engines.get(key)
-            if engine:
-                yield engine
-
-    def get_active_engine(self, chat_id: str) -> Optional[DeepEngine]:
-        for engine in self._iter_chat_engines(chat_id):
-            if engine.is_running:
-                return engine
-        return None
-
-    def get_active_engines(self, chat_id: str) -> list[DeepEngine]:
-        return [e for e in self._iter_chat_engines(chat_id) if e.is_running]
-
-    def list_engines(self, chat_id: Optional[str] = None) -> list[DeepEngine]:
-        if chat_id is None:
-            return list(self._engines.values())
-        return list(self._iter_chat_engines(chat_id))
-
-    def find_by_deep_project_id(self, chat_id: str, deep_project_id: str) -> Optional[DeepEngine]:
+    def find_by_deep_project_id(self, chat_id: str, deep_project_id: str) -> Optional["DeepEngine"]:
         if not deep_project_id:
             return None
-        # Single pass instead of double traversal
         for engine in self._iter_chat_engines(chat_id):
             try:
                 if engine.project and engine.project.project_id == deep_project_id:
@@ -676,16 +535,3 @@ class DeepEngineManager:
             except Exception:
                 continue
         return None
-
-    def cleanup_all(self):
-        with self._lock:
-            next_engines: dict[str, DeepEngine] = {}
-            for key, engine in self._engines.items():
-                engine.cleanup()
-                if engine.is_running:
-                    next_engines[key] = engine
-            self._engines = next_engines
-            self._chat_keys.clear()
-            for key in next_engines:
-                chat_id = key.partition(":")[0]
-                self._chat_keys.setdefault(chat_id, set()).add(key)

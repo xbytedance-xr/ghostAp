@@ -569,7 +569,7 @@ def test_spec_engine_review_circuit_skip_does_not_block_main_loop(monkeypatch, t
 def test_ttadk_startup_model_log_uses_real_or_auto(caplog):
     """启动点日志语义：model 字段只能是真实名或 (auto)。"""
     # Use mock settings for engine to speed up test and avoid persistence
-    with patch("src.spec_engine.engine.get_settings") as mock_engine_settings:
+    with patch("src.engine_base.get_settings") as mock_engine_settings:
         s = MagicMock()
         s.spec_max_cycles = 1
         s.spec_execution_timeout = 5
@@ -663,7 +663,7 @@ def test_ttadk_startup_model_log_uses_real_or_auto(caplog):
 
 def test_ttadk_resume_model_log_uses_real_or_auto(caplog):
     """恢复路径同样要求：model 字段只能是真实名或 (auto)。"""
-    with patch("src.spec_engine.engine.get_settings") as mock_engine_settings:
+    with patch("src.engine_base.get_settings") as mock_engine_settings:
         s = MagicMock()
         s.spec_max_cycles = 1
         s.spec_execution_timeout = 5
@@ -1237,7 +1237,7 @@ class TestSpecReporter:
 
 
 class TestSpecEngine:
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def _make_engine(self, mock_settings, **kwargs):
         s = MagicMock()
         s.spec_max_cycles = 10
@@ -1633,7 +1633,7 @@ class TestSpecEngine:
 
     def test_save_state_compaction_fields(self, tmp_path):
         """State file should include compaction hints (cycles_truncated_before, history_log_path)."""
-        with patch("src.spec_engine.engine.get_settings") as mock_settings:
+        with patch("src.engine_base.get_settings") as mock_settings:
             s = MagicMock()
             s.spec_max_cycles = 10
             s.spec_max_cycles_limit = 5000
@@ -1740,7 +1740,7 @@ PASS
 
 
 class TestSpecEngineManager:
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_get_or_create(self, mock_settings):
         s = MagicMock()
         s.spec_max_cycles = 10
@@ -1753,7 +1753,7 @@ class TestSpecEngineManager:
         e2 = mgr.get_or_create("chat1", "/tmp/a")
         assert e1 is e2  # Same instance
 
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_get_different_paths(self, mock_settings):
         s = MagicMock()
         s.spec_max_cycles = 10
@@ -1766,7 +1766,7 @@ class TestSpecEngineManager:
         e2 = mgr.get_or_create("chat1", "/tmp/b")
         assert e1 is not e2
 
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_get_active_engine(self, mock_settings):
         s = MagicMock()
         s.spec_max_cycles = 10
@@ -1781,7 +1781,7 @@ class TestSpecEngineManager:
         e._run_state = EngineRunState.RUNNING
         assert mgr.get_active_engine("chat1") is e
 
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_engine_name_switch(self, mock_settings):
         s = MagicMock()
         s.spec_max_cycles = 10
@@ -1796,7 +1796,7 @@ class TestSpecEngineManager:
         assert e2.engine_name == "Claude"
         assert e1 is not e2  # New instance because name changed
 
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_engine_name_switch_blocked_while_running(self, mock_settings):
         s = MagicMock()
         s.spec_max_cycles = 10
@@ -1810,7 +1810,7 @@ class TestSpecEngineManager:
         e2 = mgr.get_or_create("chat1", "/tmp/a", engine_name="Claude")
         assert e2 is e1  # Not replaced because still running
 
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_cleanup_all(self, mock_settings):
         s = MagicMock()
         s.spec_max_cycles = 10
@@ -1824,7 +1824,7 @@ class TestSpecEngineManager:
         mgr.cleanup_all()
         assert mgr.list_engines() == []
 
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_cleanup_all_keeps_running_engine(self, mock_settings):
         s = MagicMock()
         s.spec_max_cycles = 10
@@ -1839,7 +1839,7 @@ class TestSpecEngineManager:
         assert mgr.get("chat1", "/tmp/a") is engine
         assert engine.run_state == EngineRunState.STOPPING
 
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_load_or_create_from_disk_hydrates_project_and_resume_meta(self, mock_settings, tmp_path):
         s = MagicMock()
         s.spec_max_cycles = 10
@@ -1888,7 +1888,7 @@ class TestSpecEngineManager:
         assert e2._models_tried == ["claude-3.7-sonnet", "gpt-5.2"]
         assert getattr(e2, "_resume_meta", None)
 
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_get_or_create_preserves_explicit_ttadk_identity(self, mock_settings):
         s = MagicMock()
         s.spec_max_cycles = 10
@@ -1910,7 +1910,7 @@ class TestSpecEngineManager:
 
     @patch("src.spec_engine.engine.delete_task_state")
     @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_resume_completed_recovery_deletes_saved_task(self, mock_settings, mock_create_session, mock_delete_task_state):
         s = MagicMock()
         s.spec_max_cycles = 10
@@ -1972,7 +1972,7 @@ class TestSpecEngineManager:
         assert engine.project.status == SpecProjectStatus.COMPLETED
         mock_delete_task_state.assert_called_once_with("task123")
 
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_get_none_for_missing(self, mock_settings):
         s = MagicMock()
         mock_settings.return_value = s
@@ -1980,7 +1980,7 @@ class TestSpecEngineManager:
         assert mgr.get("chat1", "/tmp/a") is None
         assert mgr.get_active_engine("chat1") is None
 
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_list_engines(self, mock_settings):
         s = MagicMock()
         s.spec_max_cycles = 10
@@ -1996,7 +1996,7 @@ class TestSpecEngineManager:
         assert len(mgr.list_engines("c1")) == 2
         assert len(mgr.list_engines("c2")) == 1
 
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_get_active_engines(self, mock_settings):
         s = MagicMock()
         s.spec_max_cycles = 10
@@ -2294,7 +2294,7 @@ class TestSpecEngineExecution:
         return session
 
     @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_execute_single_cycle_all_pass(self, mock_settings, mock_create):
         """Full execute: 1 cycle, all reviews PASS, criteria PASS → COMPLETED."""
         mock_settings.return_value = self._mock_settings()
@@ -2342,9 +2342,9 @@ class TestSpecEngineExecution:
         assert called["cycles"] == [1]
         assert engine.run_state == EngineRunState.IDLE
 
-    @patch("src.spec_engine.engine.close_session_safely")
+    @patch("src.engine_base.close_session_safely")
     @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_execute_closes_session(self, mock_settings, mock_create, mock_close):
         """execute() should always close the underlying session in finally."""
         mock_settings.return_value = self._mock_settings()
@@ -2374,7 +2374,7 @@ class TestSpecEngineExecution:
         assert mock_close.call_args[0][0] is session
 
     @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_execute_continues_when_clarification_questions_present(self, mock_settings, mock_create):
         """Clarification questions should NOT pause the engine — it continues through all phases."""
         mock_settings.return_value = self._mock_settings()
@@ -2407,7 +2407,7 @@ class TestSpecEngineExecution:
         assert cycle.phase == SpecPhase.REVIEW
 
     @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_execute_multi_cycle_then_pass(self, mock_settings, mock_create):
         """Cycle 1 FAIL review → cycle 2 all PASS → COMPLETED in 2 cycles."""
         s = self._mock_settings()
@@ -2451,7 +2451,7 @@ class TestSpecEngineExecution:
         assert project.cycles[1].review_result.all_passed
 
     @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_execute_stop_mid_cycle(self, mock_settings, mock_create):
         """Stop during SPEC phase → cycle saved as failed, project PAUSED."""
         mock_settings.return_value = self._mock_settings()
@@ -2485,7 +2485,7 @@ class TestSpecEngineExecution:
         assert engine.run_state == EngineRunState.IDLE
 
     @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_execute_exception_handling(self, mock_settings, mock_create):
         """Exception during session creation → ABORTED + on_error called."""
         mock_settings.return_value = self._mock_settings()
@@ -2503,7 +2503,7 @@ class TestSpecEngineExecution:
         assert engine.run_state == EngineRunState.IDLE
 
     @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_resume_from_paused(self, mock_settings, mock_create):
         """Resume a paused engine → continues from next cycle."""
         s = self._mock_settings()
@@ -2543,7 +2543,7 @@ class TestSpecEngineExecution:
         assert engine.run_state == EngineRunState.IDLE
 
     @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_resume_saves_failed_cycle_on_stop(self, mock_settings, mock_create):
         """Resume with stop → failed cycle is saved (bug fix from review)."""
         mock_settings.return_value = self._mock_settings()
@@ -2581,7 +2581,7 @@ class TestSpecEngineExecution:
         assert len(project.cycles) == 1
         assert project.cycles[0].status == "failed"
 
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_resume_not_paused_noop(self, mock_settings):
         """Resume when not paused → returns project unchanged."""
         mock_settings.return_value = self._mock_settings()
@@ -2595,7 +2595,7 @@ class TestSpecEngineExecution:
         assert result.status == SpecProjectStatus.RUNNING
 
     @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_resume_exception_handling(self, mock_settings, mock_create):
         """Exception during resume → ABORTED + on_error called."""
         mock_settings.return_value = self._mock_settings()
@@ -2616,7 +2616,7 @@ class TestSpecEngineExecution:
         assert engine.run_state == EngineRunState.IDLE
 
     @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_conduct_review_with_session(self, mock_settings, mock_create):
         """_conduct_review sends prompt and parses result."""
         mock_settings.return_value = self._mock_settings()
@@ -2637,7 +2637,7 @@ class TestSpecEngineExecution:
         assert "Add error handling" in result.reviews[1].suggestions
 
     @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_conduct_review_exception(self, mock_settings, mock_create):
         """_conduct_review handles exception → all FAIL with error message."""
         mock_settings.return_value = self._mock_settings()
@@ -2658,7 +2658,7 @@ class TestSpecEngineExecution:
         assert any("timeout" in s for r in result.reviews for s in r.suggestions)
 
     @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_conduct_review_no_session(self, mock_settings, mock_create):
         """_conduct_review without session → empty ReviewResult."""
         mock_settings.return_value = self._mock_settings()
@@ -2670,7 +2670,7 @@ class TestSpecEngineExecution:
         assert result.reviews == []
 
     @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_evaluate_criteria_with_session(self, mock_settings, mock_create):
         """_evaluate_criteria parses PASS/FAIL per criterion."""
         mock_settings.return_value = self._mock_settings()
@@ -2690,7 +2690,7 @@ class TestSpecEngineExecution:
         assert engine._project.criteria_tracker.satisfied.get(1) is False
         assert engine._project.criteria_tracker.satisfied.get(2) is True
 
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_evaluate_criteria_no_session(self, mock_settings):
         """_evaluate_criteria without session → not satisfied."""
         mock_settings.return_value = self._mock_settings()
@@ -2702,7 +2702,7 @@ class TestSpecEngineExecution:
         assert not result["all_satisfied"]
 
     @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_evaluate_criteria_exception(self, mock_settings, mock_create):
         """_evaluate_criteria handles exception → not satisfied."""
         mock_settings.return_value = self._mock_settings()
@@ -2721,7 +2721,7 @@ class TestSpecEngineExecution:
 
     def test_convergence_with_stagnant_review_suggestions(self):
         """Convergence detects stagnant review suggestions across window."""
-        with patch("src.spec_engine.engine.get_settings") as mock_settings:
+        with patch("src.engine_base.get_settings") as mock_settings:
             s = MagicMock()
             s.spec_max_cycles = 10
             s.spec_convergence_window = 2
@@ -2763,7 +2763,7 @@ class TestSpecEngineExecution:
 
     def test_convergence_not_triggered_when_improving(self):
         """Convergence NOT triggered when suggestions are decreasing."""
-        with patch("src.spec_engine.engine.get_settings") as mock_settings:
+        with patch("src.engine_base.get_settings") as mock_settings:
             s = MagicMock()
             s.spec_max_cycles = 10
             s.spec_convergence_window = 2
@@ -2803,7 +2803,7 @@ class TestSpecEngineExecution:
             assert not engine._detect_convergence()
 
     @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_execute_review_disabled(self, mock_settings, mock_create):
         """When spec_review_enabled=False, review phase is skipped entirely."""
         s = self._mock_settings()
@@ -2840,7 +2840,7 @@ class TestSpecEngineExecution:
         assert review_events == []
 
     @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_discovery_generates_spec_files_and_backlog(self, mock_settings, mock_create, tmp_path):
         """每轮循环后触发问题发现→生成 spec 文件→加入 backlog，并能被下一轮加载执行。"""
         s = self._mock_settings()
@@ -2900,7 +2900,7 @@ class TestSpecEngineExecution:
         assert os.path.exists(project.work_items[0].spec_path)
 
     @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_5000_cycles_stability_with_persistence_and_resume(self, mock_settings, mock_create, tmp_path):
         """验证 5000 次完整循环可稳定执行，并支持落盘 + 断点续传加载。"""
         s = MagicMock()
@@ -3070,7 +3070,7 @@ class TestSpecEngineProjectTypes:
         return session
 
     @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_web_app_flow_no_missing_artifacts(self, mock_settings, mock_create):
         mock_settings.return_value = self._mock_settings()
 
@@ -3098,7 +3098,7 @@ class TestSpecEngineProjectTypes:
         assert project.cycles[0].plan_artifact is not None
 
     @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_api_dev_flow_no_missing_artifacts(self, mock_settings, mock_create):
         mock_settings.return_value = self._mock_settings()
 
@@ -3126,7 +3126,7 @@ class TestSpecEngineProjectTypes:
         assert project.cycles[0].plan_artifact is not None
 
     @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     def test_script_tool_flow_no_missing_artifacts(self, mock_settings, mock_create):
         mock_settings.return_value = self._mock_settings()
 
