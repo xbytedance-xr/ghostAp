@@ -19,6 +19,7 @@ from ...project import ContextSourceMode
 from ...utils.errors import log_exception
 from ..emoji import EmojiReaction
 from ..message_formatter import FeishuMessageFormatter as fmt
+from ...mode import InteractionMode
 from .base import BaseHandler
 
 if TYPE_CHECKING:
@@ -36,6 +37,14 @@ class ProgrammingModeHandler(BaseHandler):
     is_coco: bool  # True for Coco, False for Claude
     context_source: ContextSourceMode
     thinking_text: str  # "🤔 Coco 正在思考..." / "🔮 Claude 正在思考..."
+    _PROGRAMMING_MODE_ENTRIES = (
+        (InteractionMode.COCO, "is_coco_mode", "_coco_handler"),
+        (InteractionMode.CLAUDE, "is_claude_mode", "_claude_handler"),
+        (InteractionMode.AIDEN, "is_aiden_mode", "_aiden_handler"),
+        (InteractionMode.CODEX, "is_codex_mode", "_codex_handler"),
+        (InteractionMode.GEMINI, "is_gemini_mode", "_gemini_handler"),
+        (InteractionMode.TTADK, "is_ttadk_mode", "_ttadk_handler"),
+    )
 
     # ------------------------------------------------------------------
     # Hooks — subclass implements
@@ -95,6 +104,47 @@ class ProgrammingModeHandler(BaseHandler):
 
     def _uses_claude_cli(self) -> bool:
         return False
+
+    def _deactivate_other_project_modes(self, project: Optional["ProjectContext"]) -> None:
+        if not project:
+            return
+        current = self._get_interaction_mode()
+        if current != InteractionMode.COCO:
+            project.set_coco_mode(False)
+        if current != InteractionMode.CLAUDE:
+            project.set_claude_mode(False)
+        if current != InteractionMode.AIDEN:
+            project.set_aiden_mode(False)
+        if current != InteractionMode.CODEX:
+            project.set_codex_mode(False)
+        if current != InteractionMode.GEMINI:
+            project.set_gemini_mode(False)
+        if current != InteractionMode.TTADK:
+            project.set_ttadk_mode(False)
+
+    def _iter_other_programming_mode_entries(self):
+        current = self._get_interaction_mode()
+        for mode, predicate_name, handler_attr in self._PROGRAMMING_MODE_ENTRIES:
+            if mode != current:
+                yield mode, predicate_name, handler_attr
+
+    def _is_any_other_programming_mode(self, chat_id: str) -> bool:
+        for _mode, predicate_name, _handler_attr in self._iter_other_programming_mode_entries():
+            predicate = getattr(self.mode_manager, predicate_name, None)
+            if callable(predicate) and predicate(chat_id):
+                return True
+        return False
+
+    def _exit_other_programming_modes(self, message_id: str, chat_id: str, project: Optional["ProjectContext"]):
+        for mode, predicate_name, handler_attr in self._iter_other_programming_mode_entries():
+            predicate = getattr(self.mode_manager, predicate_name, None)
+            if not callable(predicate) or not predicate(chat_id):
+                continue
+            handler = getattr(self, handler_attr, None)
+            if handler is None and mode in (InteractionMode.COCO, InteractionMode.CLAUDE):
+                handler = getattr(self, "_opposite_handler", None)
+            if handler and handler is not self and hasattr(handler, "exit_mode"):
+                handler.exit_mode(message_id, chat_id, project=project)
 
     # ------------------------------------------------------------------
     # enter_mode
@@ -205,6 +255,7 @@ class ProgrammingModeHandler(BaseHandler):
         self.add_reaction(message_id, EmojiReaction.on_coco_enter())
 
         if project and snapshot and snapshot.is_resumable:
+            self._deactivate_other_project_modes(project)
             self._set_mode_on_project(project, True, snapshot.session_id, snapshot.query_count)
             if not silent:
                 mode_hint = "继续之前的对话吧！"
@@ -227,6 +278,7 @@ class ProgrammingModeHandler(BaseHandler):
                 if response_id:
                     self.register_message_project(response_id, project)
         elif project:
+            self._deactivate_other_project_modes(project)
             self._set_mode_on_project(project, True, session.session_id)
             if not silent:
                 content = (
@@ -544,12 +596,8 @@ class ProgrammingModeHandler(BaseHandler):
                 return
             session.is_resumed = True
 
-            # Mutual exclusion
-            if project and project.coco_mode:
-                project.set_coco_mode(False)
             self._enter_mode_on_manager(chat_id, project_id=pid)
         else:
-            self._enter_mode_on_manager(chat_id, project_id=pid)
             try:
                 agent_type_override = self._get_agent_type_override(project)
                 model_name = self._get_model_name_override(project)
@@ -569,8 +617,10 @@ class ProgrammingModeHandler(BaseHandler):
                     origin_message_id=message_id,
                 )
                 return
+            self._enter_mode_on_manager(chat_id, project_id=pid)
 
         if project:
+            self._deactivate_other_project_modes(project)
             self._set_mode_on_project(project, True, session_id)
             self.record_mode_transition(
                 project.project_id,
@@ -624,13 +674,10 @@ class CocoModeHandler(ProgrammingModeHandler):
         return self.mode_manager.is_coco_mode(chat_id)
 
     def _is_in_opposite_mode(self, chat_id):
-        return self.mode_manager.is_claude_mode(chat_id)
+        return self._is_any_other_programming_mode(chat_id)
 
     def _exit_opposite_mode(self, message_id, chat_id, project=None):
-        # We need the ClaudeModeHandler — but to avoid circular deps, delegate via ws_client
-        # The ws_client wires this up after handler creation.
-        if hasattr(self, "_opposite_handler"):
-            self._opposite_handler.exit_mode(message_id, chat_id, project=project)
+        self._exit_other_programming_modes(message_id, chat_id, project=project)
 
     def _enter_mode_on_manager(self, chat_id, project_id=None):
         self.mode_manager.enter_coco_mode(chat_id, project_id=project_id)
@@ -687,11 +734,10 @@ class ClaudeModeHandler(ProgrammingModeHandler):
         return self.mode_manager.is_claude_mode(chat_id)
 
     def _is_in_opposite_mode(self, chat_id):
-        return self.mode_manager.is_coco_mode(chat_id)
+        return self._is_any_other_programming_mode(chat_id)
 
     def _exit_opposite_mode(self, message_id, chat_id, project=None):
-        if hasattr(self, "_opposite_handler"):
-            self._opposite_handler.exit_mode(message_id, chat_id, project=project)
+        self._exit_other_programming_modes(message_id, chat_id, project=project)
 
     def _enter_mode_on_manager(self, chat_id, project_id=None):
         self.mode_manager.enter_claude_mode(chat_id, project_id=project_id)
@@ -751,25 +797,10 @@ class AidenModeHandler(ProgrammingModeHandler):
         return self.mode_manager.is_aiden_mode(chat_id)
 
     def _is_in_opposite_mode(self, chat_id):
-        return (
-            self.mode_manager.is_coco_mode(chat_id)
-            or self.mode_manager.is_claude_mode(chat_id)
-            or self.mode_manager.is_codex_mode(chat_id)
-            or self.mode_manager.is_gemini_mode(chat_id)
-            or self.mode_manager.is_ttadk_mode(chat_id)
-        )
+        return self._is_any_other_programming_mode(chat_id)
 
     def _exit_opposite_mode(self, message_id, chat_id, project=None):
-        if hasattr(self, "_coco_handler"):
-            self._coco_handler.exit_mode(message_id, chat_id, project=project)
-        if hasattr(self, "_claude_handler"):
-            self._claude_handler.exit_mode(message_id, chat_id, project=project)
-        if hasattr(self, "_codex_handler"):
-            self._codex_handler.exit_mode(message_id, chat_id, project=project)
-        if hasattr(self, "_gemini_handler"):
-            self._gemini_handler.exit_mode(message_id, chat_id, project=project)
-        if hasattr(self, "_ttadk_handler"):
-            self._ttadk_handler.exit_mode(message_id, chat_id, project=project)
+        self._exit_other_programming_modes(message_id, chat_id, project=project)
 
     def _enter_mode_on_manager(self, chat_id, project_id=None):
         self.mode_manager.enter_aiden_mode(chat_id, project_id=project_id)
@@ -826,25 +857,10 @@ class CodexModeHandler(ProgrammingModeHandler):
         return self.mode_manager.is_codex_mode(chat_id)
 
     def _is_in_opposite_mode(self, chat_id):
-        return (
-            self.mode_manager.is_coco_mode(chat_id)
-            or self.mode_manager.is_claude_mode(chat_id)
-            or self.mode_manager.is_aiden_mode(chat_id)
-            or self.mode_manager.is_gemini_mode(chat_id)
-            or self.mode_manager.is_ttadk_mode(chat_id)
-        )
+        return self._is_any_other_programming_mode(chat_id)
 
     def _exit_opposite_mode(self, message_id, chat_id, project=None):
-        if hasattr(self, "_coco_handler"):
-            self._coco_handler.exit_mode(message_id, chat_id, project=project)
-        if hasattr(self, "_claude_handler"):
-            self._claude_handler.exit_mode(message_id, chat_id, project=project)
-        if hasattr(self, "_aiden_handler"):
-            self._aiden_handler.exit_mode(message_id, chat_id, project=project)
-        if hasattr(self, "_gemini_handler"):
-            self._gemini_handler.exit_mode(message_id, chat_id, project=project)
-        if hasattr(self, "_ttadk_handler"):
-            self._ttadk_handler.exit_mode(message_id, chat_id, project=project)
+        self._exit_other_programming_modes(message_id, chat_id, project=project)
 
     def _enter_mode_on_manager(self, chat_id, project_id=None):
         self.mode_manager.enter_codex_mode(chat_id, project_id=project_id)
@@ -901,25 +917,10 @@ class GeminiModeHandler(ProgrammingModeHandler):
         return self.mode_manager.is_gemini_mode(chat_id)
 
     def _is_in_opposite_mode(self, chat_id):
-        return (
-            self.mode_manager.is_coco_mode(chat_id)
-            or self.mode_manager.is_claude_mode(chat_id)
-            or self.mode_manager.is_aiden_mode(chat_id)
-            or self.mode_manager.is_codex_mode(chat_id)
-            or self.mode_manager.is_ttadk_mode(chat_id)
-        )
+        return self._is_any_other_programming_mode(chat_id)
 
     def _exit_opposite_mode(self, message_id, chat_id, project=None):
-        if hasattr(self, "_coco_handler"):
-            self._coco_handler.exit_mode(message_id, chat_id, project=project)
-        if hasattr(self, "_claude_handler"):
-            self._claude_handler.exit_mode(message_id, chat_id, project=project)
-        if hasattr(self, "_aiden_handler"):
-            self._aiden_handler.exit_mode(message_id, chat_id, project=project)
-        if hasattr(self, "_codex_handler"):
-            self._codex_handler.exit_mode(message_id, chat_id, project=project)
-        if hasattr(self, "_ttadk_handler"):
-            self._ttadk_handler.exit_mode(message_id, chat_id, project=project)
+        self._exit_other_programming_modes(message_id, chat_id, project=project)
 
     def _enter_mode_on_manager(self, chat_id, project_id=None):
         self.mode_manager.enter_gemini_mode(chat_id, project_id=project_id)
@@ -977,19 +978,10 @@ class TTADKModeHandler(ProgrammingModeHandler):
         return self.mode_manager.is_ttadk_mode(chat_id)
 
     def _is_in_opposite_mode(self, chat_id):
-        return (
-            self.mode_manager.is_coco_mode(chat_id)
-            or self.mode_manager.is_claude_mode(chat_id)
-            or self.mode_manager.is_gemini_mode(chat_id)
-        )
+        return self._is_any_other_programming_mode(chat_id)
 
     def _exit_opposite_mode(self, message_id, chat_id, project=None):
-        if hasattr(self, "_coco_handler"):
-            self._coco_handler.exit_mode(message_id, chat_id, project=project)
-        if hasattr(self, "_claude_handler"):
-            self._claude_handler.exit_mode(message_id, chat_id, project=project)
-        if hasattr(self, "_gemini_handler"):
-            self._gemini_handler.exit_mode(message_id, chat_id, project=project)
+        self._exit_other_programming_modes(message_id, chat_id, project=project)
 
     def _enter_mode_on_manager(self, chat_id, project_id=None):
         self.mode_manager.enter_ttadk_mode(chat_id, project_id=project_id)
@@ -1004,8 +996,6 @@ class TTADKModeHandler(ProgrammingModeHandler):
 
     def _set_mode_on_project(self, project, active, session_id="", count=0):
         if active:
-            project.set_coco_mode(False)
-            project.set_claude_mode(False)
             project.set_ttadk_mode(True, session_id, count)
         else:
             project.set_ttadk_mode(False)

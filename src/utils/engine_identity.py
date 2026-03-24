@@ -1,0 +1,58 @@
+"""Unified engine identity resolution.
+
+This module is the SSOT for mapping interaction mode to:
+- UI engine display name
+- backend agent_type
+- optional model_name
+- transport kind (acp/cli/ttadk_cli)
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Optional
+
+from ..mode import InteractionMode
+
+
+@dataclass(frozen=True)
+class EngineIdentity:
+    engine_name: str
+    agent_type: str
+    model_name: Optional[str]
+    transport: str
+
+
+def resolve_engine_identity(
+    *,
+    mode: InteractionMode,
+    ttadk_tool_name: Optional[str] = None,
+    ttadk_model_name: Optional[str] = None,
+    acp_tool_name: Optional[str] = None,
+    acp_model_name: Optional[str] = None,
+) -> EngineIdentity:
+    """Resolve engine identity from interaction mode and optional project hints."""
+    if mode == InteractionMode.CLAUDE:
+        return EngineIdentity(engine_name="Claude", agent_type="claude", model_name=None, transport="cli")
+
+    if mode == InteractionMode.AIDEN:
+        model = acp_model_name if (acp_tool_name or "").strip().lower() == "aiden" else None
+        return EngineIdentity(engine_name="Aiden", agent_type="aiden", model_name=model, transport="acp")
+
+    if mode == InteractionMode.CODEX:
+        model = acp_model_name if (acp_tool_name or "").strip().lower() == "codex" else None
+        return EngineIdentity(engine_name="Codex", agent_type="codex", model_name=model, transport="acp")
+
+    if mode == InteractionMode.GEMINI:
+        model = acp_model_name if (acp_tool_name or "").strip().lower() == "gemini" else None
+        return EngineIdentity(engine_name="Gemini", agent_type="gemini", model_name=model, transport="acp")
+
+    if mode == InteractionMode.TTADK:
+        tool = (ttadk_tool_name or "").strip().lower() or "coco"
+        model = (ttadk_model_name or "").strip() or None
+        return EngineIdentity(engine_name="TTADK", agent_type=f"ttadk_{tool}", model_name=model, transport="ttadk_cli")
+
+    # SMART / COCO / SHELL default to Coco engine for orchestrators
+    model = acp_model_name if (acp_tool_name or "").strip().lower() == "coco" else None
+    return EngineIdentity(engine_name="Coco", agent_type="coco", model_name=model, transport="acp")
+

@@ -75,6 +75,67 @@ class ToolRegistry:
         with self._lock:
             return self._providers.get(key)
 
+    def get_cached_availability(self, name: str) -> Optional[bool]:
+        """Return fresh cached availability, or None when cache is missing/stale."""
+        key = str(name or "").lower()
+        if not key:
+            return None
+        now = time.time()
+        with self._lock:
+            v = self._availability_cache.get(key)
+            if v is None:
+                return None
+            ok, ts = v
+            if (now - float(ts or 0.0)) > float(self._availability_cache_ttl_s or 0.0):
+                try:
+                    self._availability_cache.pop(key, None)
+                except Exception:
+                    pass
+                return None
+            try:
+                self._availability_cache.move_to_end(key)
+            except Exception:
+                pass
+            return bool(ok)
+
+    def get_availability(
+        self,
+        name: str,
+        *,
+        allow_sync_probe: bool = False,
+        trigger_async_probe: bool = True,
+    ) -> bool:
+        """Get tool availability with explicit latency control.
+
+        Defaults are optimized for user-facing status views:
+        - prefer fresh cache
+        - never block on subprocess probes on cache miss
+        - trigger async probe to refresh cache in background
+        """
+        key = str(name or "").lower()
+        if not key:
+            return False
+        provider = self.get_provider(key)
+        if not provider:
+            return False
+
+        cached = self.get_cached_availability(key)
+        if cached is not None:
+            return bool(cached)
+
+        if trigger_async_probe:
+            self._probe_availability_async(key)
+
+        if not allow_sync_probe:
+            return False
+
+        try:
+            ok = bool(provider.check_availability())
+        except Exception:
+            ok = False
+        self._set_availability_cache(key, ok)
+        return ok
+
     def _check_availability_cached(self, provider: ACPProvider) -> bool:
         name = str(provider.name or "").lower()
         if not name:

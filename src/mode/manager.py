@@ -41,6 +41,14 @@ class ModeManager:
         self._chat_modes: dict[str, ModeState] = {}
         self._project_modes: dict[str, ModeState] = {}
         self._lock = threading.Lock()
+        self._programming_modes = (
+            InteractionMode.COCO,
+            InteractionMode.CLAUDE,
+            InteractionMode.AIDEN,
+            InteractionMode.CODEX,
+            InteractionMode.GEMINI,
+            InteractionMode.TTADK,
+        )
 
     def get_mode(self, chat_id: str, project_id: Optional[str] = None) -> InteractionMode:
         """Get the current interaction mode.
@@ -139,9 +147,31 @@ class ModeManager:
         """lowerCamelCase 兼容别名：`get_project_mode()`。"""
         return self.get_project_mode(projectId)
 
+    def enter_programming_mode(
+        self,
+        chat_id: str,
+        mode: InteractionMode,
+        auto: bool = False,
+        project_id: Optional[str] = None,
+    ) -> InteractionMode:
+        """统一进入编程模式入口。"""
+        if mode not in self._programming_modes:
+            raise ValueError(f"mode must be a programming mode, got: {mode}")
+        return self.set_mode(chat_id, mode, auto_entered=auto, project_id=project_id)
+
+    def enterProgrammingMode(
+        self,
+        chatId: str,
+        mode: InteractionMode,
+        auto: bool = False,
+        projectId: Optional[str] = None,
+    ) -> InteractionMode:
+        """lowerCamelCase 兼容别名：`enter_programming_mode()`。"""
+        return self.enter_programming_mode(chatId, mode, auto=auto, project_id=projectId)
+
     def enter_coco_mode(self, chat_id: str, auto: bool = False, project_id: Optional[str] = None) -> InteractionMode:
         """进入 Coco 编程模式。"""
-        return self.set_mode(chat_id, InteractionMode.COCO, auto_entered=auto, project_id=project_id)
+        return self.enter_programming_mode(chat_id, InteractionMode.COCO, auto=auto, project_id=project_id)
 
     def enterCocoMode(self, chatId: str, auto: bool = False, projectId: Optional[str] = None) -> InteractionMode:
         """lowerCamelCase 兼容别名：`enter_coco_mode()`。"""
@@ -149,7 +179,7 @@ class ModeManager:
 
     def enter_claude_mode(self, chat_id: str, auto: bool = False, project_id: Optional[str] = None) -> InteractionMode:
         """进入 Claude 编程模式。"""
-        return self.set_mode(chat_id, InteractionMode.CLAUDE, auto_entered=auto, project_id=project_id)
+        return self.enter_programming_mode(chat_id, InteractionMode.CLAUDE, auto=auto, project_id=project_id)
 
     def enterClaudeMode(self, chatId: str, auto: bool = False, projectId: Optional[str] = None) -> InteractionMode:
         """lowerCamelCase 兼容别名：`enter_claude_mode()`。"""
@@ -157,7 +187,7 @@ class ModeManager:
 
     def enter_aiden_mode(self, chat_id: str, auto: bool = False, project_id: Optional[str] = None) -> InteractionMode:
         """进入 Aiden 编程模式。"""
-        return self.set_mode(chat_id, InteractionMode.AIDEN, auto_entered=auto, project_id=project_id)
+        return self.enter_programming_mode(chat_id, InteractionMode.AIDEN, auto=auto, project_id=project_id)
 
     def enterAidenMode(self, chatId: str, auto: bool = False, projectId: Optional[str] = None) -> InteractionMode:
         """lowerCamelCase 兼容别名：`enter_aiden_mode()`。"""
@@ -165,7 +195,7 @@ class ModeManager:
 
     def enter_codex_mode(self, chat_id: str, auto: bool = False, project_id: Optional[str] = None) -> InteractionMode:
         """进入 Codex 编程模式。"""
-        return self.set_mode(chat_id, InteractionMode.CODEX, auto_entered=auto, project_id=project_id)
+        return self.enter_programming_mode(chat_id, InteractionMode.CODEX, auto=auto, project_id=project_id)
 
     def enterCodexMode(self, chatId: str, auto: bool = False, projectId: Optional[str] = None) -> InteractionMode:
         """lowerCamelCase 兼容别名：`enter_codex_mode()`。"""
@@ -173,11 +203,11 @@ class ModeManager:
 
     def enter_ttadk_mode(self, chat_id: str, auto: bool = False, project_id: Optional[str] = None) -> InteractionMode:
         """进入 TTADK 编程模式。"""
-        return self.set_mode(chat_id, InteractionMode.TTADK, auto_entered=auto, project_id=project_id)
+        return self.enter_programming_mode(chat_id, InteractionMode.TTADK, auto=auto, project_id=project_id)
 
     def enter_gemini_mode(self, chat_id: str, auto: bool = False, project_id: Optional[str] = None) -> InteractionMode:
         """进入 Gemini 编程模式。"""
-        return self.set_mode(chat_id, InteractionMode.GEMINI, auto_entered=auto, project_id=project_id)
+        return self.enter_programming_mode(chat_id, InteractionMode.GEMINI, auto=auto, project_id=project_id)
 
     def enterGeminiMode(self, chatId: str, auto: bool = False, projectId: Optional[str] = None) -> InteractionMode:
         """lowerCamelCase 兼容别名：`enter_gemini_mode()`。"""
@@ -270,14 +300,7 @@ class ModeManager:
     def is_programming_mode(self, chat_id: str, project_id: Optional[str] = None) -> bool:
         """判断是否处于编程模式（COCO/CLAUDE/AIDEN/CODEX/GEMINI/TTADK）。"""
         mode = self.get_mode(chat_id, project_id)
-        return mode in (
-            InteractionMode.COCO,
-            InteractionMode.CLAUDE,
-            InteractionMode.AIDEN,
-            InteractionMode.CODEX,
-            InteractionMode.GEMINI,
-            InteractionMode.TTADK,
-        )
+        return mode in self._programming_modes
 
     def isProgrammingMode(self, chatId: str, projectId: Optional[str] = None) -> bool:
         """lowerCamelCase 兼容别名：`is_programming_mode()`。"""

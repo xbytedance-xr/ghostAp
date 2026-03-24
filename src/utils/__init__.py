@@ -17,6 +17,7 @@ from .text import (
     make_progress_bar,
     truncate_output,
 )
+from .engine_identity import EngineIdentity, resolve_engine_identity
 
 __all__ = [
     "append_duration_to_title",
@@ -34,4 +35,6 @@ __all__ = [
     "fmt_warning",
     "fmt_timeout",
     "fmt_not_found",
+    "EngineIdentity",
+    "resolve_engine_identity",
 ]

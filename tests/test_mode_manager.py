@@ -2,6 +2,8 @@
 
 import threading
 
+import pytest
+
 from src.mode.manager import InteractionMode, ModeManager
 
 
@@ -47,6 +49,36 @@ class TestModeManagerBasics:
         old = mgr.set_mode("chat1", InteractionMode.CLAUDE)
         assert old == InteractionMode.COCO
         assert mgr.get_mode("chat1") == InteractionMode.CLAUDE
+
+
+class TestModeManagerProgrammingEntry:
+    def test_enter_programming_mode_chat_level(self):
+        mgr = ModeManager()
+        old = mgr.enter_programming_mode("chat1", InteractionMode.AIDEN, auto=True)
+        assert old == InteractionMode.SMART
+        assert mgr.get_mode("chat1") == InteractionMode.AIDEN
+        with mgr._lock:
+            state = mgr._chat_modes["chat1"]
+        assert state.auto_entered is True
+
+    def test_enter_programming_mode_project_level(self):
+        mgr = ModeManager()
+        mgr.enter_coco_mode("chat1")
+        old = mgr.enter_programming_mode("chat1", InteractionMode.CODEX, project_id="proj1")
+        assert old == InteractionMode.SMART
+        assert mgr.get_mode("chat1") == InteractionMode.COCO
+        assert mgr.get_mode("chat1", project_id="proj1") == InteractionMode.CODEX
+
+    def test_enter_programming_mode_rejects_non_programming_mode(self):
+        mgr = ModeManager()
+        with pytest.raises(ValueError):
+            mgr.enter_programming_mode("chat1", InteractionMode.SHELL)
+
+    def test_enter_programming_mode_camel_alias(self):
+        mgr = ModeManager()
+        old = mgr.enterProgrammingMode("chat1", InteractionMode.GEMINI, projectId="proj2")
+        assert old == InteractionMode.SMART
+        assert mgr.get_mode("chat1", project_id="proj2") == InteractionMode.GEMINI
 
 
 class TestModeManagerPredicates:
@@ -215,4 +247,3 @@ class TestModeManagerProjectLevel:
         mgr.enter_coco_mode("chat1", project_id="proj1")
         mgr.exit_to_smart("chat1", project_id="proj1")
         assert mgr.get_mode("chat1", project_id="proj1") == InteractionMode.SMART
-

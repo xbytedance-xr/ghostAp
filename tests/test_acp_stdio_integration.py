@@ -333,6 +333,70 @@ def test_ttadk_wrapper_filters_banner_and_passes_json(tmp_path):
     assert b"jsonrpc" in out
 
 
+def test_ttadk_wrapper_extracts_all_json_from_noisy_lines():
+    """wrapper: 单行混杂前缀/后缀噪声时，应提取全部 JSON。"""
+    import io
+
+    from src.utils import ttadk_wrapper
+
+    class _Reader:
+        def __init__(self, lines: list[bytes]):
+            self._lines = list(lines)
+
+        def readline(self):
+            return self._lines.pop(0) if self._lines else b""
+
+    state = ttadk_wrapper.WrapperState()
+    reader = _Reader(
+        [
+            b"`/data00/home/jiataorui/work/ghostAp`\n",
+            b"status: BLUE\n",
+            b"error: too many arguments for 'code'. Expected 0 arguments but got 1.\n",
+            b'noise-prefix {"jsonrpc":"2.0","id":1} noise-mid {"jsonrpc":"2.0","id":2} noise-tail\n',
+        ]
+    )
+    out = io.BytesIO()
+
+    ttadk_wrapper.pump_filtered_stream(reader, out, state)
+
+    lines = [x for x in out.getvalue().splitlines() if x.strip()]
+    assert lines == [b'{"jsonrpc":"2.0","id":1}', b'{"jsonrpc":"2.0","id":2}']
+    assert state.json_started is True
+    assert b"too many arguments for 'code'" in b"".join(state.banner_tail)
+
+
+def test_ttadk_wrapper_drops_noise_after_json_started():
+    """wrapper: JSON 开始后仍应持续过滤后续非 JSON 行。"""
+    import io
+
+    from src.utils import ttadk_wrapper
+
+    class _Reader:
+        def __init__(self, lines: list[bytes]):
+            self._lines = list(lines)
+
+        def readline(self):
+            return self._lines.pop(0) if self._lines else b""
+
+    state = ttadk_wrapper.WrapperState()
+    reader = _Reader(
+        [
+            b'{"jsonrpc":"2.0","id":1}\n',
+            b"status: BLUE\n",
+            b'noise {"jsonrpc":"2.0","id":2} tail\n',
+            b"error: extra text\n",
+        ]
+    )
+    out = io.BytesIO()
+
+    ttadk_wrapper.pump_filtered_stream(reader, out, state)
+
+    lines = [x for x in out.getvalue().splitlines() if x.strip()]
+    assert lines == [b'{"jsonrpc":"2.0","id":1}', b'{"jsonrpc":"2.0","id":2}']
+    assert b"status: BLUE" not in out.getvalue()
+    assert b"error: extra text" not in out.getvalue()
+
+
 def test_ttadk_start_session_with_pty_retry_compat_downgrade_kw_only(monkeypatch):
     """兼容：当 start_session_with_retry 是 kw-only 且不接受新参数时，应按约定顺序降参并成功调用。"""
 

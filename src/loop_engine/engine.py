@@ -21,6 +21,7 @@ from ..acp import ACPEvent, ACPEventRenderer, ACPEventType
 from ..agent_session import SyncSession, close_session_safely, create_engine_session
 from ..config import get_settings
 from ..deep_engine.models import EngineRunState
+from ..utils.engine_identity import resolve_engine_identity
 from ..utils.gc_monitor import get_gc_monitor
 from ..utils.retry import RetryPolicy, get_retry_delay, should_retry
 from ..utils.spec_utils import (
@@ -1067,6 +1068,14 @@ FAIL
         return filepath
 
     def cleanup(self):
+        if self._run_state != EngineRunState.IDLE:
+            self._run_state = EngineRunState.STOPPING
+            if self._session:
+                try:
+                    self._session.cancel()
+                except Exception:
+                    pass
+            return
         if self._session:
             try:
                 self._session.close()
@@ -1101,18 +1110,36 @@ class LoopEngineManager:
 
     def get_or_create(self, chat_id: str, root_path: str, engine_name: str = "Coco") -> LoopEngine:
         key = f"{chat_id}:{root_path}"
-
+        from ..mode import InteractionMode
         from ..ttadk import get_ttadk_manager
 
-        if engine_name.lower() == "ttadk":
-            ttadk_manager = get_ttadk_manager()
-            current_tool = ttadk_manager.get_current_tool()
-            current_model = ttadk_manager.get_current_model()
-            agent_type = f"ttadk_{current_tool}" if current_tool else "ttadk_coco"
-            model_name = current_model
+        normalized = (engine_name or "").strip().lower()
+        ttadk_tool = None
+        ttadk_model = None
+        if normalized == "ttadk":
+            mode = InteractionMode.TTADK
+            try:
+                ttadk_manager = get_ttadk_manager()
+                ttadk_tool = ttadk_manager.get_current_tool()
+                ttadk_model = ttadk_manager.get_current_model()
+            except Exception:
+                ttadk_tool = None
+                ttadk_model = None
+        elif normalized.startswith("claude"):
+            mode = InteractionMode.CLAUDE
+        elif normalized.startswith("aiden"):
+            mode = InteractionMode.AIDEN
+        elif normalized.startswith("codex"):
+            mode = InteractionMode.CODEX
+        elif normalized.startswith("gemini"):
+            mode = InteractionMode.GEMINI
         else:
-            agent_type = "claude" if engine_name.lower().startswith("claude") else "coco"
-            model_name = None
+            mode = InteractionMode.COCO
+
+        identity = resolve_engine_identity(mode=mode, ttadk_tool_name=ttadk_tool, ttadk_model_name=ttadk_model)
+        agent_type = identity.agent_type
+        model_name = identity.model_name
+        resolved_engine_name = identity.engine_name
 
         with self._lock:
             if key not in self._engines:
@@ -1120,19 +1147,19 @@ class LoopEngineManager:
                     chat_id=chat_id,
                     root_path=root_path,
                     agent_type=agent_type,
-                    engine_name=engine_name,
+                    engine_name=resolved_engine_name,
                     model_name=model_name,
                 )
                 self._add_index(chat_id, key)
             else:
                 existing = self._engines[key]
-                if existing.engine_name.lower() != engine_name.lower() and not existing.is_running:
+                if existing.engine_name.lower() != resolved_engine_name.lower() and not existing.is_running:
                     existing.cleanup()
                     self._engines[key] = LoopEngine(
                         chat_id=chat_id,
                         root_path=root_path,
                         agent_type=agent_type,
-                        engine_name=engine_name,
+                        engine_name=resolved_engine_name,
                         model_name=model_name,
                     )
             return self._engines[key]
@@ -1157,7 +1184,13 @@ class LoopEngineManager:
 
     def cleanup_all(self):
         with self._lock:
-            for engine in self._engines.values():
+            next_engines: dict[str, LoopEngine] = {}
+            for key, engine in self._engines.items():
                 engine.cleanup()
-            self._engines.clear()
+                if engine.is_running:
+                    next_engines[key] = engine
+            self._engines = next_engines
             self._chat_keys.clear()
+            for key in next_engines:
+                chat_id = key.partition(":")[0]
+                self._chat_keys.setdefault(chat_id, set()).add(key)

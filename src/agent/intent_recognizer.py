@@ -33,6 +33,7 @@ class IntentType(Enum):
     AIDEN_MESSAGE = "aiden_message"
     CODEX_MESSAGE = "codex_message"
     GEMINI_MESSAGE = "gemini_message"
+    TTADK_MESSAGE = "ttadk_message"
     CREATE_PROJECT = "create_project"
     SWITCH_PROJECT = "switch_project"
     LIST_PROJECTS = "list_projects"
@@ -245,6 +246,7 @@ class IntentRecognizer:
         "aiden_message": IntentType.AIDEN_MESSAGE,
         "codex_message": IntentType.CODEX_MESSAGE,
         "gemini_message": IntentType.GEMINI_MESSAGE,
+        "ttadk_message": IntentType.TTADK_MESSAGE,
         "change_dir": IntentType.CHANGE_DIR,
         "shell": IntentType.SHELL_COMMAND,
         "create_project": IntentType.CREATE_PROJECT,
@@ -295,6 +297,10 @@ class IntentRecognizer:
         "/enter_gemini": (IntentType.ENTER_GEMINI, "进入 Gemini 编程模式"),
         "/end_gemini": (IntentType.EXIT_GEMINI, "退出 Gemini 编程模式"),
         "/exit_gemini": (IntentType.EXIT_GEMINI, "退出 Gemini 编程模式"),
+        "/ttadk": (IntentType.TTADK_MESSAGE, "打开 TTADK 菜单"),
+        "/enter_ttadk": (IntentType.TTADK_MESSAGE, "进入 TTADK 编程模式"),
+        "/end_ttadk": (IntentType.EXIT_MODE, "退出 TTADK 编程模式"),
+        "/exit_ttadk": (IntentType.EXIT_MODE, "退出 TTADK 编程模式"),
         "/exit": (IntentType.EXIT_MODE, "退出当前模式"),
         "/quit": (IntentType.EXIT_MODE, "退出当前模式"),
         "/projects": (IntentType.LIST_PROJECTS, "查看项目列表"),
@@ -497,6 +503,7 @@ class IntentRecognizer:
     ENTER_AIDEN_KEYWORDS = {"进入aiden模式", "aiden模式", "进入aiden", "使用aiden"}
     ENTER_CODEX_KEYWORDS = {"进入codex模式", "codex模式", "进入codex", "使用codex"}
     ENTER_GEMINI_KEYWORDS = {"进入gemini模式", "gemini模式", "进入gemini", "使用gemini"}
+    ENTER_TTADK_KEYWORDS = {"进入ttadk模式", "ttadk模式", "进入ttadk", "使用ttadk", "多工具模式"}
     EXIT_MODE_KEYWORDS = {"退出模式", "退出编程模式"}
 
     DEEP_MODE_KEYWORDS = {"deep模式", "深度模式", "deep agent", "复杂任务", "大任务"}
@@ -772,7 +779,16 @@ class IntentRecognizer:
                 description="进入 Gemini 编程模式",
             )
 
-        is_programming = current_mode in ("coco", "claude", "aiden", "codex", "gemini")
+        if any(kw in text_lower for kw in self.ENTER_TTADK_KEYWORDS):
+            return IntentResult.single(
+                intent=IntentType.TTADK_MESSAGE,
+                confidence=0.95,
+                original_text=text,
+                reasoning="检测到 TTADK 模式关键词",
+                description="进入 TTADK 编程模式",
+            )
+
+        is_programming = current_mode in ("coco", "claude", "aiden", "codex", "gemini", "ttadk")
         if is_programming and len(text) < 20:
             if any(kw in text_lower for kw in self.EXIT_KEYWORDS):
                 return IntentResult.single(
@@ -889,8 +905,10 @@ class IntentRecognizer:
             return "用户当前处于 **Codex 编程模式** 中。编程相关的消息应该判断为 codex_message，而不是 enter_codex。"
         elif current_mode == "gemini":
             return "用户当前处于 **Gemini 编程模式** 中。编程相关的消息应该判断为 gemini_message，而不是 enter_gemini。"
+        elif current_mode == "ttadk":
+            return "用户当前处于 **TTADK 编程模式** 中。编程相关消息应判断为 ttadk_message，继续在 TTADK 会话内执行。"
         else:
-            return "用户当前处于 **智能模式**（默认模式）。如果用户想要编程，应该判断为 enter_coco、enter_claude、enter_aiden、enter_codex 或 enter_gemini。"
+            return "用户当前处于 **智能模式**（默认模式）。如果用户想要编程，应该判断为 enter_coco、enter_claude、enter_aiden、enter_codex、enter_gemini 或 ttadk_message。"
 
     def _get_fallback_intent(self, current_mode: str) -> IntentType:
         if current_mode == "coco":
@@ -903,6 +921,8 @@ class IntentRecognizer:
             return IntentType.CODEX_MESSAGE
         elif current_mode == "gemini":
             return IntentType.GEMINI_MESSAGE
+        elif current_mode == "ttadk":
+            return IntentType.TTADK_MESSAGE
         else:
             return IntentType.SHELL_COMMAND
 
@@ -916,6 +936,7 @@ class IntentRecognizer:
         is_in_aiden = current_mode == "aiden"
         is_in_codex = current_mode == "codex"
         is_in_gemini = current_mode == "gemini"
+        is_in_ttadk = current_mode == "ttadk"
 
         try:
             llm = self._get_llm()
@@ -956,6 +977,10 @@ class IntentRecognizer:
                     intent = IntentType.AIDEN_MESSAGE
                 if intent == IntentType.ENTER_CODEX and is_in_codex:
                     intent = IntentType.CODEX_MESSAGE
+                if intent == IntentType.ENTER_GEMINI and is_in_gemini:
+                    intent = IntentType.GEMINI_MESSAGE
+                if intent == IntentType.TTADK_MESSAGE and is_in_ttadk:
+                    intent = IntentType.TTADK_MESSAGE
 
                 data = task_data.get("data", {})
                 if intent == IntentType.CHANGE_DIR and "path" in data:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -14,6 +15,7 @@ from acp.stdio import spawn_agent_process
 from ...card import CardBuilder
 from ...card.builders.system import SystemBuilder
 from ...coco_model import get_coco_model_manager
+from ...acp.providers import tool_registry
 from ...tasking import TaskPriority, TaskSpec
 from ...ttadk import get_ttadk_manager
 from ...utils.path import normalize_ttadk_cwd
@@ -948,8 +950,6 @@ class SystemHandler(BaseHandler):
 
     def show_tools_list(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         """Show a list of all available ACP tools with quick access buttons."""
-        from ...acp.providers import tool_registry
-
         # Define tool metadata
         tool_metadata = [
             {"name": "coco", "emoji": "🤖", "description": "字节跳动 AI"},
@@ -959,11 +959,10 @@ class SystemHandler(BaseHandler):
             {"name": "gemini", "emoji": "✨", "description": "Google Gemini CLI"},
         ]
 
-        # Check availability for each tool
+        # Cached-first availability check: avoid blocking user-path on external probe.
         tools = []
         for meta in tool_metadata:
-            provider = tool_registry.get_provider(meta["name"])
-            is_available = provider.check_availability() if provider else False
+            is_available = tool_registry.get_availability(meta["name"], allow_sync_probe=False, trigger_async_probe=True)
             tools.append(
                 {
                     "name": meta["name"],
@@ -978,37 +977,72 @@ class SystemHandler(BaseHandler):
 
     def show_tools_status(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         """Show detailed status of all tools with availability and session info."""
-        from ...acp.providers import tool_registry
-        from ...mode import get_mode_manager
-
-        mode_manager = get_mode_manager()
-
         # Define tool metadata
         tool_metadata = [
-            {"name": "coco", "emoji": "🤖"},
-            {"name": "claude", "emoji": "🔮"},
-            {"name": "aiden", "emoji": "🎯"},
-            {"name": "codex", "emoji": "💻"},
-            {"name": "gemini", "emoji": "✨"},
+            {"name": "coco", "emoji": "🤖", "manager": self.ctx.coco_manager},
+            {"name": "claude", "emoji": "🔮", "manager": self.ctx.claude_manager},
+            {"name": "aiden", "emoji": "🎯", "manager": self.ctx.aiden_manager},
+            {"name": "codex", "emoji": "💻", "manager": self.ctx.codex_manager},
+            {"name": "gemini", "emoji": "✨", "manager": self.ctx.gemini_manager},
         ]
 
-        # Check availability and last used time for each tool
+        def _format_last_used(ts: float) -> str:
+            try:
+                if float(ts or 0.0) <= 0.0:
+                    return "从未使用"
+                idle = max(0, int(time.time() - float(ts)))
+            except Exception:
+                return "未知"
+            if idle < 60:
+                return f"{idle}秒前"
+            m, s = divmod(idle, 60)
+            if m < 60:
+                return f"{m}分{s}秒前"
+            h, m = divmod(m, 60)
+            return f"{h}时{m}分前"
+
+        # Gather availability + real session activity from ACP managers.
         tools = []
+        active_sessions: dict[str, dict] = {}
         for meta in tool_metadata:
-            provider = tool_registry.get_provider(meta["name"])
-            is_available = provider.check_availability() if provider else False
+            name = meta["name"]
+            manager = meta["manager"]
+            is_available = tool_registry.get_availability(name, allow_sync_probe=False, trigger_async_probe=True)
+
+            sessions = []
+            try:
+                sessions = manager.list_active_sessions()
+            except Exception:
+                sessions = []
+
+            last_active_ts = 0.0
+            if sessions:
+                try:
+                    last_active_ts = max(float(s.get("last_active", 0.0) or 0.0) for s in sessions)
+                except Exception:
+                    last_active_ts = 0.0
+
             tools.append(
                 {
-                    "name": meta["name"],
+                    "name": name,
                     "emoji": meta["emoji"],
                     "available": is_available,
-                    "last_used": "从未使用",  # TODO: Track actual last used time
+                    "last_used": _format_last_used(last_active_ts),
                 }
             )
-
-        # Get active sessions (from mode manager)
-        active_sessions = {}
-        # TODO: Get actual active session info from session managers
+            if sessions:
+                # Card expects one active summary line; provide latest session in that tool.
+                latest = None
+                try:
+                    latest = max(sessions, key=lambda s: float(s.get("last_active", 0.0) or 0.0))
+                except Exception:
+                    latest = sessions[0]
+                if latest:
+                    active_sessions[name] = {
+                        "chat_id": str(latest.get("session_key", "N/A")).split(":", 1)[0] or "N/A",
+                        "session_id": str(latest.get("session_id", "") or ""),
+                        "message_count": int(latest.get("message_count", 0) or 0),
+                    }
 
         msg_type, card = SystemBuilder.build_tools_status_card(tools, active_sessions, project)
         self.reply_interactive_card(message_id, card, msg_type=msg_type)

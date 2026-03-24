@@ -32,6 +32,7 @@ from ..loop_engine.models import (
     ReviewResult,
 )
 from ..utils.trace import TraceContext
+from ..utils.engine_identity import resolve_engine_identity
 from .validation import SpecInput
 from pydantic import ValidationError
 from ..utils.spec_utils import (
@@ -187,6 +188,7 @@ class SpecEngine:
         # last known cycle/phase for failure persistence
         self._last_cycle_num: int = 0
         self._last_phase: SpecPhase = SpecPhase.SPEC
+        self._state_lock = threading.Lock()
 
     def _wrap_callbacks(self, callbacks: SpecEngineCallbacks) -> SpecEngineCallbacks:
         def _wrap(fn: Optional[Callable[..., None]], name: str) -> Optional[Callable[..., None]]:
@@ -220,15 +222,18 @@ class SpecEngine:
 
     @property
     def project(self) -> Optional[SpecProject]:
-        return self._project
+        with self._state_lock:
+            return self._project
 
     @property
     def run_state(self) -> EngineRunState:
-        return self._run_state
+        with self._state_lock:
+            return self._run_state
 
     @property
     def is_running(self) -> bool:
-        return self._run_state != EngineRunState.IDLE
+        with self._state_lock:
+            return self._run_state != EngineRunState.IDLE
 
     def _close_session_safely(self) -> None:
         close_session_safely(self._session)
@@ -3104,25 +3109,55 @@ class SpecEngineManager:
         normalized_name = str(engine_name or "").strip() or "Coco"
 
         if normalized_agent.startswith("ttadk_"):
-            return "TTADK", normalized_agent, model_name
+            return SpecEngine._infer_engine_name(normalized_agent), normalized_agent, model_name
         if normalized_agent == "claude":
             return "Claude", "claude", None
+        if normalized_agent in {"aiden", "codex", "gemini", "coco"}:
+            from ..mode import InteractionMode
+
+            mode_map = {
+                "coco": InteractionMode.COCO,
+                "aiden": InteractionMode.AIDEN,
+                "codex": InteractionMode.CODEX,
+                "gemini": InteractionMode.GEMINI,
+            }
+            identity = resolve_engine_identity(mode=mode_map[normalized_agent])
+            return identity.engine_name, identity.agent_type, (model_name or identity.model_name)
         if normalized_agent:
             return SpecEngine._infer_engine_name(normalized_agent), normalized_agent, model_name
 
         from ..ttadk import get_ttadk_manager
+        from ..mode import InteractionMode
 
         if normalized_name.lower() == "ttadk":
             ttadk_manager = get_ttadk_manager()
             current_tool = ttadk_manager.get_current_tool()
             current_model = ttadk_manager.get_current_model()
-            resolved_agent = f"ttadk_{current_tool}" if current_tool else "ttadk_coco"
-            return "TTADK", resolved_agent, model_name or current_model
+            identity = resolve_engine_identity(
+                mode=InteractionMode.TTADK,
+                ttadk_tool_name=current_tool,
+                ttadk_model_name=current_model,
+            )
+            return identity.engine_name, identity.agent_type, (model_name or identity.model_name)
 
         if normalized_name.lower().startswith("claude"):
-            return "Claude", "claude", None
+            identity = resolve_engine_identity(mode=InteractionMode.CLAUDE)
+            return identity.engine_name, identity.agent_type, identity.model_name
 
-        return "Coco", "coco", model_name
+        if normalized_name.lower().startswith("aiden"):
+            identity = resolve_engine_identity(mode=InteractionMode.AIDEN)
+            return identity.engine_name, identity.agent_type, (model_name or identity.model_name)
+
+        if normalized_name.lower().startswith("codex"):
+            identity = resolve_engine_identity(mode=InteractionMode.CODEX)
+            return identity.engine_name, identity.agent_type, (model_name or identity.model_name)
+
+        if normalized_name.lower().startswith("gemini"):
+            identity = resolve_engine_identity(mode=InteractionMode.GEMINI)
+            return identity.engine_name, identity.agent_type, (model_name or identity.model_name)
+
+        identity = resolve_engine_identity(mode=InteractionMode.COCO)
+        return identity.engine_name, identity.agent_type, (model_name or identity.model_name)
 
     def get_or_create(
         self,
@@ -3238,7 +3273,13 @@ class SpecEngineManager:
 
     def cleanup_all(self):
         with self._lock:
-            for engine in self._engines.values():
+            next_engines: dict[str, SpecEngine] = {}
+            for key, engine in self._engines.items():
                 engine.cleanup()
-            self._engines.clear()
+                if engine.is_running:
+                    next_engines[key] = engine
+            self._engines = next_engines
             self._chat_keys.clear()
+            for key in next_engines:
+                chat_id = key.partition(":")[0]
+                self._chat_keys.setdefault(chat_id, set()).add(key)

@@ -126,6 +126,13 @@ class MyToolModeHandler(ProgrammingModeHandler):
 - **ACP 模式**：直接通过 ACP 协议与工具通信，使用 `SyncACPSession`
 - **TTADK 模式**：通过 CLI 调用工具，使用 `SyncTTADKCLISession`
 - **隔离机制**：`agent_type` 以 `ttadk_` 前缀强制走 CLI 路径
+- **强约束**：`ttadk_*` 下不得直接启动 ACP server（即使该工具支持 `acp serve`）
+
+示例：
+
+- `agent_type="codex"` → 允许走 ACP provider，尝试 `codex acp serve`
+- `agent_type="ttadk_codex"` → 必须走 CLI bridge，不允许启动 `codex acp serve`
+- `agent_type="ttadk_claude"` → 必须走 CLI bridge，不允许启动 `claude acp serve`
 
 ### 性能优化
 

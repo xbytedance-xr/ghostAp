@@ -1,5 +1,13 @@
 # GhostAP 项目记忆索引
 
+## 2026-03-24
+- **崩溃/卡住风险修复（会话恢复一致性 + 引擎清理竞态）** - 修复 resume 先切模式后建会话不一致、Deep/Loop/Spec cleanup_all 运行中引擎引用丢失、close 链路会话清理覆盖不足，新增回归并全量验证通过（`1681 passed, 10 skipped`）→ [2026-03-24.md](2026-03-24.md)
+
+## 2026-03-23
+- **全量治理续做计划落地（A/B/C/D）** - 完成编程模式互斥全量收口、ModeManager 统一编程入口、`AgentSessionManager` 语义别名导出与文档一致性修正，新增/更新回归测试并通过全量验证（`1677 passed, 10 skipped`）→ [2026-03-23.md](2026-03-23.md)
+- **TTADK ACP 输出噪声过滤与 JSON 提取修复** - 修复 `ttadk_wrapper` 仅按首行 `{` 切换透传导致的混杂输出污染：改为逐行提取所有 JSON object/array 并持续过滤噪声，补充 noisy line / post-start noise 回归，完成全量验证（`1662 passed, 10 skipped`）→ [2026-03-23.md](2026-03-23.md)
+- **架构深度审计（四层策略 + ACP/CLI 传输矩阵）** - 逐模块核对普通/deep/loop/spec 四层策略与 ACP/CLI/TTADK 桥接实现一致性，确认 `ttadk_*` 强制 CLI 隔离、并修正文档中 Claude/TTADK 传输描述偏差 → [2026-03-23.md](2026-03-23.md)
+
 ## 2026-03-22
 - **`/acp` 无响应根因修复** - 修正 ACP 工具发现与真实 CLI 协议漂移：coco 探测超时放宽、Aiden 改为 `aiden acp`、Gemini 改为 `gemini --acp`、热工具负缓存支持同步复探，恢复 `/acp` 交互入口并完成全量验证（`1660 passed, 10 skipped`）→ [2026-03-22.md](2026-03-22.md)
 - **飞书 WS 长连接静默失活根因修复** - 追到 `lark_oapi.ws.Client` 仅处理显式断连、未处理 half-open/stale socket，导致进程存活但不再收消息；在 `ws_client` 增加连接活动观测与 watchdog 主动断连重连，完成全量验证（`1655 passed, 10 skipped`）→ [2026-03-22.md](2026-03-22.md)

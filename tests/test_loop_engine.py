@@ -446,6 +446,14 @@ class TestLoopEngineManager:
         mgr.cleanup_all()
         assert mgr.get("c1", "/tmp/test") is None
 
+    def test_cleanup_all_keeps_running_engine(self):
+        mgr = self._make_manager()
+        engine = mgr.get_or_create("c1", "/tmp/test")
+        engine._run_state = EngineRunState.RUNNING
+        mgr.cleanup_all()
+        assert mgr.get("c1", "/tmp/test") is engine
+        assert engine.run_state == EngineRunState.STOPPING
+
 
 class TestIterationTracker:
     def test_initial_state(self):

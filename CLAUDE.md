@@ -4,7 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-GhostAP is a Feishu (Lark) chatbot service that provides safe remote Shell command execution and AI-assisted development via WebSocket long-connection. Users interact through Feishu chat to execute shell commands, use Coco AI (Bytedance ARK model) or Claude for remote development, and manage multiple projects. No public IP or domain is needed — the bot connects outbound via WebSocket.
+GhostAP is a Feishu (Lark) chatbot service that provides safe remote Shell command execution and AI-assisted development via WebSocket long-connection. Users interact through Feishu chat to execute shell commands, use Coco/Claude/Aiden/Codex/Gemini/TTADK for remote development, and manage multiple projects. No public IP or domain is needed — the bot connects outbound via WebSocket.
+
+### Programming Strategy Layers
+
+GhostAP has two orthogonal dimensions:
+
+- **Execution strategy layer (4 levels, complexity increasing)**
+  - **Normal programming mode**: multi-turn coding dialogue mode
+  - **Deep mode**: one-shot deep execution (single requirement → autonomous plan+execute)
+  - **Loop mode**: iterative closed-loop execution with acceptance criteria
+  - **Spec mode**: structured iterative methodology (`Spec → Plan → Task → Build → Review`)
+- **Tool transport layer (how tools are actually driven)**
+  - **ACP direct mode**: tools with ACP support are connected through ACP (JSON-RPC 2.0 over stdio)
+  - **Shell CLI mode**: tools without ACP are executed via CLI subprocess bridge
+  - **TTADK bridge mode**: TTADK-wrapped tools (including Claude/Codex in TTADK context) are forced to CLI bridge and **must not** directly start ACP server under `ttadk_*` agent types
 
 ## Commands
 
@@ -39,10 +53,11 @@ Feishu WebSocket message
         → Route by intent:
             SHELL_COMMAND → SandboxExecutor (safety check → execute)
             ENTER_COCO    → ACPSessionManager("coco") (multi-turn AI dev session via ACP)
-            ENTER_CLAUDE  → ACPSessionManager("claude") (Claude AI session via ACP)
-            ENTER_TTADK   → TTADKManager (multi-tool AI dev session)
+            ENTER_CLAUDE  → ACPSessionManager("claude") (Claude CLI session backend)
+            ENTER_TTADK   → TTADKManager + ACPSessionManager("ttadk") (CLI bridge only)
             DEEP_COMMAND  → DeepEngine (ACP-driven single-prompt deep execution)
             LOOP_COMMAND  → LoopEngine (ACP-driven iterative closed-loop)
+            SPEC_COMMAND  → SpecEngine (structured iterative execution)
             CREATE_PROJECT → ProjectManager
             ...
       → ACPEventRenderer (structured tool/plan/text rendering)
@@ -52,7 +67,7 @@ Feishu WebSocket message
 
 ### Key Modules
 
-- **`src/acp/`** — ACP (Agent Client Protocol) layer. Provides structured communication with Coco/Claude agents via JSON-RPC 2.0 over stdio. Includes:
+- **`src/acp/`** — ACP (Agent Client Protocol) layer. Provides structured communication for ACP-capable agents via JSON-RPC 2.0 over stdio, plus session routing/degrade diagnostics. Includes:
   - `models.py` — `ACPEvent`, `ACPEventType`, `ToolCallInfo`, `PlanInfo`, `ACPSessionState`, `PromptResult`
   - `client.py` — `GhostAPClient` implements ACP `Client` interface, converts raw session updates to `ACPEvent` objects
   - `session.py` — `ACPSession` manages async ACP connection lifecycle (start/prompt/cancel/close)
@@ -62,9 +77,9 @@ Feishu WebSocket message
 - **`src/ttadk/`** — TTADK (Multi-Tool AI Development Kit) layer. Manages multi-tool AI programming sessions, supporting switching between different AI tools and models. Includes:
   - `models.py` — `TTADKTool`, `TTADKModel` data models for tool/model definitions
   - `manager.py` — `TTADKManager` singleton for managing current tool/model state, switching between available tools (coco/claude/cursor/gemini/codex/tmates/trae/opencode) and models (gpt-5.2/gpt-4.1/claude-3-opus/claude-3.5-sonnet/claude-3.7-sonnet/doubao-1.5-pro/gemini-2.0-pro/gemini-2.5-pro)
-- **`src/feishu/ws_client.py`** — Core hub. Handles WebSocket events, routes messages to handlers by mode (SMART/COCO/CLAUDE/SHELL/TTADK), manages component interactions. Uses `_FORWARDING_MAP` dict + `__getattr__` dispatch for handler delegation.
+- **`src/feishu/ws_client.py`** — Core hub. Handles WebSocket events, routes messages to handlers by mode (SMART/COCO/CLAUDE/AIDEN/CODEX/GEMINI/SHELL/TTADK), manages component interactions. Uses `_FORWARDING_MAP` dict + `__getattr__` dispatch for handler delegation.
 - **`src/tasking/scheduler.py`** — `TaskScheduler`: thread-based task scheduler with per-chat ordered execution, global concurrency limit, priority queues, cancellation tokens, and progress tracking.
-- **`src/mode/manager.py`** — `ModeManager` state machine: SMART ↔ COCO/CLAUDE/SHELL mode transitions.
+- **`src/mode/manager.py`** — `ModeManager` state machine: SMART ↔ programming/shell mode transitions with chat/project scopes.
 - **`src/agent/intent_recognizer.py`** — LLM-powered ReAct intent recognition. Classifies user messages into ~30 intent types and generates shell commands from natural language.
 - **`src/sandbox/executor.py`** — `SandboxExecutor` runs shell commands with safety checks (20+ dangerous pattern regexes, blacklist, timeout, output truncation).
 - **`src/project/`** — Multi-project workspace: `ProjectManager`, `ProjectContext` (status tracking, conversation history), `MessageProjectMapper`.
@@ -72,16 +87,18 @@ Feishu WebSocket message
 - **`src/card/streaming.py`** — `StreamingCardManager` for real-time card updates during long operations. Supports desktop/mobile/responsive button layouts.
 - **`src/deep_engine/`** — ACP-driven deep execution engine. Single prompt with full requirement → agent self-plans and executes. Tracks progress via ACP plan updates and tool calls. Includes: `engine.py` (DeepEngine, DeepEngineManager), `models.py` (DeepProject, EngineRunState), `progress.py` (DeepProgress).
 - **`src/loop_engine/`** — ACP-driven iterative closed-loop engine. Multi-round prompts in a single ACP session, with convergence detection and acceptance criteria evaluation. Includes: `engine.py` (LoopEngine, LoopEngineManager), `models.py` (LoopProject, IterationRecord, CriteriaTracker), `tracker.py` (IterationTracker), `reporter.py` (LoopReporter).
+- **`src/spec_engine/`** — structured iterative engine (`Spec→Plan→Task→Build→Review`) with pause/resume/recover, task persistence, and phase-level progress reporting.
 - **`src/config.py`** — `Settings` singleton via `get_settings()`, backed by pydantic-settings + `.env`.
 
 ### Design Patterns
 
-- **ACP protocol**: All AI backend communication uses Agent Client Protocol (JSON-RPC 2.0 over stdio). `GhostAPClient` implements the `Client` interface; `SyncACPSession` bridges async ACP to synchronous threads.
+- **Strategy layering**: user-facing development workflow is split into 4 execution strategies (Normal/Deep/Loop/Spec), independent from backend tool transport.
+- **Hybrid transport (ACP + CLI)**: ACP-capable tools use ACP direct mode; non-ACP tools use Shell CLI bridge; `ttadk_*` is strictly CLI-bridged and isolated from ACP direct startup.
 - **TTADK multi-tool layer**: TTADK provides a unified interface for multiple AI tools (Coco/Claude/Cursor/Gemini/etc) and models, with `TTADKManager` singleton managing tool/model switching and state.
 - **Event-driven rendering**: `ACPEventRenderer` processes `ACPEvent` stream (text chunks, tool calls, plan updates) into Feishu Markdown. Handlers register `on_event` callbacks to drive real-time card updates.
-- **State machine**: `InteractionMode` enum governs SMART/COCO/CLAUDE/SHELL/TTADK transitions; `EngineRunState` enum tracks IDLE/RUNNING/STOPPING for Deep and Loop engines.
+- **State machine**: `InteractionMode` enum governs SMART/COCO/CLAUDE/AIDEN/CODEX/GEMINI/SHELL/TTADK transitions; `EngineRunState` enum tracks IDLE/RUNNING/STOPPING for Deep and Loop engines.
 - **Singleton**: `get_settings()` for configuration, `get_ttadk_manager()` for TTADK tool/model management
-- **Session managers**: `ACPSessionManager("coco")` and `ACPSessionManager("claude")` handle isolated ACP sessions per chat, replacing the old subprocess-based session managers.
+- **Session managers**: `ACPSessionManager` unifies per-chat/project session lifecycle across ACP and CLI backends (`coco/aiden/gemini/codex` ACP-direct, `claude` CLI backend, `ttadk_*` forced CLI bridge).
 - **Task scheduling**: `TaskScheduler` provides per-chat ordered execution with global concurrency control. Long-running tasks (e.g. Deep Engine, Loop Engine) use separate `queue_key` to avoid blocking control commands.
 - **Thread safety**: Critical sections use `threading.Lock`; message dedup uses `MessageCache` with background cleanup thread
 - **Sync-async bridge**: `SyncACPSession` runs an asyncio event loop in a daemon thread, uses `asyncio.run_coroutine_threadsafe()` to allow synchronous callers to interact with async ACP sessions.
@@ -95,7 +112,7 @@ Feishu WebSocket message
 - Before and After The Task, You Need Maintain `Memory.md` as a development log (reverse chronological, format: YYYY-MM-DD HH:MM:SS)
 - Tests and temp code go in `tests/`, keep root directory clean
 - When solving problems, consider at least two approaches and pick the best one
-- **编程模式兼容**: 所有编程模式（Coco/Claude/Shell 等）相关的后续功能，默认必须实现所有编程模式的兼容，除非用户明确指定不需要兼容
+- **编程模式兼容**: 所有编程模式（Coco/Claude/Aiden/Codex/Gemini/TTADK）相关的后续功能，默认必须实现全模式兼容，除非用户明确指定不需要兼容
 
 ## Workflow Rules
 

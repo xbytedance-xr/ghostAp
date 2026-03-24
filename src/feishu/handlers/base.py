@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 
 from ..im_client import FeishuIMClient
 from ..message_formatter import FeishuMessageFormatter as fmt
+from ...utils.engine_identity import resolve_engine_identity
 
 if TYPE_CHECKING:
     from ...card.streaming import StreamingCardManager
@@ -644,14 +645,19 @@ class BaseHandler:
     # Engine name helper
     # ------------------------------------------------------------------
     def get_engine_name(self, chat_id: str, project_id: str | None = None) -> str:
-        """Return 'Coco' or 'Claude' or 'TTADK' based on current interaction mode."""
-        from ...mode import InteractionMode
-
+        """Return engine display name based on unified identity mapping."""
         current_mode = self.ctx.mode_manager.get_mode(chat_id, project_id=project_id)
-        if current_mode == InteractionMode.CLAUDE:
-            return "Claude"
-        if current_mode == InteractionMode.GEMINI:
-            return "Gemini"
-        if current_mode == InteractionMode.TTADK:
-            return "TTADK"
-        return "Coco"
+        project = None
+        if project_id:
+            try:
+                project = self.project_manager.get_project(project_id)
+            except Exception:
+                project = None
+        identity = resolve_engine_identity(
+            mode=current_mode,
+            ttadk_tool_name=getattr(project, "ttadk_tool_name", None) if project else None,
+            ttadk_model_name=getattr(project, "ttadk_model_name", None) if project else None,
+            acp_tool_name=getattr(project, "acp_tool_name", None) if project else None,
+            acp_model_name=getattr(project, "acp_model_name", None) if project else None,
+        )
+        return identity.engine_name

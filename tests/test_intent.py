@@ -102,6 +102,11 @@ class TestIntentRecognizerQuickMatch:
         assert result is not None
         assert result.primary_intent == IntentType.EXIT_MODE
 
+    def test_exit_keyword_in_ttadk_mode(self, recognizer):
+        result = recognizer._quick_match("退出", current_mode="ttadk")
+        assert result is not None
+        assert result.primary_intent == IntentType.EXIT_MODE
+
     def test_exit_keyword_exit_in_claude_mode(self, recognizer):
         result = recognizer._quick_match("exit", current_mode="claude")
         assert result is not None
@@ -177,6 +182,11 @@ class TestIntentRecognizerContextHint:
         assert "Gemini 编程模式" in hint
         assert "gemini_message" in hint
 
+    def test_context_hint_ttadk_mode(self, recognizer):
+        hint = recognizer._get_context_hint(current_mode="ttadk")
+        assert "TTADK 编程模式" in hint
+        assert "ttadk_message" in hint
+
     def test_context_hint_smart_mode(self, recognizer):
         hint = recognizer._get_context_hint(current_mode="smart")
         assert "智能模式" in hint
@@ -194,6 +204,10 @@ class TestIntentRecognizerContextHint:
         fallback = recognizer._get_fallback_intent(current_mode="gemini")
         assert fallback == IntentType.GEMINI_MESSAGE
 
+    def test_fallback_intent_ttadk_mode(self, recognizer):
+        fallback = recognizer._get_fallback_intent(current_mode="ttadk")
+        assert fallback == IntentType.TTADK_MESSAGE
+
     def test_fallback_intent_smart_mode(self, recognizer):
         fallback = recognizer._get_fallback_intent(current_mode="smart")
         assert fallback == IntentType.SHELL_COMMAND
@@ -208,6 +222,12 @@ class TestIntentRecognizerContextHint:
         result = recognizer._quick_match("/tools_status")
         assert result is not None
         assert result.primary_intent == IntentType.TOOLS_STATUS
+        assert result.confidence == 1.0
+
+    def test_exact_command_ttadk(self, recognizer):
+        result = recognizer._quick_match("/ttadk")
+        assert result is not None
+        assert result.primary_intent == IntentType.TTADK_MESSAGE
         assert result.confidence == 1.0
 
 
@@ -259,6 +279,10 @@ class TestIntentTypeMapping:
             "enter_codex",
             "exit_codex",
             "codex_message",
+            "enter_gemini",
+            "exit_gemini",
+            "gemini_message",
+            "ttadk_message",
             "change_dir",
             "shell",
             "create_project",
@@ -299,6 +323,7 @@ class TestIntentTypeMapping:
         assert recognizer.INTENT_MAP["unknown"] == IntentType.UNKNOWN
         assert recognizer.INTENT_MAP["show_tools"] == IntentType.SHOW_TOOLS
         assert recognizer.INTENT_MAP["tools_status"] == IntentType.TOOLS_STATUS
+        assert recognizer.INTENT_MAP["ttadk_message"] == IntentType.TTADK_MESSAGE
 
 
 class TestNormalizePath:

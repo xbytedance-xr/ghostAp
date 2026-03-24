@@ -2,6 +2,7 @@ import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+from src.agent.intent_recognizer import IntentType, TaskStep
 
 from src.feishu.ws_client import FeishuWSClient
 from src.mode import InteractionMode
@@ -318,6 +319,34 @@ class TestCardActionHandler(unittest.TestCase):
                 "msg_1", "chat_1", "hello ttadk", mock_project
             )
 
+    def test_execute_single_task_ttadk_message_routes_to_ttadk_handler(self):
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+            client._ttadk_handler = MagicMock()
+            client._ttadk_handler.handle_message = MagicMock()
+            client._mode_manager.get_mode.return_value = InteractionMode.TTADK
+
+            task = TaskStep(intent=IntentType.TTADK_MESSAGE, description="ttadk", data={})
+            client._execute_single_task("m1", "c1", task, "refactor this", project=None)
+            client._ttadk_handler.handle_message.assert_called_once_with("m1", "c1", "refactor this", None)
+
     def test_process_with_intent_routes_gemini(self):
         """Test that _process_with_intent routes to Gemini handler in GEMINI mode."""
         with (
@@ -510,6 +539,7 @@ class TestCardActionHandler(unittest.TestCase):
 
             assert deep_engine.stop_called is True
             assert mock_sleep.called
+            assert client._coco_manager.cleanup_all.call_count >= 6
             client._deep_engine_manager.cleanup_all.assert_called_once()
             client._loop_engine_manager.cleanup_all.assert_called_once()
             client._spec_engine_manager.cleanup_all.assert_called_once()

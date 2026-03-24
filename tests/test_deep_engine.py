@@ -392,6 +392,16 @@ class TestDeepEngineManager:
             mgr.cleanup_all()
             assert mgr.get("c1", "/tmp/test") is None
 
+    def test_cleanup_all_keeps_running_engine(self):
+        with patch("src.deep_engine.engine.get_settings") as mock:
+            mock.return_value = MagicMock(coco_execution_timeout=300, claude_execution_timeout=600)
+            mgr = DeepEngineManager()
+            engine = mgr.get_or_create("c1", "/tmp/test")
+            engine._run_state = EngineRunState.RUNNING
+            mgr.cleanup_all()
+            assert mgr.get("c1", "/tmp/test") is engine
+            assert engine.run_state == EngineRunState.STOPPING
+
 
 class TestDeepProgress:
     def test_initial_state(self):

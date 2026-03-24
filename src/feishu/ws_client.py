@@ -243,29 +243,27 @@ class FeishuWSClient:
         self._system_handler = SystemHandler(self._handler_ctx)
         self._diagnostics_handler = DiagnosticsHandler(self._handler_ctx)
 
-        # Wire cross-references
-        self._coco_handler._opposite_handler = self._claude_handler
-        self._claude_handler._opposite_handler = self._coco_handler
-        self._aiden_handler._coco_handler = self._coco_handler
-        self._aiden_handler._claude_handler = self._claude_handler
-        self._aiden_handler._codex_handler = self._codex_handler
-        self._aiden_handler._gemini_handler = self._gemini_handler
-        self._aiden_handler._ttadk_handler = self._ttadk_handler
-        self._codex_handler._coco_handler = self._coco_handler
-        self._codex_handler._claude_handler = self._claude_handler
-        self._codex_handler._aiden_handler = self._aiden_handler
-        self._codex_handler._gemini_handler = self._gemini_handler
-        self._codex_handler._ttadk_handler = self._ttadk_handler
-        self._gemini_handler._coco_handler = self._coco_handler
-        self._gemini_handler._claude_handler = self._claude_handler
-        self._gemini_handler._aiden_handler = self._aiden_handler
-        self._gemini_handler._codex_handler = self._codex_handler
-        self._gemini_handler._ttadk_handler = self._ttadk_handler
-        self._ttadk_handler._coco_handler = self._coco_handler
-        self._ttadk_handler._claude_handler = self._claude_handler
-        self._ttadk_handler._aiden_handler = self._aiden_handler
-        self._ttadk_handler._codex_handler = self._codex_handler
-        self._ttadk_handler._gemini_handler = self._gemini_handler
+        # ------------------------------------------------------------------
+        # Wire cross-references (automated via handler registry)
+        # ------------------------------------------------------------------
+        # All programming mode handlers that need peer references
+        self._all_mode_handlers: list[ProgrammingModeHandler] = [
+            self._coco_handler,
+            self._claude_handler,
+            self._aiden_handler,
+            self._codex_handler,
+            self._gemini_handler,
+            self._ttadk_handler,
+        ]
+
+        # Auto-inject peer references for all mode handlers
+        for h in self._all_mode_handlers:
+            h._opposite_handler = self._coco_handler  # backward compat
+            for peer in self._all_mode_handlers:
+                peer_name = f"_{peer.__class__.__name__.replace('ModeHandler', '').lower()}_handler"
+                setattr(h, peer_name, peer)
+
+        # System handler needs references to all handlers
         self._system_handler.coco_handler = self._coco_handler
         self._system_handler.claude_handler = self._claude_handler
         self._system_handler.aiden_handler = self._aiden_handler
@@ -343,50 +341,7 @@ class FeishuWSClient:
 
     def _init_action_registry(self):
         """Initialize all card action handlers."""
-        # Coco
-        self._register_action(self._handle_card_enter_coco, exact="enter_coco")
-        self._register_action(self._handle_card_exit_coco, exact="exit_coco")
-        self._register_action(
-            lambda mid, cid, pid, val: self._handle_card_resume_coco(mid, cid, pid, val.get("session_id", "")),
-            exact="resume_coco",
-        )
-        self._register_action(self._handle_card_new_coco, exact="new_coco")
-
-        # Claude
-        self._register_action(self._handle_card_enter_claude, exact="enter_claude")
-        self._register_action(self._handle_card_exit_claude, exact="exit_claude")
-        self._register_action(
-            lambda mid, cid, pid, val: self._handle_card_resume_claude(mid, cid, pid, val.get("session_id", "")),
-            exact="resume_claude",
-        )
-        self._register_action(self._handle_card_new_claude, exact="new_claude")
-
-        # Aiden
-        self._register_action(self._handle_card_enter_aiden, exact="enter_aiden")
-        self._register_action(self._handle_card_exit_aiden, exact="exit_aiden")
-        self._register_action(
-            lambda mid, cid, pid, val: self._handle_card_resume_aiden(mid, cid, pid, val.get("session_id", "")),
-            exact="resume_aiden",
-        )
-        self._register_action(self._handle_card_new_aiden, exact="new_aiden")
-
-        # Gemini
-        self._register_action(self._handle_card_enter_gemini, exact="enter_gemini")
-        self._register_action(self._handle_card_exit_gemini, exact="exit_gemini")
-        self._register_action(
-            lambda mid, cid, pid, val: self._handle_card_resume_gemini(mid, cid, pid, val.get("session_id", "")),
-            exact="resume_gemini",
-        )
-        self._register_action(self._handle_card_new_gemini, exact="new_gemini")
-
-        # Codex
-        self._register_action(self._handle_card_enter_codex, exact="enter_codex")
-        self._register_action(self._handle_card_exit_codex, exact="exit_codex")
-        self._register_action(
-            lambda mid, cid, pid, val: self._handle_card_resume_codex(mid, cid, pid, val.get("session_id", "")),
-            exact="resume_codex",
-        )
-        self._register_action(self._handle_card_new_codex, exact="new_codex")
+        self._register_programming_mode_actions()
 
         # Project
         self._register_action(
@@ -454,19 +409,27 @@ class FeishuWSClient:
             exact="new_project_prompt",
         )
 
-        # TTADK
-        self._register_action(self._handle_card_enter_ttadk, exact="enter_ttadk")
-        self._register_action(self._handle_card_exit_ttadk, exact="exit_ttadk")
-        self._register_action(
-            lambda mid, cid, pid, val: self._handle_card_resume_ttadk(mid, cid, pid, val.get("session_id", "")),
-            exact="resume_ttadk",
-        )
-        self._register_action(self._handle_card_new_ttadk, exact="new_ttadk")
-
         self._register_action(
             lambda mid, cid, pid, val: self._handle_select_ttadk_tool(mid, cid, val.get("tool_name", ""), pid),
             exact="select_ttadk_tool",
         )
+
+    def _register_programming_mode_actions(self):
+        """Register enter/exit/resume/new actions for all programming modes."""
+        mode_names = ("coco", "claude", "aiden", "codex", "gemini", "ttadk")
+        for mode in mode_names:
+            enter = getattr(self, f"_handle_card_enter_{mode}")
+            exit_ = getattr(self, f"_handle_card_exit_{mode}")
+            resume = getattr(self, f"_handle_card_resume_{mode}")
+            new = getattr(self, f"_handle_card_new_{mode}")
+
+            self._register_action(enter, exact=f"enter_{mode}")
+            self._register_action(exit_, exact=f"exit_{mode}")
+            self._register_action(
+                lambda mid, cid, pid, val, _resume=resume: _resume(mid, cid, pid, val.get("session_id", "")),
+                exact=f"resume_{mode}",
+            )
+            self._register_action(new, exact=f"new_{mode}")
         self._register_action(
             lambda mid, cid, pid, val: self._handle_select_ttadk_model(
                 mid,
@@ -681,7 +644,7 @@ class FeishuWSClient:
 
         self._stop_ws_watchdog()
 
-        def _wait_engines_stopped(engines: list[Any], timeout_s: float = 2.0, interval_s: float = 0.05) -> None:
+        def _wait_engines_stopped(engines: list[Any], timeout_s: float = 5.0, interval_s: float = 0.05) -> None:
             deadline = time.time() + max(0.1, timeout_s)
             while time.time() < deadline:
                 any_running = False
@@ -764,6 +727,21 @@ class FeishuWSClient:
             self._ttadk_manager.cleanup_all()
         except Exception as e:
             logger.debug("清理ttadk_session_manager失败: %s", e)
+
+        try:
+            self._aiden_manager.cleanup_all()
+        except Exception as e:
+            logger.debug("清理aiden_session_manager失败: %s", e)
+
+        try:
+            self._codex_manager.cleanup_all()
+        except Exception as e:
+            logger.debug("清理codex_session_manager失败: %s", e)
+
+        try:
+            self._gemini_manager.cleanup_all()
+        except Exception as e:
+            logger.debug("清理gemini_session_manager失败: %s", e)
 
         try:
             self._deep_engine_manager.cleanup_all()
@@ -1808,6 +1786,7 @@ class FeishuWSClient:
                 IntentType.ENTER_AIDEN,
                 IntentType.ENTER_CODEX,
                 IntentType.ENTER_GEMINI,
+                IntentType.TTADK_MESSAGE,
             }:
                 break
 
@@ -1905,6 +1884,20 @@ class FeishuWSClient:
                 self._show_gemini_info(message_id, chat_id, project)
             else:
                 self._handle_gemini_message(message_id, chat_id, original_text, project)
+
+        elif intent == IntentType.TTADK_MESSAGE:
+            from ..mode import InteractionMode
+
+            if data.get("command") == "info":
+                self._show_ttadk_info(message_id, chat_id, project)
+            elif str(original_text or "").strip().lower() in {"/ttadk", "/enter_ttadk"}:
+                self._handle_ttadk_command(message_id, chat_id, project)
+            else:
+                _pid = project.project_id if project else None
+                mode = self._mode_manager.get_mode(chat_id, project_id=_pid)
+                if mode != InteractionMode.TTADK:
+                    self._enter_ttadk_mode(message_id, chat_id, project=project)
+                self._ttadk_handler.handle_message(message_id, chat_id, original_text, project)
 
         elif intent == IntentType.SHOW_HELP:
             self._show_full_help(message_id, chat_id, project)
@@ -2120,6 +2113,10 @@ class FeishuWSClient:
                     working_dir = self._get_working_dir(chat_id)
                     self._system_handler.execute_shell_and_reply(message_id, chat_id, cmd, working_dir, project)
                 return True
+            elif intent == IntentType.TTADK_MESSAGE:
+                self._enter_ttadk_mode(message_id, chat_id, silent=True, project=project)
+                self._reply_message(message_id, f"✅ 步骤 {step_num}: 已进入 TTADK 模式")
+                return True
 
             else:
                 return False
@@ -2143,6 +2140,8 @@ class FeishuWSClient:
             return "进入 Codex 编程模式"
         elif intent == IntentType.ENTER_GEMINI:
             return "进入 Gemini 编程模式"
+        elif intent == IntentType.TTADK_MESSAGE:
+            return "进入 TTADK 编程模式"
         elif intent == IntentType.EXIT_COCO:
             return "退出 Coco 模式"
         elif intent == IntentType.EXIT_CLAUDE:

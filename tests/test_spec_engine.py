@@ -1825,6 +1825,21 @@ class TestSpecEngineManager:
         assert mgr.list_engines() == []
 
     @patch("src.spec_engine.engine.get_settings")
+    def test_cleanup_all_keeps_running_engine(self, mock_settings):
+        s = MagicMock()
+        s.spec_max_cycles = 10
+        s.spec_convergence_window = 2
+        s.spec_execution_timeout = 300
+        mock_settings.return_value = s
+
+        mgr = SpecEngineManager()
+        engine = mgr.get_or_create("chat1", "/tmp/a")
+        engine._run_state = EngineRunState.RUNNING
+        mgr.cleanup_all()
+        assert mgr.get("chat1", "/tmp/a") is engine
+        assert engine.run_state == EngineRunState.STOPPING
+
+    @patch("src.spec_engine.engine.get_settings")
     def test_load_or_create_from_disk_hydrates_project_and_resume_meta(self, mock_settings, tmp_path):
         s = MagicMock()
         s.spec_max_cycles = 10

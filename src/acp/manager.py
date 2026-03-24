@@ -201,6 +201,21 @@ class ACPSessionManager:
         self._session_starter = session_starter
 
     @staticmethod
+    def _format_seconds_ago(seconds: float) -> str:
+        """Best-effort human readable duration for status cards/logs."""
+        try:
+            s = int(max(0, float(seconds or 0.0)))
+        except Exception:
+            s = 0
+        if s < 60:
+            return f"{s}秒前"
+        m, sec = divmod(s, 60)
+        if m < 60:
+            return f"{m}分{sec}秒前"
+        h, m = divmod(m, 60)
+        return f"{h}时{m}分前"
+
+    @staticmethod
     def _session_key(chat_id: str, project_id: Optional[str] = None) -> str:
         """Compute the session dict key."""
         return f"{chat_id}:{project_id}" if project_id else f"{chat_id}:{_DEFAULT_PROJECT}"
@@ -226,6 +241,10 @@ class ACPSessionManager:
         retries = int(getattr(settings, "acp_startup_retries", 2) or 2)
         retries = max(1, retries)
         effective_agent_type = (agent_type_override or self._agent_type).lower()
+        last_err: Exception | None = None
+        session: SyncSession | None = None
+        actual_id = ""
+        last_spec = ""
 
         # 可注入启动器（优先）：允许上层把启动编排从 manager 中抽离。
         # 重要：TTADK 前缀必须强制走 CLI Session，不允许被注入启动器绕过。
@@ -246,19 +265,22 @@ class ACPSessionManager:
                         last_spec = session.describe_agent()
                     except Exception:
                         last_spec = ""
-            except Exception:
+                    logger.info(
+                        "[ACP:%s] Session started via injected starter: key=%s, session=%s",
+                        effective_agent_type.upper(),
+                        key[-16:],
+                        actual_id[:8],
+                    )
+            except Exception as e:
                 # 注入启动器出错时，回退到内置逻辑（保持兼容/不引入回归）。
+                # NOTE: keep root cause in last_err for final diagnostics if fallback also fails.
+                last_err = e
                 session = None
                 actual_id = ""
 
         if effective_agent_type == "claude":
             # CLI backend doesn't need handshake retries.
             retries = 1
-
-        last_err: Exception | None = None
-        session: SyncSession | None = None
-        actual_id = ""
-        last_spec = ""
 
         # TTADK/ACP: 统一归一化 cwd，避免传入 "." 导致项目级缓存不落盘。
         try:
@@ -490,12 +512,24 @@ class ACPSessionManager:
         3) Optionally load a given session_id (resume) after startup.
         """
         key = self._session_key(chat_id, project_id)
-        existing = self._sessions.get(key)
+
+        # Helper: safely end session under lock with double-check
+        def _safe_end_session(check_fn) -> bool:
+            """End session under lock if check_fn returns True. Returns True if ended."""
+            with self._lock:
+                s = self._sessions.get(key)
+                if s is not None and check_fn(s):
+                    self._end_session_unlocked(key)
+                    return True
+                return False
+
+        with self._lock:
+            existing = self._sessions.get(key)
         if existing:
             # Timeout check (reuse get_session semantics)
             if time.time() - existing.last_active > self._session_timeout:
                 logger.info("[ACP:%s] Session timeout before ensure: key=%s", self._agent_type.upper(), key[-16:])
-                self.end_session(chat_id, project_id=project_id)
+                _safe_end_session(lambda _: True)
                 existing = None
 
         # Agent type / model mismatch for dynamic backends (e.g., TTADK)
@@ -509,13 +543,13 @@ class ACPSessionManager:
                     agent_type_override,
                     key[-16:],
                 )
-                self.end_session(chat_id, project_id=project_id)
+                _safe_end_session(lambda _: True)
                 existing = None
             elif model_name:
-                # TTADK: model_name 可能是“意图/友好名”，未必会透传 -m；仅当能解析出 validated 的真实模型名时才做一致性重启。
+                # TTADK: model_name 可能是"意图/友好名"，未必会透传 -m；仅当能解析出 validated 的真实模型名时才做一致性重启。
                 if agent_type_override.lower().startswith("ttadk_"):
                     # 若该 session 已因 TTADK 启动失败降级（例如降级到 coco ACP），则不要再因 model mismatch 触发重启，
-                    # 否则在 TTADK 不可用时会产生“每次 ensure 都重启→再失败→再降级”的抖动。
+                    # 否则在 TTADK 不可用时会产生"每次 ensure 都重启→再失败→再降级"的抖动。
                     target_model: Optional[str] = None
                     if not getattr(existing, "_degraded_to", ""):
                         try:
@@ -544,7 +578,7 @@ class ACPSessionManager:
                                 target_model,
                                 key[-16:],
                             )
-                            self.end_session(chat_id, project_id=project_id)
+                            _safe_end_session(lambda _: True)
                             existing = None
                 else:
                     existing_args = getattr(existing, "_agent_args", None)
@@ -556,7 +590,7 @@ class ACPSessionManager:
                             model_name,
                             key[-16:],
                         )
-                        self.end_session(chat_id, project_id=project_id)
+                        _safe_end_session(lambda _: True)
                         existing = None
 
         if existing:
@@ -569,7 +603,7 @@ class ACPSessionManager:
                     key[-16:],
                     (existing.session_id or "none")[:8],
                 )
-                self.end_session(chat_id, project_id=project_id)
+                _safe_end_session(lambda s: s is existing)
                 existing = None
             elif idle > 30.0:
                 health_to = float(getattr(get_settings(), "acp_healthcheck_timeout", 2.0) or 2.0)
@@ -580,12 +614,12 @@ class ACPSessionManager:
                         key[-16:],
                         (existing.session_id or "none")[:8],
                     )
-                    self.end_session(chat_id, project_id=project_id)
+                    _safe_end_session(lambda s: s is existing)
                     existing = None
 
         if existing and session_id and existing.session_id != session_id:
             # Different target session requested; restart to load requested session.
-            self.end_session(chat_id, project_id=project_id)
+            _safe_end_session(lambda _: True)
             existing = None
 
         if existing:
@@ -615,13 +649,19 @@ class ACPSessionManager:
         sessions the send_prompt watchdog already handles crash detection.
         """
         key = self._session_key(chat_id, project_id)
-        session = self._sessions.get(key)
+        with self._lock:
+            session = self._sessions.get(key)
         if session:
             now = time.time()
             idle = now - session.last_active
             if idle > self._session_timeout:
                 logger.info("[ACP:%s] Session timeout: key=%s", self._agent_type.upper(), key[-16:])
-                self.end_session(chat_id, project_id=project_id)
+                # Use _end_session_unlocked under lock to avoid race window
+                with self._lock:
+                    # Double-check: session may have been replaced by another thread
+                    current = self._sessions.get(key)
+                    if current is session:
+                        self._end_session_unlocked(key)
                 return None
             # Only do expensive RPC health check after prolonged idle (>30s).
             # Recently active sessions are protected by the send_prompt watchdog.
@@ -633,7 +673,10 @@ class ACPSessionManager:
                         key[-16:],
                         (session.session_id or "none")[:8],
                     )
-                    self.end_session(chat_id, project_id=project_id)
+                    with self._lock:
+                        current = self._sessions.get(key)
+                        if current is session:
+                            self._end_session_unlocked(key)
                     return None
         return session
 
@@ -675,9 +718,42 @@ class ACPSessionManager:
 
     def cleanup_all(self) -> None:
         """Close all sessions."""
-        for key in list(self._sessions.keys()):
+        with self._lock:
+            keys = list(self._sessions.keys())
+        for key in keys:
             try:
                 with self._lock:
                     self._end_session_unlocked(key)
             except Exception as e:
                 logger.debug("Error cleaning up session for %s: %s", key[-16:], e)
+
+    def list_active_sessions(self) -> list[dict]:
+        """Return lightweight snapshots for currently tracked sessions."""
+        now = time.time()
+        out: list[dict] = []
+        with self._lock:
+            items = list(self._sessions.items())
+        for key, session in items:
+            try:
+                sid = str(getattr(session, "session_id", "") or "")
+                last_active = float(getattr(session, "last_active", 0.0) or 0.0)
+                message_count = int(getattr(session, "message_count", 0) or 0)
+                idle_s = max(0.0, now - last_active) if last_active > 0 else 0.0
+                out.append(
+                    {
+                        "manager_agent_type": self._agent_type,
+                        "session_key": key,
+                        "session_id": sid,
+                        "last_active": last_active,
+                        "message_count": message_count,
+                        "idle_seconds": idle_s,
+                        "last_used_text": self._format_seconds_ago(idle_s),
+                    }
+                )
+            except Exception:
+                continue
+        return out
+
+
+class AgentSessionManager(ACPSessionManager):
+    """Semantically clearer alias for ACP+CLI session routing manager."""

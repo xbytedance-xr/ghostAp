@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import select
@@ -74,6 +75,48 @@ def _strip_ansi_for_probe(data: bytes) -> bytes:
         return _ANSI_ESCAPE_RE.sub(b"", data or b"")
     except Exception:
         return data or b""
+
+
+def _extract_json_objects_from_line(data: bytes) -> list[bytes]:
+    """从单行输出中提取所有 JSON object/array（忽略前后噪声）。"""
+    probe = _strip_ansi_for_probe(data or b"")
+    if not probe:
+        return []
+
+    try:
+        text = probe.decode("utf-8", errors="ignore")
+    except Exception:
+        return []
+
+    decoder = json.JSONDecoder()
+    out: list[bytes] = []
+    idx = 0
+    n = len(text)
+
+    while idx < n:
+        # 跳过噪声，定位下一段 JSON 起始字符
+        while idx < n and text[idx] not in "[{":
+            idx += 1
+        if idx >= n:
+            break
+
+        try:
+            obj, end = decoder.raw_decode(text, idx)
+        except json.JSONDecodeError:
+            idx += 1
+            continue
+
+        if isinstance(obj, (dict, list)):
+            chunk = text[idx:end].strip()
+            if chunk:
+                try:
+                    out.append(chunk.encode("utf-8"))
+                except Exception:
+                    pass
+
+        idx = max(end, idx + 1)
+
+    return out
 
 
 def _spawn_no_pty(cmd: list[str]) -> subprocess.Popen:
@@ -212,53 +255,45 @@ class _FDReader:
 
 
 def pump_filtered_stream(reader: object, writer: BinaryIO, state: WrapperState, *, chunk_size: int = 4096) -> None:
-    """将 reader 的输出透传到 writer。
+    """将 reader 的输出透传到 writer，仅输出可解析 JSON。
 
     规则：
-    - JSON 起始前：按行读取，过滤 banner，并记录 banner_tail
-    - JSON 起始后：按块读取并原样透传（不修改字节）
+    - 逐行读取并从每行中提取所有 JSON object/array
+    - JSON 起始前：无 JSON 的行记入 banner_tail
+    - JSON 起始后：继续丢弃非 JSON 噪声，只透传 JSON
     """
     try:
         chunk_size = int(chunk_size or 4096)
     except Exception:
         chunk_size = 4096
-    chunk_size = max(1, min(chunk_size, 1024 * 1024))
+    _ = max(1, min(chunk_size, 1024 * 1024))
 
     while True:
-        if not state.json_started:
+        line = b""
+        try:
+            line = reader.readline()
+        except Exception:
             line = b""
-            try:
-                line = reader.readline()
-            except Exception:
-                line = b""
-            if not line:
-                break
+        if not line:
+            break
 
-            probe = _strip_ansi_for_probe(line)
-            if probe.strip().startswith(b"{"):
-                state.json_started = True
+        json_chunks = _extract_json_objects_from_line(line)
+        if json_chunks:
+            state.json_started = True
+            for chunk in json_chunks:
                 try:
-                    writer.write(line)
-                    writer.flush()
+                    writer.write(chunk)
+                    writer.write(b"\n")
                 except Exception:
                     pass
-                continue
-
-            state.append_banner_line(line)
+            try:
+                writer.flush()
+            except Exception:
+                pass
             continue
 
-        # JSON started: pipe bytes
-        try:
-            chunk = reader.read(chunk_size)
-        except Exception:
-            chunk = b""
-        if not chunk:
-            break
-        try:
-            writer.write(chunk)
-            writer.flush()
-        except Exception:
-            pass
+        if not state.json_started:
+            state.append_banner_line(line)
 
 
 def emit_failure_diagnostics(

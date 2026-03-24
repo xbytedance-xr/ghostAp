@@ -282,6 +282,57 @@ def test_acp_manager_unhealthy_session_is_cleaned(monkeypatch):
     assert key not in m._sessions
 
 
+def test_acp_manager_session_starter_success_is_not_overwritten(monkeypatch):
+    """回归：session_starter 成功返回后不应被默认路径覆盖。"""
+    from types import SimpleNamespace
+
+    from src.acp import manager as mgr
+
+    class _StarterSession:
+        def __init__(self):
+            self.session_id = "sid_from_starter"
+            self.last_active = 123.0
+            self.message_count = 7
+
+        def describe_agent(self):
+            return "starter"
+
+        def load_session(self, session_id: str):
+            self.session_id = session_id
+
+        def load_local_history(self, *args, **kwargs):
+            return []
+
+        def to_snapshot(self):
+            return {"session_id": self.session_id}
+
+        def close(self):
+            return None
+
+        def is_server_running(self) -> bool:
+            return True
+
+        def is_server_healthy(self, healthcheck_timeout: float = 2.0) -> bool:
+            return True
+
+    # If fallback path is entered, this fake will explode and fail the test.
+    class _ShouldNotBeUsed:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("fallback SyncACPSession should not be used")
+
+    monkeypatch.setattr(mgr, "SyncACPSession", _ShouldNotBeUsed)
+    monkeypatch.setattr(
+        mgr, "get_settings", lambda: SimpleNamespace(acp_healthcheck_timeout=0.01, acp_startup_retries=1)
+    )
+
+    def _starter(**kwargs):
+        return (_StarterSession(), "sid_from_starter", {"attempts": []})
+
+    m = mgr.ACPSessionManager("coco", session_starter=_starter)
+    s = m.start_session("chat1", cwd=".", startup_timeout=0.01)
+    assert s.session_id == "sid_from_starter"
+
+
 class MockToolCallStart:
     """Mock ToolCallStart ACP schema object."""
 

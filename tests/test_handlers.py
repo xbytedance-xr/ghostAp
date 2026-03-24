@@ -20,6 +20,7 @@ from src.feishu.handlers.programming import (
     CocoModeHandler,
     AidenModeHandler,
     CodexModeHandler,
+    GeminiModeHandler,
     TTADKModeHandler,
 )
 from src.feishu.handlers.project import ProjectHandler
@@ -67,6 +68,15 @@ def _make_handler_context(**overrides) -> HandlerContext:
     for k, v in overrides.items():
         setattr(ctx, k, v)
     return ctx
+
+
+def _set_all_programming_mode_flags(ctx, value: bool) -> None:
+    ctx.mode_manager.is_coco_mode.return_value = value
+    ctx.mode_manager.is_claude_mode.return_value = value
+    ctx.mode_manager.is_aiden_mode.return_value = value
+    ctx.mode_manager.is_codex_mode.return_value = value
+    ctx.mode_manager.is_gemini_mode.return_value = value
+    ctx.mode_manager.is_ttadk_mode.return_value = value
 
 
 # ======================================================================
@@ -161,6 +171,16 @@ class TestBaseHandler:
         h, ctx = self._make()
         ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
         assert h.get_engine_name("chat1") == "Coco"
+
+    def test_get_engine_name_aiden(self):
+        h, ctx = self._make()
+        ctx.mode_manager.get_mode.return_value = InteractionMode.AIDEN
+        assert h.get_engine_name("chat1") == "Aiden"
+
+    def test_get_engine_name_codex(self):
+        h, ctx = self._make()
+        ctx.mode_manager.get_mode.return_value = InteractionMode.CODEX
+        assert h.get_engine_name("chat1") == "Codex"
 
     def test_mode_to_context_source(self):
         from src.project import ContextSourceMode
@@ -358,6 +378,38 @@ class TestSystemHandlerRouting:
         h.exit_current_mode("m1", "c1", None)
         h.claude_handler.exit_mode.assert_called_once_with("m1", "c1", None)
 
+    def test_show_tools_list_uses_cached_availability_api(self):
+        h = self._make()
+        with patch("src.feishu.handlers.system.tool_registry") as mock_registry:
+            mock_registry.get_availability.return_value = True
+            h.reply_interactive_card = MagicMock()
+            h.show_tools_list("m1", "c1", None)
+            # 5 tools in metadata
+            assert mock_registry.get_availability.call_count == 5
+            h.reply_interactive_card.assert_called_once()
+
+    def test_show_tools_status_uses_manager_sessions(self):
+        h = self._make()
+        h.ctx.coco_manager.list_active_sessions.return_value = [
+            {
+                "session_key": "chat_1:proj_a",
+                "session_id": "sid1",
+                "last_active": 1000.0,
+                "message_count": 3,
+            }
+        ]
+        h.ctx.claude_manager.list_active_sessions.return_value = []
+        h.ctx.aiden_manager.list_active_sessions.return_value = []
+        h.ctx.codex_manager.list_active_sessions.return_value = []
+        h.ctx.gemini_manager.list_active_sessions.return_value = []
+
+        with patch("src.feishu.handlers.system.tool_registry") as mock_registry:
+            mock_registry.get_availability.return_value = True
+            h.reply_interactive_card = MagicMock()
+            h.show_tools_status("m1", "c1", None)
+            assert mock_registry.get_availability.call_count == 5
+            h.reply_interactive_card.assert_called_once()
+
 
 # ======================================================================
 # ProgrammingModeHandler (CocoModeHandler / ClaudeModeHandler) tests
@@ -369,6 +421,11 @@ class TestCocoModeHandler:
         ctx = _make_handler_context(**ctx_overrides)
         h = CocoModeHandler(ctx)
         h._opposite_handler = MagicMock()
+        h._claude_handler = h._opposite_handler
+        h._aiden_handler = MagicMock()
+        h._codex_handler = MagicMock()
+        h._gemini_handler = MagicMock()
+        h._ttadk_handler = MagicMock()
         return h, ctx
 
     def test_mode_attributes(self):
@@ -388,7 +445,14 @@ class TestCocoModeHandler:
 
     def test_is_in_opposite_mode(self):
         h, ctx = self._make()
+        _set_all_programming_mode_flags(ctx, False)
         ctx.mode_manager.is_claude_mode.return_value = True
+        assert h._is_in_opposite_mode("c1") is True
+
+    def test_is_in_opposite_mode_checks_all_other_programming_modes(self):
+        h, ctx = self._make()
+        _set_all_programming_mode_flags(ctx, False)
+        ctx.mode_manager.is_aiden_mode.return_value = True
         assert h._is_in_opposite_mode("c1") is True
 
     def test_enter_mode_on_manager(self):
@@ -436,8 +500,21 @@ class TestCocoModeHandler:
 
     def test_exit_opposite_mode(self):
         h, _ = self._make()
+        h._aiden_handler = MagicMock()
+        h._codex_handler = MagicMock()
+        h._gemini_handler = MagicMock()
+        h._ttadk_handler = MagicMock()
+        h.mode_manager.is_claude_mode.return_value = True
+        h.mode_manager.is_aiden_mode.return_value = True
+        h.mode_manager.is_codex_mode.return_value = False
+        h.mode_manager.is_gemini_mode.return_value = False
+        h.mode_manager.is_ttadk_mode.return_value = True
         h._exit_opposite_mode("m1", "c1", project=None)
         h._opposite_handler.exit_mode.assert_called_once_with("m1", "c1", project=None)
+        h._aiden_handler.exit_mode.assert_called_once_with("m1", "c1", project=None)
+        h._codex_handler.exit_mode.assert_not_called()
+        h._gemini_handler.exit_mode.assert_not_called()
+        h._ttadk_handler.exit_mode.assert_called_once_with("m1", "c1", project=None)
 
 
 class TestClaudeModeHandler:
@@ -445,6 +522,11 @@ class TestClaudeModeHandler:
         ctx = _make_handler_context(**ctx_overrides)
         h = ClaudeModeHandler(ctx)
         h._opposite_handler = MagicMock()
+        h._coco_handler = h._opposite_handler
+        h._aiden_handler = MagicMock()
+        h._codex_handler = MagicMock()
+        h._gemini_handler = MagicMock()
+        h._ttadk_handler = MagicMock()
         return h, ctx
 
     def test_mode_attributes(self):
@@ -464,7 +546,14 @@ class TestClaudeModeHandler:
 
     def test_is_in_opposite_mode(self):
         h, ctx = self._make()
+        _set_all_programming_mode_flags(ctx, False)
         ctx.mode_manager.is_coco_mode.return_value = True
+        assert h._is_in_opposite_mode("c1") is True
+
+    def test_is_in_opposite_mode_checks_all_other_programming_modes(self):
+        h, ctx = self._make()
+        _set_all_programming_mode_flags(ctx, False)
+        ctx.mode_manager.is_ttadk_mode.return_value = True
         assert h._is_in_opposite_mode("c1") is True
 
     def test_enter_mode_on_manager(self):
@@ -504,6 +593,60 @@ class TestClaudeModeHandler:
         h._clear_snapshot_on_project(project)
         assert project.claude_session_snapshot is None
 
+    def test_exit_opposite_mode(self):
+        h, _ = self._make()
+        h.mode_manager.is_coco_mode.return_value = True
+        h.mode_manager.is_aiden_mode.return_value = True
+        h.mode_manager.is_codex_mode.return_value = False
+        h.mode_manager.is_gemini_mode.return_value = True
+        h.mode_manager.is_ttadk_mode.return_value = False
+        h._exit_opposite_mode("m1", "c1", project=None)
+        h._opposite_handler.exit_mode.assert_called_once_with("m1", "c1", project=None)
+        h._aiden_handler.exit_mode.assert_called_once_with("m1", "c1", project=None)
+        h._codex_handler.exit_mode.assert_not_called()
+        h._gemini_handler.exit_mode.assert_called_once_with("m1", "c1", project=None)
+        h._ttadk_handler.exit_mode.assert_not_called()
+
+
+class TestTTADKModeHandler:
+    def _make(self, **ctx_overrides):
+        ctx = _make_handler_context(**ctx_overrides)
+        h = TTADKModeHandler(ctx)
+        h._coco_handler = MagicMock()
+        h._claude_handler = MagicMock()
+        h._aiden_handler = MagicMock()
+        h._codex_handler = MagicMock()
+        h._gemini_handler = MagicMock()
+        return h, ctx
+
+    def test_is_in_opposite_mode_checks_all_other_programming_modes(self):
+        h, ctx = self._make()
+        _set_all_programming_mode_flags(ctx, False)
+        ctx.mode_manager.is_aiden_mode.return_value = True
+        assert h._is_in_opposite_mode("c1") is True
+
+    def test_exit_opposite_mode(self):
+        h, _ = self._make()
+        h.mode_manager.is_coco_mode.return_value = True
+        h.mode_manager.is_claude_mode.return_value = False
+        h.mode_manager.is_aiden_mode.return_value = True
+        h.mode_manager.is_codex_mode.return_value = True
+        h.mode_manager.is_gemini_mode.return_value = False
+        h._exit_opposite_mode("m1", "c1", project=None)
+        h._coco_handler.exit_mode.assert_called_once_with("m1", "c1", project=None)
+        h._claude_handler.exit_mode.assert_not_called()
+        h._aiden_handler.exit_mode.assert_called_once_with("m1", "c1", project=None)
+        h._codex_handler.exit_mode.assert_called_once_with("m1", "c1", project=None)
+        h._gemini_handler.exit_mode.assert_not_called()
+
+    def test_set_mode_on_project_activate_does_not_hardcode_other_modes(self):
+        h, _ = self._make()
+        project = MagicMock()
+        h._set_mode_on_project(project, True, "sid", 4)
+        project.set_ttadk_mode.assert_called_once_with(True, "sid", 4)
+        project.set_coco_mode.assert_not_called()
+        project.set_claude_mode.assert_not_called()
+
 
 class TestProgrammingModeEnterExit:
     """Integration-level tests for enter_mode / exit_mode template methods."""
@@ -512,6 +655,10 @@ class TestProgrammingModeEnterExit:
         ctx = _make_handler_context()
         ctx.mode_manager.is_coco_mode.return_value = False
         ctx.mode_manager.is_claude_mode.return_value = False
+        ctx.mode_manager.is_aiden_mode.return_value = False
+        ctx.mode_manager.is_codex_mode.return_value = False
+        ctx.mode_manager.is_gemini_mode.return_value = False
+        ctx.mode_manager.is_ttadk_mode.return_value = False
         ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
         ctx.project_manager.validate_project_path.return_value = (True, "ok")
         ctx.project_manager.get_or_create_project_for_path.return_value = (None, False)
@@ -525,6 +672,11 @@ class TestProgrammingModeEnterExit:
 
         h = CocoModeHandler(ctx)
         h._opposite_handler = MagicMock()
+        h._claude_handler = h._opposite_handler
+        h._aiden_handler = MagicMock()
+        h._codex_handler = MagicMock()
+        h._gemini_handler = MagicMock()
+        h._ttadk_handler = MagicMock()
         # Mock reply to avoid real API calls
         h.reply_message = MagicMock()
         h.reply_message_with_id = MagicMock(return_value="reply_1")
@@ -564,16 +716,45 @@ class TestProgrammingModeEnterExit:
         ctx.coco_manager.end_session.assert_called_once_with("c1", project_id="p1")
 
     def test_enter_mode_mutual_exclusion(self):
-        """When in Claude mode, entering Coco should exit Claude first."""
+        """When in another programming mode, entering Coco should exit it first."""
         h, ctx = self._make_coco()
-        ctx.mode_manager.is_claude_mode.return_value = True
+        ctx.mode_manager.is_gemini_mode.return_value = True
         project = MagicMock()
         project.coco_session_snapshot = None
         project.root_path = "/tmp"
         project.project_name = "test"
         project.project_id = "test_id"
         h.enter_mode("m1", "c1", project=project)
-        h._opposite_handler.exit_mode.assert_called_once()
+        h._gemini_handler.exit_mode.assert_called_once()
+
+    def test_handle_card_resume_syncs_project_flags(self):
+        h, ctx = self._make_coco()
+        project = MagicMock()
+        project.project_id = "p1"
+        project.root_path = "/tmp"
+        ctx.project_manager.get_project.return_value = project
+        session = MagicMock()
+        session.session_id = "sid_resume"
+        ctx.coco_manager.start_session.return_value = session
+        h.handle_card_resume("m1", "c1", "p1", "sid_resume")
+        project.set_claude_mode.assert_called_once_with(False)
+        project.set_aiden_mode.assert_called_once_with(False)
+        project.set_codex_mode.assert_called_once_with(False)
+        project.set_gemini_mode.assert_called_once_with(False)
+        project.set_ttadk_mode.assert_called_once_with(False)
+        project.set_coco_mode.assert_called_once_with(True, "sid_resume", 0)
+
+    def test_handle_card_resume_start_failure_does_not_switch_mode(self):
+        h, ctx = self._make_coco()
+        project = MagicMock()
+        project.project_id = "p1"
+        project.root_path = "/tmp"
+        ctx.project_manager.get_project.return_value = project
+        ctx.coco_manager.start_session.side_effect = RuntimeError("boom")
+        h.send_error_card = MagicMock()
+        h.handle_card_resume("m1", "c1", "p1", "sid_resume")
+        ctx.mode_manager.enter_coco_mode.assert_not_called()
+        h.send_error_card.assert_called_once()
 
     def test_show_info_with_project(self):
         h, ctx = self._make_coco()
@@ -1148,6 +1329,19 @@ class TestACPSessionManagerProjectIsolation:
         # proj_a session ended, proj_b untouched
         assert mgr.get_session("chat1", project_id="proj_a") is None
         assert mgr.get_session("chat1", project_id="proj_b") is s2
+
+    def test_agent_session_manager_alias_from_manager(self):
+        from src.acp.manager import ACPSessionManager, AgentSessionManager
+
+        assert issubclass(AgentSessionManager, ACPSessionManager)
+        assert AgentSessionManager._session_key("chat1", "proj_a") == ACPSessionManager._session_key("chat1", "proj_a")
+
+    def test_agent_session_manager_alias_from_package_exports(self):
+        from src.acp import ACPSessionManager, AgentSessionManager
+
+        mgr = AgentSessionManager("coco", session_timeout=999999)
+        assert isinstance(mgr, ACPSessionManager)
+        assert mgr._session_key("chat1") == "chat1:_default_"
 
 
 # ======================================================================

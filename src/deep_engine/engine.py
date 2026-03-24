@@ -23,6 +23,7 @@ from ..acp import ACPEvent, ACPEventRenderer, ACPEventType
 from ..agent_session import SyncSession, close_session_safely, create_engine_session
 from ..config import get_settings
 from ..utils.debug_utils import MemorySnapshot
+from ..utils.engine_identity import resolve_engine_identity
 from ..utils.gc_monitor import get_gc_monitor
 from ..utils.trace import TraceContext
 from .models import (
@@ -81,11 +82,13 @@ class DeepEngine:
 
     @property
     def project(self) -> Optional[DeepProject]:
-        return self._project
+        with self._context_lock:
+            return self._project
 
     @property
     def run_state(self) -> EngineRunState:
-        return self._run_state
+        with self._context_lock:
+            return self._run_state
 
     @property
     def is_running(self) -> bool:
@@ -444,10 +447,11 @@ class DeepEngine:
     }
 
     def get_progress(self) -> Optional[ProgressUpdate]:
-        if not self._project:
-            return None
+        with self._context_lock:
+            if not self._project:
+                return None
 
-        status = self._project.status
+            status = self._project.status
         if status == DeepProjectStatus.EXECUTING:
             message = f"执行中 (工具调用: {len(self._progress.tool_calls)})"
         elif status == DeepProjectStatus.FAILED:
@@ -464,25 +468,26 @@ class DeepEngine:
         )
 
     def get_task_summary(self) -> str:
-        if not self._project:
-            return "暂无任务"
+        with self._context_lock:
+            if not self._project:
+                return "暂无任务"
 
-        lines = [f"📊 **{self._project.name}** 执行进度\n"]
+            lines = [f"📊 **{self._project.name}** 执行进度\n"]
 
-        if self._progress.plan_entries:
-            lines.append(self._progress.progress_bar)
-            lines.append("")
-            for entry in self._progress.plan_entries:
-                icon = _STATUS_ICONS.get(entry["status"], "⬜")
-                lines.append(f"{icon} {entry['content']}")
-        else:
-            lines.append(f"🔧 工具调用: {len(self._progress.tool_calls)} 次")
+            if self._progress.plan_entries:
+                lines.append(self._progress.progress_bar)
+                lines.append("")
+                for entry in self._progress.plan_entries:
+                    icon = _STATUS_ICONS.get(entry["status"], "⬜")
+                    lines.append(f"{icon} {entry['content']}")
+            else:
+                lines.append(f"🔧 工具调用: {len(self._progress.tool_calls)} 次")
 
-        if self._progress.modified_files:
-            lines.append(f"\n📝 修改文件: {len(self._progress.modified_files)} 个")
+            if self._progress.modified_files:
+                lines.append(f"\n📝 修改文件: {len(self._progress.modified_files)} 个")
 
-        if self._project.duration():
-            lines.append(f"\n⏱️ 总耗时: {self._project.duration():.1f}s")
+            if self._project.duration():
+                lines.append(f"\n⏱️ 总耗时: {self._project.duration():.1f}s")
 
         return "\n".join(lines)
 
@@ -528,6 +533,14 @@ class DeepEngine:
             return False
 
     def cleanup(self):
+        if self._run_state != EngineRunState.IDLE:
+            self._run_state = EngineRunState.STOPPING
+            if self._session:
+                try:
+                    self._session.cancel()
+                except Exception:
+                    pass
+            return
         if self._session:
             try:
                 self._session.close()
@@ -563,18 +576,36 @@ class DeepEngineManager:
 
     def get_or_create(self, chat_id: str, root_path: str, engine_name: str = "Coco") -> DeepEngine:
         key = f"{chat_id}:{root_path}"
-
+        from ..mode import InteractionMode
         from ..ttadk import get_ttadk_manager
 
-        if engine_name.lower() == "ttadk":
-            ttadk_manager = get_ttadk_manager()
-            current_tool = ttadk_manager.get_current_tool()
-            current_model = ttadk_manager.get_current_model()
-            agent_type = f"ttadk_{current_tool}" if current_tool else "ttadk_coco"
-            model_name = current_model
+        normalized = (engine_name or "").strip().lower()
+        ttadk_tool = None
+        ttadk_model = None
+        if normalized == "ttadk":
+            mode = InteractionMode.TTADK
+            try:
+                ttadk_manager = get_ttadk_manager()
+                ttadk_tool = ttadk_manager.get_current_tool()
+                ttadk_model = ttadk_manager.get_current_model()
+            except Exception:
+                ttadk_tool = None
+                ttadk_model = None
+        elif normalized.startswith("claude"):
+            mode = InteractionMode.CLAUDE
+        elif normalized.startswith("aiden"):
+            mode = InteractionMode.AIDEN
+        elif normalized.startswith("codex"):
+            mode = InteractionMode.CODEX
+        elif normalized.startswith("gemini"):
+            mode = InteractionMode.GEMINI
         else:
-            agent_type = "claude" if engine_name.lower().startswith("claude") else "coco"
-            model_name = None
+            mode = InteractionMode.COCO
+
+        identity = resolve_engine_identity(mode=mode, ttadk_tool_name=ttadk_tool, ttadk_model_name=ttadk_model)
+        agent_type = identity.agent_type
+        model_name = identity.model_name
+        resolved_engine_name = identity.engine_name
 
         with self._lock:
             if key not in self._engines:
@@ -582,20 +613,20 @@ class DeepEngineManager:
                     chat_id=chat_id,
                     root_path=root_path,
                     agent_type=agent_type,
-                    engine_name=engine_name,
+                    engine_name=resolved_engine_name,
                     model_name=model_name,
                 )
                 self._engines[key] = engine
                 self._add_index(chat_id, key)
             else:
                 existing = self._engines[key]
-                if existing.engine_name.lower() != engine_name.lower() and not existing.is_running:
+                if existing.engine_name.lower() != resolved_engine_name.lower() and not existing.is_running:
                     existing.cleanup()
                     engine = DeepEngine(
                         chat_id=chat_id,
                         root_path=root_path,
                         agent_type=agent_type,
-                        engine_name=engine_name,
+                        engine_name=resolved_engine_name,
                         model_name=model_name,
                     )
                     self._engines[key] = engine
@@ -648,7 +679,13 @@ class DeepEngineManager:
 
     def cleanup_all(self):
         with self._lock:
-            for engine in self._engines.values():
+            next_engines: dict[str, DeepEngine] = {}
+            for key, engine in self._engines.items():
                 engine.cleanup()
-            self._engines.clear()
+                if engine.is_running:
+                    next_engines[key] = engine
+            self._engines = next_engines
             self._chat_keys.clear()
+            for key in next_engines:
+                chat_id = key.partition(":")[0]
+                self._chat_keys.setdefault(chat_id, set()).add(key)
