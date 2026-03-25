@@ -87,7 +87,14 @@ class CoreBuilder:
         elif is_gemini_mode or getattr(project, "gemini_mode", False):
             return f"✨ {project.project_name} · Gemini"
         elif is_ttadk_mode or project.ttadk_mode:
-            return f"🎮 {project.project_name} · TTADK"
+            tool = str(getattr(project, "ttadk_tool_name", "") or "").strip()
+            model = str(getattr(project, "ttadk_model_name", "") or "").strip()
+            suffix = ""
+            if tool and model:
+                suffix = f" · {tool}({model})"
+            elif tool:
+                suffix = f" · {tool}"
+            return f"🎮 {project.project_name} · TTADK{suffix}"
         elif is_coco_mode or project.coco_mode:
             return f"🤖 {project.project_name} · Coco"
         else:

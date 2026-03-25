@@ -312,9 +312,16 @@ class StreamingCardManager:
         is_coco_mode: bool,
         is_claude_mode: bool,
         is_ttadk_mode: bool = False,
+        ttadk_tool_name: Optional[str] = None,
+        ttadk_model_name: Optional[str] = None,
     ) -> tuple[str, str]:
         """根据模式和项目名生成标题与头部颜色模板。"""
-        return resolve_title_and_template(project_name, is_coco_mode, is_claude_mode, is_ttadk_mode=is_ttadk_mode)
+        return resolve_title_and_template(
+            project_name, is_coco_mode, is_claude_mode,
+            is_ttadk_mode=is_ttadk_mode,
+            ttadk_tool_name=ttadk_tool_name,
+            ttadk_model_name=ttadk_model_name,
+        )
 
     # ---- 创建流式卡片 ----
 
@@ -333,8 +340,15 @@ class StreamingCardManager:
         reply_to_message_id: Optional[str] = None,
         image_keys: Optional[list[str]] = None,
         reply_in_thread: Optional[bool] = None,
+        ttadk_tool_name: Optional[str] = None,
+        ttadk_model_name: Optional[str] = None,
     ) -> Optional[StreamingCard]:
-        title, header_template = self._resolve_title_and_template(project_name, is_coco_mode, is_claude_mode, is_ttadk_mode=is_ttadk_mode)
+        title, header_template = self._resolve_title_and_template(
+            project_name, is_coco_mode, is_claude_mode,
+            is_ttadk_mode=is_ttadk_mode,
+            ttadk_tool_name=ttadk_tool_name,
+            ttadk_model_name=ttadk_model_name,
+        )
 
         # "创建"阶段不做任何远端调用：先把卡片所需的元信息封装起来
         return StreamingCard(

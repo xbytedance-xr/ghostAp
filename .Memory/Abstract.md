@@ -2,6 +2,7 @@
 
 ## 2026-03-25
 - **TTADK CLI 模式 prompt 传递修复** - `SyncTTADKCLISession.send_prompt()` 将 prompt 作为位置参数传给 `ttadk code` 导致 "too many arguments" 错误，改为通过 `-a` passthrough 传递（coco/claude/gemini 使用 `-p` print 模式，codex 等使用位置参数），新增 `_build_ttadk_passthrough_prompt` + 扩展 preamble 过滤 + debug 日志 + 15 个新测试，1697 passed → [2026-03-25.md](2026-03-25.md)
+- **TTADK 卡片 banner 过滤 + 标题增强** - ASCII art banner 第 3 行含单引号未被过滤（正则补 `'"`）；卡片标题增加 TTADK 代理工具名和模型名显示（`🎮 项目 · TTADK · claude(glm-5)`），流式卡片和非流式卡片均支持，10 个新测试，1679 passed → [2026-03-25.md](2026-03-25.md)
 
 ## 2026-03-24
 - **全局优化精简（Phase 1+2）** - 修复 `_send_text_reply` 运行时 bug、删除死代码（scripts/archive/ 13 文件 + sys_monitor.py + 重复定义 + 23 个 camelCase 别名）、提取 BaseEngine/BaseEngineManager 基类消除三引擎重复、TTADK 去重、ACP Provider 表驱动合并、SpecHandler 继承 BaseEngineHandler；净减 532 行 5 个文件，1687 tests passed → [2026-03-24.md](2026-03-24.md)

@@ -116,6 +116,8 @@ def resolve_title_and_template(
     theme_color: Optional[str] = None,
     is_ttadk_mode: bool = False,
     is_gemini_mode: bool = False,
+    ttadk_tool_name: Optional[str] = None,
+    ttadk_model_name: Optional[str] = None,
 ) -> tuple[str, str]:
     """Resolve card title and header template based on mode and project name."""
     if is_claude_mode:
@@ -133,6 +135,8 @@ def resolve_title_and_template(
     if theme_color and not is_claude_mode and not is_coco_mode and not is_gemini_mode and not is_ttadk_mode:
         header_template = get_theme(theme_color).header_template
 
+    ttadk_suffix = _build_ttadk_title_suffix(ttadk_tool_name, ttadk_model_name) if is_ttadk_mode else ""
+
     if project_name:
         if is_claude_mode:
             title = f"🔮 {project_name} · Claude"
@@ -141,7 +145,7 @@ def resolve_title_and_template(
         elif is_gemini_mode:
             title = f"✨ {project_name} · Gemini"
         elif is_ttadk_mode:
-            title = f"🎮 {project_name} · TTADK"
+            title = f"🎮 {project_name} · TTADK{ttadk_suffix}"
         else:
             title = f"🧠 {project_name}"
     else:
@@ -152,12 +156,22 @@ def resolve_title_and_template(
         elif is_gemini_mode:
             mode_name = "Gemini 编程模式"
         elif is_ttadk_mode:
-            mode_name = "TTADK 多工具模式"
+            mode_name = f"TTADK{ttadk_suffix}"
         else:
             mode_name = "智能模式"
         title = f"{mode_icon} {mode_name}"
 
     return title, header_template
+
+
+def _build_ttadk_title_suffix(tool_name: Optional[str], model_name: Optional[str]) -> str:
+    tool = (tool_name or "").strip()
+    model = (model_name or "").strip()
+    if tool and model:
+        return f" · {tool}({model})"
+    if tool:
+        return f" · {tool}"
+    return ""
 
 
 # ---- Internal helpers ----

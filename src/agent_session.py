@@ -570,7 +570,7 @@ class SyncTTADKCLISession:
 
 
 _TTADK_PREAMBLE_PATTERNS = [
-    _re.compile(r"^[\s_/\\|.-]{6,}$"),
+    _re.compile(r"^[\s_/\\|.'\"-]{6,}$"),
     _re.compile(r"^TikTok AI-Driven Development Kit$", _re.IGNORECASE),
     _re.compile(r"^Version\s+\d+\.\d+\.\d+", _re.IGNORECASE),
     _re.compile(r"^Team:\s+", _re.IGNORECASE),

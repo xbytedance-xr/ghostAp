@@ -6262,6 +6262,96 @@ def test_ttadk_manager_preheat_timeout_zero_noop(monkeypatch):
     assert fake.calls == []
 
 
+class TestTTADKTitleSuffix:
+    def test_with_tool_and_model(self):
+        from src.card.shared import _build_ttadk_title_suffix
+
+        assert _build_ttadk_title_suffix("claude", "glm-5") == " · claude(glm-5)"
+
+    def test_with_tool_only(self):
+        from src.card.shared import _build_ttadk_title_suffix
+
+        assert _build_ttadk_title_suffix("gemini", None) == " · gemini"
+        assert _build_ttadk_title_suffix("coco", "") == " · coco"
+
+    def test_no_tool_no_model(self):
+        from src.card.shared import _build_ttadk_title_suffix
+
+        assert _build_ttadk_title_suffix(None, None) == ""
+        assert _build_ttadk_title_suffix("", "") == ""
+
+
+class TestResolveTitleTTADKWithToolModel:
+    def test_with_project_tool_model(self):
+        from src.card.shared import resolve_title_and_template
+
+        title, template = resolve_title_and_template(
+            "myProject", False, False,
+            is_ttadk_mode=True, ttadk_tool_name="claude", ttadk_model_name="glm-5",
+        )
+        assert "TTADK" in title
+        assert "claude" in title
+        assert "glm-5" in title
+        assert template == "orange"
+
+    def test_with_project_tool_only(self):
+        from src.card.shared import resolve_title_and_template
+
+        title, _ = resolve_title_and_template(
+            "myProject", False, False,
+            is_ttadk_mode=True, ttadk_tool_name="gemini",
+        )
+        assert "TTADK · gemini" in title
+        assert "myProject" in title
+
+    def test_no_project_with_tool_model(self):
+        from src.card.shared import resolve_title_and_template
+
+        title, _ = resolve_title_and_template(
+            None, False, False,
+            is_ttadk_mode=True, ttadk_tool_name="codex", ttadk_model_name="gpt-5.2",
+        )
+        assert "TTADK" in title
+        assert "codex" in title
+        assert "gpt-5.2" in title
+
+    def test_no_project_no_tool(self):
+        from src.card.shared import resolve_title_and_template
+
+        title, _ = resolve_title_and_template(
+            None, False, False, is_ttadk_mode=True,
+        )
+        assert "TTADK" in title
+
+    def test_backward_compatible_no_ttadk_params(self):
+        from src.card.shared import resolve_title_and_template
+
+        title, _ = resolve_title_and_template(
+            "ghostAp", False, False, is_ttadk_mode=True,
+        )
+        assert title == "🎮 ghostAp · TTADK"
+
+
+class TestPreambleAsciiArtSingleQuote:
+    def test_ascii_art_line_with_quote_filtered(self):
+        from src.agent_session import _is_ttadk_preamble_line
+
+        assert _is_ttadk_preamble_line("  | |   | | / _ \\ | | | | ' /")
+
+    def test_all_banner_lines_filtered(self):
+        from src.agent_session import _is_ttadk_preamble_line
+
+        lines = [
+            "  _____ _____  _    ____  _  __",
+            " |_   _|_   _|/ \\  |  _ \\| |/ /",
+            "   | |   | | / _ \\ | | | | ' /",
+            "   | |   | |/ ___ \\| |_| | . \\",
+            "   |_|   |_/_/   \\_\\____/|_|\\_\\",
+        ]
+        for i, line in enumerate(lines):
+            assert _is_ttadk_preamble_line(line), f"Banner line {i+1} should be filtered: {line!r}"
+
+
 class TestBuildTTADKPassthroughPrompt:
     def test_coco_uses_print_mode(self):
         from src.agent_session import _build_ttadk_passthrough_prompt

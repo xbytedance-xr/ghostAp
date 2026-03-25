@@ -102,6 +102,12 @@ class ProgrammingModeHandler(BaseHandler):
     def _get_model_name_override(self, project: Optional["ProjectContext"] = None) -> Optional[str]:
         return None
 
+    def _get_ttadk_tool_display(self, project: Optional["ProjectContext"] = None) -> Optional[str]:
+        return None
+
+    def _get_ttadk_model_display(self, project: Optional["ProjectContext"] = None) -> Optional[str]:
+        return None
+
     def _uses_claude_cli(self) -> bool:
         return False
 
@@ -416,6 +422,8 @@ class ProgrammingModeHandler(BaseHandler):
             is_ttadk_mode=self.mode_name == "TTADK",
             reply_to_message_id=message_id,
             image_keys=image_keys,
+            ttadk_tool_name=self._get_ttadk_tool_display(project) if self.mode_name == "TTADK" else None,
+            ttadk_model_name=self._get_ttadk_model_display(project) if self.mode_name == "TTADK" else None,
         )
 
         card_message_id = None
@@ -1021,6 +1029,13 @@ class TTADKModeHandler(ProgrammingModeHandler):
 
             model = get_ttadk_manager().get_current_model()
         return model
+
+    def _get_ttadk_tool_display(self, project: Optional["ProjectContext"] = None) -> Optional[str]:
+        agent_type = self._get_agent_type_override(project)
+        return agent_type.replace("ttadk_", "", 1) if agent_type else None
+
+    def _get_ttadk_model_display(self, project: Optional["ProjectContext"] = None) -> Optional[str]:
+        return self._get_model_name_override(project)
 
     @property
     def current_tool(self) -> Optional[str]:
