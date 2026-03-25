@@ -1,5 +1,8 @@
 # GhostAP 项目记忆索引
 
+## 2026-03-25
+- **TTADK CLI 模式 prompt 传递修复** - `SyncTTADKCLISession.send_prompt()` 将 prompt 作为位置参数传给 `ttadk code` 导致 "too many arguments" 错误，改为通过 `-a` passthrough 传递（coco/claude/gemini 使用 `-p` print 模式，codex 等使用位置参数），新增 `_build_ttadk_passthrough_prompt` + 扩展 preamble 过滤 + debug 日志 + 15 个新测试，1697 passed → [2026-03-25.md](2026-03-25.md)
+
 ## 2026-03-24
 - **全局优化精简（Phase 1+2）** - 修复 `_send_text_reply` 运行时 bug、删除死代码（scripts/archive/ 13 文件 + sys_monitor.py + 重复定义 + 23 个 camelCase 别名）、提取 BaseEngine/BaseEngineManager 基类消除三引擎重复、TTADK 去重、ACP Provider 表驱动合并、SpecHandler 继承 BaseEngineHandler；净减 532 行 5 个文件，1687 tests passed → [2026-03-24.md](2026-03-24.md)
 - **ACP Provider 表驱动合并** - 5 个独立 provider 文件合并为 `providers/__init__.py` 表驱动系统（`_ProviderConfig` + `GenericACPProvider`），新增 provider 只需添加一项配置，1447 tests passed → [2026-03-24.md](2026-03-24.md)

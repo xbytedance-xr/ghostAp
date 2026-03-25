@@ -6262,6 +6262,158 @@ def test_ttadk_manager_preheat_timeout_zero_noop(monkeypatch):
     assert fake.calls == []
 
 
+class TestBuildTTADKPassthroughPrompt:
+    def test_coco_uses_print_mode(self):
+        from src.agent_session import _build_ttadk_passthrough_prompt
+
+        result = _build_ttadk_passthrough_prompt("coco", "hello world")
+        assert result.startswith("-p ")
+        assert "hello world" in result
+
+    def test_claude_uses_print_mode(self):
+        from src.agent_session import _build_ttadk_passthrough_prompt
+
+        result = _build_ttadk_passthrough_prompt("claude", "fix the bug")
+        assert result.startswith("-p ")
+        assert "fix the bug" in result
+
+    def test_gemini_uses_print_mode(self):
+        from src.agent_session import _build_ttadk_passthrough_prompt
+
+        result = _build_ttadk_passthrough_prompt("gemini", "explain this code")
+        assert result.startswith("-p ")
+
+    def test_codex_uses_positional_only(self):
+        from src.agent_session import _build_ttadk_passthrough_prompt
+
+        result = _build_ttadk_passthrough_prompt("codex", "write a test")
+        assert not result.startswith("-p")
+        assert "write a test" in result
+
+    def test_unknown_tool_uses_positional(self):
+        from src.agent_session import _build_ttadk_passthrough_prompt
+
+        result = _build_ttadk_passthrough_prompt("tmates", "do something")
+        assert not result.startswith("-p")
+
+    def test_special_chars_are_quoted(self):
+        from src.agent_session import _build_ttadk_passthrough_prompt
+
+        result = _build_ttadk_passthrough_prompt("coco", 'fix "bug" in file.py')
+        assert "fix" in result
+        assert "bug" in result
+
+    def test_case_insensitive_tool_name(self):
+        from src.agent_session import _build_ttadk_passthrough_prompt
+
+        result = _build_ttadk_passthrough_prompt("Coco", "test")
+        assert result.startswith("-p ")
+
+
+class TestSyncTTADKCLISessionCmdArgs:
+    @pytest.fixture()
+    def _patch_env(self, monkeypatch):
+        monkeypatch.setattr(
+            "src.agent_session.build_ttadk_subprocess_env",
+            lambda **kw: ({"PATH": "/usr/bin", "NO_COLOR": "1"}, {}),
+        )
+
+    @pytest.mark.usefixtures("_patch_env")
+    def test_send_prompt_uses_passthrough_args(self, monkeypatch):
+        from unittest.mock import MagicMock, patch
+
+        from src.agent_session import SyncTTADKCLISession
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter(["Hello\n"])
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
+
+        with patch("src.agent_session.subprocess.Popen", return_value=mock_proc) as mock_popen:
+            session = SyncTTADKCLISession(agent_type="ttadk_coco", cwd="/tmp")
+            session.send_prompt("say hello")
+
+            cmd_args = mock_popen.call_args[0][0]
+            assert cmd_args[:4] == ["ttadk", "code", "-t", "coco"]
+            assert "-a" in cmd_args
+            a_idx = cmd_args.index("-a")
+            a_val = cmd_args[a_idx + 1]
+            assert a_val.startswith("-p ")
+            assert "say hello" in a_val
+
+    @pytest.mark.usefixtures("_patch_env")
+    def test_send_prompt_does_not_append_prompt_as_positional(self, monkeypatch):
+        from unittest.mock import MagicMock, patch
+
+        from src.agent_session import SyncTTADKCLISession
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter(["ok\n"])
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
+
+        with patch("src.agent_session.subprocess.Popen", return_value=mock_proc) as mock_popen:
+            session = SyncTTADKCLISession(agent_type="ttadk_coco", cwd="/tmp")
+            session.send_prompt("my prompt text")
+
+            cmd_args = mock_popen.call_args[0][0]
+            assert cmd_args[-1] != "my prompt text", "prompt should not be a positional arg to 'ttadk code'"
+
+    @pytest.mark.usefixtures("_patch_env")
+    def test_send_prompt_codex_no_print_flag(self, monkeypatch):
+        from unittest.mock import MagicMock, patch
+
+        from src.agent_session import SyncTTADKCLISession
+
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter(["done\n"])
+        mock_proc.stderr = iter([])
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = None
+
+        with patch("src.agent_session.subprocess.Popen", return_value=mock_proc) as mock_popen:
+            session = SyncTTADKCLISession(agent_type="ttadk_codex", cwd="/tmp")
+            session.send_prompt("write tests")
+
+            cmd_args = mock_popen.call_args[0][0]
+            a_idx = cmd_args.index("-a")
+            a_val = cmd_args[a_idx + 1]
+            assert not a_val.startswith("-p"), "codex should not use -p print mode"
+
+
+class TestTTADKPreambleNewPatterns:
+    def test_login_successful_filtered(self):
+        from src.agent_session import _is_ttadk_preamble_line
+
+        assert _is_ttadk_preamble_line("👋 Login successful. Welcome, user@example.com!")
+
+    def test_launching_tool_filtered(self):
+        from src.agent_session import _is_ttadk_preamble_line
+
+        assert _is_ttadk_preamble_line("🚀 Launching Trae CLI (Coco)...")
+        assert _is_ttadk_preamble_line("🚀 Launching Claude Code...")
+
+    def test_version_warning_filtered(self):
+        from src.agent_session import _is_ttadk_preamble_line
+
+        assert _is_ttadk_preamble_line("⚠ Version check failed: EPERM: operation not permitted")
+        assert _is_ttadk_preamble_line("Continuing with current version...")
+
+    def test_model_selector_filtered(self):
+        from src.agent_session import _is_ttadk_preamble_line
+
+        assert _is_ttadk_preamble_line("❯ GLM 5 (Recommended)")
+
+    def test_real_content_not_filtered(self):
+        from src.agent_session import _is_ttadk_preamble_line
+
+        assert not _is_ttadk_preamble_line("Hello, I can help you with that!")
+        assert not _is_ttadk_preamble_line("The answer is 42.")
+        assert not _is_ttadk_preamble_line("def foo(): return 1")
+
+
 def test_ttadk_manager_preheat_first_use_only_once(monkeypatch):
     manager = TTADKManager(default_tool="coco")
 

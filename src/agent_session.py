@@ -16,6 +16,7 @@ import json as _json
 import logging
 import os
 import re as _re
+import shlex as _shlex
 import shutil
 import subprocess
 import threading
@@ -413,8 +414,7 @@ class SyncTTADKCLISession:
         cmd = ["ttadk", "code", "-t", self._tool_name]
         if self._model_name:
             cmd.extend(["-m", self._model_name])
-        # Append prompt as the last argument
-        cmd.append(text)
+        cmd.extend(["-a", _build_ttadk_passthrough_prompt(self._tool_name, text)])
 
         raw_chunks: list[str] = []
         visible_chunks: list[str] = []
@@ -447,6 +447,8 @@ class SyncTTADKCLISession:
             # Force no color to simplify output parsing
             env["NO_COLOR"] = "1"
             env["TERM"] = "dumb"
+
+            logger.debug("[TTADK:CLI] cmd=%s cwd=%s", cmd, self._cwd)
 
             self._proc = subprocess.Popen(
                 cmd,
@@ -572,9 +574,12 @@ _TTADK_PREAMBLE_PATTERNS = [
     _re.compile(r"^TikTok AI-Driven Development Kit$", _re.IGNORECASE),
     _re.compile(r"^Version\s+\d+\.\d+\.\d+", _re.IGNORECASE),
     _re.compile(r"^Team:\s+", _re.IGNORECASE),
-    _re.compile(r"^(?:🚀|👋|✔)\s"),
+    _re.compile(r"^(?:🚀|👋|✔|⚠|❯)\s"),
     _re.compile(r"^\?\s+Select a model", _re.IGNORECASE),
     _re.compile(r"^↑↓\s+navigate", _re.IGNORECASE),
+    _re.compile(r"^Continuing with current version", _re.IGNORECASE),
+    _re.compile(r"Login successful", _re.IGNORECASE),
+    _re.compile(r"^Launching\s+", _re.IGNORECASE),
 ]
 
 
@@ -589,6 +594,26 @@ def _is_ttadk_preamble_line(text: str) -> bool:
         except Exception:
             continue
     return False
+
+
+_TTADK_PRINT_MODE_TOOLS = frozenset({"coco", "claude", "gemini"})
+
+
+def _build_ttadk_passthrough_prompt(tool_name: str, prompt: str) -> str:
+    """Build the ``-a`` value that passes *prompt* through to the downstream tool.
+
+    ``ttadk code -a <value>`` shell-splits *value* before forwarding to the
+    downstream tool CLI, so we use :func:`shlex.join` to produce a properly
+    quoted fragment.
+
+    * **coco / claude / gemini** — ``-p <prompt>`` activates *print* (headless)
+      mode so the tool outputs the answer and exits without requiring a TTY.
+    * **codex** and others — the prompt is passed as a bare positional argument.
+    """
+    tool = (tool_name or "").strip().lower()
+    if tool in _TTADK_PRINT_MODE_TOOLS:
+        return _shlex.join(["-p", prompt])
+    return _shlex.quote(prompt)
 
 
 class _JSONTextExtractor:
