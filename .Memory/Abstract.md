@@ -1,8 +1,17 @@
 # GhostAP 项目记忆索引
 
+## 2026-03-26
+- **修复卡片流式输出速度缓慢/卡顿问题** - 异步化飞书 PATCH 更新以避免阻塞底层流读取 → [2026-03-26.md](2026-03-26.md)
+- **Spec 流式卡片 PATCH 兼容 + 审查超时配置** - PATCH 载荷改为 schema 2.0 + legacy-safe elements，新增 loop_review_timeout 并接入 review 调用，补充断连/停止日志与 streaming 测试更新（36/110/187 passed）→ [2026-03-26.md](2026-03-26.md)
+
 ## 2026-03-25
 - **TTADK CLI 模式 prompt 传递修复** - `SyncTTADKCLISession.send_prompt()` 将 prompt 作为位置参数传给 `ttadk code` 导致 "too many arguments" 错误，改为通过 `-a` passthrough 传递（coco/claude/gemini 使用 `-p` print 模式，codex 等使用位置参数），新增 `_build_ttadk_passthrough_prompt` + 扩展 preamble 过滤 + debug 日志 + 15 个新测试，1697 passed → [2026-03-25.md](2026-03-25.md)
 - **TTADK 卡片 banner 过滤 + 标题增强** - ASCII art banner 第 3 行含单引号未被过滤（正则补 `'"`）；卡片标题增加 TTADK 代理工具名和模型名显示（`🎮 项目 · TTADK · claude(glm-5)`），流式卡片和非流式卡片均支持，10 个新测试，1679 passed → [2026-03-25.md](2026-03-25.md)
+- **TTADK 手机端最小交互 + YOLO 模式** - TTADK 项目新增 yolo 开关与状态展示，工具/模型自动选择与静默切换、菜单强制选择入口、ttadk_flow_duration_ms 耗时统计，补充卡片/路由/项目/流程测试，314 passed → [2026-03-25.md](2026-03-25.md)
+- **TTADK 进入失败兜底与错误提示优化** - TTADK 入口/工具/模型失败改为温和提示与重试引导，TTADK 启动超时/异常改为警告提示，卡片动作异常对 TTADK 走柔性提示；补充入口失败回归测试，170 passed → [2026-03-25.md](2026-03-25.md)
+- **TTADK 软失败卡片与恢复入口** - 新增 TTADK 软失败卡片（含“重新进入TTADK”按钮），统一 System/Programming/WS 的软失败提示为卡片；补齐 card/ws_client/handler 回归测试，279 passed → [2026-03-25.md](2026-03-25.md)
+- **TTADK 软失败提示统一服务** - 提供统一 soft-failure 文案模板与卡片入口（build_ttadk_soft_failure_card_for），替换分散调用点并修复 model 失败分支 project_id；补齐入口/模型/卡片异常软失败测试，279 passed → [2026-03-25.md](2026-03-25.md)
+- **TTADK 入口成功判定测试** - 新增 TTADK 进入成功 UI 要素测试（状态条与入口按钮），验证卡片关键元素 → [2026-03-25.md](2026-03-25.md)
 
 ## 2026-03-24
 - **全局优化精简（Phase 1+2）** - 修复 `_send_text_reply` 运行时 bug、删除死代码（scripts/archive/ 13 文件 + sys_monitor.py + 重复定义 + 23 个 camelCase 别名）、提取 BaseEngine/BaseEngineManager 基类消除三引擎重复、TTADK 去重、ACP Provider 表驱动合并、SpecHandler 继承 BaseEngineHandler；净减 532 行 5 个文件，1687 tests passed → [2026-03-24.md](2026-03-24.md)

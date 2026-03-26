@@ -366,6 +366,17 @@ class FeishuWSClient:
             lambda mid, cid, pid, val: self._handle_select_ttadk_tool(mid, cid, val.get("tool_name", ""), pid),
             exact="select_ttadk_tool",
         )
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_toggle_ttadk_yolo(
+                mid,
+                cid,
+                bool(val.get("enabled")),
+                val.get("view", "tool_select"),
+                val.get("tool_name", ""),
+                pid,
+            ),
+            exact="toggle_ttadk_yolo",
+        )
 
     def _register_programming_mode_actions(self):
         """Register enter/exit/resume/new actions for all programming modes."""
@@ -399,7 +410,7 @@ class FeishuWSClient:
         )
         self._register_action(
             lambda mid, cid, pid, val: self._handle_ttadk_command(
-                mid, cid, self._project_manager.get_project(pid) if pid else None
+                mid, cid, self._project_manager.get_project(pid) if pid else None, True
             ),
             exact="show_ttadk_menu",
         )
@@ -498,6 +509,8 @@ class FeishuWSClient:
                 return
             if kind == "disconnected" and self._ws_reconnect_requested_at <= 0.0:
                 self._ws_reconnect_requested_at = now
+                logger.warning("WS断连，已触发重连请求: ts=%.3f", now)
+                logger.warning("[METRIC] ws_disconnect")
 
     def _get_ws_watchdog_interval(self) -> float:
         value = getattr(self.settings, "feishu_ws_watchdog_interval", 15.0)
@@ -844,6 +857,7 @@ class FeishuWSClient:
         "_handle_select_ttadk_tool": ("_system_handler", "handle_select_ttadk_tool"),
         "_handle_select_ttadk_model": ("_system_handler", "handle_select_ttadk_model"),
         "_handle_refresh_ttadk_models": ("_system_handler", "handle_refresh_ttadk_models"),
+        "_handle_toggle_ttadk_yolo": ("_system_handler", "handle_toggle_ttadk_yolo"),
         "_handle_acp_command": ("_system_handler", "handle_acp_command"),
         "_handle_select_acp_tool": ("_system_handler", "handle_select_acp_tool"),
         "_handle_select_acp_model": ("_system_handler", "handle_select_acp_model"),
@@ -1607,7 +1621,26 @@ class FeishuWSClient:
             _action = locals().get("action_type", "unknown")
             try:
                 if _mid != "unknown":
-                    self._reply_message(_mid, f"❌ 操作失败 ({_action}): {e}")
+                    if str(_action).startswith("ttadk") or _action in {
+                        "show_ttadk_menu",
+                        "select_ttadk_tool",
+                        "select_ttadk_model",
+                        "refresh_ttadk_models",
+                        "toggle_ttadk_yolo",
+                    }:
+                        try:
+                            from ..card import CardBuilder
+
+                            project_id = locals().get("project_id")
+                            msg_type, card_content = CardBuilder.build_ttadk_soft_failure_card_for(
+                                "操作未完成",
+                                project_id=project_id or None,
+                            )
+                            self._reply_message(_mid, card_content, msg_type=msg_type)
+                        except Exception:
+                            self._reply_message(_mid, "⚠️ 操作未完成，请稍后重试或发送 /ttadk 重新进入")
+                    else:
+                        self._reply_message(_mid, f"❌ 操作失败 ({_action}): {e}")
             except Exception:
                 pass
 

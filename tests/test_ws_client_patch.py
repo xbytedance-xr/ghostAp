@@ -126,6 +126,144 @@ class TestCardActionHandler(unittest.TestCase):
             client._process_card_action_async(data)
             client._handle_refresh_ttadk_models.assert_called_once_with("om_1", "oc_1", "codex", "p1")
 
+    def test_process_card_action_routes_toggle_ttadk_yolo(self):
+        """验证 TTADK YOLO 切换按钮可被正确路由。"""
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+            client._handle_toggle_ttadk_yolo = MagicMock()
+
+            data = SimpleNamespace(
+                event=SimpleNamespace(
+                    action=SimpleNamespace(
+                        value={
+                            "action": "toggle_ttadk_yolo",
+                            "enabled": True,
+                            "view": "model_select",
+                            "tool_name": "codex",
+                            "project_id": "p1",
+                        },
+                        tag="button",
+                        name="toggle",
+                    ),
+                    operator=SimpleNamespace(open_id="ou_x", user_id="u_x"),
+                    context=SimpleNamespace(open_message_id="om_1", open_chat_id="oc_1"),
+                )
+            )
+
+            client._process_card_action_async(data)
+            client._handle_toggle_ttadk_yolo.assert_called_once_with(
+                "om_1", "oc_1", True, "model_select", "codex", "p1"
+            )
+
+    def test_process_card_action_routes_show_ttadk_menu_force_select(self):
+        """验证 TTADK 菜单按钮强制进入选择菜单。"""
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+            client._handle_ttadk_command = MagicMock()
+
+            project = SimpleNamespace(project_id="p1")
+            client._project_manager.get_project.return_value = project
+
+            data = SimpleNamespace(
+                event=SimpleNamespace(
+                    action=SimpleNamespace(
+                        value={
+                            "action": "show_ttadk_menu",
+                            "project_id": "p1",
+                        },
+                        tag="button",
+                        name="menu",
+                    ),
+                    operator=SimpleNamespace(open_id="ou_x", user_id="u_x"),
+                    context=SimpleNamespace(open_message_id="om_1", open_chat_id="oc_1"),
+                )
+            )
+
+            client._process_card_action_async(data)
+            client._handle_ttadk_command.assert_called_once()
+            args, _ = client._handle_ttadk_command.call_args
+            self.assertEqual(args[0], "om_1")
+            self.assertEqual(args[1], "oc_1")
+            self.assertIs(args[2], project)
+            self.assertTrue(args[3])
+
+    def test_process_card_action_ttadk_exception_uses_soft_failure_card(self):
+        """验证 TTADK 卡片动作异常时返回软失败提示。"""
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+            client._reply_message = MagicMock()
+            client._action_dispatcher.dispatch = MagicMock(side_effect=Exception("boom"))
+
+            data = SimpleNamespace(
+                event=SimpleNamespace(
+                    action=SimpleNamespace(
+                        value={"action": "select_ttadk_tool", "tool_name": "codex", "project_id": "p1"},
+                        tag="button",
+                        name="tool",
+                    ),
+                    operator=SimpleNamespace(open_id="ou_x", user_id="u_x"),
+                    context=SimpleNamespace(open_message_id="om_1", open_chat_id="oc_1"),
+                )
+            )
+
+            client._process_card_action_async(data)
+
+            client._reply_message.assert_called_once()
+            _, content = client._reply_message.call_args.args[:2]
+            self.assertIn("已为你保留选择", content)
+            self.assertIn("继续进入TTADK", content)
+
     def test_handle_card_enter_claude_passes_project(self):
         """验证卡片入口 Claude 时把 project 透传给 enter_mode（避免选错项目导致显示 Coco 卡片）"""
         with (
@@ -161,6 +299,46 @@ class TestCardActionHandler(unittest.TestCase):
 
             client._claude_handler.enter_mode.assert_called_once()
             args, kwargs = client._claude_handler.enter_mode.call_args
+            self.assertEqual(args[0], "om_1")
+            self.assertEqual(args[1], "oc_1")
+            self.assertIs(kwargs.get("project"), project)
+
+    def test_handle_card_enter_ttadk_passes_project(self):
+        """验证卡片入口 TTADK 时把 project 透传给 enter_mode（避免加载错误项目）"""
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+
+            project = SimpleNamespace(
+                project_id="p1",
+                ttadk_session_snapshot=None,
+                coco_session_snapshot=None,
+                claude_session_snapshot=None,
+            )
+            # Mock at handler level: project_manager lives inside handler context
+            client._ttadk_handler.project_manager.get_project.return_value = project
+            client._ttadk_handler.enter_mode = MagicMock()
+
+            client._handle_card_enter_ttadk("om_1", "oc_1", "p1")
+
+            client._ttadk_handler.enter_mode.assert_called_once()
+            args, kwargs = client._ttadk_handler.enter_mode.call_args
             self.assertEqual(args[0], "om_1")
             self.assertEqual(args[1], "oc_1")
             self.assertIs(kwargs.get("project"), project)

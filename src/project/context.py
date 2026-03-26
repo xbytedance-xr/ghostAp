@@ -81,6 +81,7 @@ class ProjectContext:
     ttadk_mode: bool = False
     ttadk_tool_name: Optional[str] = None
     ttadk_model_name: Optional[str] = None
+    ttadk_yolo_enabled: bool = False
 
     acp_tool_name: Optional[str] = None
     acp_model_name: Optional[str] = None
@@ -273,6 +274,7 @@ class ProjectContext:
             "ttadk_mode": self.ttadk_mode,
             "ttadk_tool_name": self.ttadk_tool_name,
             "ttadk_model_name": self.ttadk_model_name,
+            "ttadk_yolo_enabled": self.ttadk_yolo_enabled,
             "acp_tool_name": self.acp_tool_name,
             "acp_model_name": self.acp_model_name,
             "ttadk_session_snapshot": {
@@ -299,6 +301,13 @@ class ProjectContext:
 
     @classmethod
     def from_snapshot(cls, data: dict) -> "ProjectContext":
+        try:
+            from ..config import get_settings
+
+            yolo_default = bool(getattr(get_settings(), "ttadk_yolo_default_enabled", False))
+        except Exception:
+            yolo_default = False
+
         ctx = cls(
             project_id=data["project_id"],
             project_name=data["project_name"],
@@ -315,6 +324,7 @@ class ProjectContext:
             ttadk_mode=data.get("ttadk_mode", False),
             ttadk_tool_name=data.get("ttadk_tool_name"),
             ttadk_model_name=data.get("ttadk_model_name"),
+            ttadk_yolo_enabled=data.get("ttadk_yolo_enabled", yolo_default),
             acp_tool_name=data.get("acp_tool_name"),
             acp_model_name=data.get("acp_model_name"),
             theme_color=data.get("theme_color", "green"),

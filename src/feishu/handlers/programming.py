@@ -219,21 +219,37 @@ class ProgrammingModeHandler(BaseHandler):
             )
         except TimeoutError as e:
             if not silent:
-                self.send_error_card(
-                    chat_id,
-                    e,
-                    title=f"启动 {self.mode_name} 会话超时",
-                    origin_message_id=message_id,
-                )
+                if self.mode_name == "TTADK":
+                    project_id = project.project_id if project else None
+                    msg_type, card_content = CardBuilder.build_ttadk_soft_failure_card_for(
+                        "TTADK 会话启动超时",
+                        project_id=project_id,
+                    )
+                    self.reply_message(message_id, card_content, msg_type=msg_type)
+                else:
+                    self.send_error_card(
+                        chat_id,
+                        e,
+                        title=f"启动 {self.mode_name} 会话超时",
+                        origin_message_id=message_id,
+                    )
             return
         except Exception as e:
             if not silent:
-                self.send_error_card(
-                    chat_id,
-                    e,
-                    title=f"启动 {self.mode_name} 会话失败",
-                    origin_message_id=message_id,
-                )
+                if self.mode_name == "TTADK":
+                    project_id = project.project_id if project else None
+                    msg_type, card_content = CardBuilder.build_ttadk_soft_failure_card_for(
+                        "TTADK 会话暂不可用",
+                        project_id=project_id,
+                    )
+                    self.reply_message(message_id, card_content, msg_type=msg_type)
+                else:
+                    self.send_error_card(
+                        chat_id,
+                        e,
+                        title=f"启动 {self.mode_name} 会话失败",
+                        origin_message_id=message_id,
+                    )
             return
 
         # TTADK 启动失败降级提示（best-effort）

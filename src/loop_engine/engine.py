@@ -769,7 +769,8 @@ FAIL
                     review_text.clear()
                     thought_text.clear()
                     
-                self._session.send_prompt(review_prompt, on_event=on_review_event, timeout=120)
+                review_timeout = getattr(self.settings, "loop_review_timeout", 120)
+                self._session.send_prompt(review_prompt, on_event=on_review_event, timeout=review_timeout)
                 full_text = "".join(review_text)
                 # Combine text + thought for parsing (some agents put verdicts in thinking)
                 combined_text = full_text
@@ -793,6 +794,7 @@ FAIL
                     
                     # Convert to friendly error message
                     if isinstance(e, TimeoutError) or "timeout" in detail.lower():
+                        logger.warning("[METRIC] review_timeout")
                         err_msg = "多视角审查请求超时，请检查网络"
                     else:
                         err_msg = f"审查执行异常: {detail}"

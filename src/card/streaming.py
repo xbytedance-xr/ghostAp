@@ -2,6 +2,7 @@ import json
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -67,6 +68,11 @@ class StreamingCard:
     sticky_message: Optional[str] = None
     sticky_expires_at: float = 0.0
 
+    # Concurrency control
+    is_inflight: bool = False
+    pending_update: bool = False
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
 
 def _normalize_streaming_markdown(content: str, *, is_final: bool, max_chars: int) -> str:
     """让卡片在“增量渲染”时更稳定。
@@ -115,6 +121,9 @@ class StreamingCardManager:
         self._last_cleanup: float = 0.0
         self._cleanup_interval: float = 300.0  # auto-cleanup every 5 minutes
 
+        # Thread pool for asynchronous card updates
+        self._executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="streaming_card_updater")
+
     # ---- 卡片 JSON 构建（共用） ----
 
     def _build_elements(
@@ -133,8 +142,8 @@ class StreamingCardManager:
     ) -> list[dict]:
         """构建卡片内容元素列表。
 
-        注意：飞书消息 PATCH 更新（`im/v1/message.update`）对卡片字段校验更严格，
-        legacy 卡片不支持 schema 2.0 的部分字段（如 `schema`/`body`/`text_size`/`element_id`）。
+        注意：飞书消息 PATCH 更新（`im/v1/message.update`）对卡片字段校验更严格。
+        PATCH 载荷使用 schema 2.0，但元素需采用 legacy-safe 字段（避免 `text_size`/`element_id`）。
         """
         path_display = project_path or "~"
         button_elements = self._build_button_elements(buttons or [])
@@ -266,11 +275,9 @@ class StreamingCardManager:
         progress_text: str = "",
         sticky_message: Optional[str] = None,
     ) -> dict:
-        """构建 legacy 格式卡片 JSON。
+        """构建适配 PATCH 更新的 schema 2.0 卡片 JSON。
 
-        该格式同时用于：
-        - 创建“可被 PATCH 更新”的流式消息卡片（create/reply）
-        - 后续通过 `UpdateMessageRequest` 进行更新/关闭
+        PATCH 需要 schema 2.0 包装，但元素需保持 legacy-safe，避免额外字段导致校验失败。
         """
         elements = self._build_elements(
             project_path,
@@ -298,12 +305,15 @@ class StreamingCardManager:
             }
 
         return {
+            "schema": "2.0",
             "config": config,
             "header": {
                 "title": {"tag": "plain_text", "content": title},
                 "template": header_template,
             },
-            "elements": elements,
+            "body": {
+                "elements": elements,
+            },
         }
 
     def _resolve_title_and_template(
@@ -479,8 +489,7 @@ class StreamingCardManager:
                 max_chars=self._max_card_chars,
             )
             # 关键：流式卡片后续需要用 message.update(PATCH) 更新。
-            # PATCH 更新对卡片字段校验严格，schema 2.0 格式会触发 field validation failed。
-            # 因此创建阶段也必须使用 legacy 卡片结构。
+            # PATCH 更新要求 schema 2.0 包装，但元素需 legacy-safe（避免 text_size/element_id）。
             card_json = self._build_update_card_json(
                 title=card.title,
                 header_template=card.header_template,
@@ -562,128 +571,157 @@ class StreamingCardManager:
         if not card.message_id:
             return False
 
-        # --- Adaptive Flow Control Calculation ---
         now = time.time()
 
-        # Check sticky expiration
-        if card.sticky_message and card.sticky_expires_at > 0 and now > card.sticky_expires_at:
-            card.sticky_message = None
-            card.sticky_expires_at = 0.0
-            force = True  # Force update to remove sticky message
+        with card.lock:
+            # Check sticky expiration
+            if card.sticky_message and card.sticky_expires_at > 0 and now > card.sticky_expires_at:
+                card.sticky_message = None
+                card.sticky_expires_at = 0.0
+                force = True  # Force update to remove sticky message
 
-        current_len = len(content)
+            current_len = len(content)
 
-        # Calculate content arrival rate (based on FULL content length)
-        # We track rate based on data arrival, not rendering frequency
-        delta_c = current_len - card.last_content_len
-        self._flow_control.update_rate(card.flow_control_state, now, delta_c)
+            # Calculate content arrival rate (based on FULL content length)
+            delta_c = current_len - card.last_content_len
+            self._flow_control.update_rate(card.flow_control_state, now, delta_c)
 
-        # Update full content in memory
-        card.full_content = content
-        card.is_typing = is_typing
+            # Update full content in memory
+            card.full_content = content
+            card.is_typing = is_typing
 
-        # Calculate display content based on visible_chars
-        display_content = content
-        has_more = False
+            # Dual buffering strategy: Time OR Size
+            content_len = len(content)
+            size_delta = abs(content_len - card.last_content_len)
+            time_delta = now - card.last_update_at
 
-        if len(content) > card.visible_chars:
-            display_content = content[: card.visible_chars]
-            has_more = True
+            should_update = (
+                force
+                or card.last_update_at == 0.0
+                or size_delta >= card.size_threshold
+                or time_delta >= card.flow_control_state.min_update_interval_s
+                or (is_typing and time_delta >= 0.8)  # Slower update for just typing animation
+            )
 
-        normalized = _normalize_streaming_markdown(
-            display_content,
-            is_final=False,
-            max_chars=0,  # Disable truncation in normalize since we handled it
-        )
+            if should_update:
+                card.pending_update = True
 
-        # Add typing indicator suffix if active
-        if is_typing:
-            if now - card.last_typing_update > 0.4:  # Update dots every 400ms
-                card.typing_state = (card.typing_state + 1) % 4
-                card.last_typing_update = now
+            if not card.pending_update or card.is_inflight:
+                return True
 
-            dots = "." * card.typing_state
-            if normalized.strip():
-                normalized += f"\n\n_对方正在思考{dots}_"
-            else:
-                normalized = f"_对方正在思考{dots}_"
+            card.is_inflight = True
 
-        if normalized == card.last_content and not has_more and not is_typing:
-            return True
+        # Dispatch async update
+        self._executor.submit(self._do_patch_task, card)
+        return True
 
-        # Dual buffering strategy: Time OR Size
-        # Update if enough time has passed OR enough content has accumulated
-        # We compare against the FULL content length for activity, but send truncated.
-        content_len = len(content)
-        size_delta = abs(content_len - card.last_content_len)
-        time_delta = now - card.last_update_at
-
-        should_update = (
-            force
-            or card.last_update_at == 0.0
-            or size_delta >= card.size_threshold
-            or time_delta >= card.flow_control_state.min_update_interval_s
-            or (is_typing and time_delta >= 0.8)  # Slower update for just typing animation
-        )
-
-        if not should_update:
-            return True
-
+    def _do_patch_task(self, card: StreamingCard) -> None:
         try:
-            buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode, card.is_ttadk_mode)
+            while True:
+                with card.lock:
+                    if not card.pending_update:
+                        card.is_inflight = False
+                        break
+                    card.pending_update = False
 
-            # Inject Load More button if needed
-            if has_more:
-                buttons.append(
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "⬇️ 加载更多"},
-                        "type": "primary",
-                        "value": {"action": "load_more", "message_id": card.message_id},
-                    }
+                    content = card.full_content
+                    is_typing = card.is_typing
+                    has_more = False
+                    display_content = content
+
+                    if len(content) > card.visible_chars:
+                        display_content = content[: card.visible_chars]
+                        has_more = True
+
+                    now = time.time()
+
+                normalized = _normalize_streaming_markdown(
+                    display_content,
+                    is_final=False,
+                    max_chars=0,
                 )
 
-            card_json = self._build_update_card_json(
-                title=card.title,
-                header_template=card.header_template,
-                project_path=card.project_path,
-                initial_content=normalized,
-                image_keys=card.image_keys,
-                buttons=buttons,
-                streaming_mode=True,
-                status_color=card.status_color,
-                error_count=card.error_count,
-                progress_text=card.progress_text,
-                sticky_message=card.sticky_message,
-            )
+                # Add typing indicator suffix if active
+                if is_typing:
+                    with card.lock:
+                        if now - card.last_typing_update > 0.4:
+                            card.typing_state = (card.typing_state + 1) % 4
+                            card.last_typing_update = now
+                        dots = "." * card.typing_state
+                    if normalized.strip():
+                        normalized += f"\n\n_对方正在思考{dots}_"
+                    else:
+                        normalized = f"_对方正在思考{dots}_"
 
-            req = (
-                PatchMessageRequest.builder()
-                .message_id(card.message_id)
-                .request_body(
-                    PatchMessageRequestBody.builder().content(json.dumps(card_json, ensure_ascii=False)).build()
+                with card.lock:
+                    if normalized == card.last_content and not has_more and not is_typing:
+                        # nothing real changed
+                        card.last_content_len = len(content)
+                        continue
+
+                buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode, card.is_ttadk_mode)
+
+                if has_more:
+                    buttons.append(
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "⬇️ 加载更多"},
+                            "type": "primary",
+                            "value": {"action": "load_more", "message_id": card.message_id},
+                        }
+                    )
+
+                card_json = self._build_update_card_json(
+                    title=card.title,
+                    header_template=card.header_template,
+                    project_path=card.project_path,
+                    initial_content=normalized,
+                    image_keys=card.image_keys,
+                    buttons=buttons,
+                    streaming_mode=True,
+                    status_color=card.status_color,
+                    error_count=card.error_count,
+                    progress_text=card.progress_text,
+                    sticky_message=card.sticky_message,
                 )
-                .build()
-            )
 
-            resp = self._client.im.v1.message.patch(req)
+                req = (
+                    PatchMessageRequest.builder()
+                    .message_id(card.message_id)
+                    .request_body(
+                        PatchMessageRequestBody.builder().content(json.dumps(card_json, ensure_ascii=False)).build()
+                    )
+                    .build()
+                )
 
-            if not resp.success():
-                # Rate limit handling could go here
-                logger.warning("卡片消息更新失败: code=%s, msg=%s", resp.code, resp.msg)
-                return False
+                resp = self._client.im.v1.message.patch(req)
 
-            card.last_content = normalized
-            card.last_content_len = len(content)  # Track FULL content length
-            card.last_update_at = now
-            return True
+                with card.lock:
+                    if not resp.success():
+                        logger.warning("卡片消息更新失败: code=%s, msg=%s", resp.code, resp.msg)
+                    else:
+                        card.last_content = normalized
+                        card.last_content_len = len(content)
+                        card.last_update_at = time.time()
+
         except Exception as e:
-            logger.warning("卡片消息更新异常: %s", e, exc_info=True)
-            return False
+            logger.warning("卡片消息异步更新异常: %s", e, exc_info=True)
+            with card.lock:
+                card.is_inflight = False
 
     def close_streaming(self, card: StreamingCard, final_content: Optional[str] = None) -> bool:
         if not card.message_id:
             return False
+
+        # Wait briefly for any in-flight update to finish to avoid race conditions
+        for _ in range(20):
+            with card.lock:
+                if not card.is_inflight:
+                    # Prevent new updates
+                    card.pending_update = False
+                    card.is_inflight = True
+                    break
+            time.sleep(0.1)
 
         try:
             final_text = final_content if final_content else card.last_content
@@ -721,9 +759,13 @@ class StreamingCardManager:
 
             with self._lock:
                 self._cards.pop(card.message_id, None)
+            with card.lock:
+                card.is_inflight = False
             return True
         except Exception as e:
             logger.warning("关闭流式异常: %s", e, exc_info=True)
+            with card.lock:
+                card.is_inflight = False
             return False
 
     # ---- 查询/清理 ----

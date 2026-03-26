@@ -188,6 +188,7 @@ class SpecHandler(BaseEngineHandler):
             except Exception as e:
                 if isinstance(e, (TimeoutError, asyncio.TimeoutError)):
                     logger.warning("Spec Engine 执行超时 (task_id=%s): %s", task_id, e)
+                    logger.warning("[METRIC] spec_timeout task_id=%s", task_id)
                 else:
                     logger.error("Spec Engine 执行异常: %s", e, exc_info=True)
 
@@ -534,6 +535,13 @@ class SpecHandler(BaseEngineHandler):
 
     def stop_spec_engine(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         def _stop():
+            proj = project or self.project_manager.get_active_project(chat_id)
+            logger.info(
+                "Spec stop requested: chat_id=%s message_id=%s project_id=%s",
+                chat_id,
+                message_id,
+                proj.project_id if proj else None,
+            )
             self._stop_engine_generic(message_id, chat_id, project)
             if project is None:
                 proj = self.project_manager.get_active_project(chat_id)

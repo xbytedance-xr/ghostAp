@@ -93,6 +93,7 @@ class Settings(BaseSettings):
 
     ttadk_default_tool: str = "coco"
     ttadk_default_model: str = ""
+    ttadk_yolo_default_enabled: bool = False
 
     # TTADK common tool model preheating (probe-based, best-effort)
     # - enabled: master switch
@@ -193,6 +194,7 @@ class Settings(BaseSettings):
     # Loop Engine multi-perspective review (Ralph Loop)
     loop_review_enabled: bool = True
     loop_review_extra_iterations: int = 3
+    loop_review_timeout: int = 120
     
     # Loop Watchdog
     loop_watchdog_timeout: float = 300.0

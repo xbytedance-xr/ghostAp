@@ -117,7 +117,13 @@ class CoreBuilder:
             return None
         tool = str(getattr(project, "ttadk_tool_name", "") or "").strip() or "未设置"
         model = str(getattr(project, "ttadk_model_name", "") or "").strip() or "自动"
-        return {"tag": "markdown", "content": f"🎮 **TTADK 状态** · 工具: `{tool}` · 模型: `{model}`", "text_size": "notation"}
+        yolo_enabled = bool(getattr(project, "ttadk_yolo_enabled", False))
+        yolo_label = "开启" if yolo_enabled else "关闭"
+        return {
+            "tag": "markdown",
+            "content": f"🎮 **TTADK 状态** · 工具: `{tool}` · 模型: `{model}` · YOLO: `{yolo_label}`",
+            "text_size": "notation",
+        }
 
     @staticmethod
     def _build_footer_buttons(

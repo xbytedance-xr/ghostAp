@@ -119,8 +119,36 @@ class SystemBuilder:
         return "interactive", json.dumps(card, ensure_ascii=False)
 
     @staticmethod
-    def build_ttadk_tool_select_card(tools: list, project_id: Optional[str] = None) -> tuple[str, str]:
+    def _build_ttadk_yolo_toggle_button(
+        yolo_enabled: bool, project_id: Optional[str], view: str, tool_name: str = ""
+    ) -> dict:
+        enabled = bool(yolo_enabled)
+        label = "⚡ YOLO：已开启（点击关闭）" if enabled else "⚡ YOLO：已关闭（点击开启）"
+        return {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": label},
+            "type": "primary" if enabled else "default",
+            "value": {
+                "action": "toggle_ttadk_yolo",
+                "enabled": not enabled,
+                "project_id": project_id,
+                "view": view,
+                "tool_name": tool_name,
+            },
+        }
+
+    @staticmethod
+    def build_ttadk_tool_select_card(
+        tools: list, project_id: Optional[str] = None, yolo_enabled: bool = False
+    ) -> tuple[str, str]:
         elements = [{"tag": "markdown", "content": "请选择要使用的 TTADK 工具："}]
+
+        elements.extend(
+            build_responsive_layout(
+                [SystemBuilder._build_ttadk_yolo_toggle_button(yolo_enabled, project_id, "tool_select")]
+            )
+        )
+        elements.append({"tag": "hr"})
 
         buttons = []
         for tool in tools:
@@ -143,7 +171,7 @@ class SystemBuilder:
 
     @staticmethod
     def build_ttadk_model_select_card(
-        models: list, tool_name: str, project_id: Optional[str] = None
+        models: list, tool_name: str, project_id: Optional[str] = None, yolo_enabled: bool = False
     ) -> tuple[str, str]:
         elements = [
             {
@@ -154,6 +182,13 @@ class SystemBuilder:
                 ),
             }
         ]
+
+        elements.extend(
+            build_responsive_layout(
+                [SystemBuilder._build_ttadk_yolo_toggle_button(yolo_enabled, project_id, "model_select", tool_name)]
+            )
+        )
+        elements.append({"tag": "hr"})
 
         buttons = []
         for model in models:
@@ -197,6 +232,55 @@ class SystemBuilder:
 
         card = CoreBuilder._wrap_card(f"🤖 {tool_name} 模型选择", "blue", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
+    def build_ttadk_soft_failure_card(
+        message: str,
+        project_id: Optional[str] = None,
+        *,
+        action: str = "show_ttadk_menu",
+        button_text: str = "🔄 重新进入TTADK",
+    ) -> tuple[str, str]:
+        elements = [
+            {
+                "tag": "markdown",
+                "content": message.strip(),
+            }
+        ]
+
+        button = {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": button_text},
+            "type": "primary",
+            "value": {"action": action, "project_id": project_id},
+        }
+        elements.extend(build_responsive_layout([button]))
+
+        card = CoreBuilder._wrap_card("⚠️ TTADK 暂不可用", "orange", elements)
+        return "interactive", json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
+    def _format_ttadk_soft_failure_message(reason: str) -> str:
+        cleaned = str(reason or "").strip()
+        if not cleaned:
+            cleaned = "TTADK 暂不可用"
+        return f"⚠️ {cleaned}\n\n已为你保留选择，可点击继续或稍后重试。"
+
+    @staticmethod
+    def build_ttadk_soft_failure_card_for(
+        reason: str,
+        project_id: Optional[str] = None,
+        *,
+        action: str = "show_ttadk_menu",
+        button_text: str = "继续进入TTADK",
+    ) -> tuple[str, str]:
+        message = SystemBuilder._format_ttadk_soft_failure_message(reason)
+        return SystemBuilder.build_ttadk_soft_failure_card(
+            message,
+            project_id,
+            action=action,
+            button_text=button_text,
+        )
 
     @staticmethod
     def build_acp_tool_select_card(tools: list, project_id: Optional[str] = None) -> tuple[str, str]:

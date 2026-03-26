@@ -126,6 +126,10 @@ class TestCardBuilder:
         assert (refresh.get("value") or {}).get("tool_name") == "codex"
         assert (refresh.get("value") or {}).get("project_id") == "p1"
 
+        yolo_toggle = next((b for b in buttons if (b.get("value") or {}).get("action") == "toggle_ttadk_yolo"), None)
+        assert yolo_toggle is not None
+        assert (yolo_toggle.get("value") or {}).get("enabled") is True
+
     def test_build_deep_card_progress_bar_not_duplicated_when_content_contains_bar(self):
         # 兜底：即使调用方把 progress_bar 文本拼到 content，build_deep_card 也不应重复渲染
         progress_bar = "[████░░░░░░] 40% (2/5)"
@@ -178,6 +182,7 @@ class TestCardBuilder:
         sample_project.ttadk_mode = True
         sample_project.ttadk_tool_name = "codex"
         sample_project.ttadk_model_name = "gpt-5.2"
+        sample_project.ttadk_yolo_enabled = True
 
         msg_type, content = CardBuilder.build_project_response_card(
             project=sample_project,
@@ -190,6 +195,7 @@ class TestCardBuilder:
         assert "TTADK 状态" in content_str
         assert "工具: `codex`" in content_str
         assert "模型: `gpt-5.2`" in content_str
+        assert "YOLO: `开启`" in content_str
 
     def test_build_project_response_card_no_buttons(self, sample_project):
         msg_type, content = CardBuilder.build_project_response_card(
@@ -267,6 +273,7 @@ class TestCardBuilder:
     def test_build_ttadk_resume_card_includes_status_bar(self, sample_project):
         sample_project.ttadk_tool_name = "claude"
         sample_project.ttadk_model_name = "gpt-5.2-ttadk"
+        sample_project.ttadk_yolo_enabled = False
         sample_project.ttadk_session_snapshot = CocoSessionSnapshot(
             session_id="session_ttadk",
             query_count=3,
@@ -281,6 +288,7 @@ class TestCardBuilder:
         assert "TTADK 状态" in content_str
         assert "工具: `claude`" in content_str
         assert "模型: `gpt-5.2-ttadk`" in content_str
+        assert "YOLO: `关闭`" in content_str
 
     def test_build_project_created_card(self, sample_project):
         msg_type, content = CardBuilder.build_project_created_card(sample_project)
@@ -350,6 +358,25 @@ class TestCardBuilder:
         elements = card["body"]["elements"]
         img_elements = [e for e in elements if e.get("tag") == "img"]
         assert len(img_elements) == 0
+
+    def test_build_project_response_card_ttadk_entry_ui(self, sample_project):
+        sample_project.ttadk_mode = True
+        sample_project.ttadk_tool_name = "codex"
+        sample_project.ttadk_model_name = "gpt-5.2"
+        sample_project.ttadk_yolo_enabled = True
+
+        msg_type, content = CardBuilder.build_project_response_card(
+            project=sample_project,
+            title="TTADK编程模式",
+            content="已进入TTADK编程模式",
+        )
+
+        assert msg_type == "interactive"
+        content_str = json.dumps(json.loads(content), ensure_ascii=False)
+        assert "TTADK编程模式" in content_str
+        assert "已进入TTADK编程模式" in content_str
+        assert "TTADK 状态" in content_str
+        assert "show_ttadk_menu" in content_str
 
     def test_build_image_elements(self):
         elements = CardBuilder._build_image_elements(["key1", "key2", "key3"])
@@ -1430,10 +1457,16 @@ class TestTTADKCards:
         assert "Claude AI Assistant" in content_str
         assert "coco" in content_str
         assert "gemini" in content_str
+        assert "toggle_ttadk_yolo" in content_str
 
-        # 验证默认工具按钮是 primary 类型
-        column_set_elements = [e for e in elements if e.get("tag") == "column_set"]
-        assert len(column_set_elements) >= 1
+    def test_build_ttadk_soft_failure_card(self):
+        msg_type, content = CardBuilder.build_ttadk_soft_failure_card_for("TTADK 暂不可用", project_id="p1")
+        assert msg_type == "interactive"
+        content_str = json.dumps(json.loads(content), ensure_ascii=False)
+        assert "TTADK 暂不可用" in content_str
+        assert "继续进入TTADK" in content_str
+        assert "已为你保留选择" in content_str
+        assert "show_ttadk_menu" in content_str
 
     def test_build_ttadk_tool_select_card_without_project(self):
         """测试不提供 project_id 时构建 TTADK 工具选择卡片"""

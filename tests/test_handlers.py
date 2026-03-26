@@ -26,6 +26,7 @@ from src.feishu.handlers.programming import (
 from src.feishu.handlers.project import ProjectHandler
 from src.feishu.handlers.system import SystemHandler
 from src.mode.manager import InteractionMode
+from src.ttadk.models import TTADKModel, TTADKTool
 
 # ======================================================================
 # Shared fixture: mock HandlerContext
@@ -378,6 +379,192 @@ class TestSystemHandlerRouting:
         h.exit_current_mode("m1", "c1", None)
         h.claude_handler.exit_mode.assert_called_once_with("m1", "c1", None)
 
+    def test_handle_ttadk_command_auto_enters_when_configured(self):
+        ctx = _make_handler_context()
+        h = SystemHandler(ctx)
+        h.ttadk_handler = MagicMock()
+        h.reply_error = MagicMock()
+
+        project = MagicMock()
+        project.project_id = "p1"
+        project.ttadk_tool_name = "codex"
+        project.ttadk_model_name = "gpt-5.2"
+
+        with (
+            patch("src.feishu.handlers.system.CardBuilder.build_ttadk_tool_select_card") as mock_build,
+            patch("src.feishu.handlers.system.get_ttadk_manager") as mock_manager,
+        ):
+            manager = MagicMock()
+            manager.get_current_tool.return_value = ""
+            manager.get_current_model.return_value = ""
+            mock_manager.return_value = manager
+
+            h.handle_ttadk_command("m1", "c1", project)
+
+            h.ttadk_handler.enter_mode.assert_called_once_with("m1", "c1", project=project)
+            mock_build.assert_not_called()
+
+    def test_handle_select_ttadk_tool_auto_selects_default_model(self):
+        ctx = _make_handler_context()
+        h = SystemHandler(ctx)
+        h.reply_message = MagicMock()
+        h.reply_error = MagicMock()
+        h.handle_select_ttadk_model = MagicMock()
+
+        project = MagicMock()
+        project.project_id = "p1"
+        project.root_path = "/tmp"
+        ctx.project_manager.get_project.return_value = project
+
+        manager = MagicMock()
+        manager.set_tool.return_value = True
+        manager.get_current_model.return_value = None
+        manager.get_models.return_value = SimpleNamespace(
+            models=[TTADKModel(name="gpt-5.2", description="", is_default=True)],
+            error=None,
+            warnings=[],
+        )
+
+        with patch("src.feishu.handlers.system.get_ttadk_manager", return_value=manager):
+            h.handle_select_ttadk_tool("m1", "c1", "codex", "p1")
+
+        h.handle_select_ttadk_model.assert_called_once_with(
+            "m1", "c1", "codex", "gpt-5.2", project=project, silent=True
+        )
+
+    def test_handle_ttadk_command_yolo_auto_selects_tool_and_model(self):
+        ctx = _make_handler_context()
+        h = SystemHandler(ctx)
+        h.reply_error = MagicMock()
+        h.handle_select_ttadk_model = MagicMock()
+
+        project = MagicMock()
+        project.project_id = "p1"
+        project.ttadk_tool_name = ""
+        project.ttadk_model_name = ""
+        project.ttadk_yolo_enabled = True
+        project.root_path = "/tmp"
+
+        tools = [
+            TTADKTool(name="codex", description=""),
+            TTADKTool(name="claude", description=""),
+        ]
+
+        manager = MagicMock()
+        manager.get_current_tool.return_value = ""
+        manager.get_current_model.return_value = ""
+        manager.get_tools.return_value = SimpleNamespace(tools=tools, error=None)
+        manager.set_tool.return_value = True
+        manager.get_models.return_value = SimpleNamespace(
+            models=[TTADKModel(name="gpt-5.2", description="", is_default=False)],
+            error=None,
+            warnings=[],
+        )
+
+        with patch("src.feishu.handlers.system.get_ttadk_manager", return_value=manager):
+            h.handle_ttadk_command("m1", "c1", project)
+
+        h.handle_select_ttadk_model.assert_called_once_with(
+            "m1", "c1", "codex", "gpt-5.2", project=project, silent=True
+        )
+
+    def test_handle_select_ttadk_tool_yolo_falls_back_to_first_model(self):
+        ctx = _make_handler_context()
+        h = SystemHandler(ctx)
+        h.reply_message = MagicMock()
+        h.reply_error = MagicMock()
+        h.handle_select_ttadk_model = MagicMock()
+
+        project = MagicMock()
+        project.project_id = "p1"
+        project.root_path = "/tmp"
+        project.ttadk_yolo_enabled = True
+        ctx.project_manager.get_project.return_value = project
+
+        manager = MagicMock()
+        manager.set_tool.return_value = True
+        manager.get_current_model.return_value = None
+        manager.get_models.return_value = SimpleNamespace(
+            models=[
+                TTADKModel(name="gpt-5.2", description="", is_default=False),
+                TTADKModel(name="gpt-4.1", description="", is_default=False),
+            ],
+            error=None,
+            warnings=[],
+        )
+
+        with patch("src.feishu.handlers.system.get_ttadk_manager", return_value=manager):
+            h.handle_select_ttadk_tool("m1", "c1", "codex", "p1")
+
+        h.handle_select_ttadk_model.assert_called_once_with(
+            "m1", "c1", "codex", "gpt-5.2", project=project, silent=True
+        )
+
+    def test_handle_ttadk_command_tool_list_error_returns_hint(self):
+        ctx = _make_handler_context()
+        h = SystemHandler(ctx)
+        h.reply_message = MagicMock()
+        ctx.project_manager.get_active_project.return_value = None
+
+        manager = MagicMock()
+        manager.get_tools.return_value = SimpleNamespace(tools=[], error="offline")
+
+        with patch("src.feishu.handlers.system.get_ttadk_manager", return_value=manager):
+            h.handle_ttadk_command("m1", "c1", None)
+
+        h.reply_message.assert_called_once()
+        assert "已为你保留选择" in str(h.reply_message.call_args)
+        assert "继续进入TTADK" in str(h.reply_message.call_args)
+
+    def test_handle_select_ttadk_tool_model_list_error_returns_hint(self):
+        ctx = _make_handler_context()
+        h = SystemHandler(ctx)
+        h.reply_message = MagicMock()
+
+        project = MagicMock()
+        project.project_id = "p1"
+        project.root_path = "/tmp"
+        ctx.project_manager.get_project.return_value = project
+
+        manager = MagicMock()
+        manager.set_tool.return_value = True
+        manager.get_models.return_value = SimpleNamespace(models=[], error="timeout", warnings=[])
+
+        with patch("src.feishu.handlers.system.get_ttadk_manager", return_value=manager):
+            h.handle_select_ttadk_tool("m1", "c1", "codex", "p1")
+
+        h.reply_message.assert_called_once()
+        assert "已为你保留选择" in str(h.reply_message.call_args)
+        assert "继续进入TTADK" in str(h.reply_message.call_args)
+
+    def test_handle_select_ttadk_model_set_failure_returns_hint(self):
+        ctx = _make_handler_context()
+        h = SystemHandler(ctx)
+        h.reply_message = MagicMock()
+        h.reply_error = MagicMock()
+
+        manager = MagicMock()
+        manager.set_model.return_value = False
+
+        with patch("src.feishu.handlers.system.get_ttadk_manager", return_value=manager):
+            h.handle_select_ttadk_model("m1", "c1", "codex", "gpt-5.2", project=None)
+
+        assert h.reply_message.call_count == 2
+        h.reply_error.assert_not_called()
+        assert "已为你保留选择" in str(h.reply_message.call_args_list[-1])
+        assert "继续进入TTADK" in str(h.reply_message.call_args_list[-1])
+
+    def test_ttadk_flow_duration_is_recorded(self):
+        ctx = _make_handler_context()
+        h = SystemHandler(ctx)
+
+        with patch("src.feishu.handlers.system.time.perf_counter", side_effect=[10.0, 10.45]):
+            h._mark_ttadk_flow_start("c1")
+            h._report_ttadk_flow_duration("c1", "p1", "enter_mode")
+
+        assert h._ttadk_flow_last_duration_ms["c1"] == 450  # rounded to nearest ms
+        assert "c1" not in h._ttadk_flow_start_times
+
     def test_show_tools_list_uses_cached_availability_api(self):
         h = self._make()
         with patch("src.feishu.handlers.system.tool_registry") as mock_registry:
@@ -646,6 +833,79 @@ class TestTTADKModeHandler:
         project.set_ttadk_mode.assert_called_once_with(True, "sid", 4)
         project.set_coco_mode.assert_not_called()
         project.set_claude_mode.assert_not_called()
+
+    def test_enter_mode_builds_ttadk_entry_card(self):
+        ctx = _make_handler_context()
+        ctx.mode_manager.is_ttadk_mode.return_value = False
+        ctx.mode_manager.is_coco_mode.return_value = False
+        ctx.mode_manager.is_claude_mode.return_value = False
+        ctx.mode_manager.is_aiden_mode.return_value = False
+        ctx.mode_manager.is_codex_mode.return_value = False
+        ctx.mode_manager.is_gemini_mode.return_value = False
+        ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
+
+        ctx.project_manager.validate_project_path.return_value = (True, "ok")
+        project = MagicMock()
+        project.ttadk_session_snapshot = None
+        project.root_path = "/tmp"
+        project.project_name = "test"
+        project.project_id = "test_id"
+        project.ttadk_mode = False
+        project.coco_mode = False
+        project.claude_mode = False
+        ctx.project_manager.get_or_create_project_for_path.return_value = (project, False)
+
+        sess = MagicMock()
+        sess.session_id = "sid_ttadk"
+        sess.is_resumed = False
+        ctx.ttadk_manager.ensure_session.return_value = sess
+
+        h = TTADKModeHandler(ctx)
+        h._get_agent_type_override = MagicMock(return_value="ttadk_coco")
+        h._get_model_name_override = MagicMock(return_value="gpt-5.2")
+        h.reply_message = MagicMock()
+        h.reply_message_with_id = MagicMock(return_value="reply_1")
+        h.add_reaction = MagicMock()
+        h.record_mode_transition = MagicMock()
+        h.register_message_project = MagicMock()
+
+        with patch("src.feishu.handlers.programming.CardBuilder.build_project_response_card") as mock_build:
+            mock_build.return_value = ("interactive", "{}")
+            h.enter_mode("m1", "c1", project=project)
+
+            mock_build.assert_called_once()
+            _, title, content = mock_build.call_args.args[:3]
+            assert "TTADK编程模式" in title
+            assert "已进入TTADK编程模式" in content
+            h.reply_message_with_id.assert_called_once()
+
+    def test_enter_mode_ttadk_timeout_uses_warning(self):
+        ctx = _make_handler_context()
+        ctx.mode_manager.is_ttadk_mode.return_value = False
+        ctx.mode_manager.is_coco_mode.return_value = False
+        ctx.mode_manager.is_claude_mode.return_value = False
+        ctx.mode_manager.is_aiden_mode.return_value = False
+        ctx.mode_manager.is_codex_mode.return_value = False
+        ctx.mode_manager.is_gemini_mode.return_value = False
+        ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
+
+        project = MagicMock()
+        project.root_path = "/tmp"
+        project.project_id = "p1"
+        ctx.project_manager.get_or_create_project_for_path.return_value = (project, False)
+        ctx.project_manager.validate_project_path.return_value = (True, "ok")
+
+        ctx.ttadk_manager.ensure_session.side_effect = TimeoutError("boom")
+
+        h = TTADKModeHandler(ctx)
+        h.reply_message = MagicMock()
+        h.send_error_card = MagicMock()
+
+        h.enter_mode("m1", "c1", project=project)
+
+        h.reply_message.assert_called_once()
+        h.send_error_card.assert_not_called()
+        assert "已为你保留选择" in str(h.reply_message.call_args)
 
 
 class TestProgrammingModeEnterExit:

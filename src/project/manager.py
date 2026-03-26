@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..card.shared import THEMES
+from ..config import get_settings
 from .context import ProjectContext, ProjectStatus
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,8 @@ class ProjectManager:
                     return False, f"无法创建目录 {expanded_path}: {e}", None
 
             theme_color, emoji_prefix = self._get_next_theme()
+            settings = get_settings()
+            yolo_enabled = bool(getattr(settings, "ttadk_yolo_default_enabled", False))
 
             ctx = ProjectContext(
                 project_id=project_id,
@@ -96,6 +99,7 @@ class ProjectManager:
                 status=ProjectStatus.ACTIVE,
                 theme_color=theme_color,
                 emoji_prefix=emoji_prefix,
+                ttadk_yolo_enabled=yolo_enabled,
             )
 
             self._projects[project_id] = ctx

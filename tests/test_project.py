@@ -112,6 +112,7 @@ class TestProjectContext:
         ctx.set_coco_mode(True, "session_456", 10)
         ctx.ttadk_tool_name = "codex"
         ctx.ttadk_model_name = "gpt-5.2"
+        ctx.ttadk_yolo_enabled = True
 
         snapshot = ctx.to_snapshot()
 
@@ -120,6 +121,7 @@ class TestProjectContext:
         assert snapshot["coco_session_snapshot"]["session_id"] == "session_456"
         assert snapshot["ttadk_tool_name"] == "codex"
         assert snapshot["ttadk_model_name"] == "gpt-5.2"
+        assert snapshot["ttadk_yolo_enabled"] is True
 
         restored = ProjectContext.from_snapshot(snapshot)
 
@@ -129,6 +131,7 @@ class TestProjectContext:
         assert restored.coco_session_snapshot.session_id == "session_456"
         assert restored.ttadk_tool_name == "codex"
         assert restored.ttadk_model_name == "gpt-5.2"
+        assert restored.ttadk_yolo_enabled is True
 
 
 class TestProjectManager:

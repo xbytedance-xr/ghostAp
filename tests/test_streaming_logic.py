@@ -42,17 +42,23 @@ class TestStreamingLogic(unittest.TestCase):
         # 1. Update with content < limit
         content_short = "Short"
         self.manager.update_content(card, content_short)
+        
+        # Wait for async update
+        for _ in range(20):
+            if self.mock_client.im.v1.message.patch.call_count >= 1:
+                break
+            time.sleep(0.05)
 
         # Verify call args
         args, _ = self.mock_client.im.v1.message.patch.call_args
         req = args[0]
         body = json.loads(req.request_body.content)
-        content_element = find_content(body["elements"])
+        content_element = find_content(body["body"]["elements"])
         self.assertEqual(content_element["content"], "Short")
 
         # Check buttons - should NOT have "Load More"
         has_load_more = False
-        for el in body["elements"]:
+        for el in body["body"]["elements"]:
             if el.get("tag") == "column_set":
                 for col in el.get("columns", []):
                     for item in col.get("elements", []):
@@ -62,19 +68,26 @@ class TestStreamingLogic(unittest.TestCase):
 
         # 2. Update with content > limit
         content_long = "This is a very long content that exceeds the limit."
+        self.mock_client.im.v1.message.patch.reset_mock()
         self.manager.update_content(card, content_long)
+        
+        # Wait for async update
+        for _ in range(20):
+            if self.mock_client.im.v1.message.patch.call_count >= 1:
+                break
+            time.sleep(0.05)
 
         args, _ = self.mock_client.im.v1.message.patch.call_args
         req = args[0]
         body = json.loads(req.request_body.content)
-        content_element = find_content(body["elements"])
+        content_element = find_content(body["body"]["elements"])
 
         # Should be truncated to 10 chars
         self.assertEqual(content_element["content"], content_long[:10])
 
         # Check buttons - SHOULD have "Load More"
         has_load_more = False
-        for el in body["elements"]:
+        for el in body["body"]["elements"]:
             if el.get("tag") == "column_set":
                 for col in el.get("columns", []):
                     for item in col.get("elements", []):
@@ -83,13 +96,20 @@ class TestStreamingLogic(unittest.TestCase):
         self.assertTrue(has_load_more)
 
         # 3. Increase Pagination
+        self.mock_client.im.v1.message.patch.reset_mock()
         self.manager.increase_pagination("test_msg_id")
+
+        # Wait for async update
+        for _ in range(20):
+            if self.mock_client.im.v1.message.patch.call_count >= 1:
+                break
+            time.sleep(0.05)
 
         # Verify update was called with new limit (20)
         args, _ = self.mock_client.im.v1.message.patch.call_args
         req = args[0]
         body = json.loads(req.request_body.content)
-        content_element = find_content(body["elements"])
+        content_element = find_content(body["body"]["elements"])
 
         self.assertEqual(content_element["content"], content_long[:20])
 
@@ -117,6 +137,12 @@ class TestStreamingLogic(unittest.TestCase):
         large_content = "Base content" + "A" * 60
         result = self.manager.update_content(card, large_content)
         self.assertTrue(result)
+        
+        for _ in range(20):
+            if self.mock_client.im.v1.message.patch.call_count >= 1:
+                break
+            time.sleep(0.05)
+            
         self.mock_client.im.v1.message.patch.assert_called_once()
 
         # 3. Reset and test Time expiry
@@ -127,6 +153,12 @@ class TestStreamingLogic(unittest.TestCase):
         self.mock_client.im.v1.message.patch.reset_mock()
         result = self.manager.update_content(card, large_content + " small")
         self.assertTrue(result)
+        
+        for _ in range(20):
+            if self.mock_client.im.v1.message.patch.call_count >= 1:
+                break
+            time.sleep(0.05)
+            
         self.mock_client.im.v1.message.patch.assert_called_once()
 
 

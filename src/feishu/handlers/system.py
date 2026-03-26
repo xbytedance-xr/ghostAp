@@ -63,6 +63,8 @@ class SystemHandler(BaseHandler):
     def __init__(self, ctx: "HandlerContext") -> None:
         super().__init__(ctx)
         self._init_command_registry()
+        self._ttadk_flow_start_times: dict[str, float] = {}
+        self._ttadk_flow_last_duration_ms: dict[str, int] = {}
 
     def _init_command_registry(self):
         """Initialize the command dispatch registry."""
@@ -377,42 +379,6 @@ class SystemHandler(BaseHandler):
         lines.append("\n最短修复路径：若仍不可用，请确认在项目目录执行过 `ttadk init`，或切换 tool 后重试。")
         self.reply_message(message_id, "\n".join(lines))
 
-    def handle_refresh_ttadk_models(
-        self, message_id: str, chat_id: str, tool_name: str, project_id: Optional[str] = None
-    ):
-        """卡片按钮入口：强制刷新指定 tool 的模型列表，并重新渲染模型选择卡片。"""
-        from ...card.styles import UI_TEXT
-
-        manager = get_ttadk_manager()
-        tool = (tool_name or manager.get_current_tool() or "").strip()
-        try:
-            raw_cwd = self._resolve_ttadk_cwd(chat_id, project_id=(project_id or None))
-            cwd = normalize_ttadk_cwd(raw_cwd)
-            self._maybe_log_ttadk_cwd(
-                where="SystemHandler.handle_refresh_ttadk_models", raw_cwd=raw_cwd, normalized_cwd=cwd
-            )
-        except Exception:
-            cwd = None
-
-        if not tool:
-            self.reply_message(
-                message_id, UI_TEXT.get("system_ttadk_no_tool", "⚠️ 未指定 TTADK 工具，建议先发送 `/ttadk` 选择工具")
-            )
-            return
-
-        try:
-            result = manager.refresh_models(tool_name=tool, cwd=cwd)
-        except Exception as e:
-            self.reply_error(
-                message_id, str(e), title=UI_TEXT.get("system_ttadk_refresh_error", "刷新 TTADK 模型列表失败")
-            )
-            return
-
-        # 直接复用刷新结果渲染模型选择卡片（force_refresh=True 已经回填缓存）
-        models = list(getattr(result, "models", None) or [])
-        msg_type, card_content = CardBuilder.build_ttadk_model_select_card(models, tool, project_id)
-        self.reply_message(message_id, card_content, msg_type=msg_type)
-
     def _maybe_log_ttadk_cwd(self, *, where: str, raw_cwd: Optional[str], normalized_cwd: Optional[str]) -> None:
         """TTADK cwd 归一化的可观测日志（debug + 配置开关）。"""
         try:
@@ -640,14 +606,205 @@ class SystemHandler(BaseHandler):
             return active.root_path
         return None
 
-    def handle_ttadk_command(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+    def _resolve_ttadk_yolo_enabled(
+        self,
+        chat_id: str,
+        project: Optional["ProjectContext"] = None,
+        project_id: Optional[str] = None,
+    ) -> bool:
+        if project is not None:
+            return bool(getattr(project, "ttadk_yolo_enabled", False))
+        if project_id:
+            ctx = self.project_manager.get_project(project_id)
+            if ctx is not None:
+                return bool(getattr(ctx, "ttadk_yolo_enabled", False))
+        active = self.project_manager.get_active_project(chat_id)
+        if active is not None:
+            return bool(getattr(active, "ttadk_yolo_enabled", False))
+        return bool(getattr(self.settings, "ttadk_yolo_default_enabled", False))
+
+    def _apply_ttadk_yolo_enabled(
+        self,
+        chat_id: str,
+        enabled: bool,
+        project: Optional["ProjectContext"] = None,
+        project_id: Optional[str] = None,
+    ) -> Optional["ProjectContext"]:
+        target = project
+        if target is None and project_id:
+            target = self.project_manager.get_project(project_id)
+        if target is None:
+            target = self.project_manager.get_active_project(chat_id)
+        if target is not None:
+            target.ttadk_yolo_enabled = bool(enabled)
+        return target
+
+    def _pick_ttadk_auto_model(
+        self,
+        models: list,
+        *,
+        project: Optional["ProjectContext"] = None,
+        current_model: Optional[str] = None,
+    ) -> Optional[str]:
+        if not models:
+            return None
+        normalized = [m for m in models if getattr(m, "name", None)]
+        if not normalized:
+            return None
+        model_names = {m.name: m for m in normalized}
+
+        if project:
+            project_model = str(getattr(project, "ttadk_model_name", "") or "").strip()
+            if project_model and project_model in model_names:
+                return project_model
+
+        for model in normalized:
+            if bool(getattr(model, "is_default", False)):
+                return model.name
+
+        settings_model = str(getattr(self.settings, "ttadk_default_model", "") or "").strip()
+        if settings_model and settings_model in model_names:
+            return settings_model
+
+        if current_model and current_model in model_names:
+            return current_model
+
+        if len(normalized) == 1:
+            return normalized[0].name
+        return None
+
+    def _pick_ttadk_auto_tool(
+        self,
+        tools: list,
+        *,
+        project: Optional["ProjectContext"] = None,
+        current_tool: Optional[str] = None,
+    ) -> Optional[str]:
+        if not tools:
+            return None
+        normalized = [t for t in tools if getattr(t, "name", None)]
+        if not normalized:
+            return None
+        tool_names = {t.name: t for t in normalized}
+
+        if project:
+            project_tool = str(getattr(project, "ttadk_tool_name", "") or "").strip().lower()
+            if project_tool and project_tool in tool_names:
+                return project_tool
+
+        settings_tool = str(getattr(self.settings, "ttadk_default_tool", "") or "").strip().lower()
+        if settings_tool and settings_tool in tool_names:
+            return settings_tool
+
+        if current_tool and current_tool in tool_names:
+            return current_tool
+
+        if len(normalized) == 1:
+            return normalized[0].name
+        return None
+
+    def _mark_ttadk_flow_start(self, chat_id: str) -> None:
+        self._ttadk_flow_start_times[chat_id] = time.perf_counter()
+
+    def _report_ttadk_flow_duration(self, chat_id: str, project_id: Optional[str], where: str) -> None:
+        start = self._ttadk_flow_start_times.pop(chat_id, None)
+        if start is None:
+            return
+        duration_ms = int(round((time.perf_counter() - start) * 1000))
+        self._ttadk_flow_last_duration_ms[chat_id] = duration_ms
+        logger.info(
+            "ttadk_flow_duration_ms=%s chat_id=%s project_id=%s where=%s",
+            duration_ms,
+            chat_id,
+            project_id,
+            where,
+        )
+
+    def _reply_ttadk_load_hint(self, message_id: str, text: str, project_id: Optional[str] = None) -> None:
+        msg_type, card_content = CardBuilder.build_ttadk_soft_failure_card_for(text, project_id=project_id)
+        self.reply_message(message_id, card_content, msg_type=msg_type)
+
+    def handle_ttadk_command(
+        self,
+        message_id: str,
+        chat_id: str,
+        project: Optional["ProjectContext"] = None,
+        force_select: bool = False,
+    ):
+        project = project or self.project_manager.get_active_project(chat_id)
         project_id = project.project_id if project else None
         manager = get_ttadk_manager()
+        yolo_enabled = self._resolve_ttadk_yolo_enabled(chat_id, project=project, project_id=project_id)
+
+        if not force_select:
+            self._mark_ttadk_flow_start(chat_id)
+            if project and project.ttadk_tool_name and project.ttadk_model_name:
+                if self.ttadk_handler:
+                    self.ttadk_handler.current_tool = project.ttadk_tool_name
+                    self.ttadk_handler.current_model = project.ttadk_model_name
+                    self.ttadk_handler.enter_mode(message_id, chat_id, project=project)
+                    self._report_ttadk_flow_duration(chat_id, project_id, "auto_enter_project")
+                    return
+                self.reply_error(message_id, "TTADK 处理器未初始化")
+                return
+
+            current_tool = manager.get_current_tool()
+            current_model = manager.get_current_model()
+            if current_tool and current_model and self.ttadk_handler:
+                self.ttadk_handler.current_tool = current_tool
+                self.ttadk_handler.current_model = current_model
+                self.ttadk_handler.enter_mode(message_id, chat_id, project=project)
+                self._report_ttadk_flow_duration(chat_id, project_id, "auto_enter_current")
+                return
+
         result = manager.get_tools()
         if result.error:
-            self.reply_error(message_id, f"获取 TTADK 工具列表失败: {result.error}")
+            self._reply_ttadk_load_hint(
+                message_id, f"暂时无法加载 TTADK 工具列表（{result.error}）", project_id=project_id
+            )
             return
-        msg_type, card_content = CardBuilder.build_ttadk_tool_select_card(result.tools, project_id)
+
+        if not force_select and yolo_enabled:
+            auto_tool = self._pick_ttadk_auto_tool(
+                result.tools or [], project=project, current_tool=manager.get_current_tool()
+            )
+            if not auto_tool and result.tools:
+                auto_tool = result.tools[0].name
+
+            if auto_tool:
+                manager.set_tool(auto_tool)
+                try:
+                    raw_cwd = self._resolve_ttadk_cwd(chat_id, project=project, project_id=project_id)
+                    cwd = normalize_ttadk_cwd(raw_cwd)
+                    self._maybe_log_ttadk_cwd(
+                        where="SystemHandler.handle_ttadk_command", raw_cwd=raw_cwd, normalized_cwd=cwd
+                    )
+                except Exception:
+                    cwd = None
+
+                models_result = manager.get_models(cwd=cwd)
+                if models_result.error:
+                    self._reply_ttadk_load_hint(
+                        message_id,
+                        f"暂时无法加载 TTADK 模型列表（{models_result.error}）",
+                        project_id=project_id,
+                    )
+                    return
+
+                auto_model = self._pick_ttadk_auto_model(
+                    models_result.models or [], project=project, current_model=manager.get_current_model()
+                )
+                if not auto_model and models_result.models:
+                    auto_model = models_result.models[0].name
+
+                if auto_model:
+                    self.handle_select_ttadk_model(
+                        message_id, chat_id, auto_tool, auto_model, project=project, silent=True
+                    )
+                    return
+        msg_type, card_content = CardBuilder.build_ttadk_tool_select_card(
+            result.tools, project_id, yolo_enabled=yolo_enabled
+        )
         self.reply_message(message_id, card_content, msg_type=msg_type)
 
     def show_ttadk_info(self, message_id: str, chat_id: str):
@@ -698,7 +855,9 @@ class SystemHandler(BaseHandler):
         )
         success = manager.set_tool(tool_name)
         if not success:
-            self.reply_error(message_id, f"设置 TTADK 工具失败: {tool_name}")
+            self._reply_ttadk_load_hint(
+                message_id, f"暂时无法切换 TTADK 工具到 {tool_name}", project_id=project_id
+            )
             return
         if project:
             project.ttadk_tool_name = tool_name
@@ -708,7 +867,9 @@ class SystemHandler(BaseHandler):
 
         result = manager.get_models(cwd=cwd)
         if result.error:
-            self.reply_error(message_id, f"获取 TTADK 模型列表失败: {result.error}")
+            self._reply_ttadk_load_hint(
+                message_id, f"暂时无法加载 TTADK 模型列表（{result.error}）", project_id=project_id
+            )
             return
 
         # 只有在模型列表为空且有警告时才发送单独的警告消息
@@ -724,14 +885,35 @@ class SystemHandler(BaseHandler):
             # 有严重警告（如 models_untrusted），发送警告消息
             self.reply_message(message_id, f"⚠️ TTADK 模型列表可能不完整/不可信: {'; '.join(critical_warnings)}")
 
-        msg_type, card_content = CardBuilder.build_ttadk_model_select_card(result.models, tool_name, project_id)
+        yolo_enabled = self._resolve_ttadk_yolo_enabled(chat_id, project=project, project_id=project_id)
+        auto_model = self._pick_ttadk_auto_model(
+            result.models or [], project=project, current_model=manager.get_current_model()
+        )
+        if not auto_model and yolo_enabled and result.models:
+            auto_model = result.models[0].name
+        if auto_model:
+            self.handle_select_ttadk_model(message_id, chat_id, tool_name, auto_model, project=project, silent=True)
+            return
+
+        yolo_enabled = self._resolve_ttadk_yolo_enabled(chat_id, project=project, project_id=project_id)
+        msg_type, card_content = CardBuilder.build_ttadk_model_select_card(
+            result.models, tool_name, project_id, yolo_enabled=yolo_enabled
+        )
         self.reply_message(message_id, card_content, msg_type=msg_type)
 
     def handle_select_ttadk_model(
-        self, message_id: str, chat_id: str, tool_name: str, model_name: str, project: Optional["ProjectContext"] = None
+        self,
+        message_id: str,
+        chat_id: str,
+        tool_name: str,
+        model_name: str,
+        project: Optional["ProjectContext"] = None,
+        silent: bool = False,
     ):
-        # 立即给予用户反馈，避免"没反应"
-        self.reply_message(message_id, f"🔄 正在切换到模型: {model_name}...")
+        project_id = project.project_id if project else None
+        if not silent:
+            # 立即给予用户反馈，避免"没反应"
+            self.reply_message(message_id, f"🔄 正在切换到模型: {model_name}...")
 
         manager = get_ttadk_manager()
         logger.info(
@@ -743,7 +925,9 @@ class SystemHandler(BaseHandler):
         )
         success = manager.set_model(model_name)
         if not success:
-            self.reply_error(message_id, f"设置 TTADK 模型失败: {model_name}")
+            self._reply_ttadk_load_hint(
+                message_id, f"暂时无法切换 TTADK 模型到 {model_name}", project_id=project_id
+            )
             return
 
         target_project = project or self.project_manager.get_active_project(chat_id)
@@ -755,8 +939,86 @@ class SystemHandler(BaseHandler):
             self.ttadk_handler.current_tool = tool_name
             self.ttadk_handler.current_model = model_name
             self.ttadk_handler.enter_mode(message_id, chat_id, project=target_project)
+            project_id = target_project.project_id if target_project else None
+            self._report_ttadk_flow_duration(chat_id, project_id, "enter_mode")
         else:
             self.reply_error(message_id, "TTADK 处理器未初始化")
+
+    def handle_refresh_ttadk_models(self, message_id: str, chat_id: str, tool_name: str, project_id: Optional[str] = None):
+        manager = get_ttadk_manager()
+        try:
+            raw_cwd = self._resolve_ttadk_cwd(chat_id, project_id=project_id)
+            cwd = normalize_ttadk_cwd(raw_cwd)
+            self._maybe_log_ttadk_cwd(
+                where="SystemHandler.handle_refresh_ttadk_models", raw_cwd=raw_cwd, normalized_cwd=cwd
+            )
+        except Exception:
+            cwd = None
+
+        tool = (tool_name or manager.get_current_tool() or "").strip().lower()
+        if not tool:
+            self.reply_message(message_id, "⚠️ 未选择 TTADK 工具，请先使用 /ttadk 选择工具")
+            return
+
+        try:
+            result = manager.refresh_models(tool_name=tool, cwd=cwd)
+        except Exception as e:
+            self.reply_error(message_id, f"刷新 TTADK 模型列表失败: {e}")
+            return
+
+        yolo_enabled = self._resolve_ttadk_yolo_enabled(chat_id, project_id=project_id)
+        msg_type, card_content = CardBuilder.build_ttadk_model_select_card(
+            result.models or [], tool, project_id, yolo_enabled=yolo_enabled
+        )
+        self.reply_message(message_id, card_content, msg_type=msg_type)
+
+    def handle_toggle_ttadk_yolo(
+        self,
+        message_id: str,
+        chat_id: str,
+        enabled: bool,
+        view: str = "tool_select",
+        tool_name: str = "",
+        project_id: Optional[str] = None,
+    ):
+        manager = get_ttadk_manager()
+        target_project = self._apply_ttadk_yolo_enabled(chat_id, enabled, project_id=project_id)
+        yolo_enabled = self._resolve_ttadk_yolo_enabled(chat_id, project=target_project, project_id=project_id)
+
+        if view == "model_select":
+            tool = (tool_name or manager.get_current_tool() or "").strip().lower()
+            if not tool:
+                self.reply_message(message_id, "⚠️ 未选择 TTADK 工具，请先使用 /ttadk 选择工具")
+                return
+            try:
+                raw_cwd = self._resolve_ttadk_cwd(chat_id, project_id=project_id)
+                cwd = normalize_ttadk_cwd(raw_cwd)
+                self._maybe_log_ttadk_cwd(
+                    where="SystemHandler.handle_toggle_ttadk_yolo", raw_cwd=raw_cwd, normalized_cwd=cwd
+                )
+            except Exception:
+                cwd = None
+
+            if manager.get_current_tool() != tool:
+                manager.set_tool(tool)
+            result = manager.get_models(cwd=cwd)
+            if result.error:
+                self.reply_error(message_id, f"获取 TTADK 模型列表失败: {result.error}")
+                return
+            msg_type, card_content = CardBuilder.build_ttadk_model_select_card(
+                result.models or [], tool, project_id, yolo_enabled=yolo_enabled
+            )
+            self.reply_message(message_id, card_content, msg_type=msg_type)
+            return
+
+        tools_result = manager.get_tools()
+        if tools_result.error:
+            self.reply_error(message_id, f"获取 TTADK 工具列表失败: {tools_result.error}")
+            return
+        msg_type, card_content = CardBuilder.build_ttadk_tool_select_card(
+            tools_result.tools, project_id, yolo_enabled=yolo_enabled
+        )
+        self.reply_message(message_id, card_content, msg_type=msg_type)
 
     # ------------------------------------------------------------------
     # Exit current mode

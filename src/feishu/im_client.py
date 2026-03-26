@@ -57,6 +57,8 @@ class FeishuIMClient:
                     return response
 
                 logger.warning("%s失败(尝试%d/%d): %s - %s", action_name, attempt + 1, max_retries, code, msg)
+                if code == 230099 and "ErrCode: 200621" in str(msg):
+                    logger.warning("[METRIC] card_render_failed err_code=200621 action=%s", action_name)
             except Exception as e:
                 logger.warning("%s异常(尝试%d/%d): %s", action_name, attempt + 1, max_retries, e, exc_info=True)
 

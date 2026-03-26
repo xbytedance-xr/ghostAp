@@ -206,14 +206,46 @@ class CardBuilder:
         return SystemBuilder.build_shell_result_card(cmd, result, working_dir, project)
 
     @staticmethod
-    def build_ttadk_tool_select_card(tools: list, project_id: Optional[str] = None) -> tuple[str, str]:
-        return SystemBuilder.build_ttadk_tool_select_card(tools, project_id)
+    def build_ttadk_tool_select_card(
+        tools: list, project_id: Optional[str] = None, yolo_enabled: bool = False
+    ) -> tuple[str, str]:
+        return SystemBuilder.build_ttadk_tool_select_card(tools, project_id, yolo_enabled=yolo_enabled)
 
     @staticmethod
     def build_ttadk_model_select_card(
-        models: list, tool_name: str, project_id: Optional[str] = None
+        models: list, tool_name: str, project_id: Optional[str] = None, yolo_enabled: bool = False
     ) -> tuple[str, str]:
-        return SystemBuilder.build_ttadk_model_select_card(models, tool_name, project_id)
+        return SystemBuilder.build_ttadk_model_select_card(models, tool_name, project_id, yolo_enabled=yolo_enabled)
+
+    @staticmethod
+    def build_ttadk_soft_failure_card(
+        message: str,
+        project_id: Optional[str] = None,
+        *,
+        action: str = "show_ttadk_menu",
+        button_text: str = "🔄 重新进入TTADK",
+    ) -> tuple[str, str]:
+        return SystemBuilder.build_ttadk_soft_failure_card(
+            message,
+            project_id,
+            action=action,
+            button_text=button_text,
+        )
+
+    @staticmethod
+    def build_ttadk_soft_failure_card_for(
+        reason: str,
+        project_id: Optional[str] = None,
+        *,
+        action: str = "show_ttadk_menu",
+        button_text: str = "继续进入TTADK",
+    ) -> tuple[str, str]:
+        return SystemBuilder.build_ttadk_soft_failure_card_for(
+            reason,
+            project_id,
+            action=action,
+            button_text=button_text,
+        )
 
     @staticmethod
     def build_acp_tool_select_card(tools: list, project_id: Optional[str] = None) -> tuple[str, str]:

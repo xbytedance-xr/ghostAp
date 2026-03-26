@@ -162,6 +162,12 @@ class TestStreamingCardManager:
 
         result = manager.update_content(card, "new content")
 
+        import time
+        for _ in range(20):
+            if card.last_content == "new content":
+                break
+            time.sleep(0.05)
+
         assert result is True
         assert card.last_content == "new content"
 
@@ -395,7 +401,7 @@ class TestStreamingCardManager:
         assert len(img_elements) == 2
         assert img_elements[0]["img_key"] == "img_key_1"
 
-    # ---- _build_update_card_json (legacy for PATCH update) ----
+    # ---- _build_update_card_json (PATCH compatible) ----
 
     def test_build_update_card_json_is_legacy_format(self, manager):
         card_json = manager._build_update_card_json(
@@ -408,14 +414,14 @@ class TestStreamingCardManager:
             image_keys=None,
         )
 
-        # legacy 卡片没有 schema/body 包装
-        assert "schema" not in card_json
-        assert "body" not in card_json
-        assert "elements" in card_json
+        # PATCH 载荷使用 schema 2.0 包装
+        assert card_json["schema"] == "2.0"
+        assert "body" in card_json
+        assert "elements" in card_json["body"]
         assert card_json["header"]["template"] == "blue"
 
-        # legacy 元素不应包含 schema 2.0 专属字段
-        md_elements = [e for e in card_json["elements"] if e.get("tag") == "markdown"]
+        # PATCH 元素不应包含 schema 2.0 专属字段
+        md_elements = [e for e in card_json["body"]["elements"] if e.get("tag") == "markdown"]
         assert md_elements
         for el in md_elements:
             assert "text_size" not in el
@@ -439,8 +445,9 @@ class TestStreamingCardManager:
 
         req = mock_client.im.v1.message.create.call_args[0][0]
         payload = json.loads(req.body.content)
-        assert "schema" not in payload
-        assert "elements" in payload
+        assert payload["schema"] == "2.0"
+        assert "body" in payload
+        assert "elements" in payload["body"]
 
     # ---- create_and_send_card ----
 
@@ -550,7 +557,7 @@ class TestStreamingCardManager:
         # Verify the PATCH payload uses last_content, not empty string
         req = mock_client.im.v1.message.patch.call_args[0][0]
         payload = json.loads(req.body.content)
-        md_elements = [e for e in payload["elements"] if e.get("tag") == "markdown"]
+        md_elements = [e for e in payload["body"]["elements"] if e.get("tag") == "markdown"]
         content_el = [e for e in md_elements if "actual content from streaming" in e["content"]]
         assert len(content_el) == 1
 
