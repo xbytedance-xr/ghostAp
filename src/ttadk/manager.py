@@ -11,6 +11,7 @@
 import json
 import logging
 import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -1742,6 +1743,41 @@ class TTADKManager:
 
 _manager: Optional[TTADKManager] = None
 _manager_lock = threading.Lock()
+
+_ttadk_update_attempted: bool = False
+
+
+def auto_update_ttadk() -> bool:
+    global _ttadk_update_attempted
+    if _ttadk_update_attempted:
+        return False
+    _ttadk_update_attempted = True
+
+    settings = get_settings()
+    if not settings.ttadk_auto_update:
+        return False
+
+    try:
+        p = subprocess.run(
+            ["ttadk", "update"],
+            capture_output=True,
+            text=True,
+            timeout=settings.ttadk_update_timeout,
+        )
+        if p.returncode == 0:
+            logger.info("[TTADK] auto-update succeeded")
+            return True
+        else:
+            logger.warning(
+                "[TTADK] auto-update failed (rc=%d) stderr=%s",
+                p.returncode,
+                ((p.stderr or "").strip())[-200:] or "(empty)",
+            )
+            return False
+    except Exception as e:
+        logger.warning("[TTADK] auto-update error: %s", e)
+        return False
+
 
 # 显式迁移标记：避免反复从函数属性迁移 legacy store（保持 best-effort 且不引入 import-time 副作用）。
 _legacy_store_migrated: bool = False

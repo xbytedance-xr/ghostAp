@@ -191,14 +191,50 @@ class ACPSessionManager:
         agent_type: str,
         session_timeout: int = 86400,
         session_starter: Optional[Callable[..., tuple[SyncSession, str, dict]]] = None,
+        keepalive_interval: int = 0,
+        idle_healthcheck_s: float = 120.0,
     ):
         self._agent_type = agent_type  # "coco" / "claude"
         self._sessions: dict[str, SyncSession] = {}  # key = _session_key(...)
         self._session_timeout = session_timeout
         self._lock = threading.Lock()
-        # 可注入启动器：用于将 TTADK 启动编排与 ACPSessionManager 解耦。
-        # 约定：返回 (session, session_id, diagnostics_dict)。
         self._session_starter = session_starter
+        self._keepalive_interval = keepalive_interval
+        self._idle_healthcheck_s = idle_healthcheck_s
+        self._keepalive_stop = threading.Event()
+        self._keepalive_thread: threading.Thread | None = None
+        if keepalive_interval > 0:
+            self._keepalive_thread = threading.Thread(
+                target=self._keepalive_loop, daemon=True, name=f"acp-keepalive-{agent_type}"
+            )
+            self._keepalive_thread.start()
+
+    def _keepalive_loop(self) -> None:
+        while not self._keepalive_stop.wait(timeout=self._keepalive_interval):
+            try:
+                with self._lock:
+                    snapshot = list(self._sessions.items())
+                now = time.time()
+                for key, session in snapshot:
+                    try:
+                        idle = now - session.last_active
+                        if idle <= self._idle_healthcheck_s:
+                            continue
+                        alive = session.is_server_running()
+                        if not alive:
+                            with self._lock:
+                                if self._sessions.get(key) is session:
+                                    logger.info(
+                                        "[ACP:%s] Keepalive cleaning dead session: key=%s, session=%s",
+                                        self._agent_type.upper(),
+                                        key[-16:],
+                                        (session.session_id or "none")[:8],
+                                    )
+                                    self._end_session_unlocked(key)
+                    except Exception:
+                        logger.debug("[ACP:%s] Keepalive check error for key=%s", self._agent_type.upper(), key[-16:], exc_info=True)
+            except Exception:
+                logger.debug("[ACP:%s] Keepalive loop iteration error", self._agent_type.upper(), exc_info=True)
 
     @staticmethod
     def _format_seconds_ago(seconds: float) -> str:
@@ -718,6 +754,10 @@ class ACPSessionManager:
 
     def cleanup_all(self) -> None:
         """Close all sessions."""
+        self._keepalive_stop.set()
+        if self._keepalive_thread is not None:
+            self._keepalive_thread.join(timeout=5)
+            self._keepalive_thread = None
         with self._lock:
             keys = list(self._sessions.keys())
         for key in keys:

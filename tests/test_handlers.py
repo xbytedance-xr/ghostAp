@@ -379,30 +379,32 @@ class TestSystemHandlerRouting:
         h.exit_current_mode("m1", "c1", None)
         h.claude_handler.exit_mode.assert_called_once_with("m1", "c1", None)
 
-    def test_handle_ttadk_command_auto_enters_when_configured(self):
+    def test_handle_ttadk_command_shows_tool_select_even_when_configured(self):
         ctx = _make_handler_context()
         h = SystemHandler(ctx)
         h.ttadk_handler = MagicMock()
         h.reply_error = MagicMock()
+        h.reply_message = MagicMock()
 
         project = MagicMock()
         project.project_id = "p1"
         project.ttadk_tool_name = "codex"
         project.ttadk_model_name = "gpt-5.2"
+        project.ttadk_yolo_enabled = False
 
+        tools = [TTADKTool(name="codex", description="Codex")]
         with (
-            patch("src.feishu.handlers.system.CardBuilder.build_ttadk_tool_select_card") as mock_build,
+            patch("src.feishu.handlers.system.CardBuilder.build_ttadk_tool_select_card", return_value=("interactive", "{}")) as mock_build,
             patch("src.feishu.handlers.system.get_ttadk_manager") as mock_manager,
         ):
             manager = MagicMock()
-            manager.get_current_tool.return_value = ""
-            manager.get_current_model.return_value = ""
+            manager.get_tools.return_value = SimpleNamespace(tools=tools, error=None, warnings=[])
             mock_manager.return_value = manager
 
             h.handle_ttadk_command("m1", "c1", project)
 
-            h.ttadk_handler.enter_mode.assert_called_once_with("m1", "c1", project=project)
-            mock_build.assert_not_called()
+            h.ttadk_handler.enter_mode.assert_not_called()
+            mock_build.assert_called_once()
 
     def test_handle_select_ttadk_tool_auto_selects_default_model(self):
         ctx = _make_handler_context()

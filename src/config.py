@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     # Set to 0 to use the asyncio default (64KB). 10MB should be generous enough.
     acp_stream_buffer_limit: int = 10 * 1024 * 1024
 
+    acp_keepalive_interval: int = 300
+
+    acp_session_idle_healthcheck_s: float = 120.0
+
     # ------------------------------------------------------------------
     # ACP startup diagnostics (redaction + truncation)
     # ------------------------------------------------------------------
@@ -90,6 +94,9 @@ class Settings(BaseSettings):
     coco_acp_args: str = ""
     claude_acp_cmd: str = ""
     claude_acp_args: str = ""
+
+    ttadk_auto_update: bool = True
+    ttadk_update_timeout: int = 120
 
     ttadk_default_tool: str = "coco"
     ttadk_default_model: str = ""

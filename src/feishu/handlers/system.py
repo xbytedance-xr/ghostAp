@@ -18,6 +18,7 @@ from ...coco_model import get_coco_model_manager
 from ...acp.providers import tool_registry
 from ...tasking import TaskPriority, TaskSpec
 from ...ttadk import get_ttadk_manager
+from ...ttadk.manager import auto_update_ttadk
 from ...utils.path import normalize_ttadk_cwd
 from ..emoji import EmojiReaction
 from ..message_formatter import FeishuMessageFormatter as fmt
@@ -736,26 +737,9 @@ class SystemHandler(BaseHandler):
         manager = get_ttadk_manager()
         yolo_enabled = self._resolve_ttadk_yolo_enabled(chat_id, project=project, project_id=project_id)
 
-        if not force_select:
-            self._mark_ttadk_flow_start(chat_id)
-            if project and project.ttadk_tool_name and project.ttadk_model_name:
-                if self.ttadk_handler:
-                    self.ttadk_handler.current_tool = project.ttadk_tool_name
-                    self.ttadk_handler.current_model = project.ttadk_model_name
-                    self.ttadk_handler.enter_mode(message_id, chat_id, project=project)
-                    self._report_ttadk_flow_duration(chat_id, project_id, "auto_enter_project")
-                    return
-                self.reply_error(message_id, "TTADK 处理器未初始化")
-                return
+        auto_update_ttadk()
 
-            current_tool = manager.get_current_tool()
-            current_model = manager.get_current_model()
-            if current_tool and current_model and self.ttadk_handler:
-                self.ttadk_handler.current_tool = current_tool
-                self.ttadk_handler.current_model = current_model
-                self.ttadk_handler.enter_mode(message_id, chat_id, project=project)
-                self._report_ttadk_flow_duration(chat_id, project_id, "auto_enter_current")
-                return
+        self._mark_ttadk_flow_start(chat_id)
 
         result = manager.get_tools()
         if result.error:

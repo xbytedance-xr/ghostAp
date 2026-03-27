@@ -1,6 +1,10 @@
 # GhostAP 项目记忆索引
 
 ## 2026-03-27
+- **TTADK 模式增强** - 自动更新 + 工具/模型选择流程优化 + 会话保活 keepalive → [详细记录](2026-03-27.md)
+- **ACPSessionManager Keepalive 后台线程** - 添加 keepalive 守护线程定期检测空闲会话存活状态并自动清理 dead session，5 测试全通过 → [2026-03-27.md](2026-03-27.md)
+- **TTADK 自动更新功能** - 新增 `auto_update_ttadk()` 模块级函数，进程生命周期内仅执行一次 `ttadk update`，在 `handle_ttadk_command` 入口处调用，+5 测试全通过 → [2026-03-27.md](2026-03-27.md)
+- **移除 TTADK 工具/模型选择 fast-path** - 移除 `handle_ttadk_command` 中两个跳过选择的快速路径，用户重新进入 TTADK 时始终可选工具/模型 → [2026-03-27.md](2026-03-27.md)
 - **更新 Git 忽略规则（忽略 .aiden）** - 在 `.gitignore` 增加 `.aiden/`，避免本地 Aiden 目录被纳入版本控制 → [2026-03-27.md](2026-03-27.md)
 
 ## 2026-03-26
