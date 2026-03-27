@@ -78,3 +78,4 @@ image.png
 # TTADK runtime artifacts
 .ghostap/
 .ttadk_sandbox/
+.aiden/

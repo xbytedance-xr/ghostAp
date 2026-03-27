@@ -1,5 +1,8 @@
 # GhostAP 项目记忆索引
 
+## 2026-03-27
+- **更新 Git 忽略规则（忽略 .aiden）** - 在 `.gitignore` 增加 `.aiden/`，避免本地 Aiden 目录被纳入版本控制 → [2026-03-27.md](2026-03-27.md)
+
 ## 2026-03-26
 - **修复卡片流式输出速度缓慢/卡顿问题** - 异步化飞书 PATCH 更新以避免阻塞底层流读取 → [2026-03-26.md](2026-03-26.md)
 - **Spec 流式卡片 PATCH 兼容 + 审查超时配置** - PATCH 载荷改为 schema 2.0 + legacy-safe elements，新增 loop_review_timeout 并接入 review 调用，补充断连/停止日志与 streaming 测试更新（36/110/187 passed）→ [2026-03-26.md](2026-03-26.md)
