@@ -133,10 +133,17 @@ class _ObservedLarkWSClient(lark.ws.Client):
         return await super()._handle_data_frame(frame)
 
 
+_READONLY_CARD_ACTIONS = {
+    "deep_expand", "deep_collapse", "deep_mode_full", "deep_mode_compact", "deep_expand_ac", "deep_collapse_ac",
+    "loop_expand", "loop_collapse", "loop_mode_full", "loop_mode_compact", "loop_expand_ac", "loop_collapse_ac",
+    "spec_expand", "spec_collapse", "spec_mode_full", "spec_mode_compact", "spec_expand_ac", "spec_collapse_ac",
+}
+
+
 class FeishuWSClient:
     """Feishu WS Client 的服务端运行态。
 
-    该类面向“长连接服务”场景：
+    该类面向"长连接服务"场景：
     - 内部会初始化 scheduler / handler / cache，并在 `start()` 后进入事件循环。
     - `close()` 提供 best-effort 资源回收（线程/缓存/调度器等）。
     """
@@ -1653,32 +1660,7 @@ class FeishuWSClient:
             open_message_id = None
             open_chat_id = "unknown"
 
-        # While a high-priority system command (/help, /exit) is being handled,
-        # card actions should not be processed to avoid race/override.
-        try:
-            with self._system_cmd_gate_lock:
-                inflight = int(self._system_cmd_inflight_by_chat.get(open_chat_id, 0) or 0)
-            if inflight > 0:
-                if open_message_id:
-                    self._reply_message(open_message_id, "⏳ 系统指令处理中，按钮暂不可用，请稍后重试")
-                return None
-        except Exception:
-            # best-effort gate; never break card callback path
-            pass
-
-        # Dedupe rapid clicks: same (chat, message, operator, action) within a short window.
         action_type_preview = ""
-        operator_id = ""
-        try:
-            operator = data.event.operator
-            operator_id = (
-                getattr(operator, "open_id", None)
-                or getattr(operator, "user_id", None)
-                or getattr(operator, "union_id", None)
-                or ""
-            )
-        except Exception:
-            operator_id = ""
         try:
             value_raw = data.event.action.value
             if isinstance(value_raw, dict):
@@ -1696,6 +1678,28 @@ class FeishuWSClient:
                 action_type_preview = ""
         except Exception:
             action_type_preview = ""
+
+        try:
+            with self._system_cmd_gate_lock:
+                inflight = int(self._system_cmd_inflight_by_chat.get(open_chat_id, 0) or 0)
+            if inflight > 0 and action_type_preview not in _READONLY_CARD_ACTIONS:
+                if open_message_id:
+                    self._reply_message(open_message_id, "⏳ 系统指令处理中，按钮暂不可用，请稍后重试")
+                return None
+        except Exception:
+            pass
+
+        operator_id = ""
+        try:
+            operator = data.event.operator
+            operator_id = (
+                getattr(operator, "open_id", None)
+                or getattr(operator, "user_id", None)
+                or getattr(operator, "union_id", None)
+                or ""
+            )
+        except Exception:
+            operator_id = ""
 
         if open_message_id and action_type_preview:
             dedupe_key = f"{open_chat_id}:{open_message_id}:{operator_id}:{action_type_preview}"
@@ -1806,6 +1810,15 @@ class FeishuWSClient:
                 "show_help_menu",
                 "enter_deep_prompt",
                 "help_category",
+                "deep_pause",
+                "deep_stop",
+                "deep_resume",
+                "loop_pause",
+                "loop_stop",
+                "loop_resume",
+                "spec_pause",
+                "spec_stop",
+                "spec_resume",
             }
             return action_type in system_actions
         except Exception:

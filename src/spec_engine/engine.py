@@ -817,33 +817,7 @@ class SpecEngine(BaseEngine):
                     )
                     self._project.abort(msg)
                 elif reason == "max_cycles":
-                    # Check criteria via project tracker
-                    is_all_satisfied = self._project.is_all_satisfied
-
-                    # Check review status via last review result
-                    last_review_passed = True
-                    if self.settings.spec_review_enabled:
-                        if self._last_review:
-                            last_review_passed = self._last_review.all_passed
-                        else:
-                            # 只有当 review enabled 但没有 review result 时（比如第一轮就失败），算未通过
-                            last_review_passed = False
-
-                    if is_all_satisfied and last_review_passed:
-                        # 核心目标达成，但因为 backlog 没跑完导致次数耗尽
-                        msg = f"达到最大循环次数({max_cycles})。核心验收标准已满足，但仍有待办优化项（Backlog）。"
-                        self._project.status = SpecProjectStatus.PAUSED
-                        self._project.error = msg + "（已暂停，可使用 /spec_resume 继续执行优化项）"
-                        self._project.completed_at = time.time()
-                    else:
-                        msg = f"达到最大循环次数({max_cycles})仍未满足验收标准或审查未通过"
-                        # Infinite mode: treat max-cycles as a pause point instead of abort
-                        if self.settings.spec_infinite_mode:
-                            self._project.status = SpecProjectStatus.PAUSED
-                            self._project.error = msg + "（已暂停，可继续 /spec_resume 或提升 SPEC_MAX_CYCLES）"
-                            self._project.completed_at = time.time()
-                        else:
-                            self._project.abort(msg)
+                    self._handle_max_cycles_termination(max_cycles)
                 else:
                     msg = f"终止：{reason}"
                     self._project.abort(msg)
@@ -854,18 +828,6 @@ class SpecEngine(BaseEngine):
             return self._project
 
         except Exception as e:
-            from ..utils.errors import get_error_detail
-            
-            # If TraceContext is active, e is already captured by context manager if it bubbles up.
-            # But we are catching it here.
-            # We should probably not interfere with the logic too much.
-            
-            # However, if we caught the exception, we are handling it.
-            
-            # Wait, the outer try/except block (which I wrapped) handles the exception.
-            # But I also wrapped `except Exception as e` block inside `with trace_ctx:`.
-            # This is fine. The exception handling logic remains the same.
-            
             from ..utils.errors import get_error_detail
 
             error_msg = f"Spec执行异常: {get_error_detail(e)}"
@@ -895,11 +857,6 @@ class SpecEngine(BaseEngine):
                 delete_task_state(self._saved_task_id)
                 self._saved_task_id = None
                 self._saved_task_signature = None
-
-            # Explicit memory cleanup to prevent leaks under high load
-            import gc
-
-            gc.collect()
 
     # ------------------------------------------------------------------
     # Phase execution
@@ -2843,6 +2800,29 @@ CRITERIA_2: FAIL
         if self._session:
             self._session.cancel()
 
+    def _handle_max_cycles_termination(self, max_cycles: int):
+        is_all_satisfied = self._project.is_all_satisfied
+        last_review_passed = True
+        if self.settings.spec_review_enabled:
+            if self._last_review:
+                last_review_passed = self._last_review.all_passed
+            else:
+                last_review_passed = False
+
+        if is_all_satisfied and last_review_passed:
+            msg = f"达到最大循环次数({max_cycles})。核心验收标准已满足，但仍有待办优化项（Backlog）。"
+            self._project.status = SpecProjectStatus.PAUSED
+            self._project.error = msg + "（已暂停，可使用 /spec_resume 继续执行优化项）"
+            self._project.completed_at = time.time()
+        else:
+            msg = f"达到最大循环次数({max_cycles})仍未满足验收标准或审查未通过"
+            if self.settings.spec_infinite_mode:
+                self._project.status = SpecProjectStatus.PAUSED
+                self._project.error = msg + "（已暂停，可继续 /spec_resume 或提升 SPEC_MAX_CYCLES）"
+                self._project.completed_at = time.time()
+            else:
+                self._project.abort(msg)
+
     def resume(self, callbacks: Optional[SpecEngineCallbacks] = None) -> Optional[SpecProject]:
         """Resume a paused spec execution."""
         if not self._project or self._project.status not in (SpecProjectStatus.PAUSED, SpecProjectStatus.CLARIFYING):
@@ -2851,13 +2831,13 @@ CRITERIA_2: FAIL
         callbacks = self._wrap_callbacks(callbacks or SpecEngineCallbacks())
         self._run_state = EngineRunState.RUNNING
         self._project.status = SpecProjectStatus.RUNNING
-        max_cycles = self._resolve_max_cycles(self.settings.spec_max_cycles)
+        additional_cycles = self._resolve_max_cycles(self.settings.spec_max_cycles)
 
-        # Resume from the last known cycle number
         last_cycle_num = 0
         if self._project.cycles:
             last_cycle_num = self._project.cycles[-1].cycle_number
         start_cycle = max(last_cycle_num, self._project.cycle_count_total) + 1
+        max_cycles = start_cycle + additional_cycles - 1
 
         self._termination_reason = None
 
@@ -2891,11 +2871,12 @@ CRITERIA_2: FAIL
                         f"收敛终止：连续{self.settings.spec_convergence_window}轮无有效改进，"
                         "仍有未满足验收标准或审查未通过"
                     )
+                    self._project.abort(msg)
                 elif reason == "max_cycles":
-                    msg = f"达到最大循环次数({max_cycles})仍未满足验收标准或审查未通过"
+                    self._handle_max_cycles_termination(max_cycles)
                 else:
                     msg = f"终止：{reason}"
-                self._project.abort(msg)
+                    self._project.abort(msg)
 
             if callbacks.on_project_done:
                 callbacks.on_project_done(self._project)

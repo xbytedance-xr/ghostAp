@@ -820,5 +820,191 @@ class TestCardActionHandler(unittest.TestCase):
 
             client._system_handler.handle_acp_command.assert_called_once_with("m1", "c1", None)
 
+    def _make_client(self):
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_get_settings.return_value = mock_settings
+            return FeishuWSClient(MagicMock())
+
+
+class TestSystemCmdGateReadonlyBypass(unittest.TestCase):
+
+    def _make_client_with_gate_active(self, chat_id="oc_1"):
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+            client._scheduler = MagicMock()
+            client._reply_message = MagicMock()
+
+            with client._system_cmd_gate_lock:
+                client._system_cmd_inflight_by_chat[chat_id] = 1
+
+            return client
+
+    def _make_card_data(self, action_type, chat_id="oc_1", message_id="om_1"):
+        return SimpleNamespace(
+            header=SimpleNamespace(event_id="evt_1", event_type="card.action.trigger"),
+            event=SimpleNamespace(
+                action=SimpleNamespace(
+                    value={"action": action_type, "project_id": "p1"},
+                    tag="button",
+                    name="btn",
+                ),
+                operator=SimpleNamespace(open_id="ou_x", user_id="u_x"),
+                context=SimpleNamespace(open_message_id=message_id, open_chat_id=chat_id),
+            ),
+        )
+
+    def test_readonly_action_bypasses_gate(self):
+        from src.feishu.ws_client import _READONLY_CARD_ACTIONS
+
+        client = self._make_client_with_gate_active()
+        for action in ["deep_expand", "loop_collapse", "spec_mode_full", "deep_expand_ac"]:
+            self.assertIn(action, _READONLY_CARD_ACTIONS)
+            client._card_event_cache = MagicMock()
+            client._card_event_cache.is_duplicate.return_value = False
+            client._card_action_dedup_cache = MagicMock()
+            client._card_action_dedup_cache.is_duplicate.return_value = True
+            data = self._make_card_data(action)
+            result = client._handle_card_action(data)
+            self.assertIsNone(result)
+            client._reply_message.assert_not_called()
+
+    def test_non_readonly_action_blocked_by_gate(self):
+        client = self._make_client_with_gate_active()
+        client._card_event_cache = MagicMock()
+        client._card_event_cache.is_duplicate.return_value = False
+        client._card_action_dedup_cache = MagicMock()
+        client._card_action_dedup_cache.is_duplicate.return_value = True
+        data = self._make_card_data("enter_coco")
+        result = client._handle_card_action(data)
+        self.assertIsNone(result)
+        client._reply_message.assert_called_once()
+        args = client._reply_message.call_args.args
+        self.assertIn("系统指令处理中", args[1])
+        client._scheduler.submit.assert_not_called()
+
+    def test_gate_not_active_allows_all_actions(self):
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+            client._scheduler = MagicMock()
+            client._reply_message = MagicMock()
+            client._card_event_cache = MagicMock()
+            client._card_event_cache.is_duplicate.return_value = False
+            client._card_action_dedup_cache = MagicMock()
+            client._card_action_dedup_cache.is_duplicate.return_value = True
+
+            data = self._make_card_data("enter_coco")
+            result = client._handle_card_action(data)
+            self.assertIsNone(result)
+            client._reply_message.assert_not_called()
+
+
+class TestIsSystemCardActionEngineControls(unittest.TestCase):
+
+    def _make_client(self):
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_get_settings.return_value = mock_settings
+            return FeishuWSClient(MagicMock())
+
+    def _make_data(self, action_type):
+        return SimpleNamespace(
+            event=SimpleNamespace(
+                action=SimpleNamespace(value={"action": action_type}),
+            )
+        )
+
+    def test_engine_control_actions_are_system(self):
+        client = self._make_client()
+        engine_controls = [
+            "deep_pause", "deep_stop", "deep_resume",
+            "loop_pause", "loop_stop", "loop_resume",
+            "spec_pause", "spec_stop", "spec_resume",
+        ]
+        for action in engine_controls:
+            self.assertTrue(
+                client._is_system_card_action(self._make_data(action)),
+                f"{action} should be a system card action",
+            )
+
+    def test_existing_system_actions_still_recognized(self):
+        client = self._make_client()
+        for action in ["show_status", "switch_project", "show_board", "enter_deep_prompt"]:
+            self.assertTrue(
+                client._is_system_card_action(self._make_data(action)),
+                f"{action} should still be a system card action",
+            )
+
+    def test_non_system_actions_not_flagged(self):
+        client = self._make_client()
+        for action in ["enter_coco", "enter_claude", "deep_expand", "unknown_action"]:
+            self.assertFalse(
+                client._is_system_card_action(self._make_data(action)),
+                f"{action} should NOT be a system card action",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
