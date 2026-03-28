@@ -176,6 +176,37 @@ def test_system_queue_has_higher_concurrency():
     assert max_active_normal == 1
 
 
+def test_system_tasks_not_blocked_by_normal_global_limit():
+    """系统任务不应被 normal worker 的全局并发占满而饿死。"""
+
+    scheduler = TaskScheduler(max_concurrent=1, per_key_concurrency=1, system_concurrency=1)
+
+    blocker_started = threading.Event()
+    blocker_release = threading.Event()
+    sys_started = threading.Event()
+
+    def long_normal(ctx):
+        blocker_started.set()
+        blocker_release.wait(timeout=2)
+        return "normal"
+
+    def quick_system(ctx):
+        sys_started.set()
+        return "system"
+
+    h_norm = scheduler.submit(TaskSpec(chat_id="chat1", name="normal", project_id="p1"), long_normal)
+    assert blocker_started.wait(timeout=1)
+
+    h_sys = scheduler.submit(TaskSpec(chat_id="chat1", name="sys", is_system_command=True), quick_system)
+
+    # system task should start even while normal is blocking
+    assert sys_started.wait(timeout=0.3)
+    assert h_sys.wait(timeout=2).status == TaskStatus.SUCCEEDED
+
+    blocker_release.set()
+    assert h_norm.wait(timeout=2).status == TaskStatus.SUCCEEDED
+
+
 def test_different_projects_can_run_concurrently():
     """Tasks from different projects should be able to run concurrently."""
     scheduler = TaskScheduler(max_concurrent=10, per_key_concurrency=1)
@@ -293,9 +324,9 @@ def test_dispatch_submit_failure_rolls_back_running_and_sets_failed():
         assert result.status == TaskStatus.FAILED
         st = h.get_state()
         assert st.error == "submit failed"
-        assert scheduler._running_total == 0
+        assert scheduler._running_total_normal == 0
+        assert scheduler._running_total_system == 0
         assert scheduler._running_by_key[st.assigned_queue_key] == 0
         assert scheduler._running_by_project[st.project_serial_key] == 0
     finally:
         scheduler._executor.submit = original_submit
-

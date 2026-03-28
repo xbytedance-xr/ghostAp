@@ -188,7 +188,8 @@ class SpecHandler(BaseEngineHandler):
             except Exception as e:
                 if isinstance(e, (TimeoutError, asyncio.TimeoutError)):
                     logger.warning("Spec Engine 执行超时 (task_id=%s): %s", task_id, e)
-                    logger.warning("[METRIC] spec_timeout task_id=%s", task_id)
+                    # Metrics should not shadow the primary warning in tests/log sampling
+                    logger.info("[METRIC] spec_timeout task_id=%s", task_id)
                 else:
                     logger.error("Spec Engine 执行异常: %s", e, exc_info=True)
 

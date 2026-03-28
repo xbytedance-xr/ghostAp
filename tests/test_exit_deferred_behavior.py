@@ -1,0 +1,119 @@
+import threading
+import time
+from unittest.mock import MagicMock, patch
+
+from src.feishu.ws_client import FeishuWSClient
+from src.tasking import TaskSpec
+
+
+def test_exit_is_deferred_until_running_task_finishes():
+    with (
+        patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+        patch("src.feishu.ws_client.ACPSessionManager"),
+        patch("src.feishu.ws_client.IntentRecognizer"),
+        patch("src.feishu.ws_client.ProjectManager"),
+        patch("src.feishu.ws_client.MessageProjectMapper"),
+        patch("src.feishu.ws_client.DeepEngineManager"),
+        patch("src.feishu.ws_client.ProgressReporter"),
+        patch("src.mode.ModeManager"),
+    ):
+        mock_settings = MagicMock()
+        mock_settings.app_id = "test_app_id"
+        mock_settings.app_secret = "test_app_secret"
+        mock_settings.streaming_enabled = False
+        mock_settings.task_scheduler_max_concurrent = 1
+        mock_settings.task_scheduler_per_key_concurrency = 1
+        mock_get_settings.return_value = mock_settings
+
+        client = FeishuWSClient(MagicMock())
+        client._reply_message = MagicMock()
+
+        started = threading.Event()
+        unblock = threading.Event()
+        finished = threading.Event()
+        finished_time = {"t": None}
+        exit_time = {"t": None}
+
+        def long_task(_ctx):
+            started.set()
+            unblock.wait(timeout=2)
+            finished_time["t"] = time.time()
+            finished.set()
+            return "ok"
+
+        def on_exit(*args, **kwargs):
+            exit_time["t"] = time.time()
+            return True
+
+        client._exit_current_mode = MagicMock(side_effect=on_exit)
+
+        h1 = client._scheduler.submit(
+            TaskSpec(chat_id="chat", name="normal", task_type="feishu_message", project_id="p1"),
+            long_task,
+        )
+        assert started.wait(timeout=1)
+
+        client._request_deferred_exit(message_id="m_exit", chat_id="chat", project_id="p1")
+
+        # Should not exit while task is still running
+        time.sleep(0.1)
+        client._exit_current_mode.assert_not_called()
+
+        unblock.set()
+        assert h1.wait(timeout=2).status.name == "SUCCEEDED"
+
+        # Wait for control-plane thread to schedule deferred exit
+        deadline = time.time() + 2
+        while time.time() < deadline and not client._exit_current_mode.called:
+            time.sleep(0.01)
+
+        client._exit_current_mode.assert_called_once()
+        assert finished.is_set()
+        assert finished_time["t"] is not None
+        assert exit_time["t"] is not None
+        assert exit_time["t"] >= finished_time["t"]
+
+        client.close()
+
+
+def test_exit_is_immediate_when_no_running_task():
+    with (
+        patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+        patch("src.feishu.ws_client.ACPSessionManager"),
+        patch("src.feishu.ws_client.IntentRecognizer"),
+        patch("src.feishu.ws_client.ProjectManager"),
+        patch("src.feishu.ws_client.MessageProjectMapper"),
+        patch("src.feishu.ws_client.DeepEngineManager"),
+        patch("src.feishu.ws_client.ProgressReporter"),
+        patch("src.mode.ModeManager"),
+    ):
+        mock_settings = MagicMock()
+        mock_settings.app_id = "test_app_id"
+        mock_settings.app_secret = "test_app_secret"
+        mock_settings.streaming_enabled = False
+        mock_settings.task_scheduler_max_concurrent = 1
+        mock_settings.task_scheduler_per_key_concurrency = 1
+        mock_get_settings.return_value = mock_settings
+
+        client = FeishuWSClient(MagicMock())
+
+        def short_task(_ctx):
+            return "done"
+
+        h = client._scheduler.submit(
+            TaskSpec(chat_id="chat", name="short", task_type="feishu_message", project_id="p1"),
+            short_task,
+        )
+        assert h.wait(timeout=2).status.name == "SUCCEEDED"
+
+        assert client._should_defer_exit(chat_id="chat", project_id="p1") is False
+
+        client._exit_current_mode = MagicMock()
+        # mimic the core decision branch: no running task -> exit immediately
+        if client._should_defer_exit(chat_id="chat", project_id="p1"):
+            client._request_deferred_exit(message_id="m_exit", chat_id="chat", project_id="p1")
+        else:
+            client._exit_current_mode("m_exit", "chat", project=None)
+        client._exit_current_mode.assert_called_once()
+
+        client.close()

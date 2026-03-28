@@ -11,12 +11,14 @@
 """
 
 import asyncio
+from collections import deque
 import json
 import logging
 import os
 import threading
 import time
-from typing import Any, Callable, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Deque, Optional
 
 import lark_oapi as lark
 from lark_oapi.event.callback.model.p2_card_action_trigger import (
@@ -50,7 +52,7 @@ from ..project import (
     ProjectManager,
 )
 from ..spec_engine import SpecEngineManager, SpecReporter
-from ..tasking import TaskPriority, TaskScheduler, TaskSpec
+from ..tasking import TaskEvent, TaskPriority, TaskScheduler, TaskSpec, TaskStatus
 from ..utils.circuit_breaker import CircuitBreaker, CircuitBreakerOpenException
 from ..utils.rate_limit import RateLimiter, RateLimitExceededException
 from ..utils.trace import TraceContext, configure_logging_with_trace
@@ -76,6 +78,14 @@ from .message_cache import MessageCache
 from .message_formatter import FeishuMessageFormatter as fmt
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _PendingExit:
+    chat_id: str
+    project_id: Optional[str]
+    message_id: str
+    requested_at: float
 
 
 def _frame_header_value(frame: Any, key: str) -> Optional[str]:
@@ -147,6 +157,8 @@ class FeishuWSClient:
         self._intent_recognizer = IntentRecognizer()
         self._message_cache = MessageCache(ttl=300, max_size=1000, cleanup_interval=60)
         self._card_event_cache = MessageCache(ttl=300, max_size=1000, cleanup_interval=60)
+        # Card action dedupe (user rapid clicks): short TTL, per-action key.
+        self._card_action_dedup_cache = MessageCache(ttl=1, max_size=5000, cleanup_interval=30)
         self._scheduler = TaskScheduler(
             max_concurrent=self.settings.task_scheduler_max_concurrent,
             per_key_concurrency=self.settings.task_scheduler_per_key_concurrency,
@@ -161,6 +173,29 @@ class FeishuWSClient:
         )
         self._working_dirs: dict[str, str] = {}
         self._working_dir_lock = threading.Lock()
+
+        # ------------------------------------------------------------------
+        # Control-plane bookkeeping (deferred /exit)
+        # ------------------------------------------------------------------
+        self._pending_exit_lock = threading.Lock()
+        self._pending_exits: dict[str, _PendingExit] = {}  # key -> pending exit
+        self._control_plane_event_q: Deque[str] = deque()
+        self._control_plane_event_lock = threading.Lock()
+        self._control_plane_wakeup = threading.Event()
+        self._control_plane_stop = threading.Event()
+        # IMPORTANT: scheduler listeners are invoked under scheduler locks;
+        # the listener MUST be non-blocking and must not call scheduler APIs.
+        self._scheduler.add_listener(self._on_scheduler_event)
+        self._control_plane_thread = threading.Thread(
+            target=self._control_plane_loop,
+            name="control_plane",
+            daemon=True,
+        )
+        self._control_plane_thread.start()
+
+        # System command gate: while /help or /exit is being handled, card actions are blocked.
+        self._system_cmd_gate_lock = threading.Lock()
+        self._system_cmd_inflight_by_chat: dict[str, int] = {}
 
         self._project_manager = ProjectManager()
         self._message_mapper = MessageProjectMapper()
@@ -462,12 +497,18 @@ class FeishuWSClient:
 
         # Streaming
         def _handle_load_more(mid, cid, pid, val):
-            msg_id = val.get("message_id", "")
-            if msg_id:
-                manager = self._get_streaming_manager()
-                manager.increase_pagination(msg_id)
+            msg_id = (val.get("message_id") or "").strip() or mid
+            manager = self._get_streaming_manager()
+            manager.increase_pagination(msg_id)
 
         self._register_action(_handle_load_more, exact="load_more")
+
+        def _handle_load_prev(mid, cid, pid, val):
+            msg_id = (val.get("message_id") or "").strip() or mid
+            manager = self._get_streaming_manager()
+            manager.decrease_pagination(msg_id)
+
+        self._register_action(_handle_load_prev, exact="load_prev")
 
         # Deep Engine
         self._register_action(
@@ -605,10 +646,148 @@ class FeishuWSClient:
             self._ws_watchdog_thread.join(timeout=2)
         self._ws_watchdog_thread = None
 
+    # ==================================================================
+    # Control plane: deferred /exit (never block scheduler listener)
+    # ==================================================================
+
+    @staticmethod
+    def _pending_exit_key(chat_id: str, project_id: Optional[str]) -> str:
+        return f"{chat_id}:{project_id or 'DEFAULT'}"
+
+    def _on_scheduler_event(self, ev: TaskEvent) -> None:
+        """TaskScheduler listener (MUST be non-blocking).
+
+        NOTE: scheduler invokes listeners under its internal locks.
+        This callback must not call back into scheduler APIs.
+        """
+
+        try:
+            # 1) System command gate state
+            if ev.task_type in {"system_help", "system_exit"}:
+                with self._system_cmd_gate_lock:
+                    cur = int(self._system_cmd_inflight_by_chat.get(ev.chat_id, 0) or 0)
+                    if ev.status == TaskStatus.RUNNING:
+                        self._system_cmd_inflight_by_chat[ev.chat_id] = cur + 1
+                    elif ev.status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED}:
+                        nxt = max(0, cur - 1)
+                        if nxt <= 0:
+                            self._system_cmd_inflight_by_chat.pop(ev.chat_id, None)
+                        else:
+                            self._system_cmd_inflight_by_chat[ev.chat_id] = nxt
+
+            # 2) Deferred exit processing wakeup
+            if ev.status not in {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED}:
+                return
+            key = self._pending_exit_key(ev.chat_id, ev.project_id)
+            with self._control_plane_event_lock:
+                self._control_plane_event_q.append(key)
+            self._control_plane_wakeup.set()
+        except Exception:
+            # best-effort only
+            return
+
+    def _control_plane_loop(self) -> None:
+        """后台线程：处理 deferred /exit 的收敛与触发。"""
+
+        while not self._control_plane_stop.is_set():
+            self._control_plane_wakeup.wait(timeout=0.2)
+            if self._control_plane_stop.is_set():
+                return
+
+            keys: set[str] = set()
+            with self._control_plane_event_lock:
+                while self._control_plane_event_q:
+                    keys.add(self._control_plane_event_q.popleft())
+                self._control_plane_wakeup.clear()
+
+            for key in keys:
+                try:
+                    self._maybe_finalize_deferred_exit(key)
+                except Exception:
+                    continue
+
+    def _maybe_finalize_deferred_exit(self, key: str) -> None:
+        """若对应 chat/project 下已无运行中的非系统任务，则触发 deferred /exit。"""
+
+        with self._pending_exit_lock:
+            pending = self._pending_exits.get(key)
+        if not pending:
+            return
+
+        # Check if any non-system task is still running under the same scope.
+        project_id = pending.project_id
+        tasks = self._scheduler.list_tasks(chat_id=pending.chat_id, project_id=project_id, include_done=False, limit=200)
+        has_running_non_system = any(
+            (st.status == TaskStatus.RUNNING) and (not bool(getattr(st.spec, "is_system_command", False)))
+            for st in tasks
+        )
+        if has_running_non_system:
+            return
+
+        with self._pending_exit_lock:
+            pending = self._pending_exits.pop(key, None)
+        if not pending:
+            return
+
+        def _do_exit(_ctx):
+            proj = None
+            try:
+                if pending.project_id:
+                    proj = self._project_manager.get_project(pending.project_id)
+                if proj is None:
+                    proj = self._project_manager.get_active_project(pending.chat_id)
+            except Exception:
+                proj = None
+            self._exit_current_mode(pending.message_id, pending.chat_id, project=proj)
+            return True
+
+        spec = TaskSpec(
+            chat_id=pending.chat_id,
+            name="deferred_exit",
+            task_type="system_exit",
+            message_id=pending.message_id,
+            project_id=pending.project_id,
+            origin_message_id=pending.message_id,
+            priority=TaskPriority.HIGH,
+            is_system_command=True,
+        )
+        self._scheduler.submit(spec, _do_exit)
+
+    def _request_deferred_exit(
+        self,
+        *,
+        message_id: str,
+        chat_id: str,
+        project_id: Optional[str],
+    ) -> None:
+        key = self._pending_exit_key(chat_id, project_id)
+        with self._pending_exit_lock:
+            self._pending_exits[key] = _PendingExit(
+                chat_id=chat_id,
+                project_id=project_id,
+                message_id=message_id,
+                requested_at=time.time(),
+            )
+
+    def _should_defer_exit(self, *, chat_id: str, project_id: Optional[str]) -> bool:
+        tasks = self._scheduler.list_tasks(chat_id=chat_id, project_id=project_id, include_done=False, limit=200)
+        return any(
+            (st.status == TaskStatus.RUNNING) and (not bool(getattr(st.spec, "is_system_command", False)))
+            for st in tasks
+        )
+
     def close(self):
         """Best-effort cleanup for background resources."""
 
         self._stop_ws_watchdog()
+
+        try:
+            self._control_plane_stop.set()
+            self._control_plane_wakeup.set()
+            if self._control_plane_thread and self._control_plane_thread.is_alive():
+                self._control_plane_thread.join(timeout=2)
+        except Exception:
+            pass
 
         def _wait_engines_stopped(engines: list[Any], timeout_s: float = 5.0, interval_s: float = 0.05) -> None:
             deadline = time.time() + max(0.1, timeout_s)
@@ -677,6 +856,11 @@ class FeishuWSClient:
             self._card_event_cache.stop_cleanup_thread()
         except Exception as e:
             logger.debug("停止card_event_cache清理线程失败: %s", e)
+
+        try:
+            self._card_action_dedup_cache.stop_cleanup_thread()
+        except Exception as e:
+            logger.debug("停止card_action_dedup_cache清理线程失败: %s", e)
 
         # 2) Close per-chat programming sessions (kills ACP agent subprocesses)
         try:
@@ -1079,10 +1263,17 @@ class FeishuWSClient:
         request_id = self._ensure_request_id(message_id, chat_id=chat_id, project_id=project_id)
 
         with TraceContext(request_id):
+            task_type = "spec_command" if is_spec else "feishu_message"
+            if is_system:
+                tl = (text or "").strip().lower()
+                if tl in {"/help", "/帮助"}:
+                    task_type = "system_help"
+                elif tl in {"/exit", "/quit"}:
+                    task_type = "system_exit"
             spec = TaskSpec(
                 chat_id=chat_id,
                 name="process_message",
-                task_type="spec_command" if is_spec else "feishu_message",
+                task_type=task_type,
                 message_id=message_id,
                 project_id=project_id,
                 origin_message_id=message_id,
@@ -1462,6 +1653,70 @@ class FeishuWSClient:
             open_message_id = None
             open_chat_id = "unknown"
 
+        # While a high-priority system command (/help, /exit) is being handled,
+        # card actions should not be processed to avoid race/override.
+        try:
+            with self._system_cmd_gate_lock:
+                inflight = int(self._system_cmd_inflight_by_chat.get(open_chat_id, 0) or 0)
+            if inflight > 0:
+                if open_message_id:
+                    self._reply_message(open_message_id, "⏳ 系统指令处理中，按钮暂不可用，请稍后重试")
+                return None
+        except Exception:
+            # best-effort gate; never break card callback path
+            pass
+
+        # Dedupe rapid clicks: same (chat, message, operator, action) within a short window.
+        action_type_preview = ""
+        operator_id = ""
+        try:
+            operator = data.event.operator
+            operator_id = (
+                getattr(operator, "open_id", None)
+                or getattr(operator, "user_id", None)
+                or getattr(operator, "union_id", None)
+                or ""
+            )
+        except Exception:
+            operator_id = ""
+        try:
+            value_raw = data.event.action.value
+            if isinstance(value_raw, dict):
+                action_type_preview = str(value_raw.get("action", "") or "")
+            elif isinstance(value_raw, str):
+                try:
+                    parsed = json.loads(value_raw)
+                    if isinstance(parsed, dict):
+                        action_type_preview = str(parsed.get("action", "") or "")
+                    else:
+                        action_type_preview = ""
+                except Exception:
+                    action_type_preview = ""
+            else:
+                action_type_preview = ""
+        except Exception:
+            action_type_preview = ""
+
+        if open_message_id and action_type_preview:
+            dedupe_key = f"{open_chat_id}:{open_message_id}:{operator_id}:{action_type_preview}"
+            try:
+                if self._card_action_dedup_cache.is_duplicate(dedupe_key):
+                    return None
+
+                # Immediate feedback: prefer patching streaming card (non-spam), fallback to reply.
+                try:
+                    manager = self._get_streaming_manager()
+                    card = manager.get_card(open_message_id)
+                    if card:
+                        manager.set_sticky_message(open_message_id, "已收到操作，正在处理…", duration=2.5)
+                    else:
+                        self._reply_message(open_message_id, "⏳ 已收到操作，正在处理…")
+                except Exception:
+                    self._reply_message(open_message_id, "⏳ 已收到操作，正在处理…")
+            except Exception:
+                # best-effort only
+                pass
+
         project_id = None
         try:
             value_raw = data.event.action.value
@@ -1545,6 +1800,7 @@ class FeishuWSClient:
                 "select_acp_model",
                 "refresh_acp_models",
                 "load_more",
+                "load_prev",
                 "show_ttadk_menu",
                 "show_acp_menu",
                 "show_help_menu",
@@ -1687,6 +1943,11 @@ class FeishuWSClient:
         if is_in_programming:
             if self._is_exit_command(text):
                 self._add_reaction(message_id, EmojiReaction.on_coco_mode())
+                if self._should_defer_exit(chat_id=chat_id, project_id=_pid):
+                    # Do NOT interrupt the currently running programming task.
+                    self._request_deferred_exit(message_id=message_id, chat_id=chat_id, project_id=_pid)
+                    self._reply_message(message_id, "✅ 已收到 /exit，将在当前任务完成后退出（不中断执行）")
+                    return
                 self._exit_current_mode(message_id, chat_id, project=project)
                 return
 

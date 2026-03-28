@@ -270,6 +270,7 @@ class TaskScheduler:
         per_key_concurrency: int = 1,
         system_concurrency: int = 10,
         worker_executor: Optional[ThreadPoolExecutor] = None,
+        system_executor: Optional[ThreadPoolExecutor] = None,
         thread_name_prefix: str = "task_worker",
     ):
         if max_concurrent <= 0:
@@ -281,9 +282,19 @@ class TaskScheduler:
         self._per_key = per_key_concurrency
         self._system_concurrency = system_concurrency
 
+        # Two executors:
+        # - normal executor: bounded by max_concurrent
+        # - system executor: reserved capacity for system/control-plane tasks
+        #
+        # This avoids system commands being starved when normal workers are busy
+        # with long-running programming tasks.
         self._executor = worker_executor or ThreadPoolExecutor(
             max_workers=max_concurrent,
             thread_name_prefix=thread_name_prefix,
+        )
+        self._system_executor = system_executor or ThreadPoolExecutor(
+            max_workers=system_concurrency,
+            thread_name_prefix=f"{thread_name_prefix}_system",
         )
 
         self._lock = threading.Lock()
@@ -291,7 +302,8 @@ class TaskScheduler:
         self._queues: dict[str, Deque[_QueuedTask]] = defaultdict(deque)  # queue_key -> queue
         self._running_by_key: dict[str, int] = defaultdict(int)
         self._running_by_project: dict[str, int] = defaultdict(int)
-        self._running_total = 0
+        self._running_total_normal = 0
+        self._running_total_system = 0
         self._states: dict[str, TaskRunState] = {}
         self._listeners: list[Callable[[TaskEvent], None]] = []
 
@@ -672,6 +684,10 @@ class TaskScheduler:
                 self._executor.shutdown(wait=False, cancel_futures=True)
             except Exception:
                 pass
+            try:
+                self._system_executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
 
     # ------------------------ internal ------------------------
 
@@ -692,9 +708,13 @@ class TaskScheduler:
                     self._cv.wait(timeout=0.2)
                     continue
 
-                self._running_total += 1
                 state = self._states.get(task.run_id)
                 key = state.assigned_queue_key if state and state.assigned_queue_key else task.spec.get_effective_queue_key()
+                is_system = self._is_system_queue(key)
+                if is_system:
+                    self._running_total_system += 1
+                else:
+                    self._running_total_normal += 1
                 self._running_by_key[key] += 1
                 if state and state.project_serial_key:
                     self._running_by_project[state.project_serial_key] += 1
@@ -705,10 +725,14 @@ class TaskScheduler:
                 self._cv.notify_all()
 
                 try:
-                    fut = self._executor.submit(self._run_wrapper, task)
+                    executor = self._system_executor if is_system else self._executor
+                    fut = executor.submit(self._run_wrapper, task)
                 except Exception as e:
                     # rollback running counters and converge to terminal state
-                    self._running_total = max(0, self._running_total - 1)
+                    if is_system:
+                        self._running_total_system = max(0, self._running_total_system - 1)
+                    else:
+                        self._running_total_normal = max(0, self._running_total_normal - 1)
                     self._running_by_key[key] = max(0, self._running_by_key[key] - 1)
                     if state and state.project_serial_key:
                         self._running_by_project[state.project_serial_key] = max(
@@ -736,12 +760,19 @@ class TaskScheduler:
 
     def _pick_next_task_unlocked(self) -> Optional[_QueuedTask]:
         """挑选一个当前可运行的任务（调用方需持有 `_cv` 锁）。"""
-        if self._running_total >= self._max_concurrent:
-            return None
-
         for key, q in list(self._queues.items()):
             if not q:
                 continue
+
+            # Global capacity gate:
+            # - System queue: reserved executor (does not consume normal capacity)
+            # - Normal queues: bounded by max_concurrent
+            if self._is_system_queue(key):
+                if self._running_total_system >= self._system_concurrency:
+                    continue
+            else:
+                if self._running_total_normal >= self._max_concurrent:
+                    continue
             limit = self._get_key_concurrency_limit(key)
             if self._running_by_key.get(key, 0) >= limit:
                 continue
@@ -756,8 +787,11 @@ class TaskScheduler:
                     self._emit(item.run_id, TaskStatus.CANCELED)
                     continue
                 if st and st.project_serial_key and self._running_by_project.get(st.project_serial_key, 0) >= 1:
-                    # keep queue order; try other queues first
-                    break
+                    # Project-level serialization: keep per-project tasks ordered.
+                    # Exception: control-plane tasks (/help, /exit) must not be blocked.
+                    if st.spec.task_type not in {"system_help", "system_exit"}:
+                        # keep queue order; try other queues first
+                        break
                 break
 
             if not q:
@@ -766,7 +800,8 @@ class TaskScheduler:
             head = q[0]
             head_state = self._states.get(head.run_id)
             if head_state and head_state.project_serial_key and self._running_by_project.get(head_state.project_serial_key, 0) >= 1:
-                continue
+                if head_state.spec.task_type not in {"system_help", "system_exit"}:
+                    continue
             return q.popleft()
 
         return None
@@ -826,9 +861,12 @@ class TaskScheduler:
 
         finally:
             with self._cv:
-                self._running_total = max(0, self._running_total - 1)
                 st = self._states.get(run_id)
                 key = st.assigned_queue_key if st and st.assigned_queue_key else spec.get_effective_queue_key()
+                if self._is_system_queue(key):
+                    self._running_total_system = max(0, self._running_total_system - 1)
+                else:
+                    self._running_total_normal = max(0, self._running_total_normal - 1)
                 self._running_by_key[key] = max(0, self._running_by_key[key] - 1)
                 if st and st.project_serial_key:
                     self._running_by_project[st.project_serial_key] = max(0, self._running_by_project[st.project_serial_key] - 1)

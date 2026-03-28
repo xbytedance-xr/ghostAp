@@ -53,6 +53,7 @@ class StreamingCard:
     full_content: str = ""  # Complete content storage
     visible_chars: int = 20000  # Current visibility limit (default ~20KB)
     pagination_step: int = 5000  # How much to add on "Load More"
+    view_start: int = 0  # Window start offset when content is paged
 
     # Typing indicator state
     typing_state: int = 0  # 0-3 for cycling dots
@@ -479,15 +480,68 @@ class StreamingCardManager:
         self._last_cleanup = now
         self.cleanup_expired_cards()
 
+    def _slice_window(self, card: StreamingCard, content: str) -> tuple[str, bool, bool]:
+        """返回 (display_content, has_prev, has_more)。
+
+        - 默认从头开始展示；当 visible_chars 达到上限但仍有更多内容时，使用 view_start 做滑窗分页。
+        - 永远保证 display_content 不超过 _max_card_chars（避免 PATCH 载荷过大）。
+        """
+
+        if content is None:
+            content = ""
+
+        total = len(content)
+        if total <= 0:
+            card.view_start = 0
+            return "", False, False
+
+        window = int(card.visible_chars or 0)
+        if window <= 0:
+            window = min(20000, self._max_card_chars)
+        window = min(window, self._max_card_chars)
+
+        max_start = max(0, total - window)
+        start = int(card.view_start or 0)
+        if start < 0:
+            start = 0
+        if start > max_start:
+            start = max_start
+        card.view_start = start
+
+        end = min(total, start + window)
+        display = content[start:end]
+        has_prev = start > 0
+        has_more = end < total
+        return display, has_prev, has_more
+
     def send_streaming_card(self, card: StreamingCard) -> Optional[str]:
         self._maybe_cleanup()
         try:
             buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode, card.is_ttadk_mode)
-            initial = _normalize_streaming_markdown(
-                card.last_content,
-                is_final=False,
-                max_chars=self._max_card_chars,
-            )
+            # Ensure full_content is initialized (for pagination after send).
+            if not card.full_content:
+                card.full_content = card.last_content or ""
+            display, has_prev, has_more = self._slice_window(card, card.full_content)
+            initial = _normalize_streaming_markdown(display, is_final=False, max_chars=0)
+
+            if has_prev:
+                buttons.append(
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "⬆️ 上一段"},
+                        "type": "default",
+                        "value": {"action": "load_prev", "message_id": card.message_id or ""},
+                    }
+                )
+            if has_more:
+                buttons.append(
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "⬇️ 加载更多"},
+                        "type": "primary",
+                        "value": {"action": "load_more", "message_id": card.message_id or ""},
+                    }
+                )
             # 关键：流式卡片后续需要用 message.update(PATCH) 更新。
             # PATCH 更新要求 schema 2.0 包装，但元素需 legacy-safe（避免 text_size/element_id）。
             card_json = self._build_update_card_json(
@@ -586,7 +640,17 @@ class StreamingCardManager:
             delta_c = current_len - card.last_content_len
             self._flow_control.update_rate(card.flow_control_state, now, delta_c)
 
-            # Update full content in memory
+            # Update full content in memory.
+            # Monotonic guarantee: streaming output should only grow. If a shorter
+            # content arrives (out-of-order / stale caller), keep the longer one.
+            if not force:
+                try:
+                    prev_len = len(card.full_content or "")
+                    new_len = len(content or "")
+                    if new_len < prev_len:
+                        content = card.full_content
+                except Exception:
+                    pass
             card.full_content = content
             card.is_typing = is_typing
 
@@ -626,12 +690,7 @@ class StreamingCardManager:
 
                     content = card.full_content
                     is_typing = card.is_typing
-                    has_more = False
-                    display_content = content
-
-                    if len(content) > card.visible_chars:
-                        display_content = content[: card.visible_chars]
-                        has_more = True
+                    display_content, has_prev, has_more = self._slice_window(card, content)
 
                     now = time.time()
 
@@ -660,6 +719,16 @@ class StreamingCardManager:
                         continue
 
                 buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode, card.is_ttadk_mode)
+
+                if has_prev:
+                    buttons.append(
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "⬆️ 上一段"},
+                            "type": "default",
+                            "value": {"action": "load_prev", "message_id": card.message_id},
+                        }
+                    )
 
                 if has_more:
                     buttons.append(
@@ -725,12 +794,33 @@ class StreamingCardManager:
 
         try:
             final_text = final_content if final_content else card.last_content
-            normalized = _normalize_streaming_markdown(
-                final_text,
-                is_final=True,
-                max_chars=0,  # final card: no truncation
-            )
+            if final_text is None:
+                final_text = ""
+            with card.lock:
+                card.full_content = final_text
+            display, has_prev, has_more = self._slice_window(card, final_text)
+            normalized = _normalize_streaming_markdown(display, is_final=True, max_chars=0)
             buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode, card.is_ttadk_mode)
+
+            if has_prev:
+                buttons.append(
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "⬆️ 上一段"},
+                        "type": "default",
+                        "value": {"action": "load_prev", "message_id": card.message_id},
+                    }
+                )
+
+            if has_more:
+                buttons.append(
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "⬇️ 加载更多"},
+                        "type": "primary",
+                        "value": {"action": "load_more", "message_id": card.message_id},
+                    }
+                )
             card_json = self._build_update_card_json(
                 title=card.title,
                 header_template=card.header_template,
@@ -757,8 +847,11 @@ class StreamingCardManager:
                 logger.warning("关闭流式失败: code=%s, msg=%s", resp.code, resp.msg)
                 return False
 
-            with self._lock:
-                self._cards.pop(card.message_id, None)
+            # If pagination is still needed, keep the card for a while so that
+            # the user can continue paging after the task has finished.
+            if not (has_prev or has_more):
+                with self._lock:
+                    self._cards.pop(card.message_id, None)
             with card.lock:
                 card.is_inflight = False
             return True
@@ -783,17 +876,38 @@ class StreamingCardManager:
                 logger.info("清理过期卡片: %s", card_id)
 
     def increase_pagination(self, card_id: str) -> bool:
-        """Increase the visible character limit for a card and trigger update."""
+        """分页：优先扩大可见窗口；到达上限后改为滑动窗口向后翻页。"""
         with self._lock:
             card = self._cards.get(card_id)
             if not card:
                 return False
 
-            # Increase limit
-            card.visible_chars += card.pagination_step
+            content_to_render = card.full_content or ""
+            total = len(content_to_render)
+            if total <= 0:
+                return False
 
-            # Force update via normal flow
-            # We use the cached full_content
-            content_to_render = card.full_content
+            # Try to increase window size first (up to max card chars)
+            if card.visible_chars < min(total, self._max_card_chars):
+                card.visible_chars = min(self._max_card_chars, card.visible_chars + card.pagination_step)
+                card.view_start = 0
+            else:
+                # Slide forward by step
+                window = min(int(card.visible_chars or 0) or self._max_card_chars, self._max_card_chars)
+                max_start = max(0, total - window)
+                card.view_start = min(max_start, int(card.view_start or 0) + int(card.pagination_step or 0))
 
+        return self.update_content(card, content_to_render, force=True)
+
+    def decrease_pagination(self, card_id: str) -> bool:
+        """滑动窗口向前翻页（若处于滑窗模式）。"""
+        with self._lock:
+            card = self._cards.get(card_id)
+            if not card:
+                return False
+            content_to_render = card.full_content or ""
+            if not content_to_render:
+                return False
+            step = int(card.pagination_step or 0) or 0
+            card.view_start = max(0, int(card.view_start or 0) - max(1, step))
         return self.update_content(card, content_to_render, force=True)
