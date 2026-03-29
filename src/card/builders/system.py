@@ -150,21 +150,29 @@ class SystemBuilder:
         )
         elements.append({"tag": "hr"})
 
-        buttons = []
+        options = []
         for tool in tools:
             btn_text = f"{tool.name}"
             if tool.description:
                 btn_text += f" ({tool.description})"
-            buttons.append(
+            options.append(
                 {
-                    "tag": "button",
                     "text": {"tag": "plain_text", "content": btn_text},
-                    "type": "primary" if tool.is_default else "default",
-                    "value": {"action": "select_ttadk_tool", "tool_name": tool.name, "project_id": project_id},
+                    "value": tool.name
                 }
             )
 
-        elements.extend(build_responsive_layout(buttons))
+        elements.append(
+            {
+                "tag": "select_static",
+                "placeholder": {"tag": "plain_text", "content": "请选择工具..."},
+                "value": {
+                    "action": "select_ttadk_tool",
+                    "project_id": project_id,
+                },
+                "options": options
+            }
+        )
 
         card = CoreBuilder._wrap_card("🔧 TTADK 工具选择", "blue", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
@@ -190,26 +198,30 @@ class SystemBuilder:
         )
         elements.append({"tag": "hr"})
 
-        buttons = []
+        options = []
         for model in models:
             btn_text = f"{model.name}"
             if model.description:
                 btn_text += f" ({model.description})"
-            buttons.append(
+            options.append(
                 {
-                    "tag": "button",
                     "text": {"tag": "plain_text", "content": btn_text},
-                    "type": "primary" if model.is_default else "default",
-                    "value": {
-                        "action": "select_ttadk_model",
-                        "tool_name": tool_name,
-                        "model_name": model.name,
-                        "project_id": project_id,
-                    },
+                    "value": model.name
                 }
             )
-
-        elements.extend(build_responsive_layout(buttons))
+            
+        elements.append(
+            {
+                "tag": "select_static",
+                "placeholder": {"tag": "plain_text", "content": "请选择模型..."},
+                "value": {
+                    "action": "select_ttadk_model",
+                    "tool_name": tool_name,
+                    "project_id": project_id,
+                },
+                "options": options
+            }
+        )
 
         # 辅助入口：强制刷新模型列表（常用于 Invalid model / 可用模型为空）
         elements.append({"tag": "hr"})

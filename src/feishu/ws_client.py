@@ -405,7 +405,9 @@ class FeishuWSClient:
         )
 
         self._register_action(
-            lambda mid, cid, pid, val: self._handle_select_ttadk_tool(mid, cid, val.get("tool_name", ""), pid),
+            lambda mid, cid, pid, val: self._handle_select_ttadk_tool(
+                mid, cid, val.get("_option") or val.get("tool_name", ""), pid
+            ),
             exact="select_ttadk_tool",
         )
         self._register_action(
@@ -441,7 +443,7 @@ class FeishuWSClient:
                 mid,
                 cid,
                 val.get("tool_name", ""),
-                val.get("model_name", ""),
+                val.get("_option") or val.get("model_name", ""),
                 self._project_manager.get_project(pid) if pid else None,
             ),
             exact="select_ttadk_model",
@@ -1845,15 +1847,30 @@ class FeishuWSClient:
             )
 
             if isinstance(value_raw, dict):
-                value = value_raw
+                value = dict(value_raw)
             elif isinstance(value_raw, str):
                 try:
                     value = json.loads(value_raw)
+                    if not isinstance(value, dict):
+                        value = {"action": value_raw}
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("卡片 value 解析失败: value_raw=%s", value_raw[:500])
                     value = {"action": value_raw}
             else:
                 value = {"action": str(value_raw)}
+
+            # --- 注入交互组件的额外返回值 ---
+            try:
+                if getattr(action, "option", None) is not None:
+                    value["_option"] = action.option
+                if getattr(action, "options", None) is not None:
+                    value["_options"] = action.options
+                if getattr(action, "form_value", None) is not None:
+                    value["_form_value"] = action.form_value
+                if getattr(action, "input_value", None) is not None:
+                    value["_input_value"] = action.input_value
+            except Exception:
+                pass
 
             action_type = value.get("action", "")
             project_id = value.get("project_id", "")

@@ -85,18 +85,17 @@ def _normalize_streaming_markdown(content: str, *, is_final: bool, max_chars: in
     if content is None:
         content = ""
 
-    # 飞书消息 update 需要整包更新 card JSON，内容太大会导致请求失败/被截断
+    from ..feishu.message_formatter import FeishuMessageFormatter
+
     if max_chars > 0 and len(content) > max_chars:
-        tail = content[-max_chars:]
-        content = f"…（内容过长，已截断，显示最后 {max_chars} 字符）\n\n{tail}"
-
-    # 流式过程中，Markdown 代码块很容易出现“开了没关”的中间态，导致整卡渲染崩
-    fence_count = content.count("```")
-    if fence_count % 2 == 1:
-        # 最终态也补齐，保证收尾可读
-        content = content + "\n```"
-
-    return content
+        # 默认流式保留尾部（最新内容）
+        return FeishuMessageFormatter.safe_truncate_markdown(content, max_length=max_chars, keep_head=False)
+    else:
+        # 虽然没有超长，但流式过程中可能代码块未闭合，依然使用相同逻辑进行安全闭合
+        fence_count = content.count("```")
+        if fence_count % 2 == 1:
+            content += "\n```"
+        return content
 
 
 class StreamingCardManager:

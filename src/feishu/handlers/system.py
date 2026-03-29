@@ -883,7 +883,9 @@ class SystemHandler(BaseHandler):
         msg_type, card_content = CardBuilder.build_ttadk_model_select_card(
             result.models, tool_name, project_id, yolo_enabled=yolo_enabled
         )
-        self.reply_message(message_id, card_content, msg_type=msg_type)
+        patched = self.patch_message(message_id, card_content)
+        if not patched:
+            self.reply_message(message_id, card_content, msg_type=msg_type)
 
     def handle_select_ttadk_model(
         self,
@@ -954,7 +956,9 @@ class SystemHandler(BaseHandler):
         msg_type, card_content = CardBuilder.build_ttadk_model_select_card(
             result.models or [], tool, project_id, yolo_enabled=yolo_enabled
         )
-        self.reply_message(message_id, card_content, msg_type=msg_type)
+        patched = self.patch_message(message_id, card_content)
+        if not patched:
+            self.reply_message(message_id, card_content, msg_type=msg_type)
 
     def handle_toggle_ttadk_yolo(
         self,
@@ -992,7 +996,9 @@ class SystemHandler(BaseHandler):
             msg_type, card_content = CardBuilder.build_ttadk_model_select_card(
                 result.models or [], tool, project_id, yolo_enabled=yolo_enabled
             )
-            self.reply_message(message_id, card_content, msg_type=msg_type)
+            patched = self.patch_message(message_id, card_content)
+            if not patched:
+                self.reply_message(message_id, card_content, msg_type=msg_type)
             return
 
         tools_result = manager.get_tools()
@@ -1002,7 +1008,9 @@ class SystemHandler(BaseHandler):
         msg_type, card_content = CardBuilder.build_ttadk_tool_select_card(
             tools_result.tools, project_id, yolo_enabled=yolo_enabled
         )
-        self.reply_message(message_id, card_content, msg_type=msg_type)
+        patched = self.patch_message(message_id, card_content)
+        if not patched:
+            self.reply_message(message_id, card_content, msg_type=msg_type)
 
     # ------------------------------------------------------------------
     # Exit current mode
