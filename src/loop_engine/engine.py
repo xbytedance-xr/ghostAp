@@ -18,10 +18,9 @@ from langchain_openai import ChatOpenAI
 
 from ..acp import ACPEvent, ACPEventType
 from ..agent_session import create_engine_session
-from ..deep_engine.models import EngineRunState
-from ..engine_base import BaseEngine, BaseEngineManager
+from ..engine_base import BaseEngine, BaseEngineManager, EngineRunState
 from ..utils.gc_monitor import get_gc_monitor
-from ..utils.retry import RetryPolicy, get_retry_delay, should_retry
+from ..utils.retry import RetryPolicy
 from ..utils.spec_utils import (
     CRITERIA_PATTERNS as _CRITERIA_PATTERNS,
 )
@@ -169,25 +168,11 @@ class LoopEngine(BaseEngine):
                     # Track events for this iteration
                     iter_tracker = IterationTracker()
                     on_event = self._make_on_event(iter_tracker, iteration, callbacks)
-    
-                    # Retry logic with exponential backoff
-                    retry_policy = RetryPolicy(max_retries=3, retry_delay=2.0)
-                    attempt = 0
-                    result = None
-                    while attempt <= retry_policy.max_retries:
-                        try:
-                            result = self._session.send_prompt(prompt, on_event=on_event, timeout=timeout)
-                            break
-                        except Exception as e:
-                            if attempt < retry_policy.max_retries and (isinstance(e, TimeoutError) or should_retry(e)):
-                                delay = get_retry_delay(attempt, retry_policy)
-                                logger.warning(
-                                    f"[Loop] send_prompt 失败: {e}. 正在进行第 {attempt + 1} 次重试，等待 {delay:.1f}s"
-                                )
-                                time.sleep(delay)
-                                attempt += 1
-                            else:
-                                raise
+
+                    result = self._session.send_prompt_with_retry(
+                        prompt, on_event=on_event, timeout=timeout,
+                        retry_policy=RetryPolicy(max_retries=3, retry_delay=2.0),
+                    )
     
                     # Record iteration — full output, proper duration, extract focus
                     iter_end = time.time()
@@ -756,66 +741,46 @@ FAIL
             elif event.event_type == ACPEventType.THOUGHT_CHUNK and event.text:
                 thought_text.append(event.text)
 
-        # Retry logic with exponential backoff for review
-        retry_policy = RetryPolicy(max_retries=2, retry_delay=2.0)
-        attempt = 0
-        review_result = None
-        last_error = None
+        try:
+            review_timeout = getattr(self.settings, "loop_review_timeout", 120)
 
-        while attempt <= retry_policy.max_retries:
-            try:
-                # Clear text buffers for retry
-                if attempt > 0:
-                    review_text.clear()
-                    thought_text.clear()
-                    
-                review_timeout = getattr(self.settings, "loop_review_timeout", 120)
-                self._session.send_prompt(review_prompt, on_event=on_review_event, timeout=review_timeout)
-                full_text = "".join(review_text)
-                # Combine text + thought for parsing (some agents put verdicts in thinking)
-                combined_text = full_text
-                if thought_text:
-                    combined_text = full_text + "\n" + "".join(thought_text)
-                review_result = self._parse_review_output(combined_text, iteration)
-                break
-            except Exception as e:
-                from ..utils.errors import get_error_detail
-                last_error = e
-                detail = get_error_detail(e)
-                if attempt < retry_policy.max_retries and (isinstance(e, TimeoutError) or should_retry(e)):
-                    delay = get_retry_delay(attempt, retry_policy)
-                    logger.warning(
-                        f"[Loop] 多视角审查请求失败: {detail}. 正在进行第 {attempt + 1} 次重试，等待 {delay:.1f}s"
-                    )
-                    time.sleep(delay)
-                    attempt += 1
-                else:
-                    logger.warning(f"[Loop] 多视角审查异常: {detail}, 将视为有改进建议继续迭代")
-                    
-                    # Convert to friendly error message
-                    if isinstance(e, TimeoutError) or "timeout" in detail.lower():
-                        logger.warning("[METRIC] review_timeout")
-                        err_msg = "多视角审查请求超时，请检查网络"
-                    else:
-                        err_msg = f"审查执行异常: {detail}"
-                        
-                    review_result = ReviewResult(
-                        reviews=[
-                            PerspectiveReview(
-                                perspective=p,
-                                passed=False,
-                                suggestions=[err_msg],
-                                summary="异常",
-                            )
-                            for p in ReviewPerspective
-                        ],
-                        iteration=iteration,
-                    )
-                    break
+            def _before_review_retry(attempt: int, error: Exception):
+                review_text.clear()
+                thought_text.clear()
 
-        if review_result is None:
-            # Fallback if somehow loop exits without setting result
-            review_result = ReviewResult(iteration=iteration)
+            self._session.send_prompt_with_retry(
+                review_prompt, on_event=on_review_event, timeout=review_timeout,
+                retry_policy=RetryPolicy(max_retries=2, retry_delay=2.0),
+                before_retry=_before_review_retry,
+            )
+            full_text = "".join(review_text)
+            combined_text = full_text
+            if thought_text:
+                combined_text = full_text + "\n" + "".join(thought_text)
+            review_result = self._parse_review_output(combined_text, iteration)
+        except Exception as e:
+            from ..utils.errors import get_error_detail
+            detail = get_error_detail(e)
+            logger.warning(f"[Loop] 多视角审查异常: {detail}, 将视为有改进建议继续迭代")
+
+            if isinstance(e, TimeoutError) or "timeout" in detail.lower():
+                logger.warning("[METRIC] review_timeout")
+                err_msg = "多视角审查请求超时，请检查网络"
+            else:
+                err_msg = f"审查执行异常: {detail}"
+
+            review_result = ReviewResult(
+                reviews=[
+                    PerspectiveReview(
+                        perspective=p,
+                        passed=False,
+                        suggestions=[err_msg],
+                        summary="异常",
+                    )
+                    for p in ReviewPerspective
+                ],
+                iteration=iteration,
+            )
 
         if callbacks.on_review_done:
             callbacks.on_review_done(iteration, review_result)

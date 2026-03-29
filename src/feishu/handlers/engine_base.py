@@ -179,7 +179,7 @@ class BaseEngineHandler(BaseHandler):
         """
         import asyncio
 
-        from ...card import CardBuilder, DeepCardState
+        from ...card import CardBuilder, EngineCardState
         from ...utils.errors import get_error_detail
 
         try:
@@ -202,9 +202,9 @@ class BaseEngineHandler(BaseHandler):
             ref_note = self.format_ref_note(message_id, request_id) if request_id else ""
             final_content = f"{error_content}\n\n{ref_note}" if ref_note else error_content
 
-            err_msg_type, err_card = CardBuilder.build_deep_card(
+            err_msg_type, err_card = CardBuilder.build_engine_card(
                 project=project,
-                state=DeepCardState(
+                state=EngineCardState(
                     title=error_title,
                     content=final_content,
                     engine_name=f"{self._get_engine_name_prefix()}({engine_name})"

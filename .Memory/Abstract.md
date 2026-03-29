@@ -1,7 +1,18 @@
 # GhostAP 项目记忆索引
 
 ## 2026-03-29
+- **【完成】引擎层架构规范化 Spec 全量实施** - 5 Phase 14 Tasks：共享模型迁移(engine_base.py)、卡片命名统一(EngineCardState)、引擎接口统一(inject_guidance/on_analyzing_*)、spec_engine/engine.py 拆分(3183→1190行，10+子模块)、rloop 审查通过。1759 tests passed → [详细记录](2026-03-29.md)
+- **Spec Engine 内联薄包装方法** - 移除 engine.py 中 15 个仅委托到模块级函数的薄包装方法，在调用点直接内联模块级函数调用，engine.py 1238→1190 行，1759 tests passed → [详细记录](2026-03-29.md)
+- **Spec Engine 拆分第六部分：提取 criteria 评估逻辑到 criteria.py** - 从 engine.py 提取 _decompose_criteria_with_llm/_evaluate_criteria 到 criteria.py（2函数），engine.py 1387→1238 行，1759 tests passed → [详细记录](2026-03-29.md)
+- **Spec Engine 拆分第五部分：提取状态持久化方法到 persistence.py** - 从 engine.py 提取 _project_to_compact_dict/save_state/load_state 到 persistence.py（3函数），engine.py 从 1387→1238 行，persistence.py 从 285→380 行，1038 tests passed → [详细记录](2026-03-29.md)
+- **Spec Engine 拆分第四部分：提取核心 review 编排逻辑到 review.py** - 从 engine.py 提取 _conduct_review/_parse_review_output/_parse_review_with_llm 到 review.py（3函数+ReviewCircuitState），engine.py 从 1754→1387 行，review.py 从 363→620 行，1759 tests passed → [详细记录](2026-03-29.md)
+- **Spec Engine 拆分第三部分：提取 persistence.py、discovery.py、session_utils.py** - 从 engine.py 提取持久化逻辑(12函数)到 persistence.py、Discovery/Spec 生成(5函数)到 discovery.py、Session 工具(6函数)到 session_utils.py，engine.py 从 2204→1754 行，1759 tests passed → [详细记录](2026-03-29.md)
+- **Spec Engine 拆分第二部分：提取 review.py 和 convergence.py** - 从 engine.py 提取 review 诊断/解析逻辑到 review.py（6函数/常量）、收敛检测到 convergence.py（ContinuationPolicy+2函数），engine.py 减少~512行，1759 tests passed → [详细记录](2026-03-29.md)
+- **Spec Engine 拆分第一部分：提取 prompts.py 和 artifacts.py** - 从 engine.py 提取 7 个 prompt 构建函数到 prompts.py、9 个 artifact 解析函数到 artifacts.py，更新调用点和 32 处测试引用，1759 tests passed → [详细记录](2026-03-29.md)
+- **Phase 3 重构：引擎接口统一（Task 4-7）** - inject_context→inject_guidance、on_planning_*→on_analyzing_*、cleanup()统一到BaseEngine、LoopEngine retry改用send_prompt_with_retry，全量保留向后兼容，1759 tests passed → [详细记录](2026-03-29.md)
 - **Spec 模式卡片信息完整性优化** - 实现 phase 级进度指示器(on_phase_start/on_phase_done)、移除 content 过度折叠、增强 cycle_done review 建议展示、抽取辅助方法去重、+8新测试，rloop 3轮审查 → [详细记录](2026-03-29.md)
+- **Phase 1 重构：共享模型迁移到 engine_base.py** - 将 EngineRunState/ReviewPerspective/PerspectiveReview/ReviewResult 从具体引擎迁移到 engine_base.py，消除跨引擎不合理依赖，保留向后兼容 re-export，1759 tests passed → [详细记录](2026-03-29.md)
+- **Phase 2 重构：卡片层命名统一（Task 3）** - DeepCardState→EngineCardState、deep_project_id→engine_project_id、build_deep_card→build_engine_card，三重向后兼容（别名+property），29文件批量重命名，1759 tests passed → [详细记录](2026-03-29.md)
 
 ## 2026-03-28
 - **项目全局优化（rloop）** - 死代码清理(-120行)、Renderer去重(-65行)、TTADK精简(-200行)、warning banner逻辑bug修复、多角色3轮审查，总减~586行 → [详细记录](2026-03-28.md)

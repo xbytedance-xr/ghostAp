@@ -516,7 +516,7 @@ class SpecReporter:
         return "📊 Spec 状态"
 
     # ------------------------------------------------------------------
-    # Structured card sections (for build_deep_card new params)
+    # Structured card sections (for build_engine_card new params)
     # ------------------------------------------------------------------
 
     def format_status_line(self, project: SpecProject) -> str:

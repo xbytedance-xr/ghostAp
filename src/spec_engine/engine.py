@@ -10,10 +10,7 @@ import json
 import logging
 import os
 import re
-import shutil
 import time
-import traceback
-import uuid
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -22,56 +19,96 @@ from langchain_openai import ChatOpenAI
 
 from ..acp import ACPEvent, ACPEventType
 from ..agent_session import create_engine_session
-from ..coco_model import get_coco_model_manager
-from ..config import get_settings
-from ..deep_engine.models import EngineRunState
-from ..engine_base import BaseEngine, BaseEngineManager
-from ..loop_engine.models import (
+from ..engine_base import (
+    BaseEngine,
+    EngineRunState,
     PerspectiveReview,
     ReviewPerspective,
     ReviewResult,
 )
 from ..utils.trace import TraceContext
-from ..utils.engine_identity import resolve_engine_identity
 from .validation import SpecInput
 from pydantic import ValidationError
 from ..utils.spec_utils import (
-    CRITERIA_PATTERNS as _CRITERIA_PATTERNS,
-)
-from ..utils.spec_utils import (
-    PERSPECTIVE_TAG_MAP as _PERSPECTIVE_TAG_MAP,
-)
-from ..utils.spec_utils import (
     extract_json_blob,
-    normalize_list,
-    parse_review_output_loose,
-    parse_review_output_strict_tolerant,
-    validate_plan_artifact_dict,
-    validate_spec_artifact_dict,
 )
 from .models import (
-    PlanArtifact,
-    SpecArtifact,
     SpecCycle,
-    SpecCycleMetrics,
     SpecPhase,
     SpecProject,
     SpecProjectStatus,
-    SpecTask,
     SpecWorkItem,
     SpecWorkItemStatus,
 )
-from ..utils.retry import RetryPolicy, get_retry_delay, should_retry
-from .task_persistence import SpecTaskState, delete_task_state, generate_task_id, save_task_state
+from .prompts import (
+    build_build_prompt,
+    build_plan_prompt,
+    build_refinement_input,
+    build_spec_prompt,
+    build_task_prompt,
+    format_criteria_status,
+)
+from .artifacts import (
+    merge_acceptance_criteria,
+    parse_acceptance_criteria,
+    parse_plan_artifact,
+    parse_spec_artifact,
+    parse_tasks,
+)
+from ..utils.retry import RetryPolicy
+from .task_persistence import SpecTaskState, delete_task_state
 from .tracker import PhaseTracker
+from .review import (
+    ReviewCircuitState,
+    build_review_exception_diagnostics,
+    conduct_review as _conduct_review_impl,
+    extract_reviews_from_llm_response,
+    format_review_exception_log_line,
+    normalize_review_diagnostics,
+    parse_review_output as _parse_review_output_impl,
+    parse_review_with_llm as _parse_review_with_llm_impl,
+    review_result_to_text,
+)
+from .convergence import (
+    ContinuationPolicy,
+    compute_cycle_metrics,
+    detect_convergence,
+)
+from .criteria import (
+    decompose_criteria_with_llm as _decompose_criteria_with_llm_impl,
+    evaluate_criteria as _evaluate_criteria_impl,
+)
+from .persistence import (
+    append_history_event as _append_history_event,
+    cleanup_generated_specs as _cleanup_generated_specs,
+    cleanup_old_cycle_artifacts as _cleanup_old_cycle_artifacts,
+    get_state_path as _get_state_path,
+    load_engine_state as _load_engine_state,
+    persist_cycle_artifact as _persist_cycle_artifact,
+    persist_state_best_effort as _persist_state_best_effort,
+    project_to_compact_dict as _project_to_compact_dict_impl,
+    read_text_file_best_effort as _read_text_file_best_effort,
+    save_engine_state as _save_engine_state,
+    save_failed_task as _save_failed_task_impl,
+    truncate_output as _truncate_output,
+)
+from .discovery import (
+    build_input_from_spec_file as _build_input_from_spec_file,
+    discover_optimization_questions as _discover_optimization_questions,
+    generate_specs_from_discovery as _generate_specs_from_discovery,
+    pick_next_work_item as _pick_next_work_item,
+    should_load_spec_directly as _should_load_spec_directly,
+)
+from .session_utils import (
+    build_runtime_context as _build_runtime_context,
+    initialize_model_context as _initialize_model_context,
+    recreate_session_best_effort as _recreate_session_best_effort,
+    restore_runtime_context as _restore_runtime_context,
+    send_prompt_with_retry as _send_prompt_with_retry,
+    try_switch_model as _try_switch_model,
+)
 
 logger = logging.getLogger(__name__)
-
-# Pre-compiled regex for task parsing
-_TASK_LINE_PATTERN = re.compile(
-    r"^\s*(\d+)\s*[.、)]\s*(.+?)(?:\s*\(\s*(?:依赖|depends?)\s*[:：]?\s*(.*?)\s*\))?\s*$",
-    re.IGNORECASE,
-)
 
 
 @dataclass
@@ -91,58 +128,6 @@ class SpecEngineCallbacks:
     on_retry: Optional[Callable[[int, str], None]] = None
     on_model_switch: Optional[Callable[[str, str], None]] = None
     on_task_saved: Optional[Callable[[str], None]] = None
-
-
-@dataclass
-class ContinuationPolicy:
-    """Decides whether to continue the next spec-kit optimization cycle."""
-
-    max_cycles: int
-    infinite_mode: bool = False
-    disable_convergence: bool = False
-    disable_early_stop: bool = False
-    min_cycles: int = 1
-
-    def should_stop(
-        self,
-        cycle_num: int,
-        all_satisfied: bool,
-        review_passed: bool,
-        converged: bool,
-        metrics: SpecCycleMetrics,
-    ) -> Optional[str]:
-        # Force at least min_cycles if we haven't hit max_cycles
-        if cycle_num < self.min_cycles and cycle_num < self.max_cycles:
-            return None
-
-        # Success always stops
-        if all_satisfied and review_passed:
-            # Bug fix: don't stop if we have pending work items (backlog)
-            # This allows spec-kit discovery mechanism to drive further iterations.
-            if metrics.backlog_pending > 0:
-                return None
-            return "success"
-
-        # Infinite mode: never stop due to convergence/early stop
-        if self.infinite_mode:
-            return None
-
-        if (not self.disable_convergence) and converged:
-            return "converged"
-
-        if self.disable_early_stop:
-            return None
-
-        # Secondary guard: low improvement space + empty backlog for several cycles
-        if (
-            (not all_satisfied)
-            and metrics.improvement_space <= 0.2
-            and metrics.backlog_pending == 0
-            and metrics.new_satisfied == 0
-            and cycle_num >= 3
-        ):
-            return "converged"
-        return None
 
 
 class SpecEngine(BaseEngine):
@@ -171,14 +156,33 @@ class SpecEngine(BaseEngine):
         # Idempotency guard for failed task persistence: avoid saving the same failure multiple times.
         # Format: (cycle_num, phase.value, task_id)
         self._saved_task_signature: Optional[tuple[int, str, str]] = None
-        # best-effort: carry review exception diagnostics to cycle/metrics
-        self._last_review_failure_diag: Optional[dict] = None
-        # review failure circuit breaker (best-effort)
-        self._review_failure_consecutive: int = 0
-        self._review_circuit_open_until_cycle: int = 0
-        # last known cycle/phase for failure persistence
+        self._review_circuit = ReviewCircuitState()
         self._last_cycle_num: int = 0
         self._last_phase: SpecPhase = SpecPhase.SPEC
+
+    @property
+    def _last_review_failure_diag(self) -> Optional[dict]:
+        return self._review_circuit.last_review_failure_diag
+
+    @_last_review_failure_diag.setter
+    def _last_review_failure_diag(self, value: Optional[dict]):
+        self._review_circuit.last_review_failure_diag = value
+
+    @property
+    def _review_failure_consecutive(self) -> int:
+        return self._review_circuit.review_failure_consecutive
+
+    @_review_failure_consecutive.setter
+    def _review_failure_consecutive(self, value: int):
+        self._review_circuit.review_failure_consecutive = value
+
+    @property
+    def _review_circuit_open_until_cycle(self) -> int:
+        return self._review_circuit.review_circuit_open_until_cycle
+
+    @_review_circuit_open_until_cycle.setter
+    def _review_circuit_open_until_cycle(self, value: int):
+        self._review_circuit.review_circuit_open_until_cycle = value
 
     def _wrap_callbacks(self, callbacks: SpecEngineCallbacks) -> SpecEngineCallbacks:
         def _wrap(fn: Optional[Callable[..., None]], name: str) -> Optional[Callable[..., None]]:
@@ -211,29 +215,7 @@ class SpecEngine(BaseEngine):
         )
 
     def _initialize_model_context(self) -> None:
-        """根据后端类型初始化模型上下文。"""
-        agent_type = str(self._agent_type or "").strip().lower()
-
-        # CLI-only claude backend: no model list API, keep default startup behavior.
-        if agent_type == "claude":
-            self._current_model = None
-            self._models_tried = []
-            return
-
-        # TTADK: keep tool-specific current model context.
-        if agent_type.startswith("ttadk"):
-            try:
-                from ..ttadk import get_ttadk_manager
-
-                self._current_model = get_ttadk_manager().get_current_model()
-            except Exception:
-                self._current_model = None
-            self._models_tried = [self._current_model] if self._current_model else []
-            return
-
-        # ACP coco backend
-        self._current_model = get_coco_model_manager().get_current_model()
-        self._models_tried = [self._current_model] if self._current_model else []
+        self._current_model, self._models_tried = _initialize_model_context(self._agent_type)
 
     @staticmethod
     def _infer_engine_name(agent_type: Optional[str]) -> str:
@@ -245,13 +227,14 @@ class SpecEngine(BaseEngine):
         return "Coco"
 
     def _build_runtime_context(self) -> dict:
-        return {
-            "agent_type": str(self._agent_type or "").strip().lower() or "coco",
-            "engine_name": self.engine_name or self._infer_engine_name(self._agent_type),
-            "model_name": self._model_name,
-            "current_model": self._current_model,
-            "models_tried": list(self._models_tried),
-        }
+        return _build_runtime_context(
+            agent_type=str(self._agent_type or ""),
+            engine_name=self.engine_name,
+            model_name=self._model_name,
+            current_model=self._current_model,
+            models_tried=self._models_tried,
+            infer_engine_name_fn=self._infer_engine_name,
+        )
 
     def _restore_runtime_context(
         self,
@@ -261,34 +244,29 @@ class SpecEngine(BaseEngine):
         on_rate_limit: Optional[Callable[[int], None]] = None,
     ) -> None:
         runtime = dict(runtime_context or {})
-        self._agent_type = str(runtime.get("agent_type") or self._agent_type or "coco").strip().lower() or "coco"
-        self.engine_name = str(runtime.get("engine_name") or self.engine_name or self._infer_engine_name(self._agent_type)).strip() or self._infer_engine_name(self._agent_type)
-
-        restored_models = [
-            str(model).strip() for model in (runtime.get("models_tried") or []) if str(model).strip()
-        ]
-        restored_current_model = str(runtime.get("current_model") or "").strip() or None
-        restored_model_name = str(runtime.get("model_name") or "").strip() or None
-
-        self._model_name = restored_model_name or restored_current_model or self._model_name
-        self._current_model = restored_current_model or self._current_model
-        self._models_tried = restored_models
-
-        if self._current_model and self._current_model not in self._models_tried:
-            self._models_tried.append(self._current_model)
-        if not self._current_model and self._models_tried:
-            self._current_model = self._models_tried[-1]
-        if not self._model_name:
-            self._model_name = self._current_model
-
-        if not self._models_tried and self._agent_type != "claude":
-            self._initialize_model_context()
-
-        self._on_rate_limit = on_rate_limit
-        self._saved_task_id = saved_task_id or self._saved_task_id
+        tentative_agent = str(runtime.get("agent_type") or self._agent_type or "coco").strip().lower() or "coco"
+        result = _restore_runtime_context(
+            runtime_context,
+            agent_type=str(self._agent_type or ""),
+            engine_name=self.engine_name,
+            model_name=self._model_name,
+            current_model=self._current_model,
+            models_tried=self._models_tried,
+            infer_engine_name_fn=self._infer_engine_name,
+            initialize_model_context_fn=lambda: _initialize_model_context(tentative_agent),
+            saved_task_id=saved_task_id,
+            on_rate_limit=on_rate_limit,
+            existing_saved_task_id=self._saved_task_id,
+            project=self._project,
+        )
+        self._agent_type = result["agent_type"]
+        self.engine_name = result["engine_name"]
+        self._model_name = result["model_name"]
+        self._current_model = result["current_model"]
+        self._models_tried = result["models_tried"]
+        self._on_rate_limit = result["on_rate_limit"]
+        self._saved_task_id = result["saved_task_id"]
         self._saved_task_signature = None
-        if self._project and self._saved_task_id:
-            self._project.task_id = self._saved_task_id
 
     def restore_from_task_state(
         self,
@@ -322,396 +300,37 @@ class SpecEngine(BaseEngine):
         retry_policy: Optional[RetryPolicy] = None,
         before_retry: Optional[Callable[[int, Exception], None]] = None,
     ):
-        """兼容调用：会话若无 send_prompt_with_retry，则回退 send_prompt。"""
-        session = self._session
-        if not session:
-            raise RuntimeError("Spec session is not initialized")
-
-        sender = getattr(session, "send_prompt_with_retry", None)
-        if callable(sender):
-            return sender(
-                prompt,
-                on_event=on_event,
-                timeout=timeout,
-                retry_policy=retry_policy,
-                before_retry=before_retry,
-            )
-
-        fallback_sender = getattr(session, "send_prompt", None)
-        if not callable(fallback_sender):
-            raise AttributeError("session has neither send_prompt_with_retry nor send_prompt")
-
-        return fallback_sender(prompt, on_event=on_event, timeout=timeout)
-
-    # ------------------------------------------------------------------
-    # Review failure diagnostics (SSOT)
-    # ------------------------------------------------------------------
-
-    # 审查异常诊断/日志稳定字段契约（SSOT）
-    #
-    # 目标：避免出现线上日志 `[Spec] 多视角审查异常: , 将继续循环` 这种“异常信息为空”的不可观测情况。
-    # 约定：
-    # - stable 字段为唯一“对外契约”（日志/metrics/持久化 state 消费方应优先使用 stable）。
-    # - compat 字段仅用于迁移窗口期的写入与历史状态读取（读取时由 normalize 统一兜底映射）。
-    #
-    # 迁移窗口期（退场计划）：
-    # - 当前：写入 stable，并可选保留 compat 写入（降低线上回归风险）。
-    # - 退场条件：连续 3 次全量回归稳定（或 1 个发布窗口）后，停止写入 compat；读取 compat 保持长期兼容。
-    #
-    # 所有 review 异常日志（包括熔断跳过）必须输出以下 stable 字段，且 `err_repr/error_text` 永不为空：
-    # - phase: 发生阶段（固定为 review）
-    # - role: 发生子阶段/角色（当前为 multi_perspective）
-    # - cycle: 当前循环号
-    # - decision: continue/skip/circuit_open 等决策
-    # - err_type: 异常类型（或 ReviewCircuitOpen）
-    # - err_repr: repr(exception)（空则回退为 <ExceptionType>）
-    # - error_text: 面向人类的摘要（空则回退为 err_repr）
-
-    _REVIEW_DIAG_STABLE_KEYS = (
-        "phase",
-        "role",
-        "cycle",
-        "decision",
-        "fail_reason",
-        "err_type",
-        "err_repr",
-        "error_text",
-        "traceback_snippet",
-    )
-
-    _REVIEW_DIAG_COMPAT_KEYS = (
-        "cycle_number",
-        "exception_type",
-        "review_role",
-    )
-
-    _REVIEW_EXCEPTION_LOG_FIELDS = (
-        "phase",
-        "role",
-        "cycle",
-        "decision",
-        "fail_reason",
-        "err_type",
-        "err_repr",
-        "error_text",
-        "diag_json",
-    )
-
-    @staticmethod
-    def _safe_str(x: object) -> str:
-        try:
-            return str(x)
-        except Exception:
-            return ""
-
-    @staticmethod
-    def _truncate_text(text: str, max_len: int, suffix: str = "...") -> str:
-        try:
-            s = str(text or "")
-        except Exception:
-            return ""
-        if max_len <= 0:
-            return ""
-        if len(s) <= max_len:
-            return s
-        if len(suffix) >= max_len:
-            return s[:max_len]
-        return s[: max_len - len(suffix)] + suffix
+        return _send_prompt_with_retry(
+            self._session, prompt,
+            on_event=on_event, timeout=timeout,
+            retry_policy=retry_policy, before_retry=before_retry,
+        )
 
     def _build_review_exception_diagnostics(self, e: Exception, *, cycle: int) -> dict:
-        """构造多视角审查异常诊断信息（保证可序列化、error_text 非空）。"""
-
-        # Reuse ACP diagnostics config for redaction/truncation limits.
+        session_id = ""
         try:
-            from ..acp.diagnostics import get_diagnostics_config, redact_text
-
-            cfg = get_diagnostics_config(get_settings_fn=get_settings)
-            redact_enabled = cfg.redact_enabled
-            redact_patterns = cfg.redact_patterns or []
-            redact_repl = cfg.redact_replacement or "***REDACTED***"
-            cfg_snip = cfg.snippet_limit
-            cfg_total = cfg.total_limit
+            session_id = str(getattr(self._session, "session_id", "") or "")
         except Exception:
-            redact_text = None  # type: ignore[assignment]
-            redact_enabled, redact_patterns, redact_repl = True, [], "***REDACTED***"
-            cfg_snip, cfg_total = 240, 2000
-
-        def _truncate_strict(s: str, lim: int) -> str:
-            try:
-                lim = int(lim or 0)
-            except Exception:
-                lim = 0
-            if lim <= 0:
-                return ""
-            ss = self._safe_str(s)
-            if not ss:
-                return ""
-            if len(ss) <= lim:
-                return ss
-            suffix = "…(truncated)"
-            if lim <= len(suffix):
-                return ss[:lim]
-            return ss[: max(0, lim - len(suffix))] + suffix
-
-        def _redact_and_truncate(text: str, *, hard_limit: int, cfg_limit: int) -> str:
-            lim = hard_limit
-            try:
-                lim = int(hard_limit or 0)
-            except Exception:
-                lim = 0
-            lim = max(1, lim)
-            try:
-                cfg_lim = int(cfg_limit or 0)
-            except Exception:
-                cfg_lim = 0
-            if cfg_lim > 0:
-                lim = min(lim, cfg_lim)
-
-            s = self._safe_str(text)
-            if redact_enabled and callable(redact_text):
-                try:
-                    s = redact_text(s, redact_patterns, redact_repl)  # type: ignore[misc]
-                except Exception:
-                    pass
-            return _truncate_strict(s, lim)
-
-        def _extract_error_text(err: Exception) -> str:
-            base = (self._safe_str(err) or "").strip()
-            if base:
-                return base
-            # 兼容：上游异常可能 message 为空，但携带 stderr/stdout 片段
-            for k in ("stderr_snippet", "stdout_snippet", "stderr", "stdout", "message", "detail"):
-                try:
-                    v = (self._safe_str(getattr(err, k, "")) or "").strip()
-                    if v:
-                        return v
-                except Exception:
-                    continue
-            return ""
-
-        def _infer_fail_reason(err: Exception) -> str:
-            """Best-effort, stable-ish failure reason string for logs/metrics."""
-            et = "Exception"
-            try:
-                et = type(err).__name__
-            except Exception:
-                et = "Exception"
-            # Timeout-ish
-            if isinstance(err, TimeoutError):
-                return "timeout"
-            if et in ("TimeoutExpired", "ReadTimeout", "ConnectTimeout"):
-                return "timeout"
-            # Parsing-ish
-            if et in ("JSONDecodeError",):
-                return "parse_json"
-            if et in ("ValueError", "TypeError"):
-                return "parse_error"
-            return "exception"
-
-        def _extract_err_repr(err: Exception) -> str:
-            # repr 也可能为空/抛异常（极端 mock / 自定义异常），必须兜底
-            err_type = "Exception"
-            try:
-                err_type = type(err).__name__
-            except Exception:
-                err_type = "Exception"
-            try:
-                s = repr(err)
-            except Exception:
-                s = ""
-            s = (self._safe_str(s) or "").strip()
-            if not s:
-                s = f"<{err_type}>"
-            return s
-
-        err_repr = _extract_err_repr(e)
-        err_type = "Exception"
-        try:
-            err_type = type(e).__name__
-        except Exception:
-            err_type = "Exception"
-
-        error_text = _extract_error_text(e)
-        if not (error_text or "").strip():
-            # 若 message/snippet 都为空，至少输出明确的“空 message”提示
-            error_text = f"{err_type} (empty message)"
-
-        fail_reason = _infer_fail_reason(e)
-        tb = ""
-        try:
-            tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
-        except Exception:
-            tb = ""
-        tb = (tb or "").strip()
-
-        # 脱敏+截断：遵循 diagnostics 配置上限（hard_limit 只允许更严格）
-        err_repr_rt = _redact_and_truncate(err_repr, hard_limit=600, cfg_limit=cfg_snip)
-        if not (err_repr_rt or "").strip():
-            err_repr_rt = f"<{err_type}>"
-        error_text_rt = _redact_and_truncate(error_text, hard_limit=600, cfg_limit=cfg_snip)
-        if not (error_text_rt or "").strip():
-            error_text_rt = err_repr_rt
-
-        # 兼容字段（旧字段名） + 新字段名（稳定字段契约）并存，降低回归风险
-        diag = {
-            # Stable contract
-            "phase": "review",
-            "role": "multi_perspective",
-            "cycle": int(cycle or 0),
-            "decision": "review_failed_continue",
-            "fail_reason": str(fail_reason or "exception"),
-            "err_type": err_type,
-            "err_repr": err_repr_rt,
-            "error_text": error_text_rt,
-            # Backward-compatible keys (do not remove)
-            "cycle_number": int(cycle or 0),
-            "exception_type": err_type,
-            "review_role": "multi_perspective",
-            # traceback_snippet 用 total_limit 作为上限（避免写入过大）
-            "traceback_snippet": _redact_and_truncate(tb, hard_limit=1600, cfg_limit=cfg_total),
-            "project": (self._project.name or "").strip() if self._project else "",
-            "chat_id": (self.chat_id or ""),
-            "root_path": (self.root_path or ""),
-            "agent_type": (self._agent_type or ""),
-        }
-        # 尽量补充 session_id（不强依赖）
-        try:
-            diag["session_id"] = str(getattr(self._session, "session_id", "") or "")
-        except Exception:
-            diag["session_id"] = ""
-
-        return diag
+            session_id = ""
+        return build_review_exception_diagnostics(
+            e,
+            cycle=cycle,
+            project_name=(self._project.name or "").strip() if self._project else "",
+            chat_id=self.chat_id or "",
+            root_path=self.root_path or "",
+            agent_type=self._agent_type or "",
+            session_id=session_id,
+        )
 
     @classmethod
     def _normalize_review_diagnostics(cls, diag: object) -> dict:
-        """将 review diagnostics 规范化为 stable 字段（SSOT）。
-
-        语义：
-        - 输入可能来自：本版本产出的 diag、历史 state/artifacts（仅含 compat 字段）、或测试桩。
-        - 输出必须只包含 stable 字段（见 `_REVIEW_DIAG_STABLE_KEYS`），且关键字段永不为空：
-          `err_type/err_repr/error_text/cycle/decision/phase/role`。
-
-        注意：
-        - 本函数不做重型操作，且 best-effort 不抛异常。
-        - 脱敏/截断：沿用上游 `_build_review_exception_diagnostics` 已做的处理；若输入未脱敏，
-          此处只做“兜底截断”，不做额外 regex redact（避免重复成本与不一致）。
-        """
-
-        d = diag if isinstance(diag, dict) else {}
-
-        def _s(x: object) -> str:
-            try:
-                return str(x) if x is not None else ""
-            except Exception:
-                try:
-                    return repr(x)
-                except Exception:
-                    return ""
-
-        # phase/role
-        phase = (_s(d.get("phase")) or "review").strip() or "review"
-        role = (_s(d.get("role")) or _s(d.get("review_role")) or "multi_perspective").strip() or "multi_perspective"
-
-        # cycle: stable=cycle, compat=cycle_number
-        cycle_val: int = 0
-        try:
-            if "cycle" in d and d.get("cycle") is not None:
-                cycle_val = int(d.get("cycle") or 0)
-            else:
-                cycle_val = int(d.get("cycle_number") or 0)
-        except Exception:
-            cycle_val = 0
-
-        # decision
-        decision = (_s(d.get("decision")) or "review_failed_continue").strip() or "review_failed_continue"
-
-        # fail_reason: stable=fail_reason (best-effort, optional)
-        fail_reason = (_s(d.get("fail_reason")) or "").strip()
-        if not fail_reason:
-            fail_reason = "exception" if decision.startswith("review_failed") else ""
-
-        # err_type: stable=err_type, compat=exception_type
-        err_type = (_s(d.get("err_type")) or _s(d.get("exception_type")) or "Exception").strip() or "Exception"
-
-        # err_repr: stable=err_repr, fallback <err_type>
-        err_repr = (_s(d.get("err_repr")) or "").strip()
-        if not err_repr:
-            err_repr = f"<{err_type}>"
-
-        # error_text: stable=error_text, fallback err_repr
-        error_text = (_s(d.get("error_text")) or "").strip()
-        if not error_text:
-            error_text = err_repr
-
-        tb = (_s(d.get("traceback_snippet")) or "").strip()
-
-        out = {
-            "phase": phase,
-            "role": role,
-            "cycle": int(cycle_val),
-            "decision": decision,
-            "fail_reason": fail_reason,
-            "err_type": err_type,
-            "err_repr": err_repr,
-            "error_text": error_text,
-            "traceback_snippet": tb,
-        }
-
-        # Ensure output only includes stable keys
-        try:
-            return {k: out.get(k) for k in cls._REVIEW_DIAG_STABLE_KEYS}
-        except Exception:
-            return out
+        return normalize_review_diagnostics(diag)
 
     @classmethod
     def _format_review_exception_log_line(cls, diag: dict, *, diag_json: str) -> str:
-        """格式化 review 异常日志单行（SSOT）。
+        return format_review_exception_log_line(diag, diag_json=diag_json)
 
-        约束：
-        - 输入 diag 应为 stable（可先调用 `_normalize_review_diagnostics`）。
-        - 输出必须包含 stable 字段，并保证关键字段永不为空。
-        - diag_json 可能较长：这里做“兜底截断”，脱敏/截断优先依赖上游 diagnostics。
-        """
 
-        d = cls._normalize_review_diagnostics(diag)
-
-        def _s(x: object) -> str:
-            try:
-                return str(x) if x is not None else ""
-            except Exception:
-                try:
-                    return repr(x)
-                except Exception:
-                    return ""
-
-        phase = (_s(d.get("phase")) or "review").strip() or "review"
-        role = (_s(d.get("role")) or "multi_perspective").strip() or "multi_perspective"
-        decision = (_s(d.get("decision")) or "review_failed_continue").strip() or "review_failed_continue"
-        fail_reason = (_s(d.get("fail_reason")) or "").strip()
-        err_type = (_s(d.get("err_type")) or "Exception").strip() or "Exception"
-        err_repr = (_s(d.get("err_repr")) or "").strip() or f"<{err_type}>"
-        error_text = (_s(d.get("error_text")) or "").strip() or err_repr
-
-        cycle_val = 0
-        try:
-            cycle_val = int(d.get("cycle") or 0)
-        except Exception:
-            cycle_val = 0
-
-        # best-effort truncate for diag_json (avoid overly long log lines)
-        dj = _s(diag_json)
-        try:
-            if len(dj) > 2400:
-                dj = dj[:2400] + "…(truncated)"
-        except Exception:
-            pass
-
-        return (
-            f"[Spec] review_exception: phase={phase} role={role} cycle={cycle_val} decision={decision} fail_reason={fail_reason} "
-            f"err_type={err_type} err_repr={err_repr} error_text={error_text} diag={dj}, 将继续循环"
-        )
-
-    # ------------------------------------------------------------------
     # Main execution
     # ------------------------------------------------------------------
     def execute(
@@ -774,7 +393,7 @@ class SpecEngine(BaseEngine):
             self._initialize_model_context()
 
             # Parse requirement — extract acceptance criteria
-            criteria = self._parse_acceptance_criteria(requirement_text)
+            criteria = parse_acceptance_criteria(requirement_text, self._decompose_criteria_with_llm)
             self._project.acceptance_criteria = criteria
             self._project.criteria_tracker.init_criteria(criteria)
             self._project.status = SpecProjectStatus.RUNNING
@@ -959,139 +578,62 @@ class SpecEngine(BaseEngine):
             logger.error("[Spec] Phase %s 失败 (task_id=%s): %s", phase.value, task_id, err_preview)
             raise RuntimeError(f"Phase {phase.value} 失败，任务已保存(task_id={task_id}): {last_error}") from e
 
-    def _try_switch_model(self, callbacks: SpecEngineCallbacks) -> bool:
-        # Stop/pause path must not trigger model failover.
-        if self._run_state != EngineRunState.RUNNING:
-            return False
-
-        agent_type = str(self._agent_type or "").strip().lower()
-
-        # CLI-only claude backend: no model list API, keep default startup behavior.
-        if agent_type == "claude":
-            return False
-
-        # TTADK: keep tool-specific model flow.
-        if agent_type.startswith("ttadk"):
-            from ..ttadk import get_ttadk_manager
-            from ..utils.path import normalize_ttadk_cwd
-
-            ttadk_manager = get_ttadk_manager()
-            tool_name = agent_type.replace("ttadk_", "")
-            result = ttadk_manager.get_models(cwd=normalize_ttadk_cwd(self.root_path), tool_name=tool_name)
-            all_models = [m.name for m in result.models]
-            apply_switch = ttadk_manager.set_model
-        else:
-            model_manager = get_coco_model_manager()
-            result = model_manager.get_models()
-            all_models = [m.name for m in result.models]
-            apply_switch = model_manager.set_model
-
-        available = [m for m in all_models if m not in self._models_tried]
-        if not available:
-            return False
-
-        old_model = self._current_model or "(unknown)"
-        new_model = available[0]
-
-        if not apply_switch(new_model):
-            return False
-
-        self._models_tried.append(new_model)
-        self._current_model = new_model
-
-        self._close_session_safely()
-        self._session = create_engine_session(
+    def _try_switch_model(self, callbacks) -> bool:
+        switched, new_current, _, self._models_tried, new_session = _try_switch_model(
             agent_type=self._agent_type,
-            cwd=self.root_path,
+            run_state=self._run_state,
+            models_tried=self._models_tried,
+            current_model=self._current_model,
+            root_path=self.root_path,
+            model_name=self._model_name,
             on_rate_limit=getattr(self, "_on_rate_limit", None),
-            model_name=self._current_model or self._model_name,
+            close_session_fn=self._close_session_safely,
+            callbacks=callbacks,
         )
-
-        logger.info("[Spec] 模型切换: %s -> %s", old_model, new_model)
-        if callbacks.on_model_switch:
-            callbacks.on_model_switch(old_model, new_model)
-
-        return True
+        if switched:
+            self._current_model = new_current
+            self._session = new_session
+        return switched
 
     def _recreate_session_best_effort(self) -> None:
-        """Best-effort session recreation for retryable errors (Internal error, connection)."""
-        logger.info("[Spec] 正在尝试重建 ACP Session 以从错误中恢复...")
-        self._close_session_safely()
-        try:
-            self._session = create_engine_session(
-                agent_type=self._agent_type,
-                cwd=self.root_path,
-                on_rate_limit=getattr(self, "_on_rate_limit", None),
-                model_name=self._current_model or self._model_name,
-            )
-            logger.info("[Spec] ACP Session 重建成功")
-        except Exception as e:
-            logger.warning("[Spec] ACP Session 重建失败: %s", e)
+        new_session = _recreate_session_best_effort(
+            agent_type=self._agent_type,
+            root_path=self.root_path,
+            on_rate_limit=getattr(self, "_on_rate_limit", None),
+            current_model=self._current_model,
+            model_name=self._model_name,
+            close_session_fn=self._close_session_safely,
+        )
+        if new_session is not None:
+            self._session = new_session
 
     def _save_failed_task(
         self,
         error: str,
         cycle_num: int,
         phase: SpecPhase,
-        callbacks: SpecEngineCallbacks,
+        callbacks,
     ) -> str:
-        error = str(error or "")
-        task_id_override = None
-        try:
-            env_override = (os.getenv("GHOSTAP_SPEC_FAILED_TASK_ID_OVERRIDE") or "").strip()
-            if env_override and phase == SpecPhase.BUILD and "internal error" in (error or "").lower():
-                task_id_override = env_override
-        except Exception:
-            task_id_override = None
-
-        task_id = task_id_override or (self._project.task_id if self._project and self._project.task_id else generate_task_id())
-
-        sig = (int(cycle_num or 0), str(getattr(phase, "value", phase) or ""), str(task_id))
-        if self._saved_task_id and self._saved_task_signature == sig:
-            return self._saved_task_id
-
-        # Stable failure fields for persistence / acceptance checks
-        phase_value = str(getattr(phase, "value", phase) or "")
-        failure_reason = f"Phase {phase_value} 失败: {error}" if phase_value and (error or "") else (error or "")
-        try:
-            if len(failure_reason) > 2000:
-                failure_reason = failure_reason[:2000] + "…(truncated)"
-        except Exception:
-            pass
-
-        state = SpecTaskState(
-            task_id=task_id,
-            created_at=time.time(),
-            requirement=self._project.requirement if self._project else "",
-            project_path=self.root_path,
+        task_id, new_saved_id, new_sig = _save_failed_task_impl(
+            project=self._project,
+            root_path=self.root_path,
             chat_id=self.chat_id,
             agent_type=self._agent_type,
-            current_cycle=cycle_num,
-            current_phase=phase.value,
-            last_error=error,
-            retry_count=self.settings.spec_max_retries,
-            status="失败",
-            failure_reason=failure_reason,
-            models_tried=list(self._models_tried),
-            project_snapshot=self._project_to_compact_dict() if self._project else None,
-            runtime_context=self._build_runtime_context(),
+            settings=self.settings,
+            models_tried=self._models_tried,
+            build_runtime_context_fn=self._build_runtime_context,
+            project_to_compact_dict_fn=self._project_to_compact_dict,
+            saved_task_id=self._saved_task_id,
+            saved_task_signature=self._saved_task_signature,
+            error=error,
+            cycle_num=cycle_num,
+            phase=phase,
+            callbacks=callbacks,
         )
-        saved_path = ""
-        try:
-            saved_path = save_task_state(state)
-        except Exception as e:
-            logger.warning("[Spec] 任务保存失败, task_id=%s, phase=%s, err=%s", task_id, phase.value, e)
-            saved_path = ""
-
-        if saved_path:
-            self._saved_task_id = task_id
-            self._saved_task_signature = sig
-            logger.info("[Spec] 任务已保存, task_id=%s, phase=%s, error=%s", task_id, phase.value, error[:100])
-            if callbacks.on_task_saved:
-                callbacks.on_task_saved(task_id)
-        else:
-            logger.warning("[Spec] 任务未落盘, task_id=%s, phase=%s, error=%s", task_id, phase.value, error[:100])
-
+        if new_saved_id is not None:
+            self._saved_task_id = new_saved_id
+        if new_sig is not None:
+            self._saved_task_signature = new_sig
         return task_id
 
     # ------------------------------------------------------------------
@@ -1139,34 +681,34 @@ class SpecEngine(BaseEngine):
                 callbacks.on_cycle_start(cycle_num, max_cycles)
 
             # Pick next work item (spec file) if any; otherwise refine from requirement.
-            work_item = self._pick_next_work_item(cycle_num)
+            work_item = _pick_next_work_item(self._project, cycle_num)
 
             # First cycle of a fresh execute uses raw requirement
             if first_raw_input is not None and cycle_num == start_cycle:
                 spec_input = first_raw_input
             elif work_item and work_item.spec_path:
-                spec_input = self._build_input_from_spec_file(requirement, work_item)
+                spec_input = _build_input_from_spec_file(requirement, work_item)
             else:
-                spec_input = self._build_refinement_input(requirement)
+                spec_input = build_refinement_input(requirement, self._last_review, self._project)
 
             # --- SPEC PHASE ---
             cycle.phase = SpecPhase.SPEC
             self._last_phase = cycle.phase
-            if work_item and work_item.spec_path and self._should_load_spec_directly(work_item):
+            if work_item and work_item.spec_path and _should_load_spec_directly(work_item):
                 # spec 文件本身就是 spec-kit 规格产物：直接加载进入下一阶段
-                spec_output = self._read_text_file_best_effort(work_item.spec_path)
+                spec_output = _read_text_file_best_effort(work_item.spec_path)
             else:
                 spec_output = self._run_phase(
                     cycle_num,
                     SpecPhase.SPEC,
-                    self._build_spec_prompt(spec_input),
+                    build_spec_prompt(spec_input, self.root_path, self._consume_guidance(), format_criteria_status(self._project)),
                     callbacks,
                     timeout,
                 )
-            cycle.spec_content = self._truncate_output(spec_output)
+            cycle.spec_content = _truncate_output(spec_output, self.settings)
             if self.settings.spec_persist_phase_artifacts:
-                cycle.spec_path = self._persist_cycle_artifact(cycle_num, "spec", spec_output, ext="json")
-            cycle.spec_artifact, cycle.spec_artifact_errors = self._parse_spec_artifact(spec_output)
+                cycle.spec_path = _persist_cycle_artifact(self.root_path, self.settings, self._project, cycle_num, "spec", spec_output, "json")
+            cycle.spec_artifact, cycle.spec_artifact_errors = parse_spec_artifact(spec_output)
 
             if self.settings.spec_persist_every_phase:
                 self._persist_state_best_effort()
@@ -1174,7 +716,8 @@ class SpecEngine(BaseEngine):
             if work_item:
                 work_item.status = SpecWorkItemStatus.DONE
                 work_item.used_in_cycle = cycle_num
-                self._append_history_event(
+                _append_history_event(
+                    self.root_path, self.settings, self._project,
                     "work_item_consumed",
                     {
                         "cycle": cycle_num,
@@ -1186,7 +729,7 @@ class SpecEngine(BaseEngine):
 
             # If the spec provides better acceptance criteria, merge into project.
             if cycle_num == 1 and cycle.spec_artifact and cycle.spec_artifact.acceptance_criteria:
-                self._merge_acceptance_criteria(cycle.spec_artifact.acceptance_criteria)
+                merge_acceptance_criteria(self._project, cycle.spec_artifact.acceptance_criteria)
 
             if self._run_state != EngineRunState.RUNNING:
                 cycle.fail()
@@ -1202,14 +745,14 @@ class SpecEngine(BaseEngine):
             plan_output = self._run_phase(
                 cycle_num,
                 SpecPhase.PLAN,
-                self._build_plan_prompt(spec_output),
+                build_plan_prompt(spec_output, self.root_path),
                 callbacks,
                 timeout,
             )
-            cycle.plan_content = self._truncate_output(plan_output)
+            cycle.plan_content = _truncate_output(plan_output, self.settings)
             if self.settings.spec_persist_phase_artifacts:
-                cycle.plan_path = self._persist_cycle_artifact(cycle_num, "plan", plan_output, ext="json")
-            cycle.plan_artifact, cycle.plan_artifact_errors = self._parse_plan_artifact(plan_output)
+                cycle.plan_path = _persist_cycle_artifact(self.root_path, self.settings, self._project, cycle_num, "plan", plan_output, "json")
+            cycle.plan_artifact, cycle.plan_artifact_errors = parse_plan_artifact(plan_output)
 
             if self.settings.spec_persist_every_phase:
                 self._persist_state_best_effort()
@@ -1227,19 +770,19 @@ class SpecEngine(BaseEngine):
             task_output = self._run_phase(
                 cycle_num,
                 SpecPhase.TASK,
-                self._build_task_prompt(plan_output),
+                build_task_prompt(plan_output),
                 callbacks,
                 timeout,
             )
-            parsed_tasks = self._parse_tasks(task_output)
+            parsed_tasks = parse_tasks(task_output)
             cycle.tasks_total = len(parsed_tasks)
             cycle.tasks = parsed_tasks[: self.settings.spec_cycle_tasks_max]
             if self.settings.spec_persist_phase_artifacts:
-                cycle.tasks_path = self._persist_cycle_artifact(
-                    cycle_num,
+                cycle.tasks_path = _persist_cycle_artifact(
+                    self.root_path, self.settings, self._project, cycle_num,
                     "tasks",
                     json.dumps([t.to_dict() for t in parsed_tasks], ensure_ascii=False, indent=2),
-                    ext="json",
+                    "json",
                 )
 
             if self.settings.spec_persist_every_phase:
@@ -1258,13 +801,13 @@ class SpecEngine(BaseEngine):
             build_output = self._run_phase(
                 cycle_num,
                 SpecPhase.BUILD,
-                self._build_build_prompt(cycle.tasks, plan_output),
+                build_build_prompt(cycle.tasks, plan_output, self.root_path, self._consume_guidance()),
                 callbacks,
                 timeout,
             )
-            cycle.build_output = self._truncate_output(build_output)
+            cycle.build_output = _truncate_output(build_output, self.settings)
             if self.settings.spec_persist_phase_artifacts:
-                cycle.build_path = self._persist_cycle_artifact(cycle_num, "build", build_output, ext="txt")
+                cycle.build_path = _persist_cycle_artifact(self.root_path, self.settings, self._project, cycle_num, "build", build_output, "txt")
 
             if self.settings.spec_persist_every_phase:
                 self._persist_state_best_effort()
@@ -1289,8 +832,8 @@ class SpecEngine(BaseEngine):
                     cycle.review_decision = str(diag.get("decision") or "review_failed_continue")
                     cycle.review_diagnostics = dict(diag)
                 if self.settings.spec_persist_phase_artifacts:
-                    cycle.review_path = self._persist_cycle_artifact(
-                        cycle_num, "review", self._review_result_to_text(review_result), ext="txt"
+                    cycle.review_path = _persist_cycle_artifact(
+                        self.root_path, self.settings, self._project, cycle_num, "review", review_result_to_text(review_result), "txt"
                     )
                 self._last_review = review_result
                 review_passed = review_result.all_passed
@@ -1321,8 +864,8 @@ class SpecEngine(BaseEngine):
             # --- POST-CYCLE PROBLEM DISCOVERY + SPEC GENERATION ---
             if self.settings.spec_discovery_enabled and self._run_state == EngineRunState.RUNNING:
                 discovery = self._discover_optimization_questions(cycle_num)
-                cycle.discovery_path = self._persist_cycle_artifact(
-                    cycle_num, "discovery", json.dumps(discovery, ensure_ascii=False, indent=2), ext="json"
+                cycle.discovery_path = _persist_cycle_artifact(
+                    self.root_path, self.settings, self._project, cycle_num, "discovery", json.dumps(discovery, ensure_ascii=False, indent=2), "json"
                 )
                 new_items = self._generate_specs_from_discovery(cycle_num, discovery)
                 # 防止 backlog 无限制膨胀：只保留最近 N 条（长期任务可配合外部清理）
@@ -1330,7 +873,8 @@ class SpecEngine(BaseEngine):
                     self._project.work_items.extend(new_items)
                     self._project.work_items_total = max(self._project.work_items_total, len(self._project.work_items))
                     for wi in new_items:
-                        self._append_history_event(
+                        _append_history_event(
+                            self.root_path, self.settings, self._project,
                             "work_item_generated",
                             {
                                 "cycle": cycle_num,
@@ -1341,13 +885,14 @@ class SpecEngine(BaseEngine):
                         )
 
             # --- METRICS SNAPSHOT (monitoring) ---
-            metrics = self._compute_cycle_metrics(cycle)
+            metrics = compute_cycle_metrics(cycle, self._project)
             self._project.metrics_history.append(metrics)
-            cycle.metrics_path = self._persist_cycle_artifact(
-                cycle_num, "metrics", json.dumps(metrics.to_dict(), ensure_ascii=False, indent=2), ext="json"
+            cycle.metrics_path = _persist_cycle_artifact(
+                self.root_path, self.settings, self._project, cycle_num, "metrics", json.dumps(metrics.to_dict(), ensure_ascii=False, indent=2), "json"
             )
 
-            self._append_history_event(
+            _append_history_event(
+                self.root_path, self.settings, self._project,
                 "cycle_done",
                 {
                     "cycle": cycle_num,
@@ -1363,8 +908,8 @@ class SpecEngine(BaseEngine):
             )
 
             self._persist_state_best_effort()
-            self._cleanup_old_cycle_artifacts(cycle_num)
-            self._cleanup_generated_specs()
+            _cleanup_old_cycle_artifacts(self.root_path, self.settings, self._project, cycle_num)
+            _cleanup_generated_specs(self._project, self.settings)
 
             # --- TERMINATION CHECK (ContinuationPolicy) ---
             converged = False if policy.disable_convergence else self._detect_convergence()
@@ -1407,1319 +952,83 @@ class SpecEngine(BaseEngine):
             requested = 1
         return min(requested, limit)
 
-    def _pick_next_work_item(self, cycle_num: int) -> Optional[SpecWorkItem]:
-        if not self._project:
-            return None
-        for wi in self._project.work_items:
-            if wi.status == SpecWorkItemStatus.PENDING and wi.spec_path:
-                wi.status = SpecWorkItemStatus.IN_PROGRESS
-                wi.used_in_cycle = cycle_num
-                return wi
-        return None
-
-    def _should_load_spec_directly(self, work_item: SpecWorkItem) -> bool:
-        # 仅当 spec_path 指向已生成的 spec-kit JSON 产物时才直读。
-        path = (work_item.spec_path or "").lower()
-        return path.endswith(".json")
-
-    def _build_input_from_spec_file(self, original_requirement: str, work_item: SpecWorkItem) -> str:
-        spec_text = self._read_text_file_best_effort(work_item.spec_path)
-        return (
-            f"## 长程任务目标\n{original_requirement}\n\n"
-            f"## 本轮优化关注点（由问题发现机制生成）\n{work_item.question}\n\n"
-            f"## 已生成的 Spec 产物（供参考，可修正）\n{spec_text}\n"
+    def _discover_optimization_questions(self, cycle_num: int) -> list[dict]:
+        return _discover_optimization_questions(
+            project=self._project,
+            session=self._session,
+            send_prompt_fn=self._send_prompt_with_retry,
+            last_review=self._last_review,
+            cycle_num=cycle_num,
+            settings=self.settings,
         )
 
-    def _discover_optimization_questions(self, cycle_num: int) -> list[dict]:
-        """在每轮 spec-kit 循环后触发“自我提问”。"""
-        if not self._session or not self._project:
-            return []
-
-        tracker = self._project.criteria_tracker
-        unsatisfied = tracker.unsatisfied_criteria
-        pending_suggestions: list[str] = []
-        if self._last_review:
-            for pr in self._last_review.failed_perspectives:
-                for s in pr.suggestions:
-                    if s:
-                        pending_suggestions.append(str(s))
-        unsat_text = "\n".join(f"- {c}" for c in unsatisfied[:12]) if unsatisfied else "(无)"
-        sugg_text = "\n".join(f"- {s}" for s in pending_suggestions[:12]) if pending_suggestions else "(无)"
-
-        prompt = f"""你是一个长期任务的自我改进系统（Spec-kit 驱动）。
-
-请在本轮 spec-kit 实现后，自动发现与目标相关的“可优化问题”，并提出下一步要解决的关键问题。
-
-## 长程目标
-{self._project.requirement}
-
-## 当前未满足的验收标准（Top）
-{unsat_text}
-
-## 上轮审查未通过的建议（Top）
-{sugg_text}
-
-## 输出要求（必须严格遵守）
-仅输出一个 JSON 数组，放在 ```json fenced code block``` 中，不要输出任何其他文字。
-
-每个元素 schema：
-{{
-  "id": "Q-...",
-  "question": "与目标相关的具体可优化问题（可落到代码/测试/鲁棒性/性能/体验/可维护性）",
-  "why": "为什么重要（1-2句）",
-  "priority": "P0|P1|P2"
-}}
-
-约束：
-- 每个 question 必须“可行动”（能转成下一轮 spec-kit 的 Spec 任务单元）
-- 优先覆盖未满足验收标准与审查建议
-- 数量 1~{int(self.settings.spec_discovery_max_questions or 5)}
-"""
-
-        chunks: list[str] = []
-
-        def on_event(event: ACPEvent):
-            if event.event_type == ACPEventType.TEXT_CHUNK and event.text:
-                chunks.append(event.text)
-
-        from ..utils.retry import RetryPolicy
-        try:
-            self._send_prompt_with_retry(
-                prompt,
-                on_event=on_event,
-                timeout=120,
-                retry_policy=RetryPolicy(max_retries=1, retry_delay=2.0),
-            )
-            raw = "".join(chunks)
-            blob = extract_json_blob(raw)
-            data = json.loads(blob) if blob else None
-            if isinstance(data, list):
-                cleaned: list[dict] = []
-                for item in data:
-                    if not isinstance(item, dict):
-                        continue
-                    q = str(item.get("question", "")).strip()
-                    if not q:
-                        continue
-                    cleaned.append(
-                        {
-                            "id": str(item.get("id") or f"Q-{cycle_num}-{len(cleaned) + 1}"),
-                            "question": q,
-                            "why": str(item.get("why", "")).strip(),
-                            "priority": str(item.get("priority", "P1")).strip().upper(),
-                        }
-                    )
-                if cleaned:
-                    return cleaned[: self.settings.spec_discovery_max_questions]
-        except Exception as e:
-            logger.debug("[Spec] 问题发现机制失败: %s", e)
-
-        # 强制非空：保证每轮都能产出可优化问题
-        if self.settings.spec_discovery_force_nonempty and self._project:
-            fallback_q = None
-            if unsatisfied:
-                fallback_q = f"如何满足验收标准：{unsatisfied[0]}？"
-            elif pending_suggestions:
-                fallback_q = f"如何落实改进建议：{pending_suggestions[0]}？"
-            else:
-                fallback_q = "当前实现还有哪些可测试性/可维护性/鲁棒性方面的改进空间？"
-            return [
-                {
-                    "id": f"Q-{cycle_num}-1",
-                    "question": fallback_q,
-                    "why": "兜底：保证长程任务每轮都有明确的下一步优化方向",
-                    "priority": "P1",
-                }
-            ]
-
-        return []
-
-    def _generate_specs_from_discovery(self, cycle_num: int, discovery: list[dict]) -> list[SpecWorkItem]:
-        if not self._project:
-            return []
-        if not discovery:
-            return []
-
-        max_specs = self.settings.spec_generated_specs_per_cycle
-        selected = discovery[:max_specs]
-
-        if not self._session:
-            return []
-
-        prompt = f"""你是一个 spec-kit 规格生成器。
-
-请把下面这些“可优化问题”拆解为符合 spec-kit 的 Spec 任务单元，并为每个问题生成一个 Spec JSON 产物。
-
-## 长程目标
-{self._project.requirement}
-
-## 可优化问题列表
-{json.dumps(selected, ensure_ascii=False, indent=2)}
-
-## 输出要求（必须严格遵守）
-仅输出一个 JSON 数组，放在 ```json fenced code block``` 中，不要输出任何其他文字。
-
-数组元素 schema：
-{{
-  "id": "Q-...",
-  "spec": {{
-    "goals": ["..."],
-    "functional_spec": ["..."],
-    "non_functional_requirements": ["..."],
-    "acceptance_criteria": ["可验证条件..."],
-    "out_of_scope": ["..."],
-    "risks": ["..."],
-    "clarification_questions": ["..."],
-    "decisions": ["..."],
-    "version": "1.0"
-  }}
-}}
-"""
-
-        chunks: list[str] = []
-
-        def on_event(event: ACPEvent):
-            if event.event_type == ACPEventType.TEXT_CHUNK and event.text:
-                chunks.append(event.text)
-
-        items: list[SpecWorkItem] = []
-        from ..utils.retry import RetryPolicy
-        try:
-            self._send_prompt_with_retry(
-                prompt,
-                on_event=on_event,
-                timeout=180,
-                retry_policy=RetryPolicy(max_retries=1, retry_delay=2.0),
-            )
-            raw = "".join(chunks)
-            blob = extract_json_blob(raw)
-            data = json.loads(blob) if blob else None
-            if not isinstance(data, list):
-                data = []
-
-            # Map id -> question
-            id_to_question = {str(d.get("id")): str(d.get("question", "")).strip() for d in selected}
-
-            for entry in data:
-                if not isinstance(entry, dict):
-                    continue
-                qid = str(entry.get("id") or "").strip()
-                spec = entry.get("spec")
-                if not qid or not isinstance(spec, dict):
-                    continue
-                # validate and persist
-                errors = validate_spec_artifact_dict(spec)
-                if errors:
-                    # still persist for traceability
-                    logger.debug("[Spec] 生成的 spec 产物不合规(qid=%s): %s", qid, errors[:3])
-                question = id_to_question.get(qid) or qid
-                spec_text = json.dumps(spec, ensure_ascii=False, indent=2)
-                spec_path = self._persist_generated_spec_file(cycle_num, qid, spec_text)
-                items.append(
-                    SpecWorkItem(
-                        item_id=qid,
-                        question=question,
-                        created_in_cycle=cycle_num,
-                        spec_path=spec_path,
-                        status=SpecWorkItemStatus.PENDING,
-                    )
-                )
-
-        except Exception as e:
-            logger.debug("[Spec] spec 生成失败: %s", e)
-
-        # Fallback: 如果生成失败，至少把问题落盘为 minimal spec 文件
-        if not items and self.settings.spec_discovery_force_nonempty:
-            for d in selected[:max_specs]:
-                qid = str(d.get("id") or f"Q-{cycle_num}-{uuid.uuid4().hex[:4]}")
-                question = str(d.get("question") or "").strip() or qid
-                minimal = {
-                    "goals": [f"解决问题：{question}"],
-                    "functional_spec": ["实现必要的改动以满足问题要求"],
-                    "non_functional_requirements": ["不引入回归，保持可测试性"],
-                    "acceptance_criteria": [f"问题被解决：{question}"],
-                    "out_of_scope": [],
-                    "risks": [],
-                    "clarification_questions": [],
-                    "decisions": ["假设：允许基于现有实现做增量改进"],
-                    "version": "1.0",
-                }
-                spec_path = self._persist_generated_spec_file(
-                    cycle_num, qid, json.dumps(minimal, ensure_ascii=False, indent=2)
-                )
-                items.append(
-                    SpecWorkItem(
-                        item_id=qid,
-                        question=question,
-                        created_in_cycle=cycle_num,
-                        spec_path=spec_path,
-                        status=SpecWorkItemStatus.PENDING,
-                    )
-                )
-
-        return items
+    def _generate_specs_from_discovery(self, cycle_num: int, discovery: list[dict]) -> list:
+        return _generate_specs_from_discovery(
+            project=self._project,
+            session=self._session,
+            send_prompt_fn=self._send_prompt_with_retry,
+            root_path=self.root_path,
+            settings=self.settings,
+            cycle_num=cycle_num,
+            discovery=discovery,
+        )
 
     # ------------------------------------------------------------------
     # Persistence helpers (state + artifacts)
     # ------------------------------------------------------------------
     def _persist_state_best_effort(self) -> None:
-        if not self._project:
-            return
-        try:
-            self.save_state(self._get_state_path())
-        except Exception as e:
-            logger.debug("[Spec] 保存状态失败: %s", e)
-
-    def _get_state_path(self) -> str:
-        filename = self.settings.spec_state_filename
-        return os.path.join(self.root_path, filename)
-
-    def _artifact_root_dir(self) -> str:
-        dirname = self.settings.spec_artifacts_dirname
-        pid = self._project.project_id if self._project else "unknown"
-        return os.path.join(self.root_path, dirname, pid)
-
-    def _history_log_path(self) -> str:
-        root = self._artifact_root_dir()
-        os.makedirs(root, exist_ok=True)
-        filename = self.settings.spec_history_log_filename
-        return os.path.join(root, filename)
-
-    def _append_history_event(self, event_type: str, payload: dict) -> None:
-        """Append an event to the per-project history log (JSONL)."""
-        try:
-            path = self._history_log_path()
-            record = {
-                "ts": time.time(),
-                "type": event_type,
-                "project_id": self._project.project_id if self._project else "",
-                "cycle": int(payload.get("cycle") or 0),
-                "payload": payload,
-            }
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
-        except Exception:
-            return
-
-    def _persist_cycle_artifact(self, cycle_num: int, name: str, content: str, ext: str = "txt") -> Optional[str]:
-        if not content and name not in ("metrics", "discovery"):
-            return None
-        try:
-            root = self._artifact_root_dir()
-            cycle_dir = os.path.join(root, f"cycle_{cycle_num:04d}")
-            os.makedirs(cycle_dir, exist_ok=True)
-            safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "_", name)
-            path = os.path.join(cycle_dir, f"{safe_name}.{ext}")
-            tmp = path + ".tmp"
-
-            # Bound disk artifact size as well (keep the system stable for 5k+ cycles)
-            persist_max = self.settings.spec_phase_output_persist_max_chars
-            to_write = content or ""
-            if persist_max > 0 and len(to_write) > persist_max:
-                to_write = to_write[:persist_max] + "\n...\n(已截断，超长输出未全部落盘)"
-
-            with open(tmp, "w", encoding="utf-8") as f:
-                f.write(to_write)
-            os.replace(tmp, path)
-            return path
-        except Exception as e:
-            logger.debug("[Spec] 落盘产物失败(%s): %s", name, e)
-            return None
-
-    def _cleanup_old_cycle_artifacts(self, current_cycle: int) -> None:
-        """Keep only the latest N cycle directories (generated_specs are kept forever)."""
-        try:
-            retention = self.settings.spec_cycle_artifact_retention
-            if retention <= 0:
-                return
-            root = self._artifact_root_dir()
-            cutoff = current_cycle - retention
-            if cutoff <= 0:
-                return
-            old_dir = os.path.join(root, f"cycle_{cutoff:04d}")
-            if os.path.isdir(old_dir):
-                shutil.rmtree(old_dir, ignore_errors=True)
-
-            # Avoid stale paths in persisted state
-            if self._project and self._project.cycles:
-                for c in self._project.cycles:
-                    if c.cycle_number == cutoff:
-                        c.spec_path = None
-                        c.plan_path = None
-                        c.tasks_path = None
-                        c.build_path = None
-                        c.review_path = None
-                        c.discovery_path = None
-                        c.metrics_path = None
-                        break
-        except Exception:
-            return
-
-    def _cleanup_generated_specs(self) -> None:
-        """Retention for generated spec files.
-
-        规则：
-        - 永远保留 PENDING/IN_PROGRESS 的 work_item spec 文件
-        - 对已 DONE 的 work_item，仅保留最近 N 个（按 created_at）
-        """
-        if not self._project:
-            return
-        try:
-            retention = self.settings.spec_generated_specs_retention
-            if retention <= 0:
-                return
-
-            keep_paths: set[str] = set()
-            for w in self._project.work_items:
-                if w.status in (SpecWorkItemStatus.PENDING, SpecWorkItemStatus.IN_PROGRESS):
-                    if w.spec_path:
-                        keep_paths.add(w.spec_path)
-
-            done = [w for w in self._project.work_items if w.status == SpecWorkItemStatus.DONE and w.spec_path]
-            done.sort(key=lambda x: x.created_at)
-            keep_done = done[-retention:]
-            for w in keep_done:
-                keep_paths.add(w.spec_path)
-
-            # Delete extra DONE spec files
-            for w in done[:-retention]:
-                p = w.spec_path
-                if not p or p in keep_paths:
-                    continue
-                try:
-                    if os.path.exists(p):
-                        os.remove(p)
-                    w.spec_deleted = True
-                except Exception:
-                    continue
-        except Exception:
-            return
-
-    def _persist_generated_spec_file(self, cycle_num: int, qid: str, spec_text: str) -> str:
-        try:
-            root = self._artifact_root_dir()
-            spec_dir = os.path.join(root, "generated_specs")
-            os.makedirs(spec_dir, exist_ok=True)
-            safe_id = re.sub(r"[^a-zA-Z0-9_.-]+", "_", qid)[:80] or f"Q_{cycle_num}"
-            path = os.path.join(spec_dir, f"cycle_{cycle_num:04d}_{safe_id}.json")
-            tmp = path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                f.write(spec_text or "{}")
-            os.replace(tmp, path)
-            return path
-        except Exception as e:
-            logger.warning("[Spec] 生成 spec 文件落盘失败(cycle=%s, qid=%s): %s", cycle_num, qid, e)
-            return ""
-
-    @staticmethod
-    def _read_text_file_best_effort(path: str) -> str:
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return f.read()
-        except Exception:
-            return ""
-
-    def _truncate_output(self, text: str) -> str:
-        max_chars = self.settings.spec_cycle_output_max_chars
-        if max_chars <= 0:
-            return text or ""
-        if not text:
-            return ""
-        if len(text) <= max_chars:
-            return text
-        return text[:max_chars] + "\n...\n(已截断，完整内容见落盘产物)"
+        _persist_state_best_effort(self._project, self.save_state, _get_state_path(self.root_path, self.settings))
 
     # ------------------------------------------------------------------
     # Monitoring metrics
     # ------------------------------------------------------------------
-    def _compute_cycle_metrics(self, cycle: SpecCycle) -> SpecCycleMetrics:
-        if not self._project:
-            return SpecCycleMetrics(
-                cycle_number=cycle.cycle_number,
-                satisfied_count=0,
-                total_criteria=0,
-                new_satisfied=0,
-                review_suggestions=0,
-                backlog_pending=0,
-                goal_attainment=0.0,
-                improvement_space=0.0,
-            )
-
-        tracker = self._project.criteria_tracker
-        satisfied = tracker.satisfied_count
-        total = tracker.total_count
-
-        prev_satisfied = 0
-        if self._project.metrics_history:
-            prev_satisfied = self._project.metrics_history[-1].satisfied_count
-        new_satisfied = max(0, satisfied - prev_satisfied)
-
-        review_suggestions = 0
-        if cycle.review_result:
-            review_suggestions = int(cycle.review_result.total_suggestions)
-
-        # Review failure observability (best-effort)
-        review_decision = str(cycle.review_decision or "")
-        # 约定：review_failed* 表示审查执行异常（含开启熔断）；review_circuit_open_skip 仅表示跳过。
-        review_failed = bool(review_decision) and review_decision.startswith("review_failed")
-        review_exception_type = ""
-        review_error_text = ""
-        try:
-            diag = cycle.review_diagnostics
-            if isinstance(diag, dict):
-                d = self._normalize_review_diagnostics(diag)
-                review_exception_type = str(d.get("err_type") or "")
-                review_error_text = str(d.get("error_text") or "")
-        except Exception:
-            pass
-
-        backlog_pending = sum(1 for w in self._project.work_items if w.status == SpecWorkItemStatus.PENDING)
-
-        # 目标达成度：以验收标准为主（0~1），审查可作为次要信号
-        criteria_ratio = (satisfied / total) if total else 0.0
-        review_ratio = 1.0 if (cycle.review_result and cycle.review_result.all_passed) else 0.0
-        goal_attainment = min(1.0, max(0.0, criteria_ratio * 0.8 + review_ratio * 0.2))
-
-        # 优化空间评估：若本轮有增量进展或 backlog 尚有待办，则认为仍有空间
-        improvement_space = 0.0
-        if new_satisfied > 0:
-            improvement_space = 1.0
-        elif backlog_pending > 0:
-            improvement_space = 0.7
-        elif review_suggestions > 0:
-            improvement_space = 0.5
-        else:
-            improvement_space = 0.2
-
-        termination_hint = ""
-        if goal_attainment >= 0.999 and improvement_space <= 0.2:
-            termination_hint = "可终止：目标达成度高且优化空间小"
-
-        return SpecCycleMetrics(
-            cycle_number=cycle.cycle_number,
-            satisfied_count=satisfied,
-            total_criteria=total,
-            new_satisfied=new_satisfied,
-            review_suggestions=review_suggestions,
-            backlog_pending=backlog_pending,
-            goal_attainment=goal_attainment,
-            improvement_space=improvement_space,
-            termination_hint=termination_hint,
-            review_failed=review_failed,
-            review_decision=review_decision,
-            review_exception_type=review_exception_type,
-            review_error_text=review_error_text,
-        )
-
-    @staticmethod
-    def _review_result_to_text(review: ReviewResult) -> str:
-        if not review:
-            return ""
-        lines: list[str] = []
-        for pr in review.reviews:
-            verdict = "PASS" if pr.passed else "FAIL"
-            lines.append(f"[{pr.perspective.name}] {verdict}")
-            for s in pr.suggestions:
-                lines.append(f"- {s}")
-            lines.append("")
-        return "\n".join(lines).strip() + "\n"
-
-    # ------------------------------------------------------------------
-    # Prompt builders
-    # ------------------------------------------------------------------
-    def _build_spec_prompt(self, requirement: str) -> str:
-        """Phase 1: Analyze requirement into structured spec (WHAT & WHY, not HOW)."""
-        guidance = self._consume_guidance()
-        criteria_status = self._format_criteria_status()
-        return f"""你是一个专业的软件架构师。请使用 spec-kit 风格产出“规格（Spec）”。
-
-目标：只描述 **做什么/为什么/范围与约束**，不讨论具体怎么实现。
-
-## 需求
-{requirement}
-
-## 工作目录
-{self.root_path}
-{guidance}{criteria_status}
-## 输出要求（必须严格遵守）
-仅输出一个 JSON 对象，放在 ```json fenced code block``` 中，不要输出任何其他文字。
-
-Schema（字段必须存在；数组元素为字符串）：
-{{
-  "goals": ["..."],
-  "functional_spec": ["..."],
-  "non_functional_requirements": ["..."],
-  "acceptance_criteria": ["可验证条件..."],
-  "out_of_scope": ["明确不做什么..."],
-  "risks": ["风险/约束..."],
-  "clarification_questions": ["已识别的模糊点（仅记录，不等待用户回答）..."],
-  "decisions": ["已确认/可接受的假设（必须显式标注为假设）..."],
-  "version": "1.0"
-}}
-
-约束：
-- acceptance_criteria 必须可被判定 PASS/FAIL
-- 遇到信息不足时，不要停下等待用户——基于项目上下文和行业最佳实践自主选择最优方案
-- 将模糊点记录在 clarification_questions 中（仅供参考），将你的决策记录在 decisions 中
-- 如果用户引导中提供了相关信息，优先使用用户的指示
-"""
-
-    def _build_plan_prompt(self, spec: str) -> str:
-        """Phase 2: Generate technical plan from spec."""
-        return f"""你是一个资深工程师。基于下述 Spec（规格），产出 Plan（规划），强调可执行、可验证。
-
-## Spec 输入
-{spec}
-
-## 工作目录
-{self.root_path}
-
-## 输出要求（必须严格遵守）
-仅输出一个 JSON 对象，放在 ```json fenced code block``` 中，不要输出任何其他文字。
-
-Schema（字段必须存在；数组元素为字符串）：
-{{
-  "architecture": "总体架构与关键决策（文本）",
-  "tech_stack": ["语言/框架/库..."],
-  "steps": ["按优先级的一句话步骤..."],
-  "file_changes": ["新增/修改文件路径..."],
-  "test_plan": ["将新增/更新的测试与验证方式..."],
-  "risks": ["风险与应对..."],
-  "version": "1.0"
-}}
-"""
-
-    def _build_task_prompt(self, plan: str) -> str:
-        """Phase 3: Break plan into granular tasks."""
-        return f"""将以下实现方案分解为可执行的具体任务。
-
-## 实现方案
-{plan}
-
-## 输出要求
-请输出结构化的任务列表，每个任务包含：
-- 任务编号（1, 2, 3, ...）
-- 任务描述（一句话）
-- 依赖的任务编号（如果有）
-
-格式（严格遵循）：
-1. [任务描述] (依赖: 无)
-2. [任务描述] (依赖: 1)
-3. [任务描述] (依赖: 1, 2)
-...
-
-要求：
-- 每个任务应可独立测试
-- 任务粒度适中，不要过大或过小
-- 标注依赖关系以确定执行顺序
-"""
-
-    def _build_build_prompt(self, tasks: list[SpecTask], plan: str) -> str:
-        """Phase 4: Execute tasks (agent writes actual code)."""
-        task_list = "\n".join(f"{t.task_id}. {t.description}" for t in tasks)
-        guidance = self._consume_guidance()
-        return f"""按以下任务列表逐步执行实现。
-
-## 实现方案
-{plan}
-
-## 任务列表
-{task_list}
-
-## 工作目录
-{self.root_path}
-{guidance}
-## 要求
-1. 严格按照任务顺序执行
-2. 每个任务完成后进行自检
-3. 确保代码质量：无安全漏洞、有适当的错误处理
-4. 完成所有任务后输出总结
-"""
-
-    def _build_review_prompt(self) -> str:
-        """Build the multi-perspective review prompt (same as loop engine)."""
-        perspective_sections = []
-        for p in ReviewPerspective:
-            # Spec mode: make PRODUCT perspective more "Apple-like" (tasteful, high bar).
-            if p == ReviewPerspective.PRODUCT:
-                perspective_sections.append(
-                    "- **PRODUCT**: Apple 风格产品审查（高审美/高标准/完美主义）。关注：信息架构与心智模型、关键路径是否一气呵成、默认行为是否聪明、边界与异常是否体面、文案是否克制清晰、细节一致性与打磨程度。"
-                )
-            else:
-                perspective_sections.append(f"- **{p.value.upper()}**: {p.review_focus}")
-        perspectives_desc = "\n".join(perspective_sections)
-
-        goal = self._project.requirement if self._project else ""
-
-        return f"""请从以下五个视角审查当前的实现质量，并给出结构化的审查结果。
-
-## 项目目标
-{goal}
-
-## 审查视角
-{perspectives_desc}
-
-## PRODUCT 视角加严要求（Apple 风格）
-- 以“少即是多”的审美判断：删繁就简，不为功能堆砌找理由。
-- 以默认体验为王：默认路径必须顺滑、可预期、可解释；拒绝把复杂度转嫁给用户。
-- 以细节一致性为底线：命名/状态/交互/错误提示/边界行为必须统一。
-- 以体面为标准：失败与异常也要有尊严（清晰提示、可恢复、不给用户添堵）。
-- 建议要具体可落地：每条建议最好能对应到 1 个明确改动点（文案/交互/流程/边界/信息层级）。
-
-<output_format>
-严格按照以下格式输出每个视角的审查结果（每个视角占一个区块）。
-不要使用 markdown 表格、JSON、编号列表等任何其他格式。
-必须使用 [TAG] 作为区块分隔符。
-
-[ARCHITECT]
-PASS 或 FAIL
-- 改进建议1（如果FAIL）
-- 改进建议2（如果FAIL）
-
-[PRODUCT]
-PASS 或 FAIL
-- 改进建议1（如果FAIL）
-
-[USER]
-PASS 或 FAIL
-- 改进建议1（如果FAIL）
-
-[TESTER]
-PASS 或 FAIL
-- 改进建议1（如果FAIL）
-
-[DESIGNER]
-PASS 或 FAIL
-- 改进建议1（如果FAIL）
-- 改进建议2（如果FAIL）
-- (请重点关注: UI视觉、交互体验、移动端适配)
-</output_format>
-
-<example>
-[ARCHITECT]
-PASS
-
-[PRODUCT]
-FAIL
-- 缺少错误提示文案
-- 搜索结果无分页
-
-[USER]
-PASS
-
-[TESTER]
-FAIL
-- 缺少边界条件测试
-
-[DESIGNER]
-FAIL
-- 按钮间距过小，容易误触
-- 错误提示颜色对比度不足
-</example>
-
-## 审查标准
-- PASS: 该视角认为当前实现质量良好，无需改进
-- FAIL: 该视角发现可改进之处，请列出具体建议
-- 建议应具体、可操作，而非泛泛而谈
-- 如果某视角为 PASS，不需要列出建议
-"""
-
-    def _build_refinement_input(self, original_requirement: str) -> str:
-        """Build refined input from review suggestions for next cycle."""
-        lines = [f"## 原始需求\n{original_requirement}\n"]
-
-        if self._last_review:
-            failed = self._last_review.failed_perspectives
-            if failed:
-                lines.append("## 上轮审查改进建议\n以下建议需要在本轮 Spec 循环中解决：\n")
-                for pr in failed:
-                    lines.append(f"{pr.perspective.emoji} **{pr.perspective.display_name}**:")
-                    for s in pr.suggestions:
-                        lines.append(f"  - {s}")
-                    lines.append("")
-
-        # Include criteria progress
-        if self._project:
-            tracker = self._project.criteria_tracker
-            unsatisfied = tracker.unsatisfied_criteria
-            if unsatisfied:
-                lines.append("## 未满足的验收标准\n")
-                for c in unsatisfied:
-                    lines.append(f"- [ ] {c}")
-                lines.append("")
-
-        return "\n".join(lines)
-
-    # ------------------------------------------------------------------
-    # Artifact parsing (spec-kit inspired)
-    # ------------------------------------------------------------------
-    def _parse_spec_artifact(self, text: str) -> tuple[Optional[SpecArtifact], list[str]]:
-        """Parse spec JSON artifact.
-
-        Returns: (artifact|None, validation_errors)
-        """
-        blob = extract_json_blob(text)
-        if not blob:
-            return None, ["未找到 ```json``` 规格产物；已降级为纯文本"]
-        try:
-            data = json.loads(blob)
-        except Exception as e:
-            return None, [f"规格 JSON 解析失败：{e}"]
-        if not isinstance(data, dict):
-            return None, ["规格 JSON 不是对象；已降级为纯文本"]
-
-        errors = validate_spec_artifact_dict(data)
-        artifact = SpecArtifact.from_dict(
-            {
-                "goals": normalize_list(data.get("goals")),
-                "functional_spec": normalize_list(data.get("functional_spec")),
-                "non_functional_requirements": normalize_list(data.get("non_functional_requirements")),
-                "acceptance_criteria": normalize_list(data.get("acceptance_criteria")),
-                "out_of_scope": normalize_list(data.get("out_of_scope")),
-                "risks": normalize_list(data.get("risks")),
-                "clarification_questions": normalize_list(data.get("clarification_questions")),
-                "decisions": normalize_list(data.get("decisions")),
-            }
-        )
-        return artifact, errors
-
-    def _parse_plan_artifact(self, text: str) -> tuple[Optional[PlanArtifact], list[str]]:
-        """Parse plan JSON artifact.
-
-        Returns: (artifact|None, validation_errors)
-        """
-        blob = extract_json_blob(text)
-        if not blob:
-            return None, ["未找到 ```json``` 规划产物；已降级为纯文本"]
-        try:
-            data = json.loads(blob)
-        except Exception as e:
-            return None, [f"规划 JSON 解析失败：{e}"]
-        if not isinstance(data, dict):
-            return None, ["规划 JSON 不是对象；已降级为纯文本"]
-
-        errors = validate_plan_artifact_dict(data)
-        artifact = PlanArtifact.from_dict(
-            {
-                "architecture": data.get("architecture", ""),
-                "tech_stack": normalize_list(data.get("tech_stack")),
-                "steps": normalize_list(data.get("steps")),
-                "file_changes": normalize_list(data.get("file_changes")),
-                "test_plan": normalize_list(data.get("test_plan")),
-                "risks": normalize_list(data.get("risks")),
-            }
-        )
-        return artifact, errors
-
-    def _merge_acceptance_criteria(self, new_criteria: list[str]) -> None:
-        """Apply criteria from the spec artifact.
-
-        spec-kit 的验收标准应来自 Spec 产物本身，因此在第一轮我们倾向于
-        **用 Spec 的 acceptance_criteria 替换** 之前从用户输入中提取的
-        fallback 列表（避免形成“双重标准”导致永远无法满足）。
-
-        仅在以下情况下生效：
-        - 还未有任何标准被满足（satisfied_count == 0）
-        - 新标准不是明显的占位符（如 "CRITERIA_1" 这种标签）
-        """
-        if not self._project:
-            return
-
-        incoming = [c.strip() for c in (new_criteria or []) if c and c.strip()]
-        if not incoming:
-            return
-
-        # Filter obvious placeholders
-        placeholder_pat = re.compile(r"^CRITERIA_\d+$", re.IGNORECASE)
-        non_placeholder = [c for c in incoming if not placeholder_pat.match(c)]
-        if not non_placeholder:
-            return
-
-        # Deduplicate while preserving order
-        seen: set[str] = set()
-        deduped: list[str] = []
-        for c in non_placeholder:
-            if c in seen:
-                continue
-            seen.add(c)
-            deduped.append(c)
-
-        if self._project.criteria_tracker.satisfied_count == 0:
-            self._project.acceptance_criteria = deduped
-            self._project.criteria_tracker.init_criteria(deduped)
-
-    # ------------------------------------------------------------------
-    # Requirement parsing (reuses loop pattern)
-    # ------------------------------------------------------------------
-    def _parse_acceptance_criteria(self, text: str) -> list[str]:
-        """Extract acceptance criteria from user input."""
-        lines = text.strip().split("\n")
-        criteria = []
-
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith("- ") or stripped.startswith("* "):
-                criteria.append(stripped[2:])
-            elif stripped.startswith("[ ] ") or stripped.startswith("[x] "):
-                criteria.append(stripped[4:])
-
-        if not criteria:
-            criteria = self._decompose_criteria_with_llm(text)
-
-        if not criteria:
-            criteria = [f"完成需求: {text[:100]}"]
-
-        return criteria
 
     def _decompose_criteria_with_llm(self, text: str) -> list[str]:
-        """Use LLM to decompose colloquial input into acceptance criteria."""
-        settings = self.settings
-        # 测试里常用最小 settings stub；这里必须容忍缺失字段。
-        if not settings.ark_api_key or not settings.ark_model:
-            return []
-
-        prompt = f"""请分析以下用户需求，提取并拆解为明确的验收标准。
-
-用户需求（口语化描述）：
-{text}
-
-要求：
-1. 先理解用户的核心诉求
-2. 将需求拆解为 3-8 条具体、可验证的验收标准
-3. 每条标准应该是独立可验证的（能明确判断 PASS/FAIL）
-4. 标准应覆盖用户提到的所有功能点
-5. 用简洁的技术语言描述，不要过于笼统
-
-输出格式（严格按此格式，每行一条，以 "- " 开头）：
-- 验收标准1
-- 验收标准2
-- 验收标准3
-..."""
-
-        try:
-            llm = ChatOpenAI(
-                base_url=settings.ark_base_url,
-                api_key=settings.ark_api_key,
-                model=settings.ark_model,
-                temperature=0.1,
-            )
-            response = llm.invoke(
-                [
-                    SystemMessage(content="你是一个需求分析助手，擅长将口语化的产品需求拆解为结构化的验收标准。"),
-                    HumanMessage(content=prompt),
-                ]
-            )
-            return self._extract_criteria_from_llm_response(response.content)
-        except Exception as e:
-            logger.warning("[Spec] LLM 需求拆解失败: %s, 将使用原始文本", e)
-            return []
-
-    @staticmethod
-    def _extract_criteria_from_llm_response(text: str) -> list[str]:
-        """Extract criteria lines from LLM response."""
-        criteria = []
-        for line in text.strip().split("\n"):
-            stripped = line.strip()
-            if stripped.startswith("- ") or stripped.startswith("* "):
-                criterion = stripped[2:].strip()
-            elif len(stripped) > 2 and stripped[0].isdigit() and stripped[1] in ".、):） ":
-                criterion = stripped[2:].strip()
-            elif len(stripped) > 3 and stripped[:2].isdigit() and stripped[2] in ".、):） ":
-                criterion = stripped[3:].strip()
-            else:
-                continue
-            if criterion:
-                criteria.append(criterion)
-        return criteria
-
-    # ------------------------------------------------------------------
-    # Task parsing
-    # ------------------------------------------------------------------
-    @staticmethod
-    def _parse_tasks(text: str) -> list[SpecTask]:
-        """Parse numbered task list from agent output."""
-        tasks = []
-        for line in text.strip().split("\n"):
-            m = _TASK_LINE_PATTERN.match(line)
-            if not m:
-                continue
-            task_id = int(m.group(1))
-            description = m.group(2).strip().strip("[]")
-            deps_str = (m.group(3) or "").strip()
-            dependencies = []
-            if deps_str and deps_str.lower() not in ("无", "none", ""):
-                for dep in re.split(r"[,，\s]+", deps_str):
-                    dep = dep.strip()
-                    if dep.isdigit():
-                        dependencies.append(int(dep))
-            tasks.append(
-                SpecTask(
-                    task_id=task_id,
-                    description=description,
-                    dependencies=dependencies,
-                )
-            )
-        return tasks
+        return _decompose_criteria_with_llm_impl(text, self.settings)
 
     # ------------------------------------------------------------------
     # Criteria evaluation (reuses loop pattern)
     # ------------------------------------------------------------------
     def _evaluate_criteria(self, criteria: list[str], cycle: int) -> dict:
-        """Evaluate acceptance criteria by asking the agent in the same session."""
-        if not self._session:
-            return {"all_satisfied": False}
-
-        criteria_list = "\n".join(f"CRITERIA_{i + 1}: {c}" for i, c in enumerate(criteria))
-        eval_prompt = f"""请评估以下验收标准是否已满足：
-{criteria_list}
-
-对每个标准回答 PASS 或 FAIL，严格按照以下格式回复（每行一个）：
-CRITERIA_1: PASS
-CRITERIA_2: FAIL
-...
-"""
-        try:
-            eval_text: list[str] = []
-
-            def on_eval_event(event: ACPEvent):
-                if event.event_type == ACPEventType.TEXT_CHUNK and event.text:
-                    eval_text.append(event.text)
-
-            from ..utils.retry import RetryPolicy
-            self._send_prompt_with_retry(
-                eval_prompt,
-                on_event=on_eval_event,
-                timeout=60,
-                retry_policy=RetryPolicy(max_retries=1, retry_delay=2.0),
-            )
-            full_text = "".join(eval_text).upper()
-
-            per_criteria: dict[int, bool] = {}
-            for i in range(len(criteria)):
-                pat = (
-                    _CRITERIA_PATTERNS[i]
-                    if i < len(_CRITERIA_PATTERNS)
-                    else re.compile(rf"CRITERIA_{i + 1}\s*:\s*(PASS|FAIL)")
-                )
-                match = pat.search(full_text)
-                if match:
-                    per_criteria[i] = match.group(1) == "PASS"
-
-            if self._project:
-                self._project.criteria_tracker.batch_update(per_criteria, cycle)
-
-            all_satisfied = self._project.criteria_tracker.is_all_satisfied if self._project else False
-            return {"all_satisfied": all_satisfied}
-
-        except Exception as e:
-            logger.debug("[Spec] 验收标准评估失败: %s", e)
-            return {"all_satisfied": False}
+        return _evaluate_criteria_impl(
+            session=self._session,
+            criteria=criteria,
+            cycle=cycle,
+            project=self._project,
+            send_prompt_fn=self._send_prompt_with_retry,
+            settings=self.settings,
+        )
 
     # ------------------------------------------------------------------
     # Review (reuses loop engine's parsing infrastructure)
     # ------------------------------------------------------------------
     def _conduct_review(self, cycle: int, callbacks: SpecEngineCallbacks) -> ReviewResult:
-        """Conduct multi-perspective review in the same ACP session."""
-        # Optional circuit breaker: suppress repeated review failures.
-        enabled = self.settings.spec_review_failure_circuit_enabled
-        max_consecutive = max(1, self.settings.spec_review_failure_max_consecutive)
-        cooldown_cycles = max(0, self.settings.spec_review_failure_cooldown_cycles)
-
-        if (
-            enabled
-            and int(self._review_circuit_open_until_cycle or 0)
-            and int(cycle or 0) <= int(self._review_circuit_open_until_cycle or 0)
-        ):
-            diag_raw = {
-                # Stable contract
-                "phase": "review",
-                "role": "multi_perspective",
-                "cycle": int(cycle or 0),
-                "decision": "review_circuit_open_skip",
-                "fail_reason": "circuit_open",
-                "err_type": "ReviewCircuitOpen",
-                "err_repr": "<ReviewCircuitOpen>",
-                "error_text": "review_circuit_open",
-                # Backward-compatible keys
-                "cycle_number": int(cycle or 0),
-                "exception_type": "ReviewCircuitOpen",
-                "review_role": "multi_perspective",
-                "traceback_snippet": "",
-                "consecutive_failures": int(self._review_failure_consecutive or 0),
-                "open_until_cycle": int(self._review_circuit_open_until_cycle or 0),
-            }
-
-            diag = self._normalize_review_diagnostics(diag_raw)
-            self._last_review_failure_diag = dict(diag)
-            logger.warning(
-                "[Spec] review_circuit_open: phase=review role=multi_perspective cycle=%s decision=review_circuit_open_skip open_until=%s consecutive=%s, 将跳过本轮审查",
-                diag_raw.get("cycle_number"),
-                diag_raw.get("open_until_cycle"),
-                diag_raw.get("consecutive_failures"),
-            )
-            return ReviewResult(
-                reviews=[
-                    PerspectiveReview(
-                        perspective=p,
-                        passed=False,
-                        suggestions=[f"审查熔断：连续{int(self._review_failure_consecutive or 0)}次异常，跳过本轮审查"],
-                        summary="熔断",
-                    )
-                    for p in ReviewPerspective
-                ],
-                iteration=cycle,
-            )
-
-        # 没有 session 时无法发送审查 prompt；但熔断判定已在上面完成。
-        if not self._session:
-            return ReviewResult(iteration=cycle)
-
-        review_prompt = self._build_review_prompt()
-        review_text: list[str] = []
-        thought_text: list[str] = []
-
-        def on_review_event(event: ACPEvent):
-            if event.event_type == ACPEventType.TEXT_CHUNK and event.text:
-                review_text.append(event.text)
-            elif event.event_type == ACPEventType.THOUGHT_CHUNK and event.text:
-                thought_text.append(event.text)
-
-        # Reset failure diag for this review attempt
-        self._last_review_failure_diag = None
-
-        try:
-            from ..utils.retry import RetryPolicy
-            self._send_prompt_with_retry(
-                review_prompt,
-                on_event=on_review_event,
-                timeout=120,
-                retry_policy=RetryPolicy(max_retries=2, retry_delay=2.0),
-                before_retry=lambda a, e: (review_text.clear(), thought_text.clear()) if a > 0 else None,
-            )
-            full_text = "".join(review_text)
-            # Combine text + thought for parsing (some agents put verdicts in thinking)
-            combined_text = full_text
-            if thought_text:
-                combined_text = full_text + "\n" + "".join(thought_text)
-            review_result = self._parse_review_output(combined_text, cycle)
-            # success: reset circuit breaker
-            self._review_failure_consecutive = 0
-            self._review_circuit_open_until_cycle = 0
-        except Exception as e:
-            diag_raw = self._build_review_exception_diagnostics(e, cycle=cycle)
-            diag = self._normalize_review_diagnostics(diag_raw)
-            self._last_review_failure_diag = dict(diag)
-
-            # Update circuit breaker state (best-effort)
-            try:
-                self._review_failure_consecutive = int(self._review_failure_consecutive or 0) + 1
-            except Exception:
-                self._review_failure_consecutive = 1
-            if enabled and self._review_failure_consecutive >= max_consecutive and cooldown_cycles > 0:
-                try:
-                    self._review_circuit_open_until_cycle = int(cycle or 0) + int(cooldown_cycles)
-                except Exception:
-                    self._review_circuit_open_until_cycle = int(cycle or 0)
-                try:
-                    self._last_review_failure_diag["review_circuit_open"] = True
-                    self._last_review_failure_diag["open_until_cycle"] = int(self._review_circuit_open_until_cycle or 0)
-                    self._last_review_failure_diag["consecutive_failures"] = int(self._review_failure_consecutive or 0)
-                    # 标记“本次失败已触发熔断开启”（但仍按保守策略继续循环）。
-                    # 注意：metrics.review_failed 不能只依赖 == review_failed_continue，因此后续会统一判断。
-                    self._last_review_failure_diag["decision"] = "review_failed_open_circuit"
-                except Exception:
-                    pass
-            # 稳定单行字段契约：关键字段可 grep；diagnostics 使用 JSON 附加
-            diag_json = ""
-            try:
-                diag_json = json.dumps(diag, ensure_ascii=False, sort_keys=True)
-            except Exception:
-                diag_json = '{"phase":"review","decision":"review_failed_continue"}'
-
-            # 关键：日志必须永不为空。
-            # 即便格式化 helper 意外抛异常，也要降级输出稳定字段（err_type/err_repr/error_text）。
-            try:
-                logger.warning(self._format_review_exception_log_line(diag, diag_json=diag_json))
-            except Exception as log_e:
-                d = self._normalize_review_diagnostics(diag)
-                err_type = str(d.get("err_type") or "Exception")
-                err_repr = str(d.get("err_repr") or "").strip() or f"<{err_type}>"
-                error_text = str(d.get("error_text") or "").strip() or err_repr
-                logger.warning(
-                    "[Spec] 多视角审查异常: phase=review role=multi_perspective cycle=%s decision=%s "
-                    "err_type=%s err_repr=%s error_text=%s (log_format_failed=%s), 将继续循环",
-                    d.get("cycle"),
-                    d.get("decision") or "review_failed_continue",
-                    err_type,
-                    err_repr,
-                    error_text,
-                    type(log_e).__name__,
-                )
-            review_result = ReviewResult(
-                reviews=[
-                    PerspectiveReview(
-                        perspective=p,
-                        passed=False,
-                        suggestions=[
-                            f"审查执行异常: {str(diag.get('error_text') or '').strip() or str(diag.get('err_repr') or '(empty)')}"
-                        ],
-                        summary="异常",
-                    )
-                    for p in ReviewPerspective
-                ],
-                iteration=cycle,
-            )
-
-        if callbacks.on_review_done:
-            callbacks.on_review_done(cycle, review_result)
-
-        return review_result
+        return _conduct_review_impl(
+            session=self._session,
+            settings=self.settings,
+            project=self._project,
+            send_prompt_with_retry_fn=self._send_prompt_with_retry,
+            build_review_exception_diagnostics_fn=self._build_review_exception_diagnostics,
+            circuit=self._review_circuit,
+            cycle=cycle,
+            on_review_done=callbacks.on_review_done,
+        )
 
     def _parse_review_output(self, text: str, cycle: int) -> ReviewResult:
-        """Parse structured review output into ReviewResult (same logic as loop engine)."""
-        raw = (text or "").replace("\r\n", "\n")
-
-        # 1) strict/tolerant parsing (shared utils)
-        reviews = parse_review_output_strict_tolerant(raw, cycle)
-
-        # 2.5) loose parsing: keyword-pair / JSON / table formats
-        if not reviews:
-            reviews = parse_review_output_loose(raw, cycle)
-
-        # 3) LLM fallback
-        if not reviews:
-            preview = raw[:500] if raw else "(empty)"
-            logger.warning("[Spec] 正则+loose解析全部失败, 尝试LLM兜底解析. 原文预览: %s", preview)
-            reviews = self._parse_review_with_llm(raw)
-
-        # 4) Final fallback
-        if not reviews:
-            logger.warning("[Spec] 审查输出解析失败, 将视为有改进建议继续循环")
-            for p in ReviewPerspective:
-                reviews.append(
-                    PerspectiveReview(
-                        perspective=p,
-                        passed=False,
-                        suggestions=["审查输出解析失败，请检查实现质量"],
-                        summary="解析失败",
-                    )
-                )
-
-        return ReviewResult(reviews=reviews, iteration=cycle)
+        return _parse_review_output_impl(
+            text,
+            cycle,
+            parse_with_llm_fn=lambda raw: _parse_review_with_llm_impl(raw, self.settings),
+        )
 
     def _parse_review_with_llm(self, raw_text: str) -> list[PerspectiveReview]:
-        """LLM fallback: extract review verdicts from free-form text."""
-        settings = self.settings
-        # 测试里常用最小 settings stub；这里必须容忍缺失字段。
-        if not settings.ark_api_key or not settings.ark_model:
-            return []
-        if not raw_text or len(raw_text.strip()) < 10:
-            return []
-
-        prompt = f"""请从以下文本中提取四个视角的审查结果。
-
-文本内容：
-{raw_text[:3000]}
-
-请严格按以下 JSON 格式输出（不要输出其他内容）：
-[
-  {{"perspective": "ARCHITECT", "verdict": "PASS或FAIL", "suggestions": ["建议1", "建议2"]}},
-  {{"perspective": "PRODUCT", "verdict": "PASS或FAIL", "suggestions": []}},
-  {{"perspective": "USER", "verdict": "PASS或FAIL", "suggestions": []}},
-  {{"perspective": "TESTER", "verdict": "PASS或FAIL", "suggestions": []}}
-]"""
-
-        try:
-            llm = ChatOpenAI(
-                base_url=settings.ark_base_url,
-                api_key=settings.ark_api_key,
-                model=settings.ark_model,
-                temperature=0.0,
-            )
-            response = llm.invoke(
-                [
-                    SystemMessage(content="你是一个文本解析助手。从审查文本中提取结构化的审查结果，只输出JSON。"),
-                    HumanMessage(content=prompt),
-                ]
-            )
-            return self._extract_reviews_from_llm_response(response.content)
-        except Exception as e:
-            logger.warning("[Spec] LLM 兜底审查解析失败: %s", e)
-            return []
+        return _parse_review_with_llm_impl(raw_text, self.settings)
 
     @staticmethod
     def _extract_reviews_from_llm_response(text: str) -> list[PerspectiveReview]:
-        """Parse LLM JSON response into PerspectiveReview list."""
-        cleaned = text.strip()
-        if "```" in cleaned:
-            parts = cleaned.split("```")
-            for part in parts:
-                stripped = part.strip()
-                if stripped.startswith("json"):
-                    stripped = stripped[4:].strip()
-                if stripped.startswith("["):
-                    cleaned = stripped
-                    break
-
-        start = cleaned.find("[")
-        end = cleaned.rfind("]")
-        if start == -1 or end == -1 or end <= start:
-            return []
-
-        try:
-            data = json.loads(cleaned[start : end + 1])
-        except json.JSONDecodeError:
-            return []
-
-        if not isinstance(data, list):
-            return []
-
-        reviews: list[PerspectiveReview] = []
-        found: set[str] = set()
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            tag = str(item.get("perspective", "")).upper()
-            perspective = _PERSPECTIVE_TAG_MAP.get(tag)
-            if not perspective or tag in found:
-                continue
-            found.add(tag)
-            verdict = str(item.get("verdict", "")).upper()
-            passed = verdict == "PASS"
-            suggestions = item.get("suggestions", [])
-            if not isinstance(suggestions, list):
-                suggestions = []
-            suggestions = [str(s) for s in suggestions if s]
-            if passed:
-                suggestions = []
-            reviews.append(
-                PerspectiveReview(
-                    perspective=perspective,
-                    passed=passed,
-                    suggestions=suggestions,
-                    summary=f"{'通过' if passed else f'{len(suggestions)}条建议'}",
-                )
-            )
-        return reviews
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-    def _format_criteria_status(self) -> str:
-        """Format current criteria status for prompt inclusion."""
-        if not self._project or not self._project.criteria_tracker.criteria:
-            return ""
-        tracker = self._project.criteria_tracker
-        lines = ["\n## 验收标准进度"]
-        for i, c in enumerate(tracker.criteria):
-            if tracker.satisfied.get(i, False):
-                lines.append(f"- [x] {c} ✅ (已满足)")
-            else:
-                lines.append(f"- [ ] {c}")
-        return "\n".join(lines) + "\n"
+        return extract_reviews_from_llm_response(text)
 
     def _consume_guidance(self) -> str:
-        """Consume and format pending user guidance."""
         if not self._user_guidance:
             return ""
         combined = "\n\n".join(self._user_guidance)
@@ -2727,66 +1036,14 @@ CRITERIA_2: FAIL
         return f"\n## 用户引导\n{combined}\n"
 
     def _detect_convergence(self) -> bool:
-        """Detect if recent cycles made no progress.
-
-        Spec 模式的收敛定义：在最近的窗口期内
-        - 验收标准满足数量没有任何增加
-        - 且多视角审查建议数量也没有任何变化（一直重复同一批建议/一直无建议）
-
-        注意：收敛仅表示“卡住”，不代表需求达成；最终是否成功由
-        “验收标准全部满足 + 审查通过”决定。
-        """
-
         if not self._project:
             return False
+        return detect_convergence(
+            self._project,
+            convergence_window=int(self.settings.spec_convergence_window or 0),
+            review_enabled=self.settings.spec_review_enabled,
+        )
 
-        window = int(self.settings.spec_convergence_window or 0)
-        # Convergence needs at least 2 cycles to compare progress.
-        if window < 2:
-            return False
-        if len(self._project.cycles) < window:
-            return False
-
-        # When already all satisfied, never treat as converged.
-        if self._project.criteria_tracker.is_all_satisfied:
-            return False
-
-        recent = self._project.cycles[-window:]
-
-        # --- Criteria progress ---
-        tracker = self._project.criteria_tracker
-        counts: list[int] = []
-        for c in recent:
-            satisfied_now = 0
-            for idx in range(len(tracker.criteria)):
-                at = tracker.satisfied_at_iteration.get(idx)
-                if at is not None and at <= c.cycle_number:
-                    satisfied_now += 1
-            counts.append(satisfied_now)
-
-        if len(set(counts)) != 1:
-            return False  # criteria improved in window
-
-        # --- Review suggestion progress (content-aware, not just counts) ---
-        def _norm(s: str) -> str:
-            return re.sub(r"\s+", " ", (s or "").strip().lower())
-
-        suggestion_sets: list[frozenset[str]] = []
-        if not self.settings.spec_review_enabled:
-            suggestion_sets = [frozenset()] * window
-        else:
-            for c in recent:
-                if c.review_result is None:
-                    return False
-                ss: set[str] = set()
-                for pr in c.review_result.failed_perspectives:
-                    for s in pr.suggestions:
-                        ns = _norm(str(s))
-                        if ns:
-                            ss.add(ns)
-                suggestion_sets.append(frozenset(ss))
-
-        return len(set(suggestion_sets)) == 1
 
     def inject_guidance(self, message: str):
         """Inject user guidance — will be included in the next phase prompt."""
@@ -2912,289 +1169,22 @@ CRITERIA_2: FAIL
         return self._project
 
     def _project_to_compact_dict(self) -> dict:
-        """Build a compact project dict for state persistence.
-
-        关键点：避免在 5000+ 循环下每轮把全部 cycles/work_items/metrics 全量写回，
-        否则会出现 O(n^2) 的 IO 开销导致不稳定。
-        """
-        if not self._project:
-            return {}
-
-        tail_cycles = int(self.settings.spec_state_cycles_tail or 50)
-        tail_items = int(self.settings.spec_state_work_items_tail or 200)
-        tail_metrics = int(self.settings.spec_state_metrics_tail or 200)
-
-        cycle_count_total = max(int(getattr(self._project, "cycle_count_total", 0) or 0), len(self._project.cycles))
-        work_items_total = max(int(getattr(self._project, "work_items_total", 0) or 0), len(self._project.work_items))
-
-        pd = {
-            "project_id": self._project.project_id,
-            "name": self._project.name,
-            "root_path": self._project.root_path,
-            "requirement": self._project.requirement,
-            "acceptance_criteria": list(self._project.acceptance_criteria),
-            "criteria_tracker": self._project.criteria_tracker.to_dict(),
-            "status": self._project.status.value,
-            "created_at": self._project.created_at,
-            "started_at": self._project.started_at,
-            "completed_at": self._project.completed_at,
-            "error": self._project.error,
-            "cycle_count_total": cycle_count_total,
-            "work_items_total": work_items_total,
-            "cycles": [c.to_dict() for c in (self._project.cycles[-tail_cycles:] if tail_cycles > 0 else [])],
-            "metrics_history": [
-                m.to_dict() for m in (self._project.metrics_history[-tail_metrics:] if tail_metrics > 0 else [])
-            ],
-        }
-
-        # Work items: keep pending + last N for traceability
-        pending = [w for w in self._project.work_items if w.status == SpecWorkItemStatus.PENDING]
-        recent = self._project.work_items[-tail_items:] if tail_items > 0 else []
-        merged: list[SpecWorkItem] = []
-        seen: set[str] = set()
-        for w in pending + list(recent):
-            if not w or not w.item_id or w.item_id in seen:
-                continue
-            seen.add(w.item_id)
-            merged.append(w)
-        pd["work_items"] = [w.to_dict() for w in merged]
-        pd["_compact"] = {
-            "cycles_tail": tail_cycles,
-            "work_items_tail": tail_items,
-            "metrics_tail": tail_metrics,
-            "cycles_truncated_before": max(0, cycle_count_total - len(pd.get("cycles") or [])),
-        }
-        # For discoverability
-        pd["artifacts_root"] = self._artifact_root_dir()
-        pd["history_log_path"] = self._history_log_path()
-        return pd
+        return _project_to_compact_dict_impl(self._project, self.settings, self.root_path)
 
     def save_state(self, filepath: Optional[str] = None) -> str:
-        if not self._project:
-            raise ValueError("没有项目状态可保存")
-        if not filepath:
-            filepath = self._get_state_path()
-        state = {
-            "chat_id": self.chat_id,
-            "root_path": self.root_path,
-            "project": self._project_to_compact_dict(),
-            "runtime_context": self._build_runtime_context(),
-            "saved_at": time.time(),
-        }
-        tmp_path = filepath + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, filepath)
-        return filepath
+        return _save_engine_state(
+            self._project,
+            self.settings,
+            self.root_path,
+            self.chat_id,
+            self._build_runtime_context,
+            self._project_to_compact_dict,
+            filepath,
+        )
 
     @classmethod
     def load_state(cls, filepath: str) -> Optional[SpecProject]:
-        """Load a SpecProject from a state file written by save_state()."""
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            proj = data.get("project")
-            if not isinstance(proj, dict):
-                return None
-            return SpecProject.from_dict(proj)
-        except Exception:
-            return None
+        return _load_engine_state(filepath)
 
     def cleanup(self):
-        # 只要引擎尚未回到 IDLE，都可能仍有执行线程在访问 self._project；
-        # 此时只能请求停止，不能立即清空状态。
-        if self._run_state != EngineRunState.IDLE:
-            self._run_state = EngineRunState.STOPPING
-            if self._session:
-                try:
-                    self._session.cancel()
-                except Exception:
-                    pass
-            return
-
-        if self._session:
-            try:
-                self._session.close()
-            except Exception as e:
-                logger.debug("关闭ACP session失败: %s", e)
-            self._session = None
-        self._project = None
-        self._run_state = EngineRunState.IDLE
-
-
-class SpecEngineManager(BaseEngineManager["SpecEngine"]):
-    """Manages SpecEngine instances per chat.
-
-    Uses a secondary index (_chat_keys) to avoid O(n) full-table scans.
-    """
-
-    def _create_engine(
-        self,
-        chat_id: str,
-        root_path: str,
-        agent_type: str,
-        engine_name: str,
-        model_name: Optional[str],
-    ) -> "SpecEngine":
-        return SpecEngine(
-            chat_id=chat_id,
-            root_path=root_path,
-            agent_type=agent_type,
-            engine_name=engine_name,
-            model_name=model_name,
-        )
-
-    def _resolve_engine_identity(
-        self,
-        *,
-        engine_name: str = "Coco",
-        agent_type: Optional[str] = None,
-        model_name: Optional[str] = None,
-    ) -> tuple[str, str, Optional[str]]:
-        normalized_agent = str(agent_type or "").strip().lower()
-        normalized_name = str(engine_name or "").strip() or "Coco"
-
-        if normalized_agent.startswith("ttadk_"):
-            return SpecEngine._infer_engine_name(normalized_agent), normalized_agent, model_name
-        if normalized_agent == "claude":
-            return "Claude", "claude", None
-        if normalized_agent in {"aiden", "codex", "gemini", "coco"}:
-            from ..mode import InteractionMode
-
-            mode_map = {
-                "coco": InteractionMode.COCO,
-                "aiden": InteractionMode.AIDEN,
-                "codex": InteractionMode.CODEX,
-                "gemini": InteractionMode.GEMINI,
-            }
-            identity = resolve_engine_identity(mode=mode_map[normalized_agent])
-            return identity.engine_name, identity.agent_type, (model_name or identity.model_name)
-        if normalized_agent:
-            return SpecEngine._infer_engine_name(normalized_agent), normalized_agent, model_name
-
-        from ..ttadk import get_ttadk_manager
-        from ..mode import InteractionMode
-
-        if normalized_name.lower() == "ttadk":
-            ttadk_manager = get_ttadk_manager()
-            current_tool = ttadk_manager.get_current_tool()
-            current_model = ttadk_manager.get_current_model()
-            identity = resolve_engine_identity(
-                mode=InteractionMode.TTADK,
-                ttadk_tool_name=current_tool,
-                ttadk_model_name=current_model,
-            )
-            return identity.engine_name, identity.agent_type, (model_name or identity.model_name)
-
-        if normalized_name.lower().startswith("claude"):
-            identity = resolve_engine_identity(mode=InteractionMode.CLAUDE)
-            return identity.engine_name, identity.agent_type, identity.model_name
-
-        if normalized_name.lower().startswith("aiden"):
-            identity = resolve_engine_identity(mode=InteractionMode.AIDEN)
-            return identity.engine_name, identity.agent_type, (model_name or identity.model_name)
-
-        if normalized_name.lower().startswith("codex"):
-            identity = resolve_engine_identity(mode=InteractionMode.CODEX)
-            return identity.engine_name, identity.agent_type, (model_name or identity.model_name)
-
-        if normalized_name.lower().startswith("gemini"):
-            identity = resolve_engine_identity(mode=InteractionMode.GEMINI)
-            return identity.engine_name, identity.agent_type, (model_name or identity.model_name)
-
-        identity = resolve_engine_identity(mode=InteractionMode.COCO)
-        return identity.engine_name, identity.agent_type, (model_name or identity.model_name)
-
-    def get_or_create(
-        self,
-        chat_id: str,
-        root_path: str,
-        engine_name: str = "Coco",
-        *,
-        agent_type: Optional[str] = None,
-        model_name: Optional[str] = None,
-    ) -> "SpecEngine":
-        key = f"{chat_id}:{root_path}"
-        resolved_engine_name, resolved_agent_type, resolved_model_name = self._resolve_engine_identity(
-            engine_name=engine_name,
-            agent_type=agent_type,
-            model_name=model_name,
-        )
-
-        with self._lock:
-            existing = self._engines.get(key)
-            should_replace = False
-            if existing:
-                should_replace = (
-                    not existing.is_running
-                    and (
-                        existing.engine_name.lower() != resolved_engine_name.lower()
-                        or existing._agent_type != resolved_agent_type
-                        or existing._model_name != resolved_model_name
-                    )
-                )
-
-            if existing is None or should_replace:
-                if existing is not None:
-                    existing.cleanup()
-                self._engines[key] = SpecEngine(
-                    chat_id=chat_id,
-                    root_path=root_path,
-                    agent_type=resolved_agent_type,
-                    engine_name=resolved_engine_name,
-                    model_name=resolved_model_name,
-                )
-                self._add_index(chat_id, key)
-
-            return self._engines[key]
-
-    def load_or_create_from_disk(self, chat_id: str, root_path: str, engine_name: str = "Coco") -> "SpecEngine":
-        """Create engine and hydrate project state from disk if present.
-
-        用于进程重启后的断点续传：handler 在 `/spec_status`/`/spec_resume` 时可调用。
-        """
-        seed_engine = self.get_or_create(chat_id, root_path, engine_name=engine_name)
-        if not seed_engine.settings.spec_allow_resume_from_disk:
-            return seed_engine
-
-        state_path = os.path.join(root_path, seed_engine.settings.spec_state_filename)
-        persisted_project = None
-        persisted_runtime = None
-        persisted_saved_at = None
-        persisted_compact = None
-
-        if os.path.exists(state_path):
-            try:
-                with open(state_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                proj = data.get("project")
-                if isinstance(proj, dict):
-                    persisted_project = proj
-                    persisted_runtime = data.get("runtime_context") if isinstance(data.get("runtime_context"), dict) else None
-                    persisted_saved_at = data.get("saved_at")
-                    persisted_compact = proj.get("_compact")
-            except Exception:
-                persisted_project = None
-                persisted_runtime = None
-
-        runtime = dict(persisted_runtime or {})
-        engine = self.get_or_create(
-            chat_id,
-            root_path,
-            engine_name=runtime.get("engine_name") or engine_name,
-            agent_type=runtime.get("agent_type"),
-            model_name=runtime.get("model_name") or runtime.get("current_model"),
-        )
-
-        if persisted_project is not None and engine.project is None:
-            try:
-                engine._project = SpecProject.from_dict(persisted_project)
-                engine._restore_runtime_context(runtime)
-                engine._resume_meta = {
-                    "state_path": state_path,
-                    "saved_at": persisted_saved_at,
-                    "compact": persisted_compact,
-                }
-            except Exception:
-                pass
-        return engine
+        super().cleanup()

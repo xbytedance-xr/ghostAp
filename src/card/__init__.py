@@ -1,5 +1,5 @@
 from .builder import CardBuilder
-from .models import DeepCardState
+from .models import DeepCardState, EngineCardState
 from .shared import (
     THEMES,
     ProjectTheme,
@@ -12,6 +12,7 @@ from .shared import (
 __all__ = [
     "CardBuilder",
     "DeepCardState",
+    "EngineCardState",
     "ProjectTheme",
     "THEMES",
     "get_theme",

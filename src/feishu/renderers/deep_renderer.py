@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Optional
 
 from ...acp import ACPEvent, ACPEventRenderer, ACPEventType
 from ...card import CardBuilder
-from ...card.models import DeepCardState
+from ...card.models import EngineCardState
 from ...deep_engine import DeepEngineCallbacks
 from ...deep_engine.models import DeepProject, DeepProjectStatus
 from ...project import ContextSourceMode
@@ -55,14 +55,14 @@ class DeepRenderer(BaseRenderer):
             """发送 deep 任务消息，委托给 SmartSender 处理（含重锚逻辑）。"""
             sender.send(card_content, msg_type, is_update, throttle, request_id)
 
-        def on_planning_done(deep_project: DeepProject):
+        def on_analyzing_done(deep_project: DeepProject):
             content = f"🚀 ACP Deep 执行开始\n\n📂 **{deep_project.name}**\n🔗 路径: `{deep_project.root_path}`"
-            msg_type, card_content = CardBuilder.build_deep_card(
+            msg_type, card_content = CardBuilder.build_engine_card(
                 project=project,
-                state=DeepCardState(
+                state=EngineCardState(
                     title="🚀 开始执行",
                     content=content,
-                    deep_project_id=deep_project.project_id,
+                    engine_project_id=deep_project.project_id,
                     engine_name=engine_name,
                     show_buttons=False,
                 ),
@@ -140,13 +140,13 @@ class DeepRenderer(BaseRenderer):
                 is_executing=(status != DeepProjectStatus.PLANNING),
             )
 
-            msg_type, card_content = CardBuilder.build_deep_card(
+            msg_type, card_content = CardBuilder.build_engine_card(
                 project=project,
-                state=DeepCardState(
+                state=EngineCardState(
                     title=title,
                     content=content,
                     progress_bar=progress_bar,
-                    deep_project_id=deep_project_id,
+                    engine_project_id=deep_project_id,
                     is_executing=True,
                     engine_name=engine_name,
                     compact=state["compact"],
@@ -188,13 +188,13 @@ class DeepRenderer(BaseRenderer):
                         is_executing=True,
                     )
 
-                    msg_type, card_content = CardBuilder.build_deep_card(
+                    msg_type, card_content = CardBuilder.build_engine_card(
                         project=project,
-                        state=DeepCardState(
+                        state=EngineCardState(
                             title=plan_title,
                             content=plan_content,
                             progress_bar=progress_bar,
-                            deep_project_id=deep_project_id,
+                            engine_project_id=deep_project_id,
                             is_executing=True,
                             engine_name=engine_name,
                             compact=state["compact"],
@@ -233,13 +233,13 @@ class DeepRenderer(BaseRenderer):
             title = f"{status_emoji} Deep Agent 执行{'完成' if deep_project.status == DeepProjectStatus.COMPLETED else '结束'}"
 
             progress_bar = progress.progress_bar if progress else None
-            msg_type, card_content = CardBuilder.build_deep_card(
+            msg_type, card_content = CardBuilder.build_engine_card(
                 project=project,
-                state=DeepCardState(
+                state=EngineCardState(
                     title=title,
                     content=content,
                     progress_bar=progress_bar,
-                    deep_project_id=deep_project.project_id,
+                    engine_project_id=deep_project.project_id,
                     engine_name=engine_name,
                 ),
             )
@@ -280,16 +280,16 @@ class DeepRenderer(BaseRenderer):
                 }
             ]
             
-            msg_type, card_content = CardBuilder.build_deep_card(
+            msg_type, card_content = CardBuilder.build_engine_card(
                 project=project,
-                state=DeepCardState(
+                state=EngineCardState(
                     title=title,
                     content=content,
                     engine_name=engine_name,
                     show_buttons=True,
                     extra_buttons=extra_buttons,
                     action_prefix="deep",
-                    deep_project_id=deep_project_id,
+                    engine_project_id=deep_project_id,
                 ),
             )
             # Error state: immediate flush
@@ -297,7 +297,7 @@ class DeepRenderer(BaseRenderer):
             self.handler.add_reaction(message_id, EmojiReaction.on_error())
 
         return DeepEngineCallbacks(
-            on_planning_done=on_planning_done,
+            on_analyzing_done=on_analyzing_done,
             on_event=on_event,
             on_project_done=on_project_done,
             on_error=on_error,
@@ -328,9 +328,9 @@ class DeepRenderer(BaseRenderer):
                 engine_name = self.handler.get_engine_name(
                     chat_id, project_id=(project.project_id if project else None)
                 )
-                msg_type, card_content = CardBuilder.build_deep_card(
+                msg_type, card_content = CardBuilder.build_engine_card(
                     project=project,
-                    state=DeepCardState(
+                    state=EngineCardState(
                         title="📊 当前状态",
                         content="当前没有 Deep Agent 任务\n\n发送 `/deep 你的需求` 开始一个复杂任务\n发送 `/deep_status all` 查看所有项目任务",
                         engine_name=engine_name,
@@ -371,13 +371,13 @@ class DeepRenderer(BaseRenderer):
             is_executing=progress_info["is_executing"],
         )
 
-        msg_type, card_content = CardBuilder.build_deep_card(
+        msg_type, card_content = CardBuilder.build_engine_card(
             project=project,
-            state=DeepCardState(
+            state=EngineCardState(
                 title=status_title,
                 content=status_content,
                 progress_bar=progress_info["progress_bar"],
-                deep_project_id=deep_project_id,
+                engine_project_id=deep_project_id,
                 is_executing=progress_info["is_executing"],
                 is_paused=progress_info["is_paused"],
                 engine_name=engine_name,

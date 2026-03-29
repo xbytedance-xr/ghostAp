@@ -72,51 +72,7 @@ class LoopRole(Enum):
         }[self]
 
 
-class ReviewPerspective(Enum):
-    """多视角审查的视角类型。"""
-
-    ARCHITECT = "architect"
-    PRODUCT = "product"
-    USER = "user"
-    TESTER = "tester"
-    DESIGNER = "designer"
-
-    @property
-    def display_name(self) -> str:
-        return {
-            ReviewPerspective.ARCHITECT: "架构师",
-            ReviewPerspective.PRODUCT: "产品经理",
-            ReviewPerspective.USER: "用户",
-            ReviewPerspective.TESTER: "测试",
-            ReviewPerspective.DESIGNER: "设计师",
-        }[self]
-
-    @property
-    def emoji(self) -> str:
-        return {
-            ReviewPerspective.ARCHITECT: "🏗️",
-            ReviewPerspective.PRODUCT: "📦",
-            ReviewPerspective.USER: "👤",
-            ReviewPerspective.TESTER: "🧪",
-            ReviewPerspective.DESIGNER: "🎨",
-        }[self]
-
-    @property
-    def review_focus(self) -> str:
-        return {
-            ReviewPerspective.ARCHITECT: "代码结构、设计模式、可维护性、性能、安全性",
-            ReviewPerspective.PRODUCT: "需求完整度、用户价值、边界场景、功能一致性",
-            ReviewPerspective.USER: "易用性、文档、错误提示、交互体验、可理解性",
-            ReviewPerspective.TESTER: "测试覆盖、边界条件、异常处理、回归风险、可测试性",
-            ReviewPerspective.DESIGNER: "UI视觉(配色/层级)、交互体验(动效/流程)、移动端适配、美观度",
-        }[self]
-
-    @property
-    def failure_label(self) -> str:
-        """审查不通过时显示的特定文案，默认 '❌ 有建议'。"""
-        return {
-            ReviewPerspective.DESIGNER: "🎨 视觉/交互建议",
-        }.get(self, "❌ 有建议")
+from ..engine_base import PerspectiveReview, ReviewPerspective, ReviewResult
 
 
 class TerminationSignal(Enum):
@@ -178,69 +134,6 @@ class RoleSelection:
     role: LoopRole
     reason: str
     focus: str
-
-
-@dataclass
-class PerspectiveReview:
-    """单个视角的审查结果。"""
-
-    perspective: ReviewPerspective
-    passed: bool
-    suggestions: list[str] = field(default_factory=list)
-    summary: str = ""
-
-    def to_dict(self) -> dict:
-        return {
-            "perspective": self.perspective.value,
-            "passed": self.passed,
-            "suggestions": self.suggestions,
-            "summary": self.summary,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "PerspectiveReview":
-        return cls(
-            perspective=ReviewPerspective(data["perspective"]),
-            passed=data["passed"],
-            suggestions=data.get("suggestions", []),
-            summary=data.get("summary", ""),
-        )
-
-
-@dataclass
-class ReviewResult:
-    """多视角审查汇总结果。"""
-
-    reviews: list[PerspectiveReview] = field(default_factory=list)
-    iteration: int = 0
-
-    @property
-    def all_passed(self) -> bool:
-        return len(self.reviews) > 0 and all(r.passed for r in self.reviews)
-
-    @property
-    def total_suggestions(self) -> int:
-        return sum(len(r.suggestions) for r in self.reviews)
-
-    @property
-    def failed_perspectives(self) -> list[PerspectiveReview]:
-        return [r for r in self.reviews if not r.passed]
-
-    def suggestions_by_perspective(self) -> dict[ReviewPerspective, list[str]]:
-        return {r.perspective: r.suggestions for r in self.reviews if r.suggestions}
-
-    def to_dict(self) -> dict:
-        return {
-            "reviews": [r.to_dict() for r in self.reviews],
-            "iteration": self.iteration,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "ReviewResult":
-        return cls(
-            reviews=[PerspectiveReview.from_dict(r) for r in data.get("reviews", [])],
-            iteration=data.get("iteration", 0),
-        )
 
 
 @dataclass

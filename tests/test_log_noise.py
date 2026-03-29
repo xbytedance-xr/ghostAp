@@ -31,7 +31,7 @@ class TestLogNoise(unittest.TestCase):
 
         # Mock CardBuilder
         with patch("src.feishu.handlers.deep.CardBuilder") as mock_card_builder:
-            mock_card_builder.build_deep_card.return_value = ("interactive", "{}")
+            mock_card_builder.build_engine_card.return_value = ("interactive", "{}")
 
             mock_engine = MagicMock()
             mock_ctx.deep_engine_manager.get_or_create.return_value = mock_engine
@@ -86,7 +86,7 @@ class TestLogNoise(unittest.TestCase):
 
         # Mock CardBuilder
         with patch("src.feishu.handlers.loop.CardBuilder") as mock_card_builder:
-            mock_card_builder.build_deep_card.return_value = ("interactive", "{}")
+            mock_card_builder.build_engine_card.return_value = ("interactive", "{}")
 
             mock_engine = MagicMock()
             mock_ctx.loop_engine_manager.get_or_create.return_value = mock_engine
@@ -171,7 +171,7 @@ class TestLogNoise(unittest.TestCase):
 
         # Mock CardBuilder
         with patch("src.feishu.handlers.spec.CardBuilder") as mock_card_builder:
-            mock_card_builder.build_deep_card.return_value = ("interactive", "{}")
+            mock_card_builder.build_engine_card.return_value = ("interactive", "{}")
 
             mock_engine = MagicMock()
             mock_ctx.spec_engine_manager.get_or_create.return_value = mock_engine

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from src.card import CardBuilder
-from src.card.models import DeepCardState
+from src.card.models import EngineCardState
 from src.feishu.handlers.loop import LoopHandler
 from src.feishu.ws_client import FeishuWSClient
 from src.loop_engine.models import LoopProject, LoopProjectStatus
@@ -16,11 +16,11 @@ class TestLoopInteraction(unittest.TestCase):
         project = LoopProject(name="test_proj", root_path="/tmp", project_id="p1")
         project.status = LoopProjectStatus.RUNNING
 
-        # build_deep_card calls _build_deep_buttons internally
+        # build_engine_card calls _build_deep_buttons internally
         # We need to ensure we can parse the result even if it's complex
-        _, card_content = CardBuilder.build_deep_card(
+        _, card_content = CardBuilder.build_engine_card(
             project=project,
-            state=DeepCardState(
+            state=EngineCardState(
                 title="Loop Status",
                 content="Running...",
                 action_prefix="loop",
@@ -118,11 +118,11 @@ class TestLoopInteraction(unittest.TestCase):
         mock_engine.project.total_criteria = 10
         mock_engine.project.name = "test_proj"
 
-        # Patch CardBuilder.build_deep_card
-        with patch("src.card.CardBuilder.build_deep_card") as mock_build:
+        # Patch CardBuilder.build_engine_card
+        with patch("src.card.CardBuilder.build_engine_card") as mock_build:
             mock_build.return_value = ("interactive", "{}")
 
-            # Call show_loop_status which calls build_deep_card
+            # Call show_loop_status which calls build_engine_card
             # Note: We mock reply_message to avoid network calls
             handler.reply_message = MagicMock()
             handler.show_loop_status("msg_id", "chat_id", project)

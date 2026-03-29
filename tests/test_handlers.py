@@ -1364,7 +1364,7 @@ class TestDeepHandler:
 
         # Mock CardBuilder
         with patch("src.feishu.handlers.deep.CardBuilder") as mock_cb:
-            mock_cb.build_deep_card.return_value = ("interactive", "{}")
+            mock_cb.build_engine_card.return_value = ("interactive", "{}")
 
             # Execute
             h.show_deep_status("msg1", "chat1", project=project, origin_message_id="origin1")
@@ -1405,7 +1405,7 @@ class TestDeepHandler:
         # Since we saw in stack trace it was using real CardBuilder (because patch location was wrong),
         # let's try to patch the correct location.
         with patch("src.feishu.renderers.deep_renderer.CardBuilder") as mock_cb:
-            mock_cb.build_deep_card.return_value = ("interactive", "{}")
+            mock_cb.build_engine_card.return_value = ("interactive", "{}")
 
             # Execute
             h.show_deep_status("msg1", "chat1", project=project, origin_message_id="origin1")

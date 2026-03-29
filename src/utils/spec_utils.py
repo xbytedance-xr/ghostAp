@@ -15,7 +15,7 @@ import json
 import re
 from typing import Optional
 
-from ..loop_engine.models import PerspectiveReview, ReviewPerspective
+from ..engine_base import PerspectiveReview, ReviewPerspective
 
 # ---------------------------------------------------------------------------
 # Criteria patterns

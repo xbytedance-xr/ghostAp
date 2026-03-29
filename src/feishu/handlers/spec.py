@@ -161,7 +161,7 @@ class SpecHandler(BaseEngineHandler):
         # Send startup card
         content = reporter.format_analyzing_start(requirement)
         title = reporter.get_analyzing_start_title()
-        msg_type, card_content = CardBuilder.build_deep_card(
+        msg_type, card_content = CardBuilder.build_engine_card(
             project=project,
             title=title,
             content=f"{content}\n\n{self.format_ref_note(message_id, request_id)}" if request_id else content,
@@ -203,7 +203,7 @@ class SpecHandler(BaseEngineHandler):
                     engine_name=engine_name,
                     error_msg=err_msg,
                     project_id=project.project_id if project else None,
-                    deep_project_id=project.project_id if project else root_path,
+                    engine_project_id=project.project_id if project else root_path,
                     footer_note=self.format_ref_note(message_id, request_id) if request_id else None,
                 )
                 self.send_message(chat_id, err_card, err_msg_type, origin_message_id=message_id, request_id=request_id)
@@ -259,7 +259,7 @@ class SpecHandler(BaseEngineHandler):
         except Exception:
             engine = self.ctx.spec_engine_manager.get(chat_id, root_path)
         if not engine or not engine.project:
-            msg_type, card_content = CardBuilder.build_deep_card(
+            msg_type, card_content = CardBuilder.build_engine_card(
                 project=project,
                 title="🗂️ Spec 历史",
                 content="当前没有可查询的 Spec 历史（未运行过或未落盘）\n\n发送 `/spec <需求>` 启动后会自动生成历史。",
@@ -277,7 +277,7 @@ class SpecHandler(BaseEngineHandler):
         except Exception:
             tail = 20
         content = self.ctx.spec_reporter.format_history(engine.project, tail=tail)
-        msg_type, card_content = CardBuilder.build_deep_card(
+        msg_type, card_content = CardBuilder.build_engine_card(
             project=project,
             title="🗂️ Spec 历史",
             content=content,
@@ -296,7 +296,7 @@ class SpecHandler(BaseEngineHandler):
         except Exception:
             engine = self.ctx.spec_engine_manager.get(chat_id, root_path)
         if not engine or not engine.project:
-            msg_type, card_content = CardBuilder.build_deep_card(
+            msg_type, card_content = CardBuilder.build_engine_card(
                 project=project,
                 title="📈 Spec 指标",
                 content="当前没有可查询的 Spec 指标（未运行过或未落盘）\n\n发送 `/spec <需求>` 启动后会自动记录指标。",
@@ -314,7 +314,7 @@ class SpecHandler(BaseEngineHandler):
         except Exception:
             tail = 20
         content = self.ctx.spec_reporter.format_metrics(engine.project, tail=tail)
-        msg_type, card_content = CardBuilder.build_deep_card(
+        msg_type, card_content = CardBuilder.build_engine_card(
             project=project,
             title="📈 Spec 指标",
             content=content,
@@ -341,7 +341,7 @@ class SpecHandler(BaseEngineHandler):
             f"- history_log: `{getattr(s, 'spec_history_log_filename', None)}`\n"
         )
         engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
-        msg_type, card_content = CardBuilder.build_deep_card(
+        msg_type, card_content = CardBuilder.build_engine_card(
             project=project,
             title="🧩 Spec 配置",
             content=content,
@@ -609,7 +609,7 @@ class SpecHandler(BaseEngineHandler):
         title = reporter.get_guidance_injected_title()
         engine_name = engine.engine_name
 
-        msg_type, card_content = CardBuilder.build_deep_card(
+        msg_type, card_content = CardBuilder.build_engine_card(
             project=project,
             title=title,
             content=content,
@@ -683,7 +683,7 @@ class SpecHandler(BaseEngineHandler):
 
         content = reporter.format_analyzing_start(state.requirement)
         title = f"🔄 恢复任务 {task_id}"
-        msg_type, card_content = CardBuilder.build_deep_card(
+        msg_type, card_content = CardBuilder.build_engine_card(
             project=project,
             title=title,
             content=f"{content}\n\n{self.format_ref_note(message_id, request_id)}" if request_id else content,
@@ -733,7 +733,7 @@ class SpecHandler(BaseEngineHandler):
                     engine_name=engine_name,
                     error_msg=err_msg,
                     project_id=project.project_id if project else None,
-                    deep_project_id=project.project_id if project else project_path,
+                    engine_project_id=project.project_id if project else project_path,
                     footer_note=self.format_ref_note(message_id, request_id) if request_id else None,
                 )
                 self.send_message(chat_id, err_card, err_msg_type, origin_message_id=message_id, request_id=request_id)

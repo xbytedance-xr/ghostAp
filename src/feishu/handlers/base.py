@@ -628,7 +628,7 @@ class BaseHandler:
 
         def _on_rate_limit(wait_seconds: int):
             try:
-                msg_type, card_content = CardBuilder.build_deep_card(
+                msg_type, card_content = CardBuilder.build_engine_card(
                     project=project,
                     title="⏸️ 限速等待",
                     content=f"🔄 API 限速触发，自动等待 {wait_seconds} 秒后恢复...\n\n无需操作，任务将自动继续。",

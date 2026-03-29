@@ -7,14 +7,12 @@ from typing import Optional
 
 
 @dataclass
-class DeepCardState:
-    """State object for building deep engine cards, avoiding parameter explosion."""
-
+class EngineCardState:
     title: str = ""
     content: str = ""
     progress_bar: Optional[str] = None
     project_id: Optional[str] = None
-    deep_project_id: Optional[str] = None
+    engine_project_id: Optional[str] = None
     is_executing: bool = False
     is_paused: bool = False
     engine_name: str = "Coco"
@@ -28,10 +26,15 @@ class DeepCardState:
     expanded: bool = False
     expand_ac: bool = False
     action_prefix: str = "deep"
-    # Optional additional buttons (e.g., retry/recover). Each item should be a Feishu button element.
     extra_buttons: Optional[list[dict]] = None
-    # Optional warning banner content (e.g., long running task warning)
     warning_banner: Optional[str] = None
+
+    @property
+    def deep_project_id(self):
+        return self.engine_project_id
+
+
+DeepCardState = EngineCardState
 
 
 class KeyEventKind(str, Enum):

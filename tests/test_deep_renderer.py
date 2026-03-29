@@ -100,7 +100,7 @@ class TestDeepRenderer:
 
         callbacks = renderer.create_deep_callbacks("msg1", "chat1", proj)
 
-        assert callbacks.on_planning_done
+        assert callbacks.on_analyzing_done
         assert callbacks.on_event
         assert callbacks.on_project_done
         assert callbacks.on_error

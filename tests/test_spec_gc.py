@@ -20,7 +20,7 @@ def test_spec_engine_gc_collect(mock_gc_collect):
 
     with (
         patch("src.spec_engine.engine.create_engine_session") as mock_create,
-        patch("src.spec_engine.engine.get_coco_model_manager") as mock_model_manager,
+        patch("src.spec_engine.session_utils.get_coco_model_manager") as mock_model_manager,
     ):
         mock_create.return_value = MagicMock()
         mock_model_manager.return_value = MagicMock()

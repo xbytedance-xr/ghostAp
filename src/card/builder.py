@@ -5,7 +5,7 @@ from .builders.core import CoreBuilder
 from .builders.deep import DeepBuilder
 from .builders.project import ProjectBuilder
 from .builders.system import SystemBuilder
-from .models import DeepCardState
+from .models import EngineCardState
 from .shared import apply_compact_style
 
 if TYPE_CHECKING:
@@ -282,13 +282,13 @@ class CardBuilder:
         return DeepBuilder._pick_deep_template(engine_name, status)
 
     @staticmethod
-    def _build_deep_buttons(state: DeepCardState) -> list[dict]:
+    def _build_deep_buttons(state: EngineCardState) -> list[dict]:
         return DeepBuilder._build_deep_buttons(state)
 
     @staticmethod
-    def build_deep_card(
+    def build_engine_card(
         project: Optional[ProjectContext],
-        state: Optional[DeepCardState] = None,
+        state: Optional[EngineCardState] = None,
         *,
         title: str = "",
         content: str = "",
@@ -297,7 +297,7 @@ class CardBuilder:
         working_dir: Optional[str] = None,
         progress_bar: Optional[str] = None,
         project_id: Optional[str] = None,
-        deep_project_id: Optional[str] = None,
+        engine_project_id: Optional[str] = None,
         is_executing: bool = False,
         is_paused: bool = False,
         status_line: Optional[str] = None,
@@ -311,18 +311,13 @@ class CardBuilder:
         extra_buttons: Optional[list[dict]] = None,
         warning_banner: Optional[str] = None,
     ) -> tuple[str, str]:
-        """Build a deep engine card.
-
-        Supports both new API (passing DeepCardState) and legacy API
-        (passing individual keyword arguments) for backward compatibility.
-        """
         if state is None:
-            state = DeepCardState(
+            state = EngineCardState(
                 title=title,
                 content=content,
                 progress_bar=progress_bar,
                 project_id=project_id,
-                deep_project_id=deep_project_id,
+                engine_project_id=engine_project_id,
                 is_executing=is_executing,
                 is_paused=is_paused,
                 engine_name=engine_name,
@@ -339,7 +334,9 @@ class CardBuilder:
                 extra_buttons=extra_buttons,
                 warning_banner=warning_banner,
             )
-        return DeepBuilder.build_deep_card(project, state)
+        return DeepBuilder.build_engine_card(project, state)
+
+    build_deep_card = build_engine_card
 
     @staticmethod
     def build_history_list_card(

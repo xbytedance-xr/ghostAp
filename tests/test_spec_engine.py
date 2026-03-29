@@ -11,13 +11,23 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.acp.models import ACPEvent, ACPEventType, PlanInfo, ToolCallInfo
-from src.deep_engine.models import EngineRunState
-from src.loop_engine.models import (
-    PerspectiveReview,
-    ReviewPerspective,
-    ReviewResult,
+from src.engine_base import EngineRunState, PerspectiveReview, ReviewPerspective, ReviewResult
+from src.spec_engine.engine import SpecEngine, SpecEngineCallbacks
+from src.spec_engine.manager import SpecEngineManager
+from src.spec_engine.prompts import (
+    build_build_prompt,
+    build_plan_prompt,
+    build_refinement_input,
+    build_review_prompt,
+    build_spec_prompt,
+    build_task_prompt,
+    format_criteria_status,
 )
-from src.spec_engine.engine import SpecEngine, SpecEngineCallbacks, SpecEngineManager
+from src.spec_engine.artifacts import (
+    extract_criteria_from_llm_response,
+    parse_acceptance_criteria,
+    parse_tasks,
+)
 from src.spec_engine.models import (
     PlanArtifact,
     SpecArtifact,
@@ -309,7 +319,7 @@ def test_spec_engine_review_failure_diagnostics_written_to_cycle_and_metrics(mon
     # Patch create_engine_session so execute() doesn't overwrite our _session
     monkeypatch.setattr("src.spec_engine.engine.create_engine_session", lambda **kw: engine._session)
     monkeypatch.setattr(
-        "src.spec_engine.engine.get_coco_model_manager", lambda: type("M", (), {"get_current_model": lambda self: ""})()
+        "src.spec_engine.session_utils.get_coco_model_manager", lambda: type("M", (), {"get_current_model": lambda self: ""})()
     )
 
     p = engine.execute("req")
@@ -451,7 +461,7 @@ def test_spec_engine_review_failure_circuit_breaker_skips_review(monkeypatch, ca
     engine._session = sess
     monkeypatch.setattr("src.spec_engine.engine.create_engine_session", lambda **kw: engine._session)
     monkeypatch.setattr(
-        "src.spec_engine.engine.get_coco_model_manager", lambda: type("M", (), {"get_current_model": lambda self: ""})()
+        "src.spec_engine.session_utils.get_coco_model_manager", lambda: type("M", (), {"get_current_model": lambda self: ""})()
     )
 
     caplog.set_level(logging.WARNING, logger="src.spec_engine.engine")
@@ -549,7 +559,7 @@ def test_spec_engine_review_circuit_skip_does_not_block_main_loop(monkeypatch, t
     engine._session = sess
     monkeypatch.setattr("src.spec_engine.engine.create_engine_session", lambda **kw: engine._session)
     monkeypatch.setattr(
-        "src.spec_engine.engine.get_coco_model_manager", lambda: type("M", (), {"get_current_model": lambda self: ""})()
+        "src.spec_engine.session_utils.get_coco_model_manager", lambda: type("M", (), {"get_current_model": lambda self: ""})()
     )
 
     p = engine.execute("req")
@@ -1364,33 +1374,30 @@ class TestSpecEngine:
         assert engine._consume_guidance() == ""
 
     def test_parse_acceptance_criteria_with_list_markers(self):
-        engine = self._make_engine()
         text = """实现登录功能
 - 支持邮箱登录
 - 支持手机号登录
 - 有错误提示
 """
-        criteria = engine._parse_acceptance_criteria(text)
+        criteria = parse_acceptance_criteria(text)
         assert len(criteria) == 3
         assert "支持邮箱登录" in criteria
 
     def test_parse_acceptance_criteria_with_checkboxes(self):
-        engine = self._make_engine()
         text = """功能需求
 [ ] 第一项
 [x] 第二项
 """
-        criteria = engine._parse_acceptance_criteria(text)
+        criteria = parse_acceptance_criteria(text)
         assert len(criteria) == 2
 
     def test_parse_acceptance_criteria_no_markers_fallback(self):
-        engine = self._make_engine()
         text = "实现一个简单的登录页面"
-        criteria = engine._parse_acceptance_criteria(text)
+        criteria = parse_acceptance_criteria(text)
         assert len(criteria) == 1
         assert "完成需求:" in criteria[0]
 
-    @patch("src.spec_engine.engine.ChatOpenAI")
+    @patch("src.spec_engine.criteria.ChatOpenAI")
     def test_parse_acceptance_criteria_llm_decompose(self, mock_chat):
         mock_llm = MagicMock()
         mock_llm.invoke.return_value = MagicMock(content="- 实现登录接口\n- 支持错误提示\n- 添加单元测试")
@@ -1400,7 +1407,7 @@ class TestSpecEngine:
         engine.settings.ark_api_key = "test-key"
         engine.settings.ark_model = "test-model"
 
-        criteria = engine._parse_acceptance_criteria("实现登录功能")
+        criteria = parse_acceptance_criteria("实现登录功能", engine._decompose_criteria_with_llm)
         assert len(criteria) == 3
 
     def test_parse_tasks(self):
@@ -1409,7 +1416,7 @@ class TestSpecEngine:
 3. 编写前端页面 (依赖: 1, 2)
 4. 添加测试 (依赖: 2, 3)
 """
-        tasks = SpecEngine._parse_tasks(text)
+        tasks = parse_tasks(text)
         assert len(tasks) == 4
         assert tasks[0].task_id == 1
         assert tasks[0].description == "创建数据模型"
@@ -1423,11 +1430,11 @@ class TestSpecEngine:
 2、Second task (depends: 1)
 3) Third task (依赖: 1, 2)
 """
-        tasks = SpecEngine._parse_tasks(text)
+        tasks = parse_tasks(text)
         assert len(tasks) == 3
 
     def test_parse_tasks_empty(self):
-        tasks = SpecEngine._parse_tasks("no tasks here")
+        tasks = parse_tasks("no tasks here")
         assert tasks == []
 
     def test_extract_criteria_from_llm_response(self):
@@ -1438,7 +1445,7 @@ class TestSpecEngine:
 1. 添加单元测试
 2、集成测试通过
 """
-        criteria = SpecEngine._extract_criteria_from_llm_response(text)
+        criteria = extract_criteria_from_llm_response(text)
         assert len(criteria) == 5
 
     def test_extract_reviews_from_llm_response(self):
@@ -1463,8 +1470,7 @@ class TestSpecEngine:
         assert reviews == []
 
     def test_build_spec_prompt(self):
-        engine = self._make_engine()
-        prompt = engine._build_spec_prompt("Build a login system")
+        prompt = build_spec_prompt("Build a login system", "/tmp/test", "", "")
         assert "Build a login system" in prompt
         assert "/tmp/test" in prompt
         assert "```json" in prompt
@@ -1472,34 +1478,28 @@ class TestSpecEngine:
         assert "clarification_questions" in prompt
 
     def test_build_plan_prompt(self):
-        engine = self._make_engine()
-        prompt = engine._build_plan_prompt("spec output here")
+        prompt = build_plan_prompt("spec output here", "/tmp/test")
         assert "spec output here" in prompt
         assert "```json" in prompt
         assert "file_changes" in prompt
 
     def test_build_task_prompt(self):
-        engine = self._make_engine()
-        prompt = engine._build_task_prompt("plan output here")
+        prompt = build_task_prompt("plan output here")
         assert "plan output here" in prompt
         assert "任务编号" in prompt
 
     def test_build_build_prompt(self):
-        engine = self._make_engine()
         tasks = [
             SpecTask(task_id=1, description="Create models"),
             SpecTask(task_id=2, description="Add tests"),
         ]
-        prompt = engine._build_build_prompt(tasks, "plan content")
+        prompt = build_build_prompt(tasks, "plan content", "/tmp/test", "")
         assert "Create models" in prompt
         assert "Add tests" in prompt
         assert "plan content" in prompt
 
     def test_build_review_prompt(self):
-        engine = self._make_engine()
-        engine._project = SpecProject.create(root_path="/tmp")
-        engine._project.requirement = "Build auth"
-        prompt = engine._build_review_prompt()
+        prompt = build_review_prompt("Build auth")
         assert "ARCHITECT" in prompt
         assert "PRODUCT" in prompt
         assert "USER" in prompt
@@ -1508,13 +1508,12 @@ class TestSpecEngine:
         assert "Build auth" in prompt
 
     def test_build_refinement_input(self):
-        engine = self._make_engine()
-        engine._project = SpecProject.create(root_path="/tmp")
-        engine._project.requirement = "Build auth"
-        engine._project.acceptance_criteria = ["Criterion A"]
-        engine._project.criteria_tracker.init_criteria(["Criterion A"])
+        project = SpecProject.create(root_path="/tmp")
+        project.requirement = "Build auth"
+        project.acceptance_criteria = ["Criterion A"]
+        project.criteria_tracker.init_criteria(["Criterion A"])
 
-        engine._last_review = ReviewResult(
+        last_review = ReviewResult(
             reviews=[
                 PerspectiveReview(
                     perspective=ReviewPerspective.ARCHITECT,
@@ -1544,7 +1543,7 @@ class TestSpecEngine:
             iteration=1,
         )
 
-        result = engine._build_refinement_input("Build auth")
+        result = build_refinement_input("Build auth", last_review, project)
         assert "Build auth" in result
         assert "Fix security" in result
         assert "Criterion A" in result
@@ -1606,15 +1605,13 @@ class TestSpecEngine:
         assert not engine._detect_convergence()
 
     def test_format_criteria_status_empty(self):
-        engine = self._make_engine()
-        assert engine._format_criteria_status() == ""
+        assert format_criteria_status(None) == ""
 
     def test_format_criteria_status_with_project(self):
-        engine = self._make_engine()
-        engine._project = SpecProject.create(root_path="/tmp")
-        engine._project.criteria_tracker.init_criteria(["C1", "C2"])
-        engine._project.criteria_tracker.batch_update({0: True}, 1)
-        result = engine._format_criteria_status()
+        project = SpecProject.create(root_path="/tmp")
+        project.criteria_tracker.init_criteria(["C1", "C2"])
+        project.criteria_tracker.batch_update({0: True}, 1)
+        result = format_criteria_status(project)
         assert "[x]" in result
         assert "[ ]" in result
 
@@ -2128,7 +2125,7 @@ class TestSpecHandler:
         reporter.get_guidance_injected_title.return_value = "title"
         handler.ctx.spec_reporter = reporter
 
-        with patch("src.feishu.handlers.spec.CardBuilder.build_deep_card", return_value=("interactive", "card")):
+        with patch("src.feishu.handlers.spec.CardBuilder.build_engine_card", return_value=("interactive", "card")):
             handler.update_spec_guidance("mid", "cid", "Q1: answer", project=None)
 
         engine.inject_guidance.assert_called_once_with("Q1: answer")
@@ -3448,7 +3445,7 @@ def test_save_failed_task_idempotency(monkeypatch):
         call_count += 1
         return f"/tmp/saved_{call_count}.json"
         
-    monkeypatch.setattr("src.spec_engine.engine.save_task_state", mock_save_task_state)
+    monkeypatch.setattr("src.spec_engine.task_persistence.save_task_state", mock_save_task_state)
     
     callbacks = SpecEngineCallbacks()
     

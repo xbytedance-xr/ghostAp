@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.acp.models import ACPEvent, ACPEventType, PlanEntryInfo, PlanInfo, ToolCallInfo
-from src.deep_engine.models import EngineRunState
+from src.engine_base import EngineRunState, PerspectiveReview, ReviewPerspective, ReviewResult
 from src.loop_engine.engine import LoopEngine, LoopEngineCallbacks, LoopEngineManager
 from src.loop_engine.models import (
     IterationRecord,
@@ -15,9 +15,6 @@ from src.loop_engine.models import (
     LoopProject,
     LoopProjectStatus,
     LoopRequirement,
-    PerspectiveReview,
-    ReviewPerspective,
-    ReviewResult,
 )
 from src.loop_engine.reporter import LoopReporter
 from src.loop_engine.tracker import IterationTracker
@@ -270,6 +267,9 @@ class TestLoopEngine:
                 return True
 
             def send_prompt(self, *a, **k):
+                return MagicMock(stop_reason="end_turn")
+
+            def send_prompt_with_retry(self, *a, **k):
                 return MagicMock(stop_reason="end_turn")
 
         class _SessSettings:
@@ -1383,12 +1383,12 @@ PASS
 PASS
 """
 
-        def mock_send(prompt, on_event=None, timeout=None):
+        def mock_send(prompt, on_event=None, timeout=None, retry_policy=None, before_retry=None):
             if on_event:
                 on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=review_output))
             return MagicMock(stop_reason="end_turn")
 
-        mock_session.send_prompt = mock_send
+        mock_session.send_prompt_with_retry = mock_send
         engine._session = mock_session
 
         callback_called = []
@@ -1412,7 +1412,7 @@ PASS
         )
 
         mock_session = MagicMock()
-        mock_session.send_prompt.side_effect = RuntimeError("timeout")
+        mock_session.send_prompt_with_retry.side_effect = RuntimeError("timeout")
         engine._session = mock_session
 
         callbacks = LoopEngineCallbacks()

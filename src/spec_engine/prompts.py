@@ -1,0 +1,243 @@
+"""Prompt construction functions for the Spec Engine."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Optional
+
+from ..engine_base import ReviewPerspective, ReviewResult
+
+if TYPE_CHECKING:
+    from .models import SpecProject, SpecTask
+
+
+def format_criteria_status(project: Optional[SpecProject]) -> str:
+    if not project or not project.criteria_tracker.criteria:
+        return ""
+    tracker = project.criteria_tracker
+    lines = ["\n## 验收标准进度"]
+    for i, c in enumerate(tracker.criteria):
+        if tracker.satisfied.get(i, False):
+            lines.append(f"- [x] {c} ✅ (已满足)")
+        else:
+            lines.append(f"- [ ] {c}")
+    return "\n".join(lines) + "\n"
+
+
+def build_spec_prompt(requirement: str, root_path: str, guidance: str, criteria_status: str) -> str:
+    return f"""你是一个专业的软件架构师。请使用 spec-kit 风格产出"规格（Spec）"。
+
+目标：只描述 **做什么/为什么/范围与约束**，不讨论具体怎么实现。
+
+## 需求
+{requirement}
+
+## 工作目录
+{root_path}
+{guidance}{criteria_status}
+## 输出要求（必须严格遵守）
+仅输出一个 JSON 对象，放在 ```json fenced code block``` 中，不要输出任何其他文字。
+
+Schema（字段必须存在；数组元素为字符串）：
+{{
+  "goals": ["..."],
+  "functional_spec": ["..."],
+  "non_functional_requirements": ["..."],
+  "acceptance_criteria": ["可验证条件..."],
+  "out_of_scope": ["明确不做什么..."],
+  "risks": ["风险/约束..."],
+  "clarification_questions": ["已识别的模糊点（仅记录，不等待用户回答）..."],
+  "decisions": ["已确认/可接受的假设（必须显式标注为假设）..."],
+  "version": "1.0"
+}}
+
+约束：
+- acceptance_criteria 必须可被判定 PASS/FAIL
+- 遇到信息不足时，不要停下等待用户——基于项目上下文和行业最佳实践自主选择最优方案
+- 将模糊点记录在 clarification_questions 中（仅供参考），将你的决策记录在 decisions 中
+- 如果用户引导中提供了相关信息，优先使用用户的指示
+"""
+
+
+def build_plan_prompt(spec: str, root_path: str) -> str:
+    return f"""你是一个资深工程师。基于下述 Spec（规格），产出 Plan（规划），强调可执行、可验证。
+
+## Spec 输入
+{spec}
+
+## 工作目录
+{root_path}
+
+## 输出要求（必须严格遵守）
+仅输出一个 JSON 对象，放在 ```json fenced code block``` 中，不要输出任何其他文字。
+
+Schema（字段必须存在；数组元素为字符串）：
+{{
+  "architecture": "总体架构与关键决策（文本）",
+  "tech_stack": ["语言/框架/库..."],
+  "steps": ["按优先级的一句话步骤..."],
+  "file_changes": ["新增/修改文件路径..."],
+  "test_plan": ["将新增/更新的测试与验证方式..."],
+  "risks": ["风险与应对..."],
+  "version": "1.0"
+}}
+"""
+
+
+def build_task_prompt(plan: str) -> str:
+    return f"""将以下实现方案分解为可执行的具体任务。
+
+## 实现方案
+{plan}
+
+## 输出要求
+请输出结构化的任务列表，每个任务包含：
+- 任务编号（1, 2, 3, ...）
+- 任务描述（一句话）
+- 依赖的任务编号（如果有）
+
+格式（严格遵循）：
+1. [任务描述] (依赖: 无)
+2. [任务描述] (依赖: 1)
+3. [任务描述] (依赖: 1, 2)
+...
+
+要求：
+- 每个任务应可独立测试
+- 任务粒度适中，不要过大或过小
+- 标注依赖关系以确定执行顺序
+"""
+
+
+def build_build_prompt(tasks: list[SpecTask], plan: str, root_path: str, guidance: str) -> str:
+    task_list = "\n".join(f"{t.task_id}. {t.description}" for t in tasks)
+    return f"""按以下任务列表逐步执行实现。
+
+## 实现方案
+{plan}
+
+## 任务列表
+{task_list}
+
+## 工作目录
+{root_path}
+{guidance}
+## 要求
+1. 严格按照任务顺序执行
+2. 每个任务完成后进行自检
+3. 确保代码质量：无安全漏洞、有适当的错误处理
+4. 完成所有任务后输出总结
+"""
+
+
+def build_review_prompt(requirement: str) -> str:
+    perspective_sections = []
+    for p in ReviewPerspective:
+        if p == ReviewPerspective.PRODUCT:
+            perspective_sections.append(
+                "- **PRODUCT**: Apple 风格产品审查（高审美/高标准/完美主义）。关注：信息架构与心智模型、关键路径是否一气呵成、默认行为是否聪明、边界与异常是否体面、文案是否克制清晰、细节一致性与打磨程度。"
+            )
+        else:
+            perspective_sections.append(f"- **{p.value.upper()}**: {p.review_focus}")
+    perspectives_desc = "\n".join(perspective_sections)
+
+    return f"""请从以下五个视角审查当前的实现质量，并给出结构化的审查结果。
+
+## 项目目标
+{requirement}
+
+## 审查视角
+{perspectives_desc}
+
+## PRODUCT 视角加严要求（Apple 风格）
+- 以"少即是多"的审美判断：删繁就简，不为功能堆砌找理由。
+- 以默认体验为王：默认路径必须顺滑、可预期、可解释；拒绝把复杂度转嫁给用户。
+- 以细节一致性为底线：命名/状态/交互/错误提示/边界行为必须统一。
+- 以体面为标准：失败与异常也要有尊严（清晰提示、可恢复、不给用户添堵）。
+- 建议要具体可落地：每条建议最好能对应到 1 个明确改动点（文案/交互/流程/边界/信息层级）。
+
+<output_format>
+严格按照以下格式输出每个视角的审查结果（每个视角占一个区块）。
+不要使用 markdown 表格、JSON、编号列表等任何其他格式。
+必须使用 [TAG] 作为区块分隔符。
+
+[ARCHITECT]
+PASS 或 FAIL
+- 改进建议1（如果FAIL）
+- 改进建议2（如果FAIL）
+
+[PRODUCT]
+PASS 或 FAIL
+- 改进建议1（如果FAIL）
+
+[USER]
+PASS 或 FAIL
+- 改进建议1（如果FAIL）
+
+[TESTER]
+PASS 或 FAIL
+- 改进建议1（如果FAIL）
+
+[DESIGNER]
+PASS 或 FAIL
+- 改进建议1（如果FAIL）
+- 改进建议2（如果FAIL）
+- (请重点关注: UI视觉、交互体验、移动端适配)
+</output_format>
+
+<example>
+[ARCHITECT]
+PASS
+
+[PRODUCT]
+FAIL
+- 缺少错误提示文案
+- 搜索结果无分页
+
+[USER]
+PASS
+
+[TESTER]
+FAIL
+- 缺少边界条件测试
+
+[DESIGNER]
+FAIL
+- 按钮间距过小，容易误触
+- 错误提示颜色对比度不足
+</example>
+
+## 审查标准
+- PASS: 该视角认为当前实现质量良好，无需改进
+- FAIL: 该视角发现可改进之处，请列出具体建议
+- 建议应具体、可操作，而非泛泛而谈
+- 如果某视角为 PASS，不需要列出建议
+"""
+
+
+def build_refinement_input(
+    original_requirement: str,
+    last_review: Optional[ReviewResult],
+    project: Optional[SpecProject],
+) -> str:
+    lines = [f"## 原始需求\n{original_requirement}\n"]
+
+    if last_review:
+        failed = last_review.failed_perspectives
+        if failed:
+            lines.append("## 上轮审查改进建议\n以下建议需要在本轮 Spec 循环中解决：\n")
+            for pr in failed:
+                lines.append(f"{pr.perspective.emoji} **{pr.perspective.display_name}**:")
+                for s in pr.suggestions:
+                    lines.append(f"  - {s}")
+                lines.append("")
+
+    if project:
+        tracker = project.criteria_tracker
+        unsatisfied = tracker.unsatisfied_criteria
+        if unsatisfied:
+            lines.append("## 未满足的验收标准\n")
+            for c in unsatisfied:
+                lines.append(f"- [ ] {c}")
+            lines.append("")
+
+    return "\n".join(lines)

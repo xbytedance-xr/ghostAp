@@ -66,7 +66,7 @@ class TestRendererThrottling(unittest.TestCase):
         # We set stream interval to 0 in setUp
 
         with patch("src.feishu.renderers.deep_renderer.CardBuilder") as mock_builder:
-            mock_builder.build_deep_card.return_value = ("interactive", "{}")
+            mock_builder.build_engine_card.return_value = ("interactive", "{}")
 
             # Setup renderer to have content (so _maybe_stream_update triggers)
             # We can't access 'renderer' inside callbacks closure.
@@ -105,7 +105,7 @@ class TestRendererThrottling(unittest.TestCase):
         self.mock_handler.reset_mock()
 
         with patch("src.feishu.renderers.deep_renderer.CardBuilder") as mock_builder:
-            mock_builder.build_deep_card.return_value = ("interactive", "{}")
+            mock_builder.build_engine_card.return_value = ("interactive", "{}")
 
             # Simulate on_project_done (critical)
             mock_deep_project = MagicMock()
@@ -129,7 +129,7 @@ class TestRendererThrottling(unittest.TestCase):
 
         # Trigger initial message (analyzing done)
         with patch("src.feishu.renderers.loop_renderer.CardBuilder") as mock_builder:
-            mock_builder.build_deep_card.return_value = ("interactive", "{}")
+            mock_builder.build_engine_card.return_value = ("interactive", "{}")
             mock_loop_project = MagicMock()
             callbacks.on_analyzing_done(mock_loop_project)
 

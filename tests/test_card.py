@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.card.builder import CardBuilder
-from src.card.models import DeepCardState
+from src.card.models import EngineCardState
 from src.card.shared import THEMES, get_theme
 from src.config import Settings
 from src.project.context import CocoSessionSnapshot, ProjectContext
@@ -130,13 +130,13 @@ class TestCardBuilder:
         assert yolo_toggle is not None
         assert (yolo_toggle.get("value") or {}).get("enabled") is True
 
-    def test_build_deep_card_progress_bar_not_duplicated_when_content_contains_bar(self):
-        # 兜底：即使调用方把 progress_bar 文本拼到 content，build_deep_card 也不应重复渲染
+    def test_build_engine_card_progress_bar_not_duplicated_when_content_contains_bar(self):
+        # 兜底：即使调用方把 progress_bar 文本拼到 content，build_engine_card 也不应重复渲染
         progress_bar = "[████░░░░░░] 40% (2/5)"
         content = f"任务中...\n\n{progress_bar}\n"
-        _, card_content = CardBuilder.build_deep_card(
+        _, card_content = CardBuilder.build_engine_card(
             project=None,
-            state=DeepCardState(
+            state=EngineCardState(
                 title="X",
                 content=content,
                 progress_bar=progress_bar,
@@ -412,10 +412,10 @@ class TestDeepCard:
             emoji_prefix="🟢",
         )
 
-    def test_build_deep_card_basic(self, sample_project):
-        msg_type, content = CardBuilder.build_deep_card(
+    def test_build_engine_card_basic(self, sample_project):
+        msg_type, content = CardBuilder.build_engine_card(
             project=sample_project,
-            state=DeepCardState(
+            state=EngineCardState(
                 title="Test Title",
                 content="Test content",
                 engine_name="Coco",
@@ -431,15 +431,15 @@ class TestDeepCard:
         elements = card["body"]["elements"]
         assert len(elements) >= 3  # Directory + HR + Content
 
-    def test_build_deep_card_with_progress_bar(self, sample_project):
-        msg_type, content = CardBuilder.build_deep_card(
+    def test_build_engine_card_with_progress_bar(self, sample_project):
+        msg_type, content = CardBuilder.build_engine_card(
             project=sample_project,
-            state=DeepCardState(
+            state=EngineCardState(
                 title="Executing",
                 content="Task in progress",
                 progress_bar="[█████░░░░░] 50% (2/4)",
                 is_executing=True,
-                deep_project_id="proj123",
+                engine_project_id="proj123",
             ),
         )
 
@@ -449,14 +449,14 @@ class TestDeepCard:
         assert "deep_pause" in content_str
         assert "deep_stop" in content_str
 
-    def test_build_deep_card_paused(self, sample_project):
-        msg_type, content = CardBuilder.build_deep_card(
+    def test_build_engine_card_paused(self, sample_project):
+        msg_type, content = CardBuilder.build_engine_card(
             project=sample_project,
-            state=DeepCardState(
+            state=EngineCardState(
                 title="Paused",
                 content="Execution paused",
                 is_paused=True,
-                deep_project_id="proj123",
+                engine_project_id="proj123",
             ),
         )
 
@@ -465,10 +465,10 @@ class TestDeepCard:
         assert "deep_resume" in content_str
         assert "deep_stop" in content_str
 
-    def test_build_deep_card_no_project(self):
-        msg_type, content = CardBuilder.build_deep_card(
+    def test_build_engine_card_no_project(self):
+        msg_type, content = CardBuilder.build_engine_card(
             project=None,
-            state=DeepCardState(
+            state=EngineCardState(
                 title="Test",
                 content="No project",
                 engine_name="Coco",
@@ -481,10 +481,10 @@ class TestDeepCard:
         # Deep 卡片按引擎区分颜色：Coco=turquoise (running default) / Claude=purple
         assert card["header"]["template"] == "turquoise"
 
-    def test_build_deep_card_claude(self):
-        msg_type, content = CardBuilder.build_deep_card(
+    def test_build_engine_card_claude(self):
+        msg_type, content = CardBuilder.build_engine_card(
             project=None,
-            state=DeepCardState(
+            state=EngineCardState(
                 title="Test",
                 content="No project",
                 engine_name="Claude",
@@ -493,10 +493,10 @@ class TestDeepCard:
         card = json.loads(content)
         assert card["header"]["template"] == "violet"
 
-    def test_build_deep_card_with_progress(self):
-        msg_type, content = CardBuilder.build_deep_card(
+    def test_build_engine_card_with_progress(self):
+        msg_type, content = CardBuilder.build_engine_card(
             project=None,
-            state=DeepCardState(
+            state=EngineCardState(
                 title="Test",
                 content="Doing stuff",
                 progress_bar="[===>   ]",
@@ -518,7 +518,7 @@ class TestDeepCard:
         # Need content > 10 lines to show Expand button
         long_content = "\n".join([f"Line {i}" for i in range(15)])
         buttons = CardBuilder._build_deep_buttons(
-            DeepCardState(deep_project_id="proj123", is_executing=True, content=long_content)
+            EngineCardState(engine_project_id="proj123", is_executing=True, content=long_content)
         )
         # Pause, Stop, Expand, Mode -> 4 buttons
         assert len(buttons) == 4
@@ -530,7 +530,7 @@ class TestDeepCard:
         # Need content > 10 lines to show Expand button
         long_content = "\n".join([f"Line {i}" for i in range(15)])
         buttons = CardBuilder._build_deep_buttons(
-            DeepCardState(deep_project_id="proj123", is_paused=True, content=long_content)
+            EngineCardState(engine_project_id="proj123", is_paused=True, content=long_content)
         )
         # Resume, Stop, Expand, Mode -> 4 buttons
         assert len(buttons) == 4
@@ -541,7 +541,7 @@ class TestDeepCard:
     def test_build_deep_buttons_neither(self):
         # Need content > 10 lines to show Expand button
         long_content = "\n".join([f"Line {i}" for i in range(15)])
-        buttons = CardBuilder._build_deep_buttons(DeepCardState(deep_project_id="proj123", content=long_content))
+        buttons = CardBuilder._build_deep_buttons(EngineCardState(engine_project_id="proj123", content=long_content))
         # Expand, Mode -> 2 buttons
         assert len(buttons) == 2
 
@@ -654,7 +654,7 @@ class TestCardSchema20Structure:
 
     def test_deep_card_schema(self, project):
         card = self._parse_card(
-            CardBuilder.build_deep_card(project, DeepCardState(title="Title", content="Content", engine_name="Coco"))
+            CardBuilder.build_engine_card(project, EngineCardState(title="Title", content="Content", engine_name="Coco"))
         )
         self._assert_v2_structure(card, "deep")
         self._assert_no_lark_md(card, "deep")
@@ -909,9 +909,9 @@ class TestMarkdownContentRendering:
         """Deep 卡片也使用 markdown 标签"""
         content = "## 任务进度\n- [x] 步骤一\n- [ ] 步骤二\n\n```python\nresult = run()\n```"
         card = json.loads(
-            CardBuilder.build_deep_card(
+            CardBuilder.build_engine_card(
                 project,
-                state=DeepCardState(title="Deep任务", content=content, engine_name="Claude", show_buttons=False),
+                state=EngineCardState(title="Deep任务", content=content, engine_name="Claude", show_buttons=False),
             )[1]
         )
         elements = card["body"]["elements"]
@@ -1235,9 +1235,9 @@ class TestMarkdownEdgeCases:
 
     def test_deep_card_progress_bar_uses_markdown(self):
         """Deep 卡片的进度条使用 markdown 标签"""
-        _, content = CardBuilder.build_deep_card(
+        _, content = CardBuilder.build_engine_card(
             project=None,
-            state=DeepCardState(
+            state=EngineCardState(
                 title="Test",
                 content="Running",
                 progress_bar="[████░░░░░░] 40%",
@@ -1282,13 +1282,13 @@ class TestReplyModeConfig:
 
 
 class TestBuildDeepCardStructuredParams:
-    """Tests for build_deep_card new structured parameters."""
+    """Tests for build_engine_card new structured parameters."""
 
     def test_status_line_renders(self):
         """status_line should appear in card elements."""
-        _, card_content = CardBuilder.build_deep_card(
+        _, card_content = CardBuilder.build_engine_card(
             project=None,
-            state=DeepCardState(
+            state=EngineCardState(
                 title="Test",
                 content="Body",
                 engine_name="Coco",
@@ -1304,9 +1304,9 @@ class TestBuildDeepCardStructuredParams:
 
     def test_duration_line_renders(self):
         """duration_line should be combined with status_line."""
-        _, card_content = CardBuilder.build_deep_card(
+        _, card_content = CardBuilder.build_engine_card(
             project=None,
-            state=DeepCardState(
+            state=EngineCardState(
                 title="Test",
                 content="Body",
                 engine_name="Coco",
@@ -1324,9 +1324,9 @@ class TestBuildDeepCardStructuredParams:
 
     def test_criteria_section_renders(self):
         """criteria_section should be a separate element after content."""
-        _, card_content = CardBuilder.build_deep_card(
+        _, card_content = CardBuilder.build_engine_card(
             project=None,
-            state=DeepCardState(
+            state=EngineCardState(
                 title="Test",
                 content="Main body",
                 engine_name="Coco",
@@ -1341,9 +1341,9 @@ class TestBuildDeepCardStructuredParams:
 
     def test_footer_note_renders(self):
         """footer_note should appear as notation-sized element."""
-        _, card_content = CardBuilder.build_deep_card(
+        _, card_content = CardBuilder.build_engine_card(
             project=None,
-            state=DeepCardState(
+            state=EngineCardState(
                 title="Test",
                 content="Body",
                 engine_name="Coco",
@@ -1358,10 +1358,10 @@ class TestBuildDeepCardStructuredParams:
         assert footer_elems[0].get("text_size") == "notation"
 
     def test_no_optional_params_still_works(self):
-        """build_deep_card with no optional params should still work."""
-        _, card_content = CardBuilder.build_deep_card(
+        """build_engine_card with no optional params should still work."""
+        _, card_content = CardBuilder.build_engine_card(
             project=None,
-            state=DeepCardState(
+            state=EngineCardState(
                 title="Test",
                 content="Body",
                 engine_name="Coco",
@@ -1373,9 +1373,9 @@ class TestBuildDeepCardStructuredParams:
 
     def test_all_optional_params_together(self):
         """All new optional params at once."""
-        _, card_content = CardBuilder.build_deep_card(
+        _, card_content = CardBuilder.build_engine_card(
             project=None,
-            state=DeepCardState(
+            state=EngineCardState(
                 title="Full Card",
                 content="Main content",
                 progress_bar="[████░░] 60% (3/5)",
@@ -1399,9 +1399,9 @@ class TestBuildDeepCardStructuredParams:
 
     def test_criteria_section_separated_by_hr(self):
         """criteria_section should be preceded by an hr element."""
-        _, card_content = CardBuilder.build_deep_card(
+        _, card_content = CardBuilder.build_engine_card(
             project=None,
-            state=DeepCardState(
+            state=EngineCardState(
                 title="Test",
                 content="Body",
                 engine_name="Coco",

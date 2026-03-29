@@ -41,12 +41,28 @@ _STATUS_ICONS = {"pending": "⏳", "in_progress": "🔄", "completed": "✅"}
 class DeepEngineCallbacks:
     """Callbacks for deep engine lifecycle events."""
 
-    on_planning_start: Optional[Callable[[str], None]] = None
-    on_planning_done: Optional[Callable[[DeepProject], None]] = None
+    on_analyzing_start: Optional[Callable[[str], None]] = None
+    on_analyzing_done: Optional[Callable[[DeepProject], None]] = None
     on_event: Optional[Callable[[ACPEvent], None]] = None
     on_text: Optional[Callable[[str], None]] = None
     on_project_done: Optional[Callable[[DeepProject], None]] = None
     on_error: Optional[Callable[[str], None]] = None
+
+    @property
+    def on_planning_start(self):
+        return self.on_analyzing_start
+
+    @on_planning_start.setter
+    def on_planning_start(self, value):
+        self.on_analyzing_start = value
+
+    @property
+    def on_planning_done(self):
+        return self.on_analyzing_done
+
+    @on_planning_done.setter
+    def on_planning_done(self, value):
+        self.on_analyzing_done = value
 
 
 class DeepEngine(BaseEngine):
@@ -132,9 +148,9 @@ class DeepEngine(BaseEngine):
                 ):
                     # Mark as executing and fire "planning done" once.
                     self._project.start()
-                    if (not self._planning_done_fired) and callbacks.on_planning_done:
+                    if (not self._planning_done_fired) and callbacks.on_analyzing_done:
                         self._planning_done_fired = True
-                        callbacks.on_planning_done(self._project)
+                        callbacks.on_analyzing_done(self._project)
 
             match event.event_type:
                 case ACPEventType.PLAN_UPDATE:
@@ -173,8 +189,8 @@ class DeepEngine(BaseEngine):
         self._project.status = DeepProjectStatus.PLANNING
         self._project.started_at = time.time()
 
-        if callbacks.on_planning_start:
-            callbacks.on_planning_start(requirement_text)
+        if callbacks.on_analyzing_start:
+            callbacks.on_analyzing_start(requirement_text)
 
         logger.info(
             "[Deep:%s] ACP执行开始, 需求长度=%d, 路径=%s, agent=%s",
@@ -320,14 +336,12 @@ class DeepEngine(BaseEngine):
 （从这里开始再调用工具）
 """
 
-    def inject_context(self, message: str):
-        """Inject user context — will be sent as follow-up prompt after current execution.
-
-        Multiple calls accumulate; all pending messages are drained together.
-        """
+    def inject_guidance(self, message: str):
         with self._lock:
             self._pending_context.append(message)
         logger.info("[Deep] 上下文已注入(待发送, 队列=%d): %s...", len(self._pending_context), message[:100])
+
+    inject_context = inject_guidance
 
     def pause(self):
         if self._project:
@@ -475,23 +489,7 @@ class DeepEngine(BaseEngine):
             return False
 
     def cleanup(self):
-        if self._run_state != EngineRunState.IDLE:
-            self._run_state = EngineRunState.STOPPING
-            if self._session:
-                try:
-                    self._session.cancel()
-                except Exception:
-                    pass
-            return
-        if self._session:
-            try:
-                self._session.close()
-            except Exception as e:
-                logger.debug("关闭ACP session失败: %s", e)
-            self._session = None
-        self._project = None
-        self._run_state = EngineRunState.IDLE
-        get_gc_monitor(memory_threshold_percent=self.settings.deep_memory_threshold).check_and_collect(label="Deep", mem_snapshot=self._mem_snapshot)
+        super().cleanup()
 
 
 class DeepEngineManager(BaseEngineManager["DeepEngine"]):

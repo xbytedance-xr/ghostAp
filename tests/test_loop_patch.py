@@ -54,7 +54,7 @@ class TestLoopHandlerPatch:
 
         # Mock CardBuilder
         with patch("src.feishu.renderers.loop_renderer.CardBuilder") as mock_builder:
-            mock_builder.build_deep_card.return_value = ("interactive", "{}")
+            mock_builder.build_engine_card.return_value = ("interactive", "{}")
 
             # 1. First call: Analyzing done (Should be a NEW message)
             callbacks.on_analyzing_done(mock_project)
@@ -104,7 +104,7 @@ class TestLoopHandlerPatch:
         )
 
         with patch("src.feishu.renderers.loop_renderer.CardBuilder") as mock_builder:
-            mock_builder.build_deep_card.return_value = ("interactive", "{}")
+            mock_builder.build_engine_card.return_value = ("interactive", "{}")
 
             # 1. First call: Analyzing done -> msg_1
             callbacks.on_analyzing_done(mock_project)
@@ -150,7 +150,7 @@ class TestLoopHandlerPatch:
         callbacks = handler._create_loop_callbacks("msg_origin", "chat_1", None)
 
         with patch("src.feishu.renderers.loop_renderer.CardBuilder") as mock_builder:
-            mock_builder.build_deep_card.return_value = ("interactive", "{}")
+            mock_builder.build_engine_card.return_value = ("interactive", "{}")
 
             # 1. Send initial
             callbacks.on_analyzing_done(MagicMock())

@@ -4,7 +4,8 @@ Follows spec-kit methodology: spec → plan → task → build → review,
 with review-driven iteration cycles.
 """
 
-from .engine import SpecEngine, SpecEngineCallbacks, SpecEngineManager
+from .engine import SpecEngine, SpecEngineCallbacks
+from .manager import SpecEngineManager
 from .models import (
     SpecCycle,
     SpecPhase,

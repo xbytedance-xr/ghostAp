@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Optional
 
-from ...card import CardBuilder, DeepCardState
+from ...card import CardBuilder, EngineCardState
 from ...loop_engine import LoopEngineCallbacks
 from ...loop_engine.models import (
     IterationRecord,
@@ -59,9 +59,9 @@ class LoopRenderer(BaseRenderer):
 
             content = reporter.format_analyzing_done(loop_project)
             title = reporter.get_analyzing_done_title()
-            msg_type, card_content = CardBuilder.build_deep_card(
+            msg_type, card_content = CardBuilder.build_engine_card(
                 project=project,
-                state=DeepCardState(
+                state=EngineCardState(
                     title=title,
                     content=content,
                     engine_name=f"Loop({engine_name})",
@@ -109,9 +109,9 @@ class LoopRenderer(BaseRenderer):
                 is_executing=True,
             )
 
-            msg_type, card_content = CardBuilder.build_deep_card(
+            msg_type, card_content = CardBuilder.build_engine_card(
                 project=project,
-                state=DeepCardState(
+                state=EngineCardState(
                     title=title,
                     content=content,
                     progress_bar=progress_bar,
@@ -120,7 +120,7 @@ class LoopRenderer(BaseRenderer):
                     status_line=status_line,
                     duration_line=duration_line,
                     criteria_section=criteria_section,
-                    deep_project_id=loop_project_id,
+                    engine_project_id=loop_project_id,
                     compact=state["compact"],
                     expanded=state["expanded"],
                     expand_ac=state.get("expand_ac", False),
@@ -164,9 +164,9 @@ class LoopRenderer(BaseRenderer):
                     is_executing=True,
                 )
 
-                msg_type, card_content = CardBuilder.build_deep_card(
+                msg_type, card_content = CardBuilder.build_engine_card(
                     project=project,
-                    state=DeepCardState(
+                    state=EngineCardState(
                         title=title,
                         content=content,
                         progress_bar=progress_bar,
@@ -175,7 +175,7 @@ class LoopRenderer(BaseRenderer):
                         status_line=status_line,
                         duration_line=duration_line,
                         criteria_section=criteria_section,
-                        deep_project_id=loop_project_id,
+                        engine_project_id=loop_project_id,
                         compact=state["compact"],
                         expanded=state["expanded"],
                         expand_ac=state.get("expand_ac", False),
@@ -220,9 +220,9 @@ class LoopRenderer(BaseRenderer):
                 is_executing=True,
             )
 
-            msg_type, card_content = CardBuilder.build_deep_card(
+            msg_type, card_content = CardBuilder.build_engine_card(
                 project=project,
-                state=DeepCardState(
+                state=EngineCardState(
                     title=title,
                     content=content,
                     progress_bar=progress_bar,
@@ -231,7 +231,7 @@ class LoopRenderer(BaseRenderer):
                     status_line=status_line,
                     duration_line=duration_line,
                     criteria_section=criteria_section,
-                    deep_project_id=loop_project_id,
+                    engine_project_id=loop_project_id,
                     compact=state["compact"],
                     expanded=state["expanded"],
                     expand_ac=state.get("expand_ac", False),
@@ -252,15 +252,15 @@ class LoopRenderer(BaseRenderer):
             duration_line = reporter.format_duration_line(loop_project)
 
             state = self.get_ui_state(loop_project_id)
-            msg_type, card_content = CardBuilder.build_deep_card(
+            msg_type, card_content = CardBuilder.build_engine_card(
                 project=project,
-                state=DeepCardState(
+                state=EngineCardState(
                     title=title,
                     content=content,
                     progress_bar=progress_bar,
                     engine_name=f"Loop({engine_name})",
                     duration_line=duration_line,
-                    deep_project_id=loop_project_id,
+                    engine_project_id=loop_project_id,
                     compact=state["compact"],
                     expanded=state["expanded"],
                     expand_ac=state.get("expand_ac", False),
@@ -291,16 +291,16 @@ class LoopRenderer(BaseRenderer):
                 }
             ]
             
-            msg_type, card_content = CardBuilder.build_deep_card(
+            msg_type, card_content = CardBuilder.build_engine_card(
                 project=project,
-                state=DeepCardState(
+                state=EngineCardState(
                     title=title,
                     content=content,
                     engine_name=f"Loop({engine_name})",
                     show_buttons=True,
                     extra_buttons=extra_buttons,
                     action_prefix="loop",
-                    deep_project_id=loop_project_id,
+                    engine_project_id=loop_project_id,
                 ),
             )
             _send_loop_message(card_content, msg_type, is_update=True)
@@ -342,9 +342,9 @@ class LoopRenderer(BaseRenderer):
                 engine_name = self.handler.get_engine_name(
                     chat_id, project_id=(project.project_id if project else None)
                 )
-                msg_type, card_content = CardBuilder.build_deep_card(
+                msg_type, card_content = CardBuilder.build_engine_card(
                     project=project,
-                    state=DeepCardState(
+                    state=EngineCardState(
                         title="📊 Loop 状态",
                         content="当前没有 Loop 任务\n\n发送 `/loop 你的需求` 开始迭代式开发",
                         engine_name=f"Loop({engine_name})",
@@ -385,15 +385,15 @@ class LoopRenderer(BaseRenderer):
             is_executing=progress_info["is_running"],
         )
 
-        msg_type, card_content = CardBuilder.build_deep_card(
+        msg_type, card_content = CardBuilder.build_engine_card(
             project=project,
-            state=DeepCardState(
+            state=EngineCardState(
                 title=status_title,
                 content=status_content,
                 progress_bar=self._generate_progress_bar(engine.project.satisfied_count, engine.project.total_criteria),
                 is_executing=progress_info["is_running"],
                 engine_name=f"Loop({engine_name})",
-                deep_project_id=project.project_id if project else engine.project.root_path,
+                engine_project_id=project.project_id if project else engine.project.root_path,
                 compact=state["compact"],
                 expanded=state["expanded"],
                 expand_ac=state.get("expand_ac", False),
@@ -435,9 +435,9 @@ class LoopRenderer(BaseRenderer):
             completed_count=loop_project.satisfied_count,
         )
 
-        msg_type, card_content = CardBuilder.build_deep_card(
+        msg_type, card_content = CardBuilder.build_engine_card(
             project=project,
-            state=DeepCardState(
+            state=EngineCardState(
                 title=title,
                 content=content,
                 progress_bar=progress_bar,
@@ -446,7 +446,7 @@ class LoopRenderer(BaseRenderer):
                 status_line=status_line,
                 duration_line=duration_line,
                 criteria_section=criteria_section,
-                deep_project_id=project.project_id if project else loop_project.root_path,
+                engine_project_id=project.project_id if project else loop_project.root_path,
                 compact=state["compact"],
                 expanded=state["expanded"],
                 expand_ac=state.get("expand_ac", False),
@@ -485,9 +485,9 @@ class LoopRenderer(BaseRenderer):
             completed_count=loop_project.satisfied_count,
         )
 
-        msg_type, card_content = CardBuilder.build_deep_card(
+        msg_type, card_content = CardBuilder.build_engine_card(
             project=project,
-            state=DeepCardState(
+            state=EngineCardState(
                 title=title,
                 content=content,
                 progress_bar=progress_bar,
@@ -496,7 +496,7 @@ class LoopRenderer(BaseRenderer):
                 status_line=status_line,
                 duration_line=duration_line,
                 criteria_section=criteria_section,
-                deep_project_id=project.project_id if project else loop_project.root_path,
+                engine_project_id=project.project_id if project else loop_project.root_path,
                 compact=state["compact"],
                 expanded=state["expanded"],
                 expand_ac=state.get("expand_ac", False),
@@ -512,14 +512,14 @@ class LoopRenderer(BaseRenderer):
         content = reporter.format_error(error_msg)
         title = reporter.get_error_title()
 
-        msg_type, card_content = CardBuilder.build_deep_card(
+        msg_type, card_content = CardBuilder.build_engine_card(
             project=project,
-            state=DeepCardState(
+            state=EngineCardState(
                 title=title,
                 content=content,
                 engine_name=f"Loop({engine_name})",
                 show_buttons=False,
-                deep_project_id=project.project_id if project else engine.project.root_path,
+                engine_project_id=project.project_id if project else engine.project.root_path,
                 compact=state["compact"],
                 expanded=state["expanded"],
                 action_prefix="loop",
@@ -569,7 +569,7 @@ class LoopRenderer(BaseRenderer):
             history_buttons=history_buttons,
             page=page,
             has_next=has_next,
-            deep_project_id=project.project_id if project else loop_project.root_path,
+            engine_project_id=project.project_id if project else loop_project.root_path,
             engine_name=f"Loop({engine.engine_name})",
         )
         self._patch_or_send(message_id, chat_id, card_content, msg_type, origin_message_id)

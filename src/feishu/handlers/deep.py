@@ -148,7 +148,7 @@ class DeepHandler(BaseEngineHandler):
 
         planning_content = reporter.format_planning_start(requirement)
         planning_title = reporter.get_planning_start_title()
-        msg_type, card_content = CardBuilder.build_deep_card(
+        msg_type, card_content = CardBuilder.build_engine_card(
             project=project,
             title=planning_title,
             content=f"{planning_content}\n\n{self.format_ref_note(message_id, request_id)}"
@@ -235,7 +235,7 @@ class DeepHandler(BaseEngineHandler):
 
         if not candidates:
             engine_name = self.get_engine_name(chat_id, project_id=None)
-            msg_type, card_content = CardBuilder.build_deep_card(
+            msg_type, card_content = CardBuilder.build_engine_card(
                 project=None,
                 title="📊 Deep Agent 看板",
                 content="当前没有 Deep Agent 任务\n\n发送 `/deep <需求>` 开始一个复杂任务",
@@ -363,7 +363,7 @@ class DeepHandler(BaseEngineHandler):
             )
             return
 
-        engine.inject_context(update_message)
+        engine.inject_guidance(update_message)
         reporter = self.ctx.progress_reporter
         content = reporter.format_context_injected(update_message)
         title = reporter.get_context_injected_title()
@@ -375,7 +375,7 @@ class DeepHandler(BaseEngineHandler):
             except Exception:
                 project = None
 
-        msg_type, card_content = CardBuilder.build_deep_card(
+        msg_type, card_content = CardBuilder.build_engine_card(
             project=project,
             title=title,
             content=content,

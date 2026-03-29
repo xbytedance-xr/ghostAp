@@ -2,7 +2,8 @@ import threading
 import time
 import unittest
 from unittest.mock import MagicMock, patch
-from src.loop_engine.engine import LoopEngine, EngineRunState
+from src.loop_engine.engine import LoopEngine
+from src.engine_base import EngineRunState
 
 class TestLoopConcurrency(unittest.TestCase):
     def setUp(self):

@@ -1,7 +1,7 @@
 import json
 
 from src.card.builder import CardBuilder
-from src.card.models import DeepCardState
+from src.card.models import EngineCardState
 
 
 class TestCardMobileLog:
@@ -13,16 +13,16 @@ class TestCardMobileLog:
         assert CardBuilder._pick_deep_template("loop_engine") == "indigo"
 
         # Verify in card JSON
-        state = DeepCardState(
-            deep_project_id="test_proj",
+        state = EngineCardState(
+            engine_project_id="test_proj",
             title="Loop Task",
             content="Running...",
             engine_name="Loop",
             action_prefix="loop",
             compact=True,
         )
-        # build_deep_card returns tuple(type, json_str)
-        _, card_json_str = CardBuilder.build_deep_card(None, state)
+        # build_engine_card returns tuple(type, json_str)
+        _, card_json_str = CardBuilder.build_engine_card(None, state)
         card_json = json.loads(card_json_str)
 
         # Check header template color
@@ -33,15 +33,15 @@ class TestCardMobileLog:
         assert CardBuilder._pick_deep_template("deep") == "turquoise"
         assert CardBuilder._pick_deep_template("DeepSeek") == "turquoise"
 
-        state = DeepCardState(
-            deep_project_id="test_proj",
+        state = EngineCardState(
+            engine_project_id="test_proj",
             title="Deep Task",
             content="Running...",
             engine_name="Deep",
             action_prefix="deep",
             compact=True,
         )
-        _, card_json_str = CardBuilder.build_deep_card(None, state)
+        _, card_json_str = CardBuilder.build_engine_card(None, state)
         card_json = json.loads(card_json_str)
 
         assert card_json["header"]["template"] == "turquoise"
@@ -52,15 +52,15 @@ class TestCardMobileLog:
         lines = [f"Log line {i}" for i in range(20)]
         long_log = "\n".join(lines)
 
-        state = DeepCardState(
-            deep_project_id="test_proj",
+        state = EngineCardState(
+            engine_project_id="test_proj",
             title="Test Task",
             content=long_log,
             compact=True,  # Mobile/Compact mode
             engine_name="Deep",
             action_prefix="deep",
         )
-        _, card_json_str = CardBuilder.build_deep_card(None, state)
+        _, card_json_str = CardBuilder.build_engine_card(None, state)
         card_json = json.loads(card_json_str)
 
         # Find the content element (usually after directory and hr)
@@ -85,15 +85,15 @@ class TestCardMobileLog:
     def test_compact_mode_has_expand_option(self):
         """Test that compact mode offers a way to see full logs."""
         long_log = "\n".join([f"Line {i}" for i in range(20)])
-        state = DeepCardState(
-            deep_project_id="test_proj",
+        state = EngineCardState(
+            engine_project_id="test_proj",
             title="Test Task",
             content=long_log,
             compact=True,
             engine_name="Deep",
             action_prefix="deep",
         )
-        _, card_json_str = CardBuilder.build_deep_card(None, state)
+        _, card_json_str = CardBuilder.build_engine_card(None, state)
         card_json = json.loads(card_json_str)
 
         # Verify expand/collapse button logic
@@ -107,15 +107,15 @@ class TestCardMobileLog:
         error_lines = [f"Error line {i}" for i in range(20)]
         error_log = "\n".join(error_lines)
 
-        state = DeepCardState(
-            deep_project_id="test_proj",
+        state = EngineCardState(
+            engine_project_id="test_proj",
             title="Task Error Failed",  # Triggers error status (needs 'error' or '失败')
             content=error_log,
             compact=True,
             engine_name="Deep",
             action_prefix="deep",
         )
-        _, card_json_str = CardBuilder.build_deep_card(None, state)
+        _, card_json_str = CardBuilder.build_engine_card(None, state)
         card_json = json.loads(card_json_str)
 
         # Check header color (should be red for error)

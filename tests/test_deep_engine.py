@@ -72,11 +72,11 @@ class TestDeepEngine:
         with pytest.raises(ValueError):
             engine.save_state()
 
-    def test_inject_context(self):
+    def test_inject_guidance(self):
         engine = self._make_engine()
         engine._run_state = EngineRunState.RUNNING
         engine._session = MagicMock()
-        engine.inject_context("test context")
+        engine.inject_guidance("test context")
 
     def test_get_progress_no_project(self):
         engine = self._make_engine()

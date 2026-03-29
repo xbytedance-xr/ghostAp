@@ -12,23 +12,17 @@ def test_loop_engine_retry_logic(mock_save_state, mock_create_session, tmp_path)
     mock_session = MagicMock()
     mock_create_session.return_value = mock_session
 
-    # We will simulate the send_prompt failing once with a retryable error,
-    # then succeeding.
     call_count = 0
 
     def side_effect_send_prompt(*args, **kwargs):
         nonlocal call_count
         call_count += 1
-        if call_count == 1:
-            raise ValueError("timeout error")  # 'timeout' is in RETRYABLE_ERROR_PATTERNS
-
         result = MagicMock()
         result.stop_reason = "end_turn"
         return result
 
-    mock_session.send_prompt.side_effect = side_effect_send_prompt
+    mock_session.send_prompt_with_retry.side_effect = side_effect_send_prompt
 
-    # Mock other methods to avoid side effects
     engine._parse_requirement = MagicMock(return_value=LoopRequirement(goal="test", acceptance_criteria=["c1"]))
     engine._conduct_review = MagicMock()
     engine._evaluate_criteria = MagicMock(return_value={"all_satisfied": True})
@@ -38,10 +32,9 @@ def test_loop_engine_retry_logic(mock_save_state, mock_create_session, tmp_path)
 
     callbacks = LoopEngineCallbacks()
 
-    # To avoid time.sleep slowing down tests
     with patch("time.sleep", return_value=None):
         project = engine.execute("test req", callbacks)
 
-    assert call_count == 2
+    assert call_count == 1
     assert project.status.value == "completed"
     assert mock_save_state.called

@@ -12,11 +12,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
+from ..engine_base import PerspectiveReview, ReviewPerspective, ReviewResult
 from ..loop_engine.models import (
     CriteriaTracker,
-    PerspectiveReview,
-    ReviewPerspective,
-    ReviewResult,
 )
 
 # Re-export shared types for convenience

@@ -2,7 +2,7 @@ import json
 import unittest
 
 from src.card.builder import CardBuilder
-from src.card.models import DeepCardState
+from src.card.models import EngineCardState
 
 
 class TestSpecMobile(unittest.TestCase):
@@ -13,15 +13,15 @@ class TestSpecMobile(unittest.TestCase):
         assert CardBuilder._pick_deep_template("Spec(Coco)") == "green"
 
         # Verify in card JSON
-        state = DeepCardState(
-            deep_project_id="test_proj",
+        state = EngineCardState(
+            engine_project_id="test_proj",
             title="Spec Task",
             content="Running...",
             engine_name="Spec(Coco)",
             action_prefix="spec",
             compact=True,
         )
-        _, card_json_str = CardBuilder.build_deep_card(None, state)
+        _, card_json_str = CardBuilder.build_engine_card(None, state)
         card_json = json.loads(card_json_str)
 
         # Check header template color
@@ -29,8 +29,8 @@ class TestSpecMobile(unittest.TestCase):
 
     def test_spec_compact_mode_buttons(self):
         """Test that Spec engine cards in compact mode have appropriate buttons."""
-        state = DeepCardState(
-            deep_project_id="test_proj",
+        state = EngineCardState(
+            engine_project_id="test_proj",
             title="Spec Task",
             content="Running...",
             engine_name="Spec",
@@ -38,7 +38,7 @@ class TestSpecMobile(unittest.TestCase):
             compact=True,
             is_executing=True,
         )
-        _, card_json_str = CardBuilder.build_deep_card(None, state)
+        _, card_json_str = CardBuilder.build_engine_card(None, state)
         card_json = json.loads(card_json_str)
 
         # Check for pause/stop buttons
@@ -59,8 +59,8 @@ class TestSpecMobile(unittest.TestCase):
     def test_spec_compact_mode_log_truncation(self):
         """Test that Spec logs are truncated in compact mode."""
         long_log = "\n".join([f"Log line {i}" for i in range(20)])
-        state = DeepCardState(
-            deep_project_id="test_proj",
+        state = EngineCardState(
+            engine_project_id="test_proj",
             title="Spec Task",
             content=long_log,
             engine_name="Spec",
@@ -68,7 +68,7 @@ class TestSpecMobile(unittest.TestCase):
             compact=True,
             is_executing=True,
         )
-        _, card_json_str = CardBuilder.build_deep_card(None, state)
+        _, card_json_str = CardBuilder.build_engine_card(None, state)
         card_json = json.loads(card_json_str)
 
         # Find content

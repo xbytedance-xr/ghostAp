@@ -3,7 +3,7 @@ from typing import Optional
 
 from src.project.context import ProjectContext
 
-from ..models import DeepCardState
+from ..models import EngineCardState
 from ..shared import (
     apply_compact_style,
     build_responsive_layout,
@@ -58,7 +58,7 @@ class DeepBuilder:
         return style["color"]
 
     @staticmethod
-    def _create_button(action_key: str, state: DeepCardState, action_suffix: str = None) -> dict:
+    def _create_button(action_key: str, state: EngineCardState, action_suffix: str = None) -> dict:
         """Helper to create a button based on config and state."""
         config = BUTTON_CONFIG.get(action_key)
         if not config:
@@ -80,13 +80,13 @@ class DeepBuilder:
             "type": config["type"],
             "value": {
                 "action": action_name,
-                "project_id": state.project_id or state.deep_project_id,
-                "deep_project_id": state.deep_project_id,
+                "project_id": state.project_id or state.engine_project_id,
+                "deep_project_id": state.engine_project_id,
             },
         }
 
     @staticmethod
-    def _build_deep_buttons(state: DeepCardState) -> list[dict]:
+    def _build_deep_buttons(state: EngineCardState) -> list[dict]:
         """Build a flat list of deep engine buttons (for backward compatibility with tests)."""
         buttons = []
 
@@ -124,7 +124,7 @@ class DeepBuilder:
         return [apply_compact_style(b) for b in buttons if b]
 
     @staticmethod
-    def _build_grouped_layout(state: DeepCardState) -> list[dict]:
+    def _build_grouped_layout(state: EngineCardState) -> list[dict]:
         """Build layout with grouped control buttons (Pause/Stop side-by-side)."""
         control_buttons = []
         other_buttons = []
@@ -194,9 +194,9 @@ class DeepBuilder:
         return elements
 
     @staticmethod
-    def build_deep_card(
+    def build_engine_card(
         project: Optional[ProjectContext],
-        state: DeepCardState,
+        state: EngineCardState,
     ) -> tuple[str, str]:
         # Determine status for color mapping
         status_key = "running"
@@ -375,6 +375,8 @@ class DeepBuilder:
 
         card = CoreBuilder._wrap_card(header_title, theme.header_template, elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
+
+    build_deep_card = build_engine_card
 
     @staticmethod
     def build_history_list_card(

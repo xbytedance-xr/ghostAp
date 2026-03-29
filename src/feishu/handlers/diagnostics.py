@@ -273,7 +273,7 @@ class DiagnosticsHandler(BaseHandler):
                 content = self.ctx.progress_reporter.format_status(engine.project)
                 title = "📊 Deep 任务详情"
                 engine_name = engine.engine_name
-                msg_type, card_content = CardBuilder.build_deep_card(
+                msg_type, card_content = CardBuilder.build_engine_card(
                     project=project,
                     title=title,
                     content=content,
@@ -292,7 +292,7 @@ class DiagnosticsHandler(BaseHandler):
                 content = self.ctx.loop_reporter.format_status(engine.project)
                 title = "📊 Loop 任务详情"
                 engine_name = engine.engine_name
-                msg_type, card_content = CardBuilder.build_deep_card(
+                msg_type, card_content = CardBuilder.build_engine_card(
                     project=project,
                     title=title,
                     content=content,
@@ -311,7 +311,7 @@ class DiagnosticsHandler(BaseHandler):
                 content = self.ctx.spec_reporter.format_status(engine.project)
                 title = "📊 Spec 任务详情"
                 engine_name = engine.engine_name
-                msg_type, card_content = CardBuilder.build_deep_card(
+                msg_type, card_content = CardBuilder.build_engine_card(
                     project=project,
                     title=title,
                     content=content,

@@ -8,7 +8,7 @@ from src.utils.trace import TraceContext
 
 class TestTraceIntegration:
     @patch("src.spec_engine.engine.TraceContext")
-    @patch("src.spec_engine.engine.get_settings")
+    @patch("src.engine_base.get_settings")
     @patch("src.spec_engine.engine.create_engine_session")
     def test_spec_engine_trace_integration(self, mock_create_session, mock_get_settings, mock_trace_context):
         # Setup

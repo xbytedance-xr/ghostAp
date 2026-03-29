@@ -4,7 +4,7 @@ import logging
 import re
 from typing import TYPE_CHECKING, Optional
 
-from ...card import CardBuilder, DeepCardState
+from ...card import CardBuilder, EngineCardState
 from ...spec_engine import SpecEngineCallbacks
 from ...spec_engine.models import (
     ReviewResult,
@@ -58,9 +58,9 @@ class SpecRenderer(BaseRenderer):
 
             content = reporter.format_analyzing_done(spec_project)
             title = reporter.get_analyzing_done_title()
-            msg_type, card_content = CardBuilder.build_deep_card(
+            msg_type, card_content = CardBuilder.build_engine_card(
                 project=project,
-                state=DeepCardState(
+                state=EngineCardState(
                     title=title,
                     content=content,
                     engine_name=f"Spec({engine_name})",
@@ -107,9 +107,9 @@ class SpecRenderer(BaseRenderer):
                 spec_project.duration() if spec_project else 0,
             )
 
-            msg_type, card_content = CardBuilder.build_deep_card(
+            msg_type, card_content = CardBuilder.build_engine_card(
                 project=project,
-                state=DeepCardState(
+                state=EngineCardState(
                     title=title,
                     content=content,
                     progress_bar=progress_bar,
@@ -119,7 +119,7 @@ class SpecRenderer(BaseRenderer):
                     duration_line=duration_line,
                     criteria_section=criteria_section,
                     project_id=spec_project.project_id if spec_project else (project.project_id if project else None),
-                    deep_project_id=spec_project_id,
+                    engine_project_id=spec_project_id,
                     compact=state["compact"],
                     expanded=state["expanded"],
                     expand_ac=state.get("expand_ac", False),
@@ -153,9 +153,9 @@ class SpecRenderer(BaseRenderer):
                     completed_count=sp.satisfied_count,
                 )
 
-                msg_type, card_content = CardBuilder.build_deep_card(
+                msg_type, card_content = CardBuilder.build_engine_card(
                     project=project,
-                    state=DeepCardState(
+                    state=EngineCardState(
                         title=title,
                         content=content,
                         progress_bar=progress_bar,
@@ -165,7 +165,7 @@ class SpecRenderer(BaseRenderer):
                         duration_line=duration_line,
                         criteria_section=criteria_section,
                         project_id=sp.project_id,
-                        deep_project_id=spec_project_id,
+                        engine_project_id=spec_project_id,
                         compact=state["compact"],
                         expanded=state["expanded"],
                         expand_ac=state.get("expand_ac", False),
@@ -194,9 +194,9 @@ class SpecRenderer(BaseRenderer):
                 criteria_section = reporter.format_criteria_section(sp)
 
             state = self.get_ui_state(spec_project_id)
-            msg_type, card_content = CardBuilder.build_deep_card(
+            msg_type, card_content = CardBuilder.build_engine_card(
                 project=project,
-                state=DeepCardState(
+                state=EngineCardState(
                     title=title,
                     content=content,
                     progress_bar=progress_bar,
@@ -206,7 +206,7 @@ class SpecRenderer(BaseRenderer):
                     duration_line=duration_line,
                     criteria_section=criteria_section,
                     project_id=sp.project_id if engine and engine.project else (project.project_id if project else None),
-                    deep_project_id=spec_project_id,
+                    engine_project_id=spec_project_id,
                     compact=state["compact"],
                     expanded=state["expanded"],
                     expand_ac=state.get("expand_ac", False),
@@ -225,16 +225,16 @@ class SpecRenderer(BaseRenderer):
             duration_line = reporter.format_duration_line(spec_project)
 
             state = self.get_ui_state(spec_project_id)
-            msg_type, card_content = CardBuilder.build_deep_card(
+            msg_type, card_content = CardBuilder.build_engine_card(
                 project=project,
-                state=DeepCardState(
+                state=EngineCardState(
                     title=title,
                     content=content,
                     progress_bar=progress_bar,
                     project_id=spec_project.project_id,
                     engine_name=f"Spec({engine_name})",
                     duration_line=duration_line,
-                    deep_project_id=spec_project_id,
+                    engine_project_id=spec_project_id,
                     compact=state["compact"],
                     expanded=state["expanded"],
                     expand_ac=state.get("expand_ac", False),
@@ -259,7 +259,7 @@ class SpecRenderer(BaseRenderer):
                 error_msg=error,
                 state=state,
                 project_id=resolved_project_id,
-                deep_project_id=spec_project_id,
+                engine_project_id=spec_project_id,
             )
             _send_spec_message(card_content, msg_type, is_update=True)
             self.handler.add_reaction(message_id, EmojiReaction.on_error())
@@ -282,9 +282,9 @@ class SpecRenderer(BaseRenderer):
                 status_line = reporter.format_status_line(spec_project)
                 duration_line = reporter.format_duration_line(spec_project)
 
-            msg_type, card_content = CardBuilder.build_deep_card(
+            msg_type, card_content = CardBuilder.build_engine_card(
                 project=project,
-                state=DeepCardState(
+                state=EngineCardState(
                     title=title,
                     content=content,
                     progress_bar=progress_bar,
@@ -293,7 +293,7 @@ class SpecRenderer(BaseRenderer):
                     status_line=status_line,
                     duration_line=duration_line,
                     project_id=spec_project.project_id if spec_project else (project.project_id if project else None),
-                    deep_project_id=spec_project_id,
+                    engine_project_id=spec_project_id,
                     compact=state["compact"],
                     expanded=state["expanded"],
                     expand_ac=state.get("expand_ac", False),
@@ -355,9 +355,9 @@ class SpecRenderer(BaseRenderer):
                 engine_name = self.handler.get_engine_name(
                     chat_id, project_id=(project.project_id if project else None)
                 )
-                msg_type, card_content = CardBuilder.build_deep_card(
+                msg_type, card_content = CardBuilder.build_engine_card(
                     project=project,
-                    state=DeepCardState(
+                    state=EngineCardState(
                         title="📊 Spec 状态",
                         content="当前没有 Spec 任务\n\n发送 `/spec 你的需求` 开始结构化开发闭环",
                         engine_name=f"Spec({engine_name})",
@@ -396,9 +396,9 @@ class SpecRenderer(BaseRenderer):
             is_executing=progress_info["is_running"],
         )
 
-        msg_type, card_content = CardBuilder.build_deep_card(
+        msg_type, card_content = CardBuilder.build_engine_card(
             project=project,
-            state=DeepCardState(
+            state=EngineCardState(
                 title=status_title,
                 content=status_content,
                 progress_bar=progress_bar,
@@ -406,7 +406,7 @@ class SpecRenderer(BaseRenderer):
                 is_executing=progress_info["is_running"],
                 is_paused=progress_info["is_paused"],
                 engine_name=f"Spec({engine_name})",
-                deep_project_id=project.project_id if project else engine.project.root_path,
+                engine_project_id=project.project_id if project else engine.project.root_path,
                 compact=state["compact"],
                 expanded=state["expanded"],
                 expand_ac=state.get("expand_ac", False),
@@ -441,9 +441,9 @@ class SpecRenderer(BaseRenderer):
             completed_count=spec_project.satisfied_count,
         )
 
-        msg_type, card_content = CardBuilder.build_deep_card(
+        msg_type, card_content = CardBuilder.build_engine_card(
             project=project,
-            state=DeepCardState(
+            state=EngineCardState(
                 title=title,
                 content=content,
                 progress_bar=progress_bar,
@@ -453,7 +453,7 @@ class SpecRenderer(BaseRenderer):
                 duration_line=duration_line,
                 criteria_section=criteria_section,
                 project_id=project.project_id if project else spec_project.project_id,
-                deep_project_id=project.project_id if project else spec_project.root_path,
+                engine_project_id=project.project_id if project else spec_project.root_path,
                 compact=state["compact"],
                 expanded=state["expanded"],
                 action_prefix="spec",
@@ -486,9 +486,9 @@ class SpecRenderer(BaseRenderer):
             completed_count=spec_project.satisfied_count,
         )
 
-        msg_type, card_content = CardBuilder.build_deep_card(
+        msg_type, card_content = CardBuilder.build_engine_card(
             project=project,
-            state=DeepCardState(
+            state=EngineCardState(
                 title=title,
                 content=content,
                 progress_bar=progress_bar,
@@ -498,7 +498,7 @@ class SpecRenderer(BaseRenderer):
                 duration_line=duration_line,
                 criteria_section=criteria_section,
                 project_id=project.project_id if project else spec_project.project_id,
-                deep_project_id=project.project_id if project else spec_project.root_path,
+                engine_project_id=project.project_id if project else spec_project.root_path,
                 compact=state["compact"],
                 expanded=state["expanded"],
                 expand_ac=state.get("expand_ac", False),
@@ -515,18 +515,18 @@ class SpecRenderer(BaseRenderer):
         error_msg: str,
         state: Optional[dict] = None,
         project_id: Optional[str] = None,
-        deep_project_id: Optional[str] = None,
+        engine_project_id: Optional[str] = None,
         footer_note: Optional[str] = None,
     ) -> tuple[str, str]:
         reporter = self.ctx.spec_reporter
         ui_state = state or self.get_default_ui_state()
         resolved_project_id = project.project_id if project else project_id
-        resolved_deep_project_id = deep_project_id or resolved_project_id
+        resolved_engine_project_id = engine_project_id or resolved_project_id
 
         if not isinstance(resolved_project_id, (str, int)):
             resolved_project_id = None
-        if not isinstance(resolved_deep_project_id, (str, int)):
-            resolved_deep_project_id = resolved_project_id
+        if not isinstance(resolved_engine_project_id, (str, int)):
+            resolved_engine_project_id = resolved_project_id
 
         content = reporter.format_error(error_msg)
         title = reporter.get_error_title()
@@ -548,21 +548,21 @@ class SpecRenderer(BaseRenderer):
                     "value": {
                         "action": "spec_retry",
                         "task_id": saved_task_id,
-                        "project_id": resolved_project_id or resolved_deep_project_id,
-                        "deep_project_id": resolved_deep_project_id,
+                        "project_id": resolved_project_id or resolved_engine_project_id,
+                        "deep_project_id": resolved_engine_project_id,
                     },
                 }
             ]
 
-        return CardBuilder.build_deep_card(
+        return CardBuilder.build_engine_card(
             project=project,
-            state=DeepCardState(
+            state=EngineCardState(
                 title=title,
                 content=content,
                 project_id=resolved_project_id,
                 engine_name=f"Spec({engine_name})",
                 show_buttons=True,
-                deep_project_id=resolved_deep_project_id,
+                engine_project_id=resolved_engine_project_id,
                 compact=ui_state["compact"],
                 expanded=ui_state["expanded"],
                 action_prefix="spec",
@@ -578,6 +578,6 @@ class SpecRenderer(BaseRenderer):
             error_msg=error_msg,
             state=state,
             project_id=project.project_id if project else engine.project.project_id,
-            deep_project_id=project.project_id if project else engine.project.root_path,
+            engine_project_id=project.project_id if project else engine.project.root_path,
         )
         self._patch_or_send(message_id, chat_id, card_content, msg_type, origin_message_id)

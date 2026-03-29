@@ -44,10 +44,10 @@ class TestDeepHandlerPatch:
 
         with patch("src.feishu.renderers.deep_renderer.CardBuilder") as mock_builder:
             # Configure CardBuilder to return our V2 card
-            mock_builder.build_deep_card.return_value = ("interactive", v2_card_json)
+            mock_builder.build_engine_card.return_value = ("interactive", v2_card_json)
 
             # Trigger the callback which calls _send_deep_message(is_update=True)
-            callbacks.on_planning_done(mock_project)
+            callbacks.on_analyzing_done(mock_project)
 
             # Verification
             # Get the argument passed to patch()
@@ -76,14 +76,14 @@ class TestDeepHandlerPatch:
         mock_project.root_path = "/tmp"
         mock_project.project_id = "proj_123"
 
-        # We also need to mock CardBuilder because on_planning_done calls it
+        # We also need to mock CardBuilder because on_analyzing_done calls it
         with patch("src.feishu.renderers.deep_renderer.CardBuilder") as mock_builder:
-            mock_builder.build_deep_card.return_value = ("interactive", "{}")
+            mock_builder.build_engine_card.return_value = ("interactive", "{}")
 
             # Ensure reply_message/send_message are not called
             with patch.object(handler, "reply_message") as mock_reply:
                 with patch.object(handler, "send_message") as mock_send:
-                    callbacks.on_planning_done(mock_project)
+                    callbacks.on_analyzing_done(mock_project)
 
                     # Verify patch called
                     assert client.im.v1.message.patch.called
@@ -109,12 +109,12 @@ class TestDeepHandlerPatch:
         mock_project.project_id = "proj_123"
 
         with patch("src.feishu.renderers.deep_renderer.CardBuilder") as mock_builder:
-            mock_builder.build_deep_card.return_value = ("interactive", "{}")
+            mock_builder.build_engine_card.return_value = ("interactive", "{}")
 
             with patch("time.sleep") as mock_sleep:
                 with patch.object(handler, "reply_message") as mock_reply:
                     with patch.object(handler, "send_message") as mock_send:
-                        callbacks.on_planning_done(mock_project)
+                        callbacks.on_analyzing_done(mock_project)
 
                         # Verify patch called 1 time (max_retries=1)
                         assert client.im.v1.message.patch.call_count == 1
@@ -170,15 +170,15 @@ class TestDeepStatusPatch:
         client.im.v1.message.patch.return_value.success.return_value = True
 
         with patch("src.feishu.renderers.deep_renderer.CardBuilder") as mock_builder:
-            mock_builder.build_deep_card.return_value = ("interactive", "{}")
+            mock_builder.build_engine_card.return_value = ("interactive", "{}")
 
             handler.show_deep_status("msg1", "chat1", project=mock_project, origin_message_id="origin1")
 
             # Verify patch called
             client.im.v1.message.patch.assert_called_once()
 
-            # Verify build_deep_card called with compact=False
-            _, kwargs = mock_builder.build_deep_card.call_args
+            # Verify build_engine_card called with compact=False
+            _, kwargs = mock_builder.build_engine_card.call_args
             state = kwargs.get("state")
             assert state is not None
             assert state.compact is False
@@ -205,7 +205,7 @@ class TestDeepStatusPatch:
         client.im.v1.message.patch.return_value.msg = "Bad Request"
 
         with patch("src.feishu.renderers.deep_renderer.CardBuilder") as mock_builder:
-            mock_builder.build_deep_card.return_value = ("interactive", "{}")
+            mock_builder.build_engine_card.return_value = ("interactive", "{}")
 
             handler.show_deep_status("msg1", "chat1", project=mock_project, origin_message_id="origin1")
 
@@ -230,7 +230,7 @@ class TestDeepStatusPatch:
         client = handler.ctx.api_client_factory.return_value
 
         with patch("src.feishu.renderers.deep_renderer.CardBuilder") as mock_builder:
-            mock_builder.build_deep_card.return_value = ("interactive", "{}")
+            mock_builder.build_engine_card.return_value = ("interactive", "{}")
 
             handler.show_deep_status("msg1", "chat1", project=mock_project, origin_message_id=None)
 

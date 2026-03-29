@@ -7,7 +7,7 @@ import os
 from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
-from ...card.models import DeepCardState
+from ...card.models import EngineCardState
 from ...loop_engine.models import LoopProjectStatus
 from ...tasking import TaskPriority, TaskSpec
 from ...utils.text import generate_task_id
@@ -126,9 +126,9 @@ class LoopHandler(BaseEngineHandler):
         # 发送启动卡片
         content = reporter.format_analyzing_start(requirement)
         title = reporter.get_analyzing_start_title()
-        msg_type, card_content = CardBuilder.build_deep_card(
+        msg_type, card_content = CardBuilder.build_engine_card(
             project=project,
-            state=DeepCardState(
+            state=EngineCardState(
                 title=title,
                 content=f"{content}\n\n{self.format_ref_note(message_id, request_id)}" if request_id else content,
                 engine_name=f"Loop({engine_name})",
@@ -267,9 +267,9 @@ class LoopHandler(BaseEngineHandler):
         title = reporter.get_guidance_injected_title()
         engine_name = engine.engine_name
 
-        msg_type, card_content = CardBuilder.build_deep_card(
+        msg_type, card_content = CardBuilder.build_engine_card(
             project=project,
-            state=DeepCardState(
+            state=EngineCardState(
                 title=title,
                 content=content,
                 engine_name=f"Loop({engine_name})",
