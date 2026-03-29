@@ -44,8 +44,9 @@ class SpecRenderer(BaseRenderer):
 
         sender = SmartSender(handler=self.handler, message_id=message_id, chat_id=chat_id, initial_message_id=None)
 
-        # Calculate spec_project_id once for UI state lookups
         spec_project_id = project.project_id if project else self.handler.get_working_dir(chat_id)
+
+        _max_cycles = 0
 
         def _send_spec_message(
             card_content: str, msg_type: str = "interactive", is_update: bool = False, throttle: bool = False
@@ -70,6 +71,8 @@ class SpecRenderer(BaseRenderer):
             _send_spec_message(card_content, msg_type, is_update=False, throttle=False)
 
         def on_cycle_start(current: int, max_cycles: int):
+            nonlocal _max_cycles
+            _max_cycles = max_cycles
             self.update_ui_state(spec_project_id, view_mode="status", view_context={})
 
             engine = self.ctx.spec_engine_manager.get(chat_id, project.root_path if project else "")
@@ -150,12 +153,6 @@ class SpecRenderer(BaseRenderer):
                     completed_count=sp.satisfied_count,
                 )
 
-                content = self._render_collapsible_section(
-                    content,
-                    total_items=len(content.split("\n")),
-                    expanded=state.get("expand_ac", False),
-                )
-
                 msg_type, card_content = CardBuilder.build_deep_card(
                     project=project,
                     state=DeepCardState(
@@ -175,7 +172,6 @@ class SpecRenderer(BaseRenderer):
                         action_prefix="spec",
                     ),
                 )
-                # Cycle done is significant, immediate flush
                 _send_spec_message(card_content, msg_type, is_update=True, throttle=False)
 
         def on_review_done(cycle_num: int, review: ReviewResult):
@@ -268,23 +264,68 @@ class SpecRenderer(BaseRenderer):
             _send_spec_message(card_content, msg_type, is_update=True)
             self.handler.add_reaction(message_id, EmojiReaction.on_error())
 
-        # For phase events, we might want to show streaming updates?
-        # Spec engine is a bit different as it has explicit phases.
-        # For now we'll stick to cycle-level updates to keep it clean,
-        # or we could update on phase_done.
+        def _get_engine_and_state():
+            engine = self.ctx.spec_engine_manager.get(chat_id, project.root_path if project else "")
+            spec_project = engine.project if engine else None
+            state = self.get_ui_state(spec_project_id)
+            max_c = _max_cycles or (spec_project.cycle_count_total if spec_project else 10)
+            return engine, spec_project, state, max_c
+
+        def _build_phase_card(
+            title: str, content: str, spec_project, state: dict, *, show_buttons: bool = False, throttle: bool = True
+        ):
+            progress_bar = None
+            status_line = None
+            duration_line = None
+            if spec_project:
+                progress_bar = self._generate_progress_bar(spec_project.satisfied_count, spec_project.total_criteria)
+                status_line = reporter.format_status_line(spec_project)
+                duration_line = reporter.format_duration_line(spec_project)
+
+            msg_type, card_content = CardBuilder.build_deep_card(
+                project=project,
+                state=DeepCardState(
+                    title=title,
+                    content=content,
+                    progress_bar=progress_bar,
+                    is_executing=True,
+                    engine_name=f"Spec({engine_name})",
+                    status_line=status_line,
+                    duration_line=duration_line,
+                    project_id=spec_project.project_id if spec_project else (project.project_id if project else None),
+                    deep_project_id=spec_project_id,
+                    compact=state["compact"],
+                    expanded=state["expanded"],
+                    expand_ac=state.get("expand_ac", False),
+                    action_prefix="spec",
+                    show_buttons=show_buttons,
+                ),
+            )
+            _send_spec_message(card_content, msg_type, is_update=True, throttle=throttle)
+
+        def on_phase_start(cycle_num: int, phase: SpecPhase):
+            _, spec_project, state, max_c = _get_engine_and_state()
+            content = reporter.format_phase_start_content(cycle_num, phase, max_c)
+            title = reporter.get_cycle_start_title(cycle_num, max_c)
+            title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
+            _build_phase_card(title, content, spec_project, state, show_buttons=False, throttle=True)
 
         def on_phase_done(cycle_num: int, phase: SpecPhase, output: str):
-            # Optional: Update card to show phase completion
-            pass
+            _, spec_project, state, max_c = _get_engine_and_state()
+            content = reporter.format_phase_done_content(cycle_num, phase, max_c, output)
+            title = reporter.get_cycle_start_title(cycle_num, max_c)
+            title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
+            _build_phase_card(title, content, spec_project, state, show_buttons=False, throttle=True)
 
         return SpecEngineCallbacks(
             on_analyzing_done=on_analyzing_done,
             on_cycle_start=on_cycle_start,
+            on_phase_start=on_phase_start,
+            on_phase_done=on_phase_done,
             on_cycle_done=on_cycle_done,
             on_review_done=on_review_done,
             on_project_done=on_project_done,
             on_error=on_error,
-            on_phase_done=on_phase_done,
         )
 
     def render_current_view(
@@ -350,12 +391,6 @@ class SpecRenderer(BaseRenderer):
 
         progress_bar = self._generate_progress_bar(progress_info["satisfied_count"], progress_info["total_criteria"])
 
-        status_content = self._render_collapsible_section(
-            status_content,
-            total_items=len(status_content.split("\n")),
-            expanded=state.get("expand_ac", False),
-        )
-
         warning_banner = self._check_warning_banner(
             engine.project.duration(),
             is_executing=progress_info["is_running"],
@@ -404,12 +439,6 @@ class SpecRenderer(BaseRenderer):
             total_items=spec_project.total_criteria,
             expanded=state.get("expand_ac", False),
             completed_count=spec_project.satisfied_count,
-        )
-
-        content = self._render_collapsible_section(
-            content,
-            total_items=len(content.split("\n")),
-            expanded=state.get("expand_ac", False),
         )
 
         msg_type, card_content = CardBuilder.build_deep_card(

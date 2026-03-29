@@ -3345,6 +3345,88 @@ class TestSpecReporterNewMethods:
         assert "C1" in result
         assert "C2" in result
 
+    def test_format_phase_progress_at_spec(self):
+        r = SpecReporter()
+        result = r.format_phase_progress(SpecPhase.SPEC, completed=False)
+        assert "▶️" in result
+        assert "Spec" in result or "规格" in result
+        assert "⬜" in result
+
+    def test_format_phase_progress_mid_build(self):
+        r = SpecReporter()
+        result = r.format_phase_progress(SpecPhase.BUILD, completed=False)
+        assert result.count("✅") >= 3
+        assert "▶️" in result
+        assert "⬜" in result
+
+    def test_format_phase_progress_review_completed(self):
+        r = SpecReporter()
+        result = r.format_phase_progress(SpecPhase.REVIEW, completed=True)
+        assert result.count("✅") == 5
+        assert "⬜" not in result
+        assert "▶️" not in result
+
+    def test_format_phase_start_content(self):
+        r = SpecReporter()
+        result = r.format_phase_start_content(2, SpecPhase.PLAN, 5)
+        assert "[2/5]" in result
+        assert "执行中" in result
+        assert "▶️" in result
+
+    def test_format_phase_done_content(self):
+        r = SpecReporter()
+        result = r.format_phase_done_content(1, SpecPhase.BUILD, 5, "some output\nmore lines\n")
+        assert "[1/" in result
+        assert "完成" in result
+        assert "✅" in result
+
+    def test_format_cycle_done_with_review_suggestions(self):
+        r = SpecReporter()
+        review = ReviewResult(
+            reviews=[
+                PerspectiveReview(
+                    perspective=ReviewPerspective.ARCHITECT,
+                    passed=False,
+                    suggestions=["Improve naming"],
+                    summary="1条建议",
+                ),
+                PerspectiveReview(perspective=ReviewPerspective.PRODUCT, passed=True, suggestions=[], summary="通过"),
+                PerspectiveReview(perspective=ReviewPerspective.USER, passed=True, suggestions=[], summary="通过"),
+                PerspectiveReview(perspective=ReviewPerspective.TESTER, passed=True, suggestions=[], summary="通过"),
+            ],
+            iteration=1,
+        )
+        cycle = SpecCycle(cycle_number=1)
+        cycle.status = "completed"
+        cycle.review_result = review
+        result = r.format_cycle_done(1, cycle)
+        assert "审查建议" in result
+        assert "Improve naming" in result
+        assert "驱动下一轮" in result
+        assert "1 条建议" in result
+
+    def test_format_cycle_done_all_passed(self):
+        r = SpecReporter()
+        review = ReviewResult(
+            reviews=[
+                PerspectiveReview(perspective=p, passed=True, suggestions=[], summary="通过") for p in ReviewPerspective
+            ],
+            iteration=1,
+        )
+        cycle = SpecCycle(cycle_number=1)
+        cycle.status = "completed"
+        cycle.review_result = review
+        result = r.format_cycle_done(1, cycle)
+        assert "审查通过" in result
+        assert "审查建议" not in result
+
+    def test_format_cycle_start_has_progress(self):
+        r = SpecReporter()
+        result = r.format_cycle_start(1, 5)
+        assert "▶️" in result
+        assert "[1/5]" in result
+        assert "→" in result
+
 def test_save_failed_task_idempotency(monkeypatch):
     from src.spec_engine.engine import SpecEngine, SpecEngineCallbacks
     from src.spec_engine.models import SpecPhase, SpecProject

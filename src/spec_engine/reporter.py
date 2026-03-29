@@ -45,8 +45,63 @@ class SpecReporter:
         lines.append("\n🚀 准备开始 Spec 循环...")
         return "\n".join(lines)
 
+    def format_phase_progress(self, current_phase: SpecPhase, completed: bool = False) -> str:
+        phases = list(SpecPhase)
+        parts: list[str] = []
+        current_idx = phases.index(current_phase) if current_phase in phases else -1
+        for i, p in enumerate(phases):
+            if i < current_idx:
+                parts.append(f"✅{p.display_name}")
+            elif i == current_idx:
+                if completed:
+                    parts.append(f"✅{p.display_name}")
+                else:
+                    parts.append(f"▶️**{p.display_name}**")
+            else:
+                parts.append(f"⬜{p.display_name}")
+        return " → ".join(parts)
+
+    def format_phase_start_content(self, cycle: int, phase: SpecPhase, max_cycles: int) -> str:
+        progress = self.format_phase_progress(phase, completed=False)
+        return f"🔄 **Spec 循环 [{cycle}/{max_cycles}]**\n\n{progress}\n\n{phase.emoji} **{phase.display_name}** 执行中..."
+
+    def format_phase_done_content(self, cycle: int, phase: SpecPhase, max_cycles: int, output: str) -> str:
+        progress = self.format_phase_progress(phase, completed=True)
+        summary = self._extract_phase_summary(phase, output)
+        lines = [f"🔄 **Spec 循环 [{cycle}/{max_cycles}]**\n", progress, ""]
+        if summary:
+            lines.append(f"{phase.emoji} **{phase.display_name}完成**  {summary}")
+        else:
+            lines.append(f"{phase.emoji} **{phase.display_name}完成**")
+        return "\n".join(lines)
+
+    def _extract_phase_summary(self, phase: SpecPhase, output: str) -> str:
+        if not output:
+            return ""
+        if phase == SpecPhase.SPEC:
+            goals_count = output.count('"goals"')
+            criteria_count = output.count('"acceptance_criteria"')
+            if goals_count or criteria_count:
+                return "规格产物已生成"
+            return ""
+        elif phase == SpecPhase.PLAN:
+            steps_match = re.findall(r'"steps"\s*:\s*\[', output)
+            if steps_match:
+                return "方案已规划"
+            return ""
+        elif phase == SpecPhase.TASK:
+            task_lines = [l for l in output.split("\n") if re.match(r"^\s*\d+\s*[.、)]", l)]
+            if task_lines:
+                return f"共 {len(task_lines)} 个任务"
+            return ""
+        elif phase == SpecPhase.BUILD:
+            line_count = len([l for l in output.split("\n") if l.strip()])
+            return f"构建输出 {line_count} 行"
+        return ""
+
     def format_cycle_start(self, cycle_number: int, max_cycles: int, criteria_status: str = "") -> str:
-        base = f"🔄 **Spec 循环 [{cycle_number}/{max_cycles}]** 开始\n\n阶段: 📋 Spec → 🏗️ Plan → 📝 Task → 🔨 Build → 🔍 Review"
+        progress = self.format_phase_progress(SpecPhase.SPEC, completed=False)
+        base = f"🔄 **Spec 循环 [{cycle_number}/{max_cycles}]** 开始\n\n{progress}"
         if criteria_status:
             return f"{base}\n\n{criteria_status}"
         return base
@@ -66,29 +121,35 @@ class SpecReporter:
         status_emoji = "✅" if cycle.status == "completed" else "❌"
         status_text = "完成" if cycle.status == "completed" else "失败"
 
-        # Determine focus/summary from cycle phases
+        progress = self.format_phase_progress(SpecPhase.REVIEW, completed=True)
+
         summary = "循环执行结束"
         if cycle.review_result:
             if cycle.review_result.all_passed:
-                summary = "审查通过"
+                summary = "所有视角审查通过 ✅"
             else:
-                summary = f"审查发现 {cycle.review_result.total_suggestions} 条建议"
-
-        # Build output section (e.g. from build phase)
-        output_section = ""
-        if cycle.build_output:
-            out_preview = cycle.build_output
-            if len(out_preview) > 500:
-                out_preview = out_preview[:500] + "\n...(已截断)"
-            output_section = f"\n\n**构建输出:**\n```\n{out_preview}\n```"
+                summary = f"审查发现 {cycle.review_result.total_suggestions} 条改进建议"
 
         duration_str = ""
         if hasattr(cycle, "duration") and cycle.duration:
             duration_str = f"\n⏱️ 耗时: {format_duration(cycle.duration)}"
 
-        return f"""{status_emoji} **Spec 循环 [{cycle_number}] {status_text}**
+        lines = [
+            f"{status_emoji} **Spec 循环 [{cycle_number}] {status_text}**\n",
+            progress,
+            f"\n🤖 **{summary}**{duration_str}",
+        ]
 
-🤖 **{summary}**{duration_str}{output_section}"""
+        if cycle.review_result and not cycle.review_result.all_passed:
+            lines.append("\n---\n**📋 审查建议（将驱动下一轮优化）：**\n")
+            for pr in cycle.review_result.reviews:
+                if not pr.passed and pr.suggestions:
+                    lines.append(f"{pr.perspective.emoji} **{pr.perspective.display_name}**:")
+                    for s in pr.suggestions:
+                        lines.append(f"- {s}")
+            lines.append(f"\n💡 共 {cycle.review_result.total_suggestions} 条建议 → 驱动下一轮 Spec 循环")
+
+        return "\n".join(lines)
 
     def format_review_result(self, review: ReviewResult, cycle: int) -> str:
         lines = [f"🔍 **多视角审查 [循环 {cycle}]**\n"]
@@ -104,7 +165,7 @@ class SpecReporter:
                 status_text = pr.perspective.failure_label
                 lines.append(f"{pr.perspective.emoji} **{pr.perspective.display_name}**: {status_text}")
                 for s in pr.suggestions:
-                    lines.append(f"  - {s}")
+                    lines.append(f"- {s}")
 
             if count < total_reviews:
                 lines.append("\n---")
