@@ -146,7 +146,7 @@ class TestLoopRenderer:
         # Parse JSON and verify the extra_buttons (retry button) were added
         card_dict = json.loads(card_content)
         # Look through elements for the "重试" button in the loop_resume action
-        card_elements_str = json.dumps(card_dict.get("elements", []))
+        card_elements_str = json.dumps(card_dict.get("body", {}).get("elements", []))
         
         assert "Test Loop Error" in card_elements_str or "Test Loop Error" in card_content
         assert "loop_resume" in card_elements_str

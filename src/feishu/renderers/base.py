@@ -318,11 +318,9 @@ class BaseRenderer:
                 "elements": [{"tag": "plain_text", "content": "⚠️ 内容过长已自动截断，请在电脑端查看完整详情"}],
             }
 
-            if "body" in truncated_card and "elements" in truncated_card["body"]:
-                # Append to existing body
+            if "body" in truncated_card and isinstance(truncated_card.get("body", {}).get("elements"), list):
                 truncated_card["body"]["elements"].append(warning_element)
-            elif "elements" in truncated_card:
-                # Root level elements (older schema)
+            elif isinstance(truncated_card.get("elements"), list):
                 truncated_card["elements"].append(warning_element)
 
             truncated_content = json.dumps(truncated_card, ensure_ascii=False)

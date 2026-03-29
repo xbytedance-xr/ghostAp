@@ -150,7 +150,6 @@ class CoreBuilder:
 
     @staticmethod
     def _wrap_card(header_title: str, header_template: str, elements: list[dict]) -> dict:
-        """Build a schema 2.0 card JSON structure."""
         return {
             "schema": "2.0",
             "config": {"wide_screen_mode": True},
@@ -158,8 +157,6 @@ class CoreBuilder:
                 "title": {"tag": "plain_text", "content": header_title},
                 "template": header_template,
             },
-            # Backward compatibility: some callers/tests still read top-level `elements`.
-            "elements": elements,
             "body": {
                 "elements": elements,
             },
