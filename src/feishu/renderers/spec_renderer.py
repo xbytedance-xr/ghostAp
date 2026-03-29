@@ -32,13 +32,7 @@ class SpecRenderer(BaseRenderer):
         super().__init__(handler)
 
     def get_default_ui_state(self) -> dict:
-        return {
-            "compact": self.settings.card_deep_compact_default,
-            "expanded": False,
-            "expand_ac": False,
-            "view_mode": "status",
-            "view_context": {},
-        }
+        return super().get_default_ui_state()
 
     def create_spec_callbacks(
         self, message_id: str, chat_id: str, project: Optional["ProjectContext"], engine_name: str = "Coco"
@@ -106,9 +100,9 @@ class SpecRenderer(BaseRenderer):
             title = reporter.get_cycle_start_title(current, max_cycles)
             title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
 
-            warning_banner = None
-            if spec_project and spec_project.duration() and spec_project.duration() > self.settings.engine_timeout_warning_seconds:
-                warning_banner = "执行耗时较长，若无响应可点击下方【停止】按钮后重试"
+            warning_banner = self._check_warning_banner(
+                spec_project.duration() if spec_project else 0,
+            )
 
             msg_type, card_content = CardBuilder.build_deep_card(
                 project=project,
@@ -197,7 +191,7 @@ class SpecRenderer(BaseRenderer):
             criteria_section = None
             if engine and engine.project:
                 sp = engine.project
-                progress_bar = reporter._make_progress_bar(sp.satisfied_count, sp.total_criteria)
+                progress_bar = self._generate_progress_bar(sp.satisfied_count, sp.total_criteria)
                 title = append_duration_to_title(title, sp.duration())
                 status_line = reporter.format_status_line(sp)
                 duration_line = reporter.format_duration_line(sp)
@@ -231,7 +225,7 @@ class SpecRenderer(BaseRenderer):
 
             content = reporter.format_project_done(spec_project)
             title = reporter.get_project_done_title(spec_project)
-            progress_bar = reporter._make_progress_bar(spec_project.satisfied_count, spec_project.total_criteria)
+            progress_bar = self._generate_progress_bar(spec_project.satisfied_count, spec_project.total_criteria)
             duration_line = reporter.format_duration_line(spec_project)
 
             state = self.get_ui_state(spec_project_id)
@@ -362,9 +356,10 @@ class SpecRenderer(BaseRenderer):
             expanded=state.get("expand_ac", False),
         )
 
-        warning_banner = None
-        if progress_info["is_running"] and engine.project.duration() and engine.project.duration() > self.settings.engine_timeout_warning_seconds:
-            warning_banner = "执行耗时较长，若无响应可点击下方【停止】按钮后重试"
+        warning_banner = self._check_warning_banner(
+            engine.project.duration(),
+            is_executing=progress_info["is_running"],
+        )
 
         msg_type, card_content = CardBuilder.build_deep_card(
             project=project,
@@ -557,7 +552,3 @@ class SpecRenderer(BaseRenderer):
             deep_project_id=project.project_id if project else engine.project.root_path,
         )
         self._patch_or_send(message_id, chat_id, card_content, msg_type, origin_message_id)
-
-    def _patch_or_send(self, message_id, chat_id, card_content, msg_type, origin_message_id):
-        # This is now inherited from BaseRenderer
-        super()._patch_or_send(message_id, chat_id, card_content, msg_type, origin_message_id)

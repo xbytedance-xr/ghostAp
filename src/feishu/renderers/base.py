@@ -141,8 +141,11 @@ class BaseRenderer:
         Subclasses should override this to provide specific defaults.
         """
         return {
-            "compact": self.settings.card_deep_compact_default,
+            "compact": False,
             "expanded": False,
+            "expand_ac": False,
+            "view_mode": "status",
+            "view_context": {},
         }
 
     def get_ui_state(self, project_id: str) -> dict[str, Any]:
@@ -158,10 +161,20 @@ class BaseRenderer:
 
         return self.ui_states[project_id]
 
-    def update_ui_state(self, project_id: str, **kwargs):
+    def update_ui_state(self, project_id: str, **kwargs) -> None:
         """Update specific fields in the UI state."""
         state = self.get_ui_state(project_id)
         state.update(kwargs)
+
+    def _check_warning_banner(self, duration: float, is_executing: bool = True) -> str | None:
+        if not is_executing:
+            return None
+        timeout_raw = getattr(self.settings, "engine_timeout_warning_seconds", 0)
+        duration_s = duration if isinstance(duration, (int, float)) else 0
+        timeout_s = timeout_raw if isinstance(timeout_raw, (int, float)) else 0
+        if timeout_s > 0 and duration_s > timeout_s:
+            return "执行耗时较长，若无响应可尝试停止后重试"
+        return None
 
     def _generate_progress_bar(self, current: int, total: int) -> str:
         """Generate emoji progress bar like ✅✅⬜️."""

@@ -552,18 +552,13 @@ class InteractiveStrategy(ModelFetchStrategy):
                     break
         return output
 
-    def _strip_ansi(self, text: str) -> str:
-        """移除 ANSI 颜色码"""
-        return self.ANSI_ESCAPE.sub("", text)
-
     def _parse_model_selection_menu(self, output: str) -> list[str]:
         """
         解析模型选择界面的友好名称
         """
         names: list[str] = []
 
-        # 清理 ANSI 颜色码
-        clean_output = self._strip_ansi(output)
+        clean_output = strip_ansi(output)
 
         # 查找 "Select a model:" 之后的内容
         lines = clean_output.split("\n")
@@ -599,49 +594,6 @@ class InteractiveStrategy(ModelFetchStrategy):
 
         return names
 
-    def _select_and_extract_model_name(
-        self,
-        fd: int,
-        model_index: int,
-        total_models: int,
-        friendly_name: str,
-    ) -> Optional[str]:
-        """
-        选择指定模型并提取真实模型名称
-        """
-        try:
-            # 移动到目标模型位置
-            # 第一个模型已经是选中状态，不需要移动
-            for _ in range(model_index):
-                os.write(fd, b"\x1b[B")  # 下箭头
-                time.sleep(0.05)
-
-            # 按 Enter 选择
-            os.write(fd, b"\r")
-            time.sleep(0.1)
-
-            # 读取输出直到进入工具界面
-            output = self._read_until_model_display(fd, timeout=5)
-
-            if not output:
-                return None
-
-            # 提取真实模型名称
-            real_name = self._extract_real_model_name(output)
-            if real_name:
-                logger.debug("Model '%s' -> '%s'", friendly_name, real_name)
-
-            # 按 Escape 返回模型选择界面（如果还有更多模型需要获取）
-            if model_index < total_models - 1:
-                os.write(fd, b"\x1b")  # Escape
-                time.sleep(0.1)
-
-            return real_name
-
-        except Exception as e:
-            logger.debug("Failed to extract model name for index %d: %s", model_index, e)
-            return None
-
     def _read_until_model_display(self, fd: int, timeout: float = 5) -> str:
         """读取输出直到出现模型名称显示或超时"""
         output = ""
@@ -665,10 +617,8 @@ class InteractiveStrategy(ModelFetchStrategy):
         """
         从工具界面提取真正的模型名称
         """
-        # 清理 ANSI 颜色码
-        clean_output = self._strip_ansi(output)
+        clean_output = strip_ansi(output)
 
-        # 查找 model: 行
         for line in clean_output.split("\n"):
             line = line.strip()
             match = self.MODEL_NAME_PATTERN.match(line)

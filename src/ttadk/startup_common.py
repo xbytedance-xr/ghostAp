@@ -1,7 +1,7 @@
 """TTADK 启动编排公共 helper（startup_common）。
 
 目标：为 `src/ttadk/startup.py` 提供无状态/低依赖 helper，使其不再依赖 `src/ttadk/manager.py`，
-从而降低循环依赖风险。
+从而降低循环依赖风险。同时承载 compat 兼容层（provider 注入、legacy store 迁移等）。
 
 本模块只依赖：标准库 + `src/config.py` + `src/ttadk/*` 低层模块。
 """
@@ -43,16 +43,6 @@ def install_stub_cooldown_providers(
     get_settings_fn: Optional[Callable[[], object]] = None,
     legacy_store_provider: Optional[Callable[[], object]] = None,
 ) -> None:
-    """Install dependency providers for stub cooldown.
-
-    Contract:
-    - This module must not read `sys.modules` for manager-level monkeypatching.
-      Compatibility shims should be implemented in `src.ttadk.compat`.
-    - `legacy_store_provider` may return:
-        - dict: treat as active legacy store
-        - None: no legacy store specified
-        - LEGACY_STORE_CLEARED: explicitly clear legacy store and detach references
-    """
     global _STUB_TIME_FN, _STUB_GET_SETTINGS_FN, _STUB_LEGACY_STORE_PROVIDER
     if callable(time_fn):
         _STUB_TIME_FN = time_fn
@@ -60,6 +50,45 @@ def install_stub_cooldown_providers(
         _STUB_GET_SETTINGS_FN = get_settings_fn
     if callable(legacy_store_provider):
         _STUB_LEGACY_STORE_PROVIDER = legacy_store_provider
+
+
+_compat_providers_lock = threading.Lock()
+_compat_providers_installed: bool = False
+
+
+def migrate_legacy_store_from_fn_attr(
+    fn: object,
+    *,
+    attr_name: str = "_runtime_invalid_model_last_ts_by_stub",
+) -> dict[tuple[str, str, str], float] | None:
+    try:
+        cand = getattr(fn, attr_name, None)
+    except Exception:
+        cand = None
+    return cand if isinstance(cand, dict) else None
+
+
+def install_compat_providers(
+    *,
+    force: bool = False,
+    time_fn: Optional[Callable[[], float]] = None,
+    get_settings_fn: Optional[Callable[[], object]] = None,
+    legacy_store_provider: Optional[Callable[[], object]] = None,
+) -> bool:
+    global _compat_providers_installed
+    with _compat_providers_lock:
+        if _compat_providers_installed and not force:
+            return False
+        _time_fn = time_fn if callable(time_fn) else _STUB_TIME_FN
+        _gsf = get_settings_fn if callable(get_settings_fn) else _STUB_GET_SETTINGS_FN
+        _lsp = legacy_store_provider if callable(legacy_store_provider) else _STUB_LEGACY_STORE_PROVIDER
+        install_stub_cooldown_providers(
+            time_fn=_time_fn,
+            get_settings_fn=_gsf,
+            legacy_store_provider=_lsp,
+        )
+        _compat_providers_installed = True
+        return True
 
 
 # ---------------------------------------------------------------------------

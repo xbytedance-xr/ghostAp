@@ -229,13 +229,6 @@ class SpecHandler(BaseEngineHandler):
             )
 
     # ------------------------------------------------------------------
-    # callbacks factory
-    # ------------------------------------------------------------------
-    def _create_spec_callbacks(self, *args, **kwargs):
-        """Deprecated: Delegate to renderer"""
-        return self.renderer.create_spec_callbacks(*args, **kwargs)
-
-    # ------------------------------------------------------------------
     # status
     # ------------------------------------------------------------------
     def show_spec_status(

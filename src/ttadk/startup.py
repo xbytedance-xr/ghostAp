@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Optional, TypedDict
 
-from .models import is_invalid_model_error
+from .models import is_invalid_model_error, truncate_snippet
 from .runtime_repair import repair_invalid_model_startup
 
 __all__ = [
@@ -305,14 +305,7 @@ def coordinate_ttadk_startup(
             return ""
 
     def _truncate_text(text: str, limit: int) -> str:
-        if limit <= 0:
-            return ""
-        s = _safe_str(text)
-        if len(s) <= limit:
-            return s
-        if limit <= 3:
-            return s[:limit]
-        return s[: limit - 3] + "..."
+        return truncate_snippet(_safe_str(text), max_len=limit)
 
     def _error_blob(err: Exception) -> str:
         """构造用于 fail_phase 分类/invalid-model 判断的错误文本（best-effort，非空，限长）。"""

@@ -21,10 +21,6 @@ class CardBuilder:
     # --- Core Delegates ---
 
     @staticmethod
-    def _apply_compact_button_style(button: dict) -> dict:
-        return apply_compact_style(button)
-
-    @staticmethod
     def _build_button_grid(buttons: list[dict], columns: int = 2) -> list[dict]:
         from .shared import _build_button_grid
 
@@ -35,12 +31,6 @@ class CardBuilder:
         from .shared import _build_button_row_action
 
         return _build_button_row_action(buttons)
-
-    @staticmethod
-    def _build_buttons_responsive(buttons: list[dict]) -> list[dict]:
-        from .shared import build_responsive_layout
-
-        return build_responsive_layout(buttons)
 
     @staticmethod
     def _truncate_markdown(content: str, max_chars: int) -> str:

@@ -600,37 +600,6 @@ def _supports_acp_serve(command: str) -> bool:
         return False
 
 
-_TTADK_TOOL_PROBE_LOCK = threading.Lock()
-_TTADK_TOOL_INFLIGHT: set[str] = set()
-
-
-@lru_cache(maxsize=64)
-def _ttadk_tool_supports_acp(tool_cmd: str) -> bool:
-    """Detect whether a downstream tool supports `acp serve` (best-effort)."""
-    tool_cmd = (tool_cmd or "").strip()
-    if not tool_cmd:
-        return False
-
-    # Fast known case (avoid executing external binaries).
-    if tool_cmd.lower() in ("coco",):
-        return True
-
-    # Inflight de-dup: avoid concurrent external probes.
-    with _TTADK_TOOL_PROBE_LOCK:
-        if tool_cmd in _TTADK_TOOL_INFLIGHT:
-            return False
-        _TTADK_TOOL_INFLIGHT.add(tool_cmd)
-
-    try:
-        ok, _, _, _ = _probe_acp_serve_help(tool_cmd)
-        return bool(ok)
-    except Exception:
-        return False
-    finally:
-        with _TTADK_TOOL_PROBE_LOCK:
-            _TTADK_TOOL_INFLIGHT.discard(tool_cmd)
-
-
 def _resolve_ttadk_passthrough_args(tool_name: str) -> list[str]:
     """Resolve `ttadk code -a <args>` for a specific tool.
 

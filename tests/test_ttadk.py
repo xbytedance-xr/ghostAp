@@ -81,13 +81,6 @@ def clean_ttadk_manager(monkeypatch, tmp_path):
         store = src.ttadk.manager._StubCooldownStore()
         monkeypatch.setattr(src.ttadk.startup_common, "_STUB_COOLDOWN", store, raising=False)
         monkeypatch.setattr(src.ttadk.manager, "_STUB_COOLDOWN", store, raising=False)
-        # compat 层也需指向同一对象（manager 的 runtime_* helper 为 compat re-export）。
-        try:
-            import src.ttadk.compat
-
-            monkeypatch.setattr(src.ttadk.compat, "_STUB_COOLDOWN", store, raising=False)
-        except Exception:
-            pass
     except Exception:
         pass
 
@@ -975,6 +968,7 @@ def test_ttadk_sandbox_env_does_not_write_real_home_setting_json(monkeypatch, tm
 
 def test_ttadk_code_execute_success_with_validated_real_model(monkeypatch, tmp_path):
     """用户路径：validated 真名 → ttadk code 执行成功。"""
+    from src.ttadk.command_exec import execute_ttadk_code_with_repair
     from src.ttadk.manager import TTADKCommandRunner, get_ttadk_manager
     from src.ttadk.models import ResolvedModelResult
 
@@ -1002,7 +996,7 @@ def test_ttadk_code_execute_success_with_validated_real_model(monkeypatch, tmp_p
     seq = _SequenceRunner([(0, "ok", "")])
     mgr.set_command_runner(TTADKCommandRunner(runner=seq))
 
-    r = mgr.execute_ttadk_code_with_repair(tool_name="codex", cwd=str(tmp_path), input_model="gpt-5.2")
+    r = execute_ttadk_code_with_repair(manager=mgr, tool_name="codex", cwd=str(tmp_path), input_model="gpt-5.2")
     assert r["ok"] is True
     assert r["decision"] == "ttadk_code_ok"
     assert r["model"] == "gpt-5.2-codex-ttadk"
@@ -1013,6 +1007,7 @@ def test_ttadk_code_execute_success_with_validated_real_model(monkeypatch, tmp_p
 
 def test_ttadk_code_execute_invalid_model_then_refresh_and_retry_ok(monkeypatch, tmp_path):
     """用户路径：首次 invalid_model → force_refresh + 重新选真名 → 重试成功。"""
+    from src.ttadk.command_exec import execute_ttadk_code_with_repair
     from src.ttadk.manager import TTADKCommandRunner, get_ttadk_manager
     from src.ttadk.models import ResolvedModelResult
 
@@ -1064,7 +1059,7 @@ def test_ttadk_code_execute_invalid_model_then_refresh_and_retry_ok(monkeypatch,
     seq = _SequenceRunner([(1, "", _SAMPLE_INVALID_MODEL_CODEX), (0, "ok", "")])
     mgr.set_command_runner(TTADKCommandRunner(runner=seq))
 
-    r = mgr.execute_ttadk_code_with_repair(tool_name="codex", cwd=str(tmp_path), input_model="gpt-5.2")
+    r = execute_ttadk_code_with_repair(manager=mgr, tool_name="codex", cwd=str(tmp_path), input_model="gpt-5.2")
     assert r["ok"] is True
     assert r["decision"] == "ttadk_code_ok_after_refresh"
     assert r["model"] == "gpt-5.2-codex-ttadk"
@@ -1076,6 +1071,7 @@ def test_ttadk_code_execute_invalid_model_then_refresh_and_retry_ok(monkeypatch,
 
 def test_ttadk_code_execute_invalid_model_refresh_fail_then_auto_then_fail(monkeypatch, tmp_path):
     """用户路径：invalid_model → refresh 失败/无法重选 → auto 重试失败 → 返回明确失败与 next_steps。"""
+    from src.ttadk.command_exec import execute_ttadk_code_with_repair
     from src.ttadk.manager import TTADKCommandRunner, get_ttadk_manager
     from src.ttadk.models import ResolvedModelResult
 
@@ -1115,7 +1111,7 @@ def test_ttadk_code_execute_invalid_model_refresh_fail_then_auto_then_fail(monke
     seq = _SequenceRunner([(1, "", _SAMPLE_INVALID_MODEL_CODEX), (1, "", "please initialize the project first")])
     mgr.set_command_runner(TTADKCommandRunner(runner=seq))
 
-    r = mgr.execute_ttadk_code_with_repair(tool_name="codex", cwd=str(tmp_path), input_model="gpt-5.2")
+    r = execute_ttadk_code_with_repair(manager=mgr, tool_name="codex", cwd=str(tmp_path), input_model="gpt-5.2")
     assert r["ok"] is False
     assert r["decision"] == "ttadk_code_failed"
     assert r["fail_reason"] in ("not_initialized", "unknown")
@@ -1135,10 +1131,11 @@ def test_ttadk_code_e2e_smoke_if_enabled(tmp_path):
     if not shutil.which("ttadk"):
         pytest.skip("ttadk not found in PATH")
 
+    from src.ttadk.command_exec import execute_ttadk_code_with_repair
     from src.ttadk.manager import get_ttadk_manager
 
     mgr = get_ttadk_manager(default_tool="codex", default_model="gpt-5.2")
-    r = mgr.execute_ttadk_code_with_repair(tool_name="codex", cwd=str(tmp_path), input_model="gpt-5.2", timeout_s=3.0)
+    r = execute_ttadk_code_with_repair(manager=mgr, tool_name="codex", cwd=str(tmp_path), input_model="gpt-5.2", timeout_s=3.0)
     # e2e 只做“可执行且不崩溃”的 smoke，不强制 ok
     assert isinstance(r, dict)
     assert "decision" in r
@@ -1398,9 +1395,7 @@ def test_startup_common_stub_cooldown_works_without_manager_import(monkeypatch):
     # 后续测试出现单例不一致的回归。
     # 这里用“临时替换为哑模块”的方式验证 startup_common 不会读取 manager 模块状态。
     old_mgr = sys.modules.get("src.ttadk.manager")
-    old_compat = sys.modules.get("src.ttadk.compat")
     sys.modules["src.ttadk.manager"] = types.SimpleNamespace()
-    sys.modules["src.ttadk.compat"] = types.SimpleNamespace()
 
     sc.install_stub_cooldown_providers(
         time_fn=_time.time,
@@ -1416,24 +1411,18 @@ def test_startup_common_stub_cooldown_works_without_manager_import(monkeypatch):
     sc._runtime_invalid_model_stub_set_last_ts(mgr, "codex", now)
     assert sc._runtime_invalid_model_stub_get_last_ts(mgr, "codex") == now
 
-    # 恢复 sys.modules，避免污染后续测试
     if old_mgr is None:
         sys.modules.pop("src.ttadk.manager", None)
     else:
         sys.modules["src.ttadk.manager"] = old_mgr
-    if old_compat is None:
-        sys.modules.pop("src.ttadk.compat", None)
-    else:
-        sys.modules["src.ttadk.compat"] = old_compat
 
-    # 恢复 compat provider（避免后续测试环境漂移）
-    import src.ttadk.compat as compat
+    import src.ttadk.startup_common as _sc_restore
 
-    compat.install_compat_providers(force=True)
+    _sc_restore.install_compat_providers(force=True)
 
 
 def test_ttadk_compat_import_has_no_side_effect_install(monkeypatch):
-    """防回归：仅 import/reload `src.ttadk.compat` 不应触发 provider 安装副作用。"""
+    """防回归：仅 import/reload `src.ttadk.startup_common` 不应触发 provider 安装副作用。"""
     import importlib
 
     import src.ttadk.startup_common as sc
@@ -1447,38 +1436,15 @@ def test_ttadk_compat_import_has_no_side_effect_install(monkeypatch):
 
     monkeypatch.setattr(sc, "install_stub_cooldown_providers", _spy)
 
-    import src.ttadk.compat as compat
-
     calls["n"] = 0
-    importlib.reload(compat)
+    importlib.reload(sc)
     assert calls["n"] == 0
-
-
-def test_ttadk_compat_has_no_sys_modules_dependency(monkeypatch):
-    """防回归：compat 不应通过 sys.modules 读取/回写 manager（显式 provider 注入）。"""
-    import builtins
-    import importlib
-
-    import src.ttadk.compat as compat
-
-    orig_import = builtins.__import__
-
-    def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
-        # 若 compat 仍依赖 `import sys` 来读写 sys.modules，则在 reload 时会触发这里。
-        caller = (globals or {}).get("__name__", "") if isinstance(globals, dict) else ""
-        if name == "sys" and caller == "src.ttadk.compat":
-            raise AssertionError("compat should not import sys")
-        return orig_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", _guarded_import)
-    importlib.reload(compat)
 
 
 def test_ttadk_manager_import_has_no_side_effect_install(monkeypatch):
     """防回归：仅 import/reload `src.ttadk.manager` 不应触发 provider 安装副作用。"""
     import importlib
 
-    import src.ttadk.compat as compat
     import src.ttadk.manager as mgr
     import src.ttadk.startup_common as sc
 
@@ -1490,7 +1456,7 @@ def test_ttadk_manager_import_has_no_side_effect_install(monkeypatch):
         return orig(**kwargs)
 
     monkeypatch.setattr(sc, "install_stub_cooldown_providers", _spy)
-    monkeypatch.setattr(compat, "_providers_installed", False, raising=False)
+    monkeypatch.setattr(sc, "_compat_providers_installed", False, raising=False)
 
     calls["n"] = 0
     importlib.reload(mgr)
@@ -1499,7 +1465,6 @@ def test_ttadk_manager_import_has_no_side_effect_install(monkeypatch):
 
 def test_get_ttadk_manager_installs_compat_providers_once(monkeypatch):
     """回归：调用 `get_ttadk_manager()` 触发一次 provider 安装，且重复调用幂等。"""
-    import src.ttadk.compat as compat
     import src.ttadk.manager as mgr
     import src.ttadk.startup_common as sc
 
@@ -1512,7 +1477,7 @@ def test_get_ttadk_manager_installs_compat_providers_once(monkeypatch):
 
     monkeypatch.setattr(sc, "install_stub_cooldown_providers", _spy)
     # 确保处于“未安装”状态，避免被其它测试提前安装导致断言不稳定。
-    monkeypatch.setattr(compat, "_providers_installed", False, raising=False)
+    monkeypatch.setattr(sc, "_compat_providers_installed", False, raising=False)
 
     calls["n"] = 0
     mgr.get_ttadk_manager()
@@ -1527,9 +1492,8 @@ def test_get_ttadk_manager_concurrent_installs_only_once(monkeypatch):
     """并发回归：多线程并发调用 get_ttadk_manager 时 provider 安装应最多一次且无异常。"""
     import threading
 
-    import src.ttadk.compat as compat
-    import src.ttadk.manager as mgr
     import src.ttadk.startup_common as sc
+    import src.ttadk.manager as mgr
 
     calls = {"n": 0}
     orig = sc.install_stub_cooldown_providers
@@ -1539,7 +1503,7 @@ def test_get_ttadk_manager_concurrent_installs_only_once(monkeypatch):
         return orig(**kwargs)
 
     monkeypatch.setattr(sc, "install_stub_cooldown_providers", _spy)
-    monkeypatch.setattr(compat, "_providers_installed", False, raising=False)
+    monkeypatch.setattr(sc, "_compat_providers_installed", False, raising=False)
     monkeypatch.setattr(mgr, "_manager", None, raising=False)
 
     errs: list[str] = []
@@ -1563,9 +1527,8 @@ def test_get_ttadk_manager_concurrent_installs_only_once(monkeypatch):
 @pytest.mark.parametrize(
     "order",
     [
-        ("compat", "startup_common", "manager"),
-        ("startup_common", "manager", "compat"),
-        ("manager", "compat", "startup_common"),
+        ("startup_common", "manager"),
+        ("manager", "startup_common"),
     ],
 )
 def test_ttadk_import_order_has_no_side_effect_install(monkeypatch, order):
@@ -1593,9 +1556,7 @@ def test_ttadk_import_order_has_no_side_effect_install(monkeypatch, order):
     assert calls["n"] == 0
 
     mgr = importlib.import_module("src.ttadk.manager")
-    compat = importlib.import_module("src.ttadk.compat")
-    # reset deterministic
-    monkeypatch.setattr(compat, "_providers_installed", False, raising=False)
+    monkeypatch.setattr(sc, "_compat_providers_installed", False, raising=False)
     monkeypatch.setattr(mgr, "_legacy_store_migrated", False, raising=False)
     monkeypatch.setattr(mgr, "_manager", None, raising=False)
 
@@ -1802,16 +1763,15 @@ def test_build_invalid_model_context_parses_from_tail_even_when_err_blob_is_trun
 
 def test_ttadk_manager_legacy_store_monkeypatch_still_effective(monkeypatch):
     """回归：manager 侧 monkeypatch legacy store 仍能影响 startup_common 的生效 store。"""
-    import src.ttadk.compat as compat
-    import src.ttadk.manager as m
     import src.ttadk.startup_common as sc
+    import src.ttadk.manager as m
 
     injected = {("m", "q", "codex"): 321.0}
     monkeypatch.setattr(m, "_LEGACY_STUB_COOLDOWN_STORE", injected, raising=False)
     monkeypatch.setattr(sc, "_LEGACY_STUB_COOLDOWN_STORE", None, raising=False)
 
     # 确保 provider 由 get_ttadk_manager 显式安装（使用 manager 侧 legacy_store_provider）。
-    monkeypatch.setattr(compat, "_providers_installed", False, raising=False)
+    monkeypatch.setattr(sc, "_compat_providers_installed", False, raising=False)
     monkeypatch.setattr(m, "_legacy_store_migrated", False, raising=False)
     m.get_ttadk_manager()
 
@@ -1821,9 +1781,8 @@ def test_ttadk_manager_legacy_store_monkeypatch_still_effective(monkeypatch):
 
 def test_runtime_invalid_model_stub_cooldown_migrates_from_manager_coordinate_fn_attr(monkeypatch):
     """stub cooldown: 显式迁移可从 src.ttadk.manager.coordinate_ttadk_startup 函数属性迁移 legacy store。"""
-    import src.ttadk.compat as compat
-    import src.ttadk.manager as m
     import src.ttadk.startup_common as sc
+    import src.ttadk.manager as m
 
     legacy = {("legacy", "fn", "codex"): 111.0}
     monkeypatch.setattr(sc, "_LEGACY_STUB_COOLDOWN_STORE", None, raising=False)
@@ -1831,7 +1790,7 @@ def test_runtime_invalid_model_stub_cooldown_migrates_from_manager_coordinate_fn
 
     # 触发显式迁移 + provider 安装
     monkeypatch.setattr(m, "_LEGACY_STUB_COOLDOWN_STORE", None, raising=False)
-    monkeypatch.setattr(compat, "_providers_installed", False, raising=False)
+    monkeypatch.setattr(sc, "_compat_providers_installed", False, raising=False)
     monkeypatch.setattr(m, "_legacy_store_migrated", False, raising=False)
     m.get_ttadk_manager()
 
@@ -1856,15 +1815,14 @@ def test_runtime_invalid_model_stub_cooldown_migrates_from_manager_coordinate_fn
 
 def test_runtime_invalid_model_stub_cooldown_respects_manager_legacy_store_and_can_be_cleared(monkeypatch):
     """stub cooldown: 若通过 src.ttadk.manager._LEGACY_STUB_COOLDOWN_STORE 注入，应被 startup_common 使用；清空时应解除引用。"""
-    import src.ttadk.compat as compat
-    import src.ttadk.manager as m
     import src.ttadk.startup_common as sc
+    import src.ttadk.manager as m
 
     injected = {("m", "q", "codex"): 123.0}
     monkeypatch.setattr(m, "_LEGACY_STUB_COOLDOWN_STORE", injected, raising=False)
     monkeypatch.setattr(sc, "_LEGACY_STUB_COOLDOWN_STORE", None, raising=False)
 
-    monkeypatch.setattr(compat, "_providers_installed", False, raising=False)
+    monkeypatch.setattr(sc, "_compat_providers_installed", False, raising=False)
     monkeypatch.setattr(m, "_legacy_store_migrated", False, raising=False)
     m.get_ttadk_manager()
 
@@ -4087,10 +4045,10 @@ def test_set_model_accepts_synced_model(monkeypatch):
 
 def test_ttadk_model_fetcher_strip_ansi():
     """测试 ANSI 颜色码移除"""
-    # Note: Logic moved to InteractiveStrategy
-    strategy = InteractiveStrategy()
+    from src.ttadk.models import strip_ansi
+
     text_with_ansi = "\x1b[32mGreen Text\x1b[0m"
-    clean = strategy._strip_ansi(text_with_ansi)
+    clean = strip_ansi(text_with_ansi)
     assert clean == "Green Text"
 
 
@@ -4339,7 +4297,7 @@ def test_engine_session_invalid_model_auto_refresh_and_retry_success(monkeypatch
     # 注入 fetcher（避免真实 subprocess）
     mgr._model_fetcher = fetcher
     try:
-        mgr._model_fetcher.set_cache_sink(mgr._on_fetcher_cache_update)
+        mgr._model_fetcher.set_cache_sink(mgr._cache._on_fetcher_cache_update)
     except Exception:
         pass
 
@@ -4393,7 +4351,7 @@ def test_engine_session_invalid_model_retry_then_fallback_to_auto_model(monkeypa
     mgr._initialized = True
     mgr._model_fetcher = fetcher
     try:
-        mgr._model_fetcher.set_cache_sink(mgr._on_fetcher_cache_update)
+        mgr._model_fetcher.set_cache_sink(mgr._cache._on_fetcher_cache_update)
     except Exception:
         pass
 
@@ -4444,7 +4402,7 @@ def test_engine_session_invalid_model_no_available_models_degrades_to_coco(monke
     mgr._initialized = True
     mgr._model_fetcher = fetcher
     try:
-        mgr._model_fetcher.set_cache_sink(mgr._on_fetcher_cache_update)
+        mgr._model_fetcher.set_cache_sink(mgr._cache._on_fetcher_cache_update)
     except Exception:
         pass
 
@@ -4497,7 +4455,7 @@ def test_engine_session_invalid_model_with_ansi_still_recovers(monkeypatch):
     mgr._initialized = True
     mgr._model_fetcher = fetcher
     try:
-        mgr._model_fetcher.set_cache_sink(mgr._on_fetcher_cache_update)
+        mgr._model_fetcher.set_cache_sink(mgr._cache._on_fetcher_cache_update)
     except Exception:
         pass
 
@@ -4550,7 +4508,7 @@ def test_engine_session_empty_message_error_uses_stderr_to_recover(monkeypatch):
     mgr._initialized = True
     mgr._model_fetcher = fetcher
     try:
-        mgr._model_fetcher.set_cache_sink(mgr._on_fetcher_cache_update)
+        mgr._model_fetcher.set_cache_sink(mgr._cache._on_fetcher_cache_update)
     except Exception:
         pass
 
@@ -4897,7 +4855,7 @@ def test_manager_model_cached_flag():
 
     # 如果有缓存，再次获取时 cached 应该为 True
     # 但由于模型获取可能失败（终端交互），这里只测试缓存逻辑
-    if manager._is_cache_valid("coco"):
+    if manager._cache._is_cache_valid("coco"):
         result2 = manager.get_models()
         assert result2.cached is True
 
@@ -4981,16 +4939,7 @@ def test_extract_models_ignores_unrelated_string_list(monkeypatch):
 
 def test_extract_models_not_from_generic_string_list(monkeypatch):
     manager = TTADKManager(default_tool="claude")
-    monkeypatch.setattr(
-        manager,
-        "_run_ttadk_sync",
-        lambda cwd: {
-            "workspace_files": ["README.md", "image.png", "notes.txt"],
-            "metadata": {"tags": ["dev", "ops"]},
-        },
-    )
 
-    # Mock strategies to return empty (new API uses diagnostics wrapper)
     from src.ttadk.model_fetcher import FetchDiagnostics, FetchResult
 
     monkeypatch.setattr(
@@ -5550,7 +5499,7 @@ def test_ttadk_runtime_stub_cooldown_legacy_store_sync(monkeypatch):
 
 def test_ttadk_runtime_stub_cooldown_migrates_once_from_function_attr(monkeypatch):
     """legacy 函数属性 store 存在时：仅在显式初始化路径迁移一次，之后不再反复读取函数属性。"""
-    import src.ttadk.compat as compat
+    import src.ttadk.startup_common as sc
     from src.ttadk import manager as m
 
     # 禁用 TTL/max_keys 干扰
@@ -5580,7 +5529,7 @@ def test_ttadk_runtime_stub_cooldown_migrates_once_from_function_attr(monkeypatc
 
     # 显式初始化：触发一次迁移 + provider 安装
     monkeypatch.setattr(m, "_LEGACY_STUB_COOLDOWN_STORE", None, raising=False)
-    monkeypatch.setattr(compat, "_providers_installed", False, raising=False)
+    monkeypatch.setattr(sc, "_compat_providers_installed", False, raising=False)
     monkeypatch.setattr(m, "_legacy_store_migrated", False, raising=False)
     m.get_ttadk_manager()
 
@@ -5941,7 +5890,7 @@ def test_ttadk_runtime_repair_run_retry_flow_retry_auto_ok(monkeypatch):
 
 def test_ttadk_runtime_stub_limits_invalid_values_fallback(monkeypatch):
     """stub 冷却限额：非法配置值应回退默认且不抛异常。"""
-    import src.ttadk.compat as compat
+    import src.ttadk.startup_common as sc
     from src.ttadk import manager as m
 
     # reset limits cache to avoid cross-test interference
@@ -5969,7 +5918,7 @@ def test_ttadk_runtime_stub_limits_invalid_values_fallback(monkeypatch):
     )
 
     # 显式初始化：让 startup_common 通过 provider 使用本测试 monkeypatch 的 get_settings
-    monkeypatch.setattr(compat, "_providers_installed", False, raising=False)
+    monkeypatch.setattr(sc, "_compat_providers_installed", False, raising=False)
     m.get_ttadk_manager()
 
     ttl, max_keys, interval = m._runtime_invalid_model_stub_limits()
@@ -5980,7 +5929,7 @@ def test_ttadk_runtime_stub_limits_invalid_values_fallback(monkeypatch):
 
 def test_ttadk_runtime_stub_limits_negative_values_clamped(monkeypatch):
     """stub 冷却限额：负值应被 clamp 到 0。"""
-    import src.ttadk.compat as compat
+    import src.ttadk.startup_common as sc
     from src.ttadk import manager as m
 
     # reset limits cache to avoid cross-test interference
@@ -6001,7 +5950,7 @@ def test_ttadk_runtime_stub_limits_negative_values_clamped(monkeypatch):
         )(),
     )
 
-    monkeypatch.setattr(compat, "_providers_installed", False, raising=False)
+    monkeypatch.setattr(sc, "_compat_providers_installed", False, raising=False)
     m.get_ttadk_manager()
 
     ttl, max_keys, interval = m._runtime_invalid_model_stub_limits()
@@ -6012,7 +5961,7 @@ def test_ttadk_runtime_stub_limits_negative_values_clamped(monkeypatch):
 
 def test_ttadk_runtime_stub_limits_cached_by_gc_interval(monkeypatch):
     """gc_interval_s>0 时，limits 在一个周期内应命中缓存并减少 get_settings 调用。"""
-    import src.ttadk.compat as compat
+    import src.ttadk.startup_common as sc
     from src.ttadk import manager as m
 
     # reset cache
@@ -6038,7 +5987,7 @@ def test_ttadk_runtime_stub_limits_cached_by_gc_interval(monkeypatch):
 
     monkeypatch.setattr(m, "get_settings", _settings)
 
-    monkeypatch.setattr(compat, "_providers_installed", False, raising=False)
+    monkeypatch.setattr(sc, "_compat_providers_installed", False, raising=False)
     m.get_ttadk_manager()
 
     a = m._runtime_invalid_model_stub_limits()
@@ -6054,7 +6003,7 @@ def test_ttadk_runtime_stub_limits_cached_by_gc_interval(monkeypatch):
 
 def test_ttadk_runtime_stub_limits_no_cache_when_interval_zero(monkeypatch):
     """gc_interval_s=0 时不缓存：每次调用都会读取 settings。"""
-    import src.ttadk.compat as compat
+    import src.ttadk.startup_common as sc
     from src.ttadk import manager as m
 
     monkeypatch.setattr(m._STUB_COOLDOWN, "_limits_cache", None, raising=False)
@@ -6076,7 +6025,7 @@ def test_ttadk_runtime_stub_limits_no_cache_when_interval_zero(monkeypatch):
 
     monkeypatch.setattr(m, "get_settings", _settings)
 
-    monkeypatch.setattr(compat, "_providers_installed", False, raising=False)
+    monkeypatch.setattr(sc, "_compat_providers_installed", False, raising=False)
     m.get_ttadk_manager()
 
     _ = m._runtime_invalid_model_stub_limits()

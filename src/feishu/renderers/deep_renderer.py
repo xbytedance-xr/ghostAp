@@ -29,15 +29,6 @@ class DeepRenderer(BaseRenderer):
     def __init__(self, handler: "DeepHandler") -> None:
         super().__init__(handler)
 
-    def get_default_ui_state(self) -> dict:
-        return {
-            "compact": self.settings.card_deep_compact_default,
-            "expanded": False,
-            "expand_ac": False,
-            "view_mode": "status",
-            "view_context": {},
-        }
-
     def create_deep_callbacks(
         self,
         message_id: str,
@@ -144,13 +135,10 @@ class DeepRenderer(BaseRenderer):
                 content, total_items=len(content.split("\n")), expanded=state.get("expand_ac", False)
             )
 
-            warning_banner = None
-            duration_raw = engine.project.duration() if engine and engine.project else 0
-            timeout_raw = getattr(self.settings, "engine_timeout_warning_seconds", 0)
-            duration_s = duration_raw if isinstance(duration_raw, (int, float)) else 0
-            timeout_s = timeout_raw if isinstance(timeout_raw, (int, float)) else 0
-            if status != DeepProjectStatus.PLANNING and duration_s and duration_s > timeout_s:
-                warning_banner = "执行耗时较长，若无响应可尝试停止后重试"
+            warning_banner = self._check_warning_banner(
+                engine.project.duration() if engine and engine.project else 0,
+                is_executing=(status != DeepProjectStatus.PLANNING),
+            )
 
             msg_type, card_content = CardBuilder.build_deep_card(
                 project=project,
@@ -195,13 +183,10 @@ class DeepRenderer(BaseRenderer):
                         plan_content, total_items=len(plan_content.split("\n")), expanded=state.get("expand_ac", False)
                     )
 
-                    warning_banner = None
-                    duration_raw = engine.project.duration() if engine and engine.project else 0
-                    timeout_raw = getattr(self.settings, "engine_timeout_warning_seconds", 0)
-                    duration_s = duration_raw if isinstance(duration_raw, (int, float)) else 0
-                    timeout_s = timeout_raw if isinstance(timeout_raw, (int, float)) else 0
-                    if duration_s and duration_s > timeout_s:
-                        warning_banner = "执行耗时较长，若无响应可尝试停止后重试"
+                    warning_banner = self._check_warning_banner(
+                        engine.project.duration() if engine and engine.project else 0,
+                        is_executing=True,
+                    )
 
                     msg_type, card_content = CardBuilder.build_deep_card(
                         project=project,
@@ -381,13 +366,10 @@ class DeepRenderer(BaseRenderer):
             status_content, total_items=len(status_content.split("\n")), expanded=state.get("expand_ac", False)
         )
 
-        warning_banner = None
-        duration_raw = engine.project.duration()
-        timeout_raw = getattr(self.settings, "engine_timeout_warning_seconds", 0)
-        duration_s = duration_raw if isinstance(duration_raw, (int, float)) else 0
-        timeout_s = timeout_raw if isinstance(timeout_raw, (int, float)) else 0
-        if progress_info["is_executing"] and duration_s and duration_s > timeout_s:
-            warning_banner = "执行耗时较长，若无响应可尝试停止后重试"
+        warning_banner = self._check_warning_banner(
+            engine.project.duration(),
+            is_executing=progress_info["is_executing"],
+        )
 
         msg_type, card_content = CardBuilder.build_deep_card(
             project=project,

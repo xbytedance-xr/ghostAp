@@ -24,7 +24,6 @@ _ISO8601_TS_RE = re.compile(
 
 
 def truncate_snippet(text: str, max_len: int = 240) -> str:
-    """截断日志/诊断片段，避免过大或泄露过多内容。"""
     if not text:
         return ""
     text = str(text)
@@ -33,6 +32,69 @@ def truncate_snippet(text: str, max_len: int = 240) -> str:
     if len(text) <= max_len:
         return text
     return text[: max_len - 3] + "..."
+
+
+def strict_truncate(s: str, lim: int = 200) -> str:
+    try:
+        lim = int(lim or 0)
+    except Exception:
+        lim = 0
+    if lim <= 0:
+        return ""
+    try:
+        ss = str(s or "")
+    except Exception:
+        ss = ""
+    if len(ss) <= lim:
+        return ss
+    suffix = "…(truncated)"
+    if lim <= len(suffix):
+        return ss[:lim]
+    return ss[: max(0, lim - len(suffix))] + suffix
+
+
+def redact_and_truncate(
+    text: object,
+    *,
+    hard_limit: int = 240,
+    get_settings_fn: object = None,
+    cfg_limit_key: str = "snippet_limit",
+) -> str:
+    try:
+        from ..acp.diagnostics import get_diagnostics_config, redact_text
+
+        if get_settings_fn is None:
+            from ..config import get_settings as _gs
+
+            get_settings_fn = _gs
+
+        cfg = get_diagnostics_config(get_settings_fn=get_settings_fn)
+        enabled = bool(getattr(cfg, "redact_enabled", True))
+        patterns = list(getattr(cfg, "redact_patterns", []) or [])
+        repl = str(getattr(cfg, "redact_replacement", "***REDACTED***") or "***REDACTED***")
+        try:
+            cfg_lim = int(getattr(cfg, str(cfg_limit_key or "") or "snippet_limit", 0) or 0)
+        except Exception:
+            cfg_lim = 0
+        lim = int(hard_limit or 240)
+        if cfg_lim > 0:
+            lim = min(cfg_lim, lim) if lim > 0 else cfg_lim
+        lim = max(1, lim)
+    except Exception:
+        enabled, patterns, repl, lim = True, [], "***REDACTED***", max(1, int(hard_limit or 240))
+
+    try:
+        s = str(text or "")
+    except Exception:
+        s = ""
+    if enabled:
+        try:
+            from ..acp.diagnostics import redact_text
+
+            s = redact_text(s, patterns, repl)
+        except Exception:
+            pass
+    return strict_truncate(s, int(lim))
 
 
 def strip_ansi(text: str) -> str:
@@ -521,61 +583,6 @@ def build_invalid_model_context(
         except Exception:
             return ""
 
-    def _truncate_strict(s: str, lim: int) -> str:
-        """严格截断：返回值长度不超过 lim（best-effort）。"""
-        try:
-            lim = int(lim or 0)
-        except Exception:
-            lim = 0
-        if lim <= 0:
-            return ""
-        ss = _safe_str(s)
-        if not ss:
-            return ""
-        if len(ss) <= lim:
-            return ss
-        suffix = "…(truncated)"
-        if lim <= len(suffix):
-            return ss[:lim]
-        return ss[: max(0, lim - len(suffix))] + suffix
-
-    def _redact_and_truncate(text: object, *, hard_limit: int, cfg_limit_key: str) -> str:
-        """复用 ACP diagnostics 的脱敏/截断配置（best-effort）。
-
-        约定：
-        - `cfg_limit_key` 可为 `snippet_limit` 或 `total_limit`。
-        - 配置为“上限”，hard_limit 只允许收紧。
-        """
-        try:
-            from ..acp.diagnostics import get_diagnostics_config, redact_text
-
-            cfg = get_diagnostics_config(get_settings_fn=getter)
-            enabled = bool(getattr(cfg, "redact_enabled", True))
-            patterns = list(getattr(cfg, "redact_patterns", []) or [])
-            repl = str(getattr(cfg, "redact_replacement", "***REDACTED***") or "***REDACTED***")
-            # 以 diagnostics.<cfg_limit_key> 为上限，调用方 hard_limit 仅能收紧
-            try:
-                cfg_lim = int(getattr(cfg, str(cfg_limit_key or "") or "snippet_limit", 0) or 0)
-            except Exception:
-                cfg_lim = 0
-            lim = int(hard_limit or 0)
-            if cfg_lim > 0:
-                lim = min(cfg_lim, lim) if lim > 0 else cfg_lim
-            if lim <= 0:
-                lim = 240
-        except Exception:
-            enabled, patterns, repl, lim = True, [], "***REDACTED***", max(1, int(hard_limit or 1600))
-
-        s = _safe_str(text)
-        if enabled:
-            try:
-                s = redact_text(s, patterns, repl)
-            except Exception:
-                pass
-        # 注意：ACP diagnostics 的 truncate_text 会追加后缀，可能导致返回长度超过 limit。
-        # 这里使用严格截断确保 err_blob/snippet 不超过上限。
-        return _truncate_strict(s, int(lim))
-
     # 1) 聚合原始文本（尽量包含可解析信息；never raises）
     parts: list[str] = []
     try:
@@ -642,10 +649,9 @@ def build_invalid_model_context(
     hard = max(1, hard)
 
     # err_blob 属于“合并上下文”：用 total_limit 作为配置上限（更适合诊断）。
-    err_blob = _redact_and_truncate(blob_raw, hard_limit=hard, cfg_limit_key="total_limit")
-    # stdout/stderr snippet 属于“片段”：用 snippet_limit 作为配置上限。
-    stderr_snip = _redact_and_truncate(stderr_raw, hard_limit=min(600, hard), cfg_limit_key="snippet_limit")
-    stdout_snip = _redact_and_truncate(stdout_raw, hard_limit=min(600, hard), cfg_limit_key="snippet_limit")
+    err_blob = redact_and_truncate(blob_raw, hard_limit=hard, get_settings_fn=getter, cfg_limit_key="total_limit")
+    stderr_snip = redact_and_truncate(stderr_raw, hard_limit=min(600, hard), get_settings_fn=getter, cfg_limit_key="snippet_limit")
+    stdout_snip = redact_and_truncate(stdout_raw, hard_limit=min(600, hard), get_settings_fn=getter, cfg_limit_key="snippet_limit")
 
     if not err_blob:
         err_blob = "(empty)"

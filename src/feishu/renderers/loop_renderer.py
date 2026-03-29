@@ -31,14 +31,9 @@ class LoopRenderer(BaseRenderer):
         super().__init__(handler)
 
     def get_default_ui_state(self) -> dict[str, Any]:
-        return {
-            "compact": self.settings.card_deep_compact_default,
-            "expanded": False,
-            "expand_ac": False,  # Default to collapsed
-            "view_mode": "status",
-            "view_context": {},
-            "history_page": 1,
-        }
+        state = super().get_default_ui_state()
+        state["history_page"] = 0
+        return state
 
     def create_loop_callbacks(
         self, message_id: str, chat_id: str, project: Optional["ProjectContext"], engine_name: str = "Coco"
@@ -92,7 +87,6 @@ class LoopRenderer(BaseRenderer):
 
             if loop_project:
                 criteria_status = reporter.format_criteria_brief(loop_project)
-                # progress_bar = reporter._make_progress_bar(loop_project.satisfied_count, loop_project.total_criteria)
                 progress_bar = self._generate_progress_bar(loop_project.satisfied_count, loop_project.total_criteria)
 
                 status_line = reporter.format_status_line(loop_project)
@@ -110,13 +104,10 @@ class LoopRenderer(BaseRenderer):
             content = reporter.format_iteration_start(current, max_iterations, criteria_status=criteria_status)
             title = reporter.get_iteration_start_title(current, max_iterations)
 
-            warning_banner = None
-            duration_raw = loop_project.duration() if loop_project else 0
-            timeout_raw = getattr(self.settings, "engine_timeout_warning_seconds", 0)
-            duration_s = duration_raw if isinstance(duration_raw, (int, float)) else 0
-            timeout_s = timeout_raw if isinstance(timeout_raw, (int, float)) else 0
-            if duration_s and duration_s > timeout_s:
-                warning_banner = "执行耗时较长，若无响应可尝试停止后重试"
+            warning_banner = self._check_warning_banner(
+                loop_project.duration() if loop_project else 0,
+                is_executing=True,
+            )
 
             msg_type, card_content = CardBuilder.build_deep_card(
                 project=project,
@@ -153,7 +144,6 @@ class LoopRenderer(BaseRenderer):
                 success = record.status.value == "success"
                 title = reporter.get_iteration_done_title(success, iteration)
                 title = append_duration_to_title(title, lp.duration())
-                # progress_bar = reporter._make_progress_bar(lp.satisfied_count, lp.total_criteria)
                 progress_bar = self._generate_progress_bar(lp.satisfied_count, lp.total_criteria)
                 status_line = reporter.format_status_line(lp)
                 duration_line = reporter.format_duration_line(lp)
@@ -167,6 +157,11 @@ class LoopRenderer(BaseRenderer):
                     lp.total_criteria,
                     state.get("expand_ac", False),
                     completed_count=lp.satisfied_count,
+                )
+
+                warning_banner = self._check_warning_banner(
+                    lp.duration(),
+                    is_executing=True,
                 )
 
                 msg_type, card_content = CardBuilder.build_deep_card(
@@ -185,6 +180,7 @@ class LoopRenderer(BaseRenderer):
                         expanded=state["expanded"],
                         expand_ac=state.get("expand_ac", False),
                         action_prefix="loop",
+                        warning_banner=warning_banner,
                     ),
                 )
                 # Iteration done: significant state change, immediate flush
@@ -203,7 +199,6 @@ class LoopRenderer(BaseRenderer):
             duration_line = None
             criteria_section = None
             if engine and engine.project:
-                # progress_bar = reporter._make_progress_bar(engine.project.satisfied_count, engine.project.total_criteria)
                 progress_bar = self._generate_progress_bar(
                     engine.project.satisfied_count, engine.project.total_criteria
                 )
@@ -219,6 +214,11 @@ class LoopRenderer(BaseRenderer):
                     state.get("expand_ac", False),
                     completed_count=engine.project.satisfied_count,
                 )
+
+            warning_banner = self._check_warning_banner(
+                engine.project.duration() if engine and engine.project else 0,
+                is_executing=True,
+            )
 
             msg_type, card_content = CardBuilder.build_deep_card(
                 project=project,
@@ -236,6 +236,7 @@ class LoopRenderer(BaseRenderer):
                     expanded=state["expanded"],
                     expand_ac=state.get("expand_ac", False),
                     action_prefix="loop",
+                    warning_banner=warning_banner,
                 ),
             )
             # Review done: immediate flush
@@ -247,7 +248,6 @@ class LoopRenderer(BaseRenderer):
 
             content = reporter.format_project_done(loop_project)
             title = reporter.get_project_done_title(loop_project)
-            # progress_bar = reporter._make_progress_bar(loop_project.satisfied_count, loop_project.total_criteria)
             progress_bar = self._generate_progress_bar(loop_project.satisfied_count, loop_project.total_criteria)
             duration_line = reporter.format_duration_line(loop_project)
 
@@ -372,18 +372,6 @@ class LoopRenderer(BaseRenderer):
             # Fallback to status view
             self._render_status_view(message_id, chat_id, project, engine, state, origin_message_id)
 
-    def _patch_or_send(
-        self, message_id: str, chat_id: str, card_content: str, msg_type: str, origin_message_id: Optional[str] = None
-    ):
-        """Helper to patch existing status message or send new one."""
-        patched = False
-        if origin_message_id:
-            # Explicit UI interactions (view switch, refresh) should be immediate
-            patched = self.handler.patch_message(origin_message_id, card_content, max_retries=1, throttle=False)
-
-        if not patched:
-            self.handler.reply_message(message_id, card_content, msg_type=msg_type, origin_message_id=origin_message_id)
-
     def _render_status_view(self, message_id: str, chat_id: str, project, engine, state, origin_message_id):
         reporter = self.ctx.loop_reporter
         engine_name = engine.engine_name
@@ -392,13 +380,10 @@ class LoopRenderer(BaseRenderer):
         status_title = reporter.get_status_title()
         progress_info = reporter.get_progress_info(engine.project)
 
-        warning_banner = None
-        duration_raw = engine.project.duration()
-        timeout_raw = getattr(self.settings, "engine_timeout_warning_seconds", 0)
-        duration_s = duration_raw if isinstance(duration_raw, (int, float)) else 0
-        timeout_s = timeout_raw if isinstance(timeout_raw, (int, float)) else 0
-        if progress_info["is_running"] and duration_s and duration_s > timeout_s:
-            warning_banner = "执行耗时较长，若无响应可尝试停止后重试"
+        warning_banner = self._check_warning_banner(
+            engine.project.duration(),
+            is_executing=progress_info["is_running"],
+        )
 
         msg_type, card_content = CardBuilder.build_deep_card(
             project=project,

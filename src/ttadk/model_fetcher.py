@@ -13,10 +13,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from ..acp.diagnostics import get_diagnostics_config, redact_text, truncate_text
 from ..config import get_settings
 from .env_sandbox import build_ttadk_subprocess_env
-from .models import TTADKModel, is_invalid_model_error, parse_models_cache_json
+from .models import TTADKModel, is_invalid_model_error, parse_models_cache_json, redact_and_truncate
 from .strategies import (
     InteractiveStrategy,
     LocalConfigModelsStrategy,
@@ -31,33 +30,6 @@ from .strategies import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _redacted_snippet(text: object, *, limit: int = 240) -> str:
-    """统一对 stdout/stderr 片段做脱敏与截断（复用 ACP diagnostics 配置）。
-
-    约束：best-effort，不抛异常。
-    """
-    try:
-        cfg = get_diagnostics_config(get_settings_fn=get_settings)
-        enabled = bool(cfg.redact_enabled)
-        patterns = list(cfg.redact_patterns or [])
-        repl = str(cfg.redact_replacement or "***REDACTED***")
-        lim = int(cfg.snippet_limit or 0) or int(limit or 240)
-    except Exception:
-        enabled, patterns, repl, lim = True, [], "***REDACTED***", int(limit or 240)
-
-    try:
-        s = str(text or "")
-    except Exception:
-        s = ""
-    s = truncate_text(s, int(lim or 240))
-    if enabled:
-        try:
-            s = redact_text(s, patterns, repl)
-        except Exception:
-            pass
-    return s
 
 
 class TTADKCommandError(RuntimeError):
@@ -331,8 +303,8 @@ class TTADKModelFetcher:
                             else ("NonZeroExit" if (rc_i not in (None, 0)) else None),
                             "exit_code": rc_i,
                             "raw_cmd": ["ttadk", "--help"],
-                            "stdout_snippet": _redacted_snippet(out_s),
-                            "stderr_snippet": _redacted_snippet(err_s),
+                            "stdout_snippet": redact_and_truncate(out_s),
+                            "stderr_snippet": redact_and_truncate(err_s),
                             "duration_ms": duration_ms,
                             "timeout_ms": int(timeout_s * 1000),
                         }
@@ -388,10 +360,10 @@ class TTADKModelFetcher:
                                 "count": 1 if bool(ok) else 0,
                                 "exit_code": (probe_last or {}).get("rc") if isinstance(probe_last, dict) else None,
                                 "raw_cmd": raw_cmd or ["ttadk", "models", "--help"],
-                                "stderr_snippet": _redacted_snippet(
+                                "stderr_snippet": redact_and_truncate(
                                     (probe_last or {}).get("stderr") if isinstance(probe_last, dict) else ""
                                 ),
-                                "stdout_snippet": _redacted_snippet(
+                                "stdout_snippet": redact_and_truncate(
                                     (probe_last or {}).get("stdout") if isinstance(probe_last, dict) else ""
                                 ),
                                 "warnings": list(probe_warnings or []),
@@ -738,14 +710,14 @@ class TTADKModelFetcher:
                         timeout_ms = int(t * 1000) if t > 0 else None
                 except Exception:
                     timeout_ms = None
-                stderr_snip = _redacted_snippet(getattr(e, "stderr", "") or "")
-                stdout_snip = _redacted_snippet(getattr(e, "stdout", "") or "")
+                stderr_snip = redact_and_truncate(getattr(e, "stderr", "") or "")
+                stdout_snip = redact_and_truncate(getattr(e, "stdout", "") or "")
                 if isinstance(
                     e, (TTADKProbeError, TTADKOfficialCLIError, TTADKLocalConfigError, TTADKProjectMetaError)
                 ):
                     # 可诊断失败：携带 stdout/stderr/rc
-                    stderr_snip = _redacted_snippet(getattr(e, "stderr", "") or "")
-                    stdout_snip = _redacted_snippet(getattr(e, "stdout", "") or "")
+                    stderr_snip = redact_and_truncate(getattr(e, "stderr", "") or "")
+                    stdout_snip = redact_and_truncate(getattr(e, "stdout", "") or "")
 
                 # fail_reason: 优先从异常 message 前缀推断（例如 "official_cli_probe_failed: ..."）
                 fail_reason = None

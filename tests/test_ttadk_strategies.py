@@ -205,8 +205,10 @@ class TestInteractiveStrategy(unittest.TestCase):
             pass
 
     def test_strip_ansi(self):
+        from src.ttadk.models import strip_ansi
+
         text = "\x1b[31mRed\x1b[0m Text"
-        self.assertEqual(self.strategy._strip_ansi(text), "Red Text")
+        self.assertEqual(strip_ansi(text), "Red Text")
 
     def test_parse_model_selection_menu(self):
         output = """? Select a model:

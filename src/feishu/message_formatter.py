@@ -4,19 +4,11 @@ from typing import Optional
 
 class FeishuMessageFormatter:
     @staticmethod
-    def _build_post_content(title: str, content_blocks: list) -> dict:
-        return {"zh_cn": {"title": title, "content": content_blocks}}
-
-    @staticmethod
     def _text(text: str, styles: list = None) -> dict:
         node = {"tag": "text", "text": text}
         if styles:
             node["style"] = styles
         return node
-
-    @staticmethod
-    def _bold_text(text: str) -> dict:
-        return {"tag": "text", "text": text, "style": ["bold"]}
 
     @staticmethod
     def _link(text: str, href: str) -> dict:

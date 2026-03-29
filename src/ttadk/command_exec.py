@@ -16,63 +16,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from ..acp.diagnostics import get_diagnostics_config, redact_text
 from ..config import get_settings
 from .models import (
     extract_invalid_model_diagnostics,
     is_invalid_model_error,
     is_stdin_not_tty_error,
+    redact_and_truncate,
+    strict_truncate,
 )
-
-
-def _strict_truncate(s: str, lim: int) -> str:
-    """严格截断：保证返回长度不超过 lim（best-effort）。"""
-    try:
-        lim = int(lim or 0)
-    except Exception:
-        lim = 0
-    if lim <= 0:
-        return ""
-    try:
-        ss = str(s or "")
-    except Exception:
-        ss = ""
-    if len(ss) <= lim:
-        return ss
-    suffix = "…(truncated)"
-    if lim <= len(suffix):
-        return ss[:lim]
-    return ss[: max(0, lim - len(suffix))] + suffix
-
-
-def _redact_and_truncate_snippet(text: object, *, hard_limit: int = 240, get_settings_fn=get_settings) -> str:
-    """复用 ACP diagnostics 的脱敏配置，并严格截断（best-effort）。"""
-    try:
-        cfg = get_diagnostics_config(get_settings_fn=get_settings_fn)
-        enabled = bool(getattr(cfg, "redact_enabled", True))
-        patterns = list(getattr(cfg, "redact_patterns", []) or [])
-        repl = str(getattr(cfg, "redact_replacement", "***REDACTED***") or "***REDACTED***")
-        try:
-            cfg_lim = int(getattr(cfg, "snippet_limit", 0) or 0)
-        except Exception:
-            cfg_lim = 0
-        lim = int(hard_limit or 240)
-        if cfg_lim > 0:
-            lim = min(cfg_lim, lim) if lim > 0 else cfg_lim
-        lim = max(1, lim)
-    except Exception:
-        enabled, patterns, repl, lim = True, [], "***REDACTED***", max(1, int(hard_limit or 240))
-
-    try:
-        s = str(text or "")
-    except Exception:
-        s = ""
-    if enabled:
-        try:
-            s = redact_text(s, patterns, repl)
-        except Exception:
-            pass
-    return _strict_truncate(s, int(lim))
 
 
 @dataclass
@@ -163,8 +114,8 @@ class TTADKCommandRunner:
             fail_reason=str(fail_reason or ""),
             cmd=cmd,
             args=list(xs),
-            stdout_snippet=_redact_and_truncate_snippet(out_s, hard_limit=240, get_settings_fn=self._get_settings_fn),
-            stderr_snippet=_redact_and_truncate_snippet(err_s, hard_limit=240, get_settings_fn=self._get_settings_fn),
+            stdout_snippet=redact_and_truncate(out_s, hard_limit=240, get_settings_fn=self._get_settings_fn),
+            stderr_snippet=redact_and_truncate(err_s, hard_limit=240, get_settings_fn=self._get_settings_fn),
         )
 
 

@@ -20,29 +20,22 @@ from typing import Any, Callable, Optional
 from ..config import get_settings
 from .cache import TTADKModelCache
 from .command_exec import (
-    TTADKCommandRunResult,
     TTADKCommandRunner,
-    _build_ttadk_code_args,
-    _next_steps_for_fail_reason,
-    _redact_and_truncate_snippet,
-    _strict_truncate,
-    format_ttadk_code_user_message,
 )
 
 # ---------------------------------------------------------------------------
 # deprecated_* Runtime invalid-model cooldown (compat only)
 # ---------------------------------------------------------------------------
 #
-# 说明：compat 实现已下沉到 `src.ttadk.compat`，本文件仅 re-export 以维持旧导入路径与 monkeypatch 钩子。
-from .compat import _LEGACY_STUB_COOLDOWN_STORE as _LEGACY_STUB_COOLDOWN_STORE
-from .compat import _STUB_COOLDOWN as _STUB_COOLDOWN
-from .compat import _runtime_invalid_model_stub_get_last_ts as _runtime_invalid_model_stub_get_last_ts
-from .compat import _runtime_invalid_model_stub_key as _runtime_invalid_model_stub_key
-from .compat import _runtime_invalid_model_stub_limits as _runtime_invalid_model_stub_limits
-from .compat import _runtime_invalid_model_stub_set_last_ts as _runtime_invalid_model_stub_set_last_ts
-from .compat import _runtime_invalid_model_stub_store as _runtime_invalid_model_stub_store
-from .compat import _runtime_invalid_model_stub_store_unlocked as _runtime_invalid_model_stub_store_unlocked
-from .compat import _StubCooldownStore as _StubCooldownStore
+from .startup_common import _LEGACY_STUB_COOLDOWN_STORE as _LEGACY_STUB_COOLDOWN_STORE
+from .startup_common import _STUB_COOLDOWN as _STUB_COOLDOWN
+from .startup_common import _runtime_invalid_model_stub_get_last_ts as _runtime_invalid_model_stub_get_last_ts
+from .startup_common import _runtime_invalid_model_stub_key as _runtime_invalid_model_stub_key
+from .startup_common import _runtime_invalid_model_stub_limits as _runtime_invalid_model_stub_limits
+from .startup_common import _runtime_invalid_model_stub_set_last_ts as _runtime_invalid_model_stub_set_last_ts
+from .startup_common import _runtime_invalid_model_stub_store as _runtime_invalid_model_stub_store
+from .startup_common import _runtime_invalid_model_stub_store_unlocked as _runtime_invalid_model_stub_store_unlocked
+from .startup_common import _StubCooldownStore as _StubCooldownStore
 from .model_fetcher import TTADKModelFetcher
 from .models import (
     ModelListResult,
@@ -501,44 +494,6 @@ class TTADKManager:
         except Exception:
             return
 
-    def _build_ttadk_code_args(
-        self, *, tool_name: str, model_name: Optional[str], extra_args: Optional[list[str]] = None
-    ) -> list[str]:
-        return _build_ttadk_code_args(tool_name=tool_name, model_name=model_name, extra_args=extra_args)
-
-    def _next_steps_for_fail_reason(self, fail_reason: str) -> list[str]:
-        return _next_steps_for_fail_reason(fail_reason)
-
-    def execute_ttadk_code_with_repair(
-        self,
-        *,
-        tool_name: str,
-        cwd: Optional[str],
-        input_model: str,
-        timeout_s: float = 10.0,
-        force_refresh_timeout_s: float = 12.0,
-        extra_args: Optional[list[str]] = None,
-    ) -> dict:
-        """执行 `ttadk code` 并实现最小自愈闭环（兼容 façade）。
-
-        执行阶段闭环 SSOT 已下沉到 `src.ttadk.command_exec`，本方法仅保留对外兼容入口，避免双实现漂移。
-        """
-        from .command_exec import execute_ttadk_code_with_repair as _exec
-
-        return _exec(
-            manager=self,
-            tool_name=str(tool_name or ""),
-            cwd=cwd,
-            input_model=str(input_model or ""),
-            timeout_s=float(timeout_s or 10.0),
-            force_refresh_timeout_s=float(force_refresh_timeout_s or 12.0),
-            extra_args=list(extra_args or []),
-            runner=None,
-        )
-
-    def format_ttadk_code_user_message(self, result: dict) -> str:
-        return format_ttadk_code_user_message(result)
-
     def _get_runtime_invalid_model_last_ts(self, tool_name: str) -> float:
         tool = (tool_name or "").strip().lower()
         if not tool:
@@ -594,12 +549,6 @@ class TTADKManager:
             except Exception:
                 pass
             return True, last
-
-    def _on_fetcher_cache_update(self, tool_name: str, models: list[TTADKModel], source: str, diagnostics) -> None:
-        """FetchResult 的外部缓存落点（由 fetcher 调用，best-effort）。"""
-        # 该逻辑已下沉到 cache：TTADKModelFetcher 绑定 cache_sink 时会直接回灌 cache。
-        # 这里保留为空实现，以兼容可能存在的测试 spy / 历史调用。
-        return
 
     def __setattr__(self, name, value):
         # 兼容测试：允许通过 `manager._model_fetcher = TTADKModelFetcher(runner=fake)` 注入可控 fetcher。
@@ -723,7 +672,7 @@ class TTADKManager:
         cache_ok = False
         cache_untrusted = False
         with self._lock:
-            cache_ok = self._is_cache_valid(tool) and bool(self._tool_models_cache.get(tool))
+            cache_ok = self._cache._is_cache_valid(tool) and bool(self._tool_models_cache.get(tool))
             if cache_ok:
                 models = list(self._tool_models_cache.get(tool, []) or [])
                 # 启动期安全策略：cache 命中也必须考虑可信度（避免跨项目缓存误判 validated=True 并透传 -m）。
@@ -1533,13 +1482,6 @@ class TTADKManager:
         )
         return result.real_name
 
-    def _is_cache_valid(self, tool_name: str) -> bool:
-        """兼容入口：委托给 cache 内部实现。"""
-        try:
-            return bool(self._cache._is_cache_valid(tool_name))
-        except Exception:
-            return False
-
     def invalidate_model_cache(self, tool_name: Optional[str] = None) -> None:
         """使模型缓存失效"""
         self._ensure_initialized()
@@ -1568,14 +1510,6 @@ class TTADKManager:
         except Exception as e:
             logger.debug("Failed to read ttadk setting.json: %s", e)
         return []
-
-    def _load_models_from_sync(self, cwd: str, tool_name: Optional[str] = None) -> list[TTADKModel]:
-        # 已下沉到 fetcher 的 structured 策略，这里保留为兼容入口（deprecated）。
-        return []
-
-    def _run_ttadk_sync(self, cwd: str) -> Optional[object]:
-        # 已下沉到 fetcher 的 structured 策略，这里保留为兼容入口（deprecated）。
-        return None
 
     def _extract_models_from_sync(
         self,
@@ -1794,9 +1728,9 @@ def _maybe_migrate_legacy_store() -> None:
         return
     _legacy_store_migrated = True
     try:
-        from . import compat as _ttadk_compat
+        from . import startup_common as _sc
 
-        migrated = _ttadk_compat.migrate_legacy_store_from_fn_attr(coordinate_ttadk_startup)
+        migrated = _sc.migrate_legacy_store_from_fn_attr(coordinate_ttadk_startup)
         if isinstance(migrated, dict):
             try:
                 if not isinstance(globals().get("_LEGACY_STUB_COOLDOWN_STORE", None), dict):
@@ -1844,12 +1778,11 @@ def _build_stub_providers():
 
 
 def _install_compat_providers() -> None:
-    """best-effort：显式安装 compat provider（幂等由 compat 内部保证）。"""
     try:
-        from . import compat as _ttadk_compat
+        from . import startup_common as _sc
 
         time_fn, get_settings_fn, legacy_store_provider = _build_stub_providers()
-        _ttadk_compat.install_compat_providers(
+        _sc.install_compat_providers(
             time_fn=time_fn,
             get_settings_fn=get_settings_fn,
             legacy_store_provider=legacy_store_provider,
