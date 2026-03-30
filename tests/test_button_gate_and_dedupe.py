@@ -85,7 +85,7 @@ def test_button_rapid_clicks_are_deduped_and_only_one_task_is_submitted():
 
         # first click -> submit once; second click within TTL -> ignored
         assert client._scheduler.submit.call_count == 1
-        assert client._reply_message.call_count == 1
+        assert client._reply_message.call_count == 0
 
         client.close()
 

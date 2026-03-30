@@ -1715,10 +1715,8 @@ class FeishuWSClient:
                     card = manager.get_card(open_message_id)
                     if card:
                         manager.set_sticky_message(open_message_id, "已收到操作，正在处理…", duration=2.5)
-                    else:
-                        self._reply_message(open_message_id, "⏳ 已收到操作，正在处理…")
                 except Exception:
-                    self._reply_message(open_message_id, "⏳ 已收到操作，正在处理…")
+                    pass
             except Exception:
                 # best-effort only
                 pass

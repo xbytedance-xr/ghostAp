@@ -188,8 +188,7 @@ class BaseHandler:
                 self._patch_tasks[message_id] = task
                 return True
             except RuntimeError:
-                # No running loop, fallback to immediate
-                logger.warning("No running loop for throttling, falling back to immediate patch")
+                logger.debug("No running loop for throttling, falling back to immediate patch")
                 pass
 
         # If immediate (throttle=False), cancel any pending task to avoid race

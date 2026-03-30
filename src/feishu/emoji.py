@@ -2,7 +2,7 @@ class EmojiType:
     GET = "OnIt"
     TYPING = "Typing"
     THINKING = "THINKING"
-    ONE_SEC = "OneSec"
+    ONE_SEC = "OneSecond"
 
     DONE = "DONE"
     CHECK_MARK = "DONE"
@@ -11,13 +11,13 @@ class EmojiType:
     OK = "OK"
     AWESOME = "AWESOME"
 
-    CROSS_MARK = "Skull"
-    ERROR = "Skull"
+    CROSS_MARK = "SKULL"
+    ERROR = "SKULL"
     SOB = "SOB"
     WRONG = "SOB"
 
     SMART = "FINGERHEART"
-    ROCKET = "Rocket"
+    ROCKET = "Fire"
     FIRE = "Fire"
     MUSCLE = "MUSCLE"
     YEAH = "YEAH"
@@ -30,7 +30,7 @@ class EmojiType:
 
     FLASH = "JIAYI"
     READING = "THINKING"
-    BUSY = "OneSec"
+    BUSY = "OneSecond"
 
 
 class EmojiReaction:

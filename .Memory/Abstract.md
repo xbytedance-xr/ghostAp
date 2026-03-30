@@ -1,5 +1,9 @@
 # GhostAP 项目记忆索引
 
+## 2026-03-30
+- **日志 WARNING 修复与优化** - 修复 3 类 WARNING：throttling 回退降级为 DEBUG、ProbeStrategy 超时降级为 INFO、emoji_type 修正（Rocket→Fire, Skull→SKULL, OneSec→OneSecond 对照飞书官方列表） → [详细记录](2026-03-30.md)
+- **Spec/Loop 引擎独立卡片交互模式** - 每轮 cycle/iteration 完成时发独立消息卡片，增强内容展示（各 phase 产出摘要、角色/审查/标准进度） → [详细记录](2026-03-30.md)
+
 ## 2026-03-29
 - **【完成】引擎层架构规范化 Spec 全量实施** - 5 Phase 14 Tasks：共享模型迁移(engine_base.py)、卡片命名统一(EngineCardState)、引擎接口统一(inject_guidance/on_analyzing_*)、spec_engine/engine.py 拆分(3183→1190行，10+子模块)、rloop 审查通过。1759 tests passed → [详细记录](2026-03-29.md)
 - **Spec Engine 内联薄包装方法** - 移除 engine.py 中 15 个仅委托到模块级函数的薄包装方法，在调用点直接内联模块级函数调用，engine.py 1238→1190 行，1759 tests passed → [详细记录](2026-03-29.md)

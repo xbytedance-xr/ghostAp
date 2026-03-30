@@ -159,7 +159,6 @@ class SpecRenderer(BaseRenderer):
                         title=title,
                         content=content,
                         progress_bar=progress_bar,
-                        is_executing=True,
                         engine_name=f"Spec({engine_name})",
                         status_line=status_line,
                         duration_line=duration_line,
@@ -170,9 +169,11 @@ class SpecRenderer(BaseRenderer):
                         expanded=state["expanded"],
                         expand_ac=state.get("expand_ac", False),
                         action_prefix="spec",
+                        show_buttons=False,
                     ),
                 )
-                _send_spec_message(card_content, msg_type, is_update=True, throttle=False)
+                _send_spec_message(card_content, msg_type, is_update=False, throttle=False)
+                sender.current_message_id = None
 
         def on_review_done(cycle_num: int, review: ReviewResult):
             self.update_ui_state(spec_project_id, view_mode="review_done", view_context={"cycle_num": cycle_num})
@@ -241,8 +242,8 @@ class SpecRenderer(BaseRenderer):
                     action_prefix="spec",
                 ),
             )
-            # Project done: immediate flush
-            _send_spec_message(card_content, msg_type, is_update=True, throttle=False)
+            # Project done: independent message
+            _send_spec_message(card_content, msg_type, is_update=False, throttle=False)
             self.handler.add_reaction(message_id, EmojiReaction.on_multi_task_done())
 
         def on_error(error: str):

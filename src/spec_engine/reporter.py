@@ -5,9 +5,11 @@ import re
 from ..utils.text import format_duration, make_progress_bar
 from .models import (
     ReviewResult,
+    SpecCycle,
     SpecPhase,
     SpecProject,
     SpecProjectStatus,
+    SpecTaskStatus,
     SpecWorkItemStatus,
 )
 
@@ -99,6 +101,64 @@ class SpecReporter:
             return f"构建输出 {line_count} 行"
         return ""
 
+    def _format_cycle_phase_details(self, cycle: SpecCycle) -> str:
+        parts: list[str] = []
+
+        if cycle.spec_artifact:
+            sa = cycle.spec_artifact
+            goals_count = len(sa.goals)
+            ac_count = len(sa.acceptance_criteria)
+            nfr_count = len(sa.non_functional_requirements)
+            detail_parts = []
+            if goals_count:
+                detail_parts.append(f"{goals_count} 个目标")
+            if ac_count:
+                detail_parts.append(f"{ac_count} 条验收标准")
+            if nfr_count:
+                detail_parts.append(f"{nfr_count} 条非功能需求")
+            parts.append(f"📋 **规格定义**: {', '.join(detail_parts) if detail_parts else '已生成'}")
+        elif cycle.spec_content:
+            parts.append("📋 **规格定义**: 已生成")
+
+        if cycle.plan_artifact:
+            pa = cycle.plan_artifact
+            detail_parts = []
+            if pa.steps:
+                detail_parts.append(f"{len(pa.steps)} 个步骤")
+            if pa.file_changes:
+                detail_parts.append(f"{len(pa.file_changes)} 处文件变更")
+            if pa.architecture:
+                arch_brief = pa.architecture[:50] + "..." if len(pa.architecture) > 50 else pa.architecture
+                detail_parts.append(arch_brief)
+            parts.append(f"🏗️ **方案规划**: {', '.join(detail_parts) if detail_parts else '已规划'}")
+        elif cycle.plan_content:
+            parts.append("🏗️ **方案规划**: 已规划")
+
+        if cycle.tasks:
+            completed = sum(1 for t in cycle.tasks if t.status == SpecTaskStatus.COMPLETED)
+            total = len(cycle.tasks)
+            task_descs = [t.description for t in cycle.tasks[:3]]
+            parts.append(f"📝 **任务分解**: {completed}/{total} 完成")
+            for desc in task_descs:
+                brief = desc[:60] + "..." if len(desc) > 60 else desc
+                parts.append(f"  - {brief}")
+            if total > 3:
+                parts.append(f"  - ...及其他 {total - 3} 个任务")
+        elif cycle.tasks_total:
+            parts.append(f"📝 **任务分解**: {cycle.tasks_total} 个任务")
+
+        if cycle.build_output:
+            line_count = len([l for l in cycle.build_output.split("\n") if l.strip()])
+            parts.append(f"🔨 **执行构建**: 输出 {line_count} 行")
+
+        if cycle.review_result:
+            r = cycle.review_result
+            passed = sum(1 for pr in r.reviews if pr.passed)
+            total = len(r.reviews)
+            parts.append(f"🔍 **多视角审查**: {passed}/{total} 视角通过")
+
+        return "\n".join(parts)
+
     def format_cycle_start(self, cycle_number: int, max_cycles: int, criteria_status: str = "") -> str:
         progress = self.format_phase_progress(SpecPhase.SPEC, completed=False)
         base = f"🔄 **Spec 循环 [{cycle_number}/{max_cycles}]** 开始\n\n{progress}"
@@ -117,7 +177,7 @@ class SpecReporter:
 {body}
 ```"""
 
-    def format_cycle_done(self, cycle_number: int, cycle) -> str:
+    def format_cycle_done(self, cycle_number: int, cycle: SpecCycle) -> str:
         status_emoji = "✅" if cycle.status == "completed" else "❌"
         status_text = "完成" if cycle.status == "completed" else "失败"
 
@@ -139,6 +199,11 @@ class SpecReporter:
             progress,
             f"\n🤖 **{summary}**{duration_str}",
         ]
+
+        phase_details = self._format_cycle_phase_details(cycle)
+        if phase_details:
+            lines.append("\n---\n**📦 各阶段产出：**\n")
+            lines.append(phase_details)
 
         if cycle.review_result and not cycle.review_result.all_passed:
             lines.append("\n---\n**📋 审查建议（将驱动下一轮优化）：**\n")

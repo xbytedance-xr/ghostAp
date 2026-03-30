@@ -59,13 +59,44 @@ class LoopReporter:
     def format_iteration_done(self, iteration: int, record: IterationRecord) -> str:
         if record.status == IterationStatus.SUCCESS:
             summary = record.focus or "执行完成"
-            output_section = ""
-            if record.output:
-                output_section = f"\n\n**输出:**\n```\n{record.output}\n```"
-            return f"""✅ **迭代完成 [{iteration}]**
+            lines = [
+                f"✅ **迭代完成 [{iteration}]**\n",
+                f"🤖 **{summary}**",
+                f"⏱️ 耗时: {format_duration(record.duration)}",
+            ]
 
-🤖 **{summary}**
-⏱️ 耗时: {format_duration(record.duration)}{output_section}"""
+            if record.role:
+                lines.append(f"🎭 角色: {record.role.value}")
+
+            if record.criteria_progress:
+                satisfied = sum(1 for v in record.criteria_progress.values() if v)
+                total = len(record.criteria_progress)
+                lines.append(f"📊 本轮标准: {satisfied}/{total} 满足")
+
+            if record.review_result:
+                r = record.review_result
+                passed = sum(1 for pr in r.reviews if pr.passed)
+                total_r = len(r.reviews)
+                if r.all_passed:
+                    lines.append(f"🔍 审查: {passed}/{total_r} 视角全部通过 ✅")
+                else:
+                    lines.append(f"🔍 审查: {passed}/{total_r} 视角通过，{r.total_suggestions} 条建议")
+                    for pr in r.reviews:
+                        if not pr.passed and pr.suggestions:
+                            lines.append(f"  {pr.perspective.emoji} **{pr.perspective.display_name}**:")
+                            for s in pr.suggestions[:3]:
+                                lines.append(f"    - {s}")
+                            if len(pr.suggestions) > 3:
+                                lines.append(f"    - ...及其他 {len(pr.suggestions) - 3} 条")
+
+            if record.output:
+                output_brief = record.output.strip()
+                output_lines = output_brief.split("\n")
+                if len(output_lines) > 10:
+                    output_brief = "\n".join(output_lines[:10]) + f"\n... ({len(output_lines) - 10} 行省略)"
+                lines.append(f"\n**输出:**\n```\n{output_brief}\n```")
+
+            return "\n".join(lines)
         else:
             error_text = record.error or "未知错误"
             return f"""❌ **迭代失败 [{iteration}]**

@@ -299,7 +299,7 @@ class ProbeStrategy(ModelFetchStrategy):
 
         except subprocess.TimeoutExpired as e:
             # 让上层 diagnostics 记录 timeout，而不是静默吞掉
-            logger.warning(f"ProbeStrategy timed out for tool {tool_name}: {e}")
+            logger.info(f"ProbeStrategy timed out for tool {tool_name}: {e}")
             raise
         except TTADKProbeError:
             # 将可诊断错误上抛给 fetcher，便于记录 stderr/stdout 片段

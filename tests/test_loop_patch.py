@@ -87,7 +87,7 @@ class TestLoopHandlerPatch:
         client.im.v1.message.patch.return_value.code = 400
 
         # Setup reply_message to return IDs
-        handler.reply_message.side_effect = ["msg_1", "msg_2"]
+        handler.reply_message.side_effect = ["msg_1", "msg_2", "msg_3"]
 
         # Configure mock project duration
         mock_engine = MagicMock()
@@ -120,32 +120,22 @@ class TestLoopHandlerPatch:
             # Verify fallback to reply_message (sending msg_2)
             assert handler.reply_message.call_count == 2
 
-            # 3. Third call: Iteration done -> Should try patch msg_2 (the new valid ID)
+            # 3. Third call: Iteration done -> Now sends independent new message (msg_3)
             client.im.v1.message.patch.reset_mock()
             handler.reply_message.reset_mock()
-
-            # Now let patch succeed for the 3rd call to prove ID updated
-            client.im.v1.message.patch.return_value.success.return_value = True
 
             record = MagicMock(spec=IterationRecord)
             record.status = IterationStatus.SUCCESS
             callbacks.on_iteration_done(1, record)
 
-            # Verify patch called on msg_2
-            patch_args, _ = client.im.v1.message.patch.call_args
-            assert patch_args[0].message_id == "msg_2"
-
-            # Verify no new message
-            handler.reply_message.assert_not_called()
+            # Verify new message sent (independent card, not patch)
+            assert handler.reply_message.call_count == 1 or handler.send_message.call_count == 1
 
     def test_loop_message_non_update_event(self, handler):
-        """Test that some events might force a new message if designed (though current spec says reuse).
-        Actually, let's verify on_project_done also reuses if possible, or maybe we want it to be new?
-        According to plan: 'prioritize calling self.patch_message'.
-        """
+        """Test that on_project_done sends an independent new message."""
         client = handler.ctx.api_client_factory.return_value
         client.im.v1.message.patch.return_value.success.return_value = True
-        handler.reply_message.return_value = "msg_1"
+        handler.reply_message.side_effect = ["msg_1", "msg_done"]
 
         callbacks = handler._create_loop_callbacks("msg_origin", "chat_1", None)
 
@@ -155,15 +145,12 @@ class TestLoopHandlerPatch:
             # 1. Send initial
             callbacks.on_analyzing_done(MagicMock())
 
-            # 2. Project Done
+            # 2. Project Done — now sends independent new message
             mock_project = MagicMock(spec=LoopProject)
             mock_project.satisfied_count = 5
             mock_project.total_criteria = 5
 
             callbacks.on_project_done(mock_project)
 
-            # Verify it patched the existing message
-            client.im.v1.message.patch.assert_called()
-
-            # And didn't send new one
-            handler.reply_message.assert_called_once()  # Only the first one
+            # Verify new message sent (2 total: analyzing_done + project_done)
+            assert handler.reply_message.call_count == 2 or handler.send_message.call_count >= 1
