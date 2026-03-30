@@ -28,7 +28,7 @@ def test_auto_update_ttadk_success(mock_settings, mock_run):
 
     assert result is True
     mock_run.assert_called_once_with(
-        ["ttadk", "update"],
+        ["ttadk", "upgrade"],
         capture_output=True,
         text=True,
         timeout=120,
@@ -75,7 +75,7 @@ def test_auto_update_ttadk_timeout(mock_settings, mock_run):
     settings.ttadk_update_timeout = 120
     mock_settings.return_value = settings
 
-    mock_run.side_effect = subprocess.TimeoutExpired(cmd="ttadk update", timeout=120)
+    mock_run.side_effect = subprocess.TimeoutExpired(cmd="ttadk upgrade", timeout=120)
 
     result = auto_update_ttadk()
 

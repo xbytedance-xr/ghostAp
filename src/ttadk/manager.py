@@ -1693,7 +1693,7 @@ def auto_update_ttadk() -> bool:
 
     try:
         p = subprocess.run(
-            ["ttadk", "update"],
+            ["ttadk", "upgrade"],
             capture_output=True,
             text=True,
             timeout=settings.ttadk_update_timeout,
