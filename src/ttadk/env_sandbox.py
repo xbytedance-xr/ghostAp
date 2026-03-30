@@ -6,6 +6,7 @@
 - 只覆盖必要的环境变量（默认：HOME/XDG_CONFIG_HOME；可选：XDG_CACHE_HOME）
 - 其余环境变量继承父进程，避免破坏代理/证书/locale 等运行依赖
 - 统一清理 `CLAUDECODE`（避免嵌套会话 guard 导致探测/启动误判）
+- 保留真实 HOME 下的鉴权目录（Library/Preferences）到 sandbox，避免重复 OAuth 鉴权
 - best-effort：即使目录创建失败，也不抛异常影响主流程（回退为原 env）
 """
 
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -21,6 +23,25 @@ from ..config import get_settings
 logger = logging.getLogger(__name__)
 
 _SANDBOX_LOGGED = False
+
+_AUTH_PRESERVE_DIRS: tuple[str, ...] = (
+    os.path.join("Library", "Preferences", "bytesso-nodejs"),
+) if sys.platform == "darwin" else ()
+
+
+def _symlink_auth_dirs(real_home: str, sandbox_root: Path) -> None:
+    for rel in _AUTH_PRESERVE_DIRS:
+        src = Path(real_home) / rel
+        if not src.is_dir():
+            continue
+        dst = sandbox_root / rel
+        if dst.exists() or dst.is_symlink():
+            continue
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.symlink_to(src)
+        except Exception:
+            pass
 
 
 def _safe_str(x: object) -> str:
@@ -129,6 +150,13 @@ def build_ttadk_subprocess_env(
 
         env["HOME"] = sandbox_root
         env["XDG_CONFIG_HOME"] = str(xdg_config)
+
+        real_home = os.environ.get("HOME", "")
+        if real_home and real_home != sandbox_root:
+            try:
+                _symlink_auth_dirs(real_home, root)
+            except Exception:
+                pass
 
         if cover_cache:
             xdg_cache = root / "xdg_cache"

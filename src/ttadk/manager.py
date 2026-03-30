@@ -1679,38 +1679,40 @@ _manager: Optional[TTADKManager] = None
 _manager_lock = threading.Lock()
 
 _ttadk_update_attempted: bool = False
+_ttadk_update_lock = threading.Lock()
 
 
-def auto_update_ttadk() -> bool:
+def auto_update_ttadk() -> None:
     global _ttadk_update_attempted
-    if _ttadk_update_attempted:
-        return False
-    _ttadk_update_attempted = True
+    with _ttadk_update_lock:
+        if _ttadk_update_attempted:
+            return
+        _ttadk_update_attempted = True
 
     settings = get_settings()
     if not settings.ttadk_auto_update:
-        return False
+        return
 
-    try:
-        p = subprocess.run(
-            ["ttadk", "upgrade"],
-            capture_output=True,
-            text=True,
-            timeout=settings.ttadk_update_timeout,
-        )
-        if p.returncode == 0:
-            logger.info("[TTADK] auto-update succeeded")
-            return True
-        else:
-            logger.warning(
-                "[TTADK] auto-update failed (rc=%d) stderr=%s",
-                p.returncode,
-                ((p.stderr or "").strip())[-200:] or "(empty)",
+    def _do_upgrade() -> None:
+        try:
+            p = subprocess.run(
+                ["ttadk", "upgrade"],
+                capture_output=True,
+                text=True,
+                timeout=settings.ttadk_update_timeout,
             )
-            return False
-    except Exception as e:
-        logger.warning("[TTADK] auto-update error: %s", e)
-        return False
+            if p.returncode == 0:
+                logger.info("[TTADK] auto-update succeeded")
+            else:
+                logger.warning(
+                    "[TTADK] auto-update failed (rc=%d) stderr=%s",
+                    p.returncode,
+                    ((p.stderr or "").strip())[-200:] or "(empty)",
+                )
+        except Exception as e:
+            logger.warning("[TTADK] auto-update error: %s", e)
+
+    threading.Thread(target=_do_upgrade, daemon=True, name="ttadk-auto-upgrade").start()
 
 
 # 显式迁移标记：避免反复从函数属性迁移 legacy store（保持 best-effort 且不引入 import-time 副作用）。
