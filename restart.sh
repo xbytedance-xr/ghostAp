@@ -33,7 +33,7 @@ stop_service() {
     
     PIDS=$(get_running_pids)
     if [ -n "$PIDS" ]; then
-        echo "发现残留进程: $PIDS，正在清理..."
+        echo "发现残留进程: $(echo $PIDS | tr '\n' ' ')，正在清理..."
         # 同时杀进程本身与进程组，避免遗留子进程
         echo "$PIDS" | xargs kill 2>/dev/null || true
         for p in $PIDS; do
