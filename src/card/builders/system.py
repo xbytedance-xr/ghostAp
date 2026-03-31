@@ -123,7 +123,7 @@ class SystemBuilder:
         yolo_enabled: bool, project_id: Optional[str], view: str, tool_name: str = ""
     ) -> dict:
         enabled = bool(yolo_enabled)
-        label = "⚡ YOLO：已开启（点击关闭）" if enabled else "⚡ YOLO：已关闭（点击开启）"
+        label = "⚡ 自动执行：开启（点击关闭）" if enabled else "⚡ 自动执行：关闭（点击开启）"
         return {
             "tag": "button",
             "text": {"tag": "plain_text", "content": label},

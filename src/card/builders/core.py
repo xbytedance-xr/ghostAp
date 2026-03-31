@@ -121,7 +121,7 @@ class CoreBuilder:
         yolo_label = "开启" if yolo_enabled else "关闭"
         return {
             "tag": "markdown",
-            "content": f"🎮 **TTADK 状态** · 工具: `{tool}` · 模型: `{model}` · YOLO: `{yolo_label}`",
+            "content": f"🎮 **TTADK 状态** · 工具: `{tool}` · 模型: `{model}` · 自动执行: `{yolo_label}`",
             "text_size": "notation",
         }
 

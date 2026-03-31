@@ -735,7 +735,6 @@ class SystemHandler(BaseHandler):
         project = project or self.project_manager.get_active_project(chat_id)
         project_id = project.project_id if project else None
         manager = get_ttadk_manager()
-        yolo_enabled = self._resolve_ttadk_yolo_enabled(chat_id, project=project, project_id=project_id)
 
         auto_update_ttadk()
 
@@ -748,12 +747,10 @@ class SystemHandler(BaseHandler):
             )
             return
 
-        if not force_select and yolo_enabled:
+        if not force_select:
             auto_tool = self._pick_ttadk_auto_tool(
                 result.tools or [], project=project, current_tool=manager.get_current_tool()
             )
-            if not auto_tool and result.tools:
-                auto_tool = result.tools[0].name
 
             if auto_tool:
                 manager.set_tool(auto_tool)
@@ -778,14 +775,21 @@ class SystemHandler(BaseHandler):
                 auto_model = self._pick_ttadk_auto_model(
                     models_result.models or [], project=project, current_model=manager.get_current_model()
                 )
-                if not auto_model and models_result.models:
-                    auto_model = models_result.models[0].name
 
                 if auto_model:
                     self.handle_select_ttadk_model(
                         message_id, chat_id, auto_tool, auto_model, project=project, silent=True
                     )
                     return
+
+                yolo_enabled = self._resolve_ttadk_yolo_enabled(chat_id, project=project, project_id=project_id)
+                msg_type, card_content = CardBuilder.build_ttadk_model_select_card(
+                    models_result.models, auto_tool, project_id, yolo_enabled=yolo_enabled
+                )
+                self.reply_message(message_id, card_content, msg_type=msg_type)
+                return
+
+        yolo_enabled = self._resolve_ttadk_yolo_enabled(chat_id, project=project, project_id=project_id)
         msg_type, card_content = CardBuilder.build_ttadk_tool_select_card(
             result.tools, project_id, yolo_enabled=yolo_enabled
         )
@@ -869,17 +873,14 @@ class SystemHandler(BaseHandler):
             # 有严重警告（如 models_untrusted），发送警告消息
             self.reply_message(message_id, f"⚠️ TTADK 模型列表可能不完整/不可信: {'; '.join(critical_warnings)}")
 
-        yolo_enabled = self._resolve_ttadk_yolo_enabled(chat_id, project=project, project_id=project_id)
-        if yolo_enabled:
-            auto_model = self._pick_ttadk_auto_model(
-                result.models or [], project=project, current_model=manager.get_current_model()
-            )
-            if not auto_model and result.models:
-                auto_model = result.models[0].name
-            if auto_model:
-                self.handle_select_ttadk_model(message_id, chat_id, tool_name, auto_model, project=project, silent=True)
-                return
+        auto_model = self._pick_ttadk_auto_model(
+            result.models or [], project=project, current_model=manager.get_current_model()
+        )
+        if auto_model:
+            self.handle_select_ttadk_model(message_id, chat_id, tool_name, auto_model, project=project, silent=True)
+            return
 
+        yolo_enabled = self._resolve_ttadk_yolo_enabled(chat_id, project=project, project_id=project_id)
         msg_type, card_content = CardBuilder.build_ttadk_model_select_card(
             result.models, tool_name, project_id, yolo_enabled=yolo_enabled
         )

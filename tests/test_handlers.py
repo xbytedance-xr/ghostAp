@@ -401,7 +401,7 @@ class TestSystemHandlerRouting:
             manager.get_tools.return_value = SimpleNamespace(tools=tools, error=None, warnings=[])
             mock_manager.return_value = manager
 
-            h.handle_ttadk_command("m1", "c1", project)
+            h.handle_ttadk_command("m1", "c1", project, force_select=True)
 
             h.ttadk_handler.enter_mode.assert_not_called()
             mock_build.assert_called_once()
@@ -434,7 +434,7 @@ class TestSystemHandlerRouting:
             "m1", "c1", "codex", "gpt-5.2", project=project, silent=True
         )
 
-    def test_handle_ttadk_command_yolo_auto_selects_tool_and_model(self):
+    def test_handle_ttadk_command_auto_selects_with_defaults(self):
         ctx = _make_handler_context()
         h = SystemHandler(ctx)
         h.reply_error = MagicMock()
@@ -442,9 +442,9 @@ class TestSystemHandlerRouting:
 
         project = MagicMock()
         project.project_id = "p1"
-        project.ttadk_tool_name = ""
-        project.ttadk_model_name = ""
-        project.ttadk_yolo_enabled = True
+        project.ttadk_tool_name = "codex"
+        project.ttadk_model_name = "gpt-5.2"
+        project.ttadk_yolo_enabled = False
         project.root_path = "/tmp"
 
         tools = [
@@ -470,17 +470,50 @@ class TestSystemHandlerRouting:
             "m1", "c1", "codex", "gpt-5.2", project=project, silent=True
         )
 
-    def test_handle_select_ttadk_tool_yolo_falls_back_to_first_model(self):
+    def test_handle_ttadk_command_no_defaults_shows_tool_card(self):
         ctx = _make_handler_context()
         h = SystemHandler(ctx)
         h.reply_message = MagicMock()
         h.reply_error = MagicMock()
+
+        project = MagicMock()
+        project.project_id = "p1"
+        project.ttadk_tool_name = ""
+        project.ttadk_model_name = ""
+        project.ttadk_yolo_enabled = False
+        project.root_path = "/tmp"
+
+        tools = [
+            TTADKTool(name="codex", description=""),
+            TTADKTool(name="claude", description=""),
+        ]
+
+        manager = MagicMock()
+        manager.get_current_tool.return_value = ""
+        manager.get_tools.return_value = SimpleNamespace(tools=tools, error=None)
+
+        with (
+            patch("src.feishu.handlers.system.get_ttadk_manager", return_value=manager),
+            patch("src.feishu.handlers.system.CardBuilder") as mock_builder,
+        ):
+            mock_builder.build_ttadk_tool_select_card.return_value = ("interactive", "{}")
+            h.handle_ttadk_command("m1", "c1", project)
+
+        mock_builder.build_ttadk_tool_select_card.assert_called_once()
+
+    def test_handle_select_ttadk_tool_no_default_model_shows_card(self):
+        ctx = _make_handler_context()
+        h = SystemHandler(ctx)
+        h.reply_message = MagicMock()
+        h.reply_error = MagicMock()
+        h.patch_message = MagicMock(return_value=True)
         h.handle_select_ttadk_model = MagicMock()
 
         project = MagicMock()
         project.project_id = "p1"
         project.root_path = "/tmp"
-        project.ttadk_yolo_enabled = True
+        project.ttadk_yolo_enabled = False
+        project.ttadk_model_name = ""
         ctx.project_manager.get_project.return_value = project
 
         manager = MagicMock()
@@ -495,12 +528,15 @@ class TestSystemHandlerRouting:
             warnings=[],
         )
 
-        with patch("src.feishu.handlers.system.get_ttadk_manager", return_value=manager):
+        with (
+            patch("src.feishu.handlers.system.get_ttadk_manager", return_value=manager),
+            patch("src.feishu.handlers.system.CardBuilder") as mock_builder,
+        ):
+            mock_builder.build_ttadk_model_select_card.return_value = ("interactive", "{}")
             h.handle_select_ttadk_tool("m1", "c1", "codex", "p1")
 
-        h.handle_select_ttadk_model.assert_called_once_with(
-            "m1", "c1", "codex", "gpt-5.2", project=project, silent=True
-        )
+        h.handle_select_ttadk_model.assert_not_called()
+        mock_builder.build_ttadk_model_select_card.assert_called_once()
 
     def test_handle_ttadk_command_tool_list_error_returns_hint(self):
         ctx = _make_handler_context()

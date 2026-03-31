@@ -195,7 +195,7 @@ class TestCardBuilder:
         assert "TTADK 状态" in content_str
         assert "工具: `codex`" in content_str
         assert "模型: `gpt-5.2`" in content_str
-        assert "YOLO: `开启`" in content_str
+        assert "自动执行: `开启`" in content_str
 
     def test_build_project_response_card_no_buttons(self, sample_project):
         msg_type, content = CardBuilder.build_project_response_card(
@@ -288,7 +288,7 @@ class TestCardBuilder:
         assert "TTADK 状态" in content_str
         assert "工具: `claude`" in content_str
         assert "模型: `gpt-5.2-ttadk`" in content_str
-        assert "YOLO: `关闭`" in content_str
+        assert "自动执行: `关闭`" in content_str
 
     def test_build_project_created_card(self, sample_project):
         msg_type, content = CardBuilder.build_project_created_card(sample_project)

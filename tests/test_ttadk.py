@@ -1,3 +1,4 @@
+import sys
 import time
 from unittest.mock import MagicMock
 
@@ -1161,6 +1162,64 @@ def test_ttadk_sandbox_env_disabled_allows_real_home(monkeypatch, tmp_path):
     assert root == ""
     assert env.get("HOME") == "/real_home"
     assert env.get("XDG_CONFIG_HOME") == "/real_xdg"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS auth dirs only")
+def test_symlink_auth_dirs_replaces_real_dir_with_symlink(tmp_path):
+    from src.ttadk.env_sandbox import _symlink_auth_dirs
+
+    real_home = tmp_path / "real"
+    auth_src = real_home / "Library" / "Preferences" / "bytesso-nodejs"
+    auth_src.mkdir(parents=True)
+    (auth_src / "device-shared.json").write_text("{}")
+
+    sandbox = tmp_path / "sandbox"
+    old_dir = sandbox / "Library" / "Preferences" / "bytesso-nodejs"
+    old_dir.mkdir(parents=True)
+    (old_dir / "stale.json").write_text("old")
+
+    _symlink_auth_dirs(str(real_home), sandbox)
+
+    assert old_dir.is_symlink()
+    assert old_dir.resolve() == auth_src.resolve()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS auth dirs only")
+def test_symlink_auth_dirs_fixes_wrong_symlink(tmp_path):
+    from src.ttadk.env_sandbox import _symlink_auth_dirs
+
+    real_home = tmp_path / "real"
+    auth_src = real_home / "Library" / "Preferences" / "bytesso-nodejs"
+    auth_src.mkdir(parents=True)
+
+    sandbox = tmp_path / "sandbox"
+    dst = sandbox / "Library" / "Preferences" / "bytesso-nodejs"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.symlink_to(tmp_path / "wrong_target")
+
+    _symlink_auth_dirs(str(real_home), sandbox)
+
+    assert dst.is_symlink()
+    assert dst.resolve() == auth_src.resolve()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS auth dirs only")
+def test_symlink_auth_dirs_skips_correct_symlink(tmp_path):
+    from src.ttadk.env_sandbox import _symlink_auth_dirs
+
+    real_home = tmp_path / "real"
+    auth_src = real_home / "Library" / "Preferences" / "bytesso-nodejs"
+    auth_src.mkdir(parents=True)
+
+    sandbox = tmp_path / "sandbox"
+    dst = sandbox / "Library" / "Preferences" / "bytesso-nodejs"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.symlink_to(auth_src)
+
+    _symlink_auth_dirs(str(real_home), sandbox)
+
+    assert dst.is_symlink()
+    assert dst.resolve() == auth_src.resolve()
 
 
 def test_precheck_ttadk_startup_model_with_diagnostics_non_mapping_is_coerced_to_empty_dict(monkeypatch):

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Callable, Optional
@@ -35,13 +36,19 @@ def _symlink_auth_dirs(real_home: str, sandbox_root: Path) -> None:
         if not src.is_dir():
             continue
         dst = sandbox_root / rel
-        if dst.exists() or dst.is_symlink():
-            continue
+        if dst.is_symlink():
+            if dst.resolve() == src.resolve():
+                continue
+            dst.unlink()
+        elif dst.is_dir():
+            shutil.rmtree(dst, ignore_errors=True)
+        elif dst.exists():
+            dst.unlink(missing_ok=True)
         try:
             dst.parent.mkdir(parents=True, exist_ok=True)
             dst.symlink_to(src)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[env_sandbox] failed to symlink auth dir %s → %s: %s", dst, src, exc)
 
 
 def _safe_str(x: object) -> str:
