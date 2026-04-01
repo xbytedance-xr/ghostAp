@@ -26,12 +26,17 @@ logger = logging.getLogger(__name__)
 class ACPStartupError(RuntimeError):
     """ACP 启动失败的统一可诊断异常（SSOT）。
 
+    继承 RuntimeError 保持向后兼容（已有 except RuntimeError 的捕获链），
+    同时标记为 GhostAP 域异常方便统一 log_exception 降级。
+
     字段协议（稳定）：
     - agent_cmd/agent_args/cwd: 启动命令
     - returncode/stdout_snippet/stderr_snippet: best-effort 诊断片段（应为短文本，便于日志输出/脱敏/截断）
     - fail_phase: 失败阶段（可选但强烈建议设置），用于聚合与排障
     - cause: 原始异常（保留异常链）
     """
+
+    is_ghostap_error = True
 
     def __init__(
         self,

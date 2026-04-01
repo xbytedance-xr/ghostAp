@@ -49,5 +49,53 @@ class TestCommandParser(unittest.TestCase):
         self.assertFalse(cmd.flags)
 
 
+class TestCommandParserParse(unittest.TestCase):
+    def test_empty_string(self):
+        cmd = CommandParser.parse("")
+        self.assertEqual(cmd.command, "")
+        self.assertEqual(cmd.args, "")
+        self.assertFalse(cmd.is_valid)
+
+    def test_command_only(self):
+        cmd = CommandParser.parse("/deep")
+        self.assertEqual(cmd.command, "/deep")
+        self.assertEqual(cmd.args, "")
+
+    def test_command_with_args(self):
+        cmd = CommandParser.parse("/deep implement something")
+        self.assertEqual(cmd.command, "/deep")
+        self.assertEqual(cmd.args, "implement something")
+
+    def test_flag_without_known_flags_returns_raw_args(self):
+        cmd = CommandParser.parse("/deep --verbose")
+        self.assertEqual(cmd.args, "--verbose")
+
+    def test_known_flag_extracted(self):
+        cmd = CommandParser.parse("/status --all", known_flags={"all"})
+        self.assertTrue(cmd.flags.get("all"))
+        self.assertEqual(cmd.args, "")
+
+    def test_mixed_args_and_known_flag(self):
+        cmd = CommandParser.parse("/deep implement --verbose feature", known_flags={"verbose"})
+        self.assertTrue(cmd.flags.get("verbose"))
+        self.assertEqual(cmd.args, "implement feature")
+
+    def test_unknown_flag_not_extracted(self):
+        cmd = CommandParser.parse("/cmd --unknown", known_flags={"all"})
+        self.assertFalse(cmd.flags)
+        self.assertEqual(cmd.args, "--unknown")
+
+    def test_multiple_known_flags(self):
+        cmd = CommandParser.parse("/cmd --all --verbose", known_flags={"all", "verbose"})
+        self.assertTrue(cmd.flags.get("all"))
+        self.assertTrue(cmd.flags.get("verbose"))
+        self.assertEqual(cmd.args, "")
+
+    def test_whitespace_and_case_normalization(self):
+        cmd = CommandParser.parse("  /CMD  text  ")
+        self.assertEqual(cmd.command, "/cmd")
+        self.assertEqual(cmd.args, "text")
+
+
 if __name__ == "__main__":
     unittest.main()

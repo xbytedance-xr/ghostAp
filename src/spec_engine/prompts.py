@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Optional
 
 from ..engine_base import ReviewPerspective, ReviewResult
 
 if TYPE_CHECKING:
-    from .models import SpecProject, SpecTask
+    from .models import PlanArtifact, SpecArtifact, SpecProject, SpecTask
 
 
 def format_criteria_status(project: Optional[SpecProject]) -> str:
@@ -58,11 +59,16 @@ Schema（字段必须存在；数组元素为字符串）：
 """
 
 
-def build_plan_prompt(spec: str, root_path: str) -> str:
+def build_plan_prompt(spec: str, root_path: str, spec_artifact: Optional["SpecArtifact"] = None) -> str:
+    if spec_artifact and spec_artifact.goals:
+        spec_section = json.dumps(spec_artifact.to_dict(), ensure_ascii=False, indent=2)
+    else:
+        spec_section = spec
+
     return f"""你是一个资深工程师。基于下述 Spec（规格），产出 Plan（规划），强调可执行、可验证。
 
 ## Spec 输入
-{spec}
+{spec_section}
 
 ## 工作目录
 {root_path}
@@ -83,11 +89,16 @@ Schema（字段必须存在；数组元素为字符串）：
 """
 
 
-def build_task_prompt(plan: str) -> str:
+def build_task_prompt(plan: str, plan_artifact: Optional["PlanArtifact"] = None) -> str:
+    if plan_artifact and plan_artifact.steps:
+        plan_section = json.dumps(plan_artifact.to_dict(), ensure_ascii=False, indent=2)
+    else:
+        plan_section = plan
+
     return f"""将以下实现方案分解为可执行的具体任务。
 
 ## 实现方案
-{plan}
+{plan_section}
 
 ## 输出要求
 请输出结构化的任务列表，每个任务包含：
@@ -108,12 +119,17 @@ def build_task_prompt(plan: str) -> str:
 """
 
 
-def build_build_prompt(tasks: list[SpecTask], plan: str, root_path: str, guidance: str) -> str:
+def build_build_prompt(tasks: list[SpecTask], plan: str, root_path: str, guidance: str, plan_artifact: Optional["PlanArtifact"] = None) -> str:
     task_list = "\n".join(f"{t.task_id}. {t.description}" for t in tasks)
+    if plan_artifact and plan_artifact.steps:
+        plan_section = json.dumps(plan_artifact.to_dict(), ensure_ascii=False, indent=2)
+    else:
+        plan_section = plan
+
     return f"""按以下任务列表逐步执行实现。
 
 ## 实现方案
-{plan}
+{plan_section}
 
 ## 任务列表
 {task_list}

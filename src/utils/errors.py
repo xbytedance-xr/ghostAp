@@ -141,9 +141,10 @@ def fmt_not_found(resource: str, name: str = "") -> str:
 def log_exception(logger: logging.Logger, msg: str, exc: Exception, level: int = logging.ERROR):
     """Log an exception with appropriate level.
 
-    Downgrades known business logic exceptions (GhostAPError) to WARNING.
+    Downgrades known business logic exceptions (GhostAPError or any exception
+    carrying ``is_ghostap_error = True``) to WARNING.
     """
-    if isinstance(exc, GhostAPError):
+    if isinstance(exc, GhostAPError) or getattr(exc, "is_ghostap_error", False):
         logger.warning(f"{msg}: {exc}")
     else:
         logger.log(level, msg, exc_info=exc)

@@ -57,6 +57,8 @@ class TTADKStartupError(RuntimeError):
     调用方可通过 `type(err).__name__ == "TTADKStartupError"` 进行稳定分类。
     """
 
+    is_ghostap_error = True
+
     def __init__(
         self,
         message: str,

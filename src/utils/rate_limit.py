@@ -2,10 +2,14 @@ import threading
 import time
 
 
-class RateLimitExceededException(Exception):
+from .errors import GhostAPError
+
+
+class RateLimitExceededException(GhostAPError):
     """Raised when rate limit is exceeded."""
 
-    pass
+    def __init__(self, message: str = "请求频率超限"):
+        super().__init__(message, action="rate_limit")
 
 
 class RateLimiter:

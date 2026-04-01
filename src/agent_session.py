@@ -29,7 +29,7 @@ from .acp.models import ACPEvent, ACPEventType, PromptResult
 from .acp.sync_adapter import SyncACPSession
 from .config import get_settings
 from .ttadk.env_sandbox import build_ttadk_subprocess_env
-from .utils.retry import RetryPolicy, get_retry_delay, should_retry
+from .utils.retry import RetryPolicy, prompt_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -252,28 +252,12 @@ class SyncClaudeCLISession:
         retry_policy: Optional[RetryPolicy] = None,
         before_retry: Optional[Callable[[int, Exception], None]] = None,
     ) -> PromptResult:
-        policy = retry_policy or RetryPolicy()
-        last_error: Optional[Exception] = None
-
-        for attempt in range(policy.max_retries + 1):
-            try:
-                return self.send_prompt(text, on_event=on_event, timeout=timeout)
-            except Exception as e:
-                last_error = e
-                if attempt >= policy.max_retries or not should_retry(e):
-                    raise
-                if before_retry:
-                    try:
-                        before_retry(attempt + 1, e)
-                    except Exception:
-                        pass
-                delay = max(0.0, float(get_retry_delay(attempt, policy)))
-                if self._cancel_event.wait(timeout=delay):
-                    raise
-
-        if last_error is not None:
-            raise last_error
-        return self.send_prompt(text, on_event=on_event, timeout=timeout)
+        return prompt_with_retry(
+            lambda: self.send_prompt(text, on_event=on_event, timeout=timeout),
+            self._cancel_event,
+            retry_policy=retry_policy,
+            before_retry=before_retry,
+        )
 
     def cancel(self) -> None:
         """Signal cancellation — the streaming loop will terminate the process."""
@@ -545,28 +529,12 @@ class SyncTTADKCLISession:
         retry_policy: Optional[RetryPolicy] = None,
         before_retry: Optional[Callable[[int, Exception], None]] = None,
     ) -> PromptResult:
-        policy = retry_policy or RetryPolicy()
-        last_error: Optional[Exception] = None
-
-        for attempt in range(policy.max_retries + 1):
-            try:
-                return self.send_prompt(text, on_event=on_event, timeout=timeout)
-            except Exception as e:
-                last_error = e
-                if attempt >= policy.max_retries or not should_retry(e):
-                    raise
-                if before_retry:
-                    try:
-                        before_retry(attempt + 1, e)
-                    except Exception:
-                        pass
-                delay = max(0.0, float(get_retry_delay(attempt, policy)))
-                if self._cancel_event.wait(timeout=delay):
-                    raise
-
-        if last_error is not None:
-            raise last_error
-        return self.send_prompt(text, on_event=on_event, timeout=timeout)
+        return prompt_with_retry(
+            lambda: self.send_prompt(text, on_event=on_event, timeout=timeout),
+            self._cancel_event,
+            retry_policy=retry_policy,
+            before_retry=before_retry,
+        )
 
 
 _TTADK_PREAMBLE_PATTERNS = [
@@ -1196,28 +1164,12 @@ class RateLimitAwareSession:
         retry_policy: Optional[RetryPolicy] = None,
         before_retry: Optional[Callable[[int, Exception], None]] = None,
     ) -> PromptResult:
-        policy = retry_policy or RetryPolicy()
-        last_error: Optional[Exception] = None
-
-        for attempt in range(policy.max_retries + 1):
-            try:
-                return self.send_prompt(text, on_event=on_event, timeout=timeout)
-            except Exception as e:
-                last_error = e
-                if attempt >= policy.max_retries or not should_retry(e):
-                    raise
-                if before_retry:
-                    try:
-                        before_retry(attempt + 1, e)
-                    except Exception:
-                        pass
-                delay = max(0.0, float(get_retry_delay(attempt, policy)))
-                if self._cancel_event.wait(timeout=delay):
-                    raise
-
-        if last_error is not None:
-            raise last_error
-        return self.send_prompt(text, on_event=on_event, timeout=timeout)
+        return prompt_with_retry(
+            lambda: self.send_prompt(text, on_event=on_event, timeout=timeout),
+            self._cancel_event,
+            retry_policy=retry_policy,
+            before_retry=before_retry,
+        )
 
 
 class ModelFailureAwareSession:
@@ -1912,28 +1864,12 @@ class ModelFailureAwareSession:
         retry_policy: Optional[RetryPolicy] = None,
         before_retry: Optional[Callable[[int, Exception], None]] = None,
     ) -> PromptResult:
-        policy = retry_policy or RetryPolicy()
-        last_error: Optional[Exception] = None
-
-        for attempt in range(policy.max_retries + 1):
-            try:
-                return self.send_prompt(text, on_event=on_event, timeout=timeout)
-            except Exception as e:
-                last_error = e
-                if attempt >= policy.max_retries or not should_retry(e):
-                    raise
-                if before_retry:
-                    try:
-                        before_retry(attempt + 1, e)
-                    except Exception:
-                        pass
-                delay = max(0.0, float(get_retry_delay(attempt, policy)))
-                if self._cancel_event.wait(timeout=delay):
-                    raise
-
-        if last_error is not None:
-            raise last_error
-        return self.send_prompt(text, on_event=on_event, timeout=timeout)
+        return prompt_with_retry(
+            lambda: self.send_prompt(text, on_event=on_event, timeout=timeout),
+            self._cancel_event,
+            retry_policy=retry_policy,
+            before_retry=before_retry,
+        )
 
 
 def close_session_safely(session: Optional[SyncSession]) -> None:

@@ -18,40 +18,19 @@ def test_acp_manager_retries_start_failure(monkeypatch, caplog):
     import time as _time
     from types import SimpleNamespace
 
+    from tests.helpers import FakeSessionBase
+
     from src.acp import manager as mgr
 
     calls = {"start": 0}
 
-    class FakeSession:
-        def __init__(self, agent_type: str, cwd: str):
-            self.session_id = ""
-            self.last_active = _time.time()
-            self.message_count = 0
-
-        def describe_agent(self):
-            return "cmd=fake args=acp serve cwd=."
-
+    class FakeSession(FakeSessionBase):
         def start(self, startup_timeout: float = 60):
             calls["start"] += 1
             if calls["start"] < 3:
                 raise TimeoutError("startup timeout")
             self.session_id = "s_ok"
             return self.session_id
-
-        def load_session(self, session_id: str):
-            self.session_id = session_id
-
-        def load_local_history(self, *a, **kw):
-            return []
-
-        def to_snapshot(self):
-            return {"session_id": self.session_id}
-
-        def close(self):
-            return None
-
-        def is_server_healthy(self, healthcheck_timeout: float = 2.0) -> bool:
-            return True
 
     monkeypatch.setattr(mgr, "SyncACPSession", FakeSession)
     monkeypatch.setattr(
@@ -79,31 +58,16 @@ def test_acp_manager_ttadk_start_failure_no_coco_acp_fallback(monkeypatch, caplo
     import time as _time
     from types import SimpleNamespace
 
+    from tests.helpers import FakeSessionBase
+
     from src.acp import manager as mgr
 
-    class FakeFailCLISession:
-        def __init__(self, agent_type: str, cwd: str, **kwargs):
-            self.session_id = ""
-            self.last_active = _time.time()
-            self.message_count = 0
-
+    class FakeFailCLISession(FakeSessionBase):
         def describe_agent(self):
             return "tool=coco backend=cli cwd=."
 
         def start(self, startup_timeout: float = 60):
             raise RuntimeError("boom_cli")
-
-        def load_session(self, session_id: str):
-            self.session_id = session_id
-
-        def load_local_history(self, *a, **kw):
-            return []
-
-        def to_snapshot(self):
-            return {"session_id": self.session_id}
-
-        def close(self):
-            return None
 
         def is_server_healthy(self, healthcheck_timeout: float = 2.0) -> bool:
             return False

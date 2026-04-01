@@ -304,11 +304,15 @@ def test_spec_engine_review_failure_diagnostics_written_to_cycle_and_metrics(mon
         spec_disable_convergence = False
         spec_disable_early_stop = False
         spec_min_cycles = 1
+        spec_rebuild_session_between_cycles = False
         # Add for _save_failed_task
         spec_artifacts_dirname = ".spec_engine"
         spec_history_log_filename = "history.jsonl"
         spec_state_filename = ".spec_engine_state.json"
         spec_phase_output_persist_max_chars = 20000
+        spec_state_cycles_tail = 50
+        spec_state_work_items_tail = 200
+        spec_state_metrics_tail = 200
         # Add for review circuit breaker
         spec_review_failure_circuit_enabled = False
         spec_review_failure_max_consecutive = 3
@@ -425,11 +429,15 @@ def test_spec_engine_review_failure_circuit_breaker_skips_review(monkeypatch, ca
         spec_disable_convergence = False
         spec_disable_early_stop = False
         spec_min_cycles = 1
+        spec_rebuild_session_between_cycles = False
         # Add for _save_failed_task
         spec_artifacts_dirname = ".spec_engine"
         spec_history_log_filename = "history.jsonl"
         spec_state_filename = ".spec_engine_state.json"
         spec_phase_output_persist_max_chars = 20000
+        spec_state_cycles_tail = 50
+        spec_state_work_items_tail = 200
+        spec_state_metrics_tail = 200
 
     engine.settings = _S()
 
@@ -519,11 +527,15 @@ def test_spec_engine_review_circuit_skip_does_not_block_main_loop(monkeypatch, t
         spec_disable_convergence = False
         spec_disable_early_stop = False
         spec_min_cycles = 1
+        spec_rebuild_session_between_cycles = False
         # Add for _save_failed_task
         spec_artifacts_dirname = ".spec_engine"
         spec_history_log_filename = "history.jsonl"
         spec_state_filename = ".spec_engine_state.json"
         spec_phase_output_persist_max_chars = 20000
+        spec_state_cycles_tail = 50
+        spec_state_work_items_tail = 200
+        spec_state_metrics_tail = 200
 
     engine.settings = _S()
 
@@ -2270,6 +2282,7 @@ class TestSpecEngineExecution:
         s.spec_state_work_items_tail = 200
         s.spec_state_metrics_tail = 200
         s.ark_base_url = "https://ark-cn-beijing.bytedance.net/api/v3"
+        s.spec_rebuild_session_between_cycles = False
         return s
 
     def _make_mock_session(self, text_responses):
@@ -2928,6 +2941,7 @@ class TestSpecEngineExecution:
         s.spec_min_cycles = 1
         s.spec_history_log_filename = "history.jsonl"
         s.spec_generated_specs_retention = 1000
+        s.spec_rebuild_session_between_cycles = False
         mock_settings.return_value = s
 
         class DynamicSession:
@@ -3048,6 +3062,7 @@ class TestSpecEngineProjectTypes:
         s.spec_state_work_items_tail = 200
         s.spec_state_metrics_tail = 200
         s.ark_base_url = "https://ark-cn-beijing.bytedance.net/api/v3"
+        s.spec_rebuild_session_between_cycles = False
         return s
 
     def _make_mock_session(self, text_responses):

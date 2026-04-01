@@ -485,7 +485,11 @@ class LoopContextManager:
 
         for i, record in enumerate(iterations):
             distance_from_end = total - 1 - i
-            role_label = f"{record.role.emoji} {record.role.display_name}"
+            role_label = (
+                f"{record.role.emoji} {record.role.display_name}"
+                if record.role
+                else "🔧 执行者"
+            )
             status_emoji = "✅" if record.status == IterationStatus.SUCCESS else "❌"
 
             if distance_from_end < recent_full:
@@ -505,7 +509,7 @@ class LoopContextManager:
                 brief = (
                     record.summary[:80]
                     if record.summary
-                    else f"{record.role.display_name} {'成功' if record.status == IterationStatus.SUCCESS else '失败'}"
+                    else f"{'成功' if record.status == IterationStatus.SUCCESS else '失败'}"
                 )
                 lines.append(f"- #{record.iteration} {status_emoji} {brief}")
 

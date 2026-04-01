@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import time
+from collections import namedtuple
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -109,6 +110,8 @@ from .session_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+VerifyResult = namedtuple("VerifyResult", ["passed", "output"])
 
 
 @dataclass
@@ -548,7 +551,7 @@ class SpecEngine(BaseEngine):
                 ):
                     last_error = "Internal error"
             except Exception:
-                pass
+                logger.debug("override hint processing failed", exc_info=True)
 
             # 停止态下（例如服务关闭触发 cancel），phase 异常通常是 session cancel 或进程退出导致，
             # 不应继续触发模型切换或失败任务持久化。
@@ -577,6 +580,21 @@ class SpecEngine(BaseEngine):
                 err_preview = last_error or ""
             logger.error("[Spec] Phase %s 失败 (task_id=%s): %s", phase.value, task_id, err_preview)
             raise RuntimeError(f"Phase {phase.value} 失败，任务已保存(task_id={task_id}): {last_error}") from e
+
+    def _verify_build_result(self) -> VerifyResult:
+        if not self._project or not self._project.verify_command:
+            return VerifyResult(passed=True, output="")
+        from ..sandbox.executor import SandboxExecutor
+        executor = SandboxExecutor()
+        result = executor.execute(
+            self._project.verify_command,
+            cwd=self.root_path,
+            interactive=False,
+        )
+        output = result.stdout
+        if result.stderr:
+            output = f"{output}\n{result.stderr}".strip()
+        return VerifyResult(passed=result.success, output=output)
 
     def _try_switch_model(self, callbacks) -> bool:
         switched, new_current, _, self._models_tried, new_session = _try_switch_model(
@@ -745,7 +763,7 @@ class SpecEngine(BaseEngine):
             plan_output = self._run_phase(
                 cycle_num,
                 SpecPhase.PLAN,
-                build_plan_prompt(spec_output, self.root_path),
+                build_plan_prompt(spec_output, self.root_path, spec_artifact=cycle.spec_artifact),
                 callbacks,
                 timeout,
             )
@@ -770,7 +788,7 @@ class SpecEngine(BaseEngine):
             task_output = self._run_phase(
                 cycle_num,
                 SpecPhase.TASK,
-                build_task_prompt(plan_output),
+                build_task_prompt(plan_output, plan_artifact=cycle.plan_artifact),
                 callbacks,
                 timeout,
             )
@@ -801,7 +819,7 @@ class SpecEngine(BaseEngine):
             build_output = self._run_phase(
                 cycle_num,
                 SpecPhase.BUILD,
-                build_build_prompt(cycle.tasks, plan_output, self.root_path, self._consume_guidance()),
+                build_build_prompt(cycle.tasks, plan_output, self.root_path, self._consume_guidance(), plan_artifact=cycle.plan_artifact),
                 callbacks,
                 timeout,
             )
@@ -930,6 +948,14 @@ class SpecEngine(BaseEngine):
             if decision == "converged":
                 termination = "converged"
                 break
+
+            if self.settings.spec_rebuild_session_between_cycles:
+                logger.info(
+                    "[Spec:%s] 循环 %d 结束, 重建 Session 以压缩对话上下文",
+                    self._project.name,
+                    cycle_num,
+                )
+                self._recreate_session_best_effort()
 
         return termination
 

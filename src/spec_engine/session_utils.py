@@ -113,7 +113,7 @@ def recreate_session_best_effort(
     model_name: Optional[str],
     close_session_fn: Callable,
 ) -> object:
-    logger.info("[Spec] 正在尝试重建 ACP Session 以从错误中恢复...")
+    logger.info("[Spec] 正在重建 ACP Session...")
     close_session_fn()
     try:
         new_session = create_engine_session(

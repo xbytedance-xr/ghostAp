@@ -34,6 +34,7 @@ from ..utils.trace import TraceContext
 from .models import (
     IterationRecord,
     IterationStatus,
+    LoopContextManager,
     LoopProject,
     LoopProjectStatus,
     LoopRequirement,
@@ -80,6 +81,7 @@ class LoopEngine(BaseEngine):
         self._last_review: Optional[ReviewResult] = None
         self._review_extra_used: int = 0
         self._last_heartbeat: float = 0.0
+        self._context_manager: Optional[LoopContextManager] = None
 
     def execute(
         self,
@@ -143,7 +145,11 @@ class LoopEngine(BaseEngine):
                 # Build initial prompt
                 initial_prompt = self._build_initial_prompt(requirement)
                 timeout = self.settings.loop_execution_timeout
-    
+
+                self._context_manager = LoopContextManager(
+                    max_context_tokens=self.settings.loop_max_context_tokens,
+                )
+
                 review_enabled = self.settings.loop_review_enabled
                 review_extra_max = self.settings.loop_review_extra_iterations
                 self._review_extra_used = 0
@@ -208,6 +214,9 @@ class LoopEngine(BaseEngine):
     
                     with self._lock:
                         self._project.iterations.append(record)
+
+                    if self._context_manager:
+                        self._context_manager.record_iteration(record)
     
                     if callbacks.on_iteration_done:
                         callbacks.on_iteration_done(iteration, record)
@@ -420,7 +429,6 @@ class LoopEngine(BaseEngine):
 """
 
     def _build_iteration_prompt(self, iteration: int, requirement: LoopRequirement) -> str:
-        # Show satisfied vs unsatisfied criteria based on tracker state
         tracker = self._project.criteria_tracker if self._project else None
         criteria_lines = []
         for i, c in enumerate(requirement.acceptance_criteria):
@@ -430,11 +438,17 @@ class LoopEngine(BaseEngine):
                 criteria_lines.append(f"- [ ] {c}")
         criteria_list = "\n".join(criteria_lines)
 
+        history_section = ""
+        if self._context_manager and self._context_manager.iteration_count > 0:
+            history_section = f"\n{self._context_manager.build_context_prompt()}\n"
+
+        goal_anchor = f"## 原始目标\n{requirement.goal}\n"
+
         guidance_section = ""
         if self._user_guidance:
             combined = "\n\n".join(self._user_guidance)
             guidance_section = f"\n## 用户引导\n{combined}\n"
-            self._user_guidance.clear()  # consume after use
+            self._user_guidance.clear()
 
         review_section = ""
         if self._last_review and not self._last_review.all_passed:
@@ -448,9 +462,10 @@ class LoopEngine(BaseEngine):
 
         return f"""继续完成剩余的验收标准。这是第 {iteration} 轮迭代。
 
+{goal_anchor}
 ## 验收标准进度
 {criteria_list}
-{guidance_section}{review_section}
+{history_section}{guidance_section}{review_section}
 请聚焦未满足的标准（未打勾的）和审查反馈，继续实现。
 完成后报告每个标准的状态。
 """
@@ -807,16 +822,26 @@ FAIL
         return ""
 
     def _detect_convergence(self) -> bool:
-        """Detect if recent iterations made no progress."""
         if not self._project or len(self._project.iterations) < self.settings.loop_convergence_window:
             return False
 
         window = self.settings.loop_convergence_window
         recent = self._project.iterations[-window:]
 
-        # If all recent iterations have very short output, consider converged
         if all(len(r.output or "") < 50 for r in recent):
             return True
+
+        tracker = self._project.criteria_tracker
+        if tracker and tracker.total_count > 0:
+            recent_progress = [r.criteria_progress for r in recent]
+            if recent_progress:
+                satisfied_counts = [
+                    sum(1 for v in p.values() if v) for p in recent_progress
+                ]
+                if len(satisfied_counts) >= window and max(satisfied_counts) - min(satisfied_counts) == 0:
+                    all_failed = all(r.status == IterationStatus.FAILED for r in recent)
+                    if all_failed:
+                        return True
 
         return False
 

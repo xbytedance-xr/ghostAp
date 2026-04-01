@@ -21,6 +21,7 @@ dev = [
     "mypy>=1.19.1",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
     "ruff>=0.14.14",
 ]
 
@@ -38,6 +39,20 @@ asyncio_default_fixture_loop_scope = "function"
 filterwarnings = [
     "ignore::DeprecationWarning:lark_oapi.*",
     "ignore::DeprecationWarning:websockets.*"
+]
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["src/main.py", "tests/*"]
+
+[tool.coverage.report]
+fail_under = 60
+show_missing = true
+skip_empty = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.",
+    "if TYPE_CHECKING:",
 ]
 
 [tool.ruff]

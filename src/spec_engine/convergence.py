@@ -1,8 +1,11 @@
 """Convergence detection and continuation policy for SpecEngine."""
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from .models import SpecCycleMetrics, SpecProject, SpecWorkItemStatus
 from .review import normalize_review_diagnostics
@@ -23,6 +26,7 @@ class ContinuationPolicy:
         review_passed: bool,
         converged: bool,
         metrics: SpecCycleMetrics,
+        backlog_stuck: bool = False,
     ) -> Optional[str]:
         if cycle_num < self.min_cycles and cycle_num < self.max_cycles:
             return None
@@ -37,6 +41,9 @@ class ContinuationPolicy:
 
         if (not self.disable_convergence) and converged:
             return "converged"
+
+        if backlog_stuck and cycle_num >= 3:
+            return "backlog_stuck"
 
         if self.disable_early_stop:
             return None
@@ -57,6 +64,7 @@ def detect_convergence(
     *,
     convergence_window: int,
     review_enabled: bool,
+    tolerance: int = 0,
 ) -> bool:
     if not project:
         return False
@@ -82,7 +90,7 @@ def detect_convergence(
                 satisfied_now += 1
         counts.append(satisfied_now)
 
-    if len(set(counts)) != 1:
+    if max(counts) - min(counts) > tolerance:
         return False
 
     def _norm(s: str) -> str:
@@ -106,9 +114,24 @@ def detect_convergence(
     return len(set(suggestion_sets)) == 1
 
 
+def detect_backlog_stuck(project: SpecProject, *, window: int = 3) -> bool:
+    if not project or window < 1:
+        return False
+    history = project.metrics_history
+    if len(history) < window:
+        return False
+    recent = history[-window:]
+    if all(m.backlog_pending == 0 for m in recent):
+        return False
+    return all(m.backlog_pending >= recent[0].backlog_pending for m in recent[1:])
+
+
 def compute_cycle_metrics(
     cycle,
     project: SpecProject,
+    *,
+    criteria_weight: float = 0.8,
+    review_weight: float = 0.2,
 ) -> SpecCycleMetrics:
     if not project:
         return SpecCycleMetrics(
@@ -146,13 +169,13 @@ def compute_cycle_metrics(
             review_exception_type = str(d.get("err_type") or "")
             review_error_text = str(d.get("error_text") or "")
     except Exception:
-        pass
+        logger.debug("review diagnostics extraction failed", exc_info=True)
 
     backlog_pending = sum(1 for w in project.work_items if w.status == SpecWorkItemStatus.PENDING)
 
     criteria_ratio = (satisfied / total) if total else 0.0
     review_ratio = 1.0 if (cycle.review_result and cycle.review_result.all_passed) else 0.0
-    goal_attainment = min(1.0, max(0.0, criteria_ratio * 0.8 + review_ratio * 0.2))
+    goal_attainment = min(1.0, max(0.0, criteria_ratio * criteria_weight + review_ratio * review_weight))
 
     improvement_space = 0.0
     if new_satisfied > 0:

@@ -2,12 +2,34 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 from unittest.mock import patch
 
 import pytest
 
+from src.utils.retry import RetryPolicy
+
 _REAL_RUN = subprocess.run
 _REAL_POPEN_INIT = subprocess.Popen.__init__
+
+
+# ---------------------------------------------------------------------------
+# Common pytest fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def cancel_event():
+    return threading.Event()
+
+
+@pytest.fixture
+def fast_retry_policy():
+    return RetryPolicy(max_retries=2, retry_delay=0.01, jitter_factor=0)
+
+
+# ---------------------------------------------------------------------------
+# Safety guards
+# ---------------------------------------------------------------------------
 
 
 def _is_ttadk_cmd(args) -> bool:

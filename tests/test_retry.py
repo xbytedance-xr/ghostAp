@@ -1,10 +1,15 @@
+import threading
+from unittest.mock import MagicMock
+
 import pytest
 
+from src.utils.circuit_breaker import CircuitBreaker, CircuitBreakerOpenException
 from src.utils.retry import (
     NON_RETRYABLE_ERROR_PATTERNS,
     RETRYABLE_ERROR_PATTERNS,
     RetryPolicy,
     get_retry_delay,
+    prompt_with_retry,
     should_retry,
 )
 
@@ -23,6 +28,8 @@ class TestRetryPolicy:
         assert policy.max_retries == 3
         assert policy.retry_delay == 2.0
         assert policy.backoff_multiplier == 1.5
+        assert policy.max_delay == 60.0
+        assert policy.jitter_factor == 0.25
 
     def test_custom_values(self):
         policy = RetryPolicy(max_retries=5, retry_delay=1.0, backoff_multiplier=2.0)
@@ -70,15 +77,104 @@ class TestShouldRetry:
 
 
 class TestGetRetryDelay:
-    def test_delay_calculation(self):
-        policy = RetryPolicy(retry_delay=2.0, backoff_multiplier=1.5)
+    def test_delay_calculation_no_jitter(self):
+        policy = RetryPolicy(retry_delay=2.0, backoff_multiplier=1.5, jitter_factor=0)
         assert get_retry_delay(0, policy) == 2.0
         assert get_retry_delay(1, policy) == 3.0
         assert get_retry_delay(2, policy) == 4.5
 
-    def test_with_different_policy(self):
-        policy = RetryPolicy(retry_delay=1.0, backoff_multiplier=2.0)
+    def test_with_different_policy_no_jitter(self):
+        policy = RetryPolicy(retry_delay=1.0, backoff_multiplier=2.0, jitter_factor=0)
         assert get_retry_delay(0, policy) == 1.0
         assert get_retry_delay(1, policy) == 2.0
         assert get_retry_delay(2, policy) == 4.0
         assert get_retry_delay(3, policy) == 8.0
+
+    def test_max_delay_cap(self):
+        policy = RetryPolicy(retry_delay=10.0, backoff_multiplier=3.0, max_delay=20.0, jitter_factor=0)
+        assert get_retry_delay(0, policy) == 10.0
+        assert get_retry_delay(1, policy) == 20.0
+        assert get_retry_delay(2, policy) == 20.0
+
+    def test_jitter_within_bounds(self):
+        policy = RetryPolicy(retry_delay=10.0, backoff_multiplier=1.0, jitter_factor=0.25)
+        for _ in range(100):
+            delay = get_retry_delay(0, policy)
+            assert 7.5 <= delay <= 12.5
+
+    def test_zero_jitter_deterministic(self):
+        policy = RetryPolicy(retry_delay=5.0, backoff_multiplier=2.0, jitter_factor=0)
+        assert get_retry_delay(0, policy) == 5.0
+        assert get_retry_delay(0, policy) == 5.0
+
+
+class TestPromptWithRetry:
+    def test_success_first_attempt(self):
+        action = MagicMock(return_value="ok")
+        cancel = threading.Event()
+        result = prompt_with_retry(action, cancel)
+        assert result == "ok"
+        assert action.call_count == 1
+
+    def test_retries_on_retryable_error(self):
+        action = MagicMock(side_effect=[RuntimeError("timeout"), "ok"])
+        cancel = threading.Event()
+        policy = RetryPolicy(max_retries=2, retry_delay=0.01, jitter_factor=0)
+        result = prompt_with_retry(action, cancel, retry_policy=policy)
+        assert result == "ok"
+        assert action.call_count == 2
+
+    def test_raises_on_non_retryable_error(self):
+        action = MagicMock(side_effect=RuntimeError("permission denied"))
+        cancel = threading.Event()
+        policy = RetryPolicy(max_retries=3, retry_delay=0.01, jitter_factor=0)
+        with pytest.raises(RuntimeError, match="permission denied"):
+            prompt_with_retry(action, cancel, retry_policy=policy)
+        assert action.call_count == 1
+
+    def test_raises_after_max_retries(self):
+        action = MagicMock(side_effect=RuntimeError("timeout"))
+        cancel = threading.Event()
+        policy = RetryPolicy(max_retries=2, retry_delay=0.01, jitter_factor=0)
+        with pytest.raises(RuntimeError, match="timeout"):
+            prompt_with_retry(action, cancel, retry_policy=policy)
+        assert action.call_count == 3
+
+    def test_before_retry_callback(self):
+        action = MagicMock(side_effect=[RuntimeError("timeout"), "ok"])
+        cancel = threading.Event()
+        policy = RetryPolicy(max_retries=2, retry_delay=0.01, jitter_factor=0)
+        callback = MagicMock()
+        prompt_with_retry(action, cancel, retry_policy=policy, before_retry=callback)
+        callback.assert_called_once()
+        assert callback.call_args[0][0] == 1
+
+    def test_cancel_event_aborts_retry(self):
+        call_count = 0
+
+        def action():
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("timeout")
+
+        cancel = threading.Event()
+        cancel.set()
+        policy = RetryPolicy(max_retries=3, retry_delay=0.01, jitter_factor=0)
+        with pytest.raises(RuntimeError, match="timeout"):
+            prompt_with_retry(action, cancel, retry_policy=policy)
+        assert call_count == 1
+
+    def test_circuit_breaker_integration(self):
+        cb = CircuitBreaker(failure_threshold=2, recovery_timeout=60.0)
+        action = MagicMock(side_effect=[RuntimeError("timeout"), RuntimeError("timeout"), "ok"])
+        cancel = threading.Event()
+        policy = RetryPolicy(max_retries=5, retry_delay=0.01, jitter_factor=0)
+        with pytest.raises(CircuitBreakerOpenException):
+            prompt_with_retry(action, cancel, retry_policy=policy, circuit_breaker=cb)
+
+    def test_circuit_breaker_success(self):
+        cb = CircuitBreaker(failure_threshold=5, recovery_timeout=60.0)
+        action = MagicMock(return_value="ok")
+        cancel = threading.Event()
+        result = prompt_with_retry(action, cancel, circuit_breaker=cb)
+        assert result == "ok"

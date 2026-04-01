@@ -61,9 +61,10 @@ class TestCardDeduplication(unittest.TestCase):
         self.assertEqual(self.client._scheduler.submit.call_count, 1)
 
     def test_cache_cleanup(self):
-        # Override ttl and cleanup interval for fast testing
         self.client._card_event_cache._ttl = 0.1
         self.client._card_event_cache._cleanup_interval = 0.1
+        self.client._card_action_dedup_cache._ttl = 0.1
+        self.client._card_action_dedup_cache._cleanup_interval = 0.1
 
         event_id = "evt_expire_1"
         event1 = self._create_mock_event(event_id)

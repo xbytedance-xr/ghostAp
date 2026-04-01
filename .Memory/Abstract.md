@@ -1,5 +1,20 @@
 # GhostAP 项目记忆索引
 
+## 2026-04-01
+- **基于 Claude Code Agent Loop 分析的 Loop/Spec 引擎优化** — LoopEngine 接入 LoopContextManager 三级压缩+防漂移锚点、增强收敛检测（标准停滞+连续失败）；SpecEngine 阶段间结构化产物传递、循环间 Session 重建压缩上下文（+配置项 spec_rebuild_session_between_cycles）；修复 5000 cycle 测试超时（120s→9s），1981 tests passed → [详细记录](2026-04-01.md)
+
+## 2026-03-31
+- **Deep Engine ProgressReporter 单元测试** — 为 reporter.py 编写 10 个测试类 45 个用例，覆盖全部公开方法，45 passed → [详细记录](2026-03-31.md)
+- **rloop Round 2 审查修复** — shutdown/cleanup 线程安全、convergence backlog 误报修复、compact NO_TOOLS 防护，1869 tests passed → [详细记录](2026-03-31.md)
+- **三项独立模块改进（4.6/4.10/4.11）** — SpecEngine BUILD 验证钩子(verify_command+_verify_build_result)、Context Compression Framework(compact.py)、Hook System Framework(hooks.py)，20 tests passed → [详细记录](2026-03-31.md)
+- **基于 Claude Code 分析的高优先级优化（5项）** — 重试系统升级(max_delay+jitter+prompt_with_retry)、重试与熔断器联动、统一异常体系(is_ghostap_error)、覆盖率工具(pytest-cov)、共享测试Fixture(FakeSessionBase)，1780 tests passed → [详细记录](2026-03-31.md)
+- **Coverage 门控 + CleanupRegistry 工具** — pyproject.toml 添加 fail_under=60、新建 src/utils/cleanup.py 异步清理注册工具 + 4 个测试用例，4 passed → [详细记录](2026-03-31.md)
+- **CircuitBreaker 增强（4项功能扩展）** — async_call 异步调用、reset 强制重置、on_state_change 状态变更回调、滑动窗口失败追踪(deque+window_duration)，67 tests passed → [详细记录](2026-03-31.md)
+- **normalize_startup_diagnostics 管线化重构** — 234行长函数拆分为7个辅助函数(_resolve_diag_config/_init_diag_container/_normalize_fields/_apply_fallbacks/_apply_redaction/_apply_truncation/_final_guard)，主函数变为清晰管线调用，35 tests passed → [详细记录](2026-03-31.md)
+- **Spec Engine convergence.py 增强（4项功能扩展）** — compute_cycle_metrics 权重参数化、detect_convergence 容差参数、detect_backlog_stuck 新函数、should_stop backlog_stuck 参数，26 new tests + 5 existing passed → [详细记录](2026-03-31.md)
+- **Graceful Shutdown 模块** — src/utils/shutdown.py（graceful_shutdown/install_signal_handlers/is_shutting_down），参考 Claude Code gracefulShutdown.ts 模式，幂等+超时安全，4 tests passed → [详细记录](2026-03-31.md)
+- **深度代码审计与优化 Round 2** — 11 处静默异常→debug 日志 + 111 新测试 + 6 模块 __all__ + 修复双层缓存去重 bug → [详细记录](2026-03-31.md)
+
 ## 2026-03-30
 - **日志 WARNING 修复与优化** - 修复 3 类 WARNING：throttling 回退降级为 DEBUG、ProbeStrategy 超时降级为 INFO、emoji_type 修正（Rocket→Fire, Skull→SKULL, OneSec→OneSecond 对照飞书官方列表） → [详细记录](2026-03-30.md)
 - **Spec/Loop 引擎独立卡片交互模式** - 每轮 cycle/iteration 完成时发独立消息卡片，增强内容展示（各 phase 产出摘要、角色/审查/标准进度） → [详细记录](2026-03-30.md)

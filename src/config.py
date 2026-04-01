@@ -249,6 +249,7 @@ class Settings(BaseSettings):
     spec_infinite_mode: bool = False
     spec_disable_convergence: bool = False
     spec_disable_early_stop: bool = False
+    spec_rebuild_session_between_cycles: bool = True
     # State file compaction (avoid O(n^2) rewrite cost for 5k cycles)
     spec_state_cycles_tail: int = 50
     spec_state_work_items_tail: int = 200

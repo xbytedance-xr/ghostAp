@@ -449,6 +449,7 @@ class SpecProject:
     completed_at: Optional[float] = None
     error: Optional[str] = None
     task_id: Optional[str] = None  # Human-readable task ID
+    verify_command: str = ""
 
     @classmethod
     def create(cls, name: str = "", root_path: str = "") -> "SpecProject":
@@ -528,6 +529,7 @@ class SpecProject:
             "completed_at": self.completed_at,
             "error": self.error,
             "task_id": self.task_id,
+            "verify_command": self.verify_command,
         }
 
     @classmethod
@@ -549,6 +551,7 @@ class SpecProject:
             history_log_path=data.get("history_log_path"),
             compact_meta=data.get("_compact") if isinstance(data.get("_compact"), dict) else None,
             task_id=data.get("task_id"),
+            verify_command=str(data.get("verify_command") or ""),
         )
         if data.get("cycles"):
             project.cycles = [SpecCycle.from_dict(c) for c in data["cycles"]]
