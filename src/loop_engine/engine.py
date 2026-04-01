@@ -907,6 +907,13 @@ FAIL
             review_enabled = self.settings.loop_review_enabled
             review_extra_max = self.settings.loop_review_extra_iterations
 
+            if not self._context_manager:
+                self._context_manager = LoopContextManager(
+                    max_context_tokens=self.settings.loop_max_context_tokens,
+                )
+                for prev_record in self._project.iterations:
+                    self._context_manager.record_iteration(prev_record)
+
             for iteration in range(start_iteration, max_iterations + 1):
                 if self._run_state != EngineRunState.RUNNING:
                     break
@@ -945,6 +952,9 @@ FAIL
 
                 with self._lock:
                     self._project.iterations.append(record)
+
+                if self._context_manager:
+                    self._context_manager.record_iteration(record)
 
                 if callbacks.on_iteration_done:
                     callbacks.on_iteration_done(iteration, record)
