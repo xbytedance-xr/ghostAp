@@ -406,16 +406,17 @@ class TestSystemHandlerRouting:
             h.ttadk_handler.enter_mode.assert_not_called()
             mock_build.assert_called_once()
 
-    def test_handle_select_ttadk_tool_auto_selects_default_model(self):
+    def test_handle_select_ttadk_tool_always_shows_model_card(self):
         ctx = _make_handler_context()
         h = SystemHandler(ctx)
         h.reply_message = MagicMock()
         h.reply_error = MagicMock()
-        h.handle_select_ttadk_model = MagicMock()
+        h.patch_message = MagicMock(return_value=True)
 
         project = MagicMock()
         project.project_id = "p1"
         project.root_path = "/tmp"
+        project.ttadk_yolo_enabled = False
         ctx.project_manager.get_project.return_value = project
 
         manager = MagicMock()
@@ -430,9 +431,9 @@ class TestSystemHandlerRouting:
         with patch("src.feishu.handlers.system.get_ttadk_manager", return_value=manager):
             h.handle_select_ttadk_tool("m1", "c1", "codex", "p1")
 
-        h.handle_select_ttadk_model.assert_called_once_with(
-            "m1", "c1", "codex", "gpt-5.2", project=project, silent=True
-        )
+        h.patch_message.assert_called_once()
+        card_json = h.patch_message.call_args[0][1]
+        assert "模型选择" in card_json
 
     def test_handle_ttadk_command_always_shows_tool_card(self):
         ctx = _make_handler_context()

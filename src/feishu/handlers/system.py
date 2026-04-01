@@ -831,13 +831,6 @@ class SystemHandler(BaseHandler):
             # 有严重警告（如 models_untrusted），发送警告消息
             self.reply_message(message_id, f"⚠️ TTADK 模型列表可能不完整/不可信: {'; '.join(critical_warnings)}")
 
-        auto_model = self._pick_ttadk_auto_model(
-            result.models or [], project=project, current_model=manager.get_current_model()
-        )
-        if auto_model:
-            self.handle_select_ttadk_model(message_id, chat_id, tool_name, auto_model, project=project, silent=True)
-            return
-
         yolo_enabled = self._resolve_ttadk_yolo_enabled(chat_id, project=project, project_id=project_id)
         msg_type, card_content = CardBuilder.build_ttadk_model_select_card(
             result.models, tool_name, project_id, yolo_enabled=yolo_enabled
