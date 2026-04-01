@@ -747,48 +747,6 @@ class SystemHandler(BaseHandler):
             )
             return
 
-        if not force_select:
-            auto_tool = self._pick_ttadk_auto_tool(
-                result.tools or [], project=project, current_tool=manager.get_current_tool()
-            )
-
-            if auto_tool:
-                manager.set_tool(auto_tool)
-                try:
-                    raw_cwd = self._resolve_ttadk_cwd(chat_id, project=project, project_id=project_id)
-                    cwd = normalize_ttadk_cwd(raw_cwd)
-                    self._maybe_log_ttadk_cwd(
-                        where="SystemHandler.handle_ttadk_command", raw_cwd=raw_cwd, normalized_cwd=cwd
-                    )
-                except Exception:
-                    cwd = None
-
-                models_result = manager.get_models(cwd=cwd)
-                if models_result.error:
-                    self._reply_ttadk_load_hint(
-                        message_id,
-                        f"暂时无法加载 TTADK 模型列表（{models_result.error}）",
-                        project_id=project_id,
-                    )
-                    return
-
-                auto_model = self._pick_ttadk_auto_model(
-                    models_result.models or [], project=project, current_model=manager.get_current_model()
-                )
-
-                if auto_model:
-                    self.handle_select_ttadk_model(
-                        message_id, chat_id, auto_tool, auto_model, project=project, silent=True
-                    )
-                    return
-
-                yolo_enabled = self._resolve_ttadk_yolo_enabled(chat_id, project=project, project_id=project_id)
-                msg_type, card_content = CardBuilder.build_ttadk_model_select_card(
-                    models_result.models, auto_tool, project_id, yolo_enabled=yolo_enabled
-                )
-                self.reply_message(message_id, card_content, msg_type=msg_type)
-                return
-
         yolo_enabled = self._resolve_ttadk_yolo_enabled(chat_id, project=project, project_id=project_id)
         msg_type, card_content = CardBuilder.build_ttadk_tool_select_card(
             result.tools, project_id, yolo_enabled=yolo_enabled

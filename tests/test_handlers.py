@@ -434,11 +434,10 @@ class TestSystemHandlerRouting:
             "m1", "c1", "codex", "gpt-5.2", project=project, silent=True
         )
 
-    def test_handle_ttadk_command_auto_selects_with_defaults(self):
+    def test_handle_ttadk_command_always_shows_tool_card(self):
         ctx = _make_handler_context()
         h = SystemHandler(ctx)
-        h.reply_error = MagicMock()
-        h.handle_select_ttadk_model = MagicMock()
+        h.reply_message = MagicMock()
 
         project = MagicMock()
         project.project_id = "p1"
@@ -456,19 +455,14 @@ class TestSystemHandlerRouting:
         manager.get_current_tool.return_value = ""
         manager.get_current_model.return_value = ""
         manager.get_tools.return_value = SimpleNamespace(tools=tools, error=None)
-        manager.set_tool.return_value = True
-        manager.get_models.return_value = SimpleNamespace(
-            models=[TTADKModel(name="gpt-5.2", description="", is_default=False)],
-            error=None,
-            warnings=[],
-        )
 
         with patch("src.feishu.handlers.system.get_ttadk_manager", return_value=manager):
             h.handle_ttadk_command("m1", "c1", project)
 
-        h.handle_select_ttadk_model.assert_called_once_with(
-            "m1", "c1", "codex", "gpt-5.2", project=project, silent=True
-        )
+        h.reply_message.assert_called_once()
+        call_args = h.reply_message.call_args
+        card_json = call_args[0][1]
+        assert "TTADK 工具选择" in card_json
 
     def test_handle_ttadk_command_no_defaults_shows_tool_card(self):
         ctx = _make_handler_context()
