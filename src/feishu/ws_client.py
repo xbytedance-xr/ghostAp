@@ -55,6 +55,7 @@ from ..spec_engine import SpecEngineManager, SpecReporter
 from ..thread import ThreadContextManager, get_current_thread_id, get_thread_manager
 from ..tasking import TaskEvent, TaskPriority, TaskScheduler, TaskSpec, TaskStatus
 from ..utils.circuit_breaker import CircuitBreaker, CircuitBreakerOpenException
+from ..utils.errors import log_exception
 from ..utils.rate_limit import RateLimiter, RateLimitExceededException
 from ..utils.trace import TraceContext, configure_logging_with_trace
 from .action_dispatcher import ActionDispatcher
@@ -1612,6 +1613,97 @@ class FeishuWSClient:
                 return InteractionMode(thread_ctx.mode), True
         return self._mode_manager.get_mode(chat_id, project_id=project_id), self._mode_manager.is_programming_mode(chat_id, project_id=project_id)
 
+    def _get_mode_handler(self, mode):
+        from ..mode import InteractionMode
+        _map = {
+            InteractionMode.COCO: self._coco_handler,
+            InteractionMode.CLAUDE: self._claude_handler,
+            InteractionMode.AIDEN: self._aiden_handler,
+            InteractionMode.CODEX: self._codex_handler,
+            InteractionMode.GEMINI: self._gemini_handler,
+            InteractionMode.TTADK: self._ttadk_handler,
+        }
+        return _map.get(mode)
+
+    def _is_one_shot_pending(self, chat_id, project_id, current_mode):
+        if get_current_thread_id():
+            return False, None
+        if not self.settings.thread_programming_enabled:
+            return False, None
+        handler = self._get_mode_handler(current_mode)
+        if not handler:
+            return False, None
+        mgr = handler._get_session_manager()
+        session = mgr.get_session(chat_id, project_id=project_id, thread_id=None)
+        if session:
+            return False, None
+        return True, handler
+
+    def _dispatch_to_thread(self, message_id, chat_id, text, project, current_mode, handler):
+        from ..thread import set_current_thread_id, get_thread_manager
+
+        self._add_reaction(message_id, EmojiReaction.on_coco_mode())
+        self._add_reaction(message_id, EmojiReaction.on_processing())
+
+        project_id = project.project_id if project else None
+
+        mode_name = handler.mode_name
+        content = (
+            f"{handler.mode_emoji} 正在创建编程话题…\n\n"
+            f"你的需求将在话题中由 {mode_name} 处理"
+        )
+        if project:
+            msg_type, card_content = CardBuilder.build_project_response_card(
+                project,
+                f"{handler.mode_emoji} {mode_name} 编程话题",
+                content,
+                show_buttons=False,
+                footer=f"📂 项目目录: {project.root_path}",
+            )
+            thread_root_id = handler.reply_message_with_id(
+                message_id, card_content, msg_type, reply_in_thread=True,
+            )
+        else:
+            thread_root_id = handler.reply_message_with_id(
+                message_id, content, "text", reply_in_thread=True,
+            )
+
+        if not thread_root_id:
+            self._reply_message(message_id, "⚠️ 创建编程话题失败，请重试")
+            return
+
+        try:
+            set_current_thread_id(thread_root_id)
+
+            handler.enter_mode(
+                thread_root_id, chat_id, silent=True, project=project, thread_id=thread_root_id,
+            )
+
+            session = handler._get_session_manager().get_session(
+                chat_id, project_id=project_id, thread_id=thread_root_id,
+            )
+            if session:
+                self._mode_manager.exit_to_smart(chat_id, project_id=project_id)
+                if project:
+                    handler._set_mode_on_project(project, False)
+                    handler._register_thread_context(thread_root_id, chat_id, project, session)
+                handler.handle_message(message_id, chat_id, text, project)
+            else:
+                self._mode_manager.exit_to_smart(chat_id, project_id=project_id)
+                if project:
+                    handler._set_mode_on_project(project, False)
+                self._reply_message(
+                    message_id,
+                    f"⚠️ {mode_name} 会话启动失败，已退回智能模式，请重新发送 /{mode_name.lower()} 重试",
+                )
+        except Exception as e:
+            log_exception(logger, f"{mode_name} 话题执行异常", e)
+            self._mode_manager.exit_to_smart(chat_id, project_id=project_id)
+            if project:
+                handler._set_mode_on_project(project, False)
+        finally:
+            set_current_thread_id(None)
+
     def _update_task_project(self, task_ctx, project_id):
         """将调度任务与 project_id 关联（便于任务看板/诊断）。"""
         try:
@@ -1636,6 +1728,15 @@ class FeishuWSClient:
             InteractionMode.GEMINI,
             InteractionMode.TTADK,
         }:
+            if not get_current_thread_id() and self.settings.thread_programming_enabled:
+                pending, handler = self._is_one_shot_pending(chat_id, _pid, current_mode)
+                if pending:
+                    self._reply_message(
+                        message_id,
+                        f"📝 当前已开启{handler.mode_name}编程模式\n\n请发送你的编程需求，将自动创建编程话题",
+                    )
+                    return
+
             if project is None:
                 project = self._project_manager.get_active_project(chat_id)
 
@@ -2077,12 +2178,19 @@ class FeishuWSClient:
             if self._is_exit_command(text):
                 self._add_reaction(message_id, EmojiReaction.on_coco_mode())
                 if self._should_defer_exit(chat_id=chat_id, project_id=_pid):
-                    # Do NOT interrupt the currently running programming task.
                     self._request_deferred_exit(message_id=message_id, chat_id=chat_id, project_id=_pid)
                     self._reply_message(message_id, "✅ 已收到 /exit，将在当前任务完成后退出（不中断执行）")
                     return
                 self._exit_current_mode(message_id, chat_id, project=project)
                 return
+
+            if not get_current_thread_id() and self.settings.thread_programming_enabled:
+                pending, handler = self._is_one_shot_pending(chat_id, _pid, current_mode)
+                if pending:
+                    if not shell_fast_tracked:
+                        self._dispatch_to_thread(message_id, chat_id, text, project, current_mode, handler)
+                        return
+                    is_in_programming = False
 
             self._add_reaction(message_id, EmojiReaction.on_coco_mode())
             self._add_reaction(message_id, EmojiReaction.on_processing())

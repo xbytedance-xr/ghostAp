@@ -169,13 +169,23 @@ class ProgrammingModeHandler(BaseHandler):
 
         if not thread_id and self._is_in_this_mode(chat_id):
             if not silent:
-                info = self._get_session_manager().get_session_info(chat_id, project_id=project_id)
-                self.reply_message(
-                    message_id,
-                    fmt.format_warning(
-                        f"已经在{self.mode_name}编程模式中\n\n{info}\n\n说「退出模式」或发送 /exit 退出"
-                    ),
-                )
+                if _thread_enabled:
+                    self.reply_message(
+                        message_id,
+                        fmt.format_warning(
+                            f"已开启{self.mode_name}编程模式\n\n"
+                            "直接发送你的编程需求，将自动创建编程话题\n\n"
+                            "说「退出模式」或发送 /exit 退出"
+                        ),
+                    )
+                else:
+                    info = self._get_session_manager().get_session_info(chat_id, project_id=project_id)
+                    self.reply_message(
+                        message_id,
+                        fmt.format_warning(
+                            f"已经在{self.mode_name}编程模式中\n\n{info}\n\n说「退出模式」或发送 /exit 退出"
+                        ),
+                    )
             return
 
         previous_mode = self.mode_manager.get_mode(chat_id)
@@ -203,13 +213,45 @@ class ProgrammingModeHandler(BaseHandler):
                     self.reply_message(message_id, f"⚠️ {path_msg}\n\n请切换到有效目录后重试")
                 return
 
-        # Determine whether we should resume an existing ACP session
+        if _thread_enabled:
+            self._enter_mode_on_manager(chat_id, project_id=project_id)
+            self.add_reaction(message_id, EmojiReaction.on_coco_enter())
+            if project:
+                self._deactivate_other_project_modes(project)
+                self._set_mode_on_project(project, True)
+            if not silent:
+                content = (
+                    f"{self.mode_emoji} 已开启{self.mode_name}编程模式\n\n"
+                    "📝 发送你的编程需求，将自动创建编程话题\n\n"
+                    "说「退出模式」或发送 `/exit` 退出"
+                )
+                if self.mode_name == "TTADK":
+                    content += "\n\n可点击「切换TTADK工具」重新选择工具链"
+                if project:
+                    msg_type, card_content = CardBuilder.build_project_response_card(
+                        project,
+                        f"{self.mode_emoji} {self.mode_name}编程模式已开启",
+                        content,
+                        show_buttons=True,
+                        footer=f"📂 项目目录: {project.root_path}",
+                    )
+                    self.reply_message(message_id, card_content, msg_type=msg_type)
+                else:
+                    self.reply_message(message_id, content)
+            if project:
+                self.record_mode_transition(
+                    project.project_id,
+                    previous_mode,
+                    self._get_interaction_mode(),
+                    reason=f"enter_{self.mode_name.lower()}_mode(thread_pending)",
+                )
+            return
+
         target_session_id = None
         snapshot = self._get_snapshot(project) if project else None
         if snapshot and snapshot.is_resumable:
             target_session_id = snapshot.session_id
 
-        # Ensure backend session is ready before switching mode
         startup_timeout = getattr(self.settings, "acp_startup_timeout", 20)
         try:
             agent_type_override = self._get_agent_type_override(project)
@@ -259,7 +301,6 @@ class ProgrammingModeHandler(BaseHandler):
                     )
             return
 
-        # TTADK 启动失败降级提示（best-effort）
         try:
             if (
                 agent_type_override
@@ -279,13 +320,12 @@ class ProgrammingModeHandler(BaseHandler):
         except Exception:
             pass
 
-        # Now switch mode (after ACP server is confirmed ready)
-        if not thread_id and not _thread_enabled:
+        if not thread_id:
             self._enter_mode_on_manager(chat_id, project_id=project_id)
         self.add_reaction(message_id, EmojiReaction.on_coco_enter())
 
         if project and snapshot and snapshot.is_resumable:
-            if not thread_id and not _thread_enabled:
+            if not thread_id:
                 self._deactivate_other_project_modes(project)
                 self._set_mode_on_project(project, True, snapshot.session_id, snapshot.query_count)
             if not silent:
@@ -305,20 +345,11 @@ class ProgrammingModeHandler(BaseHandler):
                     show_buttons=True,
                     footer=f"📂 项目目录: {project.root_path}",
                 )
-                response_id = self.reply_message_with_id(
-                    message_id, card_content, msg_type,
-                    reply_in_thread=True if _thread_enabled else None,
-                )
+                response_id = self.reply_message_with_id(message_id, card_content, msg_type)
                 if response_id:
                     self.register_message_project(response_id, project)
-                    if _thread_enabled:
-                        self._get_session_manager().rebind_thread(chat_id, project_id, response_id)
-                        self._register_thread_context(response_id, chat_id, project, session)
-                elif _thread_enabled:
-                    self._get_session_manager().end_session(chat_id, project_id=project_id, thread_id=None)
-                    self.reply_message(message_id, fmt.format_warning("话题创建失败，请重试"))
         elif project:
-            if not thread_id and not _thread_enabled:
+            if not thread_id:
                 self._deactivate_other_project_modes(project)
                 self._set_mode_on_project(project, True, session.session_id)
             if not silent:
@@ -336,18 +367,9 @@ class ProgrammingModeHandler(BaseHandler):
                     show_buttons=True,
                     footer=f"📂 项目目录: {project.root_path}",
                 )
-                response_id = self.reply_message_with_id(
-                    message_id, card_content, msg_type,
-                    reply_in_thread=True if _thread_enabled else None,
-                )
+                response_id = self.reply_message_with_id(message_id, card_content, msg_type)
                 if response_id:
                     self.register_message_project(response_id, project)
-                    if _thread_enabled:
-                        self._get_session_manager().rebind_thread(chat_id, project_id, response_id)
-                        self._register_thread_context(response_id, chat_id, project, session)
-                elif _thread_enabled:
-                    self._get_session_manager().end_session(chat_id, project_id=project_id, thread_id=None)
-                    self.reply_message(message_id, fmt.format_warning("话题创建失败，请重试"))
         else:
             if not silent:
                 if self.is_coco:
@@ -358,7 +380,6 @@ class ProgrammingModeHandler(BaseHandler):
                         f"{self.mode_emoji} 已进入 {self.mode_name} 编程模式\n\n现在可以用自然语言描述你的需求\n\n说「退出模式」或发送 `/exit` 退出",
                     )
 
-        # Unified context: record mode transition
         if project:
             self.record_mode_transition(
                 project.project_id,
@@ -409,6 +430,13 @@ class ProgrammingModeHandler(BaseHandler):
         thread_id = get_current_thread_id()
         session = self._get_session_manager().get_session(chat_id, project_id=project_id, thread_id=thread_id)
 
+        is_pending_slot = (
+            not thread_id
+            and not session
+            and self.settings.thread_programming_enabled
+            and self._is_in_this_mode(chat_id)
+        )
+
         if project:
             if session:
                 self._update_snapshot_on_project(
@@ -431,11 +459,14 @@ class ProgrammingModeHandler(BaseHandler):
             self.mode_manager.exit_to_smart(chat_id, project_id=project_id)
 
         try:
-            if self._get_session_manager().end_session(chat_id, project_id=project_id, thread_id=thread_id):
+            has_session = self._get_session_manager().end_session(chat_id, project_id=project_id, thread_id=thread_id)
+            if has_session or is_pending_slot:
                 self.add_reaction(message_id, EmojiReaction.on_coco_exit())
 
                 if project:
                     content = f"👋 已退出{self.mode_name}编程模式\n\n会话已保存，下次可以恢复\n\n当前为 🧠 智能模式"
+                    if is_pending_slot:
+                        content = f"👋 已退出{self.mode_name}编程模式\n\n当前为 🧠 智能模式"
                     msg_type, card_content = CardBuilder.build_project_response_card(
                         project,
                         f"已退出{self.mode_name}编程模式",

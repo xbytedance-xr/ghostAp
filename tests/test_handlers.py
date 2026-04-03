@@ -1100,6 +1100,106 @@ class TestProgrammingModeEnterExit:
         h.enter_mode.assert_called_once()
 
 
+class TestOneShotPendingSlot:
+
+    def _make_coco_pending(self):
+        ctx = _make_handler_context()
+        ctx.settings.thread_programming_enabled = True
+        ctx.mode_manager.is_coco_mode.return_value = False
+        ctx.mode_manager.is_claude_mode.return_value = False
+        ctx.mode_manager.is_aiden_mode.return_value = False
+        ctx.mode_manager.is_codex_mode.return_value = False
+        ctx.mode_manager.is_gemini_mode.return_value = False
+        ctx.mode_manager.is_ttadk_mode.return_value = False
+        ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
+        ctx.project_manager.validate_project_path.return_value = (True, "ok")
+        ctx.project_manager.get_or_create_project_for_path.return_value = (None, False)
+        ctx.coco_manager.ensure_session = MagicMock()
+        ctx.coco_manager.get_session.return_value = None
+        ctx.coco_manager.end_session.return_value = False
+
+        h = CocoModeHandler(ctx)
+        h._claude_handler = MagicMock()
+        h._aiden_handler = MagicMock()
+        h._codex_handler = MagicMock()
+        h._gemini_handler = MagicMock()
+        h._ttadk_handler = MagicMock()
+        h.reply_message = MagicMock()
+        h.reply_message_with_id = MagicMock(return_value="reply_1")
+        h.add_reaction = MagicMock()
+        h.record_mode_transition = MagicMock()
+        h.register_message_project = MagicMock()
+        return h, ctx
+
+    @patch("src.thread.get_current_thread_id", return_value=None)
+    def test_enter_mode_thread_enabled_sets_mode_no_session(self, mock_tid):
+        h, ctx = self._make_coco_pending()
+        project = MagicMock()
+        project.coco_session_snapshot = None
+        project.root_path = "/tmp"
+        project.project_name = "test"
+        project.project_id = "test_id"
+
+        h.enter_mode("m1", "c1", project=project)
+
+        ctx.mode_manager.enter_coco_mode.assert_called_once_with("c1", project_id="test_id")
+        ctx.coco_manager.ensure_session.assert_not_called()
+        h.add_reaction.assert_called_once()
+        h.reply_message.assert_called_once()
+        call_args = str(h.reply_message.call_args)
+        assert "编程模式已开启" in call_args or "已开启" in call_args
+        h.record_mode_transition.assert_called_once()
+        assert "thread_pending" in str(h.record_mode_transition.call_args)
+
+    @patch("src.thread.get_current_thread_id", return_value=None)
+    def test_enter_mode_thread_enabled_already_in_mode(self, mock_tid):
+        h, ctx = self._make_coco_pending()
+        ctx.mode_manager.is_coco_mode.return_value = True
+
+        h.enter_mode("m1", "c1")
+
+        h.reply_message.assert_called_once()
+        assert "已开启" in str(h.reply_message.call_args)
+        assert "自动创建编程话题" in str(h.reply_message.call_args)
+
+    @patch("src.thread.get_current_thread_id", return_value=None)
+    def test_exit_mode_pending_slot_no_session(self, mock_tid):
+        h, ctx = self._make_coco_pending()
+        ctx.mode_manager.is_coco_mode.return_value = True
+        project = MagicMock()
+        project.project_id = "p1"
+        project.project_name = "test"
+        project.root_path = "/tmp"
+
+        h.exit_mode("m1", "c1", project=project)
+
+        ctx.mode_manager.exit_to_smart.assert_called_once_with("c1", project_id="p1")
+        h.add_reaction.assert_called_once()
+        h.reply_message_with_id.assert_called_once()
+        call_args = str(h.reply_message_with_id.call_args)
+        assert "已退出" in call_args
+
+    @patch("src.thread.get_current_thread_id", return_value="thread_123")
+    def test_enter_mode_in_thread_creates_session(self, mock_tid):
+        h, ctx = self._make_coco_pending()
+        mock_session = MagicMock()
+        mock_session.session_id = "sid1"
+        mock_session.is_resumed = False
+        ctx.coco_manager.ensure_session.return_value = mock_session
+        ctx.coco_manager.get_session.return_value = mock_session
+
+        project = MagicMock()
+        project.coco_session_snapshot = None
+        project.root_path = "/tmp"
+        project.project_name = "test"
+        project.project_id = "test_id"
+
+        h.enter_mode("m1", "c1", project=project, thread_id="thread_123")
+
+        ctx.coco_manager.ensure_session.assert_called_once()
+        assert "thread_123" in str(ctx.coco_manager.ensure_session.call_args)
+
+
 class TestTTADKModeDegradeWarning:
     def test_ttadk_enter_mode_emits_degrade_warning(self):
         ctx = _make_handler_context()

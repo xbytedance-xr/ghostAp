@@ -1,5 +1,8 @@
 # GhostAP 项目记忆索引
 
+## 2026-04-03
+- **One-Shot Pending Slot 编程模式重构** — 主对话开启编程模式后进入 pending 状态（仅设 ModeManager 不建 session），首条编程指令自动 _dispatch_to_thread 创建话题并运行会话，shell 命令保护不消费机会；mloop 4 轮审查收敛(2/2 CLEAN)，2029 tests passed → [详细记录](2026-04-03.md)
+
 ## 2026-04-02
 - **Thread 并发编程 R6-R10 修复与收敛** — exit_mode 双重清理修复（remove移到finally）、StreamingCard 存储 thread_root_id 替代 threading.local、enter_mode 孤儿session清理+用户反馈、rebind_thread 冲突检查、enter_mode _set_mode_on_project 条件对齐；on_evict 测试 7 cases + rebind overwrite test 1 case；mloop 10 轮审查收敛(8/8旅程全PASS)，2018 tests passed → [详细记录](2026-04-02.md)
 

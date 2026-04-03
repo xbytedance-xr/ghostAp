@@ -1006,5 +1006,141 @@ class TestIsSystemCardActionEngineControls(unittest.TestCase):
             )
 
 
+class TestOneShotDispatchToThread(unittest.TestCase):
+
+    def _make_client(self):
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_settings.thread_programming_enabled = True
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+        return client
+
+    @patch("src.feishu.ws_client.get_current_thread_id", return_value=None)
+    def test_dispatch_to_thread_success_exits_to_smart(self, _):
+        client = self._make_client()
+        handler = MagicMock()
+        handler.mode_name = "Coco"
+        handler.mode_emoji = "🤖"
+        handler.reply_message_with_id.return_value = "thread_root_1"
+        mock_session = MagicMock()
+        handler._get_session_manager.return_value.get_session.return_value = mock_session
+
+        project = MagicMock()
+        project.project_id = "p1"
+        project.root_path = "/tmp/test"
+        project.project_name = "test"
+
+        client._dispatch_to_thread("m1", "c1", "写个函数", project, InteractionMode.COCO, handler)
+
+        client._mode_manager.exit_to_smart.assert_called_once_with("c1", project_id="p1")
+        handler._set_mode_on_project.assert_called_once_with(project, False)
+        handler._register_thread_context.assert_called_once()
+        handler.handle_message.assert_called_once_with("m1", "c1", "写个函数", project)
+
+    @patch("src.feishu.ws_client.get_current_thread_id", return_value=None)
+    def test_dispatch_to_thread_reply_fail_no_crash(self, _):
+        client = self._make_client()
+        client._reply_message = MagicMock()
+        handler = MagicMock()
+        handler.mode_name = "Coco"
+        handler.mode_emoji = "🤖"
+        handler.reply_message_with_id.return_value = None
+
+        client._dispatch_to_thread("m1", "c1", "写个函数", MagicMock(), InteractionMode.COCO, handler)
+
+        client._reply_message.assert_called_once()
+        assert "失败" in str(client._reply_message.call_args)
+        handler.enter_mode.assert_not_called()
+
+    @patch("src.feishu.ws_client.get_current_thread_id", return_value=None)
+    def test_dispatch_to_thread_session_fail_exits_to_smart(self, _):
+        client = self._make_client()
+        handler = MagicMock()
+        handler.mode_name = "Coco"
+        handler.mode_emoji = "🤖"
+        handler.reply_message_with_id.return_value = "thread_root_1"
+        handler._get_session_manager.return_value.get_session.return_value = None
+
+        project = MagicMock()
+        project.project_id = "p1"
+        project.root_path = "/tmp/test"
+        project.project_name = "test"
+
+        client._dispatch_to_thread("m1", "c1", "写个函数", project, InteractionMode.COCO, handler)
+
+        client._mode_manager.exit_to_smart.assert_called_once_with("c1", project_id="p1")
+        handler._set_mode_on_project.assert_called_once_with(project, False)
+        handler.handle_message.assert_not_called()
+
+    @patch("src.feishu.ws_client.get_current_thread_id", return_value=None)
+    def test_dispatch_to_thread_exception_exits_to_smart(self, _):
+        client = self._make_client()
+        handler = MagicMock()
+        handler.mode_name = "Coco"
+        handler.mode_emoji = "🤖"
+        handler.reply_message_with_id.return_value = "thread_root_1"
+        handler.enter_mode.side_effect = RuntimeError("ACP crashed")
+
+        project = MagicMock()
+        project.project_id = "p1"
+        project.root_path = "/tmp/test"
+        project.project_name = "test"
+
+        client._dispatch_to_thread("m1", "c1", "写个函数", project, InteractionMode.COCO, handler)
+
+        client._mode_manager.exit_to_smart.assert_called_once_with("c1", project_id="p1")
+        handler._set_mode_on_project.assert_called_once_with(project, False)
+
+    @patch("src.feishu.ws_client.get_current_thread_id", return_value=None)
+    def test_is_one_shot_pending_true_when_no_session(self, _):
+        client = self._make_client()
+        client.settings.thread_programming_enabled = True
+        mock_handler = MagicMock()
+        mock_handler._get_session_manager.return_value.get_session.return_value = None
+        client._coco_handler = mock_handler
+
+        pending, handler = client._is_one_shot_pending("c1", "p1", InteractionMode.COCO)
+
+        self.assertTrue(pending)
+        self.assertEqual(handler, mock_handler)
+
+    @patch("src.feishu.ws_client.get_current_thread_id", return_value=None)
+    def test_is_one_shot_pending_false_when_session_exists(self, _):
+        client = self._make_client()
+        client.settings.thread_programming_enabled = True
+        mock_handler = MagicMock()
+        mock_handler._get_session_manager.return_value.get_session.return_value = MagicMock()
+        client._coco_handler = mock_handler
+
+        pending, handler = client._is_one_shot_pending("c1", "p1", InteractionMode.COCO)
+
+        self.assertFalse(pending)
+
+    @patch("src.feishu.ws_client.get_current_thread_id", return_value="thread_123")
+    def test_is_one_shot_pending_false_when_in_thread(self, _):
+        client = self._make_client()
+        client.settings.thread_programming_enabled = True
+
+        pending, handler = client._is_one_shot_pending("c1", "p1", InteractionMode.COCO)
+
+        self.assertFalse(pending)
+
+
 if __name__ == "__main__":
     unittest.main()
