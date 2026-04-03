@@ -35,8 +35,10 @@ from src.ttadk.models import TTADKModel, TTADKTool
 
 def _make_handler_context(**overrides) -> HandlerContext:
     """Build a HandlerContext with all dependencies mocked."""
+    settings = MagicMock()
+    settings.thread_programming_enabled = False
     ctx = HandlerContext(
-        settings=MagicMock(),
+        settings=settings,
         api_client_factory=MagicMock(),
         message_callback=MagicMock(),
         coco_manager=MagicMock(),
@@ -58,6 +60,7 @@ def _make_handler_context(**overrides) -> HandlerContext:
         loop_reporter=MagicMock(),
         spec_engine_manager=MagicMock(),
         spec_reporter=MagicMock(),
+        thread_manager=MagicMock(),
         streaming_manager_factory=MagicMock(),
         image_handler_factory=MagicMock(),
         working_dirs={},
@@ -1006,7 +1009,7 @@ class TestProgrammingModeEnterExit:
         project.root_path = "/tmp"
         h.exit_mode("m1", "c1", project=project)
         ctx.mode_manager.exit_to_smart.assert_called_once_with("c1", project_id="p1")
-        ctx.coco_manager.end_session.assert_called_once_with("c1", project_id="p1")
+        ctx.coco_manager.end_session.assert_called_once_with("c1", project_id="p1", thread_id=None)
 
     def test_enter_mode_mutual_exclusion(self):
         """When in another programming mode, entering Coco should exit it first."""

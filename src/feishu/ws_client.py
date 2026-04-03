@@ -52,6 +52,7 @@ from ..project import (
     ProjectManager,
 )
 from ..spec_engine import SpecEngineManager, SpecReporter
+from ..thread import ThreadContextManager, get_current_thread_id, get_thread_manager
 from ..tasking import TaskEvent, TaskPriority, TaskScheduler, TaskSpec, TaskStatus
 from ..utils.circuit_breaker import CircuitBreaker, CircuitBreakerOpenException
 from ..utils.rate_limit import RateLimiter, RateLimitExceededException
@@ -211,6 +212,8 @@ class FeishuWSClient:
         from ..mode import ModeManager
 
         self._mode_manager = ModeManager()
+        self._thread_manager = get_thread_manager()
+        self._thread_manager._on_evict = self._on_thread_evicted
 
         self._streaming_manager: Optional[StreamingCardManager] = None
         self._image_handler: Optional[FeishuImageHandler] = None
@@ -262,6 +265,7 @@ class FeishuWSClient:
             loop_reporter=self._loop_reporter,
             spec_engine_manager=self._spec_engine_manager,
             spec_reporter=self._spec_reporter,
+            thread_manager=self._thread_manager,
             streaming_manager_factory=self._get_streaming_manager,
             image_handler_factory=self._get_image_handler,
             working_dirs=self._working_dirs,
@@ -918,9 +922,28 @@ class FeishuWSClient:
             logger.debug("清理spec_engine_manager失败: %s", e)
 
         try:
+            self._thread_manager.close()
+        except Exception as e:
+            logger.debug("清理thread_manager失败: %s", e)
+
+        try:
             self._scheduler.stop(wait=True, shutdown_executor=True)
         except Exception as e:
             logger.debug("停止scheduler失败: %s", e)
+
+    def _on_thread_evicted(self, ctx) -> None:
+        for mgr in (
+            self._coco_manager,
+            self._claude_manager,
+            self._aiden_manager,
+            self._codex_manager,
+            self._gemini_manager,
+            self._ttadk_manager,
+        ):
+            try:
+                mgr.end_session(ctx.chat_id, project_id=ctx.project_id, thread_id=ctx.thread_root_id)
+            except Exception:
+                pass
 
     def _is_message_expired(self, create_time: int) -> bool:
         """判断消息是否过期。
@@ -1235,14 +1258,23 @@ class FeishuWSClient:
             chat_id = "unknown"
 
         project_id = None
+        thread_root_id = None
         try:
             parent_id = getattr(data.event.message, "parent_id", None)
             root_id = getattr(data.event.message, "root_id", None)
-            for ref in (parent_id, root_id):
-                if ref:
-                    project_id = self._message_mapper.get_project_id(ref)
-                    if project_id:
-                        break
+            thread_root_id = root_id
+
+            if root_id and self.settings.thread_programming_enabled:
+                thread_ctx = self._thread_manager.get(root_id)
+                if thread_ctx:
+                    project_id = thread_ctx.project_id
+
+            if not project_id:
+                for ref in (parent_id, root_id):
+                    if ref:
+                        project_id = self._message_mapper.get_project_id(ref)
+                        if project_id:
+                            break
         except Exception:
             project_id = None
 
@@ -1263,11 +1295,15 @@ class FeishuWSClient:
         shell_queue_key = None
         if is_shell_fast:
             queue_suffix = project_id or "default"
+            if thread_root_id:
+                queue_suffix = f"{queue_suffix}:t:{thread_root_id}"
             shell_queue_key = f"{chat_id}:shell:{queue_suffix}"
 
-        # 串行化控制面命令：确保编程初始化（/coco|/claude|/ttadk）与 /spec* 按先后顺序执行。
         control_queue_key = self._build_control_queue_key(chat_id=chat_id, project_id=project_id, text=text)
         queue_key = shell_queue_key or control_queue_key
+        if not queue_key and thread_root_id and self.settings.thread_programming_enabled:
+            queue_suffix = project_id or "default"
+            queue_key = f"{chat_id}:{queue_suffix}:t:{thread_root_id}"
 
         request_id = self._ensure_request_id(message_id, chat_id=chat_id, project_id=project_id)
 
@@ -1394,12 +1430,20 @@ class FeishuWSClient:
 
         大致流程：校验 → 解析文本/图片 → 解析项目上下文 → 路由到对应模式/引擎。
         """
+        from ..thread import set_current_thread_id
+
         try:
             event = data.event
             message = event.message
             message_id = message.message_id
             chat_id = message.chat_id
             request_id = self._ensure_request_id(message_id, chat_id=chat_id)
+
+            root_id = getattr(message, "root_id", None)
+            if root_id and self.settings.thread_programming_enabled:
+                thread_ctx = self._thread_manager.get(root_id)
+                if thread_ctx:
+                    set_current_thread_id(root_id)
 
             # 1. Validation
             if not self._validate_message(message, request_id):
@@ -1452,6 +1496,7 @@ class FeishuWSClient:
             except Exception:
                 pass
         finally:
+            set_current_thread_id(None)
             with self._pending_image_lock:
                 self._pending_image_keys.pop(message_id, None)
                 self._pending_image_only.discard(message_id)
@@ -1495,7 +1540,7 @@ class FeishuWSClient:
         with self._pending_image_lock:
             self._pending_image_keys[message_id] = image_keys
 
-        project, auto_enter_mode = self._resolve_project_from_message(message_id, chat_id, parent_id or root_id)
+        project, auto_enter_mode = self._resolve_message_context(message)
 
         try:
             if project:
@@ -1535,12 +1580,37 @@ class FeishuWSClient:
         return project, auto_enter_mode, text, is_image_only
 
     def _resolve_message_context(self, message):
-        """从 message 的 parent/root 引用恢复项目上下文。"""
+        """从 message 的 parent/root 引用恢复项目上下文。
+
+        优先级：话题上下文 > 消息引用上下文 > 当前 active project。
+        """
         message_id = message.message_id
         chat_id = message.chat_id
         parent_id = getattr(message, "parent_id", None)
         root_id = getattr(message, "root_id", None)
+
+        if root_id and self.settings.thread_programming_enabled:
+            thread_ctx = self._thread_manager.get(root_id)
+            if thread_ctx:
+                project = self._project_manager.get_project(thread_ctx.project_id)
+                if project:
+                    auto_enter_mode = thread_ctx.mode if thread_ctx.mode != "smart" else None
+                    logger.info(
+                        "[Thread] Resolved context: root=%s project=%s mode=%s",
+                        root_id[:12], thread_ctx.project_id, thread_ctx.mode,
+                    )
+                    return project, auto_enter_mode
+
         return self._resolve_project_from_message(message_id, chat_id, parent_id or root_id)
+
+    def _get_effective_mode(self, chat_id: str, project_id: Optional[str] = None):
+        from ..mode import InteractionMode
+        thread_id = get_current_thread_id()
+        if thread_id:
+            thread_ctx = self._thread_manager.get(thread_id)
+            if thread_ctx and thread_ctx.mode != "smart":
+                return InteractionMode(thread_ctx.mode), True
+        return self._mode_manager.get_mode(chat_id, project_id=project_id), self._mode_manager.is_programming_mode(chat_id, project_id=project_id)
 
     def _update_task_project(self, task_ctx, project_id):
         """将调度任务与 project_id 关联（便于任务看板/诊断）。"""
@@ -1557,7 +1627,7 @@ class FeishuWSClient:
         if not _pid and task_ctx and task_ctx.spec.project_id:
             _pid = task_ctx.spec.project_id
 
-        current_mode = self._mode_manager.get_mode(chat_id, project_id=_pid)
+        current_mode, _is_prog = self._get_effective_mode(chat_id, project_id=_pid)
         if current_mode in {
             InteractionMode.COCO,
             InteractionMode.CLAUDE,
@@ -1588,6 +1658,23 @@ class FeishuWSClient:
         self, message_id, chat_id, text, project, auto_enter_mode, is_image_only=False, shell_fast_tracked=False
     ):
         """根据 auto-enter 与当前模式，将消息路由到对应编程模式或 SMART 处理路径。"""
+        if auto_enter_mode:
+            if self._is_exit_command(text):
+                self._add_reaction(message_id, EmojiReaction.on_coco_mode())
+                self._exit_current_mode(message_id, chat_id, project=project)
+                return
+            if self._is_programming_entry_command(text):
+                self._reply_message(
+                    message_id,
+                    f"💡 当前话题已在编程模式中，直接发送你的需求即可\n\n如需切换工具，请在主对话中发送对应命令创建新话题",
+                )
+                return
+            if self._is_deep_command(text) or self._is_loop_command(text) or self._is_spec_command(text):
+                self._reply_message(
+                    message_id,
+                    "⚠️ Deep/Loop/Spec 模式暂不支持在话题中使用，请在主对话中发送对应命令",
+                )
+                return
         if auto_enter_mode == "claude":
             self._enter_claude_mode(message_id, chat_id, silent=True, project=project)
             self._add_reaction(message_id, EmojiReaction.on_coco_mode())
@@ -1830,6 +1917,8 @@ class FeishuWSClient:
         该方法会把 `action.value` normalize 为 dict，提取 `action/project_id`，并通过
         `ActionDispatcher` 做 exact/prefix 路由。
         """
+        from ..thread import set_current_thread_id
+
         try:
             start_time = time.perf_counter()
             action = data.event.action
@@ -1872,6 +1961,12 @@ class FeishuWSClient:
 
             action_type = value.get("action", "")
             project_id = value.get("project_id", "")
+
+            card_thread_id = value.get("thread_root_id")
+            if card_thread_id and self.settings.thread_programming_enabled:
+                thread_ctx = self._thread_manager.get(card_thread_id)
+                if thread_ctx:
+                    set_current_thread_id(card_thread_id)
 
             if task_ctx and project_id:
                 try:
@@ -1927,6 +2022,8 @@ class FeishuWSClient:
                         self._reply_message(_mid, f"❌ 操作失败 ({_action}): {e}")
             except Exception:
                 pass
+        finally:
+            set_current_thread_id(None)
 
     def _process_with_intent(
         self,
@@ -1941,23 +2038,31 @@ class FeishuWSClient:
         from ..mode import InteractionMode
 
         _pid = project.project_id if project else None
-        current_mode = self._mode_manager.get_mode(chat_id, project_id=_pid)
-        is_in_programming = self._mode_manager.is_programming_mode(chat_id, project_id=_pid)
+        current_mode, is_in_programming = self._get_effective_mode(chat_id, project_id=_pid)
 
         # Control-plane commands: handle consistently in all modes
         if self._is_deep_command(text):
+            if get_current_thread_id():
+                self._reply_message(message_id, "⚠️ Deep 模式暂不支持在话题中使用，请在主对话中发送 /deep 命令")
+                return
             self._add_reaction(message_id, EmojiReaction.on_smart_mode())
             self._add_reaction(message_id, EmojiReaction.on_processing())
             self._handle_deep_command(message_id, chat_id, text, project)
             return
 
         if self._is_loop_command(text):
+            if get_current_thread_id():
+                self._reply_message(message_id, "⚠️ Loop 模式暂不支持在话题中使用，请在主对话中发送 /loop 命令")
+                return
             self._add_reaction(message_id, EmojiReaction.on_smart_mode())
             self._add_reaction(message_id, EmojiReaction.on_processing())
             self._handle_loop_command(message_id, chat_id, text, project)
             return
 
         if self._is_spec_command(text):
+            if get_current_thread_id():
+                self._reply_message(message_id, "⚠️ Spec 模式暂不支持在话题中使用，请在主对话中发送 /spec 命令")
+                return
             self._add_reaction(message_id, EmojiReaction.on_smart_mode())
             self._add_reaction(message_id, EmojiReaction.on_processing())
             self._handle_spec_command(message_id, chat_id, text, project)

@@ -156,11 +156,18 @@ class ProgrammingModeHandler(BaseHandler):
     # enter_mode
     # ------------------------------------------------------------------
     def enter_mode(
-        self, message_id: str, chat_id: str, silent: bool = False, project: Optional["ProjectContext"] = None
+        self, message_id: str, chat_id: str, silent: bool = False, project: Optional["ProjectContext"] = None,
+        thread_id: Optional[str] = None,
     ):
+        from ...thread import get_current_thread_id
+
         project_id = project.project_id if project else None
 
-        if self._is_in_this_mode(chat_id):
+        if thread_id is None:
+            thread_id = get_current_thread_id()
+        _thread_enabled = self.settings.thread_programming_enabled and not thread_id
+
+        if not thread_id and self._is_in_this_mode(chat_id):
             if not silent:
                 info = self._get_session_manager().get_session_info(chat_id, project_id=project_id)
                 self.reply_message(
@@ -173,8 +180,7 @@ class ProgrammingModeHandler(BaseHandler):
 
         previous_mode = self.mode_manager.get_mode(chat_id)
 
-        # Mutual exclusion
-        if self._is_in_opposite_mode(chat_id):
+        if not thread_id and self._is_in_opposite_mode(chat_id):
             self._exit_opposite_mode(message_id, chat_id, project=project)
 
         if not project:
@@ -216,6 +222,7 @@ class ProgrammingModeHandler(BaseHandler):
                 project_id=project_id,
                 agent_type_override=agent_type_override,
                 model_name=model_name,
+                thread_id=thread_id,
             )
         except TimeoutError as e:
             if not silent:
@@ -273,12 +280,14 @@ class ProgrammingModeHandler(BaseHandler):
             pass
 
         # Now switch mode (after ACP server is confirmed ready)
-        self._enter_mode_on_manager(chat_id, project_id=project_id)
+        if not thread_id and not _thread_enabled:
+            self._enter_mode_on_manager(chat_id, project_id=project_id)
         self.add_reaction(message_id, EmojiReaction.on_coco_enter())
 
         if project and snapshot and snapshot.is_resumable:
-            self._deactivate_other_project_modes(project)
-            self._set_mode_on_project(project, True, snapshot.session_id, snapshot.query_count)
+            if not thread_id and not _thread_enabled:
+                self._deactivate_other_project_modes(project)
+                self._set_mode_on_project(project, True, snapshot.session_id, snapshot.query_count)
             if not silent:
                 mode_hint = "继续之前的对话吧！"
                 if self.mode_name == "TTADK":
@@ -296,12 +305,22 @@ class ProgrammingModeHandler(BaseHandler):
                     show_buttons=True,
                     footer=f"📂 项目目录: {project.root_path}",
                 )
-                response_id = self.reply_message_with_id(message_id, card_content, msg_type)
+                response_id = self.reply_message_with_id(
+                    message_id, card_content, msg_type,
+                    reply_in_thread=True if _thread_enabled else None,
+                )
                 if response_id:
                     self.register_message_project(response_id, project)
+                    if _thread_enabled:
+                        self._get_session_manager().rebind_thread(chat_id, project_id, response_id)
+                        self._register_thread_context(response_id, chat_id, project, session)
+                elif _thread_enabled:
+                    self._get_session_manager().end_session(chat_id, project_id=project_id, thread_id=None)
+                    self.reply_message(message_id, fmt.format_warning("话题创建失败，请重试"))
         elif project:
-            self._deactivate_other_project_modes(project)
-            self._set_mode_on_project(project, True, session.session_id)
+            if not thread_id and not _thread_enabled:
+                self._deactivate_other_project_modes(project)
+                self._set_mode_on_project(project, True, session.session_id)
             if not silent:
                 content = (
                     f"{self.mode_emoji} 已进入{self.mode_name}编程模式\n\n"
@@ -317,9 +336,18 @@ class ProgrammingModeHandler(BaseHandler):
                     show_buttons=True,
                     footer=f"📂 项目目录: {project.root_path}",
                 )
-                response_id = self.reply_message_with_id(message_id, card_content, msg_type)
+                response_id = self.reply_message_with_id(
+                    message_id, card_content, msg_type,
+                    reply_in_thread=True if _thread_enabled else None,
+                )
                 if response_id:
                     self.register_message_project(response_id, project)
+                    if _thread_enabled:
+                        self._get_session_manager().rebind_thread(chat_id, project_id, response_id)
+                        self._register_thread_context(response_id, chat_id, project, session)
+                elif _thread_enabled:
+                    self._get_session_manager().end_session(chat_id, project_id=project_id, thread_id=None)
+                    self.reply_message(message_id, fmt.format_warning("话题创建失败，请重试"))
         else:
             if not silent:
                 if self.is_coco:
@@ -340,11 +368,46 @@ class ProgrammingModeHandler(BaseHandler):
             )
 
     # ------------------------------------------------------------------
+    # Thread context registration
+    # ------------------------------------------------------------------
+    def _register_thread_context(
+        self,
+        thread_root_id: str,
+        chat_id: str,
+        project: "ProjectContext",
+        session: SyncSession,
+    ) -> None:
+        try:
+            from ...thread import get_thread_manager
+
+            mode_name = self._get_interaction_mode().value
+            tool_name = None
+            model_name = None
+            if project.ttadk_tool_name:
+                tool_name = project.ttadk_tool_name
+            if project.ttadk_model_name:
+                model_name = project.ttadk_model_name
+
+            get_thread_manager().register(
+                thread_root_id=thread_root_id,
+                chat_id=chat_id,
+                project_id=project.project_id,
+                mode=mode_name,
+                tool_name=tool_name,
+                model_name=model_name,
+            )
+        except Exception as e:
+            logger.warning("[Thread] Failed to register context: %s", e, exc_info=True)
+
+    # ------------------------------------------------------------------
     # exit_mode
     # ------------------------------------------------------------------
     def exit_mode(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+        from ...thread import get_current_thread_id, get_thread_manager
+
         project_id = project.project_id if project else None
-        session = self._get_session_manager().get_session(chat_id, project_id=project_id)
+        thread_id = get_current_thread_id()
+        session = self._get_session_manager().get_session(chat_id, project_id=project_id, thread_id=thread_id)
 
         if project:
             if session:
@@ -361,40 +424,60 @@ class ProgrammingModeHandler(BaseHandler):
                         "source_mode": self.context_source.value,
                     },
                 )
-            self._set_mode_on_project(project, False)
+            if not thread_id:
+                self._set_mode_on_project(project, False)
 
-        self.mode_manager.exit_to_smart(chat_id, project_id=project_id)
+        if not thread_id:
+            self.mode_manager.exit_to_smart(chat_id, project_id=project_id)
 
-        if self._get_session_manager().end_session(chat_id, project_id=project_id):
-            self.add_reaction(message_id, EmojiReaction.on_coco_exit())
+        try:
+            if self._get_session_manager().end_session(chat_id, project_id=project_id, thread_id=thread_id):
+                self.add_reaction(message_id, EmojiReaction.on_coco_exit())
 
-            if project:
-                content = f"👋 已退出{self.mode_name}编程模式\n\n会话已保存，下次可以恢复\n\n当前为 🧠 智能模式"
-                msg_type, card_content = CardBuilder.build_project_response_card(
-                    project,
-                    f"已退出{self.mode_name}编程模式",
-                    content,
-                    show_buttons=True,
-                )
-                response_id = self.reply_message_with_id(message_id, card_content, msg_type)
-                if response_id:
-                    self.register_message_project(response_id, project)
+                if project:
+                    content = f"👋 已退出{self.mode_name}编程模式\n\n会话已保存，下次可以恢复\n\n当前为 🧠 智能模式"
+                    msg_type, card_content = CardBuilder.build_project_response_card(
+                        project,
+                        f"已退出{self.mode_name}编程模式",
+                        content,
+                        show_buttons=True,
+                    )
+                    response_id = self.reply_message_with_id(
+                        message_id, card_content, msg_type,
+                        reply_in_thread=True if thread_id else None,
+                    )
+                    if response_id:
+                        self.register_message_project(response_id, project)
+                else:
+                    self.reply_message(
+                        message_id,
+                        f"👋 已退出{self.mode_name}编程模式\n\n当前为 🧠 智能模式",
+                        reply_in_thread=True if thread_id else None,
+                    )
             else:
-                self.reply_message(message_id, f"👋 已退出{self.mode_name}编程模式\n\n当前为 🧠 智能模式")
-        else:
-            self.reply_message(message_id, fmt.format_warning(f"当前不在 {self.mode_name} 模式中"))
+                self.reply_message(
+                    message_id,
+                    fmt.format_warning(f"当前不在 {self.mode_name} 模式中"),
+                    reply_in_thread=True if thread_id else None,
+                )
+        finally:
+            if thread_id is not None:
+                get_thread_manager().remove(thread_id)
 
     # ------------------------------------------------------------------
     # handle_message
     # ------------------------------------------------------------------
     def handle_message(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"] = None):
+        from ...thread import get_current_thread_id
+
         project_id = project.project_id if project else None
-        session = self._get_session_manager().get_session(chat_id, project_id=project_id)
+        thread_id = get_current_thread_id()
+        session = self._get_session_manager().get_session(chat_id, project_id=project_id, thread_id=thread_id)
 
         if not session:
             if project:
-                self.enter_mode(message_id, chat_id, project=project)
-                session = self._get_session_manager().get_session(chat_id, project_id=project_id)
+                self.enter_mode(message_id, chat_id, project=project, thread_id=thread_id)
+                session = self._get_session_manager().get_session(chat_id, project_id=project_id, thread_id=thread_id)
                 if not session:
                     return
             else:
@@ -427,6 +510,9 @@ class ProgrammingModeHandler(BaseHandler):
 
         logger.info("开始 %s 输出: project=%s, path=%s", self.mode_name, project_name, project_path)
 
+        from ...thread import get_current_thread_id as _get_tid
+        _thread_id = _get_tid()
+
         streaming_card = streaming_manager.create_streaming_card(
             chat_id=chat_id,
             project_name=project_name,
@@ -438,6 +524,8 @@ class ProgrammingModeHandler(BaseHandler):
             is_ttadk_mode=self.mode_name == "TTADK",
             reply_to_message_id=message_id,
             image_keys=image_keys,
+            reply_in_thread=True if _thread_id else None,
+            thread_root_id=_thread_id,
             ttadk_tool_name=self._get_ttadk_tool_display(project) if self.mode_name == "TTADK" else None,
             ttadk_model_name=self._get_ttadk_model_display(project) if self.mode_name == "TTADK" else None,
         )
@@ -532,8 +620,11 @@ class ProgrammingModeHandler(BaseHandler):
     # show_info
     # ------------------------------------------------------------------
     def show_info(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+        from ...thread import get_current_thread_id
+
         project_id = project.project_id if project else None
-        info = self._get_session_manager().get_session_info(chat_id, project_id=project_id)
+        thread_id = get_current_thread_id()
+        info = self._get_session_manager().get_session_info(chat_id, project_id=project_id, thread_id=thread_id)
         if info:
             if project:
                 msg_type, card_content = CardBuilder.build_project_response_card(
@@ -578,15 +669,19 @@ class ProgrammingModeHandler(BaseHandler):
         self.enter_mode(message_id, chat_id)
 
     def handle_card_exit(self, message_id: str, chat_id: str, project_id: str, value: Optional[dict] = None):
+        from ...thread import get_current_thread_id
         if project_id:
             project = self.project_manager.get_project(project_id)
-            if project:
+            if project and not get_current_thread_id():
                 self._set_mode_on_project(project, False)
             self.exit_mode(message_id, chat_id, project=project)
             return
         self.exit_mode(message_id, chat_id)
 
     def handle_card_resume(self, message_id: str, chat_id: str, project_id: str, session_id: str):
+        from ...thread import get_current_thread_id
+
+        thread_id = get_current_thread_id()
         project = self.project_manager.get_project(project_id) if project_id else None
         pid = project.project_id if project else None
         if project:
@@ -609,6 +704,7 @@ class ProgrammingModeHandler(BaseHandler):
                     project_id=pid,
                     agent_type_override=agent_type_override,
                     model_name=model_name,
+                    thread_id=thread_id,
                 )
             except Exception as e:
                 self.send_error_card(
@@ -620,7 +716,10 @@ class ProgrammingModeHandler(BaseHandler):
                 return
             session.is_resumed = True
 
-            self._enter_mode_on_manager(chat_id, project_id=pid)
+            if thread_id and project:
+                self._register_thread_context(thread_id, chat_id, project, session)
+            if not thread_id:
+                self._enter_mode_on_manager(chat_id, project_id=pid)
         else:
             try:
                 agent_type_override = self._get_agent_type_override(project)
@@ -632,6 +731,7 @@ class ProgrammingModeHandler(BaseHandler):
                     project_id=pid,
                     agent_type_override=agent_type_override,
                     model_name=model_name,
+                    thread_id=thread_id,
                 )
             except Exception as e:
                 self.send_error_card(
@@ -641,11 +741,15 @@ class ProgrammingModeHandler(BaseHandler):
                     origin_message_id=message_id,
                 )
                 return
-            self._enter_mode_on_manager(chat_id, project_id=pid)
+            if thread_id and project:
+                self._register_thread_context(thread_id, chat_id, project, session)
+            if not thread_id:
+                self._enter_mode_on_manager(chat_id, project_id=pid)
 
         if project:
-            self._deactivate_other_project_modes(project)
-            self._set_mode_on_project(project, True, session_id)
+            if not thread_id:
+                self._deactivate_other_project_modes(project)
+                self._set_mode_on_project(project, True, session_id)
             self.record_mode_transition(
                 project.project_id,
                 previous_mode,

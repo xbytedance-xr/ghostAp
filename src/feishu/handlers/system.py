@@ -969,9 +969,20 @@ class SystemHandler(BaseHandler):
     # ------------------------------------------------------------------
     def exit_current_mode(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         from ...mode import InteractionMode
+        from ...thread import get_current_thread_id, get_thread_manager
 
         _pid = project.project_id if project else None
         current_mode = self.mode_manager.get_mode(chat_id, project_id=_pid)
+
+        thread_id = get_current_thread_id()
+        if thread_id and current_mode == InteractionMode.SMART:
+            thread_ctx = get_thread_manager().get(thread_id)
+            if thread_ctx and thread_ctx.mode != "smart":
+                try:
+                    current_mode = InteractionMode(thread_ctx.mode)
+                except ValueError:
+                    pass
+
         if current_mode == InteractionMode.COCO:
             self.coco_handler.exit_mode(message_id, chat_id, project)
         elif current_mode == InteractionMode.CLAUDE:

@@ -252,9 +252,16 @@ class ACPSessionManager:
         return f"{h}时{m}分前"
 
     @staticmethod
-    def _session_key(chat_id: str, project_id: Optional[str] = None) -> str:
-        """Compute the session dict key."""
-        return f"{chat_id}:{project_id}" if project_id else f"{chat_id}:{_DEFAULT_PROJECT}"
+    def _session_key(chat_id: str, project_id: Optional[str] = None, thread_id: Optional[str] = None) -> str:
+        """Compute the session dict key.
+
+        When thread_id is provided, sessions are further isolated per-thread
+        so that multiple threads in the same chat+project get independent sessions.
+        """
+        base = f"{chat_id}:{project_id}" if project_id else f"{chat_id}:{_DEFAULT_PROJECT}"
+        if thread_id:
+            return f"{base}:t:{thread_id}"
+        return base
 
     def start_session(
         self,
@@ -265,9 +272,10 @@ class ACPSessionManager:
         project_id: Optional[str] = None,
         agent_type_override: Optional[str] = None,
         model_name: Optional[str] = None,
+        thread_id: Optional[str] = None,
     ) -> SyncSession:
         """Start a new session for a chat/project."""
-        key = self._session_key(chat_id, project_id)
+        key = self._session_key(chat_id, project_id, thread_id=thread_id)
         # Close existing session if any (under lock to prevent concurrent create)
         with self._lock:
             if key in self._sessions:
@@ -540,6 +548,7 @@ class ACPSessionManager:
         project_id: Optional[str] = None,
         agent_type_override: Optional[str] = None,
         model_name: Optional[str] = None,
+        thread_id: Optional[str] = None,
     ) -> SyncSession:
         """Ensure a session exists and it is ready.
 
@@ -547,7 +556,7 @@ class ACPSessionManager:
         2) If not alive / missing / timed out, auto-start a new session.
         3) Optionally load a given session_id (resume) after startup.
         """
-        key = self._session_key(chat_id, project_id)
+        key = self._session_key(chat_id, project_id, thread_id=thread_id)
 
         # Helper: safely end session under lock with double-check
         def _safe_end_session(check_fn) -> bool:
@@ -669,22 +678,23 @@ class ACPSessionManager:
             project_id=project_id,
             agent_type_override=agent_type_override,
             model_name=model_name,
+            thread_id=thread_id,
         )
 
     def resume_session(
-        self, chat_id: str, session_id: str, cwd: str = "", project_id: Optional[str] = None
+        self, chat_id: str, session_id: str, cwd: str = "", project_id: Optional[str] = None, thread_id: Optional[str] = None,
     ) -> SyncSession:
         """Resume an existing session by session_id."""
-        return self.start_session(chat_id, cwd=cwd, session_id=session_id, project_id=project_id)
+        return self.start_session(chat_id, cwd=cwd, session_id=session_id, project_id=project_id, thread_id=thread_id)
 
-    def get_session(self, chat_id: str, project_id: Optional[str] = None) -> Optional[SyncSession]:
+    def get_session(self, chat_id: str, project_id: Optional[str] = None, thread_id: Optional[str] = None) -> Optional[SyncSession]:
         """Get active session for a chat/project (with timeout check).
 
         Health check is only performed when the session has been idle for a while
         (> 30s) to avoid costly RPC round-trips on every call.  For recently-active
         sessions the send_prompt watchdog already handles crash detection.
         """
-        key = self._session_key(chat_id, project_id)
+        key = self._session_key(chat_id, project_id, thread_id=thread_id)
         with self._lock:
             session = self._sessions.get(key)
         if session:
@@ -736,18 +746,35 @@ class ACPSessionManager:
             return snapshot
         return None
 
-    def end_session(self, chat_id: str, project_id: Optional[str] = None) -> Optional[dict]:
+    def end_session(self, chat_id: str, project_id: Optional[str] = None, thread_id: Optional[str] = None) -> Optional[dict]:
         """End a session and return its snapshot."""
-        key = self._session_key(chat_id, project_id)
+        key = self._session_key(chat_id, project_id, thread_id=thread_id)
         with self._lock:
             return self._end_session_unlocked(key)
 
-    def has_active_session(self, chat_id: str, project_id: Optional[str] = None) -> bool:
-        return self.get_session(chat_id, project_id=project_id) is not None
+    def rebind_thread(self, chat_id: str, project_id: str, thread_id: str) -> bool:
+        old_key = self._session_key(chat_id, project_id, thread_id=None)
+        new_key = self._session_key(chat_id, project_id, thread_id=thread_id)
+        with self._lock:
+            session = self._sessions.get(old_key)
+            if session is None:
+                return False
+            existing = self._sessions.get(new_key)
+            if existing is not None:
+                try:
+                    self._end_session_unlocked(new_key)
+                except Exception:
+                    logger.debug("Error cleaning existing session at %s during rebind", new_key[-16:])
+            self._sessions[new_key] = session
+            del self._sessions[old_key]
+        return True
 
-    def get_session_info(self, chat_id: str, project_id: Optional[str] = None) -> Optional[str]:
+    def has_active_session(self, chat_id: str, project_id: Optional[str] = None, thread_id: Optional[str] = None) -> bool:
+        return self.get_session(chat_id, project_id=project_id, thread_id=thread_id) is not None
+
+    def get_session_info(self, chat_id: str, project_id: Optional[str] = None, thread_id: Optional[str] = None) -> Optional[str]:
         """Return human-readable session info."""
-        session = self.get_session(chat_id, project_id=project_id)
+        session = self.get_session(chat_id, project_id=project_id, thread_id=thread_id)
         if not session:
             return None
         return session.get_session_info()

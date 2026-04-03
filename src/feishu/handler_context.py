@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from ..project.mapper import MessageLinker
     from ..spec_engine import SpecEngineManager, SpecReporter
     from ..tasking import TaskScheduler
+    from ..thread import ThreadContextManager
     from .image_handler import FeishuImageHandler
 
 
@@ -58,6 +59,7 @@ class HandlerContext:
     loop_reporter: "LoopReporter"
     spec_engine_manager: "SpecEngineManager"
     spec_reporter: "SpecReporter"
+    thread_manager: "ThreadContextManager"
 
     # Lazy-initialized singletons
     streaming_manager_factory: Callable[[], "StreamingCardManager"]

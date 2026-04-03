@@ -37,6 +37,7 @@ class StreamingCard:
     is_ttadk_mode: bool = False
     is_smart_mode: bool = False
     reply_in_thread: Optional[bool] = None  # 显式指定时优先使用
+    thread_root_id: Optional[str] = None
 
     message_id: Optional[str] = None
     created_at: float = field(default_factory=time.time)
@@ -352,6 +353,7 @@ class StreamingCardManager:
         reply_in_thread: Optional[bool] = None,
         ttadk_tool_name: Optional[str] = None,
         ttadk_model_name: Optional[str] = None,
+        thread_root_id: Optional[str] = None,
     ) -> Optional[StreamingCard]:
         title, header_template = self._resolve_title_and_template(
             project_name, is_coco_mode, is_claude_mode,
@@ -374,6 +376,7 @@ class StreamingCardManager:
             is_ttadk_mode=is_ttadk_mode,
             is_smart_mode=is_smart_mode,
             reply_in_thread=reply_in_thread,
+            thread_root_id=thread_root_id,
             last_content=initial_content,
             flow_control_state=FlowControlState(min_update_interval_s=self._settings.streaming_adaptive_interval_base),
         )
@@ -459,9 +462,17 @@ class StreamingCardManager:
     # ---- 按钮构建 ----
 
     def _build_buttons(
-        self, is_coco_mode: bool, project_id: Optional[str] = None, is_claude_mode: bool = False, is_ttadk_mode: bool = False
+        self, is_coco_mode: bool, project_id: Optional[str] = None, is_claude_mode: bool = False, is_ttadk_mode: bool = False,
+        *, thread_root_id: Optional[str] = None,
     ) -> list[dict]:
-        return build_mode_buttons(is_coco_mode, project_id, is_claude_mode, is_ttadk_mode)
+        effective_thread_root_id = thread_root_id
+        if effective_thread_root_id is None:
+            try:
+                from ..thread import get_current_thread_id
+                effective_thread_root_id = get_current_thread_id()
+            except Exception:
+                pass
+        return build_mode_buttons(is_coco_mode, project_id, is_claude_mode, is_ttadk_mode, thread_root_id=effective_thread_root_id)
 
     def _build_button_elements(self, buttons: list[dict], layout: str = "responsive") -> list[dict]:
         """为卡片生成按钮区。Delegates to shared.build_responsive_layout."""
@@ -516,7 +527,7 @@ class StreamingCardManager:
     def send_streaming_card(self, card: StreamingCard) -> Optional[str]:
         self._maybe_cleanup()
         try:
-            buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode, card.is_ttadk_mode)
+            buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode, card.is_ttadk_mode, thread_root_id=card.thread_root_id)
             # Ensure full_content is initialized (for pagination after send).
             if not card.full_content:
                 card.full_content = card.last_content or ""
@@ -717,7 +728,7 @@ class StreamingCardManager:
                         card.last_content_len = len(content)
                         continue
 
-                buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode, card.is_ttadk_mode)
+                buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode, card.is_ttadk_mode, thread_root_id=card.thread_root_id)
 
                 if has_prev:
                     buttons.append(
@@ -799,7 +810,7 @@ class StreamingCardManager:
                 card.full_content = final_text
             display, has_prev, has_more = self._slice_window(card, final_text)
             normalized = _normalize_streaming_markdown(display, is_final=True, max_chars=0)
-            buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode, card.is_ttadk_mode)
+            buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode, card.is_ttadk_mode, thread_root_id=card.thread_root_id)
 
             if has_prev:
                 buttons.append(

@@ -135,7 +135,15 @@ class CoreBuilder:
     ) -> list[dict]:
         project_id_raw = getattr(project, "project_id", None) if project else None
         project_id = str(project_id_raw) if isinstance(project_id_raw, (str, int)) else None
-        return build_mode_buttons(is_coco_mode, project_id, is_claude_mode, is_ttadk_mode, is_gemini_mode)
+
+        thread_root_id = None
+        try:
+            from ...thread import get_current_thread_id
+            thread_root_id = get_current_thread_id()
+        except Exception:
+            pass
+
+        return build_mode_buttons(is_coco_mode, project_id, is_claude_mode, is_ttadk_mode, is_gemini_mode, thread_root_id=thread_root_id)
 
     @staticmethod
     def _build_footer_note(project: Optional[ProjectContext], working_dir: Optional[str] = None) -> Optional[dict]:

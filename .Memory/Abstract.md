@@ -1,7 +1,14 @@
 # GhostAP 项目记忆索引
 
+## 2026-04-02
+- **Thread 并发编程 R6-R10 修复与收敛** — exit_mode 双重清理修复（remove移到finally）、StreamingCard 存储 thread_root_id 替代 threading.local、enter_mode 孤儿session清理+用户反馈、rebind_thread 冲突检查、enter_mode _set_mode_on_project 条件对齐；on_evict 测试 7 cases + rebind overwrite test 1 case；mloop 10 轮审查收敛(8/8旅程全PASS)，2018 tests passed → [详细记录](2026-04-02.md)
+
 ## 2026-04-01
+- **Thread 编程 ACP Session rebind_thread 修复** — enter_mode 创建 session 时 thread_id=None，后续 thread 消息以 response_id 查找失败；新增 ACPSessionManager.rebind_thread() 迁移 session key，3 tests passed → [详细记录](2026-04-01.md)
+- **Thread 感知模式路由修复（R3-Fix1 + R3-Fix2）** — `_dispatch_message_logic` 新增 auto_enter_mode 下 /exit 和编程入口命令拦截；新增 `_get_effective_mode` 辅助方法实现 Thread 级模式感知，替换 `_process_with_intent` 和 `_dispatch_empty_text` 的模式获取逻辑 → [详细记录](2026-04-01.md)
 - **基于 Claude Code Agent Loop 分析的 Loop/Spec 引擎优化** — LoopEngine 接入 LoopContextManager 三级压缩+防漂移锚点、增强收敛检测（标准停滞+连续失败）；SpecEngine 阶段间结构化产物传递、循环间 Session 重建压缩上下文（+配置项 spec_rebuild_session_between_cycles）；修复 5000 cycle 测试超时（120s→9s），1981 tests passed → [详细记录](2026-04-01.md)
+- **Thread 模块单元测试** — 为 src/thread/ 编写 4 个测试类 26 个用例（ThreadContext 模型、ThreadContextManager CRUD+TTL 淘汰、thread-local 隔离、单例），26 passed → [详细记录](2026-04-01.md)
+- **R4-Fix4 + R4-Fix5: Thread 编程会话恢复与淘汰清理** — handle_card_resume 恢复会话后 re-register ThreadContext；ThreadContextManager 添加 on_evict 回调，淘汰/移除时自动清理 ACP Session（遍历 6 个 manager）；附带修复 test_handlers settings mock，2006 tests passed → [详细记录](2026-04-01.md)
 
 ## 2026-03-31
 - **Deep Engine ProgressReporter 单元测试** — 为 reporter.py 编写 10 个测试类 45 个用例，覆盖全部公开方法，45 passed → [详细记录](2026-03-31.md)

@@ -21,7 +21,7 @@ def apply_compact_style(button: dict) -> dict:
     return button
 
 
-def _create_mode_button(key: str, action: str, project_id: Optional[str] = None) -> dict:
+def _create_mode_button(key: str, action: str, project_id: Optional[str] = None, thread_root_id: Optional[str] = None) -> dict:
     """Create a button from config with dynamic action value."""
     config = BUTTON_CONFIG.get(key)
     if not config:
@@ -30,6 +30,8 @@ def _create_mode_button(key: str, action: str, project_id: Optional[str] = None)
     value = {"action": action}
     if project_id:
         value["project_id"] = project_id
+    if thread_root_id:
+        value["thread_root_id"] = thread_root_id
 
     return {
         "tag": "button",
@@ -46,30 +48,30 @@ def build_mode_buttons(
     is_claude_mode: bool = False,
     is_ttadk_mode: bool = False,
     is_gemini_mode: bool = False,
+    thread_root_id: Optional[str] = None,
 ) -> list[dict]:
     """Build mode-specific footer buttons (exit/enter mode + switch project)."""
     buttons = []
 
     if is_claude_mode:
-        buttons.append(_create_mode_button("exit_claude", "exit_claude", project_id))
+        buttons.append(_create_mode_button("exit_claude", "exit_claude", project_id, thread_root_id))
         buttons.append(_create_mode_button("switch_project", "switch_project"))
     elif is_coco_mode:
-        buttons.append(_create_mode_button("exit_coco", "exit_coco", project_id))
+        buttons.append(_create_mode_button("exit_coco", "exit_coco", project_id, thread_root_id))
         buttons.append(_create_mode_button("switch_project", "switch_project"))
     elif is_gemini_mode:
-        buttons.append(_create_mode_button("exit_gemini", "exit_gemini", project_id))
+        buttons.append(_create_mode_button("exit_gemini", "exit_gemini", project_id, thread_root_id))
         buttons.append(_create_mode_button("switch_project", "switch_project"))
     elif is_ttadk_mode:
-        buttons.append(_create_mode_button("switch_ttadk_tool", "show_ttadk_menu", project_id))
-        buttons.append(_create_mode_button("exit_ttadk", "exit_ttadk", project_id))
+        buttons.append(_create_mode_button("switch_ttadk_tool", "show_ttadk_menu", project_id, thread_root_id))
+        buttons.append(_create_mode_button("exit_ttadk", "exit_ttadk", project_id, thread_root_id))
         buttons.append(_create_mode_button("switch_project", "switch_project"))
     else:
-        buttons.append(_create_mode_button("enter_coco", "enter_coco", project_id))
-        buttons.append(_create_mode_button("enter_claude", "enter_claude", project_id))
-        buttons.append(_create_mode_button("enter_gemini", "enter_gemini", project_id))
-        buttons.append(_create_mode_button("enter_ttadk", "enter_ttadk", project_id))
+        buttons.append(_create_mode_button("enter_coco", "enter_coco", project_id, thread_root_id))
+        buttons.append(_create_mode_button("enter_claude", "enter_claude", project_id, thread_root_id))
+        buttons.append(_create_mode_button("enter_gemini", "enter_gemini", project_id, thread_root_id))
+        buttons.append(_create_mode_button("enter_ttadk", "enter_ttadk", project_id, thread_root_id))
 
-    # Filter out empty buttons if config missing
     return [b for b in buttons if b]
 
 

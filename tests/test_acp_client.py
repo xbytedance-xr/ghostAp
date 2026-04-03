@@ -437,6 +437,70 @@ def test_read_write_text_file(tmp_path: Path):
         loop.close()
 
 
+class TestRebindThread:
+    def _make_manager(self):
+        from src.acp.manager import ACPSessionManager
+
+        return ACPSessionManager("coco", session_timeout=999999)
+
+    def test_rebind_moves_session(self):
+        mgr = self._make_manager()
+        sentinel = MagicMock()
+        old_key = mgr._session_key("chat1", "proj1", thread_id=None)
+        mgr._sessions[old_key] = sentinel
+
+        result = mgr.rebind_thread("chat1", "proj1", "thread_resp_123")
+
+        assert result is True
+        new_key = mgr._session_key("chat1", "proj1", thread_id="thread_resp_123")
+        assert mgr._sessions.get(new_key) is sentinel
+        assert old_key not in mgr._sessions
+
+    def test_rebind_returns_false_when_missing(self):
+        mgr = self._make_manager()
+
+        result = mgr.rebind_thread("chat1", "proj1", "thread_resp_456")
+
+        assert result is False
+
+    def test_rebind_does_not_affect_other_keys(self):
+        mgr = self._make_manager()
+        sentinel_a = MagicMock()
+        sentinel_b = MagicMock()
+        key_a = mgr._session_key("chat1", "projA", thread_id=None)
+        key_b = mgr._session_key("chat1", "projB", thread_id=None)
+        mgr._sessions[key_a] = sentinel_a
+        mgr._sessions[key_b] = sentinel_b
+
+        mgr.rebind_thread("chat1", "projA", "t1")
+
+        assert mgr._sessions.get(mgr._session_key("chat1", "projA", thread_id="t1")) is sentinel_a
+        assert mgr._sessions.get(key_b) is sentinel_b
+        assert key_a not in mgr._sessions
+
+    def test_rebind_cleans_existing_target_session(self):
+        mgr = self._make_manager()
+        old_session = MagicMock()
+        old_session.session_id = "sid_old"
+        old_session.message_count = 3
+        existing_at_target = MagicMock()
+        existing_at_target.session_id = "sid_target"
+        existing_at_target.message_count = 5
+
+        old_key = mgr._session_key("chat1", "proj1", thread_id=None)
+        new_key = mgr._session_key("chat1", "proj1", thread_id="thread_new")
+        mgr._sessions[old_key] = old_session
+        mgr._sessions[new_key] = existing_at_target
+
+        result = mgr.rebind_thread("chat1", "proj1", "thread_new")
+
+        assert result is True
+        assert mgr._sessions.get(new_key) is old_session
+        assert old_key not in mgr._sessions
+        existing_at_target.close.assert_called_once()
+        existing_at_target.to_snapshot.assert_called_once()
+
+
 def test_read_text_file_path_escape_denied(tmp_path: Path):
     root = str(tmp_path)
     client = GhostAPClient(on_event=lambda e: None, root_dir=root)
