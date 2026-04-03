@@ -1141,6 +1141,147 @@ class TestOneShotDispatchToThread(unittest.TestCase):
 
         self.assertFalse(pending)
 
+    def test_find_active_thread_returns_programming_context(self):
+        client = self._make_client()
+        client._thread_manager = MagicMock()
+        mock_ctx = MagicMock()
+        mock_ctx.mode = "coco"
+        client._thread_manager.get_by_chat.return_value = [mock_ctx]
+
+        result = client._find_active_thread("c1")
+        self.assertEqual(result, mock_ctx)
+
+    def test_find_active_thread_skips_smart_mode(self):
+        client = self._make_client()
+        client._thread_manager = MagicMock()
+        mock_ctx = MagicMock()
+        mock_ctx.mode = "smart"
+        client._thread_manager.get_by_chat.return_value = [mock_ctx]
+
+        result = client._find_active_thread("c1")
+        self.assertIsNone(result)
+
+    def test_find_active_thread_returns_none_when_empty(self):
+        client = self._make_client()
+        client._thread_manager = MagicMock()
+        client._thread_manager.get_by_chat.return_value = []
+
+        result = client._find_active_thread("c1")
+        self.assertIsNone(result)
+
+    def test_find_active_thread_disabled_returns_none(self):
+        client = self._make_client()
+        client._thread_manager = MagicMock()
+        client.settings.thread_programming_enabled = False
+
+        result = client._find_active_thread("c1")
+        self.assertIsNone(result)
+        client._thread_manager.get_by_chat.assert_not_called()
+
+    @patch("src.feishu.ws_client.get_current_thread_id", return_value=None)
+    def test_dispatch_to_thread_cleans_old_thread(self, _):
+        client = self._make_client()
+        client._thread_manager = MagicMock()
+        old_ctx = MagicMock()
+        old_ctx.project_id = "old_p"
+        old_ctx.thread_root_id = "old_thread_root_123"
+        old_ctx.mode = "coco"
+        client._thread_manager.get_by_chat.return_value = [old_ctx]
+
+        old_handler = MagicMock()
+        old_session_mgr = MagicMock()
+        old_handler._get_session_manager.return_value = old_session_mgr
+        client._coco_handler = old_handler
+
+        handler = MagicMock()
+        handler.mode_name = "Claude"
+        handler.mode_emoji = "🟣"
+        handler.reply_message_with_id.return_value = "new_thread_root"
+        mock_session = MagicMock()
+        handler._get_session_manager.return_value.get_session.return_value = mock_session
+
+        project = MagicMock()
+        project.project_id = "p1"
+        project.root_path = "/tmp/test"
+        project.project_name = "test"
+
+        client._dispatch_to_thread("m1", "c1", "写个函数", project, InteractionMode.CLAUDE, handler)
+
+        old_session_mgr.end_session.assert_called_once_with(
+            "c1", project_id="old_p", thread_id="old_thread_root_123"
+        )
+        client._thread_manager.remove.assert_called_once_with("old_thread_root_123")
+        handler.handle_message.assert_called_once()
+
+
+class TestActiveThreadGuidance(unittest.TestCase):
+
+    def _make_client(self):
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_settings.thread_programming_enabled = True
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+        return client
+
+    @patch("src.feishu.ws_client.get_current_thread_id", return_value=None)
+    def test_guidance_shown_when_intent_unrecognized_with_active_thread(self, _):
+        client = self._make_client()
+        client._thread_manager = MagicMock()
+        client._reply_message = MagicMock()
+        client._add_reaction = MagicMock()
+        mock_ctx = MagicMock()
+        mock_ctx.mode = "coco"
+        client._thread_manager.get_by_chat.return_value = [mock_ctx]
+
+        client._execute_single_task("m1", "c1", None, "帮我写个函数", MagicMock())
+
+        client._reply_message.assert_called_once()
+        call_args = str(client._reply_message.call_args)
+        assert "活跃" in call_args
+        assert "话题" in call_args
+
+    @patch("src.feishu.ws_client.get_current_thread_id", return_value=None)
+    def test_no_guidance_when_no_active_thread(self, _):
+        client = self._make_client()
+        client._thread_manager = MagicMock()
+        client._reply_message = MagicMock()
+        client._thread_manager.get_by_chat.return_value = []
+
+        client._execute_single_task("m1", "c1", None, "帮我写个函数", MagicMock())
+
+        client._reply_message.assert_called_once()
+        call_args = str(client._reply_message.call_args)
+        assert "无法理解" in call_args
+
+    @patch("src.feishu.ws_client.get_current_thread_id", return_value=None)
+    def test_no_guidance_when_thread_disabled(self, _):
+        client = self._make_client()
+        client._thread_manager = MagicMock()
+        client._reply_message = MagicMock()
+        client.settings.thread_programming_enabled = False
+
+        client._execute_single_task("m1", "c1", None, "帮我写个函数", MagicMock())
+
+        client._reply_message.assert_called_once()
+        call_args = str(client._reply_message.call_args)
+        assert "无法理解" in call_args
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1639,6 +1639,15 @@ class FeishuWSClient:
             return False, None
         return True, handler
 
+    def _find_active_thread(self, chat_id):
+        if not self.settings.thread_programming_enabled:
+            return None
+        contexts = self._thread_manager.get_by_chat(chat_id)
+        for ctx in contexts:
+            if ctx.mode and ctx.mode != "smart":
+                return ctx
+        return None
+
     def _dispatch_to_thread(self, message_id, chat_id, text, project, current_mode, handler):
         from ..thread import set_current_thread_id, get_thread_manager
 
@@ -1646,6 +1655,19 @@ class FeishuWSClient:
         self._add_reaction(message_id, EmojiReaction.on_processing())
 
         project_id = project.project_id if project else None
+
+        old_thread = self._find_active_thread(chat_id)
+        if old_thread:
+            try:
+                from ..mode import InteractionMode as _IM
+                old_handler = self._get_mode_handler(_IM(old_thread.mode))
+                if old_handler:
+                    old_session_mgr = old_handler._get_session_manager()
+                    old_session_mgr.end_session(chat_id, project_id=old_thread.project_id, thread_id=old_thread.thread_root_id)
+                self._thread_manager.remove(old_thread.thread_root_id)
+                logger.info("[Thread] Closed old thread %s before creating new one", old_thread.thread_root_id[:12])
+            except Exception as e:
+                logger.warning("[Thread] Failed to close old thread: %s", e)
 
         mode_name = handler.mode_name
         content = (
@@ -2300,6 +2322,17 @@ class FeishuWSClient:
     ):
         """执行单一任务步骤（模式切换/系统命令/引擎命令/执行 shell 等）。"""
         if not task:
+            if self.settings.thread_programming_enabled and not get_current_thread_id():
+                active_thread = self._find_active_thread(chat_id)
+                if active_thread:
+                    mode_display = active_thread.mode.upper() if active_thread.mode else "编程"
+                    self._reply_message(
+                        message_id,
+                        f"💡 你有一个活跃的 {mode_display} 编程话题正在进行中\n\n"
+                        "请在话题中回复继续对话\n"
+                        "如需新建编程环境，请先发送对应的编程模式命令（如 /coco）",
+                    )
+                    return
             self._reply_message(message_id, "🤔 无法理解你的意图")
             return
 
