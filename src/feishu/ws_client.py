@@ -1465,6 +1465,22 @@ class FeishuWSClient:
                 # 4. Resolve Context (if no images to drive it)
                 project, auto_enter_mode = self._resolve_message_context(message)
 
+            # 4b. Safety net: if auto_enter_mode is still None but we are in a
+            # registered thread, force-set mode from thread context so that the
+            # message never accidentally falls through to SMART / intent recognition.
+            if not auto_enter_mode:
+                _root = getattr(message, "root_id", None)
+                if _root and self.settings.thread_programming_enabled:
+                    _tctx = self._thread_manager.get(_root)
+                    if _tctx and _tctx.mode and _tctx.mode != "smart":
+                        auto_enter_mode = _tctx.mode
+                        if not project:
+                            project = self._project_manager.get_project(_tctx.project_id) or self._project_manager.get_active_project(chat_id)
+                        logger.info(
+                            "[Thread] Safety-net resolved mode: root=%s mode=%s",
+                            _root[:12], auto_enter_mode,
+                        )
+
             # 5. Handle Context Updates (Task Scheduler)
             if task_ctx and project:
                 self._update_task_project(task_ctx, project.project_id)
@@ -1593,14 +1609,15 @@ class FeishuWSClient:
         if root_id and self.settings.thread_programming_enabled:
             thread_ctx = self._thread_manager.get(root_id)
             if thread_ctx:
+                auto_enter_mode = thread_ctx.mode if thread_ctx.mode != "smart" else None
                 project = self._project_manager.get_project(thread_ctx.project_id)
-                if project:
-                    auto_enter_mode = thread_ctx.mode if thread_ctx.mode != "smart" else None
-                    logger.info(
-                        "[Thread] Resolved context: root=%s project=%s mode=%s",
-                        root_id[:12], thread_ctx.project_id, thread_ctx.mode,
-                    )
-                    return project, auto_enter_mode
+                if not project:
+                    project = self._project_manager.get_active_project(chat_id)
+                logger.info(
+                    "[Thread] Resolved context: root=%s project=%s mode=%s project_found=%s",
+                    root_id[:12], thread_ctx.project_id, thread_ctx.mode, project is not None,
+                )
+                return project, auto_enter_mode
 
         return self._resolve_project_from_message(message_id, chat_id, parent_id or root_id)
 
@@ -1710,7 +1727,7 @@ class FeishuWSClient:
                 self._mode_manager.exit_to_smart(chat_id, project_id=project_id)
                 if project:
                     handler._set_mode_on_project(project, False)
-                    handler._register_thread_context(thread_root_id, chat_id, project, session)
+                handler._register_thread_context(thread_root_id, chat_id, project, session)
                 handler.handle_message(message_id, chat_id, text, project)
             else:
                 self._mode_manager.exit_to_smart(chat_id, project_id=project_id)

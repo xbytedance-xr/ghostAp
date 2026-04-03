@@ -395,7 +395,7 @@ class ProgrammingModeHandler(BaseHandler):
         self,
         thread_root_id: str,
         chat_id: str,
-        project: "ProjectContext",
+        project: Optional["ProjectContext"],
         session: SyncSession,
     ) -> None:
         try:
@@ -404,15 +404,22 @@ class ProgrammingModeHandler(BaseHandler):
             mode_name = self._get_interaction_mode().value
             tool_name = None
             model_name = None
-            if project.ttadk_tool_name:
+            if project:
+                project_id = project.project_id
+            else:
+                active = self.project_manager.get_active_project(chat_id)
+                project_id = active.project_id if active else (session.session_id or "unknown")
+                if active:
+                    project = active
+            if project and project.ttadk_tool_name:
                 tool_name = project.ttadk_tool_name
-            if project.ttadk_model_name:
+            if project and project.ttadk_model_name:
                 model_name = project.ttadk_model_name
 
             get_thread_manager().register(
                 thread_root_id=thread_root_id,
                 chat_id=chat_id,
-                project_id=project.project_id,
+                project_id=project_id,
                 mode=mode_name,
                 tool_name=tool_name,
                 model_name=model_name,
@@ -506,15 +513,22 @@ class ProgrammingModeHandler(BaseHandler):
         session = self._get_session_manager().get_session(chat_id, project_id=project_id, thread_id=thread_id)
 
         if not session:
-            if project:
-                self.enter_mode(message_id, chat_id, project=project, thread_id=thread_id)
-                session = self._get_session_manager().get_session(chat_id, project_id=project_id, thread_id=thread_id)
-                if not session:
-                    return
-            else:
+            self.enter_mode(message_id, chat_id, project=project, thread_id=thread_id)
+            if not project:
+                working_dir = self.get_working_dir(chat_id)
+                try:
+                    project, _ = self.project_manager.get_or_create_project_for_path(working_dir, chat_id)
+                    project_id = project.project_id
+                except Exception:
+                    pass
+            session = self._get_session_manager().get_session(chat_id, project_id=project_id, thread_id=thread_id)
+            if not session:
                 self.reply_message(
                     message_id,
-                    fmt.format_warning(f"{self.mode_name} 会话已过期，请发送 /{self.mode_name.lower()} 重新开始"),
+                    fmt.format_warning(
+                        f"{self.mode_name} 会话启动失败，请重新发送 /{self.mode_name.lower()} 开始"
+                    ),
+                    reply_in_thread=True if thread_id else None,
                 )
                 return
 

@@ -1,5 +1,8 @@
 # GhostAP 项目记忆索引
 
+## 2026-04-04
+- **话题编程模式多层防御修复（第三轮）** — 前两轮修复(thread_root_id/跳过enter_mode)未解决问题；本轮发现 _resolve_message_context 中 project 查找失败导致 auto_enter_mode 丢失、_dispatch_to_thread 仅在 project 非 None 时注册 ThreadContext、handle_message 在 project=None 时静默返回等多个断裂点；实施四层防御：(1) _resolve_message_context 解耦 mode 和 project 查找+始终返回不 fall-through (2) _process_message_async 安全网 (3) _dispatch_to_thread 无条件注册 (4) handle_message 统一恢复路径；mloop 4 轮收敛(2/2 CLEAN)，2058 tests passed → [详细记录](2026-04-04.md)
+
 ## 2026-04-03
 - **One-Shot Pending Slot 编程模式重构** — 主对话开启编程模式后进入 pending 状态（仅设 ModeManager 不建 session），首条编程指令自动 _dispatch_to_thread 创建话题并运行会话，shell 命令保护不消费机会；mloop 4 轮审查收敛(2/2 CLEAN)，2029 tests passed → [详细记录](2026-04-03.md)
 - **话题编程模式优化：单链接约束 + 引导提示** — 新增 _find_active_thread + 跨模式单链接清理（旧话题 session 根据 mode 动态查 handler）；引导提示从 SMART 前置拦截改为意图识别失败时精准触发；mloop 3 轮收敛(2/2 CLEAN)，2037 tests passed → [详细记录](2026-04-03.md)

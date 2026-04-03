@@ -1224,6 +1224,52 @@ class TestOneShotPendingSlot:
         call_str = str(call_kwargs)
         assert "old_snapshot_sess" not in call_str
 
+    @patch("src.thread.get_current_thread_id", return_value="thread_789")
+    def test_handle_message_session_not_found_gives_feedback(self, mock_tid):
+        """handle_message 在线程内 session 未找到且 enter_mode 也失败时应给出明确反馈"""
+        h, ctx = self._make_coco_pending()
+        ctx.coco_manager.get_session.return_value = None
+        ctx.coco_manager.ensure_session.side_effect = Exception("startup failed")
+
+        project = MagicMock()
+        project.project_id = "test_id"
+        project.root_path = "/tmp"
+        project.project_name = "test"
+        project.coco_session_snapshot = None
+        ctx.project_manager.validate_project_path.return_value = (True, "ok")
+        ctx.project_manager.get_or_create_project_for_path.return_value = (project, False)
+
+        h.reply_message = MagicMock()
+        h.add_reaction = MagicMock()
+
+        h.handle_message("m1", "c1", "继续写", project)
+
+        ctx.coco_manager.ensure_session.assert_called()
+        h.reply_message.assert_called()
+        call_str = str(h.reply_message.call_args)
+        assert "启动失败" in call_str or "重新发送" in call_str
+
+    @patch("src.thread.get_current_thread_id", return_value=None)
+    def test_register_thread_context_handles_none_project(self, mock_tid):
+        """_register_thread_context 应在 project=None 时通过 active_project 获取真实 project_id"""
+        h, ctx = self._make_coco_pending()
+        session = MagicMock()
+        session.session_id = "sess_123"
+
+        active_project = MagicMock()
+        active_project.project_id = "real_proj_id"
+        active_project.ttadk_tool_name = None
+        active_project.ttadk_model_name = None
+        ctx.project_manager.get_active_project.return_value = active_project
+
+        mock_tm = MagicMock()
+        with patch("src.thread.get_thread_manager", return_value=mock_tm):
+            h._register_thread_context("root1", "c1", None, session)
+            mock_tm.register.assert_called_once()
+            call_kwargs = mock_tm.register.call_args
+            assert call_kwargs[1]["mode"] == "coco"
+            assert call_kwargs[1]["project_id"] == "real_proj_id"
+
 
 class TestTTADKModeDegradeWarning:
     def test_ttadk_enter_mode_emits_degrade_warning(self):

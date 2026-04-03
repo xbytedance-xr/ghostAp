@@ -1399,6 +1399,295 @@ class TestThreadPersistentProgramming(unittest.TestCase):
         client._process_with_intent.assert_called_once()
         client._get_mode_handler.assert_not_called()
 
+
+class TestThreadModeRetentionRobust(unittest.TestCase):
+    """话题内编程模式保持的鲁棒性测试 — 覆盖第三轮修复的多层防御"""
+
+    def _make_client(self):
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager") as mock_pm,
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_settings.thread_programming_enabled = True
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+        return client
+
+    def test_resolve_context_returns_mode_even_if_project_none(self):
+        """_resolve_message_context 应在 thread_ctx 存在但 project 查找失败时仍返回 auto_enter_mode"""
+        client = self._make_client()
+        client.settings = MagicMock()
+        client.settings.thread_programming_enabled = True
+
+        from src.thread.models import ThreadContext
+        thread_ctx = ThreadContext(
+            thread_root_id="root1", chat_id="c1", project_id="proj1", mode="coco",
+        )
+        client._thread_manager = MagicMock()
+        client._thread_manager.get.return_value = thread_ctx
+
+        client._project_manager = MagicMock()
+        client._project_manager.get_project.return_value = None
+        fallback_project = MagicMock()
+        fallback_project.project_id = "proj_fallback"
+        client._project_manager.get_active_project.return_value = fallback_project
+
+        message = MagicMock()
+        message.message_id = "m1"
+        message.chat_id = "c1"
+        message.root_id = "root1"
+        message.parent_id = None
+
+        project, auto_mode = client._resolve_message_context(message)
+
+        self.assertEqual(auto_mode, "coco")
+        self.assertEqual(project, fallback_project)
+
+    def test_resolve_context_returns_mode_with_project_found(self):
+        """_resolve_message_context 在 thread_ctx 和 project 都存在时正常返回"""
+        client = self._make_client()
+        client.settings = MagicMock()
+        client.settings.thread_programming_enabled = True
+
+        from src.thread.models import ThreadContext
+        thread_ctx = ThreadContext(
+            thread_root_id="root1", chat_id="c1", project_id="proj1", mode="claude",
+        )
+        client._thread_manager = MagicMock()
+        client._thread_manager.get.return_value = thread_ctx
+
+        direct_project = MagicMock()
+        direct_project.project_id = "proj1"
+        client._project_manager = MagicMock()
+        client._project_manager.get_project.return_value = direct_project
+
+        message = MagicMock()
+        message.message_id = "m1"
+        message.chat_id = "c1"
+        message.root_id = "root1"
+        message.parent_id = None
+
+        project, auto_mode = client._resolve_message_context(message)
+
+        self.assertEqual(auto_mode, "claude")
+        self.assertEqual(project, direct_project)
+
+    def test_resolve_context_smart_mode_returns_none_auto_enter(self):
+        """thread_ctx.mode='smart' 时 auto_enter_mode 应为 None，但不再 fall through"""
+        client = self._make_client()
+        client.settings = MagicMock()
+        client.settings.thread_programming_enabled = True
+
+        from src.thread.models import ThreadContext
+        thread_ctx = ThreadContext(
+            thread_root_id="root1", chat_id="c1", project_id="proj1", mode="smart",
+        )
+        client._thread_manager = MagicMock()
+        client._thread_manager.get.return_value = thread_ctx
+
+        project_obj = MagicMock()
+        project_obj.project_id = "proj1"
+        client._project_manager = MagicMock()
+        client._project_manager.get_project.return_value = project_obj
+        client._resolve_project_from_message = MagicMock(return_value=(MagicMock(), None))
+
+        message = MagicMock()
+        message.message_id = "m1"
+        message.chat_id = "c1"
+        message.root_id = "root1"
+        message.parent_id = None
+
+        project, auto_mode = client._resolve_message_context(message)
+
+        self.assertIsNone(auto_mode)
+        self.assertEqual(project, project_obj)
+        client._resolve_project_from_message.assert_not_called()
+
+    def test_safety_net_in_process_message_async(self):
+        """安全网：即使 _resolve_message_context 返回 auto_enter_mode=None，安全网仍能从 thread_ctx 恢复"""
+        client = self._make_client()
+        client.settings = MagicMock()
+        client.settings.thread_programming_enabled = True
+
+        from src.thread.models import ThreadContext
+        thread_ctx = ThreadContext(
+            thread_root_id="root1", chat_id="c1", project_id="proj1", mode="coco",
+        )
+        client._thread_manager = MagicMock()
+        client._thread_manager.get.return_value = thread_ctx
+
+        project = MagicMock()
+        project.project_id = "proj1"
+        client._project_manager = MagicMock()
+        client._project_manager.get_project.return_value = project
+        client._project_manager.get_active_project.return_value = project
+
+        client._validate_message = MagicMock(return_value=True)
+        client._get_image_handler = MagicMock()
+        parse_result = MagicMock()
+        parse_result.text = "继续写"
+        parse_result.image_keys = []
+        client._get_image_handler.return_value.parse_message.return_value = parse_result
+        client._clean_at_text = MagicMock(return_value="继续写")
+
+        client._resolve_message_context = MagicMock(return_value=(project, None))
+        client._dispatch_message_logic = MagicMock()
+        client._update_task_project = MagicMock()
+
+        data = MagicMock()
+        data.event.message.message_id = "m2"
+        data.event.message.chat_id = "c1"
+        data.event.message.root_id = "root1"
+        data.event.message.create_time = None
+
+        task_ctx = MagicMock()
+        task_ctx.run_id = "run1"
+
+        client._process_message_async(data, task_ctx=task_ctx)
+
+        call_args = client._dispatch_message_logic.call_args
+        actual_auto_mode = call_args[0][4] if len(call_args[0]) > 4 else call_args[1].get("auto_enter_mode")
+        self.assertEqual(actual_auto_mode, "coco")
+
+    def test_dispatch_to_thread_registers_context_without_project(self):
+        """_dispatch_to_thread 应在 project=None 时仍注册 ThreadContext"""
+        client = self._make_client()
+        client.settings = MagicMock()
+        client.settings.thread_programming_enabled = True
+        client._add_reaction = MagicMock()
+        client._reply_message = MagicMock()
+        client._find_active_thread = MagicMock(return_value=None)
+        client._mode_manager = MagicMock()
+
+        handler = MagicMock()
+        handler.mode_name = "Coco"
+        handler.mode_emoji = "🤖"
+        handler.reply_message_with_id.return_value = "reply_id_1"
+
+        session = MagicMock()
+        session.session_id = "sess1"
+        handler._get_session_manager.return_value.get_session.return_value = session
+
+        from src.thread import set_current_thread_id
+        handler.handle_message = MagicMock()
+
+        client._dispatch_to_thread("m1", "c1", "写代码", None, InteractionMode.COCO, handler)
+
+        handler._register_thread_context.assert_called_once()
+        call_args = handler._register_thread_context.call_args
+        self.assertEqual(call_args[0][0], "m1")
+        self.assertEqual(call_args[0][1], "c1")
+        self.assertIsNone(call_args[0][2])
+
+    def test_all_modes_resolve_from_thread_ctx(self):
+        """所有编程模式 (coco/claude/aiden/codex/gemini/ttadk) 都能从 thread_ctx 正确解析"""
+        for mode in ("coco", "claude", "aiden", "codex", "gemini", "ttadk"):
+            client = self._make_client()
+            client.settings = MagicMock()
+            client.settings.thread_programming_enabled = True
+
+            from src.thread.models import ThreadContext
+            thread_ctx = ThreadContext(
+                thread_root_id="root1", chat_id="c1", project_id="proj1", mode=mode,
+            )
+            client._thread_manager = MagicMock()
+            client._thread_manager.get.return_value = thread_ctx
+
+            project = MagicMock()
+            project.project_id = "proj1"
+            client._project_manager = MagicMock()
+            client._project_manager.get_project.return_value = project
+
+            message = MagicMock()
+            message.message_id = "m1"
+            message.chat_id = "c1"
+            message.root_id = "root1"
+            message.parent_id = None
+
+            resolved_project, auto_mode = client._resolve_message_context(message)
+            self.assertEqual(auto_mode, mode, f"Mode {mode} should be returned from thread context")
+
+    def test_resolve_context_disabled_thread_skips_thread_ctx(self):
+        """thread_programming_enabled=False 时跳过 thread_ctx 查找"""
+        client = self._make_client()
+        client.settings = MagicMock()
+        client.settings.thread_programming_enabled = False
+
+        client._thread_manager = MagicMock()
+        fallback_project = MagicMock()
+        client._resolve_project_from_message = MagicMock(return_value=(fallback_project, None))
+
+        message = MagicMock()
+        message.message_id = "m1"
+        message.chat_id = "c1"
+        message.root_id = "root1"
+        message.parent_id = None
+
+        project, auto_mode = client._resolve_message_context(message)
+
+        client._thread_manager.get.assert_not_called()
+        self.assertIsNone(auto_mode)
+        client._resolve_project_from_message.assert_called_once()
+
+    def test_safety_net_covers_image_path(self):
+        """安全网在图片消息路径（_handle_image_content 返回 None mode）时也能恢复 auto_enter_mode"""
+        client = self._make_client()
+        client.settings = MagicMock()
+        client.settings.thread_programming_enabled = True
+
+        from src.thread.models import ThreadContext
+        thread_ctx = ThreadContext(
+            thread_root_id="root1", chat_id="c1", project_id="proj1", mode="coco",
+        )
+        client._thread_manager = MagicMock()
+        client._thread_manager.get.return_value = thread_ctx
+
+        project = MagicMock()
+        project.project_id = "proj1"
+        client._project_manager = MagicMock()
+        client._project_manager.get_project.return_value = project
+        client._project_manager.get_active_project.return_value = project
+
+        client._validate_message = MagicMock(return_value=True)
+        client._get_image_handler = MagicMock()
+        parse_result = MagicMock()
+        parse_result.text = "看这张图"
+        parse_result.image_keys = ["img_key_1"]
+        client._get_image_handler.return_value.parse_message.return_value = parse_result
+        client._clean_at_text = MagicMock(return_value="看这张图")
+
+        client._handle_image_content = MagicMock(return_value=(project, None, "看这张图", True))
+        client._dispatch_message_logic = MagicMock()
+        client._update_task_project = MagicMock()
+
+        data = MagicMock()
+        data.event.message.message_id = "m2"
+        data.event.message.chat_id = "c1"
+        data.event.message.root_id = "root1"
+        data.event.message.create_time = None
+
+        task_ctx = MagicMock()
+        task_ctx.run_id = "run1"
+
+        client._process_message_async(data, task_ctx=task_ctx)
+
+        call_args = client._dispatch_message_logic.call_args
+        actual_auto_mode = call_args[0][4] if len(call_args[0]) > 4 else call_args[1].get("auto_enter_mode")
+        self.assertEqual(actual_auto_mode, "coco")
+
     def test_dispatch_message_logic_handler_none_fallback(self):
         client = self._make_client()
         client._add_reaction = MagicMock()
