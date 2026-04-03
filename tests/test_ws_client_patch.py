@@ -1311,5 +1311,149 @@ class TestActiveThreadGuidance(unittest.TestCase):
         assert "无法理解" in call_args
 
 
-if __name__ == "__main__":
-    unittest.main()
+class TestThreadPersistentProgramming(unittest.TestCase):
+
+    def _make_client(self):
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_settings.thread_programming_enabled = True
+            mock_get_settings.return_value = mock_settings
+
+            client = FeishuWSClient(MagicMock())
+        return client
+
+    def test_dispatch_message_logic_skips_enter_mode_for_thread(self):
+        client = self._make_client()
+        client._add_reaction = MagicMock()
+        client._process_with_intent = MagicMock()
+        handler = MagicMock()
+        handler.handle_message = MagicMock()
+        client._get_mode_handler = MagicMock(return_value=handler)
+
+        project = MagicMock()
+        project.project_id = "p1"
+
+        client._dispatch_message_logic("m2", "c1", "继续写", project, auto_enter_mode="coco")
+
+        handler.handle_message.assert_called_once_with("m2", "c1", "继续写", project)
+        client._process_with_intent.assert_not_called()
+
+    def test_dispatch_message_logic_no_enter_mode_called(self):
+        client = self._make_client()
+        client._add_reaction = MagicMock()
+        client._enter_coco_mode = MagicMock()
+        handler = MagicMock()
+        client._get_mode_handler = MagicMock(return_value=handler)
+
+        project = MagicMock()
+        client._dispatch_message_logic("m2", "c1", "改一下", project, auto_enter_mode="coco")
+
+        client._enter_coco_mode.assert_not_called()
+
+    def test_dispatch_message_logic_thread_exit_command(self):
+        client = self._make_client()
+        client._add_reaction = MagicMock()
+        client._exit_current_mode = MagicMock()
+
+        project = MagicMock()
+        client._dispatch_message_logic("m2", "c1", "/exit", project, auto_enter_mode="coco")
+
+        client._exit_current_mode.assert_called_once()
+
+    def test_dispatch_message_logic_all_modes_skip_enter(self):
+        client = self._make_client()
+        client._add_reaction = MagicMock()
+
+        for mode in ("coco", "claude", "aiden", "codex", "gemini", "ttadk"):
+            handler = MagicMock()
+            client._get_mode_handler = MagicMock(return_value=handler)
+            project = MagicMock()
+
+            client._dispatch_message_logic(f"m_{mode}", "c1", "do stuff", project, auto_enter_mode=mode)
+
+            handler.handle_message.assert_called_once_with(f"m_{mode}", "c1", "do stuff", project)
+
+    def test_dispatch_message_logic_no_auto_enter_goes_to_intent(self):
+        client = self._make_client()
+        client._add_reaction = MagicMock()
+        client._process_with_intent = MagicMock()
+        client._get_mode_handler = MagicMock()
+
+        project = MagicMock()
+        client._dispatch_message_logic("m1", "c1", "你好", project, auto_enter_mode=None)
+
+        client._process_with_intent.assert_called_once()
+        client._get_mode_handler.assert_not_called()
+
+    def test_dispatch_message_logic_handler_none_fallback(self):
+        client = self._make_client()
+        client._add_reaction = MagicMock()
+        client._process_with_intent = MagicMock()
+        client._get_mode_handler = MagicMock(return_value=None)
+
+        project = MagicMock()
+        client._dispatch_message_logic("m1", "c1", "改一下", project, auto_enter_mode="coco")
+
+        client._process_with_intent.assert_called_once()
+
+    def test_dispatch_message_logic_programming_entry_intercepted(self):
+        client = self._make_client()
+        client._add_reaction = MagicMock()
+        client._reply_message = MagicMock()
+        client._get_mode_handler = MagicMock()
+
+        project = MagicMock()
+        client._dispatch_message_logic("m1", "c1", "/coco", project, auto_enter_mode="coco")
+
+        client._reply_message.assert_called_once()
+        call_str = str(client._reply_message.call_args)
+        assert "已在编程模式" in call_str
+        client._get_mode_handler.assert_not_called()
+
+    def test_dispatch_message_logic_deep_command_intercepted(self):
+        client = self._make_client()
+        client._add_reaction = MagicMock()
+        client._reply_message = MagicMock()
+        client._get_mode_handler = MagicMock()
+
+        project = MagicMock()
+        client._dispatch_message_logic("m1", "c1", "/deep 写一个函数", project, auto_enter_mode="coco")
+
+        client._reply_message.assert_called_once()
+        call_str = str(client._reply_message.call_args)
+        assert "暂不支持" in call_str
+        client._get_mode_handler.assert_not_called()
+
+    def test_dispatch_message_logic_exit_with_defer(self):
+        client = self._make_client()
+        client._add_reaction = MagicMock()
+        client._reply_message = MagicMock()
+        client._should_defer_exit = MagicMock(return_value=True)
+        client._request_deferred_exit = MagicMock()
+        client._exit_current_mode = MagicMock()
+        client._get_mode_handler = MagicMock()
+
+        project = MagicMock()
+        project.project_id = "p1"
+        client._dispatch_message_logic("m1", "c1", "/exit", project, auto_enter_mode="coco")
+
+        client._should_defer_exit.assert_called_once()
+        client._request_deferred_exit.assert_called_once()
+        client._reply_message.assert_called_once()
+        assert "当前任务完成后退出" in str(client._reply_message.call_args)
+        client._exit_current_mode.assert_not_called()
+        client._get_mode_handler.assert_not_called()

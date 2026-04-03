@@ -1786,6 +1786,11 @@ class FeishuWSClient:
         if auto_enter_mode:
             if self._is_exit_command(text):
                 self._add_reaction(message_id, EmojiReaction.on_coco_mode())
+                _pid = project.project_id if project else None
+                if self._should_defer_exit(chat_id=chat_id, project_id=_pid):
+                    self._request_deferred_exit(message_id=message_id, chat_id=chat_id, project_id=_pid)
+                    self._reply_message(message_id, "✅ 已收到 /exit，将在当前任务完成后退出（不中断执行）")
+                    return
                 self._exit_current_mode(message_id, chat_id, project=project)
                 return
             if self._is_programming_entry_command(text):
@@ -1800,36 +1805,15 @@ class FeishuWSClient:
                     "⚠️ Deep/Loop/Spec 模式暂不支持在话题中使用，请在主对话中发送对应命令",
                 )
                 return
-        if auto_enter_mode == "claude":
-            self._enter_claude_mode(message_id, chat_id, silent=True, project=project)
-            self._add_reaction(message_id, EmojiReaction.on_coco_mode())
-            self._add_reaction(message_id, EmojiReaction.on_processing())
-            self._handle_claude_message(message_id, chat_id, text, project)
-        elif auto_enter_mode == "coco":
-            self._enter_coco_mode(message_id, chat_id, silent=True, project=project)
-            self._add_reaction(message_id, EmojiReaction.on_coco_mode())
-            self._add_reaction(message_id, EmojiReaction.on_processing())
-            self._handle_coco_message(message_id, chat_id, text, project)
-        elif auto_enter_mode == "aiden":
-            self._enter_aiden_mode(message_id, chat_id, silent=True, project=project)
-            self._add_reaction(message_id, EmojiReaction.on_coco_mode())
-            self._add_reaction(message_id, EmojiReaction.on_processing())
-            self._handle_aiden_message(message_id, chat_id, text, project)
-        elif auto_enter_mode == "codex":
-            self._enter_codex_mode(message_id, chat_id, silent=True, project=project)
-            self._add_reaction(message_id, EmojiReaction.on_coco_mode())
-            self._add_reaction(message_id, EmojiReaction.on_processing())
-            self._handle_codex_message(message_id, chat_id, text, project)
-        elif auto_enter_mode == "gemini":
-            self._enter_gemini_mode(message_id, chat_id, silent=True, project=project)
-            self._add_reaction(message_id, EmojiReaction.on_coco_mode())
-            self._add_reaction(message_id, EmojiReaction.on_processing())
-            self._handle_gemini_message(message_id, chat_id, text, project)
-        elif auto_enter_mode == "ttadk":
-            self._enter_ttadk_mode(message_id, chat_id, silent=True, project=project)
-            self._add_reaction(message_id, EmojiReaction.on_coco_mode())
-            self._add_reaction(message_id, EmojiReaction.on_processing())
-            self._ttadk_handler.handle_message(message_id, chat_id, text, project)
+        if auto_enter_mode and auto_enter_mode in {"coco", "claude", "aiden", "codex", "gemini", "ttadk"}:
+            from ..mode import InteractionMode
+            handler = self._get_mode_handler(InteractionMode(auto_enter_mode))
+            if handler:
+                self._add_reaction(message_id, EmojiReaction.on_coco_mode())
+                self._add_reaction(message_id, EmojiReaction.on_processing())
+                handler.handle_message(message_id, chat_id, text, project)
+            else:
+                self._process_with_intent(message_id, chat_id, text, project, shell_fast_tracked=shell_fast_tracked)
         else:
             self._process_with_intent(message_id, chat_id, text, project, shell_fast_tracked=shell_fast_tracked)
 

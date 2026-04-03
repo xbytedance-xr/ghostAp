@@ -1199,6 +1199,31 @@ class TestOneShotPendingSlot:
         ctx.coco_manager.ensure_session.assert_called_once()
         assert "thread_123" in str(ctx.coco_manager.ensure_session.call_args)
 
+    @patch("src.thread.get_current_thread_id", return_value="thread_456")
+    def test_enter_mode_in_thread_ignores_snapshot_session_id(self, mock_tid):
+        h, ctx = self._make_coco_pending()
+        mock_session = MagicMock()
+        mock_session.session_id = "new_thread_sess"
+        mock_session.is_resumed = False
+        ctx.coco_manager.ensure_session.return_value = mock_session
+        ctx.coco_manager.get_session.return_value = mock_session
+
+        project = MagicMock()
+        old_snapshot = MagicMock()
+        old_snapshot.is_resumable = True
+        old_snapshot.session_id = "old_snapshot_sess"
+        project.coco_session_snapshot = old_snapshot
+        project.root_path = "/tmp"
+        project.project_name = "test"
+        project.project_id = "test_id"
+
+        h.enter_mode("m1", "c1", project=project, thread_id="thread_456")
+
+        call_kwargs = ctx.coco_manager.ensure_session.call_args
+        assert call_kwargs is not None
+        call_str = str(call_kwargs)
+        assert "old_snapshot_sess" not in call_str
+
 
 class TestTTADKModeDegradeWarning:
     def test_ttadk_enter_mode_emits_degrade_warning(self):

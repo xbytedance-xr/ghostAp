@@ -249,7 +249,7 @@ class ProgrammingModeHandler(BaseHandler):
 
         target_session_id = None
         snapshot = self._get_snapshot(project) if project else None
-        if snapshot and snapshot.is_resumable:
+        if snapshot and snapshot.is_resumable and not thread_id:
             target_session_id = snapshot.session_id
 
         startup_timeout = getattr(self.settings, "acp_startup_timeout", 20)
