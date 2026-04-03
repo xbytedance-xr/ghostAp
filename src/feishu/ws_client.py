@@ -1682,17 +1682,19 @@ class FeishuWSClient:
                 show_buttons=False,
                 footer=f"📂 项目目录: {project.root_path}",
             )
-            thread_root_id = handler.reply_message_with_id(
+            reply_id = handler.reply_message_with_id(
                 message_id, card_content, msg_type, reply_in_thread=True,
             )
         else:
-            thread_root_id = handler.reply_message_with_id(
+            reply_id = handler.reply_message_with_id(
                 message_id, content, "text", reply_in_thread=True,
             )
 
-        if not thread_root_id:
+        if not reply_id:
             self._reply_message(message_id, "⚠️ 创建编程话题失败，请重试")
             return
+
+        thread_root_id = message_id
 
         try:
             set_current_thread_id(thread_root_id)

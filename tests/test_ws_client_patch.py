@@ -1050,8 +1050,36 @@ class TestOneShotDispatchToThread(unittest.TestCase):
 
         client._mode_manager.exit_to_smart.assert_called_once_with("c1", project_id="p1")
         handler._set_mode_on_project.assert_called_once_with(project, False)
-        handler._register_thread_context.assert_called_once()
+        reg_call = handler._register_thread_context.call_args
+        self.assertEqual(reg_call[0][0], "m1")
         handler.handle_message.assert_called_once_with("m1", "c1", "写个函数", project)
+
+    @patch("src.feishu.ws_client.get_current_thread_id", return_value=None)
+    def test_dispatch_to_thread_uses_message_id_as_root(self, _):
+        client = self._make_client()
+        handler = MagicMock()
+        handler.mode_name = "Coco"
+        handler.mode_emoji = "🤖"
+        handler.reply_message_with_id.return_value = "reply_msg_id_999"
+        mock_session = MagicMock()
+        handler._get_session_manager.return_value.get_session.return_value = mock_session
+
+        project = MagicMock()
+        project.project_id = "p1"
+        project.root_path = "/tmp/test"
+        project.project_name = "test"
+
+        client._dispatch_to_thread("user_msg_id", "c1", "写个函数", project, InteractionMode.COCO, handler)
+
+        enter_call = handler.enter_mode.call_args
+        self.assertEqual(enter_call[0][0], "user_msg_id")
+        self.assertEqual(enter_call[1].get("thread_id") or enter_call[0][4] if len(enter_call[0]) > 4 else enter_call[1].get("thread_id"), "user_msg_id")
+
+        get_session_call = handler._get_session_manager.return_value.get_session.call_args
+        self.assertEqual(get_session_call[1].get("thread_id") or get_session_call[0][2] if len(get_session_call[0]) > 2 else get_session_call[1].get("thread_id"), "user_msg_id")
+
+        reg_call = handler._register_thread_context.call_args
+        self.assertEqual(reg_call[0][0], "user_msg_id")
 
     @patch("src.feishu.ws_client.get_current_thread_id", return_value=None)
     def test_dispatch_to_thread_reply_fail_no_crash(self, _):
