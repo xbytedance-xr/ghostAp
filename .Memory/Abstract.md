@@ -3,6 +3,8 @@
 ## 2026-04-03
 - **One-Shot Pending Slot 编程模式重构** — 主对话开启编程模式后进入 pending 状态（仅设 ModeManager 不建 session），首条编程指令自动 _dispatch_to_thread 创建话题并运行会话，shell 命令保护不消费机会；mloop 4 轮审查收敛(2/2 CLEAN)，2029 tests passed → [详细记录](2026-04-03.md)
 - **话题编程模式优化：单链接约束 + 引导提示** — 新增 _find_active_thread + 跨模式单链接清理（旧话题 session 根据 mode 动态查 handler）；引导提示从 SMART 前置拦截改为意图识别失败时精准触发；mloop 3 轮收敛(2/2 CLEAN)，2037 tests passed → [详细记录](2026-04-03.md)
+- **修复话题编程持续对话失败** — thread_root_id 使用 reply_message_with_id 返回值而非原始 message_id 导致 ThreadContext 查找失败，后续消息回退 SMART 模式；3 行核心修复；mloop 2 轮收敛(2/2 CLEAN)，2038 tests passed → [详细记录](2026-04-03.md)
+- **话题内持续编程模式** — _dispatch_message_logic 每条话题消息调用 enter_mode 导致 project snapshot 旧 session_id 覆盖 thread session；跳过 enter_mode 直接 handle_message + snapshot 安全网 + defer_exit；mloop 3 轮收敛，2048 tests passed → [详细记录](2026-04-03.md)
 
 ## 2026-04-02
 - **Thread 并发编程 R6-R10 修复与收敛** — exit_mode 双重清理修复（remove移到finally）、StreamingCard 存储 thread_root_id 替代 threading.local、enter_mode 孤儿session清理+用户反馈、rebind_thread 冲突检查、enter_mode _set_mode_on_project 条件对齐；on_evict 测试 7 cases + rebind overwrite test 1 case；mloop 10 轮审查收敛(8/8旅程全PASS)，2018 tests passed → [详细记录](2026-04-02.md)
