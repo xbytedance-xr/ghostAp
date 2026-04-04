@@ -1264,6 +1264,7 @@ class FeishuWSClient:
             parent_id = getattr(data.event.message, "parent_id", None)
             root_id = getattr(data.event.message, "root_id", None)
             thread_root_id = root_id
+            thread_ctx = None
 
             if root_id and self.settings.thread_programming_enabled:
                 thread_ctx = self._thread_manager.get(root_id)
@@ -1276,6 +1277,18 @@ class FeishuWSClient:
                     )
                 else:
                     logger.debug("[Thread] _handle_message miss: msg_root=%s", root_id[:12] if root_id else "N")
+
+            if not project_id and self.settings.thread_programming_enabled and not thread_ctx:
+                chat_fallbacks = self._thread_manager.get_by_chat(chat_id)
+                if chat_fallbacks:
+                    _fb = chat_fallbacks[0]
+                    if _fb.mode and _fb.mode != "smart":
+                        project_id = _fb.project_id
+                        thread_root_id = _fb.thread_root_id
+                        logger.debug(
+                            "[Thread] _handle_message chat-fallback: chat=%s canonical=%s mode=%s",
+                            chat_id[:12], _fb.thread_root_id[:12], _fb.mode,
+                        )
 
             if not project_id:
                 for ref in (parent_id, root_id):
@@ -1492,6 +1505,19 @@ class FeishuWSClient:
                             "[Thread] Safety-net resolved mode: root=%s canonical=%s mode=%s",
                             _root[:12], _tctx.thread_root_id[:12], auto_enter_mode,
                         )
+                if not auto_enter_mode and self.settings.thread_programming_enabled:
+                    _chat_ctxs = self._thread_manager.get_by_chat(chat_id)
+                    if _chat_ctxs:
+                        _best = _chat_ctxs[0]
+                        if _best.mode and _best.mode != "smart":
+                            auto_enter_mode = _best.mode
+                            set_current_thread_id(_best.thread_root_id)
+                            if not project:
+                                project = self._project_manager.get_project(_best.project_id) or self._project_manager.get_active_project(chat_id)
+                            logger.info(
+                                "[Thread] Safety-net fallback by chat: chat=%s canonical=%s mode=%s",
+                                chat_id[:12], _best.thread_root_id[:12], auto_enter_mode,
+                            )
 
             # 5. Handle Context Updates (Task Scheduler)
             if task_ctx and project:
@@ -1632,6 +1658,23 @@ class FeishuWSClient:
                     root_id[:12], thread_ctx.thread_root_id[:12], thread_ctx.project_id, thread_ctx.mode, project is not None,
                 )
                 return project, auto_enter_mode
+
+        if self.settings.thread_programming_enabled:
+            chat_ctxs = self._thread_manager.get_by_chat(chat_id)
+            if chat_ctxs:
+                best_ctx = chat_ctxs[0]
+                if best_ctx.mode and best_ctx.mode != "smart":
+                    from ..thread import set_current_thread_id
+                    set_current_thread_id(best_ctx.thread_root_id)
+                    auto_enter_mode = best_ctx.mode
+                    project = self._project_manager.get_project(best_ctx.project_id)
+                    if not project:
+                        project = self._project_manager.get_active_project(chat_id)
+                    logger.info(
+                        "[Thread] Fallback by chat: chat=%s canonical=%s project=%s mode=%s",
+                        chat_id[:12], best_ctx.thread_root_id[:12], best_ctx.project_id, best_ctx.mode,
+                    )
+                    return project, auto_enter_mode
 
         return self._resolve_project_from_message(message_id, chat_id, parent_id or root_id)
 
