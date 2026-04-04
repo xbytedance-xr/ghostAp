@@ -1,6 +1,7 @@
 # GhostAP 项目记忆索引
 
 ## 2026-04-04
+- **话题编程模式持续对话交付（reply_id 根因修复）** — 继续收口 thread 持续编程回归；确认真正 thread root 必须使用机器人创建的话题 reply_id，补齐 project=None 时 active project fallback 与 handler 恢复，并完成 mloop 两轮收敛；全量验证 2060 passed → [详细记录](2026-04-04.md)
 - **话题编程模式多层防御修复（第三轮）** — 前两轮修复(thread_root_id/跳过enter_mode)未解决问题；本轮发现 _resolve_message_context 中 project 查找失败导致 auto_enter_mode 丢失、_dispatch_to_thread 仅在 project 非 None 时注册 ThreadContext、handle_message 在 project=None 时静默返回等多个断裂点；实施四层防御：(1) _resolve_message_context 解耦 mode 和 project 查找+始终返回不 fall-through (2) _process_message_async 安全网 (3) _dispatch_to_thread 无条件注册 (4) handle_message 统一恢复路径；mloop 4 轮收敛(2/2 CLEAN)，2058 tests passed → [详细记录](2026-04-04.md)
 
 ## 2026-04-03

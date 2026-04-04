@@ -1038,6 +1038,7 @@ class TestOneShotDispatchToThread(unittest.TestCase):
         handler.mode_name = "Coco"
         handler.mode_emoji = "🤖"
         handler.reply_message_with_id.return_value = "thread_root_1"
+        handler.register_message_project = MagicMock()
         mock_session = MagicMock()
         handler._get_session_manager.return_value.get_session.return_value = mock_session
 
@@ -1050,12 +1051,13 @@ class TestOneShotDispatchToThread(unittest.TestCase):
 
         client._mode_manager.exit_to_smart.assert_called_once_with("c1", project_id="p1")
         handler._set_mode_on_project.assert_called_once_with(project, False)
+        handler.register_message_project.assert_called_once_with("thread_root_1", project)
         reg_call = handler._register_thread_context.call_args
-        self.assertEqual(reg_call[0][0], "m1")
+        self.assertEqual(reg_call[0][0], "thread_root_1")
         handler.handle_message.assert_called_once_with("m1", "c1", "写个函数", project)
 
     @patch("src.feishu.ws_client.get_current_thread_id", return_value=None)
-    def test_dispatch_to_thread_uses_message_id_as_root(self, _):
+    def test_dispatch_to_thread_uses_reply_id_as_root(self, _):
         client = self._make_client()
         handler = MagicMock()
         handler.mode_name = "Coco"
@@ -1072,14 +1074,20 @@ class TestOneShotDispatchToThread(unittest.TestCase):
         client._dispatch_to_thread("user_msg_id", "c1", "写个函数", project, InteractionMode.COCO, handler)
 
         enter_call = handler.enter_mode.call_args
-        self.assertEqual(enter_call[0][0], "user_msg_id")
-        self.assertEqual(enter_call[1].get("thread_id") or enter_call[0][4] if len(enter_call[0]) > 4 else enter_call[1].get("thread_id"), "user_msg_id")
+        self.assertEqual(enter_call[0][0], "reply_msg_id_999")
+        self.assertEqual(
+            enter_call[1].get("thread_id") or enter_call[0][4] if len(enter_call[0]) > 4 else enter_call[1].get("thread_id"),
+            "reply_msg_id_999",
+        )
 
         get_session_call = handler._get_session_manager.return_value.get_session.call_args
-        self.assertEqual(get_session_call[1].get("thread_id") or get_session_call[0][2] if len(get_session_call[0]) > 2 else get_session_call[1].get("thread_id"), "user_msg_id")
+        self.assertEqual(
+            get_session_call[1].get("thread_id") or get_session_call[0][2] if len(get_session_call[0]) > 2 else get_session_call[1].get("thread_id"),
+            "reply_msg_id_999",
+        )
 
         reg_call = handler._register_thread_context.call_args
-        self.assertEqual(reg_call[0][0], "user_msg_id")
+        self.assertEqual(reg_call[0][0], "reply_msg_id_999")
 
     @patch("src.feishu.ws_client.get_current_thread_id", return_value=None)
     def test_dispatch_to_thread_reply_fail_no_crash(self, _):
@@ -1240,6 +1248,31 @@ class TestOneShotDispatchToThread(unittest.TestCase):
         )
         client._thread_manager.remove.assert_called_once_with("old_thread_root_123")
         handler.handle_message.assert_called_once()
+
+    @patch("src.feishu.ws_client.get_current_thread_id", return_value=None)
+    def test_dispatch_to_thread_without_project_reloads_active_project_for_session_lookup(self, _):
+        client = self._make_client()
+        client._add_reaction = MagicMock()
+        client._reply_message = MagicMock()
+        client._find_active_thread = MagicMock(return_value=None)
+        client._mode_manager = MagicMock()
+
+        active_project = MagicMock()
+        active_project.project_id = "active_p"
+        client._project_manager.get_active_project.return_value = active_project
+
+        handler = MagicMock()
+        handler.mode_name = "Coco"
+        handler.mode_emoji = "🤖"
+        handler.reply_message_with_id.return_value = "thread_root_1"
+        session = MagicMock()
+        handler._get_session_manager.return_value.get_session.return_value = session
+
+        client._dispatch_to_thread("m1", "c1", "写代码", None, InteractionMode.COCO, handler)
+
+        get_session_call = handler._get_session_manager.return_value.get_session.call_args
+        self.assertEqual(get_session_call.kwargs["project_id"], "active_p")
+        handler._register_thread_context.assert_called_once_with("thread_root_1", "c1", active_project, session)
 
 
 class TestActiveThreadGuidance(unittest.TestCase):
@@ -1572,6 +1605,10 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
         client._find_active_thread = MagicMock(return_value=None)
         client._mode_manager = MagicMock()
 
+        active_project = MagicMock()
+        active_project.project_id = "active_p"
+        client._project_manager.get_active_project.return_value = active_project
+
         handler = MagicMock()
         handler.mode_name = "Coco"
         handler.mode_emoji = "🤖"
@@ -1588,9 +1625,9 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
 
         handler._register_thread_context.assert_called_once()
         call_args = handler._register_thread_context.call_args
-        self.assertEqual(call_args[0][0], "m1")
+        self.assertEqual(call_args[0][0], "reply_id_1")
         self.assertEqual(call_args[0][1], "c1")
-        self.assertIsNone(call_args[0][2])
+        self.assertIs(call_args[0][2], active_project)
 
     def test_all_modes_resolve_from_thread_ctx(self):
         """所有编程模式 (coco/claude/aiden/codex/gemini/ttadk) 都能从 thread_ctx 正确解析"""

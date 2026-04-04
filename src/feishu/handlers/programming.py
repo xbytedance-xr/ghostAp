@@ -520,8 +520,21 @@ class ProgrammingModeHandler(BaseHandler):
                     project, _ = self.project_manager.get_or_create_project_for_path(working_dir, chat_id)
                     project_id = project.project_id
                 except Exception:
-                    pass
+                    active_project = self.project_manager.get_active_project(chat_id)
+                    if active_project:
+                        project = active_project
+                        project_id = active_project.project_id
             session = self._get_session_manager().get_session(chat_id, project_id=project_id, thread_id=thread_id)
+            if not session and thread_id:
+                active_project = self.project_manager.get_active_project(chat_id)
+                if active_project and active_project is not project:
+                    project = active_project
+                    project_id = active_project.project_id
+                    session = self._get_session_manager().get_session(
+                        chat_id,
+                        project_id=project_id,
+                        thread_id=thread_id,
+                    )
             if not session:
                 self.reply_message(
                     message_id,

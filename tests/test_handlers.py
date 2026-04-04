@@ -1249,6 +1249,31 @@ class TestOneShotPendingSlot:
         call_str = str(h.reply_message.call_args)
         assert "启动失败" in call_str or "重新发送" in call_str
 
+    @patch("src.thread.get_current_thread_id", return_value="thread_789")
+    def test_handle_message_recovers_session_from_active_project_when_initial_project_missing(self, mock_tid):
+        """thread 路径下 project 不准时，应回退 active project 再次查找 session"""
+        h, ctx = self._make_coco_pending()
+
+        active_project = MagicMock()
+        active_project.project_id = "real_project"
+        active_project.root_path = "/tmp"
+        active_project.project_name = "real"
+        ctx.project_manager.get_active_project.return_value = active_project
+        ctx.project_manager.get_or_create_project_for_path.return_value = (None, False)
+
+        session = MagicMock()
+        ctx.coco_manager.get_session.side_effect = [None, session]
+        h.enter_mode = MagicMock()
+        h.handle_response = MagicMock()
+        h.inject_bridge_context = MagicMock(side_effect=lambda text, project: text)
+        h.get_working_dir = MagicMock(return_value="/tmp")
+
+        h.handle_message("m1", "c1", "继续写", project=None)
+
+        second_call = ctx.coco_manager.get_session.call_args_list[1]
+        assert second_call.kwargs["project_id"] == "real_project"
+        h.handle_response.assert_called_once()
+
     @patch("src.thread.get_current_thread_id", return_value=None)
     def test_register_thread_context_handles_none_project(self, mock_tid):
         """_register_thread_context 应在 project=None 时通过 active_project 获取真实 project_id"""

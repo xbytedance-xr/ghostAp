@@ -1702,6 +1702,8 @@ class FeishuWSClient:
             reply_id = handler.reply_message_with_id(
                 message_id, card_content, msg_type, reply_in_thread=True,
             )
+            if reply_id:
+                handler.register_message_project(reply_id, project)
         else:
             reply_id = handler.reply_message_with_id(
                 message_id, content, "text", reply_in_thread=True,
@@ -1711,7 +1713,7 @@ class FeishuWSClient:
             self._reply_message(message_id, "⚠️ 创建编程话题失败，请重试")
             return
 
-        thread_root_id = message_id
+        thread_root_id = reply_id
 
         try:
             set_current_thread_id(thread_root_id)
@@ -1719,6 +1721,10 @@ class FeishuWSClient:
             handler.enter_mode(
                 thread_root_id, chat_id, silent=True, project=project, thread_id=thread_root_id,
             )
+
+            if not project:
+                project = self._project_manager.get_active_project(chat_id)
+                project_id = project.project_id if project else None
 
             session = handler._get_session_manager().get_session(
                 chat_id, project_id=project_id, thread_id=thread_root_id,
