@@ -397,6 +397,7 @@ class ProgrammingModeHandler(BaseHandler):
         chat_id: str,
         project: Optional["ProjectContext"],
         session: SyncSession,
+        alias_keys: Optional[list[str]] = None,
     ) -> None:
         try:
             from ...thread import get_thread_manager
@@ -423,6 +424,7 @@ class ProgrammingModeHandler(BaseHandler):
                 mode=mode_name,
                 tool_name=tool_name,
                 model_name=model_name,
+                alias_keys=alias_keys,
             )
         except Exception as e:
             logger.warning("[Thread] Failed to register context: %s", e, exc_info=True)

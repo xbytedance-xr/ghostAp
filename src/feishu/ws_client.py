@@ -1269,6 +1269,13 @@ class FeishuWSClient:
                 thread_ctx = self._thread_manager.get(root_id)
                 if thread_ctx:
                     project_id = thread_ctx.project_id
+                    thread_root_id = thread_ctx.thread_root_id
+                    logger.debug(
+                        "[Thread] _handle_message hit: msg_root=%s canonical=%s mode=%s",
+                        root_id[:12] if root_id else "N", thread_ctx.thread_root_id[:12], thread_ctx.mode,
+                    )
+                else:
+                    logger.debug("[Thread] _handle_message miss: msg_root=%s", root_id[:12] if root_id else "N")
 
             if not project_id:
                 for ref in (parent_id, root_id):
@@ -1444,7 +1451,11 @@ class FeishuWSClient:
             if root_id and self.settings.thread_programming_enabled:
                 thread_ctx = self._thread_manager.get(root_id)
                 if thread_ctx:
-                    set_current_thread_id(root_id)
+                    set_current_thread_id(thread_ctx.thread_root_id)
+                    logger.debug(
+                        "[Thread] _process_async hit: msg_root=%s canonical=%s",
+                        root_id[:12], thread_ctx.thread_root_id[:12],
+                    )
 
             # 1. Validation
             if not self._validate_message(message, request_id):
@@ -1474,11 +1485,12 @@ class FeishuWSClient:
                     _tctx = self._thread_manager.get(_root)
                     if _tctx and _tctx.mode and _tctx.mode != "smart":
                         auto_enter_mode = _tctx.mode
+                        set_current_thread_id(_tctx.thread_root_id)
                         if not project:
                             project = self._project_manager.get_project(_tctx.project_id) or self._project_manager.get_active_project(chat_id)
                         logger.info(
-                            "[Thread] Safety-net resolved mode: root=%s mode=%s",
-                            _root[:12], auto_enter_mode,
+                            "[Thread] Safety-net resolved mode: root=%s canonical=%s mode=%s",
+                            _root[:12], _tctx.thread_root_id[:12], auto_enter_mode,
                         )
 
             # 5. Handle Context Updates (Task Scheduler)
@@ -1609,13 +1621,15 @@ class FeishuWSClient:
         if root_id and self.settings.thread_programming_enabled:
             thread_ctx = self._thread_manager.get(root_id)
             if thread_ctx:
+                from ..thread import set_current_thread_id
+                set_current_thread_id(thread_ctx.thread_root_id)
                 auto_enter_mode = thread_ctx.mode if thread_ctx.mode != "smart" else None
                 project = self._project_manager.get_project(thread_ctx.project_id)
                 if not project:
                     project = self._project_manager.get_active_project(chat_id)
                 logger.info(
-                    "[Thread] Resolved context: root=%s project=%s mode=%s project_found=%s",
-                    root_id[:12], thread_ctx.project_id, thread_ctx.mode, project is not None,
+                    "[Thread] Resolved context: msg_root=%s canonical=%s project=%s mode=%s project_found=%s",
+                    root_id[:12], thread_ctx.thread_root_id[:12], thread_ctx.project_id, thread_ctx.mode, project is not None,
                 )
                 return project, auto_enter_mode
 
@@ -1714,6 +1728,7 @@ class FeishuWSClient:
             return
 
         thread_root_id = reply_id
+        alias_keys = [message_id] if message_id != reply_id else []
 
         try:
             set_current_thread_id(thread_root_id)
@@ -1733,7 +1748,7 @@ class FeishuWSClient:
                 self._mode_manager.exit_to_smart(chat_id, project_id=project_id)
                 if project:
                     handler._set_mode_on_project(project, False)
-                handler._register_thread_context(thread_root_id, chat_id, project, session)
+                handler._register_thread_context(thread_root_id, chat_id, project, session, alias_keys=alias_keys)
                 handler.handle_message(message_id, chat_id, text, project)
             else:
                 self._mode_manager.exit_to_smart(chat_id, project_id=project_id)

@@ -17,6 +17,7 @@ class ThreadContextManager:
 
     def __init__(self, ttl: float = _DEFAULT_TTL, cleanup_interval: float = _CLEANUP_INTERVAL, on_evict: Optional[Callable[[ThreadContext], None]] = None):
         self._contexts: dict[str, ThreadContext] = {}
+        self._aliases: dict[str, str] = {}
         self._lock = threading.Lock()
         self._ttl = ttl
         self._on_evict = on_evict
@@ -37,6 +38,7 @@ class ThreadContextManager:
         mode: str = "smart",
         tool_name: Optional[str] = None,
         model_name: Optional[str] = None,
+        alias_keys: Optional[list[str]] = None,
     ) -> ThreadContext:
         ctx = ThreadContext(
             thread_root_id=thread_root_id,
@@ -48,9 +50,15 @@ class ThreadContextManager:
         )
         with self._lock:
             self._contexts[thread_root_id] = ctx
+            for alias in (alias_keys or []):
+                if alias and alias != thread_root_id:
+                    self._aliases[alias] = thread_root_id
+                    self._contexts[alias] = ctx
+        alias_info = ",".join((alias_keys or [])[:3]) if alias_keys else "none"
         logger.info(
-            "[Thread] Registered: root=%s chat=%s project=%s mode=%s tool=%s model=%s",
+            "[Thread] Registered: root=%s aliases=%s chat=%s project=%s mode=%s tool=%s model=%s",
             thread_root_id[:12],
+            alias_info[:36],
             chat_id[:12],
             project_id,
             mode,
@@ -68,7 +76,13 @@ class ThreadContextManager:
 
     def get_by_chat(self, chat_id: str) -> list[ThreadContext]:
         with self._lock:
-            return [c for c in self._contexts.values() if c.chat_id == chat_id]
+            seen: set[int] = set()
+            result: list[ThreadContext] = []
+            for c in self._contexts.values():
+                if c.chat_id == chat_id and id(c) not in seen:
+                    seen.add(id(c))
+                    result.append(c)
+            return result
 
     def update_mode(self, thread_root_id: str, mode: str) -> bool:
         with self._lock:
@@ -93,7 +107,15 @@ class ThreadContextManager:
 
     def remove(self, thread_root_id: str) -> Optional[ThreadContext]:
         with self._lock:
-            ctx = self._contexts.pop(thread_root_id, None)
+            canonical = self._aliases.get(thread_root_id, thread_root_id)
+            ctx = self._contexts.pop(canonical, None)
+            if canonical != thread_root_id:
+                self._contexts.pop(thread_root_id, None)
+                self._aliases.pop(thread_root_id, None)
+            alias_keys = [k for k, v in self._aliases.items() if v == canonical]
+            for k in alias_keys:
+                self._aliases.pop(k, None)
+                self._contexts.pop(k, None)
         if ctx and self._on_evict:
             try:
                 self._on_evict(ctx)
@@ -104,9 +126,16 @@ class ThreadContextManager:
     def remove_by_chat(self, chat_id: str) -> int:
         removed: list[ThreadContext] = []
         with self._lock:
-            to_remove = [k for k, c in self._contexts.items() if c.chat_id == chat_id]
+            to_remove = {k for k, c in self._contexts.items() if c.chat_id == chat_id}
+            seen_ids: set[int] = set()
             for k in to_remove:
-                removed.append(self._contexts.pop(k))
+                ctx = self._contexts.pop(k, None)
+                if ctx and id(ctx) not in seen_ids:
+                    seen_ids.add(id(ctx))
+                    removed.append(ctx)
+            stale_aliases = [a for a, c in self._aliases.items() if c in to_remove or a in to_remove]
+            for a in stale_aliases:
+                self._aliases.pop(a, None)
         if self._on_evict:
             for ctx in removed:
                 try:
@@ -118,14 +147,19 @@ class ThreadContextManager:
     @property
     def active_count(self) -> int:
         with self._lock:
-            return len(self._contexts)
+            return len({id(c) for c in self._contexts.values()})
 
     def close(self) -> None:
         self._cleanup_stop.set()
         remaining: list[ThreadContext] = []
         with self._lock:
-            remaining = list(self._contexts.values())
+            seen: set[int] = set()
+            for ctx in self._contexts.values():
+                if id(ctx) not in seen:
+                    seen.add(id(ctx))
+                    remaining.append(ctx)
             self._contexts.clear()
+            self._aliases.clear()
         if self._on_evict:
             for ctx in remaining:
                 try:
@@ -144,10 +178,16 @@ class ThreadContextManager:
         now = time.time()
         evicted: list[ThreadContext] = []
         with self._lock:
-            expired = [k for k, c in self._contexts.items() if (now - c.last_active) > self._ttl]
+            expired = {k for k, c in self._contexts.items() if (now - c.last_active) > self._ttl}
+            seen: set[int] = set()
             for k in expired:
-                ctx = self._contexts.pop(k)
-                evicted.append(ctx)
+                ctx = self._contexts.pop(k, None)
+                if ctx and id(ctx) not in seen:
+                    seen.add(id(ctx))
+                    evicted.append(ctx)
+            stale_aliases = [a for a in self._aliases if a in expired or self._aliases[a] in expired]
+            for a in stale_aliases:
+                self._aliases.pop(a, None)
         if evicted:
             logger.info("[Thread] Evicted %d expired thread contexts", len(evicted))
         if self._on_evict:

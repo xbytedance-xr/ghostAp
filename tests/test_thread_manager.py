@@ -403,3 +403,89 @@ class TestGetThreadManagerSingleton:
             m1.close()
         finally:
             mod._manager = original
+
+
+class TestDualKeyAlias:
+
+    def _make_manager(self, **kwargs):
+        kwargs.setdefault("ttl", 3600)
+        kwargs.setdefault("cleanup_interval", 99999)
+        return ThreadContextManager(**kwargs)
+
+    def test_get_by_chat_deduplicates(self):
+        mgr = self._make_manager()
+        try:
+            mgr.register("reply1", "c1", "p1", mode="coco", alias_keys=["msg1"])
+            result = mgr.get_by_chat("c1")
+            assert len(result) == 1
+            assert result[0].thread_root_id == "reply1"
+        finally:
+            mgr.close()
+
+    def test_active_count_deduplicates(self):
+        mgr = self._make_manager()
+        try:
+            mgr.register("reply1", "c1", "p1", mode="coco", alias_keys=["msg1"])
+            assert mgr.active_count == 1
+            mgr.register("reply2", "c1", "p2", mode="claude", alias_keys=["msg2"])
+            assert mgr.active_count == 2
+        finally:
+            mgr.close()
+
+    def test_remove_by_chat_cleans_aliases(self):
+        mgr = self._make_manager()
+        try:
+            mgr.register("reply1", "c1", "p1", mode="coco", alias_keys=["msg1"])
+            count = mgr.remove_by_chat("c1")
+            assert count == 1
+            assert mgr.get("reply1") is None
+            assert mgr.get("msg1") is None
+            assert len(mgr._aliases) == 0
+        finally:
+            mgr.close()
+
+    def test_close_cleans_aliases(self):
+        mgr = self._make_manager()
+        mgr.register("reply1", "c1", "p1", mode="coco", alias_keys=["msg1"])
+        mgr.close()
+        assert mgr.get("reply1") is None
+        assert mgr.get("msg1") is None
+        assert len(mgr._aliases) == 0
+
+    def test_evict_cleans_aliases(self):
+        mgr = self._make_manager(ttl=0)
+        try:
+            mgr.register("reply1", "c1", "p1", mode="coco", alias_keys=["msg1"])
+            import time
+            time.sleep(0.05)
+            mgr._evict_expired()
+            assert mgr.get("reply1") is None
+            assert mgr.get("msg1") is None
+            assert len(mgr._aliases) == 0
+        finally:
+            mgr.close()
+
+    def test_remove_normalizes_alias_to_canonical(self):
+        mgr = self._make_manager()
+        try:
+            mgr.register("reply1", "c1", "p1", mode="coco", alias_keys=["msg1", "msg2"])
+            removed = mgr.remove("msg1")
+            assert removed is not None
+            assert removed.thread_root_id == "reply1"
+            assert mgr.get("reply1") is None
+            assert mgr.get("msg1") is None
+            assert mgr.get("msg2") is None
+            assert mgr.active_count == 0
+        finally:
+            mgr.close()
+
+    def test_on_evict_called_once_with_alias(self):
+        evicted = []
+        mgr = self._make_manager(on_evict=lambda ctx: evicted.append(ctx))
+        try:
+            mgr.register("reply1", "c1", "p1", mode="coco", alias_keys=["msg1"])
+            mgr.remove("reply1")
+            assert len(evicted) == 1
+            assert evicted[0].thread_root_id == "reply1"
+        finally:
+            mgr.close()

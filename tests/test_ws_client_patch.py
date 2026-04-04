@@ -1272,7 +1272,7 @@ class TestOneShotDispatchToThread(unittest.TestCase):
 
         get_session_call = handler._get_session_manager.return_value.get_session.call_args
         self.assertEqual(get_session_call.kwargs["project_id"], "active_p")
-        handler._register_thread_context.assert_called_once_with("thread_root_1", "c1", active_project, session)
+        handler._register_thread_context.assert_called_once_with("thread_root_1", "c1", active_project, session, alias_keys=["m1"])
 
 
 class TestActiveThreadGuidance(unittest.TestCase):
@@ -1628,6 +1628,7 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
         self.assertEqual(call_args[0][0], "reply_id_1")
         self.assertEqual(call_args[0][1], "c1")
         self.assertIs(call_args[0][2], active_project)
+        self.assertEqual(call_args[1].get("alias_keys"), ["m1"])
 
     def test_all_modes_resolve_from_thread_ctx(self):
         """所有编程模式 (coco/claude/aiden/codex/gemini/ttadk) 都能从 thread_ctx 正确解析"""
@@ -1783,3 +1784,117 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
         assert "当前任务完成后退出" in str(client._reply_message.call_args)
         client._exit_current_mode.assert_not_called()
         client._get_mode_handler.assert_not_called()
+
+
+class TestDualKeyThreadContext(unittest.TestCase):
+
+    def test_register_with_alias_and_lookup_by_alias(self):
+        from src.thread.manager import ThreadContextManager
+        mgr = ThreadContextManager(ttl=3600, cleanup_interval=99999)
+        ctx = mgr.register("reply_id_1", "c1", "p1", mode="coco", alias_keys=["msg_id_1"])
+        self.assertIs(mgr.get("reply_id_1"), ctx)
+        self.assertIs(mgr.get("msg_id_1"), ctx)
+        self.assertEqual(ctx.thread_root_id, "reply_id_1")
+        mgr.close()
+
+    def test_register_without_alias(self):
+        from src.thread.manager import ThreadContextManager
+        mgr = ThreadContextManager(ttl=3600, cleanup_interval=99999)
+        ctx = mgr.register("root1", "c1", "p1", mode="claude")
+        self.assertIs(mgr.get("root1"), ctx)
+        self.assertIsNone(mgr.get("unknown_key"))
+        mgr.close()
+
+    def test_remove_cleans_aliases(self):
+        from src.thread.manager import ThreadContextManager
+        mgr = ThreadContextManager(ttl=3600, cleanup_interval=99999)
+        mgr.register("reply_id_1", "c1", "p1", mode="coco", alias_keys=["msg_id_1"])
+        mgr.remove("reply_id_1")
+        self.assertIsNone(mgr.get("reply_id_1"))
+        self.assertIsNone(mgr.get("msg_id_1"))
+        mgr.close()
+
+    def test_remove_by_alias_key_cleans_canonical(self):
+        from src.thread.manager import ThreadContextManager
+        mgr = ThreadContextManager(ttl=3600, cleanup_interval=99999)
+        mgr.register("reply_id_1", "c1", "p1", mode="coco", alias_keys=["msg_id_1"])
+        mgr.remove("msg_id_1")
+        self.assertIsNone(mgr.get("msg_id_1"))
+        self.assertIsNone(mgr.get("reply_id_1"))
+        mgr.close()
+
+    def test_resolve_context_with_alias_root_id(self):
+        client = self._make_client()
+        client.settings = MagicMock()
+        client.settings.thread_programming_enabled = True
+
+        from src.thread.manager import ThreadContextManager
+        real_mgr = ThreadContextManager(ttl=3600, cleanup_interval=99999)
+        real_mgr.register("reply_id_1", "c1", "p1", mode="coco", alias_keys=["msg_id_1"])
+        client._thread_manager = real_mgr
+
+        project = MagicMock()
+        project.project_id = "p1"
+        client._project_manager.get_project.return_value = project
+
+        message = MagicMock()
+        message.message_id = "m2"
+        message.chat_id = "c1"
+        message.root_id = "msg_id_1"
+        message.parent_id = None
+
+        from src.thread import get_current_thread_id
+        resolved_project, auto_mode = client._resolve_message_context(message)
+        self.assertEqual(auto_mode, "coco")
+        self.assertIs(resolved_project, project)
+        self.assertEqual(get_current_thread_id(), "reply_id_1")
+        from src.thread import set_current_thread_id
+        set_current_thread_id(None)
+        real_mgr.close()
+
+    def test_resolve_context_with_canonical_root_id(self):
+        client = self._make_client()
+        client.settings = MagicMock()
+        client.settings.thread_programming_enabled = True
+
+        from src.thread.manager import ThreadContextManager
+        real_mgr = ThreadContextManager(ttl=3600, cleanup_interval=99999)
+        real_mgr.register("reply_id_1", "c1", "p1", mode="coco", alias_keys=["msg_id_1"])
+        client._thread_manager = real_mgr
+
+        project = MagicMock()
+        project.project_id = "p1"
+        client._project_manager.get_project.return_value = project
+
+        message = MagicMock()
+        message.message_id = "m3"
+        message.chat_id = "c1"
+        message.root_id = "reply_id_1"
+        message.parent_id = None
+
+        resolved_project, auto_mode = client._resolve_message_context(message)
+        self.assertEqual(auto_mode, "coco")
+        self.assertIs(resolved_project, project)
+        real_mgr.close()
+
+    def _make_client(self):
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_settings.thread_programming_enabled = True
+            mock_get_settings.return_value = mock_settings
+            client = FeishuWSClient(MagicMock())
+        return client
