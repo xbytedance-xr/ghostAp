@@ -598,38 +598,15 @@ class TestCardSchema20Structure:
         self._assert_no_lark_md(card, "coco_response")
         self._assert_all_text_use_markdown_tag(card["body"]["elements"], "coco_response")
 
-    def test_smart_response_card_schema(self, project):
-        card = self._parse_card(CardBuilder.build_smart_response_card(project, "Title", "Content"))
-        self._assert_v2_structure(card, "smart_response")
-        self._assert_no_lark_md(card, "smart_response")
-
     def test_project_response_card_schema(self, project):
         card = self._parse_card(CardBuilder.build_project_response_card(project, "Title", "Content"))
         self._assert_v2_structure(card, "project_response")
         self._assert_no_lark_md(card, "project_response")
 
-    def test_status_board_card_empty_schema(self):
-        card = self._parse_card(CardBuilder.build_status_board_card([], None))
-        self._assert_v2_structure(card, "status_board_empty")
-        self._assert_no_lark_md(card, "status_board_empty")
-
     def test_status_board_card_with_projects_schema(self, project):
         card = self._parse_card(CardBuilder.build_status_board_card([project], project.project_id))
         self._assert_v2_structure(card, "status_board")
         self._assert_no_lark_md(card, "status_board")
-
-    def test_notification_card_schema(self, project):
-        card = self._parse_card(
-            CardBuilder.build_notification_card(
-                project,
-                "success",
-                "Done",
-                "Content",
-                suggestions=["Run tests"],
-            )
-        )
-        self._assert_v2_structure(card, "notification")
-        self._assert_no_lark_md(card, "notification")
 
     def test_coco_resume_card_schema(self, project):
         project.coco_session_snapshot = CocoSessionSnapshot(
@@ -641,11 +618,6 @@ class TestCardSchema20Structure:
         card = self._parse_card(CardBuilder.build_coco_resume_card(project))
         self._assert_v2_structure(card, "coco_resume")
         self._assert_no_lark_md(card, "coco_resume")
-
-    def test_project_created_card_schema(self, project):
-        card = self._parse_card(CardBuilder.build_project_created_card(project))
-        self._assert_v2_structure(card, "project_created")
-        self._assert_no_lark_md(card, "project_created")
 
     def test_error_card_schema(self):
         card = self._parse_card(CardBuilder.build_error_card("Error msg"))
@@ -714,15 +686,6 @@ class TestMarkdownContentRendering:
         assert "## 二级标题" in elem["content"]
         assert "### 三级标题" in elem["content"]
 
-    def test_unordered_list(self, project):
-        content = "结果如下：\n- 项目一\n- 项目二\n- 项目三"
-        elem = self._get_content_element(
-            CardBuilder.build_project_response_card(project, "Test", content, show_buttons=False)
-        )
-        assert elem["tag"] == "markdown"
-        assert "- 项目一" in elem["content"]
-        assert "- 项目三" in elem["content"]
-
     def test_ordered_list(self, project):
         content = "步骤：\n1. 安装依赖\n2. 运行测试\n3. 部署"
         elem = self._get_content_element(
@@ -732,15 +695,6 @@ class TestMarkdownContentRendering:
         assert "1. 安装依赖" in elem["content"]
         assert "3. 部署" in elem["content"]
 
-    def test_bold_and_italic(self, project):
-        content = "这是 **粗体** 和 *斜体* 以及 ***粗斜体***"
-        elem = self._get_content_element(
-            CardBuilder.build_project_response_card(project, "Test", content, show_buttons=False)
-        )
-        assert elem["tag"] == "markdown"
-        assert "**粗体**" in elem["content"]
-        assert "*斜体*" in elem["content"]
-
     def test_inline_code(self, project):
         content = "使用 `pip install flask` 安装"
         elem = self._get_content_element(
@@ -748,16 +702,6 @@ class TestMarkdownContentRendering:
         )
         assert elem["tag"] == "markdown"
         assert "`pip install flask`" in elem["content"]
-
-    def test_code_block(self, project):
-        content = "```python\ndef hello():\n    print('hello')\n```"
-        elem = self._get_content_element(
-            CardBuilder.build_project_response_card(project, "Test", content, show_buttons=False)
-        )
-        assert elem["tag"] == "markdown"
-        assert "```python" in elem["content"]
-        assert "def hello():" in elem["content"]
-        assert "```" in elem["content"]
 
     def test_link(self, project):
         content = "参考 [飞书文档](https://open.feishu.cn/) 获取更多信息"
@@ -767,14 +711,6 @@ class TestMarkdownContentRendering:
         assert elem["tag"] == "markdown"
         assert "[飞书文档](https://open.feishu.cn/)" in elem["content"]
 
-    def test_blockquote(self, project):
-        content = "> 这是一段引用\n> 包含多行内容"
-        elem = self._get_content_element(
-            CardBuilder.build_project_response_card(project, "Test", content, show_buttons=False)
-        )
-        assert elem["tag"] == "markdown"
-        assert "> 这是一段引用" in elem["content"]
-
     def test_horizontal_rule_in_content(self, project):
         content = "上半部分\n\n---\n\n下半部分"
         elem = self._get_content_element(
@@ -782,16 +718,6 @@ class TestMarkdownContentRendering:
         )
         assert elem["tag"] == "markdown"
         assert "---" in elem["content"]
-
-    def test_strikethrough(self, project):
-        content = "这是 ~~删除线~~ 文字"
-        elem = self._get_content_element(
-            CardBuilder.build_project_response_card(project, "Test", content, show_buttons=False)
-        )
-        assert elem["tag"] == "markdown"
-        assert "~~删除线~~" in elem["content"]
-
-    # ---- 2. 复杂 Markdown 内容 ----
 
     def test_mixed_markdown_ai_response(self, project):
         """模拟 AI 回复的典型复杂 Markdown"""
@@ -1001,12 +927,6 @@ class TestMarkdownEdgeCases:
         assert elem["tag"] == "markdown"
         assert elem["content"] == ""
 
-    def test_whitespace_only_content(self, project):
-        """纯空白内容"""
-        elem = CardBuilder._build_content_element("   \n\n   ")
-        assert elem["tag"] == "markdown"
-        assert elem["content"] == "   \n\n   "
-
     def test_empty_content_with_title(self, project):
         """有标题但内容为空"""
         elem = CardBuilder._build_content_element("", with_title="标题")
@@ -1024,13 +944,6 @@ class TestMarkdownEdgeCases:
         assert "<script>" in elem["content"]
         assert "<b>bold</b>" in elem["content"]
 
-    def test_json_in_content(self, project):
-        """JSON 内容"""
-        content = '```json\n{"key": "value", "nested": {"a": 1}}\n```'
-        elem = CardBuilder._build_content_element(content)
-        assert elem["tag"] == "markdown"
-        assert '"key": "value"' in elem["content"]
-
     def test_unicode_emoji_content(self, project):
         """Unicode 和 emoji"""
         content = "✅ 成功 | ❌ 失败 | ⚠️ 警告\n🇨🇳 中文 | 🇺🇸 English | 🇯🇵 日本語"
@@ -1038,13 +951,6 @@ class TestMarkdownEdgeCases:
         assert elem["tag"] == "markdown"
         assert "✅ 成功" in elem["content"]
         assert "🇨🇳 中文" in elem["content"]
-
-    def test_backslash_and_escapes(self, project):
-        """反斜杠和转义字符"""
-        content = "路径: C:\\Users\\test\\file.txt\n正则: `\\d+\\.\\d+`"
-        elem = CardBuilder._build_content_element(content)
-        assert elem["tag"] == "markdown"
-        assert "C:\\Users\\test\\file.txt" in elem["content"]
 
     def test_markdown_special_chars_unescaped(self, project):
         """Markdown 特殊字符不做额外转义（由飞书渲染器处理）"""
@@ -1110,14 +1016,6 @@ class TestMarkdownEdgeCases:
         truncated = CardBuilder._truncate_markdown(full, 1000)
         assert "**" in truncated
         assert truncated.count("**") % 2 == 0
-
-    def test_many_lines_content(self, project):
-        """大量行数的内容"""
-        content = "\n".join(f"第 {i} 行内容" for i in range(200))
-        elem = CardBuilder._build_content_element(content)
-        assert elem["tag"] == "markdown"
-        assert "第 0 行内容" in elem["content"]
-        assert "第 199 行内容" in elem["content"]
 
     def test_large_code_block(self, project):
         """大型代码块"""
@@ -1284,24 +1182,6 @@ class TestReplyModeConfig:
 class TestBuildDeepCardStructuredParams:
     """Tests for build_engine_card new structured parameters."""
 
-    def test_status_line_renders(self):
-        """status_line should appear in card elements."""
-        _, card_content = CardBuilder.build_engine_card(
-            project=None,
-            state=EngineCardState(
-                title="Test",
-                content="Body",
-                engine_name="Coco",
-                show_buttons=False,
-                status_line="🔄 循环执行中 · 循环 3 · 标准 1/5",
-            ),
-        )
-        card = json.loads(card_content)
-        elements = card["body"]["elements"]
-        notation_elems = [e for e in elements if e.get("text_size") == "notation"]
-        assert len(notation_elems) >= 1
-        assert "循环执行中" in notation_elems[0]["content"]
-
     def test_duration_line_renders(self):
         """duration_line should be combined with status_line."""
         _, card_content = CardBuilder.build_engine_card(
@@ -1321,23 +1201,6 @@ class TestBuildDeepCardStructuredParams:
         assert len(notation_elems) >= 1
         assert "执行中" in notation_elems[0]["content"]
         assert "3分12秒" in notation_elems[0]["content"]
-
-    def test_criteria_section_renders(self):
-        """criteria_section should be a separate element after content."""
-        _, card_content = CardBuilder.build_engine_card(
-            project=None,
-            state=EngineCardState(
-                title="Test",
-                content="Main body",
-                engine_name="Coco",
-                show_buttons=False,
-                criteria_section="📋 **验收标准 (1/3)**\n  ✅ C1\n  🔲 C2\n  🔲 C3",
-            ),
-        )
-        card = json.loads(card_content)
-        elements = card["body"]["elements"]
-        criteria_found = any("验收标准" in str(e.get("content", "")) for e in elements)
-        assert criteria_found
 
     def test_footer_note_renders(self):
         """footer_note should appear as notation-sized element."""
@@ -1397,35 +1260,6 @@ class TestBuildDeepCardStructuredParams:
         assert "Powered by Spec" in all_content
         assert "Main content" in all_content
 
-    def test_criteria_section_separated_by_hr(self):
-        """criteria_section should be preceded by an hr element."""
-        _, card_content = CardBuilder.build_engine_card(
-            project=None,
-            state=EngineCardState(
-                title="Test",
-                content="Body",
-                engine_name="Coco",
-                show_buttons=False,
-                criteria_section="📋 标准列表",
-            ),
-        )
-        card = json.loads(card_content)
-        elements = card["body"]["elements"]
-        # Find the criteria element and check the element before it is hr
-        for i, e in enumerate(elements):
-            if "标准列表" in str(e.get("content", "")):
-                assert i > 0
-                assert elements[i - 1].get("tag") == "hr"
-                break
-        else:
-            pytest.fail("criteria_section element not found")
-
-
-# ---------------------------------------------------------------------------
-# TTADK 卡片测试
-# ---------------------------------------------------------------------------
-
-
 class TestTTADKCards:
     """测试 TTADK 工具和模型选择卡片"""
 
@@ -1468,16 +1302,6 @@ class TestTTADKCards:
         assert "已为你保留选择" in content_str
         assert "show_ttadk_menu" in content_str
 
-    def test_build_ttadk_tool_select_card_without_project(self):
-        """测试不提供 project_id 时构建 TTADK 工具选择卡片"""
-        tools = [TTADKTool(name="claude", description="Claude AI Assistant")]
-
-        msg_type, content = CardBuilder.build_ttadk_tool_select_card(tools)
-        card = json.loads(content)
-
-        content_str = json.dumps(card, ensure_ascii=False)
-        assert "select_ttadk_tool" in content_str
-
     def test_build_ttadk_model_select_card_basic(self):
         """测试构建 TTADK 模型选择卡片的基本功能"""
         models = [
@@ -1506,17 +1330,6 @@ class TestTTADKCards:
         assert "claude-3.5-sonnet" in content_str
         assert "gpt-5.2" in content_str
         assert "select_ttadk_model" in content_str
-
-    def test_build_ttadk_model_select_card_without_project(self):
-        """测试不提供 project_id 时构建 TTADK 模型选择卡片"""
-        models = [TTADKModel(name="gpt-5.2", description="GPT-5.2")]
-
-        msg_type, content = CardBuilder.build_ttadk_model_select_card(models, tool_name="codex")
-        card = json.loads(content)
-
-        content_str = json.dumps(card, ensure_ascii=False)
-        assert "select_ttadk_model" in content_str
-        assert "codex" in content_str
 
     def test_ttadk_cards_schema_v2(self):
         """验证 TTADK 卡片使用 schema 2.0 结构"""

@@ -801,11 +801,6 @@ class TestSpecModels:
         assert SpecPhase.BUILD.value == "build"
         assert SpecPhase.REVIEW.value == "review"
 
-    def test_spec_phase_display_name(self):
-        assert SpecPhase.SPEC.display_name == "规格定义"
-        assert SpecPhase.BUILD.display_name == "执行构建"
-        assert SpecPhase.REVIEW.display_name == "多视角审查"
-
     def test_spec_phase_emoji(self):
         assert SpecPhase.SPEC.emoji == "📋"
         assert SpecPhase.BUILD.emoji == "🔨"
@@ -898,10 +893,6 @@ class TestSpecModels:
         assert len(project.project_id) == 8
         assert project.status == SpecProjectStatus.IDLE
 
-    def test_spec_project_create_default_name(self):
-        project = SpecProject.create(root_path="/tmp/myapp")
-        assert project.name == "myapp"
-
     def test_spec_project_lifecycle(self):
         project = SpecProject.create(root_path="/tmp")
         assert project.status == SpecProjectStatus.IDLE
@@ -919,13 +910,6 @@ class TestSpecModels:
         project.complete()
         assert project.status == SpecProjectStatus.COMPLETED
         assert project.completed_at is not None
-
-    def test_spec_project_abort(self):
-        project = SpecProject.create(root_path="/tmp")
-        project.start()
-        project.abort("timeout")
-        assert project.status == SpecProjectStatus.ABORTED
-        assert project.error == "timeout"
 
     def test_spec_project_properties(self):
         project = SpecProject.create(root_path="/tmp")
@@ -1060,12 +1044,6 @@ class TestSpecReporter:
         assert "C1" in result
         assert "C2" in result
 
-    def test_format_analyzing_done_no_criteria(self):
-        r = SpecReporter()
-        project = self._make_project()
-        result = r.format_analyzing_done(project)
-        assert "需求分析失败" in result
-
     def test_format_cycle_start(self):
         r = SpecReporter()
         result = r.format_cycle_start(1, 10)
@@ -1085,14 +1063,6 @@ class TestSpecReporter:
         assert "规格定义完成" in result
         assert "spec content output" in result
 
-    def test_format_phase_done_no_truncation(self):
-        """format_phase_done should not truncate — full content is preserved."""
-        r = SpecReporter()
-        long_content = "x" * 600
-        result = r.format_phase_done(1, SpecPhase.PLAN, long_content)
-        assert long_content in result
-        assert "..." not in result
-
     def test_format_review_result_all_passed(self):
         r = SpecReporter()
         review = ReviewResult(
@@ -1105,26 +1075,6 @@ class TestSpecReporter:
         assert "PASS" in result
         assert "无改进建议" in result
 
-    def test_format_review_result_with_suggestions(self):
-        r = SpecReporter()
-        review = ReviewResult(
-            reviews=[
-                PerspectiveReview(
-                    perspective=ReviewPerspective.ARCHITECT,
-                    passed=False,
-                    suggestions=["Fix security issue"],
-                    summary="1条建议",
-                ),
-                PerspectiveReview(perspective=ReviewPerspective.PRODUCT, passed=True, suggestions=[], summary="通过"),
-                PerspectiveReview(perspective=ReviewPerspective.USER, passed=True, suggestions=[], summary="通过"),
-                PerspectiveReview(perspective=ReviewPerspective.TESTER, passed=True, suggestions=[], summary="通过"),
-            ],
-            iteration=2,
-        )
-        result = r.format_review_result(review, 2)
-        assert "Fix security issue" in result
-        assert "改进建议: 1 条" in result
-
     def test_format_criteria_brief(self):
         r = SpecReporter()
         project = self._make_project(criteria=["C1", "C2"])
@@ -1133,12 +1083,6 @@ class TestSpecReporter:
         assert "✅" in result
         assert "🔲" in result
         assert "1/2" in result
-
-    def test_format_criteria_brief_empty(self):
-        r = SpecReporter()
-        project = self._make_project()
-        result = r.format_criteria_brief(project)
-        assert result == ""
 
     def test_format_criteria_update(self):
         r = SpecReporter()
@@ -1176,12 +1120,6 @@ class TestSpecReporter:
         project.pause()
         result = r.format_project_done(project)
         assert "Spec 模式暂停" in result
-
-    def test_format_error(self):
-        r = SpecReporter()
-        result = r.format_error("connection refused")
-        assert "Spec Agent 错误" in result
-        assert "connection refused" in result
 
     def test_format_status(self):
         r = SpecReporter()

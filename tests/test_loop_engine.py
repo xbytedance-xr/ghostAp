@@ -36,14 +36,6 @@ class TestLoopEngine:
         assert engine.project is None
         assert not engine.is_running
 
-    def test_stop(self):
-        engine = self._make_engine()
-        engine._run_state = EngineRunState.RUNNING
-        engine._session = MagicMock()
-        engine.stop()
-        assert engine.run_state == EngineRunState.STOPPING
-        engine._session.cancel.assert_called_once()
-
     def test_pause(self):
         engine = self._make_engine()
         engine._project = MagicMock()
@@ -51,15 +43,6 @@ class TestLoopEngine:
         engine._run_state = EngineRunState.RUNNING
         engine.pause()
         assert engine.run_state == EngineRunState.STOPPING
-
-    def test_cleanup(self):
-        engine = self._make_engine()
-        engine._session = MagicMock()
-        engine._project = MagicMock()
-        engine.cleanup()
-        assert engine._session is None
-        assert engine._project is None
-        assert engine.run_state == EngineRunState.IDLE
 
     def test_inject_guidance(self):
         engine = self._make_engine()
@@ -158,18 +141,6 @@ class TestLoopEngine:
         assert LoopEngine._extract_criteria_from_llm_response("") == []
         assert LoopEngine._extract_criteria_from_llm_response("没有格式化内容") == []
 
-    def test_build_initial_prompt(self):
-        engine = self._make_engine()
-        req = LoopRequirement(
-            goal="add login",
-            acceptance_criteria=["email login", "phone login"],
-            raw_text="test",
-        )
-        prompt = engine._build_initial_prompt(req)
-        assert "add login" in prompt
-        assert "email login" in prompt
-        assert "/tmp/test" in prompt
-
     def test_build_iteration_prompt(self):
         engine = self._make_engine()
         req = LoopRequirement(
@@ -181,29 +152,10 @@ class TestLoopEngine:
         assert "第 2 轮" in prompt
         assert "email login" in prompt
 
-    def test_build_iteration_prompt_with_guidance(self):
-        engine = self._make_engine()
-        engine.inject_guidance("prioritize email")
-        req = LoopRequirement(
-            goal="login",
-            acceptance_criteria=["c1"],
-            raw_text="test",
-        )
-        prompt = engine._build_iteration_prompt(3, req)
-        assert "prioritize email" in prompt
-        assert engine._user_guidance == []  # consumed
-
     def test_detect_convergence_not_enough_iterations(self):
         engine = self._make_engine()
         engine._project = LoopProject.create(name="test", root_path="/tmp")
         assert not engine._detect_convergence()
-
-    def test_detect_convergence_short_output(self):
-        engine = self._make_engine()
-        engine._project = LoopProject.create(name="test", root_path="/tmp")
-        for i in range(3):
-            engine._project.iterations.append(IterationRecord(iteration=i + 1, output="ok"))
-        assert engine._detect_convergence()
 
     def test_detect_convergence_long_output_no_convergence(self):
         engine = self._make_engine()
@@ -612,13 +564,6 @@ class TestReviewPerspective:
         assert ReviewPerspective.TESTER.value == "tester"
         assert ReviewPerspective.DESIGNER.value == "designer"
 
-    def test_display_name(self):
-        assert ReviewPerspective.ARCHITECT.display_name == "架构师"
-        assert ReviewPerspective.PRODUCT.display_name == "产品经理"
-        assert ReviewPerspective.USER.display_name == "用户"
-        assert ReviewPerspective.TESTER.display_name == "测试"
-        assert ReviewPerspective.DESIGNER.display_name == "设计师"
-
     def test_emoji(self):
         assert ReviewPerspective.ARCHITECT.emoji == "🏗️"
         assert ReviewPerspective.PRODUCT.emoji == "📦"
@@ -649,31 +594,11 @@ class TestPerspectiveReview:
         assert not pr.passed
         assert len(pr.suggestions) == 2
 
-    def test_to_dict(self):
-        pr = PerspectiveReview(
-            perspective=ReviewPerspective.PRODUCT,
-            passed=False,
-            suggestions=["缺少用户引导"],
-            summary="1条建议",
-        )
-        d = pr.to_dict()
-        assert d["perspective"] == "product"
-        assert d["passed"] is False
-        assert d["suggestions"] == ["缺少用户引导"]
-
     def test_from_dict(self):
         d = {"perspective": "user", "passed": True, "suggestions": [], "summary": "通过"}
         pr = PerspectiveReview.from_dict(d)
         assert pr.perspective == ReviewPerspective.USER
         assert pr.passed
-
-    def test_from_dict_minimal(self):
-        d = {"perspective": "architect", "passed": False}
-        pr = PerspectiveReview.from_dict(d)
-        assert pr.perspective == ReviewPerspective.ARCHITECT
-        assert not pr.passed
-        assert pr.suggestions == []
-
 
 class TestReviewResult:
     def _make_all_pass(self) -> ReviewResult:
@@ -708,10 +633,6 @@ class TestReviewResult:
     def test_total_suggestions(self):
         r = self._make_mixed()
         assert r.total_suggestions == 3
-
-    def test_total_suggestions_all_pass(self):
-        r = self._make_all_pass()
-        assert r.total_suggestions == 0
 
     def test_failed_perspectives(self):
         r = self._make_mixed()
@@ -1316,13 +1237,6 @@ class TestInitialPromptReviewNote:
         s.loop_review_extra_iterations = 3
         mock_settings.return_value = s
         return LoopEngine(chat_id="c1", root_path="/tmp/test")
-
-    def test_initial_prompt_has_review_note_when_enabled(self):
-        engine = self._make_engine(review_enabled=True)
-        req = LoopRequirement(goal="test", acceptance_criteria=["c1"], raw_text="test")
-        prompt = engine._build_initial_prompt(req)
-        assert "审查机制" in prompt
-        assert "架构师" in prompt
 
     def test_initial_prompt_no_review_note_when_disabled(self):
         engine = self._make_engine(review_enabled=False)

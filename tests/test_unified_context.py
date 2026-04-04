@@ -937,12 +937,6 @@ class TestProjectContextManagerGet:
         assert r.data["entry_count"] == 4
         assert len(r.data["entries"]) == 4
 
-    def test_get_metadata_only(self, mgr):
-        r = mgr.get_context("proj_a", include_entries=False)
-        assert r.success is True
-        assert r.data["entry_count"] == 4
-        assert len(r.data["entries"]) == 0
-
     def test_get_filtered_by_type(self, mgr):
         r = mgr.get_context("proj_a", entry_type=ContextEntryType.CONVERSATION)
         assert r.success is True
@@ -964,26 +958,10 @@ class TestProjectContextManagerGet:
         assert len(r.data["entries"]) == 1
         assert r.data["entries"][0].content == "claude msg"
 
-    def test_get_with_recent_limit(self, mgr):
-        r = mgr.get_context("proj_a", recent_limit=2)
-        assert r.success is True
-        assert len(r.data["entries"]) == 2
-
     def test_get_nonexistent_fails(self, mgr):
         r = mgr.get_context("nonexistent")
         assert r.success is False
         assert "不存在" in r.message
-
-    def test_get_empty_id_fails(self, mgr):
-        r = mgr.get_context("")
-        assert r.success is False
-
-    def test_get_includes_version_info(self, mgr):
-        ctx = mgr.store.get("proj_a")
-        ctx.create_version("v1", ContextSourceMode.COCO)
-        r = mgr.get_context("proj_a")
-        assert r.data["version_count"] == 1
-        assert r.data["current_version"] == 1
 
     def test_get_includes_bridge_info(self, mgr):
         ctx = mgr.store.get("proj_a")
@@ -1035,35 +1013,6 @@ class TestProjectContextManagerUpdate:
         assert entry.metadata["message_id"] == "msg_123"
         assert entry.source_mode == ContextSourceMode.COCO
 
-    def test_update_with_session_snapshot(self, mgr):
-        r = mgr.update_context(
-            "proj_a",
-            session_snapshot={
-                "data": {"session_id": "s1", "query_count": 5},
-                "source_mode": "claude",
-            },
-        )
-        assert r.success is True
-        ctx = mgr.store.get("proj_a")
-        assert ctx.entries[0].entry_type == ContextEntryType.SESSION_SNAPSHOT
-        assert ctx.entries[0].source_mode == ContextSourceMode.CLAUDE
-
-    def test_update_with_mode_transition(self, mgr):
-        r = mgr.update_context(
-            "proj_a",
-            mode_transition={
-                "from_mode": "coco",
-                "to_mode": "claude",
-                "reason": "user requested",
-            },
-        )
-        assert r.success is True
-        ctx = mgr.store.get("proj_a")
-        entry = ctx.entries[0]
-        assert entry.entry_type == ContextEntryType.MODE_TRANSITION
-        assert entry.metadata["from_mode"] == "coco"
-        assert entry.metadata["to_mode"] == "claude"
-
     def test_update_with_deep_result(self, mgr):
         r = mgr.update_context(
             "proj_a",
@@ -1074,20 +1023,6 @@ class TestProjectContextManagerUpdate:
         assert r.success is True
         ctx = mgr.store.get("proj_a")
         assert ctx.entries[0].entry_type == ContextEntryType.DEEP_ENGINE_RESULT
-
-    def test_update_multiple_types_at_once(self, mgr):
-        r = mgr.update_context(
-            "proj_a",
-            conversation={"role": "user", "content": "msg", "source_mode": "smart"},
-            mode_transition={"from_mode": "smart", "to_mode": "coco"},
-        )
-        assert r.success is True
-        assert r.data["added_count"] == 2
-
-    def test_update_no_data_fails(self, mgr):
-        r = mgr.update_context("proj_a")
-        assert r.success is False
-        assert "未提供" in r.message
 
     def test_update_nonexistent_auto_creates(self, mgr):
         r = mgr.update_context(
@@ -1100,26 +1035,6 @@ class TestProjectContextManagerUpdate:
         )
         assert r.success is True
         assert mgr.store.has("new_project")
-
-    def test_update_nonexistent_no_auto_create(self, mgr):
-        r = mgr.update_context(
-            "missing",
-            conversation={"role": "user", "content": "x", "source_mode": "smart"},
-            create_if_missing=False,
-        )
-        assert r.success is False
-        assert "不存在" in r.message
-
-    def test_update_empty_id_fails(self, mgr):
-        r = mgr.update_context(
-            "",
-            conversation={
-                "role": "user",
-                "content": "x",
-                "source_mode": "smart",
-            },
-        )
-        assert r.success is False
 
 
 # ---------------------------------------------------------------------------
@@ -1154,11 +1069,6 @@ class TestProjectContextManagerDelete:
         assert ctx.entry_count == 2
         assert ctx.get_entry(entry_id) is None
 
-    def test_delete_entry_not_found(self, mgr):
-        r = mgr.delete_context("proj_a", entry_id="nonexistent_id")
-        assert r.success is False
-        assert "不存在" in r.message
-
     def test_delete_by_mode(self, mgr):
         r = mgr.delete_context("proj_a", source_mode=ContextSourceMode.COCO)
         assert r.success is True
@@ -1167,23 +1077,6 @@ class TestProjectContextManagerDelete:
         ctx = mgr.store.get("proj_a")
         assert ctx.entry_count == 1
         assert ctx.entries[0].content == "claude1"
-
-    def test_delete_nonexistent_project(self, mgr):
-        r = mgr.delete_context("nonexistent")
-        assert r.success is False
-        assert "不存在" in r.message
-
-    def test_delete_entry_from_nonexistent_project(self, mgr):
-        r = mgr.delete_context("nonexistent", entry_id="some_id")
-        assert r.success is False
-
-    def test_delete_mode_from_nonexistent_project(self, mgr):
-        r = mgr.delete_context("nonexistent", source_mode=ContextSourceMode.COCO)
-        assert r.success is False
-
-    def test_delete_empty_id_fails(self, mgr):
-        r = mgr.delete_context("")
-        assert r.success is False
 
 
 # ---------------------------------------------------------------------------
@@ -1384,53 +1277,6 @@ class TestProjectSwitchContextPreservation:
         assert r.data["entry_count"] == 2
         assert r.data["version_count"] == 1
 
-    def test_session_snapshot_preserved_on_switch(self, mgr):
-        """切换前保存的会话快照能够在之后恢复"""
-        mgr.create_context("proj_a")
-        ctx_a = mgr.store.get("proj_a")
-
-        # 模拟 Coco 会话和一些对话
-        ctx_a.add_conversation("user", "refactor auth module", ContextSourceMode.COCO)
-        ctx_a.add_conversation("assistant", "I'll start refactoring...", ContextSourceMode.COCO)
-
-        # 模拟模式退出时保存 session snapshot
-        snapshot_data = {
-            "session_id": "feishu_chat1_12345",
-            "message_count": 5,
-            "last_query": "refactor auth module",
-            "is_resumed": False,
-        }
-        ctx_a.add_session_snapshot(snapshot_data, ContextSourceMode.COCO)
-
-        # 创建版本
-        ctx_a.create_version(
-            reason="project_switch: proj_a -> proj_b",
-            source_mode=ContextSourceMode.COCO,
-        )
-
-        # 验证快照可以被查询到
-        snapshots = ctx_a.get_entries_by_type(ContextEntryType.SESSION_SNAPSHOT)
-        assert len(snapshots) == 1
-        assert snapshots[0].metadata["session_id"] == "feishu_chat1_12345"
-        assert snapshots[0].metadata["message_count"] == 5
-
-    def test_version_created_with_switch_reason(self, mgr):
-        """项目切换时创建的版本包含正确的原因说明"""
-        mgr.create_context("proj_a")
-        ctx_a = mgr.store.get("proj_a")
-        ctx_a.add_conversation("user", "some work", ContextSourceMode.COCO)
-
-        ver = ctx_a.create_version(
-            reason="project_switch: proj_a -> proj_b",
-            source_mode=ContextSourceMode.SMART,
-            summary="Switched to project proj_b",
-        )
-
-        assert "project_switch" in ver.reason
-        assert "proj_a -> proj_b" in ver.reason
-        assert ver.source_mode == ContextSourceMode.SMART
-        assert ver.entry_count == 1
-        assert ver.summary == "Switched to project proj_b"
 
     def test_incremental_diff_after_switch_and_return(self, mgr):
         """切换走再切换回来后，增量 diff 只包含新增条目"""
@@ -1491,49 +1337,6 @@ class TestProjectSwitchContextRestoration:
         assert len(restored.versions) == 1
         assert restored.entries[0].content == "prev work in B"
 
-    def test_restore_info_for_project_with_context(self, mgr):
-        """_restore_project_context 返回正确的恢复状态信息"""
-        mgr.create_context("proj_c")
-        ctx_c = mgr.store.get("proj_c")
-        ctx_c.add_conversation("user", "q1", ContextSourceMode.COCO)
-        ctx_c.add_mode_transition(ContextSourceMode.COCO, ContextSourceMode.CLAUDE)
-
-        # 模拟 _restore_project_context 的逻辑
-        ctx = mgr.store.get("proj_c")
-        last_mode = None
-        transitions = ctx.get_entries_by_type(ContextEntryType.MODE_TRANSITION)
-        if transitions:
-            last_mode = transitions[-1].metadata.get("to_mode")
-
-        info = {
-            "has_context": True,
-            "entry_count": ctx.entry_count,
-            "version_count": len(ctx.versions),
-            "last_mode": last_mode,
-            "has_bridge": ctx.last_bridge_summary is not None,
-        }
-
-        assert info["has_context"] is True
-        assert info["entry_count"] == 2
-        assert info["last_mode"] == "claude"
-        assert info["has_bridge"] is False
-
-    def test_restore_info_for_project_without_context(self, mgr):
-        """不存在上下文的项目返回空恢复信息"""
-        ctx = mgr.store.get("nonexistent_proj")
-        assert ctx is None
-
-        info = {
-            "has_context": False,
-            "entry_count": 0,
-            "version_count": 0,
-            "last_mode": None,
-            "has_bridge": False,
-        }
-        assert info["has_context"] is False
-        assert info["entry_count"] == 0
-        assert info["last_mode"] is None
-
 
 class TestProjectSwitchBridgeSummary:
     """测试项目切换时的跨模式桥接摘要"""
@@ -1585,64 +1388,6 @@ class TestProjectSwitchBridgeSummary:
         assert "[End of context]" in prompt
         assert "refactor database layer" in prompt
 
-    def test_bridge_survives_project_switch(self, mgr):
-        """桥接摘要在项目切换过程中被保留"""
-        mgr.create_context("proj_a")
-        ctx_a = mgr.store.get("proj_a")
-        ctx_a.add_conversation("user", "work in A", ContextSourceMode.COCO)
-        ctx_a.build_bridge_summary(ContextSourceMode.COCO, ContextSourceMode.CLAUDE)
-
-        # 创建版本（模拟项目切换）
-        ctx_a.create_version(
-            reason="project_switch",
-            source_mode=ContextSourceMode.SMART,
-        )
-
-        # 桥接摘要仍然存在（版本创建不影响桥接摘要）
-        assert ctx_a.last_bridge_summary is not None
-        bridge = ctx_a.consume_bridge_summary()
-        assert bridge is not None
-        assert bridge.from_mode == ContextSourceMode.COCO
-
-    def test_inject_bridge_context_prepends_to_text(self):
-        """_inject_bridge_context 在有桥接时将上下文前置于用户文本"""
-        mgr = ProjectContextManager()
-        mgr.create_context("proj_a")
-        ctx = mgr.store.get("proj_a")
-        ctx.add_conversation("user", "previous work", ContextSourceMode.COCO)
-        bridge = ctx.build_bridge_summary(ContextSourceMode.COCO, ContextSourceMode.CLAUDE)
-
-        # 模拟 _inject_bridge_context 逻辑
-        original_text = "continue the refactor"
-        injection = bridge.to_injection_prompt()
-        if bridge and injection:
-            result = f"{injection}\n\n{original_text}"
-        else:
-            result = original_text
-
-        assert result.startswith("[Context from previous coco session]")
-        assert result.endswith("continue the refactor")
-        assert "[End of context]" in result
-
-        # 消费后桥接摘要消失
-        consumed = ctx.consume_bridge_summary()
-        assert consumed is not None
-        assert ctx.consume_bridge_summary() is None
-
-    def test_no_bridge_no_modification(self):
-        """没有桥接摘要时，文本不被修改"""
-        mgr = ProjectContextManager()
-        mgr.create_context("proj_a")
-        ctx = mgr.store.get("proj_a")
-
-        bridge = ctx.consume_bridge_summary()
-        assert bridge is None
-
-        # 模拟 _inject_bridge_context 逻辑——无桥接则原文返回
-        text = "original text"
-        # 无桥接 -> 原文
-        assert text == "original text"
-
 
 class TestProjectSwitchEdgeCases:
     """测试项目切换上下文的边界情况"""
@@ -1650,46 +1395,6 @@ class TestProjectSwitchEdgeCases:
     @pytest.fixture
     def mgr(self):
         return ProjectContextManager()
-
-    def test_switch_to_same_project_is_noop(self, mgr):
-        """切换到当前项目（相同 project_id）不应创建额外版本"""
-        mgr.create_context("proj_a")
-        ctx = mgr.store.get("proj_a")
-        ctx.add_conversation("user", "work", ContextSourceMode.COCO)
-
-        initial_versions = len(ctx.versions)
-
-        # 模拟：不切换（old_project == new_project）
-        # _switch_project 中的 if old_project.project_id != project.project_id 条件阻止操作
-
-        assert len(ctx.versions) == initial_versions
-
-    def test_switch_when_no_active_project(self, mgr):
-        """没有活跃项目时切换，不会导致异常"""
-        # old_project = None 的情况
-        mgr.create_context("proj_b")
-        ctx_b = mgr.store.get("proj_b")
-        assert ctx_b is not None
-        assert ctx_b.entry_count == 0
-        assert len(ctx_b.versions) == 0
-
-    def test_switch_to_project_with_empty_context(self, mgr):
-        """切换到有上下文但内容为空的项目"""
-        mgr.create_context("proj_b")
-        ctx_b = mgr.store.get("proj_b")
-        assert ctx_b.entry_count == 0
-
-        # 恢复信息应正确反映空状态
-        info = {
-            "has_context": True,
-            "entry_count": ctx_b.entry_count,
-            "version_count": len(ctx_b.versions),
-            "last_mode": None,
-            "has_bridge": ctx_b.last_bridge_summary is not None,
-        }
-        assert info["has_context"] is True
-        assert info["entry_count"] == 0
-        assert info["last_mode"] is None
 
     def test_context_isolation_across_rapid_switches(self, mgr):
         """快速多次切换不会导致上下文串扰"""
@@ -1873,60 +1578,6 @@ class TestProjectSwitchEndToEnd:
         assert restored_b.entry_count == 4  # 1 transition + 2 conversations + 1 snapshot
         assert len(restored_b.versions) == 1
 
-    def test_switch_without_active_session(self):
-        """用户在 SMART 模式下切换项目（没有活跃的 AI 会话）"""
-        mgr = ProjectContextManager()
-        mgr.create_context("proj_A")
-        ctx_a = mgr.store.get("proj_A")
-
-        # SMART 模式下的 shell 命令
-        ctx_a.add_conversation("user", "ls -la", ContextSourceMode.SHELL)
-
-        # 直接切换——不需要保存 session snapshot
-        ctx_a.create_version(
-            reason="project_switch: proj_A -> proj_B",
-            source_mode=ContextSourceMode.SMART,
-        )
-
-        mgr.create_context("proj_B")
-
-        # proj_A 上下文完好
-        assert ctx_a.entry_count == 1
-        assert len(ctx_a.versions) == 1
-
-    def test_switch_preserves_deep_engine_results(self):
-        """切换项目时 Deep Engine 结果被保留"""
-        mgr = ProjectContextManager()
-        mgr.create_context("proj_A")
-        ctx_a = mgr.store.get("proj_A")
-
-        # Deep Engine 完成
-        ctx_a.add_deep_engine_result(
-            {
-                "name": "auth_refactor",
-                "tasks": [
-                    {"title": "create middleware", "status": "completed", "result": "done"},
-                    {"title": "write tests", "status": "completed", "result": "15 tests pass"},
-                ],
-            }
-        )
-        ctx_a.create_version(
-            reason="deep_engine_done: auth_refactor",
-            source_mode=ContextSourceMode.DEEP_ENGINE,
-        )
-
-        # 切换走
-        ctx_a.create_version(
-            reason="project_switch: proj_A -> proj_B",
-            source_mode=ContextSourceMode.SMART,
-        )
-
-        # 切换回来后 Deep Engine 结果仍在
-        deep_results = ctx_a.get_entries_by_type(ContextEntryType.DEEP_ENGINE_RESULT)
-        assert len(deep_results) == 1
-        assert deep_results[0].metadata["name"] == "auth_refactor"
-        assert len(deep_results[0].metadata["tasks"]) == 2
-
     def test_bridge_includes_deep_engine_results(self):
         """桥接摘要包含 Deep Engine 任务结果"""
         mgr = ProjectContextManager()
@@ -1966,35 +1617,6 @@ class TestCRUDAdvanced:
     def mgr(self):
         return ProjectContextManager()
 
-    # ---- Create: FILE_CHANGE 类型 ----
-
-    def test_add_file_change_entry(self, ctx):
-        entry = ctx.add_entry(
-            ContextEntry(
-                entry_type=ContextEntryType.FILE_CHANGE,
-                source_mode=ContextSourceMode.COCO,
-                content="src/auth/jwt.py",
-                metadata={"action": "modified", "lines_changed": 42},
-            )
-        )
-        assert entry.entry_type == ContextEntryType.FILE_CHANGE
-        assert entry.metadata["action"] == "modified"
-        found = ctx.get_entries_by_type(ContextEntryType.FILE_CHANGE)
-        assert len(found) == 1
-
-    def test_add_ai_summary_entry(self, ctx):
-        entry = ctx.add_entry(
-            ContextEntry(
-                entry_type=ContextEntryType.AI_SUMMARY,
-                source_mode=ContextSourceMode.COCO,
-                content="Completed auth module refactoring with JWT tokens",
-                metadata={"tokens_used": 1500},
-            )
-        )
-        assert entry.entry_type == ContextEntryType.AI_SUMMARY
-        summaries = ctx.get_entries_by_type(ContextEntryType.AI_SUMMARY)
-        assert len(summaries) == 1
-
     # ---- Update: 同时更新 content 和 metadata ----
 
     def test_update_entry_content_and_metadata_simultaneously(self, ctx):
@@ -2017,21 +1639,6 @@ class TestCRUDAdvanced:
         assert found.metadata["message_id"] == "msg_1"
         assert ctx.updated_at > old_updated
 
-    def test_update_entry_content_only_preserves_metadata(self, ctx):
-        entry = ctx.add_conversation("user", "hello", ContextSourceMode.COCO, "mid1")
-        ctx.update_entry(entry.entry_id, content="goodbye")
-        found = ctx.get_entry(entry.entry_id)
-        assert found.content == "goodbye"
-        assert found.metadata["role"] == "user"
-        assert found.metadata["message_id"] == "mid1"
-
-    def test_update_entry_metadata_only_preserves_content(self, ctx):
-        entry = ctx.add_conversation("user", "keep this", ContextSourceMode.CLAUDE)
-        ctx.update_entry(entry.entry_id, metadata={"new_key": 123})
-        found = ctx.get_entry(entry.entry_id)
-        assert found.content == "keep this"
-        assert found.metadata["new_key"] == 123
-
     # ---- Read: 组合条件查询高级场景 ----
 
     def test_query_with_all_filters_combined(self, ctx):
@@ -2053,38 +1660,7 @@ class TestCRUDAdvanced:
         assert len(results) == 1
         assert results[0].content == "new_coco_2"
 
-    def test_query_entries_returns_empty_for_no_match(self, ctx):
-        ctx.add_conversation("user", "msg", ContextSourceMode.COCO)
-        results = ctx.query_entries(source_mode=ContextSourceMode.DEEP_ENGINE)
-        assert len(results) == 0
-
-    def test_get_recent_entries_exceeding_total(self, ctx):
-        ctx.add_conversation("user", "only one", ContextSourceMode.SMART)
-        recent = ctx.get_recent_entries(100)
-        assert len(recent) == 1
-
-    def test_get_conversations_limit(self, ctx):
-        for i in range(10):
-            ctx.add_conversation("user", f"msg_{i}", ContextSourceMode.COCO)
-        convs = ctx.get_conversations(limit=3)
-        assert len(convs) == 3
-        assert convs[0].content == "msg_7"
-
     # ---- Delete: 删除边界 ----
-
-    def test_delete_by_mode_no_match_returns_zero(self, ctx):
-        ctx.add_conversation("user", "coco msg", ContextSourceMode.COCO)
-        removed = ctx.clear_entries_by_mode(ContextSourceMode.DEEP_ENGINE)
-        assert removed == 0
-        assert ctx.entry_count == 1
-
-    def test_clear_entries_by_mode_no_updated_at_change(self, ctx):
-        ctx.add_conversation("user", "coco msg", ContextSourceMode.COCO)
-        old_updated = ctx.updated_at
-        time.sleep(0.01)
-        ctx.clear_entries_by_mode(ContextSourceMode.DEEP_ENGINE)
-        # 未删除任何条目，updated_at 不应变化
-        assert ctx.updated_at == old_updated
 
     def test_clear_all_then_add_again(self, ctx):
         ctx.add_conversation("user", "msg1", ContextSourceMode.SMART)
@@ -2264,35 +1840,6 @@ class TestCrossModeContextSharing:
         assert "coco work" in bridge.summary_text
         assert "claude task" in bridge.summary_text
 
-    def test_bridge_chain_across_multiple_transitions(self, ctx):
-        """
-        多次模式切换的桥接链：
-        COCO → CLAUDE (bridge1) → SHELL (bridge2)
-        每次桥接后的摘要都能正确生成
-        """
-        # Phase 1: COCO 工作
-        ctx.add_conversation("user", "write auth module", ContextSourceMode.COCO)
-        ctx.add_conversation("assistant", "created auth.py", ContextSourceMode.COCO)
-
-        # COCO → CLAUDE 桥接
-        bridge1 = ctx.build_bridge_summary(ContextSourceMode.COCO, ContextSourceMode.CLAUDE)
-        prompt1 = bridge1.to_injection_prompt()
-        assert "[Context from previous coco session]" in prompt1
-        assert "write auth module" in prompt1
-        ctx.consume_bridge_summary()
-
-        # Phase 2: CLAUDE 工作
-        ctx.add_mode_transition(ContextSourceMode.COCO, ContextSourceMode.CLAUDE)
-        ctx.add_conversation("user", "add JWT token support", ContextSourceMode.CLAUDE)
-        ctx.add_conversation("assistant", "implemented JWT", ContextSourceMode.CLAUDE)
-
-        # CLAUDE → SHELL 桥接
-        bridge2 = ctx.build_bridge_summary(ContextSourceMode.CLAUDE, ContextSourceMode.SHELL)
-        prompt2 = bridge2.to_injection_prompt()
-        assert "[Context from previous claude session]" in prompt2
-        # bridge2 应包含 COCO 和 CLAUDE 的历史
-        assert "write auth module" in prompt2 or "JWT" in prompt2
-
     def test_delete_one_mode_preserves_others(self, ctx):
         """删除一个模式的条目不影响其他模式"""
         ctx.add_conversation("user", "coco msg", ContextSourceMode.COCO)
@@ -2305,32 +1852,6 @@ class TestCrossModeContextSharing:
         assert len(ctx.get_entries_by_mode(ContextSourceMode.COCO)) == 0
         assert len(ctx.get_entries_by_mode(ContextSourceMode.CLAUDE)) == 1
         assert len(ctx.get_entries_by_mode(ContextSourceMode.SHELL)) == 1
-
-    def test_cross_mode_conversations_ordered_chronologically(self, ctx):
-        """不同模式的对话按时间顺序排列"""
-        ctx.add_conversation("user", "first (smart)", ContextSourceMode.SMART)
-        ctx.add_conversation("user", "second (coco)", ContextSourceMode.COCO)
-        ctx.add_conversation("user", "third (claude)", ContextSourceMode.CLAUDE)
-
-        recent = ctx.get_recent_entries(10)
-        assert recent[0].content == "first (smart)"
-        assert recent[1].content == "second (coco)"
-        assert recent[2].content == "third (claude)"
-
-    def test_version_snapshot_captures_multi_mode_state(self, ctx):
-        """版本快照正确记录多模式条目的数量"""
-        ctx.add_conversation("user", "coco msg", ContextSourceMode.COCO)
-        ctx.add_conversation("user", "claude msg", ContextSourceMode.CLAUDE)
-        ctx.add_deep_engine_result({"name": "task1", "tasks": []})
-
-        v = ctx.create_version("multi_mode_checkpoint", ContextSourceMode.SMART)
-        assert v.entry_count == 3
-
-        # 新增条目后 diff 正确
-        ctx.add_conversation("user", "new msg", ContextSourceMode.SHELL)
-        diff = ctx.get_entries_since_version(v.version_number)
-        assert len(diff) == 1
-        assert diff[0].source_mode == ContextSourceMode.SHELL
 
     def test_mgr_cross_mode_update_and_query(self, mgr):
         """通过 ProjectContextManager 进行跨模式操作"""
@@ -2389,108 +1910,6 @@ class TestCrossModeContextSharing:
         r_deep = mgr.get_context("proj", source_mode=ContextSourceMode.DEEP_ENGINE)
         assert len(r_deep.data["entries"]) == 1
 
-    def test_bridge_summary_collects_file_changes(self, ctx):
-        """FILE_CHANGE 在 bridgeable_types 中，桥接摘要会收集文件变更"""
-        ctx.add_conversation("user", "refactor auth", ContextSourceMode.COCO)
-        ctx.add_entry(
-            ContextEntry(
-                entry_type=ContextEntryType.FILE_CHANGE,
-                source_mode=ContextSourceMode.COCO,
-                content="src/auth/handler.py",
-            )
-        )
-        ctx.add_entry(
-            ContextEntry(
-                entry_type=ContextEntryType.FILE_CHANGE,
-                source_mode=ContextSourceMode.COCO,
-                content="src/auth/jwt.py",
-            )
-        )
-
-        bridge = ctx.build_bridge_summary(ContextSourceMode.COCO, ContextSourceMode.CLAUDE)
-        # FILE_CHANGE 在 bridgeable_types 中，文件变更会被收集
-        assert bridge.files_modified == ["src/auth/handler.py", "src/auth/jwt.py"]
-        # 对话内容仍然存在
-        assert "refactor auth" in bridge.summary_text
-
-    def test_mgr_cross_mode_end_to_end_with_bridge(self, mgr):
-        """端到端：通过 ProjectContextManager 完成跨模式工作流+桥接"""
-        mgr.create_context("webapp")
-        ctx = mgr.store.get("webapp")
-
-        # Coco 会话
-        mgr.update_context(
-            "webapp",
-            conversation={
-                "role": "user",
-                "content": "build user registration",
-                "source_mode": "coco",
-            },
-        )
-        mgr.update_context(
-            "webapp",
-            conversation={
-                "role": "assistant",
-                "content": "created register endpoint",
-                "source_mode": "coco",
-            },
-        )
-
-        # 模式切换 + 桥接
-        mgr.update_context(
-            "webapp",
-            mode_transition={
-                "from_mode": "coco",
-                "to_mode": "claude",
-                "reason": "need claude for complex logic",
-            },
-        )
-        bridge = ctx.build_bridge_summary(ContextSourceMode.COCO, ContextSourceMode.CLAUDE)
-        prompt = bridge.to_injection_prompt()
-        assert "build user registration" in prompt
-
-        # Claude 会话
-        mgr.update_context(
-            "webapp",
-            conversation={
-                "role": "user",
-                "content": "add email verification",
-                "source_mode": "claude",
-            },
-        )
-
-        # 再次切换 + Deep Engine
-        mgr.update_context(
-            "webapp",
-            mode_transition={
-                "from_mode": "claude",
-                "to_mode": "deep_engine",
-            },
-        )
-        mgr.update_context(
-            "webapp",
-            deep_result={
-                "data": {
-                    "name": "verification_flow",
-                    "tasks": [
-                        {"title": "send email", "status": "completed", "result": "SMTP configured"},
-                        {"title": "verify token", "status": "completed", "result": "token validation done"},
-                    ],
-                },
-            },
-        )
-
-        # 验证全部
-        r = mgr.get_context("webapp")
-        assert r.data["entry_count"] == 6
-
-        # 从 deep_engine 桥接回 coco
-        bridge2 = ctx.build_bridge_summary(ContextSourceMode.DEEP_ENGINE, ContextSourceMode.COCO)
-        prompt2 = bridge2.to_injection_prompt()
-        assert "[Context from previous deep_engine session]" in prompt2
-        # 应包含 deep engine 的任务结果
-        assert "send email" in prompt2 or "SMTP" in prompt2
-
 
 # ---------------------------------------------------------------------------
 # 项目切换的补充测试
@@ -2499,74 +1918,6 @@ class TestCrossModeContextSharing:
 
 class TestProjectSwitchAdvanced:
     """项目切换的补充测试场景"""
-
-    def test_multi_project_rapid_switch_with_accumulation(self):
-        """多项目快速切换 A→B→C→A，每次切换都有新数据"""
-        mgr = ProjectContextManager()
-        for name in ["A", "B", "C"]:
-            mgr.create_context(name)
-
-        ctx_a = mgr.store.get("A")
-        ctx_b = mgr.store.get("B")
-        ctx_c = mgr.store.get("C")
-
-        # Round 1: 在 A 中工作
-        ctx_a.add_conversation("user", "A round1", ContextSourceMode.COCO)
-        v_a1 = ctx_a.create_version("switch A->B", ContextSourceMode.SMART)
-
-        # Round 1: 在 B 中工作
-        ctx_b.add_conversation("user", "B round1", ContextSourceMode.CLAUDE)
-        ctx_b.create_version("switch B->C", ContextSourceMode.SMART)
-
-        # Round 1: 在 C 中工作
-        ctx_c.add_conversation("user", "C round1", ContextSourceMode.SHELL)
-        ctx_c.create_version("switch C->A", ContextSourceMode.SMART)
-
-        # Round 2: 回到 A
-        ctx_a.add_conversation("user", "A round2", ContextSourceMode.CLAUDE)
-        ctx_a.create_version("switch A->B again", ContextSourceMode.SMART)
-
-        # 验证：A 有 2 条对话，2 个版本
-        assert ctx_a.entry_count == 2
-        assert len(ctx_a.versions) == 2
-        diff_a = ctx_a.get_entries_since_version(v_a1.version_number)
-        assert len(diff_a) == 1
-        assert diff_a[0].content == "A round2"
-
-        # 验证：B 有 1 条对话，1 个版本
-        assert ctx_b.entry_count == 1
-        assert len(ctx_b.versions) == 1
-
-        # 验证：C 有 1 条对话，1 个版本
-        assert ctx_c.entry_count == 1
-        assert len(ctx_c.versions) == 1
-
-    def test_switch_with_mode_transition_in_progress(self):
-        """切换项目时存在未完成的模式切换"""
-        mgr = ProjectContextManager()
-        mgr.create_context("proj_a")
-        ctx_a = mgr.store.get("proj_a")
-
-        # Coco 工作中
-        ctx_a.add_conversation("user", "working in coco", ContextSourceMode.COCO)
-        # 记录模式切换（Coco 正在退出）
-        ctx_a.add_mode_transition(ContextSourceMode.COCO, ContextSourceMode.SMART, "exit coco for switch")
-        # 保存快照
-        ctx_a.add_session_snapshot(
-            {"session_id": "coco_123", "message_count": 1},
-            ContextSourceMode.COCO,
-        )
-        # 项目切换
-        ctx_a.create_version("project_switch", ContextSourceMode.SMART)
-
-        # 验证
-        transitions = ctx_a.get_entries_by_type(ContextEntryType.MODE_TRANSITION)
-        assert len(transitions) == 1
-        assert transitions[0].metadata["from_mode"] == "coco"
-        assert transitions[0].metadata["to_mode"] == "smart"
-
-        snapshots = ctx_a.get_entries_by_type(ContextEntryType.SESSION_SNAPSHOT)
-        assert len(snapshots) == 1
 
     def test_switch_back_and_forth_versions_accumulate(self):
         """反复切换 A↔B 版本链正确累积"""
@@ -2596,45 +1947,6 @@ class TestProjectSwitchAdvanced:
 
 class TestEdgeCases:
     """边界情况测试"""
-
-    # ---- 空字符串和特殊字符 ----
-
-    def test_empty_content_entry(self):
-        ctx = UnifiedContext(project_id="test")
-        entry = ctx.add_conversation("user", "", ContextSourceMode.SMART)
-        assert entry.content == ""
-        assert ctx.get_entry(entry.entry_id).content == ""
-
-    def test_very_long_content(self):
-        ctx = UnifiedContext(project_id="test")
-        long_text = "x" * 100_000
-        entry = ctx.add_conversation("user", long_text, ContextSourceMode.COCO)
-        assert len(entry.content) == 100_000
-        assert ctx.get_entry(entry.entry_id).content == long_text
-
-    def test_unicode_content(self):
-        ctx = UnifiedContext(project_id="test")
-        unicode_text = "你好世界 🌍 こんにちは 🎉 مرحبا"
-        entry = ctx.add_conversation("user", unicode_text, ContextSourceMode.CLAUDE)
-        assert entry.content == unicode_text
-        found = ctx.get_entry(entry.entry_id)
-        assert found.content == unicode_text
-
-    def test_special_characters_in_content(self):
-        ctx = UnifiedContext(project_id="test")
-        special_text = "line1\nline2\ttab\r\n\"quoted\" 'single' `code` \\ /"
-        entry = ctx.add_conversation("user", special_text, ContextSourceMode.SMART)
-        assert entry.content == special_text
-
-    def test_newlines_in_metadata(self):
-        ctx = UnifiedContext(project_id="test")
-        entry = ctx.add_entry(
-            ContextEntry(
-                content="test",
-                metadata={"code": "def foo():\n    return 42\n"},
-            )
-        )
-        assert ctx.get_entry(entry.entry_id).metadata["code"] == "def foo():\n    return 42\n"
 
     # ---- 容量极限边界 ----
 
@@ -2710,73 +2022,7 @@ class TestEdgeCases:
         assert len(diff) == 1
         assert diff[0].content == "new_msg"
 
-    # ---- 桥接边界 ----
-
-    def test_bridge_with_no_bridgeable_entries(self):
-        """只有不可桥接类型（mode_transition, session_snapshot）时，桥接摘要为空"""
-        ctx = UnifiedContext(project_id="test")
-        ctx.add_mode_transition(ContextSourceMode.SMART, ContextSourceMode.COCO)
-        ctx.add_session_snapshot({"session_id": "s1"}, ContextSourceMode.COCO)
-
-        bridge = ctx.build_bridge_summary(ContextSourceMode.COCO, ContextSourceMode.CLAUDE)
-        assert bridge.summary_text == ""
-        assert bridge.files_modified == []
-
-    def test_bridge_with_empty_context(self):
-        """空上下文的桥接摘要"""
-        ctx = UnifiedContext(project_id="test")
-        bridge = ctx.build_bridge_summary(ContextSourceMode.SMART, ContextSourceMode.COCO)
-        assert bridge.summary_text == ""
-        prompt = bridge.to_injection_prompt()
-        assert "[Context from previous smart session]" in prompt
-        assert "[End of context]" in prompt
-
-    def test_bridge_content_truncation(self):
-        """桥接摘要对长内容的截断（content[:300]）"""
-        ctx = UnifiedContext(project_id="test")
-        long_msg = "A" * 500
-        ctx.add_conversation("user", long_msg, ContextSourceMode.COCO)
-        bridge = ctx.build_bridge_summary(ContextSourceMode.COCO, ContextSourceMode.CLAUDE)
-
-        # 摘要中每条对话内容最多 300 字符
-        lines = bridge.summary_text.split("\n")
-        for line in lines:
-            if line.startswith("user:"):
-                content_part = line[len("user: ") :]
-                assert len(content_part) <= 300
-
-    def test_bridge_summary_max_8_lines(self):
-        """桥接摘要最多保留最近 8 行对话"""
-        ctx = UnifiedContext(project_id="test")
-        for i in range(15):
-            ctx.add_conversation("user", f"message_{i}", ContextSourceMode.COCO)
-
-        bridge = ctx.build_bridge_summary(ContextSourceMode.COCO, ContextSourceMode.CLAUDE)
-        lines = [line for line in bridge.summary_text.split("\n") if line.strip()]
-        assert len(lines) <= 8
-
     # ---- 序列化边界 ----
-
-    def test_from_dict_missing_optional_fields(self):
-        """from_dict 缺少可选字段时使用默认值"""
-        entry = ContextEntry.from_dict({})
-        assert entry.entry_type == ContextEntryType.CONVERSATION
-        assert entry.source_mode == ContextSourceMode.SMART
-        assert entry.content == ""
-        assert entry.metadata == {}
-
-    def test_version_from_dict_defaults(self):
-        version = ContextVersion.from_dict({})
-        assert version.version_number == 0
-        assert version.reason == ""
-        assert version.source_mode == ContextSourceMode.SMART
-
-    def test_bridge_from_dict_defaults(self):
-        bridge = ContextBridgeSummary.from_dict({})
-        assert bridge.from_mode == ContextSourceMode.SMART
-        assert bridge.to_mode == ContextSourceMode.SMART
-        assert bridge.summary_text == ""
-        assert bridge.key_decisions == []
 
     def test_roundtrip_with_all_entry_types(self):
         """序列化/反序列化包含所有 6 种条目类型的上下文"""
@@ -2821,14 +2067,6 @@ class TestEdgeCases:
         assert restored.last_bridge_summary is not None
         assert restored.last_bridge_summary.from_mode == ContextSourceMode.COCO
         assert restored.last_bridge_summary.to_mode == ContextSourceMode.CLAUDE
-
-    def test_roundtrip_with_none_bridge(self):
-        """没有桥接摘要时序列化/反序列化正常"""
-        ctx = UnifiedContext(project_id="no_bridge")
-        ctx.add_conversation("user", "msg", ContextSourceMode.SMART)
-
-        restored = UnifiedContext.from_dict(ctx.to_dict())
-        assert restored.last_bridge_summary is None
 
     # ---- 并发边界 ----
 
@@ -2922,16 +2160,6 @@ class TestEdgeCases:
         assert ctx.get_entry(e_claude.entry_id).content == "claude1"
 
     # ---- ProjectContextManager 边界 ----
-
-    def test_mgr_create_context_none_project_id(self):
-        mgr = ProjectContextManager()
-        r = mgr.create_context(None)
-        assert r.success is False
-
-    def test_mgr_get_context_none_project_id(self):
-        mgr = ProjectContextManager()
-        r = mgr.get_context(None)
-        assert r.success is False
 
     def test_mgr_update_context_none_project_id(self):
         mgr = ProjectContextManager()

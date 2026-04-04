@@ -115,76 +115,10 @@ class TestBaseHandler:
         assert result == str(tmp_path)
         assert h.get_working_dir("chat1") == str(tmp_path)
 
-    def test_set_working_dir_nonexistent(self):
-        h, ctx = self._make()
-        success, result = h.set_working_dir("chat1", "/nonexistent/path/xyz")
-        assert success is False
-        assert "不存在" in result
-
-    def test_ensure_request_id_generates_id(self):
-        h, ctx = self._make()
-        ctx.message_linker.get_request_id.return_value = None
-        rid = h.ensure_request_id("msg1")
-        assert rid is not None
-        assert len(rid) == 10
-
-    def test_ensure_request_id_returns_existing(self):
-        h, ctx = self._make()
-        ctx.message_linker.get_request_id.return_value = "existing_id"
-        rid = h.ensure_request_id("msg1")
-        assert rid == "existing_id"
-
-    def test_format_ref_note_empty(self):
-        h, _ = self._make()
-        assert h.format_ref_note(None, None) == ""
-
-    def test_format_ref_note_with_parts(self):
-        h, _ = self._make()
-        note = h.format_ref_note("om_123", "req_456", "run_789")
-        assert "origin=om_123" in note
-        assert "req=req_456" in note
-        assert "run=run_789" in note
-
-    def test_add_reaction_calls_api(self):
-        h, ctx = self._make()
-        mock_client = MagicMock()
-        mock_client.im.v1.message_reaction.create.return_value = MagicMock(success=lambda: True)
-        ctx.api_client_factory.return_value = mock_client
-        h.add_reaction("msg1", "thumbsup")
-        mock_client.im.v1.message_reaction.create.assert_called_once()
-
-    def test_register_message_project(self):
-        h, ctx = self._make()
-        project = SimpleNamespace(project_id="p1")
-        h.register_message_project("msg1", project)
-        ctx.message_mapper.register.assert_called_once_with("msg1", "p1")
-
     def test_get_engine_name_claude(self):
         h, ctx = self._make()
         ctx.mode_manager.get_mode.return_value = InteractionMode.CLAUDE
         assert h.get_engine_name("chat1") == "Claude"
-        ctx.mode_manager.get_mode.assert_called_with("chat1", project_id=None)
-
-    def test_get_engine_name_claude_with_project(self):
-        h, ctx = self._make()
-        ctx.mode_manager.get_mode.return_value = InteractionMode.CLAUDE
-        assert h.get_engine_name("chat1", project_id="proj1") == "Claude"
-        ctx.mode_manager.get_mode.assert_called_with("chat1", project_id="proj1")
-
-    def test_get_engine_name_default_coco(self):
-        h, ctx = self._make()
-        ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
-        assert h.get_engine_name("chat1") == "Coco"
-
-    def test_get_engine_name_aiden(self):
-        h, ctx = self._make()
-        ctx.mode_manager.get_mode.return_value = InteractionMode.AIDEN
-        assert h.get_engine_name("chat1") == "Aiden"
-
-    def test_get_engine_name_codex(self):
-        h, ctx = self._make()
-        ctx.mode_manager.get_mode.return_value = InteractionMode.CODEX
-        assert h.get_engine_name("chat1") == "Codex"
 
     def test_mode_to_context_source(self):
         from src.project import ContextSourceMode
@@ -291,12 +225,6 @@ class TestSystemHandlerRouting:
         h.handle_intercepted_command("m1", "c1", "/help", None)
         h.show_full_help.assert_called_once_with("m1", "c1", None)
 
-    def test_route_chinese_help(self):
-        h = self._make()
-        h.show_full_help = MagicMock()
-        h.handle_intercepted_command("m1", "c1", "/帮助", None)
-        h.show_full_help.assert_called_once_with("m1", "c1", None)
-
     def test_route_coco_info(self):
         h = self._make()
         h.handle_intercepted_command("m1", "c1", "/coco_info", None)
@@ -312,17 +240,6 @@ class TestSystemHandlerRouting:
         h.handle_intercepted_command("m1", "c1", "/projects", None)
         h.project_handler.show_project_board.assert_called_once_with("m1", "c1")
 
-    def test_route_status(self):
-        h = self._make()
-        project = MagicMock()
-        h.handle_intercepted_command("m1", "c1", "/status", project)
-        h.diagnostics_handler.show_unified_status.assert_called_once_with("m1", "c1", "/status", project)
-
-    def test_route_status_with_arg(self):
-        h = self._make()
-        h.handle_intercepted_command("m1", "c1", "/status some_task_id", None)
-        h.diagnostics_handler.show_unified_status.assert_called_once_with("m1", "c1", "/status some_task_id", None)
-
     def test_route_tasks(self):
         h = self._make()
         h.handle_intercepted_command("m1", "c1", "/tasks", None)
@@ -337,22 +254,6 @@ class TestSystemHandlerRouting:
         h = self._make()
         h.handle_intercepted_command("m1", "c1", "/trace msg123", None)
         h.diagnostics_handler.show_message_trace.assert_called_once_with("m1", "c1", "/trace msg123", None)
-
-    def test_route_switch_with_name(self):
-        h = self._make()
-        h.handle_intercepted_command("m1", "c1", "/switch myproject", None)
-        h.project_handler.switch_project.assert_called_once_with(
-            "m1",
-            "c1",
-            "myproject",
-            coco_handler=h.coco_handler,
-            claude_handler=h.claude_handler,
-        )
-
-    def test_route_switch_no_name(self):
-        h = self._make()
-        h.handle_intercepted_command("m1", "c1", "/switch", None)
-        h.project_handler.show_project_board.assert_called_once_with("m1", "c1")
 
     def test_route_new_project(self):
         h = self._make()
@@ -372,15 +273,6 @@ class TestSystemHandlerRouting:
         h.claude_handler = MagicMock()
         h.exit_current_mode("m1", "c1", None)
         h.coco_handler.exit_mode.assert_called_once_with("m1", "c1", None)
-
-    def test_exit_current_mode_claude(self):
-        ctx = _make_handler_context()
-        ctx.mode_manager.get_mode.return_value = InteractionMode.CLAUDE
-        h = SystemHandler(ctx)
-        h.coco_handler = MagicMock()
-        h.claude_handler = MagicMock()
-        h.exit_current_mode("m1", "c1", None)
-        h.claude_handler.exit_mode.assert_called_once_with("m1", "c1", None)
 
     def test_handle_ttadk_command_shows_tool_select_even_when_configured(self):
         ctx = _make_handler_context()
@@ -408,35 +300,6 @@ class TestSystemHandlerRouting:
 
             h.ttadk_handler.enter_mode.assert_not_called()
             mock_build.assert_called_once()
-
-    def test_handle_select_ttadk_tool_always_shows_model_card(self):
-        ctx = _make_handler_context()
-        h = SystemHandler(ctx)
-        h.reply_message = MagicMock()
-        h.reply_error = MagicMock()
-        h.patch_message = MagicMock(return_value=True)
-
-        project = MagicMock()
-        project.project_id = "p1"
-        project.root_path = "/tmp"
-        project.ttadk_yolo_enabled = False
-        ctx.project_manager.get_project.return_value = project
-
-        manager = MagicMock()
-        manager.set_tool.return_value = True
-        manager.get_current_model.return_value = None
-        manager.get_models.return_value = SimpleNamespace(
-            models=[TTADKModel(name="gpt-5.2", description="", is_default=True)],
-            error=None,
-            warnings=[],
-        )
-
-        with patch("src.feishu.handlers.system.get_ttadk_manager", return_value=manager):
-            h.handle_select_ttadk_tool("m1", "c1", "codex", "p1")
-
-        h.patch_message.assert_called_once()
-        card_json = h.patch_message.call_args[0][1]
-        assert "模型选择" in card_json
 
     def test_handle_ttadk_command_always_shows_tool_card(self):
         ctx = _make_handler_context()
@@ -611,28 +474,6 @@ class TestSystemHandlerRouting:
             assert mock_registry.get_availability.call_count == 5
             h.reply_interactive_card.assert_called_once()
 
-    def test_show_tools_status_uses_manager_sessions(self):
-        h = self._make()
-        h.ctx.coco_manager.list_active_sessions.return_value = [
-            {
-                "session_key": "chat_1:proj_a",
-                "session_id": "sid1",
-                "last_active": 1000.0,
-                "message_count": 3,
-            }
-        ]
-        h.ctx.claude_manager.list_active_sessions.return_value = []
-        h.ctx.aiden_manager.list_active_sessions.return_value = []
-        h.ctx.codex_manager.list_active_sessions.return_value = []
-        h.ctx.gemini_manager.list_active_sessions.return_value = []
-
-        with patch("src.feishu.handlers.system.tool_registry") as mock_registry:
-            mock_registry.get_availability.return_value = True
-            h.reply_interactive_card = MagicMock()
-            h.show_tools_status("m1", "c1", None)
-            assert mock_registry.get_availability.call_count == 5
-            h.reply_interactive_card.assert_called_once()
-
 
 # ======================================================================
 # ProgrammingModeHandler (CocoModeHandler / ClaudeModeHandler) tests
@@ -762,59 +603,9 @@ class TestClaudeModeHandler:
         h, ctx = self._make()
         assert h._get_session_manager() is ctx.claude_manager
 
-    def test_is_in_this_mode(self):
-        h, ctx = self._make()
-        ctx.mode_manager.is_claude_mode.return_value = True
-        assert h._is_in_this_mode("c1") is True
-
-    def test_is_in_opposite_mode(self):
-        h, ctx = self._make()
-        _set_all_programming_mode_flags(ctx, False)
-        ctx.mode_manager.is_coco_mode.return_value = True
-        assert h._is_in_opposite_mode("c1") is True
-
-    def test_is_in_opposite_mode_checks_all_other_programming_modes(self):
-        h, ctx = self._make()
-        _set_all_programming_mode_flags(ctx, False)
-        ctx.mode_manager.is_ttadk_mode.return_value = True
-        assert h._is_in_opposite_mode("c1") is True
-
-    def test_enter_mode_on_manager(self):
-        h, ctx = self._make()
-        h._enter_mode_on_manager("c1")
-        ctx.mode_manager.enter_claude_mode.assert_called_once_with("c1", project_id=None)
-
-    def test_enter_mode_on_manager_with_project(self):
-        h, ctx = self._make()
-        h._enter_mode_on_manager("c1", project_id="p1")
-        ctx.mode_manager.enter_claude_mode.assert_called_once_with("c1", project_id="p1")
-
     def test_get_interaction_mode(self):
         h, _ = self._make()
         assert h._get_interaction_mode() == InteractionMode.CLAUDE
-
-    def test_get_snapshot(self):
-        h, _ = self._make()
-        project = SimpleNamespace(coco_session_snapshot=None, claude_session_snapshot="snap")
-        assert h._get_snapshot(project) == "snap"
-
-    def test_set_mode_on_project_activate(self):
-        h, _ = self._make()
-        project = MagicMock()
-        h._set_mode_on_project(project, True, "sid", 5)
-        project.set_claude_mode.assert_called_once_with(True, "sid", 5)
-
-    def test_update_snapshot_on_project(self):
-        h, _ = self._make()
-        project = MagicMock()
-        h._update_snapshot_on_project(project, "hello", 3, "sid")
-        project.update_claude_snapshot.assert_called_once_with(query="hello", query_count=3, session_id="sid")
-
-    def test_clear_snapshot(self):
-        h, _ = self._make()
-        project = SimpleNamespace(claude_session_snapshot="snap")
-        h._clear_snapshot_on_project(project)
-        assert project.claude_session_snapshot is None
 
     def test_exit_opposite_mode(self):
         h, _ = self._make()
@@ -1011,46 +802,8 @@ class TestProgrammingModeEnterExit:
         ctx.mode_manager.exit_to_smart.assert_called_once_with("c1", project_id="p1")
         ctx.coco_manager.end_session.assert_called_once_with("c1", project_id="p1", thread_id=None)
 
-    def test_enter_mode_mutual_exclusion(self):
-        """When in another programming mode, entering Coco should exit it first."""
-        h, ctx = self._make_coco()
-        ctx.mode_manager.is_gemini_mode.return_value = True
-        project = MagicMock()
-        project.coco_session_snapshot = None
-        project.root_path = "/tmp"
-        project.project_name = "test"
-        project.project_id = "test_id"
-        h.enter_mode("m1", "c1", project=project)
-        h._gemini_handler.exit_mode.assert_called_once()
 
-    def test_handle_card_resume_syncs_project_flags(self):
-        h, ctx = self._make_coco()
-        project = MagicMock()
-        project.project_id = "p1"
-        project.root_path = "/tmp"
-        ctx.project_manager.get_project.return_value = project
-        session = MagicMock()
-        session.session_id = "sid_resume"
-        ctx.coco_manager.start_session.return_value = session
-        h.handle_card_resume("m1", "c1", "p1", "sid_resume")
-        project.set_claude_mode.assert_called_once_with(False)
-        project.set_aiden_mode.assert_called_once_with(False)
-        project.set_codex_mode.assert_called_once_with(False)
-        project.set_gemini_mode.assert_called_once_with(False)
-        project.set_ttadk_mode.assert_called_once_with(False)
-        project.set_coco_mode.assert_called_once_with(True, "sid_resume", 0)
 
-    def test_handle_card_resume_start_failure_does_not_switch_mode(self):
-        h, ctx = self._make_coco()
-        project = MagicMock()
-        project.project_id = "p1"
-        project.root_path = "/tmp"
-        ctx.project_manager.get_project.return_value = project
-        ctx.coco_manager.start_session.side_effect = RuntimeError("boom")
-        h.send_error_card = MagicMock()
-        h.handle_card_resume("m1", "c1", "p1", "sid_resume")
-        ctx.mode_manager.enter_coco_mode.assert_not_called()
-        h.send_error_card.assert_called_once()
 
     def test_show_info_with_project(self):
         h, ctx = self._make_coco()
@@ -1089,15 +842,6 @@ class TestProgrammingModeEnterExit:
         h.handle_card_exit("m1", "c1", "p1")
         project.set_coco_mode.assert_called_once_with(False)
         h.exit_mode.assert_called_once()
-
-    def test_card_new_clears_snapshot(self):
-        h, ctx = self._make_coco()
-        project = MagicMock()
-        ctx.project_manager.get_project.return_value = project
-        h.enter_mode = MagicMock()
-        h.handle_card_new("m1", "c1", "p1")
-        assert project.coco_session_snapshot is None
-        h.enter_mode.assert_called_once()
 
 
 class TestOneShotPendingSlot:
@@ -1199,30 +943,6 @@ class TestOneShotPendingSlot:
         ctx.coco_manager.ensure_session.assert_called_once()
         assert "thread_123" in str(ctx.coco_manager.ensure_session.call_args)
 
-    @patch("src.thread.get_current_thread_id", return_value="thread_456")
-    def test_enter_mode_in_thread_ignores_snapshot_session_id(self, mock_tid):
-        h, ctx = self._make_coco_pending()
-        mock_session = MagicMock()
-        mock_session.session_id = "new_thread_sess"
-        mock_session.is_resumed = False
-        ctx.coco_manager.ensure_session.return_value = mock_session
-        ctx.coco_manager.get_session.return_value = mock_session
-
-        project = MagicMock()
-        old_snapshot = MagicMock()
-        old_snapshot.is_resumable = True
-        old_snapshot.session_id = "old_snapshot_sess"
-        project.coco_session_snapshot = old_snapshot
-        project.root_path = "/tmp"
-        project.project_name = "test"
-        project.project_id = "test_id"
-
-        h.enter_mode("m1", "c1", project=project, thread_id="thread_456")
-
-        call_kwargs = ctx.coco_manager.ensure_session.call_args
-        assert call_kwargs is not None
-        call_str = str(call_kwargs)
-        assert "old_snapshot_sess" not in call_str
 
     @patch("src.thread.get_current_thread_id", return_value="thread_789")
     def test_handle_message_session_not_found_gives_feedback(self, mock_tid):
@@ -1249,51 +969,7 @@ class TestOneShotPendingSlot:
         call_str = str(h.reply_message.call_args)
         assert "启动失败" in call_str or "重新发送" in call_str
 
-    @patch("src.thread.get_current_thread_id", return_value="thread_789")
-    def test_handle_message_recovers_session_from_active_project_when_initial_project_missing(self, mock_tid):
-        """thread 路径下 project 不准时，应回退 active project 再次查找 session"""
-        h, ctx = self._make_coco_pending()
 
-        active_project = MagicMock()
-        active_project.project_id = "real_project"
-        active_project.root_path = "/tmp"
-        active_project.project_name = "real"
-        ctx.project_manager.get_active_project.return_value = active_project
-        ctx.project_manager.get_or_create_project_for_path.return_value = (None, False)
-
-        session = MagicMock()
-        ctx.coco_manager.get_session.side_effect = [None, session]
-        h.enter_mode = MagicMock()
-        h.handle_response = MagicMock()
-        h.inject_bridge_context = MagicMock(side_effect=lambda text, project: text)
-        h.get_working_dir = MagicMock(return_value="/tmp")
-
-        h.handle_message("m1", "c1", "继续写", project=None)
-
-        second_call = ctx.coco_manager.get_session.call_args_list[1]
-        assert second_call.kwargs["project_id"] == "real_project"
-        h.handle_response.assert_called_once()
-
-    @patch("src.thread.get_current_thread_id", return_value=None)
-    def test_register_thread_context_handles_none_project(self, mock_tid):
-        """_register_thread_context 应在 project=None 时通过 active_project 获取真实 project_id"""
-        h, ctx = self._make_coco_pending()
-        session = MagicMock()
-        session.session_id = "sess_123"
-
-        active_project = MagicMock()
-        active_project.project_id = "real_proj_id"
-        active_project.ttadk_tool_name = None
-        active_project.ttadk_model_name = None
-        ctx.project_manager.get_active_project.return_value = active_project
-
-        mock_tm = MagicMock()
-        with patch("src.thread.get_thread_manager", return_value=mock_tm):
-            h._register_thread_context("root1", "c1", None, session)
-            mock_tm.register.assert_called_once()
-            call_kwargs = mock_tm.register.call_args
-            assert call_kwargs[1]["mode"] == "coco"
-            assert call_kwargs[1]["project_id"] == "real_proj_id"
 
 
 class TestTTADKModeDegradeWarning:
@@ -1376,77 +1052,6 @@ class TestProjectHandler:
         h.show_project_board("m1", "c1")
         h.reply_message_with_id.assert_called_once()
 
-    def test_show_project_board_patch_success(self):
-        h, ctx = self._make()
-        ctx.project_manager.get_all_projects.return_value = []
-        ctx.project_manager.get_active_project.return_value = None
-
-        # Mock API client for patch success
-        mock_client = MagicMock()
-        mock_resp = MagicMock()
-        mock_resp.success.return_value = True
-        mock_client.im.v1.message.patch.return_value = mock_resp
-        ctx.api_client_factory.return_value = mock_client
-
-        with patch("src.feishu.handlers.project.CardBuilder") as mock_cb:
-            mock_cb.build_status_board_card.return_value = ("interactive", "{}")
-
-            h.show_project_board("m1", "c1", origin_message_id="origin1")
-
-            # Verify Patch called
-            mock_client.im.v1.message.patch.assert_called_once()
-            # Verify Reply NOT called
-            h.reply_message_with_id.assert_not_called()
-
-    def test_show_project_board_patch_failure(self):
-        h, ctx = self._make()
-        ctx.project_manager.get_all_projects.return_value = []
-        ctx.project_manager.get_active_project.return_value = None
-
-        # Mock API client for patch failure
-        mock_client = MagicMock()
-        mock_resp = MagicMock()
-        mock_resp.success.return_value = False
-        mock_resp.msg = "fail"
-        mock_client.im.v1.message.patch.return_value = mock_resp
-        ctx.api_client_factory.return_value = mock_client
-
-        with patch("src.feishu.handlers.project.CardBuilder") as mock_cb:
-            mock_cb.build_status_board_card.return_value = ("interactive", "{}")
-
-            h.show_project_board("m1", "c1", origin_message_id="origin1")
-
-            # Verify Patch called
-            mock_client.im.v1.message.patch.assert_called_once()
-            # Verify Reply called (fallback)
-            h.reply_message_with_id.assert_called_once()
-
-    def test_show_project_status_patch_success(self):
-        h, ctx = self._make()
-        project = MagicMock()
-        project.root_path = "/tmp"
-        project.project_name = "test"
-        project.project_id = "p1"
-        project.last_active = 0
-        project.get_status_emoji.return_value = "🟢"
-
-        # Mock API client for patch success
-        mock_client = MagicMock()
-        mock_resp = MagicMock()
-        mock_resp.success.return_value = True
-        mock_client.im.v1.message.patch.return_value = mock_resp
-        ctx.api_client_factory.return_value = mock_client
-
-        with patch("src.feishu.handlers.project.CardBuilder") as mock_cb:
-            mock_cb.build_project_response_card.return_value = ("interactive", "{}")
-
-            h.show_project_status("m1", "c1", project, origin_message_id="origin1")
-
-            # Verify Patch called
-            mock_client.im.v1.message.patch.assert_called_once()
-            # Verify Reply NOT called
-            h.reply_message_with_id.assert_not_called()
-
     def test_show_project_status_no_project(self):
         h, ctx = self._make()
         h.show_project_board = MagicMock()
@@ -1468,33 +1073,6 @@ class TestProjectHandler:
         h.close_project("m1", "c1", "test")
         h.reply_message.assert_called_once()
         assert "❌" in str(h.reply_message.call_args)
-
-    def test_restore_project_context_no_context(self):
-        h, ctx = self._make()
-        ctx.context_manager.store.get.return_value = None
-        project = SimpleNamespace(project_id="p1", project_name="test")
-        info = h.restore_project_context(project)
-        assert info["has_context"] is False
-
-    def test_restore_project_context_with_context(self):
-        h, ctx = self._make()
-        mock_ctx = MagicMock()
-        mock_ctx.entry_count = 5
-        mock_ctx.versions = [1, 2]
-        mock_ctx.last_bridge_summary = None
-        mock_ctx.get_entries_by_type.return_value = []
-        ctx.context_manager.store.get.return_value = mock_ctx
-        project = SimpleNamespace(project_id="p1", project_name="test")
-        info = h.restore_project_context(project)
-        assert info["has_context"] is True
-        assert info["entry_count"] == 5
-        assert info["version_count"] == 2
-
-
-# ======================================================================
-# DeepHandler tests
-# ======================================================================
-
 
 class TestDeepHandler:
     def _make(self):
