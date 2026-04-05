@@ -1852,6 +1852,76 @@ class TestDualKeyThreadContext(unittest.TestCase):
         set_current_thread_id(None)
         real_mgr.close()
 
+    def test_handle_message_chat_id_fallback_sets_queue_key(self):
+        client = self._make_client()
+        client.settings = MagicMock()
+        client.settings.thread_programming_enabled = True
+
+        from src.thread.manager import ThreadContextManager
+        real_mgr = ThreadContextManager(ttl=3600, cleanup_interval=99999)
+        real_mgr.register("reply_id_1", "c1", "p1", mode="coco", alias_keys=["msg_id_1"])
+        client._thread_manager = real_mgr
+
+        mock_scheduler = MagicMock()
+        client._scheduler = mock_scheduler
+        client._extract_text_from_message = MagicMock(return_value="hello")
+        client._is_system_command_message = MagicMock(return_value=False)
+        client._is_likely_shell_command_message = MagicMock(return_value=False)
+        client._is_spec_command = MagicMock(return_value=False)
+        client._build_control_queue_key = MagicMock(return_value=None)
+        client._ensure_request_id = MagicMock(return_value="req1")
+        client._message_linker.link_task = MagicMock()
+
+        event = MagicMock()
+        event.message.message_id = "m2"
+        event.message.chat_id = "c1"
+        event.message.content = '{"text":"hello"}'
+        setattr(event.message, "root_id", "unknown_root")
+        setattr(event.message, "parent_id", None)
+        data = MagicMock()
+        data.event = event
+        data.schema = "im.message.p2p_v1"
+
+        client._handle_message(data)
+
+        call_args = mock_scheduler.submit.call_args
+        self.assertIsNotNone(call_args)
+        spec = call_args[0][0]
+        self.assertIn("reply_id_1", spec.queue_key)
+        real_mgr.close()
+
+    def test_process_async_safety_net_chat_fallback(self):
+        client = self._make_client()
+        client.settings = MagicMock()
+        client.settings.thread_programming_enabled = True
+
+        from src.thread.manager import ThreadContextManager
+        real_mgr = ThreadContextManager(ttl=3600, cleanup_interval=99999)
+        client._thread_manager = real_mgr
+
+        project = MagicMock()
+        project.project_id = "p1"
+        client._project_manager.get_project.return_value = None
+        client._project_manager.get_active_project.return_value = project
+
+        message = MagicMock()
+        message.message_id = "m2"
+        message.chat_id = "c1"
+        setattr(message, "root_id", None)
+        setattr(message, "parent_id", None)
+        setattr(message, "content", "{}")
+
+        with patch("src.feishu.ws_client.SystemHandler.is_likely_shell_command", return_value=False):
+            real_mgr.register("reply_c", "c1", "p1", mode="claude")
+            _project, _auto_mode, _text, _is_img = client._handle_image_content(
+                message, [], "hello world", "req1", None,
+            )
+        self.assertEqual(_auto_mode, "claude")
+        from src.thread import get_current_thread_id, set_current_thread_id
+        self.assertEqual(get_current_thread_id(), "reply_c")
+        set_current_thread_id(None)
+        real_mgr.close()
+
     def test_resolve_context_with_canonical_root_id(self):
         client = self._make_client()
         client.settings = MagicMock()
