@@ -1881,10 +1881,7 @@ class FeishuWSClient:
                 )
                 return
             if self._is_deep_command(text) or self._is_loop_command(text) or self._is_spec_command(text):
-                self._reply_message(
-                    message_id,
-                    "⚠️ Deep/Loop/Spec 模式暂不支持在话题中使用，请在主对话中发送对应命令",
-                )
+                self._process_with_intent(message_id, chat_id, text, project, shell_fast_tracked=shell_fast_tracked)
                 return
         if auto_enter_mode and auto_enter_mode in {"coco", "claude", "aiden", "codex", "gemini", "ttadk"}:
             from ..mode import InteractionMode
@@ -2232,27 +2229,18 @@ class FeishuWSClient:
 
         # Control-plane commands: handle consistently in all modes
         if self._is_deep_command(text):
-            if get_current_thread_id():
-                self._reply_message(message_id, "⚠️ Deep 模式暂不支持在话题中使用，请在主对话中发送 /deep 命令")
-                return
             self._add_reaction(message_id, EmojiReaction.on_smart_mode())
             self._add_reaction(message_id, EmojiReaction.on_processing())
             self._handle_deep_command(message_id, chat_id, text, project)
             return
 
         if self._is_loop_command(text):
-            if get_current_thread_id():
-                self._reply_message(message_id, "⚠️ Loop 模式暂不支持在话题中使用，请在主对话中发送 /loop 命令")
-                return
             self._add_reaction(message_id, EmojiReaction.on_smart_mode())
             self._add_reaction(message_id, EmojiReaction.on_processing())
             self._handle_loop_command(message_id, chat_id, text, project)
             return
 
         if self._is_spec_command(text):
-            if get_current_thread_id():
-                self._reply_message(message_id, "⚠️ Spec 模式暂不支持在话题中使用，请在主对话中发送 /spec 命令")
-                return
             self._add_reaction(message_id, EmojiReaction.on_smart_mode())
             self._add_reaction(message_id, EmojiReaction.on_processing())
             self._handle_spec_command(message_id, chat_id, text, project)

@@ -1751,18 +1751,17 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
         assert "已在编程模式" in call_str
         client._get_mode_handler.assert_not_called()
 
-    def test_dispatch_message_logic_deep_command_intercepted(self):
+    def test_dispatch_message_logic_deep_command_forwarded_to_process_with_intent(self):
         client = self._make_client()
         client._add_reaction = MagicMock()
         client._reply_message = MagicMock()
         client._get_mode_handler = MagicMock()
+        client._process_with_intent = MagicMock()
 
         project = MagicMock()
         client._dispatch_message_logic("m1", "c1", "/deep 写一个函数", project, auto_enter_mode="coco")
 
-        client._reply_message.assert_called_once()
-        call_str = str(client._reply_message.call_args)
-        assert "暂不支持" in call_str
+        client._process_with_intent.assert_called_once_with("m1", "c1", "/deep 写一个函数", project, shell_fast_tracked=False)
         client._get_mode_handler.assert_not_called()
 
     def test_dispatch_message_logic_exit_with_defer(self):
