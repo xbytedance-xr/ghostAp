@@ -1,5 +1,8 @@
 # GhostAP 项目记忆索引
 
+## 2026-04-11
+- **Spec 引擎执行日志与渲染稳定性修复** — _run_phase 添加阶段开始/完成日志解决执行无日志问题、session=None 防御性检查、session 重建失败 ERROR 日志、on_review_done 修复 criteria_section 未折叠渲染 bug 和 sp 变量潜在 NameError → [详细记录](2026-04-11.md)
+
 ## 2026-04-04
 - **话题编程模式 chat_id 降级防御（第六轮终结）** — 前五轮均未能解决持续对话中断；本轮确认真正根因：_dispatch_to_thread 首条消息后 ModeManager.exit_to_smart 导致模式状态仅存于 ThreadContext(root_id 可查)，后续消息 root_id 不匹配时模式永久丢失；实施第三层防御 chat_id 降级(get_by_chat)覆盖 _resolve_message_context/safety-net/_handle_message 三处；mloop 2 轮收敛(2/2 CLEAN)，2075 tests passed → [详细记录](2026-04-04.md)
 - **话题编程模式双键注册修复（第五轮）** — ThreadContextManager.register 支持 alias_keys 双键存储(reply_id+message_id)、canonical thread_root_id 全链路传播、get_by_chat/active_count 去重、remove 规范化到 canonical；mloop 3 轮收敛，2073 tests passed → [详细记录](2026-04-04.md)
