@@ -492,6 +492,12 @@ class SpecEngine(BaseEngine):
         timeout: int,
     ) -> str:
         """Execute a single phase: send prompt, collect output, return text."""
+        project_name = self._project.name if self._project else "unknown"
+        logger.info("[Spec:%s] 循环 %d 阶段 %s 开始", project_name, cycle_num, phase.value)
+
+        if not self._session:
+            raise RuntimeError(f"Spec session is None before phase {phase.value} (cycle={cycle_num}), session may have failed to initialize or rebuild")
+
         if callbacks.on_phase_start:
             callbacks.on_phase_start(cycle_num, phase)
 
@@ -525,6 +531,10 @@ class SpecEngine(BaseEngine):
                 before_retry=_before_retry,
             )
             output = tracker.text_buffer
+            logger.info(
+                "[Spec:%s] 循环 %d 阶段 %s 完成, 输出长度=%d",
+                project_name, cycle_num, phase.value, len(output),
+            )
 
             if callbacks.on_phase_done:
                 callbacks.on_phase_done(cycle_num, phase, output)
@@ -956,6 +966,12 @@ class SpecEngine(BaseEngine):
                     cycle_num,
                 )
                 self._recreate_session_best_effort()
+                if not self._session:
+                    logger.error(
+                        "[Spec:%s] 循环 %d Session 重建失败，session=None，下一循环将无法执行",
+                        self._project.name,
+                        cycle_num,
+                    )
 
         return termination
 

@@ -182,12 +182,12 @@ class SpecRenderer(BaseRenderer):
             title = reporter.get_review_title(cycle_num, review.all_passed)
 
             engine = self.ctx.spec_engine_manager.get(chat_id, project.root_path if project else "")
+            sp = engine.project if (engine and engine.project) else None
             progress_bar = None
             status_line = None
             duration_line = None
             criteria_section = None
-            if engine and engine.project:
-                sp = engine.project
+            if sp:
                 progress_bar = self._generate_progress_bar(sp.satisfied_count, sp.total_criteria)
                 title = append_duration_to_title(title, sp.duration())
                 status_line = reporter.format_status_line(sp)
@@ -195,6 +195,13 @@ class SpecRenderer(BaseRenderer):
                 criteria_section = reporter.format_criteria_section(sp)
 
             state = self.get_ui_state(spec_project_id)
+            if sp and criteria_section:
+                criteria_section = self._render_collapsible_section(
+                    criteria_section,
+                    total_items=sp.total_criteria,
+                    expanded=state.get("expand_ac", False),
+                    completed_count=sp.satisfied_count,
+                )
             msg_type, card_content = CardBuilder.build_engine_card(
                 project=project,
                 state=EngineCardState(
@@ -206,7 +213,7 @@ class SpecRenderer(BaseRenderer):
                     status_line=status_line,
                     duration_line=duration_line,
                     criteria_section=criteria_section,
-                    project_id=sp.project_id if engine and engine.project else (project.project_id if project else None),
+                    project_id=sp.project_id if sp else (project.project_id if project else None),
                     engine_project_id=spec_project_id,
                     compact=state["compact"],
                     expanded=state["expanded"],
