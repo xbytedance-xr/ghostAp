@@ -3,6 +3,8 @@ import threading
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from src.coco_model import (
     CocoModel,
     CocoModelManager,
@@ -10,6 +12,13 @@ from src.coco_model import (
     get_coco_model_manager,
 )
 from src.coco_model.manager import DEFAULT_MODELS
+
+
+@pytest.fixture(autouse=True)
+def _mock_acp_probe():
+    # Tests in this module don't need real ACP subprocess spawn; block it to keep suite fast.
+    with patch.object(CocoModelManager, "_load_models_via_acp", return_value=[]):
+        yield
 
 
 class TestCocoModel:

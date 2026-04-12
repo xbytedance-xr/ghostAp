@@ -5,11 +5,27 @@ from src.spec_engine.engine import SpecEngine, SpecEngineCallbacks
 
 @patch("gc.collect")
 def test_spec_engine_gc_collect(mock_gc_collect):
-    engine = SpecEngine(
-        chat_id="test",
-        root_path="/tmp",
-        agent_type="coco",
-    )
+    fast_settings = MagicMock()
+    fast_settings.spec_max_cycles = 3
+    fast_settings.spec_max_cycles_limit = 3
+    fast_settings.spec_execution_timeout = 30
+    fast_settings.spec_convergence_window = 0
+    fast_settings.spec_min_cycles = 1
+    fast_settings.spec_review_enabled = False
+    fast_settings.spec_discovery_enabled = False
+    fast_settings.spec_disable_convergence = False
+    fast_settings.spec_disable_early_stop = False
+    fast_settings.spec_infinite_mode = False
+    fast_settings.spec_persist_phase_artifacts = False
+    fast_settings.spec_allow_resume_from_disk = False
+    fast_settings.spec_rebuild_session_between_cycles = False
+
+    with patch("src.engine_base.get_settings", return_value=fast_settings):
+        engine = SpecEngine(
+            chat_id="test",
+            root_path="/tmp",
+            agent_type="coco",
+        )
 
     engine._run_phase = MagicMock(return_value="dummy_prompt")
     engine._close_session_safely = MagicMock()
@@ -17,6 +33,22 @@ def test_spec_engine_gc_collect(mock_gc_collect):
     engine._parse_requirement_to_criteria = MagicMock(return_value=["test criteria"])
     engine._evaluate_criteria = MagicMock(return_value=True)
     engine._conduct_review = MagicMock()
+
+    engine.settings = engine.settings  # noqa
+    # Override cycles to shrink execution path
+    for attr, val in (
+        ("spec_max_cycles", 3),
+        ("spec_max_cycles_limit", 3),
+        ("spec_execution_timeout", 30),
+        ("spec_convergence_window", 0),
+        ("spec_min_cycles", 1),
+        ("spec_review_enabled", False),
+        ("spec_discovery_enabled", False),
+    ):
+        try:
+            setattr(engine.settings, attr, val)
+        except Exception:
+            pass
 
     with (
         patch("src.spec_engine.engine.create_engine_session") as mock_create,

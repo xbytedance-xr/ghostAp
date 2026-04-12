@@ -581,7 +581,8 @@ class TestInteractiveStrategyEnv(unittest.TestCase):
                     # We need to mock pty.openpty to check if it proceeds past the check
                     with patch("pty.openpty") as mock_pty:
                         mock_pty.return_value = (1, 2)  # master, slave fds
-                        with patch("os.close"), patch("fcntl.ioctl"), patch("subprocess.Popen"):
+                        with patch("os.close"), patch("fcntl.ioctl"), patch("subprocess.Popen"), \
+                             patch.object(InteractiveStrategy, "_read_until_prompt", return_value=""):
                             # Just ensure it tries to run (mocking enough to not crash)
                             try:
                                 strategy.fetch("test_tool")

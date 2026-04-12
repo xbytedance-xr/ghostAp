@@ -1,5 +1,8 @@
 # GhostAP 项目记忆索引
 
+## 2026-04-12
+- **测试套件加速 3.1x** — test_coco_model 新增 autouse fixture 阻止真实 ACP 探测(140s→0.16s)、test_spec_gc 构造前 patch get_settings 压缩 cycles(16.8s→0.58s)、test_force_interactive_env 补 mock _read_until_prompt(10s→0)；总耗时 225s→72s，1837 tests 全绿，零生产代码改动 → [详细记录](2026-04-12.md)
+
 ## 2026-04-11
 - **Spec 引擎执行日志与渲染稳定性修复** — _run_phase 添加阶段开始/完成日志解决执行无日志问题、session=None 防御性检查、session 重建失败 ERROR 日志、on_review_done 修复 criteria_section 未折叠渲染 bug 和 sp 变量潜在 NameError → [详细记录](2026-04-11.md)
 
