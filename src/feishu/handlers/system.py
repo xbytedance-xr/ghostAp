@@ -89,6 +89,7 @@ class SystemHandler(BaseHandler):
             "/menu": lambda m, c, t, p: self.handle_menu_command(m, c, p),
             "/tools": lambda m, c, t, p: self.show_tools_list(m, c, p),
             "/tools_status": lambda m, c, t, p: self.show_tools_status(m, c, p),
+            "/model": lambda m, c, t, p: self.handle_model_command(m, c, t, p),
         }
 
         # Prefix match handlers: prefix -> handler_func(message_id, chat_id, text, project)
@@ -101,6 +102,7 @@ class SystemHandler(BaseHandler):
             ("/switch ", self._handle_switch_command),
             ("/new ", self._handle_new_project_command),
             ("/close ", self._handle_close_command),
+            ("/model ", self.handle_model_command),
         ]
 
     def _handle_switch_command(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"]):
@@ -264,10 +266,11 @@ class SystemHandler(BaseHandler):
             "/acp",
             "/ttadk_refresh",
             "/menu",
+            "/model",
         }
         if text_lower in exact_commands:
             return True
-        prefix_commands = ("/switch ", "/new ", "/close ", "/tasks ", "/diff ", "/trace ", "/status ")
+        prefix_commands = ("/switch ", "/new ", "/close ", "/tasks ", "/diff ", "/trace ", "/status ", "/model ")
         return any(text_lower.startswith(p) for p in prefix_commands)
 
     # ------------------------------------------------------------------
@@ -586,6 +589,95 @@ class SystemHandler(BaseHandler):
 
         self.reply_message(message_id, f"🔄 正在切换到 {tool} / {model}...")
         self._enter_mode_with_acp_model(message_id, chat_id, tool, model, project)
+
+    # ------------------------------------------------------------------
+    # /model command — list/switch models for current ACP tool
+    # ------------------------------------------------------------------
+    def _resolve_current_acp_tool(self, chat_id: str, project: Optional["ProjectContext"] = None) -> str:
+        """Resolve the ACP tool name relevant to the current context.
+
+        Priority:
+        1. project.acp_tool_name (explicit tool set on active project)
+        2. Current interaction mode (coco/aiden/codex/gemini/claude)
+        3. Default: "coco"
+        """
+        if project and getattr(project, "acp_tool_name", ""):
+            return str(project.acp_tool_name).lower()
+
+        mode_to_tool = {
+            "coco": "coco",
+            "aiden": "aiden",
+            "codex": "codex",
+            "gemini": "gemini",
+            "claude": "claude",
+        }
+        for mode_check, tool in mode_to_tool.items():
+            checker = getattr(self.mode_manager, f"is_{mode_check}_mode", None)
+            if callable(checker) and checker(chat_id):
+                return tool
+
+        return "coco"
+
+    def handle_model_command(
+        self,
+        message_id: str,
+        chat_id: str,
+        text: str,
+        project: Optional["ProjectContext"] = None,
+    ) -> None:
+        """Handle /model [list|<name>|switch <name>] command.
+
+        /model              — show model selection card for current ACP tool
+        /model list         — same as above
+        /model <name>       — switch directly to <name>
+        /model switch <name>— same as /model <name>
+        """
+        text_stripped = (text or "").strip()
+        parts = text_stripped.split(None, 2)
+        # parts[0] == "/model" (case-insensitive)
+        subcommand = parts[1].lower() if len(parts) >= 2 else ""
+
+        # Resolve project if not provided
+        if project is None:
+            project = self.project_manager.get_active_project(chat_id)
+
+        tool_name = self._resolve_current_acp_tool(chat_id, project)
+        cwd = (project.root_path if project else None) or self.get_working_dir(chat_id)
+        project_id = project.project_id if project else None
+
+        current_model: Optional[str] = None
+        if project and getattr(project, "acp_tool_name", "") == tool_name:
+            current_model = getattr(project, "acp_model_name", None)
+
+        if subcommand in ("", "list", "ls"):
+            # Show interactive model selection card
+            self.reply_message(message_id, f"🔍 正在查询 {tool_name} 支持的模型...")
+            models = self._fetch_acp_models(tool_name, cwd=cwd, current_model=current_model)
+            if not models:
+                self.reply_error(message_id, f"获取 {tool_name} 模型列表失败，请稍后重试")
+                return
+            msg_type, card_content = CardBuilder.build_acp_model_select_card(models, tool_name, project_id)
+            self.reply_message(message_id, card_content, msg_type=msg_type)
+            return
+
+        # Direct switch: /model <name> or /model switch <name>
+        if subcommand == "switch":
+            model_name = parts[2].strip() if len(parts) >= 3 else ""
+        else:
+            model_name = parts[1].strip() if len(parts) >= 2 else ""
+
+        if not model_name:
+            self.reply_error(
+                message_id,
+                "请指定模型名称，例如：\n"
+                "• `/model list` — 查看可用模型\n"
+                "• `/model gpt-5.2` — 切换到指定模型\n"
+                "• `/model switch claude-3.7-sonnet` — 切换到指定模型",
+            )
+            return
+
+        self.reply_message(message_id, f"🔄 正在切换到 {tool_name} / {model_name}...")
+        self._enter_mode_with_acp_model(message_id, chat_id, tool_name, model_name, project)
 
     # ------------------------------------------------------------------
     # TTADK command handling

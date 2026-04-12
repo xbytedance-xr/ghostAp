@@ -117,56 +117,63 @@ class DeepEngine(BaseEngine):
         gc_monitor = get_gc_monitor(memory_threshold_percent=self.settings.deep_memory_threshold)
 
         def on_event(event: ACPEvent):
-            gc_monitor.check_and_collect(label="Deep", mem_snapshot=self._mem_snapshot)
+            try:
+                gc_monitor.check_and_collect(label="Deep", mem_snapshot=self._mem_snapshot)
 
-            if self._run_state == EngineRunState.STOPPING:
-                if self._session:
-                    self._session.cancel()
-                return
+                if self._run_state == EngineRunState.STOPPING:
+                    if self._session:
+                        self._session.cancel()
+                    return
 
-            self._renderer.process_event(event)
+                # Capture local ref to avoid race with cleanup()
+                renderer = self._renderer
+                if not renderer:
+                    return
+                renderer.process_event(event)
 
-            # Transition: planning -> executing
-            # Some backends (Claude CLI) only emit TEXT_CHUNK; for ACP backend,
-            # tool calls/plan updates are strong signals that execution has started.
-            if self._project and self._project.status == DeepProjectStatus.PLANNING:
-                marker_hit = False
-                try:
-                    if event.event_type == ACPEventType.TEXT_CHUNK:
-                        txt = self._renderer.text_content or ""
-                        # Heuristic markers for CLI backend
-                        if "### 执行过程" in txt or "## 执行过程" in txt or "开始执行" in txt:
-                            marker_hit = True
-                except Exception:
+                # Transition: planning -> executing
+                # Some backends (Claude CLI) only emit TEXT_CHUNK; for ACP backend,
+                # tool calls/plan updates are strong signals that execution has started.
+                if self._project and self._project.status == DeepProjectStatus.PLANNING:
                     marker_hit = False
+                    try:
+                        if event.event_type == ACPEventType.TEXT_CHUNK:
+                            txt = renderer.text_content or ""
+                            # Heuristic markers for CLI backend
+                            if "### 执行过程" in txt or "## 执行过程" in txt or "开始执行" in txt:
+                                marker_hit = True
+                    except Exception:
+                        marker_hit = False
 
-                if marker_hit or event.event_type in (
-                    ACPEventType.PLAN_UPDATE,
-                    ACPEventType.TOOL_CALL_START,
-                    ACPEventType.TOOL_CALL_UPDATE,
-                    ACPEventType.TOOL_CALL_DONE,
-                ):
-                    # Mark as executing and fire "planning done" once.
-                    self._project.start()
-                    if (not self._planning_done_fired) and callbacks.on_analyzing_done:
-                        self._planning_done_fired = True
-                        callbacks.on_analyzing_done(self._project)
+                    if marker_hit or event.event_type in (
+                        ACPEventType.PLAN_UPDATE,
+                        ACPEventType.TOOL_CALL_START,
+                        ACPEventType.TOOL_CALL_UPDATE,
+                        ACPEventType.TOOL_CALL_DONE,
+                    ):
+                        # Mark as executing and fire "planning done" once.
+                        self._project.start()
+                        if (not self._planning_done_fired) and callbacks.on_analyzing_done:
+                            self._planning_done_fired = True
+                            callbacks.on_analyzing_done(self._project)
 
-            match event.event_type:
-                case ACPEventType.PLAN_UPDATE:
-                    if event.plan:
-                        self._progress.update_plan(event.plan)
-                case ACPEventType.TOOL_CALL_DONE:
-                    if event.tool_call:
-                        self._progress.record_tool(event.tool_call)
-                case ACPEventType.TEXT_CHUNK:
-                    if event.text:
-                        self._progress.append_text(event.text)
+                match event.event_type:
+                    case ACPEventType.PLAN_UPDATE:
+                        if event.plan:
+                            self._progress.update_plan(event.plan)
+                    case ACPEventType.TOOL_CALL_DONE:
+                        if event.tool_call:
+                            self._progress.record_tool(event.tool_call)
+                    case ACPEventType.TEXT_CHUNK:
+                        if event.text:
+                            self._progress.append_text(event.text)
 
-            if callbacks.on_event:
-                callbacks.on_event(event)
-            if event.event_type == ACPEventType.TEXT_CHUNK and callbacks.on_text:
-                callbacks.on_text(event.text or "")
+                if callbacks.on_event:
+                    callbacks.on_event(event)
+                if event.event_type == ACPEventType.TEXT_CHUNK and callbacks.on_text:
+                    callbacks.on_text(event.text or "")
+            except Exception as e:
+                logger.debug("[Deep] on_event 回调异常(已捕获): %s", e)
 
         return on_event
 
@@ -275,8 +282,9 @@ class DeepEngine(BaseEngine):
 
             error_msg = f"执行异常: {detail}"
             logger.error("[Deep:%s] %s", project_name, error_msg)
-            if self._project:
-                self._project.fail(error_msg)
+            if self._project is None:
+                self._project = DeepProject.create(name=project_name, root_path=self.root_path)
+            self._project.fail(error_msg)
             if callbacks.on_error:
                 callbacks.on_error(error_msg)
             return self._project
@@ -288,6 +296,10 @@ class DeepEngine(BaseEngine):
     def _drain_pending_context(self, on_event, timeout, last_result):
         """Send any pending context injections as follow-up prompts in the same session."""
         while self._run_state == EngineRunState.RUNNING:
+            # Guard: session may have been closed by concurrent pause/stop
+            if not self._session:
+                logger.warning("[Deep] _drain_pending_context: session 已关闭, 停止处理")
+                break
             with self._lock:
                 batch = list(self._pending_context)
                 self._pending_context.clear()
@@ -301,10 +313,14 @@ class DeepEngine(BaseEngine):
 
 请根据以上信息调整你的执行方案并继续。"""
             from ..utils.retry import RetryPolicy
-            last_result = self._session.send_prompt_with_retry(
-                follow_up, on_event=on_event, timeout=timeout,
-                retry_policy=RetryPolicy(max_retries=1, retry_delay=2.0)
-            )
+            try:
+                last_result = self._session.send_prompt_with_retry(
+                    follow_up, on_event=on_event, timeout=timeout,
+                    retry_policy=RetryPolicy(max_retries=1, retry_delay=2.0)
+                )
+            except Exception as e:
+                logger.error("[Deep] _drain_pending_context 发送失败: %s", e)
+                break
         return last_result
 
     def _build_deep_prompt(self, requirement: str) -> str:
@@ -433,17 +449,24 @@ class DeepEngine(BaseEngine):
                 return None
 
             status = self._project.status
+            # Snapshot progress data under lock
+            tool_calls_count = len(self._progress.tool_calls)
+            completed = self._progress.completed_steps
+            total = self._progress.total_steps or 1
+            project_id = self._project.project_id
+            error = self._project.error
+
         if status == DeepProjectStatus.EXECUTING:
-            message = f"执行中 (工具调用: {len(self._progress.tool_calls)})"
+            message = f"执行中 (工具调用: {tool_calls_count})"
         elif status == DeepProjectStatus.FAILED:
-            message = f"执行失败: {self._project.error or '未知错误'}"
+            message = f"执行失败: {error or '未知错误'}"
         else:
             message = self._STATUS_MESSAGES.get(status, "未知状态")
 
         return ProgressUpdate(
-            project_id=self._project.project_id,
-            completed_count=self._progress.completed_steps,
-            total_count=self._progress.total_steps or 1,
+            project_id=project_id,
+            completed_count=completed,
+            total_count=total,
             status=status,
             message=message,
         )

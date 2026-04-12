@@ -175,9 +175,14 @@ class BaseEngine:
         self._session = None
 
     def stop(self):
-        self._run_state = EngineRunState.STOPPING
-        if self._session:
-            self._session.cancel()
+        with self._lock:
+            self._run_state = EngineRunState.STOPPING
+            session = self._session
+        if session:
+            try:
+                session.cancel()
+            except Exception:
+                pass
 
     def cleanup(self):
         if self._run_state != EngineRunState.IDLE:
@@ -246,7 +251,10 @@ class BaseEngineManager(Generic[T]):
                 del self._chat_keys[chat_id]
 
     def _iter_chat_engines(self, chat_id: str):
-        for key in self._chat_keys.get(chat_id, ()):
+        # Snapshot keys under lock to avoid RuntimeError: dictionary changed size during iteration
+        with self._lock:
+            keys = list(self._chat_keys.get(chat_id, ()))
+        for key in keys:
             engine = self._engines.get(key)
             if engine:
                 yield engine

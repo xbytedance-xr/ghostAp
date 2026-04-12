@@ -214,6 +214,13 @@ class BaseEngineHandler(BaseHandler):
                     action_prefix=action_prefix,
                 ),
             )
+            # Send the error card to user
+            try:
+                self.reply_message(message_id, err_card, msg_type=err_msg_type)
+            except Exception as send_err:
+                logger.error(
+                    "%s Engine 发送错误卡片失败: %s", self._get_engine_name_prefix(), send_err
+                )
 
     def _safe_lifecycle_action(
         self,

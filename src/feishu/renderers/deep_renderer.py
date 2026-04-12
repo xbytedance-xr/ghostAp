@@ -99,7 +99,9 @@ class DeepRenderer(BaseRenderer):
             # But here we only update if we proceed.
 
             engine = _get_engine()
-            deep_project_id = engine.project.project_id if engine and engine.project else None
+            if not engine or not engine.project:
+                return
+            deep_project_id = engine.project.project_id
             progress = engine.progress if engine else None
             progress_bar = progress.progress_bar if progress else None
 
@@ -169,7 +171,9 @@ class DeepRenderer(BaseRenderer):
                 plan_content = renderer.render_plan_view()
                 if sender.check_plan_throttle(plan_content):
                     engine = _get_engine()
-                    deep_project_id = engine.project.project_id if engine and engine.project else None
+                    if not engine or not engine.project:
+                        return
+                    deep_project_id = engine.project.project_id
                     progress = engine.progress if engine else None
                     progress_bar = progress.progress_bar if progress else None
                     plan_title = append_duration_to_title(
@@ -265,7 +269,11 @@ class DeepRenderer(BaseRenderer):
             title = reporter.get_error_title()
             
             engine = _get_engine()
-            deep_project_id = engine.project.project_id if engine and engine.project else (project.project_id if project else None)
+            deep_project_id = None
+            if engine and engine.project:
+                deep_project_id = engine.project.project_id
+            if not deep_project_id and project:
+                deep_project_id = project.project_id
             
             extra_buttons = [
                 {
