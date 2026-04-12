@@ -518,10 +518,18 @@ class SpecEngine(BaseEngine):
             tracker = PhaseTracker()
 
             def on_event(event: ACPEvent):
-                tracker.process(event)
-                self._renderer.process_event(event)
-                if callbacks.on_phase_event:
-                    callbacks.on_phase_event(cycle_num, phase, event)
+                try:
+                    tracker.process(event)
+                    renderer = self._renderer
+                    if renderer is not None:
+                        renderer.process_event(event)
+                    if callbacks.on_phase_event:
+                        try:
+                            callbacks.on_phase_event(cycle_num, phase, event)
+                        except Exception as cb_exc:
+                            logger.debug("[Spec] on_phase_event callback failed: %s", cb_exc)
+                except Exception as exc:
+                    logger.debug("[Spec] on_event handler error: %s", exc)
 
             self._send_prompt_with_retry(
                 prompt,

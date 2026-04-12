@@ -298,12 +298,20 @@ class LoopEngine(BaseEngine):
         """Create the on_event callback shared by execute and resume loops."""
 
         def on_event(event: ACPEvent, _it=iteration):
-            with self._lock:
-                self._last_heartbeat = time.time()
-            iter_tracker.process(event)
-            self._renderer.process_event(event)
-            if callbacks.on_iteration_event:
-                callbacks.on_iteration_event(_it, event)
+            try:
+                with self._lock:
+                    self._last_heartbeat = time.time()
+                iter_tracker.process(event)
+                renderer = self._renderer
+                if renderer is not None:
+                    renderer.process_event(event)
+                if callbacks.on_iteration_event:
+                    try:
+                        callbacks.on_iteration_event(_it, event)
+                    except Exception as cb_exc:
+                        logger.debug("[Loop] on_iteration_event callback failed: %s", cb_exc)
+            except Exception as exc:
+                logger.debug("[Loop] on_event handler error: %s", exc)
 
         return on_event
 
