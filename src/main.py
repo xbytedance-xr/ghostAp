@@ -24,7 +24,8 @@ class Application:
         self._shutdown_once = threading.Event()
 
     def _install_signal_handlers(self):
-        """Ensure SIGTERM triggers graceful cleanup.
+        """Ensure SIGTERM triggers graceful cleanup; ignore SIGHUP to survive
+        terminal/SSH disconnects that previously killed the service mid-run.
 
         restart.sh uses SIGTERM; without a handler Python may exit immediately
         and skip finally blocks, leaving child agent processes orphaned.
@@ -34,12 +35,25 @@ class Application:
             if self._shutdown_once.is_set():
                 return
             self._shutdown_once.set()
+            try:
+                sig_name = signal.Signals(signum).name
+            except Exception:
+                sig_name = str(signum)
+            logger.warning("收到终止信号 %s，开始优雅停机", sig_name)
             raise KeyboardInterrupt
 
         try:
             signal.signal(signal.SIGTERM, _handle_sigterm)
         except Exception:
             # Some environments (non-main thread / restricted) may fail; best-effort.
+            pass
+
+        # 忽略 SIGHUP：避免 SSH 会话/终端关闭意外终止长时间运行的引擎任务。
+        # restart.sh 使用 SIGTERM 停机，不依赖 SIGHUP。
+        try:
+            if hasattr(signal, "SIGHUP"):
+                signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        except Exception:
             pass
 
     def handle_message(self, message_id: str, chat_id: str, command: str, working_dir: Optional[str] = None):
