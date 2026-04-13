@@ -389,6 +389,68 @@ class ProgrammingModeHandler(BaseHandler):
             )
 
     # ------------------------------------------------------------------
+    # switch_model — live model switch for an active session
+    # ------------------------------------------------------------------
+    def switch_model(
+        self,
+        message_id: str,
+        chat_id: str,
+        model_name: str,
+        project: Optional["ProjectContext"] = None,
+    ) -> None:
+        """Switch the model for the active programming session.
+
+        Strategy:
+        1. Try ACP protocol `session/setModel` — no restart, context preserved.
+        2. Fall back to session restart: end existing session, then call
+           ensure_session() with the new model_name (bypasses enter_mode's
+           "already in mode" early-return guard).
+        """
+        project_id = project.project_id if project else None
+        cwd = (project.root_path if project else None) or self.get_working_dir(chat_id)
+        mgr = self._get_session_manager()
+
+        session = mgr.get_session(chat_id, project_id=project_id)
+        if session:
+            # Attempt protocol-level model switch (preserves conversation context).
+            set_model_fn = getattr(session, "set_model", None)
+            if callable(set_model_fn):
+                try:
+                    if set_model_fn(model_name):
+                        logger.info("[%s] Model switched via ACP protocol: %s", self.mode_name, model_name)
+                        self.reply_message(
+                            message_id,
+                            f"✅ 已切换 {self.mode_name} 模型为: **{model_name}**（对话上下文已保留）",
+                        )
+                        return
+                except Exception as e:
+                    logger.warning("[%s] ACP set_model failed, will restart session: %s", self.mode_name, e)
+
+            # Fall back: end session so ensure_session restarts with new model arg.
+            mgr.end_session(chat_id, project_id=project_id)
+
+        # Start new session with the requested model (mode stays active).
+        startup_timeout = float(getattr(self.settings, "acp_startup_timeout", 20) or 20)
+        try:
+            agent_type_override = self._get_agent_type_override(project)
+            mgr.ensure_session(
+                chat_id,
+                cwd=cwd,
+                startup_timeout=startup_timeout,
+                project_id=project_id,
+                agent_type_override=agent_type_override,
+                model_name=model_name,
+            )
+            self.reply_message(
+                message_id,
+                f"✅ 已切换 {self.mode_name} 模型为: **{model_name}**（已重启会话）",
+            )
+        except Exception as e:
+            from ...utils.errors import log_exception
+            log_exception(logger, f"切换 {self.mode_name} 模型失败", e)
+            self.reply_error(message_id, f"切换 {self.mode_name} 模型失败: {e}")
+
+    # ------------------------------------------------------------------
     # Thread context registration
     # ------------------------------------------------------------------
     def _register_thread_context(

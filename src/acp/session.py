@@ -327,6 +327,22 @@ class ACPSession:
 
         return result
 
+    async def set_model(self, model_id: str) -> bool:
+        """Switch the model for this session via ACP protocol.
+
+        Calls session/setModel on the running agent. Returns True on success.
+        Falls back gracefully if the agent doesn't support the method.
+        """
+        if not self._conn or not self._session_id:
+            raise RuntimeError("Session not started. Call start() first.")
+        try:
+            await self._conn.set_session_model(model_id=model_id, session_id=self._session_id)
+            logger.info("[ACP:%s] Model switched to: %s (session=%s)", self._agent_cmd, model_id, self._session_id[:8])
+            return True
+        except Exception as e:
+            logger.warning("[ACP:%s] set_model failed (agent may not support it): %s", self._agent_cmd, e)
+            return False
+
     async def cancel(self) -> None:
         """Cancel the current prompt execution."""
         if self._conn and self._session_id:

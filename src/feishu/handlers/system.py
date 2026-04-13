@@ -517,25 +517,28 @@ class SystemHandler(BaseHandler):
             target_project.acp_tool_name = tool_name
             target_project.acp_model_name = model_name
 
-        if tool_name == "coco" and self.coco_handler:
-            self.coco_handler.current_model = model_name
-            self.coco_handler.enter_mode(message_id, chat_id, project=target_project)
-            return
-        if tool_name == "claude" and self.claude_handler:
-            self.claude_handler.current_model = model_name
-            self.claude_handler.enter_mode(message_id, chat_id, project=target_project)
-            return
-        if tool_name == "aiden" and self.aiden_handler:
-            self.aiden_handler.current_model = model_name
-            self.aiden_handler.enter_mode(message_id, chat_id, project=target_project)
-            return
-        if tool_name == "codex" and self.codex_handler:
-            self.codex_handler.current_model = model_name
-            self.codex_handler.enter_mode(message_id, chat_id, project=target_project)
-            return
-        if tool_name == "gemini" and self.gemini_handler:
-            self.gemini_handler.current_model = model_name
-            self.gemini_handler.enter_mode(message_id, chat_id, project=target_project)
+        _TOOL_HANDLER_MAP = [
+            ("coco",   "coco_handler",   "is_coco_mode"),
+            ("claude", "claude_handler", "is_claude_mode"),
+            ("aiden",  "aiden_handler",  "is_aiden_mode"),
+            ("codex",  "codex_handler",  "is_codex_mode"),
+            ("gemini", "gemini_handler", "is_gemini_mode"),
+        ]
+        for _tool, _handler_attr, _mode_check in _TOOL_HANDLER_MAP:
+            if tool_name != _tool:
+                continue
+            handler = getattr(self, _handler_attr, None)
+            if not handler:
+                break
+            if hasattr(handler, "current_model"):
+                handler.current_model = model_name
+            # If already in this mode, switch model on the active session instead of
+            # calling enter_mode() which would return early with an "already in mode" warning.
+            mode_checker = getattr(self.mode_manager, _mode_check, None)
+            if callable(mode_checker) and mode_checker(chat_id) and hasattr(handler, "switch_model"):
+                handler.switch_model(message_id, chat_id, model_name, project=target_project)
+            else:
+                handler.enter_mode(message_id, chat_id, project=target_project)
             return
 
         self.reply_error(message_id, f"不支持的 ACP 工具: {tool_name}")

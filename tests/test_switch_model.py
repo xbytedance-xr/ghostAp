@@ -1,0 +1,328 @@
+"""Tests for model switching when already in a programming mode.
+
+Covers:
+- switch_model() on ProgrammingModeHandler: ACP-protocol path (set_model succeeds)
+- switch_model() fallback path (set_model fails → session restart)
+- switch_model() no existing session (direct ensure_session)
+- _enter_mode_with_acp_model() routes to switch_model() when mode is active
+- _enter_mode_with_acp_model() routes to enter_mode() when not in mode
+- ensure_session() restarts on model mismatch (non-TTADK)
+- ACPSession.set_model() / SyncACPSession.set_model() delegation
+"""
+
+from __future__ import annotations
+
+import asyncio
+import unittest
+from unittest.mock import AsyncMock, MagicMock, call, patch
+
+# ---------------------------------------------------------------------------
+# ACPSession.set_model()
+# ---------------------------------------------------------------------------
+class TestACPSessionSetModel(unittest.IsolatedAsyncioTestCase):
+    async def test_set_model_calls_conn(self):
+        from src.acp.session import ACPSession
+
+        session = ACPSession.__new__(ACPSession)
+        session._agent_cmd = "coco"
+        session._conn = AsyncMock()
+        session._session_id = "sess-abc123"
+
+        result = await session.set_model("gpt-5.2")
+
+        session._conn.set_session_model.assert_awaited_once_with(
+            model_id="gpt-5.2", session_id="sess-abc123"
+        )
+        assert result is True
+
+    async def test_set_model_returns_false_on_error(self):
+        from src.acp.session import ACPSession
+
+        session = ACPSession.__new__(ACPSession)
+        session._agent_cmd = "coco"
+        session._conn = AsyncMock()
+        session._conn.set_session_model.side_effect = RuntimeError("not supported")
+        session._session_id = "sess-abc123"
+
+        result = await session.set_model("gpt-5.2")
+        assert result is False
+
+    async def test_set_model_raises_when_not_started(self):
+        from src.acp.session import ACPSession
+
+        session = ACPSession.__new__(ACPSession)
+        session._agent_cmd = "coco"
+        session._conn = None
+        session._session_id = None
+
+        with self.assertRaises(RuntimeError):
+            await session.set_model("gpt-5.2")
+
+
+# ---------------------------------------------------------------------------
+# SyncACPSession.set_model()
+# ---------------------------------------------------------------------------
+class TestSyncACPSessionSetModel(unittest.TestCase):
+    def _make_sync_session(self):
+        from src.acp.sync_adapter import SyncACPSession
+
+        s = SyncACPSession.__new__(SyncACPSession)
+        s._acp_session = MagicMock()
+        s._loop = asyncio.new_event_loop()
+        return s
+
+    def test_set_model_delegates_to_acp_session(self):
+        from src.acp.sync_adapter import SyncACPSession
+
+        s = SyncACPSession.__new__(SyncACPSession)
+        s._acp_session = MagicMock()
+        s._loop = None  # no loop → returns False
+        result = s.set_model("claude-3.7-sonnet")
+        assert result is False  # graceful fallback
+
+    def test_set_model_returns_false_when_no_session(self):
+        from src.acp.sync_adapter import SyncACPSession
+
+        s = SyncACPSession.__new__(SyncACPSession)
+        s._acp_session = None
+        s._loop = None
+        result = s.set_model("gpt-5.2")
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# ACPSessionManager.ensure_session() — model mismatch restart for non-TTADK
+# ---------------------------------------------------------------------------
+class TestEnsureSessionModelMismatch(unittest.TestCase):
+    def _make_manager(self):
+        from src.acp.manager import ACPSessionManager
+
+        mgr = ACPSessionManager.__new__(ACPSessionManager)
+        import threading
+        mgr._lock = threading.Lock()
+        mgr._sessions = {}
+        mgr._agent_type = "coco"
+        mgr._session_timeout = 3600
+        mgr._max_sessions = 10
+        return mgr
+
+    def test_model_mismatch_triggers_restart(self):
+        """ensure_session with a new model_name restarts non-TTADK sessions."""
+        from src.acp.manager import ACPSessionManager
+        import time
+
+        mgr = self._make_manager()
+
+        # Inject a fake existing session with old model in its args
+        fake_session = MagicMock()
+        fake_session.last_active = time.time()
+        fake_session.session_id = "old-sess"
+        fake_session._agent_type = "coco"
+        fake_session._agent_args = ["acp", "serve", "-c", "model.name=gpt-5.2"]
+        fake_session.is_server_running.return_value = True
+        fake_session.is_server_healthy.return_value = True
+
+        key = ACPSessionManager._session_key("chat1")
+        mgr._sessions[key] = fake_session
+
+        # Patch start_session so we don't actually spawn a process
+        new_session = MagicMock()
+        new_session.session_id = "new-sess"
+        with patch.object(mgr, "start_session", return_value=new_session) as mock_start:
+            result = mgr.ensure_session(
+                "chat1",
+                cwd="/tmp",
+                model_name="claude-3.7-sonnet",  # different from old model
+            )
+
+        mock_start.assert_called_once()
+        assert result is new_session
+
+    def test_same_model_no_restart(self):
+        """ensure_session with the SAME model does NOT restart."""
+        from src.acp.manager import ACPSessionManager
+        import time
+
+        mgr = self._make_manager()
+
+        fake_session = MagicMock()
+        fake_session.last_active = time.time()
+        fake_session.session_id = "same-sess"
+        fake_session._agent_type = "coco"
+        fake_session._agent_args = ["acp", "serve", "-c", "model.name=gpt-5.2"]
+        fake_session.is_server_running.return_value = True
+        fake_session.is_server_healthy.return_value = True
+
+        key = ACPSessionManager._session_key("chat1")
+        mgr._sessions[key] = fake_session
+
+        with patch.object(mgr, "start_session") as mock_start:
+            result = mgr.ensure_session(
+                "chat1",
+                cwd="/tmp",
+                model_name="gpt-5.2",  # same model
+            )
+
+        mock_start.assert_not_called()
+        assert result is fake_session
+
+
+# ---------------------------------------------------------------------------
+# ProgrammingModeHandler.switch_model()
+# ---------------------------------------------------------------------------
+def _make_coco_handler():
+    """Build a minimal CocoModeHandler with all deps mocked."""
+    from src.feishu.handlers.programming import CocoModeHandler
+
+    ctx = MagicMock()
+    ctx.settings.thread_programming_enabled = False
+    ctx.settings.acp_startup_timeout = 10
+    ctx.mode_manager.is_coco_mode.return_value = True
+    ctx.project_manager.get_active_project.return_value = None
+    ctx.working_dirs = {}
+
+    handler = CocoModeHandler(ctx)
+    handler.reply_message = MagicMock()
+    handler.reply_error = MagicMock()
+    handler.get_working_dir = MagicMock(return_value="/tmp")
+    return handler
+
+
+class TestSwitchModelACPPath(unittest.TestCase):
+    """switch_model() succeeds via ACP set_model — no restart."""
+
+    def test_acp_switch_success_sends_reply(self):
+        handler = _make_coco_handler()
+
+        fake_session = MagicMock()
+        fake_session.set_model = MagicMock(return_value=True)
+
+        mgr_mock = MagicMock()
+        mgr_mock.get_session.return_value = fake_session
+
+        with patch.object(handler, "_get_session_manager", return_value=mgr_mock):
+            handler.switch_model("msg1", "chat1", "claude-3.7-sonnet")
+
+        fake_session.set_model.assert_called_once_with("claude-3.7-sonnet")
+        mgr_mock.end_session.assert_not_called()
+        handler.reply_message.assert_called_once()
+        msg = handler.reply_message.call_args[0][1]
+        assert "claude-3.7-sonnet" in msg
+        assert "对话上下文已保留" in msg
+
+
+class TestSwitchModelFallbackPath(unittest.TestCase):
+    """switch_model() falls back to session restart when set_model fails."""
+
+    def test_fallback_restarts_session_and_replies(self):
+        handler = _make_coco_handler()
+
+        fake_session = MagicMock()
+        fake_session.set_model = MagicMock(return_value=False)  # ACP switch fails
+
+        new_session = MagicMock()
+        new_session.session_id = "new-sess"
+
+        mgr_mock = MagicMock()
+        mgr_mock.get_session.return_value = fake_session
+        mgr_mock.ensure_session.return_value = new_session
+
+        with patch.object(handler, "_get_session_manager", return_value=mgr_mock):
+            handler.switch_model("msg1", "chat1", "gpt-5.2")
+
+        mgr_mock.end_session.assert_called_once_with("chat1", project_id=None)
+        mgr_mock.ensure_session.assert_called_once()
+        call_kwargs = mgr_mock.ensure_session.call_args
+        assert call_kwargs[1].get("model_name") == "gpt-5.2" or "gpt-5.2" in str(call_kwargs)
+        handler.reply_message.assert_called_once()
+        msg = handler.reply_message.call_args[0][1]
+        assert "已重启会话" in msg
+
+    def test_fallback_on_set_model_exception(self):
+        handler = _make_coco_handler()
+
+        fake_session = MagicMock()
+        fake_session.set_model = MagicMock(side_effect=RuntimeError("boom"))
+
+        mgr_mock = MagicMock()
+        mgr_mock.get_session.return_value = fake_session
+        mgr_mock.ensure_session.return_value = MagicMock()
+
+        with patch.object(handler, "_get_session_manager", return_value=mgr_mock):
+            handler.switch_model("msg1", "chat1", "gpt-5.2")
+
+        mgr_mock.end_session.assert_called_once()
+
+
+class TestSwitchModelNoSession(unittest.TestCase):
+    """switch_model() with no existing session goes straight to ensure_session."""
+
+    def test_no_session_calls_ensure_session(self):
+        handler = _make_coco_handler()
+
+        mgr_mock = MagicMock()
+        mgr_mock.get_session.return_value = None
+        mgr_mock.ensure_session.return_value = MagicMock()
+
+        with patch.object(handler, "_get_session_manager", return_value=mgr_mock):
+            handler.switch_model("msg1", "chat1", "gpt-5.2")
+
+        mgr_mock.end_session.assert_not_called()
+        mgr_mock.ensure_session.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# SystemHandler._enter_mode_with_acp_model() routing
+# ---------------------------------------------------------------------------
+def _make_system_handler(is_coco_mode=False):
+    from src.feishu.handlers.system import SystemHandler
+
+    ctx = MagicMock()
+    ctx.settings.app_id = "test"
+    ctx.settings.app_secret = "secret"
+    ctx.mode_manager.is_coco_mode.return_value = is_coco_mode
+    ctx.mode_manager.is_claude_mode.return_value = False
+    ctx.mode_manager.is_aiden_mode.return_value = False
+    ctx.mode_manager.is_codex_mode.return_value = False
+    ctx.mode_manager.is_gemini_mode.return_value = False
+    ctx.project_manager.get_active_project.return_value = None
+    ctx.working_dirs = {}
+
+    handler = SystemHandler(ctx)
+    handler.reply_message = MagicMock()
+    handler.reply_error = MagicMock()
+    handler.coco_handler = MagicMock(spec=["enter_mode", "switch_model", "current_model"])
+    handler.claude_handler = MagicMock(spec=["enter_mode", "switch_model", "current_model"])
+    handler.aiden_handler = MagicMock(spec=["enter_mode", "switch_model", "current_model"])
+    handler.codex_handler = MagicMock(spec=["enter_mode", "switch_model", "current_model"])
+    handler.gemini_handler = MagicMock(spec=["enter_mode", "switch_model", "current_model"])
+    return handler
+
+
+class TestEnterModeWithAcpModelRouting(unittest.TestCase):
+    def test_calls_enter_mode_when_not_in_coco_mode(self):
+        handler = _make_system_handler(is_coco_mode=False)
+        handler._enter_mode_with_acp_model("msg1", "chat1", "coco", "gpt-5.2")
+        handler.coco_handler.enter_mode.assert_called_once()
+        handler.coco_handler.switch_model.assert_not_called()
+
+    def test_calls_switch_model_when_already_in_coco_mode(self):
+        handler = _make_system_handler(is_coco_mode=True)
+        handler._enter_mode_with_acp_model("msg1", "chat1", "coco", "claude-3.7-sonnet")
+        handler.coco_handler.switch_model.assert_called_once_with(
+            "msg1", "chat1", "claude-3.7-sonnet", project=None
+        )
+        handler.coco_handler.enter_mode.assert_not_called()
+
+    def test_calls_enter_mode_for_claude_when_not_in_claude_mode(self):
+        handler = _make_system_handler(is_coco_mode=False)
+        handler._enter_mode_with_acp_model("msg1", "chat1", "claude", "opus-4")
+        handler.claude_handler.enter_mode.assert_called_once()
+        handler.claude_handler.switch_model.assert_not_called()
+
+    def test_error_for_unknown_tool(self):
+        handler = _make_system_handler(is_coco_mode=False)
+        handler._enter_mode_with_acp_model("msg1", "chat1", "unknown_tool", "gpt-5.2")
+        handler.reply_error.assert_called_once()
+        msg = handler.reply_error.call_args[0][1]
+        assert "unknown_tool" in msg

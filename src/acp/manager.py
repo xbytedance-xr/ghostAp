@@ -662,6 +662,21 @@ class ACPSessionManager:
                     _safe_end_session(lambda s: s is existing)
                     existing = None
 
+        # Model mismatch check for non-TTADK sessions (when no agent_type_override).
+        # Ensures that calling ensure_session() with a different model_name triggers a restart.
+        if existing and not agent_type_override and model_name:
+            existing_args = getattr(existing, "_agent_args", None)
+            args_text = " ".join(existing_args or [])
+            if model_name not in args_text:
+                logger.info(
+                    "[ACP:%s] Model changed (missing %s in args), restarting: key=%s",
+                    self._agent_type.upper(),
+                    model_name,
+                    key[-16:],
+                )
+                _safe_end_session(lambda _: True)
+                existing = None
+
         if existing and session_id and existing.session_id != session_id:
             # Different target session requested; restart to load requested session.
             _safe_end_session(lambda _: True)

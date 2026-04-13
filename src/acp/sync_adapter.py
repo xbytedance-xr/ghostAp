@@ -1480,6 +1480,24 @@ class SyncACPSession:
         finally:
             self._active_future = None
 
+    def set_model(self, model_id: str, timeout: float = 10.0) -> bool:
+        """Switch model on the running ACP session via session/setModel.
+
+        Returns True if the agent accepted the model switch, False otherwise.
+        Falls back gracefully for agents that don't support the method.
+        """
+        if not self._acp_session or not self._loop:
+            return False
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._acp_session.set_model(model_id),
+                self._loop,
+            )
+            return bool(future.result(timeout=float(timeout or 10.0)))
+        except Exception as e:
+            logger.warning("[ACP] set_model failed: %s", e)
+            return False
+
     def cancel(self) -> None:
         """Cancel current prompt."""
         if self._acp_session and self._loop:
