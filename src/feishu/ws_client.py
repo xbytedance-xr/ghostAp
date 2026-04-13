@@ -2395,7 +2395,17 @@ class FeishuWSClient:
         data = task.data
 
         if intent == IntentType.ENTER_COCO:
-            self._enter_coco_mode(message_id, chat_id, project=project)
+            # 显式进入 Coco：先弹出 ACP 模型选择卡，用户确认后再真正进入模式。
+            # 自动/静默路径（见 _execute_mode_entry_intent）仍走 _enter_coco_mode，
+            # 直接复用项目上已绑定的 acp_model_name，不打断对话。
+            try:
+                project_id = project.project_id if project else None
+                self._system_handler.handle_select_acp_tool(
+                    message_id, chat_id, "coco", project_id=project_id
+                )
+            except Exception as e:
+                logger.warning("展示 Coco 模型选择卡失败，回退直接进入: %s", e)
+                self._enter_coco_mode(message_id, chat_id, project=project)
 
         elif intent == IntentType.EXIT_COCO:
             self._exit_coco_mode(message_id, chat_id, project=project)
