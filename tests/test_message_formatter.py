@@ -68,17 +68,17 @@ class TestFormatCommandResult(unittest.TestCase):
         self.assertIn("error msg", md)
 
     def test_stdout_truncated_over_2000(self):
-        long_out = "x" * 5000
+        long_out = "x" * 20000
         _, data = FeishuMessageFormatter.format_command_result(
             command="cat", working_dir=None, stdout=long_out, stderr="",
             return_code=0, success=True,
         )
         md = json.loads(data)["zh_cn"]["content"][0][0]["text"]
         self.assertIn("... (输出已截断)", md)
-        self.assertNotIn("x" * 5000, md)
+        self.assertNotIn("x" * 20000, md)
 
     def test_stderr_truncated_over_1000(self):
-        long_err = "e" * 3000
+        long_err = "e" * 10000
         _, data = FeishuMessageFormatter.format_command_result(
             command="cmd", working_dir=None, stdout="", stderr=long_err,
             return_code=1, success=False,

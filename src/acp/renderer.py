@@ -48,6 +48,25 @@ class ACPEventRenderer:
         self._plan: Optional[PlanInfo] = None
         self._modified_files: set[str] = set()
         self._todo_content: str = ""  # Latest TodoWrite rendered content
+        # Consecutive same-kind completed tool aggregation state.
+        # Tracks the last tool run so repeated read/edit/etc. collapse into a
+        # single line like "📖 Read 3 个文件: a.py, b.py, c.py ✅".
+        self._last_tool_run: Optional[dict] = None
+
+    def _format_tool_run_line(self, kind: str, items: list[tuple[str, str]]) -> str:
+        icon = _KIND_ICONS.get(kind, "🔧")
+        status_icon = _STATUS_ICONS.get("completed", "✅")
+        if len(items) == 1:
+            title, loc = items[0]
+            loc_str = f" `{loc}`" if loc else ""
+            return f"\n{icon} {title}{loc_str} {status_icon}\n"
+        # Aggregate multiple same-kind calls
+        locs = [loc for _, loc in items if loc]
+        titles = [t for t, _ in items]
+        shown = locs if locs else titles
+        sample = ", ".join(f"`{s}`" if locs else s for s in shown[:3])
+        more = f" (+{len(shown) - 3})" if len(shown) > 3 else ""
+        return f"\n{icon} {len(items)} 个调用: {sample}{more} {status_icon}\n"
 
     def process_event(self, event: ACPEvent) -> str:
         """Process an event and return the current complete rendered content."""
@@ -55,6 +74,8 @@ class ACPEventRenderer:
             case ACPEventType.TEXT_CHUNK:
                 if event.text:
                     self._text_chunks.append(event.text)
+                    # Any real text breaks the aggregation run.
+                    self._last_tool_run = None
 
             case ACPEventType.THOUGHT_CHUNK:
                 # Optionally show thoughts — for now, skip to avoid noise
@@ -88,16 +109,32 @@ class ACPEventRenderer:
                     if event.tool_call.content:
                         # TodoWrite: update dedicated section, don't pollute text buffer
                         self._todo_content = event.tool_call.content
+                        self._last_tool_run = None
                     else:
                         # Add inline summary to text (skip empty titles)
                         title = (event.tool_call.title or "").strip()
                         if title:
-                            icon = _KIND_ICONS.get(event.tool_call.kind, "🔧")
-                            status_icon = _STATUS_ICONS.get(event.tool_call.status, "✅")
-                            loc_str = ""
-                            if event.tool_call.locations:
-                                loc_str = f" `{event.tool_call.locations[0]}`"
-                            self._text_chunks.append(f"\n{icon} {title}{loc_str} {status_icon}\n")
+                            kind = event.tool_call.kind or "other"
+                            loc = event.tool_call.locations[0] if event.tool_call.locations else ""
+                            item = (title, loc)
+                            run = self._last_tool_run
+                            if (
+                                run
+                                and run["kind"] == kind
+                                and run["line_idx"] == len(self._text_chunks) - 1
+                            ):
+                                # Same-kind consecutive run — update the aggregated line in place.
+                                run["items"].append(item)
+                                self._text_chunks[run["line_idx"]] = self._format_tool_run_line(kind, run["items"])
+                            else:
+                                # Start a new run.
+                                line = self._format_tool_run_line(kind, [item])
+                                self._text_chunks.append(line)
+                                self._last_tool_run = {
+                                    "kind": kind,
+                                    "items": [item],
+                                    "line_idx": len(self._text_chunks) - 1,
+                                }
 
             case ACPEventType.PLAN_UPDATE:
                 if event.plan:
@@ -172,19 +209,36 @@ class ACPEventRenderer:
         return "\n".join(["**📋 执行计划**", *lines])
 
     def _render_active_tools(self) -> str:
-        """Render currently active tool calls."""
-        lines: list[str] = []
+        """Render currently active tool calls, grouped by kind to reduce noise."""
+        groups: dict[str, list[tuple[str, str]]] = {}
+        order: list[str] = []
         for tool in self._active_tools.values():
-            # Skip TodoWrite-like tools — they are rendered in the todo section
             if tool.content:
                 continue
             title = (tool.title or "").strip()
-            if tool.status in ("in_progress", "pending") and title:
-                kind_icon = _KIND_ICONS.get(tool.kind, "🔧")
-                loc_str = ""
-                if tool.locations:
-                    loc_str = f" `{tool.locations[0]}`"
-                lines.append(f"{kind_icon} {title}{loc_str}...")
+            if tool.status not in ("in_progress", "pending") or not title:
+                continue
+            loc = tool.locations[0] if tool.locations else ""
+            kind = tool.kind or "other"
+            if kind not in groups:
+                groups[kind] = []
+                order.append(kind)
+            groups[kind].append((title, loc))
+
+        lines: list[str] = []
+        for kind in order:
+            items = groups[kind]
+            icon = _KIND_ICONS.get(kind, "🔧")
+            if len(items) == 1:
+                title, loc = items[0]
+                loc_str = f" `{loc}`" if loc else ""
+                lines.append(f"{icon} {title}{loc_str}...")
+            else:
+                locs = [l for _, l in items if l]
+                shown = locs if locs else [t for t, _ in items]
+                sample = ", ".join(f"`{s}`" if locs else s for s in shown[:3])
+                more = f" (+{len(shown) - 3})" if len(shown) > 3 else ""
+                lines.append(f"{icon} {len(items)} 个进行中: {sample}{more}...")
         return "\n".join(lines) if lines else ""
 
     def render_summary(self) -> str:

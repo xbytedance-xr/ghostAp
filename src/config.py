@@ -326,7 +326,9 @@ class Settings(BaseSettings):
 
     # Deep Card Compact Mode
     # If True, deep progress cards will default to a compact view (status line + progress bar + truncated content).
-    card_deep_compact_default: bool = True
+    # Default is False so users see full content by default — the expand/collapse
+    # button still exists for manual control when content exceeds the full threshold.
+    card_deep_compact_default: bool = False
 
     # UI Optimization Settings
     # Pagination size for project board and other lists

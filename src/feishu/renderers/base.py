@@ -289,16 +289,18 @@ class BaseRenderer:
                             obj[k] = truncate_recursive(v, depth + 1)
                         # Content fields - aggressive truncation if needed
                         elif k in ("content", "text", "value", "placeholder", "alt"):
-                            if isinstance(v, str) and len(v) > 500:
-                                obj[k] = v[:500] + "...(已截断)"
+                            # Only truncate when truly large — small strings are
+                            # labels/buttons and should never be mangled.
+                            if isinstance(v, str) and len(v) > 8000:
+                                obj[k] = v[:8000] + "...(已截断)"
                             else:
                                 obj[k] = truncate_recursive(v, depth + 1)
                         else:
                             obj[k] = truncate_recursive(v, depth + 1)
                 elif isinstance(obj, list):
                     # If list is too long, truncate items
-                    if len(obj) > 20:
-                        obj = obj[:20]
+                    if len(obj) > 60:
+                        obj = obj[:60]
                         # We might need to add a "more" item if possible, but structure varies.
                         # For now just slice.
 
@@ -306,8 +308,8 @@ class BaseRenderer:
                         obj[i] = truncate_recursive(obj[i], depth + 1)
                 elif isinstance(obj, str):
                     # Fallback for strings in other locations
-                    if len(obj) > 1000:
-                        return obj[:1000] + "...(已截断)"
+                    if len(obj) > 10000:
+                        return obj[:10000] + "...(已截断)"
                 return obj
 
             # First pass: try smart truncation on deep content

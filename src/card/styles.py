@@ -230,9 +230,9 @@ THRESHOLDS = {
     # Compact mode long-line character fallback
     "COMPACT_CHAR_FALLBACK": 1500,
     # Shell command stdout max characters
-    "SHELL_STDOUT_MAX": 4000,
+    "SHELL_STDOUT_MAX": 16000,
     # Shell command stderr max characters
-    "SHELL_STDERR_MAX": 2000,
+    "SHELL_STDERR_MAX": 8000,
     # BaseRenderer collapsible section item threshold
     "COLLAPSE_ITEM_THRESHOLD": 8,
     # BaseRenderer collapsible section long-text line threshold

@@ -12,8 +12,8 @@ class TestRefactorRobustness(unittest.TestCase):
         """Test that long shell output is truncated in the card."""
         from src.sandbox.executor import ExecutionResult
 
-        # Create a long output string (> SHELL_STDOUT_MAX=4000 chars)
-        long_output = "a" * 5000
+        # Create a long output string (> SHELL_STDOUT_MAX=16000 chars)
+        long_output = "a" * 20000
         result = ExecutionResult(return_code=0, stdout=long_output, stderr="", success=True)
 
         msg_type, content_json = SystemBuilder.build_shell_result_card("echo long", result)
@@ -27,7 +27,7 @@ class TestRefactorRobustness(unittest.TestCase):
                 if "\u5df2\u622a\u65ad" in text:  # 已截断
                     found_output = True
                     # Check that it's actually shorter than the original
-                    self.assertLess(len(text), 5000)
+                    self.assertLess(len(text), 20000)
                     # Check for truncation marker
                     self.assertIn("...(\u5df2\u622a\u65ad)...", text)  # ...(已截断)...
 
@@ -49,11 +49,11 @@ class TestRefactorRobustness(unittest.TestCase):
         small_payload = json.dumps({"header": "test", "content": "short"})
         self.assertEqual(renderer._check_and_truncate_payload(small_payload, max_size=1000), small_payload)
 
-        # Case 2: Smart truncation of long string
-        long_string = "a" * 2000
+        # Case 2: Smart truncation of long string (threshold bumped to 8000 chars)
+        long_string = "a" * 20000
         large_payload = json.dumps({"header": "test", "elements": [{"tag": "div", "text": {"content": long_string}}]})
 
-        truncated = renderer._check_and_truncate_payload(large_payload, max_size=1000)
+        truncated = renderer._check_and_truncate_payload(large_payload, max_size=12000)
         truncated_obj = json.loads(truncated)
 
         # Verify structure preserved
@@ -62,7 +62,7 @@ class TestRefactorRobustness(unittest.TestCase):
 
         # Verify string truncated
         content = truncated_obj["elements"][0]["text"]["content"]
-        self.assertLess(len(content), 2000)
+        self.assertLess(len(content), 20000)
         self.assertIn("...(已截断)", content)
 
         # Verify warning added
@@ -70,7 +70,7 @@ class TestRefactorRobustness(unittest.TestCase):
 
         # Case 3: Deeply nested truncation
         nested_payload = json.dumps({"level1": {"level2": {"level3": {"content": long_string}}}})
-        truncated = renderer._check_and_truncate_payload(nested_payload, max_size=1000)
+        truncated = renderer._check_and_truncate_payload(nested_payload, max_size=12000)
         truncated_obj = json.loads(truncated)
         content = truncated_obj["level1"]["level2"]["level3"]["content"]
         self.assertIn("...(已截断)", content)
