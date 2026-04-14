@@ -15,6 +15,7 @@ from ...acp import ACPEventRenderer
 from ...acp.manager import ACPSessionManager
 from ...agent_session import SyncSession
 from ...card import CardBuilder
+from ...card.styles import UI_TEXT
 from ...project import ContextSourceMode
 from ...utils.errors import log_exception
 from ..emoji import EmojiReaction
@@ -36,7 +37,7 @@ class ProgrammingModeHandler(BaseHandler):
     mode_emoji: str  # "🤖" / "🔮"
     is_coco: bool  # True for Coco, False for Claude
     context_source: ContextSourceMode
-    thinking_text: str  # "🤔 Coco 正在思考..." / "🔮 Claude 正在思考..."
+    thinking_text: str = ""  # Overridden by property or subclass; fallback to UI_TEXT
     _PROGRAMMING_MODE_ENTRIES = (
         (InteractionMode.COCO, "is_coco_mode", "_coco_handler"),
         (InteractionMode.CLAUDE, "is_claude_mode", "_claude_handler"),
@@ -59,7 +60,7 @@ class ProgrammingModeHandler(BaseHandler):
     def _is_in_opposite_mode(self, chat_id: str) -> bool: ...
 
     @abstractmethod
-    def _exit_opposite_mode(self, message_id: str, chat_id: str, project: Optional["ProjectContext"]):
+    def _exit_opposite_mode(self, message_id: str, chat_id: str, project: Optional["ProjectContext"], silent: bool = False):
         """Exit the *other* programming mode (mutual exclusion)."""
         ...
 
@@ -141,7 +142,7 @@ class ProgrammingModeHandler(BaseHandler):
                 return True
         return False
 
-    def _exit_other_programming_modes(self, message_id: str, chat_id: str, project: Optional["ProjectContext"]):
+    def _exit_other_programming_modes(self, message_id: str, chat_id: str, project: Optional["ProjectContext"], silent: bool = False):
         for mode, predicate_name, handler_attr in self._iter_other_programming_mode_entries():
             predicate = getattr(self.mode_manager, predicate_name, None)
             if not callable(predicate) or not predicate(chat_id):
@@ -150,7 +151,7 @@ class ProgrammingModeHandler(BaseHandler):
             if handler is None and mode in (InteractionMode.COCO, InteractionMode.CLAUDE):
                 handler = getattr(self, "_opposite_handler", None)
             if handler and handler is not self and hasattr(handler, "exit_mode"):
-                handler.exit_mode(message_id, chat_id, project=project)
+                handler.exit_mode(message_id, chat_id, project=project, silent=silent)
 
     # ------------------------------------------------------------------
     # enter_mode
@@ -173,9 +174,7 @@ class ProgrammingModeHandler(BaseHandler):
                     self.reply_message(
                         message_id,
                         fmt.format_warning(
-                            f"已开启{self.mode_name}编程模式\n\n"
-                            "直接发送你的编程需求，将自动创建编程话题\n\n"
-                            "说「退出模式」或发送 /exit 退出"
+                            UI_TEXT["mode_already_in_thread_msg"].format(name=self.mode_name)
                         ),
                     )
                 else:
@@ -183,7 +182,7 @@ class ProgrammingModeHandler(BaseHandler):
                     self.reply_message(
                         message_id,
                         fmt.format_warning(
-                            f"已经在{self.mode_name}编程模式中\n\n{info}\n\n说「退出模式」或发送 /exit 退出"
+                            UI_TEXT["mode_already_in_msg"].format(name=self.mode_name, info=info)
                         ),
                     )
             return
@@ -191,7 +190,7 @@ class ProgrammingModeHandler(BaseHandler):
         previous_mode = self.mode_manager.get_mode(chat_id)
 
         if not thread_id and self._is_in_opposite_mode(chat_id):
-            self._exit_opposite_mode(message_id, chat_id, project=project)
+            self._exit_opposite_mode(message_id, chat_id, project=project, silent=True)
 
         if not project:
             working_dir = self.get_working_dir(chat_id)
@@ -220,13 +219,9 @@ class ProgrammingModeHandler(BaseHandler):
                 self._deactivate_other_project_modes(project)
                 self._set_mode_on_project(project, True)
             if not silent:
-                content = (
-                    f"{self.mode_emoji} 已开启{self.mode_name}编程模式\n\n"
-                    "📝 发送你的编程需求，将自动创建编程话题\n\n"
-                    "说「退出模式」或发送 `/exit` 退出"
-                )
+                content = UI_TEXT["mode_enter_thread_msg"].format(emoji=self.mode_emoji, name=self.mode_name)
                 if self.mode_name == "TTADK":
-                    content += "\n\n可点击「切换TTADK工具」重新选择工具链"
+                    content += UI_TEXT["ttadk_extra_hint"]
                 if project:
                     msg_type, card_content = CardBuilder.build_project_response_card(
                         project,
@@ -329,15 +324,10 @@ class ProgrammingModeHandler(BaseHandler):
                 self._deactivate_other_project_modes(project)
                 self._set_mode_on_project(project, True, snapshot.session_id, snapshot.query_count)
             if not silent:
-                mode_hint = "继续之前的对话吧！"
+                mode_hint = UI_TEXT["mode_resume_hint_default"]
                 if self.mode_name == "TTADK":
-                    mode_hint = "当前模式：🎮 TTADK（可点「切换TTADK工具」，或发送 `/exit` 退回智能模式）"
-                content = (
-                    f"🔄 已恢复 {self.mode_name} 会话\n\n"
-                    f"• 会话 ID: `{session.session_id}`\n"
-                    f"• 历史对话: {snapshot.query_count} 条\n\n"
-                    f"{mode_hint}"
-                )
+                    mode_hint = UI_TEXT["mode_resume_hint_ttadk"]
+                content = UI_TEXT["mode_resume_msg"].format(name=self.mode_name, session_id=session.session_id, query_count=snapshot.query_count, hint=mode_hint)
                 msg_type, card_content = CardBuilder.build_project_response_card(
                     project,
                     f"{self.mode_name} 会话已恢复",
@@ -353,13 +343,9 @@ class ProgrammingModeHandler(BaseHandler):
                 self._deactivate_other_project_modes(project)
                 self._set_mode_on_project(project, True, session.session_id)
             if not silent:
-                content = (
-                    f"{self.mode_emoji} 已进入{self.mode_name}编程模式\n\n"
-                    "现在可以用自然语言描述你的需求\n\n"
-                    "说「退出模式」或发送 `/exit` 退出"
-                )
+                content = UI_TEXT["mode_enter_msg"].format(emoji=self.mode_emoji, name=self.mode_name)
                 if self.mode_name == "TTADK":
-                    content += "\n\n可点击「切换TTADK工具」重新选择工具链"
+                    content += UI_TEXT["ttadk_extra_hint"]
                 msg_type, card_content = CardBuilder.build_project_response_card(
                     project,
                     f"{self.mode_emoji} {self.mode_name}编程模式",
@@ -377,7 +363,7 @@ class ProgrammingModeHandler(BaseHandler):
                 else:
                     self.reply_message(
                         message_id,
-                        f"{self.mode_emoji} 已进入 {self.mode_name} 编程模式\n\n现在可以用自然语言描述你的需求\n\n说「退出模式」或发送 `/exit` 退出",
+                        UI_TEXT["mode_enter_no_project_msg"].format(emoji=self.mode_emoji, name=self.mode_name),
                     )
 
         if project:
@@ -494,7 +480,7 @@ class ProgrammingModeHandler(BaseHandler):
     # ------------------------------------------------------------------
     # exit_mode
     # ------------------------------------------------------------------
-    def exit_mode(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+    def exit_mode(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, silent: bool = False):
         from ...thread import get_current_thread_id, get_thread_manager
 
         project_id = project.project_id if project else None
@@ -531,13 +517,18 @@ class ProgrammingModeHandler(BaseHandler):
 
         try:
             has_session = self._get_session_manager().end_session(chat_id, project_id=project_id, thread_id=thread_id)
+            if silent:
+                # Silent mode: skip all user-facing messages (used for automatic mode switching)
+                if has_session or is_pending_slot:
+                    self.add_reaction(message_id, EmojiReaction.on_coco_exit())
+                return
             if has_session or is_pending_slot:
                 self.add_reaction(message_id, EmojiReaction.on_coco_exit())
 
                 if project:
-                    content = f"👋 已退出{self.mode_name}编程模式\n\n会话已保存，下次可以恢复\n\n当前为 🧠 智能模式"
+                    content = UI_TEXT["mode_exit_msg"].format(name=self.mode_name)
                     if is_pending_slot:
-                        content = f"👋 已退出{self.mode_name}编程模式\n\n当前为 🧠 智能模式"
+                        content = UI_TEXT["mode_exit_pending_msg"].format(name=self.mode_name)
                     msg_type, card_content = CardBuilder.build_project_response_card(
                         project,
                         f"已退出{self.mode_name}编程模式",
@@ -553,13 +544,13 @@ class ProgrammingModeHandler(BaseHandler):
                 else:
                     self.reply_message(
                         message_id,
-                        f"👋 已退出{self.mode_name}编程模式\n\n当前为 🧠 智能模式",
+                        UI_TEXT["mode_exit_pending_msg"].format(name=self.mode_name),
                         reply_in_thread=True if thread_id else None,
                     )
             else:
                 self.reply_message(
                     message_id,
-                    fmt.format_warning(f"当前不在 {self.mode_name} 模式中"),
+                    fmt.format_warning(UI_TEXT["mode_not_in_msg"].format(name=self.mode_name)),
                     reply_in_thread=True if thread_id else None,
                 )
         finally:
@@ -603,7 +594,7 @@ class ProgrammingModeHandler(BaseHandler):
                 self.reply_message(
                     message_id,
                     fmt.format_warning(
-                        f"{self.mode_name} 会话启动失败，请重新发送 /{self.mode_name.lower()} 开始"
+                        UI_TEXT["mode_session_fail_msg"].format(name=self.mode_name, cmd=self.mode_name.lower())
                     ),
                     reply_in_thread=True if thread_id else None,
                 )
@@ -911,7 +902,7 @@ class CocoModeHandler(ProgrammingModeHandler):
     mode_emoji = "🤖"
     is_coco = True
     context_source = ContextSourceMode.COCO
-    thinking_text = "🤔 Coco 正在思考..."
+    thinking_text = UI_TEXT["mode_thinking_msg"].format(emoji="🤔", name="Coco")
 
     def __init__(self, ctx):
         super().__init__(ctx)
@@ -926,8 +917,8 @@ class CocoModeHandler(ProgrammingModeHandler):
     def _is_in_opposite_mode(self, chat_id):
         return self._is_any_other_programming_mode(chat_id)
 
-    def _exit_opposite_mode(self, message_id, chat_id, project=None):
-        self._exit_other_programming_modes(message_id, chat_id, project=project)
+    def _exit_opposite_mode(self, message_id, chat_id, project=None, silent=False):
+        self._exit_other_programming_modes(message_id, chat_id, project=project, silent=silent)
 
     def _enter_mode_on_manager(self, chat_id, project_id=None):
         self.mode_manager.enter_coco_mode(chat_id, project_id=project_id)
@@ -971,7 +962,7 @@ class ClaudeModeHandler(ProgrammingModeHandler):
     mode_emoji = "🔮"
     is_coco = False
     context_source = ContextSourceMode.CLAUDE
-    thinking_text = "🔮 Claude 正在思考..."
+    thinking_text = UI_TEXT["mode_thinking_msg"].format(emoji="🔮", name="Claude")
 
     def __init__(self, ctx):
         super().__init__(ctx)
@@ -986,8 +977,8 @@ class ClaudeModeHandler(ProgrammingModeHandler):
     def _is_in_opposite_mode(self, chat_id):
         return self._is_any_other_programming_mode(chat_id)
 
-    def _exit_opposite_mode(self, message_id, chat_id, project=None):
-        self._exit_other_programming_modes(message_id, chat_id, project=project)
+    def _exit_opposite_mode(self, message_id, chat_id, project=None, silent=False):
+        self._exit_other_programming_modes(message_id, chat_id, project=project, silent=silent)
 
     def _enter_mode_on_manager(self, chat_id, project_id=None):
         self.mode_manager.enter_claude_mode(chat_id, project_id=project_id)
@@ -1034,7 +1025,7 @@ class AidenModeHandler(ProgrammingModeHandler):
     mode_emoji = "🎯"
     is_coco = False
     context_source = ContextSourceMode.AIDEN
-    thinking_text = "🎯 Aiden 正在思考..."
+    thinking_text = UI_TEXT["mode_thinking_msg"].format(emoji="🎯", name="Aiden")
 
     def __init__(self, ctx):
         super().__init__(ctx)
@@ -1049,8 +1040,8 @@ class AidenModeHandler(ProgrammingModeHandler):
     def _is_in_opposite_mode(self, chat_id):
         return self._is_any_other_programming_mode(chat_id)
 
-    def _exit_opposite_mode(self, message_id, chat_id, project=None):
-        self._exit_other_programming_modes(message_id, chat_id, project=project)
+    def _exit_opposite_mode(self, message_id, chat_id, project=None, silent=False):
+        self._exit_other_programming_modes(message_id, chat_id, project=project, silent=silent)
 
     def _enter_mode_on_manager(self, chat_id, project_id=None):
         self.mode_manager.enter_aiden_mode(chat_id, project_id=project_id)
@@ -1094,7 +1085,7 @@ class CodexModeHandler(ProgrammingModeHandler):
     mode_emoji = "⚡"
     is_coco = False
     context_source = ContextSourceMode.CODEX
-    thinking_text = "⚡ Codex 正在思考..."
+    thinking_text = UI_TEXT["mode_thinking_msg"].format(emoji="⚡", name="Codex")
 
     def __init__(self, ctx):
         super().__init__(ctx)
@@ -1109,8 +1100,8 @@ class CodexModeHandler(ProgrammingModeHandler):
     def _is_in_opposite_mode(self, chat_id):
         return self._is_any_other_programming_mode(chat_id)
 
-    def _exit_opposite_mode(self, message_id, chat_id, project=None):
-        self._exit_other_programming_modes(message_id, chat_id, project=project)
+    def _exit_opposite_mode(self, message_id, chat_id, project=None, silent=False):
+        self._exit_other_programming_modes(message_id, chat_id, project=project, silent=silent)
 
     def _enter_mode_on_manager(self, chat_id, project_id=None):
         self.mode_manager.enter_codex_mode(chat_id, project_id=project_id)
@@ -1154,7 +1145,7 @@ class GeminiModeHandler(ProgrammingModeHandler):
     mode_emoji = "✨"
     is_coco = False
     context_source = ContextSourceMode.GEMINI
-    thinking_text = "✨ Gemini 正在思考..."
+    thinking_text = UI_TEXT["mode_thinking_msg"].format(emoji="✨", name="Gemini")
 
     def __init__(self, ctx):
         super().__init__(ctx)
@@ -1169,8 +1160,8 @@ class GeminiModeHandler(ProgrammingModeHandler):
     def _is_in_opposite_mode(self, chat_id):
         return self._is_any_other_programming_mode(chat_id)
 
-    def _exit_opposite_mode(self, message_id, chat_id, project=None):
-        self._exit_other_programming_modes(message_id, chat_id, project=project)
+    def _exit_opposite_mode(self, message_id, chat_id, project=None, silent=False):
+        self._exit_other_programming_modes(message_id, chat_id, project=project, silent=silent)
 
     def _enter_mode_on_manager(self, chat_id, project_id=None):
         self.mode_manager.enter_gemini_mode(chat_id, project_id=project_id)
@@ -1214,7 +1205,7 @@ class TTADKModeHandler(ProgrammingModeHandler):
     mode_emoji = "🎮"
     is_coco = False
     context_source = ContextSourceMode.TTADK
-    thinking_text = "🎮 TTADK 正在思考..."
+    thinking_text = UI_TEXT["mode_thinking_msg"].format(emoji="🎮", name="TTADK")
 
     def __init__(self, ctx):
         super().__init__(ctx)
@@ -1230,8 +1221,8 @@ class TTADKModeHandler(ProgrammingModeHandler):
     def _is_in_opposite_mode(self, chat_id):
         return self._is_any_other_programming_mode(chat_id)
 
-    def _exit_opposite_mode(self, message_id, chat_id, project=None):
-        self._exit_other_programming_modes(message_id, chat_id, project=project)
+    def _exit_opposite_mode(self, message_id, chat_id, project=None, silent=False):
+        self._exit_other_programming_modes(message_id, chat_id, project=project, silent=silent)
 
     def _enter_mode_on_manager(self, chat_id, project_id=None):
         self.mode_manager.enter_ttadk_mode(chat_id, project_id=project_id)

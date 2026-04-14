@@ -515,8 +515,8 @@ class TestDeepCard:
     # _build_deep_buttons tests
     # ------------------------------------------------------------------
     def test_build_deep_buttons_executing(self):
-        # Need content > 10 lines to show Expand button
-        long_content = "\n".join([f"Line {i}" for i in range(15)])
+        # Need content > FULL_LINE_THRESHOLD (50) lines to show Expand button (compact=False default)
+        long_content = "\n".join([f"Line {i}" for i in range(55)])
         buttons = CardBuilder._build_deep_buttons(
             EngineCardState(engine_project_id="proj123", is_executing=True, content=long_content)
         )
@@ -527,8 +527,8 @@ class TestDeepCard:
         assert "🛑 停止" in texts
 
     def test_build_deep_buttons_paused(self):
-        # Need content > 10 lines to show Expand button
-        long_content = "\n".join([f"Line {i}" for i in range(15)])
+        # Need content > FULL_LINE_THRESHOLD (50) lines to show Expand button (compact=False default)
+        long_content = "\n".join([f"Line {i}" for i in range(55)])
         buttons = CardBuilder._build_deep_buttons(
             EngineCardState(engine_project_id="proj123", is_paused=True, content=long_content)
         )
@@ -539,8 +539,8 @@ class TestDeepCard:
         assert "🛑 停止" in texts
 
     def test_build_deep_buttons_neither(self):
-        # Need content > 10 lines to show Expand button
-        long_content = "\n".join([f"Line {i}" for i in range(15)])
+        # Need content > FULL_LINE_THRESHOLD (50) lines to show Expand button (compact=False default)
+        long_content = "\n".join([f"Line {i}" for i in range(55)])
         buttons = CardBuilder._build_deep_buttons(EngineCardState(engine_project_id="proj123", content=long_content))
         # Expand, Mode -> 2 buttons
         assert len(buttons) == 2

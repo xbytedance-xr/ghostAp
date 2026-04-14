@@ -4,6 +4,8 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Optional
 
+from src.card.styles import THRESHOLDS
+
 if TYPE_CHECKING:
     from ..handlers.base import BaseHandler
 
@@ -211,7 +213,7 @@ class BaseRenderer:
             return content
 
         # Threshold for collapsing
-        COLLAPSE_THRESHOLD = 3
+        COLLAPSE_THRESHOLD = THRESHOLDS["COLLAPSE_ITEM_THRESHOLD"]
 
         # If few items or expanded, show all
         if total_items <= COLLAPSE_THRESHOLD or expanded:
@@ -232,9 +234,9 @@ class BaseRenderer:
 
         # If we couldn't identify completed items by checkmark, but it's long text (Spec mode)
         # We might want to just truncate
-        if hidden_count == 0 and len(lines) > 10:  # Long text fallback
+        if hidden_count == 0 and len(lines) > THRESHOLDS["COLLAPSE_LINE_THRESHOLD"]:  # Long text fallback
             summary = f"📄 内容较长 (共 {len(lines)} 行)，点击下方'展开'查看全部"
-            return f"{summary}\n\n" + "\n".join(lines[:5]) + "\n..."
+            return f"{summary}\n\n" + "\n".join(lines[:THRESHOLDS["COLLAPSE_DISPLAY_LINES"]]) + "\n..."
 
         if hidden_count == 0:
             return content

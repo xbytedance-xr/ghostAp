@@ -842,9 +842,30 @@ class SystemHandler(BaseHandler):
             )
             return
 
+        # Fetch models for each tool to build combined card
+        try:
+            raw_cwd = self._resolve_ttadk_cwd(chat_id, project=project, project_id=project_id)
+            cwd = normalize_ttadk_cwd(raw_cwd)
+        except Exception:
+            cwd = None
+
+        models_by_tool: dict[str, list] = {}
+        for tool in (result.tools or []):
+            try:
+                prev_tool = manager.get_current_tool()
+                if prev_tool != tool.name:
+                    manager.set_tool(tool.name)
+                models_result = manager.get_models(cwd=cwd)
+                models_by_tool[tool.name] = models_result.models or []
+                # Restore previous tool
+                if prev_tool and prev_tool != tool.name:
+                    manager.set_tool(prev_tool)
+            except Exception:
+                models_by_tool[tool.name] = []
+
         yolo_enabled = self._resolve_ttadk_yolo_enabled(chat_id, project=project, project_id=project_id)
-        msg_type, card_content = CardBuilder.build_ttadk_tool_select_card(
-            result.tools, project_id, yolo_enabled=yolo_enabled
+        msg_type, card_content = CardBuilder.build_ttadk_combined_select_card(
+            result.tools, models_by_tool, project_id, yolo_enabled=yolo_enabled
         )
         self.reply_message(message_id, card_content, msg_type=msg_type)
 
@@ -976,6 +997,41 @@ class SystemHandler(BaseHandler):
             self._report_ttadk_flow_duration(chat_id, project_id, "enter_mode")
         else:
             self.reply_error(message_id, "TTADK 处理器未初始化")
+
+    def handle_select_ttadk_combined(
+        self,
+        message_id: str,
+        chat_id: str,
+        tool_name: str,
+        model_name: str,
+        project: Optional["ProjectContext"] = None,
+    ):
+        """Handle the combined tool+model selection from the single-step card."""
+        manager = get_ttadk_manager()
+        project = project or self.project_manager.get_active_project(chat_id)
+        project_id = project.project_id if project else None
+
+        # Set tool first
+        tool = (tool_name or "").strip().lower()
+        model = (model_name or "").strip()
+        if not tool or not model:
+            self.reply_error(message_id, "请选择工具和模型")
+            return
+
+        success = manager.set_tool(tool)
+        if not success:
+            self._reply_ttadk_load_hint(
+                message_id, f"暂时无法切换 TTADK 工具到 {tool}", project_id=project_id
+            )
+            return
+
+        if project:
+            project.ttadk_tool_name = tool
+
+        # Then delegate to the existing model selection handler
+        self.handle_select_ttadk_model(
+            message_id, chat_id, tool, model, project=project, silent=False
+        )
 
     def handle_refresh_ttadk_models(self, message_id: str, chat_id: str, tool_name: str, project_id: Optional[str] = None):
         manager = get_ttadk_manager()

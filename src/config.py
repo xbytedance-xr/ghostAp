@@ -346,6 +346,9 @@ class Settings(BaseSettings):
     thread_programming_enabled: bool = True
     thread_context_ttl: int = 86400 * 7
 
+    # ref-note 关联信息开关（默认关闭，调试时可通过 .env 设置 REF_NOTE_ENABLED=true）
+    ref_note_enabled: bool = False
+
     @property
     def command_blacklist(self) -> list[str]:
         return [cmd.strip() for cmd in self.sandbox_command_blacklist.split(",") if cmd.strip()]

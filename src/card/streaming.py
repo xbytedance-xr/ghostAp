@@ -19,6 +19,7 @@ from lark_oapi.api.im.v1 import (
 from ..config import get_settings
 from .flow_control import FlowControlConfig, FlowControlState, FlowControlStrategy
 from .shared import build_mode_buttons, build_responsive_layout, resolve_title_and_template
+from .styles import THRESHOLDS
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +53,8 @@ class StreamingCard:
 
     # Pagination support
     full_content: str = ""  # Complete content storage
-    visible_chars: int = 20000  # Current visibility limit (default ~20KB)
-    pagination_step: int = 5000  # How much to add on "Load More"
+    visible_chars: int = THRESHOLDS["STREAMING_VISIBLE_CHARS"]  # Current visibility limit
+    pagination_step: int = THRESHOLDS["PAGINATION_STEP"]  # How much to add on "Load More"
     view_start: int = 0  # Window start offset when content is paged
 
     # Typing indicator state

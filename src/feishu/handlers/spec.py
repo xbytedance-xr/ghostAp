@@ -9,6 +9,7 @@ import time
 from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
+from ...card.styles import UI_TEXT
 from ...spec_engine.models import SpecProjectStatus
 from ...spec_engine.task_persistence import list_pending_tasks, load_task_state
 from ...tasking import TaskPriority, TaskSpec
@@ -88,7 +89,7 @@ class SpecHandler(BaseEngineHandler):
         elif text_lower == "/spec_guide":
             self.reply_message(
                 message_id,
-                "📝 请提供引导信息\n\n用法: `/spec_guide <引导描述>`\n\n例如: `/spec_guide 优先考虑性能优化`",
+                UI_TEXT["spec_cmd_guide_usage"],
             )
         elif text_lower.startswith("/spec "):
             requirement = text[6:].strip()
@@ -96,30 +97,7 @@ class SpecHandler(BaseEngineHandler):
         elif text_lower == "/spec":
             self.reply_message(
                 message_id,
-                "📋 **Spec 模式：结构化开发闭环**\n\n"
-                "用法：`/spec <你的需求描述>`\n"
-                "示例：`/spec 实现用户登录注册功能，支持邮箱和手机号`\n\n"
-                "**Spec vs Deep vs Loop**\n"
-                "- Spec：按 `Spec→Plan→Task→Build→Review` 产出结构化产物并迭代收敛\n"
-                "- Deep：一次性深度拆解并执行一个复杂任务（更偏单次冲刺）\n"
-                "- Loop：以验收标准为中心做多轮迭代闭环（更偏持续推进达标）\n\n"
-                "**最小示例（推荐命令组合）**\n"
-                "- Web：`/spec 做一个登录页+登录接口` → `/spec_status` → `/spec_guide 优先补测试与错误提示`\n"
-                "- API：`/spec 新增 /v1/users 查询接口` → `/spec_status`\n"
-                "- 脚本：`/spec 写一个批量重命名脚本，支持dry-run` → `/spec_status`\n\n"
-                "**可用命令**\n"
-                "- `/spec <需求>`：启动\n"
-                "- `/spec_guide <引导>`：补充约束/偏好（下轮生效）\n"
-                "- `/spec_status`：查看进度\n"
-                "- `/spec_history`：查看 spec 文件与循环历史\n"
-                "- `/spec_metrics`：查看目标达成度与指标变化\n"
-                "- `/spec_config`：查看 Spec 长程配置（阈值/保留策略）\n"
-                "- `/spec_export`：导出当前 Spec/Plan 报告\n"
-                "- `/spec_save`：立即落盘保存状态（用于断点续传）\n"
-                "- `/spec_pause`：暂停\n"
-                "- `/spec_resume`：恢复\n"
-                "- `/spec_recover`：列出或恢复异常中断的任务（需指定 Task ID）\n"
-                "- `/stop_spec`：停止\n",
+                UI_TEXT["spec_cmd_help_usage"],
             )
         else:
             self.reply_message(message_id, "❓ 未知的 Spec 命令")

@@ -26,17 +26,17 @@ class TestDeepRendererRefactor(unittest.TestCase):
 
     def test_text_collapsing(self):
         """Verify text collapsing works for Markdown content (typical for Deep mode)"""
-        # Long text with multiple paragraphs/lines
-        long_content = "\n".join([f"Step {i}: Thinking process..." for i in range(20)])
+        # Long text with multiple paragraphs/lines — must exceed COLLAPSE_LINE_THRESHOLD (30)
+        long_content = "\n".join([f"Step {i}: Thinking process..." for i in range(40)])
 
         # Should be collapsed by default
-        collapsed = self.renderer._render_collapsible_section(long_content, total_items=20, expanded=False)
+        collapsed = self.renderer._render_collapsible_section(long_content, total_items=40, expanded=False)
         self.assertIn("📄 内容较长", collapsed)
         self.assertIn("Step 0", collapsed)
-        self.assertNotIn("Step 19", collapsed)
+        self.assertNotIn("Step 39", collapsed)
 
         # Should be full when expanded
-        expanded_content = self.renderer._render_collapsible_section(long_content, total_items=20, expanded=True)
+        expanded_content = self.renderer._render_collapsible_section(long_content, total_items=40, expanded=True)
         self.assertEqual(expanded_content, long_content)
 
 

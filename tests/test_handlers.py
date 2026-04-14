@@ -286,14 +286,17 @@ class TestSystemHandlerRouting:
         project.ttadk_tool_name = "codex"
         project.ttadk_model_name = "gpt-5.2"
         project.ttadk_yolo_enabled = False
+        project.root_path = "/tmp"
 
         tools = [TTADKTool(name="codex", description="Codex")]
         with (
-            patch("src.feishu.handlers.system.CardBuilder.build_ttadk_tool_select_card", return_value=("interactive", "{}")) as mock_build,
+            patch("src.feishu.handlers.system.CardBuilder.build_ttadk_combined_select_card", return_value=("interactive", "{}")) as mock_build,
             patch("src.feishu.handlers.system.get_ttadk_manager") as mock_manager,
         ):
             manager = MagicMock()
             manager.get_tools.return_value = SimpleNamespace(tools=tools, error=None, warnings=[])
+            manager.get_models.return_value = SimpleNamespace(models=[], error=None)
+            manager.get_current_tool.return_value = "codex"
             mock_manager.return_value = manager
 
             h.handle_ttadk_command("m1", "c1", project, force_select=True)
@@ -329,7 +332,7 @@ class TestSystemHandlerRouting:
         h.reply_message.assert_called_once()
         call_args = h.reply_message.call_args
         card_json = call_args[0][1]
-        assert "TTADK 工具选择" in card_json
+        assert "TTADK" in card_json
 
     def test_handle_ttadk_command_no_defaults_shows_tool_card(self):
         ctx = _make_handler_context()
@@ -357,10 +360,10 @@ class TestSystemHandlerRouting:
             patch("src.feishu.handlers.system.get_ttadk_manager", return_value=manager),
             patch("src.feishu.handlers.system.CardBuilder") as mock_builder,
         ):
-            mock_builder.build_ttadk_tool_select_card.return_value = ("interactive", "{}")
+            mock_builder.build_ttadk_combined_select_card.return_value = ("interactive", "{}")
             h.handle_ttadk_command("m1", "c1", project)
 
-        mock_builder.build_ttadk_tool_select_card.assert_called_once()
+        mock_builder.build_ttadk_combined_select_card.assert_called_once()
 
     def test_handle_select_ttadk_tool_no_default_model_shows_card(self):
         ctx = _make_handler_context()
@@ -574,11 +577,11 @@ class TestCocoModeHandler:
         h.mode_manager.is_gemini_mode.return_value = False
         h.mode_manager.is_ttadk_mode.return_value = True
         h._exit_opposite_mode("m1", "c1", project=None)
-        h._opposite_handler.exit_mode.assert_called_once_with("m1", "c1", project=None)
-        h._aiden_handler.exit_mode.assert_called_once_with("m1", "c1", project=None)
+        h._opposite_handler.exit_mode.assert_called_once_with("m1", "c1", project=None, silent=False)
+        h._aiden_handler.exit_mode.assert_called_once_with("m1", "c1", project=None, silent=False)
         h._codex_handler.exit_mode.assert_not_called()
         h._gemini_handler.exit_mode.assert_not_called()
-        h._ttadk_handler.exit_mode.assert_called_once_with("m1", "c1", project=None)
+        h._ttadk_handler.exit_mode.assert_called_once_with("m1", "c1", project=None, silent=False)
 
 
 class TestClaudeModeHandler:
@@ -615,10 +618,10 @@ class TestClaudeModeHandler:
         h.mode_manager.is_gemini_mode.return_value = True
         h.mode_manager.is_ttadk_mode.return_value = False
         h._exit_opposite_mode("m1", "c1", project=None)
-        h._opposite_handler.exit_mode.assert_called_once_with("m1", "c1", project=None)
-        h._aiden_handler.exit_mode.assert_called_once_with("m1", "c1", project=None)
+        h._opposite_handler.exit_mode.assert_called_once_with("m1", "c1", project=None, silent=False)
+        h._aiden_handler.exit_mode.assert_called_once_with("m1", "c1", project=None, silent=False)
         h._codex_handler.exit_mode.assert_not_called()
-        h._gemini_handler.exit_mode.assert_called_once_with("m1", "c1", project=None)
+        h._gemini_handler.exit_mode.assert_called_once_with("m1", "c1", project=None, silent=False)
         h._ttadk_handler.exit_mode.assert_not_called()
 
 
@@ -647,10 +650,10 @@ class TestTTADKModeHandler:
         h.mode_manager.is_codex_mode.return_value = True
         h.mode_manager.is_gemini_mode.return_value = False
         h._exit_opposite_mode("m1", "c1", project=None)
-        h._coco_handler.exit_mode.assert_called_once_with("m1", "c1", project=None)
+        h._coco_handler.exit_mode.assert_called_once_with("m1", "c1", project=None, silent=False)
         h._claude_handler.exit_mode.assert_not_called()
-        h._aiden_handler.exit_mode.assert_called_once_with("m1", "c1", project=None)
-        h._codex_handler.exit_mode.assert_called_once_with("m1", "c1", project=None)
+        h._aiden_handler.exit_mode.assert_called_once_with("m1", "c1", project=None, silent=False)
+        h._codex_handler.exit_mode.assert_called_once_with("m1", "c1", project=None, silent=False)
         h._gemini_handler.exit_mode.assert_not_called()
 
     def test_set_mode_on_project_activate_does_not_hardcode_other_modes(self):

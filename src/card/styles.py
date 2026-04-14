@@ -111,6 +111,34 @@ UI_TEXT = {
     "loop_task_exists": "⚠️ 当前项目已有 Loop 任务在执行中\n\n发送 `/loop_status` 查看进度\n发送 `/stop_loop` 停止任务",
     "loop_no_task_running": "⚠️ 当前没有正在运行的 Loop 任务\n\n请先使用 `/loop <需求>` 启动任务",
     "loop_status_empty": "当前没有 Loop 任务\n\n发送 `/loop 你的需求` 开始迭代式开发",
+    # Spec Engine
+    "spec_cmd_guide_usage": "📝 请提供引导信息\n\n用法: `/spec_guide <引导描述>`\n\n例如: `/spec_guide 优先考虑性能优化`",
+    "spec_cmd_help_usage": (
+        "📋 **Spec 模式：结构化开发闭环**\n\n"
+        "用法：`/spec <你的需求描述>`\n"
+        "示例：`/spec 实现用户登录注册功能，支持邮箱和手机号`\n\n"
+        "**Spec vs Deep vs Loop**\n"
+        "- Spec：按 `Spec→Plan→Task→Build→Review` 产出结构化产物并迭代收敛\n"
+        "- Deep：一次性深度拆解并执行一个复杂任务（更偏单次冲刺）\n"
+        "- Loop：以验收标准为中心做多轮迭代闭环（更偏持续推进达标）\n\n"
+        "**最小示例（推荐命令组合）**\n"
+        "- Web：`/spec 做一个登录页+登录接口` → `/spec_status` → `/spec_guide 优先补测试与错误提示`\n"
+        "- API：`/spec 新增 /v1/users 查询接口` → `/spec_status`\n"
+        "- 脚本：`/spec 写一个批量重命名脚本，支持dry-run` → `/spec_status`\n\n"
+        "**可用命令**\n"
+        "- `/spec <需求>`：启动\n"
+        "- `/spec_guide <引导>`：补充约束/偏好（下轮生效）\n"
+        "- `/spec_status`：查看进度\n"
+        "- `/spec_history`：查看 spec 文件与循环历史\n"
+        "- `/spec_metrics`：查看目标达成度与指标变化\n"
+        "- `/spec_config`：查看 Spec 长程配置（阈值/保留策略）\n"
+        "- `/spec_export`：导出当前 Spec/Plan 报告\n"
+        "- `/spec_save`：立即落盘保存状态（用于断点续传）\n"
+        "- `/spec_pause`：暂停\n"
+        "- `/spec_resume`：恢复\n"
+        "- `/spec_recover`：列出或恢复异常中断的任务（需指定 Task ID）\n"
+        "- `/stop_spec`：停止\n"
+    ),
     # Generic Engine Lifecycle
     "engine_no_active_task": "当前没有正在执行的 {engine_prefix} 任务",
     "engine_multi_resume_conflict": "⚠️ 有多个项目存在可恢复的 {engine_prefix} 任务，请查看状态后切换项目再恢复",
@@ -154,4 +182,65 @@ UI_TEXT = {
     "project_board_empty": "当前没有活动项目\n\n发送 `/new 项目名 [路径]` 创建新项目",
     "project_board_active_section": "**🟢 当前活动项目**",
     "project_board_other_section": "**⚪ 其他项目**",
+    # ── Programming Mode Prompts (centralized) ──
+    "mode_enter_thread_msg": "{emoji} 已开启{name}编程模式\n\n📝 发送你的编程需求，将自动创建编程话题\n\n说「退出模式」或发送 `/exit` 退出",
+    "mode_enter_msg": "{emoji} 已进入{name}编程模式\n\n现在可以用自然语言描述你的需求\n\n说「退出模式」或发送 `/exit` 退出",
+    "mode_enter_no_project_msg": "{emoji} 已进入 {name} 编程模式\n\n现在可以用自然语言描述你的需求\n\n说「退出模式」或发送 `/exit` 退出",
+    "mode_already_in_thread_msg": "已开启{name}编程模式\n\n直接发送你的编程需求，将自动创建编程话题\n\n说「退出模式」或发送 /exit 退出",
+    "mode_already_in_msg": "已经在{name}编程模式中\n\n{info}\n\n说「退出模式」或发送 /exit 退出",
+    "mode_exit_msg": "👋 已退出{name}编程模式\n\n会话已保存，下次可以恢复\n\n当前为 🧠 智能模式",
+    "mode_exit_pending_msg": "👋 已退出{name}编程模式\n\n当前为 🧠 智能模式",
+    "mode_not_in_msg": "当前不在 {name} 模式中",
+    "mode_thinking_msg": "{emoji} {name} 正在思考...",
+    "mode_resume_msg": "🔄 已恢复 {name} 会话\n\n• 会话 ID: `{session_id}`\n• 历史对话: {query_count} 条\n\n{hint}",
+    "mode_resume_hint_default": "继续之前的对话吧！",
+    "mode_resume_hint_ttadk": "当前模式：🎮 TTADK（可点「切换TTADK工具」，或发送 `/exit` 退回智能模式）",
+    "mode_session_fail_msg": "{name} 会话启动失败，请重新发送 /{cmd} 开始",
+    "ttadk_extra_hint": "\n\n可点击「切换TTADK工具」重新选择工具链",
+    # ── Deep Engine Card Prompts ──
+    "deep_error_no_detail": "发生错误 (无详细信息)",
+    "deep_error_expand_hint": '\n> (更多错误详情请点击下方"展开日志"按钮)...',
+    "deep_executing_placeholder": "正在执行...",
+    "deep_content_expand_hint": '\n> (更多内容请点击下方"展开日志"按钮)',
+    "deep_folded_lines_hint": "...(已折叠 {count} 行)...\n",
+    "deep_ac_expand_hint": '\n> (更多验收标准请点击"展开验收标准"按钮)...',
+    # ── Shell Truncation ──
+    "shell_truncated": "\n...(已截断)...",
+    # ── ws_client Prompts ──
+    "ws_session_fail_msg": "⚠️ {name} 会话启动失败，已退回智能模式，请重新发送 /{cmd} 重试",
+    "ws_thread_pending_msg": "📝 当前已开启{name}编程模式\n\n请发送你的编程需求，将自动创建编程话题",
+    "ws_topic_hint_msg": "💡 当前话题已在编程模式中，直接发送你的需求即可\n\n如需切换工具，请在主对话中发送对应命令创建新话题",
+    "ws_exit_deferred_msg": "✅ 已收到 /exit，将在当前任务完成后退出（不中断执行）",
+    "ws_active_topic_msg": "💡 你有一个活跃的 {name} 编程话题正在进行中\n\n请在话题中回复继续对话\n如需新建编程环境，请先发送对应的编程模式命令（如 /coco）",
+}
+
+# ──────────────────────────────────────────────────────────────
+# Centralized Thresholds — single source of truth for all
+# truncation / folding / pagination limits across the project.
+# ──────────────────────────────────────────────────────────────
+THRESHOLDS = {
+    # Card content element max characters (core.py _build_content_element)
+    "CONTENT_MAX_CHARS": 25000,
+    # Deep/Loop/Spec engine card folding — compact mode line threshold
+    "COMPACT_LINE_THRESHOLD": 15,
+    # Deep/Loop/Spec engine card folding — full mode line threshold
+    "FULL_LINE_THRESHOLD": 50,
+    # Acceptance criteria folding line threshold
+    "AC_LINE_THRESHOLD": 10,
+    # Compact mode long-line character fallback
+    "COMPACT_CHAR_FALLBACK": 1500,
+    # Shell command stdout max characters
+    "SHELL_STDOUT_MAX": 4000,
+    # Shell command stderr max characters
+    "SHELL_STDERR_MAX": 2000,
+    # BaseRenderer collapsible section item threshold
+    "COLLAPSE_ITEM_THRESHOLD": 8,
+    # BaseRenderer collapsible section long-text line threshold
+    "COLLAPSE_LINE_THRESHOLD": 30,
+    # BaseRenderer collapsible section display lines (when folded)
+    "COLLAPSE_DISPLAY_LINES": 15,
+    # Streaming card default visible characters
+    "STREAMING_VISIBLE_CHARS": 25000,
+    # Streaming card pagination step
+    "PAGINATION_STEP": 5000,
 }

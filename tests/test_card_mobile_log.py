@@ -103,8 +103,8 @@ class TestCardMobileLog:
         assert "deep_mode_full" in json_str or "deep_expand" in json_str
 
     def test_compact_error_log_truncation(self):
-        """Test that error logs in compact mode show enough context (first 5 lines)."""
-        error_lines = [f"Error line {i}" for i in range(20)]
+        """Test that error logs in compact mode show enough context (first N lines)."""
+        error_lines = [f"Error line {i}" for i in range(40)]
         error_log = "\n".join(error_lines)
 
         state = EngineCardState(
@@ -126,5 +126,5 @@ class TestCardMobileLog:
         # Should show first few lines of error
         assert "Error line 0" in json_str
         assert "Error line 4" in json_str
-        # Should truncate later lines
-        assert "Error line 10" not in json_str
+        # Should truncate later lines (COMPACT_LINE_THRESHOLD is 15)
+        assert "Error line 25" not in json_str

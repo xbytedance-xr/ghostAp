@@ -18,8 +18,8 @@ class TestCardDeepMobileOpt:
 
     def test_log_truncation_full_mode_collapsed(self, mock_project):
         """Test that logs are truncated in Full mode when collapsed (default)."""
-        # Create 20 lines of content
-        content = "\n".join([f"Log line {i}" for i in range(20)])
+        # Create 55 lines of content (> FULL_LINE_THRESHOLD=50)
+        content = "\n".join([f"Log line {i}" for i in range(55)])
 
         _, card_json = CardBuilder.build_engine_card(
             project=mock_project,
@@ -41,13 +41,13 @@ class TestCardDeepMobileOpt:
         assert content_element is not None
         assert "..." in content_element["content"]
         assert "(已折叠" in content_element["content"]
-        # Ensure only last 10 lines are shown (approx check)
-        assert "Log line 19" in content_element["content"]
+        # Ensure only last N lines are shown (approx check)
+        assert "Log line 54" in content_element["content"]
         assert "Log line 0" not in content_element["content"]
 
     def test_log_truncation_full_mode_expanded(self, mock_project):
         """Test that logs are NOT truncated in Full mode when expanded."""
-        content = "\n".join([f"Log line {i}" for i in range(20)])
+        content = "\n".join([f"Log line {i}" for i in range(55)])
 
         _, card_json = CardBuilder.build_engine_card(
             project=mock_project,
@@ -68,12 +68,12 @@ class TestCardDeepMobileOpt:
         assert content_element is not None
         assert "..." not in content_element["content"]
         assert "Log line 0" in content_element["content"]
-        assert "Log line 19" in content_element["content"]
+        assert "Log line 54" in content_element["content"]
 
     def test_compact_mode_truncation(self, mock_project):
         """Test that logs are heavily truncated in Compact mode."""
-        # Create very long single line content
-        content = "A" * 600
+        # Create very long single line content (> COMPACT_CHAR_FALLBACK=1500)
+        content = "A" * 2000
 
         _, card_json = CardBuilder.build_engine_card(
             project=mock_project,
@@ -90,8 +90,8 @@ class TestCardDeepMobileOpt:
                 break
 
         assert content_element is not None
-        # It should truncate, but maybe to 500 chars fallback if it's one long line
-        assert len(content_element["content"]) < 600
+        # It should truncate, but maybe to COMPACT_CHAR_FALLBACK chars if it's one long line
+        assert len(content_element["content"]) < 2000
         assert "..." in content_element["content"]
 
     def test_status_color_mapping(self, mock_project):
@@ -144,7 +144,7 @@ class TestCardDeepMobileOpt:
 
     def test_mode_switch_buttons(self, mock_project):
         """Test presence of mode switch and expand/collapse buttons."""
-        content = "\n".join([f"Line {i}" for i in range(15)])
+        content = "\n".join([f"Line {i}" for i in range(55)])
 
         # Case 1: Full Mode, Not Expanded -> Should show Expand button and Switch to Compact button
         _, card_json = CardBuilder.build_engine_card(

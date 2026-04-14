@@ -209,7 +209,9 @@ class TestCardOptimization:
 
     def test_error_visibility_compact(self):
         """Verify error details are shown in compact mode."""
-        error_msg = "Error line 1\nError line 2\nError line 3\nError line 4\nError line 5\nError line 6"
+        # Create more lines than COMPACT_LINE_THRESHOLD (15) to trigger truncation
+        error_lines = [f"Error line {i}" for i in range(1, 25)]
+        error_msg = "\n".join(error_lines)
 
         # Compact mode + Error status
         _, card_json = CardBuilder.build_engine_card(
@@ -231,13 +233,13 @@ class TestCardOptimization:
                 break
 
         assert content_element
-        # Should show first 5 lines
+        # Should show first N lines
         assert "Error line 5" in content_element["content"]
-        # Should show truncation hint for >5 lines
-        assert "更多错误详情请点击下方“展开日志”按钮" in content_element["content"]
+        # Should show truncation hint for >COMPACT_LINE_THRESHOLD lines
+        assert '\u66f4\u591a\u9519\u8bef\u8be6\u60c5\u8bf7\u70b9\u51fb\u4e0b\u65b9' in content_element["content"]
 
         # Compact mode + Normal status
-        normal_msg = "Normal line 1\n" + "a" * 600
+        normal_msg = "Normal line 1\n" + "a" * 2000
         _, card_json = CardBuilder.build_engine_card(
             project=None,
             state=EngineCardState(title="Task Running", content=normal_msg, engine_name="Coco", compact=True),
@@ -253,8 +255,8 @@ class TestCardOptimization:
                 break
 
         assert content_element
-        # Should be truncated to last 500 chars (approx)
-        assert len(content_element["content"]) <= 550 + len("**Title**\n\n")  # rough check
+        # Should be truncated to last COMPACT_CHAR_FALLBACK (1500) chars (approx)
+        assert len(content_element["content"]) <= 1550 + len("**Title**\n\n")  # rough check
 
     def test_control_buttons_layout_merging(self):
         """Verify that Pause and Stop buttons are merged into the same row (ColumnSet)."""

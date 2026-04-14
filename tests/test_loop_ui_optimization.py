@@ -36,24 +36,26 @@ class TestLoopUIOptimization(unittest.TestCase):
         # Mock inputs
         # _render_collapsible_section signature: (content, total_items, expanded, completed_count=0)
 
-        # Scenario 1: Few items (<= 3), no collapse
+        # Scenario 1: Few items (<= COLLAPSE_ITEM_THRESHOLD=8), no collapse
         criteria_section = "- ✅ AC1\n- ✅ AC2\n- ⬜️ AC3"
         result = self.renderer._render_collapsible_section(criteria_section, 3, False, completed_count=2)
         self.assertEqual(result, criteria_section)
 
-        # Scenario 2: Many items (> 3), collapse enabled (expand_ac=False)
+        # Scenario 2: Many items (> COLLAPSE_ITEM_THRESHOLD=8), collapse enabled (expand_ac=False)
         # Should hide ✅ items
-        criteria_section = "- ✅ AC1\n- ✅ AC2\n- ✅ AC3\n- ⬜️ AC4"
-        result = self.renderer._render_collapsible_section(criteria_section, 4, False, completed_count=3)
+        completed_lines = [f"- ✅ AC{i}" for i in range(1, 9)]
+        incomplete_line = "- ⬜️ AC9"
+        criteria_section = "\n".join(completed_lines + [incomplete_line])
+        result = self.renderer._render_collapsible_section(criteria_section, 9, False, completed_count=8)
 
         # Expect summary + incomplete items
-        self.assertIn("✅ 已通过 3 项", result)
-        self.assertIn("⬜️ AC4", result)
+        self.assertIn("✅ 已通过 8 项", result)
+        self.assertIn("⬜️ AC9", result)
         self.assertNotIn("- ✅ AC1", result)
 
         # Scenario 3: Many items, expanded (expand_ac=True)
         # Should show all
-        result = self.renderer._render_collapsible_section(criteria_section, 4, True, completed_count=3)
+        result = self.renderer._render_collapsible_section(criteria_section, 9, True, completed_count=8)
         self.assertEqual(result, criteria_section)
 
     def test_handler_toggle_ac(self):

@@ -532,6 +532,8 @@ class BaseHandler:
     def format_ref_note(
         self, origin_message_id: Optional[str], request_id: Optional[str], run_id: Optional[str] = None
     ) -> str:
+        if not self.settings.ref_note_enabled:
+            return ""
         origin_message_id = origin_message_id or ""
         request_id = request_id or ""
         run_id = run_id or ""

@@ -1,6 +1,8 @@
 import json
 from typing import Optional
 
+from src.card.styles import THRESHOLDS
+
 
 class FeishuMessageFormatter:
     @staticmethod
@@ -51,15 +53,15 @@ class FeishuMessageFormatter:
         else:
             if stdout:
                 stdout_clean = stdout.strip()
-                if len(stdout_clean) > 2000:
-                    stdout_clean = stdout_clean[:2000] + "\n... (输出已截断)"
+                if len(stdout_clean) > THRESHOLDS["SHELL_STDOUT_MAX"]:
+                    stdout_clean = stdout_clean[:THRESHOLDS["SHELL_STDOUT_MAX"]] + "\n... (输出已截断)"
                 md_parts.append("**📤 输出**:")
                 md_parts.append(f"```BASH\n{stdout_clean}\n```")
 
             if stderr:
                 stderr_clean = stderr.strip()
-                if len(stderr_clean) > 1000:
-                    stderr_clean = stderr_clean[:1000] + "\n... (已截断)"
+                if len(stderr_clean) > THRESHOLDS["SHELL_STDERR_MAX"]:
+                    stderr_clean = stderr_clean[:THRESHOLDS["SHELL_STDERR_MAX"]] + "\n... (已截断)"
                 md_parts.append("**⚠️ 错误输出**:")
                 md_parts.append(f"```BASH\n{stderr_clean}\n```")
 

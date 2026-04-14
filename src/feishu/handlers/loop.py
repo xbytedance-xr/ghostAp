@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
 from ...card.models import EngineCardState
+from ...card.styles import UI_TEXT
 from ...loop_engine.models import LoopProjectStatus
 from ...tasking import TaskPriority, TaskSpec
 from ...utils.text import generate_task_id
@@ -73,7 +74,7 @@ class LoopHandler(BaseEngineHandler):
         elif text_lower == "/loop_guide":
             self.reply_error(
                 message_id,
-                "请提供引导信息\n\n用法: `/loop_guide <引导描述>`\n\n例如: `/loop_guide 优先实现邮箱注册功能`",
+                UI_TEXT["loop_cmd_guide_usage"],
                 title="参数错误",
             )
         elif text_lower.startswith("/loop "):
@@ -82,7 +83,7 @@ class LoopHandler(BaseEngineHandler):
         elif text_lower == "/loop":
             self.reply_error(
                 message_id,
-                "请提供产品诉求\n\n用法: `/loop <你的需求描述>`\n\n例如: `/loop 实现用户登录注册功能，支持邮箱和手机号`\n\n可用命令:\n• `/loop <需求>` - 启动 Loop 模式\n• `/loop_guide <引导>` - 注入引导信息\n• `/loop_status` - 查看进度\n• `/loop_pause` - 暂停迭代\n• `/loop_resume` - 恢复迭代\n• `/stop_loop` - 停止 Loop",
+                UI_TEXT["loop_cmd_help_usage"],
                 title="参数错误",
             )
         else:

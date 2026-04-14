@@ -10,6 +10,7 @@ from src.utils.errors import GhostAPError
 from ..shared import (
     build_responsive_layout,
 )
+from ..styles import THRESHOLDS, UI_TEXT
 from .core import CoreBuilder
 
 if TYPE_CHECKING:
@@ -77,12 +78,12 @@ class SystemBuilder:
                 }
             )
         elif result.stdout or result.stderr:
-            MAX_OUTPUT_LEN = 2000
+            MAX_OUTPUT_LEN = THRESHOLDS["SHELL_STDOUT_MAX"]
 
             if result.stdout:
                 stdout_content = result.stdout
                 if len(stdout_content) > MAX_OUTPUT_LEN:
-                    stdout_content = stdout_content[:MAX_OUTPUT_LEN] + "\n...(truncated)..."
+                    stdout_content = stdout_content[:MAX_OUTPUT_LEN] + UI_TEXT["shell_truncated"]
                 elements.append(
                     {
                         "tag": "markdown",
@@ -91,8 +92,8 @@ class SystemBuilder:
                 )
             if result.stderr:
                 stderr_content = result.stderr
-                if len(stderr_content) > MAX_OUTPUT_LEN:
-                    stderr_content = stderr_content[:MAX_OUTPUT_LEN] + "\n...(truncated)..."
+                if len(stderr_content) > THRESHOLDS["SHELL_STDERR_MAX"]:
+                    stderr_content = stderr_content[:THRESHOLDS["SHELL_STDERR_MAX"]] + UI_TEXT["shell_truncated"]
                 elements.append(
                     {
                         "tag": "markdown",
@@ -243,6 +244,103 @@ class SystemBuilder:
         )
 
         card = CoreBuilder._wrap_card(f"🤖 {tool_name} 模型选择", "blue", elements)
+        return "interactive", json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
+    def build_ttadk_combined_select_card(
+        tools: list,
+        models_by_tool: dict,
+        project_id: Optional[str] = None,
+        yolo_enabled: bool = False,
+    ) -> tuple[str, str]:
+        """Build a combined TTADK tool + model selection card (single step)."""
+        elements = [{"tag": "markdown", "content": "请选择要使用的 TTADK 工具和模型："}]
+
+        elements.extend(
+            build_responsive_layout(
+                [SystemBuilder._build_ttadk_yolo_toggle_button(yolo_enabled, project_id, "combined_select")]
+            )
+        )
+        elements.append({"tag": "hr"})
+
+        # Tool selection
+        tool_options = []
+        for tool in tools:
+            btn_text = f"{tool.name}"
+            if tool.description:
+                btn_text += f" ({tool.description})"
+            tool_options.append(
+                {
+                    "text": {"tag": "plain_text", "content": btn_text},
+                    "value": tool.name,
+                }
+            )
+
+        elements.append({"tag": "markdown", "content": "**🔧 工具**"})
+        elements.append(
+            {
+                "tag": "select_static",
+                "placeholder": {"tag": "plain_text", "content": "请选择工具..."},
+                "value": {
+                    "action": "select_ttadk_combined_tool",
+                    "project_id": project_id,
+                },
+                "options": tool_options,
+            }
+        )
+
+        # Model selection per tool (show first tool's models by default)
+        if tools and models_by_tool:
+            first_tool = tools[0].name
+            models = models_by_tool.get(first_tool, [])
+            if models:
+                elements.append({"tag": "hr"})
+                elements.append({"tag": "markdown", "content": f"**🤖 模型** (工具: {first_tool})"})
+
+                model_options = []
+                for model in models:
+                    btn_text = f"{model.name}"
+                    if model.description:
+                        btn_text += f" ({model.description})"
+                    model_options.append(
+                        {
+                            "text": {"tag": "plain_text", "content": btn_text},
+                            "value": model.name,
+                        }
+                    )
+
+                elements.append(
+                    {
+                        "tag": "select_static",
+                        "placeholder": {"tag": "plain_text", "content": "请选择模型..."},
+                        "value": {
+                            "action": "select_ttadk_combined",
+                            "tool_name": first_tool,
+                            "project_id": project_id,
+                        },
+                        "options": model_options,
+                    }
+                )
+
+        # Refresh button
+        elements.append({"tag": "hr"})
+        elements.extend(
+            build_responsive_layout(
+                [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "🔄 刷新模型列表"},
+                        "type": "primary",
+                        "value": {
+                            "action": "refresh_ttadk_models",
+                            "project_id": project_id,
+                        },
+                    }
+                ]
+            )
+        )
+
+        card = CoreBuilder._wrap_card("🔧 TTADK 工具与模型选择", "blue", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
 
     @staticmethod

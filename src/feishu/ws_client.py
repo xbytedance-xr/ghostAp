@@ -40,6 +40,7 @@ from ..acp.manager import ACPSessionManager
 from ..agent.intent_recognizer import IntentRecognizer, IntentResult, IntentType, TaskStep
 from ..card import CardBuilder
 from ..card.streaming import StreamingCardManager
+from ..card.styles import UI_TEXT
 from ..config import get_settings
 from ..deep_engine import DeepEngineManager, ProgressReporter
 from ..loop_engine import LoopEngineManager, LoopReporter
@@ -456,6 +457,16 @@ class FeishuWSClient:
         self._register_action(
             lambda mid, cid, pid, val: self._handle_refresh_ttadk_models(mid, cid, val.get("tool_name", ""), pid),
             exact="refresh_ttadk_models",
+        )
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_select_ttadk_combined(
+                mid,
+                cid,
+                val.get("tool_name", ""),
+                val.get("_option") or val.get("model_name", ""),
+                self._project_manager.get_project(pid) if pid else None,
+            ),
+            exact="select_ttadk_combined",
         )
         self._register_action(
             lambda mid, cid, pid, val: self._handle_ttadk_command(
@@ -1075,6 +1086,7 @@ class FeishuWSClient:
         "_handle_select_ttadk_model": ("_system_handler", "handle_select_ttadk_model"),
         "_handle_refresh_ttadk_models": ("_system_handler", "handle_refresh_ttadk_models"),
         "_handle_toggle_ttadk_yolo": ("_system_handler", "handle_toggle_ttadk_yolo"),
+        "_handle_select_ttadk_combined": ("_system_handler", "handle_select_ttadk_combined"),
         "_handle_acp_command": ("_system_handler", "handle_acp_command"),
         "_handle_select_acp_tool": ("_system_handler", "handle_select_acp_tool"),
         "_handle_select_acp_model": ("_system_handler", "handle_select_acp_model"),
@@ -1799,7 +1811,7 @@ class FeishuWSClient:
                     handler._set_mode_on_project(project, False)
                 self._reply_message(
                     message_id,
-                    f"⚠️ {mode_name} 会话启动失败，已退回智能模式，请重新发送 /{mode_name.lower()} 重试",
+                    UI_TEXT["ws_session_fail_msg"].format(name=mode_name, cmd=mode_name.lower()),
                 )
         except Exception as e:
             log_exception(logger, f"{mode_name} 话题执行异常", e)
@@ -1838,7 +1850,7 @@ class FeishuWSClient:
                 if pending:
                     self._reply_message(
                         message_id,
-                        f"📝 当前已开启{handler.mode_name}编程模式\n\n请发送你的编程需求，将自动创建编程话题",
+                        UI_TEXT["ws_thread_pending_msg"].format(name=handler.mode_name),
                     )
                     return
 
@@ -1870,14 +1882,14 @@ class FeishuWSClient:
                 _pid = project.project_id if project else None
                 if self._should_defer_exit(chat_id=chat_id, project_id=_pid):
                     self._request_deferred_exit(message_id=message_id, chat_id=chat_id, project_id=_pid)
-                    self._reply_message(message_id, "✅ 已收到 /exit，将在当前任务完成后退出（不中断执行）")
+                    self._reply_message(message_id, UI_TEXT["ws_exit_deferred_msg"])
                     return
                 self._exit_current_mode(message_id, chat_id, project=project)
                 return
             if self._is_programming_entry_command(text):
                 self._reply_message(
                     message_id,
-                    f"💡 当前话题已在编程模式中，直接发送你的需求即可\n\n如需切换工具，请在主对话中发送对应命令创建新话题",
+                    UI_TEXT["ws_topic_hint_msg"],
                 )
                 return
             if self._is_deep_command(text) or self._is_loop_command(text) or self._is_spec_command(text):
@@ -2256,7 +2268,7 @@ class FeishuWSClient:
                 self._add_reaction(message_id, EmojiReaction.on_coco_mode())
                 if self._should_defer_exit(chat_id=chat_id, project_id=_pid):
                     self._request_deferred_exit(message_id=message_id, chat_id=chat_id, project_id=_pid)
-                    self._reply_message(message_id, "✅ 已收到 /exit，将在当前任务完成后退出（不中断执行）")
+                    self._reply_message(message_id, UI_TEXT["ws_exit_deferred_msg"])
                     return
                 self._exit_current_mode(message_id, chat_id, project=project)
                 return
@@ -2383,9 +2395,7 @@ class FeishuWSClient:
                     mode_display = active_thread.mode.upper() if active_thread.mode else "编程"
                     self._reply_message(
                         message_id,
-                        f"💡 你有一个活跃的 {mode_display} 编程话题正在进行中\n\n"
-                        "请在话题中回复继续对话\n"
-                        "如需新建编程环境，请先发送对应的编程模式命令（如 /coco）",
+                        UI_TEXT["ws_active_topic_msg"].format(name=mode_display),
                     )
                     return
             self._reply_message(message_id, "🤔 无法理解你的意图")

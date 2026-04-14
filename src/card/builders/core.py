@@ -6,7 +6,7 @@ from src.project.context import ProjectContext
 from ..shared import (
     build_mode_buttons,
 )
-from ..styles import UI_TEXT
+from ..styles import THRESHOLDS, UI_TEXT
 
 
 class CoreBuilder:
@@ -54,7 +54,7 @@ class CoreBuilder:
         return result
 
     @staticmethod
-    def _build_content_element(content: str, with_title: Optional[str] = None, max_chars: int = 4000) -> dict:
+    def _build_content_element(content: str, with_title: Optional[str] = None, max_chars: int = THRESHOLDS["CONTENT_MAX_CHARS"]) -> dict:
         full_content = f"**{with_title}**\n\n{content}" if with_title else content
 
         # Smart truncation to prevent API errors and render issues

@@ -9,7 +9,7 @@ from ..shared import (
     build_responsive_layout,
     get_theme,
 )
-from ..styles import BUTTON_CONFIG, ENGINE_STYLES
+from ..styles import BUTTON_CONFIG, ENGINE_STYLES, THRESHOLDS, UI_TEXT
 from .core import CoreBuilder
 
 
@@ -100,7 +100,7 @@ class DeepBuilder:
 
         # View buttons
         lines = (state.content or "").split("\n")
-        threshold = 5 if state.compact else 10
+        threshold = THRESHOLDS["COMPACT_LINE_THRESHOLD"] if state.compact else THRESHOLDS["FULL_LINE_THRESHOLD"]
         if len(lines) > threshold:
             action_key = "collapse" if state.expanded else "expand"
             buttons.append(DeepBuilder._create_button(action_key, state))
@@ -145,7 +145,7 @@ class DeepBuilder:
         if not state.extra_buttons:
             # Log Expand/Collapse
             lines = (state.content or "").split("\n")
-            threshold = 5 if state.compact else 10
+            threshold = THRESHOLDS["COMPACT_LINE_THRESHOLD"] if state.compact else THRESHOLDS["FULL_LINE_THRESHOLD"]
             if len(lines) > threshold:
                 action_key = "collapse" if state.expanded else "expand"
                 other_buttons.append(DeepBuilder._create_button(action_key, state))
@@ -153,7 +153,7 @@ class DeepBuilder:
             # AC Expand/Collapse
             if state.criteria_section:
                 ac_lines = state.criteria_section.split("\n")
-                if len(ac_lines) > 3:
+                if len(ac_lines) > THRESHOLDS["AC_LINE_THRESHOLD"]:
                     ac_action_key = "collapse_ac" if state.expand_ac else "expand_ac"
                     other_buttons.append(DeepBuilder._create_button(ac_action_key, state))
 
@@ -280,31 +280,30 @@ class DeepBuilder:
 
             if is_error:
                 if not display_content:
-                    display_content = "发生错误 (无详细信息)"
+                    display_content = UI_TEXT["deep_error_no_detail"]
                 else:
                     lines = display_content.split("\n")
-                    # Show first 5 lines for errors instead of hard char limit
-                    if len(lines) > 5:
-                        display_content = "\n".join(lines[:5]) + "\n> (更多错误详情请点击下方“展开日志”按钮)..."
+                    # Show first N lines for errors
+                    if len(lines) > THRESHOLDS["COMPACT_LINE_THRESHOLD"]:
+                        display_content = "\n".join(lines[:THRESHOLDS["COMPACT_LINE_THRESHOLD"]]) + UI_TEXT["deep_error_expand_hint"]
             else:
-                # Compact mode: show last 5 lines for running/paused to avoid scroll trap
+                # Compact mode: show last N lines for running/paused to avoid scroll trap
                 if not display_content:
-                    display_content = "正在执行..."
+                    display_content = UI_TEXT["deep_executing_placeholder"]
                 else:
                     lines = display_content.split("\n")
-                    if len(lines) > 5:
-                        display_content = "...\n" + "\n".join(lines[-5:]) + "\n> (更多内容请点击下方“展开日志”按钮)"
-                    elif len(display_content) > 500:
+                    if len(lines) > THRESHOLDS["COMPACT_LINE_THRESHOLD"]:
+                        display_content = "...\n" + "\n".join(lines[-THRESHOLDS["COMPACT_LINE_THRESHOLD"]:]) + UI_TEXT["deep_content_expand_hint"]
+                    elif len(display_content) > THRESHOLDS["COMPACT_CHAR_FALLBACK"]:
                         # Fallback for very long lines
-                        display_content = "..." + display_content[-500:]
+                        display_content = "..." + display_content[-THRESHOLDS["COMPACT_CHAR_FALLBACK"]:]
         else:
             # Full mode: Line-based truncation if not expanded
             if display_content:
                 lines = display_content.split("\n")
-                MAX_LINES = 10
-                if len(lines) > MAX_LINES:
-                    display_content = "...(已折叠 {} 行)...\n".format(len(lines) - MAX_LINES) + "\n".join(
-                        lines[-MAX_LINES:]
+                if len(lines) > THRESHOLDS["FULL_LINE_THRESHOLD"]:
+                    display_content = UI_TEXT["deep_folded_lines_hint"].format(count=len(lines) - THRESHOLDS["FULL_LINE_THRESHOLD"]) + "\n".join(
+                        lines[-THRESHOLDS["FULL_LINE_THRESHOLD"]:]
                     )
 
         elements.append(CoreBuilder._build_content_element(display_content))
@@ -317,9 +316,8 @@ class DeepBuilder:
             display_ac = state.criteria_section
             if not state.expand_ac:
                 ac_lines = display_ac.split("\n")
-                MAX_AC_LINES = 3
-                if len(ac_lines) > MAX_AC_LINES:
-                    display_ac = "\n".join(ac_lines[:MAX_AC_LINES]) + "\n> (更多验收标准请点击“展开验收标准”按钮)..."
+                if len(ac_lines) > THRESHOLDS["AC_LINE_THRESHOLD"]:
+                    display_ac = "\n".join(ac_lines[:THRESHOLDS["AC_LINE_THRESHOLD"]]) + UI_TEXT["deep_ac_expand_hint"]
 
             elements.append({"tag": "markdown", "content": display_ac})
 
@@ -355,7 +353,7 @@ class DeepBuilder:
                 if not state.extra_buttons:
                     # Also add expand/collapse if there is enough content
                     lines = (state.content or "").split("\n")
-                    threshold = 5 if state.compact else 10
+                    threshold = THRESHOLDS["COMPACT_LINE_THRESHOLD"] if state.compact else THRESHOLDS["FULL_LINE_THRESHOLD"]
                     if len(lines) > threshold:
                         action_key = "collapse" if state.expanded else "expand"
                         expand_btn = apply_compact_style(DeepBuilder._create_button(action_key, state))

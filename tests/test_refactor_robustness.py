@@ -12,8 +12,8 @@ class TestRefactorRobustness(unittest.TestCase):
         """Test that long shell output is truncated in the card."""
         from src.sandbox.executor import ExecutionResult
 
-        # Create a long output string (> 2000 chars)
-        long_output = "a" * 3000
+        # Create a long output string (> SHELL_STDOUT_MAX=4000 chars)
+        long_output = "a" * 5000
         result = ExecutionResult(return_code=0, stdout=long_output, stderr="", success=True)
 
         msg_type, content_json = SystemBuilder.build_shell_result_card("echo long", result)
@@ -24,12 +24,12 @@ class TestRefactorRobustness(unittest.TestCase):
         for element in content["body"]["elements"]:
             if element["tag"] == "markdown" and "```BASH" in element["content"]:
                 text = element["content"]
-                if "truncated" in text:
+                if "\u5df2\u622a\u65ad" in text:  # 已截断
                     found_output = True
                     # Check that it's actually shorter than the original
-                    self.assertLess(len(text), 3000)
+                    self.assertLess(len(text), 5000)
                     # Check for truncation marker
-                    self.assertIn("...(truncated)...", text)
+                    self.assertIn("...(\u5df2\u622a\u65ad)...", text)  # ...(已截断)...
 
         self.assertTrue(found_output, "Did not find truncated output in card")
 

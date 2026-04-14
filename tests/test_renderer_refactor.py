@@ -31,37 +31,39 @@ class TestRendererRefactor(unittest.TestCase):
 
     def test_base_render_collapsible_section_ac(self):
         """Test BaseRenderer._render_collapsible_section with AC list"""
-        # Collapse logic: > 3 items, expand=False -> Hide completed
-        content = "- ✅ Item 1\n- ✅ Item 2\n- ✅ Item 3\n- ⬜️ Item 4"
+        # Collapse logic: > COLLAPSE_ITEM_THRESHOLD=8 items, expand=False -> Hide completed
+        completed_lines = [f"- \u2705 Item {i}" for i in range(1, 9)]
+        incomplete_line = "- \u2b1c\ufe0f Item 9"
+        content = "\n".join(completed_lines + [incomplete_line])
         result = self.base_renderer._render_collapsible_section(
-            content, total_items=4, expanded=False, completed_count=3
+            content, total_items=9, expanded=False, completed_count=8
         )
 
-        self.assertIn("✅ 已通过 3 项", result)
-        self.assertNotIn("- ✅ Item 1", result)
-        self.assertIn("- ⬜️ Item 4", result)
+        self.assertIn("\u2705 \u5df2\u901a\u8fc7 8 \u9879", result)  # ✅ 已通过 8 项
+        self.assertNotIn("- \u2705 Item 1", result)
+        self.assertIn("- \u2b1c\ufe0f Item 9", result)
 
         # Expand logic
         result = self.base_renderer._render_collapsible_section(
-            content, total_items=4, expanded=True, completed_count=3
+            content, total_items=9, expanded=True, completed_count=8
         )
         self.assertEqual(result, content)
 
     def test_base_render_collapsible_section_text(self):
         """Test BaseRenderer._render_collapsible_section with long text (Spec mode)"""
-        # Create a long text > 10 lines
-        lines = [f"Line {i}" for i in range(15)]
+        # Create a long text > COLLAPSE_LINE_THRESHOLD=30 lines
+        lines = [f"Line {i}" for i in range(40)]
         content = "\n".join(lines)
 
-        # Should truncate if not expanded
-        result = self.base_renderer._render_collapsible_section(content, total_items=15, expanded=False)
-        self.assertIn("📄 内容较长 (共 15 行)", result)
+        # Should truncate if not expanded (shows first COLLAPSE_DISPLAY_LINES=15 lines)
+        result = self.base_renderer._render_collapsible_section(content, total_items=40, expanded=False)
+        self.assertIn("\u5185\u5bb9\u8f83\u957f (共 40 行)", result)  # 内容较长 (共 40 行)
         self.assertIn("Line 0", result)
-        self.assertIn("Line 4", result)
-        self.assertNotIn("Line 14", result)
+        self.assertIn("Line 14", result)
+        self.assertNotIn("Line 39", result)
 
         # Should show all if expanded
-        result = self.base_renderer._render_collapsible_section(content, total_items=15, expanded=True)
+        result = self.base_renderer._render_collapsible_section(content, total_items=40, expanded=True)
         self.assertEqual(result, content)
 
     def test_loop_renderer_inheritance(self):
