@@ -86,5 +86,16 @@ class DeepProgress:
             if len(self.modified_files) > 10:
                 lines.append(f"  • ... 等 {len(self.modified_files) - 10} 个文件")
         if self.tool_calls:
-            lines.append(f"🔧 工具调用: {len(self.tool_calls)} 次")
+            # Show total count with a breakdown by kind
+            kind_counts: dict[str, int] = {}
+            for tc in self.tool_calls:
+                kind = tc.kind or "other"
+                kind_counts[kind] = kind_counts.get(kind, 0) + 1
+            if kind_counts:
+                breakdown = " · ".join(
+                    f"{k}: {v}" for k, v in sorted(kind_counts.items(), key=lambda x: -x[1])
+                )
+                lines.append(f"🔧 工具调用: {len(self.tool_calls)} 次 ({breakdown})")
+            else:
+                lines.append(f"🔧 工具调用: {len(self.tool_calls)} 次")
         return "\n".join(lines)

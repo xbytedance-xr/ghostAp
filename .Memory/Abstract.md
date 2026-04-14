@@ -1,6 +1,7 @@
 # GhostAP 项目记忆索引
 
 ## 2026-04-14
+- **Deep Agent 完成卡片无内容修复** — 修复 `on_project_done` 显示 0% 进度条 + 执行输出近空问题；改用 closure 本地 renderer、空内容兜底提示、total_steps=0 时不显示进度条；`format_summary()` 增加 kind 拆分（如 `search: 90 · execute: 5`）；78 tests passed → [详细记录](2026-04-14.md)
 - **/help 卡片扁平化重构** — 移除 4 个 tab 切换，所有命令分 6 个 section 一次展开；顶部新增 6 个手机友好快捷入口按钮（Deep/TTADK/ACP/状态/切换项目/新建项目），全部复用已注册 callback；`category` 参数保留向后兼容；123 tests passed → [详细记录](2026-04-14.md)
 
 ## 2026-04-12

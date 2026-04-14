@@ -224,19 +224,29 @@ class DeepRenderer(BaseRenderer):
         def on_project_done(deep_project: DeepProject):
             engine = _get_engine()
             progress = engine.progress if engine else None
-            rendered_content = engine.get_rendered_content() if engine else ""
+            # Use the local renderer (same one used for streaming) for consistency.
+            # Fall back to engine renderer if somehow the local one is empty.
+            rendered_content = renderer.get_final_content() or (
+                engine.get_rendered_content() if engine else ""
+            )
 
             summary_parts = []
             if progress:
                 summary_parts.append(progress.format_summary())
             if rendered_content:
                 summary_parts.append(f"\n**📝 执行输出**\n{rendered_content}")
+            elif progress and not rendered_content:
+                # No text output captured — at least show a note so the section isn't empty
+                summary_parts.append("\n**📝 执行输出**\n（Agent 未产生文本输出，仅执行工具调用）")
 
             content = "\n\n".join(summary_parts) or "执行完成"
             status_emoji = "✅" if deep_project.status == DeepProjectStatus.COMPLETED else "⚠️"
             title = f"{status_emoji} Deep Agent 执行{'完成' if deep_project.status == DeepProjectStatus.COMPLETED else '结束'}"
 
-            progress_bar = progress.progress_bar if progress else None
+            # Don't show 0% progress bar on completion when no plan entries were tracked
+            progress_bar = (
+                progress.progress_bar if (progress and progress.total_steps > 0) else None
+            )
             msg_type, card_content = CardBuilder.build_engine_card(
                 project=project,
                 state=EngineCardState(

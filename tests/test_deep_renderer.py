@@ -94,6 +94,7 @@ class TestDeepRenderer:
         # Fix: ensure format_summary returns a string
         engine.progress.format_summary.return_value = "Progress Summary"
         engine.progress.progress_bar = "[====]"  # Fix: progress_bar should be string
+        engine.progress.total_steps = 0  # No plan entries → no 0% bar
         engine.get_rendered_content.return_value = "Rendered Content"
 
         mock_handler.ctx.deep_engine_manager.get.return_value = engine
