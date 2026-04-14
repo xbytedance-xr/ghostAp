@@ -487,11 +487,21 @@ class ProgrammingModeHandler(BaseHandler):
         thread_id = get_current_thread_id()
         session = self._get_session_manager().get_session(chat_id, project_id=project_id, thread_id=thread_id)
 
+        # Capture before exit_to_smart resets mode state
+        was_in_this_mode = self._is_in_this_mode(chat_id)
+
         is_pending_slot = (
             not thread_id
             and not session
             and self.settings.thread_programming_enabled
-            and self._is_in_this_mode(chat_id)
+            and was_in_this_mode
+        )
+        # User is in this mode (mode_manager) but has no active session (e.g. entered mode without sending any message)
+        is_mode_only_exit = (
+            not thread_id
+            and not session
+            and not self.settings.thread_programming_enabled
+            and was_in_this_mode
         )
 
         if project:
@@ -519,15 +529,15 @@ class ProgrammingModeHandler(BaseHandler):
             has_session = self._get_session_manager().end_session(chat_id, project_id=project_id, thread_id=thread_id)
             if silent:
                 # Silent mode: skip all user-facing messages (used for automatic mode switching)
-                if has_session or is_pending_slot:
+                if has_session or is_pending_slot or is_mode_only_exit:
                     self.add_reaction(message_id, EmojiReaction.on_coco_exit())
                 return
-            if has_session or is_pending_slot:
+            if has_session or is_pending_slot or is_mode_only_exit:
                 self.add_reaction(message_id, EmojiReaction.on_coco_exit())
 
                 if project:
                     content = UI_TEXT["mode_exit_msg"].format(name=self.mode_name)
-                    if is_pending_slot:
+                    if is_pending_slot or is_mode_only_exit:
                         content = UI_TEXT["mode_exit_pending_msg"].format(name=self.mode_name)
                     msg_type, card_content = CardBuilder.build_project_response_card(
                         project,
