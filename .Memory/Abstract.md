@@ -1,5 +1,8 @@
 # GhostAP 项目记忆索引
 
+## 2026-04-14
+- **/help 卡片扁平化重构** — 移除 4 个 tab 切换，所有命令分 6 个 section 一次展开；顶部新增 6 个手机友好快捷入口按钮（Deep/TTADK/ACP/状态/切换项目/新建项目），全部复用已注册 callback；`category` 参数保留向后兼容；123 tests passed → [详细记录](2026-04-14.md)
+
 ## 2026-04-12
 - **测试套件加速 3.1x** — test_coco_model 新增 autouse fixture 阻止真实 ACP 探测(140s→0.16s)、test_spec_gc 构造前 patch get_settings 压缩 cycles(16.8s→0.58s)、test_force_interactive_env 补 mock _read_until_prompt(10s→0)；总耗时 225s→72s，1837 tests 全绿，零生产代码改动 → [详细记录](2026-04-12.md)
 

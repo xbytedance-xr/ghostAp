@@ -563,97 +563,95 @@ class SystemBuilder:
         working_dir: Optional[str],
         current_mode_str: str,
     ) -> tuple[str, str]:
-        """Internal cached builder for help cards using only primitive types."""
+        """Build the help card with all commands expanded and mobile-friendly quick actions.
+
+        The ``category`` parameter is accepted for backward compatibility but
+        no longer drives tab switching — the card always renders every section
+        so users see all commands at once.
+        """
+        del category  # kept for call-site compatibility; unused
 
         project_info = f"**{project_name}** (`{root_path}`)" if project_name else "无"
 
-        # Categories
-        categories = [
-            {"name": "编程模式", "id": "coding"},
-            {"name": "Deep 任务", "id": "deep"},
-            {"name": "项目管理", "id": "project"},
-            {"name": "更多...", "id": "more"},
+        # Quick-action buttons — tap targets that map to existing callbacks.
+        # Ordered by expected mobile usage frequency.
+        quick_actions = [
+            ("🧠 Deep 任务", "primary", "enter_deep_prompt"),
+            ("🎮 TTADK", "default", "show_ttadk_menu"),
+            ("🧩 ACP", "default", "show_acp_menu"),
+            ("📊 状态", "default", "show_status"),
+            ("🔄 切换项目", "default", "switch_project"),
+            ("➕ 新建项目", "default", "new_project_prompt"),
+        ]
+        quick_buttons = [
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": label},
+                "type": btn_type,
+                "value": {"action": action, "project_id": project_id},
+            }
+            for label, btn_type, action in quick_actions
         ]
 
-        category_buttons = []
-        for cat in categories:
-            is_active = cat["id"] == category or (category == "main" and cat["id"] == "coding")
-            category_buttons.append(
-                {
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": cat["name"]},
-                    "type": "primary" if is_active else "default",
-                    "value": {"action": "help_category", "category": cat["id"], "project_id": project_id},
-                }
-            )
+        # All command sections — rendered inline so nothing is hidden behind a tab.
+        sections = [
+            (
+                "🔄 编程模式切换",
+                "`/coco` · 进入 Coco 编程模式（字节跳动 AI）\n"
+                "`/claude` · 进入 Claude 编程模式（Anthropic AI）\n"
+                "`/aiden` · 进入 Aiden 编程模式\n"
+                "`/codex` · 进入 Codex 编程模式\n"
+                "`/gemini` · 进入 Gemini 编程模式\n"
+                "`/ttadk` · 进入 TTADK 多工具编程模式\n"
+                "`/exit` · 退出当前编程模式\n"
+                "`/coco_info` · `/claude_info` · `/aiden_info` · `/codex_info` · `/ttadk_info` · 查看会话/模型信息",
+            ),
+            (
+                "🧠 Deep Engine · 复杂任务一次交付",
+                "`/deep <需求>` · 启动 Deep Engine\n"
+                "`/deep_status` · 查看任务进度\n"
+                "`/stop_deep` · 停止任务",
+            ),
+            (
+                "🔁 Loop Engine · 迭代闭环",
+                "`/loop <需求>` · 启动 Loop 模式\n"
+                "`/loop_status` · 查看迭代进度\n"
+                "`/loop_guide <引导>` · 注入引导信息\n"
+                "`/loop_pause` · 暂停迭代  ·  `/loop_resume` · 恢复迭代\n"
+                "`/stop_loop` · 停止 Loop",
+            ),
+            (
+                "📋 Spec Engine · 结构化开发闭环",
+                "`/spec <需求>` · 启动  ·  `/spec_status` · 查看进度\n"
+                "`/spec_pause` · 暂停  ·  `/spec_resume` · 继续\n"
+                "`/spec_guide <引导>` · 补充约束/偏好\n"
+                "`/spec_history` · 历史  ·  `/spec_metrics` · 目标达成度\n"
+                "`/spec_config` · 配置  ·  `/spec_save` · 立即保存\n"
+                "`/spec_export` · 导出报告  ·  `/spec_recover [任务ID]` · 恢复失败任务\n"
+                "`/stop_spec` · 停止",
+            ),
+            (
+                "📂 项目管理",
+                "`/projects` · 查看所有项目\n"
+                "`/new <名称> [路径]` · 创建新项目\n"
+                "`/switch <名称>` · 切换项目  ·  `/close <名称>` · 关闭项目\n"
+                "`/status` · 查看所有引擎任务状态\n"
+                "`/diff` · 查看最近两次版本变更",
+            ),
+            (
+                "🤖 TTADK 管理",
+                "`/ttadk_refresh` · 强制刷新模型列表\n"
+                "`/ttadk_info` · 查看当前工具和模型",
+            ),
+        ]
 
-        content = ""
-        # Default to coding if main
-        cat_key = "coding" if category == "main" else category
-
-        if cat_key == "coding":
-            content = (
-                "**🔄 编程模式切换**\n"
-                "`/coco` - 进入 Coco 编程模式（字节跳动 AI）\n"
-                "`/claude` - 进入 Claude 编程模式（Anthropic AI）\n"
-                "`/aiden` - 进入 Aiden 编程模式\n"
-                "`/codex` - 进入 Codex 编程模式\n"
-                "`/ttadk` - 进入 TTADK 多工具编程模式\n"
-                "`/exit` - 退出当前编程模式\n"
-                "`/coco_info` - 查看 Coco 会话信息\n"
-                "`/claude_info` - 查看 Claude 会话信息\n"
-                "`/aiden_info` - 查看 Aiden 会话信息\n"
-                "`/codex_info` - 查看 Codex 会话信息\n"
-                "`/ttadk_info` - 查看 TTADK 当前工具和模型"
-            )
-        elif cat_key == "deep":
-            content = (
-                "**🧠 Deep Engine（复杂任务）**\n"
-                "`/deep <需求>` - 启动 Deep Engine\n"
-                "`/deep_status` - 查看任务进度\n"
-                "`/stop_deep` - 停止任务\n\n"
-                "**🔄 Loop Engine（迭代闭环）**\n"
-                "`/loop <需求>` - 启动 Loop 模式\n"
-                "`/loop_status` - 查看迭代进度\n"
-                "`/loop_guide <引导>` - 注入引导信息\n"
-                "`/loop_pause` - 暂停迭代\n"
-                "`/loop_resume` - 恢复迭代\n"
-                "`/stop_loop` - 停止 Loop"
-            )
-        elif cat_key == "project":
-            content = (
-                "**📂 项目管理**\n"
-                "`/projects` - 查看所有项目\n"
-                "`/new <名称> [路径]` - 创建新项目\n"
-                "`/switch <名称>` - 切换项目\n"
-                "`/close <名称>` - 关闭项目\n"
-                "`/status` - 查看所有引擎任务状态\n"
-                "`/diff` - 查看最近两次版本变更"
-            )
-        elif cat_key == "more":
-            content = (
-                "**📋 Spec Engine（结构化开发闭环）**\n"
-                "`/spec <需求>` - 启动\n"
-                "`/spec_status` - 查看进度\n"
-                "`/spec_pause` - 暂停当前任务\n"
-                "`/spec_resume` - 继续当前任务\n"
-                "`/spec_guide <引导>` - 补充约束/偏好\n"
-                "`/spec_history` - 查看历史\n"
-                "`/spec_metrics` - 查看目标达成度\n"
-                "`/spec_config` - 查看配置\n"
-                "`/spec_save` - 立即保存状态\n"
-                "`/spec_export` - 导出当前报告\n"
-                "`/spec_recover [任务ID]` - 恢复失败任务\n"
-                "`/stop_spec` - 停止\n\n"
-                "**🤖 TTADK 管理**\n"
-                "`/ttadk_refresh` - 强制刷新 TTADK 模型列表\n"
-                "`/ttadk_info` - 查看 TTADK 当前状态\n\n"
-                "**💡 使用提示**\n"
-                "1. 发送 `/coco`、`/claude`、`/aiden` 或 `/codex` 进入编程模式\n"
-                "2. 发送 `/tools` 查看所有可用工具\n"
-                "3. 智能模式下直接输入 Shell 命令即可执行\n"
-                "4. 发送 `/menu` 打开快捷菜单"
-            )
+        tips = (
+            "**💡 使用提示**\n"
+            "1. 手机端优先点按上方 **⚡ 快捷入口**，无需输入指令\n"
+            "2. 发送 `/menu` 打开完整快捷菜单；`/tools` 查看可用工具\n"
+            "3. 智能模式下可直接输入 Shell 命令或自然语言\n"
+            "4. 复杂任务用 `/deep`，迭代任务用 `/loop`，规范交付用 `/spec`"
+        )
 
         elements = [
             {
@@ -662,12 +660,18 @@ class SystemBuilder:
                 "content": f"**当前状态**  •  {current_mode_str}  •  `{working_dir or '~'}`  •  项目: {project_info}",
             },
             {"tag": "hr"},
+            {"tag": "markdown", "content": "**⚡ 快捷入口**（点按执行，手机优先）"},
         ]
+        elements.extend(build_responsive_layout(quick_buttons))
+        elements.append({"tag": "hr"})
 
-        elements.extend(build_responsive_layout(category_buttons))
+        for idx, (title, body) in enumerate(sections):
+            elements.append({"tag": "markdown", "content": f"**{title}**\n{body}"})
+            if idx < len(sections) - 1:
+                elements.append({"tag": "hr"})
 
         elements.append({"tag": "hr"})
-        elements.append({"tag": "markdown", "text_size": "normal", "content": content})
+        elements.append({"tag": "markdown", "text_size": "notation", "content": tips})
 
         card = CoreBuilder._wrap_card("📖 GhostAP 使用帮助", "blue", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
