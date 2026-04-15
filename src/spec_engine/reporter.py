@@ -571,6 +571,22 @@ class SpecReporter:
             return "❓ 需要澄清"
         return "⏸️ Spec 模式暂停"
 
+    def format_goal_rewritten(self, guidance: str, new_requirement: str) -> str:
+        # 截断过长的新目标，避免卡片内容过长
+        preview = new_requirement if len(new_requirement) <= 500 else new_requirement[:500] + "..."
+        return f"""🎯 **目标已更新**
+
+**补充的约束/偏好：**
+> {guidance}
+
+**合并后的新目标：**
+{preview}
+
+后续所有迭代循环将基于此新目标执行。"""
+
+    def get_goal_rewritten_title(self) -> str:
+        return "🎯 目标已更新"
+
     def get_guidance_injected_title(self) -> str:
         return "💬 引导信息已注入"
 

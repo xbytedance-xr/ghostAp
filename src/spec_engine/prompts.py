@@ -230,6 +230,27 @@ FAIL
 """
 
 
+def build_goal_rewrite_prompt(original_requirement: str, guidance: str) -> str:
+    """构建目标重写提示词：将原始需求与用户引导合并为新的综合目标。"""
+    return f"""你是一个需求分析专家。用户在开发过程中提供了新的约束/偏好，你需要将其与原始需求合并，生成一个新的综合目标描述。
+
+## 原始需求
+{original_requirement}
+
+## 用户补充的约束/偏好
+{guidance}
+
+## 任务
+请将上述两部分合并为一个连贯、完整的新需求描述。要求：
+1. 保留原始需求的所有核心目标，不丢失任何已有要求
+2. 将用户新的约束/偏好自然地融入需求中
+3. 如有冲突，以用户的新约束/偏好为准
+4. 输出风格与原始需求保持一致（简洁、清晰、可执行）
+5. 直接输出合并后的需求文本，不要输出任何前缀、解释或注释
+
+仅输出合并后的需求文本本身："""
+
+
 def build_refinement_input(
     original_requirement: str,
     last_review: Optional[ReviewResult],

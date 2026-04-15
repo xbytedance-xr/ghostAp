@@ -2051,7 +2051,7 @@ class TestSpecHandler:
         handler.export_spec_report.assert_called_once()
 
     def test_update_spec_guidance_allows_when_clarifying(self):
-        """/spec_guide should work even when engine is CLARIFYING (not running)."""
+        """/spec_guide rewrites the goal via LLM even when engine is CLARIFYING."""
         handler = self._make_handler()
         handler.send_message = MagicMock()
         handler.reply_message = MagicMock()
@@ -2064,6 +2064,7 @@ class TestSpecHandler:
         engine = MagicMock()
         engine.engine_name = "Coco"
         engine.is_running = False
+        engine.refine_goal_with_guidance.return_value = (True, "new combined requirement")
         sp = SpecProject.create(name="p", root_path="/tmp/p")
         sp.status = SpecProjectStatus.CLARIFYING
         engine.project = sp
@@ -2072,15 +2073,50 @@ class TestSpecHandler:
         handler.ctx.spec_engine_manager.list_engines.return_value = [engine]
 
         reporter = MagicMock()
-        reporter.format_guidance_injected.return_value = "ok"
-        reporter.get_guidance_injected_title.return_value = "title"
+        reporter.format_goal_rewritten.return_value = "goal rewritten"
+        reporter.get_goal_rewritten_title.return_value = "🎯 目标已更新"
         handler.ctx.spec_reporter = reporter
 
         with patch("src.feishu.handlers.spec.CardBuilder.build_engine_card", return_value=("interactive", "card")):
             handler.update_spec_guidance("mid", "cid", "Q1: answer", project=None)
 
-        engine.inject_guidance.assert_called_once_with("Q1: answer")
+        engine.refine_goal_with_guidance.assert_called_once_with("Q1: answer")
+        engine.inject_guidance.assert_not_called()
         handler.reply_message.assert_not_called()
+        handler.send_message.assert_called_once()
+
+    def test_update_spec_guidance_fallback_on_llm_failure(self):
+        """/spec_guide falls back to inject_guidance when LLM rewrite fails."""
+        handler = self._make_handler()
+        handler.send_message = MagicMock()
+        handler.reply_message = MagicMock()
+
+        project = MagicMock()
+        project.root_path = "/tmp/p"
+        project.project_id = "p1"
+        handler.project_manager.get_active_project.return_value = project
+
+        engine = MagicMock()
+        engine.engine_name = "Coco"
+        engine.is_running = True
+        engine.refine_goal_with_guidance.return_value = (False, "LLM error")
+        sp = SpecProject.create(name="p", root_path="/tmp/p")
+        sp.status = SpecProjectStatus.RUNNING
+        engine.project = sp
+
+        handler.ctx.spec_engine_manager.get.return_value = engine
+        handler.ctx.spec_engine_manager.list_engines.return_value = [engine]
+
+        reporter = MagicMock()
+        reporter.format_guidance_injected.return_value = "injected ok"
+        reporter.get_guidance_injected_title.return_value = "💬 引导信息已注入"
+        handler.ctx.spec_reporter = reporter
+
+        with patch("src.feishu.handlers.spec.CardBuilder.build_engine_card", return_value=("interactive", "card")):
+            handler.update_spec_guidance("mid", "cid", "fallback test", project=None)
+
+        engine.refine_goal_with_guidance.assert_called_once_with("fallback test")
+        engine.inject_guidance.assert_called_once_with("fallback test")
         handler.send_message.assert_called_once()
 
 

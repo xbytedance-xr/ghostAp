@@ -581,11 +581,20 @@ class SpecHandler(BaseEngineHandler):
             )
             return
 
-        engine.inject_guidance(guide_message)
         reporter = self.ctx.spec_reporter
-        content = reporter.format_guidance_injected(guide_message)
-        title = reporter.get_guidance_injected_title()
         engine_name = engine.engine_name
+
+        # 尝试用 LLM 将原始需求与新引导合并为新的综合目标
+        success, result = engine.refine_goal_with_guidance(guide_message)
+
+        if success:
+            content = reporter.format_goal_rewritten(guide_message, result)
+            title = reporter.get_goal_rewritten_title()
+        else:
+            # LLM 重写失败，退化为临时注入（不改变持久目标）
+            engine.inject_guidance(guide_message)
+            content = reporter.format_guidance_injected(guide_message)
+            title = reporter.get_guidance_injected_title()
 
         msg_type, card_content = CardBuilder.build_engine_card(
             project=project,

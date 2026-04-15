@@ -43,6 +43,7 @@ from .models import (
 )
 from .prompts import (
     build_build_prompt,
+    build_goal_rewrite_prompt,
     build_plan_prompt,
     build_refinement_input,
     build_spec_prompt,
@@ -1094,6 +1095,49 @@ class SpecEngine(BaseEngine):
             review_enabled=self.settings.spec_review_enabled,
         )
 
+
+    def refine_goal_with_guidance(self, guidance: str) -> tuple[bool, str]:
+        """用 LLM 将原始需求与用户引导合并为新的综合目标，更新 project.requirement。
+
+        Returns:
+            (success, new_requirement_or_error_msg)
+        """
+        if not self._project:
+            return False, "没有活跃的 Spec 项目"
+
+        original = self._project.requirement
+        if not original.strip():
+            return False, "原始需求为空，无法合并"
+
+        if not self.settings.ark_api_key or not self.settings.ark_model:
+            # 无 LLM 配置时，退化为直接追加
+            self._project.requirement = f"{original}\n\n## 补充约束/偏好\n{guidance}"
+            _persist_state_best_effort(self._project, self.root_path, logger)
+            logger.info("[Spec] 无 LLM 配置，直接追加引导到需求")
+            return True, self._project.requirement
+
+        prompt = build_goal_rewrite_prompt(original, guidance)
+        try:
+            llm = ChatOpenAI(
+                base_url=self.settings.ark_base_url,
+                api_key=self.settings.ark_api_key,
+                model=self.settings.ark_model,
+                temperature=0.3,
+            )
+            response = llm.invoke([HumanMessage(content=prompt)])
+            new_req = response.content.strip()
+            if not new_req:
+                return False, "LLM 返回空内容"
+
+            self._project.requirement = new_req
+            # 清除待消费的引导队列（已融入目标，无需重复注入）
+            self._user_guidance.clear()
+            _persist_state_best_effort(self._project, self.root_path, logger)
+            logger.info("[Spec] 目标已重写(原%d字→新%d字)", len(original), len(new_req))
+            return True, new_req
+        except Exception as e:
+            logger.warning("[Spec] 目标重写 LLM 调用失败: %s", e)
+            return False, str(e)
 
     def inject_guidance(self, message: str):
         """Inject user guidance — will be included in the next phase prompt."""

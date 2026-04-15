@@ -1,6 +1,7 @@
 # GhostAP 项目记忆索引
 
 ## 2026-04-14
+- **/spec_guide 目标重写修复（类 btw 命令语义）** — 原实现仅临时注入引导，现改为 LLM 合并原始目标+引导生成新目标并持久化到 `project.requirement`，降级到 `inject_guidance` 当 LLM 失败；237 spec tests passed → [详细记录](2026-04-14.md)
 - **/exit 误报"不在模式中"修复** — 进入模式未发消息时 ACP session 未创建，exit_to_smart 前捕获 was_in_this_mode 新增 is_mode_only_exit 分支；`c806030` → [详细记录](2026-04-14.md)
 - **Deep Agent 完成卡片无内容修复** — 修复 `on_project_done` 显示 0% 进度条 + 执行输出近空问题；改用 closure 本地 renderer、空内容兜底提示、total_steps=0 时不显示进度条；`format_summary()` 增加 kind 拆分（如 `search: 90 · execute: 5`）；78 tests passed → [详细记录](2026-04-14.md)
 - **/help 卡片扁平化重构** — 移除 4 个 tab 切换，所有命令分 6 个 section 一次展开；顶部新增 6 个手机友好快捷入口按钮（Deep/TTADK/ACP/状态/切换项目/新建项目），全部复用已注册 callback；`category` 参数保留向后兼容；123 tests passed → [详细记录](2026-04-14.md)
