@@ -54,10 +54,10 @@ class ProgrammingModeHandler(BaseHandler):
     def _get_session_manager(self) -> ACPSessionManager: ...
 
     @abstractmethod
-    def _is_in_this_mode(self, chat_id: str) -> bool: ...
+    def _is_in_this_mode(self, chat_id: str, project_id: Optional[str] = None) -> bool: ...
 
     @abstractmethod
-    def _is_in_opposite_mode(self, chat_id: str) -> bool: ...
+    def _is_in_opposite_mode(self, chat_id: str, project_id: Optional[str] = None) -> bool: ...
 
     @abstractmethod
     def _exit_opposite_mode(self, message_id: str, chat_id: str, project: Optional["ProjectContext"], silent: bool = False):
@@ -135,17 +135,18 @@ class ProgrammingModeHandler(BaseHandler):
             if mode != current:
                 yield mode, predicate_name, handler_attr
 
-    def _is_any_other_programming_mode(self, chat_id: str) -> bool:
+    def _is_any_other_programming_mode(self, chat_id: str, project_id: Optional[str] = None) -> bool:
         for _mode, predicate_name, _handler_attr in self._iter_other_programming_mode_entries():
             predicate = getattr(self.mode_manager, predicate_name, None)
-            if callable(predicate) and predicate(chat_id):
+            if callable(predicate) and predicate(chat_id, project_id=project_id):
                 return True
         return False
 
     def _exit_other_programming_modes(self, message_id: str, chat_id: str, project: Optional["ProjectContext"], silent: bool = False):
+        _pid = project.project_id if project else None
         for mode, predicate_name, handler_attr in self._iter_other_programming_mode_entries():
             predicate = getattr(self.mode_manager, predicate_name, None)
-            if not callable(predicate) or not predicate(chat_id):
+            if not callable(predicate) or not predicate(chat_id, project_id=_pid):
                 continue
             handler = getattr(self, handler_attr, None)
             if handler is None and mode in (InteractionMode.COCO, InteractionMode.CLAUDE):
@@ -168,7 +169,7 @@ class ProgrammingModeHandler(BaseHandler):
             thread_id = get_current_thread_id()
         _thread_enabled = self.settings.thread_programming_enabled and not thread_id
 
-        if not thread_id and self._is_in_this_mode(chat_id):
+        if not thread_id and self._is_in_this_mode(chat_id, project_id=project_id):
             if not silent:
                 if _thread_enabled:
                     self.reply_message(
@@ -187,9 +188,9 @@ class ProgrammingModeHandler(BaseHandler):
                     )
             return
 
-        previous_mode = self.mode_manager.get_mode(chat_id)
+        previous_mode = self.mode_manager.get_mode(chat_id, project_id=project_id)
 
-        if not thread_id and self._is_in_opposite_mode(chat_id):
+        if not thread_id and self._is_in_opposite_mode(chat_id, project_id=project_id):
             self._exit_opposite_mode(message_id, chat_id, project=project, silent=True)
 
         if not project:
@@ -488,7 +489,7 @@ class ProgrammingModeHandler(BaseHandler):
         session = self._get_session_manager().get_session(chat_id, project_id=project_id, thread_id=thread_id)
 
         # Capture before exit_to_smart resets mode state
-        was_in_this_mode = self._is_in_this_mode(chat_id)
+        was_in_this_mode = self._is_in_this_mode(chat_id, project_id=project_id)
 
         is_pending_slot = (
             not thread_id
@@ -921,11 +922,11 @@ class CocoModeHandler(ProgrammingModeHandler):
     def _get_session_manager(self):
         return self.ctx.coco_manager
 
-    def _is_in_this_mode(self, chat_id):
-        return self.mode_manager.is_coco_mode(chat_id)
+    def _is_in_this_mode(self, chat_id, project_id=None):
+        return self.mode_manager.is_coco_mode(chat_id, project_id=project_id)
 
-    def _is_in_opposite_mode(self, chat_id):
-        return self._is_any_other_programming_mode(chat_id)
+    def _is_in_opposite_mode(self, chat_id, project_id=None):
+        return self._is_any_other_programming_mode(chat_id, project_id=project_id)
 
     def _exit_opposite_mode(self, message_id, chat_id, project=None, silent=False):
         self._exit_other_programming_modes(message_id, chat_id, project=project, silent=silent)
@@ -981,11 +982,11 @@ class ClaudeModeHandler(ProgrammingModeHandler):
     def _get_session_manager(self):
         return self.ctx.claude_manager
 
-    def _is_in_this_mode(self, chat_id):
-        return self.mode_manager.is_claude_mode(chat_id)
+    def _is_in_this_mode(self, chat_id, project_id=None):
+        return self.mode_manager.is_claude_mode(chat_id, project_id=project_id)
 
-    def _is_in_opposite_mode(self, chat_id):
-        return self._is_any_other_programming_mode(chat_id)
+    def _is_in_opposite_mode(self, chat_id, project_id=None):
+        return self._is_any_other_programming_mode(chat_id, project_id=project_id)
 
     def _exit_opposite_mode(self, message_id, chat_id, project=None, silent=False):
         self._exit_other_programming_modes(message_id, chat_id, project=project, silent=silent)
@@ -1044,11 +1045,11 @@ class AidenModeHandler(ProgrammingModeHandler):
     def _get_session_manager(self):
         return self.ctx.aiden_manager
 
-    def _is_in_this_mode(self, chat_id):
-        return self.mode_manager.is_aiden_mode(chat_id)
+    def _is_in_this_mode(self, chat_id, project_id=None):
+        return self.mode_manager.is_aiden_mode(chat_id, project_id=project_id)
 
-    def _is_in_opposite_mode(self, chat_id):
-        return self._is_any_other_programming_mode(chat_id)
+    def _is_in_opposite_mode(self, chat_id, project_id=None):
+        return self._is_any_other_programming_mode(chat_id, project_id=project_id)
 
     def _exit_opposite_mode(self, message_id, chat_id, project=None, silent=False):
         self._exit_other_programming_modes(message_id, chat_id, project=project, silent=silent)
@@ -1104,11 +1105,11 @@ class CodexModeHandler(ProgrammingModeHandler):
     def _get_session_manager(self):
         return self.ctx.codex_manager
 
-    def _is_in_this_mode(self, chat_id):
-        return self.mode_manager.is_codex_mode(chat_id)
+    def _is_in_this_mode(self, chat_id, project_id=None):
+        return self.mode_manager.is_codex_mode(chat_id, project_id=project_id)
 
-    def _is_in_opposite_mode(self, chat_id):
-        return self._is_any_other_programming_mode(chat_id)
+    def _is_in_opposite_mode(self, chat_id, project_id=None):
+        return self._is_any_other_programming_mode(chat_id, project_id=project_id)
 
     def _exit_opposite_mode(self, message_id, chat_id, project=None, silent=False):
         self._exit_other_programming_modes(message_id, chat_id, project=project, silent=silent)
@@ -1164,11 +1165,11 @@ class GeminiModeHandler(ProgrammingModeHandler):
     def _get_session_manager(self):
         return self.ctx.gemini_manager
 
-    def _is_in_this_mode(self, chat_id):
-        return self.mode_manager.is_gemini_mode(chat_id)
+    def _is_in_this_mode(self, chat_id, project_id=None):
+        return self.mode_manager.is_gemini_mode(chat_id, project_id=project_id)
 
-    def _is_in_opposite_mode(self, chat_id):
-        return self._is_any_other_programming_mode(chat_id)
+    def _is_in_opposite_mode(self, chat_id, project_id=None):
+        return self._is_any_other_programming_mode(chat_id, project_id=project_id)
 
     def _exit_opposite_mode(self, message_id, chat_id, project=None, silent=False):
         self._exit_other_programming_modes(message_id, chat_id, project=project, silent=silent)
@@ -1225,11 +1226,11 @@ class TTADKModeHandler(ProgrammingModeHandler):
     def _get_session_manager(self):
         return self.ctx.ttadk_manager
 
-    def _is_in_this_mode(self, chat_id):
-        return self.mode_manager.is_ttadk_mode(chat_id)
+    def _is_in_this_mode(self, chat_id, project_id=None):
+        return self.mode_manager.is_ttadk_mode(chat_id, project_id=project_id)
 
-    def _is_in_opposite_mode(self, chat_id):
-        return self._is_any_other_programming_mode(chat_id)
+    def _is_in_opposite_mode(self, chat_id, project_id=None):
+        return self._is_any_other_programming_mode(chat_id, project_id=project_id)
 
     def _exit_opposite_mode(self, message_id, chat_id, project=None, silent=False):
         self._exit_other_programming_modes(message_id, chat_id, project=project, silent=silent)
