@@ -66,12 +66,6 @@ class TaskSpec:
             return f"{self.chat_id}:{self.project_id}"
         return f"{self.chat_id}{DEFAULT_QUEUE_SUFFIX}"
 
-    # lowerCamelCase alias (compat / gradual refactor)
-    def getEffectiveQueueKey(self) -> str:
-        """`get_effective_queue_key()` 的 lowerCamelCase 兼容别名。"""
-        return self.get_effective_queue_key()
-
-
 @dataclass
 class TaskResult:
     """任务执行结果（由 `TaskScheduler.wait()` 返回）。"""
@@ -117,10 +111,6 @@ class CancellationToken:
         """标记为已取消（幂等）。"""
         self._evt.set()
 
-    def isCanceled(self) -> bool:
-        """lowerCamelCase 兼容别名：`is_canceled`。"""
-        return self.is_canceled
-
     @property
     def is_canceled(self) -> bool:
         return self._evt.is_set()
@@ -129,10 +119,6 @@ class CancellationToken:
         """若已取消则抛 `TaskCanceledError`。"""
         if self.is_canceled:
             raise TaskCanceledError("task canceled")
-
-    def raiseIfCanceled(self):
-        """lowerCamelCase 兼容别名：`raise_if_canceled()`。"""
-        return self.raise_if_canceled()
 
 
 class TaskCanceledError(RuntimeError):
@@ -173,17 +159,9 @@ class TaskContext:
         """更新任务进度（仅对 RUNNING 有效）。"""
         self._scheduler.update_progress(self.run_id, message=message, percent=percent)
 
-    def updateProgress(self, message: str, percent: Optional[float] = None):
-        """lowerCamelCase 兼容别名：`progress()`。"""
-        return self.progress(message, percent)
-
     def check_canceled(self):
         """若任务已取消则抛异常（建议任务函数周期性调用）。"""
         self.cancel_token.raise_if_canceled()
-
-    def checkCanceled(self):
-        """lowerCamelCase 兼容别名：`check_canceled()`。"""
-        return self.check_canceled()
 
 
 @dataclass
@@ -207,17 +185,9 @@ class TaskHandle:
         """请求取消任务。"""
         return self._scheduler.cancel(self.run_id)
 
-    def cancelTask(self) -> bool:
-        """lowerCamelCase 兼容别名：`cancel()`。"""
-        return self.cancel()
-
     def wait(self, timeout: Optional[float] = None) -> TaskResult:
         """等待任务结束并返回 `TaskResult`。"""
         return self._scheduler.wait(self.run_id, timeout=timeout)
-
-    def waitForResult(self, timeout: Optional[float] = None) -> TaskResult:
-        """lowerCamelCase 兼容别名：`wait()`。"""
-        return self.wait(timeout=timeout)
 
     def get_state(self) -> TaskRunState:
         """返回当前 `TaskRunState`（不存在则抛 `KeyError`）。"""
@@ -225,10 +195,6 @@ class TaskHandle:
         if not state:
             raise KeyError(f"unknown run_id: {self.run_id}")
         return state
-
-    def getState(self) -> TaskRunState:
-        """lowerCamelCase 兼容别名：`get_state()`。"""
-        return self.get_state()
 
 
 class TaskScheduler:
@@ -337,23 +303,10 @@ class TaskScheduler:
             if circuit_breaker:
                 self._circuit_breakers[task_type] = circuit_breaker
 
-    def registerPolicy(
-        self,
-        taskType: str,
-        rateLimiter: Optional[RateLimiter] = None,
-        circuitBreaker: Optional[CircuitBreaker] = None,
-    ):
-        """lowerCamelCase 兼容别名：`register_policy()`。"""
-        return self.register_policy(taskType, rate_limiter=rateLimiter, circuit_breaker=circuitBreaker)
-
     def add_listener(self, listener: Callable[[TaskEvent], None]):
         """添加任务事件监听器（best-effort，监听器异常会被吞掉）。"""
         with self._lock:
             self._listeners.append(listener)
-
-    def addListener(self, listener: Callable[[TaskEvent], None]):
-        """lowerCamelCase 兼容别名：`add_listener()`。"""
-        return self.add_listener(listener)
 
     @staticmethod
     def _build_project_serial_key(chat_id: str, project_id: Optional[str]) -> Optional[str]:
@@ -431,10 +384,6 @@ class TaskScheduler:
 
         return TaskHandle(self, run_id)
 
-    def submitTask(self, spec: TaskSpec, fn: Callable[[TaskContext], Any]) -> TaskHandle:
-        """lowerCamelCase 兼容别名：`submit()`。"""
-        return self.submit(spec, fn)
-
     def update_project_id(self, run_id: str, project_id: Optional[str]) -> bool:
         """Best-effort update of project_id for an existing task.
 
@@ -486,10 +435,6 @@ class TaskScheduler:
             self._cv.notify_all()
             return True
 
-    def updateProjectId(self, runId: str, projectId: Optional[str]) -> bool:
-        """lowerCamelCase 兼容别名：`update_project_id()`。"""
-        return self.update_project_id(runId, projectId)
-
     def cancel(self, run_id: str) -> bool:
         """取消任务。
 
@@ -516,10 +461,6 @@ class TaskScheduler:
             self._cv.notify_all()
             return True
 
-    def cancelRun(self, runId: str) -> bool:
-        """lowerCamelCase 兼容别名：`cancel()`。"""
-        return self.cancel(runId)
-
     def update_progress(self, run_id: str, *, message: str, percent: Optional[float] = None):
         """更新任务进度（仅 RUNNING 状态有效）。"""
         with self._lock:
@@ -534,18 +475,10 @@ class TaskScheduler:
                 state.progress_percent = max(0.0, min(100.0, float(percent)))
             self._emit(run_id, state.status, progress_message=message, progress_percent=state.progress_percent)
 
-    def updateProgress(self, runId: str, *, message: str, percent: Optional[float] = None):
-        """lowerCamelCase 兼容别名：`update_progress()`。"""
-        return self.update_progress(runId, message=message, percent=percent)
-
     def get_state(self, run_id: str) -> Optional[TaskRunState]:
         """获取任务运行态（不存在返回 None）。"""
         with self._lock:
             return self._states.get(run_id)
-
-    def getState(self, runId: str) -> Optional[TaskRunState]:
-        """lowerCamelCase 兼容别名：`get_state()`。"""
-        return self.get_state(runId)
 
     def get_state_by_task_id(self, task_id: str) -> Optional[TaskRunState]:
         """Look up a task by its human-readable task_id.
@@ -565,10 +498,6 @@ class TaskScheduler:
                 if len(matches) == 1:
                     return self._states.get(matches[0][1])
             return None
-
-    def getStateByTaskId(self, taskId: str) -> Optional[TaskRunState]:
-        """lowerCamelCase 兼容别名：`get_state_by_task_id()`。"""
-        return self.get_state_by_task_id(taskId)
 
     def list_tasks(
         self,
@@ -614,17 +543,6 @@ class TaskScheduler:
 
             return out
 
-    def listTasks(
-        self,
-        *,
-        chatId: Optional[str] = None,
-        projectId: Optional[str] = None,
-        includeDone: bool = False,
-        limit: int = 50,
-    ) -> list[TaskRunState]:
-        """lowerCamelCase 兼容别名：`list_tasks()`。"""
-        return self.list_tasks(chat_id=chatId, project_id=projectId, include_done=includeDone, limit=limit)
-
     def wait(self, run_id: str, timeout: Optional[float] = None) -> TaskResult:
         """等待任务进入终态并返回 `TaskResult`（超时抛 `TimeoutError`）。"""
         deadline = None if timeout is None else (time.time() + timeout)
@@ -660,10 +578,6 @@ class TaskScheduler:
                 started_at=st.started_at,
                 ended_at=st.ended_at,
             )
-
-    def waitForRun(self, runId: str, timeout: Optional[float] = None) -> TaskResult:
-        """lowerCamelCase 兼容别名：`wait()`。"""
-        return self.wait(runId, timeout=timeout)
 
     def stop(self, *, wait: bool = False, shutdown_executor: bool = False):
         """停止调度器（best-effort）。

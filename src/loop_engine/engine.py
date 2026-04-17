@@ -20,6 +20,7 @@ from ..acp import ACPEvent, ACPEventType
 from ..agent_session import create_engine_session
 from ..engine_base import BaseEngine, BaseEngineManager, EngineRunState
 from ..utils.gc_monitor import get_gc_monitor
+from ..utils.llm import ChatOpenAICacheKey, get_cached_chat_openai
 from ..utils.retry import RetryPolicy
 from ..utils.spec_utils import (
     CRITERIA_PATTERNS as _CRITERIA_PATTERNS,
@@ -82,6 +83,7 @@ class LoopEngine(BaseEngine):
         self._review_extra_used: int = 0
         self._last_heartbeat: float = 0.0
         self._context_manager: Optional[LoopContextManager] = None
+        self._llm_cache: dict[ChatOpenAICacheKey, ChatOpenAI] = {}
 
     def execute(
         self,
@@ -348,6 +350,9 @@ class LoopEngine(BaseEngine):
             raw_text=text,
         )
 
+    def _get_llm(self, temperature: float) -> ChatOpenAI:
+        return get_cached_chat_openai(self.settings, temperature, cache=self._llm_cache, llm_cls=ChatOpenAI)
+
     def _decompose_criteria_with_llm(self, text: str) -> list[str]:
         """Use LLM to summarize and decompose colloquial user input into acceptance criteria."""
         settings = self.settings
@@ -373,13 +378,7 @@ class LoopEngine(BaseEngine):
 ..."""
 
         try:
-            llm = ChatOpenAI(
-                base_url=settings.ark_base_url,
-                api_key=settings.ark_api_key,
-                model=settings.ark_model,
-                temperature=0.1,
-            )
-            response = llm.invoke(
+            response = self._get_llm(0.1).invoke(
                 [
                     SystemMessage(content="你是一个需求分析助手，擅长将口语化的产品需求拆解为结构化的验收标准。"),
                     HumanMessage(content=prompt),
@@ -671,13 +670,7 @@ FAIL
 - suggestions 数组中只放 FAIL 视角的改进建议，PASS 视角为空数组"""
 
         try:
-            llm = ChatOpenAI(
-                base_url=settings.ark_base_url,
-                api_key=settings.ark_api_key,
-                model=settings.ark_model,
-                temperature=0.0,
-            )
-            response = llm.invoke(
+            response = self._get_llm(0.0).invoke(
                 [
                     SystemMessage(content="你是一个文本解析助手。从审查文本中提取结构化的审查结果，只输出JSON。"),
                     HumanMessage(content=prompt),

@@ -27,6 +27,7 @@ from ..engine_base import (
     ReviewPerspective,
     ReviewResult,
 )
+from ..utils.llm import ChatOpenAICacheKey, get_cached_chat_openai
 from ..utils.trace import TraceContext
 from .validation import SpecInput
 from pydantic import ValidationError
@@ -163,6 +164,7 @@ class SpecEngine(BaseEngine):
         self._review_circuit = ReviewCircuitState()
         self._last_cycle_num: int = 0
         self._last_phase: SpecPhase = SpecPhase.SPEC
+        self._llm_cache: dict[ChatOpenAICacheKey, ChatOpenAI] = {}
 
     @property
     def _last_review_failure_diag(self) -> Optional[dict]:
@@ -187,6 +189,9 @@ class SpecEngine(BaseEngine):
     @_review_circuit_open_until_cycle.setter
     def _review_circuit_open_until_cycle(self, value: int):
         self._review_circuit.review_circuit_open_until_cycle = value
+
+    def _get_llm(self, temperature: float) -> ChatOpenAI:
+        return get_cached_chat_openai(self.settings, temperature, cache=self._llm_cache, llm_cls=ChatOpenAI)
 
     def _wrap_callbacks(self, callbacks: SpecEngineCallbacks) -> SpecEngineCallbacks:
         def _wrap(fn: Optional[Callable[..., None]], name: str) -> Optional[Callable[..., None]]:
@@ -1118,13 +1123,7 @@ class SpecEngine(BaseEngine):
 
         prompt = build_goal_rewrite_prompt(original, guidance)
         try:
-            llm = ChatOpenAI(
-                base_url=self.settings.ark_base_url,
-                api_key=self.settings.ark_api_key,
-                model=self.settings.ark_model,
-                temperature=0.3,
-            )
-            response = llm.invoke([HumanMessage(content=prompt)])
+            response = self._get_llm(0.3).invoke([HumanMessage(content=prompt)])
             new_req = response.content.strip()
             if not new_req:
                 return False, "LLM 返回空内容"

@@ -43,8 +43,10 @@ class ACPEventRenderer:
 
     def __init__(self):
         self._text_chunks: list[str] = []
+        self._text_content: str = ""
+        self._text_dirty: bool = False
         self._active_tools: dict[str, ToolCallInfo] = {}
-        self._completed_tools: list[ToolCallInfo] = []
+        self._completed_tool_count: int = 0
         self._plan: Optional[PlanInfo] = None
         self._modified_files: set[str] = set()
         self._todo_content: str = ""  # Latest TodoWrite rendered content
@@ -74,6 +76,7 @@ class ACPEventRenderer:
             case ACPEventType.TEXT_CHUNK:
                 if event.text:
                     self._text_chunks.append(event.text)
+                    self._text_content += event.text
                     # Any real text breaks the aggregation run.
                     self._last_tool_run = None
 
@@ -101,7 +104,7 @@ class ACPEventRenderer:
             case ACPEventType.TOOL_CALL_DONE:
                 if event.tool_call:
                     tool_id = event.tool_call.id
-                    self._completed_tools.append(event.tool_call)
+                    self._completed_tool_count += 1
                     self._active_tools.pop(tool_id, None)
                     for loc in event.tool_call.locations:
                         self._modified_files.add(loc)
@@ -125,11 +128,14 @@ class ACPEventRenderer:
                             ):
                                 # Same-kind consecutive run — update the aggregated line in place.
                                 run["items"].append(item)
-                                self._text_chunks[run["line_idx"]] = self._format_tool_run_line(kind, run["items"])
+                                new_line = self._format_tool_run_line(kind, run["items"])
+                                self._text_chunks[run["line_idx"]] = new_line
+                                self._text_dirty = True
                             else:
                                 # Start a new run.
                                 line = self._format_tool_run_line(kind, [item])
                                 self._text_chunks.append(line)
+                                self._text_content += line
                                 self._last_tool_run = {
                                     "kind": kind,
                                     "items": [item],
@@ -150,7 +156,10 @@ class ACPEventRenderer:
     @property
     def text_content(self) -> str:
         """Raw accumulated text."""
-        return "".join(self._text_chunks)
+        if self._text_dirty:
+            self._text_content = "".join(self._text_chunks)
+            self._text_dirty = False
+        return self._text_content
 
     @property
     def modified_files(self) -> set[str]:
@@ -164,7 +173,7 @@ class ACPEventRenderer:
 
     @property
     def completed_tool_count(self) -> int:
-        return len(self._completed_tools)
+        return self._completed_tool_count
 
     # ------------------------------------------------------------------
     # Rendering
@@ -186,8 +195,9 @@ class ACPEventRenderer:
             if rendered_tools:
                 parts.append(rendered_tools)
 
-        if self._text_chunks:
-            parts.append("".join(self._text_chunks))
+        text_content = self.text_content
+        if text_content:
+            parts.append(text_content)
 
         return "\n".join(parts) if parts else ""
 
@@ -244,8 +254,8 @@ class ACPEventRenderer:
     def render_summary(self) -> str:
         """Render a compact summary of completed work."""
         parts = []
-        if self._completed_tools:
-            parts.append(f"🛠️ {len(self._completed_tools)} 次工具调用")
+        if self._completed_tool_count:
+            parts.append(f"🛠️ {self._completed_tool_count} 次工具调用")
         if self._modified_files:
             parts.append(f"🗂️ {len(self._modified_files)} 个文件")
         return "  ·  ".join(parts)

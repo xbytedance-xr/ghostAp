@@ -9,6 +9,8 @@ from typing import Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
+from ..utils.llm import ChatOpenAICacheKey, get_cached_chat_openai
+
 from ..config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -481,17 +483,10 @@ class IntentRecognizer:
 
     def __init__(self):
         self.settings = get_settings()
-        self._llm: Optional[ChatOpenAI] = None
+        self._llm_cache: dict[ChatOpenAICacheKey, ChatOpenAI] = {}
 
     def _get_llm(self) -> ChatOpenAI:
-        if self._llm is None:
-            self._llm = ChatOpenAI(
-                base_url=self.settings.ark_base_url,
-                api_key=self.settings.ark_api_key,
-                model=self.settings.ark_model,
-                temperature=0.1,
-            )
-        return self._llm
+        return get_cached_chat_openai(self.settings, 0.1, cache=self._llm_cache, llm_cls=ChatOpenAI)
 
     EXIT_KEYWORDS = {"退出", "结束", "exit", "quit", "不用了", "算了", "停止"}
     PROJECT_SWITCH_KEYWORDS = {"切换项目", "换项目", "换到项目", "去项目", "打开项目"}

@@ -137,8 +137,9 @@ class ProjectManager:
         if existing:
             if chat_id:
                 self.set_active_project(chat_id, existing.project_id)
-            existing.touch()
-            self._save_projects()
+            else:
+                existing.touch()
+                self._save_projects()
             return existing, False
 
         basename = os.path.basename(expanded.rstrip(os.sep))
@@ -198,14 +199,19 @@ class ProjectManager:
             if project_id not in self._projects:
                 return False, f"项目 {project_id} 不存在"
 
+            ctx = self._projects[project_id]
             old_project_id = self._active_project.get(chat_id)
+            if old_project_id == project_id and ctx.status == ProjectStatus.ACTIVE:
+                ctx.touch()
+                self._save_projects()
+                return True, f"已切换到项目 {ctx.project_name}"
+
             if old_project_id and old_project_id in self._projects:
                 old_ctx = self._projects[old_project_id]
                 if old_ctx.status == ProjectStatus.ACTIVE:
                     old_ctx.status = ProjectStatus.IDLE
 
             self._active_project[chat_id] = project_id
-            ctx = self._projects[project_id]
             ctx.status = ProjectStatus.ACTIVE
             ctx.touch()
 

@@ -11,6 +11,7 @@ from langchain_openai import ChatOpenAI
 
 from ..acp import ACPEvent, ACPEventType
 from ..engine_base import PerspectiveReview, ReviewPerspective, ReviewResult
+from ..utils.llm import ChatOpenAICacheKey, get_cached_chat_openai
 from ..utils.retry import RetryPolicy
 from ..utils.spec_utils import (
     PERSPECTIVE_TAG_MAP as _PERSPECTIVE_TAG_MAP,
@@ -20,6 +21,12 @@ from ..utils.spec_utils import (
 from .artifacts import safe_str
 
 logger = logging.getLogger(__name__)
+
+_LLM_CACHE: dict[ChatOpenAICacheKey, ChatOpenAI] = {}
+
+
+def _get_llm(settings, temperature: float) -> ChatOpenAI:
+    return get_cached_chat_openai(settings, temperature, cache=_LLM_CACHE, llm_cls=ChatOpenAI)
 
 REVIEW_DIAG_STABLE_KEYS = (
     "phase",
@@ -602,13 +609,7 @@ def parse_review_with_llm(raw_text: str, settings) -> list[PerspectiveReview]:
 ]"""
 
     try:
-        llm = ChatOpenAI(
-            base_url=settings.ark_base_url,
-            api_key=settings.ark_api_key,
-            model=settings.ark_model,
-            temperature=0.0,
-        )
-        response = llm.invoke(
+        response = _get_llm(settings, 0.0).invoke(
             [
                 SystemMessage(content="你是一个文本解析助手。从审查文本中提取结构化的审查结果，只输出JSON。"),
                 HumanMessage(content=prompt),

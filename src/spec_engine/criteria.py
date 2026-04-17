@@ -8,11 +8,18 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from ..acp import ACPEvent, ACPEventType
+from ..utils.llm import ChatOpenAICacheKey, get_cached_chat_openai
 from ..utils.retry import RetryPolicy
 from ..utils.spec_utils import CRITERIA_PATTERNS as _CRITERIA_PATTERNS
 from .artifacts import extract_criteria_from_llm_response
 
 logger = logging.getLogger(__name__)
+
+_LLM_CACHE: dict[ChatOpenAICacheKey, ChatOpenAI] = {}
+
+
+def _get_llm(settings, temperature: float) -> ChatOpenAI:
+    return get_cached_chat_openai(settings, temperature, cache=_LLM_CACHE, llm_cls=ChatOpenAI)
 
 
 def decompose_criteria_with_llm(text: str, settings) -> list[str]:
@@ -38,13 +45,7 @@ def decompose_criteria_with_llm(text: str, settings) -> list[str]:
 ..."""
 
     try:
-        llm = ChatOpenAI(
-            base_url=settings.ark_base_url,
-            api_key=settings.ark_api_key,
-            model=settings.ark_model,
-            temperature=0.1,
-        )
-        response = llm.invoke(
+        response = _get_llm(settings, 0.1).invoke(
             [
                 SystemMessage(content="你是一个需求分析助手，擅长将口语化的产品需求拆解为结构化的验收标准。"),
                 HumanMessage(content=prompt),

@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -202,6 +203,23 @@ class TestProjectManager:
         assert active.project_id == "test"
         assert active.status == ProjectStatus.ACTIVE
 
+    def test_set_active_project_same_project_persists_touch(self, temp_storage, project_dir):
+        manager = ProjectManager(storage_path=temp_storage)
+        manager.create_project("test", "Test", project_dir)
+        manager.set_active_project("chat_123", "test")
+        first_active = manager.get_project("test").last_active
+
+        time.sleep(0.01)
+        success, _ = manager.set_active_project("chat_123", "test")
+
+        assert success is True
+        second_active = manager.get_project("test").last_active
+        assert second_active > first_active
+
+        reloaded = ProjectManager(storage_path=temp_storage).get_project("test")
+        assert reloaded is not None
+        assert reloaded.last_active == second_active
+
     def test_close_project(self, temp_storage, project_dir):
         manager = ProjectManager(storage_path=temp_storage)
         manager.create_project("test", "Test", project_dir)
@@ -309,6 +327,23 @@ class TestProjectManager:
         assert is_new is False
         assert project.project_id == "existing"
         assert manager.get_active_project("chat_123") == project
+
+    def test_get_or_create_project_for_path_existing_persists_touch_without_chat(self, temp_storage, project_dir):
+        manager = ProjectManager(storage_path=temp_storage)
+        manager.create_project("existing", "Existing Project", project_dir)
+        project = manager.get_project("existing")
+        old_active = project.last_active
+
+        time.sleep(0.01)
+        found, is_new = manager.get_or_create_project_for_path(project_dir)
+
+        assert is_new is False
+        assert found.project_id == "existing"
+        assert found.last_active > old_active
+
+        reloaded = ProjectManager(storage_path=temp_storage).get_project("existing")
+        assert reloaded is not None
+        assert reloaded.last_active == found.last_active
 
     def test_get_or_create_project_for_path_new(self, temp_storage):
         manager = ProjectManager(storage_path=temp_storage)
