@@ -1,5 +1,8 @@
 # GhostAP 项目记忆索引
 
+## 2026-04-17
+- **/exit 误报二次修复（project_id 传递缺失）** — `_is_in_this_mode`/`_is_in_opposite_mode`/`_is_any_other_programming_mode` 只传 chat_id 不传 project_id，项目级模式查 chat 级返回 False 导致误报；统一为所有模式判断方法增加 project_id 透传，6 个子类全量修复；`44f67b6` → [详细记录](2026-04-17.md)
+
 ## 2026-04-14
 - **/spec_guide 目标重写修复（类 btw 命令语义）** — 原实现仅临时注入引导，现改为 LLM 合并原始目标+引导生成新目标并持久化到 `project.requirement`，降级到 `inject_guidance` 当 LLM 失败；237 spec tests passed → [详细记录](2026-04-14.md)
 - **/exit 误报"不在模式中"修复** — 进入模式未发消息时 ACP session 未创建，exit_to_smart 前捕获 was_in_this_mode 新增 is_mode_only_exit 分支；`c806030` → [详细记录](2026-04-14.md)
