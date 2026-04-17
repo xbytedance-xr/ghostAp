@@ -1,10 +1,10 @@
 # GhostAP 项目记忆索引
 
 ## 2026-04-18
-- **/simplify 续做：LLM 缓存复用与文本缓存收口** — 新增 `src/utils/llm.py` 统一 Ark `ChatOpenAI` 缓存（有界+带锁+按配置键控）；`ACPEventRenderer` 改脏标记重建；Loop/Spec/Deep 删除重复文本块存储；定向测试 `302 passed` → [详细记录](2026-04-18.md)
+- **/simplify 续做：LLM 缓存复用、渲染器收口与项目持久化一致性** — 新增 `src/utils/llm.py` 并接入 Loop/Spec/Intent；`ACPEventRenderer` 改脏标记重建+完成计数收口；`ProjectManager` 补齐 touch 持久化一致性；定向测试 `419 passed` → [详细记录](2026-04-18.md)
 
 ## 2026-04-17
-- **全项目 simplify 清理（流式文本拼接/项目持久化/调度器别名）** — `ACPEventRenderer`/Loop/Spec/Deep 跟踪器改增量缓存文本，消除重复 `join`；`ProjectManager` 跳过重复激活写盘；删除 `TaskScheduler` 未使用 camelCase 兼容别名；定向测试 `434 passed` → [详细记录](2026-04-17.md)
+- **全项目 simplify 清理（渲染器缓存/项目持久化/调度器别名）** — `ACPEventRenderer` 先改增量文本缓存，`TaskScheduler` 清理未使用 camelCase 兼容别名，`ProjectManager` 激活路径收口（持久化一致性在 2026-04-18 续补）；定向测试 `434 passed` → [详细记录](2026-04-17.md)
 - **/exit 误报二次修复（project_id 传递缺失）** — `_is_in_this_mode`/`_is_in_opposite_mode`/`_is_any_other_programming_mode` 只传 chat_id 不传 project_id，项目级模式查 chat 级返回 False 导致误报；统一为所有模式判断方法增加 project_id 透传，6 个子类全量修复；`44f67b6` → [详细记录](2026-04-17.md)
 
 ## 2026-04-14
