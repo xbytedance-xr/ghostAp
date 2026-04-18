@@ -1,7 +1,11 @@
 # GhostAP 项目记忆索引
 
+## 2026-04-19
+- **修复 Spec Engine 收敛检测误判** — review 连续 timeout 时 fallback suggestions 固定文本导致 `detect_convergence` 误判为收敛退出；修复：异常轮次（`review_decision` 以 `review_failed` 开头）不参与收敛比较；+4 测试，30 convergence tests passed → [详细记录](2026-04-19.md)
+
 ## 2026-04-18
 - **/simplify 续做：LLM 缓存复用、渲染器收口与项目持久化一致性** — 新增 `src/utils/llm.py` 并接入 Loop/Spec/Intent；`ACPEventRenderer` 改脏标记重建+完成计数收口；`ProjectManager` 补齐 touch 持久化一致性；定向测试 `419 passed` → [详细记录](2026-04-18.md)
+- **Worktree 编排系统实现** — 新增 `/wt` 交互选择多工具-模型对+独立 worktree 创建+并行执行+合并+清理；session 工厂/6 卡片构建器/8 handler/8 card action 路由/git merge-remove-cleanup/manager merge-cleanup/dispatcher 回调；30 个新测试，全量 `1892 passed` → [详细记录](2026-04-18.md)
 
 ## 2026-04-17
 - **全项目 simplify 清理（渲染器缓存/项目持久化/调度器别名）** — `ACPEventRenderer` 先改增量文本缓存，`TaskScheduler` 清理未使用 camelCase 兼容别名，`ProjectManager` 激活路径收口（持久化一致性在 2026-04-18 续补）；定向测试 `434 passed` → [详细记录](2026-04-17.md)

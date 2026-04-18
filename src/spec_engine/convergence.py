@@ -103,6 +103,11 @@ def detect_convergence(
         for c in recent:
             if c.review_result is None:
                 return False
+            # review 异常（timeout 等）产生的 fallback suggestions 是固定模板文本，
+            # 连续异常会导致 suggestion 集合完全相同而误判为收敛。
+            # 有异常轮次时不参与收敛判定。
+            if str(c.review_decision or "").startswith("review_failed"):
+                return False
             ss: set[str] = set()
             for pr in c.review_result.failed_perspectives:
                 for s in pr.suggestions:

@@ -175,6 +175,111 @@ class TestDetectConvergenceTolerance:
         assert result_default == result_explicit
 
 
+class TestDetectConvergenceReviewFailed:
+    """review 异常轮次不应参与收敛判定（避免 timeout 等 fallback suggestions 导致误判）。"""
+
+    def _make_project_with_criteria(self, n_criteria: int) -> SpecProject:
+        project = SpecProject.create(root_path="/tmp")
+        project.criteria_tracker.init_criteria([f"C{i}" for i in range(n_criteria)])
+        return project
+
+    def _make_failed_review(self, iteration: int) -> ReviewResult:
+        """模拟 review 异常时产生的 fallback ReviewResult。"""
+        return ReviewResult(
+            reviews=[
+                PerspectiveReview(
+                    perspective=p,
+                    passed=False,
+                    suggestions=["审查执行异常: TimeoutError (empty message)"],
+                    summary="异常",
+                )
+                for p in ReviewPerspective
+            ],
+            iteration=iteration,
+        )
+
+    def test_consecutive_review_failures_not_converged(self):
+        """连续2轮 review timeout，不应被判定为收敛。"""
+        project = self._make_project_with_criteria(3)
+        project.criteria_tracker.update(0, True, 1)
+
+        project.cycles = [
+            SpecCycle(
+                cycle_number=1,
+                review_result=self._make_failed_review(1),
+                review_decision="review_failed_continue",
+            ),
+            SpecCycle(
+                cycle_number=2,
+                review_result=self._make_failed_review(2),
+                review_decision="review_failed_continue",
+            ),
+        ]
+
+        assert not detect_convergence(
+            project, convergence_window=2, review_enabled=True
+        )
+
+    def test_one_failed_one_normal_not_converged(self):
+        """一轮异常 + 一轮正常，不应被判定为收敛。"""
+        project = self._make_project_with_criteria(3)
+        project.criteria_tracker.update(0, True, 1)
+
+        project.cycles = [
+            SpecCycle(
+                cycle_number=1,
+                review_result=self._make_failed_review(1),
+                review_decision="review_failed_continue",
+            ),
+            SpecCycle(
+                cycle_number=2,
+                review_result=_make_review(2, passed=False),
+                review_decision="",
+            ),
+        ]
+
+        assert not detect_convergence(
+            project, convergence_window=2, review_enabled=True
+        )
+
+    def test_circuit_breaker_decision_not_converged(self):
+        """熔断决策也以 review_failed 开头，同样不应参与收敛。"""
+        project = self._make_project_with_criteria(3)
+        project.criteria_tracker.update(0, True, 1)
+
+        project.cycles = [
+            SpecCycle(
+                cycle_number=1,
+                review_result=self._make_failed_review(1),
+                review_decision="review_failed_open_circuit",
+            ),
+            SpecCycle(
+                cycle_number=2,
+                review_result=self._make_failed_review(2),
+                review_decision="review_failed_open_circuit",
+            ),
+        ]
+
+        assert not detect_convergence(
+            project, convergence_window=2, review_enabled=True
+        )
+
+    def test_normal_reviews_still_converge(self):
+        """正常 review（无异常）相同建议仍然正确判定为收敛。"""
+        project = self._make_project_with_criteria(3)
+        project.criteria_tracker.update(0, True, 1)
+
+        review = _make_review(1, passed=False)
+        project.cycles = [
+            SpecCycle(cycle_number=1, review_result=review, review_decision=""),
+            SpecCycle(cycle_number=2, review_result=review, review_decision=""),
+        ]
+
+        assert detect_convergence(
+            project, convergence_window=2, review_enabled=True
+        )
+
+
 class TestDetectBacklogStuck:
 
     def test_empty_project_returns_false(self):
