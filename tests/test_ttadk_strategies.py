@@ -580,8 +580,9 @@ class TestInteractiveStrategyEnv(unittest.TestCase):
                     # But fetch calls openpty etc directly.
                     # We need to mock pty.openpty to check if it proceeds past the check
                     with patch("pty.openpty") as mock_pty:
-                        mock_pty.return_value = (1, 2)  # master, slave fds
+                        mock_pty.return_value = (100, 101)  # safe fake fds (not stdout/stderr)
                         with patch("os.close"), patch("fcntl.ioctl"), patch("subprocess.Popen"), \
+                             patch("os.killpg"), patch("os.kill"), \
                              patch.object(InteractiveStrategy, "_read_until_prompt", return_value=""):
                             # Just ensure it tries to run (mocking enough to not crash)
                             try:

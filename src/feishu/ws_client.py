@@ -157,6 +157,7 @@ class FeishuWSClient:
         self.settings = get_settings()
         self.message_callback = message_callback
         self._client: Optional[lark.ws.Client] = None
+        self._closed = False
         self._api_client: Optional[lark.Client] = None
         self._coco_manager = ACPSessionManager("coco", session_timeout=self.settings.coco_session_timeout, keepalive_interval=self.settings.acp_keepalive_interval, idle_healthcheck_s=self.settings.acp_session_idle_healthcheck_s)
         self._claude_manager = ACPSessionManager("claude", session_timeout=self.settings.claude_session_timeout, keepalive_interval=self.settings.acp_keepalive_interval, idle_healthcheck_s=self.settings.acp_session_idle_healthcheck_s)
@@ -473,6 +474,18 @@ class FeishuWSClient:
                 mid, cid, self._project_manager.get_project(pid) if pid else None, True
             ),
             exact="show_ttadk_menu",
+        )
+
+        # Worktree
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_worktree_command(
+                mid, cid, self._project_manager.get_project(pid) if pid else None, True
+            ),
+            exact="show_worktree_menu",
+        )
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_finish_worktree_selection(mid, cid, pid),
+            exact="worktree_finish_selection",
         )
 
         # ACP
@@ -803,6 +816,7 @@ class FeishuWSClient:
 
     def close(self):
         """Best-effort cleanup for background resources."""
+        self._closed = True
 
         self._stop_ws_watchdog()
 
@@ -1082,6 +1096,8 @@ class FeishuWSClient:
         "_handle_card_resume_ttadk": ("_ttadk_handler", "handle_card_resume"),
         "_handle_card_new_ttadk": ("_ttadk_handler", "handle_card_new"),
         "_handle_ttadk_command": ("_system_handler", "handle_ttadk_command"),
+        "_handle_worktree_command": ("_system_handler", "handle_worktree_command"),
+        "_handle_finish_worktree_selection": ("_system_handler", "handle_finish_worktree_selection"),
         "_handle_select_ttadk_tool": ("_system_handler", "handle_select_ttadk_tool"),
         "_handle_select_ttadk_model": ("_system_handler", "handle_select_ttadk_model"),
         "_handle_refresh_ttadk_models": ("_system_handler", "handle_refresh_ttadk_models"),
@@ -2094,6 +2110,8 @@ class FeishuWSClient:
                 "show_ttadk_menu",
                 "show_acp_menu",
                 "show_help_menu",
+                "show_worktree_menu",
+                "worktree_finish_selection",
                 "enter_deep_prompt",
                 "help_category",
                 "deep_pause",
@@ -2802,18 +2820,32 @@ class FeishuWSClient:
             .build()
         )
 
-        self._client = _ObservedLarkWSClient(
-            self.settings.app_id,
-            self.settings.app_secret,
-            event_handler=event_handler,
-            log_level=lark.LogLevel.DEBUG,
-            on_activity=self._record_ws_activity,
-        )
-
         self._message_cache.start_cleanup_thread()
         self._card_event_cache.start_cleanup_thread()
         self._start_ws_watchdog()
 
         logger.info("正在建立飞书长连接...")
         logger.info("多项目管理已启用")
-        self._client.start()
+
+        reconnect_delay = getattr(self.settings, "feishu_ws_reconnect_delay_s", 5.0)
+
+        while not self._closed:
+            self._client = _ObservedLarkWSClient(
+                self.settings.app_id,
+                self.settings.app_secret,
+                event_handler=event_handler,
+                log_level=lark.LogLevel.DEBUG,
+                on_activity=self._record_ws_activity,
+            )
+            try:
+                self._client.start()
+            except Exception:
+                if self._closed:
+                    break
+                logger.exception("飞书 WS 连接异常退出")
+
+            if self._closed:
+                break
+
+            logger.warning("飞书 WS 连接已断开，%.1fs 后重连...", reconnect_delay)
+            time.sleep(reconnect_delay)

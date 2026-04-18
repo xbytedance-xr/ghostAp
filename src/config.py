@@ -263,6 +263,12 @@ class Settings(BaseSettings):
 
     streaming_enabled: bool = True
 
+    # Feishu WebSocket reconnect delay (seconds) when underlying client exits unexpectedly
+    feishu_ws_reconnect_delay_s: float = 5.0
+
+    # Feishu WebSocket watchdog interval (seconds)
+    feishu_ws_watchdog_interval: float = 60.0
+
     # Streaming flow control (Adaptive interval)
     streaming_adaptive_interval_base: float = 0.3  # Base interval (seconds) for low rate
     streaming_adaptive_interval_max: float = 2.0  # Max interval (seconds) for high rate

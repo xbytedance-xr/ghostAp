@@ -8,6 +8,7 @@ methods that bridge to the async ACPSession.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import json
 import logging
@@ -1471,7 +1472,7 @@ class SyncACPSession:
 
         try:
             return future.result(timeout=timeout)
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, concurrent.futures.CancelledError):
             raise RuntimeError("ACP agent 进程在执行过程中意外终止")
         except TimeoutError:
             # Cancel the agent process on timeout to free resources

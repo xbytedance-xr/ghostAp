@@ -244,9 +244,11 @@ class DeepRenderer(BaseRenderer):
             title = f"{status_emoji} Deep Agent 执行{'完成' if deep_project.status == DeepProjectStatus.COMPLETED else '结束'}"
 
             # Don't show 0% progress bar on completion when no plan entries were tracked
-            progress_bar = (
-                progress.progress_bar if (progress and progress.total_steps > 0) else None
-            )
+            try:
+                has_steps = progress is not None and int(progress.total_steps) > 0
+            except (TypeError, ValueError, AttributeError):
+                has_steps = False
+            progress_bar = progress.progress_bar if has_steps else None
             msg_type, card_content = CardBuilder.build_engine_card(
                 project=project,
                 state=EngineCardState(

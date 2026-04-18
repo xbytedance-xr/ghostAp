@@ -2,7 +2,10 @@ import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from ..worktree_engine.models import WorktreeRuntimeState
 
 
 class ProjectStatus(Enum):
@@ -97,7 +100,12 @@ class ProjectContext:
 
     env_vars: dict = field(default_factory=dict)
 
+    worktree_state: Any = None
+
     def __post_init__(self):
+        if self.worktree_state is None:
+            from ..worktree_engine.models import WorktreeRuntimeState
+            self.worktree_state = WorktreeRuntimeState()
         if not self.working_dir:
             self.working_dir = self.root_path
         self.root_path = os.path.expanduser(self.root_path)

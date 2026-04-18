@@ -84,6 +84,8 @@ class SystemHandler(BaseHandler):
             "/switch": lambda m, c, t, p: self.project_handler.show_project_board(m, c),
             "/ttadk": lambda m, c, t, p: self.handle_ttadk_command(m, c, p),
             "/acp": lambda m, c, t, p: self.handle_acp_command(m, c, p),
+            "/wt": lambda m, c, t, p: self.handle_worktree_command(m, c, p),
+            "/worktree": lambda m, c, t, p: self.handle_worktree_command(m, c, p),
             "/ttadk_info": lambda m, c, t, p: self.show_ttadk_info(m, c),
             "/ttadk_refresh": lambda m, c, t, p: self.refresh_ttadk_models(m, c, p),
             "/menu": lambda m, c, t, p: self.handle_menu_command(m, c, p),
@@ -264,6 +266,8 @@ class SystemHandler(BaseHandler):
             "/trace",
             "/ttadk",
             "/acp",
+            "/wt",
+            "/worktree",
             "/ttadk_refresh",
             "/menu",
             "/model",
@@ -815,6 +819,36 @@ class SystemHandler(BaseHandler):
             project_id,
             where,
         )
+
+    # ------------------------------------------------------------------
+    # Worktree commands
+    # ------------------------------------------------------------------
+    def handle_worktree_command(
+        self,
+        message_id: str,
+        chat_id: str,
+        project: Optional["ProjectContext"] = None,
+        from_card: bool = False,
+    ):
+        """Handle /wt or /worktree command — show worktree menu or status."""
+        project = project or self.project_manager.get_active_project(chat_id)
+        if not project:
+            self.reply_error(message_id, "请先创建或切换到一个项目")
+            return
+        self.reply_message(message_id, f"Worktree 管理 — 项目: {project.project_name}")
+
+    def handle_finish_worktree_selection(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: Optional[str] = None,
+    ):
+        """Handle worktree_finish_selection card action."""
+        project = self.project_manager.get_project(project_id) if project_id else None
+        if not project:
+            self.reply_error(message_id, "找不到关联的项目")
+            return
+        self.reply_message(message_id, "Worktree 选择已完成")
 
     def _reply_ttadk_load_hint(self, message_id: str, text: str, project_id: Optional[str] = None) -> None:
         msg_type, card_content = CardBuilder.build_ttadk_soft_failure_card_for(text, project_id=project_id)

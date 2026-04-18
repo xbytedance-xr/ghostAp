@@ -361,3 +361,59 @@ class CardBuilder:
         return DeepBuilder.build_history_list_card(
             project, title, content, history_buttons, page, has_next, deep_project_id, engine_name
         )
+
+    @staticmethod
+    def build_worktree_result_card(
+        selected_items: list,
+        unit_summary_lines: list[str],
+        project_id: Optional[str] = None,
+        merge_entry_ready: bool = False,
+        message: str = "",
+    ) -> tuple[str, str]:
+        import json
+
+        elements = [
+            CoreBuilder._build_content_element(
+                f"**🔀 工作单元结果**\n\n{message}\n\n" + "\n".join(unit_summary_lines)
+            ),
+        ]
+        if merge_entry_ready:
+            elements.append(
+                {
+                    "tag": "action",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "查看集成项"},
+                            "type": "primary",
+                            "value": {
+                                "action": "show_worktree_merge_entry",
+                                "project_id": project_id or "",
+                            },
+                        }
+                    ],
+                }
+            )
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {"title": {"tag": "plain_text", "content": "工作单元结果"}, "template": "turquoise"},
+            "elements": elements,
+        }
+        return "interactive", json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
+    def build_worktree_merge_entry_card(
+        merge_notes: list[str],
+        project_id: Optional[str] = None,
+        base_branch: str = "main",
+    ) -> tuple[str, str]:
+        import json
+
+        content = f"**🔀 待集成项**\n\n目标分支: `{base_branch}`\n\n" + "\n".join(merge_notes)
+        elements = [CoreBuilder._build_content_element(content)]
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {"title": {"tag": "plain_text", "content": "待集成项"}, "template": "purple"},
+            "elements": elements,
+        }
+        return "interactive", json.dumps(card, ensure_ascii=False)
