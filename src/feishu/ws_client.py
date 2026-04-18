@@ -487,6 +487,30 @@ class FeishuWSClient:
             lambda mid, cid, pid, val: self._handle_finish_worktree_selection(mid, cid, pid),
             exact="worktree_finish_selection",
         )
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_worktree_select_tool(mid, cid, pid, val),
+            exact="worktree_select_tool",
+        )
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_worktree_select_model(mid, cid, pid, val),
+            exact="worktree_select_model",
+        )
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_worktree_continue_selection(mid, cid, pid, val),
+            exact="worktree_continue_selection",
+        )
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_worktree_confirm_start(mid, cid, pid, val),
+            exact="worktree_confirm_start",
+        )
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_worktree_merge(mid, cid, pid, val),
+            exact="worktree_merge",
+        )
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_worktree_cleanup(mid, cid, pid, val),
+            exact="worktree_cleanup",
+        )
 
         # ACP
         self._register_action(
@@ -1098,6 +1122,12 @@ class FeishuWSClient:
         "_handle_ttadk_command": ("_system_handler", "handle_ttadk_command"),
         "_handle_worktree_command": ("_system_handler", "handle_worktree_command"),
         "_handle_finish_worktree_selection": ("_system_handler", "handle_finish_worktree_selection"),
+        "_handle_worktree_select_tool": ("_system_handler", "handle_worktree_select_tool"),
+        "_handle_worktree_select_model": ("_system_handler", "handle_worktree_select_model"),
+        "_handle_worktree_continue_selection": ("_system_handler", "handle_worktree_continue_selection"),
+        "_handle_worktree_confirm_start": ("_system_handler", "handle_worktree_confirm_start"),
+        "_handle_worktree_merge": ("_system_handler", "handle_worktree_merge"),
+        "_handle_worktree_cleanup": ("_system_handler", "handle_worktree_cleanup"),
         "_handle_select_ttadk_tool": ("_system_handler", "handle_select_ttadk_tool"),
         "_handle_select_ttadk_model": ("_system_handler", "handle_select_ttadk_model"),
         "_handle_refresh_ttadk_models": ("_system_handler", "handle_refresh_ttadk_models"),
@@ -2112,6 +2142,12 @@ class FeishuWSClient:
                 "show_help_menu",
                 "show_worktree_menu",
                 "worktree_finish_selection",
+                "worktree_select_tool",
+                "worktree_select_model",
+                "worktree_continue_selection",
+                "worktree_confirm_start",
+                "worktree_merge",
+                "worktree_cleanup",
                 "enter_deep_prompt",
                 "help_category",
                 "deep_pause",

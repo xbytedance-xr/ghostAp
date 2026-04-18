@@ -104,3 +104,107 @@ def test_git_service_creates_distinct_worktrees_for_multiple_selections(tmp_path
     assert len(state.units) == 2
     assert state.units[0].worktree_path != state.units[1].worktree_path
     assert state.units[0].branch_name != state.units[1].branch_name
+
+
+# ------------------------------------------------------------------
+# merge_branch / remove_worktree / remove_branch
+# ------------------------------------------------------------------
+
+
+def _commit_file(path: Path, filename: str, content: str, message: str) -> None:
+    (path / filename).write_text(content, encoding="utf-8")
+    _run_git(path, "add", filename)
+    _run_git(
+        path,
+        "-c", "user.name=Tester",
+        "-c", "user.email=tester@example.com",
+        "commit", "-m", message,
+    )
+
+
+def test_merge_branch_success(tmp_path):
+    """Fast-forward-free merge succeeds and returns (True, [])."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    # Create a feature branch, add a commit
+    _run_git(repo, "checkout", "-b", "feature-a")
+    _commit_file(repo, "a.txt", "aaa\n", "add a")
+    _run_git(repo, "checkout", "main")
+
+    service = WorktreeGitService()
+    ok, conflicts = service.merge_branch(str(repo), "feature-a", "main")
+
+    assert ok is True
+    assert conflicts == []
+    assert (repo / "a.txt").exists()
+
+
+def test_merge_branch_conflict_aborts(tmp_path):
+    """Conflicting merge returns (False, conflict_files) and aborts cleanly."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    # Diverge: main edits file one way, feature edits another
+    _commit_file(repo, "shared.txt", "main content\n", "main edit")
+    _run_git(repo, "checkout", "-b", "feature-b", "HEAD~1")
+    _commit_file(repo, "shared.txt", "feature content\n", "feature edit")
+    _run_git(repo, "checkout", "main")
+
+    service = WorktreeGitService()
+    ok, conflicts = service.merge_branch(str(repo), "feature-b", "main")
+
+    assert ok is False
+    assert "shared.txt" in conflicts
+    # Repo should be clean after abort
+    status = _run_git(repo, "status", "--porcelain")
+    assert status.stdout.strip() == ""
+
+
+def test_remove_worktree(tmp_path):
+    """remove_worktree deletes the worktree directory and prunes."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    service = WorktreeGitService()
+    # Use the expected parent directory so path validation passes
+    wt_parent = Path(service.build_worktree_parent(str(repo)))
+    wt_parent.mkdir(parents=True, exist_ok=True)
+    wt_path = str(wt_parent / "wt-test")
+    _run_git(repo, "worktree", "add", "-b", "wt-branch", wt_path, "main")
+    assert Path(wt_path).exists()
+
+    service.remove_worktree(str(repo), wt_path)
+
+    assert not Path(wt_path).exists()
+
+
+def test_remove_branch(tmp_path):
+    """remove_branch force-deletes a local branch."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    _run_git(repo, "branch", "to-delete")
+    branches_before = _run_git(repo, "branch", "--list").stdout
+    assert "to-delete" in branches_before
+
+    service = WorktreeGitService()
+    service.remove_branch(str(repo), "to-delete")
+
+    branches_after = _run_git(repo, "branch", "--list").stdout
+    assert "to-delete" not in branches_after
+
+
+def test_remove_branch_nonexistent_is_noop(tmp_path):
+    """Removing a branch that doesn't exist should not raise."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+
+    service = WorktreeGitService()
+    # Should not raise
+    service.remove_branch(str(repo), "nonexistent-branch")

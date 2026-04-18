@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from ..project.context import ProjectContext
@@ -8,6 +9,8 @@ from .git_service import WorktreeGitService
 from .models import WorktreeRuntimeState
 from .reporter import WorktreeReporter
 from .selection import WorktreeToolOption, apply_model_to_item, build_selection_item, format_selection_lines
+
+logger = logging.getLogger(__name__)
 
 
 class WorktreeManager:
@@ -155,3 +158,53 @@ class WorktreeManager:
         except Exception as exc:
             state.last_error = str(exc)
         return self._reporter.refresh_state(state)
+
+    # ------------------------------------------------------------------
+    # Merge / cleanup
+    # ------------------------------------------------------------------
+
+    def merge_to_base(self, project: ProjectContext) -> tuple[WorktreeRuntimeState, list[dict]]:
+        """Merge each completed worktree branch into *base_branch*.
+
+        Returns ``(state, merge_results)`` where each result is a dict with
+        ``display_name``, ``branch_name``, ``success``, ``detail``.
+        """
+        state = self.get_state(project)
+        if not state.units or not state.base_branch:
+            state.last_error = "没有可合并的 worktree 或基础分支未设置"
+            return self._reporter.refresh_state(state), []
+
+        merge_results: list[dict] = []
+        for unit in state.units:
+            if unit.status != "completed" or not unit.has_changes:
+                merge_results.append(
+                    {"display_name": unit.display_name, "branch_name": unit.branch_name, "success": False, "detail": "跳过（未完成或无变更）"}
+                )
+                continue
+            try:
+                ok, conflicts = self._git.merge_branch(state.git_root, unit.branch_name, state.base_branch)
+                if ok:
+                    merge_results.append({"display_name": unit.display_name, "branch_name": unit.branch_name, "success": True, "detail": "合并成功"})
+                else:
+                    merge_results.append({"display_name": unit.display_name, "branch_name": unit.branch_name, "success": False, "detail": f"冲突文件: {', '.join(conflicts)}"})
+            except Exception as exc:
+                merge_results.append({"display_name": unit.display_name, "branch_name": unit.branch_name, "success": False, "detail": str(exc)})
+
+        state.last_error = ""
+        state.merge_entry_ready = False
+        return self._reporter.refresh_state(state), merge_results
+
+    def cleanup_worktrees(self, project: ProjectContext) -> WorktreeRuntimeState:
+        """Remove all worktree directories and branches, reset state."""
+        state = self.get_state(project)
+        for unit in state.units:
+            try:
+                if unit.worktree_path:
+                    self._git.remove_worktree(state.git_root or project.root_path, unit.worktree_path)
+                if unit.branch_name:
+                    self._git.remove_branch(state.git_root or project.root_path, unit.branch_name)
+            except Exception:
+                logger.warning("清理 worktree 失败: unit=%s path=%s branch=%s", unit.unit_id, unit.worktree_path, unit.branch_name, exc_info=True)
+        # Reset state
+        project.worktree_state = WorktreeRuntimeState()
+        return self.get_state(project)

@@ -5,6 +5,7 @@ from .builders.core import CoreBuilder
 from .builders.deep import DeepBuilder
 from .builders.project import ProjectBuilder
 from .builders.system import SystemBuilder
+from .builders.worktree import WorktreeBuilder
 from .models import EngineCardState
 from .shared import apply_compact_style
 
@@ -417,3 +418,12 @@ class CardBuilder:
             "elements": elements,
         }
         return "interactive", json.dumps(card, ensure_ascii=False)
+
+    # --- Worktree Selection / Execution Delegates ---
+
+    build_worktree_tool_select_card = staticmethod(WorktreeBuilder.build_worktree_tool_select_card)
+    build_worktree_model_select_card = staticmethod(WorktreeBuilder.build_worktree_model_select_card)
+    build_worktree_continue_card = staticmethod(WorktreeBuilder.build_worktree_continue_card)
+    build_worktree_confirm_card = staticmethod(WorktreeBuilder.build_worktree_confirm_card)
+    build_worktree_progress_card = staticmethod(WorktreeBuilder.build_worktree_progress_card)
+    build_worktree_cleanup_card = staticmethod(WorktreeBuilder.build_worktree_cleanup_card)

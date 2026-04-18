@@ -823,6 +823,111 @@ class SystemHandler(BaseHandler):
     # ------------------------------------------------------------------
     # Worktree commands
     # ------------------------------------------------------------------
+
+    _WORKTREE_MAX_SELECTIONS = 5
+
+    def _get_available_worktree_tools(self) -> list[dict]:
+        """Return available tools as dicts suitable for card builders.
+
+        Probes three provider categories:
+        1. ACP direct tools (coco, aiden, codex, gemini)
+        2. CLI tools (claude)
+        3. TTADK-managed tools (filtered by shutil.which)
+        """
+        import shutil
+
+        from ...worktree_engine.selection import WorktreeToolOption
+
+        tools: list[dict] = []
+        seen: set[str] = set()
+
+        # --- ACP tools ---
+        acp_defs = [
+            ("coco", "Coco", "字节跳动 AI 编程"),
+            ("aiden", "Aiden", "AI 编程助手"),
+            ("codex", "Codex", "OpenAI Codex"),
+            ("gemini", "Gemini", "Google Gemini"),
+        ]
+        for name, display, desc in acp_defs:
+            if name in seen:
+                continue
+            if shutil.which(name):
+                tools.append(
+                    WorktreeToolOption(
+                        provider="acp",
+                        tool_name=name,
+                        display_name=display,
+                        description=desc,
+                        supports_model=False,
+                    ).__dict__
+                )
+                seen.add(name)
+
+        # --- CLI tools ---
+        if "claude" not in seen and shutil.which("claude"):
+            tools.append(
+                WorktreeToolOption(
+                    provider="cli",
+                    tool_name="claude",
+                    display_name="Claude",
+                    description="Anthropic Claude CLI",
+                    supports_model=False,
+                ).__dict__
+            )
+            seen.add("claude")
+
+        # --- TTADK tools ---
+        try:
+            manager = get_ttadk_manager()
+            result = manager.get_tools()
+            for t in result.tools:
+                name = t.name
+                if name in seen:
+                    continue
+                tools.append(
+                    WorktreeToolOption(
+                        provider="ttadk",
+                        tool_name=name,
+                        display_name=t.description or name,
+                        description=f"TTADK · {name}",
+                        supports_model=True,
+                        model_optional=True,
+                    ).__dict__
+                )
+                seen.add(name)
+        except Exception:
+            pass
+
+        return tools
+
+    def _get_models_for_tool(self, tool_name: str) -> list[dict]:
+        """Return available models for a TTADK tool as dicts for card builder."""
+        try:
+            manager = get_ttadk_manager()
+            models_result = manager.get_models(tool_name=tool_name)
+            models = []
+            for m in (models_result.models if models_result else []):
+                models.append(
+                    {
+                        "name": m.name,
+                        "display_name": getattr(m, "display_name", None) or m.name,
+                        "is_default": getattr(m, "is_default", False),
+                    }
+                )
+            return models
+        except Exception:
+            return []
+
+    def _worktree_manager(self):
+        """Lazy-init WorktreeManager instance."""
+        mgr = getattr(self, "_wt_manager", None)
+        if mgr is None:
+            from ...worktree_engine.manager import WorktreeManager
+
+            mgr = WorktreeManager(self.project_manager)
+            self._wt_manager = mgr
+        return mgr
+
     def handle_worktree_command(
         self,
         message_id: str,
@@ -830,12 +935,131 @@ class SystemHandler(BaseHandler):
         project: Optional["ProjectContext"] = None,
         from_card: bool = False,
     ):
-        """Handle /wt or /worktree command — show worktree menu or status."""
+        """Handle /wt or /worktree command — start tool selection flow."""
         project = project or self.project_manager.get_active_project(chat_id)
         if not project:
             self.reply_error(message_id, "请先创建或切换到一个项目")
             return
-        self.reply_message(message_id, f"Worktree 管理 — 项目: {project.project_name}")
+
+        mgr = self._worktree_manager()
+        mgr.start_selection(project)
+        tools = self._get_available_worktree_tools()
+        if not tools:
+            self.reply_error(message_id, "当前环境没有可用的编程工具")
+            return
+
+        project_id = project.project_id if project else None
+        state = mgr.get_state(project)
+        selected_dicts = [item.to_dict() for item in state.selection.selected_items]
+        msg_type, card = CardBuilder.build_worktree_tool_select_card(tools, selected_dicts, project_id)
+        if from_card:
+            self.patch_message(message_id, card, msg_type=msg_type)
+        else:
+            self.reply_message(message_id, card, msg_type=msg_type)
+
+    def handle_worktree_select_tool(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: Optional[str] = None,
+        value: dict | None = None,
+    ):
+        """Card action: user selected a tool from the worktree tool list."""
+        value = value or {}
+        project = self.project_manager.get_project(project_id) if project_id else self.project_manager.get_active_project(chat_id)
+        if not project:
+            self.reply_error(message_id, "找不到关联的项目")
+            return
+
+        tool_name = value.get("_option") or value.get("tool_name", "")
+        provider = value.get("provider", "")
+        supports_model = value.get("supports_model", False)
+
+        if not tool_name:
+            self.reply_error(message_id, "未选择工具")
+            return
+
+        from ...worktree_engine.selection import WorktreeToolOption
+
+        option = WorktreeToolOption(
+            provider=provider,
+            tool_name=tool_name,
+            display_name=value.get("display_name") or tool_name,
+            supports_model=bool(supports_model),
+            model_optional=True,
+        )
+
+        mgr = self._worktree_manager()
+        mgr.select_tool(project, option)
+        state = mgr.get_state(project)
+        selected_dicts = [item.to_dict() for item in state.selection.selected_items]
+        pid = project.project_id
+
+        if option.supports_model:
+            models = self._get_models_for_tool(tool_name)
+            msg_type, card = CardBuilder.build_worktree_model_select_card(
+                models, option.display_name, selected_dicts, pid,
+            )
+        else:
+            # Auto-add pending item without model, go straight to continue card
+            mgr.add_pending_item(project)
+            state = mgr.get_state(project)
+            selected_dicts = [item.to_dict() for item in state.selection.selected_items]
+            msg_type, card = CardBuilder.build_worktree_continue_card(
+                selected_dicts, state.selection.last_message, pid,
+            )
+        self.patch_message(message_id, card, msg_type=msg_type)
+
+    def handle_worktree_select_model(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: Optional[str] = None,
+        value: dict | None = None,
+    ):
+        """Card action: user selected a model for the pending tool."""
+        value = value or {}
+        project = self.project_manager.get_project(project_id) if project_id else self.project_manager.get_active_project(chat_id)
+        if not project:
+            self.reply_error(message_id, "找不到关联的项目")
+            return
+
+        model_name = value.get("_option") or value.get("model_name") or None
+        model_display = value.get("model_display_name") or model_name
+
+        mgr = self._worktree_manager()
+        state, added, msg = mgr.add_pending_item(project, model_name=model_name, model_display_name=model_display)
+        selected_dicts = [item.to_dict() for item in state.selection.selected_items]
+        pid = project.project_id
+        msg_type, card = CardBuilder.build_worktree_continue_card(selected_dicts, msg, pid)
+        self.patch_message(message_id, card, msg_type=msg_type)
+
+    def handle_worktree_continue_selection(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: Optional[str] = None,
+        value: dict | None = None,
+    ):
+        """Card action: user wants to add more tools."""
+        project = self.project_manager.get_project(project_id) if project_id else self.project_manager.get_active_project(chat_id)
+        if not project:
+            self.reply_error(message_id, "找不到关联的项目")
+            return
+
+        mgr = self._worktree_manager()
+        state = mgr.get_state(project)
+
+        if len(state.selection.selected_items) >= self._WORKTREE_MAX_SELECTIONS:
+            # Auto-finish if limit reached
+            return self.handle_finish_worktree_selection(message_id, chat_id, project_id)
+
+        mgr.back_to_tool_selection(project)
+        tools = self._get_available_worktree_tools()
+        selected_dicts = [item.to_dict() for item in state.selection.selected_items]
+        pid = project.project_id
+        msg_type, card = CardBuilder.build_worktree_tool_select_card(tools, selected_dicts, pid)
+        self.patch_message(message_id, card, msg_type=msg_type)
 
     def handle_finish_worktree_selection(
         self,
@@ -843,12 +1067,94 @@ class SystemHandler(BaseHandler):
         chat_id: str,
         project_id: Optional[str] = None,
     ):
-        """Handle worktree_finish_selection card action."""
-        project = self.project_manager.get_project(project_id) if project_id else None
+        """Card action: user finished selecting tools — show confirm card."""
+        project = self.project_manager.get_project(project_id) if project_id else self.project_manager.get_active_project(chat_id)
         if not project:
             self.reply_error(message_id, "找不到关联的项目")
             return
-        self.reply_message(message_id, "Worktree 选择已完成")
+
+        mgr = self._worktree_manager()
+        state = mgr.finalize_selection(project)
+        pid = project.project_id
+
+        if not state.enabled:
+            self.reply_error(message_id, "请至少选择一个工具-模型组合")
+            return
+
+        selected_dicts = [item.to_dict() for item in state.selection.selected_items]
+        msg_type, card = CardBuilder.build_worktree_confirm_card(selected_dicts, pid)
+        self.patch_message(message_id, card, msg_type=msg_type)
+
+    def handle_worktree_confirm_start(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: Optional[str] = None,
+        value: dict | None = None,
+    ):
+        """Card action: user confirmed selections — create worktrees and await goal."""
+        project = self.project_manager.get_project(project_id) if project_id else self.project_manager.get_active_project(chat_id)
+        if not project:
+            self.reply_error(message_id, "找不到关联的项目")
+            return
+
+        mgr = self._worktree_manager()
+        state = mgr.ensure_worktrees(project)
+
+        if state.last_error:
+            self.reply_error(message_id, f"Worktree 创建失败: {state.last_error}")
+            return
+
+        # Show progress card with "ready" status
+        units_dicts = [u.to_dict() for u in state.units]
+        pid = project.project_id
+        msg_type, card = CardBuilder.build_worktree_progress_card(
+            units_dicts, pid, message="Worktree 已创建，请发送任务需求开始并行执行。",
+        )
+        self.patch_message(message_id, card, msg_type=msg_type)
+
+    def handle_worktree_merge(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: Optional[str] = None,
+        value: dict | None = None,
+    ):
+        """Card action: merge all worktree branches back to base."""
+        project = self.project_manager.get_project(project_id) if project_id else self.project_manager.get_active_project(chat_id)
+        if not project:
+            self.reply_error(message_id, "找不到关联的项目")
+            return
+
+        mgr = self._worktree_manager()
+        state, merge_results = mgr.merge_to_base(project)
+
+        if state.last_error:
+            self.reply_error(message_id, state.last_error)
+            return
+
+        pid = project.project_id
+        msg_type, card = CardBuilder.build_worktree_cleanup_card(
+            state.merge_notes, pid, state.base_branch or "main", merge_results=merge_results,
+        )
+        self.patch_message(message_id, card, msg_type=msg_type)
+
+    def handle_worktree_cleanup(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: Optional[str] = None,
+        value: dict | None = None,
+    ):
+        """Card action: remove all worktrees and branches."""
+        project = self.project_manager.get_project(project_id) if project_id else self.project_manager.get_active_project(chat_id)
+        if not project:
+            self.reply_error(message_id, "找不到关联的项目")
+            return
+
+        mgr = self._worktree_manager()
+        mgr.cleanup_worktrees(project)
+        self.reply_message(message_id, "✅ 所有 Worktree 已清理完成")
 
     def _reply_ttadk_load_hint(self, message_id: str, text: str, project_id: Optional[str] = None) -> None:
         msg_type, card_content = CardBuilder.build_ttadk_soft_failure_card_for(text, project_id=project_id)

@@ -13,14 +13,17 @@ if TYPE_CHECKING:
 def _detect_worktree_changes(worktree_path: str) -> bool:
     if not worktree_path:
         return False
-    result = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=worktree_path,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    return bool((result.stdout or "").strip())
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=worktree_path,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        return bool((result.stdout or "").strip())
+    except Exception:
+        return False
 
 
 class WorktreeDispatcher:
@@ -60,6 +63,7 @@ class WorktreeDispatcher:
         *,
         timeout: Optional[int] = None,
         max_workers: Optional[int] = None,
+        on_unit_update: Optional[Callable[[WorktreeUnit], None]] = None,
     ) -> list[WorktreeUnit]:
         planned_units = list(units)
         if not planned_units:
@@ -67,7 +71,7 @@ class WorktreeDispatcher:
 
         workers = max(1, min(max_workers or len(planned_units), len(planned_units)))
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            future_map = {executor.submit(self._run_single_unit, unit, timeout=timeout): unit for unit in planned_units}
+            future_map = {executor.submit(self._run_single_unit, unit, timeout=timeout, on_unit_update=on_unit_update): unit for unit in planned_units}
             for future in as_completed(future_map):
                 unit = future_map[future]
                 try:
@@ -75,10 +79,20 @@ class WorktreeDispatcher:
                 except Exception as exc:
                     unit.status = "failed"
                     unit.error = str(exc)
+                    if on_unit_update:
+                        try:
+                            on_unit_update(unit)
+                        except Exception:
+                            pass
         return planned_units
 
-    def _run_single_unit(self, unit: WorktreeUnit, *, timeout: Optional[int] = None) -> None:
+    def _run_single_unit(self, unit: WorktreeUnit, *, timeout: Optional[int] = None, on_unit_update: Optional[Callable[[WorktreeUnit], None]] = None) -> None:
         unit.status = "running"
+        if on_unit_update:
+            try:
+                on_unit_update(unit)
+            except Exception:
+                pass
         session = self._session_factory(
             provider=unit.provider,
             tool_name=unit.tool_name,
@@ -92,6 +106,11 @@ class WorktreeDispatcher:
             unit.status = "completed" if getattr(result, "stop_reason", "") not in {"failed", "error", "cancelled"} else "failed"
             unit.error = "" if unit.status == "completed" else unit.summary
             unit.has_changes = _detect_worktree_changes(unit.worktree_path)
+            if on_unit_update:
+                try:
+                    on_unit_update(unit)
+                except Exception:
+                    pass
         finally:
             try:
                 session.close()
