@@ -53,7 +53,7 @@ def decompose_criteria_with_llm(text: str, settings) -> list[str]:
         )
         return extract_criteria_from_llm_response(response.content)
     except Exception as e:
-        logger.warning("[Spec] LLM 需求拆解失败: %s, 将使用原始文本", e)
+        logger.warning("[Spec] LLM 需求拆解失败: %s, 将使用原始文本", str(e) or repr(e))
         return []
 
 
@@ -110,5 +110,5 @@ CRITERIA_2: FAIL
         return {"all_satisfied": all_satisfied}
 
     except Exception as e:
-        logger.debug("[Spec] 验收标准评估失败: %s", e)
+        logger.debug("[Spec] 验收标准评估失败: %s", str(e) or repr(e))
         return {"all_satisfied": False}

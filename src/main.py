@@ -66,7 +66,7 @@ class Application:
                 working_dir,
             )
         except Exception as e:
-            logger.error("处理命令异常: %s", e)
+            logger.error("处理命令异常: %s", str(e) or repr(e))
             try:
                 from .utils.errors import get_error_detail
                 self.feishu_client.add_reaction(message_id, EmojiReaction.on_error())
@@ -115,7 +115,7 @@ class Application:
         except KeyboardInterrupt:
             logger.info("服务已停止")
         except Exception as e:
-            logger.error("服务异常: %s", e)
+            logger.error("服务异常: %s", str(e) or repr(e))
             sys.exit(1)
         finally:
             try:

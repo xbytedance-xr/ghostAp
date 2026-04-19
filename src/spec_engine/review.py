@@ -343,5 +343,5 @@ def parse_review_with_llm(raw_text: str, settings) -> list[PerspectiveReview]:
         )
         return extract_reviews_from_llm_response(response.content)
     except Exception as e:
-        logger.warning("[Spec] LLM 兜底审查解析失败: %s", e)
+        logger.warning("[Spec] LLM 兜底审查解析失败: %s", str(e) or repr(e))
         return []

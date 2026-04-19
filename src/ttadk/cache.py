@@ -571,7 +571,7 @@ class TTADKModelCache:
                 )
                 return
             except Exception as e:
-                logger.warning("Failed to load TTADK models cache from project file: path=%s err=%s", str(path), e)
+                logger.warning("Failed to load TTADK models cache from project file: path=%s err=%s", str(path), str(e) or repr(e))
                 # best-effort: remove corrupted project cache
                 try:
                     if path.exists():
@@ -604,7 +604,7 @@ class TTADKModelCache:
             _apply_loaded(data, low_confidence=True)
             logger.info("Loaded TTADK models from legacy HOME cache: path=%s", str(legacy))
         except Exception as e:
-            logger.warning("Failed to load TTADK models cache from legacy HOME file: path=%s err=%s", str(legacy), e)
+            logger.warning("Failed to load TTADK models cache from legacy HOME file: path=%s err=%s", str(legacy), str(e) or repr(e))
             return
 
         # Optional migrate: write into project cache only (never write back to HOME).
@@ -659,7 +659,7 @@ class TTADKModelCache:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             tmp_path.replace(path)
         except Exception as e:
-            logger.warning("Failed to save models cache to file: %s", e)
+            logger.warning("Failed to save models cache to file: %s", str(e) or repr(e))
 
     # ------------------------------
     # fetcher 回灌

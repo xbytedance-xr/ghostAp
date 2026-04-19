@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 ## 2026-04-19
+- **TimeoutError (empty message) 8 层纵深防御体系最终闭合** — 审查确认 8 层防御（核心兜底→用户可见→logger→引擎→review 断路器→收敛保护→回归 lint→safe_wait_for 源头防御）全部就位；src/ 零残留裸 asyncio.wait_for / f"{e}" / str(e)；`(empty message)` 源头消灭；2078 tests passed + 82 回归 lint 测试全绿 → [详细记录](2026-04-19.md)
+- **logger 路径 bare %s,e 全量加固 + safe_wait_for 测试补全** — 30 个 src 文件共 93 处 `logger.xxx("...%s", e)` bare exception 变量统一替换为 `str(e) or repr(e)` 守卫；新增 `_BARE_LOGGER_PERCENT_RE` 回归 lint；扩展 safe_wait_for 4 个边界/取消测试 + 新建 4 个集成测试（ACP stream/healthcheck/shutdown 超时）；2078 tests passed → [详细记录](2026-04-19.md)
 - **safe_wait_for 源头防御 + 回归 lint 扩展** — 新增 `src/utils/async_helpers.py` 封装 `asyncio.wait_for` 为 `safe_wait_for`，自动为空消息 TimeoutError 附加 action 文案；替换 session.py 2处 + shutdown.py 1处；扩展回归 lint 检测裸 asyncio.wait_for；+8 新测试 +1 lint 测试，2069 tests passed → [详细记录](2026-04-19.md)
 - **最终一致性加固: ttadk 内部路径 bare f"{e}" 消除** — strategies.py:302 + ttadk_wrapper.py:458,480 共 3 处内部诊断路径 bare `f"{e}"` → `str(e) or repr(e)` 一致性加固；项目中零残留裸异常格式化；2060 tests passed → [详细记录](2026-04-19.md)
 - **回归扫描器加固 + 残余裸异常消除 + asyncio.TimeoutError e2e 覆盖** — 修复 `_SKIP_GUARDS` 的 `str(` 过宽漏检问题（移除 `str(`，仅保留 `" or "` 守卫）；扩展 lint 正则变量名覆盖（+ex/te/error/exception）和用户可见函数覆盖（+_reply_message/reply_text/update_card）；修复 sync_adapter.py:819 + gc_monitor.py:59,68 共 3 处残余裸 `f"{e}"` / `f"{ex}"`；为 Deep/Loop/Spec 引擎补充 asyncio.TimeoutError e2e 用例；2060 tests passed → [详细记录](2026-04-19.md)

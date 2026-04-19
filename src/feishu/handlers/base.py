@@ -146,7 +146,7 @@ class BaseHandler:
             try:
                 origin_message_id = self.ctx.message_linker.resolve_origin(reply_message_id=message_id)
             except Exception as e:
-                logger.debug("Failed to resolve origin for message %s: %s", message_id, e)
+                logger.debug("Failed to resolve origin for message %s: %s", message_id, str(e) or repr(e))
                 origin_message_id = None
         origin_message_id = origin_message_id or message_id
         request_id = request_id or self.ensure_request_id(origin_message_id)
@@ -229,7 +229,7 @@ class BaseHandler:
                 try:
                     origin_message_id = self.ctx.message_linker.resolve_origin(reply_message_id=message_id)
                 except Exception as e:
-                    logger.debug("Failed to resolve origin inside reply_message_with_id for %s: %s", message_id, e)
+                    logger.debug("Failed to resolve origin inside reply_message_with_id for %s: %s", message_id, str(e) or repr(e))
                     origin_message_id = None
             origin_message_id = origin_message_id or message_id
             request_id = request_id or self.ensure_request_id(origin_message_id)
@@ -520,7 +520,7 @@ class BaseHandler:
         try:
             rid = self.ctx.message_linker.get_request_id(message_id)
         except Exception as e:
-            logger.debug("Failed to get existing request_id for message %s: %s", message_id, e)
+            logger.debug("Failed to get existing request_id for message %s: %s", message_id, str(e) or repr(e))
             rid = None
         if rid:
             return rid

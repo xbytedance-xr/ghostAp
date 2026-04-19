@@ -24,7 +24,7 @@ def persist_state_best_effort(project: Optional[SpecProject], save_fn, state_pat
     try:
         save_fn(state_path)
     except Exception as e:
-        logger.debug("[Spec] 保存状态失败: %s", e)
+        logger.debug("[Spec] 保存状态失败: %s", str(e) or repr(e))
 
 
 def artifact_root_dir(root_path: str, settings, project: Optional[SpecProject]) -> str:
@@ -91,7 +91,7 @@ def persist_cycle_artifact(
         os.replace(tmp, path)
         return path
     except Exception as e:
-        logger.debug("[Spec] 落盘产物失败(%s): %s", name, e)
+        logger.debug("[Spec] 落盘产物失败(%s): %s", name, str(e) or repr(e))
         return None
 
 
@@ -182,7 +182,7 @@ def persist_generated_spec_file(
         os.replace(tmp, path)
         return path
     except Exception as e:
-        logger.warning("[Spec] 生成 spec 文件落盘失败(cycle=%s, qid=%s): %s", cycle_num, qid, e)
+        logger.warning("[Spec] 生成 spec 文件落盘失败(cycle=%s, qid=%s): %s", cycle_num, qid, str(e) or repr(e))
         return ""
 
 
@@ -268,7 +268,7 @@ def save_failed_task(
     try:
         saved_path = save_task_state(state)
     except Exception as e:
-        logger.warning("[Spec] 任务保存失败, task_id=%s, phase=%s, err=%s", task_id, phase_value, e)
+        logger.warning("[Spec] 任务保存失败, task_id=%s, phase=%s, err=%s", task_id, phase_value, str(e) or repr(e))
         saved_path = ""
 
     if saved_path:

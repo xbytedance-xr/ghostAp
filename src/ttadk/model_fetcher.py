@@ -586,7 +586,7 @@ class TTADKModelFetcher:
             probe = ProbeStrategy(runner=self._runner.run_simple, timeout_s=timeout)
             return probe.fetch(tool_name, cwd=cwd)
         except Exception as e:
-            logger.debug("TTADK probe_tool_models failed: tool=%s err=%s", tool_name, e)
+            logger.debug("TTADK probe_tool_models failed: tool=%s err=%s", tool_name, str(e) or repr(e))
             return []
 
     def fetch_tool_models_with_diagnostics(

@@ -352,7 +352,7 @@ class BaseRenderer:
 
             return truncated_content
         except Exception as e:
-            logger.error("Failed to truncate payload: %s", e)
+            logger.error("Failed to truncate payload: %s", str(e) or repr(e))
             return card_content
 
     def _patch_or_send(

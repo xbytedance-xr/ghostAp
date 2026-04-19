@@ -90,7 +90,7 @@ class ACPHistoryStore:
             with open(p, "a", encoding="utf-8") as f:
                 f.write(json.dumps(payload, ensure_ascii=False) + "\n")
         except Exception as e:
-            logger.debug("[ACP] history append failed: %s", e)
+            logger.debug("[ACP] history append failed: %s", str(e) or repr(e))
 
     def load(self, session_id: str, limit: int = 200) -> list[dict]:
         if not session_id:
@@ -102,7 +102,7 @@ class ACPHistoryStore:
         try:
             raw = p.read_text(encoding="utf-8")
         except Exception as e:
-            logger.info("[ACP] history read failed: %s", e)
+            logger.info("[ACP] history read failed: %s", str(e) or repr(e))
             return []
 
         raw_strip = raw.lstrip()
@@ -287,7 +287,7 @@ class GhostAPClient(Client):
                 self._handle_plan_update(update)
             # Other update types (UsageUpdate, etc.) are silently ignored
         except Exception as e:
-            logger.debug("Error processing ACP session_update: %s", e)
+            logger.debug("Error processing ACP session_update: %s", str(e) or repr(e))
 
     def _handle_message_chunk(self, update: AgentMessageChunk) -> None:
         content = update.content
@@ -382,7 +382,7 @@ class GhostAPClient(Client):
                         return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
         except Exception as e:
             # Fail open to avoid breaking agent flows; runtime handlers still enforce.
-            logger.debug("[ACP] Permission safety check failed: %s", e)
+            logger.debug("[ACP] Permission safety check failed: %s", str(e) or repr(e))
 
         # Find an "allow_once" option, or use the first option.
         allow_option_id = ""
@@ -414,7 +414,7 @@ class GhostAPClient(Client):
             self._record(session_id, "read_file", {"path": str(resolved), "truncated": False, "chars": len(content)})
             return ReadTextFileResponse(content=content)
         except Exception as e:
-            logger.info("[ACP] read_text_file failed: path=%s err=%s", path, e)
+            logger.info("[ACP] read_text_file failed: path=%s err=%s", path, str(e) or repr(e))
             self._record(session_id, "read_file", {"path": path, "error": str(e) or repr(e)})
             return ReadTextFileResponse(content="", field_meta={"error": str(e) or repr(e), "path": path})
 
@@ -428,7 +428,7 @@ class GhostAPClient(Client):
             self._record(session_id, "write_file", {"path": str(resolved), "chars": len(content or "")})
             return WriteTextFileResponse()
         except Exception as e:
-            logger.info("[ACP] write_text_file failed: path=%s err=%s", path, e)
+            logger.info("[ACP] write_text_file failed: path=%s err=%s", path, str(e) or repr(e))
             self._record(session_id, "write_file", {"path": path, "error": str(e) or repr(e)})
             return WriteTextFileResponse(field_meta={"error": str(e) or repr(e), "path": path})
 

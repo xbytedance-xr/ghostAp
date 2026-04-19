@@ -127,7 +127,7 @@ def discover_optimization_questions(
             if cleaned:
                 return cleaned[: settings.spec_discovery_max_questions]
     except Exception as e:
-        logger.debug("[Spec] 问题发现机制失败: %s", e)
+        logger.debug("[Spec] 问题发现机制失败: %s", str(e) or repr(e))
 
     if settings.spec_discovery_force_nonempty and project:
         fallback_q = None
@@ -247,7 +247,7 @@ def generate_specs_from_discovery(
             )
 
     except Exception as e:
-        logger.debug("[Spec] spec 生成失败: %s", e)
+        logger.debug("[Spec] spec 生成失败: %s", str(e) or repr(e))
 
     if not items and settings.spec_discovery_force_nonempty:
         for d in selected[:max_specs]:

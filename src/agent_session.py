@@ -1879,7 +1879,7 @@ def close_session_safely(session: Optional[SyncSession]) -> None:
         try:
             session.close()
         except Exception as e:
-            logger.debug("关闭旧ACP session失败: %s", e)
+            logger.debug("关闭旧ACP session失败: %s", str(e) or repr(e))
 
 
 def resolve_ttadk_engine_startup_model(

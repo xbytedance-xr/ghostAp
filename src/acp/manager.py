@@ -756,7 +756,7 @@ class ACPSessionManager:
             try:
                 session.close()
             except Exception as e:
-                logger.debug("Error closing ACP session: %s", e)
+                logger.debug("Error closing ACP session: %s", str(e) or repr(e))
             del self._sessions[key]
             return snapshot
         return None
@@ -807,7 +807,7 @@ class ACPSessionManager:
                 with self._lock:
                     self._end_session_unlocked(key)
             except Exception as e:
-                logger.debug("Error cleaning up session for %s: %s", key[-16:], e)
+                logger.debug("Error cleaning up session for %s: %s", key[-16:], str(e) or repr(e))
 
     def list_active_sessions(self) -> list[dict]:
         """Return lightweight snapshots for currently tracked sessions."""

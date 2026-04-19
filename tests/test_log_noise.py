@@ -196,7 +196,9 @@ class TestLogNoise(unittest.TestCase):
                 mock_logger.warning.assert_called()
                 args = mock_logger.warning.call_args
                 self.assertIn("Spec Engine 执行超时", args[0][0])
-                self.assertIsInstance(args[0][2], asyncio.TimeoutError)
+                # After logger hardening, exception is passed as str(e) or repr(e)
+                self.assertIsInstance(args[0][2], str)
+                self.assertIn("Simulated timeout", args[0][2])
 
                 # Verify NO error log for this exception
                 mock_logger.error.assert_not_called()

@@ -51,7 +51,7 @@ class CocoModelManager:
             if config and isinstance(config.get("model"), dict):
                 return config["model"].get("name")
         except Exception as e:
-            logger.warning("Failed to read coco config: %s", e)
+            logger.warning("Failed to read coco config: %s", str(e) or repr(e))
         return None
 
     def _is_cache_valid(self) -> bool:
@@ -71,7 +71,7 @@ class CocoModelManager:
                 self._cache_time = time.time()
                 return ModelListResult(models=list(models), cached=False)
             except Exception as e:
-                logger.error("Failed to load coco models: %s", e)
+                logger.error("Failed to load coco models: %s", str(e) or repr(e))
                 return ModelListResult(
                     models=list(DEFAULT_MODELS),
                     cached=False,
@@ -146,7 +146,7 @@ class CocoModelManager:
 
             return asyncio.run(_probe())
         except Exception as e:
-            logger.debug("Failed to load coco models via ACP: %s", e)
+            logger.debug("Failed to load coco models via ACP: %s", str(e) or repr(e))
             return []
 
     def get_current_model(self) -> Optional[str]:

@@ -48,7 +48,7 @@ def _symlink_auth_dirs(real_home: str, sandbox_root: Path) -> None:
             dst.parent.mkdir(parents=True, exist_ok=True)
             dst.symlink_to(src)
         except Exception as exc:
-            logger.debug("[env_sandbox] failed to symlink auth dir %s → %s: %s", dst, src, exc)
+            logger.debug("[env_sandbox] failed to symlink auth dir %s → %s: %s", dst, src, str(exc) or repr(exc))
 
 
 def _safe_str(x: object) -> str:

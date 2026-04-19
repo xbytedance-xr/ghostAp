@@ -551,9 +551,9 @@ class SpecEngine(BaseEngine):
                         try:
                             callbacks.on_phase_event(cycle_num, phase, event)
                         except Exception as cb_exc:
-                            logger.debug("[Spec] on_phase_event callback failed: %s", cb_exc)
+                            logger.debug("[Spec] on_phase_event callback failed: %s", str(cb_exc) or repr(cb_exc))
                 except Exception as exc:
-                    logger.debug("[Spec] on_event handler error: %s", exc)
+                    logger.debug("[Spec] on_event handler error: %s", str(exc) or repr(exc))
 
             self._send_prompt_with_retry(
                 prompt,
@@ -1146,7 +1146,7 @@ class SpecEngine(BaseEngine):
             logger.info("[Spec] 目标已重写(原%d字→新%d字)", len(original), len(new_req))
             return True, new_req
         except Exception as e:
-            logger.warning("[Spec] 目标重写 LLM 调用失败: %s", e)
+            logger.warning("[Spec] 目标重写 LLM 调用失败: %s", str(e) or repr(e))
             from ..utils.errors import get_error_detail as _ged
             return False, _ged(e)
 

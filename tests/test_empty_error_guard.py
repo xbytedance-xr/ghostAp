@@ -680,6 +680,42 @@ class TestNoBareFStringInUserVisibleErrors:
             + "\n".join(violations)
         )
 
+    # --- Bare logger %s exception variable lint ---
+    # Matches: logger.xxx("...%s", e) where e is a bare exception variable
+    # WITHOUT str()/repr()/get_error_detail() wrapping.
+    # This catches the *non-fstring* pattern: logger.debug("...%s", e)
+    _BARE_LOGGER_PERCENT_RE = re.compile(
+        r'logger\.(?:debug|info|warning|error|critical)\s*\('
+        r'[^)]*%s[^)]*,\s*'
+        r'(?:e|exc|ex|te|error|exception|cb_exc|last_err)\s*\)'
+    )
+
+    def _scan_logger_bare_percent(self):
+        """Scan src/ for logger calls with bare exception variable in %s formatting."""
+        src_dir = Path(__file__).resolve().parent.parent / "src"
+        violations = []
+        for py_file in src_dir.rglob("*.py"):
+            for i, line in enumerate(py_file.read_text().splitlines(), 1):
+                stripped = line.strip()
+                # Skip lines that already use guards
+                if self._line_is_guarded(stripped):
+                    continue
+                # Skip lines with exc_info=True (full traceback already captured)
+                if "exc_info" in stripped:
+                    continue
+                if self._BARE_LOGGER_PERCENT_RE.search(stripped):
+                    violations.append(f"{py_file.relative_to(src_dir.parent)}:{i}: {stripped}")
+        return violations
+
+    def test_no_bare_logger_percent_exception(self):
+        """Logger %s calls must not use bare exception variable (risk of empty message)."""
+        violations = self._scan_logger_bare_percent()
+        assert not violations, (
+            "Found logger.xxx('...%s', e) with bare exception variable "
+            "(use str(e) or repr(e) instead):\n"
+            + "\n".join(violations)
+        )
+
 
 # ---------------------------------------------------------------------------
 # Guard tests for newly hardened internal diagnostic paths (batch 2)

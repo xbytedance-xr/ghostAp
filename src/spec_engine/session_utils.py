@@ -125,7 +125,7 @@ def recreate_session_best_effort(
         logger.info("[Spec] ACP Session 重建成功")
         return new_session
     except Exception as e:
-        logger.warning("[Spec] ACP Session 重建失败: %s", e)
+        logger.warning("[Spec] ACP Session 重建失败: %s", str(e) or repr(e))
         return None
 
 

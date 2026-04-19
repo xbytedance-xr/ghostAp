@@ -1036,7 +1036,7 @@ class TTADKManager:
                     tools = self._load_tools(filter_available=False)
                 return ToolListResult(tools=list(tools), cached=False)
             except Exception as e:
-                logger.error("Failed to load TTADK tools: %s", e)
+                logger.error("Failed to load TTADK tools: %s", str(e) or repr(e))
                 return ToolListResult(
                     tools=list(DEFAULT_TOOLS),
                     cached=False,
@@ -1510,7 +1510,7 @@ class TTADKManager:
             if isinstance(commands, dict):
                 return [str(k) for k in commands.keys()]
         except Exception as e:
-            logger.debug("Failed to read ttadk setting.json: %s", e)
+            logger.debug("Failed to read ttadk setting.json: %s", str(e) or repr(e))
         return []
 
     def _extract_models_from_sync(
@@ -1712,7 +1712,7 @@ def auto_update_ttadk() -> None:
                     ((p.stderr or "").strip())[-200:] or "(empty)",
                 )
         except Exception as e:
-            logger.warning("[TTADK] auto-update error: %s", e)
+            logger.warning("[TTADK] auto-update error: %s", str(e) or repr(e))
 
     threading.Thread(target=_do_upgrade, daemon=True, name="ttadk-auto-upgrade").start()
 

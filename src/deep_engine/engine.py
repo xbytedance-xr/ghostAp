@@ -173,7 +173,7 @@ class DeepEngine(BaseEngine):
                 if event.event_type == ACPEventType.TEXT_CHUNK and callbacks.on_text:
                     callbacks.on_text(event.text or "")
             except Exception as e:
-                logger.debug("[Deep] on_event 回调异常(已捕获): %s", e)
+                logger.debug("[Deep] on_event 回调异常(已捕获): %s", str(e) or repr(e))
 
         return on_event
 
@@ -336,7 +336,7 @@ class DeepEngine(BaseEngine):
                 logger.warning("[Deep] _drain_pending_context 超时: %s", str(e) or repr(e))
                 break
             except Exception as e:
-                logger.error("[Deep] _drain_pending_context 发送失败: %s", e)
+                logger.error("[Deep] _drain_pending_context 发送失败: %s", str(e) or repr(e))
                 break
         return last_result
 
@@ -536,7 +536,7 @@ class DeepEngine(BaseEngine):
             self._project = DeepProject.from_dict(state["project"])
             return True
         except Exception as e:
-            logger.error("加载状态失败: %s", e)
+            logger.error("加载状态失败: %s", str(e) or repr(e))
             return False
 
     def cleanup(self):

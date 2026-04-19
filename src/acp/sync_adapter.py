@@ -679,7 +679,7 @@ def _auto_update_agent(command: str) -> bool:
             )
             return False
     except Exception as e:
-        logger.warning("[ACP] %s auto-update error: %s", command, e)
+        logger.warning("[ACP] %s auto-update error: %s", command, str(e) or repr(e))
         return False
 
 
@@ -1496,7 +1496,7 @@ class SyncACPSession:
             )
             return bool(future.result(timeout=float(timeout or 10.0)))
         except Exception as e:
-            logger.warning("[ACP] set_model failed: %s", e)
+            logger.warning("[ACP] set_model failed: %s", str(e) or repr(e))
             return False
 
     def cancel(self) -> None:
@@ -1518,7 +1518,7 @@ class SyncACPSession:
                 )
                 future.result(timeout=10)
             except Exception as e:
-                logger.debug("Error closing ACP session: %s", e)
+                logger.debug("Error closing ACP session: %s", str(e) or repr(e))
 
         if self._loop:
             self._loop.call_soon_threadsafe(self._loop.stop)

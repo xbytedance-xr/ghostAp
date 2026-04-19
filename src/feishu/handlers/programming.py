@@ -411,7 +411,7 @@ class ProgrammingModeHandler(BaseHandler):
                         )
                         return
                 except Exception as e:
-                    logger.warning("[%s] ACP set_model failed, will restart session: %s", self.mode_name, e)
+                    logger.warning("[%s] ACP set_model failed, will restart session: %s", self.mode_name, str(e) or repr(e))
 
             # Fall back: end session so ensure_session restarts with new model arg.
             mgr.end_session(chat_id, project_id=project_id)

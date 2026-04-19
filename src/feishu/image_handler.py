@@ -189,7 +189,7 @@ class FeishuImageHandler:
             return filepath
 
         except Exception as e:
-            logger.error("下载图片异常: %s, error=%s", image_key, e)
+            logger.error("下载图片异常: %s, error=%s", image_key, str(e) or repr(e))
             return None
 
     @staticmethod

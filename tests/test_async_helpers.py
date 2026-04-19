@@ -100,3 +100,54 @@ class TestSafeWaitFor:
         fut.set_result(42)
         result = await safe_wait_for(fut, timeout=5.0)
         assert result == 42
+
+    # --- Boundary timeout tests ---
+
+    @pytest.mark.asyncio
+    async def test_tiny_timeout_raises_non_empty(self):
+        """Extremely small timeout (0.001s) still produces a non-empty TimeoutError."""
+        with pytest.raises(TimeoutError) as exc_info:
+            await safe_wait_for(_slow_return(), timeout=0.001)
+
+        msg = str(exc_info.value)
+        assert msg.strip() != ""
+        assert "超时" in msg
+        assert "0.001" in msg
+
+    @pytest.mark.asyncio
+    async def test_tiny_timeout_with_action(self):
+        """Tiny timeout with custom action label."""
+        with pytest.raises(TimeoutError) as exc_info:
+            await safe_wait_for(_slow_return(), timeout=0.001, action="边界测试")
+
+        msg = str(exc_info.value)
+        assert "边界测试" in msg
+        assert "0.001" in msg
+
+    # --- Cancellation behaviour tests ---
+
+    @pytest.mark.asyncio
+    async def test_coroutine_cancelled_on_timeout(self):
+        """After timeout, the underlying coroutine's task is cancelled."""
+        cancel_observed = False
+
+        async def _trackable():
+            nonlocal cancel_observed
+            try:
+                await asyncio.sleep(100)
+            except asyncio.CancelledError:
+                cancel_observed = True
+                raise
+
+        with pytest.raises(TimeoutError):
+            await safe_wait_for(_trackable(), timeout=0.01)
+
+        # Give event loop a tick to process the cancellation
+        await asyncio.sleep(0.05)
+        assert cancel_observed, "Underlying coroutine was not cancelled after timeout"
+
+    @pytest.mark.asyncio
+    async def test_timeout_does_not_cancel_fast_coro(self):
+        """A coroutine that finishes in time is NOT cancelled."""
+        result = await safe_wait_for(_fast_return("ok"), timeout=5.0)
+        assert result == "ok"

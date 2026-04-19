@@ -197,7 +197,7 @@ class BaseEngine:
             try:
                 self._session.close()
             except Exception as e:
-                logger.debug("关闭ACP session失败: %s", e)
+                logger.debug("关闭ACP session失败: %s", str(e) or repr(e))
             self._session = None
         self._project = None
         self._run_state = EngineRunState.IDLE

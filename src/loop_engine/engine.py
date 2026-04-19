@@ -238,7 +238,7 @@ class LoopEngine(BaseEngine):
                     try:
                         self.save_state()
                     except Exception as e:
-                        logger.warning("[Loop:%s] 细粒度状态保存失败: %s", project_name, e)
+                        logger.warning("[Loop:%s] 细粒度状态保存失败: %s", project_name, str(e) or repr(e))
     
                     # Evaluate acceptance criteria in the same session
                     criteria_result = self._evaluate_criteria(requirement.acceptance_criteria, iteration)
@@ -336,9 +336,9 @@ class LoopEngine(BaseEngine):
                     try:
                         callbacks.on_iteration_event(_it, event)
                     except Exception as cb_exc:
-                        logger.debug("[Loop] on_iteration_event callback failed: %s", cb_exc)
+                        logger.debug("[Loop] on_iteration_event callback failed: %s", str(cb_exc) or repr(cb_exc))
             except Exception as exc:
-                logger.debug("[Loop] on_event handler error: %s", exc)
+                logger.debug("[Loop] on_event handler error: %s", str(exc) or repr(exc))
 
         return on_event
 
@@ -411,7 +411,7 @@ class LoopEngine(BaseEngine):
             )
             return self._extract_criteria_from_llm_response(response.content)
         except Exception as e:
-            logger.warning("[Loop] LLM 需求拆解失败: %s, 将使用原始文本", e)
+            logger.warning("[Loop] LLM 需求拆解失败: %s, 将使用原始文本", str(e) or repr(e))
             return []
 
     @staticmethod
@@ -553,7 +553,7 @@ CRITERIA_2: FAIL
             return {"all_satisfied": all_satisfied, "pass_count": pass_count, "fail_count": fail_count}
 
         except Exception as e:
-            logger.debug("[Loop] 验收标准评估失败: %s", e)
+            logger.debug("[Loop] 验收标准评估失败: %s", str(e) or repr(e))
             return {"all_satisfied": False}
 
     def _build_review_prompt(self) -> str:
@@ -703,7 +703,7 @@ FAIL
             )
             return self._extract_reviews_from_llm_response(response.content)
         except Exception as e:
-            logger.warning("[Loop] LLM 兜底审查解析失败: %s", e)
+            logger.warning("[Loop] LLM 兜底审查解析失败: %s", str(e) or repr(e))
             return []
 
     @staticmethod
@@ -1092,7 +1092,7 @@ FAIL
                 try:
                     self.save_state()
                 except Exception as e:
-                    logger.warning("[Loop:%s] 细粒度状态保存失败: %s", project_name, e)
+                    logger.warning("[Loop:%s] 细粒度状态保存失败: %s", project_name, str(e) or repr(e))
 
                 criteria_result = self._evaluate_criteria(requirement.acceptance_criteria, iteration)
                 all_criteria_satisfied = criteria_result.get("all_satisfied", False)
