@@ -1612,8 +1612,8 @@ class FeishuWSClient:
                 shell_fast_tracked=shell_fast_tracked,
             )
 
-        except asyncio.TimeoutError:
-            logger.warning("处理消息超时 (asyncio.TimeoutError)")
+        except asyncio.TimeoutError as e:
+            logger.warning("处理消息超时: %s", str(e) or repr(e))
         except Exception as e:
             logger.error("处理消息异常: %s", e, exc_info=True)
             try:
@@ -2255,8 +2255,8 @@ class FeishuWSClient:
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
             logger.debug("卡片回调处理耗时: %dms", elapsed_ms)
 
-        except asyncio.TimeoutError:
-            logger.warning("处理卡片动作超时")
+        except asyncio.TimeoutError as e:
+            logger.warning("处理卡片动作超时: %s", str(e) or repr(e))
         except Exception as e:
             logger.error("处理卡片动作异常: %s", e, exc_info=True)
             # 发送错误提示给用户
