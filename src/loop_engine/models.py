@@ -151,6 +151,7 @@ class IterationRecord:
     summary: str = ""
     error: Optional[str] = None
     review_result: Optional[ReviewResult] = None
+    review_decision: Optional[str] = None
     started_at: float = field(default_factory=time.time)
     completed_at: Optional[float] = None
 
@@ -182,6 +183,7 @@ class IterationRecord:
             "summary": self.summary,
             "error": self.error,
             "review_result": self.review_result.to_dict() if self.review_result else None,
+            "review_decision": self.review_decision,
             "started_at": self.started_at,
             "completed_at": self.completed_at,
         }
@@ -202,6 +204,7 @@ class IterationRecord:
             summary=data.get("summary", ""),
             error=data.get("error"),
             review_result=ReviewResult.from_dict(review_data) if review_data else None,
+            review_decision=data.get("review_decision"),
             started_at=data.get("started_at", time.time()),
             completed_at=data.get("completed_at"),
         )

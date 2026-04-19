@@ -49,6 +49,14 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class LoopReviewCircuitState:
+    """Loop Engine review 熔断器状态，与 SpecEngine 的 ReviewCircuitState 同构。"""
+
+    review_failure_consecutive: int = 0
+    review_circuit_open_until_iter: int = 0
+
+
+@dataclass
 class LoopEngineCallbacks:
     """Loop Engine event callbacks."""
 
@@ -84,6 +92,7 @@ class LoopEngine(BaseEngine):
         self._last_heartbeat: float = 0.0
         self._context_manager: Optional[LoopContextManager] = None
         self._llm_cache: dict[ChatOpenAICacheKey, ChatOpenAI] = {}
+        self._review_circuit = LoopReviewCircuitState()
 
     def execute(
         self,
@@ -210,8 +219,9 @@ class LoopEngine(BaseEngine):
                         is_running = self._run_state == EngineRunState.RUNNING
                     
                     if review_enabled and is_running:
-                        review_result = self._conduct_review(iteration, callbacks)
+                        review_result, review_decision = self._conduct_review(iteration, callbacks)
                         record.review_result = review_result
+                        record.review_decision = review_decision
                         self._last_review = review_result
     
                     with self._lock:
@@ -742,14 +752,52 @@ FAIL
 
         return reviews
 
-    def _conduct_review(self, iteration: int, callbacks: LoopEngineCallbacks) -> ReviewResult:
-        """Conduct multi-perspective review in the same ACP session."""
+    def _conduct_review(self, iteration: int, callbacks: LoopEngineCallbacks) -> tuple[ReviewResult, Optional[str]]:
+        """Conduct multi-perspective review with circuit breaker.
+
+        Returns:
+            (review_result, review_decision) — review_decision is None on
+            success, or one of "review_circuit_open_skip" /
+            "review_failed_continue" / "review_failed_open_circuit" on
+            skip/failure.
+        """
+        circuit = self._review_circuit
+        settings = self.settings
+
+        # --- Circuit breaker: skip review while open ---
+        enabled = getattr(settings, "loop_review_failure_circuit_enabled", True)
+        max_consecutive = getattr(settings, "loop_review_failure_max_consecutive", 3)
+        cooldown = getattr(settings, "loop_review_failure_cooldown_iterations", 3)
+
+        if enabled and iteration <= circuit.review_circuit_open_until_iter:
+            logger.info(
+                "[Loop] Review 熔断中 (iter=%d, open_until=%d), 跳过审查",
+                iteration,
+                circuit.review_circuit_open_until_iter,
+            )
+            fallback = ReviewResult(
+                reviews=[
+                    PerspectiveReview(
+                        perspective=p,
+                        passed=False,
+                        suggestions=["审查熔断中，跳过本轮审查"],
+                        summary="熔断跳过",
+                    )
+                    for p in ReviewPerspective
+                ],
+                iteration=iteration,
+            )
+            if callbacks.on_review_done:
+                callbacks.on_review_done(iteration, fallback)
+            return fallback, "review_circuit_open_skip"
+
         if not self._session:
-            return ReviewResult(iteration=iteration)
+            return ReviewResult(iteration=iteration), None
 
         review_prompt = self._build_review_prompt()
         review_text: list[str] = []
         thought_text: list[str] = []
+        review_decision: Optional[str] = None
 
         def on_review_event(event: ACPEvent):
             if event.event_type == ACPEventType.TEXT_CHUNK and event.text:
@@ -758,7 +806,7 @@ FAIL
                 thought_text.append(event.text)
 
         try:
-            review_timeout = getattr(self.settings, "loop_review_timeout", 120)
+            review_timeout = getattr(settings, "loop_review_timeout", 120)
 
             def _before_review_retry(attempt: int, error: Exception):
                 review_text.clear()
@@ -774,16 +822,34 @@ FAIL
             if thought_text:
                 combined_text = full_text + "\n" + "".join(thought_text)
             review_result = self._parse_review_output(combined_text, iteration)
+
+            # Success — reset circuit breaker
+            circuit.review_failure_consecutive = 0
+            circuit.review_circuit_open_until_iter = 0
+
         except Exception as e:
             from ..utils.errors import get_error_detail
             detail = get_error_detail(e)
-            logger.warning(f"[Loop] 多视角审查异常: {detail}, 将视为有改进建议继续迭代")
+            logger.warning("[Loop] 多视角审查异常: %s, 将视为有改进建议继续迭代", detail)
 
             if isinstance(e, TimeoutError) or "timeout" in detail.lower():
                 logger.warning("[METRIC] review_timeout")
                 err_msg = "多视角审查请求超时，请检查网络"
             else:
                 err_msg = f"审查执行异常: {detail}"
+
+            # Update circuit breaker counters
+            circuit.review_failure_consecutive += 1
+            if enabled and circuit.review_failure_consecutive >= max_consecutive and cooldown > 0:
+                circuit.review_circuit_open_until_iter = iteration + cooldown
+                review_decision = "review_failed_open_circuit"
+                logger.warning(
+                    "[Loop] Review 熔断器打开: consecutive=%d, open_until_iter=%d",
+                    circuit.review_failure_consecutive,
+                    circuit.review_circuit_open_until_iter,
+                )
+            else:
+                review_decision = "review_failed_continue"
 
             review_result = ReviewResult(
                 reviews=[
@@ -801,7 +867,7 @@ FAIL
         if callbacks.on_review_done:
             callbacks.on_review_done(iteration, review_result)
 
-        return review_result
+        return review_result, review_decision
 
     def _extract_focus(self, text: str) -> str:
         """Extract a brief focus description from agent output.
@@ -828,6 +894,12 @@ FAIL
 
         window = self.settings.loop_convergence_window
         recent = self._project.iterations[-window:]
+
+        # review 异常（timeout 等）产生的 fallback suggestions 是固定模板文本，
+        # 连续异常会导致 suggestion 集合完全相同而误判为收敛。
+        for r in recent:
+            if str(r.review_decision or "").startswith("review_failed"):
+                return False
 
         if all(len(r.output or "") < 50 for r in recent):
             return True
@@ -947,8 +1019,9 @@ FAIL
                     is_running = self._run_state == EngineRunState.RUNNING
                 
                 if review_enabled and is_running:
-                    review_result = self._conduct_review(iteration, callbacks)
+                    review_result, review_decision = self._conduct_review(iteration, callbacks)
                     record.review_result = review_result
+                    record.review_decision = review_decision
                     self._last_review = review_result
 
                 with self._lock:

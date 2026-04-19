@@ -1254,6 +1254,10 @@ class TestConductReview:
         s.loop_execution_timeout = 300
         s.loop_review_enabled = True
         s.loop_review_extra_iterations = 3
+        s.loop_review_timeout = 120
+        s.loop_review_failure_circuit_enabled = True
+        s.loop_review_failure_max_consecutive = 3
+        s.loop_review_failure_cooldown_iterations = 3
         mock_settings.return_value = s
         return LoopEngine(chat_id="c1", root_path="/tmp/test")
 
@@ -1269,8 +1273,9 @@ class TestConductReview:
             )
         )
         callbacks = LoopEngineCallbacks()
-        result = engine._conduct_review(1, callbacks)
+        result, decision = engine._conduct_review(1, callbacks)
         assert result.reviews == []
+        assert decision is None
 
     def test_conduct_review_calls_session(self):
         engine = self._make_engine()
@@ -1309,8 +1314,9 @@ PASS
         callbacks = LoopEngineCallbacks(
             on_review_done=lambda it, r: callback_called.append((it, r)),
         )
-        result = engine._conduct_review(1, callbacks)
+        result, decision = engine._conduct_review(1, callbacks)
         assert result.all_passed
+        assert decision is None
         assert len(callback_called) == 1
         assert callback_called[0][0] == 1
 
@@ -1330,8 +1336,9 @@ PASS
         engine._session = mock_session
 
         callbacks = LoopEngineCallbacks()
-        result = engine._conduct_review(1, callbacks)
+        result, decision = engine._conduct_review(1, callbacks)
         assert not result.all_passed  # Exception → treated as having suggestions
+        assert decision == "review_failed_continue"
 
 
 # ===========================================================================

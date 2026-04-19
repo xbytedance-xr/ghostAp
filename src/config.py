@@ -202,7 +202,15 @@ class Settings(BaseSettings):
     loop_review_enabled: bool = True
     loop_review_extra_iterations: int = 3
     loop_review_timeout: int = 120
-    
+
+    # Loop Engine review failure circuit breaker
+    # - enabled: master switch
+    # - max_consecutive: open circuit after N consecutive review failures
+    # - cooldown_iterations: keep circuit open for next K iterations (skip review)
+    loop_review_failure_circuit_enabled: bool = True
+    loop_review_failure_max_consecutive: int = 3
+    loop_review_failure_cooldown_iterations: int = 3
+
     # Loop Watchdog
     loop_watchdog_timeout: float = 300.0
 
