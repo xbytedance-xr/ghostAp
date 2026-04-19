@@ -253,8 +253,15 @@ def build_review_exception_diagnostics(
     return diag
 
 
-def normalize_review_diagnostics(diag: object) -> dict:
-    """Normalize a diagnostics dict to stable-key form."""
+def normalize_review_diagnostics(diag: object, *, error_text_limit: int = 500) -> dict:
+    """Normalize a diagnostics dict to stable-key form.
+
+    Parameters
+    ----------
+    error_text_limit : int
+        Maximum length for the ``error_text`` field (default 500).
+        Longer values are truncated with a ``…(truncated)`` marker.
+    """
     d = diag if isinstance(diag, dict) else {}
 
     def _s(x: object) -> str:
@@ -293,6 +300,12 @@ def normalize_review_diagnostics(diag: object) -> dict:
     error_text = (_s(d.get("error_text")) or "").strip()
     if not error_text:
         error_text = err_repr
+
+    # Truncate error_text to prevent oversized diagnostic cards
+    _et_limit = max(1, int(error_text_limit or 500))
+    if len(error_text) > _et_limit:
+        _suffix = "…(truncated)"
+        error_text = error_text[: max(1, _et_limit - len(_suffix))] + _suffix
 
     tb = (_s(d.get("traceback_snippet")) or "").strip()
 

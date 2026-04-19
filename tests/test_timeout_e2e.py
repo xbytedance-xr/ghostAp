@@ -548,3 +548,102 @@ class TestProgrammingHandlerTimeoutBranch:
         assert "超时" in card_str
         # Should NOT contain bare "(empty message)" or end with empty detail
         assert "(empty message)" not in card_str
+
+
+# ---------------------------------------------------------------------------
+# E2E: concurrent.futures.TimeoutError() — full chain traversal
+# ---------------------------------------------------------------------------
+
+
+class TestConcurrentFuturesTimeoutE2EChain:
+    """Simulate concurrent.futures.TimeoutError() (bare, empty message) through
+    every layer: should_retry → prompt_with_retry → handle_review_exception →
+    build_review_exception_diagnostics → normalize_review_diagnostics →
+    build_review_error_suggestion.  Verify no layer leaks empty message."""
+
+    def test_should_retry_accepts_bare_futures_timeout(self):
+        """Layer 1: should_retry recognises concurrent.futures.TimeoutError."""
+        import concurrent.futures
+        from src.utils.retry import should_retry
+        assert should_retry(concurrent.futures.TimeoutError()) is True
+
+    def test_prompt_with_retry_retries_futures_timeout(self):
+        """Layer 2: prompt_with_retry retries on concurrent.futures.TimeoutError."""
+        import concurrent.futures
+        import threading
+        from src.utils.retry import RetryPolicy, prompt_with_retry
+        from unittest.mock import MagicMock
+
+        action = MagicMock(side_effect=[concurrent.futures.TimeoutError(), "ok"])
+        cancel = threading.Event()
+        policy = RetryPolicy(max_retries=2, retry_delay=0.01, jitter_factor=0)
+        result = prompt_with_retry(action, cancel, retry_policy=policy)
+        assert result == "ok"
+        assert action.call_count == 2
+
+    def test_diagnostics_no_empty_text_for_futures_timeout(self):
+        """Layer 3: build_review_exception_diagnostics produces non-empty error_text."""
+        import concurrent.futures
+        from src.utils.review_diagnostics import build_review_exception_diagnostics
+        diag = build_review_exception_diagnostics(
+            concurrent.futures.TimeoutError(), cycle=1,
+        )
+        assert diag["error_text"]
+        assert "(empty message)" not in diag["error_text"]
+        assert diag["fail_reason"] == "timeout"
+
+    def test_normalize_no_empty_text_for_futures_timeout(self):
+        """Layer 4: normalize_review_diagnostics guarantees non-empty error_text."""
+        import concurrent.futures
+        from src.utils.review_diagnostics import (
+            build_review_exception_diagnostics,
+            normalize_review_diagnostics,
+        )
+        diag = build_review_exception_diagnostics(
+            concurrent.futures.TimeoutError(), cycle=1,
+        )
+        normalized = normalize_review_diagnostics(diag)
+        assert normalized["error_text"]
+        assert "(empty message)" not in normalized["error_text"]
+
+    def test_suggestion_no_empty_for_futures_timeout(self):
+        """Layer 5: build_review_error_suggestion returns non-empty."""
+        from src.utils.review_helpers import build_review_error_suggestion
+        result = build_review_error_suggestion(fail_reason="timeout")
+        assert result
+        assert "(empty message)" not in result
+
+    def test_handle_review_exception_full_chain(self):
+        """Layer 6 (E2E): handle_review_exception with concurrent.futures.TimeoutError()
+        produces non-empty suggestion_text and correct metrics."""
+        import concurrent.futures
+        from unittest.mock import MagicMock
+        from src.utils.review_helpers import handle_review_exception
+        from src.spec_engine.review import ReviewCircuitState
+
+        exc = concurrent.futures.TimeoutError()
+        circuit = ReviewCircuitState()
+        settings = MagicMock()
+        settings.spec_review_failure_circuit_enabled = True
+        settings.spec_review_failure_max_consecutive = 3
+        settings.spec_review_failure_cooldown_cycles = 3
+        settings.spec_review_failure_max_cooldown_cycles = 12
+
+        result = handle_review_exception(
+            exc, circuit=circuit, cycle=1,
+            settings=settings, engine="spec",
+        )
+
+        # suggestion_text must be non-empty and not contain empty markers
+        assert result.suggestion_text
+        assert result.suggestion_text.strip()
+        assert "(empty message)" not in result.suggestion_text
+        assert "empty" not in result.suggestion_text.lower()
+
+        # diagnostics must identify timeout
+        assert result.diag["fail_reason"] == "timeout"
+        assert result.diag["error_text"]
+
+        # metrics must record timeout
+        assert result.metrics["fail_reason"] == "timeout"
+        assert result.metrics["consecutive_timeouts"] == 1

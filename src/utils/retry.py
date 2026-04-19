@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 import re
@@ -46,6 +47,10 @@ class RetryPolicy:
 
 
 def should_retry(error: Exception | str) -> bool:
+    # Short-circuit: bare TimeoutError (even with empty message) is always retryable
+    if isinstance(error, (TimeoutError, asyncio.TimeoutError)):
+        return True
+
     error_str = str(error)
 
     for pattern in NON_RETRYABLE_ERROR_PATTERNS:
@@ -108,6 +113,21 @@ def prompt_with_retry(
                     raise
             if attempt >= policy.max_retries or not should_retry(e):
                 raise
+            # Observability: log retry attempt with timing context
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            remaining_budget = (
+                round(_total_timeout - (time.monotonic() - t0), 1)
+                if _total_timeout is not None
+                else None
+            )
+            logger.info(
+                "prompt_with_retry: retry attempt=%d/%d elapsed_ms=%d remaining_budget=%s error=%s",
+                attempt + 1,
+                policy.max_retries,
+                elapsed_ms,
+                f"{remaining_budget}s" if remaining_budget is not None else "unlimited",
+                str(e) or repr(e),
+            )
             if before_retry:
                 try:
                     before_retry(attempt + 1, e)

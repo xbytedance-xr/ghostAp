@@ -1318,3 +1318,50 @@ class TestReviewCallsTotalTimeout:
             "Found send_prompt_with_retry calls in review code WITHOUT total_timeout:\n"
             + "\n".join(violations)
         )
+
+
+# ---------------------------------------------------------------------------
+# Lint guard: no bare `raise TimeoutError()` without message argument
+# ---------------------------------------------------------------------------
+
+
+class TestNoBareRaiseTimeoutError:
+    """Prevent introducing bare `raise TimeoutError()` (no message) in src/.
+
+    Bare TimeoutError() produces an empty str(e), which is the root cause
+    of the '审查执行异常: TimeoutError (empty message)' issue.
+    Only test files are exempted (they intentionally test the bare case).
+    """
+
+    # Matches: raise TimeoutError() — with empty parens, no arguments
+    _BARE_RAISE_RE = re.compile(r'raise\s+TimeoutError\s*\(\s*\)')
+
+    # Files in src/ that legitimately wrap and re-raise with a message
+    # (they catch the bare one from concurrent.futures and add a message)
+    _ALLOWLIST = {
+        "src/acp/sync_adapter.py",  # catches bare and re-raises with message
+    }
+
+    def _scan(self):
+        src_dir = Path(__file__).resolve().parent.parent / "src"
+        violations = []
+        for py_file in src_dir.rglob("*.py"):
+            rel = str(py_file.relative_to(src_dir.parent))
+            if rel in self._ALLOWLIST:
+                continue
+            for i, line in enumerate(py_file.read_text().splitlines(), 1):
+                stripped = line.strip()
+                # Skip comments and test-like assertions
+                if stripped.startswith("#"):
+                    continue
+                if self._BARE_RAISE_RE.search(stripped):
+                    violations.append(f"{rel}:{i}: {stripped}")
+        return violations
+
+    def test_no_bare_raise_timeout_error_in_src(self):
+        violations = self._scan()
+        assert not violations, (
+            "Found bare `raise TimeoutError()` without message in src/ "
+            "(risk of empty error message):\n"
+            + "\n".join(violations)
+        )

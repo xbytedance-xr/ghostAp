@@ -842,3 +842,55 @@ class TestSpecSkipOverrunProtection:
             cycle=1,
         )
         assert circuit.consecutive_skips == 0
+
+
+# ---------------------------------------------------------------------------
+# normalize_review_diagnostics: error_text truncation
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeDiagnosticsErrorTextTruncation:
+    """normalize_review_diagnostics must truncate error_text to 500 chars."""
+
+    def _normalize(self, diag, **kwargs):
+        from src.utils.review_diagnostics import normalize_review_diagnostics
+        return normalize_review_diagnostics(diag, **kwargs)
+
+    def test_short_text_unchanged(self):
+        diag = {"error_text": "short error"}
+        result = self._normalize(diag)
+        assert result["error_text"] == "short error"
+
+    def test_exact_500_chars_unchanged(self):
+        text = "a" * 500
+        diag = {"error_text": text}
+        result = self._normalize(diag)
+        assert result["error_text"] == text
+        assert len(result["error_text"]) == 500
+
+    def test_501_chars_truncated(self):
+        text = "a" * 501
+        diag = {"error_text": text}
+        result = self._normalize(diag)
+        assert len(result["error_text"]) <= 500
+        assert result["error_text"].endswith("…(truncated)")
+
+    def test_1000_chars_truncated_with_marker(self):
+        text = "x" * 1000
+        diag = {"error_text": text}
+        result = self._normalize(diag)
+        assert len(result["error_text"]) <= 500
+        assert "…(truncated)" in result["error_text"]
+
+    def test_custom_limit(self):
+        text = "y" * 200
+        diag = {"error_text": text}
+        result = self._normalize(diag, error_text_limit=100)
+        assert len(result["error_text"]) <= 100
+        assert result["error_text"].endswith("…(truncated)")
+
+    def test_empty_text_fallback_not_truncated(self):
+        """Empty error_text falls back to err_repr, which should be short."""
+        diag = {"error_text": "", "err_repr": "TimeoutError()"}
+        result = self._normalize(diag)
+        assert result["error_text"] == "TimeoutError()"

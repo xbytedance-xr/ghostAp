@@ -127,7 +127,32 @@ class TestComputeAdaptiveTimeout:
         assert compute_adaptive_timeout(0, base_timeout=60, min_timeout=10) == 60
         assert compute_adaptive_timeout(1, base_timeout=60, min_timeout=10) == 30
         assert compute_adaptive_timeout(2, base_timeout=60, min_timeout=10) == 15
-        assert compute_adaptive_timeout(3, base_timeout=60, min_timeout=10) == 10
+        assert compute_adaptive_timeout(3, base_timeout=60, min_timeout=10) == 15  # hard_floor=15
+
+    # -- hard_floor protection tests --
+
+    def test_hard_floor_default_15s(self):
+        """With min_timeout=5 (below hard_floor), result is still >= 15."""
+        assert compute_adaptive_timeout(10, base_timeout=120, min_timeout=5) == 15
+
+    def test_hard_floor_prevents_extreme_low(self):
+        """Even with min_timeout=1, hard_floor=15 keeps result at 15."""
+        for n in range(20):
+            result = compute_adaptive_timeout(n, base_timeout=120, min_timeout=1)
+            assert result >= 15, f"n={n}: result={result} < 15"
+
+    def test_hard_floor_custom_value(self):
+        """Custom hard_floor overrides the default 15s."""
+        assert compute_adaptive_timeout(10, base_timeout=120, min_timeout=5, hard_floor=20) == 20
+
+    def test_hard_floor_zero_disables(self):
+        """hard_floor=0 effectively disables the floor protection."""
+        assert compute_adaptive_timeout(10, base_timeout=120, min_timeout=5, hard_floor=0) == 5
+
+    def test_consecutive_10_never_below_hard_floor(self):
+        """After 10 consecutive timeouts, result must be >= hard_floor (15)."""
+        result = compute_adaptive_timeout(10)
+        assert result >= 15
 
 
 # ---------------------------------------------------------------------------
