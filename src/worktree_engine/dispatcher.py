@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import random
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -7,6 +8,8 @@ from typing import TYPE_CHECKING, Callable, Iterable, Optional
 
 from .models import WorktreeUnit
 from ..utils.errors import get_error_detail
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..agent_session import SyncSession
@@ -117,8 +120,19 @@ class WorktreeDispatcher:
                 except Exception:
                     pass
         except TimeoutError as te:
+            logger.warning("[Worktree] 单元执行超时: unit=%s, error=%s", unit.unit_id, str(te) or repr(te))
             unit.status = "failed"
-            unit.error = get_error_detail(te)
+            unit.error = f"执行超时: {get_error_detail(te)}"
+            unit.summary = unit.error
+            if on_unit_update:
+                try:
+                    on_unit_update(unit)
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.error("[Worktree] 单元执行异常: unit=%s, error=%s", unit.unit_id, str(exc) or repr(exc))
+            unit.status = "failed"
+            unit.error = f"执行异常: {get_error_detail(exc)}"
             unit.summary = unit.error
             if on_unit_update:
                 try:

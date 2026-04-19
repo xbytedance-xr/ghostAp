@@ -1,6 +1,7 @@
 # GhostAP 项目记忆索引
 
 ## 2026-04-19
+- **验证审查：8 层防御体系闭合确认 + 2 处增量修复** — 全面审查 8 层 TimeoutError 防御体系（全量 2078 tests + 4 lint 扫描器 + 140 专项测试全绿）；修复 ws_client.py 卡片动作 `str(e) or repr(e)` → `get_error_detail(e)` + worktree dispatcher 新增 logger.warning + except Exception 兜底；2078 tests passed → [详细记录](2026-04-19.md)
 - **TimeoutError (empty message) 8 层纵深防御体系最终闭合** — 审查确认 8 层防御（核心兜底→用户可见→logger→引擎→review 断路器→收敛保护→回归 lint→safe_wait_for 源头防御）全部就位；src/ 零残留裸 asyncio.wait_for / f"{e}" / str(e)；`(empty message)` 源头消灭；2078 tests passed + 82 回归 lint 测试全绿 → [详细记录](2026-04-19.md)
 - **logger 路径 bare %s,e 全量加固 + safe_wait_for 测试补全** — 30 个 src 文件共 93 处 `logger.xxx("...%s", e)` bare exception 变量统一替换为 `str(e) or repr(e)` 守卫；新增 `_BARE_LOGGER_PERCENT_RE` 回归 lint；扩展 safe_wait_for 4 个边界/取消测试 + 新建 4 个集成测试（ACP stream/healthcheck/shutdown 超时）；2078 tests passed → [详细记录](2026-04-19.md)
 - **safe_wait_for 源头防御 + 回归 lint 扩展** — 新增 `src/utils/async_helpers.py` 封装 `asyncio.wait_for` 为 `safe_wait_for`，自动为空消息 TimeoutError 附加 action 文案；替换 session.py 2处 + shutdown.py 1处；扩展回归 lint 检测裸 asyncio.wait_for；+8 新测试 +1 lint 测试，2069 tests passed → [详细记录](2026-04-19.md)

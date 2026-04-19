@@ -56,7 +56,7 @@ from ..spec_engine import SpecEngineManager, SpecReporter
 from ..thread import ThreadContextManager, get_current_thread_id, get_thread_manager
 from ..tasking import TaskEvent, TaskPriority, TaskScheduler, TaskSpec, TaskStatus
 from ..utils.circuit_breaker import CircuitBreaker, CircuitBreakerOpenException
-from ..utils.errors import log_exception
+from ..utils.errors import get_error_detail, log_exception
 from ..utils.rate_limit import RateLimiter, RateLimitExceededException
 from ..utils.trace import TraceContext, configure_logging_with_trace
 from .action_dispatcher import ActionDispatcher
@@ -2284,7 +2284,7 @@ class FeishuWSClient:
                         except Exception:
                             self._reply_message(_mid, "⚠️ 操作未完成，请稍后重试或发送 /ttadk 重新进入")
                     else:
-                        self._reply_message(_mid, f"❌ 操作失败 ({_action}): {str(e) or repr(e)}")
+                        self._reply_message(_mid, f"❌ 操作失败 ({_action}): {get_error_detail(e)}")
             except Exception:
                 pass
         finally:
