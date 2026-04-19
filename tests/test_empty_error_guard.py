@@ -655,6 +655,31 @@ class TestNoBareFStringInUserVisibleErrors:
             + "\n".join(violations)
         )
 
+    # --- Bare asyncio.wait_for lint ---
+    _BARE_WAIT_FOR_RE = re.compile(r'asyncio\.wait_for\s*\(')
+    _WAIT_FOR_ALLOWLIST = {"src/utils/async_helpers.py"}  # safe_wait_for 自身需要调用
+
+    def _scan_bare_wait_for(self):
+        """Scan src/ for direct asyncio.wait_for usage (should use safe_wait_for)."""
+        src_dir = Path(__file__).resolve().parent.parent / "src"
+        violations = []
+        for py_file in src_dir.rglob("*.py"):
+            rel = str(py_file.relative_to(src_dir.parent))
+            if rel in self._WAIT_FOR_ALLOWLIST:
+                continue
+            for i, line in enumerate(py_file.read_text().splitlines(), 1):
+                if self._BARE_WAIT_FOR_RE.search(line):
+                    violations.append(f"{rel}:{i}: {line.strip()}")
+        return violations
+
+    def test_no_bare_asyncio_wait_for(self):
+        """All asyncio.wait_for should use safe_wait_for to prevent empty TimeoutError."""
+        violations = self._scan_bare_wait_for()
+        assert not violations, (
+            "Found bare asyncio.wait_for (use safe_wait_for instead):\n"
+            + "\n".join(violations)
+        )
+
 
 # ---------------------------------------------------------------------------
 # Guard tests for newly hardened internal diagnostic paths (batch 2)

@@ -17,6 +17,7 @@ from .text import (
     make_progress_bar,
     truncate_output,
 )
+from .async_helpers import safe_wait_for
 from .engine_identity import EngineIdentity, resolve_engine_identity
 
 __all__ = [
@@ -37,4 +38,5 @@ __all__ = [
     "fmt_not_found",
     "EngineIdentity",
     "resolve_engine_identity",
+    "safe_wait_for",
 ]

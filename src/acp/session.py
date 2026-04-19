@@ -17,6 +17,7 @@ from acp.schema import PromptResponse
 from acp.stdio import spawn_agent_process
 
 from ..config import get_settings
+from ..utils.async_helpers import safe_wait_for
 from .client import ACPHistoryStore, GhostAPClient
 from .models import ACPEvent, ACPEventType, ACPSessionState, PromptResult
 
@@ -87,7 +88,7 @@ async def _read_stream_snippet(stream: object, *, max_bytes: int = 8192, timeout
         coro = getattr(stream, "read", None)
         if not callable(coro):
             return ""
-        data = await asyncio.wait_for(coro(max_bytes), timeout=timeout)
+        data = await safe_wait_for(coro(max_bytes), timeout=timeout, action="ACP stream read")
         if not data:
             return ""
         if isinstance(data, str):
@@ -234,9 +235,10 @@ class ACPSession:
             # Use a stable roundtrip request. `session/load` should be supported by agents.
             if not self._session_id:
                 return False
-            await asyncio.wait_for(
+            await safe_wait_for(
                 self._conn.load_session(cwd=self._cwd, session_id=self._session_id),
                 timeout=timeout,
+                action="ACP 健康检查",
             )
             return True
         except Exception:

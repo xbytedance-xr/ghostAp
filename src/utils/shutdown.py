@@ -6,6 +6,7 @@ import signal
 import sys
 import threading
 
+from .async_helpers import safe_wait_for
 from .cleanup import run_all_cleanups
 from .hooks import HookEvent, fire_hooks
 
@@ -31,8 +32,8 @@ def graceful_shutdown(exit_code: int = 0, *, reason: str = "", timeout: float = 
     try:
         loop = asyncio.new_event_loop()
         try:
-            loop.run_until_complete(asyncio.wait_for(run_all_cleanups(), timeout=timeout))
-        except asyncio.TimeoutError:
+            loop.run_until_complete(safe_wait_for(run_all_cleanups(), timeout=timeout, action="graceful shutdown cleanup"))
+        except (asyncio.TimeoutError, TimeoutError):
             logger.warning("cleanup timed out after %.1fs", timeout)
         finally:
             loop.close()
