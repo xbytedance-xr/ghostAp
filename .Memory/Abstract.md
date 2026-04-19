@@ -1,5 +1,8 @@
 # GhostAP 项目记忆索引
 
+## 2026-04-20
+- **落实改进建议：ReviewCircuitState 持久化提交落地** — 将 9 个文件 +609 行未暂存改动提交（ReviewCircuitState to_dict/from_dict 序列化、SpecEngine/LoopEngine save/load_state_with_circuit、Loop skip overrun 保护、12 个 E2E empty message 守卫测试）；全量 2189 passed + 94 回归 lint + 193 超时专项全绿；`a7c8e64` → [详细记录](2026-04-20.md)
+
 ## 2026-04-19
 - **ReviewCircuitState 持久化 + Loop 审查跳过率保护 + E2E empty message 测试** — 将 Spec/Loop 的 ReviewCircuitState 纳入状态持久化（save/load_state round-trip，旧快照兼容）；LoopEngine 新增 `consecutive_skips` 字段和 `review_skip_overrun` warning；补充 5 个 E2E empty message 端到端测试 + 7 个 `build_review_error_suggestion` 输出守卫；2189 tests passed → [详细记录](2026-04-19.md)
 - **review 异常处理统一抽取 handle_review_exception** — 将 Spec/Loop 两引擎 ~160 行重复 except 分支抽取到 `review_helpers.py` 的 `handle_review_exception()` 共享函数；统一 timeout 检测逻辑（Spec 侧补齐 isinstance+detail 冗余检查）；新增 `_is_timeout_error()`、`ReviewExceptionResult` NamedTuple；+18 新测试，2167 tests passed；`433c2c4` → [详细记录](2026-04-19.md)
