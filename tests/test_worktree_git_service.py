@@ -208,3 +208,131 @@ def test_remove_branch_nonexistent_is_noop(tmp_path):
     service = WorktreeGitService()
     # Should not raise
     service.remove_branch(str(repo), "nonexistent-branch")
+
+
+def test_no_git_auto_init_and_create_worktree(tmp_path):
+    """T8: Empty directory → auto git init → create worktree succeeds (AC5)."""
+    project_root = tmp_path / "empty-project"
+    project_root.mkdir()
+    # Just write a file — no git repo
+    (project_root / "main.py").write_text("pass\n", encoding="utf-8")
+
+    service = WorktreeGitService()
+
+    # ensure_local_repo should auto-init
+    repo_state = service.ensure_local_repo(str(project_root))
+    assert repo_state.initialized is True
+    assert repo_state.repo_root == str(project_root.resolve())
+
+    # Verify git is actually initialised
+    result = _run_git(project_root, "rev-parse", "--is-inside-work-tree")
+    assert result.stdout.strip() == "true"
+
+    # Now create worktrees on the auto-initialised repo
+    from src.worktree_engine.models import WorktreeSelectionItem
+
+    selections = [
+        WorktreeSelectionItem(
+            provider="acp", tool_name="coco",
+            display_name="Coco", model_name="doubao",
+        ),
+    ]
+    _, units = service.create_units(
+        root_path=str(project_root), selections=selections,
+    )
+    assert len(units) == 1
+    assert Path(units[0].worktree_path).exists()
+    assert units[0].branch_name.startswith("ghostap/wt/")
+
+
+def test_full_lifecycle_create_execute_merge_cleanup(tmp_path):
+    """T7: create → write files → commit → merge → cleanup full lifecycle."""
+    project_root = tmp_path / "lifecycle-project"
+    project_root.mkdir()
+    _init_repo(project_root)
+
+    from src.worktree_engine.models import WorktreeSelectionItem
+
+    service = WorktreeGitService()
+    selections = [
+        WorktreeSelectionItem(provider="acp", tool_name="coco", display_name="Coco"),
+        WorktreeSelectionItem(provider="cli", tool_name="claude", display_name="Claude"),
+    ]
+    repo_state, units = service.create_units(
+        root_path=str(project_root), selections=selections,
+    )
+
+    # Verify worktrees exist
+    wt_list_before = _run_git(project_root, "worktree", "list").stdout
+    for unit in units:
+        assert Path(unit.worktree_path).exists()
+        assert unit.branch_name in wt_list_before
+
+    # Simulate tool execution: write files and commit in each worktree
+    for unit in units:
+        wt = Path(unit.worktree_path)
+        _commit_file(wt, f"{unit.tool_name}.py", f"# {unit.tool_name}\n", f"feat: {unit.tool_name}")
+
+    # Merge each branch back to base
+    for unit in units:
+        ok, conflicts = service.merge_branch(repo_state.repo_root, unit.branch_name, repo_state.base_branch)
+        assert ok is True
+        assert conflicts == []
+
+    # Verify merged files exist on base branch
+    _run_git(project_root, "checkout", repo_state.base_branch)
+    assert (project_root / "coco.py").exists()
+    assert (project_root / "claude.py").exists()
+
+    # Cleanup
+    for unit in units:
+        service.remove_worktree(repo_state.repo_root, unit.worktree_path)
+        service.remove_branch(repo_state.repo_root, unit.branch_name)
+
+    # Verify worktrees are gone
+    wt_list_after = _run_git(project_root, "worktree", "list").stdout
+    for unit in units:
+        assert unit.worktree_path not in wt_list_after
+
+
+def test_no_remote_operations_during_lifecycle(tmp_path, monkeypatch):
+    """T9: No push/fetch/pull operations during entire worktree lifecycle (AC6)."""
+    project_root = tmp_path / "no-remote-project"
+    project_root.mkdir()
+    _init_repo(project_root)
+
+    from src.worktree_engine.models import WorktreeSelectionItem
+    from unittest.mock import patch
+
+    # Track all git commands
+    git_commands: list[list[str]] = []
+    original_run = subprocess.run
+
+    def tracking_run(args, **kwargs):
+        if args and args[0] == "git":
+            git_commands.append(list(args))
+        return original_run(args, **kwargs)
+
+    with patch("subprocess.run", side_effect=tracking_run):
+        service = WorktreeGitService()
+        selections = [
+            WorktreeSelectionItem(provider="acp", tool_name="coco", display_name="Coco"),
+        ]
+        repo_state, units = service.create_units(
+            root_path=str(project_root), selections=selections,
+        )
+
+        # Simulate work and merge
+        wt = Path(units[0].worktree_path)
+        _commit_file(wt, "test.py", "pass\n", "add test")
+        service.merge_branch(repo_state.repo_root, units[0].branch_name, repo_state.base_branch)
+
+        # Cleanup
+        service.remove_worktree(repo_state.repo_root, units[0].worktree_path)
+        service.remove_branch(repo_state.repo_root, units[0].branch_name)
+
+    # Assert no remote operations occurred
+    remote_ops = {"push", "fetch", "pull"}
+    for cmd in git_commands:
+        git_subcmd = cmd[1] if len(cmd) > 1 else ""
+        assert git_subcmd not in remote_ops, f"Unexpected remote operation: {cmd}"

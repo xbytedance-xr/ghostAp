@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -1105,6 +1106,11 @@ class SystemHandler(BaseHandler):
             self.reply_error(message_id, f"Worktree 创建失败: {state.last_error}")
             return
 
+        # Mark all units as "ready" so the message-routing interception can
+        # detect that worktree mode is awaiting a user goal.
+        for unit in state.units:
+            unit.status = "ready"
+
         # Show progress card with "ready" status
         units_dicts = [u.to_dict() for u in state.units]
         pid = project.project_id
@@ -1112,6 +1118,80 @@ class SystemHandler(BaseHandler):
             units_dicts, pid, message="Worktree 已创建，请发送任务需求开始并行执行。",
         )
         self.patch_message(message_id, card, msg_type=msg_type)
+
+    def handle_worktree_execute(
+        self,
+        message_id: str,
+        chat_id: str,
+        text: str,
+        project: Optional["ProjectContext"] = None,
+    ):
+        """Route user message as a worktree goal — trigger parallel execution."""
+        if project is None:
+            project = self.project_manager.get_active_project(chat_id)
+        if not project:
+            self.reply_error(message_id, "找不到关联的项目")
+            return
+
+        goal = str(text or "").strip()
+        if not goal:
+            self.reply_message(message_id, "请输入任务需求")
+            return
+
+        mgr = self._worktree_manager()
+        pid = project.project_id
+
+        # Send an initial "executing" progress card
+        state = mgr.get_state(project)
+        units_dicts = [u.to_dict() for u in state.units]
+        msg_type, card = CardBuilder.build_worktree_progress_card(
+            units_dicts, pid, message=f"⏳ 正在并行执行: {goal[:80]}",
+        )
+        progress_mid = self.send_message(chat_id, card, msg_type=msg_type)
+
+        # Build a throttled callback for live progress updates
+        _update_lock = threading.Lock()
+        _last_update: list[float] = [0.0]
+        _THROTTLE_INTERVAL = 0.5  # seconds
+
+        def _on_unit_update(unit):
+            now = time.time()
+            with _update_lock:
+                if now - _last_update[0] < _THROTTLE_INTERVAL:
+                    return
+                _last_update[0] = now
+            try:
+                cur_state = mgr.get_state(project)
+                cur_dicts = [u.to_dict() for u in cur_state.units]
+                mt, cd = CardBuilder.build_worktree_progress_card(
+                    cur_dicts, pid, message=f"🔄 执行中: {goal[:60]}",
+                )
+                if progress_mid:
+                    self.patch_message(progress_mid, cd, msg_type=mt)
+            except Exception:
+                pass
+
+        # Execute in the current thread (already inside a task-scheduler slot)
+        state = mgr.execute_goal(project, goal, on_unit_update=_on_unit_update)
+
+        # Show final result — cleanup card with merge/cleanup entry
+        if state.last_error:
+            self.reply_error(message_id, state.last_error)
+            return
+
+        final_dicts = [u.to_dict() for u in state.units]
+        if state.merge_entry_ready:
+            msg_type, card = CardBuilder.build_worktree_cleanup_card(
+                state.merge_notes, pid, state.base_branch or "main",
+            )
+        else:
+            msg_type, card = CardBuilder.build_worktree_progress_card(
+                final_dicts, pid, message="执行完成（无可合并的变更）",
+            )
+        if progress_mid:
+            self.patch_message(progress_mid, card, msg_type=msg_type)
+        else:
+            self.reply_message(message_id, card, msg_type=msg_type)
 
     def handle_worktree_merge(
         self,

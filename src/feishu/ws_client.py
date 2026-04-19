@@ -1121,6 +1121,7 @@ class FeishuWSClient:
         "_handle_card_new_ttadk": ("_ttadk_handler", "handle_card_new"),
         "_handle_ttadk_command": ("_system_handler", "handle_ttadk_command"),
         "_handle_worktree_command": ("_system_handler", "handle_worktree_command"),
+        "_handle_worktree_execute": ("_system_handler", "handle_worktree_execute"),
         "_handle_finish_worktree_selection": ("_system_handler", "handle_finish_worktree_selection"),
         "_handle_worktree_select_tool": ("_system_handler", "handle_worktree_select_tool"),
         "_handle_worktree_select_model": ("_system_handler", "handle_worktree_select_model"),
@@ -1246,6 +1247,17 @@ class FeishuWSClient:
     def _is_interceptable_command(text: str) -> bool:
         """判断是否为需要系统层拦截的命令（帮助/项目/状态等）。"""
         return SystemHandler.is_interceptable_command(text)
+
+    @staticmethod
+    def _is_worktree_awaiting_goal(project: "ProjectContext") -> bool:
+        """Return True when worktree mode is enabled and units are ready for a goal."""
+        state = getattr(project, "worktree_state", None)
+        if state is None or not getattr(state, "enabled", False):
+            return False
+        units = getattr(state, "units", None)
+        if not units:
+            return False
+        return any(getattr(u, "status", "") == "ready" for u in units)
 
     @staticmethod
     def _mode_to_context_source(mode) -> ContextSourceMode:
@@ -2314,6 +2326,13 @@ class FeishuWSClient:
 
         if self._is_interceptable_command(text):
             self._handle_intercepted_command(message_id, chat_id, text, project)
+            return
+
+        # Worktree mode: route user messages as execution goals when worktree
+        # is enabled and units are ready to receive tasks.
+        if project and self._is_worktree_awaiting_goal(project):
+            self._add_reaction(message_id, EmojiReaction.on_processing())
+            self._handle_worktree_execute(message_id, chat_id, text, project)
             return
 
         # Programming mode (Coco / Claude / TTADK): exit or forward to active session

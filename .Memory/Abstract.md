@@ -4,6 +4,7 @@
 - **修复 Spec Engine 收敛检测误判** — review 连续 timeout 时 fallback suggestions 固定文本导致 `detect_convergence` 误判为收敛退出；修复：异常轮次（`review_decision` 以 `review_failed` 开头）不参与收敛比较；+4 测试，30 convergence tests passed → [详细记录](2026-04-19.md)
 - **改进 Spec Engine 审查超时体验** — 解决 `TimeoutError (empty message)` 不友好文案：sync_adapter 为 TimeoutError 附加有意义消息、review 诊断层对 timeout 用中文友好文案、fallback suggestions 区分 timeout/非 timeout、review timeout 从硬编码改配置项 `spec_review_timeout`、熔断器默认开启；+7 新测试，1920 tests passed → [详细记录](2026-04-19.md)
 - **审查验证：TimeoutError 改进落实确认** — 全面审查 commit 416c13a/e1b99c4 的三层防御（Transport/Diagnostics/Safety），确认 sync_adapter re-raise、review 诊断友好文案、熔断器、收敛检测跳过、其他引擎兼容均无遗漏；+14 新测试（test_review_timeout.py），1934 tests passed → [详细记录](2026-04-19.md)
+- **Worktree Engine TimeoutError 加固** — 将 spec_engine 的 TimeoutError 防御推广到 worktree_engine：dispatcher._run_single_unit 增加 except TimeoutError 友好消息、execute_units/manager 空串兜底；+4 新测试，1938 tests passed → [详细记录](2026-04-19.md)
 
 ## 2026-04-18
 - **/simplify 续做：LLM 缓存复用、渲染器收口与项目持久化一致性** — 新增 `src/utils/llm.py` 并接入 Loop/Spec/Intent；`ACPEventRenderer` 改脏标记重建+完成计数收口；`ProjectManager` 补齐 touch 持久化一致性；定向测试 `419 passed` → [详细记录](2026-04-18.md)

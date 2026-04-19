@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Callable, Iterable, Optional
@@ -40,14 +41,17 @@ class WorktreeDispatcher:
 
         return create_sync_session_for_worktree(**kwargs)
 
+    # Tools known for strong reasoning / analysis capabilities
+    _REASONING_TOOLS: frozenset[str] = frozenset({"claude", "gemini"})
+
     def plan_user_goal(self, goal: str, units: Iterable[WorktreeUnit]) -> list[WorktreeUnit]:
         normalized_goal = str(goal or "").strip()
         planned_units = list(units)
         if not planned_units:
             return []
 
-        role_templates = self._build_role_templates(len(planned_units))
-        for unit, (title, role_prompt) in zip(planned_units, role_templates):
+        assignments = self._assign_roles_smart(planned_units)
+        for unit, (title, role_prompt) in zip(planned_units, assignments):
             unit.task_title = title
             unit.task_prompt = (
                 f"用户目标：{normalized_goal}\n"
@@ -78,7 +82,7 @@ class WorktreeDispatcher:
                     future.result()
                 except Exception as exc:
                     unit.status = "failed"
-                    unit.error = str(exc)
+                    unit.error = str(exc).strip() or "执行异常"
                     if on_unit_update:
                         try:
                             on_unit_update(unit)
@@ -111,11 +115,82 @@ class WorktreeDispatcher:
                     on_unit_update(unit)
                 except Exception:
                     pass
+        except TimeoutError as te:
+            unit.status = "failed"
+            unit.error = str(te).strip() or f"执行超时 ({timeout}s)"
+            unit.summary = unit.error
+            if on_unit_update:
+                try:
+                    on_unit_update(unit)
+                except Exception:
+                    pass
         finally:
             try:
                 session.close()
             except Exception:
                 pass
+
+    @classmethod
+    def _assign_roles_smart(cls, units: list[WorktreeUnit]) -> list[tuple[str, str]]:
+        """Assign analysis/implementation/review roles based on tool characteristics.
+
+        Reasoning-strong tools (claude, gemini) are preferred for analysis and
+        review.  All other tools are assigned implementation roles.  When no
+        reasoning tool is present the method falls back to positional assignment
+        via ``_build_role_templates``.
+        """
+        role_defs = {
+            "analysis": ("分析与方案", "先理解需求、梳理风险与改动范围，并给出执行建议"),
+            "implement": ("实现与修改", "聚焦代码实现、必要修改与验证思路"),
+            "review": ("审查与汇总", "复核前面结果，指出风险、遗漏与合并建议"),
+        }
+
+        if len(units) <= 1:
+            return [("综合处理", "完成需求分析、实现与复核，给出最终建议")]
+
+        # Classify units
+        reasoning_indices = [i for i, u in enumerate(units) if u.tool_name in cls._REASONING_TOOLS]
+        other_indices = [i for i, u in enumerate(units) if u.tool_name not in cls._REASONING_TOOLS]
+
+        # Fallback: no recognisable tool category → use positional assignment
+        if not reasoning_indices and not other_indices:
+            return cls._build_role_templates(len(units))
+
+        assignments: list[tuple[int, tuple[str, str]]] = []
+
+        # 1. Pick analyser – prefer reasoning tool
+        if reasoning_indices:
+            analyser_idx = reasoning_indices.pop(0)
+        else:
+            analyser_idx = other_indices.pop(0)
+        assignments.append((analyser_idx, role_defs["analysis"]))
+
+        # 2. Pick reviewer – prefer reasoning tool (different from analyser)
+        if reasoning_indices:
+            reviewer_idx = reasoning_indices.pop(0)
+        elif other_indices:
+            reviewer_idx = other_indices.pop(-1)
+        else:
+            # Only one unit left – re-assigned as reviewer is impossible,
+            # fallback handled below.
+            reviewer_idx = None
+
+        # 3. Remaining units are implementers
+        remaining = reasoning_indices + other_indices
+        random.shuffle(remaining)
+        impl_count = 0
+        for idx in remaining:
+            impl_count += 1
+            label = f"实现与修改 {impl_count}" if impl_count > 1 else "实现与修改"
+            assignments.append((idx, (label, role_defs["implement"][1])))
+
+        # Append reviewer last (review should conceptually happen after implementation)
+        if reviewer_idx is not None:
+            assignments.append((reviewer_idx, role_defs["review"]))
+
+        # Sort by original unit order so the returned list aligns with *units*
+        assignments.sort(key=lambda t: t[0])
+        return [role for _, role in assignments]
 
     @staticmethod
     def _build_role_templates(count: int) -> list[tuple[str, str]]:

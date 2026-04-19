@@ -103,7 +103,7 @@ def test_execute_goal_refreshes_summary_lines_and_merge_notes(tmp_path):
 
     original_execute_units = manager._dispatcher.execute_units
 
-    def _fake_execute_units(units, timeout=None, max_workers=None):
+    def _fake_execute_units(units, timeout=None, max_workers=None, on_unit_update=None):
         for unit in units:
             unit.status = "completed"
             unit.summary = unit.summary or "执行完成"
@@ -116,3 +116,39 @@ def test_execute_goal_refreshes_summary_lines_and_merge_notes(tmp_path):
     assert state.summary_lines
     assert state.merge_notes
     assert state.merge_entry_ready is True
+
+
+def test_reporter_timeout_unit_shows_timeout_summary():
+    """Failed unit with timeout error → summary line includes timeout info."""
+    reporter = WorktreeReporter()
+    units = [
+        WorktreeUnit(
+            unit_id="u1",
+            selection_key="acp:coco:d",
+            provider="acp",
+            tool_name="coco",
+            display_name="Coco",
+            status="failed",
+            task_title="分析与方案",
+            error="执行超时 (30s)",
+        ),
+        WorktreeUnit(
+            unit_id="u2",
+            selection_key="acp:codex:d",
+            provider="acp",
+            tool_name="codex",
+            display_name="Codex",
+            status="completed",
+            task_title="实现与修改",
+            summary="实现完成",
+            has_changes=True,
+        ),
+    ]
+    lines = reporter.build_unit_summary_lines(units)
+
+    # Failed timeout unit shows timeout error text
+    assert "超时" in lines[0]
+    assert "❌" in lines[0]
+    # Completed unit shows normally
+    assert "✅" in lines[1]
+    assert "实现完成" in lines[1]

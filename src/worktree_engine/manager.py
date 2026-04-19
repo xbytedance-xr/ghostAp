@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Callable, Optional
 
 from ..project.context import ProjectContext
 from .dispatcher import WorktreeDispatcher
@@ -143,7 +143,14 @@ class WorktreeManager:
         state.units = self._dispatcher.plan_user_goal(state.last_user_goal, state.units)
         return self._reporter.refresh_state(state)
 
-    def execute_goal(self, project: ProjectContext, goal: str, *, timeout: Optional[int] = None) -> WorktreeRuntimeState:
+    def execute_goal(
+        self,
+        project: ProjectContext,
+        goal: str,
+        *,
+        timeout: Optional[int] = None,
+        on_unit_update: Optional[Callable] = None,
+    ) -> WorktreeRuntimeState:
         state = self.get_state(project)
         if not state.units:
             state = self.ensure_worktrees(project)
@@ -153,10 +160,12 @@ class WorktreeManager:
             return self._reporter.refresh_state(state)
         state = self.plan_goal(project, goal)
         try:
-            state.units = self._dispatcher.execute_units(state.units, timeout=timeout)
+            state.units = self._dispatcher.execute_units(
+                state.units, timeout=timeout, on_unit_update=on_unit_update,
+            )
             state.last_error = ""
         except Exception as exc:
-            state.last_error = str(exc)
+            state.last_error = str(exc).strip() or "执行异常"
         return self._reporter.refresh_state(state)
 
     # ------------------------------------------------------------------
