@@ -20,6 +20,7 @@ def send_prompt_with_retry(
     timeout: Optional[int] = None,
     retry_policy: Optional[RetryPolicy] = None,
     before_retry: Optional[Callable[[int, Exception], None]] = None,
+    total_timeout: Optional[float] = None,
 ):
     if not session:
         raise RuntimeError("Spec session is not initialized")
@@ -32,6 +33,7 @@ def send_prompt_with_retry(
             timeout=timeout,
             retry_policy=retry_policy,
             before_retry=before_retry,
+            total_timeout=total_timeout,
         )
 
     fallback_sender = getattr(session, "send_prompt", None)

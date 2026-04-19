@@ -1273,3 +1273,48 @@ class TestBuildReviewErrorSuggestionOutputGuard:
         )
         assert result and result.strip()
         assert "ValueError('x')" in result
+
+
+class TestReviewCallsTotalTimeout:
+    """Lint guard: review-related send_prompt_with_retry calls in spec_engine
+    and loop_engine must include total_timeout parameter to prevent unbounded
+    retry duration."""
+
+    _REVIEW_FILES = [
+        "src/spec_engine/review.py",
+        "src/loop_engine/engine.py",
+    ]
+
+    def test_review_send_prompt_with_retry_has_total_timeout(self):
+        """All send_prompt_with_retry calls in review code must include total_timeout."""
+        import re
+        src_dir = Path(__file__).resolve().parent.parent
+        violations = []
+        call_re = re.compile(r'send_prompt_with_retry\s*\(')
+        total_timeout_re = re.compile(r'total_timeout\s*=')
+        # Only check inside review functions — detect the enclosing function name
+        review_fn_re = re.compile(r'^\s*def\s+(?:conduct_review|_conduct_review)\b')
+
+        for rel_path in self._REVIEW_FILES:
+            full_path = src_dir / rel_path
+            if not full_path.exists():
+                continue
+            content = full_path.read_text()
+            lines = content.splitlines()
+            in_review_fn = False
+            for i, line in enumerate(lines, 1):
+                # Track whether we're inside a review function
+                if re.match(r'^\s*def\s+\w+', line):
+                    in_review_fn = bool(review_fn_re.match(line))
+                if not in_review_fn:
+                    continue
+                if call_re.search(line):
+                    # Look at the full call (may span multiple lines)
+                    snippet = "\n".join(lines[i - 1 : min(i + 10, len(lines))])
+                    if not total_timeout_re.search(snippet):
+                        violations.append(f"{rel_path}:{i}: {line.strip()}")
+
+        assert not violations, (
+            "Found send_prompt_with_retry calls in review code WITHOUT total_timeout:\n"
+            + "\n".join(violations)
+        )

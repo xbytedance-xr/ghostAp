@@ -4,7 +4,8 @@ import logging
 import random
 import re
 import threading
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable, Optional, TypeVar
 
 if TYPE_CHECKING:
@@ -41,6 +42,7 @@ class RetryPolicy:
     backoff_multiplier: float = 1.5
     max_delay: float = 60.0
     jitter_factor: float = 0.25
+    total_timeout: Optional[float] = None
 
 
 def should_retry(error: Exception | str) -> bool:
@@ -74,13 +76,25 @@ def prompt_with_retry(
     retry_policy: Optional[RetryPolicy] = None,
     before_retry: Optional[Callable[[int, Exception], None]] = None,
     circuit_breaker: Optional[CircuitBreaker] = None,
+    total_timeout: Optional[float] = None,
 ) -> T:
     from .circuit_breaker import CircuitBreaker as _CB
 
     policy = retry_policy or RetryPolicy()
+    # total_timeout precedence: explicit kwarg > policy field > None (disabled)
+    _total_timeout = total_timeout if total_timeout is not None else policy.total_timeout
     last_error: Optional[Exception] = None
+    t0 = time.monotonic()
 
     for attempt in range(policy.max_retries + 1):
+        # Check total timeout budget before each attempt
+        if _total_timeout is not None and attempt > 0:
+            elapsed = time.monotonic() - t0
+            if elapsed >= _total_timeout:
+                raise TimeoutError(
+                    f"prompt_with_retry 总耗时 ({elapsed:.1f}s) 超过上限 ({_total_timeout}s)"
+                ) from last_error
+
         try:
             if circuit_breaker is not None:
                 return circuit_breaker.call(action)
@@ -100,6 +114,14 @@ def prompt_with_retry(
                 except Exception:
                     pass
             delay = max(0.0, float(get_retry_delay(attempt, policy)))
+            # Clamp delay if total_timeout budget would be exceeded
+            if _total_timeout is not None:
+                remaining = _total_timeout - (time.monotonic() - t0)
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"prompt_with_retry 总耗时超过上限 ({_total_timeout}s)"
+                    ) from e
+                delay = min(delay, remaining)
             if cancel_event.wait(timeout=delay):
                 raise
 

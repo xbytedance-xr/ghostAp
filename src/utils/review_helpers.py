@@ -128,6 +128,7 @@ def handle_review_exception(
     build_diag_fn: Optional[object] = None,
     build_diag_kwargs: Optional[dict] = None,
     review_timeout: int = 0,
+    review_elapsed_ms: int = 0,
 ) -> ReviewExceptionResult:
     """Centralised review exception handler shared by Spec & Loop engines.
 
@@ -159,6 +160,10 @@ def handle_review_exception(
         ``chat_id``).
     review_timeout : int
         The adaptive timeout that was used for the review call.
+    review_elapsed_ms : int
+        Actual wall-clock elapsed time for the review call (including retries),
+        in milliseconds.  Written to ``circuit.last_review_elapsed_ms`` and
+        emitted as ``total_elapsed_ms`` in the metrics dict.
 
     Returns
     -------
@@ -205,6 +210,12 @@ def handle_review_exception(
     diag_raw = build_diag_fn(e, cycle=cycle, **(build_diag_kwargs or {}))
     diag = normalize_review_diagnostics(diag_raw)
     circuit.last_review_failure_diag = dict(diag)
+
+    # 1b. Record elapsed time on circuit
+    try:
+        circuit.last_review_elapsed_ms = int(review_elapsed_ms or 0)
+    except Exception:
+        pass
 
     # 2. Unified timeout detection + consecutive tracking
     _fail_reason = str(diag.get("fail_reason") or "").strip()
@@ -279,6 +290,7 @@ def handle_review_exception(
         "circuit_open": bool(_circuit_open_val and int(cycle or 0) < int(_circuit_open_val)),
         "adaptive_timeout": int(review_timeout),
         "backoff_level": int(circuit.backoff_level or 0),
+        "total_elapsed_ms": int(review_elapsed_ms or 0),
     }
     try:
         logger.info("%s review_metrics: %s", _log_prefix, json.dumps(metrics, ensure_ascii=False))

@@ -166,6 +166,7 @@ class _MockCircuitSpec:
     last_review_failure_diag: Optional[dict] = None
     backoff_level: int = 0
     consecutive_timeouts: int = 0
+    last_review_elapsed_ms: int = 0
 
 
 @dataclass
@@ -176,6 +177,7 @@ class _MockCircuitLoop:
     last_review_failure_diag: Optional[dict] = None
     backoff_level: int = 0
     consecutive_timeouts: int = 0
+    last_review_elapsed_ms: int = 0
 
 
 def _stub_build_diag(e, *, cycle, **kw):
@@ -427,3 +429,59 @@ class TestHandleReviewExceptionLoop:
         assert len(calls) == 1
         assert calls[0]["project_name"] == "test_proj"
         assert calls[0]["chat_id"] == "c1"
+
+
+# ---------------------------------------------------------------------------
+# handle_review_exception — total_elapsed_ms in metrics
+# ---------------------------------------------------------------------------
+
+class TestHandleReviewExceptionElapsedMs:
+    """Verify review_elapsed_ms flows into metrics['total_elapsed_ms'] and circuit."""
+
+    def test_metrics_contains_total_elapsed_ms_spec(self):
+        circuit = _MockCircuitSpec()
+        settings = _make_settings()
+        result = handle_review_exception(
+            RuntimeError("x"),
+            circuit=circuit,
+            cycle=1,
+            settings=settings,
+            engine="spec",
+            build_diag_fn=_stub_build_diag,
+            review_elapsed_ms=1234,
+        )
+        assert "total_elapsed_ms" in result.metrics
+        assert isinstance(result.metrics["total_elapsed_ms"], int)
+        assert result.metrics["total_elapsed_ms"] == 1234
+        assert circuit.last_review_elapsed_ms == 1234
+
+    def test_metrics_contains_total_elapsed_ms_loop(self):
+        circuit = _MockCircuitLoop()
+        settings = _make_settings()
+        result = handle_review_exception(
+            TimeoutError("timeout"),
+            circuit=circuit,
+            cycle=3,
+            settings=settings,
+            engine="loop",
+            build_diag_fn=_stub_build_diag,
+            review_elapsed_ms=5678,
+        )
+        assert "total_elapsed_ms" in result.metrics
+        assert isinstance(result.metrics["total_elapsed_ms"], int)
+        assert result.metrics["total_elapsed_ms"] == 5678
+        assert circuit.last_review_elapsed_ms == 5678
+
+    def test_default_elapsed_ms_is_zero(self):
+        circuit = _MockCircuitSpec()
+        settings = _make_settings()
+        result = handle_review_exception(
+            RuntimeError("x"),
+            circuit=circuit,
+            cycle=1,
+            settings=settings,
+            engine="spec",
+            build_diag_fn=_stub_build_diag,
+        )
+        assert result.metrics["total_elapsed_ms"] == 0
+        assert circuit.last_review_elapsed_ms == 0

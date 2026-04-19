@@ -62,6 +62,7 @@ class SyncSession(Protocol):
         timeout: Optional[int] = None,
         retry_policy: Optional[RetryPolicy] = None,
         before_retry: Optional[Callable[[int, Exception], None]] = None,
+        total_timeout: Optional[float] = None,
     ) -> PromptResult: ...
     def cancel(self) -> None: ...
     def close(self) -> None: ...
@@ -252,12 +253,14 @@ class SyncClaudeCLISession:
         timeout: Optional[int] = None,
         retry_policy: Optional[RetryPolicy] = None,
         before_retry: Optional[Callable[[int, Exception], None]] = None,
+        total_timeout: Optional[float] = None,
     ) -> PromptResult:
         return prompt_with_retry(
             lambda: self.send_prompt(text, on_event=on_event, timeout=timeout),
             self._cancel_event,
             retry_policy=retry_policy,
             before_retry=before_retry,
+            total_timeout=total_timeout,
         )
 
     def cancel(self) -> None:
@@ -529,12 +532,14 @@ class SyncTTADKCLISession:
         timeout: Optional[int] = None,
         retry_policy: Optional[RetryPolicy] = None,
         before_retry: Optional[Callable[[int, Exception], None]] = None,
+        total_timeout: Optional[float] = None,
     ) -> PromptResult:
         return prompt_with_retry(
             lambda: self.send_prompt(text, on_event=on_event, timeout=timeout),
             self._cancel_event,
             retry_policy=retry_policy,
             before_retry=before_retry,
+            total_timeout=total_timeout,
         )
 
 
@@ -1164,12 +1169,14 @@ class RateLimitAwareSession:
         timeout: Optional[int] = None,
         retry_policy: Optional[RetryPolicy] = None,
         before_retry: Optional[Callable[[int, Exception], None]] = None,
+        total_timeout: Optional[float] = None,
     ) -> PromptResult:
         return prompt_with_retry(
             lambda: self.send_prompt(text, on_event=on_event, timeout=timeout),
             self._cancel_event,
             retry_policy=retry_policy,
             before_retry=before_retry,
+            total_timeout=total_timeout,
         )
 
 
@@ -1864,12 +1871,14 @@ class ModelFailureAwareSession:
         timeout: Optional[int] = None,
         retry_policy: Optional[RetryPolicy] = None,
         before_retry: Optional[Callable[[int, Exception], None]] = None,
+        total_timeout: Optional[float] = None,
     ) -> PromptResult:
         return prompt_with_retry(
             lambda: self.send_prompt(text, on_event=on_event, timeout=timeout),
             self._cancel_event,
             retry_policy=retry_policy,
             before_retry=before_retry,
+            total_timeout=total_timeout,
         )
 
 

@@ -308,11 +308,13 @@ class SpecEngine(BaseEngine):
         timeout: Optional[int] = None,
         retry_policy: Optional[RetryPolicy] = None,
         before_retry: Optional[Callable[[int, Exception], None]] = None,
+        total_timeout: Optional[float] = None,
     ):
         return _send_prompt_with_retry(
             self._session, prompt,
             on_event=on_event, timeout=timeout,
             retry_policy=retry_policy, before_retry=before_retry,
+            total_timeout=total_timeout,
         )
 
     def _build_review_exception_diagnostics(self, e: Exception, *, cycle: int) -> dict:

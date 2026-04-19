@@ -383,3 +383,27 @@ class TestLoopAdaptiveTimeout:
         engine._session.send_prompt_with_retry = capturing_send
         engine._conduct_review(1, callbacks)
         assert captured == [30]
+
+
+class TestLoopReviewCircuitStateSerialization:
+    """LoopReviewCircuitState.to_dict/from_dict round-trip for last_review_elapsed_ms."""
+
+    def test_round_trip_default(self):
+        circuit = LoopReviewCircuitState()
+        assert circuit.last_review_elapsed_ms == 0
+        d = circuit.to_dict()
+        assert "last_review_elapsed_ms" in d
+        restored = LoopReviewCircuitState.from_dict(d)
+        assert restored.last_review_elapsed_ms == 0
+
+    def test_round_trip_nonzero(self):
+        circuit = LoopReviewCircuitState(last_review_elapsed_ms=9999)
+        d = circuit.to_dict()
+        assert d["last_review_elapsed_ms"] == 9999
+        restored = LoopReviewCircuitState.from_dict(d)
+        assert restored.last_review_elapsed_ms == 9999
+
+    def test_from_dict_missing_key_defaults_zero(self):
+        """Backward compat: old persisted state without last_review_elapsed_ms."""
+        restored = LoopReviewCircuitState.from_dict({"review_failure_consecutive": 2})
+        assert restored.last_review_elapsed_ms == 0

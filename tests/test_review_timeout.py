@@ -742,6 +742,30 @@ class TestConsecutiveSkipsSerialization:
         assert restored.consecutive_skips == 0
 
 
+class TestLastReviewElapsedMsSerialization:
+    """last_review_elapsed_ms survives to_dict → from_dict round-trip."""
+
+    def test_round_trip_default(self):
+        circuit = ReviewCircuitState()
+        assert circuit.last_review_elapsed_ms == 0
+        d = circuit.to_dict()
+        assert "last_review_elapsed_ms" in d
+        restored = ReviewCircuitState.from_dict(d)
+        assert restored.last_review_elapsed_ms == 0
+
+    def test_round_trip_nonzero(self):
+        circuit = ReviewCircuitState(last_review_elapsed_ms=12345)
+        d = circuit.to_dict()
+        assert d["last_review_elapsed_ms"] == 12345
+        restored = ReviewCircuitState.from_dict(d)
+        assert restored.last_review_elapsed_ms == 12345
+
+    def test_from_dict_missing_key_defaults_zero(self):
+        """Backward compat: old persisted state without last_review_elapsed_ms."""
+        restored = ReviewCircuitState.from_dict({"review_failure_consecutive": 2})
+        assert restored.last_review_elapsed_ms == 0
+
+
 class TestSpecSkipOverrunProtection:
     """conduct_review increments consecutive_skips on circuit-open skip
     and logs a warning when the overrun threshold is reached."""

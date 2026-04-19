@@ -58,6 +58,7 @@ class LoopReviewCircuitState:
     backoff_level: int = 0
     consecutive_timeouts: int = 0
     consecutive_skips: int = 0
+    last_review_elapsed_ms: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -66,6 +67,7 @@ class LoopReviewCircuitState:
             "backoff_level": self.backoff_level,
             "consecutive_timeouts": self.consecutive_timeouts,
             "consecutive_skips": self.consecutive_skips,
+            "last_review_elapsed_ms": self.last_review_elapsed_ms,
         }
 
     @classmethod
@@ -76,6 +78,7 @@ class LoopReviewCircuitState:
             backoff_level=int(data.get("backoff_level") or 0),
             consecutive_timeouts=int(data.get("consecutive_timeouts") or 0),
             consecutive_skips=int(data.get("consecutive_skips") or 0),
+            last_review_elapsed_ms=int(data.get("last_review_elapsed_ms") or 0),
         )
 
 
@@ -894,6 +897,9 @@ FAIL
         circuit.last_review_failure_diag = None
         review_timeout: int = 0  # sentinel — overwritten inside try; safe fallback for metrics
 
+        import time as _time
+        _t0 = _time.monotonic()
+
         try:
             from ..utils.review_helpers import compute_adaptive_timeout
             base_timeout = int(getattr(settings, "loop_review_timeout", 120) or 120)
@@ -910,6 +916,7 @@ FAIL
                 review_prompt, on_event=on_review_event, timeout=review_timeout,
                 retry_policy=RetryPolicy(max_retries=2, retry_delay=2.0),
                 before_retry=_before_review_retry,
+                total_timeout=float(review_timeout * 2),
             )
             full_text = "".join(review_text)
             combined_text = full_text
@@ -939,6 +946,7 @@ FAIL
                     "root_path": self.root_path,
                 },
                 review_timeout=review_timeout,
+                review_elapsed_ms=int((_time.monotonic() - _t0) * 1000),
             )
             review_decision = result.review_decision
 

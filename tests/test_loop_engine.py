@@ -1302,7 +1302,7 @@ PASS
 PASS
 """
 
-        def mock_send(prompt, on_event=None, timeout=None, retry_policy=None, before_retry=None):
+        def mock_send(prompt, on_event=None, timeout=None, retry_policy=None, before_retry=None, total_timeout=None):
             if on_event:
                 on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=review_output))
             return MagicMock(stop_reason="end_turn")

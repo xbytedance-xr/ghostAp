@@ -107,6 +107,7 @@ class ReviewCircuitState:
     backoff_level: int = 0
     consecutive_timeouts: int = 0
     consecutive_skips: int = 0
+    last_review_elapsed_ms: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -115,6 +116,7 @@ class ReviewCircuitState:
             "backoff_level": self.backoff_level,
             "consecutive_timeouts": self.consecutive_timeouts,
             "consecutive_skips": self.consecutive_skips,
+            "last_review_elapsed_ms": self.last_review_elapsed_ms,
         }
 
     @classmethod
@@ -125,6 +127,7 @@ class ReviewCircuitState:
             backoff_level=int(data.get("backoff_level") or 0),
             consecutive_timeouts=int(data.get("consecutive_timeouts") or 0),
             consecutive_skips=int(data.get("consecutive_skips") or 0),
+            last_review_elapsed_ms=int(data.get("last_review_elapsed_ms") or 0),
         )
 
 
@@ -225,6 +228,9 @@ def conduct_review(
     circuit.last_review_failure_diag = None
     review_timeout: int = 0  # sentinel — overwritten inside try; safe fallback for metrics
 
+    import time as _time
+    _t0 = _time.monotonic()
+
     try:
         from ..utils.review_helpers import compute_adaptive_timeout
         base_timeout = int(getattr(settings, "spec_review_timeout", 120) or 120)
@@ -238,6 +244,7 @@ def conduct_review(
             timeout=review_timeout,
             retry_policy=RetryPolicy(max_retries=2, retry_delay=2.0),
             before_retry=lambda a, e: (review_text.clear(), thought_text.clear()) if a > 0 else None,
+            total_timeout=float(review_timeout * 2),
         )
         full_text = "".join(review_text)
         combined_text = full_text
@@ -256,6 +263,7 @@ def conduct_review(
     except Exception as e:
         from ..utils.review_helpers import handle_review_exception
 
+        _elapsed_ms = int((_time.monotonic() - _t0) * 1000)
         result = handle_review_exception(
             e,
             circuit=circuit,
@@ -264,6 +272,7 @@ def conduct_review(
             engine="spec",
             build_diag_fn=build_review_exception_diagnostics_fn,
             review_timeout=review_timeout,
+            review_elapsed_ms=_elapsed_ms,
         )
         review_result = ReviewResult(
             reviews=[
