@@ -498,6 +498,7 @@ class TestSpecCircuitExponentialBackoff:
 
         # Reset consecutive but keep backoff_level (simulate: circuit closes, fails again)
         circuit.review_failure_consecutive = 0
+        circuit.recent_outcomes.clear()
 
         # Second trigger (cycles after cooldown)
         base = first_open_until + 1
@@ -525,6 +526,7 @@ class TestSpecCircuitExponentialBackoff:
 
         # Second trigger: start after cooldown expires
         circuit.review_failure_consecutive = 0
+        circuit.recent_outcomes.clear()
         base2 = circuit.review_circuit_open_until_cycle + 1
         for cycle in range(base2, base2 + 3):
             self._run_review_cycle(settings, project, circuit, cycle)
@@ -532,6 +534,7 @@ class TestSpecCircuitExponentialBackoff:
 
         # Third trigger: start after cooldown expires
         circuit.review_failure_consecutive = 0
+        circuit.recent_outcomes.clear()
         base3 = circuit.review_circuit_open_until_cycle + 1
         for cycle in range(base3, base3 + 3):
             self._run_review_cycle(settings, project, circuit, cycle)
@@ -541,6 +544,7 @@ class TestSpecCircuitExponentialBackoff:
 
         # Fourth trigger: still capped at 12
         circuit.review_failure_consecutive = 0
+        circuit.recent_outcomes.clear()
         base4 = circuit.review_circuit_open_until_cycle + 1
         for cycle in range(base4, base4 + 3):
             self._run_review_cycle(settings, project, circuit, cycle)

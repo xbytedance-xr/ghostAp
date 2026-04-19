@@ -10,7 +10,7 @@ import logging
 import os
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -59,6 +59,7 @@ class LoopReviewCircuitState:
     consecutive_timeouts: int = 0
     consecutive_skips: int = 0
     last_review_elapsed_ms: int = 0
+    recent_outcomes: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -68,6 +69,7 @@ class LoopReviewCircuitState:
             "consecutive_timeouts": self.consecutive_timeouts,
             "consecutive_skips": self.consecutive_skips,
             "last_review_elapsed_ms": self.last_review_elapsed_ms,
+            "recent_outcomes": list(self.recent_outcomes)[-20:],
         }
 
     @classmethod
@@ -79,6 +81,7 @@ class LoopReviewCircuitState:
             consecutive_timeouts=int(data.get("consecutive_timeouts") or 0),
             consecutive_skips=int(data.get("consecutive_skips") or 0),
             last_review_elapsed_ms=int(data.get("last_review_elapsed_ms") or 0),
+            recent_outcomes=list(data.get("recent_outcomes") or []),
         )
 
 
@@ -864,12 +867,32 @@ FAIL
             _base_msg = "审查熔断中，跳过本轮审查"
             if is_skip_overrun:
                 _base_msg += f"（⚠ 跳过次数异常偏高：已连续跳过{circuit.consecutive_skips}次，熔断器可能卡住，建议排查）"
+
+            # Lightweight lint fallback
+            _lint_msg = ""
+            try:
+                _lint_enabled = getattr(settings, "review_circuit_lint_fallback_enabled", True)
+                if _lint_enabled and self._project and hasattr(self._project, "root_path") and self._project.root_path:
+                    from ..utils.lightweight_lint import run_lightweight_lint
+                    import glob as _glob
+                    _lint_timeout = int(getattr(settings, "review_circuit_lint_timeout", 10) or 10)
+                    _py_files = _glob.glob(os.path.join(self._project.root_path, "**/*.py"), recursive=True)[:50]
+                    if _py_files:
+                        _lint_result = run_lightweight_lint(_py_files, timeout=_lint_timeout)
+                        _lint_msg = _lint_result.summary()
+            except Exception:
+                pass
+
+            _suggestions = [_base_msg]
+            if _lint_msg:
+                _suggestions.append(_lint_msg)
+
             fallback = ReviewResult(
                 reviews=[
                     PerspectiveReview(
                         perspective=p,
                         passed=False,
-                        suggestions=[_base_msg],
+                        suggestions=_suggestions,
                         summary="熔断跳过",
                     )
                     for p in ReviewPerspective
@@ -930,6 +953,13 @@ FAIL
             circuit.backoff_level = 0
             circuit.consecutive_timeouts = 0
             circuit.consecutive_skips = 0
+            # Record success for sliding window tracker
+            try:
+                circuit.recent_outcomes.append("success")
+                if len(circuit.recent_outcomes) > 20:
+                    circuit.recent_outcomes[:] = circuit.recent_outcomes[-20:]
+            except Exception:
+                pass
 
         except Exception as e:
             from ..utils.review_helpers import handle_review_exception

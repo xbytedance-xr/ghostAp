@@ -267,6 +267,7 @@ class TestLoopCircuitExponentialBackoff:
 
         # Reset consecutive, keep backoff
         engine._review_circuit.review_failure_consecutive = 0
+        engine._review_circuit.recent_outcomes.clear()
         base = engine._review_circuit.review_circuit_open_until_iter + 1
         for i in range(base, base + 3):
             engine._conduct_review(i, callbacks)
@@ -282,6 +283,7 @@ class TestLoopCircuitExponentialBackoff:
         # 3 triggers with proper gap between them
         for trigger in range(3):
             engine._review_circuit.review_failure_consecutive = 0
+            engine._review_circuit.recent_outcomes.clear()
             base = engine._review_circuit.review_circuit_open_until_iter + 1
             for i in range(base, base + 3):
                 engine._conduct_review(i, callbacks)
@@ -289,6 +291,7 @@ class TestLoopCircuitExponentialBackoff:
         assert engine._review_circuit.backoff_level == 3
         # Fourth trigger still capped
         engine._review_circuit.review_failure_consecutive = 0
+        engine._review_circuit.recent_outcomes.clear()
         base = engine._review_circuit.review_circuit_open_until_iter + 1
         for i in range(base, base + 3):
             engine._conduct_review(i, callbacks)

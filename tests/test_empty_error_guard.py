@@ -1037,6 +1037,14 @@ class TestSpecReviewMetricsLog:
         logger.addHandler(handler)
         old_level = logger.level
         logger.setLevel(logging.DEBUG)
+        # Also capture metrics_exporter logger (metrics now routed via exporter)
+        logger_me = logging.getLogger("src.utils.metrics_exporter")
+        logger_me.addHandler(handler)
+        old_level_me = logger_me.level
+        logger_me.setLevel(logging.DEBUG)
+        # Reset exporter singleton so LoggerExporter is re-created fresh
+        from src.utils.metrics_exporter import reset_metrics_exporter
+        reset_metrics_exporter()
         try:
             conduct_review(
                 session=MagicMock(),
@@ -1054,6 +1062,9 @@ class TestSpecReviewMetricsLog:
         finally:
             logger.removeHandler(handler)
             logger.setLevel(old_level)
+            logger_me.removeHandler(handler)
+            logger_me.setLevel(old_level_me)
+            reset_metrics_exporter()
 
         # Find the review_metrics record
         metrics_records = [r for r in records if "review_metrics" in str(r.getMessage())]

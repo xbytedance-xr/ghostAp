@@ -1,6 +1,7 @@
 # GhostAP 项目记忆索引
 
 ## 2026-04-20
+- **三项增量改进：Metrics Exporter + 滑动窗口熔断 + Lint 降级** — (A) 新增 `metrics_exporter.py` 模块（ReviewMetricsExporter 协议 + LoggerExporter + JsonLinesExporter），review_helpers 通过接口输出 metrics，config 可切换 exporter 类型；(B) 新增 `SlidingWindowTracker` 类，CircuitState 新增 `recent_outcomes` 字段，handle_review_exception 集成滑动窗口动态熔断（与 max_consecutive 并列触发，window_size/threshold 可配置）；(C) 新增 `lightweight_lint.py` 模块（ast.parse + ruff check），Spec/Loop 熔断跳过分支自动运行本地 lint 并注入 suggestions（可配置开关+超时）；+60 新测试，2303 tests passed（baseline 2243 + 60）；零回归 → [详细记录](2026-04-20.md)
 - **TimeoutError (empty message) 增量加固提交落地** — should_retry isinstance 短路+prompt_with_retry 可观测性日志+compute_adaptive_timeout hard_floor=15s+normalize_review_diagnostics error_text 500 字符截断+lint 禁止裸 raise TimeoutError()+concurrent.futures.TimeoutError 6 层 E2E 测试；2243 tests passed（+26）；`9d0ffb9` → [详细记录](2026-04-20.md)
 - **落实改进建议：ReviewCircuitState 持久化提交落地** — 将 9 个文件 +609 行未暂存改动提交（ReviewCircuitState to_dict/from_dict 序列化、SpecEngine/LoopEngine save/load_state_with_circuit、Loop skip overrun 保护、12 个 E2E empty message 守卫测试）；全量 2189 passed + 94 回归 lint + 193 超时专项全绿；`a7c8e64` → [详细记录](2026-04-20.md)
 - **Spec ReviewCircuitState consecutive_skips 对齐 + resume circuit 恢复** — Spec ReviewCircuitState 补齐 consecutive_skips 字段+序列化+skip overrun 检测，与 Loop 熔断器能力对齐；Spec/Loop 两引擎 resume() 新增 load_state_with_circuit() 自动恢复持久化 circuit state（消除进程重启后熔断状态丢失风险）；+8 新测试，2197 tests passed；`f75fa41` → [详细记录](2026-04-20.md)

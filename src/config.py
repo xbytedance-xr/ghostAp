@@ -237,6 +237,22 @@ class Settings(BaseSettings):
     spec_review_failure_max_cooldown_cycles: int = 12
     spec_review_min_timeout: int = 30
 
+    # Review metrics exporter
+    # - "logger" (default): output via logging.info (original behaviour)
+    # - "jsonl": append JSON Lines to review_metrics_jsonl_path
+    review_metrics_exporter_type: str = "logger"
+    review_metrics_jsonl_path: str = "review_metrics.jsonl"
+
+    # Sliding window dynamic circuit breaker (shared by Spec & Loop)
+    # - window_size: number of recent review outcomes to track (min 3)
+    # - success_rate_threshold: open circuit if success_rate < threshold
+    review_circuit_window_size: int = 10
+    review_circuit_success_rate_threshold: float = 0.3
+
+    # Review circuit-breaker lint fallback (run local lint when circuit is open)
+    review_circuit_lint_fallback_enabled: bool = True
+    review_circuit_lint_timeout: int = 10
+
     # Spec long-range persistence / monitoring
     spec_state_filename: str = ".spec_engine_state.json"
     spec_artifacts_dirname: str = ".spec_engine"

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import deque
 from typing import NamedTuple, Optional
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,59 @@ def compute_adaptive_timeout(
     """
     n = max(0, int(consecutive_timeouts))
     return max(base_timeout // (2 ** n), min_timeout, hard_floor)
+
+
+# ---------------------------------------------------------------------------
+# Sliding window tracker for dynamic circuit breaker
+# ---------------------------------------------------------------------------
+
+
+class SlidingWindowTracker:
+    """Tracks recent review outcomes in a fixed-size sliding window.
+
+    Used to compute success rate for dynamic circuit-breaker thresholds.
+
+    Parameters
+    ----------
+    window_size : int
+        Maximum number of recent outcomes to keep (default 10).
+    """
+
+    def __init__(self, window_size: int = 10) -> None:
+        self._window_size = max(1, int(window_size))
+        self._outcomes: deque[str] = deque(maxlen=self._window_size)
+
+    @property
+    def window_size(self) -> int:
+        return self._window_size
+
+    @property
+    def outcomes(self) -> list[str]:
+        return list(self._outcomes)
+
+    def record(self, outcome: str) -> None:
+        """Record a single outcome (``"success"`` / ``"timeout"`` / ``"error"``)."""
+        self._outcomes.append(outcome)
+
+    def success_rate(self) -> float:
+        """Return success rate in ``[0.0, 1.0]``.  Returns ``1.0`` if empty."""
+        if not self._outcomes:
+            return 1.0
+        return sum(1 for o in self._outcomes if o == "success") / len(self._outcomes)
+
+    def should_open_circuit(self, threshold: float = 0.3) -> bool:
+        """Return ``True`` if success rate is below *threshold* and window is full."""
+        if len(self._outcomes) < self._window_size:
+            return False
+        return self.success_rate() < threshold
+
+    @classmethod
+    def from_list(cls, outcomes: list[str], window_size: int = 10) -> "SlidingWindowTracker":
+        """Reconstruct from a serialised outcome list."""
+        tracker = cls(window_size=window_size)
+        for o in outcomes:
+            tracker.record(o)
+        return tracker
 
 
 # ---------------------------------------------------------------------------
@@ -242,9 +296,36 @@ def handle_review_exception(
     except Exception:
         circuit.review_failure_consecutive = 1
 
+    # 4b. Sliding window outcome recording
+    _outcome = "timeout" if _is_timeout_error(e, fail_reason=_fail_reason, error_detail=error_detail) else "error"
+    try:
+        if hasattr(circuit, "recent_outcomes"):
+            circuit.recent_outcomes.append(_outcome)
+            # Trim to window size (default 20 for persistence; SlidingWindowTracker uses its own maxlen)
+            if len(circuit.recent_outcomes) > 20:
+                circuit.recent_outcomes[:] = circuit.recent_outcomes[-20:]
+    except Exception:
+        pass
+
     review_decision: Optional[str] = "review_failed_continue"
 
-    if enabled and circuit.review_failure_consecutive >= max_consecutive and cooldown_base > 0:
+    # 4c. Sliding window circuit-breaker check (dynamic threshold)
+    _raw_ws = getattr(settings, "review_circuit_window_size", None)
+    _window_size = int(_raw_ws) if isinstance(_raw_ws, (int, float)) else 10
+    _window_size = max(3, _window_size)
+    _raw_st = getattr(settings, "review_circuit_success_rate_threshold", None)
+    _success_threshold = float(_raw_st) if isinstance(_raw_st, (int, float)) else 0.3
+    _sliding_trigger = False
+    try:
+        if hasattr(circuit, "recent_outcomes") and len(circuit.recent_outcomes) >= _window_size:
+            _tracker = SlidingWindowTracker.from_list(circuit.recent_outcomes, window_size=_window_size)
+            _sliding_trigger = _tracker.should_open_circuit(threshold=_success_threshold)
+    except Exception:
+        pass
+
+    _consecutive_trigger = circuit.review_failure_consecutive >= max_consecutive
+
+    if enabled and (_consecutive_trigger or _sliding_trigger) and cooldown_base > 0:
         actual_cooldown = compute_exponential_cooldown(
             circuit.backoff_level, base_cooldown=cooldown_base, max_cooldown=max_cooldown,
         )
@@ -298,9 +379,19 @@ def handle_review_exception(
         "total_elapsed_ms": int(review_elapsed_ms or 0),
     }
     try:
-        logger.info("%s review_metrics: %s", _log_prefix, json.dumps(metrics, ensure_ascii=False))
+        from .metrics_exporter import get_metrics_exporter
+        _exporter_type = getattr(settings, "review_metrics_exporter_type", "logger") or "logger"
+        _exporter_kwargs: dict = {}
+        if _exporter_type == "jsonl":
+            _exporter_kwargs["path"] = getattr(settings, "review_metrics_jsonl_path", "review_metrics.jsonl")
+        exporter = get_metrics_exporter(exporter_type=_exporter_type, **_exporter_kwargs)
+        exporter.export_metrics(metrics, prefix=_log_prefix)
     except Exception:
-        pass
+        # Fallback: original logger.info if exporter fails
+        try:
+            logger.info("%s review_metrics: %s", _log_prefix, json.dumps(metrics, ensure_ascii=False))
+        except Exception:
+            pass
 
     return ReviewExceptionResult(
         diag=diag,
