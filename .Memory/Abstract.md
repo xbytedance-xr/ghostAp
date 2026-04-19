@@ -1,6 +1,7 @@
 # GhostAP 项目记忆索引
 
 ## 2026-04-19
+- **彻底消除剩余 str(e) 空值缺口（6 文件 12 处）** — deep/loop/spec handler 项目创建、spec handler 导出/恢复/保存状态、system handler TTADK refresh、spec_engine last_error/rewrite_requirement、worktree manager init/merge、main.py 顶层异常，统一替换为 `get_error_detail(e)` 或直接传异常对象给 `fmt_error()`；+33 测试（test_empty_error_guard.py），1999 tests passed；`be61258` → [详细记录](2026-04-19.md)
 - **增量闭合 str(exc) 空值守卫：5 处缺口修补** — `build_error_card` 改用 `get_error_detail`、`send_error_card` fallback 空值兜底、`scheduler` `state.error` 用 `repr(e)` 兜底、`fmt_exception` 非超时路径用 `repr(exc)` 兜底、`worktree dispatcher` 统一到 `get_error_detail()`；+15 新测试，1981 tests passed；`359fb82` → [详细记录](2026-04-19.md)
 - **闭合「审查执行异常: TimeoutError (empty message)」残余缺口** — engine_base.py `_safe_lifecycle_action` 用户消息用 `get_error_detail` 替代裸 `str(e)` 消除空尾；loop_engine/spec_engine review 非 timeout 异常分支 `(empty message)` 替换为中文友好文案；同步更新 test_convergence/test_log_noise 测试 fixture；1966 tests passed；`3b237e5` → [详细记录](2026-04-19.md)
 - **三引擎 execute/resume 顶层 TimeoutError 分支加固** — Deep/Loop/Spec 三引擎的 execute/resume 顶层 except Exception 前插入 except TimeoutError 分支，超时日志从 ERROR 降为 WARNING、文案区分"超时"/"异常"；Deep Engine 额外加固 _drain_pending_context；+7 新测试，1966 tests passed；`3b237e5` → [详细记录](2026-04-19.md)
