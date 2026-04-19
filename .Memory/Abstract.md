@@ -1,7 +1,7 @@
 # GhostAP 项目记忆索引
 
 ## 2026-04-19
-- **review_diagnostics 源头消灭 (empty message) 标记 + 低风险路径增量加固** — review_diagnostics 层 `(empty message)` 标记从下游过滤升级为源头消灭（空消息按 timeout/非timeout 分流中文友好文案）；补强 worktree dispatcher/manager、base handler fallback、deep engine logger 共 5 处低风险路径；+14 新测试，2057 tests passed → [详细记录](2026-04-19.md)
+- **review_diagnostics 源头消灭 (empty message) 标记 + 低风险路径增量加固** — review_diagnostics 层 `(empty message)` 标记从下游过滤升级为源头消灭（空消息按 timeout/非timeout 分流中文友好文案）；补强 worktree dispatcher/manager、base handler fallback、deep engine logger 共 5 处低风险路径；+14 新测试，2057 tests passed；`a962ee7` → [详细记录](2026-04-19.md)
 - **完成零盲区 str(exc) 空值加固提交落地** — 将 12 轮增量修复的 20 个文件（+707/-35 行）统一提交：17 个 src/ 文件的用户可见/logger/内部诊断路径全量加固 + 245 行 guard 测试 + 33 个端到端超时测试；8 层纵深防御体系完整闭环（核心兜底→用户可见→logger→引擎→review 断路器→收敛保护→回归 lint→测试覆盖）；2043 tests passed；`d2b28da` → [详细记录](2026-04-19.md)
 - **内部诊断路径 logger 裸 f"{e}" 全量加固 + 回归 lint 扩展** — 修补 13 处 logger.warning/error 中裸 `f"{e}"` 引用（intent_recognizer/engine_base/project manager/artifacts + ws_client/action_dispatcher/errors/strategies），统一加 `str(e) or repr(e)` 守卫；扩展回归 lint 覆盖 logger 路径（`_BARE_LOGGER_RE`）；+13 新测试（4 组 guard + 1 个 logger lint），2043 tests passed → [详细记录](2026-04-19.md)
 - **system.py handle_refresh_ttadk_models 最后一处裸 f"{e}" 修复 + lint 回归检查** — 修复 system.py:1476 `reply_error` 裸 `f"{e}"` → `get_error_detail(e)`；新增 3 个集成测试（`TestSystemHandlerRefreshModelsIntegration`）+ 1 个 regex lint 回归检查（`TestNoBareFStringInUserVisibleErrors`），2030 tests passed → [详细记录](2026-04-19.md)
