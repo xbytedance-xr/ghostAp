@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 ## 2026-04-19
+- **统一 _has_timeout_in_chain + review_timeout 哨兵修复 + metrics 测试覆盖** — 消除 errors.py 和 review_diagnostics.py 的 `_has_timeout_in_chain` 重复实现（合并 isinstance+类名匹配逻辑，review_diagnostics 改为导入）；修复 Spec/Loop review_timeout `'in dir()'` 不可靠检查改为哨兵默认值；新增 15 个测试（8 链检测一致性+7 metrics 结构验证），2149 tests passed → [详细记录](2026-04-19.md)
+- **异常链遍历增强 + 结构化 metrics 日志** — `_infer_fail_reason()` 和 `get_error_detail()` 增加异常链 (`__cause__`/`__context__`) 遍历（最大深度 10 层），包装在非 TimeoutError 内的 TimeoutError 也能正确识别；SpecEngine + LoopEngine 审查异常块新增结构化 metrics 日志（JSON 格式，含 metric_type/fail_reason/consecutive_timeouts/circuit_open 等字段）；+16 新测试，2134 tests passed → [详细记录](2026-04-19.md)
 - **Review 熔断器指数退避 + 渐进超时 + 异常处理统一** — 新增 `src/utils/review_helpers.py` 共享模块（3 个函数：`build_review_error_suggestion`/`compute_exponential_cooldown`/`compute_adaptive_timeout`）；SpecEngine + LoopEngine 的 ReviewCircuitState 新增 `backoff_level`/`consecutive_timeouts`；熔断器 cooldown 从固定值升级为指数退避（3→6→12，上限可配置）；review timeout 渐进缩短（120→60→30s）；suggestion 文案生成统一到共享函数；config.py 新增 4 配置项；+36 新测试，2118 tests passed → [详细记录](2026-04-19.md)
 - **最终验证确认：8 层 TimeoutError 防御体系完整闭合** — 全量 2082 tests + 147 专项测试 + 4 类 grep 扫描全绿；src/ 零裸 asyncio.wait_for/f"{e}"/裸 logger %s,e/裸 str(e)；8 层防御体系无退化，问题彻底解决 → [详细记录](2026-04-19.md)
 - **超时用户通知 + programming handler 超时专用分支** — ws_client 消息/卡片超时从静默日志改为主动通知用户（TTADK 发软失败卡片，通用路径发文本）；programming handler 两处 send_prompt 插入 except TimeoutError 专用分支（文案区分超时/异常）；+4 新测试，2082 tests passed → [详细记录](2026-04-19.md)

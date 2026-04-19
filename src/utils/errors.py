@@ -61,6 +61,35 @@ class SafetyCheckError(GhostAPError):
 # User-facing message formatters
 # ---------------------------------------------------------------------------
 
+_CHAIN_MAX_DEPTH = 10
+
+
+def _has_timeout_in_chain(err: BaseException, *, _depth: int = 0) -> bool:
+    """Walk __cause__ / __context__ for a wrapped TimeoutError (max 10 levels).
+
+    Detects:
+    - ``TimeoutError`` / ``asyncio.TimeoutError`` via isinstance
+    - Third-party timeout types (``TimeoutExpired``, ``ReadTimeout``,
+      ``ConnectTimeout``) via class-name matching
+    """
+    if _depth >= _CHAIN_MAX_DEPTH:
+        return False
+    for attr in ("__cause__", "__context__"):
+        chained = getattr(err, attr, None)
+        if chained is None:
+            continue
+        if isinstance(chained, (TimeoutError, asyncio.TimeoutError)):
+            return True
+        try:
+            tn = type(chained).__name__
+        except Exception:
+            tn = ""
+        if tn in ("TimeoutExpired", "ReadTimeout", "ConnectTimeout"):
+            return True
+        if _has_timeout_in_chain(chained, _depth=_depth + 1):
+            return True
+    return False
+
 
 def fmt_error(action: str, detail: Union[str, Exception] = "") -> str:
     """Format a hard-failure message."""
@@ -71,6 +100,13 @@ def fmt_error(action: str, detail: Union[str, Exception] = "") -> str:
                 detail = "操作超时，请稍后重试"
             else:
                 detail = f"操作超时 ({msg})"
+        elif _has_timeout_in_chain(detail):
+            # Exception wraps a TimeoutError in its chain
+            inner_msg = str(detail)
+            if not inner_msg:
+                detail = "操作超时，请稍后重试"
+            else:
+                detail = f"操作超时 ({inner_msg})"
         else:
             detail = str(detail)
 

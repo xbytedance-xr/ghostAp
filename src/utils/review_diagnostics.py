@@ -56,6 +56,9 @@ def _safe_str(x: object) -> str:
         return ""
 
 
+from .errors import _has_timeout_in_chain  # unified implementation
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -170,6 +173,9 @@ def build_review_exception_diagnostics(
         if isinstance(err, TimeoutError):
             return "timeout"
         if et in ("TimeoutExpired", "ReadTimeout", "ConnectTimeout"):
+            return "timeout"
+        # Traverse exception chain (__cause__ / __context__) for wrapped TimeoutError
+        if _has_timeout_in_chain(err):
             return "timeout"
         if et in ("JSONDecodeError",):
             return "parse_json"

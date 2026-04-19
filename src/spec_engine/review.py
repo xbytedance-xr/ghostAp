@@ -191,6 +191,7 @@ def conduct_review(
             thought_text.append(event.text)
 
     circuit.last_review_failure_diag = None
+    review_timeout: int = 0  # sentinel — overwritten inside try; safe fallback for metrics
 
     try:
         from ..utils.review_helpers import compute_adaptive_timeout
@@ -277,6 +278,22 @@ def conduct_review(
                 error_text,
                 type(log_e).__name__,
             )
+        # Structured metrics log for monitoring/alerting integration
+        try:
+            _metrics = json.dumps({
+                "metric_type": "review_exception",
+                "engine": "spec",
+                "cycle": int(cycle or 0),
+                "fail_reason": _fail_reason,
+                "consecutive_timeouts": int(circuit.consecutive_timeouts or 0),
+                "consecutive_failures": int(circuit.review_failure_consecutive or 0),
+                "circuit_open": bool(getattr(circuit, "review_circuit_open_until_cycle", 0) and int(cycle or 0) < int(circuit.review_circuit_open_until_cycle or 0)),
+                "adaptive_timeout": int(review_timeout),
+                "backoff_level": int(circuit.backoff_level or 0),
+            }, ensure_ascii=False)
+            logger.info("[Spec] review_metrics: %s", _metrics)
+        except Exception:
+            pass
         _suggestion_text = build_review_error_suggestion(
             fail_reason=_fail_reason,
             error_text=str(diag.get("error_text") or ""),

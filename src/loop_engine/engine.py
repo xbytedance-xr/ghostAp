@@ -823,6 +823,7 @@ FAIL
                 thought_text.append(event.text)
 
         circuit.last_review_failure_diag = None
+        review_timeout: int = 0  # sentinel — overwritten inside try; safe fallback for metrics
 
         try:
             from ..utils.review_helpers import compute_adaptive_timeout
@@ -879,7 +880,6 @@ FAIL
             _fail_reason = str(diag.get("fail_reason") or "").strip()
             if _fail_reason == "timeout" or isinstance(e, TimeoutError) or "timeout" in detail.lower():
                 circuit.consecutive_timeouts = int(circuit.consecutive_timeouts or 0) + 1
-                logger.warning("[METRIC] review_timeout")
             else:
                 circuit.consecutive_timeouts = 0
 
@@ -924,6 +924,23 @@ FAIL
                 logger.warning(format_review_exception_log_line(diag, diag_json=diag_json, prefix="[Loop]"))
             except Exception:
                 logger.warning("[Loop] 多视角审查异常: %s, 将视为有改进建议继续迭代", detail)
+
+            # Structured metrics log for monitoring/alerting integration
+            try:
+                _metrics = json.dumps({
+                    "metric_type": "review_exception",
+                    "engine": "loop",
+                    "iteration": int(iteration or 0),
+                    "fail_reason": _fail_reason,
+                    "consecutive_timeouts": int(circuit.consecutive_timeouts or 0),
+                    "consecutive_failures": int(circuit.review_failure_consecutive or 0),
+                    "circuit_open": bool(getattr(circuit, "review_circuit_open_until_iter", 0) and int(iteration or 0) < int(circuit.review_circuit_open_until_iter or 0)),
+                    "adaptive_timeout": int(review_timeout),
+                    "backoff_level": int(circuit.backoff_level or 0),
+                }, ensure_ascii=False)
+                logger.info("[Loop] review_metrics: %s", _metrics)
+            except Exception:
+                pass
 
             review_result = ReviewResult(
                 reviews=[

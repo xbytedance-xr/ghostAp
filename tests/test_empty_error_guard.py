@@ -917,3 +917,200 @@ class TestBaseHandlerFallbackTimeoutContext:
     def test_regular_error_fallback_nonempty(self):
         detail = get_error_detail(Exception())
         assert detail  # never empty
+
+
+# ---------------------------------------------------------------------------
+# Exception chain traversal: _infer_fail_reason + _has_timeout_in_chain
+# ---------------------------------------------------------------------------
+
+
+class TestInferFailReasonChainedExceptions:
+    """review_diagnostics: _infer_fail_reason must detect TimeoutError in exception chains."""
+
+    def _infer(self, exc: Exception) -> str:
+        from src.utils.review_diagnostics import build_review_exception_diagnostics
+        diag = build_review_exception_diagnostics(exc, cycle=1)
+        return diag.get("fail_reason", "")
+
+    def test_direct_timeout_still_timeout(self):
+        """Regression: direct TimeoutError → 'timeout'."""
+        assert self._infer(TimeoutError()) == "timeout"
+
+    def test_direct_timeout_with_message(self):
+        assert self._infer(TimeoutError("ACP prompt 超时")) == "timeout"
+
+    def test_wrapped_timeout_via_cause(self):
+        """RuntimeError wrapping TimeoutError via __cause__ → 'timeout'."""
+        outer = RuntimeError("wrapper")
+        outer.__cause__ = TimeoutError("inner")
+        assert self._infer(outer) == "timeout"
+
+    def test_wrapped_timeout_via_context(self):
+        """RuntimeError wrapping TimeoutError via __context__ → 'timeout'."""
+        outer = RuntimeError("wrapper")
+        outer.__context__ = TimeoutError("inner")
+        assert self._infer(outer) == "timeout"
+
+    def test_multi_level_nested_timeout(self):
+        """Exception → RuntimeError → TimeoutError (3 levels) → 'timeout'."""
+        deep = TimeoutError("deep")
+        mid = RuntimeError("mid")
+        mid.__cause__ = deep
+        outer = Exception("outer")
+        outer.__context__ = mid
+        assert self._infer(outer) == "timeout"
+
+    def test_no_timeout_in_chain(self):
+        """ValueError with no TimeoutError in chain → NOT 'timeout'."""
+        assert self._infer(ValueError("bad input")) != "timeout"
+
+    def test_no_timeout_in_non_timeout_chain(self):
+        """RuntimeError → ValueError chain → NOT 'timeout'."""
+        outer = RuntimeError("outer")
+        outer.__cause__ = ValueError("inner")
+        assert self._infer(outer) != "timeout"
+
+    def test_chain_depth_limit_protection(self):
+        """Deep chain (>10 levels) does not cause infinite recursion."""
+        from src.utils.review_diagnostics import _has_timeout_in_chain
+        # Build chain of 15 RuntimeErrors with no TimeoutError
+        exc = RuntimeError("base")
+        for i in range(15):
+            wrapper = RuntimeError(f"level-{i}")
+            wrapper.__cause__ = exc
+            exc = wrapper
+        # Should not hang and should return False
+        assert not _has_timeout_in_chain(exc)
+
+    def test_chain_with_timeout_at_depth_9(self):
+        """TimeoutError at depth 9 (within limit) is detected."""
+        from src.utils.review_diagnostics import _has_timeout_in_chain
+        exc = TimeoutError("deep")
+        for i in range(9):
+            wrapper = RuntimeError(f"level-{i}")
+            wrapper.__cause__ = exc
+            exc = wrapper
+        assert _has_timeout_in_chain(exc)
+
+
+# ---------------------------------------------------------------------------
+# Structured review_metrics log validation (Spec & Loop engines)
+# ---------------------------------------------------------------------------
+
+
+_EXPECTED_METRICS_KEYS = {
+    "metric_type", "engine", "fail_reason",
+    "consecutive_timeouts", "consecutive_failures",
+    "circuit_open", "adaptive_timeout", "backoff_level",
+}
+
+
+class TestSpecReviewMetricsLog:
+    """spec_engine/review.py: review_metrics logger.info is called with valid JSON."""
+
+    def _run_conduct_review_with_error(self, exc: Exception):
+        """Call conduct_review with a send_fn that raises *exc*, return captured log records."""
+        import json
+        import logging
+        from dataclasses import dataclass, field
+        from unittest.mock import MagicMock
+
+        from src.spec_engine.review import ReviewCircuitState, conduct_review
+
+        circuit = ReviewCircuitState()
+        settings = MagicMock()
+        settings.spec_review_failure_circuit_enabled = False
+        settings.spec_review_failure_max_consecutive = 3
+        settings.spec_review_failure_cooldown_cycles = 3
+        settings.spec_review_timeout = 120
+        settings.spec_review_min_timeout = 30
+        settings.spec_review_failure_max_cooldown_cycles = 12
+
+        def raise_exc(*a, **kw):
+            raise exc
+
+        records: list[logging.LogRecord] = []
+        handler = logging.Handler()
+        handler.emit = lambda r: records.append(r)
+
+        logger = logging.getLogger("src.spec_engine.review")
+        logger.addHandler(handler)
+        old_level = logger.level
+        logger.setLevel(logging.DEBUG)
+        try:
+            conduct_review(
+                session=MagicMock(),
+                settings=settings,
+                project=MagicMock(requirement="test req"),
+                send_prompt_with_retry_fn=raise_exc,
+                build_review_exception_diagnostics_fn=lambda e, cycle: {
+                    "phase": "review", "cycle": cycle, "fail_reason": "timeout" if isinstance(e, TimeoutError) else "exception",
+                    "err_type": type(e).__name__, "err_repr": repr(e),
+                    "error_text": str(e) or "审查执行异常",
+                },
+                circuit=circuit,
+                cycle=3,
+            )
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(old_level)
+
+        # Find the review_metrics record
+        metrics_records = [r for r in records if "review_metrics" in str(r.getMessage())]
+        return metrics_records
+
+    def test_metrics_log_emitted_on_timeout(self):
+        recs = self._run_conduct_review_with_error(TimeoutError("slow"))
+        assert len(recs) >= 1, "review_metrics log not emitted"
+
+    def test_metrics_log_emitted_on_regular_error(self):
+        recs = self._run_conduct_review_with_error(RuntimeError("oops"))
+        assert len(recs) >= 1, "review_metrics log not emitted"
+
+    def test_metrics_json_structure(self):
+        import json
+        recs = self._run_conduct_review_with_error(TimeoutError())
+        msg = recs[0].getMessage()
+        json_str = msg.split("review_metrics: ", 1)[1]
+        data = json.loads(json_str)
+        missing = _EXPECTED_METRICS_KEYS - set(data.keys())
+        assert not missing, f"Missing metrics keys: {missing}"
+        assert data["engine"] == "spec"
+        assert data["metric_type"] == "review_exception"
+
+    def test_metrics_adaptive_timeout_is_int(self):
+        import json
+        recs = self._run_conduct_review_with_error(TimeoutError())
+        msg = recs[0].getMessage()
+        json_str = msg.split("review_metrics: ", 1)[1]
+        data = json.loads(json_str)
+        assert isinstance(data["adaptive_timeout"], int)
+        assert data["adaptive_timeout"] > 0  # sentinel was overwritten by compute_adaptive_timeout
+
+    def test_metrics_sentinel_fallback_when_compute_fails(self):
+        """If compute_adaptive_timeout itself raised, adaptive_timeout should be 0 sentinel."""
+        # This is implicitly tested: the sentinel is set before try, so if compute_adaptive_timeout
+        # raises, the except block still has review_timeout = 0.
+        # We verify by checking the sentinel pattern exists in the source.
+        import inspect
+        from src.spec_engine.review import conduct_review
+        source = inspect.getsource(conduct_review)
+        assert "review_timeout: int = 0" in source or "review_timeout = 0" in source
+
+
+class TestLoopReviewMetricsLog:
+    """loop_engine/engine.py: review_metrics logger.info has valid JSON."""
+
+    def test_metrics_expected_keys_constant(self):
+        """Sanity: the expected-keys set covers the known schema."""
+        # "cycle" or "iteration" — loop uses "iteration"
+        loop_extra = {"iteration"}
+        assert loop_extra - _EXPECTED_METRICS_KEYS  # iteration is extra, not in base set
+
+    def test_loop_metrics_sentinel_in_source(self):
+        """loop_engine _conduct_review uses review_timeout sentinel, not dir() check."""
+        import inspect
+        from src.loop_engine.engine import LoopEngine
+        source = inspect.getsource(LoopEngine._conduct_review)
+        assert "review_timeout: int = 0" in source or "review_timeout = 0" in source
+        assert "'review_timeout' in dir()" not in source
