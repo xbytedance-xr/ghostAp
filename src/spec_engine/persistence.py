@@ -349,6 +349,7 @@ def save_engine_state(
     build_runtime_context_fn,
     project_to_compact_dict_fn,
     filepath: Optional[str] = None,
+    review_circuit: Optional[dict] = None,
 ) -> str:
     if not project:
         raise ValueError("没有项目状态可保存")
@@ -361,6 +362,8 @@ def save_engine_state(
         "runtime_context": build_runtime_context_fn(),
         "saved_at": time.time(),
     }
+    if review_circuit:
+        state["review_circuit"] = review_circuit
     tmp_path = filepath + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
@@ -368,13 +371,19 @@ def save_engine_state(
     return filepath
 
 
-def load_engine_state(filepath: str) -> Optional[SpecProject]:
+def load_engine_state(filepath: str) -> tuple[Optional[SpecProject], dict]:
+    """Load engine state.  Returns (project, review_circuit_dict).
+
+    ``review_circuit_dict`` is empty when the snapshot predates circuit
+    persistence (backward-compatible).
+    """
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             data = json.load(f)
         proj = data.get("project")
         if not isinstance(proj, dict):
-            return None
-        return SpecProject.from_dict(proj)
+            return None, {}
+        rc = data.get("review_circuit")
+        return SpecProject.from_dict(proj), rc if isinstance(rc, dict) else {}
     except Exception:
-        return None
+        return None, {}

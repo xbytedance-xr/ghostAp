@@ -1114,3 +1114,162 @@ class TestLoopReviewMetricsLog:
         source = inspect.getsource(LoopEngine._conduct_review)
         assert "review_timeout: int = 0" in source or "review_timeout = 0" in source
         assert "'review_timeout' in dir()" not in source
+
+
+# ---------------------------------------------------------------------------
+# E2E: handle_review_exception with bare asyncio.TimeoutError('')
+# ---------------------------------------------------------------------------
+
+
+class TestHandleReviewExceptionE2EEmptyMessage:
+    """Simulate asyncio.TimeoutError('') through handle_review_exception and
+    verify no empty message / '(empty message)' leaks to suggestion_text."""
+
+    def _make_circuit(self, engine: str):
+        if engine == "spec":
+            from src.spec_engine.review import ReviewCircuitState
+            return ReviewCircuitState()
+        from src.loop_engine.engine import LoopReviewCircuitState
+        return LoopReviewCircuitState()
+
+    def _make_settings(self, engine: str):
+        s = MagicMock()
+        if engine == "loop":
+            s.loop_review_failure_circuit_enabled = True
+            s.loop_review_failure_max_consecutive = 3
+            s.loop_review_failure_cooldown_iterations = 3
+            s.loop_review_failure_max_cooldown_iterations = 12
+        else:
+            s.spec_review_failure_circuit_enabled = True
+            s.spec_review_failure_max_consecutive = 3
+            s.spec_review_failure_cooldown_cycles = 3
+            s.spec_review_failure_max_cooldown_cycles = 12
+        return s
+
+    def test_bare_asyncio_timeout_spec(self):
+        """asyncio.TimeoutError() with empty message through Spec path."""
+        import asyncio
+        from src.utils.review_helpers import handle_review_exception
+
+        exc = asyncio.TimeoutError()
+        circuit = self._make_circuit("spec")
+        result = handle_review_exception(
+            exc, circuit=circuit, cycle=1,
+            settings=self._make_settings("spec"), engine="spec",
+        )
+        assert result.suggestion_text
+        assert "(empty message)" not in result.suggestion_text
+        assert result.suggestion_text.strip() != ""
+
+    def test_bare_asyncio_timeout_loop(self):
+        """asyncio.TimeoutError() with empty message through Loop path."""
+        import asyncio
+        from src.utils.review_helpers import handle_review_exception
+
+        exc = asyncio.TimeoutError()
+        circuit = self._make_circuit("loop")
+        result = handle_review_exception(
+            exc, circuit=circuit, cycle=1,
+            settings=self._make_settings("loop"), engine="loop",
+        )
+        assert result.suggestion_text
+        assert "(empty message)" not in result.suggestion_text
+        assert result.suggestion_text.strip() != ""
+
+    def test_builtin_timeout_empty_string(self):
+        """TimeoutError('') — empty string message."""
+        from src.utils.review_helpers import handle_review_exception
+
+        exc = TimeoutError("")
+        circuit = self._make_circuit("spec")
+        result = handle_review_exception(
+            exc, circuit=circuit, cycle=1,
+            settings=self._make_settings("spec"), engine="spec",
+        )
+        assert result.suggestion_text
+        assert "(empty message)" not in result.suggestion_text
+        assert "empty" not in result.suggestion_text.lower()
+
+    def test_chained_timeout_empty(self):
+        """RuntimeError wrapping asyncio.TimeoutError() — chain traversal."""
+        import asyncio
+        from src.utils.review_helpers import handle_review_exception
+
+        inner = asyncio.TimeoutError()
+        exc = RuntimeError("review failed")
+        exc.__cause__ = inner
+        circuit = self._make_circuit("loop")
+        result = handle_review_exception(
+            exc, circuit=circuit, cycle=2,
+            settings=self._make_settings("loop"), engine="loop",
+        )
+        assert result.suggestion_text
+        assert "(empty message)" not in result.suggestion_text
+
+    def test_non_timeout_exception_no_empty(self):
+        """Non-timeout exception still produces non-empty suggestion."""
+        from src.utils.review_helpers import handle_review_exception
+
+        exc = ValueError("bad input")
+        circuit = self._make_circuit("spec")
+        result = handle_review_exception(
+            exc, circuit=circuit, cycle=1,
+            settings=self._make_settings("spec"), engine="spec",
+        )
+        assert result.suggestion_text
+        assert "bad input" in result.suggestion_text
+
+
+# ---------------------------------------------------------------------------
+# review_helpers output guard: build_review_error_suggestion all branches
+# ---------------------------------------------------------------------------
+
+
+class TestBuildReviewErrorSuggestionOutputGuard:
+    """Ensure build_review_error_suggestion never returns empty for any branch."""
+
+    def test_timeout_branch(self):
+        from src.utils.review_helpers import build_review_error_suggestion
+        result = build_review_error_suggestion(fail_reason="timeout")
+        assert result and result.strip()
+        assert "(empty message)" not in result
+
+    def test_empty_error_text_branch(self):
+        from src.utils.review_helpers import build_review_error_suggestion
+        result = build_review_error_suggestion(fail_reason="unknown", error_text="", err_repr="")
+        assert result and result.strip()
+        assert "(empty message)" not in result
+
+    def test_empty_message_marker_branch(self):
+        from src.utils.review_helpers import build_review_error_suggestion
+        result = build_review_error_suggestion(
+            fail_reason="unknown", error_text="(empty message)", err_repr="",
+        )
+        assert result and result.strip()
+        assert "(empty message)" not in result
+
+    def test_normal_error_branch(self):
+        from src.utils.review_helpers import build_review_error_suggestion
+        result = build_review_error_suggestion(
+            fail_reason="parse_error", error_text="JSON decode failed",
+        )
+        assert result and result.strip()
+        assert "JSON decode failed" in result
+
+    def test_all_empty_inputs(self):
+        from src.utils.review_helpers import build_review_error_suggestion
+        result = build_review_error_suggestion()
+        assert result and result.strip()
+
+    def test_whitespace_only_error_text(self):
+        from src.utils.review_helpers import build_review_error_suggestion
+        result = build_review_error_suggestion(fail_reason="", error_text="   ", err_repr="")
+        assert result and result.strip()
+
+    def test_err_repr_fallback_when_error_text_empty(self):
+        from src.utils.review_helpers import build_review_error_suggestion
+        result = build_review_error_suggestion(
+            fail_reason="some_error", error_text="", err_repr="ValueError('x')",
+        )
+        assert result and result.strip()
+        assert "ValueError('x')" in result

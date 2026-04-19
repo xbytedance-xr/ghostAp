@@ -3618,3 +3618,120 @@ def test_non_timeout_fallback_review_result_keeps_generic_format():
     all_suggestions = [s for rev in result.reviews for s in (rev.suggestions or [])]
     assert all("审查执行异常:" in s for s in all_suggestions)
     assert all("bad input" in s for s in all_suggestions)
+
+
+# ======================================================================
+# ReviewCircuitState persistence round-trip tests
+# ======================================================================
+
+
+class TestReviewCircuitStatePersistence:
+    """Verify circuit state survives save → load round-trip."""
+
+    def test_save_load_roundtrip(self, tmp_path):
+        """Circuit counters survive save_engine_state → load_engine_state."""
+        from src.spec_engine.persistence import save_engine_state, load_engine_state
+        from src.spec_engine.review import ReviewCircuitState
+
+        # Prepare a minimal SpecProject
+        proj = SpecProject(
+            project_id="p1", name="test", root_path=str(tmp_path),
+            requirement="test req",
+        )
+        circuit = ReviewCircuitState(
+            review_failure_consecutive=2,
+            review_circuit_open_until_cycle=5,
+            backoff_level=1,
+            consecutive_timeouts=3,
+        )
+
+        settings = MagicMock()
+        settings.spec_state_filename = ".spec_state.json"
+        fp = str(tmp_path / ".spec_state.json")
+
+        save_engine_state(
+            project=proj, settings=settings, root_path=str(tmp_path),
+            chat_id="c1",
+            build_runtime_context_fn=lambda: {},
+            project_to_compact_dict_fn=proj.to_dict,
+            filepath=fp,
+            review_circuit=circuit.to_dict(),
+        )
+
+        loaded_proj, rc_dict = load_engine_state(fp)
+        assert loaded_proj is not None
+        restored = ReviewCircuitState.from_dict(rc_dict)
+        assert restored.review_failure_consecutive == 2
+        assert restored.review_circuit_open_until_cycle == 5
+        assert restored.backoff_level == 1
+        assert restored.consecutive_timeouts == 3
+
+    def test_load_old_format_without_circuit(self, tmp_path):
+        """Old snapshots (no review_circuit key) return default values."""
+        from src.spec_engine.persistence import load_engine_state
+        from src.spec_engine.review import ReviewCircuitState
+
+        proj = SpecProject(
+            project_id="p2", name="old", root_path=str(tmp_path),
+        )
+        # Simulate old-format state file (no review_circuit key)
+        old_state = {
+            "chat_id": "c1",
+            "root_path": str(tmp_path),
+            "project": proj.to_dict(),
+            "saved_at": 1.0,
+        }
+        fp = str(tmp_path / "old_state.json")
+        with open(fp, "w") as f:
+            json.dump(old_state, f)
+
+        loaded_proj, rc_dict = load_engine_state(fp)
+        assert loaded_proj is not None
+        assert rc_dict == {}
+        restored = ReviewCircuitState.from_dict(rc_dict) if rc_dict else ReviewCircuitState()
+        assert restored.backoff_level == 0
+        assert restored.consecutive_timeouts == 0
+        assert restored.review_failure_consecutive == 0
+
+    def test_spec_engine_load_state_with_circuit(self, tmp_path):
+        """SpecEngine.load_state_with_circuit returns both project and circuit."""
+        from src.spec_engine.review import ReviewCircuitState
+
+        proj = SpecProject(
+            project_id="p3", name="t", root_path=str(tmp_path),
+        )
+        circuit = ReviewCircuitState(backoff_level=2, consecutive_timeouts=4)
+        state = {
+            "chat_id": "c1",
+            "root_path": str(tmp_path),
+            "project": proj.to_dict(),
+            "review_circuit": circuit.to_dict(),
+            "saved_at": 1.0,
+        }
+        fp = str(tmp_path / "state.json")
+        with open(fp, "w") as f:
+            json.dump(state, f)
+
+        loaded_proj, loaded_circuit = SpecEngine.load_state_with_circuit(fp)
+        assert loaded_proj is not None
+        assert loaded_circuit.backoff_level == 2
+        assert loaded_circuit.consecutive_timeouts == 4
+
+    def test_spec_engine_load_state_backward_compat(self, tmp_path):
+        """SpecEngine.load_state still returns just Optional[SpecProject]."""
+        proj = SpecProject(
+            project_id="p4", name="t", root_path=str(tmp_path),
+        )
+        state = {
+            "chat_id": "c1",
+            "root_path": str(tmp_path),
+            "project": proj.to_dict(),
+            "saved_at": 1.0,
+        }
+        fp = str(tmp_path / "state.json")
+        with open(fp, "w") as f:
+            json.dump(state, f)
+
+        loaded = SpecEngine.load_state(fp)
+        assert loaded is not None
+        assert loaded.project_id == "p4"

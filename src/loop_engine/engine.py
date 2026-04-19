@@ -57,6 +57,26 @@ class LoopReviewCircuitState:
     last_review_failure_diag: Optional[dict] = None
     backoff_level: int = 0
     consecutive_timeouts: int = 0
+    consecutive_skips: int = 0
+
+    def to_dict(self) -> dict:
+        return {
+            "review_failure_consecutive": self.review_failure_consecutive,
+            "review_circuit_open_until_iter": self.review_circuit_open_until_iter,
+            "backoff_level": self.backoff_level,
+            "consecutive_timeouts": self.consecutive_timeouts,
+            "consecutive_skips": self.consecutive_skips,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "LoopReviewCircuitState":
+        return cls(
+            review_failure_consecutive=int(data.get("review_failure_consecutive") or 0),
+            review_circuit_open_until_iter=int(data.get("review_circuit_open_until_iter") or 0),
+            backoff_level=int(data.get("backoff_level") or 0),
+            consecutive_timeouts=int(data.get("consecutive_timeouts") or 0),
+            consecutive_skips=int(data.get("consecutive_skips") or 0),
+        )
 
 
 @dataclass
@@ -96,6 +116,41 @@ class LoopEngine(BaseEngine):
         self._context_manager: Optional[LoopContextManager] = None
         self._llm_cache: dict[ChatOpenAICacheKey, ChatOpenAI] = {}
         self._review_circuit = LoopReviewCircuitState()
+
+    def save_state(self, filepath: Optional[str] = None) -> str:
+        """Override BaseEngine to include review circuit state."""
+        if not self._project:
+            raise ValueError("没有项目状态可保存")
+        if not filepath:
+            filepath = os.path.join(self.root_path, self._state_filename)
+        state = {
+            "chat_id": self.chat_id,
+            "root_path": self.root_path,
+            "project": self._project.to_dict(),
+            "saved_at": time.time(),
+            "review_circuit": self._review_circuit.to_dict(),
+        }
+        tmp_path = filepath + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, filepath)
+        return filepath
+
+    @classmethod
+    def load_state_with_circuit(cls, filepath: str) -> tuple[Optional[LoopProject], LoopReviewCircuitState]:
+        """Load project + review circuit state (backward-compatible)."""
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            proj_data = data.get("project")
+            if not isinstance(proj_data, dict):
+                return None, LoopReviewCircuitState()
+            project = LoopProject.from_dict(proj_data)
+            rc = data.get("review_circuit")
+            circuit = LoopReviewCircuitState.from_dict(rc) if isinstance(rc, dict) else LoopReviewCircuitState()
+            return project, circuit
+        except Exception:
+            return None, LoopReviewCircuitState()
 
     def execute(
         self,
@@ -787,6 +842,16 @@ FAIL
         cooldown = getattr(settings, "loop_review_failure_cooldown_iterations", 3)
 
         if enabled and iteration <= circuit.review_circuit_open_until_iter:
+            circuit.consecutive_skips += 1
+            skip_overrun_threshold = max(1, max_consecutive) * 2
+            if circuit.consecutive_skips >= skip_overrun_threshold:
+                logger.warning(
+                    "[Loop] review_skip_overrun: consecutive_skips=%d >= threshold=%d, iter=%d, "
+                    "review circuit may be stuck",
+                    circuit.consecutive_skips,
+                    skip_overrun_threshold,
+                    iteration,
+                )
             logger.info(
                 "[Loop] Review 熔断中 (iter=%d, open_until=%d), 跳过审查",
                 iteration,
@@ -853,6 +918,7 @@ FAIL
             circuit.review_circuit_open_until_iter = 0
             circuit.backoff_level = 0
             circuit.consecutive_timeouts = 0
+            circuit.consecutive_skips = 0
 
         except Exception as e:
             from ..utils.review_helpers import handle_review_exception

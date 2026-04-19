@@ -1301,11 +1301,20 @@ class SpecEngine(BaseEngine):
             self._build_runtime_context,
             self._project_to_compact_dict,
             filepath,
+            review_circuit=self._review_circuit.to_dict(),
         )
 
     @classmethod
     def load_state(cls, filepath: str) -> Optional[SpecProject]:
-        return _load_engine_state(filepath)
+        project, _rc = _load_engine_state(filepath)
+        return project
+
+    @classmethod
+    def load_state_with_circuit(cls, filepath: str) -> tuple[Optional[SpecProject], ReviewCircuitState]:
+        """Load project + review circuit state (backward-compatible)."""
+        project, rc_dict = _load_engine_state(filepath)
+        circuit = ReviewCircuitState.from_dict(rc_dict) if rc_dict else ReviewCircuitState()
+        return project, circuit
 
     def cleanup(self):
         super().cleanup()

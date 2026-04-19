@@ -1398,3 +1398,174 @@ class TestReviewReporter:
         title = reporter.get_review_title(2, all_passed=False)
         assert "多视角审查" in title
         assert "第2轮" in title
+
+
+# ======================================================================
+# LoopReviewCircuitState persistence round-trip tests
+# ======================================================================
+
+
+class TestLoopReviewCircuitStatePersistence:
+    """Verify LoopEngine circuit state survives save → load round-trip."""
+
+    def test_save_load_roundtrip(self, tmp_path):
+        """Circuit counters survive save_state → load_state_with_circuit."""
+        import json
+        from src.loop_engine.engine import LoopReviewCircuitState
+
+        engine = LoopEngine(chat_id="c1", root_path=str(tmp_path))
+        engine._project = LoopProject.create(
+            name="test", root_path=str(tmp_path),
+        )
+        engine._review_circuit = LoopReviewCircuitState(
+            review_failure_consecutive=3,
+            review_circuit_open_until_iter=7,
+            backoff_level=2,
+            consecutive_timeouts=5,
+        )
+
+        fp = str(tmp_path / ".loop_state.json")
+        engine.save_state(fp)
+
+        loaded_proj, loaded_circuit = LoopEngine.load_state_with_circuit(fp)
+        assert loaded_proj is not None
+        assert loaded_circuit.review_failure_consecutive == 3
+        assert loaded_circuit.review_circuit_open_until_iter == 7
+        assert loaded_circuit.backoff_level == 2
+        assert loaded_circuit.consecutive_timeouts == 5
+
+    def test_load_old_format_without_circuit(self, tmp_path):
+        """Old snapshots (no review_circuit key) return default circuit."""
+        import json
+        from src.loop_engine.engine import LoopReviewCircuitState
+
+        proj = LoopProject.create(
+            name="old", root_path=str(tmp_path),
+        )
+        old_state = {
+            "chat_id": "c1",
+            "root_path": str(tmp_path),
+            "project": proj.to_dict(),
+            "saved_at": 1.0,
+        }
+        fp = str(tmp_path / "old_state.json")
+        with open(fp, "w") as f:
+            json.dump(old_state, f)
+
+        loaded_proj, loaded_circuit = LoopEngine.load_state_with_circuit(fp)
+        assert loaded_proj is not None
+        assert loaded_circuit.backoff_level == 0
+        assert loaded_circuit.consecutive_timeouts == 0
+        assert loaded_circuit.review_failure_consecutive == 0
+
+    def test_save_state_includes_review_circuit_key(self, tmp_path):
+        """Saved JSON must contain the review_circuit key."""
+        import json
+        from src.loop_engine.engine import LoopReviewCircuitState
+
+        engine = LoopEngine(chat_id="c1", root_path=str(tmp_path))
+        engine._project = LoopProject.create(
+            name="test", root_path=str(tmp_path),
+        )
+        engine._review_circuit = LoopReviewCircuitState(backoff_level=1)
+
+        fp = str(tmp_path / "state.json")
+        engine.save_state(fp)
+
+        with open(fp) as f:
+            data = json.load(f)
+        assert "review_circuit" in data
+        assert data["review_circuit"]["backoff_level"] == 1
+
+
+# ======================================================================
+# Review skip overrun protection tests
+# ======================================================================
+
+
+class TestLoopReviewSkipOverrun:
+    """Verify warning is emitted when consecutive_skips >= max_consecutive * 2."""
+
+    def test_skip_overrun_warning(self, tmp_path, caplog):
+        """When consecutive_skips reaches threshold, a warning is logged."""
+        from src.loop_engine.engine import LoopReviewCircuitState
+
+        engine = LoopEngine(chat_id="c1", root_path=str(tmp_path))
+        engine._project = LoopProject.create(name="t", root_path=str(tmp_path))
+        # Set circuit to be open until iteration 100
+        engine._review_circuit = LoopReviewCircuitState(
+            review_failure_consecutive=3,
+            review_circuit_open_until_iter=100,
+            backoff_level=1,
+            consecutive_timeouts=1,
+            consecutive_skips=5,  # Already at threshold - 1
+        )
+
+        callbacks = LoopEngineCallbacks()
+        with caplog.at_level(logging.WARNING):
+            result, decision = engine._conduct_review(1, callbacks)
+
+        assert decision == "review_circuit_open_skip"
+        assert engine._review_circuit.consecutive_skips == 6
+        assert any("review_skip_overrun" in r.message for r in caplog.records)
+
+    def test_no_warning_below_threshold(self, tmp_path, caplog):
+        """Below threshold, no overrun warning."""
+        from src.loop_engine.engine import LoopReviewCircuitState
+
+        engine = LoopEngine(chat_id="c1", root_path=str(tmp_path))
+        engine._project = LoopProject.create(name="t", root_path=str(tmp_path))
+        engine._review_circuit = LoopReviewCircuitState(
+            review_failure_consecutive=3,
+            review_circuit_open_until_iter=100,
+            consecutive_skips=0,
+        )
+
+        callbacks = LoopEngineCallbacks()
+        with caplog.at_level(logging.WARNING):
+            result, decision = engine._conduct_review(1, callbacks)
+
+        assert decision == "review_circuit_open_skip"
+        assert engine._review_circuit.consecutive_skips == 1
+        assert not any("review_skip_overrun" in r.message for r in caplog.records)
+
+    def test_skips_reset_on_success(self, tmp_path):
+        """consecutive_skips resets to 0 when review succeeds."""
+        from src.loop_engine.engine import LoopReviewCircuitState
+
+        engine = LoopEngine(chat_id="c1", root_path=str(tmp_path))
+        engine._project = LoopProject.create(name="t", root_path=str(tmp_path))
+        engine._project.requirement = LoopRequirement(
+            goal="test", raw_text="r", acceptance_criteria=["c1"],
+        )
+        engine._review_circuit = LoopReviewCircuitState(
+            review_failure_consecutive=2,
+            consecutive_skips=10,
+        )
+
+        # Mock session to return a parseable review response
+        mock_session = MagicMock()
+        mock_session.send_prompt_with_retry.return_value = MagicMock(stop_reason="end_turn")
+
+        def fake_send(prompt, on_event=None, timeout=0, **kwargs):
+            if on_event:
+                text = (
+                    "```json\n"
+                    '[{"perspective": "correctness", "passed": true, "suggestions": []},'
+                    '{"perspective": "robustness", "passed": true, "suggestions": []},'
+                    '{"perspective": "maintainability", "passed": true, "suggestions": []},'
+                    '{"perspective": "performance", "passed": true, "suggestions": []},'
+                    '{"perspective": "requirement_alignment", "passed": true, "suggestions": []}]'
+                    "\n```"
+                )
+                on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=text))
+            return MagicMock(stop_reason="end_turn")
+
+        mock_session.send_prompt_with_retry = fake_send
+        engine._session = mock_session
+
+        callbacks = LoopEngineCallbacks()
+        result, decision = engine._conduct_review(1, callbacks)
+
+        assert decision is None  # success
+        assert engine._review_circuit.consecutive_skips == 0

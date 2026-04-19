@@ -107,6 +107,23 @@ class ReviewCircuitState:
     backoff_level: int = 0
     consecutive_timeouts: int = 0
 
+    def to_dict(self) -> dict:
+        return {
+            "review_failure_consecutive": self.review_failure_consecutive,
+            "review_circuit_open_until_cycle": self.review_circuit_open_until_cycle,
+            "backoff_level": self.backoff_level,
+            "consecutive_timeouts": self.consecutive_timeouts,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ReviewCircuitState":
+        return cls(
+            review_failure_consecutive=int(data.get("review_failure_consecutive") or 0),
+            review_circuit_open_until_cycle=int(data.get("review_circuit_open_until_cycle") or 0),
+            backoff_level=int(data.get("backoff_level") or 0),
+            consecutive_timeouts=int(data.get("consecutive_timeouts") or 0),
+        )
+
 
 def conduct_review(
     *,

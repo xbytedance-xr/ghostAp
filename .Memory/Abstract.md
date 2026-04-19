@@ -1,6 +1,7 @@
 # GhostAP 项目记忆索引
 
 ## 2026-04-19
+- **ReviewCircuitState 持久化 + Loop 审查跳过率保护 + E2E empty message 测试** — 将 Spec/Loop 的 ReviewCircuitState 纳入状态持久化（save/load_state round-trip，旧快照兼容）；LoopEngine 新增 `consecutive_skips` 字段和 `review_skip_overrun` warning；补充 5 个 E2E empty message 端到端测试 + 7 个 `build_review_error_suggestion` 输出守卫；2189 tests passed → [详细记录](2026-04-19.md)
 - **review 异常处理统一抽取 handle_review_exception** — 将 Spec/Loop 两引擎 ~160 行重复 except 分支抽取到 `review_helpers.py` 的 `handle_review_exception()` 共享函数；统一 timeout 检测逻辑（Spec 侧补齐 isinstance+detail 冗余检查）；新增 `_is_timeout_error()`、`ReviewExceptionResult` NamedTuple；+18 新测试，2167 tests passed；`433c2c4` → [详细记录](2026-04-19.md)
 - **统一 _has_timeout_in_chain + review_timeout 哨兵修复 + metrics 测试覆盖** — 消除 errors.py 和 review_diagnostics.py 的 `_has_timeout_in_chain` 重复实现（合并 isinstance+类名匹配逻辑，review_diagnostics 改为导入）；修复 Spec/Loop review_timeout `'in dir()'` 不可靠检查改为哨兵默认值；新增 15 个测试（8 链检测一致性+7 metrics 结构验证），2149 tests passed；`433c2c4` → [详细记录](2026-04-19.md)
 - **异常链遍历增强 + 结构化 metrics 日志** — `_infer_fail_reason()` 和 `get_error_detail()` 增加异常链 (`__cause__`/`__context__`) 遍历（最大深度 10 层），包装在非 TimeoutError 内的 TimeoutError 也能正确识别；SpecEngine + LoopEngine 审查异常块新增结构化 metrics 日志（JSON 格式，含 metric_type/fail_reason/consecutive_timeouts/circuit_open 等字段）；+16 新测试，2134 tests passed → [详细记录](2026-04-19.md)
