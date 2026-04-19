@@ -56,7 +56,7 @@ class GCMonitor:
                     try:
                         mem_snapshot.log_growth(logger_func=logger.warning)
                     except Exception as ex:
-                        logger.warning(f"[{label}] 内存快照分析失败: {ex}")
+                        logger.warning(f"[{label}] 内存快照分析失败: {str(ex) or repr(ex)}")
 
                 # Trigger garbage collection
                 gc.collect()
@@ -65,7 +65,7 @@ class GCMonitor:
                 logger.info(f"[{label}] GC后内存: {mem_percent_after:.1f}%")
 
         except Exception as e:
-            logger.debug(f"[{label}] 内存监控失败: {e}")
+            logger.debug(f"[{label}] 内存监控失败: {str(e) or repr(e)}")
 
 
 _global_gc_monitor: Optional[GCMonitor] = None

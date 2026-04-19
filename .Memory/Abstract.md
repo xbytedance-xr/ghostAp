@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 ## 2026-04-19
+- **最终一致性加固: ttadk 内部路径 bare f"{e}" 消除** — strategies.py:302 + ttadk_wrapper.py:458,480 共 3 处内部诊断路径 bare `f"{e}"` → `str(e) or repr(e)` 一致性加固；项目中零残留裸异常格式化；2060 tests passed → [详细记录](2026-04-19.md)
+- **回归扫描器加固 + 残余裸异常消除 + asyncio.TimeoutError e2e 覆盖** — 修复 `_SKIP_GUARDS` 的 `str(` 过宽漏检问题（移除 `str(`，仅保留 `" or "` 守卫）；扩展 lint 正则变量名覆盖（+ex/te/error/exception）和用户可见函数覆盖（+_reply_message/reply_text/update_card）；修复 sync_adapter.py:819 + gc_monitor.py:59,68 共 3 处残余裸 `f"{e}"` / `f"{ex}"`；为 Deep/Loop/Spec 引擎补充 asyncio.TimeoutError e2e 用例；2060 tests passed → [详细记录](2026-04-19.md)
 - **review_diagnostics 源头消灭 (empty message) 标记 + 低风险路径增量加固** — review_diagnostics 层 `(empty message)` 标记从下游过滤升级为源头消灭（空消息按 timeout/非timeout 分流中文友好文案）；补强 worktree dispatcher/manager、base handler fallback、deep engine logger 共 5 处低风险路径；+14 新测试，2057 tests passed；`a962ee7` → [详细记录](2026-04-19.md)
 - **完成零盲区 str(exc) 空值加固提交落地** — 将 12 轮增量修复的 20 个文件（+707/-35 行）统一提交：17 个 src/ 文件的用户可见/logger/内部诊断路径全量加固 + 245 行 guard 测试 + 33 个端到端超时测试；8 层纵深防御体系完整闭环（核心兜底→用户可见→logger→引擎→review 断路器→收敛保护→回归 lint→测试覆盖）；2043 tests passed；`d2b28da` → [详细记录](2026-04-19.md)
 - **内部诊断路径 logger 裸 f"{e}" 全量加固 + 回归 lint 扩展** — 修补 13 处 logger.warning/error 中裸 `f"{e}"` 引用（intent_recognizer/engine_base/project manager/artifacts + ws_client/action_dispatcher/errors/strategies），统一加 `str(e) or repr(e)` 守卫；扩展回归 lint 覆盖 logger 路径（`_BARE_LOGGER_RE`）；+13 新测试（4 组 guard + 1 个 logger lint），2043 tests passed → [详细记录](2026-04-19.md)

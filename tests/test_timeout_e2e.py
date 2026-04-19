@@ -36,6 +36,22 @@ class _TimeoutSession:
         pass
 
 
+class _AsyncioTimeoutSession:
+    """Fake ACP session that always raises bare asyncio.TimeoutError (empty message)."""
+
+    def send_prompt(self, prompt, on_event=None, timeout=0, **kw):
+        raise asyncio.TimeoutError()
+
+    def send_prompt_with_retry(self, prompt, on_event=None, timeout=0, **kw):
+        raise asyncio.TimeoutError()
+
+    def cancel(self):
+        pass
+
+    def close(self):
+        pass
+
+
 # ---------------------------------------------------------------------------
 # 1. Formatter layer: get_error_detail / fmt_error / fmt_exception
 # ---------------------------------------------------------------------------
@@ -145,6 +161,21 @@ class TestDeepEngineE2E:
             assert len(err.strip()) > 0, "on_error received empty message"
             assert "超时" in err
 
+    def test_bare_asyncio_timeout_produces_nonempty_error(self, deep_engine, caplog):
+        from src.deep_engine.engine import DeepEngineCallbacks
+
+        cb = DeepEngineCallbacks()
+        errors = []
+        cb.on_error = lambda msg: errors.append(msg)
+
+        with patch("src.deep_engine.engine.create_engine_session", return_value=_AsyncioTimeoutSession()):
+            deep_engine.plan_and_execute("test", callbacks=cb)
+
+        assert len(errors) >= 1
+        for err in errors:
+            assert len(err.strip()) > 0, "on_error received empty message for asyncio.TimeoutError"
+            assert "超时" in err
+
 
 class TestLoopEngineE2E:
     """LoopEngine bare TimeoutError → on_error callback message non-empty."""
@@ -185,6 +216,26 @@ class TestLoopEngineE2E:
         assert len(errors) >= 1
         for err in errors:
             assert len(err.strip()) > 0, "on_error received empty message"
+            assert "超时" in err
+
+    def test_bare_asyncio_timeout_produces_nonempty_error(self, loop_engine, caplog):
+        from src.loop_engine.engine import LoopEngineCallbacks
+        from src.loop_engine.models import LoopRequirement
+
+        cb = LoopEngineCallbacks()
+        errors = []
+        cb.on_error = lambda msg: errors.append(msg)
+
+        loop_engine._parse_requirement = lambda txt: LoopRequirement(
+            goal="g", acceptance_criteria=["c"], raw_text=txt,
+        )
+
+        with patch("src.loop_engine.engine.create_engine_session", return_value=_AsyncioTimeoutSession()):
+            loop_engine.execute("test", callbacks=cb)
+
+        assert len(errors) >= 1
+        for err in errors:
+            assert len(err.strip()) > 0, "on_error received empty message for asyncio.TimeoutError"
             assert "超时" in err
 
 
@@ -238,6 +289,33 @@ class TestSpecEngineE2E:
         assert len(errors) >= 1
         for err in errors:
             assert len(err.strip()) > 0, "on_error received empty message"
+            assert "超时" in err
+
+    def test_bare_asyncio_timeout_produces_nonempty_error(self, spec_engine, caplog, monkeypatch):
+        from src.spec_engine.engine import SpecEngineCallbacks
+
+        cb = SpecEngineCallbacks()
+        errors = []
+        cb.on_error = lambda msg: errors.append(msg)
+
+        monkeypatch.setattr(
+            "src.spec_engine.engine.create_engine_session",
+            lambda **kw: _AsyncioTimeoutSession(),
+        )
+        monkeypatch.setattr(
+            "src.spec_engine.engine.parse_acceptance_criteria",
+            lambda txt, decompose_fn=None: ["criterion1"],
+        )
+        monkeypatch.setattr(
+            spec_engine, "_run_cycle_loop",
+            lambda **kw: (_ for _ in ()).throw(asyncio.TimeoutError()),
+        )
+
+        spec_engine.execute("test", callbacks=cb)
+
+        assert len(errors) >= 1
+        for err in errors:
+            assert len(err.strip()) > 0, "on_error received empty message for asyncio.TimeoutError"
             assert "超时" in err
 
 

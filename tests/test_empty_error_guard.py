@@ -595,18 +595,27 @@ class TestNoBareFStringInUserVisibleErrors:
     """Lint guard: reply_error / send_error_card calls must not use bare f\"{e}\"
     or f\"{exc}\" which can produce empty strings for TimeoutError()."""
 
-    # Pattern: reply_error(...f"...{e}") or send_error_card(...f"...{e}")
-    # Matches bare {e}, {exc}, {err} without get_error_detail / repr / or guard
+    # Pattern: user-visible output calls with bare {e}/{exc}/{err}/etc.
+    # Matches bare exception vars without get_error_detail / repr / or guard
     _BARE_FSTR_RE = re.compile(
-        r'(?:reply_error|send_error_card)\s*\([^)]*f["\'].*\{(?:e|exc|err)\}[^)]*\)'
+        r'(?:reply_error|send_error_card|_reply_message|reply_text|update_card)'
+        r'\s*\([^)]*f["\'].*\{(?:e|exc|err|ex|te|error|exception)\}[^)]*\)'
     )
 
     # Pattern: logger.warning/error(f"...{e}") — bare exception in log format
     _BARE_LOGGER_RE = re.compile(
-        r'logger\.(?:warning|error)\s*\(\s*f["\'].*\{(?:e|exc|err)\}'
+        r'logger\.(?:warning|error)\s*\(\s*f["\'].*\{(?:e|exc|err|ex|te|error|exception)\}'
     )
 
-    _SKIP_GUARDS = ("get_error_detail", "repr(", " or ", "str(")
+    # "str(" alone is too broad — `str(e)` without `or repr(e)` is still unsafe.
+    # Keep "str(" only when the same line also contains " or " (handled by the
+    # " or " entry).  Replace the blanket "str(" with a precise check below.
+    _SKIP_GUARDS = ("get_error_detail", "repr(", " or ")
+
+    @classmethod
+    def _line_is_guarded(cls, line: str) -> bool:
+        """Return True if *line* already has a safe guard pattern."""
+        return any(g in line for g in cls._SKIP_GUARDS)
 
     def _scan_src_files(self):
         src_dir = Path(__file__).resolve().parent.parent / "src"
@@ -614,7 +623,7 @@ class TestNoBareFStringInUserVisibleErrors:
         for py_file in src_dir.rglob("*.py"):
             for i, line in enumerate(py_file.read_text().splitlines(), 1):
                 # Skip lines that already use get_error_detail or repr or `or`
-                if any(g in line for g in self._SKIP_GUARDS):
+                if self._line_is_guarded(line):
                     continue
                 if self._BARE_FSTR_RE.search(line):
                     violations.append(f"{py_file.relative_to(src_dir.parent)}:{i}: {line.strip()}")
@@ -626,7 +635,7 @@ class TestNoBareFStringInUserVisibleErrors:
         violations = []
         for py_file in src_dir.rglob("*.py"):
             for i, line in enumerate(py_file.read_text().splitlines(), 1):
-                if any(g in line for g in self._SKIP_GUARDS):
+                if self._line_is_guarded(line):
                     continue
                 if self._BARE_LOGGER_RE.search(line):
                     violations.append(f"{py_file.relative_to(src_dir.parent)}:{i}: {line.strip()}")

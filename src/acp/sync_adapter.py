@@ -816,7 +816,7 @@ def resolve_agent_spec(
         return tool_registry.get_serve_command(agent_type, model_name)
     except Exception as e:
         raise RuntimeError(
-            f"{agent_type} does not appear to support ACP server mode. Please set *_ACP_CMD/*_ACP_ARGS overrides. Details: {e}"
+            f"{agent_type} does not appear to support ACP server mode. Please set *_ACP_CMD/*_ACP_ARGS overrides. Details: {str(e) or repr(e)}"
         )
 
 
