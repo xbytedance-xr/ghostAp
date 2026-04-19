@@ -12,9 +12,6 @@ from ..acp import ACPEvent, ACPEventType
 from ..engine_base import PerspectiveReview, ReviewPerspective, ReviewResult
 from ..utils.llm import ChatOpenAICacheKey, get_cached_chat_openai
 from ..utils.review_diagnostics import (
-    REVIEW_DIAG_COMPAT_KEYS,
-    REVIEW_DIAG_STABLE_KEYS,
-    REVIEW_EXCEPTION_LOG_FIELDS,
     build_review_exception_diagnostics,
     format_review_exception_log_line,
     normalize_review_diagnostics,
@@ -221,90 +218,23 @@ def conduct_review(
         circuit.backoff_level = 0
         circuit.consecutive_timeouts = 0
     except Exception as e:
-        from ..utils.review_helpers import build_review_error_suggestion, compute_exponential_cooldown
+        from ..utils.review_helpers import handle_review_exception
 
-        diag_raw = build_review_exception_diagnostics_fn(e, cycle=cycle)
-        diag = normalize_review_diagnostics(diag_raw)
-        circuit.last_review_failure_diag = dict(diag)
-
-        # Track consecutive timeouts for adaptive timeout
-        _fail_reason = str(diag.get("fail_reason") or "").strip()
-        if _fail_reason == "timeout":
-            circuit.consecutive_timeouts = int(circuit.consecutive_timeouts or 0) + 1
-        else:
-            circuit.consecutive_timeouts = 0
-
-        try:
-            circuit.review_failure_consecutive = int(circuit.review_failure_consecutive or 0) + 1
-        except Exception:
-            circuit.review_failure_consecutive = 1
-        if enabled and circuit.review_failure_consecutive >= max_consecutive and cooldown_cycles > 0:
-            max_cooldown = int(getattr(settings, "spec_review_failure_max_cooldown_cycles", 12) or 12)
-            actual_cooldown = compute_exponential_cooldown(
-                circuit.backoff_level, base_cooldown=cooldown_cycles, max_cooldown=max_cooldown,
-            )
-            try:
-                circuit.review_circuit_open_until_cycle = int(cycle or 0) + actual_cooldown
-            except Exception:
-                circuit.review_circuit_open_until_cycle = int(cycle or 0)
-            circuit.backoff_level = int(circuit.backoff_level or 0) + 1
-            try:
-                circuit.last_review_failure_diag["review_circuit_open"] = True
-                circuit.last_review_failure_diag["open_until_cycle"] = int(circuit.review_circuit_open_until_cycle or 0)
-                circuit.last_review_failure_diag["consecutive_failures"] = int(circuit.review_failure_consecutive or 0)
-                circuit.last_review_failure_diag["decision"] = "review_failed_open_circuit"
-            except Exception:
-                pass
-        diag_json = ""
-        try:
-            diag_json = json.dumps(diag, ensure_ascii=False, sort_keys=True)
-        except Exception:
-            diag_json = '{"phase":"review","decision":"review_failed_continue"}'
-
-        try:
-            logger.warning(format_review_exception_log_line(diag, diag_json=diag_json))
-        except Exception as log_e:
-            d = normalize_review_diagnostics(diag)
-            err_type = str(d.get("err_type") or "Exception")
-            err_repr = str(d.get("err_repr") or "").strip() or f"<{err_type}>"
-            error_text = str(d.get("error_text") or "").strip() or err_repr
-            logger.warning(
-                "[Spec] 多视角审查异常: phase=review role=multi_perspective cycle=%s decision=%s "
-                "err_type=%s err_repr=%s error_text=%s (log_format_failed=%s), 将继续循环",
-                d.get("cycle"),
-                d.get("decision") or "review_failed_continue",
-                err_type,
-                err_repr,
-                error_text,
-                type(log_e).__name__,
-            )
-        # Structured metrics log for monitoring/alerting integration
-        try:
-            _metrics = json.dumps({
-                "metric_type": "review_exception",
-                "engine": "spec",
-                "cycle": int(cycle or 0),
-                "fail_reason": _fail_reason,
-                "consecutive_timeouts": int(circuit.consecutive_timeouts or 0),
-                "consecutive_failures": int(circuit.review_failure_consecutive or 0),
-                "circuit_open": bool(getattr(circuit, "review_circuit_open_until_cycle", 0) and int(cycle or 0) < int(circuit.review_circuit_open_until_cycle or 0)),
-                "adaptive_timeout": int(review_timeout),
-                "backoff_level": int(circuit.backoff_level or 0),
-            }, ensure_ascii=False)
-            logger.info("[Spec] review_metrics: %s", _metrics)
-        except Exception:
-            pass
-        _suggestion_text = build_review_error_suggestion(
-            fail_reason=_fail_reason,
-            error_text=str(diag.get("error_text") or ""),
-            err_repr=str(diag.get("err_repr") or ""),
+        result = handle_review_exception(
+            e,
+            circuit=circuit,
+            cycle=cycle,
+            settings=settings,
+            engine="spec",
+            build_diag_fn=build_review_exception_diagnostics_fn,
+            review_timeout=review_timeout,
         )
         review_result = ReviewResult(
             reviews=[
                 PerspectiveReview(
                     perspective=p,
                     passed=False,
-                    suggestions=[_suggestion_text],
+                    suggestions=[result.suggestion_text],
                     summary="异常",
                 )
                 for p in ReviewPerspective

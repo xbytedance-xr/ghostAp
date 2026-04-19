@@ -855,99 +855,29 @@ FAIL
             circuit.consecutive_timeouts = 0
 
         except Exception as e:
-            from ..utils.errors import get_error_detail
-            from ..utils.review_diagnostics import (
-                build_review_exception_diagnostics,
-                format_review_exception_log_line,
-                normalize_review_diagnostics,
-            )
-            from ..utils.review_helpers import build_review_error_suggestion, compute_exponential_cooldown
+            from ..utils.review_helpers import handle_review_exception
 
-            detail = get_error_detail(e)
-
-            # Build structured diagnostics (same as SpecEngine)
-            diag_raw = build_review_exception_diagnostics(
+            result = handle_review_exception(
                 e,
+                circuit=circuit,
                 cycle=iteration,
-                project_name=getattr(self._project, "name", ""),
-                chat_id=self.chat_id,
-                root_path=self.root_path,
+                settings=settings,
+                engine="loop",
+                build_diag_kwargs={
+                    "project_name": getattr(self._project, "name", ""),
+                    "chat_id": self.chat_id,
+                    "root_path": self.root_path,
+                },
+                review_timeout=review_timeout,
             )
-            diag = normalize_review_diagnostics(diag_raw)
-            circuit.last_review_failure_diag = dict(diag)
-
-            # Track consecutive timeouts for adaptive timeout
-            _fail_reason = str(diag.get("fail_reason") or "").strip()
-            if _fail_reason == "timeout" or isinstance(e, TimeoutError) or "timeout" in detail.lower():
-                circuit.consecutive_timeouts = int(circuit.consecutive_timeouts or 0) + 1
-            else:
-                circuit.consecutive_timeouts = 0
-
-            err_msg = build_review_error_suggestion(
-                fail_reason=_fail_reason,
-                error_text=str(diag.get("error_text") or ""),
-                err_repr=str(diag.get("err_repr") or ""),
-            )
-
-            # Update circuit breaker counters
-            circuit.review_failure_consecutive += 1
-            if enabled and circuit.review_failure_consecutive >= max_consecutive and cooldown > 0:
-                max_cooldown = int(getattr(settings, "loop_review_failure_max_cooldown_iterations", 12) or 12)
-                actual_cooldown = compute_exponential_cooldown(
-                    circuit.backoff_level, base_cooldown=cooldown, max_cooldown=max_cooldown,
-                )
-                circuit.review_circuit_open_until_iter = iteration + actual_cooldown
-                circuit.backoff_level = int(circuit.backoff_level or 0) + 1
-                review_decision = "review_failed_open_circuit"
-                try:
-                    circuit.last_review_failure_diag["decision"] = "review_failed_open_circuit"
-                    circuit.last_review_failure_diag["review_circuit_open"] = True
-                    circuit.last_review_failure_diag["open_until_iter"] = int(circuit.review_circuit_open_until_iter)
-                    circuit.last_review_failure_diag["consecutive_failures"] = int(circuit.review_failure_consecutive)
-                except Exception:
-                    pass
-                logger.warning(
-                    "[Loop] Review 熔断器打开: consecutive=%d, open_until_iter=%d",
-                    circuit.review_failure_consecutive,
-                    circuit.review_circuit_open_until_iter,
-                )
-            else:
-                review_decision = "review_failed_continue"
-
-            # Structured log line
-            diag_json = ""
-            try:
-                diag_json = json.dumps(diag, ensure_ascii=False, sort_keys=True)
-            except Exception:
-                diag_json = '{"phase":"review","decision":"review_failed_continue"}'
-            try:
-                logger.warning(format_review_exception_log_line(diag, diag_json=diag_json, prefix="[Loop]"))
-            except Exception:
-                logger.warning("[Loop] 多视角审查异常: %s, 将视为有改进建议继续迭代", detail)
-
-            # Structured metrics log for monitoring/alerting integration
-            try:
-                _metrics = json.dumps({
-                    "metric_type": "review_exception",
-                    "engine": "loop",
-                    "iteration": int(iteration or 0),
-                    "fail_reason": _fail_reason,
-                    "consecutive_timeouts": int(circuit.consecutive_timeouts or 0),
-                    "consecutive_failures": int(circuit.review_failure_consecutive or 0),
-                    "circuit_open": bool(getattr(circuit, "review_circuit_open_until_iter", 0) and int(iteration or 0) < int(circuit.review_circuit_open_until_iter or 0)),
-                    "adaptive_timeout": int(review_timeout),
-                    "backoff_level": int(circuit.backoff_level or 0),
-                }, ensure_ascii=False)
-                logger.info("[Loop] review_metrics: %s", _metrics)
-            except Exception:
-                pass
+            review_decision = result.review_decision
 
             review_result = ReviewResult(
                 reviews=[
                     PerspectiveReview(
                         perspective=p,
                         passed=False,
-                        suggestions=[err_msg],
+                        suggestions=[result.suggestion_text],
                         summary="异常",
                     )
                     for p in ReviewPerspective

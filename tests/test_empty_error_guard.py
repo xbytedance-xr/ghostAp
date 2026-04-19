@@ -1033,7 +1033,7 @@ class TestSpecReviewMetricsLog:
         handler = logging.Handler()
         handler.emit = lambda r: records.append(r)
 
-        logger = logging.getLogger("src.spec_engine.review")
+        logger = logging.getLogger("src.utils.review_helpers")
         logger.addHandler(handler)
         old_level = logger.level
         logger.setLevel(logging.DEBUG)
