@@ -927,8 +927,10 @@ FAIL
             from ..utils.review_helpers import compute_adaptive_timeout
             base_timeout = int(getattr(settings, "loop_review_timeout", 120) or 120)
             min_timeout = int(getattr(settings, "loop_review_min_timeout", 30) or 30)
+            hard_floor = int(getattr(settings, "loop_review_hard_floor", 15) or 15)
             review_timeout = compute_adaptive_timeout(
                 circuit.consecutive_timeouts, base_timeout=base_timeout, min_timeout=min_timeout,
+                hard_floor=hard_floor,
             )
 
             def _before_review_retry(attempt: int, error: Exception):

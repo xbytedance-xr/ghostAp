@@ -1,6 +1,10 @@
 # GhostAP 项目记忆索引
 
+> **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
+
 ## 2026-04-20
+- **引入维护性 Backlog 机制** — 新建 `.Memory/Backlog.md` 收集 Low/Medium severity 审计缺口；AGENTS.md Workflow Rules 新增第 5 条分级处理规则；Abstract.md 添加 Backlog 入口；避免低优先级修复打断主线开发节奏 → [详细记录](2026-04-20.md)
+- **三项审计缺口修复：metrics_exporter bug + hard_floor 可配置化 + 单例重配置** — (A) JsonLinesExporter except 子句 `str(Exception)` → `str(e)` 修复日志记录类名 bug；(B) config.py 新增 `spec_review_hard_floor`/`loop_review_hard_floor`，Spec/Loop review 传递到 `compute_adaptive_timeout`；(C) `get_metrics_exporter` 单例支持类型变更时自动重建；+10 新测试，2322 tests passed；零回归 → [详细记录](2026-04-20.md)
 - **_run_async 空消息包装 + LoopReporter (empty message) 过滤** — sync_adapter._run_async 补空消息 TimeoutError 包装（与 send_prompt 对齐）；LoopReporter.format_iteration_done 过滤 (empty message)/空/None 错误文本替换为友好提示；+9 新测试，2312 tests passed；零回归 → [详细记录](2026-04-20.md)
 - **三项增量改进：Metrics Exporter + 滑动窗口熔断 + Lint 降级** — (A) 新增 `metrics_exporter.py` 模块（ReviewMetricsExporter 协议 + LoggerExporter + JsonLinesExporter），review_helpers 通过接口输出 metrics，config 可切换 exporter 类型；(B) 新增 `SlidingWindowTracker` 类，CircuitState 新增 `recent_outcomes` 字段，handle_review_exception 集成滑动窗口动态熔断（与 max_consecutive 并列触发，window_size/threshold 可配置）；(C) 新增 `lightweight_lint.py` 模块（ast.parse + ruff check），Spec/Loop 熔断跳过分支自动运行本地 lint 并注入 suggestions（可配置开关+超时）；+60 新测试，2303 tests passed（baseline 2243 + 60）；零回归 → [详细记录](2026-04-20.md)
 - **TimeoutError (empty message) 增量加固提交落地** — should_retry isinstance 短路+prompt_with_retry 可观测性日志+compute_adaptive_timeout hard_floor=15s+normalize_review_diagnostics error_text 500 字符截断+lint 禁止裸 raise TimeoutError()+concurrent.futures.TimeoutError 6 层 E2E 测试；2243 tests passed（+26）；`9d0ffb9` → [详细记录](2026-04-20.md)

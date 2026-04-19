@@ -120,6 +120,7 @@ Feishu WebSocket message
 2. **实现完整性** - 实现功能时覆盖所有子操作（如 CRUD 全覆盖、收发都实现），不要只做 happy path。如果 scope 不明确，先问清楚再动手。
 3. **先研究后实现** - 修改已有模块前，先用 Grep/Read 查看该模块现有模式和约定，确保新代码与既有风格一致。
 4. **任务完成必须更新 Memory** - 每次任务完成后，必须更新 `.Memory/{YYYY-MM-DD}.md` 记录执行内容，并同步更新 `.Memory/Abstract.md` 索引。这是任务闭环的一部分，未更新 Memory 等于任务未完成。
+5. **审计缺口分级处理** - Review/Audit 产出的改进建议按 severity 分级：**High**（影响正确性/安全性）立即修复；**Medium**（可观测性/可运维性缺口）和 **Low**（代码风格/文档一致性）录入 `.Memory/Backlog.md`，集中在维护窗口批量处理，不打断主线开发节奏。
 
 ## Project Memory System (重要)
 

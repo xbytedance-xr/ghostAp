@@ -225,3 +225,74 @@ class TestHandleReviewExceptionIntegration:
             )
         assert result.metrics["metric_type"] == "review_exception"
         mock_get.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Gap fix: except clause logs actual error, not class name
+# ---------------------------------------------------------------------------
+class TestJsonLinesExporterErrorLogging:
+    """Verify that write failures log the actual exception message, not '<class Exception>'."""
+
+    def test_write_failure_logs_actual_error(self, tmp_path):
+        """When file write fails, logger.debug should contain the real error message."""
+        path = str(tmp_path / "readonly" / "m.jsonl")
+        os.makedirs(str(tmp_path / "readonly"), exist_ok=True)
+
+        exporter = JsonLinesExporter(path=path)
+        # Make the file unwritable by pointing to a directory
+        os.makedirs(path, exist_ok=True)
+
+        with patch("src.utils.metrics_exporter.logger") as mock_logger:
+            exporter.export_metrics(SAMPLE_METRICS)
+            if mock_logger.debug.called:
+                call_args = mock_logger.debug.call_args
+                log_msg = call_args[0][1] if len(call_args[0]) > 1 else ""
+                # Must NOT contain the class representation
+                assert "<class" not in str(log_msg), (
+                    f"Log should contain actual error, not class name; got: {log_msg}"
+                )
+
+    def test_write_failure_does_not_log_class_exception(self):
+        """Explicitly verify str(Exception) pattern is gone — error variable is used."""
+        import inspect
+        source = inspect.getsource(JsonLinesExporter.export_metrics)
+        assert "str(Exception)" not in source, "Must use str(e), not str(Exception)"
+        assert "repr(Exception)" not in source, "Must use repr(e), not repr(Exception)"
+
+
+# ---------------------------------------------------------------------------
+# Gap fix: get_metrics_exporter reconfiguration
+# ---------------------------------------------------------------------------
+class TestFactoryReconfiguration:
+    """Verify get_metrics_exporter rebuilds singleton when type changes."""
+
+    def setup_method(self):
+        reset_metrics_exporter()
+
+    def teardown_method(self):
+        reset_metrics_exporter()
+
+    def test_switch_logger_to_jsonl(self, tmp_path):
+        a = get_metrics_exporter("logger")
+        assert isinstance(a, LoggerExporter)
+        b = get_metrics_exporter("jsonl", path=str(tmp_path / "m.jsonl"))
+        assert isinstance(b, JsonLinesExporter)
+        assert a is not b
+
+    def test_switch_jsonl_to_logger(self, tmp_path):
+        a = get_metrics_exporter("jsonl", path=str(tmp_path / "m.jsonl"))
+        assert isinstance(a, JsonLinesExporter)
+        b = get_metrics_exporter("logger")
+        assert isinstance(b, LoggerExporter)
+        assert a is not b
+
+    def test_same_type_returns_cached(self):
+        a = get_metrics_exporter("logger")
+        b = get_metrics_exporter("logger")
+        assert a is b
+
+    def test_same_jsonl_type_returns_cached(self, tmp_path):
+        path = str(tmp_path / "m.jsonl")
+        a = get_metrics_exporter("jsonl", path=path)
+        b = get_metrics_exporter("jsonl", path=path)
+        assert a is b

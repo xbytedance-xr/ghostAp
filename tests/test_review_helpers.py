@@ -510,3 +510,36 @@ class TestHandleReviewExceptionElapsedMs:
         )
         assert result.metrics["total_elapsed_ms"] == 0
         assert circuit.last_review_elapsed_ms == 0
+
+
+# ---------------------------------------------------------------------------
+# Gap fix: hard_floor config wiring
+# ---------------------------------------------------------------------------
+class TestHardFloorConfigWiring:
+    """Verify hard_floor config fields exist and have correct defaults."""
+
+    def test_config_spec_review_hard_floor_default(self):
+        from src.config import Settings
+        s = Settings()
+        assert s.spec_review_hard_floor == 15
+
+    def test_config_loop_review_hard_floor_default(self):
+        from src.config import Settings
+        s = Settings()
+        assert s.loop_review_hard_floor == 15
+
+    def test_hard_floor_passed_to_compute_adaptive_timeout(self):
+        """hard_floor parameter actually affects the result."""
+        # With hard_floor=20, result should never go below 20
+        for n in range(20):
+            result = compute_adaptive_timeout(
+                n, base_timeout=120, min_timeout=5, hard_floor=20,
+            )
+            assert result >= 20, f"n={n}: result={result} < hard_floor=20"
+
+    def test_hard_floor_10_allows_lower_than_default(self):
+        """Custom hard_floor=10 allows result to go below default 15."""
+        result = compute_adaptive_timeout(
+            10, base_timeout=120, min_timeout=5, hard_floor=10,
+        )
+        assert result == 10

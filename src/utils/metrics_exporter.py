@@ -84,10 +84,10 @@ class JsonLinesExporter:
             line = json.dumps(metrics, ensure_ascii=False, sort_keys=True)
             with open(self._path, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
-        except Exception:
+        except Exception as e:
             logger.debug(
                 "JsonLinesExporter write failed: %s",
-                str(Exception) or repr(Exception),
+                str(e) or repr(e),
             )
 
 
@@ -109,7 +109,11 @@ def get_metrics_exporter(exporter_type: str = "logger", **kwargs: object) -> Rev
     *exporter_type* to re-create (useful in tests).
     """
     global _exporter_instance
-    if _exporter_instance is not None:
+
+    # Check if the cached instance matches the requested type; rebuild if not.
+    _type_map = {"jsonl": JsonLinesExporter, "logger": LoggerExporter}
+    expected_cls = _type_map.get(exporter_type, LoggerExporter)
+    if _exporter_instance is not None and isinstance(_exporter_instance, expected_cls):
         return _exporter_instance
 
     if exporter_type == "jsonl":

@@ -259,8 +259,10 @@ def conduct_review(
         from ..utils.review_helpers import compute_adaptive_timeout
         base_timeout = int(getattr(settings, "spec_review_timeout", 120) or 120)
         min_timeout = int(getattr(settings, "spec_review_min_timeout", 30) or 30)
+        hard_floor = int(getattr(settings, "spec_review_hard_floor", 15) or 15)
         review_timeout = compute_adaptive_timeout(
             circuit.consecutive_timeouts, base_timeout=base_timeout, min_timeout=min_timeout,
+            hard_floor=hard_floor,
         )
         send_prompt_with_retry_fn(
             review_prompt,

@@ -212,6 +212,7 @@ class Settings(BaseSettings):
     loop_review_failure_cooldown_iterations: int = 3
     loop_review_failure_max_cooldown_iterations: int = 12
     loop_review_min_timeout: int = 30
+    loop_review_hard_floor: int = 15
 
     # Loop Watchdog
     loop_watchdog_timeout: float = 300.0
@@ -236,6 +237,7 @@ class Settings(BaseSettings):
     spec_review_failure_cooldown_cycles: int = 3
     spec_review_failure_max_cooldown_cycles: int = 12
     spec_review_min_timeout: int = 30
+    spec_review_hard_floor: int = 15
 
     # Review metrics exporter
     # - "logger" (default): output via logging.info (original behaviour)
