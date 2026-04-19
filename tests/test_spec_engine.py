@@ -3735,3 +3735,96 @@ class TestReviewCircuitStatePersistence:
         loaded = SpecEngine.load_state(fp)
         assert loaded is not None
         assert loaded.project_id == "p4"
+
+
+@patch("src.spec_engine.engine.create_engine_session")
+@patch("src.engine_base.get_settings")
+def test_resume_restores_circuit_state_from_disk(mock_settings, mock_create, tmp_path):
+    """resume() should restore _review_circuit from persisted state file."""
+    from src.spec_engine.review import ReviewCircuitState
+
+    s = MagicMock()
+    s.spec_max_cycles = 1
+    s.spec_max_cycles_limit = 5000
+    s.spec_convergence_window = 1
+    s.spec_execution_timeout = 300
+    s.spec_state_filename = ".spec_engine_state.json"
+    s.spec_review_failure_circuit_enabled = True
+    s.spec_review_failure_max_consecutive = 3
+    s.spec_review_failure_cooldown_cycles = 3
+    s.spec_review_failure_max_cooldown_cycles = 12
+    s.spec_review_enabled = True
+    s.spec_infinite_mode = False
+    s.spec_disable_convergence = False
+    s.spec_disable_early_stop = False
+    s.spec_min_cycles = 1
+    s.spec_max_retries = 1
+    s.spec_discovery_enabled = False
+    s.spec_allow_resume_from_disk = True
+    s.spec_artifacts_dirname = ".spec_engine"
+    s.spec_persist_phase_artifacts = False
+    s.spec_persist_every_phase = False
+    s.spec_history_log_filename = "history.jsonl"
+    s.spec_phase_output_persist_max_chars = 20000
+    s.spec_cycle_artifact_retention = 50
+    s.spec_generated_specs_retention = 1000
+    s.spec_state_cycles_tail = 50
+    s.spec_state_work_items_tail = 200
+    s.spec_state_metrics_tail = 200
+    s.spec_cycle_output_max_chars = 4000
+    s.spec_cycle_tasks_max = 50
+    s.spec_review_min_timeout = 30
+    s.spec_review_timeout = 120
+    s.ark_api_key = ""
+    s.ark_model = ""
+    s.ark_base_url = ""
+    mock_settings.return_value = s
+
+    # Make session creation fail fast so resume() exits quickly
+    mock_create.side_effect = RuntimeError("test-abort")
+
+    root = str(tmp_path)
+    engine = SpecEngine(chat_id="c1", root_path=root)
+
+    # Set up paused project
+    proj = SpecProject.create(root_path=root)
+    proj.requirement = "test"
+    proj.acceptance_criteria = ["test"]
+    proj.criteria_tracker.init_criteria(["test"])
+    proj.status = SpecProjectStatus.PAUSED
+    proj.started_at = time.time()
+    engine._project = proj
+
+    # Verify fresh circuit (all zeros)
+    assert engine._review_circuit.consecutive_timeouts == 0
+    assert engine._review_circuit.backoff_level == 0
+    assert engine._review_circuit.consecutive_skips == 0
+
+    # Persist state with non-zero circuit
+    circuit_data = ReviewCircuitState(
+        backoff_level=3,
+        consecutive_timeouts=5,
+        review_failure_consecutive=2,
+        review_circuit_open_until_cycle=8,
+        consecutive_skips=4,
+    )
+    state = {
+        "chat_id": "c1",
+        "root_path": root,
+        "project": proj.to_dict(),
+        "review_circuit": circuit_data.to_dict(),
+        "saved_at": 1.0,
+    }
+    state_path = os.path.join(root, ".spec_engine_state.json")
+    with open(state_path, "w") as f:
+        json.dump(state, f)
+
+    # resume() will restore circuit from disk then fail on session creation
+    engine.resume()
+
+    # Circuit should be restored from disk, not the fresh default
+    assert engine._review_circuit.backoff_level == 3
+    assert engine._review_circuit.consecutive_timeouts == 5
+    assert engine._review_circuit.review_failure_consecutive == 2
+    assert engine._review_circuit.review_circuit_open_until_cycle == 8
+    assert engine._review_circuit.consecutive_skips == 4

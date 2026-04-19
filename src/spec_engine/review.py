@@ -106,6 +106,7 @@ class ReviewCircuitState:
     review_circuit_open_until_cycle: int = 0
     backoff_level: int = 0
     consecutive_timeouts: int = 0
+    consecutive_skips: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -113,6 +114,7 @@ class ReviewCircuitState:
             "review_circuit_open_until_cycle": self.review_circuit_open_until_cycle,
             "backoff_level": self.backoff_level,
             "consecutive_timeouts": self.consecutive_timeouts,
+            "consecutive_skips": self.consecutive_skips,
         }
 
     @classmethod
@@ -122,6 +124,7 @@ class ReviewCircuitState:
             review_circuit_open_until_cycle=int(data.get("review_circuit_open_until_cycle") or 0),
             backoff_level=int(data.get("backoff_level") or 0),
             consecutive_timeouts=int(data.get("consecutive_timeouts") or 0),
+            consecutive_skips=int(data.get("consecutive_skips") or 0),
         )
 
 
@@ -147,6 +150,18 @@ def conduct_review(
         and int(circuit.review_circuit_open_until_cycle or 0)
         and int(cycle or 0) <= int(circuit.review_circuit_open_until_cycle or 0)
     ):
+        circuit.consecutive_skips += 1
+        skip_overrun_threshold = max(1, max_consecutive) * 2
+        is_skip_overrun = circuit.consecutive_skips >= skip_overrun_threshold
+        if is_skip_overrun:
+            logger.warning(
+                "[Spec] review_skip_overrun: consecutive_skips=%d >= threshold=%d cycle=%d open_until=%d, 跳过次数异常偏高",
+                circuit.consecutive_skips,
+                skip_overrun_threshold,
+                int(cycle or 0),
+                int(circuit.review_circuit_open_until_cycle or 0),
+            )
+
         diag_raw = {
             "phase": "review",
             "role": "multi_perspective",
@@ -172,12 +187,15 @@ def conduct_review(
             diag_raw.get("open_until_cycle"),
             diag_raw.get("consecutive_failures"),
         )
+        _base_msg = f"审查熔断：连续{int(circuit.review_failure_consecutive or 0)}次异常，跳过本轮审查"
+        if is_skip_overrun:
+            _base_msg += f"（⚠ 跳过次数异常偏高：已连续跳过{circuit.consecutive_skips}次，熔断器可能卡住，建议排查）"
         review_result = ReviewResult(
             reviews=[
                 PerspectiveReview(
                     perspective=p,
                     passed=False,
-                    suggestions=[f"审查熔断：连续{int(circuit.review_failure_consecutive or 0)}次异常，跳过本轮审查"],
+                    suggestions=[_base_msg],
                     summary="熔断",
                 )
                 for p in ReviewPerspective
@@ -234,6 +252,7 @@ def conduct_review(
         circuit.review_circuit_open_until_cycle = 0
         circuit.backoff_level = 0
         circuit.consecutive_timeouts = 0
+        circuit.consecutive_skips = 0
     except Exception as e:
         from ..utils.review_helpers import handle_review_exception
 

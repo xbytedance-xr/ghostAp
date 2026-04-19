@@ -844,7 +844,8 @@ FAIL
         if enabled and iteration <= circuit.review_circuit_open_until_iter:
             circuit.consecutive_skips += 1
             skip_overrun_threshold = max(1, max_consecutive) * 2
-            if circuit.consecutive_skips >= skip_overrun_threshold:
+            is_skip_overrun = circuit.consecutive_skips >= skip_overrun_threshold
+            if is_skip_overrun:
                 logger.warning(
                     "[Loop] review_skip_overrun: consecutive_skips=%d >= threshold=%d, iter=%d, "
                     "review circuit may be stuck",
@@ -857,12 +858,15 @@ FAIL
                 iteration,
                 circuit.review_circuit_open_until_iter,
             )
+            _base_msg = "审查熔断中，跳过本轮审查"
+            if is_skip_overrun:
+                _base_msg += f"（⚠ 跳过次数异常偏高：已连续跳过{circuit.consecutive_skips}次，熔断器可能卡住，建议排查）"
             fallback = ReviewResult(
                 reviews=[
                     PerspectiveReview(
                         perspective=p,
                         passed=False,
-                        suggestions=["审查熔断中，跳过本轮审查"],
+                        suggestions=[_base_msg],
                         summary="熔断跳过",
                     )
                     for p in ReviewPerspective
@@ -1041,6 +1045,15 @@ FAIL
             return self._project
         if not self._project.requirement:
             return self._project
+
+        # Restore review circuit state from persistence (survives process restart)
+        try:
+            state_path = os.path.join(self.root_path, self._state_filename)
+            if os.path.isfile(state_path):
+                _, circuit = self.load_state_with_circuit(state_path)
+                self._review_circuit = circuit
+        except Exception as e:
+            logger.debug("[Loop] resume circuit restore skipped: %s", str(e) or repr(e))
 
         callbacks = callbacks or LoopEngineCallbacks()
         self._run_state = EngineRunState.RUNNING

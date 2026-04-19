@@ -1190,6 +1190,15 @@ class SpecEngine(BaseEngine):
         if not self._project or self._project.status not in (SpecProjectStatus.PAUSED, SpecProjectStatus.CLARIFYING):
             return self._project
 
+        # Restore review circuit state from persistence (survives process restart)
+        try:
+            state_path = _get_state_path(self.root_path, self.settings)
+            if os.path.isfile(state_path):
+                _, circuit = self.load_state_with_circuit(state_path)
+                self._review_circuit = circuit
+        except Exception as e:
+            logger.debug("[Spec] resume circuit restore skipped: %s", str(e) or repr(e))
+
         callbacks = self._wrap_callbacks(callbacks or SpecEngineCallbacks())
         self._run_state = EngineRunState.RUNNING
         self._project.status = SpecProjectStatus.RUNNING

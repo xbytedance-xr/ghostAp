@@ -1487,7 +1487,7 @@ class TestLoopReviewSkipOverrun:
     """Verify warning is emitted when consecutive_skips >= max_consecutive * 2."""
 
     def test_skip_overrun_warning(self, tmp_path, caplog):
-        """When consecutive_skips reaches threshold, a warning is logged."""
+        """When consecutive_skips reaches threshold, a warning is logged and suggestions reflect overrun."""
         from src.loop_engine.engine import LoopReviewCircuitState
 
         engine = LoopEngine(chat_id="c1", root_path=str(tmp_path))
@@ -1508,9 +1508,12 @@ class TestLoopReviewSkipOverrun:
         assert decision == "review_circuit_open_skip"
         assert engine._review_circuit.consecutive_skips == 6
         assert any("review_skip_overrun" in r.message for r in caplog.records)
+        # Verify suggestions surface overrun info to user
+        for rev in result.reviews:
+            assert any("跳过次数异常偏高" in s for s in rev.suggestions)
 
     def test_no_warning_below_threshold(self, tmp_path, caplog):
-        """Below threshold, no overrun warning."""
+        """Below threshold, no overrun warning and suggestions have no overrun text."""
         from src.loop_engine.engine import LoopReviewCircuitState
 
         engine = LoopEngine(chat_id="c1", root_path=str(tmp_path))
@@ -1528,6 +1531,9 @@ class TestLoopReviewSkipOverrun:
         assert decision == "review_circuit_open_skip"
         assert engine._review_circuit.consecutive_skips == 1
         assert not any("review_skip_overrun" in r.message for r in caplog.records)
+        # Below overrun threshold: suggestions should NOT contain overrun warning
+        for rev in result.reviews:
+            assert not any("跳过次数异常偏高" in s for s in rev.suggestions)
 
     def test_skips_reset_on_success(self, tmp_path):
         """consecutive_skips resets to 0 when review succeeds."""
@@ -1569,3 +1575,74 @@ class TestLoopReviewSkipOverrun:
 
         assert decision is None  # success
         assert engine._review_circuit.consecutive_skips == 0
+
+
+@patch("src.loop_engine.engine.create_engine_session")
+@patch("src.engine_base.get_settings")
+def test_resume_restores_circuit_state_from_disk(mock_settings, mock_create, tmp_path):
+    """resume() should restore _review_circuit from persisted state file."""
+    import json
+    import os
+    import time
+
+    from src.loop_engine.engine import LoopReviewCircuitState
+
+    s = MagicMock()
+    s.loop_max_iterations = 5
+    s.loop_convergence_window = 3
+    s.loop_execution_timeout = 300
+    s.loop_max_context_tokens = 50000
+    s.loop_review_enabled = True
+    s.loop_review_extra_iterations = 2
+    s.loop_review_failure_circuit_enabled = True
+    s.loop_review_failure_max_consecutive = 3
+    s.loop_review_failure_cooldown_iterations = 3
+    s.loop_review_failure_max_cooldown_iterations = 12
+    s.loop_review_timeout = 120
+    s.loop_review_min_timeout = 30
+    mock_settings.return_value = s
+
+    # Make session creation fail fast
+    mock_create.side_effect = RuntimeError("test-abort")
+
+    root = str(tmp_path)
+    engine = LoopEngine(chat_id="c1", root_path=root)
+
+    # Set up paused project
+    proj = LoopProject.create(name="test", root_path=root)
+    proj.requirement = LoopRequirement(goal="test", acceptance_criteria=["c1"], raw_text="raw")
+    proj.status = LoopProjectStatus.PAUSED
+    engine._project = proj
+
+    # Verify fresh circuit
+    assert engine._review_circuit.consecutive_timeouts == 0
+    assert engine._review_circuit.consecutive_skips == 0
+
+    # Write state file with non-zero circuit
+    circuit_data = LoopReviewCircuitState(
+        backoff_level=2,
+        consecutive_timeouts=4,
+        review_failure_consecutive=3,
+        review_circuit_open_until_iter=7,
+        consecutive_skips=5,
+    )
+    state = {
+        "chat_id": "c1",
+        "root_path": root,
+        "project": proj.to_dict(),
+        "review_circuit": circuit_data.to_dict(),
+        "saved_at": 1.0,
+    }
+    state_path = os.path.join(root, ".loop_engine_state.json")
+    with open(state_path, "w") as f:
+        json.dump(state, f)
+
+    # resume() restores circuit then fails on session creation
+    engine.resume()
+
+    # Circuit restored from disk
+    assert engine._review_circuit.backoff_level == 2
+    assert engine._review_circuit.consecutive_timeouts == 4
+    assert engine._review_circuit.review_failure_consecutive == 3
+    assert engine._review_circuit.review_circuit_open_until_iter == 7
+    assert engine._review_circuit.consecutive_skips == 5

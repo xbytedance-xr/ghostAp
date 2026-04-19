@@ -711,3 +711,110 @@ class TestSpecAdaptiveTimeout:
             cycle=1,
         )
         assert captured == [30]
+
+
+# ---------------------------------------------------------------------------
+# T-Skip: Spec ReviewCircuitState.consecutive_skips serialization & overrun
+# ---------------------------------------------------------------------------
+
+
+class TestConsecutiveSkipsSerialization:
+    """consecutive_skips survives to_dict → from_dict round-trip."""
+
+    def test_round_trip_default(self):
+        circuit = ReviewCircuitState()
+        assert circuit.consecutive_skips == 0
+        d = circuit.to_dict()
+        assert "consecutive_skips" in d
+        restored = ReviewCircuitState.from_dict(d)
+        assert restored.consecutive_skips == 0
+
+    def test_round_trip_nonzero(self):
+        circuit = ReviewCircuitState(consecutive_skips=7)
+        d = circuit.to_dict()
+        assert d["consecutive_skips"] == 7
+        restored = ReviewCircuitState.from_dict(d)
+        assert restored.consecutive_skips == 7
+
+    def test_from_dict_missing_key_defaults_zero(self):
+        """Backward compat: old persisted state without consecutive_skips."""
+        restored = ReviewCircuitState.from_dict({"review_failure_consecutive": 2})
+        assert restored.consecutive_skips == 0
+
+
+class TestSpecSkipOverrunProtection:
+    """conduct_review increments consecutive_skips on circuit-open skip
+    and logs a warning when the overrun threshold is reached."""
+
+    def test_consecutive_skips_increments_on_skip(self):
+        settings = _make_settings(spec_review_failure_max_consecutive=3)
+        project = _make_project()
+        circuit = ReviewCircuitState(
+            review_failure_consecutive=3,
+            review_circuit_open_until_cycle=10,
+        )
+        assert circuit.consecutive_skips == 0
+
+        result = conduct_review(
+            session=MagicMock(),
+            settings=settings,
+            project=project,
+            send_prompt_with_retry_fn=MagicMock(),
+            build_review_exception_diagnostics_fn=MagicMock(),
+            circuit=circuit,
+            cycle=5,
+        )
+        assert circuit.consecutive_skips == 1
+        # Below overrun threshold: suggestions should NOT contain overrun warning
+        for rev in result.reviews:
+            assert not any("跳过次数异常偏高" in s for s in rev.suggestions)
+
+    def test_overrun_warning_logged(self):
+        """When consecutive_skips reaches threshold, a warning is logged and suggestions reflect overrun."""
+        settings = _make_settings(spec_review_failure_max_consecutive=3)
+        project = _make_project()
+        # threshold = max(1,3)*2 = 6; set skips to 5 so next skip hits 6
+        circuit = ReviewCircuitState(
+            review_failure_consecutive=3,
+            review_circuit_open_until_cycle=100,
+            consecutive_skips=5,
+        )
+
+        import logging
+        with patch.object(logging.getLogger("src.spec_engine.review"), "warning") as mock_warn:
+            result = conduct_review(
+                session=MagicMock(),
+                settings=settings,
+                project=project,
+                send_prompt_with_retry_fn=MagicMock(),
+                build_review_exception_diagnostics_fn=MagicMock(),
+                circuit=circuit,
+                cycle=50,
+            )
+        assert circuit.consecutive_skips == 6
+        overrun_calls = [c for c in mock_warn.call_args_list if "review_skip_overrun" in str(c)]
+        assert len(overrun_calls) >= 1
+        # Verify suggestions surface overrun info to user
+        for rev in result.reviews:
+            assert any("跳过次数异常偏高" in s for s in rev.suggestions)
+
+    def test_consecutive_skips_reset_on_success(self):
+        """Successful review resets consecutive_skips to 0."""
+        settings = _make_settings(spec_review_failure_max_consecutive=3)
+        project = _make_project()
+        circuit = ReviewCircuitState(consecutive_skips=5)
+
+        def fake_send(*args, **kwargs):
+            # Return valid review text so parse succeeds
+            pass
+
+        conduct_review(
+            session=MagicMock(),
+            settings=settings,
+            project=project,
+            send_prompt_with_retry_fn=fake_send,
+            build_review_exception_diagnostics_fn=MagicMock(),
+            circuit=circuit,
+            cycle=1,
+        )
+        assert circuit.consecutive_skips == 0
