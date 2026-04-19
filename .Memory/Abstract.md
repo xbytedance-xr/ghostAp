@@ -3,6 +3,7 @@
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 
 ## 2026-04-20
+- **最终验证闭环：TimeoutError (empty message) 10 层防御体系完整性确认** — 全量 2322 tests passed + grep 4 项零残留 + 代码审查 6 项确认（_run_async/send_prompt/LoopReporter/review_diagnostics/三引擎 TimeoutError 分支/CircuitState 持久化）+ Backlog 三项 Done；10 层防御体系完整闭合，无代码改动需求 → [详细记录](2026-04-20.md)
 - **引入维护性 Backlog 机制** — 新建 `.Memory/Backlog.md` 收集 Low/Medium severity 审计缺口；AGENTS.md Workflow Rules 新增第 5 条分级处理规则；Abstract.md 添加 Backlog 入口；避免低优先级修复打断主线开发节奏 → [详细记录](2026-04-20.md)
 - **三项审计缺口修复：metrics_exporter bug + hard_floor 可配置化 + 单例重配置** — (A) JsonLinesExporter except 子句 `str(Exception)` → `str(e)` 修复日志记录类名 bug；(B) config.py 新增 `spec_review_hard_floor`/`loop_review_hard_floor`，Spec/Loop review 传递到 `compute_adaptive_timeout`；(C) `get_metrics_exporter` 单例支持类型变更时自动重建；+10 新测试，2322 tests passed；零回归 → [详细记录](2026-04-20.md)
 - **_run_async 空消息包装 + LoopReporter (empty message) 过滤** — sync_adapter._run_async 补空消息 TimeoutError 包装（与 send_prompt 对齐）；LoopReporter.format_iteration_done 过滤 (empty message)/空/None 错误文本替换为友好提示；+9 新测试，2312 tests passed；零回归 → [详细记录](2026-04-20.md)
