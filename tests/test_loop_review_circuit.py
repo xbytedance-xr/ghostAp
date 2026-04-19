@@ -32,6 +32,8 @@ def engine():
         s.loop_review_failure_circuit_enabled = True
         s.loop_review_failure_max_consecutive = 3
         s.loop_review_failure_cooldown_iterations = 3
+        s.loop_review_failure_max_cooldown_iterations = 12
+        s.loop_review_min_timeout = 30
         mock_settings.return_value = s
         eng = LoopEngine(chat_id="test", root_path="/tmp/test")
         # Provide a mock session so review actually attempts the prompt
@@ -236,3 +238,148 @@ class TestLoopReviewDiagnostics:
         assert diag.get("review_circuit_open") is True
         assert diag.get("open_until_iter") == 6  # 3 + 3
         assert diag.get("consecutive_failures") == 3
+
+
+# ===========================================================================
+# Loop Engine: Exponential backoff for circuit breaker cooldown
+# ===========================================================================
+
+
+class TestLoopCircuitExponentialBackoff:
+    """Verify exponential backoff: cooldown grows 3→6→12 on repeated triggers."""
+
+    def test_first_trigger_cooldown_is_base(self, engine, callbacks):
+        """First circuit trigger: cooldown = base (3)."""
+        engine._session.send_prompt_with_retry.side_effect = TimeoutError("t")
+        for i in range(1, 4):
+            engine._conduct_review(i, callbacks)
+
+        assert engine._review_circuit.review_circuit_open_until_iter == 6  # 3 + 3
+        assert engine._review_circuit.backoff_level == 1
+
+    def test_second_trigger_cooldown_doubles(self, engine, callbacks):
+        """Second circuit trigger: cooldown = 6."""
+        engine._session.send_prompt_with_retry.side_effect = TimeoutError("t")
+        # First trigger
+        for i in range(1, 4):
+            engine._conduct_review(i, callbacks)
+        assert engine._review_circuit.backoff_level == 1
+
+        # Reset consecutive, keep backoff
+        engine._review_circuit.review_failure_consecutive = 0
+        base = engine._review_circuit.review_circuit_open_until_iter + 1
+        for i in range(base, base + 3):
+            engine._conduct_review(i, callbacks)
+
+        # cooldown = 3 * 2^1 = 6
+        assert engine._review_circuit.review_circuit_open_until_iter == (base + 2) + 6
+        assert engine._review_circuit.backoff_level == 2
+
+    def test_third_trigger_cooldown_capped(self, engine, callbacks):
+        """Third trigger: cooldown capped at max (12)."""
+        engine._session.send_prompt_with_retry.side_effect = TimeoutError("t")
+
+        # 3 triggers with proper gap between them
+        for trigger in range(3):
+            engine._review_circuit.review_failure_consecutive = 0
+            base = engine._review_circuit.review_circuit_open_until_iter + 1
+            for i in range(base, base + 3):
+                engine._conduct_review(i, callbacks)
+
+        assert engine._review_circuit.backoff_level == 3
+        # Fourth trigger still capped
+        engine._review_circuit.review_failure_consecutive = 0
+        base = engine._review_circuit.review_circuit_open_until_iter + 1
+        for i in range(base, base + 3):
+            engine._conduct_review(i, callbacks)
+        assert engine._review_circuit.review_circuit_open_until_iter == (base + 2) + 12
+
+    def test_success_resets_backoff_level(self, engine, callbacks):
+        """After success, backoff_level resets to 0."""
+        engine._session.send_prompt_with_retry.side_effect = TimeoutError("t")
+        for i in range(1, 4):
+            engine._conduct_review(i, callbacks)
+        assert engine._review_circuit.backoff_level == 1
+
+        # Success
+        engine._session.send_prompt_with_retry.side_effect = None
+        engine._session.send_prompt_with_retry.return_value = MagicMock()
+        base = engine._review_circuit.review_circuit_open_until_iter + 1
+        engine._conduct_review(base, callbacks)
+
+        assert engine._review_circuit.backoff_level == 0
+        assert engine._review_circuit.consecutive_timeouts == 0
+
+
+# ===========================================================================
+# Loop Engine: Adaptive (progressive) review timeout
+# ===========================================================================
+
+
+class TestLoopAdaptiveTimeout:
+    """Verify review timeout decreases on consecutive timeouts."""
+
+    def test_timeout_decreases_on_consecutive_timeouts(self, engine, callbacks):
+        """Consecutive TimeoutErrors trigger progressively shorter timeouts."""
+        engine.settings.loop_review_timeout = 120
+        engine.settings.loop_review_min_timeout = 30
+        engine.settings.loop_review_failure_max_consecutive = 100  # prevent circuit interference
+
+        captured_timeouts = []
+        original_send = engine._session.send_prompt_with_retry
+
+        def capturing_send(*args, **kwargs):
+            captured_timeouts.append(kwargs.get("timeout"))
+            raise TimeoutError("t")
+
+        engine._session.send_prompt_with_retry = capturing_send
+
+        for i in range(1, 4):
+            engine._conduct_review(i, callbacks)
+
+        assert captured_timeouts == [120, 60, 30]
+
+    def test_timeout_resets_after_success(self, engine, callbacks):
+        """After success, timeout returns to base."""
+        engine.settings.loop_review_timeout = 120
+        engine.settings.loop_review_min_timeout = 30
+        engine.settings.loop_review_failure_max_consecutive = 100
+
+        # 2 timeouts
+        engine._session.send_prompt_with_retry.side_effect = TimeoutError("t")
+        for i in range(1, 3):
+            engine._conduct_review(i, callbacks)
+        assert engine._review_circuit.consecutive_timeouts == 2
+
+        # 1 success
+        engine._session.send_prompt_with_retry.side_effect = None
+        engine._session.send_prompt_with_retry.return_value = MagicMock()
+        engine._conduct_review(3, callbacks)
+        assert engine._review_circuit.consecutive_timeouts == 0
+
+        # Next timeout should use base (120)
+        captured = []
+
+        def capturing_send(*args, **kwargs):
+            captured.append(kwargs.get("timeout"))
+            raise TimeoutError("t")
+
+        engine._session.send_prompt_with_retry = capturing_send
+        engine._conduct_review(4, callbacks)
+        assert captured == [120]
+
+    def test_timeout_respects_min(self, engine, callbacks):
+        """Timeout never goes below min_timeout."""
+        engine.settings.loop_review_timeout = 120
+        engine.settings.loop_review_min_timeout = 30
+        engine._review_circuit.consecutive_timeouts = 10
+
+        captured = []
+
+        def capturing_send(*args, **kwargs):
+            captured.append(kwargs.get("timeout"))
+            raise TimeoutError("t")
+
+        engine._session.send_prompt_with_retry = capturing_send
+        engine._conduct_review(1, callbacks)
+        assert captured == [30]

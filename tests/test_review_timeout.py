@@ -45,6 +45,8 @@ def _make_settings(**overrides):
         "spec_review_failure_circuit_enabled": True,
         "spec_review_failure_max_consecutive": 3,
         "spec_review_failure_cooldown_cycles": 3,
+        "spec_review_failure_max_cooldown_cycles": 12,
+        "spec_review_min_timeout": 30,
         "spec_review_enabled": True,
         "diagnostics_redact_enabled": False,
         "diagnostics_snippet_limit": 240,
@@ -436,3 +438,276 @@ class TestConvergenceSkipsReviewFailed:
         )
 
         assert result is True
+
+
+# ===========================================================================
+# T12: Exponential backoff for circuit breaker cooldown
+# ===========================================================================
+
+
+class TestSpecCircuitExponentialBackoff:
+    """Verify exponential backoff: cooldown grows 3→6→12 on repeated triggers."""
+
+    def _run_review_cycle(self, settings, project, circuit, cycle):
+        def fake_send_prompt(*args, **kwargs):
+            raise TimeoutError()
+
+        return conduct_review(
+            session=MagicMock(),
+            settings=settings,
+            project=project,
+            send_prompt_with_retry_fn=fake_send_prompt,
+            build_review_exception_diagnostics_fn=lambda e, **kw: build_review_exception_diagnostics(
+                e, cycle=kw.get("cycle", 1), get_settings_fn=lambda: settings,
+            ),
+            circuit=circuit,
+            cycle=cycle,
+        )
+
+    def test_first_trigger_cooldown_is_base(self):
+        """First circuit trigger: cooldown = base (3)."""
+        settings = _make_settings(
+            spec_review_failure_max_consecutive=3,
+            spec_review_failure_cooldown_cycles=3,
+            spec_review_failure_max_cooldown_cycles=12,
+        )
+        project = _make_project()
+        circuit = ReviewCircuitState()
+
+        for cycle in range(1, 4):
+            self._run_review_cycle(settings, project, circuit, cycle)
+
+        # First trigger: cooldown=3, open_until = 3 + 3 = 6
+        assert circuit.review_circuit_open_until_cycle == 6
+        assert circuit.backoff_level == 1
+
+    def test_second_trigger_cooldown_doubles(self):
+        """Second circuit trigger: cooldown = 6."""
+        settings = _make_settings(
+            spec_review_failure_max_consecutive=3,
+            spec_review_failure_cooldown_cycles=3,
+            spec_review_failure_max_cooldown_cycles=12,
+        )
+        project = _make_project()
+        circuit = ReviewCircuitState()
+
+        # First trigger (cycles 1-3)
+        for cycle in range(1, 4):
+            self._run_review_cycle(settings, project, circuit, cycle)
+        first_open_until = circuit.review_circuit_open_until_cycle
+
+        # Reset consecutive but keep backoff_level (simulate: circuit closes, fails again)
+        circuit.review_failure_consecutive = 0
+
+        # Second trigger (cycles after cooldown)
+        base = first_open_until + 1
+        for cycle in range(base, base + 3):
+            self._run_review_cycle(settings, project, circuit, cycle)
+
+        # cooldown = 3 * 2^1 = 6
+        assert circuit.review_circuit_open_until_cycle == (base + 2) + 6
+        assert circuit.backoff_level == 2
+
+    def test_third_trigger_cooldown_capped(self):
+        """Third circuit trigger: cooldown = min(12, max_cooldown=12)."""
+        settings = _make_settings(
+            spec_review_failure_max_consecutive=3,
+            spec_review_failure_cooldown_cycles=3,
+            spec_review_failure_max_cooldown_cycles=12,
+        )
+        project = _make_project()
+        circuit = ReviewCircuitState()
+
+        # First trigger (cycles 1-3) → cooldown=3, open_until=6, backoff=1
+        for cycle in range(1, 4):
+            self._run_review_cycle(settings, project, circuit, cycle)
+        assert circuit.backoff_level == 1
+
+        # Second trigger: start after cooldown expires
+        circuit.review_failure_consecutive = 0
+        base2 = circuit.review_circuit_open_until_cycle + 1
+        for cycle in range(base2, base2 + 3):
+            self._run_review_cycle(settings, project, circuit, cycle)
+        assert circuit.backoff_level == 2
+
+        # Third trigger: start after cooldown expires
+        circuit.review_failure_consecutive = 0
+        base3 = circuit.review_circuit_open_until_cycle + 1
+        for cycle in range(base3, base3 + 3):
+            self._run_review_cycle(settings, project, circuit, cycle)
+        assert circuit.backoff_level == 3
+        # cooldown = min(3 * 2^2, 12) = 12
+        assert circuit.review_circuit_open_until_cycle == (base3 + 2) + 12
+
+        # Fourth trigger: still capped at 12
+        circuit.review_failure_consecutive = 0
+        base4 = circuit.review_circuit_open_until_cycle + 1
+        for cycle in range(base4, base4 + 3):
+            self._run_review_cycle(settings, project, circuit, cycle)
+        assert circuit.review_circuit_open_until_cycle == (base4 + 2) + 12
+
+    def test_success_resets_backoff_level(self):
+        """After a successful review, backoff_level resets to 0."""
+        settings = _make_settings(
+            spec_review_failure_max_consecutive=3,
+            spec_review_failure_cooldown_cycles=3,
+            spec_review_failure_max_cooldown_cycles=12,
+        )
+        project = _make_project()
+        circuit = ReviewCircuitState()
+
+        # Trigger once
+        for cycle in range(1, 4):
+            self._run_review_cycle(settings, project, circuit, cycle)
+        assert circuit.backoff_level == 1
+
+        # Simulate success
+        def success_send(*args, **kwargs):
+            pass  # no exception = success
+
+        conduct_review(
+            session=MagicMock(),
+            settings=settings,
+            project=project,
+            send_prompt_with_retry_fn=success_send,
+            build_review_exception_diagnostics_fn=lambda e, **kw: {},
+            circuit=circuit,
+            cycle=10,
+        )
+
+        assert circuit.backoff_level == 0
+        assert circuit.consecutive_timeouts == 0
+
+
+# ===========================================================================
+# T13: Adaptive (progressive) review timeout
+# ===========================================================================
+
+
+class TestSpecAdaptiveTimeout:
+    """Verify review timeout decreases on consecutive timeouts."""
+
+    def test_timeout_decreases_on_consecutive_timeouts(self):
+        """Consecutive TimeoutErrors should trigger progressively shorter timeouts."""
+        settings = _make_settings(
+            spec_review_timeout=120,
+            spec_review_min_timeout=30,
+            spec_review_failure_max_consecutive=100,  # high so circuit doesn't interfere
+        )
+        project = _make_project()
+        circuit = ReviewCircuitState()
+
+        captured_timeouts = []
+
+        def capturing_send(*args, **kwargs):
+            captured_timeouts.append(kwargs.get("timeout"))
+            raise TimeoutError()
+
+        for cycle in range(1, 4):
+            conduct_review(
+                session=MagicMock(),
+                settings=settings,
+                project=project,
+                send_prompt_with_retry_fn=capturing_send,
+                build_review_exception_diagnostics_fn=lambda e, **kw: build_review_exception_diagnostics(
+                    e, cycle=kw.get("cycle", 1), get_settings_fn=lambda: settings,
+                ),
+                circuit=circuit,
+                cycle=cycle,
+            )
+
+        # Timeout sequence: 120 (n=0), 60 (n=1), 30 (n=2)
+        assert captured_timeouts == [120, 60, 30]
+
+    def test_timeout_resets_after_success(self):
+        """After success, timeout should go back to base."""
+        settings = _make_settings(
+            spec_review_timeout=120,
+            spec_review_min_timeout=30,
+            spec_review_failure_max_consecutive=100,
+        )
+        project = _make_project()
+        circuit = ReviewCircuitState()
+
+        # 2 timeouts
+        def timeout_send(*args, **kwargs):
+            raise TimeoutError()
+
+        for cycle in range(1, 3):
+            conduct_review(
+                session=MagicMock(),
+                settings=settings,
+                project=project,
+                send_prompt_with_retry_fn=timeout_send,
+                build_review_exception_diagnostics_fn=lambda e, **kw: build_review_exception_diagnostics(
+                    e, cycle=kw.get("cycle", 1), get_settings_fn=lambda: settings,
+                ),
+                circuit=circuit,
+                cycle=cycle,
+            )
+        assert circuit.consecutive_timeouts == 2
+
+        # 1 success
+        def success_send(*args, **kwargs):
+            pass
+
+        conduct_review(
+            session=MagicMock(),
+            settings=settings,
+            project=project,
+            send_prompt_with_retry_fn=success_send,
+            build_review_exception_diagnostics_fn=lambda e, **kw: {},
+            circuit=circuit,
+            cycle=10,
+        )
+        assert circuit.consecutive_timeouts == 0
+
+        # Next timeout should use base again
+        captured = []
+
+        def capture_send(*args, **kwargs):
+            captured.append(kwargs.get("timeout"))
+            raise TimeoutError()
+
+        conduct_review(
+            session=MagicMock(),
+            settings=settings,
+            project=project,
+            send_prompt_with_retry_fn=capture_send,
+            build_review_exception_diagnostics_fn=lambda e, **kw: build_review_exception_diagnostics(
+                e, cycle=kw.get("cycle", 1), get_settings_fn=lambda: settings,
+            ),
+            circuit=circuit,
+            cycle=11,
+        )
+        assert captured == [120]
+
+    def test_timeout_respects_min(self):
+        """Timeout never goes below min_timeout."""
+        settings = _make_settings(
+            spec_review_timeout=120,
+            spec_review_min_timeout=30,
+            spec_review_failure_max_consecutive=100,
+        )
+        project = _make_project()
+        circuit = ReviewCircuitState()
+        circuit.consecutive_timeouts = 10  # very high
+
+        captured = []
+
+        def capture_send(*args, **kwargs):
+            captured.append(kwargs.get("timeout"))
+            raise TimeoutError()
+
+        conduct_review(
+            session=MagicMock(),
+            settings=settings,
+            project=project,
+            send_prompt_with_retry_fn=capture_send,
+            build_review_exception_diagnostics_fn=lambda e, **kw: build_review_exception_diagnostics(
+                e, cycle=kw.get("cycle", 1), get_settings_fn=lambda: settings,
+            ),
+            circuit=circuit,
+            cycle=1,
+        )
+        assert captured == [30]

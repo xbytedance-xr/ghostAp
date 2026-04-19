@@ -55,6 +55,8 @@ class LoopReviewCircuitState:
     review_failure_consecutive: int = 0
     review_circuit_open_until_iter: int = 0
     last_review_failure_diag: Optional[dict] = None
+    backoff_level: int = 0
+    consecutive_timeouts: int = 0
 
 
 @dataclass
@@ -823,7 +825,12 @@ FAIL
         circuit.last_review_failure_diag = None
 
         try:
-            review_timeout = getattr(settings, "loop_review_timeout", 120)
+            from ..utils.review_helpers import compute_adaptive_timeout
+            base_timeout = int(getattr(settings, "loop_review_timeout", 120) or 120)
+            min_timeout = int(getattr(settings, "loop_review_min_timeout", 30) or 30)
+            review_timeout = compute_adaptive_timeout(
+                circuit.consecutive_timeouts, base_timeout=base_timeout, min_timeout=min_timeout,
+            )
 
             def _before_review_retry(attempt: int, error: Exception):
                 review_text.clear()
@@ -843,6 +850,8 @@ FAIL
             # Success — reset circuit breaker
             circuit.review_failure_consecutive = 0
             circuit.review_circuit_open_until_iter = 0
+            circuit.backoff_level = 0
+            circuit.consecutive_timeouts = 0
 
         except Exception as e:
             from ..utils.errors import get_error_detail
@@ -851,6 +860,7 @@ FAIL
                 format_review_exception_log_line,
                 normalize_review_diagnostics,
             )
+            from ..utils.review_helpers import build_review_error_suggestion, compute_exponential_cooldown
 
             detail = get_error_detail(e)
 
@@ -865,20 +875,29 @@ FAIL
             diag = normalize_review_diagnostics(diag_raw)
             circuit.last_review_failure_diag = dict(diag)
 
-            if isinstance(e, TimeoutError) or "timeout" in detail.lower():
+            # Track consecutive timeouts for adaptive timeout
+            _fail_reason = str(diag.get("fail_reason") or "").strip()
+            if _fail_reason == "timeout" or isinstance(e, TimeoutError) or "timeout" in detail.lower():
+                circuit.consecutive_timeouts = int(circuit.consecutive_timeouts or 0) + 1
                 logger.warning("[METRIC] review_timeout")
-                err_msg = "多视角审查请求超时，请检查网络"
             else:
-                _detail = detail.strip()
-                if not _detail or "(empty message)" in _detail:
-                    err_msg = "审查执行异常，将在下一轮重试"
-                else:
-                    err_msg = f"审查执行异常: {_detail}"
+                circuit.consecutive_timeouts = 0
+
+            err_msg = build_review_error_suggestion(
+                fail_reason=_fail_reason,
+                error_text=str(diag.get("error_text") or ""),
+                err_repr=str(diag.get("err_repr") or ""),
+            )
 
             # Update circuit breaker counters
             circuit.review_failure_consecutive += 1
             if enabled and circuit.review_failure_consecutive >= max_consecutive and cooldown > 0:
-                circuit.review_circuit_open_until_iter = iteration + cooldown
+                max_cooldown = int(getattr(settings, "loop_review_failure_max_cooldown_iterations", 12) or 12)
+                actual_cooldown = compute_exponential_cooldown(
+                    circuit.backoff_level, base_cooldown=cooldown, max_cooldown=max_cooldown,
+                )
+                circuit.review_circuit_open_until_iter = iteration + actual_cooldown
+                circuit.backoff_level = int(circuit.backoff_level or 0) + 1
                 review_decision = "review_failed_open_circuit"
                 try:
                     circuit.last_review_failure_diag["decision"] = "review_failed_open_circuit"

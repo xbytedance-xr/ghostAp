@@ -210,6 +210,8 @@ class Settings(BaseSettings):
     loop_review_failure_circuit_enabled: bool = True
     loop_review_failure_max_consecutive: int = 3
     loop_review_failure_cooldown_iterations: int = 3
+    loop_review_failure_max_cooldown_iterations: int = 12
+    loop_review_min_timeout: int = 30
 
     # Loop Watchdog
     loop_watchdog_timeout: float = 300.0
@@ -232,6 +234,8 @@ class Settings(BaseSettings):
     spec_review_failure_circuit_enabled: bool = True
     spec_review_failure_max_consecutive: int = 3
     spec_review_failure_cooldown_cycles: int = 3
+    spec_review_failure_max_cooldown_cycles: int = 12
+    spec_review_min_timeout: int = 30
 
     # Spec long-range persistence / monitoring
     spec_state_filename: str = ".spec_engine_state.json"

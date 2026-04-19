@@ -19,6 +19,11 @@ from .text import (
 )
 from .async_helpers import safe_wait_for
 from .engine_identity import EngineIdentity, resolve_engine_identity
+from .review_helpers import (
+    build_review_error_suggestion,
+    compute_adaptive_timeout,
+    compute_exponential_cooldown,
+)
 
 __all__ = [
     "append_duration_to_title",
@@ -39,4 +44,7 @@ __all__ = [
     "EngineIdentity",
     "resolve_engine_identity",
     "safe_wait_for",
+    "build_review_error_suggestion",
+    "compute_adaptive_timeout",
+    "compute_exponential_cooldown",
 ]

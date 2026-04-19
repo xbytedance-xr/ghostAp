@@ -107,6 +107,8 @@ class ReviewCircuitState:
     last_review_failure_diag: Optional[dict] = None
     review_failure_consecutive: int = 0
     review_circuit_open_until_cycle: int = 0
+    backoff_level: int = 0
+    consecutive_timeouts: int = 0
 
 
 def conduct_review(
@@ -191,7 +193,12 @@ def conduct_review(
     circuit.last_review_failure_diag = None
 
     try:
-        review_timeout = getattr(settings, "spec_review_timeout", 120)
+        from ..utils.review_helpers import compute_adaptive_timeout
+        base_timeout = int(getattr(settings, "spec_review_timeout", 120) or 120)
+        min_timeout = int(getattr(settings, "spec_review_min_timeout", 30) or 30)
+        review_timeout = compute_adaptive_timeout(
+            circuit.consecutive_timeouts, base_timeout=base_timeout, min_timeout=min_timeout,
+        )
         send_prompt_with_retry_fn(
             review_prompt,
             on_event=on_review_event,
@@ -210,20 +217,36 @@ def conduct_review(
         )
         circuit.review_failure_consecutive = 0
         circuit.review_circuit_open_until_cycle = 0
+        circuit.backoff_level = 0
+        circuit.consecutive_timeouts = 0
     except Exception as e:
+        from ..utils.review_helpers import build_review_error_suggestion, compute_exponential_cooldown
+
         diag_raw = build_review_exception_diagnostics_fn(e, cycle=cycle)
         diag = normalize_review_diagnostics(diag_raw)
         circuit.last_review_failure_diag = dict(diag)
+
+        # Track consecutive timeouts for adaptive timeout
+        _fail_reason = str(diag.get("fail_reason") or "").strip()
+        if _fail_reason == "timeout":
+            circuit.consecutive_timeouts = int(circuit.consecutive_timeouts or 0) + 1
+        else:
+            circuit.consecutive_timeouts = 0
 
         try:
             circuit.review_failure_consecutive = int(circuit.review_failure_consecutive or 0) + 1
         except Exception:
             circuit.review_failure_consecutive = 1
         if enabled and circuit.review_failure_consecutive >= max_consecutive and cooldown_cycles > 0:
+            max_cooldown = int(getattr(settings, "spec_review_failure_max_cooldown_cycles", 12) or 12)
+            actual_cooldown = compute_exponential_cooldown(
+                circuit.backoff_level, base_cooldown=cooldown_cycles, max_cooldown=max_cooldown,
+            )
             try:
-                circuit.review_circuit_open_until_cycle = int(cycle or 0) + int(cooldown_cycles)
+                circuit.review_circuit_open_until_cycle = int(cycle or 0) + actual_cooldown
             except Exception:
                 circuit.review_circuit_open_until_cycle = int(cycle or 0)
+            circuit.backoff_level = int(circuit.backoff_level or 0) + 1
             try:
                 circuit.last_review_failure_diag["review_circuit_open"] = True
                 circuit.last_review_failure_diag["open_until_cycle"] = int(circuit.review_circuit_open_until_cycle or 0)
@@ -254,15 +277,11 @@ def conduct_review(
                 error_text,
                 type(log_e).__name__,
             )
-        _fail_reason = str(diag.get("fail_reason") or "").strip()
-        if _fail_reason == "timeout":
-            _suggestion_text = "审查超时，跳过本轮审查继续执行"
-        else:
-            _raw_error = str(diag.get('error_text') or '').strip() or str(diag.get('err_repr') or '').strip()
-            if not _raw_error or "(empty message)" in _raw_error:
-                _suggestion_text = "审查执行异常，将在下一轮重试"
-            else:
-                _suggestion_text = f"审查执行异常: {_raw_error}"
+        _suggestion_text = build_review_error_suggestion(
+            fail_reason=_fail_reason,
+            error_text=str(diag.get("error_text") or ""),
+            err_repr=str(diag.get("err_repr") or ""),
+        )
         review_result = ReviewResult(
             reviews=[
                 PerspectiveReview(
