@@ -1,6 +1,7 @@
 # GhostAP 项目记忆索引
 
 ## 2026-04-19
+- **增量闭合 str(exc) 空值守卫：5 处缺口修补** — `build_error_card` 改用 `get_error_detail`、`send_error_card` fallback 空值兜底、`scheduler` `state.error` 用 `repr(e)` 兜底、`fmt_exception` 非超时路径用 `repr(exc)` 兜底、`worktree dispatcher` 统一到 `get_error_detail()`；+15 新测试，1981 tests passed；`359fb82` → [详细记录](2026-04-19.md)
 - **闭合「审查执行异常: TimeoutError (empty message)」残余缺口** — engine_base.py `_safe_lifecycle_action` 用户消息用 `get_error_detail` 替代裸 `str(e)` 消除空尾；loop_engine/spec_engine review 非 timeout 异常分支 `(empty message)` 替换为中文友好文案；同步更新 test_convergence/test_log_noise 测试 fixture；1966 tests passed；`3b237e5` → [详细记录](2026-04-19.md)
 - **三引擎 execute/resume 顶层 TimeoutError 分支加固** — Deep/Loop/Spec 三引擎的 execute/resume 顶层 except Exception 前插入 except TimeoutError 分支，超时日志从 ERROR 降为 WARNING、文案区分"超时"/"异常"；Deep Engine 额外加固 _drain_pending_context；+7 新测试，1966 tests passed；`3b237e5` → [详细记录](2026-04-19.md)
 - **Loop Engine 结构化审查诊断：与 Spec Engine 对齐** — 提取 `build_review_exception_diagnostics` / `format_review_exception_log_line` 到 `src/utils/review_diagnostics.py` 可复用模块；Loop Engine `_conduct_review` 引入结构化 diag dict、`LoopReviewCircuitState.last_review_failure_diag` 存储、结构化日志；Spec Engine 改为 re-export 零风险；+6 新测试，1959 tests passed；`41b5970` → [详细记录](2026-04-19.md)

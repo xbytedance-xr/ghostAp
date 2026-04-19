@@ -654,9 +654,9 @@ class TaskScheduler:
                         )
                     if state:
                         state.status = TaskStatus.FAILED
-                        state.error = str(e)
+                        state.error = str(e) or repr(e)
                         state.ended_at = time.time()
-                        self._emit(task.run_id, TaskStatus.FAILED, error=str(e))
+                        self._emit(task.run_id, TaskStatus.FAILED, error=state.error)
                     self._cv.notify_all()
                     continue
                 if state:
@@ -767,9 +767,9 @@ class TaskScheduler:
                 st = self._states.get(run_id)
                 if st:
                     st.status = TaskStatus.FAILED
-                    st.error = str(e)
+                    st.error = str(e) or repr(e)
                     st.ended_at = time.time()
-                    self._emit(run_id, TaskStatus.FAILED, error=str(e))
+                    self._emit(run_id, TaskStatus.FAILED, error=st.error)
                 self._cv.notify_all()
             raise
 

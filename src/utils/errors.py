@@ -118,7 +118,7 @@ def fmt_exception(action: str, exc: BaseException) -> str:
     """Format an unexpected exception for the user."""
     if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
         return f"❌ {action}超时: 操作耗时过长，请重试"
-    return f"❌ {action}异常: {str(exc)}"
+    return f"❌ {action}异常: {str(exc) or repr(exc)}"
 
 
 def fmt_warning(message: str) -> str:

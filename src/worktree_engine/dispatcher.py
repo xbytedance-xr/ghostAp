@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Callable, Iterable, Optional
 
 from .models import WorktreeUnit
+from ..utils.errors import get_error_detail
 
 if TYPE_CHECKING:
     from ..agent_session import SyncSession
@@ -117,7 +118,7 @@ class WorktreeDispatcher:
                     pass
         except TimeoutError as te:
             unit.status = "failed"
-            unit.error = str(te).strip() or f"执行超时 ({timeout}s)"
+            unit.error = get_error_detail(te)
             unit.summary = unit.error
             if on_unit_update:
                 try:

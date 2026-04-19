@@ -5,7 +5,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Optional
 
 from src.project.context import ProjectContext
-from src.utils.errors import GhostAPError
+from src.utils.errors import GhostAPError, get_error_detail
 
 from ..shared import (
     build_responsive_layout,
@@ -28,7 +28,7 @@ class SystemBuilder:
     ) -> tuple[str, str]:
         from ..shared import build_quick_actions
 
-        message = str(exc)
+        message = get_error_detail(exc) if isinstance(exc, Exception) else (str(exc) or "未知错误")
         quick_actions = []
         context = {}
 
