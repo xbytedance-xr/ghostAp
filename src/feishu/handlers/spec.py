@@ -13,7 +13,7 @@ from ...card.styles import UI_TEXT
 from ...spec_engine.models import SpecProjectStatus
 from ...spec_engine.task_persistence import list_pending_tasks, load_task_state
 from ...tasking import TaskPriority, TaskSpec
-from ...utils.errors import fmt_error
+from ...utils.errors import fmt_error, get_error_detail
 from ...utils.text import generate_task_id
 from ..emoji import EmojiReaction
 from ..renderers.spec_renderer import SpecRenderer
@@ -115,7 +115,7 @@ class SpecHandler(BaseEngineHandler):
                 if is_new:
                     logger.info("Spec Engine 自动创建项目: %s @ %s", project.project_name, project.root_path)
             except Exception as e:
-                self.reply_message(message_id, fmt_error("创建项目", str(e)))
+                self.reply_message(message_id, fmt_error("创建项目", e))
                 return
 
         root_path = project.root_path if project else self.get_working_dir(chat_id)
@@ -392,7 +392,7 @@ class SpecHandler(BaseEngineHandler):
                 f.write("\n".join(lines))
             self.reply_message(message_id, f"✅ 导出成功: `{export_path}`")
         except Exception as e:
-            self.reply_message(message_id, f"❌ 导出失败: {str(e)}")
+            self.reply_message(message_id, f"❌ 导出失败: {get_error_detail(e)}")
 
     def save_spec_state(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         if project is None:
@@ -409,7 +409,7 @@ class SpecHandler(BaseEngineHandler):
             path = engine.save_state()
             self.reply_message(message_id, f"✅ 已保存 Spec 状态到: `{path}`")
         except Exception as e:
-            self.reply_message(message_id, fmt_error("保存 Spec 状态", str(e)))
+            self.reply_message(message_id, fmt_error("保存 Spec 状态", e))
 
     # ------------------------------------------------------------------
     # pause / resume / stop
@@ -648,7 +648,7 @@ class SpecHandler(BaseEngineHandler):
             try:
                 project, _ = self.project_manager.get_or_create_project_for_path(project_path, chat_id)
             except Exception as e:
-                self.reply_message(message_id, fmt_error("恢复项目上下文", str(e)))
+                self.reply_message(message_id, fmt_error("恢复项目上下文", e))
                 return
 
         existing = self.ctx.spec_engine_manager.get(chat_id, project_path)
@@ -696,7 +696,7 @@ class SpecHandler(BaseEngineHandler):
             engine.restore_from_task_state(state, on_rate_limit=on_rate_limit)
         except Exception as e:
             logger.warning("恢复任务上下文失败(task_id=%s): %s", task_id, e, exc_info=True)
-            self.reply_message(message_id, fmt_error("恢复任务上下文", str(e)))
+            self.reply_message(message_id, fmt_error("恢复任务上下文", e))
             return
 
         def run_spec_engine():

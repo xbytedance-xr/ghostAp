@@ -255,3 +255,255 @@ class TestGetErrorDetailNeverEmpty:
     def test_exception_with_message(self):
         result = get_error_detail(ValueError("bad input"))
         assert "bad input" in result
+
+
+# ---------------------------------------------------------------------------
+# Task 6: Deep/Loop handler — project creation empty error guard
+# ---------------------------------------------------------------------------
+
+class TestDeepHandlerProjectCreateEmptyGuard:
+    """deep.py: project creation failure must never produce empty error message."""
+
+    def _make_handler(self):
+        from src.feishu.handlers.deep import DeepHandler
+        ctx = MagicMock()
+        ctx.settings = MagicMock()
+        ctx.settings.ref_note_enabled = False
+        handler = DeepHandler(ctx)
+        return handler
+
+    def test_bare_exception_nonempty_error(self):
+        handler = self._make_handler()
+        sent = []
+        handler.send_error_card = lambda **kw: sent.append(kw)
+        handler.get_working_dir = lambda cid: "/tmp"
+        handler.ctx.project_manager.get_or_create_project_for_path.side_effect = Exception()
+
+        handler.start_deep_engine("msg1", "chat1", "test requirement")
+        assert len(sent) == 1
+        exc_val = sent[0]["exc"]
+        assert exc_val  # must be non-empty string
+        assert len(str(exc_val)) > 0
+
+    def test_bare_timeout_error_nonempty(self):
+        handler = self._make_handler()
+        sent = []
+        handler.send_error_card = lambda **kw: sent.append(kw)
+        handler.get_working_dir = lambda cid: "/tmp"
+        handler.ctx.project_manager.get_or_create_project_for_path.side_effect = TimeoutError()
+
+        handler.start_deep_engine("msg1", "chat1", "test requirement")
+        assert len(sent) == 1
+        exc_val = str(sent[0]["exc"])
+        assert exc_val
+        assert "超时" in exc_val
+
+
+class TestLoopHandlerProjectCreateEmptyGuard:
+    """loop.py: project creation failure must never produce empty error message."""
+
+    def _make_handler(self):
+        from src.feishu.handlers.loop import LoopHandler
+        ctx = MagicMock()
+        ctx.settings = MagicMock()
+        ctx.settings.ref_note_enabled = False
+        handler = LoopHandler(ctx)
+        return handler
+
+    def test_bare_exception_nonempty_error(self):
+        handler = self._make_handler()
+        sent = []
+        handler.send_error_card = lambda **kw: sent.append(kw)
+        handler.get_working_dir = lambda cid: "/tmp"
+        handler.ctx.project_manager.get_or_create_project_for_path.side_effect = Exception()
+
+        handler.start_loop_engine("msg1", "chat1", "test requirement")
+        assert len(sent) == 1
+        exc_val = sent[0]["exc"]
+        assert exc_val
+        assert len(str(exc_val)) > 0
+
+    def test_bare_timeout_error_nonempty(self):
+        handler = self._make_handler()
+        sent = []
+        handler.send_error_card = lambda **kw: sent.append(kw)
+        handler.get_working_dir = lambda cid: "/tmp"
+        handler.ctx.project_manager.get_or_create_project_for_path.side_effect = TimeoutError()
+
+        handler.start_loop_engine("msg1", "chat1", "test requirement")
+        assert len(sent) == 1
+        exc_val = str(sent[0]["exc"])
+        assert exc_val
+        assert "超时" in exc_val
+
+
+# ---------------------------------------------------------------------------
+# Task 7: Spec handler — multiple empty error guard paths
+# ---------------------------------------------------------------------------
+
+class TestSpecHandlerEmptyGuard:
+    """spec.py: all error paths must produce non-empty user-facing messages."""
+
+    def _make_handler(self):
+        from src.feishu.handlers.spec import SpecHandler
+        ctx = MagicMock()
+        ctx.settings = MagicMock()
+        ctx.settings.ref_note_enabled = False
+        handler = SpecHandler(ctx)
+        return handler
+
+    def test_project_create_bare_exception(self):
+        handler = self._make_handler()
+        sent = []
+        handler.reply_message = lambda mid, content, **kw: sent.append(content)
+        handler.get_working_dir = lambda cid: "/tmp"
+        handler.ctx.project_manager.get_or_create_project_for_path.side_effect = Exception()
+
+        handler.start_spec_engine("msg1", "chat1", "req")
+        assert len(sent) == 1
+        assert sent[0]
+        assert "创建项目" in sent[0]
+        # Must not end with just "失败" and nothing else meaningful
+        assert "❌" in sent[0]
+
+    def test_project_create_bare_timeout(self):
+        handler = self._make_handler()
+        sent = []
+        handler.reply_message = lambda mid, content, **kw: sent.append(content)
+        handler.get_working_dir = lambda cid: "/tmp"
+        handler.ctx.project_manager.get_or_create_project_for_path.side_effect = TimeoutError()
+
+        handler.start_spec_engine("msg1", "chat1", "req")
+        assert len(sent) == 1
+        assert "超时" in sent[0]
+
+    def test_export_bare_exception(self):
+        """Export file write failure with bare Exception() should not produce empty tail."""
+        from src.utils.errors import get_error_detail
+        # Directly test that get_error_detail handles bare Exception
+        result = get_error_detail(Exception())
+        assert result  # non-empty fallback
+
+    def test_restore_context_bare_exception(self):
+        """fmt_error("恢复项目上下文", Exception()) should produce non-empty."""
+        from src.utils.errors import fmt_error
+        result = fmt_error("恢复项目上下文", Exception())
+        assert result
+        assert "恢复项目上下文" in result
+
+    def test_restore_context_bare_timeout(self):
+        """fmt_error("恢复任务上下文", TimeoutError()) should mention timeout."""
+        from src.utils.errors import fmt_error
+        result = fmt_error("恢复任务上下文", TimeoutError())
+        assert "超时" in result
+
+
+# ---------------------------------------------------------------------------
+# Task 8: spec_engine — last_error and rewrite_requirement
+# ---------------------------------------------------------------------------
+
+class TestSpecEngineInternalEmptyGuard:
+    """spec_engine/engine.py: internal error tracking must never be empty."""
+
+    def test_get_error_detail_for_last_error(self):
+        """get_error_detail replaces the old 3-tier fallback for last_error."""
+        result = get_error_detail(Exception())
+        assert result  # must be non-empty
+        result2 = get_error_detail(TimeoutError())
+        assert result2
+        assert "超时" in result2
+
+    def test_get_error_detail_for_rewrite_requirement(self):
+        """return False, get_error_detail(e) must never return empty string."""
+        for exc in [Exception(), TimeoutError(), ValueError(), RuntimeError()]:
+            result = get_error_detail(exc)
+            assert result, f"get_error_detail({type(exc).__name__}()) returned empty"
+
+
+# ---------------------------------------------------------------------------
+# Task 9: WorktreeManager — init/merge empty error guard
+# ---------------------------------------------------------------------------
+
+class TestWorktreeManagerEmptyGuard:
+    """worktree_engine/manager.py: last_error and merge detail must be non-empty."""
+
+    def test_init_bare_exception_last_error_nonempty(self):
+        """WorktreeManager.initialize_worktrees failure should produce non-empty last_error."""
+        result = get_error_detail(Exception())
+        assert result
+        # Simulate what the code does: state.last_error = get_error_detail(exc)
+        last_error = get_error_detail(Exception())
+        summary = f"- worktree 创建失败：{last_error}"
+        assert "创建失败" in summary
+        assert not summary.endswith("：")  # must have content after colon
+
+    def test_merge_bare_exception_detail_nonempty(self):
+        """Merge failure detail should be non-empty for bare Exception."""
+        detail = get_error_detail(Exception())
+        assert detail
+        result = {"success": False, "detail": detail}
+        assert result["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Task 10: main.py — top-level exception handler
+# ---------------------------------------------------------------------------
+
+class TestMainAppEmptyGuard:
+    """main.py: top-level exception handler must produce non-empty error message."""
+
+    def test_get_error_detail_for_main(self):
+        """get_error_detail is now used in main.py instead of str(e)."""
+        for exc in [Exception(), TimeoutError(), RuntimeError()]:
+            result = get_error_detail(exc)
+            assert result, f"main.py would show empty error for {type(exc).__name__}()"
+
+
+# ---------------------------------------------------------------------------
+# Task 11: spec.py save_state — fmt_error now receives Exception directly
+# ---------------------------------------------------------------------------
+
+class TestSpecHandlerSaveStateEmptyGuard:
+    """spec.py:412 — save_state error now passes exception object to fmt_error,
+    so isinstance dispatch handles bare TimeoutError() correctly."""
+
+    def test_save_state_bare_timeout_no_empty_tail(self):
+        """fmt_error('保存 Spec 状态', TimeoutError()) must mention timeout."""
+        from src.utils.errors import fmt_error
+
+        result = fmt_error("保存 Spec 状态", TimeoutError())
+        assert result
+        assert "保存 Spec 状态" in result
+        assert "超时" in result
+        assert not result.endswith(": ")
+
+    def test_save_state_bare_exception_no_empty_tail(self):
+        """fmt_error('保存 Spec 状态', Exception()) must not leave empty detail."""
+        from src.utils.errors import fmt_error
+
+        result = fmt_error("保存 Spec 状态", Exception())
+        assert result
+        assert "保存 Spec 状态" in result
+        # When str(Exception()) is empty, fmt_error returns "❌ 保存 Spec 状态失败" (no colon)
+        assert not result.endswith(": ")
+
+
+# ---------------------------------------------------------------------------
+# Task 12: system.py TTADK refresh — get_error_detail for reply_error
+# ---------------------------------------------------------------------------
+
+class TestSystemHandlerTTADKRefreshEmptyGuard:
+    """system.py:371 — TTADK model refresh now uses get_error_detail(e)
+    instead of str(e), preventing empty error text for bare exceptions."""
+
+    def test_ttadk_refresh_bare_timeout_nonempty(self):
+        """get_error_detail(TimeoutError()) must produce non-empty timeout text."""
+        result = get_error_detail(TimeoutError())
+        assert result
+        assert "超时" in result
+
+    def test_ttadk_refresh_bare_exception_nonempty(self):
+        """get_error_detail(Exception()) must produce non-empty fallback text."""
+        result = get_error_detail(Exception())
+        assert result
+        assert len(result) > 0

@@ -102,7 +102,8 @@ class LoopHandler(BaseEngineHandler):
                 if is_new:
                     logger.info("Loop Engine 自动创建项目: %s @ %s", project.project_name, project.root_path)
             except Exception as e:
-                self.reply_error(message_id, str(e), title="创建项目失败")
+                from ...utils.errors import get_error_detail
+                self.reply_error(message_id, get_error_detail(e), title="创建项目失败")
                 return
 
         root_path = project.root_path if project else self.get_working_dir(chat_id)

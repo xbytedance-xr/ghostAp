@@ -122,9 +122,10 @@ class WorktreeManager:
                 base_branch=state.base_branch or None,
             )
         except Exception as exc:
+            from ..utils.errors import get_error_detail
             state.enabled = False
             state.merge_entry_ready = False
-            state.last_error = str(exc)
+            state.last_error = get_error_detail(exc)
             state.summary_lines = [f"- worktree 创建失败：{state.last_error}"]
             return state
 
@@ -197,7 +198,8 @@ class WorktreeManager:
                 else:
                     merge_results.append({"display_name": unit.display_name, "branch_name": unit.branch_name, "success": False, "detail": f"冲突文件: {', '.join(conflicts)}"})
             except Exception as exc:
-                merge_results.append({"display_name": unit.display_name, "branch_name": unit.branch_name, "success": False, "detail": str(exc)})
+                from ..utils.errors import get_error_detail
+                merge_results.append({"display_name": unit.display_name, "branch_name": unit.branch_name, "success": False, "detail": get_error_detail(exc)})
 
         state.last_error = ""
         state.merge_entry_ready = False

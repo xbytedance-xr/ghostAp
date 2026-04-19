@@ -574,16 +574,9 @@ class SpecEngine(BaseEngine):
             return output
 
         except Exception as e:
-            last_error = str(e)
-            if not last_error:
-                try:
-                    if getattr(e, "args", None):
-                        last_error = str(e.args[0])
-                except Exception:
-                    last_error = ""
-            if not last_error:
-                last_error = repr(e)
-                
+            from ..utils.errors import get_error_detail as _ged
+            last_error = _ged(e)
+
             try:
                 override_hint = (os.getenv("GHOSTAP_SPEC_FAILED_TASK_ID_OVERRIDE") or "").strip()
                 if (
@@ -1154,7 +1147,8 @@ class SpecEngine(BaseEngine):
             return True, new_req
         except Exception as e:
             logger.warning("[Spec] 目标重写 LLM 调用失败: %s", e)
-            return False, str(e)
+            from ..utils.errors import get_error_detail as _ged
+            return False, _ged(e)
 
     def inject_guidance(self, message: str):
         """Inject user guidance — will be included in the next phase prompt."""

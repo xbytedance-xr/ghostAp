@@ -21,6 +21,7 @@ from ...tasking import TaskPriority, TaskSpec
 from ...ttadk import get_ttadk_manager
 from ...ttadk.manager import auto_update_ttadk
 from ...utils.path import normalize_ttadk_cwd
+from ...utils.errors import get_error_detail
 from ..emoji import EmojiReaction
 from ..message_formatter import FeishuMessageFormatter as fmt
 from .base import BaseHandler
@@ -367,7 +368,7 @@ class SystemHandler(BaseHandler):
             result = manager.refresh_models(tool_name=tool or None, cwd=cwd)
         except Exception as e:
             self.reply_error(
-                message_id, str(e), title=UI_TEXT.get("system_ttadk_refresh_error", "刷新 TTADK 模型列表失败")
+                message_id, get_error_detail(e), title=UI_TEXT.get("system_ttadk_refresh_error", "刷新 TTADK 模型列表失败")
             )
             return
 

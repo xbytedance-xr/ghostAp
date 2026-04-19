@@ -68,8 +68,9 @@ class Application:
         except Exception as e:
             logger.error("处理命令异常: %s", e)
             try:
+                from .utils.errors import get_error_detail
                 self.feishu_client.add_reaction(message_id, EmojiReaction.on_error())
-                self.feishu_client.reply(message_id, fmt.format_error(str(e)), chat_id=chat_id)
+                self.feishu_client.reply(message_id, fmt.format_error(get_error_detail(e)), chat_id=chat_id)
             except Exception:
                 pass
 
