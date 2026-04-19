@@ -215,12 +215,13 @@ class Settings(BaseSettings):
     spec_convergence_window: int = 2
     spec_min_cycles: int = 2
     spec_review_enabled: bool = True
+    spec_review_timeout: int = 120
 
     # Spec Engine review failure circuit breaker
     # - enabled: master switch
     # - max_consecutive: open circuit after N consecutive review failures
     # - cooldown_cycles: keep circuit open for next K cycles (skip review)
-    spec_review_failure_circuit_enabled: bool = False
+    spec_review_failure_circuit_enabled: bool = True
     spec_review_failure_max_consecutive: int = 3
     spec_review_failure_cooldown_cycles: int = 3
 

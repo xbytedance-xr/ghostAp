@@ -3453,3 +3453,168 @@ def test_save_failed_task_idempotency(monkeypatch):
     task_id3 = engine._save_failed_task("Error 1", 1, SpecPhase.REVIEW, callbacks)
     assert call_count == 2
     assert task_id3 == "test-task-123"
+
+
+# ======================================================================
+# TimeoutError 改进: 诊断 / 文案 / 配置项
+# ======================================================================
+
+
+def test_timeout_error_with_message_diagnostics_has_friendly_text():
+    """TimeoutError 带消息时，diagnostics.error_text 应为该消息而非 'empty message'。"""
+    from src.spec_engine.review import build_review_exception_diagnostics, normalize_review_diagnostics
+
+    err = TimeoutError("ACP prompt 执行超时 (120s)")
+    diag_raw = build_review_exception_diagnostics(err, cycle=1)
+    diag = normalize_review_diagnostics(diag_raw)
+    assert diag["fail_reason"] == "timeout"
+    assert "empty message" not in diag["error_text"]
+    assert "超时" in diag["error_text"]
+
+
+def test_timeout_error_empty_message_diagnostics_uses_friendly_text():
+    """TimeoutError 空消息时，diagnostics.error_text 应为中文友好文案而非 'TimeoutError (empty message)'。"""
+    from src.spec_engine.review import build_review_exception_diagnostics, normalize_review_diagnostics
+
+    err = TimeoutError()
+    diag_raw = build_review_exception_diagnostics(err, cycle=2)
+    diag = normalize_review_diagnostics(diag_raw)
+    assert diag["fail_reason"] == "timeout"
+    assert "empty message" not in diag["error_text"]
+    assert "审查超时" in diag["error_text"]
+
+
+def test_non_timeout_error_empty_message_still_uses_empty_message_fallback():
+    """非 timeout 类异常空消息时，仍使用 '(empty message)' 兜底。"""
+    from src.spec_engine.review import build_review_exception_diagnostics, normalize_review_diagnostics
+
+    err = RuntimeError()
+    diag_raw = build_review_exception_diagnostics(err, cycle=3)
+    diag = normalize_review_diagnostics(diag_raw)
+    assert diag["fail_reason"] != "timeout"
+    # 非 timeout 不应被替换为中文友好文案
+    assert "审查超时" not in diag["error_text"]
+
+
+def test_spec_review_timeout_config_exists_and_defaults():
+    """spec_review_timeout 配置项应存在且默认值为 120。"""
+    from src.config import Settings
+
+    s = Settings(
+        feishu_app_id="x",
+        feishu_app_secret="x",
+        ark_api_key="x",
+        ark_model="x",
+    )
+    assert hasattr(s, "spec_review_timeout")
+    assert s.spec_review_timeout == 120
+
+
+def test_spec_review_timeout_passed_to_send_prompt(monkeypatch):
+    """conduct_review 应将 settings.spec_review_timeout 传递给 send_prompt_with_retry_fn 的 timeout 参数。"""
+    from src.spec_engine.review import ReviewCircuitState, conduct_review
+
+    captured_timeout = {}
+
+    def fake_send(prompt, on_event=None, timeout=0, **kw):
+        captured_timeout["value"] = timeout
+        if on_event:
+            from src.acp.models import ACPEvent, ACPEventType
+            on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n\n[DESIGNER]\nPASS\n"))
+        return MagicMock(stop_reason="end_turn")
+
+    class _Settings:
+        spec_review_failure_circuit_enabled = False
+        spec_review_failure_max_consecutive = 3
+        spec_review_failure_cooldown_cycles = 3
+        spec_review_timeout = 42
+        ark_api_key = ""
+        ark_model = ""
+        ark_base_url = ""
+
+    project = SpecProject.create(root_path="/tmp")
+    project.requirement = "test"
+    circuit = ReviewCircuitState()
+
+    conduct_review(
+        session=MagicMock(),
+        settings=_Settings(),
+        project=project,
+        send_prompt_with_retry_fn=fake_send,
+        build_review_exception_diagnostics_fn=lambda e, cycle=0: {"fail_reason": "exception"},
+        circuit=circuit,
+        cycle=1,
+    )
+
+    assert captured_timeout["value"] == 42
+
+
+def test_timeout_fallback_review_result_has_friendly_suggestion():
+    """TimeoutError 触发的 fallback ReviewResult 应包含 '审查超时' 而非 'empty message'。"""
+    from src.spec_engine.review import ReviewCircuitState, conduct_review, build_review_exception_diagnostics
+
+    def fake_send(prompt, on_event=None, timeout=0, **kw):
+        raise TimeoutError()
+
+    class _Settings:
+        spec_review_failure_circuit_enabled = False
+        spec_review_failure_max_consecutive = 3
+        spec_review_failure_cooldown_cycles = 3
+        spec_review_timeout = 10
+        ark_api_key = ""
+        ark_model = ""
+        ark_base_url = ""
+
+    project = SpecProject.create(root_path="/tmp")
+    project.requirement = "test"
+    circuit = ReviewCircuitState()
+
+    result = conduct_review(
+        session=MagicMock(),
+        settings=_Settings(),
+        project=project,
+        send_prompt_with_retry_fn=fake_send,
+        build_review_exception_diagnostics_fn=build_review_exception_diagnostics,
+        circuit=circuit,
+        cycle=1,
+    )
+
+    assert result is not None
+    all_suggestions = [s for rev in result.reviews for s in (rev.suggestions or [])]
+    assert all("审查超时" in s for s in all_suggestions), f"Expected '审查超时' in suggestions, got: {all_suggestions}"
+    assert all("empty message" not in s for s in all_suggestions)
+
+
+def test_non_timeout_fallback_review_result_keeps_generic_format():
+    """非 timeout 异常的 fallback ReviewResult 仍使用 '审查执行异常: ...' 格式。"""
+    from src.spec_engine.review import ReviewCircuitState, conduct_review, build_review_exception_diagnostics
+
+    def fake_send(prompt, on_event=None, timeout=0, **kw):
+        raise ValueError("bad input")
+
+    class _Settings:
+        spec_review_failure_circuit_enabled = False
+        spec_review_failure_max_consecutive = 3
+        spec_review_failure_cooldown_cycles = 3
+        spec_review_timeout = 10
+        ark_api_key = ""
+        ark_model = ""
+        ark_base_url = ""
+
+    project = SpecProject.create(root_path="/tmp")
+    project.requirement = "test"
+    circuit = ReviewCircuitState()
+
+    result = conduct_review(
+        session=MagicMock(),
+        settings=_Settings(),
+        project=project,
+        send_prompt_with_retry_fn=fake_send,
+        build_review_exception_diagnostics_fn=build_review_exception_diagnostics,
+        circuit=circuit,
+        cycle=1,
+    )
+
+    all_suggestions = [s for rev in result.reviews for s in (rev.suggestions or [])]
+    assert all("审查执行异常:" in s for s in all_suggestions)
+    assert all("bad input" in s for s in all_suggestions)

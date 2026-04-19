@@ -1474,10 +1474,10 @@ class SyncACPSession:
             return future.result(timeout=timeout)
         except (asyncio.CancelledError, concurrent.futures.CancelledError):
             raise RuntimeError("ACP agent 进程在执行过程中意外终止")
-        except TimeoutError:
+        except TimeoutError as e:
             # Cancel the agent process on timeout to free resources
             self.cancel()
-            raise
+            raise TimeoutError(f"ACP prompt 执行超时 ({timeout}s)") from e
         finally:
             self._active_future = None
 

@@ -181,6 +181,10 @@ def build_review_exception_diagnostics(
         error_text = f"{err_type} (empty message)"
 
     fail_reason = _infer_fail_reason(e)
+
+    # 对 timeout 类型异常，使用中文友好文案替代技术性 "empty message"
+    if fail_reason == "timeout" and ("(empty message)" in error_text or not _extract_error_text(e).strip()):
+        error_text = "审查超时，将在下一轮重试"
     tb = ""
     try:
         tb = "".join(traceback.format_exception(type(e), e, e.__traceback__))
@@ -473,10 +477,11 @@ def conduct_review(
     circuit.last_review_failure_diag = None
 
     try:
+        review_timeout = getattr(settings, "spec_review_timeout", 120)
         send_prompt_with_retry_fn(
             review_prompt,
             on_event=on_review_event,
-            timeout=120,
+            timeout=review_timeout,
             retry_policy=RetryPolicy(max_retries=2, retry_delay=2.0),
             before_retry=lambda a, e: (review_text.clear(), thought_text.clear()) if a > 0 else None,
         )
@@ -535,14 +540,17 @@ def conduct_review(
                 error_text,
                 type(log_e).__name__,
             )
+        _fail_reason = str(diag.get("fail_reason") or "").strip()
+        if _fail_reason == "timeout":
+            _suggestion_text = "审查超时，跳过本轮审查继续执行"
+        else:
+            _suggestion_text = f"审查执行异常: {str(diag.get('error_text') or '').strip() or str(diag.get('err_repr') or '(empty)')}"
         review_result = ReviewResult(
             reviews=[
                 PerspectiveReview(
                     perspective=p,
                     passed=False,
-                    suggestions=[
-                        f"审查执行异常: {str(diag.get('error_text') or '').strip() or str(diag.get('err_repr') or '(empty)')}"
-                    ],
+                    suggestions=[_suggestion_text],
                     summary="异常",
                 )
                 for p in ReviewPerspective
