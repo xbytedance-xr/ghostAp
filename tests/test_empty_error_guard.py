@@ -752,3 +752,98 @@ class TestArtifactsParseEmptyGuard:
             msg = f"规格 JSON 解析失败：{str(e) or repr(e)}"
             assert msg
             assert len(msg) > len("规格 JSON 解析失败：")
+
+
+# ---------------------------------------------------------------------------
+# diagnose_review_failure: (empty message) marker must never appear
+# ---------------------------------------------------------------------------
+
+
+class TestDiagnoseReviewFailureNoEmptyMessageMarker:
+    """review_diagnostics.py: error_text must never contain '(empty message)'."""
+
+    def _build(self, exc: Exception) -> dict:
+        from src.utils.review_diagnostics import build_review_exception_diagnostics
+        return build_review_exception_diagnostics(exc, cycle=1)
+
+    def test_timeout_error_no_empty_marker(self):
+        diag = self._build(TimeoutError())
+        assert "(empty message)" not in diag["error_text"]
+
+    def test_value_error_no_empty_marker(self):
+        diag = self._build(ValueError())
+        assert "(empty message)" not in diag["error_text"]
+
+    def test_runtime_error_no_empty_marker(self):
+        diag = self._build(RuntimeError())
+        assert "(empty message)" not in diag["error_text"]
+
+    def test_bare_exception_no_empty_marker(self):
+        diag = self._build(Exception())
+        assert "(empty message)" not in diag["error_text"]
+
+    def test_timeout_friendly_text(self):
+        diag = self._build(TimeoutError())
+        assert "审查超时" in diag["error_text"]
+
+    def test_non_timeout_friendly_text(self):
+        for exc_cls in (ValueError, RuntimeError, Exception):
+            diag = self._build(exc_cls())
+            assert "审查执行异常" in diag["error_text"], f"Failed for {exc_cls.__name__}"
+
+    def test_exception_with_message_preserved(self):
+        """Exceptions with a real message should keep that message."""
+        diag = self._build(ValueError("bad input"))
+        assert "bad input" in diag["error_text"]
+        assert "(empty message)" not in diag["error_text"]
+
+    def test_timeout_with_message_preserved(self):
+        """TimeoutError with a real message should keep that message."""
+        diag = self._build(TimeoutError("took too long"))
+        assert "took too long" in diag["error_text"]
+
+    def test_err_repr_still_contains_repr_info(self):
+        """err_repr field should still carry repr() info for debugging."""
+        diag = self._build(TimeoutError())
+        assert diag["err_repr"]  # not empty
+        assert "TimeoutError" in diag["err_repr"]
+
+
+# ---------------------------------------------------------------------------
+# worktree dispatcher/manager + base handler: TimeoutError context preserved
+# ---------------------------------------------------------------------------
+
+
+class TestWorktreeDispatcherTimeoutContext:
+    """worktree_engine/dispatcher.py: TimeoutError() must produce '超时' in error."""
+
+    def test_timeout_error_preserves_context(self):
+        """execute_units catch-all: TimeoutError() → error contains '超时'."""
+        detail = get_error_detail(TimeoutError())
+        assert detail
+        assert "超时" in detail
+
+    def test_regular_error_nonempty(self):
+        detail = get_error_detail(RuntimeError())
+        assert detail  # never empty
+
+
+class TestWorktreeManagerTimeoutContext:
+    """worktree_engine/manager.py: TimeoutError() in execute_goal → '超时'."""
+
+    def test_timeout_error_preserves_context(self):
+        detail = get_error_detail(TimeoutError())
+        assert "超时" in detail
+
+
+class TestBaseHandlerFallbackTimeoutContext:
+    """feishu/handlers/base.py: fallback detail for TimeoutError has '超时'."""
+
+    def test_timeout_fallback_has_context(self):
+        detail = get_error_detail(TimeoutError())
+        assert "超时" in detail
+        assert detail != "操作失败"  # old fallback
+
+    def test_regular_error_fallback_nonempty(self):
+        detail = get_error_detail(Exception())
+        assert detail  # never empty

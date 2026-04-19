@@ -83,7 +83,7 @@ class WorktreeDispatcher:
                     future.result()
                 except Exception as exc:
                     unit.status = "failed"
-                    unit.error = str(exc).strip() or "执行异常"
+                    unit.error = get_error_detail(exc)
                     if on_unit_update:
                         try:
                             on_unit_update(unit)

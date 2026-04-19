@@ -83,7 +83,8 @@ class BaseHandler:
         except Exception as e:
             logger.error("发送错误卡片失败: %s", e, exc_info=True)
             # Fallback to simple text reply
-            fallback_detail = str(exc) or "操作失败"
+            from ...utils.errors import get_error_detail
+            fallback_detail = get_error_detail(exc)
             if origin_message_id:
                 self.reply_message(origin_message_id, f"❌ {title}: {fallback_detail}")
             else:

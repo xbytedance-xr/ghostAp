@@ -166,7 +166,8 @@ class WorktreeManager:
             )
             state.last_error = ""
         except Exception as exc:
-            state.last_error = str(exc).strip() or "执行异常"
+            from ..utils.errors import get_error_detail
+            state.last_error = get_error_detail(exc)
         return self._reporter.refresh_state(state)
 
     # ------------------------------------------------------------------

@@ -202,13 +202,13 @@ def build_review_exception_diagnostics(
         err_type = "Exception"
 
     error_text = _extract_error_text(e)
-    if not (error_text or "").strip():
-        error_text = f"{err_type} (empty message)"
-
     fail_reason = _infer_fail_reason(e)
 
-    if fail_reason == "timeout" and ("(empty message)" in error_text or not _extract_error_text(e).strip()):
-        error_text = "审查超时，将在下一轮重试"
+    if not (error_text or "").strip():
+        if fail_reason == "timeout":
+            error_text = "审查超时，将在下一轮重试"
+        else:
+            error_text = "审查执行异常，请检查服务状态"
 
     tb = ""
     try:

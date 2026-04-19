@@ -333,7 +333,7 @@ class DeepEngine(BaseEngine):
                     retry_policy=RetryPolicy(max_retries=1, retry_delay=2.0)
                 )
             except TimeoutError as e:
-                logger.warning("[Deep] _drain_pending_context 超时: %s", e)
+                logger.warning("[Deep] _drain_pending_context 超时: %s", str(e) or repr(e))
                 break
             except Exception as e:
                 logger.error("[Deep] _drain_pending_context 发送失败: %s", e)
