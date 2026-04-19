@@ -684,6 +684,10 @@ class ProgrammingModeHandler(BaseHandler):
                 final_response = renderer.get_final_content() or "✅ 执行完成"
                 response_with_dir = f"{final_response}\n\n---\n📁 工作目录: `{global_working_dir}`"
                 self.reply_message(message_id, response_with_dir)
+            except TimeoutError as e:
+                log_exception(logger, f"{self.mode_name} ACP执行超时", e, level=logging.WARNING)
+                msg_type, content = CardBuilder.build_error_card(e, title="执行超时", project=project)
+                self.reply_message(message_id, content, msg_type)
             except Exception as e:
                 msg_type, content = CardBuilder.build_error_card(e, title="执行异常", project=project)
                 self.reply_message(message_id, content, msg_type)
@@ -704,6 +708,9 @@ class ProgrammingModeHandler(BaseHandler):
                     final_response = result.text
                 if not final_response:
                     final_response = "✅ 执行完成"
+            except TimeoutError as e:
+                final_response = f"⏳ 执行超时: {get_error_detail(e)}"
+                log_exception(logger, f"{self.mode_name} ACP执行超时", e, level=logging.WARNING)
             except Exception as e:
                 final_response = f"❌ 执行异常: {get_error_detail(e)}"
                 log_exception(logger, f"{self.mode_name} ACP执行异常", e)

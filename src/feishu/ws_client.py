@@ -1614,6 +1614,10 @@ class FeishuWSClient:
 
         except asyncio.TimeoutError as e:
             logger.warning("处理消息超时: %s", str(e) or repr(e))
+            try:
+                self._reply_message(message_id, "⏳ 处理消息超时，请稍后重试")
+            except Exception:
+                pass
         except Exception as e:
             logger.error("处理消息异常: %s", e, exc_info=True)
             try:
@@ -2257,6 +2261,32 @@ class FeishuWSClient:
 
         except asyncio.TimeoutError as e:
             logger.warning("处理卡片动作超时: %s", str(e) or repr(e))
+            _mid = locals().get("open_message_id", "unknown")
+            _action = locals().get("action_type", "unknown")
+            try:
+                if _mid != "unknown":
+                    if str(_action).startswith("ttadk") or _action in {
+                        "show_ttadk_menu",
+                        "select_ttadk_tool",
+                        "select_ttadk_model",
+                        "refresh_ttadk_models",
+                        "toggle_ttadk_yolo",
+                    }:
+                        try:
+                            from ..card import CardBuilder
+
+                            _pid = locals().get("project_id")
+                            msg_type, card_content = CardBuilder.build_ttadk_soft_failure_card_for(
+                                "操作超时",
+                                project_id=_pid or None,
+                            )
+                            self._reply_message(_mid, card_content, msg_type=msg_type)
+                        except Exception:
+                            self._reply_message(_mid, "⏳ 操作超时，请稍后重试或发送 /ttadk 重新进入")
+                    else:
+                        self._reply_message(_mid, f"⏳ 操作超时 ({_action}): {get_error_detail(e)}")
+            except Exception:
+                pass
         except Exception as e:
             logger.error("处理卡片动作异常: %s", e, exc_info=True)
             # 发送错误提示给用户

@@ -1,6 +1,7 @@
 # GhostAP 项目记忆索引
 
 ## 2026-04-19
+- **超时用户通知 + programming handler 超时专用分支** — ws_client 消息/卡片超时从静默日志改为主动通知用户（TTADK 发软失败卡片，通用路径发文本）；programming handler 两处 send_prompt 插入 except TimeoutError 专用分支（文案区分超时/异常）；+4 新测试，2082 tests passed → [详细记录](2026-04-19.md)
 - **最终验证闭环：TimeoutError (empty message) 改进建议落实确认** — 全量2078测试+66回归Lint+131超时专项全绿；grep零残留裸asyncio.wait_for；补上ws_client.py:1615/2258两处fire-and-forget日志盲点（`as e` + `str(e) or repr(e)`）；8层防御体系全部就位，问题彻底解决 → [详细记录](2026-04-19.md)
 - **验证审查：8 层防御体系闭合确认 + 2 处增量修复** — 全面审查 8 层 TimeoutError 防御体系（全量 2078 tests + 4 lint 扫描器 + 140 专项测试全绿）；修复 ws_client.py 卡片动作 `str(e) or repr(e)` → `get_error_detail(e)` + worktree dispatcher 新增 logger.warning + except Exception 兜底；2078 tests passed → [详细记录](2026-04-19.md)
 - **TimeoutError (empty message) 8 层纵深防御体系最终闭合** — 审查确认 8 层防御（核心兜底→用户可见→logger→引擎→review 断路器→收敛保护→回归 lint→safe_wait_for 源头防御）全部就位；src/ 零残留裸 asyncio.wait_for / f"{e}" / str(e)；`(empty message)` 源头消灭；2078 tests passed + 82 回归 lint 测试全绿 → [详细记录](2026-04-19.md)

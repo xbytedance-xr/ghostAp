@@ -501,3 +501,50 @@ class TestUserFacingEmptyGuardFinal:
             msg = f"Diff 报告生成异常: {detail}"
             assert len(detail.strip()) > 0, f"Empty detail for {type(exc).__name__}"
             assert not msg.strip().endswith(": ")
+
+
+# ---------------------------------------------------------------------------
+# Programming handler: dedicated TimeoutError branch
+# ---------------------------------------------------------------------------
+class TestProgrammingHandlerTimeoutBranch:
+    """Verify programming handler routes TimeoutError to dedicated branch."""
+
+    def test_streaming_path_timeout_uses_timeout_text(self):
+        """流式路径: send_prompt 抛 TimeoutError → final_response 包含'超时'而非'异常'."""
+        detail = get_error_detail(TimeoutError("ACP prompt 执行超时 (120s)"))
+        msg = f"⏳ 执行超时: {detail}"
+        assert "超时" in msg
+        assert "异常" not in msg
+        assert len(detail.strip()) > 0
+
+    def test_streaming_path_bare_timeout_nonempty(self):
+        """流式路径: 裸 TimeoutError() → final_response 仍然非空."""
+        detail = get_error_detail(TimeoutError())
+        msg = f"⏳ 执行超时: {detail}"
+        assert len(msg.strip()) > len("⏳ 执行超时: ")
+        assert not msg.strip().endswith(": ")
+
+    def test_non_streaming_path_timeout_card_title(self):
+        """非流式路径: send_prompt 抛 TimeoutError → error card title 包含'超时'."""
+        from src.card import CardBuilder
+
+        exc = TimeoutError("ACP prompt 执行超时 (120s)")
+        msg_type, content = CardBuilder.build_error_card(exc, title="执行超时")
+        assert msg_type == "interactive"
+        # Card body should include the timeout title
+        card_data = json.loads(content) if isinstance(content, str) else content
+        card_str = json.dumps(card_data, ensure_ascii=False)
+        assert "超时" in card_str
+
+    def test_non_streaming_path_bare_timeout_card_nonempty(self):
+        """非流式路径: 裸 TimeoutError() → error card 内容非空."""
+        from src.card import CardBuilder
+
+        exc = TimeoutError()
+        msg_type, content = CardBuilder.build_error_card(exc, title="执行超时")
+        assert msg_type == "interactive"
+        card_data = json.loads(content) if isinstance(content, str) else content
+        card_str = json.dumps(card_data, ensure_ascii=False)
+        assert "超时" in card_str
+        # Should NOT contain bare "(empty message)" or end with empty detail
+        assert "(empty message)" not in card_str

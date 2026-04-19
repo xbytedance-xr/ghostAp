@@ -272,6 +272,11 @@ class TestLogNoise(unittest.TestCase):
                 # Verify NO error log for this exception
                 mock_logger.error.assert_not_called()
 
+                # Verify user was notified about timeout
+                client._reply_message.assert_called_once()
+                reply_text = str(client._reply_message.call_args)
+                self.assertIn("超时", reply_text)
+
     def test_ws_client_card_action_timeout_warning(self):
         """验证 FeishuWSClient 处理卡片动作超时时记录为 warning"""
         from contextlib import ExitStack
@@ -326,6 +331,11 @@ class TestLogNoise(unittest.TestCase):
 
                 # Verify NO error log for this exception
                 mock_logger.error.assert_not_called()
+
+                # Verify user was notified about timeout
+                client._reply_message.assert_called()
+                reply_text = str(client._reply_message.call_args)
+                self.assertIn("超时", reply_text)
 
 
 if __name__ == "__main__":
