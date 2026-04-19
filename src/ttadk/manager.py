@@ -175,7 +175,7 @@ def start_ttadk_engine_session(
                 tool_name,
                 intent,
                 type(err).__name__,
-                str(err) or "(empty)",
+                (str(err) or repr(err))[:200],
             )
             s = _start_coco(
                 agent_type="coco",
@@ -185,7 +185,7 @@ def start_ttadk_engine_session(
             )
             try:
                 s._degraded_to = "coco"
-                s._degraded_reason = str(err) or ""
+                s._degraded_reason = (str(err) or repr(err))[:200]
             except Exception:
                 pass
             return s
@@ -1040,7 +1040,7 @@ class TTADKManager:
                 return ToolListResult(
                     tools=list(DEFAULT_TOOLS),
                     cached=False,
-                    error=str(e),
+                    error=str(e) or repr(e),
                 )
 
     def _check_tool_available(self, tool_name: str) -> bool:

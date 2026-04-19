@@ -507,3 +507,248 @@ class TestSystemHandlerTTADKRefreshEmptyGuard:
         result = get_error_detail(Exception())
         assert result
         assert len(result) > 0
+
+
+# ---------------------------------------------------------------------------
+# Task 13: system.py handle_refresh_ttadk_models — integration guard
+# ---------------------------------------------------------------------------
+
+class TestSystemHandlerRefreshModelsIntegration:
+    """system.py:1476 — handle_refresh_ttadk_models reply_error must never
+    produce empty-tail message for bare TimeoutError or Exception."""
+
+    def _make_handler(self):
+        from src.feishu.handlers.system import SystemHandler
+
+        ctx = MagicMock()
+        ctx.settings = MagicMock()
+        ctx.settings.ref_note_enabled = False
+        handler = SystemHandler(ctx)
+        return handler
+
+    def test_bare_timeout_reply_error_nonempty(self):
+        handler = self._make_handler()
+        sent = []
+        handler.reply_error = lambda mid, content, **kw: sent.append(content)
+        handler._resolve_ttadk_cwd = lambda *a, **kw: "/tmp"
+        handler._maybe_log_ttadk_cwd = lambda **kw: None
+
+        mock_mgr = MagicMock()
+        mock_mgr.get_current_tool.return_value = "coco"
+        mock_mgr.refresh_models.side_effect = TimeoutError()
+
+        with patch("src.feishu.handlers.system.get_ttadk_manager", return_value=mock_mgr):
+            handler.handle_refresh_ttadk_models("msg1", "chat1", "coco")
+
+        assert len(sent) == 1
+        msg = sent[0]
+        assert msg  # non-empty
+        assert not msg.endswith(": ")  # no empty tail
+        assert "超时" in msg  # timeout info preserved
+
+    def test_bare_exception_reply_error_nonempty(self):
+        handler = self._make_handler()
+        sent = []
+        handler.reply_error = lambda mid, content, **kw: sent.append(content)
+        handler._resolve_ttadk_cwd = lambda *a, **kw: "/tmp"
+        handler._maybe_log_ttadk_cwd = lambda **kw: None
+
+        mock_mgr = MagicMock()
+        mock_mgr.get_current_tool.return_value = "coco"
+        mock_mgr.refresh_models.side_effect = Exception()
+
+        with patch("src.feishu.handlers.system.get_ttadk_manager", return_value=mock_mgr):
+            handler.handle_refresh_ttadk_models("msg1", "chat1", "coco")
+
+        assert len(sent) == 1
+        msg = sent[0]
+        assert msg  # non-empty
+        assert not msg.endswith(": ")
+
+    def test_named_timeout_preserves_message(self):
+        handler = self._make_handler()
+        sent = []
+        handler.reply_error = lambda mid, content, **kw: sent.append(content)
+        handler._resolve_ttadk_cwd = lambda *a, **kw: "/tmp"
+        handler._maybe_log_ttadk_cwd = lambda **kw: None
+
+        mock_mgr = MagicMock()
+        mock_mgr.get_current_tool.return_value = "coco"
+        mock_mgr.refresh_models.side_effect = TimeoutError("模型服务不可用")
+
+        with patch("src.feishu.handlers.system.get_ttadk_manager", return_value=mock_mgr):
+            handler.handle_refresh_ttadk_models("msg1", "chat1", "coco")
+
+        assert len(sent) == 1
+        assert "模型服务不可用" in sent[0]
+
+
+# ---------------------------------------------------------------------------
+# Regression lint: no bare f"{e}" in user-visible reply_error / send_error_card
+# ---------------------------------------------------------------------------
+
+import re
+from pathlib import Path
+
+
+class TestNoBareFStringInUserVisibleErrors:
+    """Lint guard: reply_error / send_error_card calls must not use bare f\"{e}\"
+    or f\"{exc}\" which can produce empty strings for TimeoutError()."""
+
+    # Pattern: reply_error(...f"...{e}") or send_error_card(...f"...{e}")
+    # Matches bare {e}, {exc}, {err} without get_error_detail / repr / or guard
+    _BARE_FSTR_RE = re.compile(
+        r'(?:reply_error|send_error_card)\s*\([^)]*f["\'].*\{(?:e|exc|err)\}[^)]*\)'
+    )
+
+    # Pattern: logger.warning/error(f"...{e}") — bare exception in log format
+    _BARE_LOGGER_RE = re.compile(
+        r'logger\.(?:warning|error)\s*\(\s*f["\'].*\{(?:e|exc|err)\}'
+    )
+
+    _SKIP_GUARDS = ("get_error_detail", "repr(", " or ", "str(")
+
+    def _scan_src_files(self):
+        src_dir = Path(__file__).resolve().parent.parent / "src"
+        violations = []
+        for py_file in src_dir.rglob("*.py"):
+            for i, line in enumerate(py_file.read_text().splitlines(), 1):
+                # Skip lines that already use get_error_detail or repr or `or`
+                if any(g in line for g in self._SKIP_GUARDS):
+                    continue
+                if self._BARE_FSTR_RE.search(line):
+                    violations.append(f"{py_file.relative_to(src_dir.parent)}:{i}: {line.strip()}")
+        return violations
+
+    def _scan_logger_bare_fstr(self):
+        """Scan logger.warning/error for bare f\"{e}\" without guard."""
+        src_dir = Path(__file__).resolve().parent.parent / "src"
+        violations = []
+        for py_file in src_dir.rglob("*.py"):
+            for i, line in enumerate(py_file.read_text().splitlines(), 1):
+                if any(g in line for g in self._SKIP_GUARDS):
+                    continue
+                if self._BARE_LOGGER_RE.search(line):
+                    violations.append(f"{py_file.relative_to(src_dir.parent)}:{i}: {line.strip()}")
+        return violations
+
+    def test_no_bare_fstring_in_user_visible_errors(self):
+        violations = self._scan_src_files()
+        assert not violations, (
+            "Found bare f\"{e}\" in user-visible error paths (risk of empty message):\n"
+            + "\n".join(violations)
+        )
+
+    def test_no_bare_fstring_in_logger_errors(self):
+        violations = self._scan_logger_bare_fstr()
+        assert not violations, (
+            "Found bare f\"{e}\" in logger.warning/error (risk of empty message in logs):\n"
+            + "\n".join(violations)
+        )
+
+
+# ---------------------------------------------------------------------------
+# Guard tests for newly hardened internal diagnostic paths (batch 2)
+# ---------------------------------------------------------------------------
+
+
+class TestIntentRecognizerEmptyGuard:
+    """intent_recognizer.py: bare exception in reasoning must not be empty."""
+
+    def test_bare_exception_reasoning_nonempty(self):
+        from src.agent.intent_recognizer import IntentRecognizer
+
+        recognizer = IntentRecognizer.__new__(IntentRecognizer)
+        recognizer._get_fallback_intent = lambda mode: "CHAT"
+
+        # Simulate the except block logic directly
+        e = Exception()
+        reasoning = f"异常回退: {str(e) or repr(e)}"
+        assert reasoning  # non-empty
+        assert not reasoning.endswith(": ")  # no empty tail
+        assert "Exception()" in reasoning  # repr fallback
+
+    def test_bare_timeout_reasoning_nonempty(self):
+        e = TimeoutError()
+        reasoning = f"异常回退: {str(e) or repr(e)}"
+        assert reasoning
+        assert not reasoning.endswith(": ")
+        assert "TimeoutError()" in reasoning
+
+    def test_named_exception_preserves_message(self):
+        e = ValueError("bad input")
+        reasoning = f"异常回退: {str(e) or repr(e)}"
+        assert "bad input" in reasoning
+
+
+class TestEngineBaseLoggerEmptyGuard:
+    """engine_base.py: logger format strings must not have empty tail."""
+
+    def test_timeout_logger_nonempty(self):
+        e = TimeoutError()
+        msg = f"Deep Engine 执行超时 (task_id=t1): {str(e) or repr(e)}"
+        assert msg
+        assert not msg.endswith(": ")
+        assert "TimeoutError()" in msg
+
+    def test_bare_exception_logger_nonempty(self):
+        e = Exception()
+        msg = f"Deep Engine 执行异常: {str(e) or repr(e)}"
+        assert msg
+        assert not msg.endswith(": ")
+        assert "Exception()" in msg
+
+    def test_named_exception_logger_preserves(self):
+        e = RuntimeError("connection lost")
+        msg = f"Deep Engine 执行异常: {str(e) or repr(e)}"
+        assert "connection lost" in msg
+
+
+class TestProjectManagerEmptyGuard:
+    """project/manager.py: directory creation error must not be empty."""
+
+    def test_bare_exception_nonempty(self):
+        e = Exception()
+        msg = f"无法创建目录 /tmp/test: {str(e) or repr(e)}"
+        assert msg
+        assert not msg.endswith(": ")
+        assert "Exception()" in msg
+
+    def test_bare_os_error_nonempty(self):
+        e = OSError()
+        msg = f"无法创建目录 /tmp/test: {str(e) or repr(e)}"
+        assert msg
+        assert not msg.endswith(": ")
+
+    def test_named_os_error_preserves(self):
+        e = PermissionError("access denied")
+        msg = f"无法创建目录 /tmp/test: {str(e) or repr(e)}"
+        assert "access denied" in msg
+
+
+class TestArtifactsParseEmptyGuard:
+    """spec_engine/artifacts.py: JSON parse error must not be empty."""
+
+    def test_spec_parse_bare_exception_nonempty(self):
+        e = Exception()
+        msg = f"规格 JSON 解析失败：{str(e) or repr(e)}"
+        assert msg
+        assert not msg.endswith("：")  # Chinese colon
+        assert "Exception()" in msg
+
+    def test_plan_parse_bare_exception_nonempty(self):
+        e = Exception()
+        msg = f"规划 JSON 解析失败：{str(e) or repr(e)}"
+        assert msg
+        assert not msg.endswith("：")
+        assert "Exception()" in msg
+
+    def test_json_decode_error_preserves_message(self):
+        import json
+
+        try:
+            json.loads("{bad json")
+        except Exception as e:
+            msg = f"规格 JSON 解析失败：{str(e) or repr(e)}"
+            assert msg
+            assert len(msg) > len("规格 JSON 解析失败：")

@@ -17,7 +17,7 @@ from ...agent_session import SyncSession
 from ...card import CardBuilder
 from ...card.styles import UI_TEXT
 from ...project import ContextSourceMode
-from ...utils.errors import log_exception
+from ...utils.errors import get_error_detail, log_exception
 from ..emoji import EmojiReaction
 from ..message_formatter import FeishuMessageFormatter as fmt
 from ...mode import InteractionMode
@@ -435,7 +435,7 @@ class ProgrammingModeHandler(BaseHandler):
         except Exception as e:
             from ...utils.errors import log_exception
             log_exception(logger, f"切换 {self.mode_name} 模型失败", e)
-            self.reply_error(message_id, f"切换 {self.mode_name} 模型失败: {e}")
+            self.reply_error(message_id, f"切换 {self.mode_name} 模型失败: {get_error_detail(e)}")
 
     # ------------------------------------------------------------------
     # Thread context registration
@@ -705,7 +705,7 @@ class ProgrammingModeHandler(BaseHandler):
                 if not final_response:
                     final_response = "✅ 执行完成"
             except Exception as e:
-                final_response = f"❌ 执行异常: {e}"
+                final_response = f"❌ 执行异常: {get_error_detail(e)}"
                 log_exception(logger, f"{self.mode_name} ACP执行异常", e)
                 # If exception has quick actions, send a separate error card
                 from ...utils.errors import GhostAPError

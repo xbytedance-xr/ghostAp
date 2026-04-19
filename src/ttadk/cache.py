@@ -811,12 +811,12 @@ class TTADKModelCache:
                 ttl_s=float(getattr(self, "_cache_ttl_s", 0.0) or 0.0),
                 chosen_strategy="fetch_exception",
                 attempts=[],
-                error_snippet=str(e) or "",
+                error_snippet=(str(e) or repr(e))[:200],
             )
             return ModelListResult(
                 models=list(self._default_models),
                 cached=False,
-                error=str(e),
+                error=str(e) or repr(e),
                 source="defaults",
                 warnings=["models_error"],
                 diagnostics=diag,

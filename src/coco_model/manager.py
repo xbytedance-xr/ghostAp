@@ -75,7 +75,7 @@ class CocoModelManager:
                 return ModelListResult(
                     models=list(DEFAULT_MODELS),
                     cached=False,
-                    error=str(e),
+                    error=str(e) or repr(e),
                 )
 
     def _load_models(self) -> list[CocoModel]:

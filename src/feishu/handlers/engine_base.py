@@ -187,9 +187,9 @@ class BaseEngineHandler(BaseHandler):
         except Exception as e:
             # 1. Log based on exception type
             if isinstance(e, (TimeoutError, asyncio.TimeoutError)):
-                logger.warning(f"{self._get_engine_name_prefix()} Engine 执行超时 (task_id={task_id}): {e}")
+                logger.warning(f"{self._get_engine_name_prefix()} Engine 执行超时 (task_id={task_id}): {str(e) or repr(e)}")
             else:
-                logger.error(f"{self._get_engine_name_prefix()} Engine 执行异常: {e}", exc_info=True)
+                logger.error(f"{self._get_engine_name_prefix()} Engine 执行异常: {str(e) or repr(e)}", exc_info=True)
 
             # 2. Format error message
             err_msg = get_error_detail(e)
@@ -247,9 +247,9 @@ class BaseEngineHandler(BaseHandler):
         except Exception as e:
             engine_prefix = self._get_engine_name_prefix()
             if isinstance(e, (TimeoutError, asyncio.TimeoutError)):
-                logger.warning(f"{engine_prefix} {action_name} 操作超时: {e}")
+                logger.warning(f"{engine_prefix} {action_name} 操作超时: {str(e) or repr(e)}")
             else:
-                logger.error(f"{engine_prefix} {action_name} 操作异常: {e}", exc_info=True)
+                logger.error(f"{engine_prefix} {action_name} 操作异常: {str(e) or repr(e)}", exc_info=True)
 
             # Send simple error reply for lifecycle actions
             from ...utils.errors import get_error_detail

@@ -1426,7 +1426,7 @@ class FeishuWSClient:
                     ),
                 )
             except (RateLimitExceededException, CircuitBreakerOpenException) as e:
-                logger.warning(f"Backpressure applied: {e}")
+                logger.warning(f"Backpressure applied: {str(e) or repr(e)}")
                 if is_spec:
                     self._reply_message(message_id, "⚠️ 系统繁忙 (Spec 模式)，请稍后再试。")
                 else:
@@ -2284,7 +2284,7 @@ class FeishuWSClient:
                         except Exception:
                             self._reply_message(_mid, "⚠️ 操作未完成，请稍后重试或发送 /ttadk 重新进入")
                     else:
-                        self._reply_message(_mid, f"❌ 操作失败 ({_action}): {e}")
+                        self._reply_message(_mid, f"❌ 操作失败 ({_action}): {str(e) or repr(e)}")
             except Exception:
                 pass
         finally:

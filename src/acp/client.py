@@ -415,8 +415,8 @@ class GhostAPClient(Client):
             return ReadTextFileResponse(content=content)
         except Exception as e:
             logger.info("[ACP] read_text_file failed: path=%s err=%s", path, e)
-            self._record(session_id, "read_file", {"path": path, "error": str(e)})
-            return ReadTextFileResponse(content="", field_meta={"error": str(e), "path": path})
+            self._record(session_id, "read_file", {"path": path, "error": str(e) or repr(e)})
+            return ReadTextFileResponse(content="", field_meta={"error": str(e) or repr(e), "path": path})
 
     async def write_text_file(
         self, content: str, path: str, session_id: str, **kwargs: Any
@@ -429,8 +429,8 @@ class GhostAPClient(Client):
             return WriteTextFileResponse()
         except Exception as e:
             logger.info("[ACP] write_text_file failed: path=%s err=%s", path, e)
-            self._record(session_id, "write_file", {"path": path, "error": str(e)})
-            return WriteTextFileResponse(field_meta={"error": str(e), "path": path})
+            self._record(session_id, "write_file", {"path": path, "error": str(e) or repr(e)})
+            return WriteTextFileResponse(field_meta={"error": str(e) or repr(e), "path": path})
 
     # ------------------------------------------------------------------
     # Terminal operations (stub — agent manages its own terminals)

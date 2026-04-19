@@ -9,6 +9,7 @@ from ...card import CardBuilder
 from ...project import ContextEntryType
 from ...tasking import TaskPriority, TaskSpec
 from ...utils.text import format_duration
+from ...utils.errors import get_error_detail
 from .base import BaseHandler
 
 if TYPE_CHECKING:
@@ -649,7 +650,7 @@ class DiagnosticsHandler(BaseHandler):
                         self.register_message_project(rid, project)
                 task_ctx.progress("完成", 100)
             except Exception as e:
-                msg = f"Diff 报告生成异常: {e}"
+                msg = f"Diff 报告生成异常: {get_error_detail(e)}"
                 final_ref = self.format_ref_note(message_id, request_id, run_id=getattr(task_ctx, "run_id", None))
                 final = f"❌ {msg}\n\n{final_ref}" if final_ref else f"❌ {msg}"
                 try:

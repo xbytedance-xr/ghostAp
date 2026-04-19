@@ -145,6 +145,6 @@ def log_exception(logger: logging.Logger, msg: str, exc: Exception, level: int =
     carrying ``is_ghostap_error = True``) to WARNING.
     """
     if isinstance(exc, GhostAPError) or getattr(exc, "is_ghostap_error", False):
-        logger.warning(f"{msg}: {exc}")
+        logger.warning(f"{msg}: {str(exc) or repr(exc)}")
     else:
         logger.log(level, msg, exc_info=exc)

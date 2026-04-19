@@ -85,7 +85,7 @@ class ProjectManager:
                 try:
                     os.makedirs(expanded_path, exist_ok=True)
                 except Exception as e:
-                    return False, f"无法创建目录 {expanded_path}: {e}", None
+                    return False, f"无法创建目录 {expanded_path}: {str(e) or repr(e)}", None
 
             theme_color, emoji_prefix = self._get_next_theme()
             settings = get_settings()

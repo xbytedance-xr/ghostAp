@@ -29,6 +29,7 @@ from .acp.models import ACPEvent, ACPEventType, PromptResult
 from .acp.sync_adapter import SyncACPSession
 from .config import get_settings
 from .ttadk.env_sandbox import build_ttadk_subprocess_env
+from .utils.errors import get_error_detail
 from .utils.retry import RetryPolicy, prompt_with_retry
 
 logger = logging.getLogger(__name__)
@@ -242,7 +243,7 @@ class SyncClaudeCLISession:
 
         except Exception as e:
             self.is_resumed = True
-            return PromptResult(stop_reason="error", text=f"❌ Claude 执行异常: {e}")
+            return PromptResult(stop_reason="error", text=f"❌ Claude 执行异常: {get_error_detail(e)}")
 
     def send_prompt_with_retry(
         self,
@@ -517,7 +518,7 @@ class SyncTTADKCLISession:
             return PromptResult(stop_reason=stop_reason, text=output)
 
         except Exception as e:
-            return PromptResult(stop_reason="error", text=f"❌ TTADK 执行异常: {e}")
+            return PromptResult(stop_reason="error", text=f"❌ TTADK 执行异常: {get_error_detail(e)}")
         finally:
             self._proc = None
 

@@ -1473,7 +1473,7 @@ class SystemHandler(BaseHandler):
         try:
             result = manager.refresh_models(tool_name=tool, cwd=cwd)
         except Exception as e:
-            self.reply_error(message_id, f"刷新 TTADK 模型列表失败: {e}")
+            self.reply_error(message_id, f"刷新 TTADK 模型列表失败: {get_error_detail(e)}")
             return
 
         yolo_enabled = self._resolve_ttadk_yolo_enabled(chat_id, project_id=project_id)

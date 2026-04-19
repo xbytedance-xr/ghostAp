@@ -998,12 +998,12 @@ class IntentRecognizer:
             )
 
         except Exception as e:
-            logger.error("意图识别异常: %s", e)
+            logger.error("意图识别异常: %s", str(e) or repr(e))
             fallback = self._get_fallback_intent(current_mode)
             return IntentResult.single(
                 intent=fallback,
                 confidence=0.3,
                 original_text=text,
-                reasoning=f"异常回退: {e}",
+                reasoning=f"异常回退: {str(e) or repr(e)}",
                 description=f"执行: {text}",
             )

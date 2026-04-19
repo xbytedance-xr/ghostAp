@@ -45,7 +45,7 @@ class ActionDispatcher:
             except TypeError as e:
                 # 兼容旧的 handler 签名 (可能只接受 3 个参数，或者其他变体)
                 # 但目前约定是 (mid, cid, pid, value)
-                logger.error(f"Action handler for '{action_type}' signature mismatch: {e}")
+                logger.error(f"Action handler for '{action_type}' signature mismatch: {str(e) or repr(e)}")
                 raise e
 
         # 2. Prefix match
@@ -55,7 +55,7 @@ class ActionDispatcher:
                     handler(open_message_id, open_chat_id, project_id, value, type=action_type)
                     return True
                 except TypeError as e:
-                    logger.error(f"Prefix handler for '{prefix}' signature mismatch: {e}")
+                    logger.error(f"Prefix handler for '{prefix}' signature mismatch: {str(e) or repr(e)}")
                     raise e
 
         return False
