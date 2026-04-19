@@ -455,6 +455,24 @@ class SpecEngine(BaseEngine):
 
             return self._project
 
+        except TimeoutError as e:
+            from ..utils.errors import get_error_detail
+
+            error_msg = f"Spec执行超时: {get_error_detail(e)}"
+            logger.warning("[Spec:%s] %s", project_name, error_msg)
+            if self._project:
+                self._project.status = SpecProjectStatus.ABORTED
+                self._project.completed_at = time.time()
+                if not self._saved_task_id:
+                    try:
+                        task_id = self._save_failed_task(error_msg, self._last_cycle_num, self._last_phase, callbacks)
+                        error_msg = f"{error_msg} (任务已保存: {task_id})"
+                    except Exception as save_err:
+                        logger.warning("[Spec] 异常任务保存失败: %s", save_err)
+            if callbacks.on_error:
+                callbacks.on_error(error_msg)
+            return self._project
+
         except Exception as e:
             from ..utils.errors import get_error_detail
 
@@ -1230,6 +1248,22 @@ class SpecEngine(BaseEngine):
 
             if callbacks.on_project_done:
                 callbacks.on_project_done(self._project)
+
+        except TimeoutError as e:
+            from ..utils.errors import get_error_detail
+
+            error_msg = f"Spec恢复超时: {get_error_detail(e)}"
+            logger.warning("[Spec:%s] %s", self._project.name, error_msg)
+            self._project.status = SpecProjectStatus.ABORTED
+            self._project.completed_at = time.time()
+            if not self._saved_task_id:
+                try:
+                    task_id = self._save_failed_task(error_msg, self._last_cycle_num, self._last_phase, callbacks)
+                    error_msg = f"{error_msg} (任务已保存: {task_id})"
+                except Exception as save_err:
+                    logger.warning("[Spec] 异常任务保存失败: %s", save_err)
+            if callbacks.on_error:
+                callbacks.on_error(error_msg)
 
         except Exception as e:
             from ..utils.errors import get_error_detail

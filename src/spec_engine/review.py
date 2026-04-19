@@ -258,7 +258,11 @@ def conduct_review(
         if _fail_reason == "timeout":
             _suggestion_text = "审查超时，跳过本轮审查继续执行"
         else:
-            _suggestion_text = f"审查执行异常: {str(diag.get('error_text') or '').strip() or str(diag.get('err_repr') or '(empty)')}"
+            _raw_error = str(diag.get('error_text') or '').strip() or str(diag.get('err_repr') or '').strip()
+            if not _raw_error or "(empty message)" in _raw_error:
+                _suggestion_text = "审查执行异常，将在下一轮重试"
+            else:
+                _suggestion_text = f"审查执行异常: {_raw_error}"
         review_result = ReviewResult(
             reviews=[
                 PerspectiveReview(

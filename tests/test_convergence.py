@@ -190,7 +190,7 @@ class TestDetectConvergenceReviewFailed:
                 PerspectiveReview(
                     perspective=p,
                     passed=False,
-                    suggestions=["审查执行异常: TimeoutError (empty message)"],
+                    suggestions=["审查执行异常，将在下一轮重试"],
                     summary="异常",
                 )
                 for p in ReviewPerspective

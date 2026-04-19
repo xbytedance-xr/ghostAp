@@ -1,0 +1,270 @@
+"""Tests: three-engine TimeoutError handling in execute/resume top-level except blocks.
+
+Validates that TimeoutError is caught separately from generic Exception, logged at
+WARNING level (not ERROR), and produces error messages containing '超时'.
+"""
+
+import logging
+import time
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from src.deep_engine.engine import DeepEngine, DeepEngineCallbacks
+from src.deep_engine.models import DeepProjectStatus
+from src.engine_base import EngineRunState
+from src.loop_engine.engine import LoopEngine, LoopEngineCallbacks
+from src.loop_engine.models import LoopProjectStatus, LoopRequirement
+from src.spec_engine.engine import SpecEngine, SpecEngineCallbacks
+from src.spec_engine.models import SpecProjectStatus
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+class _TimeoutSession:
+    """A fake session that raises TimeoutError on every prompt call."""
+
+    def send_prompt(self, prompt, on_event=None, timeout=0, **kw):
+        raise TimeoutError()
+
+    def send_prompt_with_retry(self, prompt, on_event=None, timeout=0, **kw):
+        raise TimeoutError()
+
+    def cancel(self):
+        pass
+
+    def close(self):
+        pass
+
+
+@pytest.fixture
+def deep_engine():
+    with patch("src.engine_base.get_settings") as mock_settings:
+        s = MagicMock()
+        s.coco_execution_timeout = 300
+        s.claude_execution_timeout = 600
+        s.deep_memory_threshold = 90
+        mock_settings.return_value = s
+        yield DeepEngine(chat_id="t", root_path="/tmp/test")
+
+
+@pytest.fixture
+def loop_engine():
+    with patch("src.engine_base.get_settings") as mock_settings:
+        s = MagicMock()
+        s.loop_max_iterations = 15
+        s.loop_convergence_window = 3
+        s.loop_execution_timeout = 300
+        s.loop_review_enabled = False
+        s.loop_review_extra_iterations = 0
+        s.loop_max_context_tokens = 80000
+        s.loop_review_timeout = 5
+        s.loop_review_failure_circuit_enabled = False
+        s.loop_review_failure_max_consecutive = 3
+        s.loop_review_failure_cooldown_iterations = 3
+        mock_settings.return_value = s
+        yield LoopEngine(chat_id="t", root_path="/tmp/test")
+
+
+@pytest.fixture
+def spec_engine():
+    with patch("src.engine_base.get_settings") as mock_settings:
+        s = MagicMock()
+        s.spec_max_cycles = 10
+        s.spec_max_cycles_limit = 5000
+        s.spec_convergence_window = 2
+        s.spec_execution_timeout = 300
+        s.spec_review_timeout = 120
+        s.spec_review_enabled = True
+        s.spec_review_failure_circuit_enabled = False
+        s.spec_min_cycles = 1
+        s.spec_rebuild_session_between_cycles = False
+        s.spec_max_retries = 2
+        s.spec_infinite_mode = False
+        s.spec_disable_convergence = False
+        s.spec_disable_early_stop = False
+        s.spec_cycle_tasks_max = 10
+        mock_settings.return_value = s
+        yield SpecEngine(chat_id="t", root_path="/tmp/test")
+
+
+# ===========================================================================
+# Deep Engine
+# ===========================================================================
+
+class TestDeepEngineTimeout:
+
+    def test_plan_and_execute_timeout(self, deep_engine, caplog):
+        """plan_and_execute: TimeoutError → WARNING log + '执行超时' + FAILED status."""
+        cb = DeepEngineCallbacks()
+        errors = []
+        cb.on_error = lambda msg: errors.append(msg)
+
+        with patch("src.deep_engine.engine.create_engine_session", return_value=_TimeoutSession()):
+            project = deep_engine.plan_and_execute("do something", callbacks=cb)
+
+        assert project.status == DeepProjectStatus.FAILED
+        assert any("执行超时" in e for e in errors)
+        assert deep_engine.run_state == EngineRunState.IDLE
+
+        # Verify WARNING, not ERROR
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING and "执行超时" in r.message]
+        assert len(warning_records) >= 1
+
+    def test_drain_pending_context_timeout(self, deep_engine, caplog):
+        """_drain_pending_context: TimeoutError → WARNING log, returns gracefully."""
+        deep_engine._run_state = EngineRunState.RUNNING
+        deep_engine._session = _TimeoutSession()
+        deep_engine._pending_context = ["extra context"]
+
+        last = MagicMock()
+        result = deep_engine._drain_pending_context(
+            on_event=lambda e: None, timeout=10, last_result=last,
+        )
+
+        # Should return the original last_result (drain failed, no update)
+        assert result is last
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING and "超时" in r.message]
+        assert len(warning_records) >= 1
+
+    def test_resume_timeout(self, deep_engine, caplog):
+        """resume: TimeoutError → WARNING log + '恢复执行超时' + FAILED status."""
+        from src.deep_engine.models import DeepProject
+        deep_engine._project = DeepProject.create(name="test", root_path="/tmp/test")
+        deep_engine._project.status = DeepProjectStatus.PAUSED
+
+        cb = DeepEngineCallbacks()
+        errors = []
+        cb.on_error = lambda msg: errors.append(msg)
+
+        with patch("src.deep_engine.engine.create_engine_session", return_value=_TimeoutSession()):
+            project = deep_engine.resume(callbacks=cb)
+
+        assert project.status == DeepProjectStatus.FAILED
+        assert any("恢复执行超时" in e for e in errors)
+        assert deep_engine.run_state == EngineRunState.IDLE
+
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING and "恢复执行超时" in r.message]
+        assert len(warning_records) >= 1
+
+
+# ===========================================================================
+# Loop Engine
+# ===========================================================================
+
+class TestLoopEngineTimeout:
+
+    def test_execute_timeout(self, loop_engine, caplog):
+        """execute: TimeoutError → WARNING + 'Loop执行超时' + ABORTED status."""
+        cb = LoopEngineCallbacks()
+        errors = []
+        cb.on_error = lambda msg: errors.append(msg)
+
+        # Stub _parse_requirement to avoid LLM calls
+        loop_engine._parse_requirement = lambda txt: LoopRequirement(
+            goal="g", acceptance_criteria=["c"], raw_text=txt,
+        )
+
+        with patch("src.loop_engine.engine.create_engine_session", return_value=_TimeoutSession()):
+            project = loop_engine.execute("do something", callbacks=cb)
+
+        assert project.status == LoopProjectStatus.ABORTED
+        assert any("Loop执行超时" in e for e in errors)
+        assert loop_engine.run_state == EngineRunState.IDLE
+
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING and "Loop执行超时" in r.message]
+        assert len(warning_records) >= 1
+
+    def test_resume_timeout(self, loop_engine, caplog):
+        """resume: TimeoutError → WARNING + 'Loop恢复超时' + ABORTED status."""
+        from src.loop_engine.models import LoopProject
+        loop_engine._project = LoopProject.create(name="test", root_path="/tmp/test")
+        loop_engine._project.status = LoopProjectStatus.PAUSED
+        # resume requires a requirement object
+        loop_engine._project.set_requirement(
+            LoopRequirement(goal="g", acceptance_criteria=["c"], raw_text="req"),
+        )
+
+        cb = LoopEngineCallbacks()
+        errors = []
+        cb.on_error = lambda msg: errors.append(msg)
+
+        with patch("src.loop_engine.engine.create_engine_session", return_value=_TimeoutSession()):
+            project = loop_engine.resume(callbacks=cb)
+
+        assert project.status == LoopProjectStatus.ABORTED
+        assert any("Loop恢复超时" in e for e in errors)
+        assert loop_engine.run_state == EngineRunState.IDLE
+
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING and "Loop恢复超时" in r.message]
+        assert len(warning_records) >= 1
+
+
+# ===========================================================================
+# Spec Engine
+# ===========================================================================
+
+class TestSpecEngineTimeout:
+
+    def test_execute_timeout(self, spec_engine, caplog, monkeypatch):
+        """execute: TimeoutError → WARNING + 'Spec执行超时' + ABORTED status."""
+        cb = SpecEngineCallbacks()
+        errors = []
+        cb.on_error = lambda msg: errors.append(msg)
+
+        monkeypatch.setattr(
+            "src.spec_engine.engine.create_engine_session",
+            lambda **kw: _TimeoutSession(),
+        )
+        # Stub criteria parsing to avoid LLM
+        monkeypatch.setattr(
+            "src.spec_engine.engine.parse_acceptance_criteria",
+            lambda txt, decompose_fn=None: ["criterion1"],
+        )
+        # Stub _run_cycle_loop to directly raise TimeoutError (avoids deep settings deps)
+        monkeypatch.setattr(
+            spec_engine, "_run_cycle_loop",
+            lambda **kw: (_ for _ in ()).throw(TimeoutError("ACP prompt 执行超时 (300s)")),
+        )
+
+        project = spec_engine.execute("do something", callbacks=cb)
+
+        assert project.status == SpecProjectStatus.ABORTED
+        assert any("Spec执行超时" in e for e in errors)
+        assert spec_engine.run_state == EngineRunState.IDLE
+
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING and "Spec执行超时" in r.message]
+        assert len(warning_records) >= 1
+
+    def test_resume_timeout(self, spec_engine, caplog, monkeypatch):
+        """resume: TimeoutError → WARNING + 'Spec恢复超时' + ABORTED status."""
+        from src.spec_engine.models import SpecProject
+        spec_engine._project = SpecProject.create(name="test", root_path="/tmp/test")
+        spec_engine._project.status = SpecProjectStatus.PAUSED
+        spec_engine._project.requirement = "do something"
+        spec_engine._project.acceptance_criteria = ["c1"]
+
+        cb = SpecEngineCallbacks()
+        errors = []
+        cb.on_error = lambda msg: errors.append(msg)
+
+        monkeypatch.setattr(
+            "src.spec_engine.engine.create_engine_session",
+            lambda **kw: _TimeoutSession(),
+        )
+        # Stub _run_cycle_loop to directly raise TimeoutError
+        monkeypatch.setattr(
+            spec_engine, "_run_cycle_loop",
+            lambda **kw: (_ for _ in ()).throw(TimeoutError("ACP prompt 执行超时 (300s)")),
+        )
+
+        project = spec_engine.resume(callbacks=cb)
+
+        assert project.status == SpecProjectStatus.ABORTED
+        assert any("Spec恢复超时" in e for e in errors)
+        assert spec_engine.run_state == EngineRunState.IDLE
+
+        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING and "Spec恢复超时" in r.message]
+        assert len(warning_records) >= 1

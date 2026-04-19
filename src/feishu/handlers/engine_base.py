@@ -252,4 +252,7 @@ class BaseEngineHandler(BaseHandler):
                 logger.error(f"{engine_prefix} {action_name} 操作异常: {e}", exc_info=True)
 
             # Send simple error reply for lifecycle actions
-            self.reply_message(message_id, f"❌ {action_name}失败: {e}")
+            from ...utils.errors import get_error_detail
+
+            err_detail = get_error_detail(e)
+            self.reply_message(message_id, f"❌ {action_name}失败: {err_detail}")

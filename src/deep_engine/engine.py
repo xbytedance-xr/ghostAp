@@ -275,6 +275,20 @@ class DeepEngine(BaseEngine):
 
                 return self._project
 
+        except TimeoutError as e:
+            from ..utils.errors import get_error_detail
+
+            detail = get_error_detail(e)
+
+            error_msg = f"执行超时: {detail}"
+            logger.warning("[Deep:%s] %s", project_name, error_msg)
+            if self._project is None:
+                self._project = DeepProject.create(name=project_name, root_path=self.root_path)
+            self._project.fail(error_msg)
+            if callbacks.on_error:
+                callbacks.on_error(error_msg)
+            return self._project
+
         except Exception as e:
             from ..utils.errors import get_error_detail
 
@@ -318,6 +332,9 @@ class DeepEngine(BaseEngine):
                     follow_up, on_event=on_event, timeout=timeout,
                     retry_policy=RetryPolicy(max_retries=1, retry_delay=2.0)
                 )
+            except TimeoutError as e:
+                logger.warning("[Deep] _drain_pending_context 超时: %s", e)
+                break
             except Exception as e:
                 logger.error("[Deep] _drain_pending_context 发送失败: %s", e)
                 break
@@ -417,6 +434,17 @@ class DeepEngine(BaseEngine):
 
             if callbacks.on_project_done:
                 callbacks.on_project_done(self._project)
+
+        except TimeoutError as e:
+            from ..utils.errors import get_error_detail
+
+            detail = get_error_detail(e)
+
+            error_msg = f"恢复执行超时: {detail}"
+            logger.warning("[Deep:%s] %s", self._project.name, error_msg)
+            self._project.fail(error_msg)
+            if callbacks.on_error:
+                callbacks.on_error(error_msg)
 
         except Exception as e:
             from ..utils.errors import get_error_detail

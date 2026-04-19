@@ -284,6 +284,20 @@ class LoopEngine(BaseEngine):
     
                 return self._project
 
+        except TimeoutError as e:
+            from ..utils.errors import get_error_detail
+
+            detail = get_error_detail(e)
+
+            error_msg = f"Loop执行超时: {detail}"
+            logger.warning("[Loop:%s] %s", project_name, error_msg)
+            if self._project:
+                self._project.status = LoopProjectStatus.ABORTED
+                self._project.completed_at = time.time()
+            if callbacks.on_error:
+                callbacks.on_error(error_msg)
+            return self._project
+
         except Exception as e:
             from ..utils.errors import get_error_detail
 
@@ -855,7 +869,11 @@ FAIL
                 logger.warning("[METRIC] review_timeout")
                 err_msg = "多视角审查请求超时，请检查网络"
             else:
-                err_msg = f"审查执行异常: {detail}"
+                _detail = detail.strip()
+                if not _detail or "(empty message)" in _detail:
+                    err_msg = "审查执行异常，将在下一轮重试"
+                else:
+                    err_msg = f"审查执行异常: {_detail}"
 
             # Update circuit breaker counters
             circuit.review_failure_consecutive += 1
@@ -1106,6 +1124,18 @@ FAIL
 
             if callbacks.on_project_done:
                 callbacks.on_project_done(self._project)
+
+        except TimeoutError as e:
+            from ..utils.errors import get_error_detail
+
+            detail = get_error_detail(e)
+
+            error_msg = f"Loop恢复超时: {detail}"
+            logger.warning("[Loop:%s] %s", project_name, error_msg)
+            self._project.status = LoopProjectStatus.ABORTED
+            self._project.completed_at = time.time()
+            if callbacks.on_error:
+                callbacks.on_error(error_msg)
 
         except Exception as e:
             from ..utils.errors import get_error_detail

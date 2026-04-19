@@ -141,8 +141,8 @@ class TestLogNoise(unittest.TestCase):
             # Verify NO error log for this exception
             mock_logger.error.assert_not_called()
 
-            # Verify error message sent to user
-            handler.reply_message.assert_called_with("mid", "❌ stop失败: Stop timeout")
+            # Verify error message sent to user (get_error_detail formats TimeoutError)
+            handler.reply_message.assert_called_with("mid", "❌ stop失败: 操作超时 (Stop timeout)")
 
     def test_spec_handler_timeout_warning(self):
         """验证 SpecHandler 将 TimeoutError 记录为 warning"""
