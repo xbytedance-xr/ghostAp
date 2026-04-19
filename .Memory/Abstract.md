@@ -2,6 +2,7 @@
 
 ## 2026-04-20
 - **落实改进建议：ReviewCircuitState 持久化提交落地** — 将 9 个文件 +609 行未暂存改动提交（ReviewCircuitState to_dict/from_dict 序列化、SpecEngine/LoopEngine save/load_state_with_circuit、Loop skip overrun 保护、12 个 E2E empty message 守卫测试）；全量 2189 passed + 94 回归 lint + 193 超时专项全绿；`a7c8e64` → [详细记录](2026-04-20.md)
+- **Spec ReviewCircuitState consecutive_skips 对齐 + resume circuit 恢复** — Spec ReviewCircuitState 补齐 consecutive_skips 字段+序列化+skip overrun 检测，与 Loop 熔断器能力对齐；Spec/Loop 两引擎 resume() 新增 load_state_with_circuit() 自动恢复持久化 circuit state（消除进程重启后熔断状态丢失风险）；+8 新测试，2197 tests passed；`f75fa41` → [详细记录](2026-04-20.md)
 
 ## 2026-04-19
 - **ReviewCircuitState 持久化 + Loop 审查跳过率保护 + E2E empty message 测试** — 将 Spec/Loop 的 ReviewCircuitState 纳入状态持久化（save/load_state round-trip，旧快照兼容）；LoopEngine 新增 `consecutive_skips` 字段和 `review_skip_overrun` warning；补充 5 个 E2E empty message 端到端测试 + 7 个 `build_review_error_suggestion` 输出守卫；2189 tests passed → [详细记录](2026-04-19.md)
