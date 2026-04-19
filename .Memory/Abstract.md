@@ -1,6 +1,7 @@
 # GhostAP 项目记忆索引
 
 ## 2026-04-19
+- **Loop Engine 结构化审查诊断：与 Spec Engine 对齐** — 提取 `build_review_exception_diagnostics` / `format_review_exception_log_line` 到 `src/utils/review_diagnostics.py` 可复用模块；Loop Engine `_conduct_review` 引入结构化 diag dict、`LoopReviewCircuitState.last_review_failure_diag` 存储、结构化日志；Spec Engine 改为 re-export 零风险；+6 新测试，1959 tests passed → [详细记录](2026-04-19.md)
 - **Loop Engine review 熔断器 + 收敛检测加固** — 将 Spec Engine 的三层 TimeoutError 防御推广到 Loop Engine：新增 `LoopReviewCircuitState` 熔断器（连续 3 次 review 异常后跳过 review 3 轮冷却）、`IterationRecord.review_decision` 字段、收敛检测跳过 `review_failed` 轮次防止误判；3 个配置项（`loop_review_failure_circuit_enabled/max_consecutive/cooldown_iterations`）；+15 新测试，1953 tests passed → [详细记录](2026-04-19.md)
 - **修复 Spec Engine 收敛检测误判** — review 连续 timeout 时 fallback suggestions 固定文本导致 `detect_convergence` 误判为收敛退出；修复：异常轮次（`review_decision` 以 `review_failed` 开头）不参与收敛比较；+4 测试，30 convergence tests passed → [详细记录](2026-04-19.md)
 - **改进 Spec Engine 审查超时体验** — 解决 `TimeoutError (empty message)` 不友好文案：sync_adapter 为 TimeoutError 附加有意义消息、review 诊断层对 timeout 用中文友好文案、fallback suggestions 区分 timeout/非 timeout、review timeout 从硬编码改配置项 `spec_review_timeout`、熔断器默认开启；+7 新测试，1920 tests passed → [详细记录](2026-04-19.md)

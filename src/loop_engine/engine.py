@@ -54,6 +54,7 @@ class LoopReviewCircuitState:
 
     review_failure_consecutive: int = 0
     review_circuit_open_until_iter: int = 0
+    last_review_failure_diag: Optional[dict] = None
 
 
 @dataclass
@@ -805,6 +806,8 @@ FAIL
             elif event.event_type == ACPEventType.THOUGHT_CHUNK and event.text:
                 thought_text.append(event.text)
 
+        circuit.last_review_failure_diag = None
+
         try:
             review_timeout = getattr(settings, "loop_review_timeout", 120)
 
@@ -829,8 +832,24 @@ FAIL
 
         except Exception as e:
             from ..utils.errors import get_error_detail
+            from ..utils.review_diagnostics import (
+                build_review_exception_diagnostics,
+                format_review_exception_log_line,
+                normalize_review_diagnostics,
+            )
+
             detail = get_error_detail(e)
-            logger.warning("[Loop] 多视角审查异常: %s, 将视为有改进建议继续迭代", detail)
+
+            # Build structured diagnostics (same as SpecEngine)
+            diag_raw = build_review_exception_diagnostics(
+                e,
+                cycle=iteration,
+                project_name=getattr(self._project, "name", ""),
+                chat_id=self.chat_id,
+                root_path=self.root_path,
+            )
+            diag = normalize_review_diagnostics(diag_raw)
+            circuit.last_review_failure_diag = dict(diag)
 
             if isinstance(e, TimeoutError) or "timeout" in detail.lower():
                 logger.warning("[METRIC] review_timeout")
@@ -843,6 +862,13 @@ FAIL
             if enabled and circuit.review_failure_consecutive >= max_consecutive and cooldown > 0:
                 circuit.review_circuit_open_until_iter = iteration + cooldown
                 review_decision = "review_failed_open_circuit"
+                try:
+                    circuit.last_review_failure_diag["decision"] = "review_failed_open_circuit"
+                    circuit.last_review_failure_diag["review_circuit_open"] = True
+                    circuit.last_review_failure_diag["open_until_iter"] = int(circuit.review_circuit_open_until_iter)
+                    circuit.last_review_failure_diag["consecutive_failures"] = int(circuit.review_failure_consecutive)
+                except Exception:
+                    pass
                 logger.warning(
                     "[Loop] Review 熔断器打开: consecutive=%d, open_until_iter=%d",
                     circuit.review_failure_consecutive,
@@ -850,6 +876,17 @@ FAIL
                 )
             else:
                 review_decision = "review_failed_continue"
+
+            # Structured log line
+            diag_json = ""
+            try:
+                diag_json = json.dumps(diag, ensure_ascii=False, sort_keys=True)
+            except Exception:
+                diag_json = '{"phase":"review","decision":"review_failed_continue"}'
+            try:
+                logger.warning(format_review_exception_log_line(diag, diag_json=diag_json, prefix="[Loop]"))
+            except Exception:
+                logger.warning("[Loop] 多视角审查异常: %s, 将视为有改进建议继续迭代", detail)
 
             review_result = ReviewResult(
                 reviews=[
