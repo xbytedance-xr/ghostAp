@@ -1376,3 +1376,150 @@ class TestNoBareRaiseTimeoutError:
             "(risk of empty error message):\n"
             + "\n".join(violations)
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 3: _run_async empty-message TimeoutError wrapping
+# ---------------------------------------------------------------------------
+
+
+class TestRunAsyncTimeoutWrapping:
+    """sync_adapter._run_async must never leak empty TimeoutError messages."""
+
+    def _make_adapter(self):
+        """Create a minimal SyncACPSession with a running event loop."""
+        import asyncio
+
+        from src.acp.sync_adapter import SyncACPSession
+
+        adapter = SyncACPSession.__new__(SyncACPSession)
+        adapter._agent_type = "test_agent"
+        adapter._loop = asyncio.new_event_loop()
+        adapter._loop_thread = threading.Thread(
+            target=adapter._loop.run_forever, daemon=True
+        )
+        adapter._loop_thread.start()
+        return adapter
+
+    def _cleanup(self, adapter):
+        adapter._loop.call_soon_threadsafe(adapter._loop.stop)
+        adapter._loop_thread.join(timeout=2)
+
+    def test_timeout_has_nonempty_message(self):
+        """future.result timeout → TimeoutError with meaningful message."""
+        import asyncio
+
+        adapter = self._make_adapter()
+        try:
+            async def hang():
+                await asyncio.sleep(999)
+
+            try:
+                adapter._run_async(hang(), timeout=0.05)
+                assert False, "Should have raised TimeoutError"
+            except TimeoutError as e:
+                msg = str(e)
+                assert msg, "_run_async produced empty TimeoutError message"
+                assert "(empty message)" not in msg
+                assert "test_agent" in msg
+        finally:
+            self._cleanup(adapter)
+
+    def test_normal_return_unaffected(self):
+        """Non-timeout coroutines return normally."""
+        adapter = self._make_adapter()
+        try:
+            async def ok():
+                return 42
+
+            assert adapter._run_async(ok(), timeout=5) == 42
+        finally:
+            self._cleanup(adapter)
+
+    def test_non_timeout_exception_passthrough(self):
+        """Non-TimeoutError exceptions propagate unchanged."""
+        adapter = self._make_adapter()
+        try:
+            async def boom():
+                raise ValueError("test boom")
+
+            try:
+                adapter._run_async(boom(), timeout=5)
+                assert False, "Should have raised ValueError"
+            except ValueError as e:
+                assert "test boom" in str(e)
+        finally:
+            self._cleanup(adapter)
+
+    def test_timeout_with_existing_message_preserved(self):
+        """If the underlying TimeoutError already has a message, preserve it."""
+        import asyncio
+
+        adapter = self._make_adapter()
+        try:
+            async def raise_with_msg():
+                raise TimeoutError("custom timeout msg")
+
+            try:
+                adapter._run_async(raise_with_msg(), timeout=5)
+                assert False, "Should have raised TimeoutError"
+            except TimeoutError as e:
+                assert "custom timeout msg" in str(e)
+        finally:
+            self._cleanup(adapter)
+
+
+# ---------------------------------------------------------------------------
+# Task 4: LoopReporter empty-message filtering
+# ---------------------------------------------------------------------------
+
+
+class TestLoopReporterEmptyMessageFilter:
+    """LoopReporter.format_iteration_result must filter (empty message) in errors."""
+
+    def _make_record(self, error_text):
+        from src.loop_engine.models import IterationRecord, IterationStatus
+        rec = IterationRecord(iteration=1)
+        rec.status = IterationStatus.FAILED
+        rec.error = error_text
+        rec.duration = 5.0
+        return rec
+
+    def test_empty_message_filtered(self):
+        from src.loop_engine.reporter import LoopReporter
+        reporter = LoopReporter()
+        rec = self._make_record("TimeoutError (empty message)")
+        result = reporter.format_iteration_done(1, rec)
+        assert "(empty message)" not in result
+        assert "执行异常" in result
+
+    def test_none_error_shows_friendly_text(self):
+        from src.loop_engine.reporter import LoopReporter
+        reporter = LoopReporter()
+        rec = self._make_record(None)
+        result = reporter.format_iteration_done(1, rec)
+        assert "(empty message)" not in result
+        assert "执行异常" in result
+
+    def test_empty_string_error_shows_friendly_text(self):
+        from src.loop_engine.reporter import LoopReporter
+        reporter = LoopReporter()
+        rec = self._make_record("")
+        result = reporter.format_iteration_done(1, rec)
+        assert "(empty message)" not in result
+        assert "执行异常" in result
+
+    def test_whitespace_only_error_shows_friendly_text(self):
+        from src.loop_engine.reporter import LoopReporter
+        reporter = LoopReporter()
+        rec = self._make_record("   ")
+        result = reporter.format_iteration_done(1, rec)
+        assert "(empty message)" not in result
+        assert "执行异常" in result
+
+    def test_real_error_preserved(self):
+        from src.loop_engine.reporter import LoopReporter
+        reporter = LoopReporter()
+        rec = self._make_record("ACP prompt 执行超时 (120s)")
+        result = reporter.format_iteration_done(1, rec)
+        assert "ACP prompt 执行超时 (120s)" in result

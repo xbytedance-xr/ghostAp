@@ -1569,4 +1569,10 @@ class SyncACPSession:
         if not self._loop:
             raise RuntimeError("Event loop not started")
         future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result(timeout=timeout)
+        try:
+            return future.result(timeout=timeout)
+        except TimeoutError as e:
+            msg = str(e).strip()
+            if not msg:
+                msg = f"ACP 异步操作超时 ({timeout}s): agent={self._agent_type}"
+            raise TimeoutError(msg) from e

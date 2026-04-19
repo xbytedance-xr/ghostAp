@@ -98,7 +98,11 @@ class LoopReporter:
 
             return "\n".join(lines)
         else:
-            error_text = record.error or "未知错误"
+            _raw_error = (record.error or "").strip()
+            if not _raw_error or "(empty message)" in _raw_error:
+                error_text = "执行异常，将在下一轮重试"
+            else:
+                error_text = _raw_error
             return f"""❌ **迭代失败 [{iteration}]**
 
 ⏱️ 耗时: {format_duration(record.duration)}
