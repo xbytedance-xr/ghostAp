@@ -3,6 +3,7 @@
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 
 ## 2026-04-20
+- **Review 重构 Phase C Step4-6（dormant 地基）** — 新增 `PerspectiveWorker`（单视角 worker + `run_workers_parallel` 并发）、`CycleBudget`（wall-clock 预算 + `run_with_budget` 降级）、`LintGate`（`evaluate_lint_gate` + 语法错短路所有视角 FAIL）；30 新测试（9+10+11）+ 2447 全量通过；三模块未接入 engine.py，生产路径仍走旧 `conduct_review`，等 Step7 通电；`ce62f4d` + `c50acda` + `c1005f3` + `3b241ec` → [详细记录](2026-04-20.md)
 - **Review 重构 Phase A（Step1-2）+ ACP Invalid params 竞态修复** — 修复 `sync_adapter.cancel()` fire-and-forget 竞态（`-32602 Invalid params` 根因）；新增 `ReviewArtifacts`（review 输入落盘脱 session）+ `ReviewStrategy` ABC（旧行为包为 `MultiPerspectiveStrategy` 零行为变更）；12 新测试 + 2410 全量通过；剩余 Step3-8 待分批交付 → [详细记录](2026-04-20.md)
 - **Worktree Engine 优化：7 项验收标准全量实现** — 基于 Spec→Plan→Task→Build 方法论实现 AC1~AC7：自定义路径创建（`_validate_custom_path` 安全校验 + `mkdir -p`）、远程分支关联（单次 `fetch --all` 优化）、安全删除（`DeleteWarning` 返回模式 + `force` 确认）、富列表展示（`git worktree list --porcelain` 解析 + 列对齐表格）、自动同步（`reset --hard + clean -fd` + 脏状态拒绝）、存储优化（`gc --aggressive + repack`）、批量创建性能（串行避免锁竞争）；新增 26 个测试；全量 2399 passed 零回归 → [详细记录](2026-04-20.md)
 - **最终闭环：TimeoutError (empty message) 改进建议全部落实** — 26 轮增量修复 + 最终闭环验证完毕；10 层纵深防御体系完整（safe_wait_for 源头→get_error_detail 兜底→用户/日志路径统一→三引擎独立 catch→review_helpers 统一异常处理→收敛跳过→7 个静态 lint 门禁→滑动窗口熔断→本地 lint 降级）；Backlog B-001~B-008 全部 Done；全量 2374 passed 零回归；`cbeb8fd` → [详细记录](2026-04-20.md)
