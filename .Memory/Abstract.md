@@ -3,6 +3,7 @@
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 
 ## 2026-04-20
+- **局部耦合重构：引入 Registry 模式解耦 HandlerContext 与 FeishuWSClient** — 引入服务注册表模式，将硬编码单例引用替换为基于 HandlerContext 容器的动态查找；移除 FeishuWSClient 交叉注入循环；124 tests passed；`7b0ed1e` → [详细记录](2026-04-20.md)
 - **第二十二次闭环验证：9 步任务分解 + 白名单全量审计确认** — 9 步任务并行+顺序执行（静态门禁 112 passed + TimeoutError 单元 22 passed + e2e 40 passed + review 36 passed + 17 处白名单 str(e) 逐一审计零风险 + Backlog B-001~B-008 全部 Done 8/8 + 全量 2329 passed 47.96s + 零代码改动仅验证归档）；第二十二次独立确认无退化无新缺口，问题闭环 → [详细记录](2026-04-20.md)
 - **TTADK 子系统 str(e) → get_error_detail(e) 增量加固** — TTADK 3 个文件 7 处 `str(e) or ""/(empty)` → `get_error_detail(e)` 替换 + 新增 TestTimeoutErrorE2EDetail 6 个端到端测试；src/ str(e) 站点从 15 降至 8；全量 2329 passed 零回归 → [详细记录](2026-04-20.md)
 - **第二十一次闭环验证：7 步任务列表顺序执行确认** — 7 步任务顺序执行（TimeoutError 专项 182 passed 2.87s + 静态门禁 1 passed + grep 扫描零残留 + Backlog B-001~B-007 全 Done 7/7 + 全量 2323 passed 48.41s + 零代码改动仅验证归档）；第二十一次独立确认无退化无新缺口，问题彻底闭环 → [详细记录](2026-04-20.md)
