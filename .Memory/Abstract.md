@@ -3,6 +3,7 @@
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 
 ## 2026-04-20
+- **全量统一提交落地：`str(e) or repr(e)` → `get_error_detail(e)` + Backlog 归档** — 30+ 文件 90+ 处全量替换 + `TestBanStrOrReprPattern` 静态门禁 + Backlog B-001~B-007 全部 Done；验证（专项 106 passed + 全量 2323 passed + 5 项 grep 零残留）后提交 `d1b87f1`（44 files, +288/-131）；提交后二次回归 2323 passed 零退化 → [详细记录](2026-04-20.md)
 - **第十八次闭环验证：9 步任务列表严格顺序执行确认** — 9 步任务含依赖关系严格顺序执行（TimeoutError 专项 106 passed 2.36s + 全量 2323 passed 48.87s + spec_engine/review.py 6 项防御完整 + loop_engine/engine.py 与 spec 一致含收敛跳过 + review_helpers.py 三函数参数合理边界有保护 + Backlog B-001~B-007 全部 Done 7/7 + 零缺陷零修复）；第十八次独立确认无退化无新缺口 → [详细记录](2026-04-20.md)
 - **第十七次闭环验证：完整 Plan 分解执行确认** — Spec→Plan→Task 方法论分解 8 个任务按依赖执行（TimeoutError 专项 106 passed + 全量 2323 passed 47.49s + spec_engine/review.py 防御完整 + loop_engine/engine.py 与 spec 一致 + review_helpers.py 参数合理 + Backlog B-001~B-007 全部 Done + 零缺陷零修复）；第十七次独立确认无退化无新缺口 → [详细记录](2026-04-20.md)
 - **第十六次闭环验证：任务列表逐步执行确认** — 8 步任务严格顺序执行（依赖同步 84pkg + TimeoutError 专项 106 passed + 静态 lint 门禁 6 passed + 全量 2323 passed 47.87s + Backlog B-001~B-007 全部 Done + 零缺口零修复）；第十六次独立确认无退化无新缺口 → [详细记录](2026-04-20.md)
