@@ -2101,6 +2101,97 @@ def create_engine_session(
     return session
 
 
+def create_review_session(
+    agent_type: str,
+    cwd: str,
+    model_name: Optional[str] = None,
+) -> SyncSession:
+    """Create a short-lived session dedicated to review prompts.
+
+    Differs from `create_engine_session` in two ways:
+    - Skips `RateLimitAwareSession` / `ModelFailureAwareSession` wrappers.
+      Review is best-effort — on failure the pipeline falls back to other
+      strategies (lint, skip) instead of burning retries.
+    - Caller is expected to close the session after use; see
+      `EphemeralReviewSession` for a context-managed convenience.
+
+    Allows `agent_type` to differ from the build agent (heterogeneous review).
+    """
+    from .acp.sync_adapter import start_session_with_retry
+    from .coco_model import get_coco_model_manager
+    from .utils.path import normalize_ttadk_cwd
+
+    settings = get_settings()
+    agent_type = (agent_type or "coco").lower()
+    cwd = normalize_ttadk_cwd(cwd) or cwd
+
+    logger.info(
+        "[SessionFactory] create_review_session: agent=%s cwd=%s model=%s",
+        agent_type, cwd, model_name,
+    )
+
+    if agent_type == "claude":
+        session: SyncSession = SyncClaudeCLISession(cwd=cwd)
+        session.start()
+        return session
+
+    if agent_type.startswith("ttadk_"):
+        from .ttadk.startup_common import precheck_ttadk_startup_model
+        info = precheck_ttadk_startup_model(
+            agent_type=agent_type, cwd=cwd, model_intent=model_name
+        )
+        session = SyncTTADKCLISession(
+            agent_type=agent_type, cwd=cwd, model_name=info.get("model")
+        )
+        session.start()
+        return session
+
+    effective_model = model_name or get_coco_model_manager().get_current_model()
+    return start_session_with_retry(
+        agent_type=agent_type,
+        cwd=cwd,
+        startup_timeout=settings.acp_startup_timeout,
+        model_name=effective_model,
+    )
+
+
+class EphemeralReviewSession:
+    """Context manager: fresh review session per `with` block; auto-close on exit.
+
+    Use to isolate review from the build session so review prompts run on a
+    clean, small ACP context. Create anew per cycle — do not reuse across cycles.
+    """
+
+    def __init__(
+        self,
+        agent_type: str,
+        cwd: str,
+        model_name: Optional[str] = None,
+    ):
+        self._agent_type = agent_type
+        self._cwd = cwd
+        self._model_name = model_name
+        self._session: Optional[SyncSession] = None
+
+    def __enter__(self) -> SyncSession:
+        self._session = create_review_session(
+            self._agent_type, self._cwd, self._model_name
+        )
+        return self._session
+
+    def __exit__(self, *exc) -> None:
+        if self._session is None:
+            return
+        try:
+            close = getattr(self._session, "close", None)
+            if callable(close):
+                close()
+        except Exception as e:
+            logger.debug("[EphemeralReviewSession] close failed: %s", repr(e))
+        finally:
+            self._session = None
+
+
 def create_sync_session_for_worktree(
     *,
     provider: str = "",
