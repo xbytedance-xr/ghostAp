@@ -230,6 +230,71 @@ FAIL
 """
 
 
+def build_single_perspective_review_prompt(
+    perspective: ReviewPerspective,
+    *,
+    requirement: str,
+    diff_patch: str = "",
+    touched_files: Optional[list[str]] = None,
+    spec_output: str = "",
+    plan_output: str = "",
+    build_output: str = "",
+    max_diff_bytes: int = 40_000,
+) -> str:
+    """Single-perspective review prompt. Small context, single [TAG] output.
+
+    Designed for PerspectiveWorker — each worker sends exactly this prompt to
+    its own (possibly ephemeral) session. Avoids the 5-in-1 context bloat that
+    caused Invalid params / timeout cascades.
+    """
+    tag = perspective.name  # ARCHITECT / PRODUCT / USER / TESTER / DESIGNER
+    if perspective == ReviewPerspective.PRODUCT:
+        focus_block = (
+            "Apple 风格产品审查（高审美/高标准/完美主义）。关注：信息架构与心智模型、"
+            "关键路径是否一气呵成、默认行为是否聪明、边界与异常是否体面、文案是否克制"
+            "清晰、细节一致性与打磨程度。"
+        )
+    else:
+        focus_block = perspective.review_focus
+
+    diff_section = ""
+    if diff_patch:
+        patch = diff_patch
+        if len(patch) > max_diff_bytes:
+            patch = patch[:max_diff_bytes] + f"\n...[truncated {len(diff_patch) - max_diff_bytes} bytes]"
+        diff_section = f"\n## 代码变更 (git diff HEAD)\n```diff\n{patch}\n```\n"
+
+    files_section = ""
+    if touched_files:
+        files_section = "\n## 涉及文件\n" + "\n".join(f"- {f}" for f in touched_files[:50]) + "\n"
+
+    spec_section = f"\n## Spec 摘要\n{spec_output}\n" if spec_output else ""
+    plan_section = f"\n## Plan 摘要\n{plan_output}\n" if plan_output else ""
+    build_section = f"\n## Build 摘要\n{build_output}\n" if build_output else ""
+
+    return f"""你是 **{perspective.display_name}** 视角的评审员。只从这一个视角给出判断，不要覆盖其它视角。
+
+## 项目目标
+{requirement}
+
+## 视角关注点
+{focus_block}
+{spec_section}{plan_section}{build_section}{files_section}{diff_section}
+<output_format>
+严格按以下格式输出，不要输出其他任何内容：
+
+[{tag}]
+PASS 或 FAIL
+- 改进建议1（如果 FAIL）
+- 改进建议2（如果 FAIL）
+</output_format>
+
+## 标准
+- PASS: 本视角认为当前实现质量良好，无需改进
+- FAIL: 发现可改进之处，列出具体、可落地的建议（每条对应一个明确改动点）
+"""
+
+
 def build_goal_rewrite_prompt(original_requirement: str, guidance: str) -> str:
     """构建目标重写提示词：将原始需求与用户引导合并为新的综合目标。"""
     return f"""你是一个需求分析专家。用户在开发过程中提供了新的约束/偏好，你需要将其与原始需求合并，生成一个新的综合目标描述。
