@@ -880,7 +880,7 @@ class SpecEngine(BaseEngine):
             if self.settings.spec_review_enabled:
                 cycle.phase = SpecPhase.REVIEW
                 self._last_phase = cycle.phase
-                review_result = self._conduct_review(cycle_num, callbacks)
+                review_result = self._conduct_review(cycle_num, callbacks, cycle_obj=cycle)
                 cycle.review_result = review_result
                 # best-effort: persist review failure decision/diagnostics for traceability
                 diag = self._last_review_failure_diag
@@ -1072,7 +1072,21 @@ class SpecEngine(BaseEngine):
     # ------------------------------------------------------------------
     # Review (reuses loop engine's parsing infrastructure)
     # ------------------------------------------------------------------
-    def _conduct_review(self, cycle: int, callbacks: SpecEngineCallbacks) -> ReviewResult:
+    def _conduct_review(self, cycle: int, callbacks: SpecEngineCallbacks, cycle_obj=None) -> ReviewResult:
+        # When cycle_obj is provided and parallel pipeline is enabled, collect artifacts.
+        artifacts = None
+        parallel_enabled = getattr(self.settings, "spec_review_parallel_enabled", True)
+        if parallel_enabled and cycle_obj is not None:
+            try:
+                from .review_artifacts import collect_review_artifacts
+                artifacts = collect_review_artifacts(
+                    cycle=cycle_obj,
+                    project=self._project,
+                    cwd=self.root_path,
+                )
+            except Exception as e:
+                logger.debug("[Spec] collect_review_artifacts failed, falling back to legacy: %s", repr(e))
+
         return _conduct_review_impl(
             session=self._session,
             settings=self.settings,
@@ -1082,6 +1096,9 @@ class SpecEngine(BaseEngine):
             circuit=self._review_circuit,
             cycle=cycle,
             on_review_done=callbacks.on_review_done,
+            artifacts=artifacts,
+            agent_type=self._agent_type or "coco",
+            model_name=self._model_name,
         )
 
     def _parse_review_output(self, text: str, cycle: int) -> ReviewResult:

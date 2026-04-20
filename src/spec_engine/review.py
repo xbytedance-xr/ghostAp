@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -136,6 +136,17 @@ class ReviewCircuitState:
         )
 
 
+def _outcomes_to_review_result(
+    outcomes: List["PerspectiveOutcome"],
+    cycle: int,
+) -> ReviewResult:
+    """Convert parallel pipeline outcomes to the unified ReviewResult."""
+    return ReviewResult(
+        reviews=[o.review for o in outcomes],
+        iteration=cycle,
+    )
+
+
 def conduct_review(
     *,
     session,
@@ -146,6 +157,10 @@ def conduct_review(
     circuit: ReviewCircuitState,
     cycle: int,
     on_review_done: Optional[Callable] = None,
+    # --- Pipeline params (Step 7a) ---
+    artifacts: Optional["ReviewArtifacts"] = None,
+    agent_type: str = "coco",
+    model_name: Optional[str] = None,
 ) -> ReviewResult:
     from .prompts import build_review_prompt
 
@@ -153,6 +168,7 @@ def conduct_review(
     max_consecutive = max(1, settings.spec_review_failure_max_consecutive)
     cooldown_cycles = max(0, settings.spec_review_failure_cooldown_cycles)
 
+    # ---- Circuit breaker skip (unchanged) ----
     if (
         enabled
         and int(circuit.review_circuit_open_until_cycle or 0)
@@ -234,6 +250,20 @@ def conduct_review(
             on_review_done(cycle, review_result)
         return review_result
 
+    # ---- Pipeline path: use parallel review pipeline when artifacts provided ----
+    if artifacts is not None:
+        return _conduct_review_pipeline(
+            artifacts=artifacts,
+            settings=settings,
+            circuit=circuit,
+            cycle=cycle,
+            agent_type=agent_type,
+            model_name=model_name,
+            build_review_exception_diagnostics_fn=build_review_exception_diagnostics_fn,
+            on_review_done=on_review_done,
+        )
+
+    # ---- Legacy serial path (kept for backward compat until callers provide artifacts) ----
     if not session:
         review_result = ReviewResult(iteration=cycle)
         if on_review_done:
@@ -306,6 +336,120 @@ def conduct_review(
             engine="spec",
             build_diag_fn=build_review_exception_diagnostics_fn,
             review_timeout=review_timeout,
+            review_elapsed_ms=_elapsed_ms,
+        )
+        review_result = ReviewResult(
+            reviews=[
+                PerspectiveReview(
+                    perspective=p,
+                    passed=False,
+                    suggestions=[result.suggestion_text],
+                    summary="异常",
+                )
+                for p in ReviewPerspective
+            ],
+            iteration=cycle,
+        )
+
+    if on_review_done:
+        on_review_done(cycle, review_result)
+
+    return review_result
+
+
+def _conduct_review_pipeline(
+    *,
+    artifacts: "ReviewArtifacts",
+    settings,
+    circuit: ReviewCircuitState,
+    cycle: int,
+    agent_type: str,
+    model_name: Optional[str],
+    build_review_exception_diagnostics_fn: Callable[..., dict],
+    on_review_done: Optional[Callable],
+) -> ReviewResult:
+    """Run the parallel review pipeline (Step 7a) with circuit-breaker bookkeeping."""
+    from .cycle_budget import CycleBudget
+    from .review_pipeline import run_review_pipeline
+
+    import time as _time
+
+    # Budget = 2× base review timeout (parallel workers share one wall-clock window).
+    base_timeout = int(getattr(settings, "spec_review_timeout", 120) or 120)
+    budget_seconds = float(base_timeout * 2)
+    budget = CycleBudget(total_seconds=budget_seconds, label=f"spec_review_c{cycle}")
+
+    circuit.last_review_failure_diag = None
+    _t0 = _time.monotonic()
+
+    try:
+        outcomes = run_review_pipeline(
+            artifacts,
+            budget,
+            agent_type=agent_type,
+            model_name=model_name,
+        )
+        review_result = _outcomes_to_review_result(outcomes, cycle)
+
+        # Pipeline succeeded — reset circuit counters.
+        has_real_errors = any(o.error and o.error != "lint_gate_short_circuit" for o in outcomes)
+        if not has_real_errors:
+            circuit.review_failure_consecutive = 0
+            circuit.review_circuit_open_until_cycle = 0
+            circuit.backoff_level = 0
+            circuit.consecutive_timeouts = 0
+            circuit.consecutive_skips = 0
+            try:
+                circuit.recent_outcomes.append("success")
+                if len(circuit.recent_outcomes) > 20:
+                    circuit.recent_outcomes[:] = circuit.recent_outcomes[-20:]
+            except Exception:
+                pass
+        else:
+            # Workers failed individually but pipeline didn't throw.
+            # Record diagnostics so the engine can persist them to the cycle.
+            failed_workers = [o for o in outcomes if o.error and o.error != "lint_gate_short_circuit"]
+            circuit.last_review_failure_diag = normalize_review_diagnostics({
+                "phase": "review",
+                "role": "pipeline_parallel",
+                "cycle": int(cycle or 0),
+                "decision": "review_failed_continue",
+                "fail_reason": "worker_errors",
+                "err_type": failed_workers[0].error if failed_workers else "unknown",
+                "err_repr": "; ".join(o.error or "" for o in failed_workers[:3]),
+                "error_text": f"{len(failed_workers)}/{len(outcomes)} workers failed",
+                "cycle_number": int(cycle or 0),
+                "exception_type": "PipelineWorkerErrors",
+                "review_role": "pipeline_parallel",
+                "traceback_snippet": "",
+                "consecutive_failures": int(circuit.review_failure_consecutive or 0),
+            })
+            try:
+                circuit.recent_outcomes.append("partial_failure")
+                if len(circuit.recent_outcomes) > 20:
+                    circuit.recent_outcomes[:] = circuit.recent_outcomes[-20:]
+            except Exception:
+                pass
+
+        logger.info(
+            "[Spec] pipeline review done: cycle=%d perspectives=%d all_passed=%s elapsed_ms=%d",
+            cycle,
+            len(outcomes),
+            review_result.all_passed,
+            int((_time.monotonic() - _t0) * 1000),
+        )
+    except Exception as e:
+        from ..utils.review_helpers import handle_review_exception
+
+        _elapsed_ms = int((_time.monotonic() - _t0) * 1000)
+        result = handle_review_exception(
+            e,
+            circuit=circuit,
+            cycle=cycle,
+            settings=settings,
+            engine="spec",
+            build_diag_fn=build_review_exception_diagnostics_fn,
+            review_timeout=int(budget_seconds),
             review_elapsed_ms=_elapsed_ms,
         )
         review_result = ReviewResult(
