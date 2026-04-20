@@ -1613,7 +1613,7 @@ class FeishuWSClient:
             )
 
         except asyncio.TimeoutError as e:
-            logger.warning("处理消息超时: %s", str(e) or repr(e))
+            logger.warning("处理消息超时: %s", get_error_detail(e))
             try:
                 self._reply_message(message_id, "⏳ 处理消息超时，请稍后重试")
             except Exception:
@@ -2260,7 +2260,7 @@ class FeishuWSClient:
             logger.debug("卡片回调处理耗时: %dms", elapsed_ms)
 
         except asyncio.TimeoutError as e:
-            logger.warning("处理卡片动作超时: %s", str(e) or repr(e))
+            logger.warning("处理卡片动作超时: %s", get_error_detail(e))
             _mid = locals().get("open_message_id", "unknown")
             _action = locals().get("action_type", "unknown")
             try:

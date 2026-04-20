@@ -120,7 +120,7 @@ class WorktreeDispatcher:
                 except Exception:
                     pass
         except TimeoutError as te:
-            logger.warning("[Worktree] 单元执行超时: unit=%s, error=%s", unit.unit_id, str(te) or repr(te))
+            logger.warning("[Worktree] 单元执行超时: unit=%s, error=%s", unit.unit_id, get_error_detail(te))
             unit.status = "failed"
             unit.error = f"执行超时: {get_error_detail(te)}"
             unit.summary = unit.error
