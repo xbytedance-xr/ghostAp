@@ -103,8 +103,8 @@ class PerspectiveWorker:
             if et == ACPEventType.TEXT_CHUNK and text:
                 with self._lock:
                     self._buf.append(text)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("[PerspectiveWorker:%s] on_event error: %s", self.perspective.name, repr(e))
 
     def _parse(self, raw: str) -> PerspectiveReview:
         from ..utils.spec_utils import parse_review_output_strict_tolerant

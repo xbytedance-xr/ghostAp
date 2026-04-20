@@ -134,9 +134,13 @@ def run_with_budget(
 
     budget.start()
 
+    order = {p: i for i, p in enumerate(ReviewPerspective)}
+
     if budget.exceeded():
         logger.warning("[CycleBudget] already exceeded at start; skipping all perspectives")
-        return [_budget_exceeded_outcome(b.worker.perspective, 0) for b in bindings]
+        skipped = [_budget_exceeded_outcome(b.worker.perspective, 0) for b in bindings]
+        skipped.sort(key=lambda o: order.get(o.perspective, 999))
+        return skipped
 
     if budget.unlimited:
         per_worker_timeout: Optional[float] = None
@@ -148,7 +152,9 @@ def run_with_budget(
                 remaining,
                 min_per_worker_s,
             )
-            return [_budget_exceeded_outcome(b.worker.perspective, 0) for b in bindings]
+            skipped = [_budget_exceeded_outcome(b.worker.perspective, 0) for b in bindings]
+            skipped.sort(key=lambda o: order.get(o.perspective, 999))
+            return skipped
         per_worker_timeout = remaining
 
     outcomes = run_workers_parallel(
@@ -158,18 +164,19 @@ def run_with_budget(
         per_worker_timeout=per_worker_timeout,
     )
 
-    # Safety net: ensure every binding has an outcome.
+    # Safety net: ensure every binding has an outcome. run_workers_parallel
+    # already synthesizes FAILs on timeout, so missing should be rare — DEBUG
+    # is enough; only escalate at the per-missing log below if it fires.
     seen = {o.perspective for o in outcomes}
     missing = [b for b in bindings if b.worker.perspective not in seen]
     if missing:
         elapsed_ms = int(budget.elapsed() * 1000)
         for b in missing:
-            logger.warning(
+            logger.debug(
                 "[CycleBudget] missing outcome for %s; synthesizing budget-exceeded FAIL",
                 b.worker.perspective.name,
             )
             outcomes.append(_budget_exceeded_outcome(b.worker.perspective, elapsed_ms))
 
-    order = {p: i for i, p in enumerate(ReviewPerspective)}
     outcomes.sort(key=lambda o: order.get(o.perspective, 999))
     return outcomes

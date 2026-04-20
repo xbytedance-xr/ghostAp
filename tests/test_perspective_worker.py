@@ -148,8 +148,8 @@ def test_run_workers_parallel_empty_returns_empty():
 
 
 def test_run_workers_parallel_actually_concurrent():
-    """With 3 workers each sleeping 0.4s, total should be well under 1.2s."""
-    delay = 0.4
+    """With 3 workers each sleeping 0.2s, parallel elapsed must be < serial (0.6s)."""
+    delay = 0.2
     bindings = [
         WorkerBinding(
             PerspectiveWorker(p, timeout=5.0),
@@ -162,5 +162,5 @@ def test_run_workers_parallel_actually_concurrent():
     elapsed = time.monotonic() - t0
     assert len(outs) == 3
     assert all(o.ok for o in outs)
-    # Serial would be ~1.2s; parallel should be ~0.4-0.7s.
-    assert elapsed < 1.0, f"workers did not run in parallel (elapsed={elapsed:.2f}s)"
+    # Serial would be ~0.6s; parallel should be ~0.2-0.35s. Leave slack for CI.
+    assert elapsed < 0.5, f"workers did not run in parallel (elapsed={elapsed:.2f}s)"
