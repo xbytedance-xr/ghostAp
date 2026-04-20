@@ -165,15 +165,13 @@ class SpecHandler(BaseEngineHandler):
                 engine.execute(requirement, callbacks, task_id=task_id, on_rate_limit=_on_rate_limit)
             except Exception as e:
                 if isinstance(e, (TimeoutError, asyncio.TimeoutError)):
-                    logger.warning("Spec Engine 执行超时 (task_id=%s): %s", task_id, str(e) or repr(e))
+                    logger.warning("Spec Engine 执行超时 (task_id=%s): %s", task_id, get_error_detail(e))
                     # Metrics should not shadow the primary warning in tests/log sampling
                     logger.info("[METRIC] spec_timeout task_id=%s", task_id)
                 else:
                     logger.error("Spec Engine 执行异常: %s", e, exc_info=True)
 
-                # 使用增强的 fmt_error 处理异常消息
-                from ...utils.errors import get_error_detail
-
+                # 使用增强的 get_error_detail 处理异常消息
                 err_msg = get_error_detail(e)
 
                 err_msg_type, err_card = self.renderer.build_error_card(
@@ -707,11 +705,9 @@ class SpecHandler(BaseEngineHandler):
                 engine.resume(callbacks)
             except Exception as e:
                 if isinstance(e, (TimeoutError, asyncio.TimeoutError)):
-                    logger.warning("Spec Engine 恢复超时 (task_id=%s): %s", task_id, str(e) or repr(e))
+                    logger.warning("Spec Engine 恢复超时 (task_id=%s): %s", task_id, get_error_detail(e))
                 else:
                     logger.error("Spec Engine 恢复执行异常: %s", e, exc_info=True)
-
-                from ...utils.errors import get_error_detail
 
                 err_msg = get_error_detail(e)
 

@@ -3,6 +3,10 @@
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 
 ## 2026-04-20
+- **B-005 修复：engine_base.py / spec.py TimeoutError 分支 logger 统一到 get_error_detail** — `engine_base.py` 4 处 + `spec.py` 2 处 `str(e) or repr(e)` → `get_error_detail(e)` + 移除 spec.py 2 处冗余 local import（修复 UnboundLocalError）；2322 passed 零回归 + 回归 lint 105 passed 零违规；Backlog B-001~B-005 全部 Done 无 Open 条目 → [详细记录](2026-04-20.md)
+- **B-004 修复：DeepEngine logger 路径统一到 get_error_detail** — `engine.py` 4 处 `str(e) or repr(e)` → `get_error_detail(e)`（_drain_pending_context×2 + _build_on_event + load_state）；2322 passed 零回归 + 回归 lint 105 passed 零违规；Backlog B-001~B-004 全部 Done 无 Open 条目 → [详细记录](2026-04-20.md)
+- **第十一次独立验证：15 项任务清单全量闭环确认** — 全量 2322 passed (47.63s) + TimeoutError 专项 249 passed (3.13s, 6 个测试文件) + 静态回归扫描 4 项零违规 + 10 层关键代码逐层抽查全部完整 + Backlog B-001/B-002/B-003 Done；新发现 B-004（DeepEngine._drain_pending_context logger 路径 Low severity）录入 Backlog；第十一次独立确认无退化无用户可见缺口 → [详细记录](2026-04-20.md)
+- **第十次独立验证：10 层防御体系完全闭环确认** — 全量 2322 passed (47.11s) + TimeoutError 专项 249 passed (3.13s, 6 个测试文件) + 静态回归扫描 4 项零违规（裸 f"{e}"/裸 asyncio.wait_for/裸 logger %s,e/裸 raise TimeoutError()）+ Backlog 三项 Done 无新增；第十次独立确认无退化无新缺口，问题彻底闭环 → [详细记录](2026-04-20.md)
 - **第九次独立验证：10 层防御体系持续闭环确认** — 全量 2322 passed (47.83s) + TimeoutError 专项 145 passed (2.59s) + 静态回归扫描 5 项零违规（裸 f"{e}"/裸 asyncio.wait_for/裸 logger %s,e/裸 raise TimeoutError()）；第九次独立确认无退化无新缺口 → [详细记录](2026-04-20.md)
 - **第八次独立验证：10 层防御体系最终闭环确认** — 全量 2322 passed (48.38s) + TimeoutError 专项 245 passed + 回归 lint 105 passed + E2E 40 passed + Grep 4 项零违规 + Backlog 三项 Done 无新增 + 10 层关键文件抽查 10/10 通过（safe_wait_for/fmt_error/get_error_detail/三引擎 except/SlidingWindowTracker/lightweight_lint/handle_review_exception/LoopReporter）；第八次独立确认无退化无新缺口 → [详细记录](2026-04-20.md)
 - **第七次独立验证：10 层防御体系持续完整** — Grep 4 项零残留 + Backlog 三项 Done + 回归 lint 105 passed + E2E 40 passed + TimeoutError 专项 245 passed + 全量 2322 passed (46.32s) + 代码审查 4 项（\_run\_async/send\_prompt/handle\_review\_exception/safe\_wait\_for）确认非空友好文案；第七次独立确认无退化无新缺口 → [详细记录](2026-04-20.md)

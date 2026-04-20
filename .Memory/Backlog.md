@@ -19,3 +19,5 @@
 | B-001 | 2026-04-20 | `JsonLinesExporter` except 子句记录 `<class 'Exception'>` 而非实际错误信息 | Medium | Audit | Done | 待提交 |
 | B-002 | 2026-04-20 | `hard_floor` 自适应超时下限硬编码为 15s，不可通过配置调整 | Low | Audit | Done | 待提交 |
 | B-003 | 2026-04-20 | `get_metrics_exporter()` 单例在类型变更时返回旧缓存实例 | Low | Audit | Done | 待提交 |
+| B-004 | 2026-04-20 | `DeepEngine._drain_pending_context` L336 使用 `str(e) or repr(e)` 而非 `get_error_detail(e)`，内部 logger 路径不一致 | Low | Audit | Done | 待提交 |
+| B-005 | 2026-04-20 | `engine_base.py` 4 处 + `spec.py` 2 处 TimeoutError 分支 logger 使用 `str(e) or repr(e)` 而非 `get_error_detail(e)`，风格不一致 | Low | Audit | Done | 待提交 |
