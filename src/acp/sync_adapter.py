@@ -1476,8 +1476,11 @@ class SyncACPSession:
         except (asyncio.CancelledError, concurrent.futures.CancelledError):
             raise RuntimeError("ACP agent 进程在执行过程中意外终止")
         except TimeoutError as e:
-            # Cancel the agent process on timeout to free resources
-            self.cancel()
+            # Cancel the agent process on timeout to free resources.
+            # Wait briefly for cancel to be acknowledged — otherwise a follow-up
+            # send_prompt can race with the in-flight cancel and the agent
+            # rejects it with `-32602 Invalid params`.
+            self.cancel(wait=True, timeout=2.0)
             raise TimeoutError(f"ACP prompt 执行超时 ({timeout}s)") from e
         finally:
             self._active_future = None
@@ -1500,13 +1503,26 @@ class SyncACPSession:
             logger.warning("[ACP] set_model failed: %s", get_error_detail(e))
             return False
 
-    def cancel(self) -> None:
-        """Cancel current prompt."""
-        if self._acp_session and self._loop:
-            asyncio.run_coroutine_threadsafe(
-                self._acp_session.cancel(),
-                self._loop,
-            )
+    def cancel(self, wait: bool = False, timeout: float = 2.0) -> None:
+        """Cancel current prompt.
+
+        When wait=True, block (up to `timeout` s) until the agent has acknowledged
+        the cancel. This prevents the race where a follow-up `send_prompt` lands
+        at the agent before cancel is processed, causing a `-32602 Invalid params`
+        rejection because the session is still mid-cancel.
+        """
+        if not (self._acp_session and self._loop):
+            return
+        fut = asyncio.run_coroutine_threadsafe(
+            self._acp_session.cancel(),
+            self._loop,
+        )
+        if not wait:
+            return
+        try:
+            fut.result(timeout=timeout)
+        except Exception as e:
+            logger.debug("[ACP] cancel wait skipped: %s", get_error_detail(e))
 
     def close(self) -> None:
         """Close session and stop event loop."""
