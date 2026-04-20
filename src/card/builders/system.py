@@ -166,7 +166,7 @@ class SystemBuilder:
         elements.append(
             {
                 "tag": "select_static",
-                "placeholder": {"tag": "plain_text", "content": "请选择工具..."},
+                "placeholder": {"tag": "plain_text", "content": "选择工具"},
                 "value": {
                     "action": "select_ttadk_tool",
                     "project_id": project_id,
@@ -214,7 +214,7 @@ class SystemBuilder:
         elements.append(
             {
                 "tag": "select_static",
-                "placeholder": {"tag": "plain_text", "content": "请选择模型..."},
+                "placeholder": {"tag": "plain_text", "content": "选择模型"},
                 "value": {
                     "action": "select_ttadk_model",
                     "tool_name": tool_name,
@@ -280,7 +280,7 @@ class SystemBuilder:
         elements.append(
             {
                 "tag": "select_static",
-                "placeholder": {"tag": "plain_text", "content": "请选择工具..."},
+                "placeholder": {"tag": "plain_text", "content": "选择工具"},
                 "value": {
                     "action": "select_ttadk_combined_tool",
                     "project_id": project_id,
@@ -312,7 +312,7 @@ class SystemBuilder:
                 elements.append(
                     {
                         "tag": "select_static",
-                        "placeholder": {"tag": "plain_text", "content": "请选择模型..."},
+                        "placeholder": {"tag": "plain_text", "content": "选择模型"},
                         "value": {
                             "action": "select_ttadk_combined",
                             "tool_name": first_tool,
@@ -351,11 +351,10 @@ class SystemBuilder:
         action: str = "show_ttadk_menu",
         button_text: str = "🔄 重新进入TTADK",
     ) -> tuple[str, str]:
+        # Clean the message for the banner (CoreBuilder adds its own emoji)
+        banner_msg = message.replace("⚠️ ", "").strip()
         elements = [
-            {
-                "tag": "markdown",
-                "content": message.strip(),
-            }
+            CoreBuilder._build_banner_element(banner_msg, type="warning")
         ]
 
         button = {

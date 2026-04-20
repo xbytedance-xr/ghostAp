@@ -18,18 +18,24 @@ class WorktreeBuilder:
         tools: list[dict],
         selected_items: list[dict],
         project_id: Optional[str] = None,
+        message: str = "",
     ) -> tuple[str, str]:
         """Render tool selection card with buttons for each available tool.
 
         *tools*: ``[{"tool_name": ..., "display_name": ..., "provider": ..., "supports_model": bool, "description": ...}]``
         *selected_items*: already-selected ``[{"display_label": ...}]`` for display.
         """
-        lines = ["**请选择一个工具加入 Worktree 组合：**\n"]
+        lines = []
+        lines.append("**请选择一个工具加入 Worktree 组合：**\n")
         for t in tools:
             desc = t.get("description") or ""
             lines.append(f"- **{t['display_name']}** {f'— {desc}' if desc else ''}")
 
-        elements: list[dict] = [CoreBuilder._build_content_element("\n".join(lines))]
+        elements: list[dict] = []
+        if message:
+            elements.append(CoreBuilder._build_banner_element(message, type="success"))
+
+        elements.append(CoreBuilder._build_content_element("\n".join(lines)))
 
         # Already-selected list
         if selected_items:
@@ -59,6 +65,25 @@ class WorktreeBuilder:
         if buttons:
             elements.append({"tag": "action", "actions": buttons})
 
+        # Finish button (resident)
+        if selected_items:
+            elements.append(
+                {
+                    "tag": "action",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "完成选择"},
+                            "type": "primary",
+                            "value": {
+                                "action": "worktree_finish_selection",
+                                "project_id": project_id or "",
+                            },
+                        }
+                    ],
+                }
+            )
+
         card = CoreBuilder._wrap_card("🌳 Worktree — 选择工具", "turquoise", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
 
@@ -68,16 +93,21 @@ class WorktreeBuilder:
         tool_display_name: str,
         selected_items: list[dict],
         project_id: Optional[str] = None,
+        message: str = "",
     ) -> tuple[str, str]:
         """Render model selection card for a TTADK tool.
 
         *models*: ``[{"name": ..., "display_name": ..., "is_default": bool}]``
         """
-        elements: list[dict] = [
+        elements: list[dict] = []
+        if message:
+            elements.append(CoreBuilder._build_banner_element(message, type="success"))
+
+        elements.append(
             CoreBuilder._build_content_element(
                 f"**为 {tool_display_name} 选择模型：**"
             )
-        ]
+        )
 
         # Already-selected list
         if selected_items:
@@ -120,58 +150,24 @@ class WorktreeBuilder:
                 },
             }
         )
+        # Finish button
+        if selected_items:
+            buttons.append(
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "完成选择"},
+                    "type": "primary",
+                    "value": {
+                        "action": "worktree_finish_selection",
+                        "project_id": project_id or "",
+                    },
+                }
+            )
+
         if buttons:
             elements.append({"tag": "action", "actions": buttons})
 
         card = CoreBuilder._wrap_card("🌳 Worktree — 选择模型", "turquoise", elements)
-        return "interactive", json.dumps(card, ensure_ascii=False)
-
-    @staticmethod
-    def build_worktree_continue_card(
-        selected_items: list[dict],
-        last_message: str = "",
-        project_id: Optional[str] = None,
-    ) -> tuple[str, str]:
-        """Ask whether to continue selecting more tool-model pairs."""
-        parts: list[str] = []
-        if last_message:
-            parts.append(f"✅ {last_message}\n")
-
-        if selected_items:
-            parts.append("**已选组合：**")
-            for i, item in enumerate(selected_items, 1):
-                parts.append(f"{i}. {item.get('display_label', item.get('display_name', ''))}")
-
-        parts.append("\n**是否继续选择其他工具-模型对？**")
-
-        elements: list[dict] = [CoreBuilder._build_content_element("\n".join(parts))]
-        elements.append(
-            {
-                "tag": "action",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "继续选择"},
-                        "type": "default",
-                        "value": {
-                            "action": "worktree_continue_selection",
-                            "project_id": project_id or "",
-                        },
-                    },
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "完成选择"},
-                        "type": "primary",
-                        "value": {
-                            "action": "worktree_finish_selection",
-                            "project_id": project_id or "",
-                        },
-                    },
-                ],
-            }
-        )
-
-        card = CoreBuilder._wrap_card("🌳 Worktree — 选择组合", "turquoise", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
 
     @staticmethod
@@ -183,16 +179,27 @@ class WorktreeBuilder:
         parts = ["**即将启动以下工具-模型组合：**\n"]
         for i, item in enumerate(selected_items, 1):
             parts.append(f"{i}. {item.get('display_label', item.get('display_name', ''))}")
-        parts.append("\n确认后请输入任务需求，系统将为每个组合创建独立 worktree 并行执行。")
+        parts.append("\n输入任务需求并启动。")
 
         elements: list[dict] = [CoreBuilder._build_content_element("\n".join(parts))]
+
+        # Add input component for immediate goal entry
+        elements.append(
+            {
+                "tag": "input",
+                "name": "worktree_goal",
+                "placeholder": {"tag": "plain_text", "content": "任务需求"},
+                "max_length": 500,
+            }
+        )
+
         elements.append(
             {
                 "tag": "action",
                 "actions": [
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "确认并等待任务输入"},
+                        "text": {"tag": "plain_text", "content": "确认并开始执行"},
                         "type": "primary",
                         "value": {
                             "action": "worktree_confirm_start",
@@ -235,8 +242,6 @@ class WorktreeBuilder:
             "failed": "❌",
         }
         parts: list[str] = []
-        if message:
-            parts.append(f"{message}\n")
         parts.append("**执行进度：**\n")
         for unit in units:
             icon = status_icons.get(unit.get("status", "pending"), "⏳")
@@ -245,7 +250,39 @@ class WorktreeBuilder:
             status = unit.get("status", "pending")
             parts.append(f"{icon} **{name}** · `{status}` · {title}")
 
-        elements: list[dict] = [CoreBuilder._build_content_element("\n".join(parts))]
+        elements: list[dict] = []
+        if message:
+            elements.append(CoreBuilder._build_banner_element(message, type="info"))
+
+        elements.append(CoreBuilder._build_content_element("\n".join(parts)))
+        
+        # If all units are ready, add a clear input box and an explicit 'Execute' button
+        is_ready = any(u.get("status") == "ready" for u in units)
+        if is_ready:
+            elements.append(
+                {
+                    "tag": "input",
+                    "name": "worktree_goal",
+                    "placeholder": {"tag": "plain_text", "content": "任务需求..."},
+                    "max_length": 500,
+                }
+            )
+            elements.append(
+                {
+                    "tag": "action",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "🚀 开始并行执行"},
+                            "type": "primary",
+                            "value": {
+                                "action": "worktree_execute_action",
+                                "project_id": project_id or "",
+                            },
+                        }
+                    ],
+                }
+            )
 
         card = CoreBuilder._wrap_card("🌳 Worktree — 执行中", "blue", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)

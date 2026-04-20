@@ -171,6 +171,23 @@ class TestWorktreeCommandRouting(unittest.TestCase):
             client._process_card_action_async(data)
             client._handle_worktree_confirm_start.assert_called_once()
 
+    def test_card_action_routes_worktree_execute_action(self):
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            client = self._build_ws_client(mock_get_settings)
+            client._handle_worktree_execute_action = MagicMock()
+            data = self._make_card_event("worktree_execute_action")
+            client._process_card_action_async(data)
+            client._handle_worktree_execute_action.assert_called_once()
+
     def test_card_action_routes_worktree_merge(self):
         with (
             patch("src.feishu.ws_client.get_settings") as mock_get_settings,
@@ -223,8 +240,8 @@ class TestWorktreeCommandRouting(unittest.TestCase):
                 "worktree_finish_selection",
                 "worktree_select_tool",
                 "worktree_select_model",
-                "worktree_continue_selection",
                 "worktree_confirm_start",
+                "worktree_execute_action",
                 "worktree_merge",
                 "worktree_cleanup",
             ]
@@ -234,6 +251,25 @@ class TestWorktreeCommandRouting(unittest.TestCase):
                     client._is_system_card_action(data),
                     f"{action} should be in system card action whitelist",
                 )
+
+    def test_handle_worktree_confirm_start_with_input_goal(self):
+        """handle_worktree_confirm_start should trigger execution if goal input is present."""
+        handler = self._build_system_handler()
+        project = MagicMock()
+        handler.project_manager.get_project.return_value = project
+        
+        handler._worktree_manager = MagicMock()
+        mock_state = MagicMock()
+        mock_state.last_error = None
+        mock_state.units = [MagicMock()]
+        handler._worktree_manager().ensure_worktrees.return_value = mock_state
+        
+        handler.handle_worktree_execute = MagicMock()
+        
+        value = {"action": "worktree_confirm_start", "worktree_goal": "Refactor everything"}
+        handler.handle_worktree_confirm_start("msg-1", "chat-1", project_id="p1", value=value)
+        
+        handler.handle_worktree_execute.assert_called_once_with("msg-1", "chat-1", "Refactor everything", project=project)
 
     def _build_system_handler(self):
         """Build a minimally-mocked SystemHandler for direct method tests."""

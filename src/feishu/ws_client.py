@@ -490,10 +490,6 @@ class FeishuWSClient:
             exact="worktree_select_model",
         )
         self._register_action(
-            lambda mid, cid, pid, val: self._handle_worktree_continue_selection(mid, cid, pid, val),
-            exact="worktree_continue_selection",
-        )
-        self._register_action(
             lambda mid, cid, pid, val: self._handle_worktree_confirm_start(mid, cid, pid, val),
             exact="worktree_confirm_start",
         )
@@ -504,6 +500,10 @@ class FeishuWSClient:
         self._register_action(
             lambda mid, cid, pid, val: self._handle_worktree_cleanup(mid, cid, pid, val),
             exact="worktree_cleanup",
+        )
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_worktree_execute_action(mid, cid, pid, val),
+            exact="worktree_execute_action",
         )
 
         # ACP
@@ -1119,8 +1119,8 @@ class FeishuWSClient:
         "_handle_finish_worktree_selection": ("system", "handle_finish_worktree_selection"),
         "_handle_worktree_select_tool": ("system", "handle_worktree_select_tool"),
         "_handle_worktree_select_model": ("system", "handle_worktree_select_model"),
-        "_handle_worktree_continue_selection": ("system", "handle_worktree_continue_selection"),
         "_handle_worktree_confirm_start": ("system", "handle_worktree_confirm_start"),
+        "_handle_worktree_execute_action": ("system", "handle_worktree_execute_action"),
         "_handle_worktree_merge": ("system", "handle_worktree_merge"),
         "_handle_worktree_cleanup": ("system", "handle_worktree_cleanup"),
         "_handle_select_ttadk_tool": ("system", "handle_select_ttadk_tool"),
@@ -2159,8 +2159,8 @@ class FeishuWSClient:
                 "worktree_finish_selection",
                 "worktree_select_tool",
                 "worktree_select_model",
-                "worktree_continue_selection",
                 "worktree_confirm_start",
+                "worktree_execute_action",
                 "worktree_merge",
                 "worktree_cleanup",
                 "enter_deep_prompt",

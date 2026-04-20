@@ -199,11 +199,11 @@ UI_TEXT = {
     "ttadk_extra_hint": "\n\n可点击「切换TTADK工具」重新选择工具链",
     # ── Deep Engine Card Prompts ──
     "deep_error_no_detail": "发生错误 (无详细信息)",
-    "deep_error_expand_hint": '\n> (更多错误详情请点击下方"展开日志"按钮)...',
+    "deep_error_expand_hint": '\n> (展开日志查看更多)...',
     "deep_executing_placeholder": "正在执行...",
-    "deep_content_expand_hint": '\n> (更多内容请点击下方"展开日志"按钮)',
+    "deep_content_expand_hint": '\n> (展开日志查看更多)',
     "deep_folded_lines_hint": "...(已折叠 {count} 行)...\n",
-    "deep_ac_expand_hint": '\n> (更多验收标准请点击"展开验收标准"按钮)...',
+    "deep_ac_expand_hint": '\n> (展开验收标准查看更多)...',
     # ── Shell Truncation ──
     "shell_truncated": "\n...(已截断)...",
     # ── ws_client Prompts ──

@@ -327,12 +327,15 @@ class ProgrammingModeHandler(BaseHandler):
                 if self.mode_name == "TTADK":
                     mode_hint = UI_TEXT["mode_resume_hint_ttadk"]
                 content = UI_TEXT["mode_resume_msg"].format(name=self.mode_name, session_id=session.session_id, query_count=snapshot.query_count, hint=mode_hint)
+                
+                banner = CardBuilder._build_banner_element(f"{self.mode_name} 会话已恢复", type="success")
                 msg_type, card_content = CardBuilder.build_project_response_card(
                     project,
-                    f"{self.mode_name} 会话已恢复",
+                    f"{self.mode_name} 编程模式",
                     content,
                     show_buttons=True,
                     footer=f"📂 项目目录: {project.root_path}",
+                    banner=banner,
                 )
                 response_id = self.reply_message_with_id(message_id, card_content, msg_type)
                 if response_id:
@@ -345,12 +348,15 @@ class ProgrammingModeHandler(BaseHandler):
                 content = UI_TEXT["mode_enter_msg"].format(emoji=self.mode_emoji, name=self.mode_name)
                 if self.mode_name == "TTADK":
                     content += UI_TEXT["ttadk_extra_hint"]
+                
+                banner = CardBuilder._build_banner_element(f"{self.mode_name} 编程模式已开启", type="success")
                 msg_type, card_content = CardBuilder.build_project_response_card(
                     project,
                     f"{self.mode_emoji} {self.mode_name}编程模式",
                     content,
                     show_buttons=True,
                     footer=f"📂 项目目录: {project.root_path}",
+                    banner=banner,
                 )
                 response_id = self.reply_message_with_id(message_id, card_content, msg_type)
                 if response_id:
@@ -403,10 +409,15 @@ class ProgrammingModeHandler(BaseHandler):
                 try:
                     if set_model_fn(model_name):
                         logger.info("[%s] Model switched via ACP protocol: %s", self.mode_name, model_name)
-                        self.reply_message(
-                            message_id,
-                            f"✅ 已切换 {self.mode_name} 模型为: **{model_name}**（对话上下文已保留）",
+                        
+                        banner = CardBuilder._build_banner_element(f"已切换 {self.mode_name} 模型为: {model_name}", type="success")
+                        msg_type, card_content = CardBuilder.build_project_response_card(
+                            project,
+                            f"{self.mode_name} 模型已切换",
+                            "对话上下文已保留，可以继续当前任务。",
+                            banner=banner,
                         )
+                        self.reply_message(message_id, card_content, msg_type=msg_type)
                         return
                 except Exception as e:
                     logger.warning("[%s] ACP set_model failed, will restart session: %s", self.mode_name, get_error_detail(e))
@@ -426,10 +437,15 @@ class ProgrammingModeHandler(BaseHandler):
                 agent_type_override=agent_type_override,
                 model_name=model_name,
             )
-            self.reply_message(
-                message_id,
-                f"✅ 已切换 {self.mode_name} 模型为: **{model_name}**（已重启会话）",
+            
+            banner = CardBuilder._build_banner_element(f"已切换 {self.mode_name} 模型为: {model_name}", type="success")
+            msg_type, card_content = CardBuilder.build_project_response_card(
+                project,
+                f"{self.mode_name} 模型已切换",
+                "已重启会话，可以开始新任务。",
+                banner=banner,
             )
+            self.reply_message(message_id, card_content, msg_type=msg_type)
         except Exception as e:
             from ...utils.errors import log_exception
             log_exception(logger, f"切换 {self.mode_name} 模型失败", e)
@@ -538,11 +554,14 @@ class ProgrammingModeHandler(BaseHandler):
                     content = UI_TEXT["mode_exit_msg"].format(name=self.mode_name)
                     if is_pending_slot or is_mode_only_exit:
                         content = UI_TEXT["mode_exit_pending_msg"].format(name=self.mode_name)
+                    
+                    banner = CardBuilder._build_banner_element(f"已退出 {self.mode_name} 编程模式", type="info")
                     msg_type, card_content = CardBuilder.build_project_response_card(
                         project,
-                        f"已退出{self.mode_name}编程模式",
+                        "模式已退出",
                         content,
                         show_buttons=True,
+                        banner=banner,
                     )
                     response_id = self.reply_message_with_id(
                         message_id, card_content, msg_type,

@@ -261,12 +261,7 @@ class DeepBuilder:
 
         # Warning banner
         if state.warning_banner:
-            elements.append(
-                {
-                    "tag": "markdown",
-                    "content": f"<font color='red'>**⚠️ {state.warning_banner}**</font>",
-                }
-            )
+            elements.append(CoreBuilder._build_banner_element(state.warning_banner, type="warning"))
 
         # Main content processing
         display_content = state.content if isinstance(state.content, str) else str(state.content or "")

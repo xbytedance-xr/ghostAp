@@ -64,6 +64,37 @@ class CoreBuilder:
         return {"tag": "markdown", "content": full_content}
 
     @staticmethod
+    def _build_banner_element(message: str, type: str = "info") -> dict:
+        """Build a prominent banner element using column_set and background_style."""
+        style_map = {
+            "success": ("green", "✅"),
+            "warning": ("yellow", "⚠️"),
+            "error": ("red", "❌"),
+            "info": ("blue", "ℹ️"),
+        }
+        bg_style, emoji = style_map.get(type, ("blue", "ℹ️"))
+
+        return {
+            "tag": "column_set",
+            "flex_mode": "stretch",
+            "background_style": bg_style,
+            "columns": [
+                {
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 1,
+                    "vertical_align": "center",
+                    "elements": [
+                        {
+                            "tag": "markdown",
+                            "content": f"**{emoji} {message}**",
+                        }
+                    ],
+                }
+            ],
+        }
+
+    @staticmethod
     def _build_header_title(
         project: Optional[ProjectContext],
         is_coco_mode: bool = False,

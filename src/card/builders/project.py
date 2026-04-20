@@ -23,6 +23,7 @@ class ProjectBuilder:
         extra_buttons: Optional[list[dict]] = None,
         footer: Optional[str] = None,
         image_keys: Optional[list[str]] = None,
+        banner: Optional[dict] = None,
     ) -> tuple[str, str]:
         return ProjectBuilder._build_response_card_inner(
             project,
@@ -36,6 +37,7 @@ class ProjectBuilder:
             extra_buttons=extra_buttons,
             footer=footer,
             image_keys=image_keys,
+            banner=banner,
         )
 
     @staticmethod
@@ -86,6 +88,7 @@ class ProjectBuilder:
         extra_buttons: Optional[list[dict]] = None,
         footer: Optional[str] = None,
         image_keys: Optional[list[str]] = None,
+        banner: Optional[dict] = None,
     ) -> tuple[str, str]:
         theme = get_theme(project.theme_color if project else ("orange" if is_ttadk_mode else "turquoise" if is_gemini_mode else "blue"))
 
@@ -107,6 +110,11 @@ class ProjectBuilder:
             CoreBuilder._build_directory_element(project, working_dir),
             {"tag": "hr"},
         ]
+
+        if banner:
+            elements.append(banner)
+            elements.append({"tag": "hr"})
+
         if actual_ttadk:
             ttadk_status = CoreBuilder._build_ttadk_status_element(project)
             if ttadk_status:

@@ -988,14 +988,18 @@ class SystemHandler(BaseHandler):
             models = self._get_models_for_tool(tool_name)
             msg_type, card = CardBuilder.build_worktree_model_select_card(
                 models, option.display_name, selected_dicts, pid,
+                message=f"已选择工具: {option.display_name}",
             )
         else:
-            # Auto-add pending item without model, go straight to continue card
-            mgr.add_pending_item(project)
+            # Auto-add pending item without model, back to tool selection
+            state, _, msg = mgr.add_pending_item(project)
+            mgr.back_to_tool_selection(project)
+            
             state = mgr.get_state(project)
+            tools = self._get_available_worktree_tools()
             selected_dicts = [item.to_dict() for item in state.selection.selected_items]
-            msg_type, card = CardBuilder.build_worktree_continue_card(
-                selected_dicts, state.selection.last_message, pid,
+            msg_type, card = CardBuilder.build_worktree_tool_select_card(
+                tools, selected_dicts, pid, message=msg,
             )
         self.patch_message(message_id, card, msg_type=msg_type)
 
@@ -1018,36 +1022,16 @@ class SystemHandler(BaseHandler):
 
         mgr = self._worktree_manager()
         state, added, msg = mgr.add_pending_item(project, model_name=model_name, model_display_name=model_display)
-        selected_dicts = [item.to_dict() for item in state.selection.selected_items]
-        pid = project.project_id
-        msg_type, card = CardBuilder.build_worktree_continue_card(selected_dicts, msg, pid)
-        self.patch_message(message_id, card, msg_type=msg_type)
-
-    def handle_worktree_continue_selection(
-        self,
-        message_id: str,
-        chat_id: str,
-        project_id: Optional[str] = None,
-        value: dict | None = None,
-    ):
-        """Card action: user wants to add more tools."""
-        project = self.project_manager.get_project(project_id) if project_id else self.project_manager.get_active_project(chat_id)
-        if not project:
-            self.reply_error(message_id, "找不到关联的项目")
-            return
-
-        mgr = self._worktree_manager()
-        state = mgr.get_state(project)
-
-        if len(state.selection.selected_items) >= self._WORKTREE_MAX_SELECTIONS:
-            # Auto-finish if limit reached
-            return self.handle_finish_worktree_selection(message_id, chat_id, project_id)
-
+        # Back to tool selection for next tool
         mgr.back_to_tool_selection(project)
-        tools = self._get_available_worktree_tools()
+
+        state = mgr.get_state(project)
         selected_dicts = [item.to_dict() for item in state.selection.selected_items]
+        tools = self._get_available_worktree_tools()
         pid = project.project_id
-        msg_type, card = CardBuilder.build_worktree_tool_select_card(tools, selected_dicts, pid)
+        msg_type, card = CardBuilder.build_worktree_tool_select_card(
+            tools, selected_dicts, pid, message=msg,
+        )
         self.patch_message(message_id, card, msg_type=msg_type)
 
     def handle_finish_worktree_selection(
@@ -1082,6 +1066,7 @@ class SystemHandler(BaseHandler):
         value: dict | None = None,
     ):
         """Card action: user confirmed selections — create worktrees and await goal."""
+        value = value or {}
         project = self.project_manager.get_project(project_id) if project_id else self.project_manager.get_active_project(chat_id)
         if not project:
             self.reply_error(message_id, "找不到关联的项目")
@@ -1098,6 +1083,14 @@ class SystemHandler(BaseHandler):
         # detect that worktree mode is awaiting a user goal.
         for unit in state.units:
             unit.status = "ready"
+
+        # Check if user provided a goal in the input box
+        goal = str(value.get("worktree_goal") or value.get("_input_value") or "").strip()
+
+        if goal:
+            # If goal is present, skip the "waiting" step and go straight to execution
+            self.handle_worktree_execute(message_id, chat_id, goal, project=project)
+            return
 
         # Show progress card with "ready" status
         units_dicts = [u.to_dict() for u in state.units]
@@ -1223,6 +1216,27 @@ class SystemHandler(BaseHandler):
         mgr = self._worktree_manager()
         mgr.cleanup_worktrees(project)
         self.reply_message(message_id, "✅ 所有 Worktree 已清理完成")
+
+    def handle_worktree_execute_action(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: Optional[str] = None,
+        value: dict | None = None,
+    ):
+        """Card action: execute worktree goal from progress card input."""
+        value = value or {}
+        project = self.project_manager.get_project(project_id) if project_id else self.project_manager.get_active_project(chat_id)
+        if not project:
+            self.reply_error(message_id, "找不到关联的项目")
+            return
+
+        goal = str(value.get("worktree_goal") or value.get("_input_value") or "").strip()
+        if not goal:
+            self.reply_message(message_id, "⚠️ 请先在输入框中填写任务需求")
+            return
+
+        self.handle_worktree_execute(message_id, chat_id, goal, project=project)
 
     def _reply_ttadk_load_hint(self, message_id: str, text: str, project_id: Optional[str] = None) -> None:
         msg_type, card_content = CardBuilder.build_ttadk_soft_failure_card_for(text, project_id=project_id)
@@ -1651,12 +1665,13 @@ class SystemHandler(BaseHandler):
         if success:
             self.add_reaction(message_id, EmojiReaction.on_dir_changed())
             if project:
-                content = f"✅ 已切换到: `{result}`"
+                banner = CardBuilder._build_banner_element(f"目录已切换到: {result}", type="success")
                 msg_type, card_content = CardBuilder.build_project_response_card(
                     project,
                     "目录已切换",
-                    content,
+                    f"当前工作目录已成功更新为 `{result}`。",
                     show_buttons=True,
+                    banner=banner,
                 )
                 response_id = self.reply_message_with_id(message_id, card_content, msg_type)
                 if response_id:
@@ -1665,7 +1680,18 @@ class SystemHandler(BaseHandler):
                 self.reply_message(message_id, fmt.format_dir_change(result, True))
         else:
             self.add_reaction(message_id, EmojiReaction.on_error())
-            self.reply_message(message_id, fmt.format_error(result))
+            if project:
+                banner = CardBuilder._build_banner_element(f"切换目录失败: {result}", type="error")
+                msg_type, card_content = CardBuilder.build_project_response_card(
+                    project,
+                    "操作失败",
+                    f"无法切换到目标目录: `{result}`",
+                    show_buttons=True,
+                    banner=banner,
+                )
+                self.reply_message(message_id, card_content, msg_type=msg_type)
+            else:
+                self.reply_message(message_id, fmt.format_error(result))
 
     # ------------------------------------------------------------------
     # Help

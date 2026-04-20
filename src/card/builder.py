@@ -73,6 +73,10 @@ class CardBuilder:
     def _format_time_ago(timestamp: float) -> str:
         return CoreBuilder._format_time_ago(timestamp)
 
+    @staticmethod
+    def _build_banner_element(message: str, type: str = "success") -> dict:
+        return CoreBuilder._build_banner_element(message, type)
+
     # --- Project Delegates ---
 
     @staticmethod
@@ -132,9 +136,10 @@ class CardBuilder:
         extra_buttons: Optional[list[dict]] = None,
         footer: Optional[str] = None,
         image_keys: Optional[list[str]] = None,
+        banner: Optional[dict] = None,
     ) -> tuple[str, str]:
         return ProjectBuilder.build_project_response_card(
-            project, title, content, show_buttons, extra_buttons, footer, image_keys
+            project, title, content, show_buttons, extra_buttons, footer, image_keys, banner=banner
         )
 
     @staticmethod
@@ -423,7 +428,6 @@ class CardBuilder:
 
     build_worktree_tool_select_card = staticmethod(WorktreeBuilder.build_worktree_tool_select_card)
     build_worktree_model_select_card = staticmethod(WorktreeBuilder.build_worktree_model_select_card)
-    build_worktree_continue_card = staticmethod(WorktreeBuilder.build_worktree_continue_card)
     build_worktree_confirm_card = staticmethod(WorktreeBuilder.build_worktree_confirm_card)
     build_worktree_progress_card = staticmethod(WorktreeBuilder.build_worktree_progress_card)
     build_worktree_cleanup_card = staticmethod(WorktreeBuilder.build_worktree_cleanup_card)
