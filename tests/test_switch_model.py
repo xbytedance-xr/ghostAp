@@ -307,14 +307,18 @@ def _make_system_handler(is_coco_mode=False):
     ctx.project_manager.get_active_project.return_value = None
     ctx.working_dirs = {}
 
+    mock_handlers = {
+        "coco": MagicMock(spec=["enter_mode", "switch_model", "current_model"]),
+        "claude": MagicMock(spec=["enter_mode", "switch_model", "current_model"]),
+        "aiden": MagicMock(spec=["enter_mode", "switch_model", "current_model"]),
+        "codex": MagicMock(spec=["enter_mode", "switch_model", "current_model"]),
+        "gemini": MagicMock(spec=["enter_mode", "switch_model", "current_model"]),
+    }
+    ctx.handlers = mock_handlers
+
     handler = SystemHandler(ctx)
     handler.reply_message = MagicMock()
     handler.reply_error = MagicMock()
-    handler.coco_handler = MagicMock(spec=["enter_mode", "switch_model", "current_model"])
-    handler.claude_handler = MagicMock(spec=["enter_mode", "switch_model", "current_model"])
-    handler.aiden_handler = MagicMock(spec=["enter_mode", "switch_model", "current_model"])
-    handler.codex_handler = MagicMock(spec=["enter_mode", "switch_model", "current_model"])
-    handler.gemini_handler = MagicMock(spec=["enter_mode", "switch_model", "current_model"])
     return handler
 
 
@@ -322,22 +326,22 @@ class TestEnterModeWithAcpModelRouting(unittest.TestCase):
     def test_calls_enter_mode_when_not_in_coco_mode(self):
         handler = _make_system_handler(is_coco_mode=False)
         handler._enter_mode_with_acp_model("msg1", "chat1", "coco", "gpt-5.2")
-        handler.coco_handler.enter_mode.assert_called_once()
-        handler.coco_handler.switch_model.assert_not_called()
+        handler.ctx.handlers["coco"].enter_mode.assert_called_once()
+        handler.ctx.handlers["coco"].switch_model.assert_not_called()
 
     def test_calls_switch_model_when_already_in_coco_mode(self):
         handler = _make_system_handler(is_coco_mode=True)
         handler._enter_mode_with_acp_model("msg1", "chat1", "coco", "claude-3.7-sonnet")
-        handler.coco_handler.switch_model.assert_called_once_with(
+        handler.ctx.handlers["coco"].switch_model.assert_called_once_with(
             "msg1", "chat1", "claude-3.7-sonnet", project=None
         )
-        handler.coco_handler.enter_mode.assert_not_called()
+        handler.ctx.handlers["coco"].enter_mode.assert_not_called()
 
     def test_calls_enter_mode_for_claude_when_not_in_claude_mode(self):
         handler = _make_system_handler(is_coco_mode=False)
         handler._enter_mode_with_acp_model("msg1", "chat1", "claude", "opus-4")
-        handler.claude_handler.enter_mode.assert_called_once()
-        handler.claude_handler.switch_model.assert_not_called()
+        handler.ctx.handlers["claude"].enter_mode.assert_called_once()
+        handler.ctx.handlers["claude"].switch_model.assert_not_called()
 
     def test_error_for_unknown_tool(self):
         handler = _make_system_handler(is_coco_mode=False)

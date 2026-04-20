@@ -511,16 +511,16 @@ class SystemHandler(BaseHandler):
             target_project.acp_model_name = model_name
 
         _TOOL_HANDLER_MAP = [
-            ("coco",   "coco_handler",   "is_coco_mode"),
-            ("claude", "claude_handler", "is_claude_mode"),
-            ("aiden",  "aiden_handler",  "is_aiden_mode"),
-            ("codex",  "codex_handler",  "is_codex_mode"),
-            ("gemini", "gemini_handler", "is_gemini_mode"),
+            ("coco",   "is_coco_mode"),
+            ("claude", "is_claude_mode"),
+            ("aiden",  "is_aiden_mode"),
+            ("codex",  "is_codex_mode"),
+            ("gemini", "is_gemini_mode"),
         ]
-        for _tool, _handler_attr, _mode_check in _TOOL_HANDLER_MAP:
+        for _tool, _mode_check in _TOOL_HANDLER_MAP:
             if tool_name != _tool:
                 continue
-            handler = getattr(self, _handler_attr, None)
+            handler = self.get_handler(_tool)
             if not handler:
                 break
             if hasattr(handler, "current_model"):

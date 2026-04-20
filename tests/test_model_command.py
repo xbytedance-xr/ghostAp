@@ -32,15 +32,18 @@ def _make_handler():
     ctx.project_manager.get_active_project.return_value = None
     ctx.working_dirs = {}
 
+    ctx.handlers = {
+        "coco": MagicMock(),
+        "claude": MagicMock(),
+        "aiden": MagicMock(),
+        "codex": MagicMock(),
+        "gemini": MagicMock(),
+    }
+
     handler = SystemHandler(ctx)
     handler.reply_message = MagicMock()
     handler.reply_error = MagicMock()
     handler.get_working_dir = MagicMock(return_value="/tmp")
-    handler.coco_handler = MagicMock()
-    handler.claude_handler = MagicMock()
-    handler.aiden_handler = MagicMock()
-    handler.codex_handler = MagicMock()
-    handler.gemini_handler = MagicMock()
     return handler
 
 
