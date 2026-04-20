@@ -152,7 +152,7 @@ def get_error_detail(exc: Exception, *, default: str = "未知错误") -> str:
 
 def fmt_exception(action: str, exc: BaseException) -> str:
     """Format an unexpected exception for the user."""
-    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)) or _has_timeout_in_chain(exc):
         return f"❌ {action}超时: 操作耗时过长，请重试"
     return f"❌ {action}异常: {str(exc) or repr(exc)}"
 
@@ -181,6 +181,6 @@ def log_exception(logger: logging.Logger, msg: str, exc: Exception, level: int =
     carrying ``is_ghostap_error = True``) to WARNING.
     """
     if isinstance(exc, GhostAPError) or getattr(exc, "is_ghostap_error", False):
-        logger.warning(f"{msg}: {str(exc) or repr(exc)}")
+        logger.warning(f"{msg}: {get_error_detail(exc)}")
     else:
         logger.log(level, msg, exc_info=exc)

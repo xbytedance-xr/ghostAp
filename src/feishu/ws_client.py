@@ -295,6 +295,20 @@ class FeishuWSClient:
         # ------------------------------------------------------------------
         # Populate registry containers in context
         # ------------------------------------------------------------------
+        # Bind handlers directly on instance for backward compatibility (especially for tests)
+        self._coco_handler = coco_handler
+        self._claude_handler = claude_handler
+        self._aiden_handler = aiden_handler
+        self._codex_handler = codex_handler
+        self._gemini_handler = gemini_handler
+        self._ttadk_handler = ttadk_handler
+        self._deep_handler = deep_handler
+        self._loop_handler = loop_handler
+        self._spec_handler = spec_handler
+        self._project_handler = project_handler
+        self._system_handler = system_handler
+        self._diagnostics_handler = diagnostics_handler
+
         self._handler_ctx.managers.update({
             "coco": self._coco_manager,
             "claude": self._claude_manager,
@@ -504,6 +518,10 @@ class FeishuWSClient:
         self._register_action(
             lambda mid, cid, pid, val: self._handle_worktree_execute_action(mid, cid, pid, val),
             exact="worktree_execute_action",
+        )
+        self._register_action(
+            lambda mid, cid, pid, val: self._handle_worktree_retry_failed(mid, cid, pid, val),
+            exact="worktree_retry_failed",
         )
 
         # ACP
@@ -1123,6 +1141,7 @@ class FeishuWSClient:
         "_handle_worktree_execute_action": ("system", "handle_worktree_execute_action"),
         "_handle_worktree_merge": ("system", "handle_worktree_merge"),
         "_handle_worktree_cleanup": ("system", "handle_worktree_cleanup"),
+        "_handle_worktree_retry_failed": ("system", "handle_worktree_retry_failed"),
         "_handle_select_ttadk_tool": ("system", "handle_select_ttadk_tool"),
         "_handle_select_ttadk_model": ("system", "handle_select_ttadk_model"),
         "_handle_refresh_ttadk_models": ("system", "handle_refresh_ttadk_models"),
@@ -2163,6 +2182,7 @@ class FeishuWSClient:
                 "worktree_execute_action",
                 "worktree_merge",
                 "worktree_cleanup",
+                "worktree_retry_failed",
                 "enter_deep_prompt",
                 "help_category",
                 "deep_pause",

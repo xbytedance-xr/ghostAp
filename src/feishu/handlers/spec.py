@@ -693,7 +693,7 @@ class SpecHandler(BaseEngineHandler):
         try:
             engine.restore_from_task_state(state, on_rate_limit=on_rate_limit)
         except Exception as e:
-            logger.warning("恢复任务上下文失败(task_id=%s): %s", task_id, e, exc_info=True)
+            logger.warning("恢复任务上下文失败(task_id=%s): %s", task_id, get_error_detail(e), exc_info=True)
             self.reply_message(message_id, fmt_error("恢复任务上下文", e))
             return
 

@@ -332,7 +332,8 @@ def test_worktree_select_tool_skips_model_selection_for_coco_even_with_multiple_
         "tool_name": "coco",
         "provider": "acp",
         "supports_model": True,
-        "display_name": "Coco"
+        "display_name": "Coco",
+        "skip_model_selection": True
     }
     
     # Mock multiple models

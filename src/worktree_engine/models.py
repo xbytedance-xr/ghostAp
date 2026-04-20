@@ -29,6 +29,7 @@ class WorktreeSelectionItem:
     model_display_name: Optional[str] = None
     supports_model: bool = True
     model_optional: bool = False
+    skip_model_selection: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -67,6 +68,7 @@ class WorktreeSelectionItem:
             model_display_name=_clean_optional_str(data.get("model_display_name")),
             supports_model=bool(data.get("supports_model", True)),
             model_optional=bool(data.get("model_optional", False)),
+            skip_model_selection=bool(data.get("skip_model_selection", False)),
             metadata=dict(data.get("metadata") or {}),
         )
 

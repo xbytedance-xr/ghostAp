@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, call, patch
+from src.project.context import ProjectContext
 
 # ---------------------------------------------------------------------------
 # ACPSession.set_model()
@@ -193,16 +194,25 @@ class TestSwitchModelACPPath(unittest.TestCase):
 
     def test_acp_switch_success_sends_reply(self):
         handler = _make_coco_handler()
-
+    
         fake_session = MagicMock()
         fake_session.set_model = MagicMock(return_value=True)
-
+    
         mgr_mock = MagicMock()
         mgr_mock.get_session.return_value = fake_session
-
+    
+        project = MagicMock(spec=ProjectContext)
+        project.project_id = "p1"
+        project.coco_mode = True
+        project.claude_mode = False
+        project.ttadk_mode = False
+        project.theme_color = "blue"
+        project.root_path = "/tmp/p1"
+        project.project_name = "P1"
+    
         with patch.object(handler, "_get_session_manager", return_value=mgr_mock):
-            handler.switch_model("msg1", "chat1", "claude-3.7-sonnet")
-
+            handler.switch_model("msg1", "chat1", "claude-3.7-sonnet", project=project)
+    
         fake_session.set_model.assert_called_once_with("claude-3.7-sonnet")
         mgr_mock.end_session.assert_not_called()
         handler.reply_message.assert_called_once()
@@ -216,21 +226,30 @@ class TestSwitchModelFallbackPath(unittest.TestCase):
 
     def test_fallback_restarts_session_and_replies(self):
         handler = _make_coco_handler()
-
+    
         fake_session = MagicMock()
         fake_session.set_model = MagicMock(return_value=False)  # ACP switch fails
-
+    
         new_session = MagicMock()
         new_session.session_id = "new-sess"
-
+    
         mgr_mock = MagicMock()
         mgr_mock.get_session.return_value = fake_session
         mgr_mock.ensure_session.return_value = new_session
-
+    
+        project = MagicMock(spec=ProjectContext)
+        project.project_id = "p1"
+        project.coco_mode = True
+        project.claude_mode = False
+        project.ttadk_mode = False
+        project.theme_color = "blue"
+        project.root_path = "/tmp/p1"
+        project.project_name = "P1"
+    
         with patch.object(handler, "_get_session_manager", return_value=mgr_mock):
-            handler.switch_model("msg1", "chat1", "gpt-5.2")
-
-        mgr_mock.end_session.assert_called_once_with("chat1", project_id=None)
+            handler.switch_model("msg1", "chat1", "gpt-5.2", project=project)
+    
+        mgr_mock.end_session.assert_called_once_with("chat1", project_id="p1")
         mgr_mock.ensure_session.assert_called_once()
         call_kwargs = mgr_mock.ensure_session.call_args
         assert call_kwargs[1].get("model_name") == "gpt-5.2" or "gpt-5.2" in str(call_kwargs)

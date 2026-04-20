@@ -403,7 +403,8 @@ DEFAULT_TOOLS = [
     TTADKTool(name="cursor", description="Cursor AI Editor"),
     TTADKTool(name="gemini", description="Google Gemini AI"),
     TTADKTool(name="codex", description="OpenAI Codex"),
-    TTADKTool(name="coco", description="Coco AI Assistant"),
+    TTADKTool(name="coco", description="Coco AI Assistant", skip_model_selection=True),
+    TTADKTool(name="aiden", description="Aiden AI", skip_model_selection=True),
     TTADKTool(name="tmates", description="Tmates AI"),
     TTADKTool(name="trae", description="Trae IDE AI"),
     TTADKTool(name="opencode", description="OpenCode AI"),
@@ -1076,6 +1077,10 @@ class TTADKManager:
         """
         tools = []
         tool_names = self._load_tool_names_from_settings()
+
+        # Build skip map from DEFAULT_TOOLS for metadata propagation
+        skip_map = {t.name: t.skip_model_selection for t in DEFAULT_TOOLS}
+
         if not tool_names:
             tool_names = [t.name for t in DEFAULT_TOOLS]
         self._known_tools = {str(name) for name in tool_names}
@@ -1089,6 +1094,7 @@ class TTADKManager:
                     name=name,
                     description=TOOL_DESCRIPTIONS.get(name, "AI Tool"),
                     is_default=(name == self._current_tool),
+                    skip_model_selection=skip_map.get(name, False),
                 )
             )
         return tools

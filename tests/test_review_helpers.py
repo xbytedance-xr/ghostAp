@@ -29,21 +29,21 @@ class TestBuildReviewErrorSuggestion:
         result = build_review_error_suggestion(fail_reason="exception", error_text="", err_repr="")
         assert result == "审查执行异常，将在下一轮重试"
 
-    def test_empty_message_marker_returns_retry(self):
+    def test_timeout_marker_in_text_returns_timeout(self):
         result = build_review_error_suggestion(
             fail_reason="exception",
             error_text="TimeoutError (empty message)",
             err_repr="",
         )
-        assert result == "审查执行异常，将在下一轮重试"
+        assert result == "审查超时，跳过本轮审查继续执行"
 
-    def test_empty_message_in_err_repr_returns_retry(self):
+    def test_timeout_marker_in_err_repr_returns_timeout(self):
         result = build_review_error_suggestion(
             fail_reason="exception",
             error_text="",
             err_repr="TimeoutError (empty message)",
         )
-        assert result == "审查执行异常，将在下一轮重试"
+        assert result == "审查超时，跳过本轮审查继续执行"
 
     def test_real_error_text_included(self):
         result = build_review_error_suggestion(

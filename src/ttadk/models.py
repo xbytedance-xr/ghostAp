@@ -793,6 +793,7 @@ class TTADKTool:
     name: str
     description: str = ""
     is_default: bool = False
+    skip_model_selection: bool = False
 
 
 @dataclass

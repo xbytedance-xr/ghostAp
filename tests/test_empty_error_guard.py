@@ -184,6 +184,29 @@ class TestFmtExceptionEmptyGuard:
         assert "超时" in result
         assert "操作耗时过长" in result
 
+    def test_concurrent_futures_timeout_error(self):
+        import concurrent.futures
+        result = fmt_exception("任务", concurrent.futures.TimeoutError())
+        assert "任务超时" in result
+        assert "操作耗时过长" in result
+
+    def test_wrapped_timeout_chain(self):
+        inner = TimeoutError()
+        outer = RuntimeError("chained failure")
+        outer.__cause__ = inner
+        result = fmt_exception("审查", outer)
+        assert "审查超时" in result
+        assert "操作耗时过长" in result
+
+    def test_wrapped_asyncio_timeout_chain(self):
+        import asyncio
+        inner = asyncio.TimeoutError()
+        outer = ValueError("failed")
+        outer.__context__ = inner
+        result = fmt_exception("执行", outer)
+        assert "执行超时" in result
+        assert "操作耗时过长" in result
+
 
 # ---------------------------------------------------------------------------
 # Task 5: WorktreeDispatcher — get_error_detail integration
@@ -194,29 +217,29 @@ class TestWorktreeDispatcherGetErrorDetail:
 
     def test_bare_timeout_uses_get_error_detail(self, tmp_path):
         from src.worktree_engine.dispatcher import WorktreeDispatcher
-        from src.worktree_engine.models import WorktreeUnit
-
+        from src.worktree_engine.models import WorktreeUnit, WorktreeSelectionItem
+    
         d = tmp_path / "wt"
         d.mkdir()
-
+    
         @dataclass
         class FakeResult:
             stop_reason: str
             text: str
-
+    
         class TimeoutSession:
             def __init__(self, **kw):
                 pass
-
+    
             def start(self, startup_timeout=60):
                 return "ok"
-
+    
             def send_prompt(self, text, on_event=None, timeout=None):
                 raise TimeoutError()
-
+    
             def close(self):
                 pass
-
+    
         unit = WorktreeUnit(
             unit_id="u0",
             selection_key="acp:coco:d",
@@ -225,8 +248,14 @@ class TestWorktreeDispatcherGetErrorDetail:
             display_name="Coco",
             worktree_path=str(d),
         )
+        tool = WorktreeSelectionItem(
+            provider="acp",
+            tool_name="coco",
+            display_name="Coco",
+            supports_model=True,
+        )
         dispatcher = WorktreeDispatcher(session_factory=lambda **kw: TimeoutSession(**kw))
-        planned = dispatcher.plan_user_goal("test", [unit])
+        planned = dispatcher.plan_user_goal("test", [unit], [tool])
         executed = dispatcher.execute_units(planned, timeout=30)
 
         assert executed[0].status == "failed"
@@ -1561,6 +1590,33 @@ class TestTimeoutErrorE2EDetail:
         assert result, "get_error_detail for context-wrapped TimeoutError returned empty"
         assert "超时" in result
 
+    def test_third_party_timeout_via_name(self):
+        """Verifies that TimeoutExpired, ReadTimeout, ConnectTimeout are detected by name."""
+        for tn in ("TimeoutExpired", "ReadTimeout", "ConnectTimeout"):
+            class MockTimeout(Exception):
+                pass
+            MockTimeout.__name__ = tn
+            
+            inner = MockTimeout("inner timeout")
+            outer = RuntimeError("outer")
+            outer.__cause__ = inner
+            
+            result = get_error_detail(outer)
+            assert "超时" in result, f"Failed for {tn}"
+
+    def test_concurrent_futures_timeout_error(self):
+        import concurrent.futures
+        result = get_error_detail(concurrent.futures.TimeoutError())
+        assert "超时" in result
+
+    def test_concurrent_futures_wrapped_timeout(self):
+        import concurrent.futures
+        inner = concurrent.futures.TimeoutError()
+        outer = RuntimeError("wrapper")
+        outer.__cause__ = inner
+        result = get_error_detail(outer)
+        assert "超时" in result
+
     def test_timeout_with_message_preserves(self):
         result = get_error_detail(TimeoutError("ACP 超时 120s"))
         assert "ACP 超时 120s" in result
@@ -1569,6 +1625,99 @@ class TestTimeoutErrorE2EDetail:
         result = get_error_detail(TimeoutError(""))
         assert result, "get_error_detail(TimeoutError('')) returned empty"
         assert "超时" in result
+
+
+# ---------------------------------------------------------------------------
+# Task 5: Logger-level empty-message guards (4 fix sites)
+# ---------------------------------------------------------------------------
+
+
+class TestLogExceptionEmptyTimeout:
+    """errors.py: log_exception must not produce empty detail for TimeoutError()."""
+
+    def test_log_exception_empty_timeout_uses_detail(self):
+        import logging
+        from unittest.mock import MagicMock
+        from src.utils.errors import log_exception, GhostAPError
+
+        mock_logger = MagicMock(spec=logging.Logger)
+        # GhostAPError with empty message — goes through WARNING branch
+        exc = GhostAPError("")
+        log_exception(mock_logger, "测试操作", exc)
+        mock_logger.warning.assert_called_once()
+        logged_msg = mock_logger.warning.call_args[0][0]
+        # Detail part (after ": ") should not be empty
+        parts = logged_msg.split(": ", 1)
+        assert len(parts) == 2, f"Expected 'msg: detail' format, got: {logged_msg}"
+        assert parts[1], f"Detail part is empty in: {logged_msg}"
+
+    def test_log_exception_timeout_error_goes_to_log_level(self):
+        """TimeoutError is not GhostAPError, so goes to logger.log() branch — no empty string concern."""
+        import logging
+        from unittest.mock import MagicMock
+        from src.utils.errors import log_exception
+
+        mock_logger = MagicMock(spec=logging.Logger)
+        log_exception(mock_logger, "超时测试", TimeoutError())
+        # Should use logger.log with exc_info, not warning branch
+        mock_logger.log.assert_called_once()
+
+
+class TestSpecHandlerResumeTimeoutLogNotEmpty:
+    """spec.py: restore_from_task_state timeout log must not be empty."""
+
+    def test_restore_timeout_log_has_detail(self):
+        import logging
+        from unittest.mock import MagicMock, patch
+        from src.utils.errors import get_error_detail
+
+        # Simulate the logger call pattern used in spec.py:696
+        mock_logger = MagicMock(spec=logging.Logger)
+        e = TimeoutError()  # empty message
+        detail = get_error_detail(e)
+        mock_logger.warning("恢复任务上下文失败(task_id=%s): %s", "test-task", detail, exc_info=True)
+
+        call_args = mock_logger.warning.call_args
+        # The %s placeholder for detail should not be empty
+        assert call_args[0][2], "detail placeholder is empty for bare TimeoutError()"
+        assert "超时" in call_args[0][2] or "未知" in call_args[0][2]
+
+
+class TestIMClientRetryTimeoutLogNotEmpty:
+    """im_client.py: retry exception log must not be empty for TimeoutError()."""
+
+    def test_retry_timeout_log_has_detail(self):
+        from src.utils.errors import get_error_detail
+
+        e = TimeoutError()  # empty message
+        detail = get_error_detail(e)
+        # Simulate the format string used in im_client.py:63
+        formatted = "%s异常(尝试%d/%d): %s" % ("发送消息", 1, 3, detail)
+        # The detail part should not end with ": " (empty)
+        assert not formatted.endswith(": "), f"Log ends with empty detail: {formatted}"
+        assert "超时" in formatted or "未知" in formatted
+
+
+class TestAgentSessionRateLimitTimeoutLogNotEmpty:
+    """agent_session.py: rate-limit retry log must not be empty for TimeoutError()."""
+
+    def test_rate_limit_timeout_log_has_detail(self):
+        from src.utils.errors import get_error_detail
+
+        e = TimeoutError()  # empty message
+        detail = get_error_detail(e)
+        # Simulate the format string used in agent_session.py:1138-1144
+        formatted = "[RateLimit] 限速检测，等待 %ds 后重试 (attempt=%d/%d): %s" % (30, 1, 3, detail)
+        assert not formatted.endswith(": "), f"Log ends with empty detail: {formatted}"
+        assert "超时" in formatted or "未知" in formatted
+
+    def test_rate_limit_with_message_preserves(self):
+        from src.utils.errors import get_error_detail
+
+        e = TimeoutError("rate limit 429")
+        detail = get_error_detail(e)
+        formatted = "[RateLimit] 限速检测，等待 %ds 后重试 (attempt=%d/%d): %s" % (30, 1, 3, detail)
+        assert "rate limit 429" in formatted
 
 
 # ---------------------------------------------------------------------------

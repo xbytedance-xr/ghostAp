@@ -841,6 +841,8 @@ class SystemHandler(BaseHandler):
             if name in seen:
                 continue
             if shutil.which(name):
+                provider = tool_registry.get_provider(name)
+                skip = getattr(provider, "skip_model_selection", False) if provider else False
                 tools.append(
                     WorktreeToolOption(
                         provider="acp",
@@ -849,6 +851,7 @@ class SystemHandler(BaseHandler):
                         description=desc,
                         supports_model=True,
                         model_optional=True,
+                        skip_model_selection=skip,
                     ).__dict__
                 )
                 seen.add(name)
@@ -882,6 +885,7 @@ class SystemHandler(BaseHandler):
                         description=f"TTADK · {name}",
                         supports_model=True,
                         model_optional=True,
+                        skip_model_selection=getattr(t, "skip_model_selection", False),
                     ).__dict__
                 )
                 seen.add(name)
@@ -989,6 +993,7 @@ class SystemHandler(BaseHandler):
         tool_name = value.get("_option") or value.get("tool_name", "")
         provider = value.get("provider", "")
         supports_model = value.get("supports_model", False)
+        skip_model_selection = value.get("skip_model_selection", False)
 
         if not tool_name:
             self.reply_error(message_id, "未选择工具")
@@ -1002,6 +1007,7 @@ class SystemHandler(BaseHandler):
             display_name=value.get("display_name") or tool_name,
             supports_model=bool(supports_model),
             model_optional=True,
+            skip_model_selection=bool(skip_model_selection),
         )
 
         mgr = self._worktree_manager()
@@ -1014,14 +1020,11 @@ class SystemHandler(BaseHandler):
         should_skip_model = not option.supports_model
         models = []
 
-        # Tools that we skip model selection for by default in worktree (e.g. Coco, Aiden)
-        SKIP_MODEL_TOOLS = ["coco", "aiden"]
-
         if option.supports_model:
             models = self._get_models_for_tool(
                 tool_name, provider=provider, chat_id=chat_id, project=project
             )
-            if len(models) <= 1 or tool_name.lower() in SKIP_MODEL_TOOLS:
+            if len(models) <= 1 or option.skip_model_selection:
                 should_skip_model = True
 
         if not should_skip_model:
@@ -1220,6 +1223,7 @@ class SystemHandler(BaseHandler):
         if state.merge_entry_ready:
             msg_type, card = CardBuilder.build_worktree_cleanup_card(
                 state.merge_notes, pid, state.base_branch or "main",
+                units=final_dicts,
             )
         else:
             msg_type, card = CardBuilder.build_worktree_progress_card(
@@ -1293,6 +1297,80 @@ class SystemHandler(BaseHandler):
             return
 
         self.handle_worktree_execute(message_id, chat_id, goal, project=project)
+
+    def handle_worktree_retry_failed(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: Optional[str] = None,
+        value: dict | None = None,
+    ):
+        """Card action: retry only the failed worktree units."""
+        project = self.project_manager.get_project(project_id) if project_id else self.project_manager.get_active_project(chat_id)
+        if not project:
+            self.reply_error(message_id, "找不到关联的项目")
+            return
+
+        mgr = self._worktree_manager()
+        pid = project.project_id
+        state = mgr.get_state(project)
+
+        # Guard: reject if any unit is still running
+        if any(u.status == "running" for u in state.units):
+            self.reply_message(message_id, "⚠️ 存在正在执行的单元，请等待完成后再重试")
+            return
+
+        # Send an initial progress card indicating retry is starting
+        units_dicts = [u.to_dict() for u in state.units]
+        msg_type, card = CardBuilder.build_worktree_progress_card(
+            units_dicts, pid, message="🔄 正在重试失败单元...",
+        )
+        progress_mid = self.send_message(chat_id, card, msg_type=msg_type)
+
+        # Throttled live progress callback (same pattern as handle_worktree_execute)
+        _update_lock = threading.Lock()
+        _last_update: list[float] = [0.0]
+        _THROTTLE_INTERVAL = 0.5
+
+        def _on_unit_update(unit):
+            now = time.time()
+            with _update_lock:
+                if now - _last_update[0] < _THROTTLE_INTERVAL:
+                    return
+                _last_update[0] = now
+            try:
+                cur_state = mgr.get_state(project)
+                cur_dicts = [u.to_dict() for u in cur_state.units]
+                mt, cd = CardBuilder.build_worktree_progress_card(
+                    cur_dicts, pid, message="🔄 重试执行中...",
+                )
+                if progress_mid:
+                    self.patch_message(progress_mid, cd, msg_type=mt)
+            except Exception:
+                pass
+
+        # Execute retry
+        state = mgr.retry_failed_units(project, on_unit_update=_on_unit_update)
+
+        # Show final result
+        if state.last_error:
+            self.reply_error(message_id, state.last_error)
+            return
+
+        final_dicts = [u.to_dict() for u in state.units]
+        if state.merge_entry_ready:
+            msg_type, card = CardBuilder.build_worktree_cleanup_card(
+                state.merge_notes, pid, state.base_branch or "main",
+                units=final_dicts,
+            )
+        else:
+            msg_type, card = CardBuilder.build_worktree_progress_card(
+                final_dicts, pid, message="重试完成",
+            )
+        if progress_mid:
+            self.patch_message(progress_mid, card, msg_type=msg_type)
+        else:
+            self.reply_message(message_id, card, msg_type=msg_type)
 
     def _reply_ttadk_load_hint(self, message_id: str, text: str, project_id: Optional[str] = None) -> None:
         msg_type, card_content = CardBuilder.build_ttadk_soft_failure_card_for(text, project_id=project_id)

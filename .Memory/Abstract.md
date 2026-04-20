@@ -3,6 +3,16 @@
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 
 ## 2026-04-20
+- **最终闭环：TimeoutError (empty message) 改进建议全部落实** — 26 轮增量修复 + 最终闭环验证完毕；10 层纵深防御体系完整（safe_wait_for 源头→get_error_detail 兜底→用户/日志路径统一→三引擎独立 catch→review_helpers 统一异常处理→收敛跳过→7 个静态 lint 门禁→滑动窗口熔断→本地 lint 降级）；Backlog B-001~B-008 全部 Done；全量 2374 passed 零回归；`cbeb8fd` → [详细记录](2026-04-20.md)
+- **第二十六次增量修复：日志层 TimeoutError 空消息缝隙封堵** — 4 处日志调用 bare `e`/`str(exc) or repr(exc)` → `get_error_detail(e)` 替换（errors.py log_exception + spec.py + im_client.py + agent_session.py）；新增 6 个测试用例；全量 2374 passed 零回归 → [详细记录](2026-04-20.md)
+- **第二十五次闭环验证：TimeoutError 纵深防御专项加固确认** — 8 步任务严格顺序执行（fmt_exception 链式检测 + review_helpers 关键字匹配 + 静态扫描零残留 + concurrent.futures.TimeoutError 专项回归 + 全量 2363 passed 50.28s）；确认 10 层纵深防御体系完整闭环，彻底消除空消息超时提示 → [详细记录](2026-04-20.md)
+- **补强纵深防御体系：TimeoutError 链式检测与审查建议加固** — 增强 `fmt_exception` 异常链检测能力（`_has_timeout_in_chain`）；加固 `build_review_error_suggestion` 关键字匹配逻辑（识别 "TimeoutError"）；新增 regression tests 覆盖三方超时类型；207 tests passed 零回归 → [详细记录](2026-04-20.md)
+- **第二十四次闭环验证：8 步任务列表严格顺序执行确认** — 8 步任务严格顺序执行（静态门禁 112 passed + e2e 40 passed + review 36 passed + grep 4 项零残留 + Backlog B-001~B-008 全部 Done 8/8 + 全量 2357 passed 49.35s + 零代码改动仅验证归档）；第二十四次独立确认无退化无新缺口，问题闭环 → [详细记录](2026-04-20.md)
+- **第二十三次闭环验证：8 步任务分解顺序执行确认** — 8 步任务并行+顺序执行（静态门禁 112 passed + e2e 40 passed + review 36 passed + grep 4 项零残留 + Backlog B-001~B-008 全部 Done 8/8 + 全量 2357 passed 48.10s + 零代码改动仅验证归档）；第二十三次独立确认无退化无新缺口，问题闭环 → [详细记录](2026-04-20.md)
+- **Worktree 执行进度卡片优化：展示失败原因详情** — 在 `build_worktree_progress_card` 及 `build_unit_summary_lines` 中增加对失败状态单元的错误原因展示，使用 `> 🔍 失败原因：{detail}` 格式提升异常反馈透明度；13 tests passed → [详细记录](2026-04-20.md)
+- **Worktree 文案一致性优化：统一输入框 Placeholder** — 将 `build_worktree_progress_card` 的输入框 placeholder 从“任务需求...”改为“任务需求”，与 `build_worktree_confirm_card` 保持一致；7 tests passed → [详细记录](2026-04-20.md)
+- **Worktree “确认组合”卡片视觉优化：引入操作热区 (Hot Area)** — 在“确认组合”卡片中引入带背景色（wathet）的 `column_set` 容器，将“任务需求”输入框与“确认执行”按钮物理嵌套，并新增引导 Banner，实现“输入->启动”一气呵成的交互体验；同步优化进度卡片就绪状态布局；7 tests passed 零回归 → [详细记录](2026-04-20.md)
+- **彻底解耦模型跳过逻辑：移至工具定义层 (ACP/TTADK)** — 将 Worktree 选择流程中硬编码的 `SKIP_MODEL_TOOLS` 白名单解耦，元数据下沉至 ACP Provider 和 TTADK Tool 定义层；支持完整链路的元数据传播与序列化；彻底移除 UI 层硬编码逻辑；107 tests passed 零回归 → [详细记录](2026-04-20.md)
 - **强化卡片反馈视觉呈现：引入 Banner 组件 UI** — 提升 Feishu 交互卡片中反馈信息的视觉冲击力。在 `column_set` 中使用 `background_style` 实现彩色状态条（Banner），全面覆盖编程模式切换、目录变更、TTADK 软失败等场景；131 tests passed (119+7+5)；`bfae21a` + `c9f48ef` → [详细记录](2026-04-20.md)
 - **Worktree 交互路径优化：移除确认环节，引入常驻“完成选择”按钮** — 将“完成选择”按钮设为工具/模型卡片常驻选项，选择后直接返回工具列表并显示反馈信息；彻底移除 `continue_card` 相关冗余代码；21 tests passed → [详细记录](2026-04-20.md)
 - **Worktree 引导文案精简** — 将 `build_worktree_confirm_card` 中的引导文案从冗长的“确认后请输入任务需求...”精简为“输入任务需求并启动”；14 tests passed → [详细记录](2026-04-20.md)

@@ -1140,7 +1140,7 @@ class RateLimitAwareSession:
                     wait_time,
                     attempt + 1,
                     max_retries,
-                    e,
+                    get_error_detail(e),
                 )
 
                 # Interruptible sleep: check cancel_event every second

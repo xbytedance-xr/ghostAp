@@ -97,6 +97,7 @@ class _ProviderConfig:
     model_style: Optional[str] = None
     help_blob_loader: Optional[HelpBlobLoader] = None
     is_default: bool = False
+    skip_model_selection: bool = False
 
 
 def _apply_model_args(
@@ -132,6 +133,10 @@ class GenericACPProvider:
     @property
     def name(self) -> str:
         return self._config.tool_name
+
+    @property
+    def skip_model_selection(self) -> bool:
+        return bool(self._config.skip_model_selection)
 
     def check_availability(self) -> bool:
         return self._config.availability_checker()
@@ -215,6 +220,7 @@ _PROVIDER_CONFIGS: list[_ProviderConfig] = [
         availability_checker=_make_resolve_checker("coco"),
         model_style="config_c",
         is_default=True,
+        skip_model_selection=True,
     ),
     _ProviderConfig(
         tool_name="claude",
@@ -228,6 +234,7 @@ _PROVIDER_CONFIGS: list[_ProviderConfig] = [
         availability_checker=_aiden_checker,
         model_style="dynamic",
         help_blob_loader=_aiden_help_loader,
+        skip_model_selection=True,
     ),
     _ProviderConfig(
         tool_name="codex",

@@ -6,7 +6,7 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Callable, Iterable, Optional
 
-from .models import WorktreeUnit
+from .models import WorktreeSelectionItem, WorktreeUnit
 from ..utils.errors import get_error_detail
 
 logger = logging.getLogger(__name__)

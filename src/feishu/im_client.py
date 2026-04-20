@@ -15,7 +15,7 @@ from lark_oapi.api.im.v1 import (
     ReplyMessageRequestBody,
 )
 
-from ..utils.errors import LARK_CODE_MESSAGE_NOT_FOUND, LARK_CODE_MESSAGE_RECALLED
+from ..utils.errors import LARK_CODE_MESSAGE_NOT_FOUND, LARK_CODE_MESSAGE_RECALLED, get_error_detail
 
 if TYPE_CHECKING:
     from ..config import Settings
@@ -60,7 +60,7 @@ class FeishuIMClient:
                 if code == 230099 and "ErrCode: 200621" in str(msg):
                     logger.warning("[METRIC] card_render_failed err_code=200621 action=%s", action_name)
             except Exception as e:
-                logger.warning("%s异常(尝试%d/%d): %s", action_name, attempt + 1, max_retries, e, exc_info=True)
+                logger.warning("%s异常(尝试%d/%d): %s", action_name, attempt + 1, max_retries, get_error_detail(e), exc_info=True)
 
             if attempt < max_retries - 1:
                 time.sleep(0.3 * (2**attempt))

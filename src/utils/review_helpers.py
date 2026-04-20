@@ -31,10 +31,11 @@ def build_review_error_suggestion(
     - otherwise → "审查执行异常: {detail}"
     """
     _fail_reason = (fail_reason or "").strip()
-    if _fail_reason == "timeout":
+    _raw = (error_text or "").strip() or (err_repr or "").strip()
+
+    if _fail_reason == "timeout" or "TimeoutError" in _raw:
         return "审查超时，跳过本轮审查继续执行"
 
-    _raw = (error_text or "").strip() or (err_repr or "").strip()
     if not _raw or "(empty message)" in _raw:
         return "审查执行异常，将在下一轮重试"
     return f"审查执行异常: {_raw}"

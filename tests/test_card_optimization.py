@@ -236,7 +236,7 @@ class TestCardOptimization:
         # Should show first N lines
         assert "Error line 5" in content_element["content"]
         # Should show truncation hint for >COMPACT_LINE_THRESHOLD lines
-        assert '\u66f4\u591a\u9519\u8bef\u8be6\u60c5\u8bf7\u70b9\u51fb\u4e0b\u65b9' in content_element["content"]
+        assert '(展开日志查看更多)' in content_element["content"]
 
         # Compact mode + Normal status
         normal_msg = "Normal line 1\n" + "a" * 2000

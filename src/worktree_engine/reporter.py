@@ -52,7 +52,7 @@ class WorktreeReporter:
             display_name = WorktreeReporter._get_unit_display_name(unit)
 
             if status == "failed":
-                summary = unit.error or "执行失败"
+                summary = f"🔍 失败原因：{unit.error or '未知执行异常'}"
             else:
                 summary = unit.summary or "暂无摘要"
             lines.append(f"- {icon} `{display_name}` · `{status}` · {task_text} · {change_text} · {summary}")

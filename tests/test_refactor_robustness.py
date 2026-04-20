@@ -92,20 +92,25 @@ class TestRefactorRobustness(unittest.TestCase):
         """Test that SystemHandler correctly dispatches commands using the new registry."""
         mock_ctx = MagicMock()
         handler = SystemHandler(mock_ctx)
-
-        # Mock handlers
-        handler.coco_handler = MagicMock()
-        handler.project_handler = MagicMock()
-        handler.diagnostics_handler = MagicMock()
-
+    
+        # Mock handlers in registry
+        coco_mock = MagicMock()
+        project_mock = MagicMock()
+        diagnostics_mock = MagicMock()
+        mock_ctx.handlers.get.side_effect = lambda k: {
+            "coco": coco_mock,
+            "project": project_mock,
+            "diagnostics": diagnostics_mock,
+        }.get(k)
+    
         # Test exact match
         handler.handle_intercepted_command("mid", "cid", "/coco_info")
-        handler.coco_handler.show_info.assert_called_with("mid", "cid", None)
-
+        coco_mock.show_info.assert_called_with("mid", "cid", None)
+    
         # Test prefix match
         handler.handle_intercepted_command("mid", "cid", "/status detail")
-        handler.diagnostics_handler.show_unified_status.assert_called_with("mid", "cid", "/status detail", None)
-
+        diagnostics_mock.show_unified_status.assert_called_with("mid", "cid", "/status detail", None)
+    
         # Test fallback
         with patch.object(handler, "show_full_help") as mock_help:
             handler.handle_intercepted_command("mid", "cid", "/unknown_cmd")

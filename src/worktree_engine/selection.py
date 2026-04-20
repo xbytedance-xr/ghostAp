@@ -14,6 +14,7 @@ class WorktreeToolOption:
     description: str = ""
     supports_model: bool = True
     model_optional: bool = False
+    skip_model_selection: bool = False
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,7 @@ def build_selection_item(option: WorktreeToolOption) -> WorktreeSelectionItem:
         display_name=str(option.display_name or option.tool_name or "").strip(),
         supports_model=bool(option.supports_model),
         model_optional=bool(option.model_optional),
+        skip_model_selection=bool(option.skip_model_selection),
         metadata={
             "provider_display_name": provider_display_name(option.provider),
             "description": str(option.description or "").strip(),

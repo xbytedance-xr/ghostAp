@@ -146,8 +146,8 @@ def test_reporter_timeout_unit_shows_timeout_summary():
     ]
     lines = reporter.build_unit_summary_lines(units)
 
-    # Failed timeout unit shows timeout error text
-    assert "超时" in lines[0]
+    # Failed timeout unit shows timeout error text with new prefix
+    assert "🔍 失败原因：执行超时 (30s)" in lines[0]
     assert "❌" in lines[0]
     # Completed unit shows normally
     assert "✅" in lines[1]

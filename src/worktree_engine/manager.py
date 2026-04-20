@@ -173,6 +173,63 @@ class WorktreeManager:
         return self._reporter.refresh_state(state)
 
     # ------------------------------------------------------------------
+    # Retry failed units
+    # ------------------------------------------------------------------
+
+    def retry_failed_units(
+        self,
+        project: ProjectContext,
+        *,
+        timeout: Optional[int] = None,
+        on_unit_update: Optional[Callable] = None,
+    ) -> WorktreeRuntimeState:
+        """Re-execute only the failed units, preserving completed ones.
+
+        Reuses ``last_user_goal`` — caller does not need to re-supply the goal.
+        """
+        state = self.get_state(project)
+
+        # Guard: need a goal from the previous run
+        if not state.last_user_goal:
+            state.last_error = "没有可重试的目标（上次执行目标为空）"
+            return self._reporter.refresh_state(state)
+
+        # Guard: must have failed units to retry
+        failed_units = [u for u in state.units if u.status == "failed"]
+        if not failed_units:
+            state.last_error = "当前没有失败的工作单元需要重试"
+            return self._reporter.refresh_state(state)
+
+        # Guard: no units should be running (concurrent safety)
+        if any(u.status == "running" for u in state.units):
+            state.last_error = "存在正在执行的单元，请等待执行完成后再重试"
+            return self._reporter.refresh_state(state)
+
+        # Reset failed units' state fields
+        for unit in failed_units:
+            unit.status = "pending"
+            unit.error = ""
+            unit.summary = ""
+            unit.has_changes = False
+
+        # Re-plan only failed units (keep completed units unchanged)
+        failed_units = self._dispatcher.plan_user_goal(
+            state.last_user_goal, failed_units, state.selection.selected_items
+        )
+
+        # Execute only the re-planned (previously-failed) units
+        try:
+            self._dispatcher.execute_units(
+                failed_units, timeout=timeout, on_unit_update=on_unit_update,
+            )
+            state.last_error = ""
+        except Exception as exc:
+            from ..utils.errors import get_error_detail
+            state.last_error = get_error_detail(exc)
+
+        return self._reporter.refresh_state(state)
+
+    # ------------------------------------------------------------------
     # Merge / cleanup
     # ------------------------------------------------------------------
 

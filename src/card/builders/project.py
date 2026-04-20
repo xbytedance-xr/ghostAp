@@ -16,7 +16,7 @@ class ProjectBuilder:
 
     @staticmethod
     def build_project_response_card(
-        project: ProjectContext,
+        project: Optional[ProjectContext],
         title: str,
         content: str,
         show_buttons: bool = True,
@@ -30,10 +30,10 @@ class ProjectBuilder:
             title,
             content,
             show_buttons=show_buttons,
-            is_coco_mode=project.coco_mode,
-            is_claude_mode=project.claude_mode,
-            is_ttadk_mode=project.ttadk_mode,
-            is_gemini_mode=getattr(project, "gemini_mode", False),
+            is_coco_mode=bool(project and getattr(project, "coco_mode", False)),
+            is_claude_mode=bool(project and getattr(project, "claude_mode", False)),
+            is_ttadk_mode=bool(project and getattr(project, "ttadk_mode", False)),
+            is_gemini_mode=bool(project and getattr(project, "gemini_mode", False)),
             extra_buttons=extra_buttons,
             footer=footer,
             image_keys=image_keys,
@@ -90,12 +90,15 @@ class ProjectBuilder:
         image_keys: Optional[list[str]] = None,
         banner: Optional[dict] = None,
     ) -> tuple[str, str]:
-        theme = get_theme(project.theme_color if project else ("orange" if is_ttadk_mode else "turquoise" if is_gemini_mode else "blue"))
+        theme_color = getattr(project, "theme_color", None) if project else None
+        if not theme_color:
+            theme_color = "orange" if is_ttadk_mode else "turquoise" if is_gemini_mode else "blue"
+        theme = get_theme(theme_color)
 
         # Determine actual mode from project if available
-        actual_coco = is_coco_mode or (project and project.coco_mode)
-        actual_claude = is_claude_mode or (project and project.claude_mode)
-        actual_ttadk = is_ttadk_mode or (project and project.ttadk_mode)
+        actual_coco = is_coco_mode or (project and getattr(project, "coco_mode", False))
+        actual_claude = is_claude_mode or (project and getattr(project, "claude_mode", False))
+        actual_ttadk = is_ttadk_mode or (project and getattr(project, "ttadk_mode", False))
         actual_gemini = is_gemini_mode or (project and getattr(project, "gemini_mode", False))
 
         header_title = CoreBuilder._build_header_title(

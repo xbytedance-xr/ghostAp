@@ -58,6 +58,7 @@ class WorktreeBuilder:
                         "tool_name": t["tool_name"],
                         "provider": t.get("provider", ""),
                         "supports_model": t.get("supports_model", False),
+                        "skip_model_selection": t.get("skip_model_selection", False),
                         "project_id": project_id or "",
                     },
                 }
@@ -179,42 +180,59 @@ class WorktreeBuilder:
         parts = ["**即将启动以下工具-模型组合：**\n"]
         for i, item in enumerate(selected_items, 1):
             parts.append(f"{i}. {item.get('display_label', item.get('display_name', ''))}")
-        parts.append("\n输入任务需求并启动。")
 
         elements: list[dict] = [CoreBuilder._build_content_element("\n".join(parts))]
 
-        # Add input component for immediate goal entry
+        # Add guiding banner
         elements.append(
-            {
-                "tag": "input",
-                "name": "worktree_goal",
-                "placeholder": {"tag": "plain_text", "content": "任务需求"},
-                "max_length": 500,
-            }
+            CoreBuilder._build_banner_element(
+                "请在下方输入您的任务需求，点击按钮一键开启执行", type="info"
+            )
         )
 
+        # Hot area: Group input and actions in a column_set with background
         elements.append(
             {
-                "tag": "action",
-                "actions": [
+                "tag": "column_set",
+                "flex_mode": "stretch",
+                "background_style": "wathet",
+                "columns": [
                     {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "确认并开始执行"},
-                        "type": "primary",
-                        "value": {
-                            "action": "worktree_confirm_start",
-                            "project_id": project_id or "",
-                        },
-                    },
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "重新选择"},
-                        "type": "default",
-                        "value": {
-                            "action": "show_worktree_menu",
-                            "project_id": project_id or "",
-                        },
-                    },
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "elements": [
+                            {
+                                "tag": "input",
+                                "name": "worktree_goal",
+                                "placeholder": {"tag": "plain_text", "content": "任务需求"},
+                                "max_length": 500,
+                            },
+                            {
+                                "tag": "action",
+                                "actions": [
+                                    {
+                                        "tag": "button",
+                                        "text": {"tag": "plain_text", "content": "确认并开始执行"},
+                                        "type": "primary",
+                                        "value": {
+                                            "action": "worktree_confirm_start",
+                                            "project_id": project_id or "",
+                                        },
+                                    },
+                                    {
+                                        "tag": "button",
+                                        "text": {"tag": "plain_text", "content": "重新选择"},
+                                        "type": "default",
+                                        "value": {
+                                            "action": "show_worktree_menu",
+                                            "project_id": project_id or "",
+                                        },
+                                    },
+                                ],
+                            },
+                        ],
+                    }
                 ],
             }
         )
@@ -225,6 +243,35 @@ class WorktreeBuilder:
     # ------------------------------------------------------------------
     # Execution phase cards
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_progress_title(units: list[dict]) -> tuple[str, str]:
+        """Derive card title suffix and header color from unit statuses.
+
+        Returns ``(title_suffix, color)`` – e.g. ``("就绪", "turquoise")``.
+        Priority (highest → lowest):
+        1. all completed          → ("已完成", "green")
+        2. any running            → ("执行中", "blue")
+        3. has failed & no running→ ("部分失败", "red")
+        4. all ready              → ("就绪", "turquoise")
+        5. fallback               → ("准备中", "blue")
+        """
+        if not units:
+            return "执行中", "blue"
+
+        statuses = [u.get("status", "pending") for u in units]
+        has_running = "running" in statuses
+        has_failed = "failed" in statuses
+
+        if all(s == "completed" for s in statuses):
+            return "已完成", "green"
+        if has_running:
+            return "执行中", "blue"
+        if has_failed:
+            return "部分失败", "red"
+        if all(s == "ready" for s in statuses):
+            return "就绪", "turquoise"
+        return "准备中", "blue"
 
     @staticmethod
     def build_worktree_progress_card(
@@ -249,6 +296,9 @@ class WorktreeBuilder:
             title = unit.get("task_title", "")
             status = unit.get("status", "pending")
             parts.append(f"{icon} **{name}** · `{status}` · {title}")
+            if status == "failed":
+                error_detail = unit.get("error") or "未知执行异常"
+                parts.append(f"> 🔍 **失败原因**：{error_detail}")
 
         elements: list[dict] = []
         if message:
@@ -260,23 +310,61 @@ class WorktreeBuilder:
         is_ready = any(u.get("status") == "ready" for u in units)
         if is_ready:
             elements.append(
+                CoreBuilder._build_banner_element(
+                    "所有单元已就绪，请录入总任务目标并开始执行", type="info"
+                )
+            )
+            elements.append(
                 {
-                    "tag": "input",
-                    "name": "worktree_goal",
-                    "placeholder": {"tag": "plain_text", "content": "任务需求..."},
-                    "max_length": 500,
+                    "tag": "column_set",
+                    "flex_mode": "stretch",
+                    "background_style": "wathet",
+                    "columns": [
+                        {
+                            "tag": "column",
+                            "width": "weighted",
+                            "weight": 1,
+                            "elements": [
+                                {
+                                    "tag": "input",
+                                    "name": "worktree_goal",
+                                    "placeholder": {"tag": "plain_text", "content": "任务需求"},
+                                    "max_length": 500,
+                                },
+                                {
+                                    "tag": "action",
+                                    "actions": [
+                                        {
+                                            "tag": "button",
+                                            "text": {"tag": "plain_text", "content": "🚀 开始并行执行"},
+                                            "type": "primary",
+                                            "value": {
+                                                "action": "worktree_execute_action",
+                                                "project_id": project_id or "",
+                                            },
+                                        }
+                                    ],
+                                },
+                            ],
+                        }
+                    ],
                 }
             )
+
+        # Show retry button when there are failed units and nothing is running
+        has_failed = any(u.get("status") == "failed" for u in units)
+        has_running = any(u.get("status") == "running" for u in units)
+        if has_failed and not has_running:
             elements.append(
                 {
                     "tag": "action",
                     "actions": [
                         {
                             "tag": "button",
-                            "text": {"tag": "plain_text", "content": "🚀 开始并行执行"},
+                            "text": {"tag": "plain_text", "content": "🔄 重试失败单元"},
                             "type": "primary",
                             "value": {
-                                "action": "worktree_execute_action",
+                                "action": "worktree_retry_failed",
                                 "project_id": project_id or "",
                             },
                         }
@@ -284,7 +372,8 @@ class WorktreeBuilder:
                 }
             )
 
-        card = CoreBuilder._wrap_card("🌳 Worktree — 执行中", "blue", elements)
+        title_suffix, header_color = WorktreeBuilder._resolve_progress_title(units)
+        card = CoreBuilder._wrap_card(f"🌳 Worktree — {title_suffix}", header_color, elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
 
     # ------------------------------------------------------------------
@@ -297,6 +386,7 @@ class WorktreeBuilder:
         project_id: Optional[str] = None,
         base_branch: str = "main",
         merge_results: list[dict] | None = None,
+        units: list[dict] | None = None,
     ) -> tuple[str, str]:
         """Card with merge + cleanup action buttons."""
         parts = [f"**目标分支：** `{base_branch}`\n"]
@@ -315,16 +405,57 @@ class WorktreeBuilder:
             parts.extend(merge_notes)
 
         elements: list[dict] = [CoreBuilder._build_content_element("\n".join(parts))]
+
+        # Determine if there are retryable failed units
+        has_failed = bool(units) and any(u.get("status") == "failed" for u in units)
+        has_running = bool(units) and any(u.get("status") == "running" for u in units)
+        show_retry = has_failed and not has_running
+
+        # Insert failed unit summary section before action buttons
+        if show_retry:
+            failed_units = [u for u in units if u.get("status") == "failed"]
+            max_display = 5
+            summary_lines: list[str] = ["**失败单元：**"]
+            for u in failed_units[:max_display]:
+                name = u.get("display_name") or u.get("tool_name") or "未知单元"
+                task_title = (u.get("task_title") or "").strip()
+                error = (u.get("error") or "未知执行异常").strip() or "未知执行异常"
+                if len(error) > 80:
+                    error = error[:77] + "..."
+                if task_title:
+                    summary_lines.append(f"❌ **{name}** · {task_title} — {error}")
+                else:
+                    summary_lines.append(f"❌ **{name}** — {error}")
+            overflow = len(failed_units) - max_display
+            if overflow > 0:
+                summary_lines.append(f"...及 {overflow} 个其他失败单元")
+            elements.append(CoreBuilder._build_content_element("\n".join(summary_lines)))
+
+        merge_label = "✅ 先合并已完成" if show_retry else "合并所有分支"
         actions: list[dict] = [
             {
                 "tag": "button",
-                "text": {"tag": "plain_text", "content": "合并所有分支"},
+                "text": {"tag": "plain_text", "content": merge_label},
                 "type": "primary",
                 "value": {
                     "action": "worktree_merge",
                     "project_id": project_id or "",
                 },
             },
+        ]
+        if show_retry:
+            actions.append(
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "🔄 重试失败单元"},
+                    "type": "primary",
+                    "value": {
+                        "action": "worktree_retry_failed",
+                        "project_id": project_id or "",
+                    },
+                }
+            )
+        actions.append(
             {
                 "tag": "button",
                 "text": {"tag": "plain_text", "content": "清理 Worktree"},
@@ -334,7 +465,7 @@ class WorktreeBuilder:
                     "project_id": project_id or "",
                 },
             },
-        ]
+        )
         elements.append({"tag": "action", "actions": actions})
 
         card = CoreBuilder._wrap_card("🌳 Worktree — 集成与清理", "purple", elements)
