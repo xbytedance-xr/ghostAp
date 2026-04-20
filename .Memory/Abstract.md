@@ -3,6 +3,14 @@
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 
 ## 2026-04-20
+- **第九次独立验证：10 层防御体系持续闭环确认** — 全量 2322 passed (47.83s) + TimeoutError 专项 145 passed (2.59s) + 静态回归扫描 5 项零违规（裸 f"{e}"/裸 asyncio.wait_for/裸 logger %s,e/裸 raise TimeoutError()）；第九次独立确认无退化无新缺口 → [详细记录](2026-04-20.md)
+- **第八次独立验证：10 层防御体系最终闭环确认** — 全量 2322 passed (48.38s) + TimeoutError 专项 245 passed + 回归 lint 105 passed + E2E 40 passed + Grep 4 项零违规 + Backlog 三项 Done 无新增 + 10 层关键文件抽查 10/10 通过（safe_wait_for/fmt_error/get_error_detail/三引擎 except/SlidingWindowTracker/lightweight_lint/handle_review_exception/LoopReporter）；第八次独立确认无退化无新缺口 → [详细记录](2026-04-20.md)
+- **第七次独立验证：10 层防御体系持续完整** — Grep 4 项零残留 + Backlog 三项 Done + 回归 lint 105 passed + E2E 40 passed + TimeoutError 专项 245 passed + 全量 2322 passed (46.32s) + 代码审查 4 项（\_run\_async/send\_prompt/handle\_review\_exception/safe\_wait\_for）确认非空友好文案；第七次独立确认无退化无新缺口 → [详细记录](2026-04-20.md)
+- **第六次独立验证：10 层防御体系持续完整** — 全量 2322 passed (47.40s) + Grep 4 项零残留 + Backlog 三项 Done + 代码审查 3 项（handle_review_exception/\_run\_async/safe\_wait\_for）确认非空友好文案 + 回归 lint 105 passed；第六次独立确认无退化无新缺口 → [详细记录](2026-04-20.md)
+- **第五次独立验证：10 层防御体系持续完整** — Grep 4 项零残留 + Backlog 三项 Done + 回归 lint 105 passed + E2E 40 passed + TimeoutError 专项 245 passed + 全量 2322 passed (49.86s)；第五次独立确认无退化无新缺口 → [详细记录](2026-04-20.md)
+- **第四次独立验证：10 层防御体系持续完整** — Grep 4 项零残留 + Backlog 三项 Done + 回归 lint 105 passed + E2E 40 passed + TimeoutError 专项 245 passed + 全量 2322 passed；第四次独立确认无退化无新缺口 → [详细记录](2026-04-20.md)
+- **三次确认验证：10 层防御体系执行闭环** — 按 9 项任务清单逐步执行（Grep 4 项零残留 + Backlog 三项 Done + 回归 lint 105 passed + 全量 2322 passed, 46.91s）；第三次独立确认无退化无新缺口，改进建议已完全落实 → [详细记录](2026-04-20.md)
+- **二次确认验证：10 层防御体系持续完整** — Grep 4 项零残留 + Backlog 三项 Done + 回归 lint 105 passed + 全量 2322 passed；10 层防御无退化无新缺口 → [详细记录](2026-04-20.md)
 - **最终验证闭环：TimeoutError (empty message) 10 层防御体系完整性确认** — 全量 2322 tests passed + grep 4 项零残留 + 代码审查 6 项确认（_run_async/send_prompt/LoopReporter/review_diagnostics/三引擎 TimeoutError 分支/CircuitState 持久化）+ Backlog 三项 Done；10 层防御体系完整闭合，无代码改动需求 → [详细记录](2026-04-20.md)
 - **引入维护性 Backlog 机制** — 新建 `.Memory/Backlog.md` 收集 Low/Medium severity 审计缺口；AGENTS.md Workflow Rules 新增第 5 条分级处理规则；Abstract.md 添加 Backlog 入口；避免低优先级修复打断主线开发节奏 → [详细记录](2026-04-20.md)
 - **三项审计缺口修复：metrics_exporter bug + hard_floor 可配置化 + 单例重配置** — (A) JsonLinesExporter except 子句 `str(Exception)` → `str(e)` 修复日志记录类名 bug；(B) config.py 新增 `spec_review_hard_floor`/`loop_review_hard_floor`，Spec/Loop review 传递到 `compute_adaptive_timeout`；(C) `get_metrics_exporter` 单例支持类型变更时自动重建；+10 新测试，2322 tests passed；零回归 → [详细记录](2026-04-20.md)
