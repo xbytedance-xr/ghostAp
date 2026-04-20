@@ -3,6 +3,7 @@
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 
 ## 2026-04-20
+- **强化卡片反馈视觉呈现：引入 Banner 组件 UI** — 提升 Feishu 交互卡片中反馈信息的视觉冲击力。在 `column_set` 中使用 `background_style` 实现彩色状态条（Banner），全面覆盖编程模式切换、目录变更、TTADK 软失败等场景；126 tests passed；`bfae21a` → [详细记录](2026-04-20.md)
 - **Worktree 交互路径优化：移除确认环节，引入常驻“完成选择”按钮** — 将“完成选择”按钮设为工具/模型卡片常驻选项，选择后直接返回工具列表并显示反馈信息；彻底移除 `continue_card` 相关冗余代码；21 tests passed → [详细记录](2026-04-20.md)
 - **Worktree 引导文案精简** — 将 `build_worktree_confirm_card` 中的引导文案从冗长的“确认后请输入任务需求...”精简为“输入任务需求并启动”；14 tests passed → [详细记录](2026-04-20.md)
 - **局部耦合重构：引入 Registry 模式解耦 HandlerContext 与 FeishuWSClient** — 引入服务注册表模式，将硬编码单例引用替换为基于 HandlerContext 容器的动态查找；移除 FeishuWSClient 交叉注入循环；124 tests passed；`7b0ed1e` → [详细记录](2026-04-20.md)
