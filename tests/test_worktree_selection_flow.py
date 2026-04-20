@@ -281,3 +281,79 @@ def test_wt_command_without_available_tools_returns_error():
     error_mock.assert_called_once()
     error_text = str(error_mock.call_args)
     assert "当前环境没有可用的编程工具" in error_text
+
+
+def test_worktree_select_tool_skips_model_selection_if_only_one_model():
+    """AC: if a tool has only 1 model, skip model selection card and auto-add it."""
+    handler = _make_system_handler()
+    project = ProjectContext(project_id="p-skip", project_name="SKIP", root_path="/tmp/skip")
+    handler.ctx.project_manager.get_active_project.return_value = project
+    handler.ctx.project_manager.get_project.return_value = project
+
+    # Mock tool with supports_model=True but only 1 model
+    fake_tool_value = {
+        "tool_name": "single_model_tool",
+        "provider": "ttadk",
+        "supports_model": True,
+        "display_name": "SingleTool"
+    }
+    
+    # Mock models list with 1 item
+    fake_models = [{"name": "m1", "display_name": "Model 1", "is_default": True}]
+    
+    patch_message_mock = MagicMock(return_value=True)
+    
+    with patch.object(handler, "_get_models_for_tool", return_value=fake_models), \
+         patch.object(handler, "patch_message", patch_message_mock):
+        
+        handler.handle_worktree_select_tool("msg1", "chat1", project_id="p-skip", value=fake_tool_value)
+        
+    # Verify state: item should have been added and stage back to tool_select
+    state = WorktreeManager.get_state(project)
+    assert len(state.selection.selected_items) == 1
+    assert state.selection.selected_items[0].tool_name == "single_model_tool"
+    assert state.selection.selected_items[0].model_name == "m1"
+    assert state.selection.stage == "tool_select"
+    
+    # Verify CardBuilder.build_worktree_tool_select_card was called (not model select)
+    patch_message_mock.assert_called_once()
+    sent_card_json = patch_message_mock.call_args[0][1]
+    assert "选择工具" in sent_card_json
+
+
+def test_worktree_select_tool_skips_model_selection_for_coco_even_with_multiple_models():
+    """AC: if tool is 'coco', skip model selection even if it might have multiple models."""
+    handler = _make_system_handler()
+    project = ProjectContext(project_id="p-coco", project_name="COCO", root_path="/tmp/coco")
+    handler.ctx.project_manager.get_active_project.return_value = project
+    handler.ctx.project_manager.get_project.return_value = project
+
+    fake_tool_value = {
+        "tool_name": "coco",
+        "provider": "acp",
+        "supports_model": True,
+        "display_name": "Coco"
+    }
+    
+    # Mock multiple models
+    fake_models = [
+        {"name": "m1", "display_name": "Model 1", "is_default": True},
+        {"name": "m2", "display_name": "Model 2", "is_default": False}
+    ]
+    
+    patch_message_mock = MagicMock(return_value=True)
+    
+    with patch.object(handler, "_get_models_for_tool", return_value=fake_models), \
+         patch.object(handler, "patch_message", patch_message_mock):
+        
+        handler.handle_worktree_select_tool("msg2", "chat1", project_id="p-coco", value=fake_tool_value)
+        
+    state = WorktreeManager.get_state(project)
+    assert len(state.selection.selected_items) == 1
+    assert state.selection.selected_items[0].tool_name == "coco"
+    assert state.selection.selected_items[0].model_name == "m1" # Default one picked
+    assert state.selection.stage == "tool_select"
+    
+    patch_message_mock.assert_called_once()
+    sent_card_json = patch_message_mock.call_args[0][1]
+    assert "选择工具" in sent_card_json

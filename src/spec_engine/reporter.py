@@ -407,12 +407,17 @@ class SpecReporter:
             SpecProjectStatus.ABORTED: "⚠️ 已终止",
         }.get(project.status, "❓ 未知状态")
 
+        done_items = sum(1 for w in getattr(project, "work_items", []) if w.status == SpecWorkItemStatus.DONE)
+        total_items = getattr(project, "work_items_total", 0)
+
         lines = [
             f"📊 **{project.name}** Spec 状态\n",
             f"状态: {status_text}",
             f"循环: {project.current_cycle_number} 轮",
             f"标准: {project.satisfied_count}/{project.total_criteria} 满足",
         ]
+        if total_items > 0:
+            lines.append(f"单元: {done_items}/{total_items} 完成")
 
         if project.duration():
             lines.append(f"⏱️ 已执行: {format_duration(project.duration())}")
@@ -614,7 +619,15 @@ class SpecReporter:
         status_text = status_map.get(project.status, "❓ 未知")
         cycle_info = f"循环 {project.current_cycle_number}"
         criteria_info = f"标准 {project.satisfied_count}/{project.total_criteria}"
-        return f"{status_text} · {cycle_info} · {criteria_info}"
+
+        # 增加规格单元计数提示，解决极简主义偏差导致的状态可见性缺失
+        work_item_info = ""
+        total_items = getattr(project, "work_items_total", 0)
+        if total_items > 0:
+            done_items = sum(1 for w in getattr(project, "work_items", []) if w.status == SpecWorkItemStatus.DONE)
+            work_item_info = f" · 单元 {done_items}/{total_items}"
+
+        return f"{status_text} · {cycle_info} · {criteria_info}{work_item_info}"
 
     def format_duration_line(self, project: SpecProject) -> str:
         """Duration line for card metadata area."""
@@ -635,11 +648,16 @@ class SpecReporter:
         return make_progress_bar(completed, total)
 
     def get_progress_info(self, project: SpecProject) -> dict:
+        done_work_items = sum(1 for w in getattr(project, "work_items", []) if w.status == SpecWorkItemStatus.DONE)
+        total_work_items = getattr(project, "work_items_total", 0)
+
         return {
             "progress_bar": self._make_progress_bar(project.satisfied_count, project.total_criteria),
             "satisfied_count": project.satisfied_count,
             "total_criteria": project.total_criteria,
             "cycle_count": project.current_cycle_number,
+            "done_work_items": done_work_items,
+            "total_work_items": total_work_items,
             "status": project.status,
             "project_name": project.name,
             "project_id": project.project_id,

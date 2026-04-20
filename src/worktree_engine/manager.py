@@ -118,7 +118,7 @@ class WorktreeManager:
         try:
             repo_state, units = self._git.create_units(
                 root_path=project.root_path,
-                selections=state.selection.selected_items,
+                count=len(state.selection.selected_items),
                 base_branch=state.base_branch or None,
             )
         except Exception as exc:
@@ -141,7 +141,9 @@ class WorktreeManager:
     def plan_goal(self, project: ProjectContext, goal: str) -> WorktreeRuntimeState:
         state = self.get_state(project)
         state.last_user_goal = str(goal or "").strip()
-        state.units = self._dispatcher.plan_user_goal(state.last_user_goal, state.units)
+        state.units = self._dispatcher.plan_user_goal(
+            state.last_user_goal, state.units, state.selection.selected_items
+        )
         return self._reporter.refresh_state(state)
 
     def execute_goal(

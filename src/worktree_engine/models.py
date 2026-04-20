@@ -121,10 +121,10 @@ class WorktreeSelectionState:
 @dataclass
 class WorktreeUnit:
     unit_id: str
-    selection_key: str
-    provider: str
-    tool_name: str
-    display_name: str
+    selection_key: str = ""
+    provider: str = ""
+    tool_name: str = ""
+    display_name: str = ""
     model_name: Optional[str] = None
     branch_name: str = ""
     worktree_path: str = ""
@@ -144,18 +144,14 @@ class WorktreeUnit:
         if not isinstance(data, dict):
             return None
         unit_id = _clean_str(data.get("unit_id"))
-        selection_key = _clean_str(data.get("selection_key"))
-        provider = _clean_str(data.get("provider"))
-        tool_name = _clean_str(data.get("tool_name"))
-        display_name = _clean_str(data.get("display_name") or tool_name)
-        if not all([unit_id, selection_key, provider, tool_name]):
+        if not unit_id:
             return None
         return cls(
             unit_id=unit_id,
-            selection_key=selection_key,
-            provider=provider,
-            tool_name=tool_name,
-            display_name=display_name,
+            selection_key=_clean_str(data.get("selection_key")),
+            provider=_clean_str(data.get("provider")),
+            tool_name=_clean_str(data.get("tool_name")),
+            display_name=_clean_str(data.get("display_name") or data.get("tool_name")),
             model_name=_clean_optional_str(data.get("model_name")),
             branch_name=_clean_str(data.get("branch_name")),
             worktree_path=_clean_str(data.get("worktree_path")),

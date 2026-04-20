@@ -95,17 +95,11 @@ class WorktreeGitService:
         root = Path(repo_root).resolve()
         return str(root.parent / f".ghostap-worktrees-{root.name}")
 
-    def build_branch_name(self, selection: WorktreeSelectionItem, index: int) -> str:
-        provider = _slugify(selection.provider, default="provider")
-        tool = _slugify(selection.tool_name, default="tool")
-        model = _slugify(selection.model_name or "default", default="default")
-        return f"ghostap/wt/{index:02d}-{provider}-{tool}-{model}"
+    def build_branch_name(self, index: int) -> str:
+        return f"ghostap/wt/{index:02d}-unit"
 
-    def build_unit_id(self, selection: WorktreeSelectionItem, index: int) -> str:
-        provider = _slugify(selection.provider, default="provider")
-        tool = _slugify(selection.tool_name, default="tool")
-        model = _slugify(selection.model_name or "default", default="default")
-        return f"wt-{index:02d}-{provider}-{tool}-{model}"
+    def build_unit_id(self, index: int) -> str:
+        return f"wt-{index:02d}"
 
     def create_worktree(self, repo_root: str, branch_name: str, worktree_path: str, base_ref: str) -> None:
         worktree = Path(worktree_path)
@@ -128,26 +122,21 @@ class WorktreeGitService:
         self,
         *,
         root_path: str,
-        selections: list[WorktreeSelectionItem],
+        count: int,
         base_branch: Optional[str] = None,
     ) -> tuple[GitRepoState, list[WorktreeUnit]]:
         repo = self.ensure_local_repo(root_path)
         worktree_parent = Path(self.build_worktree_parent(repo.repo_root))
         units: list[WorktreeUnit] = []
         base_ref = base_branch or repo.base_branch or "HEAD"
-        for index, selection in enumerate(selections, start=1):
-            unit_id = self.build_unit_id(selection, index)
-            branch_name = self.build_branch_name(selection, index)
+        for index in range(1, count + 1):
+            unit_id = self.build_unit_id(index)
+            branch_name = self.build_branch_name(index)
             worktree_path = str((worktree_parent / unit_id).resolve())
             self.create_worktree(repo.repo_root, branch_name, worktree_path, base_ref)
             units.append(
                 WorktreeUnit(
                     unit_id=unit_id,
-                    selection_key=selection.selection_key,
-                    provider=selection.provider,
-                    tool_name=selection.tool_name,
-                    display_name=selection.display_name,
-                    model_name=selection.model_name,
                     branch_name=branch_name,
                     worktree_path=worktree_path,
                     status="ready",

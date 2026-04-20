@@ -238,7 +238,7 @@ def test_no_git_auto_init_and_create_worktree(tmp_path):
         ),
     ]
     _, units = service.create_units(
-        root_path=str(project_root), selections=selections,
+        root_path=str(project_root), count=len(selections),
     )
     assert len(units) == 1
     assert Path(units[0].worktree_path).exists()
@@ -259,7 +259,7 @@ def test_full_lifecycle_create_execute_merge_cleanup(tmp_path):
         WorktreeSelectionItem(provider="cli", tool_name="claude", display_name="Claude"),
     ]
     repo_state, units = service.create_units(
-        root_path=str(project_root), selections=selections,
+        root_path=str(project_root), count=len(selections),
     )
 
     # Verify worktrees exist
@@ -269,9 +269,12 @@ def test_full_lifecycle_create_execute_merge_cleanup(tmp_path):
         assert unit.branch_name in wt_list_before
 
     # Simulate tool execution: write files and commit in each worktree
-    for unit in units:
+    # Since we didn't call dispatcher, units don't have tool_name yet.
+    # We use selections to simulate which tool went to which unit.
+    for i, unit in enumerate(units):
+        tool_name = selections[i].tool_name
         wt = Path(unit.worktree_path)
-        _commit_file(wt, f"{unit.tool_name}.py", f"# {unit.tool_name}\n", f"feat: {unit.tool_name}")
+        _commit_file(wt, f"{tool_name}.py", f"# {tool_name}\n", f"feat: {tool_name}")
 
     # Merge each branch back to base
     for unit in units:
@@ -319,7 +322,7 @@ def test_no_remote_operations_during_lifecycle(tmp_path, monkeypatch):
             WorktreeSelectionItem(provider="acp", tool_name="coco", display_name="Coco"),
         ]
         repo_state, units = service.create_units(
-            root_path=str(project_root), selections=selections,
+            root_path=str(project_root), count=len(selections),
         )
 
         # Simulate work and merge

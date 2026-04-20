@@ -152,3 +152,31 @@ def test_reporter_timeout_unit_shows_timeout_summary():
     # Completed unit shows normally
     assert "✅" in lines[1]
     assert "实现完成" in lines[1]
+
+
+def test_get_unit_display_name_mapping():
+    reporter = WorktreeReporter()
+
+    # 1. Explicit display_name
+    u1 = WorktreeUnit(unit_id="wt-01", display_name="My Tool")
+    assert reporter._get_unit_display_name(u1) == "My Tool"
+
+    # 2. Standard wt-01 maps to 工作空间 A
+    u2 = WorktreeUnit(unit_id="wt-01")
+    assert reporter._get_unit_display_name(u2) == "工作空间 A"
+
+    # 3. Standard wt-26 maps to 工作空间 Z
+    u3 = WorktreeUnit(unit_id="wt-26")
+    assert reporter._get_unit_display_name(u3) == "工作空间 Z"
+
+    # 4. Out of range wt-27 falls back to 单元 27
+    u4 = WorktreeUnit(unit_id="wt-27")
+    assert reporter._get_unit_display_name(u4) == "单元 27"
+
+    # 5. Unknown ID maps to 自动分配中
+    u5 = WorktreeUnit(unit_id="unknown")
+    assert reporter._get_unit_display_name(u5) == "自动分配中"
+
+    # 6. Suffix but not wt- prefix fallback
+    u6 = WorktreeUnit(unit_id="custom-02")
+    assert reporter._get_unit_display_name(u6) == "单元 02"

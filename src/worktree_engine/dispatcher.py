@@ -48,14 +48,25 @@ class WorktreeDispatcher:
     # Tools known for strong reasoning / analysis capabilities
     _REASONING_TOOLS: frozenset[str] = frozenset({"claude", "gemini"})
 
-    def plan_user_goal(self, goal: str, units: Iterable[WorktreeUnit]) -> list[WorktreeUnit]:
+    def plan_user_goal(self, goal: str, units: Iterable[WorktreeUnit], tools: Iterable[WorktreeSelectionItem]) -> list[WorktreeUnit]:
         normalized_goal = str(goal or "").strip()
         planned_units = list(units)
-        if not planned_units:
-            return []
+        tool_pool = list(tools)
+        if not planned_units or not tool_pool:
+            return planned_units
 
-        assignments = self._assign_roles_smart(planned_units)
-        for unit, (title, role_prompt) in zip(planned_units, assignments):
+        # 决定角色与工具分配
+        assignments = self._assign_roles_smart(planned_units, tool_pool)
+        for unit, (tool, role_info) in zip(planned_units, assignments):
+            title, role_prompt = role_info
+            
+            # 动态绑定工具
+            unit.provider = tool.provider
+            unit.tool_name = tool.tool_name
+            unit.selection_key = tool.selection_key
+            unit.display_name = tool.display_name
+            unit.model_name = tool.model_name
+            
             unit.task_title = title
             unit.task_prompt = (
                 f"用户目标：{normalized_goal}\n"
@@ -101,6 +112,18 @@ class WorktreeDispatcher:
                 on_unit_update(unit)
             except Exception:
                 pass
+        
+        # 如果尚未分配具体工具（理论上 plan 阶段已完成分配，这里做安全检查）
+        if not all([unit.provider, unit.tool_name]):
+            unit.status = "failed"
+            unit.error = "工作单元未绑定执行工具"
+            if on_unit_update:
+                try:
+                    on_unit_update(unit)
+                except Exception:
+                    pass
+            return
+
         session = self._session_factory(
             provider=unit.provider,
             tool_name=unit.tool_name,
@@ -145,14 +168,15 @@ class WorktreeDispatcher:
             except Exception:
                 pass
 
-    @classmethod
-    def _assign_roles_smart(cls, units: list[WorktreeUnit]) -> list[tuple[str, str]]:
-        """Assign analysis/implementation/review roles based on tool characteristics.
+    def _assign_roles_smart(
+        self,
+        units: list[WorktreeUnit],
+        tools: list[WorktreeSelectionItem]
+    ) -> list[tuple[WorktreeSelectionItem, tuple[str, str]]]:
+        """Assign analysis/implementation/review roles and bind tools from pool.
 
         Reasoning-strong tools (claude, gemini) are preferred for analysis and
-        review.  All other tools are assigned implementation roles.  When no
-        reasoning tool is present the method falls back to positional assignment
-        via ``_build_role_templates``.
+        review. Remaining tools are assigned implementation roles.
         """
         role_defs = {
             "analysis": ("分析与方案", "先理解需求、梳理风险与改动范围，并给出执行建议"),
@@ -160,52 +184,67 @@ class WorktreeDispatcher:
             "review": ("审查与汇总", "复核前面结果，指出风险、遗漏与合并建议"),
         }
 
-        if len(units) <= 1:
-            return [("综合处理", "完成需求分析、实现与复核，给出最终建议")]
+        count = len(units)
+        if count <= 1:
+            # Only one unit, use the first tool for comprehensive handling
+            tool = tools[0] if tools else WorktreeSelectionItem(provider="none", tool_name="none", display_name="None")
+            return [(tool, ("综合处理", "完成需求分析、实现与复核，给出最终建议"))]
 
-        # Classify units
-        reasoning_indices = [i for i, u in enumerate(units) if u.tool_name in cls._REASONING_TOOLS]
-        other_indices = [i for i, u in enumerate(units) if u.tool_name not in cls._REASONING_TOOLS]
+        # Classify tool pool
+        reasoning_tools = [t for t in tools if t.tool_name in self._REASONING_TOOLS]
+        other_tools = [t for t in tools if t.tool_name not in self._REASONING_TOOLS]
 
-        # Fallback: no recognisable tool category → use positional assignment
-        if not reasoning_indices and not other_indices:
-            return cls._build_role_templates(len(units))
+        # Shuffle for diversity if multiple options exist
+        random.shuffle(reasoning_tools)
+        random.shuffle(other_tools)
 
-        assignments: list[tuple[int, tuple[str, str]]] = []
-
+        assignments: list[tuple[WorktreeSelectionItem, tuple[str, str]]] = []
+        
         # 1. Pick analyser – prefer reasoning tool
-        if reasoning_indices:
-            analyser_idx = reasoning_indices.pop(0)
+        if reasoning_tools:
+            analyser_tool = reasoning_tools.pop(0)
         else:
-            analyser_idx = other_indices.pop(0)
-        assignments.append((analyser_idx, role_defs["analysis"]))
+            analyser_tool = other_tools.pop(0)
 
-        # 2. Pick reviewer – prefer reasoning tool (different from analyser)
-        if reasoning_indices:
-            reviewer_idx = reasoning_indices.pop(0)
-        elif other_indices:
-            reviewer_idx = other_indices.pop(-1)
-        else:
-            # Only one unit left – re-assigned as reviewer is impossible,
-            # fallback handled below.
-            reviewer_idx = None
+        # 2. Pick reviewer (if count >= 2) – prefer reasoning tool (different from analyser)
+        reviewer_tool = None
+        if count >= 2:
+            if reasoning_tools:
+                reviewer_tool = reasoning_tools.pop(0)
+            elif other_tools:
+                reviewer_tool = other_tools.pop(-1) # Take from the end to leave room for implementers
 
-        # 3. Remaining units are implementers
-        remaining = reasoning_indices + other_indices
+        # 3. Remaining are implementers
+        remaining = reasoning_tools + other_tools
         random.shuffle(remaining)
-        impl_count = 0
-        for idx in remaining:
-            impl_count += 1
-            label = f"实现与修改 {impl_count}" if impl_count > 1 else "实现与修改"
-            assignments.append((idx, (label, role_defs["implement"][1])))
 
-        # Append reviewer last (review should conceptually happen after implementation)
-        if reviewer_idx is not None:
-            assignments.append((reviewer_idx, role_defs["review"]))
+        # Build sequence: Analysis -> Implementation(s) -> Review
+        # Analysis first
+        assignments.append((analyser_tool, role_defs["analysis"]))
 
-        # Sort by original unit order so the returned list aligns with *units*
-        assignments.sort(key=lambda t: t[0])
-        return [role for _, role in assignments]
+        # Implementers middle
+        impl_target_count = count - (2 if reviewer_tool else 1)
+        if reviewer_tool:
+            # If we have a reviewer, we expect count-2 implementers
+            impl_target_count = count - 2
+        else:
+            # This case shouldn't happen if count >= 2 due to logic above
+            impl_target_count = count - 1
+        for i in range(impl_target_count):
+            if remaining:
+                tool = remaining.pop(0)
+            else:
+                # Fallback: re-use existing tools if pool is smaller than units (theoretically shouldn't happen)
+                tool = tools[i % len(tools)]
+            
+            label = f"实现与修改 {i + 1}" if impl_target_count > 1 else "实现与修改"
+            assignments.append((tool, (label, role_defs["implement"][1])))
+
+        # Review last
+        if reviewer_tool:
+            assignments.append((reviewer_tool, role_defs["review"]))
+
+        return assignments
 
     @staticmethod
     def _build_role_templates(count: int) -> list[tuple[str, str]]:

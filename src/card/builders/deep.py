@@ -241,22 +241,36 @@ class DeepBuilder:
             elements.append({"tag": "markdown", "content": f"📊 {state.progress_bar}"})
 
         # Status + duration line (compact, notation-size)
-        meta_parts = [p for p in (state.status_line, state.duration_line) if p]
-        if meta_parts:
-            # Use separator from config
+        # 智能拼接元数据，针对 Spec Engine 等多维度状态场景优化显示，确保移动端可见性
+        meta_items = []
+        if state.status_line:
+            # 如果状态行已经包含分隔符，拆分为独立项以便后续智能换行
+            if " · " in state.status_line:
+                meta_items.extend([s.strip() for s in state.status_line.split(" · ") if s.strip()])
+            else:
+                meta_items.append(state.status_line.strip())
+
+        if state.duration_line:
+            meta_items.append(state.duration_line.strip())
+
+        if meta_items:
             style = DeepBuilder._resolve_style(state.engine_name)
             separator = style.get("meta_separator", " · ")
+
+            # 策略：如果元数据项过多（例如增加了规格单元进度），则强制换行展示，避免在移动端被截断或重叠
+            if len(meta_items) > 3:
+                separator = "\n"
 
             elements.append(
                 {
                     "tag": "markdown",
-                    "content": separator.join(meta_parts),
+                    "content": separator.join(meta_items),
                     "text_size": "notation",
                 }
             )
 
         # Separator before main content (only if we have meta above)
-        if meta_parts:
+        if meta_items:
             elements.append({"tag": "hr"})
 
         # Warning banner

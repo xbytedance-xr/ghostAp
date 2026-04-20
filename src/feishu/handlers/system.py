@@ -847,7 +847,8 @@ class SystemHandler(BaseHandler):
                         tool_name=name,
                         display_name=display,
                         description=desc,
-                        supports_model=False,
+                        supports_model=True,
+                        model_optional=True,
                     ).__dict__
                 )
                 seen.add(name)
@@ -889,8 +890,33 @@ class SystemHandler(BaseHandler):
 
         return tools
 
-    def _get_models_for_tool(self, tool_name: str) -> list[dict]:
-        """Return available models for a TTADK tool as dicts for card builder."""
+    def _get_models_for_tool(
+        self,
+        tool_name: str,
+        provider: str = "ttadk",
+        chat_id: str = "",
+        project: Optional["ProjectContext"] = None,
+    ) -> list[dict]:
+        """Return available models for a tool (ACP or TTADK) as dicts for card builder."""
+        if provider == "acp":
+            try:
+                cwd = (project.root_path if project else None) or self.get_working_dir(chat_id)
+                current_model = None
+                if project and getattr(project, "acp_tool_name", "") == tool_name:
+                    current_model = getattr(project, "acp_model_name", None)
+
+                acp_models = self._fetch_acp_models(tool_name, cwd=cwd, current_model=current_model)
+                return [
+                    {
+                        "name": m.name,
+                        "display_name": m.description or m.name,
+                        "is_default": m.is_default,
+                    }
+                    for m in acp_models
+                ]
+            except Exception:
+                return []
+
         try:
             manager = get_ttadk_manager()
             models_result = manager.get_models(tool_name=tool_name)
@@ -899,7 +925,7 @@ class SystemHandler(BaseHandler):
                 models.append(
                     {
                         "name": m.name,
-                        "display_name": getattr(m, "display_name", None) or m.name,
+                        "display_name": getattr(m, "friendly_name", None) or getattr(m, "display_name", None) or m.name,
                         "is_default": getattr(m, "is_default", False),
                     }
                 )
@@ -984,23 +1010,53 @@ class SystemHandler(BaseHandler):
         selected_dicts = [item.to_dict() for item in state.selection.selected_items]
         pid = project.project_id
 
+        # Logic to skip model selection card if tool has only one model or is in skip-list
+        should_skip_model = not option.supports_model
+        models = []
+
+        # Tools that we skip model selection for by default in worktree (e.g. Coco, Aiden)
+        SKIP_MODEL_TOOLS = ["coco", "aiden"]
+
         if option.supports_model:
-            models = self._get_models_for_tool(tool_name)
+            models = self._get_models_for_tool(
+                tool_name, provider=provider, chat_id=chat_id, project=project
+            )
+            if len(models) <= 1 or tool_name.lower() in SKIP_MODEL_TOOLS:
+                should_skip_model = True
+
+        if not should_skip_model:
             msg_type, card = CardBuilder.build_worktree_model_select_card(
-                models, option.display_name, selected_dicts, pid,
+                models,
+                option.display_name,
+                selected_dicts,
+                pid,
                 message=f"已选择工具: {option.display_name}",
             )
         else:
-            # Auto-add pending item without model, back to tool selection
-            state, _, msg = mgr.add_pending_item(project)
+            # Auto-add pending item, picking a model if available
+            model_name = None
+            model_display = None
+            if models:
+                # Use default model if marked, else first one
+                target = next((m for m in models if m.get("is_default")), models[0])
+                model_name = target["name"]
+                model_display = target.get("display_name")
+
+            state, _, msg = mgr.add_pending_item(
+                project, model_name=model_name, model_display_name=model_display
+            )
             mgr.back_to_tool_selection(project)
-            
+
             state = mgr.get_state(project)
             tools = self._get_available_worktree_tools()
             selected_dicts = [item.to_dict() for item in state.selection.selected_items]
             msg_type, card = CardBuilder.build_worktree_tool_select_card(
-                tools, selected_dicts, pid, message=msg,
+                tools,
+                selected_dicts,
+                pid,
+                message=msg,
             )
+
         self.patch_message(message_id, card, msg_type=msg_type)
 
     def handle_worktree_select_model(

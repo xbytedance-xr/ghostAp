@@ -6,6 +6,7 @@
 - **强化卡片反馈视觉呈现：引入 Banner 组件 UI** — 提升 Feishu 交互卡片中反馈信息的视觉冲击力。在 `column_set` 中使用 `background_style` 实现彩色状态条（Banner），全面覆盖编程模式切换、目录变更、TTADK 软失败等场景；131 tests passed (119+7+5)；`bfae21a` + `c9f48ef` → [详细记录](2026-04-20.md)
 - **Worktree 交互路径优化：移除确认环节，引入常驻“完成选择”按钮** — 将“完成选择”按钮设为工具/模型卡片常驻选项，选择后直接返回工具列表并显示反馈信息；彻底移除 `continue_card` 相关冗余代码；21 tests passed → [详细记录](2026-04-20.md)
 - **Worktree 引导文案精简** — 将 `build_worktree_confirm_card` 中的引导文案从冗长的“确认后请输入任务需求...”精简为“输入任务需求并启动”；14 tests passed → [详细记录](2026-04-20.md)
+- **Worktree 交互路径优化：智能跳过单模型选择卡片** — 为工具选择引入模型数量检测与白名单机制（Coco/Aiden），单模型工具自动选择并返回，减少交互层级；2331 tests passed → [详细记录](2026-04-20.md)
 - **局部耦合重构：引入 Registry 模式解耦 HandlerContext 与 FeishuWSClient** — 引入服务注册表模式，将硬编码单例引用替换为基于 HandlerContext 容器的动态查找；移除 FeishuWSClient 交叉注入循环；124 tests passed；`7b0ed1e` → [详细记录](2026-04-20.md)
 - **第二十二次闭环验证：9 步任务分解 + 白名单全量审计确认** — 9 步任务并行+顺序执行（静态门禁 112 passed + TimeoutError 单元 22 passed + e2e 40 passed + review 36 passed + 17 处白名单 str(e) 逐一审计零风险 + Backlog B-001~B-008 全部 Done 8/8 + 全量 2329 passed 47.96s + 零代码改动仅验证归档）；第二十二次独立确认无退化无新缺口，问题闭环 → [详细记录](2026-04-20.md)
 - **TTADK 子系统 str(e) → get_error_detail(e) 增量加固** — TTADK 3 个文件 7 处 `str(e) or ""/(empty)` → `get_error_detail(e)` 替换 + 新增 TestTimeoutErrorE2EDetail 6 个端到端测试；src/ str(e) 站点从 15 降至 8；全量 2329 passed 零回归 → [详细记录](2026-04-20.md)
