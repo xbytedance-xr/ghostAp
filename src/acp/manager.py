@@ -15,6 +15,7 @@ from typing import Callable, Optional
 from ..agent_session import SyncClaudeCLISession, SyncSession, SyncTTADKCLISession
 from .. import agent_session as _agent_session_mod
 from ..config import get_settings
+from ..utils.errors import get_error_detail
 from .diagnostics import (
     format_startup_failure_log_line,
     get_diagnostics_config,
@@ -756,7 +757,7 @@ class ACPSessionManager:
             try:
                 session.close()
             except Exception as e:
-                logger.debug("Error closing ACP session: %s", str(e) or repr(e))
+                logger.debug("Error closing ACP session: %s", get_error_detail(e))
             del self._sessions[key]
             return snapshot
         return None
@@ -807,7 +808,7 @@ class ACPSessionManager:
                 with self._lock:
                     self._end_session_unlocked(key)
             except Exception as e:
-                logger.debug("Error cleaning up session for %s: %s", key[-16:], str(e) or repr(e))
+                logger.debug("Error cleaning up session for %s: %s", key[-16:], get_error_detail(e))
 
     def list_active_sessions(self) -> list[dict]:
         """Return lightweight snapshots for currently tracked sessions."""

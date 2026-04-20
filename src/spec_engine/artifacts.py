@@ -6,6 +6,7 @@ import json
 import re
 from typing import TYPE_CHECKING, Optional
 
+from ..utils.errors import get_error_detail
 from ..utils.spec_utils import (
     extract_json_blob,
     normalize_list,
@@ -55,7 +56,7 @@ def parse_spec_artifact(text: str) -> tuple[Optional[SpecArtifact], list[str]]:
     try:
         data = json.loads(blob)
     except Exception as e:
-        return None, [f"规格 JSON 解析失败：{str(e) or repr(e)}"]
+        return None, [f"规格 JSON 解析失败：{get_error_detail(e)}"]
     if not isinstance(data, dict):
         return None, ["规格 JSON 不是对象；已降级为纯文本"]
 
@@ -86,7 +87,7 @@ def parse_plan_artifact(text: str) -> tuple[Optional[PlanArtifact], list[str]]:
     try:
         data = json.loads(blob)
     except Exception as e:
-        return None, [f"规划 JSON 解析失败：{str(e) or repr(e)}"]
+        return None, [f"规划 JSON 解析失败：{get_error_detail(e)}"]
     if not isinstance(data, dict):
         return None, ["规划 JSON 不是对象；已降级为纯文本"]
 

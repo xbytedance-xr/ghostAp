@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
+from ..utils.errors import get_error_detail
+
 if TYPE_CHECKING:
     from ..config import Settings
 
@@ -189,7 +191,7 @@ class FeishuImageHandler:
             return filepath
 
         except Exception as e:
-            logger.error("下载图片异常: %s, error=%s", image_key, str(e) or repr(e))
+            logger.error("下载图片异常: %s, error=%s", image_key, get_error_detail(e))
             return None
 
     @staticmethod

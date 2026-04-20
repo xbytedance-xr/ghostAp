@@ -11,6 +11,7 @@ from .acp import ACPEventRenderer
 from .agent_session import SyncSession, close_session_safely
 from .config import get_settings
 from .utils.engine_identity import resolve_engine_identity
+from .utils.errors import get_error_detail
 from .utils.gc_monitor import get_gc_monitor
 
 logger = logging.getLogger(__name__)
@@ -197,7 +198,7 @@ class BaseEngine:
             try:
                 self._session.close()
             except Exception as e:
-                logger.debug("关闭ACP session失败: %s", str(e) or repr(e))
+                logger.debug("关闭ACP session失败: %s", get_error_detail(e))
             self._session = None
         self._project = None
         self._run_state = EngineRunState.IDLE

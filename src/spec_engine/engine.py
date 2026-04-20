@@ -27,6 +27,7 @@ from ..engine_base import (
     ReviewPerspective,
     ReviewResult,
 )
+from ..utils.errors import get_error_detail
 from ..utils.llm import ChatOpenAICacheKey, get_cached_chat_openai
 from ..utils.trace import TraceContext
 from .validation import SpecInput
@@ -531,7 +532,7 @@ class SpecEngine(BaseEngine):
             if attempt > 0:
                 self._recreate_session_best_effort()
             if callbacks.on_retry:
-                callbacks.on_retry(attempt, str(error) or repr(error))
+                callbacks.on_retry(attempt, get_error_detail(error))
 
         from ..utils.retry import RetryPolicy
         retry_policy = RetryPolicy(
@@ -553,9 +554,9 @@ class SpecEngine(BaseEngine):
                         try:
                             callbacks.on_phase_event(cycle_num, phase, event)
                         except Exception as cb_exc:
-                            logger.debug("[Spec] on_phase_event callback failed: %s", str(cb_exc) or repr(cb_exc))
+                            logger.debug("[Spec] on_phase_event callback failed: %s", get_error_detail(cb_exc))
                 except Exception as exc:
-                    logger.debug("[Spec] on_event handler error: %s", str(exc) or repr(exc))
+                    logger.debug("[Spec] on_event handler error: %s", get_error_detail(exc))
 
             self._send_prompt_with_retry(
                 prompt,
@@ -1148,7 +1149,7 @@ class SpecEngine(BaseEngine):
             logger.info("[Spec] 目标已重写(原%d字→新%d字)", len(original), len(new_req))
             return True, new_req
         except Exception as e:
-            logger.warning("[Spec] 目标重写 LLM 调用失败: %s", str(e) or repr(e))
+            logger.warning("[Spec] 目标重写 LLM 调用失败: %s", get_error_detail(e))
             from ..utils.errors import get_error_detail as _ged
             return False, _ged(e)
 
@@ -1199,7 +1200,7 @@ class SpecEngine(BaseEngine):
                 _, circuit = self.load_state_with_circuit(state_path)
                 self._review_circuit = circuit
         except Exception as e:
-            logger.debug("[Spec] resume circuit restore skipped: %s", str(e) or repr(e))
+            logger.debug("[Spec] resume circuit restore skipped: %s", get_error_detail(e))
 
         callbacks = self._wrap_callbacks(callbacks or SpecEngineCallbacks())
         self._run_state = EngineRunState.RUNNING

@@ -6,6 +6,7 @@ import uuid
 from typing import Callable, Optional
 
 from ..acp import ACPEvent, ACPEventType
+from ..utils.errors import get_error_detail
 from ..utils.spec_utils import extract_json_blob, validate_spec_artifact_dict
 from .models import SpecProject, SpecWorkItem, SpecWorkItemStatus
 from .persistence import persist_generated_spec_file, read_text_file_best_effort
@@ -127,7 +128,7 @@ def discover_optimization_questions(
             if cleaned:
                 return cleaned[: settings.spec_discovery_max_questions]
     except Exception as e:
-        logger.debug("[Spec] 问题发现机制失败: %s", str(e) or repr(e))
+        logger.debug("[Spec] 问题发现机制失败: %s", get_error_detail(e))
 
     if settings.spec_discovery_force_nonempty and project:
         fallback_q = None
@@ -247,7 +248,7 @@ def generate_specs_from_discovery(
             )
 
     except Exception as e:
-        logger.debug("[Spec] spec 生成失败: %s", str(e) or repr(e))
+        logger.debug("[Spec] spec 生成失败: %s", get_error_detail(e))
 
     if not items and settings.spec_discovery_force_nonempty:
         for d in selected[:max_specs]:

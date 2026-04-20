@@ -488,7 +488,7 @@ class SystemHandler(BaseHandler):
         try:
             models = asyncio.run(_probe())
         except Exception as e:
-            logger.info("[ACP] fetch models failed: tool=%s err=%s", tool_name, str(e) or repr(e))
+            logger.info("[ACP] fetch models failed: tool=%s err=%s", tool_name, get_error_detail(e))
             models = []
 
         if models:

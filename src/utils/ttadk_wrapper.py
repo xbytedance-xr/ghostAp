@@ -9,6 +9,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import BinaryIO, Optional
 
+from .errors import get_error_detail
+
 # PTY support (best-effort): allow downstream tools that require a real TTY
 try:
     import pty
@@ -455,7 +457,7 @@ def main():
         else:
             proc = _spawn_no_pty(cmd)
     except Exception as e:
-        sys.stderr.write(f"Failed to start subprocess {cmd}: {str(e) or repr(e)}\n")
+        sys.stderr.write(f"Failed to start subprocess {cmd}: {get_error_detail(e)}\n")
         sys.exit(1)
 
     # Start forwarding threads
@@ -477,7 +479,7 @@ def main():
                     # 若 pump 线程异常退出，仍尽量留下可诊断线索（仅在 JSON 未开始时会输出）。
                     try:
                         state.append_banner_line(
-                            f"[ttadk_wrapper] pump_error:{type(e).__name__}:{str(e) or repr(e)}\n".encode("utf-8", errors="ignore")
+                            f"[ttadk_wrapper] pump_error:{type(e).__name__}:{get_error_detail(e)}\n".encode("utf-8", errors="ignore")
                         )
                     except Exception:
                         pass

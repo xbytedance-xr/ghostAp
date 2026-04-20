@@ -11,6 +11,7 @@ from langchain_openai import ChatOpenAI
 
 from ..acp import ACPEvent, ACPEventType
 from ..engine_base import PerspectiveReview, ReviewPerspective, ReviewResult
+from ..utils.errors import get_error_detail
 from ..utils.llm import ChatOpenAICacheKey, get_cached_chat_openai
 from ..utils.review_diagnostics import (
     build_review_exception_diagnostics,
@@ -387,5 +388,5 @@ def parse_review_with_llm(raw_text: str, settings) -> list[PerspectiveReview]:
         )
         return extract_reviews_from_llm_response(response.content)
     except Exception as e:
-        logger.warning("[Spec] LLM 兜底审查解析失败: %s", str(e) or repr(e))
+        logger.warning("[Spec] LLM 兜底审查解析失败: %s", get_error_detail(e))
         return []

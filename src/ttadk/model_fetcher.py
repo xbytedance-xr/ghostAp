@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..config import get_settings
+from ..utils.errors import get_error_detail
 from .env_sandbox import build_ttadk_subprocess_env
 from .models import TTADKModel, is_invalid_model_error, parse_models_cache_json, redact_and_truncate
 from .strategies import (
@@ -586,7 +587,7 @@ class TTADKModelFetcher:
             probe = ProbeStrategy(runner=self._runner.run_simple, timeout_s=timeout)
             return probe.fetch(tool_name, cwd=cwd)
         except Exception as e:
-            logger.debug("TTADK probe_tool_models failed: tool=%s err=%s", tool_name, str(e) or repr(e))
+            logger.debug("TTADK probe_tool_models failed: tool=%s err=%s", tool_name, get_error_detail(e))
             return []
 
     def fetch_tool_models_with_diagnostics(

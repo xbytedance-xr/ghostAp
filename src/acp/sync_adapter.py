@@ -31,6 +31,7 @@ from .diagnostics import (
 )
 from .models import ACPEvent, PromptResult
 from .session import ACPSession, ACPStartupError
+from ..utils.errors import get_error_detail
 
 logger = logging.getLogger(__name__)
 
@@ -679,7 +680,7 @@ def _auto_update_agent(command: str) -> bool:
             )
             return False
     except Exception as e:
-        logger.warning("[ACP] %s auto-update error: %s", command, str(e) or repr(e))
+        logger.warning("[ACP] %s auto-update error: %s", command, get_error_detail(e))
         return False
 
 
@@ -816,7 +817,7 @@ def resolve_agent_spec(
         return tool_registry.get_serve_command(agent_type, model_name)
     except Exception as e:
         raise RuntimeError(
-            f"{agent_type} does not appear to support ACP server mode. Please set *_ACP_CMD/*_ACP_ARGS overrides. Details: {str(e) or repr(e)}"
+            f"{agent_type} does not appear to support ACP server mode. Please set *_ACP_CMD/*_ACP_ARGS overrides. Details: {get_error_detail(e)}"
         )
 
 
@@ -1496,7 +1497,7 @@ class SyncACPSession:
             )
             return bool(future.result(timeout=float(timeout or 10.0)))
         except Exception as e:
-            logger.warning("[ACP] set_model failed: %s", str(e) or repr(e))
+            logger.warning("[ACP] set_model failed: %s", get_error_detail(e))
             return False
 
     def cancel(self) -> None:
@@ -1518,7 +1519,7 @@ class SyncACPSession:
                 )
                 future.result(timeout=10)
             except Exception as e:
-                logger.debug("Error closing ACP session: %s", str(e) or repr(e))
+                logger.debug("Error closing ACP session: %s", get_error_detail(e))
 
         if self._loop:
             self._loop.call_soon_threadsafe(self._loop.stop)

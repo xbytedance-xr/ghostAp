@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from .env_sandbox import build_ttadk_subprocess_env
+from ..utils.errors import get_error_detail
 from .models import (
     TTADKModel,
     extract_available_models,
@@ -299,14 +300,14 @@ class ProbeStrategy(ModelFetchStrategy):
 
         except subprocess.TimeoutExpired as e:
             # 让上层 diagnostics 记录 timeout，而不是静默吞掉
-            logger.info(f"ProbeStrategy timed out for tool {tool_name}: {str(e) or repr(e)}")
+            logger.info(f"ProbeStrategy timed out for tool {tool_name}: {get_error_detail(e)}")
             raise
         except TTADKProbeError:
             # 将可诊断错误上抛给 fetcher，便于记录 stderr/stdout 片段
             raise
         except Exception as e:
             # 统一上抛可诊断错误，避免 fetcher 侧出现“ok=False 但无 error_type/rc/snippet”的静默回退。
-            logger.warning(f"ProbeStrategy failed for tool {tool_name}: {str(e) or repr(e)}")
+            logger.warning(f"ProbeStrategy failed for tool {tool_name}: {get_error_detail(e)}")
             raise TTADKProbeError(
                 f"probe_exception:{type(e).__name__}: tool={tool_name}",
                 returncode=rc,
@@ -467,7 +468,7 @@ class InteractiveStrategy(ModelFetchStrategy):
             return models
 
         except Exception as e:
-            logger.warning(f"InteractiveStrategy failed for tool {tool_name}: {str(e) or repr(e)}")
+            logger.warning(f"InteractiveStrategy failed for tool {tool_name}: {get_error_detail(e)}")
             return []
         finally:
             # 清理
@@ -515,7 +516,7 @@ class InteractiveStrategy(ModelFetchStrategy):
                         except Exception:
                             pass
                 except Exception as e:
-                    logger.warning(f"Failed to cleanup ttadk interactive process {getattr(proc, 'pid', None)}: {str(e) or repr(e)}")
+                    logger.warning(f"Failed to cleanup ttadk interactive process {getattr(proc, 'pid', None)}: {get_error_detail(e)}")
 
     def _select_and_extract_current_model(self, fd: int, timeout: float = 6) -> Optional[str]:
         """选择当前高亮项并提取 real model id，然后返回菜单。"""

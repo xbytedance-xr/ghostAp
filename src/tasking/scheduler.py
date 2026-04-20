@@ -9,6 +9,7 @@ from enum import Enum, IntEnum
 from typing import Any, Callable, Deque, Optional
 
 from ..utils.circuit_breaker import CircuitBreaker, CircuitBreakerOpenException, CircuitState
+from ..utils.errors import get_error_detail
 from ..utils.rate_limit import RateLimiter, RateLimitExceededException
 
 
@@ -654,7 +655,7 @@ class TaskScheduler:
                         )
                     if state:
                         state.status = TaskStatus.FAILED
-                        state.error = str(e) or repr(e)
+                        state.error = get_error_detail(e)
                         state.ended_at = time.time()
                         self._emit(task.run_id, TaskStatus.FAILED, error=state.error)
                     self._cv.notify_all()
@@ -767,7 +768,7 @@ class TaskScheduler:
                 st = self._states.get(run_id)
                 if st:
                     st.status = TaskStatus.FAILED
-                    st.error = str(e) or repr(e)
+                    st.error = get_error_detail(e)
                     st.ended_at = time.time()
                     self._emit(run_id, TaskStatus.FAILED, error=st.error)
                 self._cv.notify_all()

@@ -130,7 +130,7 @@ class WorktreeDispatcher:
                 except Exception:
                     pass
         except Exception as exc:
-            logger.error("[Worktree] 单元执行异常: unit=%s, error=%s", unit.unit_id, str(exc) or repr(exc))
+            logger.error("[Worktree] 单元执行异常: unit=%s, error=%s", unit.unit_id, get_error_detail(exc))
             unit.status = "failed"
             unit.error = f"执行异常: {get_error_detail(exc)}"
             unit.summary = unit.error

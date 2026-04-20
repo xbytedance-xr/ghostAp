@@ -5,6 +5,7 @@ import time
 from typing import TYPE_CHECKING, Any, Optional
 
 from src.card.styles import THRESHOLDS
+from ...utils.errors import get_error_detail
 
 if TYPE_CHECKING:
     from ..handlers.base import BaseHandler
@@ -352,7 +353,7 @@ class BaseRenderer:
 
             return truncated_content
         except Exception as e:
-            logger.error("Failed to truncate payload: %s", str(e) or repr(e))
+            logger.error("Failed to truncate payload: %s", get_error_detail(e))
             return card_content
 
     def _patch_or_send(

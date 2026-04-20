@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 from ..im_client import FeishuIMClient
 from ..message_formatter import FeishuMessageFormatter as fmt
 from ...utils.engine_identity import resolve_engine_identity
+from ...utils.errors import get_error_detail
 
 if TYPE_CHECKING:
     from ...card.streaming import StreamingCardManager
@@ -146,7 +147,7 @@ class BaseHandler:
             try:
                 origin_message_id = self.ctx.message_linker.resolve_origin(reply_message_id=message_id)
             except Exception as e:
-                logger.debug("Failed to resolve origin for message %s: %s", message_id, str(e) or repr(e))
+                logger.debug("Failed to resolve origin for message %s: %s", message_id, get_error_detail(e))
                 origin_message_id = None
         origin_message_id = origin_message_id or message_id
         request_id = request_id or self.ensure_request_id(origin_message_id)
@@ -229,7 +230,7 @@ class BaseHandler:
                 try:
                     origin_message_id = self.ctx.message_linker.resolve_origin(reply_message_id=message_id)
                 except Exception as e:
-                    logger.debug("Failed to resolve origin inside reply_message_with_id for %s: %s", message_id, str(e) or repr(e))
+                    logger.debug("Failed to resolve origin inside reply_message_with_id for %s: %s", message_id, get_error_detail(e))
                     origin_message_id = None
             origin_message_id = origin_message_id or message_id
             request_id = request_id or self.ensure_request_id(origin_message_id)
@@ -520,7 +521,7 @@ class BaseHandler:
         try:
             rid = self.ctx.message_linker.get_request_id(message_id)
         except Exception as e:
-            logger.debug("Failed to get existing request_id for message %s: %s", message_id, str(e) or repr(e))
+            logger.debug("Failed to get existing request_id for message %s: %s", message_id, get_error_detail(e))
             rid = None
         if rid:
             return rid

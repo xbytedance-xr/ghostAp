@@ -7,6 +7,7 @@ from typing import Optional
 import yaml
 from acp.stdio import spawn_agent_process
 
+from ..utils.errors import get_error_detail
 from .models import CocoModel, ModelListResult
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ class CocoModelManager:
             if config and isinstance(config.get("model"), dict):
                 return config["model"].get("name")
         except Exception as e:
-            logger.warning("Failed to read coco config: %s", str(e) or repr(e))
+            logger.warning("Failed to read coco config: %s", get_error_detail(e))
         return None
 
     def _is_cache_valid(self) -> bool:
@@ -71,11 +72,11 @@ class CocoModelManager:
                 self._cache_time = time.time()
                 return ModelListResult(models=list(models), cached=False)
             except Exception as e:
-                logger.error("Failed to load coco models: %s", str(e) or repr(e))
+                logger.error("Failed to load coco models: %s", get_error_detail(e))
                 return ModelListResult(
                     models=list(DEFAULT_MODELS),
                     cached=False,
-                    error=str(e) or repr(e),
+                    error=get_error_detail(e),
                 )
 
     def _load_models(self) -> list[CocoModel]:
@@ -146,7 +147,7 @@ class CocoModelManager:
 
             return asyncio.run(_probe())
         except Exception as e:
-            logger.debug("Failed to load coco models via ACP: %s", str(e) or repr(e))
+            logger.debug("Failed to load coco models via ACP: %s", get_error_detail(e))
             return []
 
     def get_current_model(self) -> Optional[str]:

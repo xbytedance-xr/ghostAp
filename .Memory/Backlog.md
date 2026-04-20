@@ -21,3 +21,5 @@
 | B-003 | 2026-04-20 | `get_metrics_exporter()` 单例在类型变更时返回旧缓存实例 | Low | Audit | Done | 待提交 |
 | B-004 | 2026-04-20 | `DeepEngine._drain_pending_context` L336 使用 `str(e) or repr(e)` 而非 `get_error_detail(e)`，内部 logger 路径不一致 | Low | Audit | Done | 待提交 |
 | B-005 | 2026-04-20 | `engine_base.py` 4 处 + `spec.py` 2 处 TimeoutError 分支 logger 使用 `str(e) or repr(e)` 而非 `get_error_detail(e)`，风格不一致 | Low | Audit | Done | 待提交 |
+| B-006 | 2026-04-20 | `sync_adapter.py` L682/L819/L1499/L1521 共 4 处非 TimeoutError 的 `except Exception` 块使用 `str(e) or repr(e)` 而非 `get_error_detail(e)`，风格不一致（内部诊断/调试路径，无用户可见影响） | Low | Audit | Done | 待提交 |
+| B-007 | 2026-04-20 | 全代码库 `str(e) or repr(e)` → `get_error_detail(e)` 统一：30+ 文件 90+ 处替换，含变量名变体 `str(exc/err/ex/cb_exc/error) or repr(...)` 全覆盖；新增 `test_empty_error_guard.py::TestBanStrOrReprPattern` 静态扫描回归门禁，仅 `errors.py` 自身实现豁免 | Low | Audit | Done | 待提交 |

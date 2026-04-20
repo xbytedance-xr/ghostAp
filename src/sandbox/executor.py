@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from ..config import get_settings
+from ..utils.errors import get_error_detail
 from ..utils.text import truncate_output
 
 
@@ -151,7 +152,7 @@ class SandboxExecutor:
             )
         except Exception as e:
             return ExecutionResult(
-                success=False, stdout="", stderr="", return_code=-1, error_message=f"执行异常: {str(e) or repr(e)}"
+                success=False, stdout="", stderr="", return_code=-1, error_message=f"执行异常: {get_error_detail(e)}"
             )
 
     def _sanitize_command_for_noninteractive(self, command: str) -> str:

@@ -6,6 +6,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 
+from ..utils.errors import get_error_detail
+
 logger = logging.getLogger(__name__)
 
 SPEC_TASKS_DIR = os.path.expanduser("~/.ghostap/spec_tasks")
@@ -159,7 +161,7 @@ def save_task_state(state: SpecTaskState) -> str:
             return filepath
         except Exception as e:
             last_err = e
-            logger.warning("保存任务状态失败 %s: %s", root, str(e) or repr(e))
+            logger.warning("保存任务状态失败 %s: %s", root, get_error_detail(e))
         finally:
             if os.path.exists(tmp_path):
                 try:
@@ -167,7 +169,7 @@ def save_task_state(state: SpecTaskState) -> str:
                 except OSError:
                     pass
     if last_err:
-        logger.warning("保存任务状态失败: %s", str(last_err) or repr(last_err))
+        logger.warning("保存任务状态失败: %s", get_error_detail(last_err))
     return ""
 
 
@@ -181,7 +183,7 @@ def load_task_state(task_id: str) -> Optional[SpecTaskState]:
                 data = json.load(f)
             return SpecTaskState.from_dict(data)
         except Exception as e:
-            logger.warning("加载任务状态失败 %s: %s", task_id, str(e) or repr(e))
+            logger.warning("加载任务状态失败 %s: %s", task_id, get_error_detail(e))
             continue
     return None
 
@@ -197,7 +199,7 @@ def delete_task_state(task_id: str) -> bool:
             logger.debug("删除任务状态: %s", filepath)
             deleted = True
         except OSError as e:
-            logger.warning("删除任务状态失败 %s: %s", task_id, str(e) or repr(e))
+            logger.warning("删除任务状态失败 %s: %s", task_id, get_error_detail(e))
     return deleted
 
 

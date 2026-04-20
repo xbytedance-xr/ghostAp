@@ -7,6 +7,7 @@ from ..acp import ACPEvent
 from ..agent_session import create_engine_session
 from ..coco_model import get_coco_model_manager
 from ..engine_base import EngineRunState
+from ..utils.errors import get_error_detail
 from ..utils.retry import RetryPolicy
 
 logger = logging.getLogger(__name__)
@@ -127,7 +128,7 @@ def recreate_session_best_effort(
         logger.info("[Spec] ACP Session 重建成功")
         return new_session
     except Exception as e:
-        logger.warning("[Spec] ACP Session 重建失败: %s", str(e) or repr(e))
+        logger.warning("[Spec] ACP Session 重建失败: %s", get_error_detail(e))
         return None
 
 

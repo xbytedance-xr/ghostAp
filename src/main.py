@@ -9,10 +9,12 @@ try:
     from config import get_settings
     from feishu.message_formatter import FeishuMessageFormatter as fmt
     from feishu.ws_client import EmojiReaction, FeishuWSClient
+    from utils.errors import get_error_detail
 except ImportError:
     from .config import get_settings
     from .feishu.message_formatter import FeishuMessageFormatter as fmt
     from .feishu.ws_client import EmojiReaction, FeishuWSClient
+    from .utils.errors import get_error_detail
 
 logger = logging.getLogger(__name__)
 
@@ -66,9 +68,8 @@ class Application:
                 working_dir,
             )
         except Exception as e:
-            logger.error("处理命令异常: %s", str(e) or repr(e))
+            logger.error("处理命令异常: %s", get_error_detail(e))
             try:
-                from .utils.errors import get_error_detail
                 self.feishu_client.add_reaction(message_id, EmojiReaction.on_error())
                 self.feishu_client.reply(message_id, fmt.format_error(get_error_detail(e)), chat_id=chat_id)
             except Exception:
@@ -115,7 +116,7 @@ class Application:
         except KeyboardInterrupt:
             logger.info("服务已停止")
         except Exception as e:
-            logger.error("服务异常: %s", str(e) or repr(e))
+            logger.error("服务异常: %s", get_error_detail(e))
             sys.exit(1)
         finally:
             try:

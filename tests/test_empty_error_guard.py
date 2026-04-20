@@ -1523,3 +1523,37 @@ class TestLoopReporterEmptyMessageFilter:
         rec = self._make_record("ACP prompt 执行超时 (120s)")
         result = reporter.format_iteration_done(1, rec)
         assert "ACP prompt 执行超时 (120s)" in result
+
+
+# ---------------------------------------------------------------------------
+# Static scan: ban `str(e) or repr(e)` pattern from src/ (except errors.py)
+# ---------------------------------------------------------------------------
+
+import pathlib
+import re
+
+_SRC_ROOT = pathlib.Path(__file__).resolve().parent.parent / "src"
+_BAN_PATTERN = re.compile(r"str\(\w+\)\s+or\s+repr\(\w+\)")
+_ALLOWED_FILES = {"errors.py"}  # get_error_detail implementation itself
+
+
+class TestBanStrOrReprPattern:
+    """Ensure `str(e) or repr(e)` is never used in src/ (use get_error_detail instead)."""
+
+    def test_no_str_or_repr_in_src(self):
+        violations: list[str] = []
+        for py_file in sorted(_SRC_ROOT.rglob("*.py")):
+            if py_file.name in _ALLOWED_FILES:
+                continue
+            try:
+                text = py_file.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            for lineno, line in enumerate(text.splitlines(), 1):
+                if _BAN_PATTERN.search(line):
+                    rel = py_file.relative_to(_SRC_ROOT.parent)
+                    violations.append(f"  {rel}:{lineno}: {line.strip()}")
+        assert not violations, (
+            f"Found {len(violations)} occurrence(s) of banned `str(x) or repr(x)` pattern "
+            f"(use get_error_detail instead):\n" + "\n".join(violations)
+        )

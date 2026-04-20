@@ -18,6 +18,8 @@ import os
 import subprocess
 from dataclasses import dataclass, field
 
+from .errors import get_error_detail
+
 logger = logging.getLogger(__name__)
 
 
@@ -65,14 +67,14 @@ def _check_syntax(file_path: str) -> list[LintIssue]:
         issues.append(LintIssue(
             file=file_path,
             line=e.lineno or 0,
-            message=f"SyntaxError: {str(e) or repr(e)}",
+            message=f"SyntaxError: {get_error_detail(e)}",
             source="ast",
         ))
     except Exception as e:
         issues.append(LintIssue(
             file=file_path,
             line=0,
-            message=f"Parse error: {str(e) or repr(e)}",
+            message=f"Parse error: {get_error_detail(e)}",
             source="ast",
         ))
     return issues
@@ -109,7 +111,7 @@ def _check_ruff(file_paths: list[str], timeout: int = 10) -> tuple[list[LintIssu
         logger.debug("ruff check timed out after %ds", timeout)
         return [], True
     except Exception as e:
-        logger.debug("ruff check failed: %s", str(e) or repr(e))
+        logger.debug("ruff check failed: %s", get_error_detail(e))
         return [], False
 
 

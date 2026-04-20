@@ -10,6 +10,7 @@ from typing import Optional
 
 from ..card.shared import THEMES
 from ..config import get_settings
+from ..utils.errors import get_error_detail
 from .context import ProjectContext, ProjectStatus
 
 logger = logging.getLogger(__name__)
@@ -85,7 +86,7 @@ class ProjectManager:
                 try:
                     os.makedirs(expanded_path, exist_ok=True)
                 except Exception as e:
-                    return False, f"无法创建目录 {expanded_path}: {str(e) or repr(e)}", None
+                    return False, f"无法创建目录 {expanded_path}: {get_error_detail(e)}", None
 
             theme_color, emoji_prefix = self._get_next_theme()
             settings = get_settings()
@@ -272,7 +273,7 @@ class ProjectManager:
             with self._file_lock(True):
                 self._write_atomic(data)
         except Exception as e:
-            logger.error("保存项目数据失败: %s", str(e) or repr(e))
+            logger.error("保存项目数据失败: %s", get_error_detail(e))
 
     def _load_projects(self):
         if not self._storage_path.exists():
@@ -291,7 +292,7 @@ class ProjectManager:
                     ctx.status = ProjectStatus.IDLE
                     self._projects[pid] = ctx
                 except Exception as e:
-                    logger.error("加载项目 %s 失败: %s", pid, str(e) or repr(e))
+                    logger.error("加载项目 %s 失败: %s", pid, get_error_detail(e))
 
             self._active_project = data.get("active_project", {})
             self._color_index = data.get("color_index", 0)
@@ -302,4 +303,4 @@ class ProjectManager:
                     os.replace(self._storage_path, corrupt_path)
                     logger.error("加载项目数据失败，已备份损坏文件到: %s", corrupt_path)
             except Exception:
-                logger.error("加载项目数据失败: %s", str(e) or repr(e))
+                logger.error("加载项目数据失败: %s", get_error_detail(e))

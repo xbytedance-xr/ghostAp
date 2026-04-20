@@ -656,7 +656,7 @@ class FeishuWSClient:
             logger.warning("飞书长连接 watchdog 已触发重连: %s", reason)
             return True
         except Exception as e:
-            logger.warning("飞书长连接 watchdog 触发重连失败: reason=%s err=%s", reason, str(e) or repr(e))
+            logger.warning("飞书长连接 watchdog 触发重连失败: reason=%s err=%s", reason, get_error_detail(e))
             return False
 
     def _check_ws_health_once(self, now: Optional[float] = None) -> bool:
@@ -689,7 +689,7 @@ class FeishuWSClient:
             try:
                 self._check_ws_health_once()
             except Exception as e:
-                logger.debug("飞书长连接 watchdog 检查失败: %s", str(e) or repr(e))
+                logger.debug("飞书长连接 watchdog 检查失败: %s", get_error_detail(e))
 
     def _start_ws_watchdog(self) -> None:
         if self._ws_watchdog_thread and self._ws_watchdog_thread.is_alive():
@@ -913,73 +913,73 @@ class FeishuWSClient:
         try:
             self._message_cache.stop_cleanup_thread()
         except Exception as e:
-            logger.debug("停止message_cache清理线程失败: %s", str(e) or repr(e))
+            logger.debug("停止message_cache清理线程失败: %s", get_error_detail(e))
 
         try:
             self._card_event_cache.stop_cleanup_thread()
         except Exception as e:
-            logger.debug("停止card_event_cache清理线程失败: %s", str(e) or repr(e))
+            logger.debug("停止card_event_cache清理线程失败: %s", get_error_detail(e))
 
         try:
             self._card_action_dedup_cache.stop_cleanup_thread()
         except Exception as e:
-            logger.debug("停止card_action_dedup_cache清理线程失败: %s", str(e) or repr(e))
+            logger.debug("停止card_action_dedup_cache清理线程失败: %s", get_error_detail(e))
 
         # 2) Close per-chat programming sessions (kills ACP agent subprocesses)
         try:
             self._coco_manager.cleanup_all()
         except Exception as e:
-            logger.debug("清理coco_session_manager失败: %s", str(e) or repr(e))
+            logger.debug("清理coco_session_manager失败: %s", get_error_detail(e))
 
         try:
             self._claude_manager.cleanup_all()
         except Exception as e:
-            logger.debug("清理claude_session_manager失败: %s", str(e) or repr(e))
+            logger.debug("清理claude_session_manager失败: %s", get_error_detail(e))
 
         try:
             self._ttadk_manager.cleanup_all()
         except Exception as e:
-            logger.debug("清理ttadk_session_manager失败: %s", str(e) or repr(e))
+            logger.debug("清理ttadk_session_manager失败: %s", get_error_detail(e))
 
         try:
             self._aiden_manager.cleanup_all()
         except Exception as e:
-            logger.debug("清理aiden_session_manager失败: %s", str(e) or repr(e))
+            logger.debug("清理aiden_session_manager失败: %s", get_error_detail(e))
 
         try:
             self._codex_manager.cleanup_all()
         except Exception as e:
-            logger.debug("清理codex_session_manager失败: %s", str(e) or repr(e))
+            logger.debug("清理codex_session_manager失败: %s", get_error_detail(e))
 
         try:
             self._gemini_manager.cleanup_all()
         except Exception as e:
-            logger.debug("清理gemini_session_manager失败: %s", str(e) or repr(e))
+            logger.debug("清理gemini_session_manager失败: %s", get_error_detail(e))
 
         try:
             self._deep_engine_manager.cleanup_all()
         except Exception as e:
-            logger.debug("清理deep_engine_manager失败: %s", str(e) or repr(e))
+            logger.debug("清理deep_engine_manager失败: %s", get_error_detail(e))
 
         try:
             self._loop_engine_manager.cleanup_all()
         except Exception as e:
-            logger.debug("清理loop_engine_manager失败: %s", str(e) or repr(e))
+            logger.debug("清理loop_engine_manager失败: %s", get_error_detail(e))
 
         try:
             self._spec_engine_manager.cleanup_all()
         except Exception as e:
-            logger.debug("清理spec_engine_manager失败: %s", str(e) or repr(e))
+            logger.debug("清理spec_engine_manager失败: %s", get_error_detail(e))
 
         try:
             self._thread_manager.close()
         except Exception as e:
-            logger.debug("清理thread_manager失败: %s", str(e) or repr(e))
+            logger.debug("清理thread_manager失败: %s", get_error_detail(e))
 
         try:
             self._scheduler.stop(wait=True, shutdown_executor=True)
         except Exception as e:
-            logger.debug("停止scheduler失败: %s", str(e) or repr(e))
+            logger.debug("停止scheduler失败: %s", get_error_detail(e))
 
     def _on_thread_evicted(self, ctx) -> None:
         for mgr in (
@@ -1426,7 +1426,7 @@ class FeishuWSClient:
                     ),
                 )
             except (RateLimitExceededException, CircuitBreakerOpenException) as e:
-                logger.warning(f"Backpressure applied: {str(e) or repr(e)}")
+                logger.warning(f"Backpressure applied: {get_error_detail(e)}")
                 if is_spec:
                     self._reply_message(message_id, "⚠️ 系统繁忙 (Spec 模式)，请稍后再试。")
                 else:
@@ -1436,7 +1436,7 @@ class FeishuWSClient:
                 if message_id:
                     self._message_linker.link_task(message_id, handle.run_id)
             except Exception as e:
-                logger.debug("link_task失败(message): message_id=%s, run_id=%s, err=%s", message_id, handle.run_id, str(e) or repr(e))
+                logger.debug("link_task失败(message): message_id=%s, run_id=%s, err=%s", message_id, handle.run_id, get_error_detail(e))
 
     def _is_system_command_message(self, data: P2ImMessageReceiveV1) -> bool:
         """Check if the message is a system command that should bypass project queue.
@@ -1677,7 +1677,7 @@ class FeishuWSClient:
                     message_id, request_id=request_id, chat_id=chat_id, project_id=project.project_id
                 )
         except Exception as e:
-            logger.debug("register_origin失败(image_msg): message_id=%s, err=%s", message_id, str(e) or repr(e))
+            logger.debug("register_origin失败(image_msg): message_id=%s, err=%s", message_id, get_error_detail(e))
 
         if task_ctx and project:
             self._update_task_project(task_ctx, project.project_id)
@@ -1815,7 +1815,7 @@ class FeishuWSClient:
                 self._thread_manager.remove(old_thread.thread_root_id)
                 logger.info("[Thread] Closed old thread %s before creating new one", old_thread.thread_root_id[:12])
             except Exception as e:
-                logger.warning("[Thread] Failed to close old thread: %s", str(e) or repr(e))
+                logger.warning("[Thread] Failed to close old thread: %s", get_error_detail(e))
 
         mode_name = handler.mode_name
         content = (
@@ -1888,7 +1888,7 @@ class FeishuWSClient:
         try:
             self._scheduler.update_project_id(task_ctx.run_id, project_id)
         except Exception as e:
-            logger.debug("update_project_id失败: run_id=%s, err=%s", task_ctx.run_id, str(e) or repr(e))
+            logger.debug("update_project_id失败: run_id=%s, err=%s", task_ctx.run_id, get_error_detail(e))
 
     def _dispatch_empty_text(self, message_id, chat_id, project, task_ctx):
         """处理“文本为空”的情况：在编程模式下仍转发（保持会话），否则展示帮助。"""
@@ -2002,7 +2002,7 @@ class FeishuWSClient:
                 value_preview,
             )
         except Exception as e:
-            logger.warning("卡片回调基础信息解析失败: %s", str(e) or repr(e))
+            logger.warning("卡片回调基础信息解析失败: %s", get_error_detail(e))
         try:
             open_message_id = data.event.context.open_message_id
             open_chat_id = data.event.context.open_chat_id
@@ -2241,7 +2241,7 @@ class FeishuWSClient:
                 try:
                     self._scheduler.update_project_id(task_ctx.run_id, project_id)
                 except Exception as e:
-                    logger.debug("update_project_id失败(card_action): run_id=%s, err=%s", task_ctx.run_id, str(e) or repr(e))
+                    logger.debug("update_project_id失败(card_action): run_id=%s, err=%s", task_ctx.run_id, get_error_detail(e))
 
             logger.info(
                 "卡片按钮点击: action=%s, project_id=%s, value_keys=%s",
@@ -2418,7 +2418,7 @@ class FeishuWSClient:
         try:
             intent_result = self._intent_recognizer.recognize(text, current_mode.value)
         except Exception as e:
-            logger.error("意图识别异常: %s", str(e) or repr(e))
+            logger.error("意图识别异常: %s", get_error_detail(e))
             working_dir = self._get_working_dir(chat_id)
             self._submit_shell_command(message_id, chat_id, text, working_dir, project)
             return
@@ -2517,7 +2517,7 @@ class FeishuWSClient:
                     message_id, chat_id, "coco", project_id=project_id
                 )
             except Exception as e:
-                logger.warning("展示 Coco 模型选择卡失败，回退直接进入: %s", str(e) or repr(e))
+                logger.warning("展示 Coco 模型选择卡失败，回退直接进入: %s", get_error_detail(e))
                 self._enter_coco_mode(message_id, chat_id, project=project)
 
         elif intent == IntentType.EXIT_COCO:
@@ -2821,7 +2821,7 @@ class FeishuWSClient:
                 return False
 
         except Exception as e:
-            logger.error("执行步骤 %d 异常: %s", step_num, str(e) or repr(e))
+            logger.error("执行步骤 %d 异常: %s", step_num, get_error_detail(e))
             return False
 
     def _get_task_description(self, task: TaskStep) -> str:

@@ -19,6 +19,7 @@ from langchain_openai import ChatOpenAI
 from ..acp import ACPEvent, ACPEventType
 from ..agent_session import create_engine_session
 from ..engine_base import BaseEngine, BaseEngineManager, EngineRunState
+from ..utils.errors import get_error_detail
 from ..utils.gc_monitor import get_gc_monitor
 from ..utils.llm import ChatOpenAICacheKey, get_cached_chat_openai
 from ..utils.retry import RetryPolicy
@@ -301,7 +302,7 @@ class LoopEngine(BaseEngine):
                     try:
                         self.save_state()
                     except Exception as e:
-                        logger.warning("[Loop:%s] 细粒度状态保存失败: %s", project_name, str(e) or repr(e))
+                        logger.warning("[Loop:%s] 细粒度状态保存失败: %s", project_name, get_error_detail(e))
     
                     # Evaluate acceptance criteria in the same session
                     criteria_result = self._evaluate_criteria(requirement.acceptance_criteria, iteration)
@@ -399,9 +400,9 @@ class LoopEngine(BaseEngine):
                     try:
                         callbacks.on_iteration_event(_it, event)
                     except Exception as cb_exc:
-                        logger.debug("[Loop] on_iteration_event callback failed: %s", str(cb_exc) or repr(cb_exc))
+                        logger.debug("[Loop] on_iteration_event callback failed: %s", get_error_detail(cb_exc))
             except Exception as exc:
-                logger.debug("[Loop] on_event handler error: %s", str(exc) or repr(exc))
+                logger.debug("[Loop] on_event handler error: %s", get_error_detail(exc))
 
         return on_event
 
@@ -474,7 +475,7 @@ class LoopEngine(BaseEngine):
             )
             return self._extract_criteria_from_llm_response(response.content)
         except Exception as e:
-            logger.warning("[Loop] LLM 需求拆解失败: %s, 将使用原始文本", str(e) or repr(e))
+            logger.warning("[Loop] LLM 需求拆解失败: %s, 将使用原始文本", get_error_detail(e))
             return []
 
     @staticmethod
@@ -616,7 +617,7 @@ CRITERIA_2: FAIL
             return {"all_satisfied": all_satisfied, "pass_count": pass_count, "fail_count": fail_count}
 
         except Exception as e:
-            logger.debug("[Loop] 验收标准评估失败: %s", str(e) or repr(e))
+            logger.debug("[Loop] 验收标准评估失败: %s", get_error_detail(e))
             return {"all_satisfied": False}
 
     def _build_review_prompt(self) -> str:
@@ -766,7 +767,7 @@ FAIL
             )
             return self._extract_reviews_from_llm_response(response.content)
         except Exception as e:
-            logger.warning("[Loop] LLM 兜底审查解析失败: %s", str(e) or repr(e))
+            logger.warning("[Loop] LLM 兜底审查解析失败: %s", get_error_detail(e))
             return []
 
     @staticmethod
@@ -1093,7 +1094,7 @@ FAIL
                 _, circuit = self.load_state_with_circuit(state_path)
                 self._review_circuit = circuit
         except Exception as e:
-            logger.debug("[Loop] resume circuit restore skipped: %s", str(e) or repr(e))
+            logger.debug("[Loop] resume circuit restore skipped: %s", get_error_detail(e))
 
         callbacks = callbacks or LoopEngineCallbacks()
         self._run_state = EngineRunState.RUNNING
@@ -1177,7 +1178,7 @@ FAIL
                 try:
                     self.save_state()
                 except Exception as e:
-                    logger.warning("[Loop:%s] 细粒度状态保存失败: %s", project_name, str(e) or repr(e))
+                    logger.warning("[Loop:%s] 细粒度状态保存失败: %s", project_name, get_error_detail(e))
 
                 criteria_result = self._evaluate_criteria(requirement.acceptance_criteria, iteration)
                 all_criteria_satisfied = criteria_result.get("all_satisfied", False)

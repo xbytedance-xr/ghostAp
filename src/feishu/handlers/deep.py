@@ -10,6 +10,7 @@ from ...card import CardBuilder
 from ...deep_engine.models import DeepProjectStatus
 from ...tasking import TaskPriority, TaskSpec
 from ...utils.command_parser import CommandParser
+from ...utils.errors import get_error_detail
 from ...utils.text import generate_task_id
 from ..emoji import EmojiReaction
 from ..renderers.deep_renderer import DeepRenderer
@@ -327,7 +328,7 @@ class DeepHandler(BaseEngineHandler):
             try:
                 e.stop()
             except Exception as ex:
-                logger.debug("停止deep engine失败: %s", str(ex) or repr(ex))
+                logger.debug("停止deep engine失败: %s", get_error_detail(ex))
 
         msg = UI_TEXT.get(
             "deep_stop_all_success", "🛑 已发送停止信号：{count} 个 Deep Agent 任务将在当前步骤完成后停止"
@@ -401,7 +402,7 @@ class DeepHandler(BaseEngineHandler):
                 if engine:
                     target_project = self.project_manager.find_project_by_path(engine.root_path)
             except Exception as e:
-                logger.debug("resolve_deep_target_project失败: %s", str(e) or repr(e))
+                logger.debug("resolve_deep_target_project失败: %s", get_error_detail(e))
                 target_project = None
 
         deep_actions = {

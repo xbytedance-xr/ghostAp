@@ -18,6 +18,7 @@ from acp.stdio import spawn_agent_process
 
 from ..config import get_settings
 from ..utils.async_helpers import safe_wait_for
+from ..utils.errors import get_error_detail
 from .client import ACPHistoryStore, GhostAPClient
 from .models import ACPEvent, ACPEventType, ACPSessionState, PromptResult
 
@@ -278,7 +279,7 @@ class ACPSession:
                 try:
                     on_event(ev)
                 except Exception as exc:
-                    logger.warning("[ACP] on_event callback error: %s", str(exc) or repr(exc))
+                    logger.warning("[ACP] on_event callback error: %s", get_error_detail(exc))
 
         self._event_handler = _collector
         self._state.message_count += 1
@@ -342,7 +343,7 @@ class ACPSession:
             logger.info("[ACP:%s] Model switched to: %s (session=%s)", self._agent_cmd, model_id, self._session_id[:8])
             return True
         except Exception as e:
-            logger.warning("[ACP:%s] set_model failed (agent may not support it): %s", self._agent_cmd, str(e) or repr(e))
+            logger.warning("[ACP:%s] set_model failed (agent may not support it): %s", self._agent_cmd, get_error_detail(e))
             return False
 
     async def cancel(self) -> None:
@@ -357,7 +358,7 @@ class ACPSession:
             try:
                 await self._ctx_manager.__aexit__(None, None, None)
             except Exception as e:
-                logger.debug("[ACP:%s] Error closing session: %s", self._agent_cmd, str(e) or repr(e))
+                logger.debug("[ACP:%s] Error closing session: %s", self._agent_cmd, get_error_detail(e))
             self._ctx_manager = None
             self._conn = None
             self._proc = None
@@ -369,4 +370,4 @@ class ACPSession:
             try:
                 self._event_handler(event)
             except Exception as e:
-                logger.debug("[ACP] Event handler error: %s", str(e) or repr(e))
+                logger.debug("[ACP] Event handler error: %s", get_error_detail(e))

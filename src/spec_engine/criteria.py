@@ -8,6 +8,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from ..acp import ACPEvent, ACPEventType
+from ..utils.errors import get_error_detail
 from ..utils.llm import ChatOpenAICacheKey, get_cached_chat_openai
 from ..utils.retry import RetryPolicy
 from ..utils.spec_utils import CRITERIA_PATTERNS as _CRITERIA_PATTERNS
@@ -53,7 +54,7 @@ def decompose_criteria_with_llm(text: str, settings) -> list[str]:
         )
         return extract_criteria_from_llm_response(response.content)
     except Exception as e:
-        logger.warning("[Spec] LLM 需求拆解失败: %s, 将使用原始文本", str(e) or repr(e))
+        logger.warning("[Spec] LLM 需求拆解失败: %s, 将使用原始文本", get_error_detail(e))
         return []
 
 
@@ -110,5 +111,5 @@ CRITERIA_2: FAIL
         return {"all_satisfied": all_satisfied}
 
     except Exception as e:
-        logger.debug("[Spec] 验收标准评估失败: %s", str(e) or repr(e))
+        logger.debug("[Spec] 验收标准评估失败: %s", get_error_detail(e))
         return {"all_satisfied": False}

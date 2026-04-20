@@ -5,6 +5,8 @@ import threading
 import time
 from typing import Optional
 
+from .errors import get_error_detail
+
 try:
     import psutil
 except Exception:  # pragma: no cover - exercised via monkeypatch in tests
@@ -56,7 +58,7 @@ class GCMonitor:
                     try:
                         mem_snapshot.log_growth(logger_func=logger.warning)
                     except Exception as ex:
-                        logger.warning(f"[{label}] 内存快照分析失败: {str(ex) or repr(ex)}")
+                        logger.warning(f"[{label}] 内存快照分析失败: {get_error_detail(ex)}")
 
                 # Trigger garbage collection
                 gc.collect()
@@ -65,7 +67,7 @@ class GCMonitor:
                 logger.info(f"[{label}] GC后内存: {mem_percent_after:.1f}%")
 
         except Exception as e:
-            logger.debug(f"[{label}] 内存监控失败: {str(e) or repr(e)}")
+            logger.debug(f"[{label}] 内存监控失败: {get_error_detail(e)}")
 
 
 _global_gc_monitor: Optional[GCMonitor] = None

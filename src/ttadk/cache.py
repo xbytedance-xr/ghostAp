@@ -20,6 +20,7 @@ from typing import Optional
 
 from .model_fetcher import TTADKModelFetcher
 from .models import ModelListResult, TTADKModel, build_model_list_diagnostics
+from ..utils.errors import get_error_detail
 
 logger = logging.getLogger(__name__)
 
@@ -571,7 +572,7 @@ class TTADKModelCache:
                 )
                 return
             except Exception as e:
-                logger.warning("Failed to load TTADK models cache from project file: path=%s err=%s", str(path), str(e) or repr(e))
+                logger.warning("Failed to load TTADK models cache from project file: path=%s err=%s", str(path), get_error_detail(e))
                 # best-effort: remove corrupted project cache
                 try:
                     if path.exists():
@@ -604,7 +605,7 @@ class TTADKModelCache:
             _apply_loaded(data, low_confidence=True)
             logger.info("Loaded TTADK models from legacy HOME cache: path=%s", str(legacy))
         except Exception as e:
-            logger.warning("Failed to load TTADK models cache from legacy HOME file: path=%s err=%s", str(legacy), str(e) or repr(e))
+            logger.warning("Failed to load TTADK models cache from legacy HOME file: path=%s err=%s", str(legacy), get_error_detail(e))
             return
 
         # Optional migrate: write into project cache only (never write back to HOME).
@@ -659,7 +660,7 @@ class TTADKModelCache:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             tmp_path.replace(path)
         except Exception as e:
-            logger.warning("Failed to save models cache to file: %s", str(e) or repr(e))
+            logger.warning("Failed to save models cache to file: %s", get_error_detail(e))
 
     # ------------------------------
     # fetcher 回灌
@@ -811,12 +812,12 @@ class TTADKModelCache:
                 ttl_s=float(getattr(self, "_cache_ttl_s", 0.0) or 0.0),
                 chosen_strategy="fetch_exception",
                 attempts=[],
-                error_snippet=(str(e) or repr(e))[:200],
+                error_snippet=(get_error_detail(e))[:200],
             )
             return ModelListResult(
                 models=list(self._default_models),
                 cached=False,
-                error=str(e) or repr(e),
+                error=get_error_detail(e),
                 source="defaults",
                 warnings=["models_error"],
                 diagnostics=diag,

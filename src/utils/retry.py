@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Callable, Optional, TypeVar
 if TYPE_CHECKING:
     from .circuit_breaker import CircuitBreaker
 
+from .errors import get_error_detail
+
 logger = logging.getLogger(__name__)
 
 __all__ = ["RetryPolicy", "should_retry", "get_retry_delay", "prompt_with_retry"]
@@ -126,7 +128,7 @@ def prompt_with_retry(
                 policy.max_retries,
                 elapsed_ms,
                 f"{remaining_budget}s" if remaining_budget is not None else "unlimited",
-                str(e) or repr(e),
+                get_error_detail(e),
             )
             if before_retry:
                 try:

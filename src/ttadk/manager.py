@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from ..config import get_settings
+from ..utils.errors import get_error_detail
 from .cache import TTADKModelCache
 from .command_exec import (
     TTADKCommandRunner,
@@ -175,7 +176,7 @@ def start_ttadk_engine_session(
                 tool_name,
                 intent,
                 type(err).__name__,
-                (str(err) or repr(err))[:200],
+                get_error_detail(err)[:200],
             )
             s = _start_coco(
                 agent_type="coco",
@@ -185,7 +186,7 @@ def start_ttadk_engine_session(
             )
             try:
                 s._degraded_to = "coco"
-                s._degraded_reason = (str(err) or repr(err))[:200]
+                s._degraded_reason = get_error_detail(err)[:200]
             except Exception:
                 pass
             return s
@@ -1036,11 +1037,11 @@ class TTADKManager:
                     tools = self._load_tools(filter_available=False)
                 return ToolListResult(tools=list(tools), cached=False)
             except Exception as e:
-                logger.error("Failed to load TTADK tools: %s", str(e) or repr(e))
+                logger.error("Failed to load TTADK tools: %s", get_error_detail(e))
                 return ToolListResult(
                     tools=list(DEFAULT_TOOLS),
                     cached=False,
-                    error=str(e) or repr(e),
+                    error=get_error_detail(e),
                 )
 
     def _check_tool_available(self, tool_name: str) -> bool:
@@ -1510,7 +1511,7 @@ class TTADKManager:
             if isinstance(commands, dict):
                 return [str(k) for k in commands.keys()]
         except Exception as e:
-            logger.debug("Failed to read ttadk setting.json: %s", str(e) or repr(e))
+            logger.debug("Failed to read ttadk setting.json: %s", get_error_detail(e))
         return []
 
     def _extract_models_from_sync(
@@ -1712,7 +1713,7 @@ def auto_update_ttadk() -> None:
                     ((p.stderr or "").strip())[-200:] or "(empty)",
                 )
         except Exception as e:
-            logger.warning("[TTADK] auto-update error: %s", str(e) or repr(e))
+            logger.warning("[TTADK] auto-update error: %s", get_error_detail(e))
 
     threading.Thread(target=_do_upgrade, daemon=True, name="ttadk-auto-upgrade").start()
 

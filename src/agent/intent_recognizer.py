@@ -9,6 +9,7 @@ from typing import Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
+from ..utils.errors import get_error_detail
 from ..utils.llm import ChatOpenAICacheKey, get_cached_chat_openai
 
 from ..config import get_settings
@@ -998,12 +999,12 @@ class IntentRecognizer:
             )
 
         except Exception as e:
-            logger.error("意图识别异常: %s", str(e) or repr(e))
+            logger.error("意图识别异常: %s", get_error_detail(e))
             fallback = self._get_fallback_intent(current_mode)
             return IntentResult.single(
                 intent=fallback,
                 confidence=0.3,
                 original_text=text,
-                reasoning=f"异常回退: {str(e) or repr(e)}",
+                reasoning=f"异常回退: {get_error_detail(e)}",
                 description=f"执行: {text}",
             )

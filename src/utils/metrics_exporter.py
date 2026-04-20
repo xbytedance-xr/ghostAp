@@ -13,6 +13,8 @@ import logging
 import os
 from typing import Protocol, runtime_checkable
 
+from .errors import get_error_detail
+
 logger = logging.getLogger(__name__)
 
 
@@ -87,7 +89,7 @@ class JsonLinesExporter:
         except Exception as e:
             logger.debug(
                 "JsonLinesExporter write failed: %s",
-                str(e) or repr(e),
+                get_error_detail(e),
             )
 
 
