@@ -168,6 +168,49 @@ class WorktreeUnit:
 
 
 @dataclass
+class DeleteWarning:
+    """Warning returned when a worktree has uncommitted changes or unmerged branches."""
+
+    has_uncommitted: bool = False
+    uncommitted_files: list[str] = field(default_factory=list)
+    has_unmerged: bool = False
+    unmerged_branch: str = ""
+
+    @property
+    def is_safe(self) -> bool:
+        return not self.has_uncommitted and not self.has_unmerged
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "has_uncommitted": self.has_uncommitted,
+            "uncommitted_files": list(self.uncommitted_files),
+            "has_unmerged": self.has_unmerged,
+            "unmerged_branch": self.unmerged_branch,
+            "is_safe": self.is_safe,
+        }
+
+
+@dataclass
+class WorktreeInfo:
+    """Structured info for a single worktree entry from ``git worktree list``."""
+
+    path: str = ""
+    branch: str = ""
+    commit: str = ""
+    is_active: bool = False
+    last_updated: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "path": self.path,
+            "branch": self.branch,
+            "commit": self.commit,
+            "is_active": self.is_active,
+            "last_updated": self.last_updated,
+        }
+
+
+@dataclass
 class WorktreeRuntimeState:
     enabled: bool = False
     git_initialized_locally: bool = False

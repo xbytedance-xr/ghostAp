@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .models import WorktreeRuntimeState, WorktreeUnit
+from .models import WorktreeInfo, WorktreeRuntimeState, WorktreeUnit
 
 
 class WorktreeReporter:
@@ -69,3 +69,34 @@ class WorktreeReporter:
                 f"- `{display_name}` → 分支 `{unit.branch_name or '(未创建)'}` → worktree `{unit.worktree_path or '(未创建)'}` → 建议合并回 `{target}`"
             )
         return notes
+
+    @staticmethod
+    def format_worktree_table(entries: list[WorktreeInfo]) -> str:
+        """Format worktree list into an aligned table string."""
+        if not entries:
+            return "(无 worktree)"
+
+        headers = ("路径", "分支", "状态", "最后更新")
+        rows: list[tuple[str, str, str, str]] = []
+        for entry in entries:
+            active_mark = " *" if entry.is_active else ""
+            rows.append((
+                entry.path,
+                entry.branch or "(detached)",
+                f"活跃{active_mark}" if entry.is_active else "非活跃",
+                entry.last_updated or "-",
+            ))
+
+        # Compute column widths
+        col_widths = [len(h) for h in headers]
+        for row in rows:
+            for i, cell in enumerate(row):
+                col_widths[i] = max(col_widths[i], len(cell))
+
+        def _fmt_row(cells: tuple[str, ...]) -> str:
+            return "  ".join(cell.ljust(col_widths[i]) for i, cell in enumerate(cells))
+
+        lines = [_fmt_row(headers), "-" * (sum(col_widths) + 2 * (len(headers) - 1))]
+        for row in rows:
+            lines.append(_fmt_row(row))
+        return "\n".join(lines)

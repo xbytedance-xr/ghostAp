@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
-from .models import WorktreeSelectionItem, WorktreeUnit
+from .models import DeleteWarning, WorktreeInfo, WorktreeSelectionItem, WorktreeUnit
+
+logger = logging.getLogger(__name__)
 
 
 class WorktreeGitError(RuntimeError):
@@ -101,7 +105,39 @@ class WorktreeGitService:
     def build_unit_id(self, index: int) -> str:
         return f"wt-{index:02d}"
 
-    def create_worktree(self, repo_root: str, branch_name: str, worktree_path: str, base_ref: str) -> None:
+    # Forbidden path prefixes for custom_path safety validation
+    _FORBIDDEN_PREFIXES = ("/etc", "/usr", "/var", "/sys", "/proc", "/dev", "/boot", "/sbin", "/bin")
+
+    def _validate_custom_path(self, custom_path: str) -> None:
+        """Validate a user-supplied custom worktree path for safety."""
+        resolved = str(Path(custom_path).resolve())
+        if ".." in Path(custom_path).parts:
+            raise WorktreeGitError(f"自定义路径包含 '..'，拒绝操作: {custom_path}")
+        for prefix in self._FORBIDDEN_PREFIXES:
+            if resolved == prefix or resolved.startswith(prefix + "/"):
+                raise WorktreeGitError(f"自定义路径指向系统目录，拒绝操作: {custom_path}")
+
+    def create_worktree(
+        self,
+        repo_root: str,
+        branch_name: str,
+        worktree_path: str,
+        base_ref: str,
+        *,
+        custom_path: Optional[str] = None,
+        remote_branch: Optional[str] = None,
+    ) -> None:
+        if custom_path:
+            self._validate_custom_path(custom_path)
+            worktree_path = str(Path(custom_path).resolve())
+        # Fetch remote branch if specified
+        if remote_branch:
+            # Strip 'origin/' prefix if present to get the bare branch name for fetch
+            fetch_ref = remote_branch
+            if fetch_ref.startswith("origin/"):
+                fetch_ref = fetch_ref[len("origin/"):]
+            self._run_git(repo_root, "fetch", "origin", fetch_ref, check=False)
+            base_ref = f"origin/{fetch_ref}"
         worktree = Path(worktree_path)
         if worktree.exists() and any(worktree.iterdir()):
             return
@@ -124,9 +160,19 @@ class WorktreeGitService:
         root_path: str,
         count: int,
         base_branch: Optional[str] = None,
+        custom_base_dir: Optional[str] = None,
     ) -> tuple[GitRepoState, list[WorktreeUnit]]:
+        t0 = time.monotonic()
         repo = self.ensure_local_repo(root_path)
-        worktree_parent = Path(self.build_worktree_parent(repo.repo_root))
+        # Single fetch upfront to avoid per-worktree fetch overhead
+        if repo.remote_lines:
+            self._run_git(repo.repo_root, "fetch", "--all", check=False)
+            logger.debug("git fetch --all completed in %.2fs", time.monotonic() - t0)
+        if custom_base_dir:
+            self._validate_custom_path(custom_base_dir)
+            worktree_parent = Path(custom_base_dir).resolve()
+        else:
+            worktree_parent = Path(self.build_worktree_parent(repo.repo_root))
         units: list[WorktreeUnit] = []
         base_ref = base_branch or repo.base_branch or "HEAD"
         for index in range(1, count + 1):
@@ -144,7 +190,60 @@ class WorktreeGitService:
                 )
             )
         self.ensure_remote_unchanged(repo.repo_root, repo.remote_lines)
+        # Lightweight gc after batch creation
+        self._run_git(repo.repo_root, "gc", "--auto", check=False)
+        elapsed = time.monotonic() - t0
+        logger.info("create_units: %d worktrees created in %.2fs", count, elapsed)
         return repo, units
+
+    # ------------------------------------------------------------------
+    # Safety checks
+    # ------------------------------------------------------------------
+
+    def check_worktree_safety(
+        self,
+        repo_root: str,
+        worktree_path: str,
+        base_branch: Optional[str] = None,
+    ) -> DeleteWarning:
+        """Check if a worktree has uncommitted changes or unmerged branches."""
+        warning = DeleteWarning()
+
+        # Check uncommitted changes
+        status_result = self._run_git(worktree_path, "status", "--porcelain", check=False)
+        dirty_lines = [
+            line.strip()
+            for line in (status_result.stdout or "").splitlines()
+            if line.strip()
+        ]
+        if dirty_lines:
+            warning.has_uncommitted = True
+            warning.uncommitted_files = dirty_lines
+
+        # Check unmerged commits (commits in worktree branch not in base)
+        if base_branch:
+            branch_result = self._run_git(
+                worktree_path, "rev-parse", "--abbrev-ref", "HEAD", check=False
+            )
+            wt_branch = (branch_result.stdout or "").strip()
+            if wt_branch and wt_branch != base_branch:
+                log_result = self._run_git(
+                    worktree_path,
+                    "log",
+                    f"{base_branch}..{wt_branch}",
+                    "--oneline",
+                    check=False,
+                )
+                unmerged_lines = [
+                    line.strip()
+                    for line in (log_result.stdout or "").splitlines()
+                    if line.strip()
+                ]
+                if unmerged_lines:
+                    warning.has_unmerged = True
+                    warning.unmerged_branch = wt_branch
+
+        return warning
 
     # ------------------------------------------------------------------
     # Merge / cleanup
@@ -191,9 +290,26 @@ class WorktreeGitService:
         if not str(resolved).startswith(str(expected_parent)):
             raise WorktreeGitError(f"worktree 路径 {worktree_path} 不在预期目录 {expected_parent} 下，拒绝操作")
 
-    def remove_worktree(self, repo_root: str, worktree_path: str) -> None:
-        """Remove a worktree directory (force) and prune stale entries."""
+    def remove_worktree(
+        self,
+        repo_root: str,
+        worktree_path: str,
+        *,
+        force: bool = True,
+        base_branch: Optional[str] = None,
+    ) -> Optional[DeleteWarning]:
+        """Remove a worktree directory.
+
+        When *force* is ``False``, checks for uncommitted changes and
+        unmerged branches first.  Returns a :class:`DeleteWarning` if
+        the worktree is not safe to delete (caller should re-call with
+        ``force=True`` to confirm).  Returns ``None`` on success.
+        """
         self._validate_worktree_path(repo_root, worktree_path)
+        if not force:
+            warning = self.check_worktree_safety(repo_root, worktree_path, base_branch)
+            if not warning.is_safe:
+                return warning
         self._run_git(repo_root, "worktree", "remove", "--force", worktree_path, check=False)
         self._run_git(repo_root, "worktree", "prune", check=False)
         # Best-effort cleanup of leftover directory
@@ -202,7 +318,129 @@ class WorktreeGitService:
             import shutil as _shutil
 
             _shutil.rmtree(wt, ignore_errors=True)
+        return None
 
     def remove_branch(self, repo_root: str, branch_name: str) -> None:
         """Force-delete a local branch."""
         self._run_git(repo_root, "branch", "-D", branch_name, check=False)
+
+    # ------------------------------------------------------------------
+    # List / sync / optimize
+    # ------------------------------------------------------------------
+
+    def list_worktrees(self, repo_root: str) -> list[WorktreeInfo]:
+        """List all worktrees using ``git worktree list --porcelain``."""
+        result = self._run_git(repo_root, "worktree", "list", "--porcelain", check=False)
+        if result.returncode != 0:
+            return []
+
+        # Determine current active worktree
+        cwd = str(Path.cwd().resolve())
+
+        entries: list[WorktreeInfo] = []
+        current: dict[str, str] = {}
+        for line in (result.stdout or "").splitlines():
+            line = line.strip()
+            if not line:
+                # End of entry block
+                if current.get("worktree"):
+                    wt_path = current["worktree"]
+                    branch = current.get("branch", "").replace("refs/heads/", "")
+                    is_active = str(Path(wt_path).resolve()) == cwd
+                    # Get last commit time
+                    last_updated = ""
+                    time_result = self._run_git(
+                        wt_path, "log", "-1", "--format=%ci", check=False
+                    )
+                    if time_result.returncode == 0 and (time_result.stdout or "").strip():
+                        last_updated = (time_result.stdout or "").strip()
+                    else:
+                        # Fallback to directory mtime
+                        try:
+                            mtime = Path(wt_path).stat().st_mtime
+                            import datetime
+                            last_updated = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+                        except OSError:
+                            pass
+                    entries.append(WorktreeInfo(
+                        path=wt_path,
+                        branch=branch,
+                        commit=current.get("HEAD", ""),
+                        is_active=is_active,
+                        last_updated=last_updated,
+                    ))
+                current = {}
+                continue
+            if line.startswith("worktree "):
+                current["worktree"] = line[len("worktree "):]
+            elif line.startswith("HEAD "):
+                current["HEAD"] = line[len("HEAD "):]
+            elif line.startswith("branch "):
+                current["branch"] = line[len("branch "):]
+            elif line == "bare":
+                current["bare"] = "true"
+            elif line == "detached":
+                current["detached"] = "true"
+
+        # Handle last entry (porcelain output may not end with blank line)
+        if current.get("worktree"):
+            wt_path = current["worktree"]
+            branch = current.get("branch", "").replace("refs/heads/", "")
+            is_active = str(Path(wt_path).resolve()) == cwd
+            last_updated = ""
+            time_result = self._run_git(wt_path, "log", "-1", "--format=%ci", check=False)
+            if time_result.returncode == 0 and (time_result.stdout or "").strip():
+                last_updated = (time_result.stdout or "").strip()
+            entries.append(WorktreeInfo(
+                path=wt_path,
+                branch=branch,
+                commit=current.get("HEAD", ""),
+                is_active=is_active,
+                last_updated=last_updated,
+            ))
+
+        return entries
+
+    def sync_worktree(
+        self,
+        repo_root: str,
+        worktree_path: str,
+        branch: Optional[str] = None,
+        *,
+        force: bool = False,
+    ) -> Optional[DeleteWarning]:
+        """Sync a worktree to the latest remote state.
+
+        Executes: fetch → checkout → reset --hard → clean -fd.
+
+        If *force* is ``False`` and the worktree has uncommitted changes,
+        returns a :class:`DeleteWarning` instead of proceeding.
+        Returns ``None`` on success.
+        """
+        if not force:
+            warning = self.check_worktree_safety(repo_root, worktree_path)
+            if warning.has_uncommitted:
+                return warning
+
+        # Determine branch if not given
+        if not branch:
+            branch_result = self._run_git(
+                worktree_path, "rev-parse", "--abbrev-ref", "HEAD", check=False
+            )
+            branch = (branch_result.stdout or "").strip() or "main"
+
+        self._run_git(worktree_path, "fetch", "origin", check=False)
+        self._run_git(worktree_path, "checkout", branch, check=False)
+        # Reset to remote tracking branch if available, otherwise just the branch
+        remote_ref = f"origin/{branch}"
+        ref_check = self._run_git(worktree_path, "rev-parse", "--verify", remote_ref, check=False)
+        reset_target = remote_ref if ref_check.returncode == 0 else branch
+        self._run_git(worktree_path, "reset", "--hard", reset_target)
+        self._run_git(worktree_path, "clean", "-fd", check=False)
+        return None
+
+    def optimize_storage(self, repo_root: str) -> None:
+        """Run aggressive gc + repack to minimize shared object storage."""
+        self._run_git(repo_root, "gc", "--aggressive", "--prune=now", check=False)
+        self._run_git(repo_root, "repack", "-a", "-d", check=False)
+        logger.info("optimize_storage: gc + repack completed for %s", repo_root)

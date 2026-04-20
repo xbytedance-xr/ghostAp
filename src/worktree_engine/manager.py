@@ -6,7 +6,7 @@ from typing import Callable, Optional
 from ..project.context import ProjectContext
 from .dispatcher import WorktreeDispatcher
 from .git_service import WorktreeGitService
-from .models import WorktreeRuntimeState
+from .models import DeleteWarning, WorktreeRuntimeState
 from .reporter import WorktreeReporter
 from .selection import WorktreeToolOption, apply_model_to_item, build_selection_item, format_selection_lines
 
@@ -110,7 +110,12 @@ class WorktreeManager:
         state.selection.last_message = "已进入 worktree 模式" if state.enabled else "请至少选择一个工具"
         return state
 
-    def ensure_worktrees(self, project: ProjectContext) -> WorktreeRuntimeState:
+    def ensure_worktrees(
+        self,
+        project: ProjectContext,
+        *,
+        custom_base_dir: Optional[str] = None,
+    ) -> WorktreeRuntimeState:
         state = self.get_state(project)
         if not state.selection.selected_items:
             state.last_error = "当前没有可创建 worktree 的工具-模型组合"
@@ -120,6 +125,7 @@ class WorktreeManager:
                 root_path=project.root_path,
                 count=len(state.selection.selected_items),
                 base_branch=state.base_branch or None,
+                custom_base_dir=custom_base_dir,
             )
         except Exception as exc:
             from ..utils.errors import get_error_detail
@@ -265,17 +271,81 @@ class WorktreeManager:
         state.merge_entry_ready = False
         return self._reporter.refresh_state(state), merge_results
 
-    def cleanup_worktrees(self, project: ProjectContext) -> WorktreeRuntimeState:
-        """Remove all worktree directories and branches, reset state."""
+    def cleanup_worktrees(
+        self,
+        project: ProjectContext,
+        *,
+        force: bool = True,
+    ) -> tuple[WorktreeRuntimeState, list[DeleteWarning]]:
+        """Remove all worktree directories and branches, reset state.
+
+        When *force* is ``False``, checks each worktree for safety first.
+        Returns ``(state, warnings)`` — warnings is non-empty if any
+        worktree was skipped due to uncommitted changes / unmerged branches.
+        """
         state = self.get_state(project)
+        warnings: list[DeleteWarning] = []
+        repo_root = state.git_root or project.root_path
         for unit in state.units:
             try:
                 if unit.worktree_path:
-                    self._git.remove_worktree(state.git_root or project.root_path, unit.worktree_path)
+                    warning = self._git.remove_worktree(
+                        repo_root,
+                        unit.worktree_path,
+                        force=force,
+                        base_branch=state.base_branch or None,
+                    )
+                    if warning is not None:
+                        warnings.append(warning)
+                        continue
                 if unit.branch_name:
-                    self._git.remove_branch(state.git_root or project.root_path, unit.branch_name)
+                    self._git.remove_branch(repo_root, unit.branch_name)
             except Exception:
-                logger.warning("清理 worktree 失败: unit=%s path=%s branch=%s", unit.unit_id, unit.worktree_path, unit.branch_name, exc_info=True)
-        # Reset state
-        project.worktree_state = WorktreeRuntimeState()
-        return self.get_state(project)
+                logger.warning(
+                    "清理 worktree 失败: unit=%s path=%s branch=%s",
+                    unit.unit_id, unit.worktree_path, unit.branch_name, exc_info=True,
+                )
+        if not warnings:
+            # Only run optimize_storage and reset state when all worktrees cleaned
+            try:
+                self._git.optimize_storage(repo_root)
+            except Exception:
+                logger.warning("optimize_storage failed", exc_info=True)
+            project.worktree_state = WorktreeRuntimeState()
+            return self.get_state(project), []
+        return self._reporter.refresh_state(state), warnings
+
+    # ------------------------------------------------------------------
+    # List / sync
+    # ------------------------------------------------------------------
+
+    def list_worktrees(self, project: ProjectContext) -> tuple[WorktreeRuntimeState, str]:
+        """List all worktrees and return formatted table.
+
+        Returns ``(state, table_string)``.
+        """
+        state = self.get_state(project)
+        repo_root = state.git_root or project.root_path
+        entries = self._git.list_worktrees(repo_root)
+        table = self._reporter.format_worktree_table(entries)
+        return state, table
+
+    def sync_worktree(
+        self,
+        project: ProjectContext,
+        worktree_path: str,
+        branch: Optional[str] = None,
+        *,
+        force: bool = False,
+    ) -> tuple[WorktreeRuntimeState, Optional[DeleteWarning]]:
+        """Sync a worktree to its remote branch's latest state.
+
+        Returns ``(state, warning)`` — warning is non-None if worktree
+        has uncommitted changes and *force* is ``False``.
+        """
+        state = self.get_state(project)
+        repo_root = state.git_root or project.root_path
+        warning = self._git.sync_worktree(
+            repo_root, worktree_path, branch, force=force,
+        )
+        return state, warning

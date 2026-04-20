@@ -3,6 +3,7 @@
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 
 ## 2026-04-20
+- **Worktree Engine 优化：7 项验收标准全量实现** — 基于 Spec→Plan→Task→Build 方法论实现 AC1~AC7：自定义路径创建（`_validate_custom_path` 安全校验 + `mkdir -p`）、远程分支关联（单次 `fetch --all` 优化）、安全删除（`DeleteWarning` 返回模式 + `force` 确认）、富列表展示（`git worktree list --porcelain` 解析 + 列对齐表格）、自动同步（`reset --hard + clean -fd` + 脏状态拒绝）、存储优化（`gc --aggressive + repack`）、批量创建性能（串行避免锁竞争）；新增 26 个测试；全量 2399 passed 零回归 → [详细记录](2026-04-20.md)
 - **最终闭环：TimeoutError (empty message) 改进建议全部落实** — 26 轮增量修复 + 最终闭环验证完毕；10 层纵深防御体系完整（safe_wait_for 源头→get_error_detail 兜底→用户/日志路径统一→三引擎独立 catch→review_helpers 统一异常处理→收敛跳过→7 个静态 lint 门禁→滑动窗口熔断→本地 lint 降级）；Backlog B-001~B-008 全部 Done；全量 2374 passed 零回归；`cbeb8fd` → [详细记录](2026-04-20.md)
 - **第二十六次增量修复：日志层 TimeoutError 空消息缝隙封堵** — 4 处日志调用 bare `e`/`str(exc) or repr(exc)` → `get_error_detail(e)` 替换（errors.py log_exception + spec.py + im_client.py + agent_session.py）；新增 6 个测试用例；全量 2374 passed 零回归 → [详细记录](2026-04-20.md)
 - **第二十五次闭环验证：TimeoutError 纵深防御专项加固确认** — 8 步任务严格顺序执行（fmt_exception 链式检测 + review_helpers 关键字匹配 + 静态扫描零残留 + concurrent.futures.TimeoutError 专项回归 + 全量 2363 passed 50.28s）；确认 10 层纵深防御体系完整闭环，彻底消除空消息超时提示 → [详细记录](2026-04-20.md)
