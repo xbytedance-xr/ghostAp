@@ -3,6 +3,8 @@
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 
 ## 2026-04-20
+- **第十四次闭环验证：审查执行异常改进建议最终归档确认** — 全量 2323 passed (47.72s) + TimeoutError 专项 245 passed + Backlog B-001~B-007 全部 Done 零 Open + 静态零残留 3 项验证通过（str(e) or repr(e) 仅 errors.py 白名单/asyncio.wait_for 仅 safe_wait_for 内部/raise TimeoutError() 零残留）；第十四次独立确认无退化无新缺口，改进建议完全落实，问题归档关闭 → [详细记录](2026-04-20.md)
+- **B-006 + 全代码库 `str(e) or repr(e)` → `get_error_detail(e)` 统一** — 关闭最后一个审计缺口 B-006（sync_adapter.py 4 处）；同时全代码库 30+ 文件 90+ 处 `str(e/exc/err/ex/cb_exc/error) or repr(...)` 全量替换为 `get_error_detail()`；新增 `TestBanStrOrReprPattern` 静态扫描回归门禁（仅 `errors.py` 自身实现豁免）；2323 tests passed 零回归；Backlog B-001~B-007 全部 Done → [详细记录](2026-04-20.md)
 - **第十三次闭环验证：10 层防御体系零缺口确认** — 11 步任务清单全量执行（全量 2322 passed + TimeoutError 专项 245 passed + 回归 lint 15 passed + 空消息守卫 105 passed + E2E 40 passed + Grep 扫描零裸 asyncio.wait_for + 14 处 TimeoutError except 块全部受保护）；零新增缺口、零代码改动；Backlog B-001~B-005 全部 Done → [详细记录](2026-04-20.md)
 - **第十二次闭环验证 + ws_client/dispatcher 残余 TimeoutError 日志路径修复** — 11 步任务清单全量执行（全量 2322 passed + TimeoutError 专项 245 passed + 回归 lint 15 passed + 空消息守卫 105 passed + E2E 40 passed + Grep 扫描零裸 asyncio.wait_for）；发现并修复 ws_client.py 2 处 + dispatcher.py 1 处 TimeoutError except 块日志层 `str(e) or repr(e)` → `get_error_detail(e)` 统一；修复后 2322 passed 零回归；Backlog B-001~B-005 全部 Done → [详细记录](2026-04-20.md)
 - **B-005 修复：engine_base.py / spec.py TimeoutError 分支 logger 统一到 get_error_detail** — `engine_base.py` 4 处 + `spec.py` 2 处 `str(e) or repr(e)` → `get_error_detail(e)` + 移除 spec.py 2 处冗余 local import（修复 UnboundLocalError）；2322 passed 零回归 + 回归 lint 105 passed 零违规；Backlog B-001~B-005 全部 Done 无 Open 条目 → [详细记录](2026-04-20.md)
