@@ -68,6 +68,8 @@ def _make_handler_context(**overrides) -> HandlerContext:
         pending_image_keys={},
         pending_image_lock=threading.Lock(),
         enable_streaming=False,
+        managers={},
+        handlers={},
     )
     for k, v in overrides.items():
         setattr(ctx, k, v)
@@ -212,11 +214,21 @@ class TestSystemHandlerRouting:
     def _make(self):
         ctx = _make_handler_context()
         handler = SystemHandler(ctx)
-        handler.coco_handler = MagicMock()
-        handler.claude_handler = MagicMock()
-        handler.project_handler = MagicMock()
-        handler.deep_handler = MagicMock()
-        handler.diagnostics_handler = MagicMock()
+        ctx.handlers.update({
+            "coco": MagicMock(),
+            "claude": MagicMock(),
+            "project": MagicMock(),
+            "deep": MagicMock(),
+            "diagnostics": MagicMock(),
+            "ttadk": MagicMock(),
+        })
+        # Keep attributes for test assertions
+        handler.coco_handler = ctx.handlers["coco"]
+        handler.claude_handler = ctx.handlers["claude"]
+        handler.project_handler = ctx.handlers["project"]
+        handler.deep_handler = ctx.handlers["deep"]
+        handler.diagnostics_handler = ctx.handlers["diagnostics"]
+        handler.ttadk_handler = ctx.handlers["ttadk"]
         return handler
 
     def test_route_help(self):
@@ -269,8 +281,8 @@ class TestSystemHandlerRouting:
         ctx = _make_handler_context()
         ctx.mode_manager.get_mode.return_value = InteractionMode.COCO
         h = SystemHandler(ctx)
-        h.coco_handler = MagicMock()
-        h.claude_handler = MagicMock()
+        ctx.handlers["coco"] = MagicMock()
+        h.coco_handler = ctx.handlers["coco"]
         h.exit_current_mode("m1", "c1", None)
         h.coco_handler.exit_mode.assert_called_once_with("m1", "c1", None)
 
@@ -487,12 +499,20 @@ class TestCocoModeHandler:
     def _make(self, **ctx_overrides):
         ctx = _make_handler_context(**ctx_overrides)
         h = CocoModeHandler(ctx)
-        h._opposite_handler = MagicMock()
+        ctx.handlers.update({
+            "claude": MagicMock(),
+            "aiden": MagicMock(),
+            "codex": MagicMock(),
+            "gemini": MagicMock(),
+            "ttadk": MagicMock(),
+        })
+        # Keep attributes for test assertions
+        h._opposite_handler = ctx.handlers["claude"]
         h._claude_handler = h._opposite_handler
-        h._aiden_handler = MagicMock()
-        h._codex_handler = MagicMock()
-        h._gemini_handler = MagicMock()
-        h._ttadk_handler = MagicMock()
+        h._aiden_handler = ctx.handlers["aiden"]
+        h._codex_handler = ctx.handlers["codex"]
+        h._gemini_handler = ctx.handlers["gemini"]
+        h._ttadk_handler = ctx.handlers["ttadk"]
         return h, ctx
 
     def test_mode_attributes(self):
@@ -567,10 +587,6 @@ class TestCocoModeHandler:
 
     def test_exit_opposite_mode(self):
         h, _ = self._make()
-        h._aiden_handler = MagicMock()
-        h._codex_handler = MagicMock()
-        h._gemini_handler = MagicMock()
-        h._ttadk_handler = MagicMock()
         h.mode_manager.is_claude_mode.return_value = True
         h.mode_manager.is_aiden_mode.return_value = True
         h.mode_manager.is_codex_mode.return_value = False
@@ -588,12 +604,20 @@ class TestClaudeModeHandler:
     def _make(self, **ctx_overrides):
         ctx = _make_handler_context(**ctx_overrides)
         h = ClaudeModeHandler(ctx)
-        h._opposite_handler = MagicMock()
+        ctx.handlers.update({
+            "coco": MagicMock(),
+            "aiden": MagicMock(),
+            "codex": MagicMock(),
+            "gemini": MagicMock(),
+            "ttadk": MagicMock(),
+        })
+        # Keep attributes for test assertions
+        h._opposite_handler = ctx.handlers["coco"]
         h._coco_handler = h._opposite_handler
-        h._aiden_handler = MagicMock()
-        h._codex_handler = MagicMock()
-        h._gemini_handler = MagicMock()
-        h._ttadk_handler = MagicMock()
+        h._aiden_handler = ctx.handlers["aiden"]
+        h._codex_handler = ctx.handlers["codex"]
+        h._gemini_handler = ctx.handlers["gemini"]
+        h._ttadk_handler = ctx.handlers["ttadk"]
         return h, ctx
 
     def test_mode_attributes(self):
@@ -629,11 +653,19 @@ class TestTTADKModeHandler:
     def _make(self, **ctx_overrides):
         ctx = _make_handler_context(**ctx_overrides)
         h = TTADKModeHandler(ctx)
-        h._coco_handler = MagicMock()
-        h._claude_handler = MagicMock()
-        h._aiden_handler = MagicMock()
-        h._codex_handler = MagicMock()
-        h._gemini_handler = MagicMock()
+        ctx.handlers.update({
+            "coco": MagicMock(),
+            "claude": MagicMock(),
+            "aiden": MagicMock(),
+            "codex": MagicMock(),
+            "gemini": MagicMock(),
+        })
+        # Keep attributes for test assertions
+        h._coco_handler = ctx.handlers["coco"]
+        h._claude_handler = ctx.handlers["claude"]
+        h._aiden_handler = ctx.handlers["aiden"]
+        h._codex_handler = ctx.handlers["codex"]
+        h._gemini_handler = ctx.handlers["gemini"]
         return h, ctx
 
     def test_is_in_opposite_mode_checks_all_other_programming_modes(self):
@@ -761,12 +793,20 @@ class TestProgrammingModeEnterExit:
         ctx.coco_manager.end_session.return_value = True
 
         h = CocoModeHandler(ctx)
-        h._opposite_handler = MagicMock()
+        ctx.handlers.update({
+            "claude": MagicMock(),
+            "aiden": MagicMock(),
+            "codex": MagicMock(),
+            "gemini": MagicMock(),
+            "ttadk": MagicMock(),
+        })
+        # Keep attributes for test assertions
+        h._opposite_handler = ctx.handlers["claude"]
         h._claude_handler = h._opposite_handler
-        h._aiden_handler = MagicMock()
-        h._codex_handler = MagicMock()
-        h._gemini_handler = MagicMock()
-        h._ttadk_handler = MagicMock()
+        h._aiden_handler = ctx.handlers["aiden"]
+        h._codex_handler = ctx.handlers["codex"]
+        h._gemini_handler = ctx.handlers["gemini"]
+        h._ttadk_handler = ctx.handlers["ttadk"]
         # Mock reply to avoid real API calls
         h.reply_message = MagicMock()
         h.reply_message_with_id = MagicMock(return_value="reply_1")
@@ -866,11 +906,19 @@ class TestOneShotPendingSlot:
         ctx.coco_manager.end_session.return_value = False
 
         h = CocoModeHandler(ctx)
-        h._claude_handler = MagicMock()
-        h._aiden_handler = MagicMock()
-        h._codex_handler = MagicMock()
-        h._gemini_handler = MagicMock()
-        h._ttadk_handler = MagicMock()
+        ctx.handlers.update({
+            "claude": MagicMock(),
+            "aiden": MagicMock(),
+            "codex": MagicMock(),
+            "gemini": MagicMock(),
+            "ttadk": MagicMock(),
+        })
+        # Keep attributes for test assertions
+        h._claude_handler = ctx.handlers["claude"]
+        h._aiden_handler = ctx.handlers["aiden"]
+        h._codex_handler = ctx.handlers["codex"]
+        h._gemini_handler = ctx.handlers["gemini"]
+        h._ttadk_handler = ctx.handlers["ttadk"]
         h.reply_message = MagicMock()
         h.reply_message_with_id = MagicMock(return_value="reply_1")
         h.add_reaction = MagicMock()

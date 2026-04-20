@@ -50,19 +50,6 @@ class _ACPModelOption:
 class SystemHandler(BaseHandler):
     """Help, exit, shell, directory, and intercepted-command handling."""
 
-    # Reference to programming handlers set by ws_client after construction
-    coco_handler = None
-    claude_handler = None
-    aiden_handler = None
-    codex_handler = None
-    gemini_handler = None
-    ttadk_handler = None
-    project_handler = None
-    deep_handler = None
-    loop_handler = None
-    spec_handler = None
-    diagnostics_handler = None
-
     def __init__(self, ctx: "HandlerContext") -> None:
         super().__init__(ctx)
         self._init_command_registry()
@@ -76,14 +63,14 @@ class SystemHandler(BaseHandler):
             "/help": lambda m, c, t, p: self.show_full_help(m, c, p),
             "/帮助": lambda m, c, t, p: self.show_full_help(m, c, p),
             "/coco_status": lambda m, c, t, p: self.show_coco_status(m, c),
-            "/coco_info": lambda m, c, t, p: self.coco_handler.show_info(m, c, p),
-            "/claude_info": lambda m, c, t, p: self.claude_handler.show_info(m, c, p),
-            "/aiden_info": lambda m, c, t, p: self.aiden_handler.show_info(m, c, p),
-            "/codex_info": lambda m, c, t, p: self.codex_handler.show_info(m, c, p),
-            "/gemini_info": lambda m, c, t, p: self.gemini_handler.show_info(m, c, p),
-            "/projects": lambda m, c, t, p: self.project_handler.show_project_board(m, c),
-            "/project": lambda m, c, t, p: self.project_handler.show_project_board(m, c),
-            "/switch": lambda m, c, t, p: self.project_handler.show_project_board(m, c),
+            "/coco_info": lambda m, c, t, p: self.get_handler("coco").show_info(m, c, p),
+            "/claude_info": lambda m, c, t, p: self.get_handler("claude").show_info(m, c, p),
+            "/aiden_info": lambda m, c, t, p: self.get_handler("aiden").show_info(m, c, p),
+            "/codex_info": lambda m, c, t, p: self.get_handler("codex").show_info(m, c, p),
+            "/gemini_info": lambda m, c, t, p: self.get_handler("gemini").show_info(m, c, p),
+            "/projects": lambda m, c, t, p: self.get_handler("project").show_project_board(m, c),
+            "/project": lambda m, c, t, p: self.get_handler("project").show_project_board(m, c),
+            "/switch": lambda m, c, t, p: self.get_handler("project").show_project_board(m, c),
             "/ttadk": lambda m, c, t, p: self.handle_ttadk_command(m, c, p),
             "/acp": lambda m, c, t, p: self.handle_acp_command(m, c, p),
             "/wt": lambda m, c, t, p: self.handle_worktree_command(m, c, p),
@@ -99,10 +86,10 @@ class SystemHandler(BaseHandler):
         # Prefix match handlers: prefix -> handler_func(message_id, chat_id, text, project)
         # Note: Order matters if prefixes overlap (not the case here yet)
         self._prefix_handlers = [
-            ("/status", lambda m, c, t, p: self.diagnostics_handler.show_unified_status(m, c, t, p)),
-            ("/tasks", lambda m, c, t, p: self.diagnostics_handler.show_task_board(m, c, t, p)),
-            ("/diff", lambda m, c, t, p: self.diagnostics_handler.show_context_diff(m, c, t, p)),
-            ("/trace", lambda m, c, t, p: self.diagnostics_handler.show_message_trace(m, c, t, p)),
+            ("/status", lambda m, c, t, p: self.get_handler("diagnostics").show_unified_status(m, c, t, p)),
+            ("/tasks", lambda m, c, t, p: self.get_handler("diagnostics").show_task_board(m, c, t, p)),
+            ("/diff", lambda m, c, t, p: self.get_handler("diagnostics").show_context_diff(m, c, t, p)),
+            ("/trace", lambda m, c, t, p: self.get_handler("diagnostics").show_message_trace(m, c, t, p)),
             ("/switch ", self._handle_switch_command),
             ("/new ", self._handle_new_project_command),
             ("/close ", self._handle_close_command),
@@ -112,15 +99,15 @@ class SystemHandler(BaseHandler):
     def _handle_switch_command(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"]):
         name = text[8:].strip()
         if name:
-            self.project_handler.switch_project(
+            self.get_handler("project").switch_project(
                 message_id,
                 chat_id,
                 name,
-                coco_handler=self.coco_handler,
-                claude_handler=self.claude_handler,
+                coco_handler=self.get_handler("coco"),
+                claude_handler=self.get_handler("claude"),
             )
         else:
-            self.project_handler.show_project_board(message_id, chat_id)
+            self.get_handler("project").show_project_board(message_id, chat_id)
 
     def _handle_new_project_command(
         self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"]
@@ -131,7 +118,7 @@ class SystemHandler(BaseHandler):
         name = parts[0] if parts else ""
         path = parts[1] if len(parts) > 1 else self.get_working_dir(chat_id)
         if name:
-            self.project_handler.create_project(message_id, chat_id, name, path)
+            self.get_handler("project").create_project(message_id, chat_id, name, path)
         else:
             self.reply_error(
                 message_id, UI_TEXT.get("system_new_project_usage", "用法: `/new 项目名 [路径]`"), title="参数错误"
@@ -140,7 +127,7 @@ class SystemHandler(BaseHandler):
     def _handle_close_command(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"]):
         name = text[7:].strip()
         if name:
-            self.project_handler.close_project(message_id, chat_id, name)
+            self.get_handler("project").close_project(message_id, chat_id, name)
 
     # ------------------------------------------------------------------
     # Command predicates
@@ -1410,10 +1397,11 @@ class SystemHandler(BaseHandler):
             target_project.ttadk_tool_name = tool_name or manager.get_current_tool()
             target_project.ttadk_model_name = model_name
 
-        if self.ttadk_handler:
-            self.ttadk_handler.current_tool = tool_name
-            self.ttadk_handler.current_model = model_name
-            self.ttadk_handler.enter_mode(message_id, chat_id, project=target_project)
+        ttadk_handler = self.get_handler("ttadk")
+        if ttadk_handler:
+            ttadk_handler.current_tool = tool_name
+            ttadk_handler.current_model = model_name
+            ttadk_handler.enter_mode(message_id, chat_id, project=target_project)
             project_id = target_project.project_id if target_project else None
             self._report_ttadk_flow_duration(chat_id, project_id, "enter_mode")
         else:
@@ -1556,17 +1544,17 @@ class SystemHandler(BaseHandler):
                     pass
 
         if current_mode == InteractionMode.COCO:
-            self.coco_handler.exit_mode(message_id, chat_id, project)
+            self.get_handler("coco").exit_mode(message_id, chat_id, project)
         elif current_mode == InteractionMode.CLAUDE:
-            self.claude_handler.exit_mode(message_id, chat_id, project)
+            self.get_handler("claude").exit_mode(message_id, chat_id, project)
         elif current_mode == InteractionMode.AIDEN:
-            self.aiden_handler.exit_mode(message_id, chat_id, project)
+            self.get_handler("aiden").exit_mode(message_id, chat_id, project)
         elif current_mode == InteractionMode.CODEX:
-            self.codex_handler.exit_mode(message_id, chat_id, project)
+            self.get_handler("codex").exit_mode(message_id, chat_id, project)
         elif current_mode == InteractionMode.GEMINI:
-            self.gemini_handler.exit_mode(message_id, chat_id, project)
+            self.get_handler("gemini").exit_mode(message_id, chat_id, project)
         elif current_mode == InteractionMode.TTADK:
-            self.ttadk_handler.exit_mode(message_id, chat_id, project)
+            self.get_handler("ttadk").exit_mode(message_id, chat_id, project)
         else:
             self.reply_message(message_id, "🧠 当前已经在智能模式中")
 

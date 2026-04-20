@@ -726,10 +726,7 @@ def _build_generic_error_blob(error: Exception) -> str:
     等 SSOT 入口，避免在上层重复实现/分叉规则。
     """
     parts: list[str] = []
-    try:
-        parts.append(str(error) or "")
-    except Exception:
-        parts.append("")
+    parts.append(get_error_detail(error))
     # 兼容 ACPStartupError/TTADKProbeError 等携带 snippet 字段的异常
     for k in ("stderr_snippet", "stdout_snippet", "stderr", "stdout", "message"):
         try:
@@ -999,7 +996,7 @@ def _default_compaction_action(*, session: SyncSession) -> Optional[SyncSession]
 def _detect_rate_limit(error: Exception) -> Optional[int]:
     """Detect rate limiting from error.  Returns suggested wait seconds or 0 (detected
     but no explicit wait), or None (not a rate-limit error)."""
-    msg = str(error)
+    msg = get_error_detail(error)
     for pat in _RATE_LIMIT_PATTERNS:
         if pat.search(msg):
             m = _RETRY_AFTER_RE.search(msg)
@@ -1590,10 +1587,7 @@ class ModelFailureAwareSession:
             }
             if error is not None:
                 d["error_type"] = type(error).__name__
-                try:
-                    d["error"] = str(error) or "(empty)"
-                except Exception:
-                    d["error"] = "(empty)"
+                d["error"] = get_error_detail(error)
             if extra:
                 try:
                     d.update(dict(extra))

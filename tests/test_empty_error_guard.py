@@ -1579,7 +1579,7 @@ import pathlib
 import re
 
 _SRC_ROOT = pathlib.Path(__file__).resolve().parent.parent / "src"
-_BAN_PATTERN = re.compile(r"str\(\w+\)\s+or\s+repr\(\w+\)")
+_BAN_PATTERN = re.compile(r"str\(\w+\)\s+or\s+(?:repr\(\w+\)|\"(?:\(empty\)|empty)\")")
 _ALLOWED_FILES = {"errors.py"}  # get_error_detail implementation itself
 
 

@@ -38,13 +38,13 @@ class ProgrammingModeHandler(BaseHandler):
     is_coco: bool  # True for Coco, False for Claude
     context_source: ContextSourceMode
     thinking_text: str = ""  # Overridden by property or subclass; fallback to UI_TEXT
-    _PROGRAMMING_MODE_ENTRIES = (
-        (InteractionMode.COCO, "is_coco_mode", "_coco_handler"),
-        (InteractionMode.CLAUDE, "is_claude_mode", "_claude_handler"),
-        (InteractionMode.AIDEN, "is_aiden_mode", "_aiden_handler"),
-        (InteractionMode.CODEX, "is_codex_mode", "_codex_handler"),
-        (InteractionMode.GEMINI, "is_gemini_mode", "_gemini_handler"),
-        (InteractionMode.TTADK, "is_ttadk_mode", "_ttadk_handler"),
+    _PROGRAMMING_MODE_KEYS = (
+        (InteractionMode.COCO, "is_coco_mode", "coco"),
+        (InteractionMode.CLAUDE, "is_claude_mode", "claude"),
+        (InteractionMode.AIDEN, "is_aiden_mode", "aiden"),
+        (InteractionMode.CODEX, "is_codex_mode", "codex"),
+        (InteractionMode.GEMINI, "is_gemini_mode", "gemini"),
+        (InteractionMode.TTADK, "is_ttadk_mode", "ttadk"),
     )
 
     # ------------------------------------------------------------------
@@ -131,12 +131,12 @@ class ProgrammingModeHandler(BaseHandler):
 
     def _iter_other_programming_mode_entries(self):
         current = self._get_interaction_mode()
-        for mode, predicate_name, handler_attr in self._PROGRAMMING_MODE_ENTRIES:
+        for mode, predicate_name, handler_key in self._PROGRAMMING_MODE_KEYS:
             if mode != current:
-                yield mode, predicate_name, handler_attr
+                yield mode, predicate_name, handler_key
 
     def _is_any_other_programming_mode(self, chat_id: str, project_id: Optional[str] = None) -> bool:
-        for _mode, predicate_name, _handler_attr in self._iter_other_programming_mode_entries():
+        for _mode, predicate_name, _handler_key in self._iter_other_programming_mode_entries():
             predicate = getattr(self.mode_manager, predicate_name, None)
             if callable(predicate) and predicate(chat_id, project_id=project_id):
                 return True
@@ -144,13 +144,11 @@ class ProgrammingModeHandler(BaseHandler):
 
     def _exit_other_programming_modes(self, message_id: str, chat_id: str, project: Optional["ProjectContext"], silent: bool = False):
         _pid = project.project_id if project else None
-        for mode, predicate_name, handler_attr in self._iter_other_programming_mode_entries():
+        for mode, predicate_name, handler_key in self._iter_other_programming_mode_entries():
             predicate = getattr(self.mode_manager, predicate_name, None)
             if not callable(predicate) or not predicate(chat_id, project_id=_pid):
                 continue
-            handler = getattr(self, handler_attr, None)
-            if handler is None and mode in (InteractionMode.COCO, InteractionMode.CLAUDE):
-                handler = getattr(self, "_opposite_handler", None)
+            handler = self.get_handler(handler_key)
             if handler and handler is not self and hasattr(handler, "exit_mode"):
                 handler.exit_mode(message_id, chat_id, project=project, silent=silent)
 

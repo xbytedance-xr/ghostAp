@@ -61,6 +61,14 @@ class BaseHandler:
     def scheduler(self):
         return self.ctx.scheduler
 
+    def get_handler(self, key: str) -> Optional[Any]:
+        """Get a handler from the registry."""
+        return self.ctx.handlers.get(key)
+
+    def get_manager(self, key: str) -> Optional["ACPSessionManager"]:
+        """Get a manager from the registry."""
+        return self.ctx.managers.get(key)
+
     def send_error_card(
         self,
         chat_id: str,

@@ -1058,7 +1058,7 @@ def start_agent_session_with_diagnostics(
             )
             d = normalize_startup_diagnostics(d, get_settings_fn=get_settings)
         except Exception:
-            d = {"error_text": str(e) or "(empty)", "fail_reason": "start_failed"}
+            d = {"error_text": get_error_detail(e), "fail_reason": "start_failed"}
         try:
             e.diagnostics = d
         except Exception:

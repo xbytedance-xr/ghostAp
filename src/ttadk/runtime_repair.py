@@ -14,6 +14,7 @@ import time
 from typing import Any, Callable, Optional
 
 from ..config import get_settings
+from ..utils.errors import get_error_detail
 from .models import (
     TTADKModel,
     choose_best_available_model,
@@ -439,7 +440,7 @@ def _run_retry_flow(
             "diagnostics": _finalize_diagnostics(attempts),
         }
     except Exception as e2:
-        attempts.append({"phase": "retry", "ok": False, "error_type": type(e2).__name__, "error": str(e2) or "(empty)"})
+        attempts.append({"phase": "retry", "ok": False, "error_type": type(e2).__name__, "error": get_error_detail(e2)})
 
         # 2) 若带 real model 仍失败，再尝试 auto
         if retry_model is not None:

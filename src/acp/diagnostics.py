@@ -24,6 +24,7 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+from ..utils.errors import get_error_detail
 from ..config import get_settings as _default_get_settings
 
 __all__ = [
@@ -146,6 +147,8 @@ def _safe_str(x: object) -> str:
 
     移除条件：仓内不再存在对本模块 `_safe_str` 的跨模块导入，且连续回归稳定后可删除。
     """
+    if isinstance(x, Exception):
+        return get_error_detail(x)
     try:
         return str(x) if x is not None else ""
     except Exception:
@@ -302,7 +305,7 @@ def _init_diag_container(diag: object) -> dict:
         elif diag is None:
             out["error"] = "(empty)"
         else:
-            out["error"] = _truncate_text(_safe_str(diag) or "(empty)", 400)
+            out["error"] = _truncate_text(_safe_str(diag), 400)
     except Exception:
         out["error"] = "format_error"
     return out
@@ -766,7 +769,7 @@ def format_startup_failure_log_line(
             d = normalize_startup_diagnostics(
                 {
                     "error_type": err_type,
-                    "error": _safe_str(error) or "(empty)",
+                    "error": _safe_str(error),
                     "fail_reason": "",
                 },
                 get_settings_fn=get_settings_fn,

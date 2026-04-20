@@ -168,7 +168,7 @@ def _build_startup_diagnostics(
             "model": model_name or "",
             "timeout_s": float(timeout or 0),
             "error_type": type(error).__name__,
-            "error": str(error) if error is not None else "(empty)",
+            "error": get_error_detail(error) if isinstance(error, Exception) else "(empty)",
             "cmd": "",
             "args": [],
             "rc": None,

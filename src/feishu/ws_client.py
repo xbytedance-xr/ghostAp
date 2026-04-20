@@ -278,57 +278,51 @@ class FeishuWSClient:
             enable_streaming=self._enable_streaming,
         )
 
-        # Instantiate handlers
-        self._coco_handler = CocoModeHandler(self._handler_ctx)
-        self._claude_handler = ClaudeModeHandler(self._handler_ctx)
-        self._aiden_handler = AidenModeHandler(self._handler_ctx)
-        self._codex_handler = CodexModeHandler(self._handler_ctx)
-        self._gemini_handler = GeminiModeHandler(self._handler_ctx)
-        self._ttadk_handler = TTADKModeHandler(self._handler_ctx)
-        self._deep_handler = DeepHandler(self._handler_ctx)
-        self._loop_handler = LoopHandler(self._handler_ctx)
-        self._spec_handler = SpecHandler(self._handler_ctx)
-        self._project_handler = ProjectHandler(self._handler_ctx)
-        self._system_handler = SystemHandler(self._handler_ctx)
-        self._diagnostics_handler = DiagnosticsHandler(self._handler_ctx)
+        # Instantiate handlers (temp locals for registry population)
+        coco_handler = CocoModeHandler(self._handler_ctx)
+        claude_handler = ClaudeModeHandler(self._handler_ctx)
+        aiden_handler = AidenModeHandler(self._handler_ctx)
+        codex_handler = CodexModeHandler(self._handler_ctx)
+        gemini_handler = GeminiModeHandler(self._handler_ctx)
+        ttadk_handler = TTADKModeHandler(self._handler_ctx)
+        deep_handler = DeepHandler(self._handler_ctx)
+        loop_handler = LoopHandler(self._handler_ctx)
+        spec_handler = SpecHandler(self._handler_ctx)
+        project_handler = ProjectHandler(self._handler_ctx)
+        system_handler = SystemHandler(self._handler_ctx)
+        diagnostics_handler = DiagnosticsHandler(self._handler_ctx)
 
         # ------------------------------------------------------------------
-        # Wire cross-references (automated via handler registry)
+        # Populate registry containers in context
         # ------------------------------------------------------------------
-        # All programming mode handlers that need peer references
-        self._all_mode_handlers: list[ProgrammingModeHandler] = [
-            self._coco_handler,
-            self._claude_handler,
-            self._aiden_handler,
-            self._codex_handler,
-            self._gemini_handler,
-            self._ttadk_handler,
-        ]
-
-        # Auto-inject peer references for all mode handlers
-        for h in self._all_mode_handlers:
-            h._opposite_handler = self._coco_handler  # backward compat
-            for peer in self._all_mode_handlers:
-                peer_name = f"_{peer.__class__.__name__.replace('ModeHandler', '').lower()}_handler"
-                setattr(h, peer_name, peer)
-
-        # System handler needs references to all handlers
-        self._system_handler.coco_handler = self._coco_handler
-        self._system_handler.claude_handler = self._claude_handler
-        self._system_handler.aiden_handler = self._aiden_handler
-        self._system_handler.codex_handler = self._codex_handler
-        self._system_handler.gemini_handler = self._gemini_handler
-        self._system_handler.ttadk_handler = self._ttadk_handler
-        self._system_handler.project_handler = self._project_handler
-        self._system_handler.deep_handler = self._deep_handler
-        self._system_handler.loop_handler = self._loop_handler
-        self._system_handler.spec_handler = self._spec_handler
-        self._system_handler.diagnostics_handler = self._diagnostics_handler
+        self._handler_ctx.managers.update({
+            "coco": self._coco_manager,
+            "claude": self._claude_manager,
+            "aiden": self._aiden_manager,
+            "codex": self._codex_manager,
+            "gemini": self._gemini_manager,
+            "ttadk": self._ttadk_manager,
+        })
+        self._handler_ctx.handlers.update({
+            "coco": coco_handler,
+            "claude": claude_handler,
+            "aiden": aiden_handler,
+            "codex": codex_handler,
+            "gemini": gemini_handler,
+            "ttadk": ttadk_handler,
+            "deep": deep_handler,
+            "loop": loop_handler,
+            "spec": spec_handler,
+            "project": project_handler,
+            "system": system_handler,
+            "diagnostics": diagnostics_handler,
+        })
 
         # Bind forwarding methods directly on instance (replaces __getattr__ dispatch)
-        for attr_name, (handler_attr, method_name) in self._FORWARDING_MAP.items():
-            handler = getattr(self, handler_attr)
-            setattr(self, attr_name, getattr(handler, method_name))
+        for attr_name, (handler_key, method_name) in self._FORWARDING_MAP.items():
+            handler = self._handler_ctx.handlers.get(handler_key)
+            if handler:
+                setattr(self, attr_name, getattr(handler, method_name))
 
         # --- Action Dispatcher ---
         self._action_dispatcher = ActionDispatcher()
@@ -1044,157 +1038,157 @@ class FeishuWSClient:
     # that mock ``client._enter_coco_mode`` etc.
     # ------------------------------------------------------------------
 
-    # Dispatch table: _method_name -> (handler_attr, handler_method_name)
+    # Dispatch table: _method_name -> (registry_key, handler_method_name)
     _FORWARDING_MAP: dict[str, tuple[str, str]] = {
-        # --- shared base handler helpers (delegate via _coco_handler) ---
-        "_add_reaction": ("_coco_handler", "add_reaction"),
-        "_get_working_dir": ("_coco_handler", "get_working_dir"),
-        "_set_working_dir": ("_coco_handler", "set_working_dir"),
-        "_ensure_request_id": ("_coco_handler", "ensure_request_id"),
-        "_format_ref_note": ("_coco_handler", "format_ref_note"),
-        "_register_message_project": ("_coco_handler", "register_message_project"),
-        "_reply_message": ("_coco_handler", "reply_message"),
-        "_reply_message_with_id": ("_coco_handler", "reply_message_with_id"),
-        "send_message": ("_coco_handler", "send_message"),
-        "_get_engine_name": ("_coco_handler", "get_engine_name"),
-        "_record_mode_transition": ("_coco_handler", "record_mode_transition"),
-        "_inject_bridge_context": ("_coco_handler", "inject_bridge_context"),
+        # --- shared base handler helpers (delegate via coco) ---
+        "_add_reaction": ("coco", "add_reaction"),
+        "_get_working_dir": ("coco", "get_working_dir"),
+        "_set_working_dir": ("coco", "set_working_dir"),
+        "_ensure_request_id": ("coco", "ensure_request_id"),
+        "_format_ref_note": ("coco", "format_ref_note"),
+        "_register_message_project": ("coco", "register_message_project"),
+        "_reply_message": ("coco", "reply_message"),
+        "_reply_message_with_id": ("coco", "reply_message_with_id"),
+        "send_message": ("coco", "send_message"),
+        "_get_engine_name": ("coco", "get_engine_name"),
+        "_record_mode_transition": ("coco", "record_mode_transition"),
+        "_inject_bridge_context": ("coco", "inject_bridge_context"),
         # --- Coco mode ---
-        "_enter_coco_mode": ("_coco_handler", "enter_mode"),
-        "_exit_coco_mode": ("_coco_handler", "exit_mode"),
-        "_handle_coco_message": ("_coco_handler", "handle_message"),
-        "_handle_coco_response": ("_coco_handler", "handle_response"),
-        "_show_coco_info": ("_coco_handler", "show_info"),
-        "_handle_card_enter_coco": ("_coco_handler", "handle_card_enter"),
-        "_handle_card_exit_coco": ("_coco_handler", "handle_card_exit"),
-        "_handle_card_resume_coco": ("_coco_handler", "handle_card_resume"),
-        "_handle_card_new_coco": ("_coco_handler", "handle_card_new"),
+        "_enter_coco_mode": ("coco", "enter_mode"),
+        "_exit_coco_mode": ("coco", "exit_mode"),
+        "_handle_coco_message": ("coco", "handle_message"),
+        "_handle_coco_response": ("coco", "handle_response"),
+        "_show_coco_info": ("coco", "show_info"),
+        "_handle_card_enter_coco": ("coco", "handle_card_enter"),
+        "_handle_card_exit_coco": ("coco", "handle_card_exit"),
+        "_handle_card_resume_coco": ("coco", "handle_card_resume"),
+        "_handle_card_new_coco": ("coco", "handle_card_new"),
         # --- Claude mode ---
-        "_enter_claude_mode": ("_claude_handler", "enter_mode"),
-        "_exit_claude_mode": ("_claude_handler", "exit_mode"),
-        "_handle_claude_message": ("_claude_handler", "handle_message"),
-        "_handle_claude_response": ("_claude_handler", "handle_response"),
-        "_show_claude_info": ("_claude_handler", "show_info"),
-        "_handle_card_enter_claude": ("_claude_handler", "handle_card_enter"),
-        "_handle_card_exit_claude": ("_claude_handler", "handle_card_exit"),
-        "_handle_card_resume_claude": ("_claude_handler", "handle_card_resume"),
-        "_handle_card_new_claude": ("_claude_handler", "handle_card_new"),
+        "_enter_claude_mode": ("claude", "enter_mode"),
+        "_exit_claude_mode": ("claude", "exit_mode"),
+        "_handle_claude_message": ("claude", "handle_message"),
+        "_handle_claude_response": ("claude", "handle_response"),
+        "_show_claude_info": ("claude", "show_info"),
+        "_handle_card_enter_claude": ("claude", "handle_card_enter"),
+        "_handle_card_exit_claude": ("claude", "handle_card_exit"),
+        "_handle_card_resume_claude": ("claude", "handle_card_resume"),
+        "_handle_card_new_claude": ("claude", "handle_card_new"),
         # --- Aiden mode ---
-        "_enter_aiden_mode": ("_aiden_handler", "enter_mode"),
-        "_exit_aiden_mode": ("_aiden_handler", "exit_mode"),
-        "_handle_aiden_message": ("_aiden_handler", "handle_message"),
-        "_handle_aiden_response": ("_aiden_handler", "handle_response"),
-        "_show_aiden_info": ("_aiden_handler", "show_info"),
-        "_handle_card_enter_aiden": ("_aiden_handler", "handle_card_enter"),
-        "_handle_card_exit_aiden": ("_aiden_handler", "handle_card_exit"),
-        "_handle_card_resume_aiden": ("_aiden_handler", "handle_card_resume"),
-        "_handle_card_new_aiden": ("_aiden_handler", "handle_card_new"),
+        "_enter_aiden_mode": ("aiden", "enter_mode"),
+        "_exit_aiden_mode": ("aiden", "exit_mode"),
+        "_handle_aiden_message": ("aiden", "handle_message"),
+        "_handle_aiden_response": ("aiden", "handle_response"),
+        "_show_aiden_info": ("aiden", "show_info"),
+        "_handle_card_enter_aiden": ("aiden", "handle_card_enter"),
+        "_handle_card_exit_aiden": ("aiden", "handle_card_exit"),
+        "_handle_card_resume_aiden": ("aiden", "handle_card_resume"),
+        "_handle_card_new_aiden": ("aiden", "handle_card_new"),
         # --- Gemini mode ---
-        "_enter_gemini_mode": ("_gemini_handler", "enter_mode"),
-        "_exit_gemini_mode": ("_gemini_handler", "exit_mode"),
-        "_handle_gemini_message": ("_gemini_handler", "handle_message"),
-        "_handle_gemini_response": ("_gemini_handler", "handle_response"),
-        "_show_gemini_info": ("_gemini_handler", "show_info"),
-        "_handle_card_enter_gemini": ("_gemini_handler", "handle_card_enter"),
-        "_handle_card_exit_gemini": ("_gemini_handler", "handle_card_exit"),
-        "_handle_card_resume_gemini": ("_gemini_handler", "handle_card_resume"),
-        "_handle_card_new_gemini": ("_gemini_handler", "handle_card_new"),
+        "_enter_gemini_mode": ("gemini", "enter_mode"),
+        "_exit_gemini_mode": ("gemini", "exit_mode"),
+        "_handle_gemini_message": ("gemini", "handle_message"),
+        "_handle_gemini_response": ("gemini", "handle_response"),
+        "_show_gemini_info": ("gemini", "show_info"),
+        "_handle_card_enter_gemini": ("gemini", "handle_card_enter"),
+        "_handle_card_exit_gemini": ("gemini", "handle_card_exit"),
+        "_handle_card_resume_gemini": ("gemini", "handle_card_resume"),
+        "_handle_card_new_gemini": ("gemini", "handle_card_new"),
         # --- Codex mode ---
-        "_enter_codex_mode": ("_codex_handler", "enter_mode"),
-        "_exit_codex_mode": ("_codex_handler", "exit_mode"),
-        "_handle_codex_message": ("_codex_handler", "handle_message"),
-        "_handle_codex_response": ("_codex_handler", "handle_response"),
-        "_show_codex_info": ("_codex_handler", "show_info"),
-        "_handle_card_enter_codex": ("_codex_handler", "handle_card_enter"),
-        "_handle_card_exit_codex": ("_codex_handler", "handle_card_exit"),
-        "_handle_card_resume_codex": ("_codex_handler", "handle_card_resume"),
-        "_handle_card_new_codex": ("_codex_handler", "handle_card_new"),
+        "_enter_codex_mode": ("codex", "enter_mode"),
+        "_exit_codex_mode": ("codex", "exit_mode"),
+        "_handle_codex_message": ("codex", "handle_message"),
+        "_handle_codex_response": ("codex", "handle_response"),
+        "_show_codex_info": ("codex", "show_info"),
+        "_handle_card_enter_codex": ("codex", "handle_card_enter"),
+        "_handle_card_exit_codex": ("codex", "handle_card_exit"),
+        "_handle_card_resume_codex": ("codex", "handle_card_resume"),
+        "_handle_card_new_codex": ("codex", "handle_card_new"),
         # --- TTADK mode ---
-        "_enter_ttadk_mode": ("_ttadk_handler", "enter_mode"),
-        "_exit_ttadk_mode": ("_ttadk_handler", "exit_mode"),
-        "_handle_ttadk_message": ("_ttadk_handler", "handle_message"),
-        "_handle_ttadk_response": ("_ttadk_handler", "handle_response"),
-        "_show_ttadk_info": ("_ttadk_handler", "show_info"),
-        "_handle_card_enter_ttadk": ("_ttadk_handler", "handle_card_enter"),
-        "_handle_card_exit_ttadk": ("_ttadk_handler", "handle_card_exit"),
-        "_handle_card_resume_ttadk": ("_ttadk_handler", "handle_card_resume"),
-        "_handle_card_new_ttadk": ("_ttadk_handler", "handle_card_new"),
-        "_handle_ttadk_command": ("_system_handler", "handle_ttadk_command"),
-        "_handle_worktree_command": ("_system_handler", "handle_worktree_command"),
-        "_handle_worktree_execute": ("_system_handler", "handle_worktree_execute"),
-        "_handle_finish_worktree_selection": ("_system_handler", "handle_finish_worktree_selection"),
-        "_handle_worktree_select_tool": ("_system_handler", "handle_worktree_select_tool"),
-        "_handle_worktree_select_model": ("_system_handler", "handle_worktree_select_model"),
-        "_handle_worktree_continue_selection": ("_system_handler", "handle_worktree_continue_selection"),
-        "_handle_worktree_confirm_start": ("_system_handler", "handle_worktree_confirm_start"),
-        "_handle_worktree_merge": ("_system_handler", "handle_worktree_merge"),
-        "_handle_worktree_cleanup": ("_system_handler", "handle_worktree_cleanup"),
-        "_handle_select_ttadk_tool": ("_system_handler", "handle_select_ttadk_tool"),
-        "_handle_select_ttadk_model": ("_system_handler", "handle_select_ttadk_model"),
-        "_handle_refresh_ttadk_models": ("_system_handler", "handle_refresh_ttadk_models"),
-        "_handle_toggle_ttadk_yolo": ("_system_handler", "handle_toggle_ttadk_yolo"),
-        "_handle_select_ttadk_combined": ("_system_handler", "handle_select_ttadk_combined"),
-        "_handle_acp_command": ("_system_handler", "handle_acp_command"),
-        "_handle_select_acp_tool": ("_system_handler", "handle_select_acp_tool"),
-        "_handle_select_acp_model": ("_system_handler", "handle_select_acp_model"),
-        "_handle_refresh_acp_models": ("_system_handler", "handle_refresh_acp_models"),
-        "_handle_help_category": ("_system_handler", "handle_help_category"),
-        "_handle_deep_prompt": ("_system_handler", "handle_deep_prompt"),
+        "_enter_ttadk_mode": ("ttadk", "enter_mode"),
+        "_exit_ttadk_mode": ("ttadk", "exit_mode"),
+        "_handle_ttadk_message": ("ttadk", "handle_message"),
+        "_handle_ttadk_response": ("ttadk", "handle_response"),
+        "_show_ttadk_info": ("ttadk", "show_info"),
+        "_handle_card_enter_ttadk": ("ttadk", "handle_card_enter"),
+        "_handle_card_exit_ttadk": ("ttadk", "handle_card_exit"),
+        "_handle_card_resume_ttadk": ("ttadk", "handle_card_resume"),
+        "_handle_card_new_ttadk": ("ttadk", "handle_card_new"),
+        "_handle_ttadk_command": ("system", "handle_ttadk_command"),
+        "_handle_worktree_command": ("system", "handle_worktree_command"),
+        "_handle_worktree_execute": ("system", "handle_worktree_execute"),
+        "_handle_finish_worktree_selection": ("system", "handle_finish_worktree_selection"),
+        "_handle_worktree_select_tool": ("system", "handle_worktree_select_tool"),
+        "_handle_worktree_select_model": ("system", "handle_worktree_select_model"),
+        "_handle_worktree_continue_selection": ("system", "handle_worktree_continue_selection"),
+        "_handle_worktree_confirm_start": ("system", "handle_worktree_confirm_start"),
+        "_handle_worktree_merge": ("system", "handle_worktree_merge"),
+        "_handle_worktree_cleanup": ("system", "handle_worktree_cleanup"),
+        "_handle_select_ttadk_tool": ("system", "handle_select_ttadk_tool"),
+        "_handle_select_ttadk_model": ("system", "handle_select_ttadk_model"),
+        "_handle_refresh_ttadk_models": ("system", "handle_refresh_ttadk_models"),
+        "_handle_toggle_ttadk_yolo": ("system", "handle_toggle_ttadk_yolo"),
+        "_handle_select_ttadk_combined": ("system", "handle_select_ttadk_combined"),
+        "_handle_acp_command": ("system", "handle_acp_command"),
+        "_handle_select_acp_tool": ("system", "handle_select_acp_tool"),
+        "_handle_select_acp_model": ("system", "handle_select_acp_model"),
+        "_handle_refresh_acp_models": ("system", "handle_refresh_acp_models"),
+        "_handle_help_category": ("system", "handle_help_category"),
+        "_handle_deep_prompt": ("system", "handle_deep_prompt"),
         # --- Deep Engine ---
-        "_handle_deep_command": ("_deep_handler", "handle_deep_command"),
-        "_start_deep_engine": ("_deep_handler", "start_deep_engine"),
-        "_create_deep_callbacks": ("_deep_handler", "_create_deep_callbacks"),
-        "_show_deep_status": ("_deep_handler", "show_deep_status"),
-        "_show_deep_board": ("_deep_handler", "show_deep_board"),
-        "_pause_deep_engine": ("_deep_handler", "pause_deep_engine"),
-        "_resume_deep_engine": ("_deep_handler", "resume_deep_engine"),
-        "_stop_deep_engine": ("_deep_handler", "stop_deep_engine"),
-        "_stop_all_deep_engines": ("_deep_handler", "stop_all_deep_engines"),
-        "_update_deep_context": ("_deep_handler", "update_deep_context"),
-        "_toggle_deep_log": ("_deep_handler", "toggle_deep_log"),
-        "_switch_deep_card_mode": ("_deep_handler", "switch_deep_card_mode"),
+        "_handle_deep_command": ("deep", "handle_deep_command"),
+        "_start_deep_engine": ("deep", "start_deep_engine"),
+        "_create_deep_callbacks": ("deep", "_create_deep_callbacks"),
+        "_show_deep_status": ("deep", "show_deep_status"),
+        "_show_deep_board": ("deep", "show_deep_board"),
+        "_pause_deep_engine": ("deep", "pause_deep_engine"),
+        "_resume_deep_engine": ("deep", "resume_deep_engine"),
+        "_stop_deep_engine": ("deep", "stop_deep_engine"),
+        "_stop_all_deep_engines": ("deep", "stop_all_deep_engines"),
+        "_update_deep_context": ("deep", "update_deep_context"),
+        "_toggle_deep_log": ("deep", "toggle_deep_log"),
+        "_switch_deep_card_mode": ("deep", "switch_deep_card_mode"),
         # --- Loop Engine ---
-        "_handle_loop_command": ("_loop_handler", "handle_loop_command"),
-        "_start_loop_engine": ("_loop_handler", "start_loop_engine"),
-        "_show_loop_status": ("_loop_handler", "show_loop_status"),
-        "_pause_loop_engine": ("_loop_handler", "pause_loop_engine"),
-        "_resume_loop_engine": ("_loop_handler", "resume_loop_engine"),
-        "_stop_loop_engine": ("_loop_handler", "stop_loop_engine"),
-        "_update_loop_guidance": ("_loop_handler", "update_loop_guidance"),
-        "_toggle_loop_log": ("_loop_handler", "toggle_loop_log"),
-        "_switch_loop_card_mode": ("_loop_handler", "switch_loop_card_mode"),
+        "_handle_loop_command": ("loop", "handle_loop_command"),
+        "_start_loop_engine": ("loop", "start_loop_engine"),
+        "_show_loop_status": ("loop", "show_loop_status"),
+        "_pause_loop_engine": ("loop", "pause_loop_engine"),
+        "_resume_loop_engine": ("loop", "resume_loop_engine"),
+        "_stop_loop_engine": ("loop", "stop_loop_engine"),
+        "_update_loop_guidance": ("loop", "update_loop_guidance"),
+        "_toggle_loop_log": ("loop", "toggle_loop_log"),
+        "_switch_loop_card_mode": ("loop", "switch_loop_card_mode"),
         # --- Spec Engine ---
-        "_handle_spec_command": ("_spec_handler", "handle_spec_command"),
-        "_start_spec_engine": ("_spec_handler", "start_spec_engine"),
-        "_show_spec_status": ("_spec_handler", "show_spec_status"),
-        "_pause_spec_engine": ("_spec_handler", "pause_spec_engine"),
-        "_resume_spec_engine": ("_spec_handler", "resume_spec_engine"),
-        "_stop_spec_engine": ("_spec_handler", "stop_spec_engine"),
-        "_update_spec_guidance": ("_spec_handler", "update_spec_guidance"),
-        "_toggle_spec_log": ("_spec_handler", "toggle_spec_log"),
-        "_switch_spec_card_mode": ("_spec_handler", "switch_spec_card_mode"),
-        "_toggle_spec_ac": ("_spec_handler", "toggle_spec_ac"),
+        "_handle_spec_command": ("spec", "handle_spec_command"),
+        "_start_spec_engine": ("spec", "start_spec_engine"),
+        "_show_spec_status": ("spec", "show_spec_status"),
+        "_pause_spec_engine": ("spec", "pause_spec_engine"),
+        "_resume_spec_engine": ("spec", "resume_spec_engine"),
+        "_stop_spec_engine": ("spec", "stop_spec_engine"),
+        "_update_spec_guidance": ("spec", "update_spec_guidance"),
+        "_toggle_spec_log": ("spec", "toggle_spec_log"),
+        "_switch_spec_card_mode": ("spec", "switch_spec_card_mode"),
+        "_toggle_spec_ac": ("spec", "toggle_spec_ac"),
         # --- Project ---
-        "_create_project": ("_project_handler", "create_project"),
-        "_show_project_board": ("_project_handler", "show_project_board"),
-        "_show_current_project": ("_project_handler", "show_current_project"),
-        "_show_project_status": ("_project_handler", "show_project_status"),
-        "_preserve_project_context": ("_project_handler", "preserve_project_context"),
-        "_restore_project_context": ("_project_handler", "restore_project_context"),
-        "_close_project": ("_project_handler", "close_project"),
+        "_create_project": ("project", "create_project"),
+        "_show_project_board": ("project", "show_project_board"),
+        "_show_current_project": ("project", "show_current_project"),
+        "_show_project_status": ("project", "show_project_status"),
+        "_preserve_project_context": ("project", "preserve_project_context"),
+        "_restore_project_context": ("project", "restore_project_context"),
+        "_close_project": ("project", "close_project"),
         # --- System ---
-        "_show_help": ("_system_handler", "show_help"),
-        "_show_full_help": ("_system_handler", "show_full_help"),
-        "_exit_current_mode": ("_system_handler", "exit_current_mode"),
-        "_submit_shell_command": ("_system_handler", "submit_shell_command"),
-        "_change_directory": ("_system_handler", "change_directory"),
-        "_handle_intercepted_command": ("_system_handler", "handle_intercepted_command"),
+        "_show_help": ("system", "show_help"),
+        "_show_full_help": ("system", "show_full_help"),
+        "_exit_current_mode": ("system", "exit_current_mode"),
+        "_submit_shell_command": ("system", "submit_shell_command"),
+        "_change_directory": ("system", "change_directory"),
+        "_handle_intercepted_command": ("system", "handle_intercepted_command"),
         # --- Diagnostics ---
-        "_show_task_board": ("_diagnostics_handler", "show_task_board"),
-        "_show_context_diff": ("_diagnostics_handler", "show_context_diff"),
-        "_build_context_diff_report": ("_diagnostics_handler", "_build_context_diff_report"),
-        "_submit_diff_report": ("_diagnostics_handler", "_submit_diff_report"),
-        "_show_message_trace": ("_diagnostics_handler", "show_message_trace"),
+        "_show_task_board": ("diagnostics", "show_task_board"),
+        "_show_context_diff": ("diagnostics", "show_context_diff"),
+        "_build_context_diff_report": ("diagnostics", "_build_context_diff_report"),
+        "_submit_diff_report": ("diagnostics", "_submit_diff_report"),
+        "_show_message_trace": ("diagnostics", "show_message_trace"),
     }
 
     def __getattr__(self, name: str):
@@ -1212,16 +1206,21 @@ class FeishuWSClient:
         """轻量表情反馈封装：委托到 handler 的 `add_reaction`。"""
         self._add_reaction(message_id, emoji_type)
 
+    def _get_handler(self, key: str) -> Any:
+        return self._handler_ctx.handlers.get(key)
+
     def _switch_project(self, message_id: str, chat_id: str, name: str, auto_enter_coco: bool = True):
         """切换当前 chat 的 active project，并可选自动进入 Coco 模式。"""
-        self._project_handler.switch_project(
-            message_id,
-            chat_id,
-            name,
-            auto_enter_coco=auto_enter_coco,
-            coco_handler=self._coco_handler,
-            claude_handler=self._claude_handler,
-        )
+        project_handler = self._get_handler("project")
+        if project_handler:
+            project_handler.switch_project(
+                message_id,
+                chat_id,
+                name,
+                auto_enter_coco=auto_enter_coco,
+                coco_handler=self._get_handler("coco"),
+                claude_handler=self._get_handler("claude"),
+            )
 
     @staticmethod
     def _is_exit_command(text: str) -> bool:

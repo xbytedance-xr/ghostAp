@@ -71,3 +71,7 @@ class HandlerContext:
     pending_image_keys: dict[str, list[str]] = field(default_factory=dict)
     pending_image_lock: threading.Lock = field(default_factory=threading.Lock)
     enable_streaming: bool = True
+
+    # Registry containers for decoupling
+    managers: dict[str, "ACPSessionManager"] = field(default_factory=dict)
+    handlers: dict[str, Any] = field(default_factory=dict)
