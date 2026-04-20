@@ -312,7 +312,7 @@ class ProbeStrategy(ModelFetchStrategy):
                 f"probe_exception:{type(e).__name__}: tool={tool_name}",
                 returncode=rc,
                 stdout=truncate_snippet(out),
-                stderr=truncate_snippet(err or str(e) or ""),
+                stderr=truncate_snippet(err or get_error_detail(e)),
             )
 
     # 旧的正则/ANSI 处理已下沉到 models.py（extract_available_models / is_invalid_model_error）
@@ -1167,7 +1167,7 @@ class LocalConfigModelsStrategy(ModelFetchStrategy):
             raise TTADKLocalConfigError(
                 f"local_config_read_failed:{type(e).__name__}",
                 file_path=self._safe_path_hint(path),
-                stderr=truncate_snippet(str(e) or ""),
+                stderr=truncate_snippet(get_error_detail(e)),
             )
 
         text = (raw or "").strip()

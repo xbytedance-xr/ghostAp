@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from ..config import get_settings
+from ..utils.errors import get_error_detail
 from .models import (
     extract_invalid_model_diagnostics,
     is_invalid_model_error,
@@ -68,7 +69,7 @@ class TTADKCommandRunner:
             rc, out, err = r.run_simple(xs, cwd, timeout)  # type: ignore[attr-defined]
         except Exception as e:
             et = type(e).__name__
-            msg = str(e) or "(empty)"
+            msg = get_error_detail(e)
             err = f"{et}: {msg}"
             rc, out = 1, ""
 
@@ -253,7 +254,7 @@ def execute_ttadk_code_with_repair(
                     "ok": False,
                     "timeout_s": float(force_refresh_timeout_s or 0.0),
                     "error_type": type(e).__name__,
-                    "error": str(e) or "(empty)",
+                    "error": get_error_detail(e),
                 }
             )
 

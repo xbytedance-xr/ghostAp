@@ -1526,6 +1526,52 @@ class TestLoopReporterEmptyMessageFilter:
 
 
 # ---------------------------------------------------------------------------
+# E2E: get_error_detail produces non-empty for all TimeoutError variants
+# ---------------------------------------------------------------------------
+
+
+class TestTimeoutErrorE2EDetail:
+    """End-to-end: get_error_detail always returns non-empty, meaningful text
+    for bare TimeoutError(), wrapped TimeoutError, and asyncio.TimeoutError."""
+
+    def test_bare_timeout_nonempty_and_contains_timeout(self):
+        result = get_error_detail(TimeoutError())
+        assert result, "get_error_detail(TimeoutError()) returned empty"
+        assert "超时" in result
+
+    def test_bare_asyncio_timeout_nonempty(self):
+        import asyncio
+        result = get_error_detail(asyncio.TimeoutError())
+        assert result, "get_error_detail(asyncio.TimeoutError()) returned empty"
+        assert "超时" in result
+
+    def test_wrapped_timeout_via_cause(self):
+        inner = TimeoutError()
+        outer = RuntimeError("wrapper")
+        outer.__cause__ = inner
+        result = get_error_detail(outer)
+        assert result, "get_error_detail for wrapped TimeoutError returned empty"
+        assert "超时" in result
+
+    def test_wrapped_timeout_via_context(self):
+        inner = TimeoutError()
+        outer = RuntimeError("wrapper")
+        outer.__context__ = inner
+        result = get_error_detail(outer)
+        assert result, "get_error_detail for context-wrapped TimeoutError returned empty"
+        assert "超时" in result
+
+    def test_timeout_with_message_preserves(self):
+        result = get_error_detail(TimeoutError("ACP 超时 120s"))
+        assert "ACP 超时 120s" in result
+
+    def test_empty_string_timeout_still_nonempty(self):
+        result = get_error_detail(TimeoutError(""))
+        assert result, "get_error_detail(TimeoutError('')) returned empty"
+        assert "超时" in result
+
+
+# ---------------------------------------------------------------------------
 # Static scan: ban `str(e) or repr(e)` pattern from src/ (except errors.py)
 # ---------------------------------------------------------------------------
 

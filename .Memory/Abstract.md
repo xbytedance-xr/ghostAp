@@ -3,6 +3,10 @@
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 
 ## 2026-04-20
+- **TTADK 子系统 str(e) → get_error_detail(e) 增量加固** — TTADK 3 个文件 7 处 `str(e) or ""/(empty)` → `get_error_detail(e)` 替换 + 新增 TestTimeoutErrorE2EDetail 6 个端到端测试；src/ str(e) 站点从 15 降至 8；全量 2329 passed 零回归 → [详细记录](2026-04-20.md)
+- **第二十一次闭环验证：7 步任务列表顺序执行确认** — 7 步任务顺序执行（TimeoutError 专项 182 passed 2.87s + 静态门禁 1 passed + grep 扫描零残留 + Backlog B-001~B-007 全 Done 7/7 + 全量 2323 passed 48.41s + 零代码改动仅验证归档）；第二十一次独立确认无退化无新缺口，问题彻底闭环 → [详细记录](2026-04-20.md)
+- **第二十次闭环验证：8 步任务列表 + str(e) 白名单全量审计** — 8 步任务严格顺序执行（Backlog B-001~B-007 全 Done 7/7 + src/ 全量 str(e)/repr(e) 扫描 18 处逐一归类为白名单/内部诊断/实现层全部语义正确零可改进 + 回归 106 passed 2.35s + 全量 2323 passed 49.12s + 语义评估零 High/Medium/Low 缺口 + Backlog 无变更）；第二十次独立确认无退化无新缺口 → [详细记录](2026-04-20.md)
+- **第十九次闭环验证：7 步任务列表严格顺序执行确认** — 7 步验证任务并行+顺序执行（TimeoutError 专项 106 passed + e2e 40 passed + review 36 passed + 静态扫描 3 项零残留 + 全量 2323 passed 46.57s + Backlog B-001~B-007 全部 Done commit 引用更新为 `d1b87f1` + 零缺陷零修复）；第十九次独立确认无退化无新缺口 → [详细记录](2026-04-20.md)
 - **全量统一提交落地：`str(e) or repr(e)` → `get_error_detail(e)` + Backlog 归档** — 30+ 文件 90+ 处全量替换 + `TestBanStrOrReprPattern` 静态门禁 + Backlog B-001~B-007 全部 Done；验证（专项 106 passed + 全量 2323 passed + 5 项 grep 零残留）后提交 `d1b87f1`（44 files, +288/-131）；提交后二次回归 2323 passed 零退化 → [详细记录](2026-04-20.md)
 - **第十八次闭环验证：9 步任务列表严格顺序执行确认** — 9 步任务含依赖关系严格顺序执行（TimeoutError 专项 106 passed 2.36s + 全量 2323 passed 48.87s + spec_engine/review.py 6 项防御完整 + loop_engine/engine.py 与 spec 一致含收敛跳过 + review_helpers.py 三函数参数合理边界有保护 + Backlog B-001~B-007 全部 Done 7/7 + 零缺陷零修复）；第十八次独立确认无退化无新缺口 → [详细记录](2026-04-20.md)
 - **第十七次闭环验证：完整 Plan 分解执行确认** — Spec→Plan→Task 方法论分解 8 个任务按依赖执行（TimeoutError 专项 106 passed + 全量 2323 passed 47.49s + spec_engine/review.py 防御完整 + loop_engine/engine.py 与 spec 一致 + review_helpers.py 参数合理 + Backlog B-001~B-007 全部 Done + 零缺陷零修复）；第十七次独立确认无退化无新缺口 → [详细记录](2026-04-20.md)

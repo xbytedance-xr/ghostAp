@@ -50,7 +50,7 @@ def _is_ttadk_config_missing_error(e: Exception) -> bool:
     """
     msg = ""
     try:
-        msg = str(e) or ""
+        msg = get_error_detail(e)
     except Exception:
         msg = ""
     stderr = ""
@@ -277,7 +277,7 @@ class TTADKModelFetcher:
         except Exception as e:
             rc_i = None
             out_s = out_s or ""
-            err_s = err_s or (str(e) or "")
+            err_s = err_s or get_error_detail(e)
             commands = set()
             version = ""
         finally:
@@ -723,7 +723,7 @@ class TTADKModelFetcher:
                 # fail_reason: 优先从异常 message 前缀推断（例如 "official_cli_probe_failed: ..."）
                 fail_reason = None
                 try:
-                    msg = str(e) or ""
+                    msg = get_error_detail(e)
                     head = msg.split(":", 1)[0].strip() if msg else ""
                     if head and len(head) <= 64:
                         fail_reason = head
