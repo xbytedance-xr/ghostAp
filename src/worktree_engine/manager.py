@@ -35,11 +35,12 @@ class WorktreeManager:
             project.worktree_state = state
         return state
 
-    def start_selection(self, project: ProjectContext) -> WorktreeRuntimeState:
+    def start_selection(self, project: ProjectContext, goal: str = "") -> WorktreeRuntimeState:
         state = self.get_state(project)
         state.selection.active = True
         state.selection.stage = "tool_select"
         state.selection.pending_item = None
+        state.selection.pending_goal = str(goal or "").strip()
         state.selection.last_error = ""
         state.selection.last_message = "请选择一个工具开始 worktree 组合"
         return state

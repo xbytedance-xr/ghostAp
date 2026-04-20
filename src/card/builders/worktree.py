@@ -19,11 +19,13 @@ class WorktreeBuilder:
         selected_items: list[dict],
         project_id: Optional[str] = None,
         message: str = "",
+        goal: str = "",
     ) -> tuple[str, str]:
         """Render tool selection card with buttons for each available tool.
 
         *tools*: ``[{"tool_name": ..., "display_name": ..., "provider": ..., "supports_model": bool, "description": ...}]``
         *selected_items*: already-selected ``[{"display_label": ...}]`` for display.
+        *goal*: pre-filled task goal; when empty, renders an input box.
         """
         lines = []
         lines.append("**请选择一个工具加入 Worktree 组合：**\n")
@@ -34,6 +36,21 @@ class WorktreeBuilder:
         elements: list[dict] = []
         if message:
             elements.append(CoreBuilder._build_banner_element(message, type="success"))
+
+        # Goal area: show read-only display if goal is set, otherwise input box
+        if goal:
+            elements.append(
+                CoreBuilder._build_content_element(f"**任务目标：** {goal}")
+            )
+        else:
+            elements.append(
+                {
+                    "tag": "input",
+                    "name": "worktree_goal",
+                    "placeholder": {"tag": "plain_text", "content": "输入任务目标（选完工具后自动执行）"},
+                    "max_length": 500,
+                }
+            )
 
         elements.append(CoreBuilder._build_content_element("\n".join(lines)))
 
@@ -60,6 +77,7 @@ class WorktreeBuilder:
                         "supports_model": t.get("supports_model", False),
                         "skip_model_selection": t.get("skip_model_selection", False),
                         "project_id": project_id or "",
+                        "goal": goal,
                     },
                 }
             )
@@ -79,6 +97,7 @@ class WorktreeBuilder:
                             "value": {
                                 "action": "worktree_finish_selection",
                                 "project_id": project_id or "",
+                                "goal": goal,
                             },
                         }
                     ],
@@ -95,6 +114,7 @@ class WorktreeBuilder:
         selected_items: list[dict],
         project_id: Optional[str] = None,
         message: str = "",
+        goal: str = "",
     ) -> tuple[str, str]:
         """Render model selection card for a TTADK tool.
 
@@ -103,6 +123,12 @@ class WorktreeBuilder:
         elements: list[dict] = []
         if message:
             elements.append(CoreBuilder._build_banner_element(message, type="success"))
+
+        # Show goal if present
+        if goal:
+            elements.append(
+                CoreBuilder._build_content_element(f"**任务目标：** {goal}")
+            )
 
         elements.append(
             CoreBuilder._build_content_element(
@@ -134,6 +160,7 @@ class WorktreeBuilder:
                         "model_name": m["name"],
                         "model_display_name": m.get("display_name") or m["name"],
                         "project_id": project_id or "",
+                        "goal": goal,
                     },
                 }
             )
@@ -148,6 +175,7 @@ class WorktreeBuilder:
                     "model_name": "",
                     "model_display_name": "",
                     "project_id": project_id or "",
+                    "goal": goal,
                 },
             }
         )
@@ -161,6 +189,7 @@ class WorktreeBuilder:
                     "value": {
                         "action": "worktree_finish_selection",
                         "project_id": project_id or "",
+                        "goal": goal,
                     },
                 }
             )

@@ -95,7 +95,10 @@ class TestWorktreeCommandRouting(unittest.TestCase):
 
             client._process_card_action_async(data)
 
-            client._handle_finish_worktree_selection.assert_called_once_with("om_1", "oc_1", "p1")
+            client._handle_finish_worktree_selection.assert_called_once_with(
+                "om_1", "oc_1", "p1",
+                {"action": "worktree_finish_selection", "project_id": "p1"},
+            )
 
     def _build_ws_client(self, mock_get_settings):
         """Helper to build a minimally-patched FeishuWSClient for card-action tests."""

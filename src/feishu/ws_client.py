@@ -492,7 +492,7 @@ class FeishuWSClient:
             exact="show_worktree_menu",
         )
         self._register_action(
-            lambda mid, cid, pid, val: self._handle_finish_worktree_selection(mid, cid, pid),
+            lambda mid, cid, pid, val: self._handle_finish_worktree_selection(mid, cid, pid, val),
             exact="worktree_finish_selection",
         )
         self._register_action(

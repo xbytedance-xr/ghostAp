@@ -79,6 +79,7 @@ class WorktreeSelectionState:
     stage: str = "idle"
     pending_item: Optional[WorktreeSelectionItem] = None
     selected_items: list[WorktreeSelectionItem] = field(default_factory=list)
+    pending_goal: str = ""
     last_message: str = ""
     last_error: str = ""
 
@@ -96,6 +97,7 @@ class WorktreeSelectionState:
             "stage": _clean_str(self.stage, default="idle"),
             "pending_item": self.pending_item.to_dict() if self.pending_item else None,
             "selected_items": [item.to_dict() for item in self.selected_items],
+            "pending_goal": self.pending_goal,
             "last_message": self.last_message,
             "last_error": self.last_error,
         }
@@ -115,6 +117,7 @@ class WorktreeSelectionState:
             stage=_clean_str(data.get("stage"), default="idle"),
             pending_item=pending_item,
             selected_items=selected_items,
+            pending_goal=_clean_str(data.get("pending_goal")),
             last_message=_clean_str(data.get("last_message")),
             last_error=_clean_str(data.get("last_error")),
         )

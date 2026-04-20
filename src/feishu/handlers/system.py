@@ -90,6 +90,8 @@ class SystemHandler(BaseHandler):
             ("/tasks", lambda m, c, t, p: self.get_handler("diagnostics").show_task_board(m, c, t, p)),
             ("/diff", lambda m, c, t, p: self.get_handler("diagnostics").show_context_diff(m, c, t, p)),
             ("/trace", lambda m, c, t, p: self.get_handler("diagnostics").show_message_trace(m, c, t, p)),
+            ("/worktree ", self._handle_worktree_prefix_command),
+            ("/wt ", self._handle_worktree_prefix_command),
             ("/switch ", self._handle_switch_command),
             ("/new ", self._handle_new_project_command),
             ("/close ", self._handle_close_command),
@@ -128,6 +130,17 @@ class SystemHandler(BaseHandler):
         name = text[7:].strip()
         if name:
             self.get_handler("project").close_project(message_id, chat_id, name)
+
+    def _handle_worktree_prefix_command(
+        self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"]
+    ):
+        """Parse '/wt <goal>' or '/worktree <goal>' and delegate to handle_worktree_command."""
+        text_lower = text.lower().strip()
+        if text_lower.startswith("/worktree"):
+            goal = text[len("/worktree"):].strip()
+        else:
+            goal = text[len("/wt"):].strip()
+        self.handle_worktree_command(message_id, chat_id, project, goal=goal)
 
     # ------------------------------------------------------------------
     # Command predicates
@@ -263,7 +276,7 @@ class SystemHandler(BaseHandler):
         }
         if text_lower in exact_commands:
             return True
-        prefix_commands = ("/switch ", "/new ", "/close ", "/tasks ", "/diff ", "/trace ", "/status ", "/model ")
+        prefix_commands = ("/worktree ", "/wt ", "/switch ", "/new ", "/close ", "/tasks ", "/diff ", "/trace ", "/status ", "/model ")
         return any(text_lower.startswith(p) for p in prefix_commands)
 
     # ------------------------------------------------------------------
@@ -953,6 +966,7 @@ class SystemHandler(BaseHandler):
         chat_id: str,
         project: Optional["ProjectContext"] = None,
         from_card: bool = False,
+        goal: str = "",
     ):
         """Handle /wt or /worktree command — start tool selection flow."""
         project = project or self.project_manager.get_active_project(chat_id)
@@ -960,8 +974,10 @@ class SystemHandler(BaseHandler):
             self.reply_error(message_id, "请先创建或切换到一个项目")
             return
 
+        goal = str(goal or "").strip()[:500]  # cap at 500 chars
+
         mgr = self._worktree_manager()
-        mgr.start_selection(project)
+        mgr.start_selection(project, goal=goal)
         tools = self._get_available_worktree_tools()
         if not tools:
             self.reply_error(message_id, "当前环境没有可用的编程工具")
@@ -970,7 +986,9 @@ class SystemHandler(BaseHandler):
         project_id = project.project_id if project else None
         state = mgr.get_state(project)
         selected_dicts = [item.to_dict() for item in state.selection.selected_items]
-        msg_type, card = CardBuilder.build_worktree_tool_select_card(tools, selected_dicts, project_id)
+        msg_type, card = CardBuilder.build_worktree_tool_select_card(
+            tools, selected_dicts, project_id, goal=goal,
+        )
         if from_card:
             self.patch_message(message_id, card, msg_type=msg_type)
         else:
@@ -999,6 +1017,13 @@ class SystemHandler(BaseHandler):
             self.reply_error(message_id, "未选择工具")
             return
 
+        # Resolve goal: card value > state.selection.pending_goal
+        mgr = self._worktree_manager()
+        state = mgr.get_state(project)
+        goal = str(value.get("goal") or value.get("_input_value") or state.selection.pending_goal or "").strip()
+        if goal:
+            state.selection.pending_goal = goal
+
         from ...worktree_engine.selection import WorktreeToolOption
 
         option = WorktreeToolOption(
@@ -1010,7 +1035,6 @@ class SystemHandler(BaseHandler):
             skip_model_selection=bool(skip_model_selection),
         )
 
-        mgr = self._worktree_manager()
         mgr.select_tool(project, option)
         state = mgr.get_state(project)
         selected_dicts = [item.to_dict() for item in state.selection.selected_items]
@@ -1034,6 +1058,7 @@ class SystemHandler(BaseHandler):
                 selected_dicts,
                 pid,
                 message=f"已选择工具: {option.display_name}",
+                goal=goal,
             )
         else:
             # Auto-add pending item, picking a model if available
@@ -1050,6 +1075,11 @@ class SystemHandler(BaseHandler):
             )
             mgr.back_to_tool_selection(project)
 
+            # Fast path: goal exists -> skip tool list, auto-execute
+            if goal:
+                self.handle_finish_worktree_selection(message_id, chat_id, project_id=pid, value=value)
+                return
+
             state = mgr.get_state(project)
             tools = self._get_available_worktree_tools()
             selected_dicts = [item.to_dict() for item in state.selection.selected_items]
@@ -1058,6 +1088,7 @@ class SystemHandler(BaseHandler):
                 selected_dicts,
                 pid,
                 message=msg,
+                goal=goal,
             )
 
         self.patch_message(message_id, card, msg_type=msg_type)
@@ -1080,16 +1111,28 @@ class SystemHandler(BaseHandler):
         model_display = value.get("model_display_name") or model_name
 
         mgr = self._worktree_manager()
+
+        # Resolve goal: card value > state.selection.pending_goal
+        state = mgr.get_state(project)
+        goal = str(value.get("goal") or state.selection.pending_goal or "").strip()
+        if goal:
+            state.selection.pending_goal = goal
+
         state, added, msg = mgr.add_pending_item(project, model_name=model_name, model_display_name=model_display)
         # Back to tool selection for next tool
         mgr.back_to_tool_selection(project)
+
+        # Fast path: goal exists -> skip tool list, auto-execute
+        if goal:
+            self.handle_finish_worktree_selection(message_id, chat_id, project_id=project_id, value=value)
+            return
 
         state = mgr.get_state(project)
         selected_dicts = [item.to_dict() for item in state.selection.selected_items]
         tools = self._get_available_worktree_tools()
         pid = project.project_id
         msg_type, card = CardBuilder.build_worktree_tool_select_card(
-            tools, selected_dicts, pid, message=msg,
+            tools, selected_dicts, pid, message=msg, goal=goal,
         )
         self.patch_message(message_id, card, msg_type=msg_type)
 
@@ -1098,14 +1141,27 @@ class SystemHandler(BaseHandler):
         message_id: str,
         chat_id: str,
         project_id: Optional[str] = None,
+        value: dict | None = None,
     ):
-        """Card action: user finished selecting tools — show confirm card."""
+        """Card action: user finished selecting tools — show confirm card or auto-execute."""
+        value = value or {}
         project = self.project_manager.get_project(project_id) if project_id else self.project_manager.get_active_project(chat_id)
         if not project:
             self.reply_error(message_id, "找不到关联的项目")
             return
 
         mgr = self._worktree_manager()
+
+        # Resolve goal: card button value > card input > state.selection.pending_goal
+        state = mgr.get_state(project)
+        goal = str(
+            value.get("goal")
+            or value.get("worktree_goal")
+            or value.get("_input_value")
+            or state.selection.pending_goal
+            or ""
+        ).strip()
+
         state = mgr.finalize_selection(project)
         pid = project.project_id
 
@@ -1113,9 +1169,41 @@ class SystemHandler(BaseHandler):
             self.reply_error(message_id, "请至少选择一个工具-模型组合")
             return
 
+        # Fast path: goal exists → skip confirm card, auto-execute
+        if goal:
+            self._auto_execute_worktree(message_id, chat_id, goal, project=project)
+            return
+
+        # Fallback: no goal → show confirm card (backward compatible)
         selected_dicts = [item.to_dict() for item in state.selection.selected_items]
         msg_type, card = CardBuilder.build_worktree_confirm_card(selected_dicts, pid)
         self.patch_message(message_id, card, msg_type=msg_type)
+
+    def _auto_execute_worktree(
+        self,
+        message_id: str,
+        chat_id: str,
+        goal: str,
+        project: Optional["ProjectContext"] = None,
+    ):
+        """Fast path: ensure_worktrees → set units ready → execute with silent_mode."""
+        if project is None:
+            project = self.project_manager.get_active_project(chat_id)
+        if not project:
+            self.reply_error(message_id, "找不到关联的项目")
+            return
+
+        mgr = self._worktree_manager()
+        state = mgr.ensure_worktrees(project)
+
+        if state.last_error:
+            self.reply_error(message_id, f"Worktree 创建失败: {state.last_error}")
+            return
+
+        for unit in state.units:
+            unit.status = "ready"
+
+        self.handle_worktree_execute(message_id, chat_id, goal, project=project, silent_mode=True)
 
     def handle_worktree_confirm_start(
         self,
@@ -1165,8 +1253,13 @@ class SystemHandler(BaseHandler):
         chat_id: str,
         text: str,
         project: Optional["ProjectContext"] = None,
+        silent_mode: bool = False,
     ):
-        """Route user message as a worktree goal — trigger parallel execution."""
+        """Route user message as a worktree goal — trigger parallel execution.
+
+        When *silent_mode* is True (auto-execute fast path), throttle interval
+        is raised to 30s and a 10-min timeout safety-valve notification is sent.
+        """
         if project is None:
             project = self.project_manager.get_active_project(chat_id)
         if not project:
@@ -1184,19 +1277,44 @@ class SystemHandler(BaseHandler):
         # Send an initial "executing" progress card
         state = mgr.get_state(project)
         units_dicts = [u.to_dict() for u in state.units]
+        if silent_mode:
+            init_msg = f"🚀 已开始执行: {goal[:80]}\n完成后将自动通知，请稍候…"
+        else:
+            init_msg = f"⏳ 正在并行执行: {goal[:80]}"
         msg_type, card = CardBuilder.build_worktree_progress_card(
-            units_dicts, pid, message=f"⏳ 正在并行执行: {goal[:80]}",
+            units_dicts, pid, message=init_msg,
         )
         progress_mid = self.send_message(chat_id, card, msg_type=msg_type)
 
         # Build a throttled callback for live progress updates
         _update_lock = threading.Lock()
         _last_update: list[float] = [0.0]
-        _THROTTLE_INTERVAL = 0.5  # seconds
+        _THROTTLE_INTERVAL = 30.0 if silent_mode else 0.5  # seconds
+        _exec_start = time.time()
+        _TIMEOUT_NOTIFY = 600.0  # 10 minutes
+        _timeout_notified: list[bool] = [False]
 
         def _on_unit_update(unit):
             now = time.time()
+            elapsed = now - _exec_start
             with _update_lock:
+                # Silent mode 10-min timeout safety-valve
+                if silent_mode and elapsed >= _TIMEOUT_NOTIFY and not _timeout_notified[0]:
+                    _timeout_notified[0] = True
+                    _last_update[0] = now
+                    try:
+                        cur_state = mgr.get_state(project)
+                        cur_dicts = [u.to_dict() for u in cur_state.units]
+                        mt, cd = CardBuilder.build_worktree_progress_card(
+                            cur_dicts, pid,
+                            message=f"⏳ 仍在执行中 ({int(elapsed // 60)}min)，请耐心等待…",
+                        )
+                        if progress_mid:
+                            self.patch_message(progress_mid, cd, msg_type=mt)
+                    except Exception:
+                        pass
+                    return
+
                 if now - _last_update[0] < _THROTTLE_INTERVAL:
                     return
                 _last_update[0] = now

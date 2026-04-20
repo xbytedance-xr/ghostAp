@@ -3,6 +3,7 @@
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 
 ## 2026-04-20
+- **Worktree Auto-Execute 快速路径：`/wt <goal>` 一键执行** — 命令路由重构（前缀匹配 `"/wt "` + goal 解析）；`WorktreeSelectionState.pending_goal` 状态持久化 + card button value 双通道透传；`handle_finish_worktree_selection` goal 存在时自动执行（跳过 confirm_card）；静默模式（30s 节流 + 10min 超时阀）；向后兼容（无 goal 时行为不变）；15 新测试 + 2471 全量通过零回归 → [详细记录](2026-04-20.md)
 - **Review 重构 Phase C Step7a-7b: ReviewPipeline 组装 + conduct_review 接入** — 新增 `review_pipeline.py`（lint gate → ephemeral session × N → parallel workers → budget cap 协调）；`conduct_review()` 新增 pipeline 路径（artifacts 非空时直接走并行，否则 fallback legacy serial）；`_conduct_review_pipeline` 带 circuit-breaker 计数 + worker 错误 diagnostics；engine.py `_conduct_review` 增加 `cycle_obj` + `spec_review_parallel_enabled` flag；8 pipeline tests + 2451 全量通过零回归 → [详细记录](2026-04-20.md)
 - **Review 重构 Phase C Step4-6（dormant 地基）** — 新增 `PerspectiveWorker`（单视角 worker + `run_workers_parallel` 并发）、`CycleBudget`（wall-clock 预算 + `run_with_budget` 降级）、`LintGate`（`evaluate_lint_gate` + 语法错短路所有视角 FAIL）；30 新测试（9+10+11）+ 2447 全量通过；三模块未接入 engine.py，生产路径仍走旧 `conduct_review`，等 Step7 通电；`ce62f4d` + `c50acda` + `c1005f3` + `3b241ec` → [详细记录](2026-04-20.md)
 - **Review 重构 Phase A（Step1-2）+ ACP Invalid params 竞态修复** — 修复 `sync_adapter.cancel()` fire-and-forget 竞态（`-32602 Invalid params` 根因）；新增 `ReviewArtifacts`（review 输入落盘脱 session）+ `ReviewStrategy` ABC（旧行为包为 `MultiPerspectiveStrategy` 零行为变更）；12 新测试 + 2410 全量通过；剩余 Step3-8 待分批交付 → [详细记录](2026-04-20.md)
