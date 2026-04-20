@@ -51,16 +51,6 @@ def test_project_builder_with_banner():
     card = json.loads(card_json)
     
     # Banner should be the third element (Directory, HR, Banner, HR, Content, Buttons)
-    # Wait, let's check the implementation in project.py:
-    # 109→        elements = [
-    # 110→            CoreBuilder._build_directory_element(project, working_dir),
-    # 111→            {"tag": "hr"},
-    # 112→        ]
-    # 113→
-    # 114→        if banner:
-    # 115→            elements.append(banner)
-    # 116→            elements.append({"tag": "hr"})
-    
     elements = card["body"]["elements"]
     assert elements[2]["tag"] == "column_set"
     assert elements[2]["background_style"] == "green"
@@ -77,7 +67,6 @@ def test_worktree_builder_with_message_banner():
         tools=[], selected_items=[], project_id=project.project_id, message=message
     )
     card = json.loads(card_json)
-    # WorktreeBuilder uses CoreBuilder._wrap_card which puts elements in body.elements
     elements = card["body"]["elements"]
     assert elements[0]["tag"] == "column_set"
     assert elements[0]["background_style"] == "green"
@@ -128,15 +117,6 @@ def test_deep_builder_warning_banner():
     elements = card["body"]["elements"]
     
     # Find the banner in elements
-    # 234→        elements = [
-    # 235→            CoreBuilder._build_directory_element(project, state.working_dir),
-    # 236→            {"tag": "hr"},
-    # 237→        ]
-    # ...
-    # 263→        if state.warning_banner:
-    # 264→            elements.append(CoreBuilder._build_banner_element(state.warning_banner, type="warning"))
-    
-    # Directory, HR, (Optional Progress), (Optional Status/Duration), (Optional HR), Warning Banner
     banner_found = False
     for el in elements:
         if el.get("tag") == "column_set" and el.get("background_style") == "yellow":
