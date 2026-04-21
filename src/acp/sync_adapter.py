@@ -1325,6 +1325,7 @@ class SyncACPSession:
         if not self._started.wait(timeout=min(5.0, float(startup_timeout or 60))):
             # Fail fast: event loop thread did not start.
             self.close()
+            logger.error("[ACP:%s] 事件循环启动超时 (timeout=%ss)", self._agent_type, min(5.0, float(startup_timeout or 60)))
             raise TimeoutError(f"ACP 事件循环启动超时: agent={self._agent_type}")
 
         # Start ACP session (spawns agent `acp serve` process and initializes protocol)
@@ -1460,6 +1461,8 @@ class SyncACPSession:
         if not self._acp_session:
             raise RuntimeError("Session not started")
 
+        effective_timeout = timeout if timeout is not None else 600.0
+
         self.last_active = time.time()
         self.message_count += 1
         self.last_query = text
@@ -1472,16 +1475,18 @@ class SyncACPSession:
         self._start_watchdog()
 
         try:
-            return future.result(timeout=timeout)
+            return future.result(timeout=effective_timeout)
         except (asyncio.CancelledError, concurrent.futures.CancelledError):
             raise RuntimeError("ACP agent 进程在执行过程中意外终止")
         except TimeoutError as e:
+            agent_type_str = getattr(self, "_agent_type", "unknown")
+            logger.error("[ACP:%s] prompt 执行超时 (timeout=%ss): %s", agent_type_str, effective_timeout, get_error_detail(e))
             # Cancel the agent process on timeout to free resources.
             # Wait briefly for cancel to be acknowledged — otherwise a follow-up
             # send_prompt can race with the in-flight cancel and the agent
             # rejects it with `-32602 Invalid params`.
             self.cancel(wait=True, timeout=2.0)
-            raise TimeoutError(f"ACP prompt 执行超时 ({timeout}s)") from e
+            raise TimeoutError(f"ACP prompt 执行超时 ({effective_timeout}s)") from e
         finally:
             self._active_future = None
 
@@ -1589,7 +1594,9 @@ class SyncACPSession:
         try:
             return future.result(timeout=timeout)
         except TimeoutError as e:
+            future.cancel()
             msg = str(e).strip()
             if not msg:
                 msg = f"ACP 异步操作超时 ({timeout}s): agent={self._agent_type}"
+            logger.error("[ACP:%s] _run_async 超时 (timeout=%ss): %s", self._agent_type, timeout, get_error_detail(e))
             raise TimeoutError(msg) from e

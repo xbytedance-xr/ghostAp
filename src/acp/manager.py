@@ -10,6 +10,7 @@ from __future__ import annotations
 import threading
 import time
 import logging
+import contextlib
 from typing import Callable, Optional, Protocol, TYPE_CHECKING
 
 from ..agent_session import SyncClaudeCLISession, SyncSession, SyncTTADKCLISession
@@ -303,10 +304,22 @@ class ACPSessionManager:
             )
             self._keepalive_thread.start()
 
+    @contextlib.contextmanager
+    def _acquire_lock(self, timeout: float = 30.0):
+        """Context manager to acquire lock with timeout, preventing deadlocks."""
+        if not self._lock.acquire(timeout=timeout):
+            msg = f"[ACP:{self._agent_type.upper()}] Failed to acquire lock within {timeout}s (deadlock detected)"
+            logger.error(msg)
+            raise TimeoutError(msg)
+        try:
+            yield
+        finally:
+            self._lock.release()
+
     def _keepalive_loop(self) -> None:
         while not self._keepalive_stop.wait(timeout=self._keepalive_interval):
             try:
-                with self._lock:
+                with self._acquire_lock():
                     snapshot = list(self._sessions.items())
                 now = time.time()
                 for key, session in snapshot:
@@ -316,7 +329,7 @@ class ACPSessionManager:
                             continue
                         alive = session.is_server_running()
                         if not alive:
-                            with self._lock:
+                            with self._acquire_lock():
                                 if self._sessions.get(key) is session:
                                     logger.info(
                                         "[ACP:%s] Keepalive cleaning dead session: key=%s, session=%s",
@@ -483,7 +496,7 @@ class ACPSessionManager:
         """Start a new session for a chat/project."""
         key = self._session_key(chat_id, project_id, thread_id=thread_id)
         # Close existing session if any (under lock to prevent concurrent create)
-        with self._lock:
+        with self._acquire_lock():
             if key in self._sessions:
                 self._end_session_unlocked(key)
 
@@ -771,7 +784,7 @@ class ACPSessionManager:
             logger.warning("Unexpected error in manager", exc_info=True)
             pass
 
-        with self._lock:
+        with self._acquire_lock():
             self._sessions[key] = session
         # 会话成功启动后触发 Telemetry 事件（best-effort）。
         try:
@@ -809,14 +822,14 @@ class ACPSessionManager:
         # Helper: safely end session under lock with double-check
         def _safe_end_session(check_fn) -> bool:
             """End session under lock if check_fn returns True. Returns True if ended."""
-            with self._lock:
+            with self._acquire_lock():
                 s = self._sessions.get(key)
                 if s is not None and check_fn(s):
                     self._end_session_unlocked(key)
                     return True
                 return False
 
-        with self._lock:
+        with self._acquire_lock():
             existing = self._sessions.get(key)
         if existing:
             # Timeout check (reuse get_session semantics)
@@ -959,7 +972,7 @@ class ACPSessionManager:
         sessions the send_prompt watchdog already handles crash detection.
         """
         key = self._session_key(chat_id, project_id, thread_id=thread_id)
-        with self._lock:
+        with self._acquire_lock():
             session = self._sessions.get(key)
         if session:
             now = time.time()
@@ -967,7 +980,7 @@ class ACPSessionManager:
             if idle > self._session_timeout:
                 logger.info("[ACP:%s] Session timeout: key=%s", self._agent_type.upper(), key[-16:])
                 # Use _end_session_unlocked under lock to avoid race window
-                with self._lock:
+                with self._acquire_lock():
                     # Double-check: session may have been replaced by another thread
                     current = self._sessions.get(key)
                     if current is session:
@@ -983,7 +996,7 @@ class ACPSessionManager:
                         key[-16:],
                         (session.session_id or "none")[:8],
                     )
-                    with self._lock:
+                    with self._acquire_lock():
                         current = self._sessions.get(key)
                         if current is session:
                             self._end_session_unlocked(key)
@@ -1014,24 +1027,30 @@ class ACPSessionManager:
                 )
             except Exception as e:
                 logger.debug("[ACP:%s] session telemetry on_session_end error", self._agent_type.upper(), exc_info=True)
-            try:
-                session.close()
-            except Exception as e:
-                logger.debug("Error closing ACP session: %s", get_error_detail(e))
             del self._sessions[key]
+
+            # Offload closing to a background thread to prevent blocking _lock
+            # for up to 5 seconds during event loop shutdown.
+            def _close_bg():
+                try:
+                    session.close()
+                except Exception as e:
+                    logger.debug("Error closing ACP session: %s", get_error_detail(e))
+            
+            threading.Thread(target=_close_bg, daemon=True, name=f"acp-close-{key[-8:]}").start()
             return snapshot
         return None
 
     def end_session(self, chat_id: str, project_id: Optional[str] = None, thread_id: Optional[str] = None) -> Optional[dict]:
         """End a session and return its snapshot."""
         key = self._session_key(chat_id, project_id, thread_id=thread_id)
-        with self._lock:
+        with self._acquire_lock():
             return self._end_session_unlocked(key)
 
     def rebind_thread(self, chat_id: str, project_id: str, thread_id: str) -> bool:
         old_key = self._session_key(chat_id, project_id, thread_id=None)
         new_key = self._session_key(chat_id, project_id, thread_id=thread_id)
-        with self._lock:
+        with self._acquire_lock():
             session = self._sessions.get(old_key)
             if session is None:
                 return False
@@ -1061,11 +1080,11 @@ class ACPSessionManager:
         if self._keepalive_thread is not None:
             self._keepalive_thread.join(timeout=5)
             self._keepalive_thread = None
-        with self._lock:
+        with self._acquire_lock():
             keys = list(self._sessions.keys())
         for key in keys:
             try:
-                with self._lock:
+                with self._acquire_lock():
                     self._end_session_unlocked(key)
             except Exception as e:
                 logger.debug("Error cleaning up session for %s: %s", key[-16:], get_error_detail(e))
@@ -1074,7 +1093,7 @@ class ACPSessionManager:
         """Return lightweight snapshots for currently tracked sessions."""
         now = time.time()
         out: list[dict] = []
-        with self._lock:
+        with self._acquire_lock():
             items = list(self._sessions.items())
 
         for key, session in items:

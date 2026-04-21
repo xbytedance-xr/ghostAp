@@ -1,6 +1,9 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
+## 2026-04-22
+- **并发风险排查与锁竞争优化** — 解决 ACP `manager.py` 和 `sync_adapter.py` 中由异步超时引发的任务泄露，将长达 5 秒的会话关闭（`session.close`）操作异步化以消除对全局字典锁的竞争，并修复依赖注入重构遗留的 Mock 测试。 → [详细记录](2026-04-22.md)
+
 
 ## 2026-04-21
 - **增强并发超时异常清理正则支持** - 优化底层报错信息的正则清理逻辑，彻底从面向用户的提示消息中抹除并发控制细节（如嵌套括号的 `4 (of 5) futures unfinished`） → [2026-04-21.md](2026-04-21.md)
@@ -422,3 +425,6 @@
 
 ## 2026-01-09
 - **项目创建** - 核心功能完成 + 飞书 WebSocket + Coco 会话 + ReAct 意图识别 → [2026-01-09.md](2026-01-09.md)
+
+## 2026-04-21
+- **重构 TaskSpec 等为 Pydantic 强类型模型** - 替换 `src/tasking/scheduler.py` 中的 dataclass 并在相关模块和测试用例中修复 Pydantic Strict 类型检查错误 → [2026-04-21.md](./2026-04-21.md#重构-taskspec-等模型为-pydantic-basemodel-2026-04-21)

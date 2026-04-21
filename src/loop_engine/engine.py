@@ -114,6 +114,10 @@ class LoopEngine(BaseEngine):
         agent_type: str = "coco",
         engine_name: str = "Coco",
         model_name: Optional[str] = None,
+        *,
+        retry_policy: Optional[RetryPolicy] = None,
+        get_llm_fn: Optional[Callable] = None,
+        create_session_fn: Optional[Callable] = None,
     ):
         super().__init__(chat_id, root_path, agent_type, engine_name, model_name)
         self._user_guidance: list[str] = []
@@ -123,6 +127,9 @@ class LoopEngine(BaseEngine):
         self._context_manager: Optional[LoopContextManager] = None
         self._llm_cache: dict[ChatOpenAICacheKey, ChatOpenAI] = {}
         self._review_circuit = LoopReviewCircuitState()
+        self._retry_policy = retry_policy or RetryPolicy(max_retries=3, retry_delay=2.0)
+        self._get_llm_fn = get_llm_fn or get_cached_chat_openai
+        self._create_session_fn = create_session_fn or create_engine_session
 
     def save_state(self, filepath: Optional[str] = None) -> str:
         """Override BaseEngine to include review circuit state."""
@@ -211,7 +218,7 @@ class LoopEngine(BaseEngine):
                 # Create session
                 from ..utils.path import normalize_ttadk_cwd
     
-                self._session = create_engine_session(
+                self._session = self._create_session_fn(
                     agent_type=self._agent_type,
                     cwd=normalize_ttadk_cwd(self.root_path) or self.root_path,
                     on_rate_limit=on_rate_limit,
@@ -253,7 +260,7 @@ class LoopEngine(BaseEngine):
 
                     result = self._session.send_prompt_with_retry(
                         prompt, on_event=on_event, timeout=timeout,
-                        retry_policy=RetryPolicy(max_retries=3, retry_delay=2.0),
+                        retry_policy=self._retry_policy,
                     )
     
                     # Record iteration — full output, proper duration, extract focus
@@ -349,8 +356,6 @@ class LoopEngine(BaseEngine):
                 return self._project
 
         except TimeoutError as e:
-            from ..utils.errors import get_error_detail
-
             detail = get_error_detail(e)
 
             error_msg = f"Loop执行超时: {detail}"
@@ -363,8 +368,6 @@ class LoopEngine(BaseEngine):
             return self._project
 
         except Exception as e:
-            from ..utils.errors import get_error_detail
-
             detail = get_error_detail(e)
 
             error_msg = f"Loop执行异常: {detail}"
@@ -440,7 +443,7 @@ class LoopEngine(BaseEngine):
         )
 
     def _get_llm(self, temperature: float) -> ChatOpenAI:
-        return get_cached_chat_openai(self.settings, temperature, cache=self._llm_cache, llm_cls=ChatOpenAI)
+        return self._get_llm_fn(self.settings, temperature, cache=self._llm_cache, llm_cls=ChatOpenAI)
 
     def _decompose_criteria_with_llm(self, text: str) -> list[str]:
         """Use LLM to summarize and decompose colloquial user input into acceptance criteria."""
@@ -940,7 +943,7 @@ FAIL
 
             self._session.send_prompt_with_retry(
                 review_prompt, on_event=on_review_event, timeout=review_timeout,
-                retry_policy=RetryPolicy(max_retries=2, retry_delay=2.0),
+                retry_policy=RetryPolicy(max_retries=2, retry_delay=self._retry_policy.retry_delay, backoff_multiplier=self._retry_policy.backoff_multiplier),
                 before_retry=_before_review_retry,
                 total_timeout=float(review_timeout * 2),
             )
@@ -1110,7 +1113,7 @@ FAIL
 
             from ..utils.path import normalize_ttadk_cwd
 
-            self._session = create_engine_session(
+            self._session = self._create_session_fn(
                 agent_type=self._agent_type,
                 cwd=normalize_ttadk_cwd(self.root_path) or self.root_path,
                 on_rate_limit=getattr(self, "_on_rate_limit", None),
@@ -1212,8 +1215,6 @@ FAIL
                 callbacks.on_project_done(self._project)
 
         except TimeoutError as e:
-            from ..utils.errors import get_error_detail
-
             detail = get_error_detail(e)
 
             error_msg = f"Loop恢复超时: {detail}"
@@ -1224,8 +1225,6 @@ FAIL
                 callbacks.on_error(error_msg)
 
         except Exception as e:
-            from ..utils.errors import get_error_detail
-
             detail = get_error_detail(e)
 
             error_msg = f"Loop恢复异常: {detail}"
@@ -1251,6 +1250,10 @@ class LoopEngineManager(BaseEngineManager["LoopEngine"]):
         agent_type: str,
         engine_name: str,
         model_name: Optional[str],
+        *,
+        retry_policy: Optional[RetryPolicy] = None,
+        get_llm_fn: Optional[Callable] = None,
+        create_session_fn: Optional[Callable] = None,
     ) -> "LoopEngine":
         return LoopEngine(
             chat_id=chat_id,
@@ -1258,4 +1261,7 @@ class LoopEngineManager(BaseEngineManager["LoopEngine"]):
             agent_type=agent_type,
             engine_name=engine_name,
             model_name=model_name,
+            retry_policy=retry_policy,
+            get_llm_fn=get_llm_fn,
+            create_session_fn=create_session_fn,
         )

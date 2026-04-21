@@ -29,8 +29,8 @@ def test_run_workers_parallel_timeout():
     
     assert len(outcomes) == 1
     assert not outcomes[0].review.passed
-    assert outcomes[0].error == "当前系统较繁忙，操作已超时（1/1 个视角未完成）"
-    assert outcomes[0].review.suggestions == ["审查异常：当前系统较繁忙，操作已超时（1/1 个视角未完成）"]
+    assert outcomes[0].error == "当前系统较繁忙，操作已超时"
+    assert outcomes[0].review.suggestions == ["审查异常：当前系统较繁忙，操作已超时"]
     assert "futures unfinished" not in outcomes[0].error
     assert "futures unfinished" not in outcomes[0].review.suggestions[0]
 

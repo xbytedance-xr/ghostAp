@@ -4,7 +4,8 @@ import time
 import uuid
 from collections import defaultdict, deque
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
+from pydantic import BaseModel, Field, ConfigDict
 from enum import Enum, IntEnum
 from typing import Any, Callable, Deque, Optional
 
@@ -35,9 +36,9 @@ SYSTEM_QUEUE_SUFFIX = ":SYSTEM"
 DEFAULT_QUEUE_SUFFIX = ":DEFAULT"
 
 
-@dataclass(frozen=True)
-class TaskSpec:
+class TaskSpec(BaseModel):
     """Metadata that influences routing and scheduling."""
+    model_config = ConfigDict(frozen=True)
 
     chat_id: str
     name: str
@@ -67,9 +68,9 @@ class TaskSpec:
             return f"{self.chat_id}:{self.project_id}"
         return f"{self.chat_id}{DEFAULT_QUEUE_SUFFIX}"
 
-@dataclass
-class TaskResult:
+class TaskResult(BaseModel):
     """任务执行结果（由 `TaskScheduler.wait()` 返回）。"""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     run_id: str
     status: TaskStatus
@@ -79,9 +80,9 @@ class TaskResult:
     ended_at: Optional[float] = None
 
 
-@dataclass(frozen=True)
-class TaskEvent:
+class TaskEvent(BaseModel):
     """任务状态/进度事件（用于 listeners 与可观测性输出）。"""
+    model_config = ConfigDict(frozen=True)
 
     run_id: str
     chat_id: str
@@ -128,22 +129,22 @@ class TaskCanceledError(RuntimeError):
     pass
 
 
-@dataclass
-class TaskRunState:
+class TaskRunState(BaseModel):
     """任务运行态（调度器内部 SSOT）。"""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     spec: TaskSpec
     run_id: str
     assigned_queue_key: str = ""
     project_serial_key: Optional[str] = None
     status: TaskStatus = TaskStatus.QUEUED
-    created_at: float = field(default_factory=time.time)
+    created_at: float = Field(default_factory=time.time)
     started_at: Optional[float] = None
     ended_at: Optional[float] = None
     progress_message: Optional[str] = None
     progress_percent: Optional[float] = None
     error: Optional[str] = None
-    cancellation: CancellationToken = field(default_factory=CancellationToken)
+    cancellation: CancellationToken = Field(default_factory=CancellationToken)
     future: Optional[Future] = None
 
 
@@ -165,13 +166,13 @@ class TaskContext:
         self.cancel_token.raise_if_canceled()
 
 
-@dataclass
-class _QueuedTask:
+class _QueuedTask(BaseModel):
     """队列中的任务项（内部数据结构）。"""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     run_id: str
     spec: TaskSpec
-    fn: Callable[[TaskContext], Any]
+    fn: Callable[['TaskContext'], Any]
     context: contextvars.Context
 
 
@@ -402,7 +403,7 @@ class TaskScheduler:
             if old_project == project_id:
                 return True
 
-            new_spec = replace(state.spec, project_id=str(project_id))
+            new_spec = state.spec.model_copy(update={"project_id": str(project_id)})
             new_queue_key = new_spec.get_effective_queue_key()
             new_project_key = self._build_project_serial_key(new_spec.chat_id, new_spec.project_id)
 

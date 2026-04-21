@@ -193,7 +193,7 @@ class SpecHandler(BaseEngineHandler):
             message_id=message_id,
             origin_message_id=message_id,
             request_id=request_id,
-            task_id=task_id,
+            task_id=task_id or None,
             priority=TaskPriority.NORMAL,
         )
         handle = self.scheduler.submit(spec, lambda ctx: run_spec_engine())
@@ -730,7 +730,7 @@ class SpecHandler(BaseEngineHandler):
             message_id=message_id,
             origin_message_id=message_id,
             request_id=request_id,
-            task_id=task_id,
+            task_id=task_id or None,
             priority=TaskPriority.NORMAL,
         )
         handle = self.scheduler.submit(spec, lambda ctx: run_spec_engine())

@@ -267,14 +267,11 @@ def run_workers_parallel(
         except TimeoutError:
             # Some futures did not complete within per_worker_timeout.
             # Synthesize FAIL outcomes for all unfinished bindings.
-            total = len(future_to_binding)
             unprocessed_futures = set(future_to_binding.keys()) - processed_futures
-            unfinished = len(unprocessed_futures)
             
             # Use domain semantics, disregarding the stdlib's internal format
-            base_err = "当前系统较繁忙，操作已超时"
+            err = "当前系统较繁忙，操作已超时"
 
-            err = f"{base_err}（{unfinished}/{total} 个视角未完成）"
             for fut in unprocessed_futures:
                 b = future_to_binding[fut]
                 fut.cancel()

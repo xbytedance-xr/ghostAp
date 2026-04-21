@@ -210,8 +210,8 @@ class TestLoopEngineE2E:
             goal="g", acceptance_criteria=["c"], raw_text=txt,
         )
 
-        with patch("src.loop_engine.engine.create_engine_session", return_value=_TimeoutSession()):
-            loop_engine.execute("test", callbacks=cb)
+        loop_engine._create_session_fn = lambda **kwargs: _TimeoutSession()
+        loop_engine.execute("test", callbacks=cb)
 
         assert len(errors) >= 1
         for err in errors:
@@ -230,8 +230,8 @@ class TestLoopEngineE2E:
             goal="g", acceptance_criteria=["c"], raw_text=txt,
         )
 
-        with patch("src.loop_engine.engine.create_engine_session", return_value=_AsyncioTimeoutSession()):
-            loop_engine.execute("test", callbacks=cb)
+        loop_engine._create_session_fn = lambda **kwargs: _AsyncioTimeoutSession()
+        loop_engine.execute("test", callbacks=cb)
 
         assert len(errors) >= 1
         for err in errors:

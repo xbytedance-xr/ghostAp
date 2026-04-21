@@ -167,8 +167,8 @@ class TestLoopEngineTimeout:
             goal="g", acceptance_criteria=["c"], raw_text=txt,
         )
 
-        with patch("src.loop_engine.engine.create_engine_session", return_value=_TimeoutSession()):
-            project = loop_engine.execute("do something", callbacks=cb)
+        loop_engine._create_session_fn = lambda **kwargs: _TimeoutSession()
+        project = loop_engine.execute("do something", callbacks=cb)
 
         assert project.status == LoopProjectStatus.ABORTED
         assert any("Loop执行超时" in e for e in errors)
@@ -191,8 +191,8 @@ class TestLoopEngineTimeout:
         errors = []
         cb.on_error = lambda msg: errors.append(msg)
 
-        with patch("src.loop_engine.engine.create_engine_session", return_value=_TimeoutSession()):
-            project = loop_engine.resume(callbacks=cb)
+        loop_engine._create_session_fn = lambda **kwargs: _TimeoutSession()
+        project = loop_engine.resume(callbacks=cb)
 
         assert project.status == LoopProjectStatus.ABORTED
         assert any("Loop恢复超时" in e for e in errors)
