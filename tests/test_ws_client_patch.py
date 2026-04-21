@@ -38,7 +38,17 @@ class TestCardActionHandler(unittest.TestCase):
             client._scheduler = MagicMock()
 
             # 调用 handler
-            result = client._handle_card_action(MagicMock())
+            mock_event = MagicMock()
+            mock_event.header.event_id = "test_event_id"
+            mock_event.header.event_type = "card.action.trigger"
+            mock_event.event.context.open_message_id = "test_msg_1"
+            mock_event.event.context.open_chat_id = "test_chat_1"
+            mock_event.event.action.tag = "button"
+            mock_event.event.action.name = "test_action"
+            mock_event.event.action.value = {"action": "test", "project_id": "test_proj_1"}
+            mock_event.event.operator.open_id = "user_1"
+
+            result = client._handle_card_action(mock_event)
 
             # 验证返回 None
             self.assertIsNone(result)

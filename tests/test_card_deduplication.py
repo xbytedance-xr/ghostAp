@@ -14,6 +14,7 @@ class TestCardDeduplication(unittest.TestCase):
         # Mock internal components to avoid side effects
         self.client._project_manager = MagicMock()
         self.client._message_linker = MagicMock()
+        self.client._message_linker.resolve_origin.return_value = "msg_123"
         self.client._scheduler = MagicMock()
         self.client._ensure_request_id = MagicMock(return_value="req_123")
 
@@ -29,7 +30,7 @@ class TestCardDeduplication(unittest.TestCase):
         mock_event.event = MagicMock()
         mock_event.event.action = MagicMock()
         mock_event.event.action.tag = "button"
-        mock_event.event.action.value = {"action": "test_action"}
+        mock_event.event.action.value = {"action": "test_action", "project_id": "test_proj_1"}
         mock_event.event.context = MagicMock()
         mock_event.event.context.open_message_id = "msg_123"
         mock_event.event.context.open_chat_id = "chat_123"

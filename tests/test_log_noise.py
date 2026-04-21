@@ -13,7 +13,9 @@ class TestLogNoise(unittest.TestCase):
         handler = DeepHandler(mock_ctx)
 
         # Setup project manager mock to return a tuple
-        mock_ctx.project_manager.get_or_create_project_for_path.return_value = (MagicMock(), False)
+        mock_project = MagicMock()
+        mock_project.project_id = "test_project_id"
+        mock_ctx.project_manager.get_or_create_project_for_path.return_value = (mock_project, False)
 
         # Mock renderer method
         handler.renderer.create_deep_callbacks = MagicMock()
@@ -67,7 +69,9 @@ class TestLogNoise(unittest.TestCase):
         handler = LoopHandler(mock_ctx)
 
         # Setup project manager mock to return a tuple
-        mock_ctx.project_manager.get_or_create_project_for_path.return_value = (MagicMock(), False)
+        mock_project = MagicMock()
+        mock_project.project_id = "test_project_id"
+        mock_ctx.project_manager.get_or_create_project_for_path.return_value = (mock_project, False)
 
         # Mock renderer method
         handler.renderer.create_loop_callbacks = MagicMock()
@@ -152,7 +156,9 @@ class TestLogNoise(unittest.TestCase):
         handler = SpecHandler(mock_ctx)
 
         # Setup project manager mock to return a tuple
-        mock_ctx.project_manager.get_or_create_project_for_path.return_value = (MagicMock(), False)
+        mock_project = MagicMock()
+        mock_project.project_id = "test_project_id"
+        mock_ctx.project_manager.get_or_create_project_for_path.return_value = (mock_project, False)
 
         # Mock renderer method
         handler.renderer.create_spec_callbacks = MagicMock()
