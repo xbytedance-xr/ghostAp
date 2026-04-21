@@ -3,10 +3,18 @@
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 
 ## 2026-04-21
+- **增强并发超时异常清理正则支持** - 优化底层报错信息的正则清理逻辑，彻底从面向用户的提示消息中抹除并发控制细节（如嵌套括号的 `4 (of 5) futures unfinished`） → [2026-04-21.md](2026-04-21.md)
+
+- **产品愿景达成：打造一气呵成的 Worktree 自动执行交互体验** — 将卡片 Banner 自动补全、拦截与免确认等用户体验改进作为核心交付物，彻底消除用户从点击到任务启动之间的感知延迟；同步降级底层测试修复（如 TimeoutError、Race Condition）为纯技术支撑点 → [详细记录](2026-04-21.md)
+
 - **优化 spec_engine 超时错误的用户体验** - 处理并发工作器出现并发 TimeoutError 时抛出的技术细节(4 (of 5) futures unfinished)，向用户展示体验友好的文本 -> [2026-04-21.md](2026-04-21.md)
+
 - **重构正则解析提升执行效率** — 将 `src/spec_engine/perspective_worker.py` 异常处理路径内动态加载的正则解析优化为模块级别的预编译常量，提升执行效率 → [详细记录](2026-04-21.md)
+
 - **审查异常文案本地化打磨** — 在合成超时异常的审查建议时，将底层并发工程术语（futures）的暴露替换为符合统一本地化心智要求的纯中文表达，无缝对接现有异常处理控制流并消除中英混排 → [详细记录](2026-04-21.md)
+
 - **perspective_worker.py 并发超时信息增强** - 在并发等待超时时注入精确的 `(X of Y futures unfinished)` 数量信息以便在合并审查结果中更好地展示诊断详情 → [2026-04-21.md](2026-04-21.md)
+
 - **共享文案层增强 & 相对时间文案统一** — 在 `src/utils/text.py` 新增统一相对时间 API `format_time_ago`，将历史 `format_seconds_ago` 和 `CoreBuilder._format_time_ago` 改造为对共享入口的 [DEPRECATED] 兼容包装；ACP 状态卡片与项目卡片统一使用“刚刚/分钟/小时/天前”一套文案；`get_acp_result_header_text` 标题文案调整为“工具调用/改动文件”等与 UI/测试一致；新增/扩展 text_utils、card、acp_keepalive 等测试并跑通全量 2480 tests，确认无回归 → [详细记录](2026-04-21.md)
 
 - **相对时间语义分层（TimeAgoBucket）** — 在现有共享文案层基础上引入 `TimeAgoBucket` 语义结构与 `compute_time_ago_bucket/render_time_ago_cn` 分层实现，将“时间间隔 → 文案”拆分为“时间间隔 → 语义段 → 文案”；`format_time_ago` 改为对语义计算 + 默认中文渲染的薄包装，`format_seconds_ago` 继续作为兼容入口；新增测试覆盖 TimeAgoBucket 边界与渲染行为，并在 `tests/test_text_utils.py`、`tests/test_card.py`、`tests/test_acp_keepalive.py` 以及全量 `tests/` 上跑通 2489 tests，确认无回归 → [详细记录](2026-04-21.md)
@@ -20,8 +28,6 @@
 - **TimeAgo 语义层抽离为独立模块（time_ago.py）** — 在现有 TimeAgoBucket 与渲染分层基础上，将「秒数→语义段」纯计算逻辑从 `src/utils/text.py` 抽离到独立模块 `src/utils/time_ago.py`，只暴露 `TimeAgoKind`/`TimeAgoBucket`/`compute_time_ago_bucket` 语义 API；`text.py` 退化为文案层包装，仅依赖语义模块并负责 bucket→中文文案映射；ACP 管理器、System handler 和 CardBuilder 等核心层改为直接依赖 `time_ago` 语义模块（或通过 `format_time_ago_from_bucket` 复用文案），测试层面新增 `tests/test_time_ago.py` 并调整既有单测依赖，最终在全量 2497 tests 基础上验证零回归 → [详细记录](2026-04-21.md)
 
 - **ACP 核心层与文案层边界收紧（ACPSessionManager & PromptResult 去耦 + idle bucket 语义命名）** — 在完成 TimeAgo 语义层抽离后，进一步让 ACP 核心层只产出结构化数据：在 `ACPSessionManager` 内部新增 `_compute_idle_bucket` 私有方法，显式命名“会话空闲时间 bucket 计算”职责并委托 `compute_time_ago_bucket` 作为 SSOT，将历史 `_format_seconds_ago` 改造为 [DEPRECATED] 兼容包装仅转调 `_compute_idle_bucket`，`list_active_sessions` 统一使用 `_compute_idle_bucket(idle_s)` 计算 `idle_bucket` 并保持输出仅包含 `idle_seconds` + `idle_bucket`；`PromptResult` 删去模型层的 `to_markdown` 方法，将 Markdown 渲染逻辑迁移到渲染层 `render_prompt_result_markdown`（位于 `src/acp/renderer.py`，统一依赖 `get_acp_result_header_text`）；更新 `tests/test_acp_keepalive.py` 与 `tests/test_acp_models.py` 断言新的结构化输出，并在全量 2496 tests 上验证零回归 → [详细记录](2026-04-21.md)
-
-- **Worktree Auto-Execute Banner 体验增强 & 上下文化重构** — 在 Worktree Auto-Execute 快速路径中，针对 `build_worktree_confirm_card` 的 Banner 文案进行信息增强：在自动执行场景下将当前 goal 的精简摘要以「任务需求」形式内嵌到 Banner，并附加已选工具/模型组合概要（如 `Coco · gpt-5.1`），长 goal 做智能截断以保持移动端可读性；新增/扩展 `tests/test_worktree_command_routing.py` 覆盖 Banner 文案包含 goal 与 selection summary、长 goal 截断以及空选择容错等场景，并在全量测试基础上确认零回归。同时进一步将 `_build_auto_execute_banner_text` 的入参彻底收敛为单一 `WorktreeBannerContext`：在 `src/card/models.py` 扩展上下文字段（新增 `message` 与 `banner_kind`），并重写 `WorktreeBuilder._build_auto_execute_banner_text(ctx)` 仅依赖上下文对象（首行状态文案 + goal 摘要 + 工具/模型摘要），同步重构 `build_worktree_tool_select_card` / `build_worktree_model_select_card` / `build_worktree_confirm_card` 的自动执行分支，使其只负责构造 `WorktreeBannerContext` 并调用统一 helper，真正实现 Banner 组装逻辑的单一职责和单一入口；相关行为由 `tests/test_card_builders.py` 中的基础与边界用例锁定，并通过定向 pytest 回归确认零回归 → [详细记录](2026-04-21.md)
 
 - **ACPSessionManager IdleHealthConfig 抽象与构造参数收口** — 在 `src/acp/telemetry.py` 中新增 `IdleHealthConfig` 数据类与 `build_idle_health_config_for_manager` 工厂函数，将 `idle_health_telemetry` / `session_telemetry` / `idle_health_service` 三个注入点聚合为单一高层配置对象；在 `ACPSessionManager.__init__` 中收口 IdleHealth 相关参数并实现“显式参数 > config 对象 > 默认工厂”的优先级规则，保持默认构造与历史显式注入路径完全兼容；通过 `tests/test_acp_idle_health_config.py`、`tests/test_acp_keepalive.py::TestManagerInitIdleHealthConfigPriority` 与 `tests/test_feishu_ws_client_idle_health_config.py` 等单测锁定行为，并在全量 2574 tests 上确认零回归 → [详细记录](2026-04-21.md)
 

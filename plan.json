@@ -1,0 +1,25 @@
+```json
+{
+  "architecture": "针对并发任务超时的异常处理，在捕获 TimeoutError 后，进一步清理传递给前端或日志的错误消息，彻底移除 Python 默认异常描述中的 'X (of Y) futures unfinished' 或类似字眼，提升用户侧可见错误信息的整洁度和专业度。",
+  "tech_stack": [
+    "Python 3.11+"
+  ],
+  "steps": [
+    "分析 `src/spec_engine/perspective_worker.py` 中的 `_TIMEOUT_ERR_RE` 正则表达式覆盖不全的原因。",
+    "增强正则表达式 `_TIMEOUT_ERR_RE` 以匹配所有包含括号内外层级的 `X of Y futures unfinished` 模式变体。",
+    "修改 `run_workers_parallel` 中超时异常处理对 `_TIMEOUT_ERR_RE.sub` 的调用逻辑，确保各种 `TimeoutError` 变体能够被准确清洗。",
+    "运行现有的单元测试如 `tests/test_perspective_worker_timeout.py` 验证清洗效果。"
+  ],
+  "file_changes": [
+    "src/spec_engine/perspective_worker.py"
+  ],
+  "test_plan": [
+    "执行 `uv run pytest tests/test_perspective_worker_timeout.py -v` 验证是否成功去除了 `(4 (of 5) futures unfinished)` 类似信息",
+    "执行 `uv run pytest tests/test_perspective_worker.py -v` 确保改动不影响现有的并发 Worker 功能"
+  ],
+  "risks": [
+    "正则表达式可能存在误杀正常业务报错的风险，需要将其限定在严格匹配 `futures unfinished` 这一标准 Python 内置格式特征上。"
+  ],
+  "version": "1.0"
+}
+```
