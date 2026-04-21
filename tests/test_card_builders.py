@@ -1,13 +1,90 @@
 import json
 from typing import Optional
 
+from src.card.builder import CardBuilder
 from src.card.builders.core import CoreBuilder
 from src.card.builders.project import ProjectBuilder
 from src.card.builders.worktree import WorktreeBuilder
+from src.card.styles import UI_TEXT
 from src.card.builders.system import SystemBuilder
 from src.card.builders.deep import DeepBuilder
-from src.card.models import EngineCardState
+from src.card.models import (
+    EngineCardState,
+    EngineStatusEntry,
+    ModelOptionView,
+    ToolOptionView,
+    WorktreeBannerContext,
+)
 from src.project.context import ProjectContext
+
+
+def test_shorten_goal_for_banner_cleans_newlines():
+    """Verify that _shorten_goal_for_banner correctly cleans up newlines and excessive spaces."""
+    
+    # 1. 包含换行符的短文本
+    goal1 = "This is a\nmultiline\ngoal"
+    res1 = WorktreeBuilder._shorten_goal_for_banner(goal1)
+    assert res1 == "This is a multiline goal"
+    assert "\n" not in res1
+    
+    # 2. 包含连续空行及多余空白的文本
+    goal2 = "Task with \n\n  multiple \r\n\n blank lines"
+    res2 = WorktreeBuilder._shorten_goal_for_banner(goal2)
+    assert res2 == "Task with multiple blank lines"
+    
+    # 3. 超长且包含换行符的文本需要被清洗并正确截断
+    # 我们期望截断发生在单行化之后的第 max_len 处
+    goal3 = "A\n" * 40 + "B" * 50  # 长文本
+    res3 = WorktreeBuilder._shorten_goal_for_banner(goal3, max_len=80)
+    assert len(res3) == 80
+    assert res3.endswith("...")
+    assert "\n" not in res3
+    
+    # 4. 包含 Markdown 标记的文本应该被清洗，防止加粗语法被破坏
+    goal4 = "**Bold** and \n**newline**"
+    res4 = WorktreeBuilder._shorten_goal_for_banner(goal4)
+    assert res4 == "Bold and newline"
+    assert "**" not in res4
+    
+    # 5. 超长带有 Markdown 标记的截断测试
+    # "**" + "A"*80 + "**" 移除 "**" 后是 "A"*80
+    # 长度刚好等于 max_len，所以不应该被截断补省略号
+    goal5 = "**" + "A" * 80 + "**"
+    res5 = WorktreeBuilder._shorten_goal_for_banner(goal5, max_len=80)
+    assert len(res5) <= 80
+    assert res5 == "A" * 80
+    assert "**" not in res5
+    
+    # 6. 超过 max_len 带有 Markdown 标记的截断测试
+    goal6 = "**" + "A" * 85 + "**"
+    res6 = WorktreeBuilder._shorten_goal_for_banner(goal6, max_len=80)
+    assert len(res6) <= 80
+    assert res6.endswith("...")
+    assert "**" not in res6
+
+    # 7. 空文本
+    assert WorktreeBuilder._shorten_goal_for_banner(None) == ""
+    assert WorktreeBuilder._shorten_goal_for_banner("") == ""
+    assert WorktreeBuilder._shorten_goal_for_banner("   \n  ") == ""
+
+
+def test_tool_option_view_defaults():
+    opt = ToolOptionView(name="coco")
+
+    assert opt.name == "coco"
+    assert opt.description == ""
+    assert opt.is_default is False
+    assert opt.emoji == "🤖"
+    assert opt.disabled is False
+
+
+def test_model_option_view_defaults():
+    opt = ModelOptionView(name="gpt-5.2")
+
+    assert opt.name == "gpt-5.2"
+    assert opt.description == ""
+    assert opt.is_default is False
+    assert opt.display_name is None
 
 
 def test_core_builder_banner_element():
@@ -125,6 +202,44 @@ def test_deep_builder_warning_banner():
             break
     
     assert banner_found is True
+
+
+def test_worktree_auto_execute_banner_helper_basic():
+    """_build_auto_execute_banner_text 应拼接基础文案 + goal 摘要 + 工具摘要。"""
+
+    ctx = WorktreeBannerContext(
+        message=UI_TEXT["worktree_auto_executing_banner"],
+        goal="Refactor everything",
+        selected_items=[{"display_label": "Coco / gpt-5.1"}],
+        banner_kind="auto_execute",
+    )
+
+    banner = WorktreeBuilder._build_auto_execute_banner_text(ctx)
+
+    # 1. 原始自动执行文案
+    assert UI_TEXT["worktree_auto_executing_banner"] in banner
+    # 2. goal 摘要以「」包裹
+    assert "「Refactor everything" in banner
+    # 3. 工具/模型标签采用 "Coco · gpt-5.1" 形式
+    assert "Coco · gpt-5.1" in banner
+
+
+def test_worktree_auto_execute_banner_helper_empty_fields():
+    """空 goal / selected_items 时仅保留基础文案，不应报错。"""
+
+    ctx = WorktreeBannerContext(
+        message=UI_TEXT["worktree_auto_executing_banner"],
+        goal="",
+        selected_items=None,
+        banner_kind="auto_execute",
+    )
+
+    banner = WorktreeBuilder._build_auto_execute_banner_text(ctx)
+
+    # 仅包含基础自动执行文案，不包含 goal 行和 "使用：" 行
+    assert UI_TEXT["worktree_auto_executing_banner"] in banner
+    assert "「" not in banner
+    assert "使用：" not in banner
 
 
 def test_worktree_confirm_card_grouping():
@@ -285,3 +400,173 @@ def test_worktree_progress_card_title_empty_units():
     title, color = _get_progress_card_header([])
     assert "执行中" in title
     assert color == "blue"
+
+
+# ------------------------------------------------------------------
+# CardBuilder facade diagnostics delegates
+# ------------------------------------------------------------------
+
+
+def test_card_builder_diagnostics_task_board_empty():
+    """CardBuilder.build_task_board_content should show empty hint when no tasks exist."""
+
+    content = CardBuilder.build_task_board_content(tasks=[])
+
+    # DiagnosticsBuilder uses diag_no_active_tasks as the primary empty-state hint.
+    assert UI_TEXT["diag_no_active_tasks"] in content
+
+
+def test_card_builder_diagnostics_task_board_grouped_view():
+    """Grouped task board view should include project name, status emoji and message."""
+
+    class DummySpec:
+        def __init__(self, name: str, task_type: str) -> None:
+            self.name = name
+            self.task_type = task_type
+
+    class DummyState:
+        def __init__(self) -> None:
+            self.status = "running"
+            self.progress_percent = 42
+            self.progress_message = "syncing context"
+            self.run_id = "run-12345"
+            self.spec = DummySpec("Sync", "update")
+
+    class DummyProject:
+        def __init__(self, name: str) -> None:
+            self.project_name = name
+
+    class DummyProjectManager:
+        def get_project(self, pid: str) -> DummyProject:
+            return DummyProject(f"Project-{pid}")
+
+    state = DummyState()
+    groups = {"p1": [state]}
+
+    content = CardBuilder.build_task_board_content(
+        tasks=[state], groups=groups, project_manager=DummyProjectManager()
+    )
+
+    # Project name should be rendered from project manager
+    assert "Project-p1" in content
+    # Status emoji for "running" and progress message should be present
+    assert "🔄" in content
+    assert state.progress_message in content
+    # Run id short form should contain the tail of run_id
+    assert "run-12345" in content
+
+
+def test_card_builder_unified_status_content_basic():
+    """Unified status content should summarize engine entries with emojis."""
+
+    entries = [
+        EngineStatusEntry(
+            mode="Deep",
+            task_id="task-abcdef123456",
+            name="DeepRun",
+            status="running",
+            info="executing",
+        ),
+        EngineStatusEntry(
+            mode="Loop",
+            task_id="task-ffffeeee1111",
+            name="LoopRun",
+            status="failed",
+            info="error",
+        ),
+    ]
+
+    content = CardBuilder.build_unified_status_content(entries, include_done=False, project_name="DemoProject")
+
+    # Header should contain total count
+    assert str(len(entries)) in content
+    # Per-entry lines should include mode, name, info and mapped emojis
+    assert "Deep" in content and "Loop" in content
+    assert "DeepRun" in content and "LoopRun" in content
+    assert "executing" in content and "error" in content
+    assert "🔄" in content  # running
+    assert "❌" in content  # failed
+    # When include_done is False, the all-tasks hint should be appended
+    assert UI_TEXT["diag_status_all_hint"] in content
+
+
+def test_card_builder_unified_status_content_include_done_suppresses_hint():
+    """include_done=True should suppress the 'show all' hint."""
+
+    entries = [
+        EngineStatusEntry(
+            mode="Deep",
+            task_id="task-xyz",
+            name="DeepRun",
+            status="completed",
+            info="done",
+        )
+    ]
+
+    content = CardBuilder.build_unified_status_content(entries, include_done=True)
+    assert UI_TEXT["diag_status_all_hint"] not in content
+
+
+def test_card_builder_format_engine_status_info_deep_uses_status_when_no_duration():
+    """Deep mode with zero duration should fall back to raw status string."""
+
+    class Dummy:
+        def __init__(self) -> None:
+            self.status = "RUNNING"
+
+        def duration(self) -> float:
+            return 0.0
+
+    mode_label = UI_TEXT["diag_engine_deep"]
+    info = CardBuilder.format_engine_status_info(mode_label, Dummy())
+    assert info == "RUNNING"
+
+
+def test_card_builder_format_engine_status_info_loop_includes_iteration_and_criteria():
+    """Loop mode should include iteration index and criteria ratio when available."""
+
+    class Dummy:
+        def __init__(self) -> None:
+            self.status = "LOOP"
+            self.current_iteration = 3
+            self.satisfied_count = 1
+            self.total_criteria = 4
+
+        def duration(self) -> float:
+            return 0.0
+
+    mode_label = UI_TEXT["diag_engine_loop"]
+    info = CardBuilder.format_engine_status_info(mode_label, Dummy())
+
+    assert "3" in info
+    assert "1/4" in info
+
+
+def test_card_builder_format_engine_status_info_spec_includes_cycle_phase_and_criteria():
+    """Spec mode should include cycle number, phase label and criteria ratio when available."""
+
+    class Phase:
+        def __init__(self, display_name: str) -> None:
+            self.display_name = display_name
+
+    class Cycle:
+        def __init__(self) -> None:
+            self.phase = Phase("Plan")
+
+    class Dummy:
+        def __init__(self) -> None:
+            self.status = "SPEC"
+            self.current_cycle_number = 2
+            self.current_cycle = Cycle()
+            self.satisfied_count = 2
+            self.total_criteria = 5
+
+        def duration(self) -> float:
+            return 0.0
+
+    mode_label = UI_TEXT["diag_engine_spec"]
+    info = CardBuilder.format_engine_status_info(mode_label, Dummy())
+
+    assert "2" in info
+    assert "Plan" in info
+    assert "2/5" in info

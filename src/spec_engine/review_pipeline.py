@@ -34,7 +34,7 @@ def run_review_pipeline(
     perspectives: Optional[List[ReviewPerspective]] = None,
     agent_type: str = "coco",
     model_name: Optional[str] = None,
-    max_parallel: int = 5,
+    max_parallel: Optional[int] = None,
     min_per_worker_s: float = 15.0,
 ) -> List[PerspectiveOutcome]:
     """Assemble and run the high-performance parallel review pipeline.
@@ -52,6 +52,12 @@ def run_review_pipeline(
     # 2. Prepare bindings (Step 4)
     if not perspectives:
         perspectives = list(ReviewPerspective)
+
+    from ..config import get_settings
+    settings = get_settings()
+    if max_parallel is None:
+        max_parallel = int(getattr(settings, "spec_review_max_parallel", 2) or 2)
+    max_parallel = max(1, max_parallel)
 
     bindings: List[WorkerBinding] = []
     cwd = artifacts.cwd or "."

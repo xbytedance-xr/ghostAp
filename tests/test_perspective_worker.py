@@ -224,17 +224,6 @@ def test_run_workers_parallel_timeout():
     
     assert len(outcomes) == 1
     assert not outcomes[0].review.passed
-    assert outcomes[0].error == "操作超时（1/1 个视角未完成）"
-    assert outcomes[0].review.suggestions == ["审查异常：操作超时（1/1 个视角未完成）"]
-
-
-def test_run_workers_parallel_timeout_regex_coverage():
-    from src.spec_engine.perspective_worker import _TIMEOUT_ERR_RE
-    s1 = "操作超时 (4 of 5 futures unfinished)"
-    s2 = "操作超时 (4 (of 5) futures unfinished)"
-    s3 = "TimeoutError: 10 (of 12) futures unfinished"
-    
-    assert _TIMEOUT_ERR_RE.sub('', s1).strip(" :") == "操作超时"
-    assert _TIMEOUT_ERR_RE.sub('', s2).strip(" :") == "操作超时"
-    assert _TIMEOUT_ERR_RE.sub('', s3).strip(" :") == "TimeoutError"
+    assert outcomes[0].error == "当前系统较繁忙，操作已超时（1/1 个视角未完成）"
+    assert outcomes[0].review.suggestions == ["审查异常：当前系统较繁忙，操作已超时（1/1 个视角未完成）"]
 

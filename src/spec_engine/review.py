@@ -374,9 +374,20 @@ def _conduct_review_pipeline(
 
     import time as _time
 
-    # Budget = 2× base review timeout (parallel workers share one wall-clock window).
+    # Budget: Compute total budget by considering concurrency limit.
     base_timeout = int(getattr(settings, "spec_review_timeout", 120) or 120)
-    budget_seconds = float(base_timeout * 2)
+    max_parallel = max(1, int(getattr(settings, "spec_review_max_parallel", 2) or 2))
+    
+    # 默认使用 5 个视角。
+    perspective_count = 5 
+    
+    # 如果允许的并发度低于视角的数量，则至少需要排队分批执行。
+    # 为了避免排队引发 timeout，预估批次数 multiplier = ceil(perspective_count / max_parallel)
+    import math
+    multiplier = math.ceil(perspective_count / max_parallel)
+    
+    # 我们给予一定冗余（默认原先是 * 2，现在可以动态放大预估值）。
+    budget_seconds = float(base_timeout * max(2, multiplier + 1))
     budget = CycleBudget(total_seconds=budget_seconds, label=f"spec_review_c{cycle}")
 
     circuit.last_review_failure_diag = None
@@ -409,13 +420,17 @@ def _conduct_review_pipeline(
             # Workers failed individually but pipeline didn't throw.
             # Record diagnostics so the engine can persist them to the cycle.
             failed_workers = [o for o in outcomes if o.error and o.error != "lint_gate_short_circuit"]
+            err_type_val = failed_workers[0].error if failed_workers else "unknown"
+            if err_type_val and ("个视角未完成" in err_type_val or "futures unfinished" in err_type_val):
+                err_type_val = "当前系统较繁忙，操作已超时"
+
             circuit.last_review_failure_diag = normalize_review_diagnostics({
                 "phase": "review",
                 "role": "pipeline_parallel",
                 "cycle": int(cycle or 0),
                 "decision": "review_failed_continue",
                 "fail_reason": "worker_errors",
-                "err_type": failed_workers[0].error if failed_workers else "unknown",
+                "err_type": err_type_val,
                 "err_repr": "; ".join(o.error or "" for o in failed_workers[:3]),
                 "error_text": f"{len(failed_workers)}/{len(outcomes)} workers failed",
                 "cycle_number": int(cycle or 0),

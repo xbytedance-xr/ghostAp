@@ -317,9 +317,7 @@ class DeepHandler(BaseEngineHandler):
         if not engines:
             self.reply_error(
                 message_id,
-                UI_TEXT.get("deep_no_active_tasks", "当前没有正在执行的 Deep Agent 任务").format(
-                    engine_prefix="Deep Agent"
-                ),
+                UI_TEXT["deep_no_active_tasks"],
                 title="无活动任务",
             )
             return
@@ -330,9 +328,7 @@ class DeepHandler(BaseEngineHandler):
             except Exception as ex:
                 logger.debug("停止deep engine失败: %s", get_error_detail(ex))
 
-        msg = UI_TEXT.get(
-            "deep_stop_all_success", "🛑 已发送停止信号：{count} 个 Deep Agent 任务将在当前步骤完成后停止"
-        ).format(count=len(engines))
+        msg = UI_TEXT["deep_stop_all_success"].format(count=len(engines))
         self.reply_message(message_id, msg)
 
     # ------------------------------------------------------------------

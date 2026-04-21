@@ -21,7 +21,6 @@ contract + parallel runner.
 from __future__ import annotations
 
 import logging
-import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -35,8 +34,6 @@ from .prompts import build_single_perspective_review_prompt
 from .review_artifacts import ReviewArtifacts
 
 logger = logging.getLogger(__name__)
-
-_TIMEOUT_ERR_RE = re.compile(r'[\(\[【\s\-]*\d+\s*\(?of\s*\d+\)?\s*futures\s*unfinished[\)\]】\.\s]*', flags=re.IGNORECASE)
 
 __all__ = [
     "PerspectiveOutcome",
@@ -237,21 +234,15 @@ def run_workers_parallel(
                             error=err,
                         )
                     )
-        except TimeoutError as e:
+        except TimeoutError:
             # Some futures did not complete within per_worker_timeout.
             # Synthesize FAIL outcomes for all unfinished bindings.
             total = len(future_to_binding)
             unprocessed_futures = set(future_to_binding.keys()) - processed_futures
             unfinished = len(unprocessed_futures)
-            base_err = get_error_detail(e) or "操作超时"
-            # Extract the actual error message without the ' (X of Y futures unfinished)' part
-            # because the concurrent.futures.TimeoutError str representation includes this
-            # technical detail which we want to hide from the user.
-            base_err = _TIMEOUT_ERR_RE.sub('', base_err).strip(" :.()[]【】-")
             
-            # 明确告知用户可能是并发限速或排队所致
-            if "操作超时" in base_err or not base_err:
-                base_err = "操作超时 (可能受限于大模型并发限流或内部排队)"
+            # Use domain semantics, disregarding the stdlib's internal format
+            base_err = "当前系统较繁忙，操作已超时"
 
             err = f"{base_err}（{unfinished}/{total} 个视角未完成）"
             for fut in unprocessed_futures:

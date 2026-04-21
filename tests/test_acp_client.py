@@ -38,6 +38,7 @@ def test_acp_manager_retries_start_failure(monkeypatch, caplog):
     )
 
     caplog.set_level(logging.WARNING)
+    # 默认路径仍然支持「少参数」构造
     m = mgr.ACPSessionManager("coco", session_timeout=999999)
     s = m.start_session("chat1", cwd=".", startup_timeout=0.01)
     assert s.session_id == "s_ok"

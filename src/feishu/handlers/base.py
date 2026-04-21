@@ -13,8 +13,9 @@ import json
 import logging
 import os
 import uuid
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional, Any
 
+from ...card.styles import UI_TEXT
 from ..im_client import FeishuIMClient
 from ..message_formatter import FeishuMessageFormatter as fmt
 from ...utils.engine_identity import resolve_engine_identity
@@ -73,12 +74,15 @@ class BaseHandler:
         self,
         chat_id: str,
         exc: Exception | str,
-        title: str = "操作失败",
+        title: str = "",
         origin_message_id: Optional[str] = None,
         reply_in_thread: Optional[bool] = None,
     ):
         """Send a structured error card (schema 2.0) with QuickActions if available."""
         from ...card import CardBuilder
+
+        if not title:
+            title = UI_TEXT["system_error_title"]
 
         try:
             _, card_json_str = CardBuilder.build_error_card(exc, title=title)
@@ -103,7 +107,7 @@ class BaseHandler:
         self,
         message_id: str,
         exc: Exception | str,
-        title: str = "操作失败",
+        title: str = "",
         chat_id: Optional[str] = None,
     ):
         """Convenience wrapper for send_error_card to reply to a message."""
@@ -557,7 +561,7 @@ class BaseHandler:
             parts.append(f"run={run_id}")
         if not parts:
             return ""
-        return "🔗 关联：" + " • ".join(parts)
+        return UI_TEXT["system_ref_note_prefix"] + " • ".join(parts)
 
     # ------------------------------------------------------------------
     # Unified context utilities
@@ -642,8 +646,8 @@ class BaseHandler:
             try:
                 msg_type, card_content = CardBuilder.build_engine_card(
                     project=project,
-                    title="⏸️ 限速等待",
-                    content=f"🔄 API 限速触发，自动等待 {wait_seconds} 秒后恢复...\n\n无需操作，任务将自动继续。",
+                    title=UI_TEXT["system_rate_limit_title"],
+                    content=UI_TEXT["system_rate_limit_content"].format(wait_seconds=wait_seconds),
                     engine_name=engine_name,
                     show_buttons=False,
                 )

@@ -40,6 +40,21 @@ class TestThreadContext:
         ctx = ThreadContext(thread_root_id="abc123", chat_id="chat1", project_id="proj1")
         assert ctx.session_key_suffix == "t:abc123"
 
+    def test_session_key_suffix_roundtrip_with_acp_manager(self):
+        """ThreadContext.session_key_suffix 应与 ACPSessionManager 的编码/解析协议对齐。"""
+
+        from src.acp.manager import ACPSessionManager
+
+        ctx = ThreadContext(thread_root_id="thread-xyz", chat_id="chat-1", project_id="proj-1")
+
+        # 通过 ACPSessionManager 生成带线程维度的 session_key
+        key = ACPSessionManager._session_key(ctx.chat_id, ctx.project_id, thread_id=ctx.thread_root_id)
+        chat_id, project_id, thread_id = ACPSessionManager._parse_session_key(key)
+
+        assert chat_id == ctx.chat_id
+        assert project_id == ctx.project_id
+        assert thread_id == ctx.thread_root_id
+
     def test_to_dict(self):
         ctx = ThreadContext(
             thread_root_id="root1",

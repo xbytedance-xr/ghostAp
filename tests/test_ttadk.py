@@ -2006,10 +2006,11 @@ class TestTTADKTitleSuffix:
 class TestResolveTitleTTADKWithToolModel:
     def test_with_project_tool_model(self):
         from src.card.shared import resolve_title_and_template
+        from src.mode.manager import InteractionMode
 
         title, template = resolve_title_and_template(
-            "myProject", False, False,
-            is_ttadk_mode=True, ttadk_tool_name="claude", ttadk_model_name="glm-5",
+            "myProject",
+            mode=InteractionMode.TTADK, ttadk_tool_name="claude", ttadk_model_name="glm-5",
         )
         assert "TTADK" in title
         assert "claude" in title
@@ -2018,20 +2019,22 @@ class TestResolveTitleTTADKWithToolModel:
 
     def test_with_project_tool_only(self):
         from src.card.shared import resolve_title_and_template
+        from src.mode.manager import InteractionMode
 
         title, _ = resolve_title_and_template(
-            "myProject", False, False,
-            is_ttadk_mode=True, ttadk_tool_name="gemini",
+            "myProject",
+            mode=InteractionMode.TTADK, ttadk_tool_name="gemini",
         )
         assert "TTADK · gemini" in title
         assert "myProject" in title
 
     def test_no_project_with_tool_model(self):
         from src.card.shared import resolve_title_and_template
+        from src.mode.manager import InteractionMode
 
         title, _ = resolve_title_and_template(
-            None, False, False,
-            is_ttadk_mode=True, ttadk_tool_name="codex", ttadk_model_name="gpt-5.2",
+            None,
+            mode=InteractionMode.TTADK, ttadk_tool_name="codex", ttadk_model_name="gpt-5.2",
         )
         assert "TTADK" in title
         assert "codex" in title
@@ -2039,17 +2042,19 @@ class TestResolveTitleTTADKWithToolModel:
 
     def test_no_project_no_tool(self):
         from src.card.shared import resolve_title_and_template
+        from src.mode.manager import InteractionMode
 
         title, _ = resolve_title_and_template(
-            None, False, False, is_ttadk_mode=True,
+            None, mode=InteractionMode.TTADK,
         )
         assert "TTADK" in title
 
     def test_backward_compatible_no_ttadk_params(self):
         from src.card.shared import resolve_title_and_template
+        from src.mode.manager import InteractionMode
 
         title, _ = resolve_title_and_template(
-            "ghostAp", False, False, is_ttadk_mode=True,
+            "ghostAp", mode=InteractionMode.TTADK,
         )
         assert title == "🎮 ghostAp · TTADK"
 

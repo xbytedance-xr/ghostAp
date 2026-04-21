@@ -1,4 +1,5 @@
 from typing import TYPE_CHECKING, Optional
+from src.mode.manager import InteractionMode
 
 from ..project.context import ProjectContext
 from .builders.core import CoreBuilder
@@ -43,9 +44,12 @@ class CardBuilder:
 
     @staticmethod
     def _build_header_title(
-        project: Optional[ProjectContext], is_coco_mode: bool = False, is_claude_mode: bool = False
+        project: Optional[ProjectContext],
+        mode: Optional[InteractionMode] = None,
     ) -> str:
-        return CoreBuilder._build_header_title(project, is_coco_mode, is_claude_mode)
+        return CoreBuilder._build_header_title(
+            project, mode=mode
+        )
 
     @staticmethod
     def _build_directory_element(project: Optional[ProjectContext], working_dir: Optional[str] = None) -> dict:
@@ -53,9 +57,12 @@ class CardBuilder:
 
     @staticmethod
     def _build_footer_buttons(
-        project: Optional[ProjectContext], is_coco_mode: bool = False, is_claude_mode: bool = False
+        project: Optional[ProjectContext],
+        mode: Optional[InteractionMode] = None,
     ) -> list[dict]:
-        return CoreBuilder._build_footer_buttons(project, is_coco_mode, is_claude_mode)
+        return CoreBuilder._build_footer_buttons(
+            project, mode=mode
+        )
 
     @staticmethod
     def _build_footer_note(project: Optional[ProjectContext], working_dir: Optional[str] = None) -> Optional[dict]:
@@ -86,9 +93,7 @@ class CardBuilder:
         content: str,
         working_dir: Optional[str] = None,
         show_buttons: bool = True,
-        is_coco_mode: bool = False,
-        is_claude_mode: bool = False,
-        is_ttadk_mode: bool = False,
+        mode: Optional[InteractionMode] = None,
         extra_buttons: Optional[list[dict]] = None,
         footer: Optional[str] = None,
         image_keys: Optional[list[str]] = None,
@@ -99,12 +104,10 @@ class CardBuilder:
             content,
             working_dir,
             show_buttons,
-            is_coco_mode,
-            is_claude_mode,
-            is_ttadk_mode,
-            extra_buttons,
-            footer,
-            image_keys,
+            mode=mode,
+            extra_buttons=extra_buttons,
+            footer=footer,
+            image_keys=image_keys,
         )
 
     @staticmethod
@@ -179,10 +182,128 @@ class CardBuilder:
         return ProjectBuilder.build_ttadk_resume_card(project)
 
     @staticmethod
+    def build_current_project_card(project: ProjectContext, global_working_dir: str) -> tuple[str, str]:
+        return ProjectBuilder.build_current_project_card(project, global_working_dir)
+
+    @staticmethod
+    def build_project_status_report_card(project: ProjectContext, global_working_dir: str) -> tuple[str, str]:
+        return ProjectBuilder.build_project_status_report_card(project, global_working_dir)
+
+    @staticmethod
+    def build_project_switch_card(project: ProjectContext, context_info: str = "") -> tuple[str, str]:
+        return ProjectBuilder.build_project_switch_card(project, context_info)
+
+    @staticmethod
     def build_project_created_card(project: ProjectContext) -> tuple[str, str]:
         return ProjectBuilder.build_project_created_card(project)
 
+    @staticmethod
+    def build_project_not_found_content(name: str, suggestions: Optional[list[ProjectContext]] = None) -> str:
+        return ProjectBuilder.build_project_not_found_content(name, suggestions=suggestions)
+
+    @staticmethod
+    def build_restore_info_content(restore_info: dict) -> str:
+        return ProjectBuilder.build_restore_info_content(restore_info)
+
+    @staticmethod
+    def build_project_switch_notification_card(project: ProjectContext, restore_info: dict) -> tuple[str, str]:
+        return ProjectBuilder.build_project_switch_notification_card(project, restore_info)
+
     # --- System Delegates ---
+
+    @staticmethod
+    def build_tools_list_card(
+        tools: list[dict],
+        project: Optional[ProjectContext] = None,
+    ) -> tuple[str, str]:
+        return SystemBuilder.build_tools_list_card(tools, project)
+
+    @staticmethod
+    def build_tools_status_card(
+        tools: list[dict],
+        active_sessions: dict[str, dict] = None,
+        project: Optional[ProjectContext] = None,
+    ) -> tuple[str, str]:
+        return SystemBuilder.build_tools_status_card(tools, active_sessions, project)
+
+    @staticmethod
+    def build_directory_change_card(
+        project: Optional[ProjectContext],
+        path: str,
+        success: bool = True,
+    ) -> Optional[tuple[str, str]]:
+        return SystemBuilder.build_directory_change_card(project, path, success)
+
+    @staticmethod
+    def build_ttadk_refresh_result_card(tool: str, result: any) -> tuple[str, str]:
+        return SystemBuilder.build_ttadk_refresh_result_card(tool, result)
+
+    @staticmethod
+    def build_switching_status_card(tool: str, model: str) -> tuple[str, str]:
+        return SystemBuilder.build_switching_status_card(tool, model)
+
+    @staticmethod
+    def build_ttadk_info_content(
+        current_tool: Optional[str],
+        current_model: Optional[str],
+        tool_desc: dict[str, str],
+        model_desc: dict[str, str],
+    ) -> str:
+        return SystemBuilder.build_ttadk_info_content(current_tool, current_model, tool_desc, model_desc)
+
+    @staticmethod
+    def build_coco_status_content(
+        current_model: Optional[str],
+        models: list,
+    ) -> str:
+        return SystemBuilder.build_coco_status_content(current_model, models)
+
+    # --- Diagnostics Delegates ---
+
+    @staticmethod
+    def build_task_board_content(
+        tasks: list,
+        mode_display: str = "",
+        groups: Optional[dict] = None,
+        project_manager: any = None,
+    ) -> str:
+        from .builders.diagnostics import DiagnosticsBuilder
+        return DiagnosticsBuilder.build_task_board_content(tasks, mode_display, groups, project_manager)
+
+    @staticmethod
+    def build_unified_status_content(
+        entries: list,
+        include_done: bool = False,
+        project_name: str = ""
+    ) -> str:
+        from .builders.diagnostics import DiagnosticsBuilder
+        return DiagnosticsBuilder.build_unified_status_content(entries, include_done, project_name)
+
+    @staticmethod
+    def format_engine_status_info(mode: str, p: any) -> str:
+        from .builders.diagnostics import DiagnosticsBuilder
+        return DiagnosticsBuilder.format_engine_status_info(mode, p)
+
+    @staticmethod
+    def build_message_trace_content(data: dict) -> str:
+        from .builders.diagnostics import DiagnosticsBuilder
+        return DiagnosticsBuilder.build_message_trace_content(data)
+
+    @staticmethod
+    def build_task_detail_content(state: any) -> str:
+        from .builders.diagnostics import DiagnosticsBuilder
+        return DiagnosticsBuilder.build_task_detail_content(state)
+
+    @staticmethod
+    def build_diff_report_content(
+        project: any,
+        from_v: any,
+        to_v: any,
+        entries: list,
+        show_current: bool = False,
+    ) -> str:
+        from .builders.diagnostics import DiagnosticsBuilder
+        return DiagnosticsBuilder.build_diff_report_content(project, from_v, to_v, entries, show_current)
 
     @staticmethod
     def build_error_card(
@@ -269,9 +390,9 @@ class CardBuilder:
         project: Optional[ProjectContext] = None,
         category: str = "main",
         working_dir: Optional[str] = None,
-        current_mode_str: str = "智能模式",
+        current_mode: any = None,
     ) -> tuple[str, str]:
-        return SystemBuilder.build_help_card(project, category, working_dir, current_mode_str)
+        return SystemBuilder.build_help_card(project, category, working_dir, current_mode)
 
     @staticmethod
     def _build_help_card_cached(
@@ -368,62 +489,6 @@ class CardBuilder:
             project, title, content, history_buttons, page, has_next, deep_project_id, engine_name
         )
 
-    @staticmethod
-    def build_worktree_result_card(
-        selected_items: list,
-        unit_summary_lines: list[str],
-        project_id: Optional[str] = None,
-        merge_entry_ready: bool = False,
-        message: str = "",
-    ) -> tuple[str, str]:
-        import json
-
-        elements = [
-            CoreBuilder._build_content_element(
-                f"**🔀 工作单元结果**\n\n{message}\n\n" + "\n".join(unit_summary_lines)
-            ),
-        ]
-        if merge_entry_ready:
-            elements.append(
-                {
-                    "tag": "action",
-                    "actions": [
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "查看集成项"},
-                            "type": "primary",
-                            "value": {
-                                "action": "show_worktree_merge_entry",
-                                "project_id": project_id or "",
-                            },
-                        }
-                    ],
-                }
-            )
-        card = {
-            "config": {"wide_screen_mode": True},
-            "header": {"title": {"tag": "plain_text", "content": "工作单元结果"}, "template": "turquoise"},
-            "elements": elements,
-        }
-        return "interactive", json.dumps(card, ensure_ascii=False)
-
-    @staticmethod
-    def build_worktree_merge_entry_card(
-        merge_notes: list[str],
-        project_id: Optional[str] = None,
-        base_branch: str = "main",
-    ) -> tuple[str, str]:
-        import json
-
-        content = f"**🔀 待集成项**\n\n目标分支: `{base_branch}`\n\n" + "\n".join(merge_notes)
-        elements = [CoreBuilder._build_content_element(content)]
-        card = {
-            "config": {"wide_screen_mode": True},
-            "header": {"title": {"tag": "plain_text", "content": "待集成项"}, "template": "purple"},
-            "elements": elements,
-        }
-        return "interactive", json.dumps(card, ensure_ascii=False)
-
     # --- Worktree Selection / Execution Delegates ---
 
     build_worktree_tool_select_card = staticmethod(WorktreeBuilder.build_worktree_tool_select_card)
@@ -431,3 +496,5 @@ class CardBuilder:
     build_worktree_confirm_card = staticmethod(WorktreeBuilder.build_worktree_confirm_card)
     build_worktree_progress_card = staticmethod(WorktreeBuilder.build_worktree_progress_card)
     build_worktree_cleanup_card = staticmethod(WorktreeBuilder.build_worktree_cleanup_card)
+    build_worktree_result_card = staticmethod(WorktreeBuilder.build_worktree_result_card)
+    build_worktree_merge_entry_card = staticmethod(WorktreeBuilder.build_worktree_merge_entry_card)

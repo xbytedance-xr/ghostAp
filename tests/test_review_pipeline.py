@@ -78,7 +78,7 @@ def test_pipeline_lint_gate_no_short_circuit_when_clean(artifacts, budget):
          patch("src.spec_engine.review_pipeline.EphemeralReviewSession") as mock_eph:
         mock_eph.return_value.__enter__.return_value = mock_session
         outcomes = run_review_pipeline(
-            artifacts, budget, perspectives=[ReviewPerspective.ARCHITECT]
+            artifacts, budget, perspectives=[ReviewPerspective.ARCHITECT], max_parallel=2
         )
         assert len(outcomes) == 1
         assert outcomes[0].error is None
@@ -134,7 +134,7 @@ def test_pipeline_full_parallel_run(artifacts, budget):
          patch("src.spec_engine.review_pipeline.EphemeralReviewSession", side_effect=_fake_ephemeral):
 
         perspectives = [ReviewPerspective.ARCHITECT, ReviewPerspective.PRODUCT]
-        outcomes = run_review_pipeline(artifacts, budget, perspectives=perspectives)
+        outcomes = run_review_pipeline(artifacts, budget, perspectives=perspectives, max_parallel=2)
 
         assert len(outcomes) == 2
         # Outcomes are sorted by ReviewPerspective enum order
@@ -175,7 +175,7 @@ def test_pipeline_inject_lint_hints(artifacts, budget):
         mock_eph.return_value.__enter__.return_value = mock_session
 
         outcomes = run_review_pipeline(
-            artifacts, budget, perspectives=[ReviewPerspective.ARCHITECT]
+            artifacts, budget, perspectives=[ReviewPerspective.ARCHITECT], max_parallel=2
         )
 
         assert len(outcomes) == 1
@@ -245,7 +245,7 @@ def test_pipeline_session_failure_isolated(artifacts, budget):
          patch("src.spec_engine.review_pipeline.EphemeralReviewSession", side_effect=_flaky_ephemeral):
 
         perspectives = [ReviewPerspective.ARCHITECT, ReviewPerspective.PRODUCT]
-        outcomes = run_review_pipeline(artifacts, budget, perspectives=perspectives)
+        outcomes = run_review_pipeline(artifacts, budget, perspectives=perspectives, max_parallel=2)
 
         assert len(outcomes) == 2
         # The failed one should have an error

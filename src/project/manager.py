@@ -70,14 +70,21 @@ class ProjectManager:
         self._color_index += 1
         return theme.color, theme.emoji
 
+    @staticmethod
+    def generate_id(name: str) -> str:
+        return name.lower().replace(" ", "_").replace("-", "_")
+
     def create_project(
         self,
-        project_id: str,
+        project_id: Optional[str],
         project_name: str,
         root_path: str,
         chat_id: Optional[str] = None,
     ) -> tuple[bool, str, Optional[ProjectContext]]:
         with self._lock:
+            if not project_id:
+                project_id = self.generate_id(project_name)
+
             if project_id in self._projects:
                 return False, f"项目 {project_id} 已存在", None
 
@@ -147,7 +154,7 @@ class ProjectManager:
         if not basename:
             basename = "root"
 
-        project_id = basename.lower().replace(" ", "_").replace("-", "_")
+        project_id = self.generate_id(basename)
         original_id = project_id
         counter = 1
         while project_id in self._projects:

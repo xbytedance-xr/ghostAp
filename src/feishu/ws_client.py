@@ -37,6 +37,7 @@ except Exception:  # pragma: no cover
     P2ImMessageReceiveV1 = Any  # type: ignore
 
 from ..acp.manager import ACPSessionManager
+from ..acp.telemetry import build_idle_health_config_for_manager
 from ..agent.intent_recognizer import IntentRecognizer, IntentResult, IntentType, TaskStep
 from ..card import CardBuilder
 from ..card.streaming import StreamingCardManager
@@ -59,6 +60,7 @@ from ..utils.circuit_breaker import CircuitBreaker, CircuitBreakerOpenException
 from ..utils.errors import get_error_detail, log_exception
 from ..utils.rate_limit import RateLimiter, RateLimitExceededException
 from ..utils.trace import TraceContext, configure_logging_with_trace
+from ..worktree_engine.manager import WorktreeManager
 from .action_dispatcher import ActionDispatcher
 from .emoji import EmojiReaction
 from .handler_context import HandlerContext
@@ -159,12 +161,53 @@ class FeishuWSClient:
         self._client: Optional[lark.ws.Client] = None
         self._closed = False
         self._api_client: Optional[lark.Client] = None
-        self._coco_manager = ACPSessionManager("coco", session_timeout=self.settings.coco_session_timeout, keepalive_interval=self.settings.acp_keepalive_interval, idle_healthcheck_s=self.settings.acp_session_idle_healthcheck_s)
-        self._claude_manager = ACPSessionManager("claude", session_timeout=self.settings.claude_session_timeout, keepalive_interval=self.settings.acp_keepalive_interval, idle_healthcheck_s=self.settings.acp_session_idle_healthcheck_s)
-        self._aiden_manager = ACPSessionManager("aiden", session_timeout=self.settings.coco_session_timeout, keepalive_interval=self.settings.acp_keepalive_interval, idle_healthcheck_s=self.settings.acp_session_idle_healthcheck_s)
-        self._codex_manager = ACPSessionManager("codex", session_timeout=self.settings.coco_session_timeout, keepalive_interval=self.settings.acp_keepalive_interval, idle_healthcheck_s=self.settings.acp_session_idle_healthcheck_s)
-        self._gemini_manager = ACPSessionManager("gemini", session_timeout=self.settings.coco_session_timeout, keepalive_interval=self.settings.acp_keepalive_interval, idle_healthcheck_s=self.settings.acp_session_idle_healthcheck_s)
-        self._ttadk_manager = ACPSessionManager("ttadk", session_timeout=self.settings.coco_session_timeout, keepalive_interval=self.settings.acp_keepalive_interval, idle_healthcheck_s=self.settings.acp_session_idle_healthcheck_s)
+
+        # ACPSessionManager: IdleHealth 相关协作者统一通过 IdleHealthConfig 注入，
+        # 避免在构造函数中直接依赖具体 Telemetry/Service 实现。
+        idle_health_cfg = build_idle_health_config_for_manager()
+
+        self._coco_manager = ACPSessionManager(
+            "coco",
+            session_timeout=self.settings.coco_session_timeout,
+            keepalive_interval=self.settings.acp_keepalive_interval,
+            idle_healthcheck_s=self.settings.acp_session_idle_healthcheck_s,
+            idle_health_config=idle_health_cfg,
+        )
+        self._claude_manager = ACPSessionManager(
+            "claude",
+            session_timeout=self.settings.claude_session_timeout,
+            keepalive_interval=self.settings.acp_keepalive_interval,
+            idle_healthcheck_s=self.settings.acp_session_idle_healthcheck_s,
+            idle_health_config=idle_health_cfg,
+        )
+        self._aiden_manager = ACPSessionManager(
+            "aiden",
+            session_timeout=self.settings.coco_session_timeout,
+            keepalive_interval=self.settings.acp_keepalive_interval,
+            idle_healthcheck_s=self.settings.acp_session_idle_healthcheck_s,
+            idle_health_config=idle_health_cfg,
+        )
+        self._codex_manager = ACPSessionManager(
+            "codex",
+            session_timeout=self.settings.coco_session_timeout,
+            keepalive_interval=self.settings.acp_keepalive_interval,
+            idle_healthcheck_s=self.settings.acp_session_idle_healthcheck_s,
+            idle_health_config=idle_health_cfg,
+        )
+        self._gemini_manager = ACPSessionManager(
+            "gemini",
+            session_timeout=self.settings.coco_session_timeout,
+            keepalive_interval=self.settings.acp_keepalive_interval,
+            idle_healthcheck_s=self.settings.acp_session_idle_healthcheck_s,
+            idle_health_config=idle_health_cfg,
+        )
+        self._ttadk_manager = ACPSessionManager(
+            "ttadk",
+            session_timeout=self.settings.coco_session_timeout,
+            keepalive_interval=self.settings.acp_keepalive_interval,
+            idle_healthcheck_s=self.settings.acp_session_idle_healthcheck_s,
+            idle_health_config=idle_health_cfg,
+        )
         self._intent_recognizer = IntentRecognizer()
         self._message_cache = MessageCache(ttl=300, max_size=1000, cleanup_interval=60)
         self._card_event_cache = MessageCache(ttl=300, max_size=1000, cleanup_interval=60)
@@ -1268,14 +1311,14 @@ class FeishuWSClient:
 
     @staticmethod
     def _is_worktree_awaiting_goal(project: "ProjectContext") -> bool:
-        """Return True when worktree mode is enabled and units are ready for a goal."""
+        """Return True when worktree journey is awaiting a goal.
+
+        具体判定逻辑下沉到 ``WorktreeManager.is_awaiting_goal``，避免在
+        WS 层拼装布尔条件，统一依赖 WorktreeRuntimeState / journey 状态机。
+        """
+
         state = getattr(project, "worktree_state", None)
-        if state is None or not getattr(state, "enabled", False):
-            return False
-        units = getattr(state, "units", None)
-        if not units:
-            return False
-        return any(getattr(u, "status", "") == "ready" for u in units)
+        return WorktreeManager.is_awaiting_goal(state)
 
     @staticmethod
     def _mode_to_context_source(mode) -> ContextSourceMode:

@@ -7,24 +7,42 @@ suffix is used for backward compatibility.
 
 from __future__ import annotations
 
-import logging
 import threading
 import time
-from typing import Callable, Optional
+import logging
+from typing import Callable, Optional, Protocol, TYPE_CHECKING
 
 from ..agent_session import SyncClaudeCLISession, SyncSession, SyncTTADKCLISession
 from .. import agent_session as _agent_session_mod
 from ..config import get_settings
 from ..utils.errors import get_error_detail
+from .helper import SessionKeyCodec
 from .diagnostics import (
     format_startup_failure_log_line,
     get_diagnostics_config,
     redact_text,
     truncate_text,
 )
+from .telemetry import (
+    IdleHealthTelemetryContext,
+    TelemetryAdapter,
+    DefaultSessionTelemetryAdapter,
+    IdleHealthConfig,
+    build_idle_health_config_for_manager,
+)
 from .sync_adapter import SyncACPSession, build_startup_diagnostics
 
 logger = logging.getLogger(__name__)
+
+
+if TYPE_CHECKING:
+    # 仅用于类型检查：避免在运行时将内部协议/实现暴露为公开 API。
+    from .telemetry import _IdleHealthTelemetry as IdleHealthTelemetry
+    from .telemetry import _IdleHealthServiceProtocol as IdleHealthServiceProtocol
+
+
+# NOTE: 用于控制 `_format_seconds_ago` 的一次性告警，仅在首次兼容调用时输出。
+_warned_deprecated_format_seconds_ago = False
 
 # Preserve the original TTADK CLI session class so that we can
 # distinguish between tests patching src.acp.manager.SyncTTADKCLISession
@@ -177,7 +195,13 @@ def _build_startup_diagnostics(
         }
 
 
-_DEFAULT_PROJECT = "_default_"
+# `SessionKeyCodec` 的默认 project 占位符应作为 session_key 协议的 SSOT；
+# 为保持历史常量名稳定，这里仅作为引用别名保留。
+_DEFAULT_PROJECT = SessionKeyCodec.DEFAULT_PROJECT_PLACEHOLDER
+
+# 标准化后的 session_key 解析结果类型：
+# (chat_id, project_id, thread_id)
+SessionKeyParts = tuple[str, Optional[str], Optional[str]]
 
 
 class ACPSessionManager:
@@ -194,7 +218,36 @@ class ACPSessionManager:
         session_starter: Optional[Callable[..., tuple[SyncSession, str, dict]]] = None,
         keepalive_interval: int = 0,
         idle_healthcheck_s: float = 120.0,
+        idle_health_telemetry: IdleHealthTelemetry | None = None,
+        session_telemetry: TelemetryAdapter | None = None,
+        idle_health_service: IdleHealthServiceProtocol | None = None,
+        idle_health_config: IdleHealthConfig | None = None,
     ):
+        """Initialize a per-agent ACPSessionManager instance.
+
+        IdleHealth 相关参数使用约定：
+
+        - **新代码唯一推荐入口**：优先通过 ``idle_health_config=`` 注入
+          :class:`IdleHealthConfig` 实例。业务侧通常应调用
+          :func:`src.acp.telemetry.build_idle_health_config_for_manager` 构造该
+          配置对象，并在需要时通过 ``session_telemetry=...`` 覆盖会话级
+          Telemetry；
+        - ``idle_health_config``: 推荐的 IdleHealth 协作者注入入口；调用方应优先
+          通过 :class:`IdleHealthConfig`（或
+          :func:`src.acp.telemetry.build_idle_health_config_for_manager` 的返回值）
+          集中声明 IdleHealthTelemetry / SessionTelemetry / IdleHealthService 等协作
+          者，以避免构造函数参数膨胀；
+        - ``idle_health_telemetry`` / ``session_telemetry`` / ``idle_health_service``:
+          [DEPRECATED] 仅为兼容历史调用点保留的显式协作者注入参数。新代码不应
+          直接依赖这些参数，而应通过 ``idle_health_config`` 进行配置收口；当同
+          时给定 ``idle_health_config`` 与上述显式参数时，显式参数仍然具有更高
+          优先级，其行为由 :meth:`IdleHealthConfig.resolve_for_manager` 统一解析。
+
+        注意：本构造函数不自行推导 IdleHealth 默认行为，而是将「显式参数 /
+        IdleHealthConfig / 默认工厂」的组合解析委托给 Telemetry 模块中的
+        :meth:`IdleHealthConfig.resolve_for_manager`，以确保 IdleHealth 相关配置的
+        单一事实来源（SSOT）位于 Telemetry 层。
+        """
         self._agent_type = agent_type  # "coco" / "claude"
         self._sessions: dict[str, SyncSession] = {}  # key = _session_key(...)
         self._session_timeout = session_timeout
@@ -204,6 +257,39 @@ class ACPSessionManager:
         self._idle_healthcheck_s = idle_healthcheck_s
         self._keepalive_stop = threading.Event()
         self._keepalive_thread: threading.Thread | None = None
+        # Telemetry 与 IdleHealth 协作者：统一通过 IdleHealthConfig.resolve_for_manager
+        # + 显式参数解析，解析优先级为「显式参数 > IdleHealthConfig 字段 > 默认工厂/适配器」。
+
+        cfg: IdleHealthConfig | None = idle_health_config
+
+        # 兼容性提示：当调用方显式使用 idle_health_* 协作者参数时，打印一次
+        # 软 deprecate 日志，提示迁移到 idle_health_config 收口路径。为避免在
+        # 高频路径产生副作用，日志输出采用 best-effort 策略，不影响主流程。
+        try:
+            if any(
+                x is not None
+                for x in (idle_health_telemetry, session_telemetry, idle_health_service)
+            ):
+                logger.warning(
+                    "[DEPRECATED] ACPSessionManager.__init__ 的 idle_health_telemetry/"
+                    "session_telemetry/idle_health_service 参数仅为兼容旧调用点保留；"
+                    "请优先通过 idle_health_config=IdleHealthConfig(...) 或"
+                    "build_idle_health_config_for_manager(...) 注入 IdleHealth 协作者。"
+                )
+        except Exception:
+            # 不因日志问题影响核心逻辑。
+            pass
+
+        (
+            self._idle_health_telemetry,
+            self._session_telemetry,
+            self._idle_health_service,
+        ) = IdleHealthConfig._resolve_for_manager(
+            config=cfg,
+            idle_health_telemetry=idle_health_telemetry,
+            session_telemetry=session_telemetry,
+            idle_health_service=idle_health_service,
+        )
         if keepalive_interval > 0:
             self._keepalive_thread = threading.Thread(
                 target=self._keepalive_loop, daemon=True, name=f"acp-keepalive-{agent_type}"
@@ -238,31 +324,142 @@ class ACPSessionManager:
                 logger.debug("[ACP:%s] Keepalive loop iteration error", self._agent_type.upper(), exc_info=True)
 
     @staticmethod
-    def _format_seconds_ago(seconds: float) -> str:
-        """Best-effort human readable duration for status cards/logs."""
+    def _compute_idle_bucket(seconds: float) -> "TimeAgoBucket":
+        """将 idle 秒数转换为 :class:`TimeAgoBucket` 结构的纯语义函数。
+
+        说明：
+        - 仅负责「秒数 → 语义化时间区间」的映射，不产出任何 UI 文案；
+        - 内部委托 `src.utils.time_ago.compute_time_ago_bucket` 作为 SSOT，
+          保证与全局 TimeAgo 语义保持一致；
+        - 供会话管理与诊断逻辑使用，上层如 Feishu Handler / CardBuilder
+          需要展示「多久之前」文本时，应基于返回的 ``TimeAgoBucket``
+          调用文案层 helper（例如 ``src.utils.text.format_time_ago_from_bucket``）。
+        """
+
+        from src.utils.time_ago import compute_time_ago_bucket
+
+        return compute_time_ago_bucket(seconds)
+
+    @staticmethod
+    def _compute_idle_bucket_legacy(seconds: float) -> "TimeAgoBucket":
+        """[LEGACY] `_compute_idle_bucket` 的兼容别名。
+
+        本方法存在的唯一目的，是为历史上通过 `_format_seconds_ago` 间接
+        调用 idle bucket 计算逻辑的代码提供一个稳定锚点，便于未来在需要时
+        对「旧调用点」做差异化处理；**新代码一律不应调用本方法**。
+        """
+
+        return ACPSessionManager._compute_idle_bucket(seconds)
+
+    @staticmethod
+    def _compute_idle_bucket_deprecated(seconds: float) -> "TimeAgoBucket":
+        """[DEPRECATED] 兼容包装：禁止新代码调用，仅为旧测试/调用点保留。
+
+        历史上本方法（通过 `_format_seconds_ago` 名称暴露）同时承担
+        「格式化文案 + 返回 bucket」的混合职责。为避免核心层重新耦合
+        文案逻辑，现已收口为对 :meth:`_compute_idle_bucket_legacy` 的薄
+        封装，仅为旧 idle bucket 调用点提供兼容入口。
+
+        运行时行为：
+        - 首次调用时打印一次 WARNING 级别日志，提醒迁移到
+          :meth:`_compute_idle_bucket` 或上层 bucket→文案渲染函数；
+        - 后续调用仅做静默转发，避免在高频路径产生日志风暴。
+        """
+
+        # NOTE: 该方法仅为兼容旧调用点保留，禁止在新代码中引用。
+        # 如果你在 code review 中看到新的 `_compute_idle_bucket_deprecated`
+        # 或 `_format_seconds_ago` 调用，请优先建议改为 `_compute_idle_bucket`
+        # 或文案层 helper。
+        global _warned_deprecated_format_seconds_ago
         try:
-            s = int(max(0, float(seconds or 0.0)))
-        except Exception:
-            s = 0
-        if s < 60:
-            return f"{s}秒前"
-        m, sec = divmod(s, 60)
-        if m < 60:
-            return f"{m}分{sec}秒前"
-        h, m = divmod(m, 60)
-        return f"{h}时{m}分前"
+            if not _warned_deprecated_format_seconds_ago:
+                _warned_deprecated_format_seconds_ago = True
+                try:
+                    logger.warning(
+                        "[DEPRECATED] ACPSessionManager._format_seconds_ago() 已废弃，仅供旧测试/调用点兼容；请改用 _compute_idle_bucket 或上层文案 helper。"
+                    )
+                except Exception:
+                    # 尽量不因日志问题影响核心逻辑。
+                    pass
+        except NameError:
+            # 理论上不会发生，仅作双重兜底，确保兼容包装永不抛错。
+            pass
+
+        return ACPSessionManager._compute_idle_bucket_legacy(seconds)
+
+    # NOTE: 历史名称 `_format_seconds_ago` 的极薄兼容别名，新代码请改用
+    # `_compute_idle_bucket` 或上层文案 helper；仅供旧调用点/测试保留。
+    _format_seconds_ago = _compute_idle_bucket_deprecated
+
+    def _classify_idle_health_with_telemetry(
+        self,
+        bucket: "TimeAgoBucket",
+        context: IdleHealthTelemetryContext | None = None,
+    ) -> "IdleHealth":
+        """基于 TimeAgoBucket 对会话 idle 状态做粗粒度健康分类（实例入口）。
+
+        说明：
+        - 委托 Telemetry 模块的高层入口 `_classify_idle_health_for_manager`；
+        - 通过实例级 ``self._idle_health_telemetry`` 注入可观测性实现；
+        - 保持 UNKNOWN 回退语义与历史实现等价。
+        """
+
+        # NOTE: 具体实现收敛在 Telemetry 模块内部，manager 仅负责提供 bucket/context
+        # 与注入好的 telemetry 实例，避免在此处重复维护 UNKNOWN 回退策略。
+        from . import telemetry as _telemetry_mod
+
+        return _telemetry_mod._classify_idle_health_for_manager(  # type: ignore[attr-defined]
+            bucket,
+            context=context,  # type: ignore[arg-type]
+            telemetry=self._idle_health_telemetry,
+        )
+
+    @staticmethod
+    def classify_idle_health(bucket: "TimeAgoBucket", context: IdleHealthTelemetryContext | None = None) -> "IdleHealth":
+        """兼容静态入口：保持历史调用点 API 不变。
+
+        说明：
+        - 静态入口统一委托 Telemetry 模块的
+          `_classify_idle_health_for_manager`；
+        - Telemetry 实例的选择与 UNKNOWN 回退策略完全收敛在 Telemetry
+          模块内部，manager 只负责提供 bucket/context；
+        - 调用方签名与返回语义保持不变，兼容历史测试与调用点。
+        """
+
+        from . import telemetry as _telemetry_mod
+
+        return _telemetry_mod._classify_idle_health_for_manager(  # type: ignore[attr-defined]
+            bucket,
+            context=context,  # type: ignore[arg-type]
+        )
 
     @staticmethod
     def _session_key(chat_id: str, project_id: Optional[str] = None, thread_id: Optional[str] = None) -> str:
-        """Compute the session dict key.
+        """Compute the opaque ``session_key`` used as the internal dict key.
 
-        When thread_id is provided, sessions are further isolated per-thread
-        so that multiple threads in the same chat+project get independent sessions.
+        说明：
+        - 具体编码协议已集中到 :class:`SessionKeyCodec` 中，本方法仅作为
+          兼容入口，委托给协作者以避免协议散落在多个模块；
+        - 历史上关于 chat/project/thread 段落与占位符的约束在迁移过程中
+          由 SessionKeyCodec 保持，与现有行为等价；
+        - 调用方仍应将返回值视为不透明字符串，仅通过
+          :meth:`_parse_session_key` 或 SessionKeyCodec.decode 进行解析。
         """
-        base = f"{chat_id}:{project_id}" if project_id else f"{chat_id}:{_DEFAULT_PROJECT}"
-        if thread_id:
-            return f"{base}:t:{thread_id}"
-        return base
+
+        return SessionKeyCodec.encode(chat_id, project_id=project_id, thread_id=thread_id)
+
+    @staticmethod
+    def _parse_session_key(key: str) -> SessionKeyParts:
+        """Parse a ``session_key`` back into ``(chat_id, project_id, thread_id)``.
+
+        说明：
+        - 解析协议同样集中在 :class:`SessionKeyCodec` 中，本方法仅作为
+          兼容入口，保证历史静态调用点与测试无需修改即可复用新实现；
+        - SessionKeyCodec.decode 已实现对旧格式与异常输入的宽容解析逻辑，
+          包括 ``("", None, None)`` 与 ``(key, None, None)`` 等兜底分支。
+        """
+
+        return SessionKeyCodec.decode(key)
 
     def start_session(
         self,
@@ -418,6 +615,16 @@ class ACPSessionManager:
                     detail = err_repr or "unknown"
                 safe_detail = _sanitize_startup_detail(detail) or "start_failed"
                 logger.warning("TTADK CLI startup failed: %s", safe_detail)
+                try:
+                    self._session_telemetry.on_session_start_failed(
+                        manager_agent_type=self._agent_type,
+                        session_key=key,
+                        backend_kind="cli",
+                        error=last_err or RuntimeError(safe_detail),
+                        diagnostics=None,
+                    )
+                except Exception:
+                    logger.debug("[ACP:%s] session telemetry on_session_start_failed error", self._agent_type.upper(), exc_info=True)
                 raise RuntimeError(f"启动 {effective_agent_type} CLI 失败: {safe_detail}")
 
         # Retry spawning agent process + handshake, since ACP CLI may be temporarily unavailable.
@@ -517,6 +724,16 @@ class ACPSessionManager:
             detail = str(last_err) if last_err else "unknown"
             spec = f" ({last_spec})" if last_spec else ""
             kind = "会话" if effective_agent_type == "claude" else "ACP Server"
+            try:
+                self._session_telemetry.on_session_start_failed(
+                    manager_agent_type=self._agent_type,
+                    session_key=key,
+                    backend_kind=("cli" if effective_agent_type == "claude" or effective_agent_type.startswith("ttadk_") else "acp"),
+                    error=last_err or RuntimeError(detail),
+                    diagnostics=None,
+                )
+            except Exception:
+                logger.debug("[ACP:%s] session telemetry on_session_start_failed error", self._agent_type.upper(), exc_info=True)
             raise RuntimeError(f"启动 {effective_agent_type} {kind} 失败{spec}（已重试 {retries} 次）: {detail}")
 
         # If caller wants a specific session_id (resume), load it
@@ -538,6 +755,18 @@ class ACPSessionManager:
 
         with self._lock:
             self._sessions[key] = session
+        # 会话成功启动后触发 Telemetry 事件（best-effort）。
+        try:
+            backend_kind = "cli" if effective_agent_type == "claude" or effective_agent_type.startswith("ttadk_") else "acp"
+            self._session_telemetry.on_session_start(
+                manager_agent_type=self._agent_type,
+                session_key=key,
+                session_id=session.session_id or actual_id,
+                backend_kind=backend_kind,
+                model_name=model_name,
+            )
+        except Exception:
+            logger.debug("[ACP:%s] session telemetry on_session_start error", self._agent_type.upper(), exc_info=True)
         return session
 
     def ensure_session(
@@ -754,6 +983,18 @@ class ACPSessionManager:
                 session.message_count,
             )
             snapshot = session.to_snapshot()
+            # Best-effort Telemetry：会话结束事件
+            try:
+                self._session_telemetry.on_session_end(
+                    manager_agent_type=self._agent_type,
+                    session_key=key,
+                    session_id=session.session_id or "",
+                    message_count=session.message_count,
+                    reason=None,
+                    extra=None,
+                )
+            except Exception:
+                logger.debug("[ACP:%s] session telemetry on_session_end error", self._agent_type.upper(), exc_info=True)
             try:
                 session.close()
             except Exception as e:
@@ -816,12 +1057,22 @@ class ACPSessionManager:
         out: list[dict] = []
         with self._lock:
             items = list(self._sessions.items())
+
         for key, session in items:
             try:
                 sid = str(getattr(session, "session_id", "") or "")
                 last_active = float(getattr(session, "last_active", 0.0) or 0.0)
                 message_count = int(getattr(session, "message_count", 0) or 0)
-                idle_s = max(0.0, now - last_active) if last_active > 0 else 0.0
+
+                idle_health, idle_bucket, idle_s, _ctx = self._idle_health_service.classify_session_idle_health(
+                    manager_agent_type=self._agent_type,
+                    session_key=key,
+                    session_id=sid,
+                    last_active=last_active,
+                    now=now,
+                    message_count=message_count,
+                )
+
                 out.append(
                     {
                         "manager_agent_type": self._agent_type,
@@ -830,7 +1081,8 @@ class ACPSessionManager:
                         "last_active": last_active,
                         "message_count": message_count,
                         "idle_seconds": idle_s,
-                        "last_used_text": self._format_seconds_ago(idle_s),
+                        "idle_bucket": idle_bucket,
+                        "idle_health": idle_health,
                     }
                 )
             except Exception:

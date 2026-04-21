@@ -2,6 +2,8 @@ import time
 from typing import Optional
 
 from src.project.context import ProjectContext
+from src.utils.text import format_time_ago
+from src.mode.manager import InteractionMode
 
 from ..shared import (
     build_mode_buttons,
@@ -18,7 +20,7 @@ class CoreBuilder:
         if len(content) <= max_chars:
             return content
 
-        warning_msg = UI_TEXT.get("log_truncated_warning", "\n> ⚠️ **日志内容过长，已被截断**...\n")
+        warning_msg = UI_TEXT["log_truncated_warning"]
         keep_chars = max_chars - len(warning_msg) - 20  # buffer
 
         truncated_content = content[-keep_chars:]
@@ -97,27 +99,36 @@ class CoreBuilder:
     @staticmethod
     def _build_header_title(
         project: Optional[ProjectContext],
-        is_coco_mode: bool = False,
-        is_claude_mode: bool = False,
-        is_ttadk_mode: bool = False,
-        is_gemini_mode: bool = False,
+        mode: Optional[InteractionMode] = None,
     ) -> str:
+        # Resolve mode from project if not provided directly
+        effective_mode = mode
+        if effective_mode is None and project:
+            if getattr(project, "ttadk_mode", False):
+                effective_mode = InteractionMode.TTADK
+            elif getattr(project, "claude_mode", False):
+                effective_mode = InteractionMode.CLAUDE
+            elif getattr(project, "gemini_mode", False):
+                effective_mode = InteractionMode.GEMINI
+            elif getattr(project, "coco_mode", False):
+                effective_mode = InteractionMode.COCO
+
         if not project:
-            if is_claude_mode:
-                return UI_TEXT.get("claude_mode_title")
-            elif is_gemini_mode:
-                return "✨ Gemini 编程模式"
-            elif is_ttadk_mode:
-                return UI_TEXT.get("system_mode_ttadk", "🎮 TTADK 多工具模式")
-            mode_icon = "🤖" if is_coco_mode else "🧠"
-            mode_name = UI_TEXT.get("coco_mode_title") if is_coco_mode else UI_TEXT.get("smart_mode_title")
+            if effective_mode == InteractionMode.CLAUDE:
+                return UI_TEXT["claude_mode_title"]
+            elif effective_mode == InteractionMode.GEMINI:
+                return UI_TEXT["gemini_mode_title"]
+            elif effective_mode == InteractionMode.TTADK:
+                return UI_TEXT["system_mode_ttadk"]
+            mode_icon = "🤖" if effective_mode == InteractionMode.COCO else "🧠"
+            mode_name = UI_TEXT["coco_mode_title"] if effective_mode == InteractionMode.COCO else UI_TEXT["smart_mode_title"]
             return f"{mode_icon} {mode_name}"
 
-        if is_claude_mode or project.claude_mode:
+        if effective_mode == InteractionMode.CLAUDE:
             return f"🔮 {project.project_name} · Claude"
-        elif is_gemini_mode or getattr(project, "gemini_mode", False):
+        elif effective_mode == InteractionMode.GEMINI:
             return f"✨ {project.project_name} · Gemini"
-        elif is_ttadk_mode or project.ttadk_mode:
+        elif effective_mode == InteractionMode.TTADK:
             tool = str(getattr(project, "ttadk_tool_name", "") or "").strip()
             model = str(getattr(project, "ttadk_model_name", "") or "").strip()
             suffix = ""
@@ -126,7 +137,7 @@ class CoreBuilder:
             elif tool:
                 suffix = f" · {tool}"
             return f"🎮 {project.project_name} · TTADK{suffix}"
-        elif is_coco_mode or project.coco_mode:
+        elif effective_mode == InteractionMode.COCO:
             return f"🤖 {project.project_name} · Coco"
         else:
             return f"🧠 {project.project_name}"
@@ -146,23 +157,22 @@ class CoreBuilder:
     def _build_ttadk_status_element(project: Optional[ProjectContext]) -> Optional[dict]:
         if not project:
             return None
-        tool = str(getattr(project, "ttadk_tool_name", "") or "").strip() or "未设置"
-        model = str(getattr(project, "ttadk_model_name", "") or "").strip() or "自动"
+        tool = str(getattr(project, "ttadk_tool_name", "") or "").strip() or UI_TEXT["system_not_set"]
+        model = str(getattr(project, "ttadk_model_name", "") or "").strip() or UI_TEXT["system_auto"]
         yolo_enabled = bool(getattr(project, "ttadk_yolo_enabled", False))
-        yolo_label = "开启" if yolo_enabled else "关闭"
+        yolo_label = UI_TEXT["system_on"] if yolo_enabled else UI_TEXT["system_off"]
         return {
             "tag": "markdown",
-            "content": f"🎮 **TTADK 状态** · 工具: `{tool}` · 模型: `{model}` · 自动执行: `{yolo_label}`",
+            "content": UI_TEXT["system_ttadk_status_banner"].format(
+                tool=tool, model=model, yolo=yolo_label
+            ),
             "text_size": "notation",
         }
 
     @staticmethod
     def _build_footer_buttons(
         project: Optional[ProjectContext],
-        is_coco_mode: bool = False,
-        is_claude_mode: bool = False,
-        is_ttadk_mode: bool = False,
-        is_gemini_mode: bool = False,
+        mode: Optional[InteractionMode] = None,
     ) -> list[dict]:
         project_id_raw = getattr(project, "project_id", None) if project else None
         project_id = str(project_id_raw) if isinstance(project_id_raw, (str, int)) else None
@@ -173,13 +183,24 @@ class CoreBuilder:
             thread_root_id = get_current_thread_id()
         except Exception:
             pass
+            
+        effective_mode = mode
+        if effective_mode is None and project:
+            if getattr(project, "ttadk_mode", False):
+                effective_mode = InteractionMode.TTADK
+            elif getattr(project, "claude_mode", False):
+                effective_mode = InteractionMode.CLAUDE
+            elif getattr(project, "gemini_mode", False):
+                effective_mode = InteractionMode.GEMINI
+            elif getattr(project, "coco_mode", False):
+                effective_mode = InteractionMode.COCO
 
-        return build_mode_buttons(is_coco_mode, project_id, is_claude_mode, is_ttadk_mode, is_gemini_mode, thread_root_id=thread_root_id)
+        return build_mode_buttons(effective_mode, project_id, thread_root_id=thread_root_id)
 
     @staticmethod
     def _build_footer_note(project: Optional[ProjectContext], working_dir: Optional[str] = None) -> Optional[dict]:
         if project:
-            content = UI_TEXT.get("project_dir_label", "📂 项目目录: `{path}`").format(path=project.root_path)
+            content = UI_TEXT["project_dir_label"].format(path=project.root_path)
             return {
                 "tag": "markdown",
                 "content": content,
@@ -205,21 +226,32 @@ class CoreBuilder:
     def _build_image_elements(image_keys: list[str]) -> list[dict]:
         elements = []
         for i, key in enumerate(image_keys):
-            alt_text = UI_TEXT.get("image_alt_text", "图片 {index}").format(index=i + 1)
+            alt_text = UI_TEXT["image_alt_text"].format(index=i + 1)
             elements.append({"tag": "img", "img_key": key, "alt": {"tag": "plain_text", "content": alt_text}})
         return elements
 
     @staticmethod
     def _format_time_ago(timestamp: float) -> str:
-        diff = time.time() - timestamp
-        if diff < 60:
-            return UI_TEXT.get("time_just_now", "刚刚")
-        elif diff < 3600:
-            minutes = int(diff / 60)
-            return UI_TEXT.get("time_mins_ago", "{minutes} 分钟前").format(minutes=minutes)
-        elif diff < 86400:
-            hours = int(diff / 3600)
-            return UI_TEXT.get("time_hours_ago", "{hours} 小时前").format(hours=hours)
-        else:
-            days = int(diff / 86400)
-            return UI_TEXT.get("time_days_ago", "{days} 天前").format(days=days)
+        """[DEPRECATED] 卡片层相对时间包装函数。
+
+        统一入口应使用 :func:`src.utils.text.format_time_ago`，本函数仅负责：
+        - 接受时间戳 ``timestamp``；
+        - 与当前时间做差得到秒数 ``diff``；
+        - 使用 :func:`compute_time_ago_bucket` 计算语义区间；
+        - 再通过共享渲染层生成最终文案。
+
+        负数时间差会被当作 0 处理，避免出现 "负几天前" 等异常描述。
+        """
+
+        try:
+            diff = float(time.time() - (timestamp or 0.0))
+        except Exception:
+            diff = 0.0
+        if diff < 0:
+            diff = 0.0
+
+        from src.utils.time_ago import compute_time_ago_bucket
+        from src.utils.text import format_time_ago_from_bucket
+
+        bucket = compute_time_ago_bucket(diff)
+        return format_time_ago_from_bucket(bucket)

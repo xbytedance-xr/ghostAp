@@ -201,11 +201,11 @@ class DeepBuilder:
         # Determine status for color mapping
         status_key = "running"
         title_lower = state.title.lower()
-        if "error" in title_lower or "失败" in state.title:
+        if "error" in title_lower or UI_TEXT["deep_status_failed_zh"] in state.title:
             status_key = "error"
         elif (
-            "完成" in state.title
-            or "结束" in state.title
+            UI_TEXT["deep_status_completed_zh"] in state.title
+            or UI_TEXT["deep_status_finished_zh"] in state.title
             or "completed" in title_lower
             or "finished" in title_lower
             or "success" in title_lower
@@ -213,7 +213,12 @@ class DeepBuilder:
             status_key = "completed"
         elif state.is_paused:
             status_key = "paused"
-        elif "规划" in state.title or "分析" in state.title or "planning" in title_lower or "analyzing" in title_lower:
+        elif (
+            UI_TEXT["deep_status_planning_zh"] in state.title
+            or UI_TEXT["deep_status_analyzing_zh"] in state.title
+            or "planning" in title_lower
+            or "analyzing" in title_lower
+        ):
             status_key = "planning"
 
         header_template = DeepBuilder._pick_deep_template(state.engine_name, status_key)
@@ -350,7 +355,8 @@ class DeepBuilder:
             else:
                 buttons = []
                 # Finished or not started, still show mode switch
-                base_buttons = CoreBuilder._build_footer_buttons(project, is_coco_mode=False, is_claude_mode=False)
+                from src.mode.manager import InteractionMode
+                base_buttons = CoreBuilder._build_footer_buttons(project, mode=InteractionMode.SMART)
 
                 # Custom extra buttons (e.g. retry/recover) should be first
                 if state.extra_buttons:
@@ -401,7 +407,7 @@ class DeepBuilder:
         theme = get_theme(header_template)
 
         # Consistent title using helper (or similar logic)
-        header_title = f"📜 {project.project_name if project else 'Loop'} · 历史记录"
+        header_title = f"📜 {project.project_name if project else 'Loop'}{UI_TEXT['system_history_record_title']}"
 
         elements = [
             {"tag": "markdown", "content": f"**{title}**\n\n{content}"},
@@ -417,7 +423,7 @@ class DeepBuilder:
             nav_buttons.append(
                 {
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "⬅️ 上一页"},
+                    "text": {"tag": "plain_text", "content": UI_TEXT["system_btn_prev_page"]},
                     "type": "default",
                     "value": {
                         "action": "loop_history_page",
@@ -432,7 +438,7 @@ class DeepBuilder:
             nav_buttons.append(
                 {
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "➡️ 下一页"},
+                    "text": {"tag": "plain_text", "content": UI_TEXT["system_btn_next_page"]},
                     "type": "default",
                     "value": {
                         "action": "loop_history_page",
@@ -447,7 +453,7 @@ class DeepBuilder:
         nav_buttons.append(
             {
                 "tag": "button",
-                "text": {"tag": "plain_text", "content": "📊 返回状态"},
+                "text": {"tag": "plain_text", "content": UI_TEXT["system_btn_back_status"]},
                 "type": "primary",
                 "value": {
                     "action": "loop_back_to_list",  # Reusing generic back action name or specific

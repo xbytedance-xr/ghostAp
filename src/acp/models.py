@@ -9,7 +9,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Optional, TYPE_CHECKING, TypedDict
 
 
 class ACPEventType(Enum):
@@ -99,7 +99,6 @@ class ACPSessionState:
             last_active=data.get("last_active", time.time()),
         )
 
-
 @dataclass
 class PromptResult:
     """Result of a prompt sent via ACP."""
@@ -154,60 +153,3 @@ class PromptResult:
                 p = data.get("path")
                 if p:
                     self.modified_files.add(p)
-
-    # ---- presentation ----
-    def to_markdown(self, max_text_chars: int = 8000, max_items: int = 50) -> str:
-        """Render a compact Markdown summary for Feishu/console display."""
-
-        parts: list[str] = []
-
-        # Header
-        parts.append(f"**✅ PromptResult** · stop_reason=`{self.stop_reason}`")
-
-        # Text
-        if self.text:
-            text = self.text
-            if max_text_chars > 0 and len(text) > max_text_chars:
-                text = text[:max_text_chars] + "\n... (truncated)"
-            parts.append("\n**📝 输出文本**")
-            parts.append(text)
-
-        # Plan
-        if self.plan and self.plan.entries:
-            parts.append("\n**📋 计划**")
-            for ent in self.plan.entries[:max_items]:
-                icon = {"completed": "✅", "in_progress": "🔄", "pending": "⏳"}.get(ent.status, "⬜")
-                parts.append(f"- {icon} {ent.content}")
-
-        # Tool calls
-        if self.tool_calls:
-            parts.append("\n**🛠️ 工具调用**")
-            for tc in self.tool_calls[:max_items]:
-                loc = f" `{tc.locations[0]}`" if tc.locations else ""
-                parts.append(f"- `{tc.kind}` {tc.title}{loc} · `{tc.status}`")
-
-        # Tool results
-        if self.tool_results:
-            parts.append("\n**📦 工具结果(本地记录)**")
-            for e in self.tool_results[:max_items]:
-                kind = e.get("kind", "unknown")
-                data = e.get("data") if isinstance(e.get("data"), dict) else {}
-                if kind == "execute":
-                    cmd = data.get("command", "")
-                    code = data.get("exit_code")
-                    parts.append(f"- `execute` `{cmd}` · exit_code={code}")
-                elif kind in ("read_file", "write_file"):
-                    p = data.get("path", "")
-                    parts.append(f"- `{kind}` `{p}`")
-                elif kind == "permission":
-                    parts.append(f"- `permission` {data.get('outcome', '')} · {data.get('reason', '')}")
-                else:
-                    parts.append(f"- `{kind}`")
-
-        # Modified files
-        if self.modified_files:
-            parts.append("\n**🗂️ 改动文件**")
-            for p in sorted(self.modified_files)[:max_items]:
-                parts.append(f"- `{p}`")
-
-        return "\n".join(parts).strip() + "\n"

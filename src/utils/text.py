@@ -1,15 +1,68 @@
+"""Text utilities and shared UI copy helpers.
+
+本模块处于 "共享文案层"：
+- 仅依赖 Python 标准库；
+- 可被 ACP 核心层与卡片 UI 层同时使用；
+- 不直接依赖具体 UI 主题（例如颜色、布局等）。
+"""
+
 import re
 import threading
 import time
+from typing import Literal, TypedDict
+
+from src.utils.time_ago import IdleHealth, TimeAgoBucket, compute_time_ago_bucket
+
 
 _TASK_ID_LOCK = threading.Lock()
 _TASK_ID_SEQ = 0
+
+
+def format_time_ago_from_bucket(bucket: TimeAgoBucket) -> str:
+    """从已有 :class:`TimeAgoBucket` 渲染相对时间文案。
+
+    该辅助函数主要用于调用方已经持有 bucket 的场景，避免重复计算秒数
+    → bucket 的映射关系；其行为应始终与 ``render_time_ago_cn`` 一致。
+    """
+
+    return render_time_ago_cn(bucket)
+
+
+def render_time_ago_cn(bucket: TimeAgoBucket) -> str:
+    """将时间语义段渲染为中文文案。
+
+    当前实现保持与原 :func:`format_time_ago` 完全一致的规则：
+    - "seconds" → "刚刚"；
+    - "minutes" → "{value} 分钟前"；
+    - "hours"   → "{value} 小时前"；
+    - "days"    → "{value} 天前"。
+
+    未来如需支持多语言/多风格，可在调用方选择不同渲染函数，而保留 bucket 计算逻辑不变。
+    """
+
+    kind = bucket["kind"]
+    value = int(bucket["value"])
+
+    if kind == "seconds":
+        return "刚刚"
+    if kind == "minutes":
+        return f"{value} 分钟前"
+    if kind == "hours":
+        return f"{value} 小时前"
+    if kind == "days":
+        return f"{value} 天前"
+
+    # 理论上不会走到这里，但为了防御性编码，fallback 到「刚刚」。
+    return "刚刚"
 
 
 def format_duration(seconds: float) -> str:
     """Format seconds into human-readable duration string.
 
     Examples: "5秒", "3分12秒", "1小时30分5秒"
+
+    NOTE: 该函数只负责数值到中文描述的转换，不绑定具体 UI 主题，
+    调用方自行决定前缀/图标（例如 "🔄 执行中 · "）。
     """
     if seconds < 0:
         seconds = 0
@@ -29,6 +82,64 @@ def append_duration_to_title(title: str, duration_secs: float | None) -> str:
     if duration_secs:
         return f"{title} · {format_duration(duration_secs)}"
     return title
+
+
+def format_idle_health(health: IdleHealth) -> str:
+    """将 IdleHealth 枚举渲染为简短中文文案。
+
+    说明：
+    - 仅做文案层映射，不参与任何业务决策；
+    - 作为 IdleHealth → 文案 的 SSOT，避免在各处散落 magic string；
+    - 如需展示 emoji，可在调用方或后续扩展中统一更新本函数实现。
+    """
+
+    if health is IdleHealth.HEALTHY:
+        return "健康（近期活跃）"
+    if health is IdleHealth.IDLE:
+        return "空闲（可关注）"
+    if health is IdleHealth.STALE:
+        return "陈旧（可清理候选）"
+    # 包含 UNKNOWN 或未来扩展值
+    return "未知"
+
+
+def format_seconds_ago(seconds: float) -> str:
+    """[DEPRECATED] 兼容包装：请改用 :func:`format_time_ago`。
+
+    历史上本函数直接实现了一套独立的相对时间文案（`X秒前 / X分Y秒前 / X时Y分前`）。
+    现在统一收敛到共享入口 :func:`format_time_ago`（基于 "秒数→语义段→文案" 的分层架构），
+    以避免一种概念多套说法，并为多语言/多风格预留扩展点。
+
+    行为说明：
+    - 接受秒数作为输入；
+    - 内部直接调用 :func:`format_time_ago`，返回 "刚刚" / "X 分钟前" / "X 小时前" / "X 天前"；
+    - 负数或异常输入会被按 0 处理。
+
+    未来新增调用方请直接依赖 :func:`format_time_ago`，避免继续扩散本兼容别名。
+    """
+
+    return format_time_ago(seconds)
+
+
+def format_time_ago(seconds: float) -> str:
+    """统一的相对时间文案（"X 时间前" 风格）。
+
+    该函数作为共享文案层的默认中文入口，内部实现分为两步：
+    1. 使用 :func:`compute_time_ago_bucket` 将秒数转换为语义化区间；
+    2. 使用 :func:`render_time_ago_cn` 将语义区间渲染为中文文案。
+
+    语义规则（以秒数为输入）：
+    - 负数或异常输入按 0 处理；
+    - <60 秒：bucket.kind == "seconds" → "刚刚"；
+    - <60 分钟：bucket.kind == "minutes" → "{m} 分钟前"；
+    - <24 小时：bucket.kind == "hours" → "{h} 小时前"；
+    - 其他：bucket.kind == "days" → "{d} 天前"。
+
+    若调用方需要更精细的调试信息，可同时展示原始秒数/时间戳；不建议在调用方自行拼接另一套文案。
+    """
+
+    bucket = compute_time_ago_bucket(seconds)
+    return render_time_ago_cn(bucket)
 
 
 def generate_task_id(project_name: str) -> str:
@@ -70,3 +181,62 @@ def truncate_output(output: str, max_len: int, label: str = "输出被截断") -
     if len(output) > max_len:
         return output[:max_len] + f"\n\n... ({label}，共 {len(output)} 字符)"
     return output
+
+
+def get_acp_result_header_text() -> dict[str, str]:
+    """Return localized ACP result section headers.
+
+    暂时返回固定中文/英文混合文案，未来可以根据 locale 做切换。
+    """
+
+    return {
+        "text": "结果文本",
+        "plan": "执行计划",
+        "tools": "工具调用",
+        "tool_results": "工具执行记录",
+        "files": "改动文件",
+        # Tool descriptions used in ACP helper / system cards
+        "tool_desc_coco": "字节跳动 AI",
+        "tool_desc_claude": "Anthropic AI",
+        "tool_desc_aiden": "Aiden CLI",
+        "tool_desc_codex": "OpenAI Codex",
+        "tool_desc_gemini": "Google Gemini CLI",
+    }
+
+
+def render_violation_report(
+    title: str,
+    recommended_fix: str | None,
+    violation_lines: list[str],
+    *,
+    fix_label: str = "【推荐修复方式】",
+) -> str:
+    """渲染统一结构的“违规报告”文案。
+
+    结构约定（满足「标题 → 修复方案 → 违规列表」的层级）：
+
+    - 第 1 行：问题标题（例如「发现针对 session_key 的手工字符串解析反模式:"）；
+    - 若存在推荐修复文案：
+      - 第 2 行：空行（与标题做视觉分隔）；
+      - 第 3 行：修复方案标签行（默认「【推荐修复方式】」）；
+      - 第 4 行：推荐修复说明正文；
+      - 第 5 行：空行（与后续违规列表分隔）；
+    - 之后：逐行输出违规明细（通常以 "- " 开头的列表行）。
+
+    recommended_fix 为空或仅包含空白时，将省略“修复方案”区块，直接输出标题 + 违规列表，
+    以避免出现孤立标签或多余空行。
+    """
+
+    lines: list[str] = [title]
+
+    fix = (recommended_fix or "").strip()
+    if fix:
+        # 空行 + 标签 + 修复文案 + 空行
+        lines.append("")
+        lines.append(fix_label)
+        lines.append(fix)
+        lines.append("")
+
+    # 违规列表本身交由调用方构造，保持高度可定制性
+    lines.extend(violation_lines)
+    return "\n".join(lines)

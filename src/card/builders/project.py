@@ -2,7 +2,9 @@ import json
 from typing import Optional
 
 from src.project.context import ProjectContext, ProjectStatus
+from src.mode.manager import InteractionMode
 
+from ..styles import UI_TEXT
 from ..shared import (
     apply_compact_style,
     build_responsive_layout,
@@ -15,6 +17,116 @@ class ProjectBuilder:
     """Project-related card building utilities."""
 
     @staticmethod
+    def build_project_info_content(project: ProjectContext, global_working_dir: str) -> str:
+        """Build the Markdown content for project info."""
+        lines = [UI_TEXT["project_current_header"].format(name=project.project_name), ""]
+
+        lines.append(UI_TEXT["project_id_label"].format(id=project.project_id))
+        lines.append(UI_TEXT["project_dir_label"].format(path=project.root_path))
+        lines.append(UI_TEXT["project_dir_info_cwd"].format(cwd=global_working_dir))
+        lines.append(
+            UI_TEXT["project_status_label"].format(
+                emoji=project.get_status_emoji(), status=project.status.value
+            )
+        )
+        lines.append(
+            UI_TEXT["project_coco_status"].format(
+                status=f"🤖 {UI_TEXT['system_on']}" if project.coco_mode else UI_TEXT["system_off"]
+            )
+        )
+        lines.append(
+            UI_TEXT["project_claude_status"].format(
+                status=f"🔮 {UI_TEXT['system_on']}" if project.claude_mode else UI_TEXT["system_off"]
+            )
+        )
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def build_project_status_content(project: ProjectContext, global_working_dir: str) -> str:
+        """Build the Markdown content for project status report."""
+        lines = []
+
+        lines.append(
+            UI_TEXT["project_status_label"].format(
+                emoji=project.get_status_emoji(), status=project.status.value
+            )
+        )
+        lines.append(UI_TEXT["project_dir_label"].format(path=project.root_path))
+        lines.append(UI_TEXT["project_dir_info_cwd"].format(cwd=global_working_dir))
+        lines.append(
+            UI_TEXT["project_last_active_label"].format(
+                time_ago=CoreBuilder._format_time_ago(project.last_active)
+            )
+        )
+
+        if project.coco_mode and project.coco_session_snapshot:
+            snap = project.coco_session_snapshot
+            lines.append(UI_TEXT["project_coco_session_header"])
+            lines.append(UI_TEXT["project_session_id_label"].format(id=snap.session_id))
+            lines.append(UI_TEXT["project_session_count_label"].format(count=snap.query_count))
+
+        if project.claude_mode and project.claude_session_snapshot:
+            snap = project.claude_session_snapshot
+            lines.append(UI_TEXT["project_claude_session_header"])
+            lines.append(UI_TEXT["project_session_id_label"].format(id=snap.session_id))
+            lines.append(UI_TEXT["project_session_count_label"].format(count=snap.query_count))
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def build_current_project_card(project: ProjectContext, global_working_dir: str) -> tuple[str, str]:
+        """Build the full card for current project info."""
+        content = ProjectBuilder.build_project_info_content(project, global_working_dir)
+        return ProjectBuilder.build_project_response_card(
+            project, UI_TEXT["project_info_card_title"], content, show_buttons=True
+        )
+
+    @staticmethod
+    def build_project_status_report_card(project: ProjectContext, global_working_dir: str) -> tuple[str, str]:
+        """Build the full card for project status report."""
+        content = ProjectBuilder.build_project_status_content(project, global_working_dir)
+        return ProjectBuilder.build_project_response_card(
+            project, UI_TEXT["project_status_card_title"], content, show_buttons=True
+        )
+
+    @staticmethod
+    def build_project_not_found_content(name: str, suggestions: Optional[list[ProjectContext]] = None) -> str:
+        """Build the Markdown content for project not found error."""
+        header = UI_TEXT["project_not_found"].format(name=name)
+        content = f"{header}"
+        if suggestions:
+            similar_header = UI_TEXT["project_similar_header"]
+            suggestion_lines = "\n".join([f"• {p.project_name}" for p in suggestions[:5]])
+            content += f"{similar_header}\n{suggestion_lines}"
+        return content
+
+    @staticmethod
+    def build_restore_info_content(restore_info: dict) -> str:
+        """Build the Markdown content for context restoration info."""
+        if not restore_info.get("has_context"):
+            return ""
+        
+        content = UI_TEXT["project_restore_info"].format(
+            count=restore_info['entry_count']
+        )
+        if restore_info.get("last_mode"):
+            content += UI_TEXT["project_restore_last_mode"].format(
+                mode=restore_info['last_mode']
+            )
+        return content
+
+    @staticmethod
+    def build_project_switch_card(project: ProjectContext, context_info: str = "") -> tuple[str, str]:
+        """Build a notification card for project switch."""
+        content = UI_TEXT["project_switched_content"].format(
+            name=project.project_name, root=project.root_path, context_info=context_info
+        )
+        return ProjectBuilder.build_project_response_card(
+            project, UI_TEXT["project_switch_title"], content, show_buttons=True
+        )
+
+    @staticmethod
     def build_project_response_card(
         project: Optional[ProjectContext],
         title: str,
@@ -25,15 +137,23 @@ class ProjectBuilder:
         image_keys: Optional[list[str]] = None,
         banner: Optional[dict] = None,
     ) -> tuple[str, str]:
+        effective_mode = None
+        if project:
+            if getattr(project, "ttadk_mode", False):
+                effective_mode = InteractionMode.TTADK
+            elif getattr(project, "claude_mode", False):
+                effective_mode = InteractionMode.CLAUDE
+            elif getattr(project, "gemini_mode", False):
+                effective_mode = InteractionMode.GEMINI
+            elif getattr(project, "coco_mode", False):
+                effective_mode = InteractionMode.COCO
+                
         return ProjectBuilder._build_response_card_inner(
             project,
             title,
             content,
             show_buttons=show_buttons,
-            is_coco_mode=bool(project and getattr(project, "coco_mode", False)),
-            is_claude_mode=bool(project and getattr(project, "claude_mode", False)),
-            is_ttadk_mode=bool(project and getattr(project, "ttadk_mode", False)),
-            is_gemini_mode=bool(project and getattr(project, "gemini_mode", False)),
+            mode=effective_mode,
             extra_buttons=extra_buttons,
             footer=footer,
             image_keys=image_keys,
@@ -54,7 +174,7 @@ class ProjectBuilder:
             content,
             working_dir,
             show_buttons,
-            is_coco_mode=True,
+            mode=InteractionMode.COCO,
         )
 
     @staticmethod
@@ -71,7 +191,7 @@ class ProjectBuilder:
             content,
             working_dir,
             show_buttons,
-            is_coco_mode=False,
+            mode=InteractionMode.SMART,
         )
 
     @staticmethod
@@ -81,32 +201,32 @@ class ProjectBuilder:
         content: str,
         working_dir: Optional[str] = None,
         show_buttons: bool = True,
-        is_coco_mode: bool = False,
-        is_claude_mode: bool = False,
-        is_ttadk_mode: bool = False,
-        is_gemini_mode: bool = False,
+        mode: Optional[InteractionMode] = None,
         extra_buttons: Optional[list[dict]] = None,
         footer: Optional[str] = None,
         image_keys: Optional[list[str]] = None,
         banner: Optional[dict] = None,
     ) -> tuple[str, str]:
+        # Determine actual mode from project if not provided directly
+        effective_mode = mode
+        if effective_mode is None and project:
+            if getattr(project, "ttadk_mode", False):
+                effective_mode = InteractionMode.TTADK
+            elif getattr(project, "claude_mode", False):
+                effective_mode = InteractionMode.CLAUDE
+            elif getattr(project, "gemini_mode", False):
+                effective_mode = InteractionMode.GEMINI
+            elif getattr(project, "coco_mode", False):
+                effective_mode = InteractionMode.COCO
+
         theme_color = getattr(project, "theme_color", None) if project else None
         if not theme_color:
-            theme_color = "orange" if is_ttadk_mode else "turquoise" if is_gemini_mode else "blue"
+            theme_color = "orange" if effective_mode == InteractionMode.TTADK else "turquoise" if effective_mode == InteractionMode.GEMINI else "blue"
         theme = get_theme(theme_color)
-
-        # Determine actual mode from project if available
-        actual_coco = is_coco_mode or (project and getattr(project, "coco_mode", False))
-        actual_claude = is_claude_mode or (project and getattr(project, "claude_mode", False))
-        actual_ttadk = is_ttadk_mode or (project and getattr(project, "ttadk_mode", False))
-        actual_gemini = is_gemini_mode or (project and getattr(project, "gemini_mode", False))
 
         header_title = CoreBuilder._build_header_title(
             project,
-            is_coco_mode=actual_coco,
-            is_claude_mode=actual_claude,
-            is_ttadk_mode=actual_ttadk,
-            is_gemini_mode=actual_gemini,
+            mode=effective_mode,
         )
 
         elements = [
@@ -118,7 +238,7 @@ class ProjectBuilder:
             elements.append(banner)
             elements.append({"tag": "hr"})
 
-        if actual_ttadk:
+        if effective_mode == InteractionMode.TTADK:
             ttadk_status = CoreBuilder._build_ttadk_status_element(project)
             if ttadk_status:
                 elements.append(ttadk_status)
@@ -146,10 +266,7 @@ class ProjectBuilder:
         if show_buttons:
             buttons = CoreBuilder._build_footer_buttons(
                 project,
-                is_coco_mode=actual_coco,
-                is_claude_mode=actual_claude,
-                is_ttadk_mode=actual_ttadk,
-                is_gemini_mode=actual_gemini,
+                mode=effective_mode,
             )
             if extra_buttons:
                 buttons.extend([apply_compact_style(b) for b in extra_buttons])
@@ -165,15 +282,16 @@ class ProjectBuilder:
         page: int = 1,
         page_size: int = 5,
     ) -> tuple[str, str]:
+        board_title = UI_TEXT["project_board_title"]
         if not projects:
             empty_elements = [
-                {"tag": "markdown", "content": "暂无项目\n\n发送 `/new 项目名 路径` 创建新项目"},
+                {"tag": "markdown", "content": UI_TEXT["project_board_empty_content"]},
                 *build_responsive_layout(
                     [
                         apply_compact_style(
                             {
                                 "tag": "button",
-                                "text": {"tag": "plain_text", "content": "➕ 新建项目"},
+                                "text": {"tag": "plain_text", "content": UI_TEXT["project_board_btn_new"]},
                                 "type": "primary",
                                 "value": {"action": "new_project_prompt"},
                             }
@@ -181,7 +299,7 @@ class ProjectBuilder:
                     ]
                 ),
             ]
-            card = CoreBuilder._wrap_card("📋 项目看板", "blue", empty_elements)
+            card = CoreBuilder._wrap_card(board_title, "blue", empty_elements)
             return "interactive", json.dumps(card, ensure_ascii=False)
 
         # Sort: Current project first, then by last_active descending
@@ -200,26 +318,26 @@ class ProjectBuilder:
         end_idx = start_idx + page_size
         page_projects = sorted_projects[start_idx:end_idx]
 
-        elements = [{"tag": "markdown", "content": f"共 **{total_projects}** 个项目"}, {"tag": "hr"}]
+        elements = [{"tag": "markdown", "content": UI_TEXT["project_board_total_projects"].format(total=total_projects)}, {"tag": "hr"}]
 
         for project in page_projects:
             is_current = project.project_id == current_project_id
             status_emoji = project.get_status_emoji()
-            current_marker = " (当前)" if is_current else ""
+            current_marker = UI_TEXT["project_board_current_marker"] if is_current else ""
 
             mode_info = ""
             if project.claude_mode:
                 query_count = 0
                 if project.claude_session_snapshot:
                     query_count = project.claude_session_snapshot.query_count
-                mode_info = f" | 🔮 Claude 模式中 (消息数: {query_count})"
+                mode_info = UI_TEXT["project_board_claude_info"].format(count=query_count)
             elif project.coco_mode:
                 query_count = 0
                 if project.coco_session_snapshot:
                     query_count = project.coco_session_snapshot.query_count
-                mode_info = f" | 🤖 Coco 模式中 (消息数: {query_count})"
+                mode_info = UI_TEXT["project_board_coco_info"].format(count=query_count)
             elif project.status == ProjectStatus.BUSY and project.current_task:
-                mode_info = f" | ⏳ {project.current_task.task_type}"
+                mode_info = UI_TEXT["project_board_busy_info"].format(task_type=project.current_task.task_type)
 
             last_active = CoreBuilder._format_time_ago(project.last_active)
 
@@ -236,7 +354,7 @@ class ProjectBuilder:
                 buttons.append(
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "切换到此项目"},
+                        "text": {"tag": "plain_text", "content": UI_TEXT["project_board_btn_switch"]},
                         "type": "primary",
                         "value": {"action": "switch_to", "project_id": project.project_id},
                     }
@@ -245,7 +363,7 @@ class ProjectBuilder:
                 buttons.append(
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "继续开发"},
+                        "text": {"tag": "plain_text", "content": UI_TEXT["project_board_btn_continue"]},
                         "type": "primary",
                         "value": {"action": "continue_dev", "project_id": project.project_id},
                     }
@@ -254,7 +372,7 @@ class ProjectBuilder:
             buttons.append(
                 {
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "查看详情"},
+                    "text": {"tag": "plain_text", "content": UI_TEXT["project_board_btn_detail"]},
                     "type": "default",
                     "value": {"action": "show_detail", "project_id": project.project_id},
                 }
@@ -263,8 +381,7 @@ class ProjectBuilder:
             elements.extend(build_responsive_layout(buttons))
             elements.append({"tag": "hr"})
 
-        # Remove last hr if it's not needed (but we add pagination so maybe keep it)
-        # Actually standard practice is elements.pop() then add footer buttons
+        # Remove last hr
         if elements and elements[-1].get("tag") == "hr":
             elements.pop()
 
@@ -274,7 +391,7 @@ class ProjectBuilder:
             pagination_buttons.append(
                 {
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "⬅️ 上一页"},
+                    "text": {"tag": "plain_text", "content": UI_TEXT["project_board_btn_prev"]},
                     "type": "default",
                     "value": {"action": "switch_board_page", "page": page - 1},
                 }
@@ -284,7 +401,7 @@ class ProjectBuilder:
             pagination_buttons.append(
                 {
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "下一页 ➡️"},
+                    "text": {"tag": "plain_text", "content": UI_TEXT["project_board_btn_next"]},
                     "type": "default",
                     "value": {"action": "switch_board_page", "page": page + 1},
                 }
@@ -297,7 +414,7 @@ class ProjectBuilder:
                 elements.append(
                     {
                         "tag": "markdown",
-                        "content": f"第 {page}/{total_pages} 页",
+                        "content": UI_TEXT["project_board_page_info"].format(page=page, total=total_pages),
                         "text_align": "center",
                         "text_size": "notation",
                     }
@@ -309,13 +426,13 @@ class ProjectBuilder:
                 [
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "➕ 新建项目"},
+                        "text": {"tag": "plain_text", "content": UI_TEXT["project_board_btn_new"]},
                         "type": "default",
                         "value": {"action": "new_project_prompt"},
                     },
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": "🔄 刷新"},
+                        "text": {"tag": "plain_text", "content": UI_TEXT["project_board_btn_refresh"]},
                         "type": "default",
                         "value": {"action": "refresh_board"},
                     },
@@ -323,7 +440,7 @@ class ProjectBuilder:
             )
         )
 
-        card = CoreBuilder._wrap_card("📋 项目看板", "blue", elements)
+        card = CoreBuilder._wrap_card(board_title, "blue", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
 
     @staticmethod
@@ -354,18 +471,27 @@ class ProjectBuilder:
         ]
 
         if suggestions:
-            suggestion_text = "💡 **建议下一步:**\n" + "\n".join(f"• {s}" for s in suggestions)
+            suggestion_text = UI_TEXT["project_notif_suggestion_header"] + "\n" + "\n".join(f"• {s}" for s in suggestions)
             elements.append({"tag": "markdown", "content": suggestion_text})
 
         if buttons:
             elements.extend(build_responsive_layout(buttons[:4]))
         else:
+            effective_mode = None
+            if project:
+                if getattr(project, "ttadk_mode", False):
+                    effective_mode = InteractionMode.TTADK
+                elif getattr(project, "claude_mode", False):
+                    effective_mode = InteractionMode.CLAUDE
+                elif getattr(project, "gemini_mode", False):
+                    effective_mode = InteractionMode.GEMINI
+                elif getattr(project, "coco_mode", False):
+                    effective_mode = InteractionMode.COCO
             elements.extend(
                 build_responsive_layout(
                     CoreBuilder._build_footer_buttons(
                         project,
-                        is_coco_mode=project.coco_mode,
-                        is_claude_mode=project.claude_mode,
+                        mode=effective_mode,
                     )
                 )
             )
@@ -394,14 +520,14 @@ class ProjectBuilder:
 
         if not snapshot:
             return ProjectBuilder.build_project_response_card(
-                project, f"{mode_name} 模式", "没有可恢复的会话", show_buttons=True
+                project, f"{mode_name} 模式", UI_TEXT["project_resume_no_session"], show_buttons=True
             )
 
         content = (
-            f"🔄 检测到未完成的 {mode_name} 会话\n\n"
-            f"• 会话 ID: `{snapshot.session_id}`\n"
-            f"• 对话数: {snapshot.query_count} 条\n"
-            f"• 最后对话: {snapshot.last_query}"
+            UI_TEXT["project_resume_detected"].format(mode=mode_name) + "\n\n"
+            f"• " + UI_TEXT["project_resume_session_id"].format(id=snapshot.session_id) + "\n"
+            f"• " + UI_TEXT["project_resume_query_count"].format(count=snapshot.query_count) + "\n"
+            f"• " + UI_TEXT["project_resume_last_query"].format(query=snapshot.last_query)
         )
 
         resume_action = f"resume_{mode}"
@@ -411,7 +537,7 @@ class ProjectBuilder:
             apply_compact_style(
                 {
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "🔄 恢复会话"},
+                    "text": {"tag": "plain_text", "content": UI_TEXT["project_resume_btn_resume"]},
                     "type": "primary",
                     "value": {
                         "action": resume_action,
@@ -423,7 +549,7 @@ class ProjectBuilder:
             apply_compact_style(
                 {
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "🆕 开始新会话"},
+                    "text": {"tag": "plain_text", "content": UI_TEXT["project_resume_btn_new"]},
                     "type": "default",
                     "value": {
                         "action": new_action,
@@ -433,7 +559,15 @@ class ProjectBuilder:
             ),
         ]
 
-        header_title = CoreBuilder._build_header_title(project, is_coco_mode=is_coco, is_claude_mode=is_claude, is_ttadk_mode=is_ttadk)
+        effective_mode = None
+        if is_ttadk:
+            effective_mode = InteractionMode.TTADK
+        elif is_claude:
+            effective_mode = InteractionMode.CLAUDE
+        elif is_coco:
+            effective_mode = InteractionMode.COCO
+            
+        header_title = CoreBuilder._build_header_title(project, mode=effective_mode)
 
         elements = [
             CoreBuilder._build_directory_element(project),
@@ -468,18 +602,16 @@ class ProjectBuilder:
     ) -> tuple[str, str]:
         theme = get_theme(project.theme_color)
 
-        content = (
-            f"✅ 项目 **{project.project_name}** 创建成功\n\n"
-            f"• 项目 ID: `{project.project_id}`\n"
-            f"• 路径: `{project.root_path}`\n"
-            f"• 主题色: {project.emoji_prefix} {project.theme_color}"
-        )
+        content = UI_TEXT["project_create_success"].format(
+            name=project.project_name, path=project.root_path
+        ) + f"\n• " + UI_TEXT["project_id_label"].format(id=project.project_id) + \
+            f"\n• {UI_TEXT['system_theme_color_label']}{project.emoji_prefix} {project.theme_color}"
 
         buttons = [
             apply_compact_style(
                 {
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "🤖 开始 Coco"},
+                    "text": {"tag": "plain_text", "content": UI_TEXT["project_btn_start_coco"]},
                     "type": "primary",
                     "value": {"action": "enter_coco", "project_id": project.project_id},
                 }
@@ -487,7 +619,7 @@ class ProjectBuilder:
             apply_compact_style(
                 {
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "🔮 开始 Claude"},
+                    "text": {"tag": "plain_text", "content": UI_TEXT["project_btn_start_claude"]},
                     "type": "default",
                     "value": {"action": "enter_claude", "project_id": project.project_id},
                 }
@@ -495,7 +627,7 @@ class ProjectBuilder:
             apply_compact_style(
                 {
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "📋 项目看板"},
+                    "text": {"tag": "plain_text", "content": UI_TEXT["project_board_title"]},
                     "type": "default",
                     "value": {"action": "show_board"},
                 }
@@ -507,5 +639,20 @@ class ProjectBuilder:
         ]
         elements.extend(build_responsive_layout(buttons))
 
-        card = CoreBuilder._wrap_card("🎉 新项目已创建", theme.header_template, elements)
+        card = CoreBuilder._wrap_card(UI_TEXT["project_created_title"], theme.header_template, elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
+    def build_project_switch_notification_card(
+        project: ProjectContext,
+        restore_info: dict,
+    ) -> tuple[str, str]:
+        """Consolidates switch message, context restoration info, and resume session logic."""
+        context_info = ProjectBuilder.build_restore_info_content(restore_info)
+        
+        if project.coco_session_snapshot and project.coco_session_snapshot.is_resumable:
+            return ProjectBuilder.build_coco_resume_card(project)
+        elif project.claude_session_snapshot and project.claude_session_snapshot.is_resumable:
+            return ProjectBuilder.build_claude_resume_card(project)
+        else:
+            return ProjectBuilder.build_project_switch_card(project, context_info)

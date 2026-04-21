@@ -5,6 +5,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Optional
+from src.mode.manager import InteractionMode
 
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
@@ -33,10 +34,7 @@ class StreamingCard:
     project_id: Optional[str] = None
     reply_to_message_id: Optional[str] = None
     image_keys: Optional[list[str]] = None
-    is_coco_mode: bool = True
-    is_claude_mode: bool = False
-    is_ttadk_mode: bool = False
-    is_smart_mode: bool = False
+    mode: Optional[InteractionMode] = None
     reply_in_thread: Optional[bool] = None  # 显式指定时优先使用
     thread_root_id: Optional[str] = None
 
@@ -321,16 +319,13 @@ class StreamingCardManager:
     def _resolve_title_and_template(
         self,
         project_name: Optional[str],
-        is_coco_mode: bool,
-        is_claude_mode: bool,
-        is_ttadk_mode: bool = False,
+        mode: Optional[InteractionMode] = None,
         ttadk_tool_name: Optional[str] = None,
         ttadk_model_name: Optional[str] = None,
     ) -> tuple[str, str]:
         """根据模式和项目名生成标题与头部颜色模板。"""
         return resolve_title_and_template(
-            project_name, is_coco_mode, is_claude_mode,
-            is_ttadk_mode=is_ttadk_mode,
+            project_name, mode=mode,
             ttadk_tool_name=ttadk_tool_name,
             ttadk_model_name=ttadk_model_name,
         )
@@ -345,10 +340,7 @@ class StreamingCardManager:
         project_id: Optional[str] = None,
         initial_content: str = "🔄 正在思考...",
         element_id: str = "content_md",
-        is_coco_mode: bool = True,
-        is_claude_mode: bool = False,
-        is_ttadk_mode: bool = False,
-        is_smart_mode: bool = False,
+        mode: Optional[InteractionMode] = InteractionMode.COCO,
         reply_to_message_id: Optional[str] = None,
         image_keys: Optional[list[str]] = None,
         reply_in_thread: Optional[bool] = None,
@@ -357,8 +349,7 @@ class StreamingCardManager:
         thread_root_id: Optional[str] = None,
     ) -> Optional[StreamingCard]:
         title, header_template = self._resolve_title_and_template(
-            project_name, is_coco_mode, is_claude_mode,
-            is_ttadk_mode=is_ttadk_mode,
+            project_name, mode=mode,
             ttadk_tool_name=ttadk_tool_name,
             ttadk_model_name=ttadk_model_name,
         )
@@ -372,10 +363,7 @@ class StreamingCardManager:
             project_id=project_id,
             reply_to_message_id=reply_to_message_id,
             image_keys=image_keys,
-            is_coco_mode=is_coco_mode,
-            is_claude_mode=is_claude_mode,
-            is_ttadk_mode=is_ttadk_mode,
-            is_smart_mode=is_smart_mode,
+            mode=mode,
             reply_in_thread=reply_in_thread,
             thread_root_id=thread_root_id,
             last_content=initial_content,
@@ -391,17 +379,14 @@ class StreamingCardManager:
         project_name: Optional[str] = None,
         project_path: Optional[str] = None,
         project_id: Optional[str] = None,
-        is_coco_mode: bool = True,
-        is_claude_mode: bool = False,
-        is_ttadk_mode: bool = False,
-        is_smart_mode: bool = False,
+        mode: Optional[InteractionMode] = InteractionMode.COCO,
         reply_to_message_id: Optional[str] = None,
         image_keys: Optional[list[str]] = None,
         reply_in_thread: Optional[bool] = None,
     ) -> Optional[str]:
         """非流式发送：直接发送 schema 2.0 card JSON（不依赖 CardKit 卡片实体）。"""
-        title, header_template = self._resolve_title_and_template(project_name, is_coco_mode, is_claude_mode, is_ttadk_mode=is_ttadk_mode)
-        buttons = self._build_buttons(is_coco_mode, project_id, is_claude_mode, is_ttadk_mode)
+        title, header_template = self._resolve_title_and_template(project_name, mode=mode)
+        buttons = self._build_buttons(mode, project_id)
         card_json = self._build_card_json(
             title=title,
             header_template=header_template,
@@ -419,7 +404,7 @@ class StreamingCardManager:
                 # 优先使用显式传入的 reply_in_thread 参数
                 effective_reply_in_thread = reply_in_thread
                 if effective_reply_in_thread is None:
-                    if is_smart_mode:
+                    if mode == InteractionMode.SMART:
                         effective_reply_in_thread = self._settings.smart_reply_mode == "thread"
                     else:
                         effective_reply_in_thread = self._settings.default_reply_mode == "thread"
@@ -463,7 +448,7 @@ class StreamingCardManager:
     # ---- 按钮构建 ----
 
     def _build_buttons(
-        self, is_coco_mode: bool, project_id: Optional[str] = None, is_claude_mode: bool = False, is_ttadk_mode: bool = False,
+        self, mode: Optional[InteractionMode] = None, project_id: Optional[str] = None,
         *, thread_root_id: Optional[str] = None,
     ) -> list[dict]:
         effective_thread_root_id = thread_root_id
@@ -473,7 +458,7 @@ class StreamingCardManager:
                 effective_thread_root_id = get_current_thread_id()
             except Exception:
                 pass
-        return build_mode_buttons(is_coco_mode, project_id, is_claude_mode, is_ttadk_mode, thread_root_id=effective_thread_root_id)
+        return build_mode_buttons(mode, project_id, thread_root_id=effective_thread_root_id)
 
     def _build_button_elements(self, buttons: list[dict], layout: str = "responsive") -> list[dict]:
         """为卡片生成按钮区。Delegates to shared.build_responsive_layout."""
@@ -528,7 +513,7 @@ class StreamingCardManager:
     def send_streaming_card(self, card: StreamingCard) -> Optional[str]:
         self._maybe_cleanup()
         try:
-            buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode, card.is_ttadk_mode, thread_root_id=card.thread_root_id)
+            buttons = self._build_buttons(card.mode, card.project_id, thread_root_id=card.thread_root_id)
             # Ensure full_content is initialized (for pagination after send).
             if not card.full_content:
                 card.full_content = card.last_content or ""
@@ -575,7 +560,7 @@ class StreamingCardManager:
                 # 优先使用显式传入的 reply_in_thread 参数
                 effective_reply_in_thread = card.reply_in_thread
                 if effective_reply_in_thread is None:
-                    if card.is_smart_mode:
+                    if card.mode == InteractionMode.SMART:
                         effective_reply_in_thread = self._settings.smart_reply_mode == "thread"
                     else:
                         effective_reply_in_thread = self._settings.default_reply_mode == "thread"
@@ -729,7 +714,7 @@ class StreamingCardManager:
                         card.last_content_len = len(content)
                         continue
 
-                buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode, card.is_ttadk_mode, thread_root_id=card.thread_root_id)
+                buttons = self._build_buttons(card.mode, card.project_id, thread_root_id=card.thread_root_id)
 
                 if has_prev:
                     buttons.append(
@@ -811,7 +796,7 @@ class StreamingCardManager:
                 card.full_content = final_text
             display, has_prev, has_more = self._slice_window(card, final_text)
             normalized = _normalize_streaming_markdown(display, is_final=True, max_chars=0)
-            buttons = self._build_buttons(card.is_coco_mode, card.project_id, card.is_claude_mode, card.is_ttadk_mode, thread_root_id=card.thread_root_id)
+            buttons = self._build_buttons(card.mode, card.project_id, thread_root_id=card.thread_root_id)
 
             if has_prev:
                 buttons.append(

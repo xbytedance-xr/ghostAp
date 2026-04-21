@@ -790,6 +790,8 @@ def parse_models_cache_json(
 
 @dataclass
 class TTADKTool:
+    """TTADK 工具定义（用于工具选择与状态展示）。"""
+
     name: str
     description: str = ""
     is_default: bool = False
@@ -798,10 +800,40 @@ class TTADKTool:
 
 @dataclass
 class TTADKModel:
+    """TTADK 模型定义（真实模型 ID + 展示元信息）。"""
+
     name: str  # 真实模型名称（如 gpt-5.2-codex-ttadk）
     description: str = ""  # 描述
     is_default: bool = False
     friendly_name: str = ""  # 友好显示名称（如 GPT 5.2 Codex (Recommended)）
+
+
+@dataclass
+class ACPToolOption:
+    """ACP 工具选择 UI 选项模型。
+
+    说明：
+    - 与 ACP 协议无关，仅用于卡片/命令层的工具选择展示；
+    - 下游卡片/handler 只依赖 name/description/is_default/emoji 这几个字段；
+    - 放在 ttadk.models 中是为了与 TTADKTool 等工具/模型定义靠近，避免污染 ACP 核心模型层。
+    """
+
+    name: str
+    description: str = ""
+    is_default: bool = False
+    emoji: str = "🤖"
+
+
+@dataclass
+class ACPModelOption:
+    """ACP 模型选择 UI 选项模型。
+
+    同样只承载展示/选择语义，不参与 ACP 协议结构体定义。
+    """
+
+    name: str
+    description: str = ""
+    is_default: bool = False
 
 
 @dataclass(frozen=True)

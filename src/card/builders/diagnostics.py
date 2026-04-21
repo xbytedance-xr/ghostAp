@@ -1,0 +1,364 @@
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING, Optional
+
+from src.card.styles import UI_TEXT
+from src.card.builders.core import CoreBuilder
+from src.card.models import EngineStatusEntry
+
+if TYPE_CHECKING:
+    from src.tasking.scheduler import TaskState
+
+logger = logging.getLogger(__name__)
+
+
+class DiagnosticsBuilder:
+    """Diagnostics-related card building utilities."""
+
+    @staticmethod
+    def _get_status_emoji(status) -> str:
+        val = getattr(status, "value", status)
+        return {
+            "queued": "⏳",
+            "running": "🔄",
+            "succeeded": "✅",
+            "failed": "❌",
+            "canceled": "⛔",
+        }.get(str(val), "❓")
+
+    @staticmethod
+    def build_task_board_content(
+        tasks: list[TaskState],
+        mode_display: str = "",
+        groups: Optional[dict[str, list[TaskState]]] = None,
+        project_manager = None,
+    ) -> str:
+        """Build the Markdown content for task board."""
+        lines = []
+        if mode_display:
+            lines.append(UI_TEXT["diag_current_mode"].format(mode=mode_display))
+            lines.append("")
+
+        if not tasks:
+            lines.append(UI_TEXT["diag_no_active_tasks"])
+        elif groups is not None:
+            # Multi-project grouped view
+            for pid, items in groups.items():
+                proj_name = UI_TEXT["system_no_project_display"]
+                if pid and project_manager:
+                    try:
+                        p = project_manager.get_project(pid)
+                        if p:
+                            proj_name = p.project_name
+                    except Exception:
+                        pass
+                
+                id_info = UI_TEXT["diag_project_id_fmt"].format(id=pid) if pid else ""
+                lines.append(UI_TEXT["diag_project_header"].format(
+                    name=proj_name, id_info=id_info
+                ))
+                
+                for st in items[:10]:
+                    emoji = DiagnosticsBuilder._get_status_emoji(st.status)
+                    pct = UI_TEXT["diag_task_pct_fmt"].format(pct=st.progress_percent) if st.progress_percent is not None else ""
+                    msg = UI_TEXT["diag_task_msg_fmt"].format(msg=st.progress_message) if st.progress_message else ""
+                    lines.append(UI_TEXT["diag_task_line"].format(
+                        emoji=emoji,
+                        run_id=st.run_id,
+                        name=st.spec.name,
+                        task_type=st.spec.task_type,
+                        pct=pct,
+                        msg=msg
+                    ))
+        else:
+            # Single project list view
+            for st in tasks:
+                emoji = DiagnosticsBuilder._get_status_emoji(st.status)
+                pct = UI_TEXT["diag_task_pct_fmt"].format(pct=st.progress_percent) if st.progress_percent is not None else ""
+                msg = UI_TEXT["diag_task_msg_fmt"].format(msg=st.progress_message) if st.progress_message else ""
+                lines.append(UI_TEXT["diag_task_line"].format(
+                    emoji=emoji,
+                    run_id=st.run_id,
+                    name=st.spec.name,
+                    task_type=st.spec.task_type,
+                    pct=pct,
+                    msg=msg
+                ))
+
+        return "\n".join(lines) if lines else UI_TEXT["diag_no_tasks"]
+
+    @staticmethod
+    def format_engine_status_info(mode: str, p: any) -> str:
+        """Format the 'info' string for different engines (Deep/Loop/Spec)."""
+        from src.utils.text import format_duration
+        dur = format_duration(p.duration()) if p.duration() else ""
+
+        deep_label = UI_TEXT["diag_engine_deep"]
+        loop_label = UI_TEXT["diag_engine_loop"]
+        spec_label = UI_TEXT["diag_engine_spec"]
+
+        if mode == deep_label:
+            return f"{dur}" if dur else (p.status.value if hasattr(p.status, "value") else str(p.status))
+
+        if mode == loop_label:
+            criteria = f"{p.satisfied_count}/{p.total_criteria}" if p.total_criteria else ""
+            parts = [UI_TEXT["diag_status_iteration"].format(iteration=p.current_iteration)]
+            if criteria:
+                parts.append(UI_TEXT["diag_status_criteria"].format(criteria=criteria))
+            if dur:
+                parts.append(dur)
+            return " · ".join(parts) if parts else (p.status.value if hasattr(p.status, "value") else str(p.status))
+
+        if mode == spec_label:
+            criteria = f"{p.satisfied_count}/{p.total_criteria}" if p.total_criteria else ""
+            phase = ""
+            if p.current_cycle:
+                phase = p.current_cycle.phase.display_name
+            parts = [UI_TEXT["diag_status_cycle"].format(cycle=p.current_cycle_number)]
+            if phase:
+                parts.append(phase)
+            if criteria:
+                parts.append(UI_TEXT["diag_status_criteria"].format(criteria=criteria))
+            if dur:
+                parts.append(dur)
+            return " · ".join(parts) if parts else (p.status.value if hasattr(p.status, "value") else str(p.status))
+
+        return ""
+
+    @staticmethod
+    def build_unified_status_content(
+        entries: list[EngineStatusEntry],
+        include_done: bool = False,
+        project_name: str = ""
+    ) -> str:
+        """Build the Markdown content for unified status across all engines."""
+        if not entries:
+            content = UI_TEXT["diag_no_engine_tasks"]
+            if project_name:
+                content += UI_TEXT["project_current_header"].format(name=project_name) + "\n\n"
+            content += UI_TEXT["diag_engine_launch_hints"]
+            return content
+
+        status_emoji_map = {
+            "idle": "⏳",
+            "planning": "🧠",
+            "executing": "🔄",
+            "running": "🔄",
+            "analyzing": "🧠",
+            "paused": "⏸️",
+            "completed": "✅",
+            "failed": "❌",
+            "aborted": "⚠️",
+            "clarifying": "❓",
+        }
+
+        lines = [UI_TEXT["diag_unified_status_header"].format(count=len(entries))]
+        for e in entries:
+            emoji = status_emoji_map.get(e.status, "❓")
+            tid_short = f" `{e.task_id[-12:]}`" if e.task_id else ""
+            lines.append(UI_TEXT["diag_engine_line"].format(
+                emoji=emoji,
+                mode=e.mode,
+                name=e.name,
+                tid=tid_short,
+                info=e.info
+            ))
+
+        if not include_done:
+            lines.append(UI_TEXT["diag_status_all_hint"])
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def build_task_detail_content(state: TaskState) -> str:
+        """Build the Markdown content for task detail."""
+        emoji = DiagnosticsBuilder._get_status_emoji(state.status)
+        lines = [
+            UI_TEXT["diag_task_name_label"].format(name=state.spec.name),
+            UI_TEXT["diag_task_type_label"].format(type=state.spec.task_type),
+            UI_TEXT["diag_task_status_label"].format(
+                emoji=emoji, status=state.status.value if hasattr(state.status, "value") else state.status
+            ),
+            UI_TEXT["diag_task_run_id_label"].format(id=state.run_id),
+        ]
+        if state.spec.task_id:
+            lines.append(UI_TEXT["diag_task_id_label"].format(id=state.spec.task_id))
+        if state.progress_message:
+            lines.append(UI_TEXT["diag_task_progress_label"].format(msg=state.progress_message))
+        return "\n".join(lines)
+
+    @staticmethod
+    def build_diff_report_content(
+        project,
+        from_v,
+        to_v,
+        entries: list,
+        show_current: bool = False,
+    ) -> str:
+        """Build the Markdown content for context diff report."""
+
+        def _short(s: str, n: int = 180) -> str:
+            s = (s or "").replace("\r", " ").replace("\n", " ")
+            return s if len(s) <= n else (s[: n - 1] + "…")
+
+        lines = [UI_TEXT["diag_diff_title"]]
+        lines.append(
+            UI_TEXT["diag_diff_project_label"].format(
+                name=project.project_name, id=project.project_id
+            )
+        )
+        if show_current:
+            lines.append(
+                UI_TEXT["diag_diff_range_current_label"].format(
+                    from_v=from_v.version_number
+                )
+            )
+        elif to_v:
+            lines.append(
+                UI_TEXT["diag_diff_range_label"].format(
+                    from_v=from_v.version_number, to_v=to_v.version_number
+                )
+            )
+
+        lines.append(
+            UI_TEXT["diag_diff_start_reason_label"].format(
+                reason=_short(from_v.reason, 120)
+            )
+        )
+        if to_v:
+            lines.append(
+                UI_TEXT["diag_diff_end_reason_label"].format(
+                    reason=_short(to_v.reason, 120)
+                )
+            )
+        lines.append(UI_TEXT["diag_diff_added_entries_label"].format(count=len(entries)))
+
+        if not entries:
+            lines.append("")
+            lines.append(UI_TEXT["diag_diff_no_entries"])
+            return "\n".join(lines)
+
+        from src.project import ContextEntryType
+
+        file_changes, mode_changes, deep_results, summaries, conversations, others = [], [], [], [], [], []
+        for e in entries:
+            et = getattr(e, "entry_type", None)
+            if et == ContextEntryType.FILE_CHANGE:
+                file_changes.append(e)
+            elif et == ContextEntryType.MODE_TRANSITION:
+                mode_changes.append(e)
+            elif et == ContextEntryType.DEEP_ENGINE_RESULT:
+                deep_results.append(e)
+            elif et == ContextEntryType.AI_SUMMARY:
+                summaries.append(e)
+            elif et == ContextEntryType.CONVERSATION:
+                conversations.append(e)
+            else:
+                others.append(e)
+
+        if file_changes:
+            lines.append("")
+            uniq, seen = [], set()
+            for e in file_changes:
+                p = (e.content or "").strip()
+                if not p or p in seen:
+                    continue
+                seen.add(p)
+                uniq.append(p)
+            lines.append(
+                UI_TEXT["diag_diff_file_changes_header"].format(count=len(uniq))
+            )
+            for p in uniq[:20]:
+                lines.append(f"- `{p}`")
+
+        if deep_results:
+            lines.append("")
+            lines.append(
+                UI_TEXT["diag_diff_deep_results_header"].format(count=len(deep_results))
+            )
+            for e in deep_results[:5]:
+                name = (e.metadata or {}).get("name") or "unknown"
+                tasks = (e.metadata or {}).get("tasks") or []
+                done = sum(1 for t in tasks if isinstance(t, dict) and t.get("status") == "completed")
+                lines.append(
+                    UI_TEXT["diag_diff_deep_item"].format(
+                        name=name, done=done, total=len(tasks)
+                    )
+                )
+
+        if mode_changes:
+            lines.append("")
+            lines.append(
+                UI_TEXT["diag_diff_mode_changes_header"].format(count=len(mode_changes))
+            )
+            for e in mode_changes[-10:]:
+                reason = (e.metadata or {}).get("reason", "")
+                lines.append(f"- {_short(e.content, 120)}{f'（{_short(reason, 80)}）' if reason else ''}")
+
+        if summaries:
+            lines.append("")
+            lines.append(
+                UI_TEXT["diag_diff_summaries_header"].format(count=len(summaries))
+            )
+            for e in summaries[-5:]:
+                lines.append(f"- {_short(e.content, 200)}")
+
+        if conversations:
+            lines.append("")
+            lines.append(
+                UI_TEXT["diag_diff_conversations_header"].format(count=len(conversations))
+            )
+            for e in conversations[-8:]:
+                role = (e.metadata or {}).get("role", "?")
+                lines.append(f"- `{role}`: {_short(e.content, 160)}")
+
+        if others:
+            lines.append("")
+            lines.append(UI_TEXT["diag_diff_others_header"].format(count=len(others)))
+            for e in others[:10]:
+                et = getattr(e, "entry_type", None)
+                sm = getattr(e, "source_mode", None)
+                et_val = getattr(et, "value", str(et))
+                sm_val = getattr(sm, "value", str(sm))
+                lines.append(f"- `{et_val}`/`{sm_val}`: {_short(e.content, 160)}")
+
+        content = "\n".join(lines)
+        if len(content) > 7000:
+            content = content[:7000] + UI_TEXT["diag_diff_truncated"]
+        return content
+
+    @staticmethod
+    def build_message_trace_content(data: dict) -> str:
+        """Build the Markdown content for message trace results."""
+        lines = []
+        
+        # Origin info
+        origin = data.get("origin_id")
+        req_id = data.get("request_id")
+        pid = data.get("project_id")
+        
+        if origin:
+            lines.append(f"{UI_TEXT['diag_label_origin_id']}: `{origin}`")
+        if req_id:
+            lines.append(f"{UI_TEXT['diag_label_request_id']}: `{req_id}`")
+        if pid:
+            lines.append(f"{UI_TEXT['diag_label_project_id']}: `{pid}`")
+            
+        # Replies
+        replies = data.get("replies", [])
+        if replies:
+            lines.append("")
+            lines.append(UI_TEXT["diag_trace_replies_header"].format(count=len(replies)))
+            for rid in replies:
+                lines.append(f"- `{rid}`")
+                
+        # Run IDs
+        runs = data.get("run_ids", [])
+        if runs:
+            lines.append("")
+            lines.append(UI_TEXT["diag_trace_runs_header"].format(count=len(runs)))
+            for run_id in runs:
+                lines.append(f"- `{run_id}`")
+                
+        return "\n".join(lines)

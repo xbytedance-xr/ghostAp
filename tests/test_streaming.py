@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.card.streaming import StreamingCard, StreamingCardManager
+from src.mode.manager import InteractionMode
 
 
 class TestStreamingCard:
@@ -43,7 +44,7 @@ class TestStreamingCardManager:
         return StreamingCardManager(mock_client)
 
     def test_build_buttons_coco_mode(self, manager):
-        buttons = manager._build_buttons(is_coco_mode=True, project_id="proj_123")
+        buttons = manager._build_buttons(mode=InteractionMode.COCO, project_id="proj_123")
 
         assert len(buttons) == 2
         assert buttons[0]["text"]["content"] == "🚪 退出Coco"
@@ -54,7 +55,7 @@ class TestStreamingCardManager:
         assert buttons[1].get("size") == "medium"
 
     def test_build_buttons_smart_mode(self, manager):
-        buttons = manager._build_buttons(is_coco_mode=False, project_id="proj_123")
+        buttons = manager._build_buttons(mode=InteractionMode.SMART, project_id="proj_123")
 
         assert len(buttons) == 4
         actions = [b["behaviors"][0]["value"]["action"] for b in buttons]
@@ -70,7 +71,7 @@ class TestStreamingCardManager:
             project_path="/tmp/test",
             project_id="proj_456",
             initial_content="思考中...",
-            is_coco_mode=True,
+            mode=InteractionMode.COCO,
         )
 
         assert card is not None
@@ -87,7 +88,7 @@ class TestStreamingCardManager:
             project_path="/tmp/test",
             project_id="proj_456",
             initial_content="思考中...",
-            is_coco_mode=True,
+            mode=InteractionMode.COCO,
             image_keys=["img_v2_abc", "img_v2_def"],
         )
 
@@ -101,8 +102,7 @@ class TestStreamingCardManager:
             project_path="/tmp/test",
             project_id="proj_456",
             initial_content="thinking...",
-            is_coco_mode=False,
-            is_claude_mode=True,
+            mode=InteractionMode.CLAUDE,
         )
         assert card is not None
         assert card.header_template == "purple"
@@ -304,27 +304,27 @@ class TestStreamingCardManager:
     # ---- _resolve_title_and_template ----
 
     def test_resolve_title_coco_with_project(self, manager):
-        title, template = manager._resolve_title_and_template("MyProject", is_coco_mode=True, is_claude_mode=False)
+        title, template = manager._resolve_title_and_template("MyProject", mode=InteractionMode.COCO)
         assert title == "🤖 MyProject · Coco"
         assert template == "blue"
 
     def test_resolve_title_claude_with_project(self, manager):
-        title, template = manager._resolve_title_and_template("MyProject", is_coco_mode=False, is_claude_mode=True)
+        title, template = manager._resolve_title_and_template("MyProject", mode=InteractionMode.CLAUDE)
         assert title == "🔮 MyProject · Claude"
         assert template == "purple"
 
     def test_resolve_title_smart_with_project(self, manager):
-        title, template = manager._resolve_title_and_template("MyProject", is_coco_mode=False, is_claude_mode=False)
+        title, template = manager._resolve_title_and_template("MyProject", mode=InteractionMode.SMART)
         assert title == "🧠 MyProject"
         assert template == "turquoise"
 
     def test_resolve_title_coco_no_project(self, manager):
-        title, template = manager._resolve_title_and_template(None, is_coco_mode=True, is_claude_mode=False)
+        title, template = manager._resolve_title_and_template(None, mode=InteractionMode.COCO)
         assert title == "🤖 编程模式"
         assert template == "blue"
 
     def test_resolve_title_claude_no_project(self, manager):
-        title, template = manager._resolve_title_and_template(None, is_coco_mode=False, is_claude_mode=True)
+        title, template = manager._resolve_title_and_template(None, mode=InteractionMode.CLAUDE)
         assert title == "🔮 Claude 编程模式"
         assert template == "purple"
 
@@ -464,7 +464,7 @@ class TestStreamingCardManager:
             project_name="TestProject",
             project_path="/tmp/test",
             project_id="proj_456",
-            is_coco_mode=True,
+            mode=InteractionMode.COCO,
             reply_to_message_id="original_msg_id",
         )
 
@@ -486,7 +486,7 @@ class TestStreamingCardManager:
         message_id = manager.create_and_send_card(
             chat_id="chat_123",
             content="内容",
-            is_claude_mode=True,
+            mode=InteractionMode.CLAUDE,
         )
 
         assert message_id == "msg_create_456"
@@ -527,8 +527,7 @@ class TestStreamingCardManager:
             chat_id="chat_123",
             content="Claude 回复",
             project_name="ProjectX",
-            is_coco_mode=False,
-            is_claude_mode=True,
+            mode=InteractionMode.CLAUDE,
         )
 
         assert message_id == "msg_claude"
@@ -562,7 +561,7 @@ class TestStreamingCardManager:
         assert len(content_el) == 1
 
     def test_build_buttons_claude_mode(self, manager):
-        buttons = manager._build_buttons(is_coco_mode=False, project_id="proj_123", is_claude_mode=True)
+        buttons = manager._build_buttons(mode=InteractionMode.CLAUDE, project_id="proj_123")
 
         assert len(buttons) == 2
         assert buttons[0]["text"]["content"] == "🚪 退出Claude"

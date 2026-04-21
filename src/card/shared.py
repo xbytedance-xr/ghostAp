@@ -2,6 +2,8 @@
 
 from typing import Optional
 
+from src.mode.manager import InteractionMode
+
 from ..config import get_settings
 from .styles import BUTTON_CONFIG, THEMES, ProjectTheme
 
@@ -43,26 +45,23 @@ def _create_mode_button(key: str, action: str, project_id: Optional[str] = None,
 
 
 def build_mode_buttons(
-    is_coco_mode: bool,
+    mode: Optional[InteractionMode] = None,
     project_id: Optional[str] = None,
-    is_claude_mode: bool = False,
-    is_ttadk_mode: bool = False,
-    is_gemini_mode: bool = False,
     thread_root_id: Optional[str] = None,
 ) -> list[dict]:
     """Build mode-specific footer buttons (exit/enter mode + switch project)."""
     buttons = []
 
-    if is_claude_mode:
+    if mode == InteractionMode.CLAUDE:
         buttons.append(_create_mode_button("exit_claude", "exit_claude", project_id, thread_root_id))
         buttons.append(_create_mode_button("switch_project", "switch_project"))
-    elif is_coco_mode:
+    elif mode == InteractionMode.COCO:
         buttons.append(_create_mode_button("exit_coco", "exit_coco", project_id, thread_root_id))
         buttons.append(_create_mode_button("switch_project", "switch_project"))
-    elif is_gemini_mode:
+    elif mode == InteractionMode.GEMINI:
         buttons.append(_create_mode_button("exit_gemini", "exit_gemini", project_id, thread_root_id))
         buttons.append(_create_mode_button("switch_project", "switch_project"))
-    elif is_ttadk_mode:
+    elif mode == InteractionMode.TTADK:
         buttons.append(_create_mode_button("switch_ttadk_tool", "show_ttadk_menu", project_id, thread_root_id))
         buttons.append(_create_mode_button("exit_ttadk", "exit_ttadk", project_id, thread_root_id))
         buttons.append(_create_mode_button("switch_project", "switch_project"))
@@ -113,51 +112,48 @@ def build_responsive_layout(buttons: list[dict]) -> list[dict]:
 
 def resolve_title_and_template(
     project_name: Optional[str],
-    is_coco_mode: bool,
-    is_claude_mode: bool,
+    mode: Optional[InteractionMode] = None,
     theme_color: Optional[str] = None,
-    is_ttadk_mode: bool = False,
-    is_gemini_mode: bool = False,
     ttadk_tool_name: Optional[str] = None,
     ttadk_model_name: Optional[str] = None,
 ) -> tuple[str, str]:
     """Resolve card title and header template based on mode and project name."""
-    if is_claude_mode:
+    if mode == InteractionMode.CLAUDE:
         mode_icon, header_template = "🔮", "purple"
-    elif is_coco_mode:
+    elif mode == InteractionMode.COCO:
         mode_icon, header_template = "🤖", "blue"
-    elif is_gemini_mode:
+    elif mode == InteractionMode.GEMINI:
         mode_icon, header_template = "✨", "turquoise"
-    elif is_ttadk_mode:
+    elif mode == InteractionMode.TTADK:
         mode_icon, header_template = "🎮", "orange"
     else:
         mode_icon, header_template = "🧠", "turquoise"
 
     # If a theme_color is provided (from project), use it for the template
-    if theme_color and not is_claude_mode and not is_coco_mode and not is_gemini_mode and not is_ttadk_mode:
+    if theme_color and mode not in [InteractionMode.CLAUDE, InteractionMode.COCO, InteractionMode.GEMINI, InteractionMode.TTADK]:
         header_template = get_theme(theme_color).header_template
 
-    ttadk_suffix = _build_ttadk_title_suffix(ttadk_tool_name, ttadk_model_name) if is_ttadk_mode else ""
+    ttadk_suffix = _build_ttadk_title_suffix(ttadk_tool_name, ttadk_model_name) if mode == InteractionMode.TTADK else ""
 
     if project_name:
-        if is_claude_mode:
+        if mode == InteractionMode.CLAUDE:
             title = f"🔮 {project_name} · Claude"
-        elif is_coco_mode:
+        elif mode == InteractionMode.COCO:
             title = f"🤖 {project_name} · Coco"
-        elif is_gemini_mode:
+        elif mode == InteractionMode.GEMINI:
             title = f"✨ {project_name} · Gemini"
-        elif is_ttadk_mode:
+        elif mode == InteractionMode.TTADK:
             title = f"🎮 {project_name} · TTADK{ttadk_suffix}"
         else:
             title = f"🧠 {project_name}"
     else:
-        if is_claude_mode:
+        if mode == InteractionMode.CLAUDE:
             mode_name = "Claude 编程模式"
-        elif is_coco_mode:
+        elif mode == InteractionMode.COCO:
             mode_name = "编程模式"
-        elif is_gemini_mode:
+        elif mode == InteractionMode.GEMINI:
             mode_name = "Gemini 编程模式"
-        elif is_ttadk_mode:
+        elif mode == InteractionMode.TTADK:
             mode_name = f"TTADK{ttadk_suffix}"
         else:
             mode_name = "智能模式"

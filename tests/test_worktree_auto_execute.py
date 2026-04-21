@@ -20,7 +20,15 @@ from src.card import CardBuilder
 from src.feishu.handlers.system import SystemHandler
 from src.project.context import ProjectContext
 from src.worktree_engine.manager import WorktreeManager
-from src.worktree_engine.models import WorktreeSelectionState, WorktreeRuntimeState, WorktreeUnit
+from src.worktree_engine.models import (
+    WorktreeJourneyState,
+    WorktreeJourneyStatus,
+    WorktreeRuntimeState,
+    WorktreeSelectionItem,
+    WorktreeSelectionState,
+    WorktreeUnit,
+    transition_journey_state,
+)
 from src.worktree_engine.selection import WorktreeToolOption
 
 
@@ -48,6 +56,98 @@ _FAKE_TOOLS = [
 
 
 # ---------------------------------------------------------------------------
+# Journey state machine tests (PENDING → AUTO_EXECUTING → RUNNING → COMPLETED/FAILED)
+# ---------------------------------------------------------------------------
+
+
+def test_journey_goal_created_transitions_to_pending():
+    """goal_created 事件将旅程从 IDLE 推进到 PENDING，并记录 goal。"""
+    state = WorktreeJourneyState()
+    assert state.status == WorktreeJourneyStatus.IDLE
+
+    new_state = transition_journey_state(state, event="goal_created", goal="实现登录功能")
+
+    assert new_state is not state
+    assert new_state.status == WorktreeJourneyStatus.PENDING
+    assert new_state.goal == "实现登录功能"
+    assert new_state.last_error == ""
+
+
+def test_journey_auto_execute_started_from_pending():
+    """auto_execute_started 仅允许在 IDLE/PENDING 时进入 AUTO_EXECUTING，并可设置 silent_mode。"""
+    state = WorktreeJourneyState(status=WorktreeJourneyStatus.PENDING, goal="添加单元测试")
+
+    new_state = transition_journey_state(
+        state,
+        event="auto_execute_started",
+        silent_mode=True,
+    )
+
+    assert new_state.status == WorktreeJourneyStatus.AUTO_EXECUTING
+    assert new_state.goal == "添加单元测试"
+    assert new_state.silent_mode is True
+    assert new_state.last_error == ""
+
+
+def test_journey_execution_flow_to_completed():
+    """从 PENDING → AUTO_EXECUTING → RUNNING → COMPLETED 的主干路径。"""
+    s0 = WorktreeJourneyState()
+    s1 = transition_journey_state(s0, event="goal_created", goal="重构数据库")
+    assert s1.status == WorktreeJourneyStatus.PENDING
+
+    s2 = transition_journey_state(s1, event="auto_execute_started")
+    assert s2.status == WorktreeJourneyStatus.AUTO_EXECUTING
+
+    s3 = transition_journey_state(s2, event="execution_started")
+    assert s3.status == WorktreeJourneyStatus.RUNNING
+
+    s4 = transition_journey_state(s3, event="execution_succeeded")
+    assert s4.status == WorktreeJourneyStatus.COMPLETED
+    assert s4.last_error == ""
+
+
+def test_journey_execution_failed_records_error():
+    """execution_failed 将状态置为 FAILED 并记录 last_error。"""
+    running = WorktreeJourneyState(status=WorktreeJourneyStatus.RUNNING, goal="自动修复 CI")
+
+    failed = transition_journey_state(
+        running,
+        event="execution_failed",
+        error="某个 worktree 单元执行失败",
+    )
+
+    assert failed.status == WorktreeJourneyStatus.FAILED
+    assert "失败" in failed.last_error
+
+
+def test_journey_illegal_transition_does_not_mutate_state():
+    """非法事件/迁移保持原状态不变，仅在 last_error 中留下提示。"""
+    state = WorktreeJourneyState(status=WorktreeJourneyStatus.IDLE)
+
+    new_state = transition_journey_state(state, event="execution_succeeded")
+
+    assert new_state.status == WorktreeJourneyStatus.IDLE
+    assert "非法状态迁移" in (new_state.last_error or "") or "未知旅程事件" in (new_state.last_error or "")
+
+
+def test_journey_reset_always_returns_idle_state():
+    """reset 事件总是返回一个全新的 IDLE 状态，用于清理一次旅程。"""
+    state = WorktreeJourneyState(
+        status=WorktreeJourneyStatus.FAILED,
+        goal="之前的任务",
+        last_error="error",
+        silent_mode=True,
+    )
+
+    reset_state = transition_journey_state(state, event="reset")
+
+    assert reset_state.status == WorktreeJourneyStatus.IDLE
+    assert reset_state.goal == ""
+    assert reset_state.last_error == ""
+    assert reset_state.silent_mode is False
+
+
+# ---------------------------------------------------------------------------
 # (a) /wt with goal parsed correctly
 # ---------------------------------------------------------------------------
 
@@ -64,12 +164,139 @@ def test_wt_command_with_goal_parsed():
 
     state = WorktreeManager.get_state(project)
     assert state.selection.pending_goal == "实现登录功能"
+    # journey 也应记录该目标，并处于 PENDING 阶段
+    assert state.journey.goal == "实现登录功能"
+    assert state.journey.status == WorktreeJourneyStatus.PENDING
 
     reply_mock.assert_called_once()
     card_json = reply_mock.call_args[0][1]
     assert "任务目标" in card_json
     assert "实现登录功能" in card_json
+    
 
+def test_apply_journey_event_updates_runtime_state_journey():
+    """WorktreeManager.apply_journey_event 应通过 transition_journey_state 更新 journey。"""
+    # 初始运行态
+    runtime_state = WorktreeRuntimeState()
+    assert runtime_state.journey.status == WorktreeJourneyStatus.IDLE
+
+    # 应用 goal_created 事件
+    WorktreeManager.apply_journey_event(
+        runtime_state,
+        event="goal_created",
+        goal="实现登录功能",
+    )
+
+    assert runtime_state.journey.status == WorktreeJourneyStatus.PENDING
+    assert runtime_state.journey.goal == "实现登录功能"
+
+    # 再次应用 auto_execute_started，打开 silent_mode
+    WorktreeManager.apply_journey_event(
+        runtime_state,
+        event="auto_execute_started",
+        silent_mode=True,
+    )
+
+    assert runtime_state.journey.status == WorktreeJourneyStatus.AUTO_EXECUTING
+    assert runtime_state.journey.silent_mode is True
+
+
+def test_apply_journey_event_handles_unknown_event_gracefully():
+    """未知事件不会抛异常，并在 journey.last_error 中留下标记。"""
+    runtime_state = WorktreeRuntimeState()
+
+    WorktreeManager.apply_journey_event(runtime_state, event="__unknown__")
+
+    assert runtime_state.journey.status == WorktreeJourneyStatus.IDLE
+    # transition_journey_state 会在 last_error 中写入 "未知旅程事件"，兜底逻辑不应覆盖该信息
+    assert runtime_state.journey.last_error
+
+
+def test_is_awaiting_goal_pending_with_ready_unit_returns_true():
+    """PENDING 且存在 ready 单元时，应视为等待用户目标输入。"""
+
+    state = WorktreeRuntimeState()
+    state.journey.status = WorktreeJourneyStatus.PENDING
+    state.units = [WorktreeUnit(unit_id="u1", status="ready")]
+
+    assert WorktreeManager.is_awaiting_goal(state) is True
+
+
+def test_is_awaiting_goal_auto_executing_with_ready_unit_returns_true():
+    """AUTO_EXECUTING 阶段且存在 ready 单元，同样视为等待目标（或自动执行中的等待）。"""
+
+    state = WorktreeRuntimeState()
+    state.journey.status = WorktreeJourneyStatus.AUTO_EXECUTING
+    state.units = [WorktreeUnit(unit_id="u1", status="ready")]
+
+    assert WorktreeManager.is_awaiting_goal(state) is True
+
+
+def test_is_awaiting_goal_requires_ready_unit():
+    """没有任何 ready 单元时，即便旅程在 PENDING/AUTO_EXECUTING 也不应拦截为等待目标。"""
+
+    state = WorktreeRuntimeState()
+    state.journey.status = WorktreeJourneyStatus.PENDING
+    state.units = [WorktreeUnit(unit_id="u1", status="pending")]
+
+    assert WorktreeManager.is_awaiting_goal(state) is False
+
+
+def test_is_awaiting_goal_false_for_non_pending_statuses():
+    """RUNNING/COMPLETED/FAILED 等阶段一律不视为等待目标。"""
+
+    for status in (
+        WorktreeJourneyStatus.RUNNING,
+        WorktreeJourneyStatus.COMPLETED,
+        WorktreeJourneyStatus.FAILED,
+        WorktreeJourneyStatus.IDLE,
+    ):
+        state = WorktreeRuntimeState()
+        state.journey.status = status
+        state.units = [WorktreeUnit(unit_id="u1", status="ready")]
+        assert WorktreeManager.is_awaiting_goal(state) is False
+
+
+def test_is_awaiting_goal_truth_table_matches_journey_status_enum():
+    """遍历全部 WorktreeJourneyStatus，校验 is_awaiting_goal 的真值表契约。
+
+    约定真值表（在 WorktreeManager.is_awaiting_goal docstring 中声明）：
+    - IDLE/RUNNING/COMPLETED/FAILED → 一律 False；
+    - PENDING/AUTO_EXECUTING        → 仅当存在 ready 单元时为 True。
+    """
+
+    truth_table = {
+        WorktreeJourneyStatus.IDLE: False,
+        WorktreeJourneyStatus.PENDING: True,
+        WorktreeJourneyStatus.AUTO_EXECUTING: True,
+        WorktreeJourneyStatus.RUNNING: False,
+        WorktreeJourneyStatus.COMPLETED: False,
+        WorktreeJourneyStatus.FAILED: False,
+    }
+
+    # 枚举防御：确保测试覆盖全部枚举成员
+    assert set(truth_table.keys()) == set(WorktreeJourneyStatus)
+
+    # 当存在 ready 单元时，真值取决于上表；不存在 ready 单元时一律 False。
+    for status, expects_true_with_ready in truth_table.items():
+        # 有 ready 单元的情况
+        state = WorktreeRuntimeState()
+        state.journey.status = status
+        state.units = [WorktreeUnit(unit_id="u1", status="ready")]
+        assert WorktreeManager.is_awaiting_goal(state) is expects_true_with_ready
+
+        # 无 ready 单元的情况
+        state_no_ready = WorktreeRuntimeState()
+        state_no_ready.journey.status = status
+        state_no_ready.units = [WorktreeUnit(unit_id="u1", status="pending")]
+        assert WorktreeManager.is_awaiting_goal(state_no_ready) is False
+
+
+def test_is_awaiting_goal_handles_none_and_invalid_state_gracefully():
+    """None 或非 WorktreeRuntimeState 入参应直接返回 False。"""
+
+    assert WorktreeManager.is_awaiting_goal(None) is False
+    assert WorktreeManager.is_awaiting_goal(object()) is False  # type: ignore[arg-type]
 
 def test_wt_prefix_command_parses_goal():
     """_handle_worktree_prefix_command extracts goal from '/wt 实现登录'."""
@@ -84,6 +311,8 @@ def test_wt_prefix_command_parses_goal():
 
     state = WorktreeManager.get_state(project)
     assert state.selection.pending_goal == "实现登录"
+    assert state.journey.goal == "实现登录"
+    assert state.journey.status == WorktreeJourneyStatus.PENDING
 
 
 def test_worktree_prefix_command_parses_goal():
@@ -99,6 +328,8 @@ def test_worktree_prefix_command_parses_goal():
 
     state = WorktreeManager.get_state(project)
     assert state.selection.pending_goal == "重构认证"
+    assert state.journey.goal == "重构认证"
+    assert state.journey.status == WorktreeJourneyStatus.PENDING
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +450,10 @@ def test_auto_execute_worktree_calls_execute_with_silent_mode():
     assert kwargs[0][2] == "测试目标"  # goal
     # Verify units were set to "ready"
     assert all(u.status == "ready" for u in state.units)
+    # Verify journey reflects AUTO_EXECUTING with silent_mode
+    assert state.journey.status == WorktreeJourneyStatus.AUTO_EXECUTING
+    assert state.journey.goal == "测试目标"
+    assert state.journey.silent_mode is True
 
 
 # ---------------------------------------------------------------------------
@@ -413,6 +648,58 @@ def test_model_select_card_passes_goal_in_buttons():
     )
     body = json.dumps(json.loads(card_json), ensure_ascii=False)
     assert '"goal": "测试目标"' in body or '"goal":"测试目标"' in body
+
+
+def test_plan_goal_emits_goal_created_and_updates_journey():
+    """WorktreeManager.plan_goal 应触发 goal_created 并记录 last_user_goal。"""
+    project = _make_project("p-plan")
+    mgr = WorktreeManager(project_manager=None)
+
+    # 避免真实 dispatcher 行为，替换为简单 stub
+    mgr._dispatcher = MagicMock()
+    mgr._dispatcher.plan_user_goal.return_value = []
+    mgr._reporter = MagicMock()
+    mgr._reporter.refresh_state.side_effect = lambda s: s
+
+    state = mgr.plan_goal(project, "实现搜索功能")
+
+    assert state.last_user_goal == "实现搜索功能"
+    assert state.journey.status == WorktreeJourneyStatus.PENDING
+    assert state.journey.goal == "实现搜索功能"
+
+
+def test_execute_goal_emits_execution_events_on_success_and_failure():
+    """execute_goal 应在成功/失败路径上分别推进 COMPLETED/FAILED 旅程状态。"""
+    project = _make_project("p-exec-flow")
+    mgr = WorktreeManager(project_manager=None)
+
+    # 构造初始运行态：已有一个 unit，selection 中有一个 item，避免 ensure_worktrees 分支
+    state = WorktreeManager.get_state(project)
+    state.units = [WorktreeUnit(unit_id="u1")]
+    state.selection.selected_items = [
+        WorktreeSelectionItem(provider="acp", tool_name="coco", display_name="Coco")
+    ]
+
+    # Stub dispatcher / reporter
+    mgr._dispatcher = MagicMock()
+    # plan_user_goal 直接返回现有 units
+    mgr._dispatcher.plan_user_goal.side_effect = lambda goal, units, items: units
+    # execute_units 在第一次调用成功返回，在第二次调用抛出异常
+    mgr._dispatcher.execute_units.side_effect = [state.units, Exception("boom")]  # type: ignore[list-item]
+
+    mgr._reporter = MagicMock()
+    mgr._reporter.refresh_state.side_effect = lambda s: s
+
+    # 成功路径：第一次调用 execute_goal
+    ok_state = mgr.execute_goal(project, "修复 bug")
+    assert ok_state.journey.status == WorktreeJourneyStatus.COMPLETED
+    assert ok_state.journey.goal == "修复 bug"
+
+    # 失败路径：第二次调用 execute_goal，会走 execute_units 异常分支
+    fail_state = mgr.execute_goal(project, "再次修复 bug")
+    assert fail_state.journey.status == WorktreeJourneyStatus.FAILED
+    # last_error 由 get_error_detail 生成，这里只要求非空
+    assert fail_state.journey.last_error
 
 
 # ---------------------------------------------------------------------------

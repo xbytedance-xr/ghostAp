@@ -1464,6 +1464,37 @@ class TestACPSessionManagerProjectIsolation:
         assert isinstance(mgr, ACPSessionManager)
         assert mgr._session_key("chat1") == "chat1:_default_"
 
+    def test_parse_session_key_roundtrip_basic_and_thread(self):
+        from src.acp.manager import ACPSessionManager, _DEFAULT_PROJECT
+
+        # 显式 project + 线程维度
+        key = ACPSessionManager._session_key("chat-1", "proj-1", thread_id="thread-9")
+        chat_id, project_id, thread_id = ACPSessionManager._parse_session_key(key)
+        assert chat_id == "chat-1"
+        assert project_id == "proj-1"
+        assert thread_id == "thread-9"
+
+        # 默认项目：应返回 project_id=None
+        key_default = ACPSessionManager._session_key("chat-2")
+        chat_id2, project_id2, thread_id2 = ACPSessionManager._parse_session_key(key_default)
+        assert chat_id2 == "chat-2"
+        assert project_id2 is None
+        assert thread_id2 is None
+
+        # 直接传入带占位符的历史 key，应与 helper 约定一致
+        legacy_key = f"chat-3:{_DEFAULT_PROJECT}"
+        chat_id3, project_id3, thread_id3 = ACPSessionManager._parse_session_key(legacy_key)
+        assert chat_id3 == "chat-3"
+        assert project_id3 is None
+        assert thread_id3 is None
+
+        # 非标准 key：至少应保留原始 key 作为 chat_id，避免日志上下文丢失
+        weird_key = "just-a-single-token"
+        chat_id4, project_id4, thread_id4 = ACPSessionManager._parse_session_key(weird_key)
+        assert chat_id4 == weird_key
+        assert project_id4 is None
+        assert thread_id4 is None
+
 
 # ======================================================================
 # SystemHandler patch tests

@@ -1,0 +1,236 @@
+import asyncio
+import logging
+from pathlib import Path
+from typing import Optional, TYPE_CHECKING
+
+from acp.stdio import spawn_agent_process
+
+from .client import GhostAPClient
+from .providers import tool_registry
+from ..ttadk.models import ACPModelOption, ACPToolOption
+from ..utils.text import get_acp_result_header_text
+
+if TYPE_CHECKING:
+    pass
+
+
+logger = logging.getLogger(__name__)
+
+
+def list_acp_tools() -> list[ACPToolOption]:
+    """List available ACP tools.
+
+    使用共享文案层提供的工具描述文案，避免直接依赖 card.styles.UI_TEXT。
+    """
+
+    names = ["coco", "claude", "aiden", "codex", "gemini"]
+    out: list[ACPToolOption] = []
+    headers = get_acp_result_header_text()
+
+    for name in names:
+        provider = tool_registry.get_provider(name)
+        if not provider:
+            continue
+        try:
+            available = bool(provider.check_availability())
+        except Exception:
+            available = False
+        if available:
+            desc = headers.get(f"tool_desc_{name}") or name
+            out.append(
+                ACPToolOption(name=name, description=desc, is_default=(name == "coco"))
+            )
+    return out
+
+
+def fetch_acp_models(
+    tool_name: str, cwd: Optional[str], current_model: Optional[str] = None
+) -> list[ACPModelOption]:
+    """Synchronous wrapper to probe available models from an ACP provider."""
+    try:
+        models = asyncio.run(probe_acp_models(tool_name, cwd, current_model))
+    except Exception:
+        models = []
+
+    if models:
+        return models
+
+    # Fallback for coco
+    if tool_name == "coco":
+        try:
+            from ..coco_model import get_coco_model_manager
+
+            fallback = get_coco_model_manager().get_models().models
+            return [
+                ACPModelOption(
+                    name=m.name,
+                    description=m.description,
+                    is_default=bool(getattr(m, "is_default", False)),
+                )
+                for m in (fallback or [])
+                if getattr(m, "name", "")
+            ]
+        except Exception:
+            pass
+
+    if current_model:
+        return [
+            ACPModelOption(
+                name=str(current_model), description=str(current_model), is_default=True
+            )
+        ]
+
+    return []
+
+
+class SessionKeyCodec:
+    """`session_key` 编解码协作者。
+
+    设计目标：
+    - 将会话路由使用的 `session_key` 字符串协议（chat/project/thread）集中到
+      单一位置，避免在各处手写字符串拼接或拆分逻辑；
+    - 保持与现有 :class:`ACPSessionManager` 中 `_session_key` /
+      `_parse_session_key` 语义等价，包括默认项目占位符与旧格式兼容策略；
+    - 提供面向调用方的显式类型签名，便于在测试中做 roundtrip 与异常路径
+      覆盖，同时为后续迁移 Lint 提供目标入口。
+
+    注意：
+    - 本类仅负责「字符串协议 ↔ 结构化三元组(chat_id, project_id, thread_id)」
+      的转换，不做持久化、日志打印或安全校验；
+    - 默认项目的占位符常量应与 ACPSessionManager 中使用的值保持一致，
+      后续在完成迁移后会以本类为 SSOT。
+    """
+
+    #: 默认 project 段占位符；必须与 ACPSessionManager 中的 `_DEFAULT_PROJECT`
+    #: 保持一致，以确保旧 key 仍能被正确解析。
+    DEFAULT_PROJECT_PLACEHOLDER = "_default_"
+
+    @classmethod
+    def encode(
+        cls,
+        chat_id: str,
+        project_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
+    ) -> str:
+        """根据 chat/project/thread 构造用于内部路由的 `session_key`。
+
+        约定：
+        - `chat_id` 始终位于首段且不可为空字符串；
+        - 第二段为 project 占位：有显式 project 时使用其字符串形式；否则使用
+          `_default_` 占位，调用方通过 `project_id is None` 语义区分；
+        - 存在 `thread_id` 时，在 project 段之后追加 `":t:"` 前缀形成
+          `chat:project:t:thread_id`，以支持同 chat+project 下多线程隔离；
+        - 所有输入均通过 `f"{value}"` 做字符串化，不做字符合法性归一化。
+        """
+
+        # 与现有实现保持一致的字符串化策略
+        base = f"{chat_id}:{project_id}" if project_id else f"{chat_id}:{cls.DEFAULT_PROJECT_PLACEHOLDER}"
+        if thread_id:
+            return f"{base}:t:{thread_id}"
+        return base
+
+    @classmethod
+    def decode(cls, key: str) -> tuple[str, Optional[str], Optional[str]]:
+        """将 `session_key` 解析为 `(chat_id, project_id, thread_id)`。
+
+        兼容约束：
+        - 对称性：与 :meth:`encode` 的编码协议保持对称；
+        - 宽进严出：对于历史/异常 key 保持鲁棒而不抛异常，极端场景下返回
+          `("", None, None)` 或 `(key, None, None)` 保留可追踪信息；
+        - 线程维度采用 `":t:"` 前缀的标准编码格式。
+        """
+
+        try:
+            s = str(key or "")
+        except Exception:
+            # 极端兜底：保证返回可打印 chat_id
+            return "", None, None
+
+        if not s:
+            return "", None, None
+
+        try:
+            parts = s.split(":")
+            if not parts:
+                return "", None, None
+
+            chat_id = parts[0] or ""
+
+            project_id: Optional[str] = None
+            if len(parts) >= 2:
+                raw_project = parts[1] or ""
+                if raw_project and raw_project != cls.DEFAULT_PROJECT_PLACEHOLDER:
+                    project_id = raw_project
+
+            thread_id: Optional[str] = None
+            # 标准编码：chat:project:t:thread_id
+            if len(parts) >= 4 and parts[2] == "t":
+                thread_id = parts[3] or ""
+
+            return chat_id, project_id, thread_id
+        except Exception:
+            # 解析失败时，保留原始 key 作为 chat_id，避免完全丢失上下文
+            return s, None, None
+
+
+async def probe_acp_models(
+    tool_name: str, cwd: Optional[str], current_model: Optional[str] = None
+) -> list[ACPModelOption]:
+    """Asynchronously probe available models from an ACP provider."""
+    provider = tool_registry.get_provider(tool_name)
+    if not provider:
+        return []
+
+    cmd, args = provider.get_serve_command(None)
+
+    import os
+
+    env = os.environ.copy()
+    env.pop("CLAUDECODE", None)
+    client = GhostAPClient(on_event=lambda _ev: None, auto_approve=True)
+
+    try:
+        async with spawn_agent_process(
+            client, cmd, *args, env=env, cwd=(cwd or str(Path.cwd()))
+        ) as (conn, _proc):
+            await conn.initialize(protocol_version=1)
+            resp = await conn.new_session(cwd=(cwd or str(Path.cwd())))
+            models_state = getattr(resp, "models", None)
+            available = list(getattr(models_state, "available_models", []) or [])
+            current_id = str(
+                getattr(models_state, "current_model_id", "")
+                or getattr(models_state, "currentModelId", "")
+            )
+            target_default = str((current_model or current_id or "")).strip()
+
+            items = []
+            seen = set()
+            for item in available:
+                model_id = str(
+                    getattr(item, "model_id", "")
+                    or getattr(item, "modelId", "")
+                    or getattr(item, "name", "")
+                ).strip()
+                if not model_id or model_id in seen:
+                    continue
+                seen.add(model_id)
+                description = str(
+                    getattr(item, "description", "")
+                    or getattr(item, "name", "")
+                    or model_id
+                ).strip()
+                items.append(
+                    ACPModelOption(
+                        name=model_id,
+                        description=description,
+                        is_default=(model_id == target_default),
+                    )
+                )
+            return items
+    except Exception as e:
+        from ..utils.errors import get_error_detail
+
+        logger.info(
+            "[ACP] fetch models failed: tool=%s err=%s", tool_name, get_error_detail(e)
+        )
+        return []

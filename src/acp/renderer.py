@@ -11,7 +11,9 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from .models import ACPEvent, ACPEventType, PlanInfo, ToolCallInfo
+from src.utils.text import get_acp_result_header_text
+
+from .models import ACPEvent, ACPEventType, PlanInfo, PromptResult, ToolCallInfo
 
 logger = logging.getLogger(__name__)
 
@@ -278,3 +280,69 @@ class ACPEventRenderer:
                 parts.append(rendered_tools)
 
         return "\n".join(parts) if parts else ""
+
+
+def render_prompt_result_markdown(result: PromptResult, max_text_chars: int = 8000, max_items: int = 50) -> str:
+    """Render a compact Markdown summary for a :class:`PromptResult`.
+
+    该函数位于渲染层（而非模型层），负责将 PromptResult 中累积的文本、计划、
+    工具调用与改动文件信息转换为适合 Feishu/终端展示的 Markdown 片段。
+
+    文案配置（各小节标题等）统一通过 :func:`get_acp_result_header_text` 注入，
+    从而避免在核心模型层引入对文案模块的直接依赖。
+    """
+
+    parts: list[str] = []
+
+    headers = get_acp_result_header_text()
+
+    # Header
+    parts.append(f"**✅ PromptResult** · stop_reason=`{result.stop_reason}`")
+
+    # Text
+    if result.text:
+        text = result.text
+        if max_text_chars > 0 and len(text) > max_text_chars:
+            text = text[:max_text_chars] + "\n... (truncated)"
+        parts.append(f"\n**{headers.get('text', 'Text')}**")
+        parts.append(text)
+
+    # Plan
+    if result.plan and result.plan.entries:
+        parts.append(f"\n**{headers.get('plan', 'Plan')}**")
+        for ent in result.plan.entries[:max_items]:
+            icon = {"completed": "✅", "in_progress": "🔄", "pending": "⏳"}.get(ent.status, "⬜")
+            parts.append(f"- {icon} {ent.content}")
+
+    # Tool calls
+    if result.tool_calls:
+        parts.append(f"\n**{headers.get('tools', 'Tool calls')}**")
+        for tc in result.tool_calls[:max_items]:
+            loc = f" `{tc.locations[0]}`" if tc.locations else ""
+            parts.append(f"- `{tc.kind}` {tc.title}{loc} · `{tc.status}`")
+
+    # Tool results
+    if result.tool_results:
+        parts.append(f"\n**{headers.get('tool_results', 'Tool results')}**")
+        for e in result.tool_results[:max_items]:
+            kind = e.get("kind", "unknown")
+            data = e.get("data") if isinstance(e.get("data"), dict) else {}
+            if kind == "execute":
+                cmd = data.get("command", "")
+                code = data.get("exit_code")
+                parts.append(f"- `execute` `{cmd}` · exit_code={code}")
+            elif kind in ("read_file", "write_file"):
+                p = data.get("path", "")
+                parts.append(f"- `{kind}` `{p}`")
+            elif kind == "permission":
+                parts.append(f"- `permission` {data.get('outcome', '')} · {data.get('reason', '')}")
+            else:
+                parts.append(f"- `{kind}`")
+
+    # Modified files
+    if result.modified_files:
+        parts.append(f"\n**{headers.get('files', 'Modified files')}**")
+        for p in sorted(result.modified_files)[:max_items]:
+            parts.append(f"- `{p}`")
+
+    return "\n".join(parts).strip() + "\n"

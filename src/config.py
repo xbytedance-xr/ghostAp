@@ -227,6 +227,7 @@ class Settings(BaseSettings):
     spec_min_cycles: int = 2
     spec_review_enabled: bool = True
     spec_review_timeout: int = 120
+    spec_review_max_parallel: int = 2
 
     # Spec Engine review failure circuit breaker
     # - enabled: master switch
