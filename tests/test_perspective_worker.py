@@ -164,3 +164,77 @@ def test_run_workers_parallel_actually_concurrent():
     assert all(o.ok for o in outs)
     # Serial would be ~0.6s; parallel should be ~0.2-0.35s. Leave slack for CI.
     assert elapsed < 0.5, f"workers did not run in parallel (elapsed={elapsed:.2f}s)"
+
+def test_run_workers_parallel_race_condition():
+    """Tests that no results are lost when futures complete at the exact moment of a timeout."""
+    
+    # We want one worker to be fast and complete normally
+    # We want another worker to be slow, but finish RIGHT when the timeout happens
+    
+    def _runner_fast(prompt: str, on_event, timeout: float) -> str:
+        return "[ARCHITECT]\nPASS\n"
+        
+    def _runner_exact_timeout(prompt: str, on_event, timeout: float) -> str:
+        time.sleep(0.3)  # Matches per_worker_timeout
+        return "[PRODUCT]\nPASS\n"
+        
+    def _runner_very_slow(prompt: str, on_event, timeout: float) -> str:
+        time.sleep(2.0)
+        return "[USER]\nPASS\n"
+        
+    bindings = [
+        WorkerBinding(
+            PerspectiveWorker(ReviewPerspective.ARCHITECT, timeout=5.0),
+            _runner_fast,
+        ),
+        WorkerBinding(
+            PerspectiveWorker(ReviewPerspective.PRODUCT, timeout=5.0),
+            _runner_exact_timeout,
+        ),
+        WorkerBinding(
+            PerspectiveWorker(ReviewPerspective.USER, timeout=5.0),
+            _runner_very_slow,
+        )
+    ]
+    
+    # Run with a 0.3s timeout.
+    outs = run_workers_parallel(bindings, _make_artifacts(), per_worker_timeout=0.3)
+    
+    assert len(outs) == 3
+    
+    # Fast one must succeed
+    assert outs[0].perspective == ReviewPerspective.ARCHITECT
+    assert outs[0].ok is True
+    
+    # At least one must fail due to timeout (the very slow one)
+    assert any(not o.ok and o.perspective == ReviewPerspective.USER for o in outs)
+
+
+def test_run_workers_parallel_timeout():
+    def slow_runner(prompt, on_event, timeout):
+        time.sleep(0.5)
+        return "slow"
+        
+    b1 = WorkerBinding(
+        worker=PerspectiveWorker(perspective=ReviewPerspective.ARCHITECT, timeout=0.1),
+        prompt_runner=slow_runner
+    )
+    
+    outcomes = run_workers_parallel([b1], _make_artifacts(), max_workers=1, per_worker_timeout=0.1)
+    
+    assert len(outcomes) == 1
+    assert not outcomes[0].review.passed
+    assert outcomes[0].error == "操作超时（1/1 个视角未完成）"
+    assert outcomes[0].review.suggestions == ["审查异常：操作超时（1/1 个视角未完成）"]
+
+
+def test_run_workers_parallel_timeout_regex_coverage():
+    from src.spec_engine.perspective_worker import _TIMEOUT_ERR_RE
+    s1 = "操作超时 (4 of 5 futures unfinished)"
+    s2 = "操作超时 (4 (of 5) futures unfinished)"
+    s3 = "TimeoutError: 10 (of 12) futures unfinished"
+    
+    assert _TIMEOUT_ERR_RE.sub('', s1).strip(" :") == "操作超时"
+    assert _TIMEOUT_ERR_RE.sub('', s2).strip(" :") == "操作超时"
+    assert _TIMEOUT_ERR_RE.sub('', s3).strip(" :") == "TimeoutError"
+

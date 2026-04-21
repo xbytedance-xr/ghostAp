@@ -21,6 +21,7 @@ contract + parallel runner.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -34,6 +35,8 @@ from .prompts import build_single_perspective_review_prompt
 from .review_artifacts import ReviewArtifacts
 
 logger = logging.getLogger(__name__)
+
+_TIMEOUT_ERR_RE = re.compile(r'\s*\(?\s*\d+\s*\(?of\s*\d+\)?\s*futures\s*unfinished\s*\)?', flags=re.IGNORECASE)
 
 __all__ = [
     "PerspectiveOutcome",
@@ -207,9 +210,11 @@ def run_workers_parallel(
         future_to_binding = {
             pool.submit(b.worker.run, artifacts, b.prompt_runner): b for b in bindings
         }
+        processed_futures = set()
         try:
             for fut in as_completed(future_to_binding, timeout=per_worker_timeout):
                 b = future_to_binding[fut]
+                processed_futures.add(fut)
                 try:
                     outcomes.append(fut.result())
                 except Exception as e:
@@ -235,10 +240,17 @@ def run_workers_parallel(
         except TimeoutError as e:
             # Some futures did not complete within per_worker_timeout.
             # Synthesize FAIL outcomes for all unfinished bindings.
-            err = get_error_detail(e) or "parallel review timeout"
-            for fut, b in future_to_binding.items():
-                if fut.done():
-                    continue
+            total = len(future_to_binding)
+            unprocessed_futures = set(future_to_binding.keys()) - processed_futures
+            unfinished = len(unprocessed_futures)
+            base_err = get_error_detail(e) or "操作超时"
+            # Extract the actual error message without the ' (X of Y futures unfinished)' part
+            # because the concurrent.futures.TimeoutError str representation includes this
+            # technical detail which we want to hide from the user.
+            base_err = _TIMEOUT_ERR_RE.sub('', base_err).strip(" :")
+            err = f"{base_err}（{unfinished}/{total} 个视角未完成）"
+            for fut in unprocessed_futures:
+                b = future_to_binding[fut]
                 fut.cancel()
                 logger.warning(
                     "[run_workers_parallel] worker %s timeout: %s",
