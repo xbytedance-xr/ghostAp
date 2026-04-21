@@ -46,15 +46,14 @@ class TestSpecValidation(unittest.TestCase):
         callbacks.on_error.assert_called_once()
         
     @patch("src.spec_engine.engine.SpecProject")
-    @patch("src.spec_engine.engine.create_engine_session")
-    def test_engine_execute_valid_input(self, mock_create_session, mock_project_cls):
+    def test_engine_execute_valid_input(self, mock_project_cls):
         # Setup mock project
         mock_project = MagicMock()
         mock_project_cls.create.return_value = mock_project
         
         # Setup mock session to avoid actual execution
         mock_session = MagicMock()
-        mock_create_session.return_value = mock_session
+        self.engine._create_session_fn = MagicMock(return_value=mock_session)
         
         # Mock run_cycle_loop to return immediately
         self.engine._run_cycle_loop = MagicMock(return_value="success")

@@ -320,10 +320,10 @@ def test_spec_engine_review_failure_diagnostics_written_to_cycle_and_metrics(mon
 
     engine.settings = _S()
 
-    # Patch create_engine_session so execute() doesn't overwrite our _session
-    monkeypatch.setattr("src.spec_engine.engine.create_engine_session", lambda **kw: engine._session)
+    # Patch session factory inside SpecEngine since we injected it via DI
+    engine._create_session_fn = lambda **kw: engine._session
     monkeypatch.setattr(
-        "src.spec_engine.session_utils.get_coco_model_manager", lambda: type("M", (), {"get_current_model": lambda self: ""})()
+        "src.spec_engine.session_utils.get_coco_model_manager", lambda: type("M", (), {"get_current_model": lambda self: "", "get_models": lambda self: type("MR", (), {"models": []})(), "set_model": lambda self, model: True})()
     )
     # Force pipeline review path to raise, so diagnostics are written via handle_review_exception
     def _raise_pipeline(*a, **kw):
@@ -474,9 +474,9 @@ def test_spec_engine_review_failure_circuit_breaker_skips_review(monkeypatch, ca
 
     sess = _Sess()
     engine._session = sess
-    monkeypatch.setattr("src.spec_engine.engine.create_engine_session", lambda **kw: engine._session)
+    engine._create_session_fn = lambda **kw: engine._session
     monkeypatch.setattr(
-        "src.spec_engine.session_utils.get_coco_model_manager", lambda: type("M", (), {"get_current_model": lambda self: ""})()
+        "src.spec_engine.session_utils.get_coco_model_manager", lambda: type("M", (), {"get_current_model": lambda self: "", "get_models": lambda self: type("MR", (), {"models": []})(), "set_model": lambda self, model: True})()
     )
     # Force pipeline review path to raise, so the circuit breaker test exercises handle_review_exception
     monkeypatch.setattr(
@@ -582,9 +582,9 @@ def test_spec_engine_review_circuit_skip_does_not_block_main_loop(monkeypatch, t
 
     sess = _Sess()
     engine._session = sess
-    monkeypatch.setattr("src.spec_engine.engine.create_engine_session", lambda **kw: engine._session)
+    engine._create_session_fn = lambda **kw: engine._session
     monkeypatch.setattr(
-        "src.spec_engine.session_utils.get_coco_model_manager", lambda: type("M", (), {"get_current_model": lambda self: ""})()
+        "src.spec_engine.session_utils.get_coco_model_manager", lambda: type("M", (), {"get_current_model": lambda self: "", "get_models": lambda self: type("MR", (), {"models": []})(), "set_model": lambda self, model: True})()
     )
     # Force pipeline review path to raise, so the circuit breaker opens after first failure
     monkeypatch.setattr(

@@ -146,6 +146,10 @@ class SpecEngine(BaseEngine):
         agent_type: str = "coco",
         engine_name: str = "Coco",
         model_name: Optional[str] = None,
+        *,
+        retry_policy: Optional[RetryPolicy] = None,
+        get_llm_fn: Optional[Callable] = None,
+        create_session_fn: Optional[Callable] = None,
     ):
         super().__init__(chat_id, root_path, agent_type, engine_name, model_name)
         self._project: Optional[SpecProject] = None
@@ -154,7 +158,9 @@ class SpecEngine(BaseEngine):
         # success / paused / converged / max_cycles / stopped
         self._termination_reason: Optional[str] = None
         self._resume_meta: Optional[dict] = None
-        self._retry_policy = RetryPolicy()
+        self._retry_policy = retry_policy or RetryPolicy()
+        self._get_llm_fn = get_llm_fn or get_cached_chat_openai
+        self._create_session_fn = create_session_fn or create_engine_session
         self._models_tried: list[str] = []
         self._current_model: Optional[str] = None
         self._on_rate_limit: Optional[Callable[[int], None]] = None
@@ -192,7 +198,7 @@ class SpecEngine(BaseEngine):
         self._review_circuit.review_circuit_open_until_cycle = value
 
     def _get_llm(self, temperature: float) -> ChatOpenAI:
-        return get_cached_chat_openai(self.settings, temperature, cache=self._llm_cache, llm_cls=ChatOpenAI)
+        return self._get_llm_fn(self.settings, temperature, cache=self._llm_cache, llm_cls=ChatOpenAI)
 
     def _wrap_callbacks(self, callbacks: SpecEngineCallbacks) -> SpecEngineCallbacks:
         def _wrap(fn: Optional[Callable[..., None]], name: str) -> Optional[Callable[..., None]]:
@@ -415,7 +421,7 @@ class SpecEngine(BaseEngine):
                 callbacks.on_analyzing_done(self._project)
 
             # Create ACP session
-            self._session = create_engine_session(
+            self._session = self._create_session_fn(
                 agent_type=self._agent_type,
                 cwd=self.root_path,
                 on_rate_limit=on_rate_limit,
@@ -1236,7 +1242,7 @@ class SpecEngine(BaseEngine):
             self._close_session_safely()
 
             # Resolve TTADK startup model (resume)
-            self._session = create_engine_session(
+            self._session = self._create_session_fn(
                 agent_type=self._agent_type,
                 cwd=self.root_path,
                 on_rate_limit=getattr(self, "_on_rate_limit", None),
