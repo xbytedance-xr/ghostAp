@@ -25,6 +25,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Callable, Optional
 
 from ..engine_base import PerspectiveReview, ReviewPerspective
@@ -38,8 +39,15 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "PerspectiveOutcome",
     "PerspectiveWorker",
+    "ReviewErrorCode",
     "run_workers_parallel",
 ]
+
+class ReviewErrorCode(Enum):
+    """Enumeration of strict error codes to distinguish perspective worker failures."""
+    TIMEOUT = "TIMEOUT"
+    WORKER_ERROR = "WORKER_ERROR"
+    BUDGET_EXCEEDED = "BUDGET_EXCEEDED"
 
 
 PromptRunner = Callable[[str, Callable, float], str]
@@ -58,6 +66,7 @@ class PerspectiveOutcome:
     review: PerspectiveReview
     elapsed_ms: int = 0
     error: Optional[str] = None  # non-empty = this worker failed; review is synthetic FAIL
+    error_code: Optional[ReviewErrorCode] = None
     raw_preview: str = ""  # first 500 chars of raw output, for debugging
 
     @property
@@ -69,6 +78,7 @@ class PerspectiveOutcome:
             "perspective": self.perspective.value,
             "elapsed_ms": self.elapsed_ms,
             "error": self.error,
+            "error_code": self.error_code.value if self.error_code else None,
             "passed": self.review.passed,
             "suggestion_count": len(self.review.suggestions),
         }
@@ -139,10 +149,19 @@ class PerspectiveWorker:
         t0 = time.monotonic()
         raw = ""
         err: Optional[str] = None
+        err_code: Optional[ReviewErrorCode] = None
         try:
             raw = prompt_runner(prompt, self._on_event, self.timeout) or ""
         except Exception as e:
             err = get_error_detail(e) or repr(e)
+            if isinstance(e, TimeoutError):
+                err_code = ReviewErrorCode.TIMEOUT
+            else:
+                from ..utils.errors import _has_timeout_in_chain
+                if _has_timeout_in_chain(e):
+                    err_code = ReviewErrorCode.TIMEOUT
+                else:
+                    err_code = ReviewErrorCode.WORKER_ERROR
             logger.warning(
                 "[PerspectiveWorker:%s] prompt failed: %s",
                 self.perspective.name,
@@ -171,6 +190,7 @@ class PerspectiveWorker:
             review=review,
             elapsed_ms=elapsed_ms,
             error=err,
+            error_code=err_code,
             raw_preview=(raw or "")[:500],
         )
 
@@ -216,6 +236,15 @@ def run_workers_parallel(
                     outcomes.append(fut.result())
                 except Exception as e:
                     err = get_error_detail(e) or repr(e)
+                    if isinstance(e, TimeoutError):
+                        err_code = ReviewErrorCode.TIMEOUT
+                    else:
+                        from ..utils.errors import _has_timeout_in_chain
+                        if _has_timeout_in_chain(e):
+                            err_code = ReviewErrorCode.TIMEOUT
+                        else:
+                            err_code = ReviewErrorCode.WORKER_ERROR
+
                     logger.warning(
                         "[run_workers_parallel] worker %s raised: %s",
                         b.worker.perspective.name,
@@ -232,6 +261,7 @@ def run_workers_parallel(
                             ),
                             elapsed_ms=0,
                             error=err,
+                            error_code=err_code,
                         )
                     )
         except TimeoutError:
@@ -264,6 +294,7 @@ def run_workers_parallel(
                         ),
                         elapsed_ms=int((per_worker_timeout or 0) * 1000),
                         error=err,
+                        error_code=ReviewErrorCode.TIMEOUT,
                     )
                 )
 

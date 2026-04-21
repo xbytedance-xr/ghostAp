@@ -23,6 +23,7 @@ from typing import Optional
 from ..engine_base import PerspectiveReview, ReviewPerspective
 from .perspective_worker import (
     PerspectiveOutcome,
+    ReviewErrorCode,
     WorkerBinding,
     run_workers_parallel,
 )
@@ -106,6 +107,7 @@ def _budget_exceeded_outcome(perspective: ReviewPerspective, elapsed_ms: int) ->
         ),
         elapsed_ms=elapsed_ms,
         error="cycle_budget_exceeded",
+        error_code=ReviewErrorCode.BUDGET_EXCEEDED,
     )
 
 

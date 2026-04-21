@@ -18,11 +18,13 @@ def test_review_futures_unfinished_cleaned(monkeypatch):
     
     def fake_run(*args, **kwargs):
         # returns an outcome containing "futures unfinished" which might come from deep inside TimeoutError
+        from src.spec_engine.perspective_worker import ReviewErrorCode
         return [
             PerspectiveOutcome(
                 perspective=ReviewPerspective.ARCHITECT,
                 review=PerspectiveReview(perspective=ReviewPerspective.ARCHITECT, passed=False, suggestions=[]),
-                error="操作超时 (1 (of 5) futures unfinished)"
+                error="操作超时 (1 (of 5) futures unfinished)",
+                error_code=ReviewErrorCode.TIMEOUT
             )
         ]
     

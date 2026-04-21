@@ -371,6 +371,7 @@ def _conduct_review_pipeline(
     """Run the parallel review pipeline (Step 7a) with circuit-breaker bookkeeping."""
     from .cycle_budget import CycleBudget
     from .review_pipeline import run_review_pipeline
+    from .perspective_worker import ReviewErrorCode
 
     import time as _time
 
@@ -421,7 +422,7 @@ def _conduct_review_pipeline(
             # Record diagnostics so the engine can persist them to the cycle.
             failed_workers = [o for o in outcomes if o.error and o.error != "lint_gate_short_circuit"]
             err_type_val = failed_workers[0].error if failed_workers else "unknown"
-            if err_type_val and ("个视角未完成" in err_type_val or "futures unfinished" in err_type_val):
+            if failed_workers and failed_workers[0].error_code == ReviewErrorCode.TIMEOUT:
                 err_type_val = "当前系统较繁忙，操作已超时"
 
             circuit.last_review_failure_diag = normalize_review_diagnostics({
