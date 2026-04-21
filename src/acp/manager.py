@@ -61,11 +61,13 @@ def _format_error_type_and_repr(err: object) -> tuple[str, str]:
     """
     try:
         err_type = type(err).__name__
-    except Exception:
+    except Exception as e:
+        logger.warning("Unexpected error in manager", exc_info=True)
         err_type = "Exception"
     try:
         err_repr = repr(err)
-    except Exception:
+    except Exception as e:
+        logger.warning("Unexpected error in manager", exc_info=True)
         err_repr = ""
     if not (err_repr or "").strip():
         err_repr = f"<{err_type}>"
@@ -86,7 +88,8 @@ def _format_ttadk_startup_attempts(diagnostics: object, *, per_item_limit: int =
         return format_attempts_summary(
             attempts, per_item_limit=per_item_limit, total_limit=total_limit, get_settings_fn=get_settings
         )
-    except Exception:
+    except Exception as e:
+        logger.warning("Unexpected error in manager", exc_info=True)
         return ""
 
 
@@ -105,7 +108,8 @@ def _sanitize_startup_detail(text: str) -> str:
             )
         lim = int(getattr(cfg, "snippet_limit", 240) or 240)
         s = truncate_text(s, max(1, lim))
-    except Exception:
+    except Exception as e:
+        logger.warning("Unexpected error in manager", exc_info=True)
         pass
     return s
 
@@ -155,7 +159,8 @@ def _degrade_ttadk_to_coco_acp(
         fr = (fr or "").strip() or "start_failed"
         et = (et or "").strip() or (repr(reason) if reason is not None else "<Exception> (empty)")
         s._degraded_reason = f"{fr}: {et}"
-    except Exception:
+    except Exception as e:
+        logger.warning("Unexpected error in manager", exc_info=True)
         s._degraded_reason = str(reason) or (repr(reason) if reason is not None else "")
     return (s, sid)
 
@@ -178,7 +183,8 @@ def _build_startup_diagnostics(
             error=error,
             timeout_s=float(timeout or 0),
         )
-    except Exception:
+    except Exception as e:
+        logger.warning("Unexpected error in manager", exc_info=True)
         # 极端兜底：保证返回可序列化 dict
         return {
             "agent_type": agent_type or "",
@@ -276,7 +282,8 @@ class ACPSessionManager:
                     "请优先通过 idle_health_config=IdleHealthConfig(...) 或"
                     "build_idle_health_config_for_manager(...) 注入 IdleHealth 协作者。"
                 )
-        except Exception:
+        except Exception as e:
+            logger.warning("Unexpected error in manager", exc_info=True)
             # 不因日志问题影响核心逻辑。
             pass
 
@@ -318,9 +325,9 @@ class ACPSessionManager:
                                         (session.session_id or "none")[:8],
                                     )
                                     self._end_session_unlocked(key)
-                    except Exception:
+                    except Exception as e:
                         logger.debug("[ACP:%s] Keepalive check error for key=%s", self._agent_type.upper(), key[-16:], exc_info=True)
-            except Exception:
+            except Exception as e:
                 logger.debug("[ACP:%s] Keepalive loop iteration error", self._agent_type.upper(), exc_info=True)
 
     @staticmethod
@@ -378,7 +385,8 @@ class ACPSessionManager:
                     logger.warning(
                         "[DEPRECATED] ACPSessionManager._format_seconds_ago() 已废弃，仅供旧测试/调用点兼容；请改用 _compute_idle_bucket 或上层文案 helper。"
                     )
-                except Exception:
+                except Exception as e:
+                    logger.warning("Unexpected error in manager", exc_info=True)
                     # 尽量不因日志问题影响核心逻辑。
                     pass
         except NameError:
@@ -505,7 +513,8 @@ class ACPSessionManager:
                     # best-effort：保留可读 agent spec
                     try:
                         last_spec = session.describe_agent()
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("Unexpected error in manager", exc_info=True)
                         last_spec = ""
                     logger.info(
                         "[ACP:%s] Session started via injected starter: key=%s, session=%s",
@@ -539,9 +548,11 @@ class ACPSessionManager:
                         raw_cwd,
                         norm_cwd,
                     )
-            except Exception:
+            except Exception as e:
+                logger.warning("Unexpected error in manager", exc_info=True)
                 pass
-        except Exception:
+        except Exception as e:
+            logger.warning("Unexpected error in manager", exc_info=True)
             pass
 
         # 強制拦截 ttadk_ 模式并分配 CLI session，绝不触发 ACP Server
@@ -559,7 +570,8 @@ class ACPSessionManager:
                 mgr_cls = SyncTTADKCLISession
                 try:
                     agent_cls = getattr(_agent_session_mod, "SyncTTADKCLISession", None)
-                except Exception:
+                except Exception as e:
+                    logger.warning("Unexpected error in manager", exc_info=True)
                     agent_cls = None
 
                 eff_cls = mgr_cls
@@ -608,7 +620,8 @@ class ACPSessionManager:
                             if v:
                                 detail = v
                                 break
-                        except Exception:
+                        except Exception as e:
+                            logger.warning("Unexpected error in manager", exc_info=True)
                             continue
                 if not detail:
                     _, err_repr = _format_error_type_and_repr(last_err)
@@ -623,7 +636,7 @@ class ACPSessionManager:
                         error=last_err or RuntimeError(safe_detail),
                         diagnostics=None,
                     )
-                except Exception:
+                except Exception as e:
                     logger.debug("[ACP:%s] session telemetry on_session_start_failed error", self._agent_type.upper(), exc_info=True)
                 raise RuntimeError(f"启动 {effective_agent_type} CLI 失败: {safe_detail}")
 
@@ -650,7 +663,8 @@ class ACPSessionManager:
 
                     try:
                         last_spec = session.describe_agent()
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("Unexpected error in manager", exc_info=True)
                         last_spec = ""
 
                     # Progressive timeout: allow more time on later attempts.
@@ -691,9 +705,11 @@ class ACPSessionManager:
                                 try:
                                     if not (str(e) or "").strip() or (str(e) or "").strip() in ("(empty)", "None"):
                                         e.args = (et,)
-                                except Exception:
+                                except Exception as e:
+                                    logger.warning("Unexpected error in manager", exc_info=True)
                                     pass
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("Unexpected error in manager", exc_info=True)
                         pass
 
                     # 统一失败日志（SSOT=src.acp.diagnostics.format_startup_failure_log_line）
@@ -713,7 +729,8 @@ class ACPSessionManager:
                     try:
                         if session:
                             session.close()
-                    except Exception:
+                    except Exception as e:
+                        logger.warning("Unexpected error in manager", exc_info=True)
                         pass
                     session = None
                     if attempt < retries:
@@ -732,7 +749,7 @@ class ACPSessionManager:
                     error=last_err or RuntimeError(detail),
                     diagnostics=None,
                 )
-            except Exception:
+            except Exception as e:
                 logger.debug("[ACP:%s] session telemetry on_session_start_failed error", self._agent_type.upper(), exc_info=True)
             raise RuntimeError(f"启动 {effective_agent_type} {kind} 失败{spec}（已重试 {retries} 次）: {detail}")
 
@@ -750,7 +767,8 @@ class ACPSessionManager:
         # Load local persisted history (best-effort)
         try:
             session.load_local_history(session.session_id)
-        except Exception:
+        except Exception as e:
+            logger.warning("Unexpected error in manager", exc_info=True)
             pass
 
         with self._lock:
@@ -765,7 +783,7 @@ class ACPSessionManager:
                 backend_kind=backend_kind,
                 model_name=model_name,
             )
-        except Exception:
+        except Exception as e:
             logger.debug("[ACP:%s] session telemetry on_session_start error", self._agent_type.upper(), exc_info=True)
         return session
 
@@ -840,7 +858,8 @@ class ACPSessionManager:
                             )
                             if bool(pre.get("validated")):
                                 target_model = str(pre.get("model") or "").strip() or None
-                        except Exception:
+                        except Exception as e:
+                            logger.warning("Unexpected error in manager", exc_info=True)
                             target_model = None
 
                     if target_model:
@@ -993,7 +1012,7 @@ class ACPSessionManager:
                     reason=None,
                     extra=None,
                 )
-            except Exception:
+            except Exception as e:
                 logger.debug("[ACP:%s] session telemetry on_session_end error", self._agent_type.upper(), exc_info=True)
             try:
                 session.close()
@@ -1020,7 +1039,7 @@ class ACPSessionManager:
             if existing is not None:
                 try:
                     self._end_session_unlocked(new_key)
-                except Exception:
+                except Exception as e:
                     logger.debug("Error cleaning existing session at %s during rebind", new_key[-16:])
             self._sessions[new_key] = session
             del self._sessions[old_key]
@@ -1085,7 +1104,8 @@ class ACPSessionManager:
                         "idle_health": idle_health,
                     }
                 )
-            except Exception:
+            except Exception as e:
+                logger.warning("Unexpected error in manager", exc_info=True)
                 continue
         return out
 
