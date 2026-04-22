@@ -400,7 +400,7 @@ class TestInternalDiagnosticsGuard:
         assert len(result.error.strip()) > 0, "ModelListResult.error is empty for bare Exception"
 
     def test_ttadk_manager_tool_list_error_nonempty(self):
-        """TTADKManager: ToolListResult.error non-empty for bare Exception."""
+        """TTADKManager: ToolListResult.error non-empty for typed exception."""
         from src.ttadk.manager import TTADKManager
 
         mgr = TTADKManager.__new__(TTADKManager)
@@ -409,7 +409,7 @@ class TestInternalDiagnosticsGuard:
         mgr._tool_cache_ttl = 0.0
         mgr._lock = __import__("threading").Lock()
 
-        mgr._load_tools = MagicMock(side_effect=Exception())
+        mgr._load_tools = MagicMock(side_effect=OSError("tool load failed"))
         mgr._ensure_initialized = lambda: None
         mgr._is_tool_cache_valid = MagicMock(return_value=False)
         with patch("src.ttadk.manager.get_settings") as ms:
@@ -417,7 +417,7 @@ class TestInternalDiagnosticsGuard:
             result = mgr.get_tools()
 
         assert result.error is not None
-        assert len(result.error.strip()) > 0, "ToolListResult.error is empty for bare Exception"
+        assert len(result.error.strip()) > 0, "ToolListResult.error is empty for OSError"
 
 
 # ---------------------------------------------------------------------------

@@ -348,3 +348,91 @@ class TestNormalizePath:
     def test_path_with_spaces(self, recognizer):
         result = recognizer._normalize_path("  /tmp/test  ")
         assert result == "/tmp/test"
+
+
+# ── Boundary test cases ──────────────────────────────────────────────
+
+
+class TestQuickMatchBoundaryEdgeCases:
+    """≥8 boundary tests covering edge cases not previously covered."""
+
+    @pytest.fixture
+    def recognizer(self):
+        return IntentRecognizer()
+
+    def test_empty_string_returns_none(self, recognizer):
+        """Empty input should not match any intent."""
+        result = recognizer._quick_match("")
+        assert result is None
+
+    def test_whitespace_only_returns_none(self, recognizer):
+        """Whitespace-only input should not match any intent."""
+        result = recognizer._quick_match("   ")
+        assert result is None
+
+    def test_exit_keyword_exactly_20_chars_in_programming_mode(self, recognizer):
+        """Exit keyword in text exactly 20 chars long should NOT match (guard is len < 20)."""
+        # "退出" is 2 chars, pad to exactly 20 chars
+        text = "退出" + "x" * 18  # len == 20
+        assert len(text) == 20
+        result = recognizer._quick_match(text, current_mode="coco")
+        assert result is None  # len < 20 guard prevents match
+
+    def test_exit_keyword_19_chars_in_programming_mode(self, recognizer):
+        """Exit keyword in text of 19 chars should match (guard is len < 20)."""
+        text = "退出" + "x" * 17  # len == 19
+        assert len(text) == 19
+        result = recognizer._quick_match(text, current_mode="coco")
+        assert result is not None
+        assert result.primary_intent == IntentType.EXIT_MODE
+
+    def test_deep_update_with_content(self, recognizer):
+        """/deep_update with a message extracts the message correctly."""
+        result = recognizer._quick_match("/deep_update 增加错误处理")
+        assert result is not None
+        assert result.primary_intent == IntentType.DEEP_UPDATE
+        assert result.primary_data["message"] == "增加错误处理"
+
+    def test_spec_command_with_requirement(self, recognizer):
+        result = recognizer._quick_match("/spec 重构认证模块")
+        assert result is not None
+        assert result.primary_intent == IntentType.ENTER_SPEC
+        assert result.primary_data["requirement"] == "重构认证模块"
+
+    def test_heuristic_shell_single_char_word_not_matched(self, recognizer):
+        """Single-char first word should NOT trigger command heuristic (2 <= len <= 15)."""
+        result = recognizer._quick_match("x something")
+        assert result is None
+
+    def test_heuristic_shell_long_word_not_matched(self, recognizer):
+        """First word > 15 chars should NOT trigger command heuristic."""
+        result = recognizer._quick_match("abcdefghijklmnop arg")  # 16 chars
+        assert result is None
+
+    def test_info_commands_all_modes(self, recognizer):
+        """All mode-specific _info commands should return correct intent."""
+        info_map = {
+            "/coco_info": IntentType.COCO_MESSAGE,
+            "/claude_info": IntentType.CLAUDE_MESSAGE,
+            "/aiden_info": IntentType.AIDEN_MESSAGE,
+            "/codex_info": IntentType.CODEX_MESSAGE,
+            "/gemini_info": IntentType.GEMINI_MESSAGE,
+        }
+        for cmd, expected_intent in info_map.items():
+            result = recognizer._quick_match(cmd)
+            assert result is not None, f"Expected match for {cmd}"
+            assert result.primary_intent == expected_intent, f"Wrong intent for {cmd}"
+            assert result.primary_data.get("command") == "info"
+
+    def test_parse_response_malformed_json(self, recognizer):
+        """Malformed JSON in code block should return empty dict."""
+        content = '```json\n{"tasks": [broken\n```'
+        parsed, _ = recognizer._parse_response(content)
+        assert parsed == {}
+
+    def test_cd_with_tilde_path(self, recognizer):
+        """cd ~/workspace should capture tilde path correctly."""
+        result = recognizer._quick_match("cd ~/workspace")
+        assert result is not None
+        assert result.primary_intent == IntentType.CHANGE_DIR
+        assert result.primary_data["path"] == "~/workspace"

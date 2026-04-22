@@ -381,6 +381,9 @@ class Settings(BaseSettings):
     # button still exists for manual control when content exceeds the full threshold.
     card_deep_compact_default: bool = False
 
+    # 卡片流式更新最大字符数（避免 PATCH 载荷过大）
+    card_max_chars: int = 28000
+
     # UI Optimization Settings
     # Pagination size for project board and other lists
     ui_page_size: int = 5

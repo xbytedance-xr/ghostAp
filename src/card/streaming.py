@@ -106,6 +106,14 @@ def _normalize_streaming_markdown(content: str, *, is_final: bool, max_chars: in
         return content
 
 
+# 飞书卡片流式动画参数（由飞书 SDK 协议定义）
+_STREAMING_CONFIG: dict = {
+    "print_frequency_ms": {"default": 30, "android": 30, "ios": 30, "pc": 30},
+    "print_step": {"default": 3, "android": 3, "ios": 3, "pc": 3},
+    "print_strategy": "fast",
+}
+
+
 class StreamingCardManager:
     def __init__(self, client: lark.Client):
         self._client = client
@@ -125,7 +133,7 @@ class StreamingCardManager:
             )
         )
 
-        self._max_card_chars = 28000
+        self._max_card_chars = self._settings.card_max_chars
         self._last_cleanup: float = 0.0
         self._cleanup_interval: float = 300.0  # auto-cleanup every 5 minutes
 
@@ -250,11 +258,7 @@ class StreamingCardManager:
         }
         if streaming_mode:
             config["streaming_mode"] = True
-            config["streaming_config"] = {
-                "print_frequency_ms": {"default": 30, "android": 30, "ios": 30, "pc": 30},
-                "print_step": {"default": 3, "android": 3, "ios": 3, "pc": 3},
-                "print_strategy": "fast",
-            }
+            config["streaming_config"] = _STREAMING_CONFIG
 
         return {
             "schema": "2.0",
@@ -306,11 +310,7 @@ class StreamingCardManager:
         }
         if streaming_mode:
             config["streaming_mode"] = True
-            config["streaming_config"] = {
-                "print_frequency_ms": {"default": 30, "android": 30, "ios": 30, "pc": 30},
-                "print_step": {"default": 3, "android": 3, "ios": 3, "pc": 3},
-                "print_strategy": "fast",
-            }
+            config["streaming_config"] = _STREAMING_CONFIG
 
         return {
             "schema": "2.0",
