@@ -3,6 +3,9 @@
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-04-22
 - **并发风险排查与锁竞争优化** — 解决 ACP `manager.py` 和 `sync_adapter.py` 中由异步超时引发的任务泄露，将长达 5 秒的会话关闭（`session.close`）操作异步化以消除对全局字典锁的竞争，并修复依赖注入重构遗留的 Mock 测试。 → [详细记录](2026-04-22.md)
+- **ACPEventRenderer reset()/get_final_content() 语义一致性修复** — 将 `reset()` 中 `_text_chunks.clear()`/`_active_tools.clear()`/`_modified_files.clear()` 三处原地清空改为赋值新实例（`= []`/`= {}`/`= set()`），与 `__init__` 创建新对象的语义保持一致；同步修改 `get_final_content()` 中的 `_active_tools.clear()` 为赋值新 dict；更新 docstring 使文档与实现一致；新增 2 个引用独立性测试验证 reset()/get_final_content() 后旧引用不被清空 → [详细记录](2026-04-22.md)
+- **删除 _LazyProvider 死代码** — 移除 `src/acp/providers/__init__.py` 中未被引用的 `_LazyProvider` 类定义，纯死代码清理，全量 2710 tests 零回归 → [详细记录](2026-04-22.md)
+- **合并 providers 三层惰性缓存为单一锁** — 将 `_ensure_checkers()` / `_get_provider_configs()` / `_ensure_providers()` 三层 double-checked locking（3 把锁 + 3 组全局可变状态）合并为单一 `_ensure_providers()` + `_init_lock`，减少认知负担和初始化顺序耦合风险，全量 2711 tests 零回归 → [详细记录](2026-04-22.md)
 
 
 ## 2026-04-21
