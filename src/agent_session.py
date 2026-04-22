@@ -176,8 +176,8 @@ class SyncClaudeCLISession:
                 # Claude Code CLI refuses to launch inside another Claude Code session.
                 # Our process may run under Claude Code / other wrappers, so we must
                 # explicitly unset the guard env to avoid nested-session crash.
-                env = os.environ.copy()
-                env.pop("CLAUDECODE", None)
+                from .utils.env import build_clean_env
+                env = build_clean_env()
 
                 self._proc = subprocess.Popen(
                     args,

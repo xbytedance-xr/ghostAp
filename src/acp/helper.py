@@ -183,10 +183,9 @@ async def probe_acp_models(
 
     cmd, args = provider.get_serve_command(None)
 
-    import os
+    from ..utils.env import build_clean_env
 
-    env = os.environ.copy()
-    env.pop("CLAUDECODE", None)
+    env = build_clean_env()
     client = GhostAPClient(on_event=lambda _ev: None, auto_approve=True)
 
     try:

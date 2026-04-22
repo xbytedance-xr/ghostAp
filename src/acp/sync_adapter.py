@@ -538,8 +538,8 @@ def _probe_acp_serve_help(command: str) -> tuple[bool, Optional[int], str, str]:
         return False, None, "", ""
     try:
         # Claude Code 等可能因嵌套会话 guard 拒绝启动；探测时移除该 env，提升稳健性。
-        env = os.environ.copy()
-        env.pop("CLAUDECODE", None)
+        from ..utils.env import build_clean_env
+        env = build_clean_env()
         p = subprocess.run(
             [cmd, "acp", "serve", "--help"],
             capture_output=True,
@@ -573,8 +573,8 @@ def _supports_acp_serve(command: str) -> bool:
         # Some agent CLIs (notably Claude Code) refuse to launch when `CLAUDECODE`
         # is set (nested-session guard). Since this probe is executed inside our
         # service process, explicitly drop it to keep detection robust.
-        env = os.environ.copy()
-        env.pop("CLAUDECODE", None)
+        from ..utils.env import build_clean_env
+        env = build_clean_env()
         p = subprocess.run(
             [command, "acp", "serve", "--help"],
             capture_output=True,

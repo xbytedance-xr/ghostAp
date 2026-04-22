@@ -41,8 +41,8 @@ def _make_custom_help_checker(
     @functools.lru_cache(maxsize=1)
     def _get_help_blob() -> str:
         try:
-            env = os.environ.copy()
-            env.pop("CLAUDECODE", None)
+            from ...utils.env import build_clean_env
+            env = build_clean_env()
             p = subprocess.run(
                 help_cmd,
                 capture_output=True,

@@ -112,8 +112,8 @@ class CocoModelManager:
             from src.acp.client import GhostAPClient
 
             async def _probe() -> list[CocoModel]:
-                env = os.environ.copy()
-                env.pop("CLAUDECODE", None)
+                from src.utils.env import build_clean_env
+                env = build_clean_env()
 
                 client = GhostAPClient(on_event=lambda _ev: None, auto_approve=True)
                 async with spawn_agent_process(client, "coco", "acp", "serve", env=env, cwd=str(Path.cwd())) as (
