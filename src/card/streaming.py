@@ -25,6 +25,13 @@ from .styles import THRESHOLDS
 logger = logging.getLogger(__name__)
 
 
+def _make_set_event() -> threading.Event:
+    """Create an Event that starts in set (ready) state."""
+    e = threading.Event()
+    e.set()
+    return e
+
+
 @dataclass
 class StreamingCard:
     chat_id: str
@@ -73,6 +80,7 @@ class StreamingCard:
     is_inflight: bool = False
     pending_update: bool = False
     lock: threading.Lock = field(default_factory=threading.Lock)
+    inflight_done: threading.Event = field(default_factory=lambda: _make_set_event())
 
 
 def _normalize_streaming_markdown(content: str, *, is_final: bool, max_chars: int) -> str:
@@ -670,6 +678,7 @@ class StreamingCardManager:
                 return True
 
             card.is_inflight = True
+            card.inflight_done.clear()
 
         # Dispatch async update
         self._executor.submit(self._do_patch_task, card)
@@ -681,6 +690,7 @@ class StreamingCardManager:
                 with card.lock:
                     if not card.pending_update:
                         card.is_inflight = False
+                        card.inflight_done.set()
                         break
                     card.pending_update = False
 
@@ -773,20 +783,20 @@ class StreamingCardManager:
             logger.warning("卡片消息异步更新异常: %s", e, exc_info=True)
             with card.lock:
                 card.is_inflight = False
+                card.inflight_done.set()
 
     def close_streaming(self, card: StreamingCard, final_content: Optional[str] = None) -> bool:
         if not card.message_id:
             return False
 
-        # Wait briefly for any in-flight update to finish to avoid race conditions
-        for _ in range(20):
-            with card.lock:
-                if not card.is_inflight:
-                    # Prevent new updates
-                    card.pending_update = False
-                    card.is_inflight = True
-                    break
-            time.sleep(0.1)
+        # Wait for any in-flight update to finish to avoid race conditions
+        card.inflight_done.wait(timeout=2.0)
+
+        with card.lock:
+            # Prevent new updates
+            card.pending_update = False
+            card.is_inflight = True
+            card.inflight_done.clear()
 
         try:
             final_text = final_content if final_content else card.last_content
@@ -850,11 +860,13 @@ class StreamingCardManager:
                     self._cards.pop(card.message_id, None)
             with card.lock:
                 card.is_inflight = False
+                card.inflight_done.set()
             return True
         except Exception as e:
             logger.warning("关闭流式异常: %s", e, exc_info=True)
             with card.lock:
                 card.is_inflight = False
+                card.inflight_done.set()
             return False
 
     # ---- 查询/清理 ----
