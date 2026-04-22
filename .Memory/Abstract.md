@@ -1,11 +1,17 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
+## 2026-04-23
+- **消除 DeepEngineCallbacks 重复定义** — 删除 `src/deep_engine/callbacks.py` 中与 `engine.py` 重复的 `DeepEngineCallbacks`，统一到 `engine.py` 的规范版本（`on_error: Optional[Callable[[str], None]]`），使其与 `HasOnError` Protocol 类型兼容；更新测试导入路径；全量 2761 tests 零回归 → [详细记录](2026-04-23.md)
+
 ## 2026-04-22
 - **并发风险排查与锁竞争优化** — 解决 ACP `manager.py` 和 `sync_adapter.py` 中由异步超时引发的任务泄露，将长达 5 秒的会话关闭（`session.close`）操作异步化以消除对全局字典锁的竞争，并修复依赖注入重构遗留的 Mock 测试。 → [详细记录](2026-04-22.md)
 - **ACPEventRenderer reset()/get_final_content() 语义一致性修复** — 将 `reset()` 中 `_text_chunks.clear()`/`_active_tools.clear()`/`_modified_files.clear()` 三处原地清空改为赋值新实例（`= []`/`= {}`/`= set()`），与 `__init__` 创建新对象的语义保持一致；同步修改 `get_final_content()` 中的 `_active_tools.clear()` 为赋值新 dict；更新 docstring 使文档与实现一致；新增 2 个引用独立性测试验证 reset()/get_final_content() 后旧引用不被清空 → [详细记录](2026-04-22.md)
 - **删除 _LazyProvider 死代码** — 移除 `src/acp/providers/__init__.py` 中未被引用的 `_LazyProvider` 类定义，纯死代码清理，全量 2710 tests 零回归 → [详细记录](2026-04-22.md)
 - **合并 providers 三层惰性缓存为单一锁** — 将 `_ensure_checkers()` / `_get_provider_configs()` / `_ensure_providers()` 三层 double-checked locking（3 把锁 + 3 组全局可变状态）合并为单一 `_ensure_providers()` + `_init_lock`，减少认知负担和初始化顺序耦合风险，全量 2711 tests 零回归 → [详细记录](2026-04-22.md)
+- **Scope-Creep 变更拆分为 5 个独立 commit** — 将混合 diff 中的竞态修复、`_find_lru_cached` DRY 重构、BaseEngine DI、多模块 singleton reset、TaskScheduler GC reaping 拆分为 5 个主题独立 commit，每个携带独立测试，全量 2730 tests 零回归 → [详细记录](2026-04-22.md)
+- **审查异常 futures unfinished 纵深清洗** — 在 `errors.py` 源头层添加 `_FUTURES_UNFINISHED_RE` 正则清洗 stdlib `concurrent.futures` 的 `"N (of M) futures unfinished"` 内部诊断信息；在 `perspective_worker.py` 的 `PerspectiveWorker.run()` 和 `run_workers_parallel()` 内层 except 中对 TIMEOUT 错误码强制收敛为域语义文案；新增 8 个测试，全量 2738 tests 零回归 → [详细记录](2026-04-22.md)
+- **可测试性与鲁棒性综合改进（24 项任务）** — 线程安全锁（SpecEngine/DeepEngine/ACP client/session 4 处 `with self._lock:` 保护）、递归深度限制（`_run_phase` max_depth=3）、共享错误处理抽取（`_format_engine_error()` 模板方法消除三引擎 6 处重复）、配置中心化（3 个 Settings 字段替代 `os.getenv`）、废弃代码清理（4 个 deprecated 方法删除）、测试 sleep 替换（`_advance_time` 时间戳偏移 + `threading.Event` 阻塞模式 + keepalive_interval 缩减）；新增 3 个测试文件；5×116 稳定性验证零 flaky；全量 2755 tests 零回归 → [详细记录](2026-04-22.md)
 
 
 ## 2026-04-21
