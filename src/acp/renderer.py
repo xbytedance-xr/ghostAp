@@ -152,7 +152,7 @@ class ACPEventRenderer:
 
     def get_final_content(self) -> str:
         """Return the final rendered content (no active tools shown)."""
-        self._active_tools.clear()
+        self._active_tools = {}
         return self._render()
 
     @property
@@ -176,6 +176,62 @@ class ACPEventRenderer:
     @property
     def completed_tool_count(self) -> int:
         return self._completed_tool_count
+
+    def reset(self) -> None:
+        """Reset all accumulated state for a fresh rendering cycle.
+
+        Call this method when reusing the same ``ACPEventRenderer`` instance for
+        a new round of ACP prompt processing — for example, before issuing a
+        retry in ``DeepEngine`` or starting a new user prompt within the same
+        session.  After calling ``reset()``, the renderer behaves identically to
+        a newly constructed instance.
+
+        **What gets reset**:
+
+        - Accumulated agent text output
+        - Tool call records (active calls and completed count)
+        - Execution plan snapshot
+        - File change tracking and todo content
+
+        .. note::
+           For the full list of internal fields cleared by this method,
+           see ``__init__``.
+
+        **Important notes**:
+
+        - This method **only** resets the renderer's internal accumulation
+          state.  It does **not** trigger any cleanup callbacks, cancel running
+          ACP sessions, or notify external subscribers.
+        - Any external references previously obtained via properties (e.g.
+          ``text_content``, ``modified_files``) remain **independent** after
+          ``reset()`` — they still hold the data captured before the reset.
+          Internally, ``reset()`` rebinds each mutable container to a fresh
+          instance (matching ``__init__`` semantics), so prior references are
+          never mutated.
+        - If ``reset()`` is called while the renderer is in the middle of
+          processing events (i.e. between ``process_event`` calls), subsequent
+          ``process_event`` calls will start from a clean state — prior text,
+          tool calls, and plan information will be lost.
+
+        Example::
+
+            renderer = ACPEventRenderer()
+            # … process events for prompt 1 …
+            content = renderer.get_final_content()
+
+            # Reuse for prompt 2
+            renderer.reset()
+            # … process events for prompt 2 …
+        """
+        self._text_chunks = []
+        self._text_content = ""
+        self._text_dirty = False
+        self._active_tools = {}
+        self._completed_tool_count = 0
+        self._plan = None
+        self._modified_files = set()
+        self._todo_content = ""
+        self._last_tool_run = None
 
     # ------------------------------------------------------------------
     # Rendering
