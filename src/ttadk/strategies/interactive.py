@@ -91,16 +91,26 @@ class InteractiveStrategy(ModelFetchStrategy):
             except Exception:
                 pass
             cmd = ["ttadk", "code", "-t", tool_name]
-            proc = subprocess.Popen(
-                cmd,
-                stdin=slave,
-                stdout=slave,
-                stderr=slave,
-                cwd=cwd or None,
-                env=env,
-                close_fds=True,
-                start_new_session=True,  # 便于 kill 进程组，避免遗留子进程
-            )
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdin=slave,
+                    stdout=slave,
+                    stderr=slave,
+                    cwd=cwd or None,
+                    env=env,
+                    close_fds=True,
+                    start_new_session=True,  # 便于 kill 进程组，避免遗留子进程
+                )
+            except Exception:
+                # Popen failed — close slave immediately (master cleaned up in outer finally)
+                if slave is not None:
+                    try:
+                        os.close(slave)
+                    except OSError:
+                        pass
+                    slave = None
+                raise
             os.close(slave)
             slave = None
 
