@@ -55,4 +55,5 @@ def install_signal_handlers() -> None:
 
 def _reset_shutdown_state() -> None:
     global _shutdown_in_progress
-    _shutdown_in_progress = False
+    with _shutdown_lock:
+        _shutdown_in_progress = False

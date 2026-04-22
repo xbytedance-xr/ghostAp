@@ -1,4 +1,5 @@
 import shlex
+import threading
 from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -410,10 +411,13 @@ class Settings(BaseSettings):
 
 
 _settings: Optional[Settings] = None
+_settings_lock = threading.Lock()
 
 
 def get_settings() -> Settings:
     global _settings
     if _settings is None:
-        _settings = Settings()
+        with _settings_lock:
+            if _settings is None:
+                _settings = Settings()
     return _settings
