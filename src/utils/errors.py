@@ -37,6 +37,46 @@ class GhostAPError(Exception):
         self.context = context or {}
 
 
+# ---------------------------------------------------------------------------
+# Domain-specific exception hierarchy
+# ---------------------------------------------------------------------------
+
+
+class ACPError(GhostAPError):
+    """ACP (Agent Client Protocol) layer errors — session, transport, protocol."""
+
+    def __init__(self, message: str = "ACP 通信异常", **kwargs):
+        super().__init__(message, action=kwargs.pop("action", "acp"), **kwargs)
+
+
+class FeishuError(GhostAPError):
+    """Feishu integration errors — WebSocket, API, message handling."""
+
+    def __init__(self, message: str = "飞书通信异常", **kwargs):
+        super().__init__(message, action=kwargs.pop("action", "feishu"), **kwargs)
+
+
+class TTADKError(GhostAPError):
+    """TTADK (Multi-Tool AI Development Kit) errors — tool/model management, startup, cache."""
+
+    def __init__(self, message: str = "TTADK 操作异常", **kwargs):
+        super().__init__(message, action=kwargs.pop("action", "ttadk"), **kwargs)
+
+
+class EngineError(GhostAPError):
+    """Execution engine errors — Deep/Loop/Spec engine lifecycle and execution."""
+
+    def __init__(self, message: str = "引擎执行异常", **kwargs):
+        super().__init__(message, action=kwargs.pop("action", "engine"), **kwargs)
+
+
+class SessionError(GhostAPError):
+    """Session orchestration errors — agent_session lifecycle and coordination."""
+
+    def __init__(self, message: str = "会话管理异常", **kwargs):
+        super().__init__(message, action=kwargs.pop("action", "session"), **kwargs)
+
+
 class SessionExpiredError(GhostAPError):
     """AI session (Coco/Claude) has expired or is unreachable."""
 
