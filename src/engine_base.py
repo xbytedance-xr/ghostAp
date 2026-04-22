@@ -142,10 +142,11 @@ class BaseEngine:
         agent_type: str = "coco",
         engine_name: str = "Coco",
         model_name: Optional[str] = None,
+        settings: Optional[object] = None,
     ):
         self.chat_id = chat_id
         self.root_path = os.path.expanduser(root_path)
-        self.settings = get_settings()
+        self.settings = settings if settings is not None else get_settings()
         self.engine_name = engine_name
         self._agent_type = agent_type
         self._model_name = model_name
