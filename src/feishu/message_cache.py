@@ -22,23 +22,26 @@ class MessageCache:
         self._last_cleanup = time.time()
         self._cleanup_thread: Optional[threading.Thread] = None
         self._running = False
+        self._stop_event = threading.Event()
 
     def start_cleanup_thread(self):
         if self._cleanup_thread is not None:
             return
         self._running = True
+        self._stop_event.clear()
         self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True, name="message_cache_cleanup")
         self._cleanup_thread.start()
 
     def stop_cleanup_thread(self):
         self._running = False
+        self._stop_event.set()
         if self._cleanup_thread:
             self._cleanup_thread.join(timeout=2)
             self._cleanup_thread = None
 
     def _cleanup_loop(self):
         while self._running:
-            time.sleep(self._cleanup_interval)
+            self._stop_event.wait(timeout=self._cleanup_interval)
             if self._running:
                 self._do_cleanup()
 
