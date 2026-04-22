@@ -157,7 +157,7 @@ FORWARDING_MAP: dict[str, tuple[str, str]] = {
     "_show_message_trace": ("diagnostics", "show_message_trace"),
 }
 
-def bind_forwarding_methods(client: Any, handler_ctx: Any):
+def bind_forwarding_methods(client: Any, handler_ctx: Any) -> None:
     """
     Bind forwarding methods directly on the client instance.
     """

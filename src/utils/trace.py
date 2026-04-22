@@ -13,7 +13,7 @@ def get_trace_id() -> Optional[str]:
     return _trace_id_ctx_var.get() or _request_id_ctx_var.get()
 
 
-def set_trace_id(trace_id: str):
+def set_trace_id(trace_id: str) -> contextvars.Token[Optional[str]]:
     """Set the current trace_id in context."""
     return _trace_id_ctx_var.set(trace_id)
 
@@ -70,7 +70,7 @@ class RequestIdFilter(logging.Filter):
         return True
 
 
-def configure_logging_with_trace():
+def configure_logging_with_trace() -> None:
     """Helper to configure basic logging with trace support."""
     root = logging.getLogger()
     f = RequestIdFilter()

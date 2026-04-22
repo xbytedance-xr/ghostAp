@@ -126,7 +126,7 @@ class Application:
                 pass
 
 
-def main():
+def main() -> None:
     app = Application()
     app.run()
 

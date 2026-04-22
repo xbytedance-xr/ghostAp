@@ -8,7 +8,7 @@ from ..card import CardBuilder
 
 logger = logging.getLogger(__name__)
 
-def init_action_registry(client: 'FeishuWSClient'):
+def init_action_registry(client: 'FeishuWSClient') -> None:
     """Initialize all card action handlers and register them to the client's action dispatcher."""
     register_programming_mode_actions(client)
 
@@ -96,7 +96,7 @@ def init_action_registry(client: 'FeishuWSClient'):
         exact="toggle_ttadk_yolo",
     )
 
-def register_programming_mode_actions(client: 'FeishuWSClient'):
+def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
     """Register enter/exit/resume/new actions for all programming modes."""
     mode_names = ("coco", "claude", "aiden", "codex", "gemini", "ttadk")
     for mode in mode_names:

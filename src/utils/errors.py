@@ -174,7 +174,7 @@ def fmt_not_found(resource: str, name: str = "") -> str:
     return f"❌ 未找到 {resource}"
 
 
-def log_exception(logger: logging.Logger, msg: str, exc: Exception, level: int = logging.ERROR):
+def log_exception(logger: logging.Logger, msg: str, exc: Exception, level: int = logging.ERROR) -> None:
     """Log an exception with appropriate level.
 
     Downgrades known business logic exceptions (GhostAPError or any exception
