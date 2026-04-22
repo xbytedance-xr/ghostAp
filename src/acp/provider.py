@@ -10,7 +10,7 @@ import logging
 import time
 from collections import OrderedDict
 import threading
-from typing import Optional, Protocol, runtime_checkable
+from typing import Iterable, Optional, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -301,6 +301,20 @@ class ToolRegistry:
             # best-effort: completely ignore preheat failures
             pass
 
+    # ----------------------------------
+    # Test-only: guarded state reset
+    # ----------------------------------
+    def _reset_for_testing(self, names: Iterable[str]) -> None:
+        """Remove specified providers under *self._lock*.  **Test-only.**
+
+        After removal, if ``_default_provider`` no longer exists in the
+        remaining providers it is set to ``None``.
+        """
+        with self._lock:
+            for n in names:
+                self._providers.pop(n, None)
+            if self._default_provider and self._default_provider not in self._providers:
+                self._default_provider = None
 
 
 # 兼容别名：旧测试/调用点可能仍引用 `_ToolRegistry`

@@ -293,6 +293,29 @@ def get_providers() -> dict[str, GenericACPProvider]:
     return _ensure_providers()
 
 
+def _reset_providers_for_testing() -> None:
+    """Reset providers, checkers, and their lru_caches. **Test-only.**
+
+    After calling this, the next ``get_providers()`` / ``_ensure_providers()``
+    will rebuild everything from scratch.
+    """
+    global _checkers, _providers
+    with _init_lock:
+        # Clear lru_caches held by checkers before discarding references.
+        if _checkers is not None:
+            for _name, entry in _checkers.items():
+                _, _, clear_fn = entry
+                try:
+                    clear_fn()
+                except Exception:
+                    pass
+        # Unregister providers from the module-level tool_registry (lock-safe).
+        if _providers is not None:
+            tool_registry._reset_for_testing(list(_providers.keys()))
+        _checkers = None
+        _providers = None
+
+
 CocoProvider = type("CocoProvider", (), {"__new__": lambda cls: _ensure_providers()["coco"]})
 ClaudeProvider = type("ClaudeProvider", (), {"__new__": lambda cls: _ensure_providers()["claude"]})
 AidenProvider = type("AidenProvider", (), {"__new__": lambda cls: _ensure_providers()["aiden"]})
@@ -325,6 +348,7 @@ __all__ = [
     "ToolRegistry",
     "tool_registry",
     "get_providers",
+    "_reset_providers_for_testing",
     "CocoProvider",
     "ClaudeProvider",
     "AidenProvider",
