@@ -1,4 +1,4 @@
-"""Tests for src.deep_engine.callbacks and src.deep_engine.metrics modules."""
+"""Tests for DeepEngineCallbacks and src.deep_engine.metrics modules."""
 from __future__ import annotations
 
 import time
@@ -75,14 +75,14 @@ class TestDeepEngineCallbacks:
 
     def test_can_instantiate(self):
         # DeepEngineCallbacks inherits from EngineCallbacks; verify import works
-        from src.deep_engine.callbacks import DeepEngineCallbacks
+        from src.deep_engine.engine import DeepEngineCallbacks
         cb = DeepEngineCallbacks()
         # Planning aliases should point to analyzing callbacks
         assert cb.on_planning_start is cb.on_analyzing_start
         assert cb.on_planning_done is cb.on_analyzing_done
 
     def test_planning_setter_delegates(self):
-        from src.deep_engine.callbacks import DeepEngineCallbacks
+        from src.deep_engine.engine import DeepEngineCallbacks
         cb = DeepEngineCallbacks()
         sentinel = lambda: None
         cb.on_planning_start = sentinel
