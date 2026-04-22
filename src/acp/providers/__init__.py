@@ -4,6 +4,7 @@ import functools
 import os
 import re
 import subprocess
+import threading
 from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
@@ -201,98 +202,129 @@ def _make_probe_checker_with_cache_handle(
     return checker, loader, _clear
 
 
-_aiden_checker, _aiden_help_loader, _aiden_cache_clear = _make_custom_help_checker_with_cache_handle(
-    ["aiden", "acp", "--help"],
-    ["usage:", "aiden acp", "acp agent"],
-)
-
-_codex_checker, _codex_help_loader, _codex_cache_clear = _make_probe_checker_with_cache_handle("codex")
-
-_gemini_checker, _gemini_help_loader, _gemini_cache_clear = _make_custom_help_checker_with_cache_handle(
-    ["gemini", "--help"],
-    ["usage:", "--acp"],
-)
-
-_PROVIDER_CONFIGS: list[_ProviderConfig] = [
-    _ProviderConfig(
-        tool_name="coco",
-        serve_args=["acp", "serve"],
-        availability_checker=_make_resolve_checker("coco"),
-        model_style="config_c",
-        is_default=True,
-        skip_model_selection=True,
-    ),
-    _ProviderConfig(
-        tool_name="claude",
-        serve_args=["acp", "serve"],
-        availability_checker=_make_resolve_checker("claude"),
-        model_style=None,
-    ),
-    _ProviderConfig(
-        tool_name="aiden",
-        serve_args=["acp"],
-        availability_checker=_aiden_checker,
-        model_style="dynamic",
-        help_blob_loader=_aiden_help_loader,
-        skip_model_selection=True,
-    ),
-    _ProviderConfig(
-        tool_name="codex",
-        serve_args=["acp", "serve"],
-        availability_checker=_codex_checker,
-        model_style="dynamic",
-        help_blob_loader=_codex_help_loader,
-    ),
-    _ProviderConfig(
-        tool_name="gemini",
-        serve_args=["--acp"],
-        availability_checker=_gemini_checker,
-        model_style="dynamic",
-        help_blob_loader=_gemini_help_loader,
-    ),
-]
+_checkers: dict[str, tuple] | None = None
+_providers: dict[str, GenericACPProvider] | None = None
+_init_lock = threading.Lock()
 
 
-def _build_providers() -> dict[str, GenericACPProvider]:
-    providers: dict[str, GenericACPProvider] = {}
-    for cfg in _PROVIDER_CONFIGS:
-        p = GenericACPProvider(cfg)
-        providers[cfg.tool_name] = p
-        tool_registry.register(p, is_default=cfg.is_default)
-    return providers
+def _ensure_providers() -> dict[str, GenericACPProvider]:
+    """Single lazy-init entry point: checkers → configs → providers."""
+    global _checkers, _providers
+    if _providers is not None:
+        return _providers
+    with _init_lock:
+        if _providers is not None:
+            return _providers
+
+        # --- 1) build checkers ---
+        aiden = _make_custom_help_checker_with_cache_handle(
+            ["aiden", "acp", "--help"],
+            ["usage:", "aiden acp", "acp agent"],
+        )
+        codex = _make_probe_checker_with_cache_handle("codex")
+        gemini = _make_custom_help_checker_with_cache_handle(
+            ["gemini", "--help"],
+            ["usage:", "--acp"],
+        )
+        _checkers = {"aiden": aiden, "codex": codex, "gemini": gemini}
+
+        _aiden_checker, _aiden_help_loader, _ = aiden
+        _codex_checker, _codex_help_loader, _ = codex
+        _gemini_checker, _gemini_help_loader, _ = gemini
+
+        # --- 2) build configs ---
+        configs = [
+            _ProviderConfig(
+                tool_name="coco",
+                serve_args=["acp", "serve"],
+                availability_checker=_make_resolve_checker("coco"),
+                model_style="config_c",
+                is_default=True,
+                skip_model_selection=True,
+            ),
+            _ProviderConfig(
+                tool_name="claude",
+                serve_args=["acp", "serve"],
+                availability_checker=_make_resolve_checker("claude"),
+                model_style=None,
+            ),
+            _ProviderConfig(
+                tool_name="aiden",
+                serve_args=["acp"],
+                availability_checker=_aiden_checker,
+                model_style="dynamic",
+                help_blob_loader=_aiden_help_loader,
+                skip_model_selection=True,
+            ),
+            _ProviderConfig(
+                tool_name="codex",
+                serve_args=["acp", "serve"],
+                availability_checker=_codex_checker,
+                model_style="dynamic",
+                help_blob_loader=_codex_help_loader,
+            ),
+            _ProviderConfig(
+                tool_name="gemini",
+                serve_args=["--acp"],
+                availability_checker=_gemini_checker,
+                model_style="dynamic",
+                help_blob_loader=_gemini_help_loader,
+            ),
+        ]
+
+        # --- 3) build and register providers ---
+        result: dict[str, GenericACPProvider] = {}
+        for cfg in configs:
+            p = GenericACPProvider(cfg)
+            result[cfg.tool_name] = p
+            tool_registry.register(p, is_default=cfg.is_default)
+        _providers = result
+    return _providers
 
 
-_providers = _build_providers()
+def _get_checker(name: str) -> tuple:
+    _ensure_providers()  # guarantees _checkers is populated
+    assert _checkers is not None
+    return _checkers[name]
 
 
-CocoProvider = type("CocoProvider", (), {"__new__": lambda cls: _providers["coco"]})
-ClaudeProvider = type("ClaudeProvider", (), {"__new__": lambda cls: _providers["claude"]})
-AidenProvider = type("AidenProvider", (), {"__new__": lambda cls: _providers["aiden"]})
-CodexProvider = type("CodexProvider", (), {"__new__": lambda cls: _providers["codex"]})
-GeminiProvider = type("GeminiProvider", (), {"__new__": lambda cls: _providers["gemini"]})
+def get_providers() -> dict[str, GenericACPProvider]:
+    """Public accessor — lazily builds and registers all providers on first call."""
+    return _ensure_providers()
+
+
+CocoProvider = type("CocoProvider", (), {"__new__": lambda cls: _ensure_providers()["coco"]})
+ClaudeProvider = type("ClaudeProvider", (), {"__new__": lambda cls: _ensure_providers()["claude"]})
+AidenProvider = type("AidenProvider", (), {"__new__": lambda cls: _ensure_providers()["aiden"]})
+CodexProvider = type("CodexProvider", (), {"__new__": lambda cls: _ensure_providers()["codex"]})
+GeminiProvider = type("GeminiProvider", (), {"__new__": lambda cls: _ensure_providers()["gemini"]})
 
 
 def _get_aiden_acp_serve_help_blob() -> str:
-    return _aiden_help_loader()
+    _, loader, _ = _get_checker("aiden")
+    return loader()
 
-_get_aiden_acp_serve_help_blob.cache_clear = _aiden_cache_clear  # type: ignore[attr-defined]
+_get_aiden_acp_serve_help_blob.cache_clear = lambda: _get_checker("aiden")[2]()  # type: ignore[attr-defined]
 
 
 def _get_codex_acp_serve_help_blob() -> str:
-    return _codex_help_loader()
+    _, loader, _ = _get_checker("codex")
+    return loader()
 
-_get_codex_acp_serve_help_blob.cache_clear = _codex_cache_clear  # type: ignore[attr-defined]
+_get_codex_acp_serve_help_blob.cache_clear = lambda: _get_checker("codex")[2]()  # type: ignore[attr-defined]
 
 
 def _get_gemini_acp_serve_help_blob() -> str:
-    return _gemini_help_loader()
+    _, loader, _ = _get_checker("gemini")
+    return loader()
 
-_get_gemini_acp_serve_help_blob.cache_clear = _gemini_cache_clear  # type: ignore[attr-defined]
+_get_gemini_acp_serve_help_blob.cache_clear = lambda: _get_checker("gemini")[2]()  # type: ignore[attr-defined]
 
 
 __all__ = [
     "ToolRegistry",
     "tool_registry",
+    "get_providers",
     "CocoProvider",
     "ClaudeProvider",
     "AidenProvider",
