@@ -494,9 +494,6 @@ class SpecEngine(BaseEngine):
             self._close_session_safely()
             self._run_state = EngineRunState.IDLE
 
-            import gc
-
-            gc.collect()
             if self._project and self._project.status == SpecProjectStatus.COMPLETED and self._saved_task_id:
                 delete_task_state(self._saved_task_id)
                 self._saved_task_id = None
@@ -1293,9 +1290,6 @@ class SpecEngine(BaseEngine):
             self._close_session_safely()
             self._run_state = EngineRunState.IDLE
 
-            import gc
-
-            gc.collect()
             if self._project and self._project.status == SpecProjectStatus.COMPLETED and self._saved_task_id:
                 delete_task_state(self._saved_task_id)
                 self._saved_task_id = None

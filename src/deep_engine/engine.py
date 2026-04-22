@@ -5,18 +5,12 @@ the new Deep Engine sends a single comprehensive prompt to the agent and
 monitors its plan/tool-call/text progress via ACP events.
 """
 
-import gc
 import json
 import logging
 import os
 import time
 from dataclasses import dataclass
 from typing import Callable, Optional
-
-try:
-    import psutil
-except Exception:  # pragma: no cover
-    psutil = None  # type: ignore[assignment]
 
 from ..acp import ACPEvent, ACPEventType
 from ..agent_session import create_engine_session
@@ -92,25 +86,17 @@ class DeepEngine(BaseEngine):
         return self._progress
 
     def _check_memory_and_gc(self) -> None:
-        """Backward-compatible memory check hook used by legacy tests/callers."""
+        """Backward-compatible memory check hook used by legacy tests/callers.
+
+        Delegates to the global GCMonitor which handles threshold-based gc.collect().
+        """
         now = time.time()
         if now - self._last_mem_check < 5.0:
             return
         self._last_mem_check = now
 
-        if psutil is None:
-            return
-
-        try:
-            process = psutil.Process(os.getpid())
-            mem_percent = process.memory_percent()
-            threshold_raw = getattr(self.settings, "deep_memory_threshold", 80.0)
-            threshold = threshold_raw if isinstance(threshold_raw, (int, float)) else 80.0
-            if mem_percent >= float(threshold):
-                gc.collect()
-                process.memory_percent()
-        except Exception:
-            return
+        gc_monitor = get_gc_monitor(memory_threshold_percent=self.settings.deep_memory_threshold)
+        gc_monitor.check_and_collect(label="DeepEngine")
 
     def _make_on_event(self, callbacks: DeepEngineCallbacks) -> Callable[[ACPEvent], None]:
         """Create the on_event callback shared by plan_and_execute and resume."""
