@@ -2,7 +2,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
 if TYPE_CHECKING:
     from ..worktree_engine.models import WorktreeRuntimeState
@@ -121,99 +121,76 @@ class ProjectContext:
             self.conversation_history = self.conversation_history[-self.max_history_size :]
         self.touch()
 
-    def set_coco_mode(self, enabled: bool, session_id: Optional[str] = None, query_count: int = 0):
-        self.coco_mode = enabled
+    # ── Mode name → (mode_flag_attr, snapshot_attr) mapping ──
+    _MODE_ATTRS: ClassVar[dict[str, tuple[str, str]]] = {
+        "coco": ("coco_mode", "coco_session_snapshot"),
+        "claude": ("claude_mode", "claude_session_snapshot"),
+        "aiden": ("aiden_mode", "aiden_session_snapshot"),
+        "codex": ("codex_mode", "codex_session_snapshot"),
+        "gemini": ("gemini_mode", "gemini_session_snapshot"),
+        "ttadk": ("ttadk_mode", "ttadk_session_snapshot"),
+    }
+
+    def set_programming_mode(self, mode_type: str, enabled: bool, session_id: Optional[str] = None, query_count: int = 0):
+        """Generic mode setter — replaces per-mode set_*_mode methods."""
+        mode_flag, snap_attr = self._MODE_ATTRS[mode_type]
+        setattr(self, mode_flag, enabled)
         if enabled and session_id:
-            self.coco_session_snapshot = CocoSessionSnapshot(
+            setattr(self, snap_attr, SessionSnapshot(
                 session_id=session_id, query_count=query_count, last_query="", is_resumable=True
-            )
-        elif not enabled and self.coco_session_snapshot:
-            self.coco_session_snapshot.is_resumable = True
+            ))
+        elif not enabled:
+            snap = getattr(self, snap_attr)
+            if snap:
+                snap.is_resumable = True
+
+    def update_programming_snapshot(self, mode_type: str, query: str, query_count: int, session_id: Optional[str] = None):
+        """Generic snapshot updater — replaces per-mode update_*_snapshot methods."""
+        _, snap_attr = self._MODE_ATTRS[mode_type]
+        snap = getattr(self, snap_attr)
+        if snap:
+            snap.last_query = query
+            snap.query_count = query_count
+            if session_id:
+                snap.session_id = session_id
+
+    # ── Backward-compatible delegates ──
+
+    def set_coco_mode(self, enabled: bool, session_id: Optional[str] = None, query_count: int = 0):
+        self.set_programming_mode("coco", enabled, session_id, query_count)
 
     def update_coco_snapshot(self, query: str, query_count: int):
-        if self.coco_session_snapshot:
-            self.coco_session_snapshot.last_query = query
-            self.coco_session_snapshot.query_count = query_count
+        self.update_programming_snapshot("coco", query, query_count)
 
     def set_claude_mode(self, enabled: bool, session_id: Optional[str] = None, query_count: int = 0):
-        self.claude_mode = enabled
-        if enabled and session_id:
-            self.claude_session_snapshot = ClaudeSessionSnapshot(
-                session_id=session_id, query_count=query_count, last_query="", is_resumable=True
-            )
-        elif not enabled and self.claude_session_snapshot:
-            self.claude_session_snapshot.is_resumable = True
+        self.set_programming_mode("claude", enabled, session_id, query_count)
 
     def update_claude_snapshot(self, query: str, query_count: int, session_id: Optional[str] = None):
-        if self.claude_session_snapshot:
-            self.claude_session_snapshot.last_query = query
-            self.claude_session_snapshot.query_count = query_count
-            if session_id:
-                self.claude_session_snapshot.session_id = session_id
+        self.update_programming_snapshot("claude", query, query_count, session_id)
 
     def set_aiden_mode(self, enabled: bool, session_id: Optional[str] = None, query_count: int = 0):
-        self.aiden_mode = enabled
-        if enabled and session_id:
-            self.aiden_session_snapshot = AidenSessionSnapshot(
-                session_id=session_id, query_count=query_count, last_query="", is_resumable=True
-            )
-        elif not enabled and self.aiden_session_snapshot:
-            self.aiden_session_snapshot.is_resumable = True
+        self.set_programming_mode("aiden", enabled, session_id, query_count)
 
     def update_aiden_snapshot(self, query: str, query_count: int, session_id: Optional[str] = None):
-        if self.aiden_session_snapshot:
-            self.aiden_session_snapshot.last_query = query
-            self.aiden_session_snapshot.query_count = query_count
-            if session_id:
-                self.aiden_session_snapshot.session_id = session_id
+        self.update_programming_snapshot("aiden", query, query_count, session_id)
 
     def set_codex_mode(self, enabled: bool, session_id: Optional[str] = None, query_count: int = 0):
-        self.codex_mode = enabled
-        if enabled and session_id:
-            self.codex_session_snapshot = CodexSessionSnapshot(
-                session_id=session_id, query_count=query_count, last_query="", is_resumable=True
-            )
-        elif not enabled and self.codex_session_snapshot:
-            self.codex_session_snapshot.is_resumable = True
+        self.set_programming_mode("codex", enabled, session_id, query_count)
 
     def update_codex_snapshot(self, query: str, query_count: int, session_id: Optional[str] = None):
-        if self.codex_session_snapshot:
-            self.codex_session_snapshot.last_query = query
-            self.codex_session_snapshot.query_count = query_count
-            if session_id:
-                self.codex_session_snapshot.session_id = session_id
+        self.update_programming_snapshot("codex", query, query_count, session_id)
 
     def set_gemini_mode(self, enabled: bool, session_id: Optional[str] = None, query_count: int = 0):
-        self.gemini_mode = enabled
-        if enabled and session_id:
-            self.gemini_session_snapshot = GeminiSessionSnapshot(
-                session_id=session_id, query_count=query_count, last_query="", is_resumable=True
-            )
-        elif not enabled and self.gemini_session_snapshot:
-            self.gemini_session_snapshot.is_resumable = True
+        self.set_programming_mode("gemini", enabled, session_id, query_count)
 
     def update_gemini_snapshot(self, query: str, query_count: int, session_id: Optional[str] = None):
-        if self.gemini_session_snapshot:
-            self.gemini_session_snapshot.last_query = query
-            self.gemini_session_snapshot.query_count = query_count
-            if session_id:
-                self.gemini_session_snapshot.session_id = session_id
+        self.update_programming_snapshot("gemini", query, query_count, session_id)
 
     def set_ttadk_mode(self, enabled: bool, session_id: Optional[str] = None, query_count: int = 0):
-        self.ttadk_mode = enabled
-        if enabled and session_id:
-            self.ttadk_session_snapshot = TtadkSessionSnapshot(
-                session_id=session_id, query_count=query_count, last_query="", is_resumable=True
-            )
-        elif not enabled and self.ttadk_session_snapshot:
-            self.ttadk_session_snapshot.is_resumable = True
+        self.set_programming_mode("ttadk", enabled, session_id, query_count)
 
     def update_ttadk_snapshot(self, query: str, query_count: int, session_id: Optional[str] = None):
-        if self.ttadk_session_snapshot:
-            self.ttadk_session_snapshot.last_query = query
-            self.ttadk_session_snapshot.query_count = query_count
-            if session_id:
-                self.ttadk_session_snapshot.session_id = session_id
+        self.update_programming_snapshot("ttadk", query, query_count, session_id)
 
     def get_status_emoji(self) -> str:
         status_map = {
@@ -225,8 +202,19 @@ class ProjectContext:
         }
         return status_map.get(self.status, "⚪")
 
-    def to_snapshot(self) -> dict:
+    @staticmethod
+    def _snap_to_dict(snap: Optional[SessionSnapshot]) -> Optional[dict]:
+        if snap is None:
+            return None
         return {
+            "session_id": snap.session_id,
+            "query_count": snap.query_count,
+            "last_query": snap.last_query,
+            "is_resumable": snap.is_resumable,
+        }
+
+    def to_snapshot(self) -> dict:
+        d: dict = {
             "project_id": self.project_id,
             "project_name": self.project_name,
             "root_path": self.root_path,
@@ -234,65 +222,11 @@ class ProjectContext:
             "status": self.status.value,
             "created_at": self.created_at,
             "last_active": self.last_active,
-            "coco_mode": self.coco_mode,
-            "coco_session_snapshot": {
-                "session_id": self.coco_session_snapshot.session_id,
-                "query_count": self.coco_session_snapshot.query_count,
-                "last_query": self.coco_session_snapshot.last_query,
-                "is_resumable": self.coco_session_snapshot.is_resumable,
-            }
-            if self.coco_session_snapshot
-            else None,
-            "claude_mode": self.claude_mode,
-            "claude_session_snapshot": {
-                "session_id": self.claude_session_snapshot.session_id,
-                "query_count": self.claude_session_snapshot.query_count,
-                "last_query": self.claude_session_snapshot.last_query,
-                "is_resumable": self.claude_session_snapshot.is_resumable,
-            }
-            if self.claude_session_snapshot
-            else None,
-            "aiden_mode": self.aiden_mode,
-            "aiden_session_snapshot": {
-                "session_id": self.aiden_session_snapshot.session_id,
-                "query_count": self.aiden_session_snapshot.query_count,
-                "last_query": self.aiden_session_snapshot.last_query,
-                "is_resumable": self.aiden_session_snapshot.is_resumable,
-            }
-            if self.aiden_session_snapshot
-            else None,
-            "codex_mode": self.codex_mode,
-            "codex_session_snapshot": {
-                "session_id": self.codex_session_snapshot.session_id,
-                "query_count": self.codex_session_snapshot.query_count,
-                "last_query": self.codex_session_snapshot.last_query,
-                "is_resumable": self.codex_session_snapshot.is_resumable,
-            }
-            if self.codex_session_snapshot
-            else None,
-            "gemini_mode": self.gemini_mode,
-            "gemini_session_snapshot": {
-                "session_id": self.gemini_session_snapshot.session_id,
-                "query_count": self.gemini_session_snapshot.query_count,
-                "last_query": self.gemini_session_snapshot.last_query,
-                "is_resumable": self.gemini_session_snapshot.is_resumable,
-            }
-            if self.gemini_session_snapshot
-            else None,
-            "ttadk_mode": self.ttadk_mode,
             "ttadk_tool_name": self.ttadk_tool_name,
             "ttadk_model_name": self.ttadk_model_name,
             "ttadk_yolo_enabled": self.ttadk_yolo_enabled,
             "acp_tool_name": self.acp_tool_name,
             "acp_model_name": self.acp_model_name,
-            "ttadk_session_snapshot": {
-                "session_id": self.ttadk_session_snapshot.session_id,
-                "query_count": self.ttadk_session_snapshot.query_count,
-                "last_query": self.ttadk_session_snapshot.last_query,
-                "is_resumable": self.ttadk_session_snapshot.is_resumable,
-            }
-            if self.ttadk_session_snapshot
-            else None,
             "theme_color": self.theme_color,
             "emoji_prefix": self.emoji_prefix,
             "env_vars": self.env_vars,
@@ -306,6 +240,10 @@ class ProjectContext:
                 for item in self.conversation_history
             ],
         }
+        for mode_type, (mode_flag, snap_attr) in self._MODE_ATTRS.items():
+            d[mode_flag] = getattr(self, mode_flag)
+            d[snap_attr] = self._snap_to_dict(getattr(self, snap_attr))
+        return d
 
     @classmethod
     def from_snapshot(cls, data: dict) -> "ProjectContext":
@@ -341,52 +279,24 @@ class ProjectContext:
         )
         if data.get("coco_session_snapshot"):
             snap = data["coco_session_snapshot"]
-            ctx.coco_session_snapshot = CocoSessionSnapshot(
+            ctx.coco_session_snapshot = SessionSnapshot(
                 session_id=snap["session_id"],
                 query_count=snap["query_count"],
                 last_query=snap["last_query"],
                 is_resumable=snap.get("is_resumable", True),
             )
-        if data.get("claude_session_snapshot"):
-            snap = data["claude_session_snapshot"]
-            ctx.claude_session_snapshot = ClaudeSessionSnapshot(
-                session_id=snap["session_id"],
-                query_count=snap["query_count"],
-                last_query=snap["last_query"],
-                is_resumable=snap.get("is_resumable", True),
-            )
-        if data.get("aiden_session_snapshot"):
-            snap = data["aiden_session_snapshot"]
-            ctx.aiden_session_snapshot = AidenSessionSnapshot(
-                session_id=snap["session_id"],
-                query_count=snap["query_count"],
-                last_query=snap["last_query"],
-                is_resumable=snap.get("is_resumable", True),
-            )
-        if data.get("codex_session_snapshot"):
-            snap = data["codex_session_snapshot"]
-            ctx.codex_session_snapshot = CodexSessionSnapshot(
-                session_id=snap["session_id"],
-                query_count=snap["query_count"],
-                last_query=snap["last_query"],
-                is_resumable=snap.get("is_resumable", True),
-            )
-        if data.get("gemini_session_snapshot"):
-            snap = data["gemini_session_snapshot"]
-            ctx.gemini_session_snapshot = GeminiSessionSnapshot(
-                session_id=snap["session_id"],
-                query_count=snap["query_count"],
-                last_query=snap["last_query"],
-                is_resumable=snap.get("is_resumable", True),
-            )
-        if data.get("ttadk_session_snapshot"):
-            snap = data["ttadk_session_snapshot"]
-            ctx.ttadk_session_snapshot = TtadkSessionSnapshot(
-                session_id=snap["session_id"],
-                query_count=snap["query_count"],
-                last_query=snap["last_query"],
-                is_resumable=snap.get("is_resumable", True),
-            )
+        # Restore remaining mode snapshots via generic loop
+        for mode_type, (_, snap_attr) in cls._MODE_ATTRS.items():
+            if mode_type == "coco":
+                continue  # already handled above
+            snap_data = data.get(snap_attr)
+            if snap_data:
+                setattr(ctx, snap_attr, SessionSnapshot(
+                    session_id=snap_data["session_id"],
+                    query_count=snap_data["query_count"],
+                    last_query=snap_data["last_query"],
+                    is_resumable=snap_data.get("is_resumable", True),
+                ))
         for item_data in data.get("conversation_history", []):
             ctx.conversation_history.append(
                 ConversationItem(

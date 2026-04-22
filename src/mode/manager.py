@@ -134,6 +134,13 @@ class ModeManager:
             raise ValueError(f"mode must be a programming mode, got: {mode}")
         return self.set_mode(chat_id, mode, auto_entered=auto, project_id=project_id)
 
+    # Alias for callers preferring the shorter name
+    enter_mode = enter_programming_mode
+
+    def is_mode(self, chat_id: str, mode: InteractionMode, project_id: Optional[str] = None) -> bool:
+        """Generic mode check — replaces per-mode is_*_mode methods."""
+        return self.get_mode(chat_id, project_id) == mode
+
     def enter_coco_mode(self, chat_id: str, auto: bool = False, project_id: Optional[str] = None) -> InteractionMode:
         """进入 Coco 编程模式。"""
         return self.enter_programming_mode(chat_id, InteractionMode.COCO, auto=auto, project_id=project_id)
