@@ -28,6 +28,21 @@ AvailabilityChecker = Callable[[], bool]
 HelpBlobLoader = Callable[[], str]
 
 
+def _find_lru_cached(*fns: object) -> Optional[Callable[[], None]]:
+    """Walk *fns* looking for the first ``lru_cache``-wrapped callable and
+    return its ``cache_clear`` handle.  Inspects both the function itself and
+    the cells of its ``__closure__`` (one level deep) so that it works for
+    both raw ``@lru_cache`` functions and closures that capture one."""
+    for fn in fns:
+        if hasattr(fn, "cache_clear"):
+            return fn.cache_clear  # type: ignore[union-attr]
+        for cell in (getattr(fn, "__closure__", None) or []):
+            obj = cell.cell_contents
+            if callable(obj) and hasattr(obj, "cache_clear"):
+                return obj.cache_clear
+    return None
+
+
 def _make_resolve_checker(tool_name: str) -> AvailabilityChecker:
     def _check() -> bool:
         from ..sync_adapter import _resolve_with_auto_update
@@ -158,17 +173,6 @@ def _make_custom_help_checker_with_cache_handle(
     required_keywords: Sequence[str],
 ) -> tuple[AvailabilityChecker, HelpBlobLoader, Callable[[], None]]:
     checker, loader = _make_custom_help_checker(help_cmd, required_keywords)
-
-    def _find_lru_cached(*fns: object) -> Optional[Callable[[], None]]:
-        for fn in fns:
-            if hasattr(fn, "cache_clear"):
-                return fn.cache_clear  # type: ignore[union-attr]
-            for cell in (getattr(fn, "__closure__", None) or []):
-                obj = cell.cell_contents
-                if callable(obj) and hasattr(obj, "cache_clear"):
-                    return obj.cache_clear
-        return None
-
     clear_fn = _find_lru_cached(checker, loader)
 
     def _clear() -> None:
@@ -182,17 +186,6 @@ def _make_probe_checker_with_cache_handle(
     tool_name: str,
 ) -> tuple[AvailabilityChecker, HelpBlobLoader, Callable[[], None]]:
     checker, loader = _make_probe_checker(tool_name)
-
-    def _find_lru_cached(*fns: object) -> Optional[Callable[[], None]]:
-        for fn in fns:
-            if hasattr(fn, "cache_clear"):
-                return fn.cache_clear  # type: ignore[union-attr]
-            for cell in (getattr(fn, "__closure__", None) or []):
-                obj = cell.cell_contents
-                if callable(obj) and hasattr(obj, "cache_clear"):
-                    return obj.cache_clear
-        return None
-
     clear_fn = _find_lru_cached(loader, checker)
 
     def _clear() -> None:
