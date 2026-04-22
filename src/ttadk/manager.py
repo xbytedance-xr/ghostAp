@@ -832,9 +832,9 @@ class TTADKManager:
                     )
                 else:
                     models_result = self.get_models(cwd=cwd, tool_name=tool, force_refresh=False)
-            except Exception:
+            except (RuntimeError, OSError, TimeoutError, subprocess.SubprocessError):
                 models_result = self.get_models(cwd=cwd, tool_name=tool, force_refresh=False)
-        except Exception as e:
+        except (RuntimeError, OSError, TimeoutError, subprocess.SubprocessError) as e:
             models_result = None
             attempts.append({"phase": "models", "ok": False, "error_type": type(e).__name__})
 
@@ -1037,7 +1037,7 @@ class TTADKManager:
                     logger.warning("No tools available after filtering, falling back to full list")
                     tools = self._load_tools(filter_available=False)
                 return ToolListResult(tools=list(tools), cached=False)
-            except Exception as e:
+            except (OSError, json.JSONDecodeError, KeyError, subprocess.SubprocessError) as e:
                 logger.error("Failed to load TTADK tools: %s", get_error_detail(e))
                 return ToolListResult(
                     tools=list(DEFAULT_TOOLS),
@@ -1645,7 +1645,7 @@ class TTADKManager:
             try:
                 mr = self.get_models(cwd=None, tool_name=target_tool, force_refresh=False)
                 descriptors = list(getattr(mr, "models", []) or [])
-            except Exception:
+            except (RuntimeError, OSError, TimeoutError, subprocess.SubprocessError):
                 descriptors = []
 
             resolved, diag = resolve_model_id(

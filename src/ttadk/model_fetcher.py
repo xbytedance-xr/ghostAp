@@ -274,7 +274,7 @@ class TTADKModelFetcher:
             # 若帮助输出不包含 Commands 段，保守返回空集合
             if rc_i != 0:
                 commands = set()
-        except Exception as e:
+        except (subprocess.SubprocessError, TimeoutError, OSError, PermissionError) as e:
             rc_i = None
             out_s = out_s or ""
             err_s = err_s or get_error_detail(e)

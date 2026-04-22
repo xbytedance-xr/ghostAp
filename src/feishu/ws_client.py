@@ -968,7 +968,7 @@ class FeishuWSClient:
             msg = data.event.message
             message_id = msg.message_id
             chat_id = msg.chat_id
-        except Exception:
+        except (AttributeError, TypeError):
             message_id = None
             chat_id = "unknown"
 
@@ -1010,14 +1010,14 @@ class FeishuWSClient:
                         project_id = self._message_mapper.get_project_id(ref)
                         if project_id:
                             break
-        except Exception:
+        except (AttributeError, KeyError, TypeError):
             project_id = None
 
         if not project_id:
             try:
                 active = self._project_manager.get_active_project(chat_id)
                 project_id = active.project_id if active else None
-            except Exception:
+            except (AttributeError, KeyError):
                 project_id = None
 
         text = self._extract_text_from_message(data)
@@ -1079,7 +1079,7 @@ class FeishuWSClient:
             try:
                 if message_id:
                     self._message_linker.link_task(message_id, handle.run_id)
-            except Exception as e:
+            except (KeyError, AttributeError, RuntimeError) as e:
                 logger.debug("link_task失败(message): message_id=%s, run_id=%s, err=%s", message_id, handle.run_id, get_error_detail(e))
 
     def _is_system_command_message(self, data: P2ImMessageReceiveV1) -> bool:
@@ -1108,7 +1108,7 @@ class FeishuWSClient:
                 return True
             # Also detect exit keywords (Chinese)
             return self._is_exit_command(text)
-        except Exception:
+        except (json.JSONDecodeError, AttributeError, KeyError, TypeError):
             return False
 
     def _extract_text_from_message(self, data: P2ImMessageReceiveV1) -> str:
@@ -1123,7 +1123,7 @@ class FeishuWSClient:
                 parts = text.split(None, 1)
                 text = parts[1].strip() if len(parts) > 1 else ""
             return text
-        except Exception:
+        except (json.JSONDecodeError, AttributeError, KeyError, TypeError):
             return ""
 
     @staticmethod
@@ -1645,12 +1645,12 @@ class FeishuWSClient:
                 type(action.value).__name__,
                 value_preview,
             )
-        except Exception as e:
+        except (AttributeError, TypeError, KeyError) as e:
             logger.warning("卡片回调基础信息解析失败: %s", get_error_detail(e))
         try:
             open_message_id = data.event.context.open_message_id
             open_chat_id = data.event.context.open_chat_id
-        except Exception:
+        except (AttributeError, TypeError):
             open_message_id = None
             open_chat_id = "unknown"
 
@@ -1760,7 +1760,7 @@ class FeishuWSClient:
             handle = self._scheduler.submit(spec, lambda ctx: self._process_card_action_async(data, task_ctx=ctx))
             try:
                 self._message_linker.link_task(origin_message_id, handle.run_id)
-            except Exception as e:
+            except (KeyError, AttributeError, RuntimeError) as e:
                 logger.debug(
                     "link_task失败(card_action): origin=%s, run_id=%s, err=%s", origin_message_id, handle.run_id, e
                 )
@@ -1822,7 +1822,7 @@ class FeishuWSClient:
                 "spec_resume",
             }
             return action_type in system_actions
-        except Exception:
+        except (json.JSONDecodeError, AttributeError, KeyError, TypeError):
             return False
 
     def _process_card_action_async(self, data: Any, task_ctx=None):

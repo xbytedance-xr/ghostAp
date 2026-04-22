@@ -31,7 +31,7 @@ from .diagnostics import (
 )
 from .models import ACPEvent, PromptResult
 from .session import ACPSession, ACPStartupError
-from ..utils.errors import get_error_detail
+from ..utils.errors import ACPError, get_error_detail
 
 logger = logging.getLogger(__name__)
 
@@ -556,7 +556,7 @@ def _probe_acp_serve_help(command: str) -> tuple[bool, Optional[int], str, str]:
         )
         # 片段截断，避免日志/异常过大
         return ok, int(p.returncode), (out or "")[-200:], (err or "")[-200:]
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
         return False, None, "", (str(e) or type(e).__name__)[:200]
 
 
@@ -598,7 +598,7 @@ def _supports_acp_serve(command: str) -> bool:
         if "acp" in out_lower and "server" in out_lower:
             return True
         return False
-    except Exception:
+    except (OSError, subprocess.SubprocessError, ValueError):
         return False
 
 
@@ -681,7 +681,7 @@ def _auto_update_agent(command: str) -> bool:
                 stderr[-200:] if stderr else "(empty)",
             )
             return False
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError) as e:
         logger.warning("[ACP] %s auto-update error: %s", command, get_error_detail(e))
         return False
 
@@ -695,7 +695,7 @@ def _resolve_with_auto_update(command: str) -> bool:
         _supports_acp_serve.cache_clear()
         try:
             _probe_acp_serve_help.cache_clear()
-        except Exception:
+        except AttributeError:
             pass
         if _supports_acp_serve(command):
             return True
@@ -738,7 +738,7 @@ def resolve_agent_spec(
                 try:
                     with getattr(mgr, "_lock", None) or _NULL_LOCK:  # type: ignore[name-defined]
                         descriptors = list(getattr(mgr, "_tool_models_cache", {}).get(tool_name, []) or [])
-                except Exception:
+                except (AttributeError, TypeError, KeyError):
                     descriptors = []
 
                 if descriptors:
@@ -775,7 +775,7 @@ def resolve_agent_spec(
                         resolved_model = None
                         resolution_source = "drop_m"
                         resolution_reason = "no_cache"
-            except Exception:
+            except (ImportError, AttributeError, TypeError, ValueError):
                 resolved_model = input_model
 
         passthrough = _resolve_ttadk_passthrough_args(tool_name)
@@ -813,7 +813,7 @@ def resolve_agent_spec(
             # Best-effort: warms availability cache via a daemon thread.
             # Safe to call multiple times and safe to ignore all failures.
             tool_registry.preheat_async()
-        except Exception:
+        except (OSError, RuntimeError):
             pass
 
         return tool_registry.get_serve_command(agent_type, model_name)
@@ -875,7 +875,7 @@ def start_session_with_retry(
             spec = ""
             try:
                 spec = session.describe_agent() if session else ""
-            except Exception:
+            except (AttributeError, TypeError):
                 spec = ""
 
             # Best-effort structured diagnostics for startup failures.
@@ -893,7 +893,7 @@ def start_session_with_retry(
             if spec and not diag.get("spec"):
                 try:
                     diag["spec"] = truncate_text(spec, 400)
-                except Exception:
+                except (TypeError, ValueError):
                     pass
 
             if bool(log_failures):
@@ -912,7 +912,7 @@ def start_session_with_retry(
                             get_settings_fn=get_settings,
                         )
                     )
-                except Exception:
+                except (ImportError, TypeError, ValueError):
                     # fallback to legacy message
                     logger.warning(
                         "[ACP:%s] Engine session start failed: %s",
@@ -922,7 +922,7 @@ def start_session_with_retry(
             try:
                 if session:
                     session.close()
-            except Exception:
+            except (OSError, RuntimeError):
                 pass
             session = None
             if attempt < retries:
@@ -1308,7 +1308,7 @@ class SyncACPSession:
         try:
             args = " ".join(str(x) for x in (self._agent_args or []))
             return f"cmd={self._agent_cmd} args={args} cwd={self._cwd}"
-        except Exception:
+        except (AttributeError, TypeError):
             return f"agent={self._agent_type}"
 
     def start(self, startup_timeout: float = 60) -> str:
@@ -1339,7 +1339,7 @@ class SyncACPSession:
             # Best-effort cleanup on startup failure.
             try:
                 self.close()
-            except Exception:
+            except (OSError, RuntimeError):
                 pass
             raise
 
@@ -1359,7 +1359,7 @@ class SyncACPSession:
             if callable(poll):
                 return poll() is None
             return True
-        except Exception:
+        except (OSError, AttributeError):
             return False
 
     def is_server_healthy(self, healthcheck_timeout: float = 2.0) -> bool:
@@ -1379,7 +1379,7 @@ class SyncACPSession:
                     self._acp_session.health_check(timeout=healthcheck_timeout), timeout=healthcheck_timeout + 1.0
                 )
             )
-        except Exception:
+        except (TimeoutError, OSError, RuntimeError):
             return False
 
     async def _start_session(self) -> str:
@@ -1390,7 +1390,8 @@ class SyncACPSession:
                 env_override, _ = build_ttadk_subprocess_env(
                     cwd=self._cwd or ".", agent_type=self._agent_type, tool_name=tool
                 )
-        except Exception:
+        except (OSError, ValueError, KeyError) as e:
+            logger.debug("[ACP:%s] build_ttadk_subprocess_env failed, using default env: %s", self._agent_type, str(e))
             env_override = None
 
         self._acp_session = ACPSession(
@@ -1416,7 +1417,8 @@ class SyncACPSession:
         try:
             store = ACPHistoryStore()
             self.history = store.load(sid, limit=limit)
-        except Exception:
+        except (OSError, json.JSONDecodeError, ValueError) as e:
+            logger.debug("[ACP] load_local_history failed for %s: %s", sid, str(e))
             self.history = []
         return list(self.history)
 
@@ -1506,7 +1508,7 @@ class SyncACPSession:
                 self._loop,
             )
             return bool(future.result(timeout=float(timeout or 10.0)))
-        except Exception as e:
+        except (TimeoutError, OSError, RuntimeError) as e:
             logger.warning("[ACP] set_model failed: %s", get_error_detail(e))
             return False
 
@@ -1528,7 +1530,7 @@ class SyncACPSession:
             return
         try:
             fut.result(timeout=timeout)
-        except Exception as e:
+        except (TimeoutError, OSError, RuntimeError) as e:
             logger.debug("[ACP] cancel wait skipped: %s", get_error_detail(e))
 
     def close(self) -> None:
@@ -1541,7 +1543,7 @@ class SyncACPSession:
                     self._loop,
                 )
                 future.result(timeout=10)
-            except Exception as e:
+            except (TimeoutError, OSError, RuntimeError) as e:
                 logger.debug("Error closing ACP session: %s", get_error_detail(e))
 
         if self._loop:

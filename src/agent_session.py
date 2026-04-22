@@ -242,7 +242,7 @@ class SyncClaudeCLISession:
             stop_reason = "end_turn" if rc == 0 else "failed"
             return PromptResult(stop_reason=stop_reason, text=output)
 
-        except Exception as e:
+        except (subprocess.SubprocessError, OSError, TimeoutError) as e:
             self.is_resumed = True
             return PromptResult(stop_reason="error", text=f"❌ Claude 执行异常: {get_error_detail(e)}")
 
@@ -520,7 +520,7 @@ class SyncTTADKCLISession:
 
             return PromptResult(stop_reason=stop_reason, text=output)
 
-        except Exception as e:
+        except (subprocess.SubprocessError, OSError, TimeoutError) as e:
             return PromptResult(stop_reason="error", text=f"❌ TTADK 执行异常: {get_error_detail(e)}")
         finally:
             self._proc = None
@@ -797,7 +797,7 @@ def _extract_model_from_agent_args(args: list[str]) -> str:
     """从 agent_args 中 best-effort 提取当前 model 名称。"""
     try:
         xs = [str(x) for x in (args or [])]
-    except Exception:
+    except (TypeError, ValueError):
         return ""
 
     # coco: -c model.name=xxx
@@ -846,7 +846,7 @@ def _replace_model_in_agent_args(args: list[str], new_model: str) -> tuple[list[
 
     try:
         xs = [str(x) for x in (args or [])]
-    except Exception:
+    except (TypeError, ValueError):
         xs = list(args or [])
 
     out = list(xs)
@@ -872,7 +872,7 @@ def _replace_model_in_agent_args(args: list[str], new_model: str) -> tuple[list[
                         out[j + 1] = new_model
                         return (out, True)
                 break
-    except Exception:
+    except (TypeError, IndexError):
         pass
 
     # generic: first -m <value>
@@ -893,7 +893,7 @@ def _remove_model_in_agent_args(args: list[str]) -> tuple[list[str], bool]:
     """
     try:
         xs = [str(x) for x in (args or [])]
-    except Exception:
+    except (TypeError, ValueError):
         xs = list(args or [])
 
     # 优先只移除 ttadk code 的 "-m <model>"，避免误删 python 的 "-m <module>"。
@@ -906,11 +906,11 @@ def _remove_model_in_agent_args(args: list[str]) -> tuple[list[str], bool]:
                         # delete "-m" and its value
                         try:
                             del out[j : j + 2]
-                        except Exception:
+                        except (IndexError, TypeError):
                             return (list(xs), False)
                         return (out, True)
                 return (list(xs), False)
-    except Exception:
+    except (TypeError, IndexError):
         pass
 
     # fallback: remove first -m <value>
@@ -984,7 +984,7 @@ def _apply_compaction_once(
         new_sess = builder(agent_type=agent_type, cwd=cwd, agent_cmd=agent_cmd, agent_args=list(agent_args))
         new_sess.start(startup_timeout=timeout_s)
         return new_sess
-    except Exception:
+    except (RuntimeError, OSError, TimeoutError):
         return None
 
 
@@ -1326,7 +1326,7 @@ class ModelFailureAwareSession:
         base, rewrap = self._unwrap_rate_limit()
         try:
             new_base = action(base)
-        except Exception:
+        except (RuntimeError, OSError, TimeoutError):
             new_base = None
 
         if new_base is None:
@@ -1393,7 +1393,7 @@ class ModelFailureAwareSession:
         try:
             new_base = SyncACPSession(agent_type=agent_type, cwd=cwd, agent_cmd=agent_cmd, agent_args=list(new_args))
             new_base.start(startup_timeout=timeout_s)
-        except Exception:
+        except (RuntimeError, OSError, TimeoutError):
             return False
 
         self._inner = rewrap(new_base)
@@ -1514,7 +1514,7 @@ class ModelFailureAwareSession:
         try:
             new_base = SyncACPSession(agent_type=agent_type, cwd=cwd, agent_cmd=agent_cmd, agent_args=list(new_args))
             new_base.start(startup_timeout=timeout_s)
-        except Exception:
+        except (RuntimeError, OSError, TimeoutError):
             return False
 
         self._inner = rewrap(new_base)
@@ -1534,7 +1534,7 @@ class ModelFailureAwareSession:
             model = get_coco_model_manager().get_current_model()
             timeout_s = float(getattr(self._settings, "acp_startup_timeout", 20) or 20)
             new_base = start_session_with_retry(agent_type="coco", cwd=cwd, startup_timeout=timeout_s, model_name=model)
-        except Exception:
+        except (ImportError, RuntimeError, OSError, TimeoutError):
             return False
 
         try:
@@ -1615,7 +1615,7 @@ class ModelFailureAwareSession:
                             ctx = build_invalid_model_context(e, get_settings_fn=get_settings, limit=1600)
                             is_invalid = bool(ctx.get("is_invalid_model"))
                             available_models = list(ctx.get("available_models") or [])
-                        except Exception:
+                        except (ImportError, RuntimeError, ValueError):
                             ctx = {}
                             is_invalid = False
                             available_models = []
@@ -1623,7 +1623,7 @@ class ModelFailureAwareSession:
                         if is_invalid:
                             try:
                                 args0 = list(getattr(base, "_agent_args", []) or [])
-                            except Exception:
+                            except (TypeError, AttributeError):
                                 args0 = []
                             tool = self._extract_ttadk_tool_name(agent_type=agent_type, agent_args=args0)
                             input_model = _extract_model_from_agent_args(args0)
@@ -1647,7 +1647,7 @@ class ModelFailureAwareSession:
                                     cooldown_s=float(cooldown_s or 0.0),
                                     now_ts=time.time(),
                                 )
-                            except Exception:
+                            except (ImportError, RuntimeError, AttributeError):
                                 allowed, last_ts = True, 0.0
 
                             if not allowed:
@@ -1787,11 +1787,8 @@ class ModelFailureAwareSession:
                         pass
 
                     # feature flag: disabled => no auto-repair
-                    try:
-                        if not bool(getattr(self._settings, "model_failure_compaction_enabled", True)):
-                            raise
-                    except Exception:
-                        pass
+                    if not bool(getattr(self._settings, "model_failure_compaction_enabled", True)):
+                        raise
 
                     # If loop detected: suppress compaction and attempt failover once.
                     if is_loop:
