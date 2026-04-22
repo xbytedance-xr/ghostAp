@@ -607,6 +607,51 @@ class TaskScheduler:
 
     # ------------------------ internal ------------------------
 
+    _TERMINAL_STATUSES = frozenset({TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED})
+    _REAP_DEFAULT_MAX_AGE = 300.0  # seconds
+
+    def _reap_completed_states(self, max_age_seconds: float = _REAP_DEFAULT_MAX_AGE) -> int:
+        """Evict terminal TaskRunState entries older than *max_age_seconds*.
+
+        Must be called while holding ``self._cv`` (or ``self._lock``).
+        Returns the number of evicted entries.
+        """
+        now = time.time()
+        to_remove: list[str] = []
+        for run_id, st in self._states.items():
+            if st.status not in self._TERMINAL_STATUSES:
+                continue
+            ended = st.ended_at or st.created_at
+            if (now - ended) >= max_age_seconds:
+                to_remove.append(run_id)
+        for run_id in to_remove:
+            st = self._states.pop(run_id, None)
+            if st:
+                # clean up secondary indexes
+                chat_id = st.spec.chat_id
+                dq = self._by_chat.get(chat_id)
+                if dq:
+                    try:
+                        dq.remove(run_id)
+                    except ValueError:
+                        pass
+                    if not dq:
+                        self._by_chat.pop(chat_id, None)
+                pid = st.spec.project_id
+                if pid:
+                    pdq = self._by_project.get(pid)
+                    if pdq:
+                        try:
+                            pdq.remove(run_id)
+                        except ValueError:
+                            pass
+                        if not pdq:
+                            self._by_project.pop(pid, None)
+                tid = st.spec.task_id
+                if tid:
+                    self._by_task_id.pop(tid, None)
+        return len(to_remove)
+
     def _dispatch_loop(self):
         """调度循环：不断从队列中挑选可运行任务并投递到线程池。
 
@@ -621,6 +666,7 @@ class TaskScheduler:
 
                 task = self._pick_next_task_unlocked()
                 if not task:
+                    self._reap_completed_states()
                     self._cv.wait(timeout=0.2)
                     continue
 
