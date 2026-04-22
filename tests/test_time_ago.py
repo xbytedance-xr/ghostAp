@@ -9,7 +9,6 @@
 import logging
 
 import pytest
-from src.acp import manager as acp_manager
 from src.acp.manager import ACPSessionManager
 from src.acp.telemetry import IdleHealthTelemetryContext, _classify_idle_health_with_fallback
 from src.utils.time_ago import IdleHealth, classify_idle_health_from_bucket, compute_time_ago_bucket
@@ -47,31 +46,6 @@ class TestComputeTimeAgoBucket:
 
 
 class TestIdleBucketHelpers:
-    def test_compute_idle_bucket_legacy_aligns_with_ssot(self) -> None:
-        """旧别名 `_compute_idle_bucket_legacy` 应与 SSOT 完全对齐。"""
-
-        for seconds in (0, 59, 60, 3600, 86400):
-            assert ACPSessionManager._compute_idle_bucket_legacy(seconds) == compute_time_ago_bucket(seconds)
-
-    def test_format_seconds_ago_warns_once_and_delegates(self, caplog) -> None:
-        """`_format_seconds_ago` 应只在首次调用时告警，并保持语义结果一致。"""
-
-        # 重置一次性告警开关，确保测试可重复运行。
-        acp_manager._warned_deprecated_format_seconds_ago = False
-
-        caplog.set_level(logging.WARNING, logger="src.acp.manager")
-
-        b1 = ACPSessionManager._format_seconds_ago(60)
-        b2 = ACPSessionManager._format_seconds_ago(120)
-
-        # 语义结果应与 SSOT 保持一致
-        assert b1 == compute_time_ago_bucket(60)
-        assert b2 == compute_time_ago_bucket(120)
-
-        # 仅首次调用产生一次告警
-        warn_records = [r for r in caplog.records if "ACPSessionManager._format_seconds_ago()" in r.getMessage()]
-        assert len(warn_records) == 1
-
     def test_classify_idle_health_from_bucket_basic_mapping(self) -> None:
         """classify_idle_health_from_bucket 应按 kind 做粗粒度健康映射。"""
 

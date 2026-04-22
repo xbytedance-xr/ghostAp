@@ -42,9 +42,6 @@ if TYPE_CHECKING:
     from .telemetry import _IdleHealthServiceProtocol as IdleHealthServiceProtocol
 
 
-# NOTE: 用于控制 `_format_seconds_ago` 的一次性告警，仅在首次兼容调用时输出。
-_warned_deprecated_format_seconds_ago = False
-
 # Preserve the original TTADK CLI session class so that we can
 # distinguish between tests patching src.acp.manager.SyncTTADKCLISession
 # and those patching src.agent_session.SyncTTADKCLISession.
@@ -359,58 +356,6 @@ class ACPSessionManager:
         from src.utils.time_ago import compute_time_ago_bucket
 
         return compute_time_ago_bucket(seconds)
-
-    @staticmethod
-    def _compute_idle_bucket_legacy(seconds: float) -> "TimeAgoBucket":
-        """[LEGACY] `_compute_idle_bucket` 的兼容别名。
-
-        本方法存在的唯一目的，是为历史上通过 `_format_seconds_ago` 间接
-        调用 idle bucket 计算逻辑的代码提供一个稳定锚点，便于未来在需要时
-        对「旧调用点」做差异化处理；**新代码一律不应调用本方法**。
-        """
-
-        return ACPSessionManager._compute_idle_bucket(seconds)
-
-    @staticmethod
-    def _compute_idle_bucket_deprecated(seconds: float) -> "TimeAgoBucket":
-        """[DEPRECATED] 兼容包装：禁止新代码调用，仅为旧测试/调用点保留。
-
-        历史上本方法（通过 `_format_seconds_ago` 名称暴露）同时承担
-        「格式化文案 + 返回 bucket」的混合职责。为避免核心层重新耦合
-        文案逻辑，现已收口为对 :meth:`_compute_idle_bucket_legacy` 的薄
-        封装，仅为旧 idle bucket 调用点提供兼容入口。
-
-        运行时行为：
-        - 首次调用时打印一次 WARNING 级别日志，提醒迁移到
-          :meth:`_compute_idle_bucket` 或上层 bucket→文案渲染函数；
-        - 后续调用仅做静默转发，避免在高频路径产生日志风暴。
-        """
-
-        # NOTE: 该方法仅为兼容旧调用点保留，禁止在新代码中引用。
-        # 如果你在 code review 中看到新的 `_compute_idle_bucket_deprecated`
-        # 或 `_format_seconds_ago` 调用，请优先建议改为 `_compute_idle_bucket`
-        # 或文案层 helper。
-        global _warned_deprecated_format_seconds_ago
-        try:
-            if not _warned_deprecated_format_seconds_ago:
-                _warned_deprecated_format_seconds_ago = True
-                try:
-                    logger.warning(
-                        "[DEPRECATED] ACPSessionManager._format_seconds_ago() 已废弃，仅供旧测试/调用点兼容；请改用 _compute_idle_bucket 或上层文案 helper。"
-                    )
-                except Exception as e:
-                    logger.warning("Unexpected error in manager", exc_info=True)
-                    # 尽量不因日志问题影响核心逻辑。
-                    pass
-        except NameError:
-            # 理论上不会发生，仅作双重兜底，确保兼容包装永不抛错。
-            pass
-
-        return ACPSessionManager._compute_idle_bucket_legacy(seconds)
-
-    # NOTE: 历史名称 `_format_seconds_ago` 的极薄兼容别名，新代码请改用
-    # `_compute_idle_bucket` 或上层文案 helper；仅供旧调用点/测试保留。
-    _format_seconds_ago = _compute_idle_bucket_deprecated
 
     def _classify_idle_health_with_telemetry(
         self,
