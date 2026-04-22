@@ -1812,13 +1812,23 @@ def _get_or_create_singleton(default_tool: Optional[str], default_model: Optiona
 
 
 def get_ttadk_manager(default_tool: Optional[str] = None, default_model: Optional[str] = None) -> TTADKManager:
-    # 显式一次性初始化点：将 compat provider 的安装从“import-time 副作用”迁移到
+    # 显式一次性初始化点：将 compat provider 的安装从"import-time 副作用"迁移到
     # 稳定入口 `get_ttadk_manager()`。
     # - best-effort：任何异常都吞掉，避免影响主流程与兼容性
     # - 幂等：由 `compat.install_compat_providers()` 内部的 lock + 标记保证
     _maybe_migrate_legacy_store()
     _install_compat_providers()
     return _get_or_create_singleton(default_tool, default_model)
+
+
+def _reset_ttadk_manager_for_testing() -> None:
+    """Reset the global TTADKManager singleton and update flag. **Test-only.**"""
+    global _manager, _ttadk_update_attempted, _legacy_store_migrated
+    with _manager_lock:
+        _manager = None
+    with _ttadk_update_lock:
+        _ttadk_update_attempted = False
+    _legacy_store_migrated = False
 
 
 def coordinate_ttadk_startup(

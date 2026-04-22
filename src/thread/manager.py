@@ -213,6 +213,13 @@ def get_thread_manager() -> ThreadContextManager:
     return _manager
 
 
+def _reset_thread_manager_for_testing() -> None:
+    """Reset the global ThreadContextManager singleton. **Test-only.**"""
+    global _manager
+    with _manager_lock:
+        _manager = None
+
+
 def set_current_thread_id(thread_id: Optional[str]) -> None:
     _current_thread_id.value = thread_id
 

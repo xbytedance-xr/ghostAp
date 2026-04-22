@@ -120,3 +120,62 @@ def _block_real_ttadk_subprocess(request):
     with patch("subprocess.run", side_effect=_guarded_run), \
          patch.object(subprocess.Popen, "__init__", _guarded_popen_init):
         yield
+
+
+# ---------------------------------------------------------------------------
+# lru_cache hygiene — clear module-level caches between tests.
+# MAINTAIN: when adding a new @lru_cache in src/, register its cache_clear here.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _clear_all_lru_caches():
+    """Clear all known module-level lru_caches after each test."""
+    yield
+    # sync_adapter caches
+    try:
+        from src.acp.sync_adapter import _probe_acp_serve_help, _supports_acp_serve
+        _probe_acp_serve_help.cache_clear()
+        _supports_acp_serve.cache_clear()
+    except Exception:
+        pass
+    # diagnostics caches
+    try:
+        from src.acp.diagnostics import _compile_redaction_patterns
+        _compile_redaction_patterns.cache_clear()
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Singleton hygiene — reset global singletons so tests start from clean state.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _reset_all_singletons():
+    """Reset all known global singletons after each test."""
+    yield
+    try:
+        from src.config import _reset_settings_for_testing
+        _reset_settings_for_testing()
+    except Exception:
+        pass
+    try:
+        from src.coco_model.manager import _reset_coco_model_manager_for_testing
+        _reset_coco_model_manager_for_testing()
+    except Exception:
+        pass
+    try:
+        from src.ttadk.manager import _reset_ttadk_manager_for_testing
+        _reset_ttadk_manager_for_testing()
+    except Exception:
+        pass
+    try:
+        from src.thread.manager import _reset_thread_manager_for_testing
+        _reset_thread_manager_for_testing()
+    except Exception:
+        pass
+    try:
+        from src.acp.providers import _reset_providers_for_testing
+        _reset_providers_for_testing()
+    except Exception:
+        pass

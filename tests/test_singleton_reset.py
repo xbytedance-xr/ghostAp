@@ -4,6 +4,61 @@ from __future__ import annotations
 from unittest.mock import patch, MagicMock
 
 
+class TestSettingsReset:
+    def test_reset_produces_new_instance(self):
+        from src.config import get_settings, _reset_settings_for_testing
+
+        with patch("src.config.Settings") as MockSettings:
+            MockSettings.return_value = MagicMock(name="settings_a")
+            a = get_settings()
+            # Same instance on repeated call
+            assert get_settings() is a
+
+            _reset_settings_for_testing()
+
+            MockSettings.return_value = MagicMock(name="settings_b")
+            b = get_settings()
+            assert b is not a
+
+
+class TestCocoModelManagerReset:
+    def test_reset_produces_new_instance(self):
+        from src.coco_model.manager import (
+            get_coco_model_manager,
+            _reset_coco_model_manager_for_testing,
+        )
+
+        with patch("src.coco_model.manager.CocoModelManager") as MockCls:
+            MockCls.return_value = MagicMock(name="mgr_a")
+            a = get_coco_model_manager()
+            assert get_coco_model_manager() is a
+
+            _reset_coco_model_manager_for_testing()
+
+            MockCls.return_value = MagicMock(name="mgr_b")
+            b = get_coco_model_manager()
+            assert b is not a
+
+
+class TestThreadManagerReset:
+    def test_reset_produces_new_instance(self):
+        from src.thread.manager import (
+            get_thread_manager,
+            _reset_thread_manager_for_testing,
+        )
+
+        with patch("src.thread.manager.ThreadContextManager") as MockCls:
+            MockCls.return_value = MagicMock(name="mgr_a")
+            a = get_thread_manager()
+            assert get_thread_manager() is a
+
+            _reset_thread_manager_for_testing()
+
+            MockCls.return_value = MagicMock(name="mgr_b")
+            b = get_thread_manager()
+            assert b is not a
+
+
 class TestProvidersReset:
     def test_reset_clears_and_allows_rebuild(self):
         from src.acp.providers import (

@@ -426,3 +426,10 @@ def get_settings() -> Settings:
             if _settings is None:
                 _settings = Settings()
     return _settings
+
+
+def _reset_settings_for_testing() -> None:
+    """Reset the global settings singleton. **Test-only.**"""
+    global _settings
+    with _settings_lock:
+        _settings = None

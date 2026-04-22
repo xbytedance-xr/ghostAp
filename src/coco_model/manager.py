@@ -198,3 +198,10 @@ def get_coco_model_manager() -> CocoModelManager:
             if _manager is None:
                 _manager = CocoModelManager()
     return _manager
+
+
+def _reset_coco_model_manager_for_testing() -> None:
+    """Reset the global CocoModelManager singleton. **Test-only.**"""
+    global _manager
+    with _manager_lock:
+        _manager = None
