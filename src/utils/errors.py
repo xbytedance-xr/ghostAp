@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from typing import Union
 
 """Unified error formatting and base exception for user-facing messages.
@@ -63,6 +64,26 @@ class SafetyCheckError(GhostAPError):
 
 _CHAIN_MAX_DEPTH = 10
 
+# stdlib concurrent.futures 在 TimeoutError 中注入的内部诊断格式，不应暴露给用户。
+# 示例: "1 (of 5) futures unfinished", "3 (of 5) futures unfinished"
+_FUTURES_UNFINISHED_RE = re.compile(r"\d+\s*\(of\s*\d+\)\s*futures?\s*unfinished")
+
+
+def classify_timeout(exc: BaseException) -> bool:
+    """Determine whether *exc* should be classified as a timeout error.
+
+    Returns ``True`` if *exc* is itself a ``TimeoutError`` /
+    ``asyncio.TimeoutError``, **or** if any exception in its
+    ``__cause__`` / ``__context__`` chain is a timeout type (detected by
+    :func:`_has_timeout_in_chain`).
+
+    This is the single source of truth for timeout classification — callers
+    should prefer this over hand-rolling ``isinstance`` + chain-walk.
+    """
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return True
+    return _has_timeout_in_chain(exc)
+
 
 def _has_timeout_in_chain(err: BaseException, *, _depth: int = 0) -> bool:
     """Walk __cause__ / __context__ for a wrapped TimeoutError (max 10 levels).
@@ -95,14 +116,14 @@ def fmt_error(action: str, detail: Union[str, Exception] = "") -> str:
     """Format a hard-failure message."""
     if isinstance(detail, Exception):
         if isinstance(detail, (TimeoutError, asyncio.TimeoutError)):
-            msg = str(detail)
+            msg = _FUTURES_UNFINISHED_RE.sub("", str(detail)).strip()
             if not msg:
                 detail = "操作超时，请稍后重试"
             else:
                 detail = f"操作超时 ({msg})"
         elif _has_timeout_in_chain(detail):
             # Exception wraps a TimeoutError in its chain
-            inner_msg = str(detail)
+            inner_msg = _FUTURES_UNFINISHED_RE.sub("", str(detail)).strip()
             if not inner_msg:
                 detail = "操作超时，请稍后重试"
             else:
@@ -152,7 +173,7 @@ def get_error_detail(exc: Exception, *, default: str = "未知错误") -> str:
 
 def fmt_exception(action: str, exc: BaseException) -> str:
     """Format an unexpected exception for the user."""
-    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)) or _has_timeout_in_chain(exc):
+    if classify_timeout(exc):
         return f"❌ {action}超时: 操作耗时过长，请重试"
     return f"❌ {action}异常: {str(exc) or repr(exc)}"
 

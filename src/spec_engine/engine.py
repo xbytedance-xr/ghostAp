@@ -465,39 +465,27 @@ class SpecEngine(BaseEngine):
             return self._project
 
         except TimeoutError as e:
-            from ..utils.errors import get_error_detail
-
-            error_msg = f"Spec执行超时: {get_error_detail(e)}"
-            logger.warning("[Spec:%s] %s", project_name, error_msg)
+            error_msg = self._format_engine_error(e, "Spec执行", is_timeout=True, callbacks=callbacks)
             if self._project:
                 self._project.status = SpecProjectStatus.ABORTED
                 self._project.completed_at = time.time()
                 if not self._saved_task_id:
                     try:
-                        task_id = self._save_failed_task(error_msg, self._last_cycle_num, self._last_phase, callbacks)
-                        error_msg = f"{error_msg} (任务已保存: {task_id})"
+                        self._save_failed_task(error_msg, self._last_cycle_num, self._last_phase, callbacks)
                     except Exception as save_err:
                         logger.warning("[Spec] 异常任务保存失败: %s", save_err)
-            if callbacks.on_error:
-                callbacks.on_error(error_msg)
             return self._project
 
         except Exception as e:
-            from ..utils.errors import get_error_detail
-
-            error_msg = f"Spec执行异常: {get_error_detail(e)}"
-            logger.error("[Spec:%s] %s", project_name, error_msg)
+            error_msg = self._format_engine_error(e, "Spec执行", is_timeout=False, callbacks=callbacks)
             if self._project:
                 self._project.status = SpecProjectStatus.ABORTED
                 self._project.completed_at = time.time()
                 if not self._saved_task_id:
                     try:
-                        task_id = self._save_failed_task(error_msg, self._last_cycle_num, self._last_phase, callbacks)
-                        error_msg = f"{error_msg} (任务已保存: {task_id})"
+                        self._save_failed_task(error_msg, self._last_cycle_num, self._last_phase, callbacks)
                     except Exception as save_err:
                         logger.warning("[Spec] 异常任务保存失败: %s", save_err)
-            if callbacks.on_error:
-                callbacks.on_error(error_msg)
             return self._project
 
         finally:
@@ -523,6 +511,7 @@ class SpecEngine(BaseEngine):
         prompt: str,
         callbacks: SpecEngineCallbacks,
         timeout: int,
+        _depth: int = 0,
     ) -> str:
         """Execute a single phase: send prompt, collect output, return text."""
         project_name = self._project.name if self._project else "unknown"
@@ -587,7 +576,7 @@ class SpecEngine(BaseEngine):
             last_error = _ged(e)
 
             try:
-                override_hint = (os.getenv("GHOSTAP_SPEC_FAILED_TASK_ID_OVERRIDE") or "").strip()
+                override_hint = (self.settings.spec_failed_task_id_override or "").strip()
                 if (
                     override_hint
                     and phase == SpecPhase.BUILD
@@ -610,10 +599,11 @@ class SpecEngine(BaseEngine):
                 return ""
 
             if self._try_switch_model(callbacks):
-                # We do not retry here natively after switch model, to keep it simple and match old logic
-                # we just raise to fall into fail path. The original logic did a `continue` of the while True loop.
-                # Since we stripped the while True loop, let's restore the recursive retry if switch model succeeds:
-                return self._run_phase(cycle_num, phase, prompt, callbacks, timeout)
+                if _depth >= 3:
+                    raise RuntimeError(
+                        f"Phase {phase.value} 模型切换递归超限 (depth={_depth})，停止重试"
+                    ) from e
+                return self._run_phase(cycle_num, phase, prompt, callbacks, timeout, _depth=_depth + 1)
 
             task_id = self._save_failed_task(last_error, cycle_num, phase, callbacks)
             try:
@@ -1279,36 +1269,24 @@ class SpecEngine(BaseEngine):
                 callbacks.on_project_done(self._project)
 
         except TimeoutError as e:
-            from ..utils.errors import get_error_detail
-
-            error_msg = f"Spec恢复超时: {get_error_detail(e)}"
-            logger.warning("[Spec:%s] %s", self._project.name, error_msg)
+            error_msg = self._format_engine_error(e, "Spec恢复", is_timeout=True, callbacks=callbacks)
             self._project.status = SpecProjectStatus.ABORTED
             self._project.completed_at = time.time()
             if not self._saved_task_id:
                 try:
-                    task_id = self._save_failed_task(error_msg, self._last_cycle_num, self._last_phase, callbacks)
-                    error_msg = f"{error_msg} (任务已保存: {task_id})"
+                    self._save_failed_task(error_msg, self._last_cycle_num, self._last_phase, callbacks)
                 except Exception as save_err:
                     logger.warning("[Spec] 异常任务保存失败: %s", save_err)
-            if callbacks.on_error:
-                callbacks.on_error(error_msg)
 
         except Exception as e:
-            from ..utils.errors import get_error_detail
-
-            error_msg = f"Spec恢复异常: {get_error_detail(e)}"
-            logger.error("[Spec:%s] %s", self._project.name, error_msg)
+            error_msg = self._format_engine_error(e, "Spec恢复", is_timeout=False, callbacks=callbacks)
             self._project.status = SpecProjectStatus.ABORTED
             self._project.completed_at = time.time()
             if not self._saved_task_id:
                 try:
-                    task_id = self._save_failed_task(error_msg, self._last_cycle_num, self._last_phase, callbacks)
-                    error_msg = f"{error_msg} (任务已保存: {task_id})"
+                    self._save_failed_task(error_msg, self._last_cycle_num, self._last_phase, callbacks)
                 except Exception as save_err:
                     logger.warning("[Spec] 异常任务保存失败: %s", save_err)
-            if callbacks.on_error:
-                callbacks.on_error(error_msg)
 
         finally:
             self._close_session_safely()

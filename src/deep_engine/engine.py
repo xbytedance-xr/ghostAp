@@ -187,9 +187,10 @@ class DeepEngine(BaseEngine):
     ) -> DeepProject:
         """Single ACP prompt drives the entire deep execution."""
         callbacks = callbacks or DeepEngineCallbacks()
-        self._run_state = EngineRunState.RUNNING
-        self._planning_done_fired = False
-        self._on_rate_limit = on_rate_limit
+        with self._lock:
+            self._run_state = EngineRunState.RUNNING
+            self._planning_done_fired = False
+            self._on_rate_limit = on_rate_limit
 
         project_name = os.path.basename(self.root_path) or "deep_project"
         self._project = DeepProject.create(name=project_name, root_path=self.root_path)
@@ -277,31 +278,17 @@ class DeepEngine(BaseEngine):
                 return self._project
 
         except TimeoutError as e:
-            from ..utils.errors import get_error_detail
-
-            detail = get_error_detail(e)
-
-            error_msg = f"执行超时: {detail}"
-            logger.warning("[Deep:%s] %s", project_name, error_msg)
             if self._project is None:
                 self._project = DeepProject.create(name=project_name, root_path=self.root_path)
+            error_msg = self._format_engine_error(e, "执行", is_timeout=True, callbacks=callbacks)
             self._project.fail(error_msg)
-            if callbacks.on_error:
-                callbacks.on_error(error_msg)
             return self._project
 
         except Exception as e:
-            from ..utils.errors import get_error_detail
-
-            detail = get_error_detail(e)
-
-            error_msg = f"执行异常: {detail}"
-            logger.error("[Deep:%s] %s", project_name, error_msg)
             if self._project is None:
                 self._project = DeepProject.create(name=project_name, root_path=self.root_path)
+            error_msg = self._format_engine_error(e, "执行", is_timeout=False, callbacks=callbacks)
             self._project.fail(error_msg)
-            if callbacks.on_error:
-                callbacks.on_error(error_msg)
             return self._project
 
         finally:
@@ -392,8 +379,9 @@ class DeepEngine(BaseEngine):
             return self._project
 
         callbacks = callbacks or DeepEngineCallbacks()
-        self._run_state = EngineRunState.RUNNING
-        self._project.status = DeepProjectStatus.EXECUTING
+        with self._lock:
+            self._run_state = EngineRunState.RUNNING
+            self._project.status = DeepProjectStatus.EXECUTING
 
         try:
             # Close old session before opening new one (prevent resource leak)
@@ -439,26 +427,12 @@ class DeepEngine(BaseEngine):
                 callbacks.on_project_done(self._project)
 
         except TimeoutError as e:
-            from ..utils.errors import get_error_detail
-
-            detail = get_error_detail(e)
-
-            error_msg = f"恢复执行超时: {detail}"
-            logger.warning("[Deep:%s] %s", self._project.name, error_msg)
+            error_msg = self._format_engine_error(e, "恢复执行", is_timeout=True, callbacks=callbacks)
             self._project.fail(error_msg)
-            if callbacks.on_error:
-                callbacks.on_error(error_msg)
 
         except Exception as e:
-            from ..utils.errors import get_error_detail
-
-            detail = get_error_detail(e)
-
-            error_msg = f"恢复执行异常: {detail}"
-            logger.error("[Deep:%s] %s", self._project.name, error_msg)
+            error_msg = self._format_engine_error(e, "恢复执行", is_timeout=False, callbacks=callbacks)
             self._project.fail(error_msg)
-            if callbacks.on_error:
-                callbacks.on_error(error_msg)
 
         finally:
             self._run_state = EngineRunState.IDLE

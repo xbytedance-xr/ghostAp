@@ -356,27 +356,17 @@ class LoopEngine(BaseEngine):
                 return self._project
 
         except TimeoutError as e:
-            detail = get_error_detail(e)
-
-            error_msg = f"Loop执行超时: {detail}"
-            logger.warning("[Loop:%s] %s", project_name, error_msg)
+            error_msg = self._format_engine_error(e, "Loop执行", is_timeout=True, callbacks=callbacks)
             if self._project:
                 self._project.status = LoopProjectStatus.ABORTED
                 self._project.completed_at = time.time()
-            if callbacks.on_error:
-                callbacks.on_error(error_msg)
             return self._project
 
         except Exception as e:
-            detail = get_error_detail(e)
-
-            error_msg = f"Loop执行异常: {detail}"
-            logger.error("[Loop:%s] %s", project_name, error_msg)
+            error_msg = self._format_engine_error(e, "Loop执行", is_timeout=False, callbacks=callbacks)
             if self._project:
                 self._project.status = LoopProjectStatus.ABORTED
                 self._project.completed_at = time.time()
-            if callbacks.on_error:
-                callbacks.on_error(error_msg)
             return self._project
 
         finally:
@@ -1215,24 +1205,14 @@ FAIL
                 callbacks.on_project_done(self._project)
 
         except TimeoutError as e:
-            detail = get_error_detail(e)
-
-            error_msg = f"Loop恢复超时: {detail}"
-            logger.warning("[Loop:%s] %s", project_name, error_msg)
+            error_msg = self._format_engine_error(e, "Loop恢复", is_timeout=True, callbacks=callbacks)
             self._project.status = LoopProjectStatus.ABORTED
             self._project.completed_at = time.time()
-            if callbacks.on_error:
-                callbacks.on_error(error_msg)
 
         except Exception as e:
-            detail = get_error_detail(e)
-
-            error_msg = f"Loop恢复异常: {detail}"
-            logger.error("[Loop:%s] %s", project_name, error_msg)
+            error_msg = self._format_engine_error(e, "Loop恢复", is_timeout=False, callbacks=callbacks)
             self._project.status = LoopProjectStatus.ABORTED
             self._project.completed_at = time.time()
-            if callbacks.on_error:
-                callbacks.on_error(error_msg)
 
         finally:
             self._run_state = EngineRunState.IDLE

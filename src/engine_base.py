@@ -5,7 +5,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Generic, Optional, TypeVar
+from typing import Callable, Generic, Optional, Protocol, TypeVar, runtime_checkable
 
 from .acp import ACPEventRenderer
 from .agent_session import SyncSession, close_session_safely
@@ -126,6 +126,13 @@ class ReviewResult:
         )
 
 
+@runtime_checkable
+class HasOnError(Protocol):
+    """Protocol for callback objects that may carry an ``on_error`` handler."""
+
+    on_error: Optional[Callable[[str], None]]
+
+
 T = TypeVar("T", bound="BaseEngine")
 
 
@@ -230,6 +237,35 @@ class BaseEngine:
 
     def inject_guidance(self, text: str) -> None:
         self._pending_guidance = text
+
+    def _format_engine_error(
+        self,
+        error: Exception,
+        label: str,
+        *,
+        is_timeout: bool = False,
+        callbacks: Optional[HasOnError] = None,
+    ) -> str:
+        """Shared error formatting: build message, log, fire callback.
+
+        Args:
+            error: The caught exception.
+            label: Human-readable prefix (e.g. "Spec执行", "Loop恢复").
+            is_timeout: True for TimeoutError (warning), False for generic (error).
+            callbacks: An object with an optional ``on_error`` callable attribute.
+
+        Returns:
+            The formatted user-facing error message.
+        """
+        detail = get_error_detail(error)
+        kind = "超时" if is_timeout else "异常"
+        error_msg = f"{label}{kind}: {detail}"
+        project_name = getattr(self._project, "name", None) or "unknown"
+        log_fn = logger.warning if is_timeout else logger.error
+        log_fn("[%s:%s] %s", self.engine_name, project_name, error_msg)
+        if callbacks is not None and callbacks.on_error is not None:
+            callbacks.on_error(error_msg)
+        return error_msg
 
     def get_rendered_content(self) -> str:
         return self._renderer.get_final_content()

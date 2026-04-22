@@ -1,6 +1,6 @@
 import asyncio
 
-from src.utils.errors import fmt_error
+from src.utils.errors import classify_timeout, fmt_error, fmt_exception, get_error_detail
 
 
 class TestErrorFormatting:
@@ -36,3 +36,173 @@ class TestErrorFormatting:
         result = fmt_error("测试", exc)
         # Expecting: ❌ 测试失败: 操作超时 (连接超时)
         assert "操作超时 (连接超时)" in result
+
+
+class TestFuturesUnfinishedSanitization:
+    """Verify stdlib concurrent.futures 'N (of M) futures unfinished' is sanitized."""
+
+    def test_fmt_error_sanitizes_futures_unfinished(self):
+        exc = TimeoutError("1 (of 5) futures unfinished")
+        result = fmt_error("操作", exc)
+        assert "futures unfinished" not in result
+        assert "操作超时" in result
+
+    def test_fmt_error_sanitizes_multiple_futures_unfinished(self):
+        exc = TimeoutError("3 (of 5) futures unfinished")
+        result = fmt_error("审查", exc)
+        assert "futures unfinished" not in result
+        assert "操作超时" in result
+
+    def test_get_error_detail_sanitizes_futures_unfinished(self):
+        exc = TimeoutError("1 (of 5) futures unfinished")
+        result = get_error_detail(exc)
+        assert "futures unfinished" not in result
+        assert "操作超时" in result
+
+    def test_get_error_detail_pure_futures_becomes_friendly(self):
+        """When the entire message is just 'N (of M) futures unfinished', fallback to friendly text."""
+        exc = TimeoutError("2 (of 3) futures unfinished")
+        result = get_error_detail(exc)
+        assert "futures unfinished" not in result
+        assert "请稍后重试" in result
+
+    def test_fmt_error_preserves_custom_timeout_message(self):
+        """Custom TimeoutError messages that don't match the pattern are kept."""
+        exc = TimeoutError("连接超时")
+        result = fmt_error("操作", exc)
+        assert "连接超时" in result
+        assert "操作超时" in result
+
+    def test_fmt_error_mixed_message_sanitized(self):
+        """Message containing futures unfinished mixed with other text."""
+        exc = TimeoutError("timeout after 30s: 1 (of 5) futures unfinished")
+        result = fmt_error("操作", exc)
+        assert "futures unfinished" not in result
+        assert "timeout after 30s" in result
+
+
+class TestClassifyTimeout:
+    """Tests for classify_timeout — single source of truth for timeout classification."""
+
+    def test_classify_timeout_direct_timeout(self):
+        assert classify_timeout(TimeoutError("boom")) is True
+
+    def test_classify_timeout_asyncio_timeout(self):
+        assert classify_timeout(asyncio.TimeoutError()) is True
+
+    def test_classify_timeout_chained_timeout(self):
+        inner = TimeoutError("inner")
+        outer = RuntimeError("outer")
+        outer.__cause__ = inner
+        assert classify_timeout(outer) is True
+
+    def test_classify_timeout_non_timeout(self):
+        assert classify_timeout(ValueError("nope")) is False
+
+
+class TestFmtException:
+    """Tests for fmt_exception — uses classify_timeout as single source of truth."""
+
+    def test_fmt_exception_direct_timeout(self):
+        exc = TimeoutError("boom")
+        result = fmt_exception("连接", exc)
+        assert result == "❌ 连接超时: 操作耗时过长，请重试"
+
+    def test_fmt_exception_asyncio_timeout(self):
+        exc = asyncio.TimeoutError()
+        result = fmt_exception("请求", exc)
+        assert result == "❌ 请求超时: 操作耗时过长，请重试"
+
+    def test_fmt_exception_chained_timeout(self):
+        inner = TimeoutError("inner")
+        outer = RuntimeError("outer")
+        outer.__cause__ = inner
+        result = fmt_exception("操作", outer)
+        assert result == "❌ 操作超时: 操作耗时过长，请重试"
+
+    def test_fmt_exception_non_timeout(self):
+        exc = ValueError("bad value")
+        result = fmt_exception("解析", exc)
+        assert result == "❌ 解析异常: bad value"
+
+    def test_fmt_exception_non_timeout_empty_message(self):
+        exc = RuntimeError()
+        result = fmt_exception("处理", exc)
+        assert "❌ 处理异常:" in result
+
+
+class TestHasOnErrorProtocol:
+    """Verify HasOnError Protocol and _format_engine_error type safety."""
+
+    def test_spec_engine_callbacks_satisfies_protocol(self):
+        from src.engine_base import HasOnError
+        from src.spec_engine.engine import SpecEngineCallbacks
+
+        cb = SpecEngineCallbacks()
+        assert isinstance(cb, HasOnError)
+
+    def test_deep_engine_callbacks_satisfies_protocol(self):
+        from src.engine_base import HasOnError
+        from src.deep_engine.engine import DeepEngineCallbacks
+
+        cb = DeepEngineCallbacks()
+        assert isinstance(cb, HasOnError)
+
+    def test_loop_engine_callbacks_satisfies_protocol(self):
+        from src.engine_base import HasOnError
+        from src.loop_engine.engine import LoopEngineCallbacks
+
+        cb = LoopEngineCallbacks()
+        assert isinstance(cb, HasOnError)
+
+    def test_format_engine_error_calls_on_error(self):
+        """on_error callback should be invoked with the formatted message."""
+        from dataclasses import dataclass, field
+        from typing import Optional, Callable
+
+        from src.engine_base import BaseEngine
+
+        @dataclass
+        class FakeCallbacks:
+            on_error: Optional[Callable[[str], None]] = None
+            errors: list = field(default_factory=list)
+
+            def __post_init__(self):
+                self.on_error = lambda msg: self.errors.append(msg)
+
+        engine = BaseEngine(chat_id="test", root_path="/tmp")
+        cb = FakeCallbacks()
+        result = engine._format_engine_error(
+            ValueError("boom"), "测试", callbacks=cb
+        )
+        assert "测试异常" in result
+        assert "boom" in result
+        assert len(cb.errors) == 1
+        assert cb.errors[0] == result
+
+    def test_format_engine_error_callbacks_none(self):
+        """callbacks=None should not raise."""
+        from src.engine_base import BaseEngine
+
+        engine = BaseEngine(chat_id="test", root_path="/tmp")
+        result = engine._format_engine_error(
+            ValueError("x"), "测试", callbacks=None
+        )
+        assert "测试异常" in result
+
+    def test_format_engine_error_on_error_none(self):
+        """callbacks with on_error=None should not raise."""
+        from dataclasses import dataclass
+        from typing import Optional, Callable
+
+        from src.engine_base import BaseEngine
+
+        @dataclass
+        class NullCallbacks:
+            on_error: Optional[Callable[[str], None]] = None
+
+        engine = BaseEngine(chat_id="test", root_path="/tmp")
+        result = engine._format_engine_error(
+            ValueError("x"), "测试", callbacks=NullCallbacks()
+        )
+        assert "测试异常" in result
