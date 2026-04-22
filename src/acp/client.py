@@ -114,7 +114,7 @@ class ACPHistoryStore:
                 if isinstance(data, list):
                     items = [x for x in data if isinstance(x, dict)]
                     return items[-limit:] if limit > 0 else items
-            except Exception:
+            except (ValueError, json.JSONDecodeError):
                 # Fall through to jsonl parsing
                 pass
 
@@ -127,7 +127,7 @@ class ACPHistoryStore:
                 obj = json.loads(s)
                 if isinstance(obj, dict):
                     items.append(obj)
-            except Exception:
+            except (ValueError, json.JSONDecodeError):
                 # Corrupt line: skip
                 continue
 
@@ -268,7 +268,7 @@ class GhostAPClient(Client):
             payload = {"kind": kind, "data": data or {}}
             self._history.append(session_id, payload)
         except Exception:
-            pass
+            logger.debug("[ACP] history record failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # Core callback: session_update

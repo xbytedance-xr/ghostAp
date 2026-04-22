@@ -34,6 +34,7 @@ def list_acp_tools() -> list[ACPToolOption]:
         try:
             available = bool(provider.check_availability())
         except Exception:
+            logger.debug("[ACP] availability check failed for %s", name, exc_info=True)
             available = False
         if available:
             desc = headers.get(f"tool_desc_{name}") or name
@@ -50,6 +51,7 @@ def fetch_acp_models(
     try:
         models = asyncio.run(probe_acp_models(tool_name, cwd, current_model))
     except Exception:
+        logger.debug("[ACP] probe models failed for %s", tool_name, exc_info=True)
         models = []
 
     if models:
@@ -71,7 +73,7 @@ def fetch_acp_models(
                 if getattr(m, "name", "")
             ]
         except Exception:
-            pass
+            logger.debug("[ACP] coco model fallback failed", exc_info=True)
 
     if current_model:
         return [
