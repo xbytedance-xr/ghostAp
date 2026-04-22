@@ -130,7 +130,11 @@ class InteractiveStrategy(ModelFetchStrategy):
             logger.debug(f"InteractiveStrategy found friendly names for {tool_name}: {friendly_names}")
 
             # 依次选择每个模型获取真实名称（避免模型过多导致 O(n) 过慢/不稳定）
-            max_models = int(os.getenv("TTADK_INTERACTIVE_MAX_MODELS", "12") or 12)
+            try:
+                from ...config import get_settings
+                max_models = getattr(get_settings(), "ttadk_interactive_max_models", 12)
+            except Exception:
+                max_models = 12
             max_models = max(1, min(max_models, 50))
             if len(friendly_names) > max_models:
                 logger.warning(

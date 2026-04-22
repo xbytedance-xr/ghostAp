@@ -63,6 +63,9 @@ class Settings(BaseSettings):
 
     acp_session_idle_healthcheck_s: float = 120.0
 
+    # Maximum characters for file content in ACP read/write operations
+    acp_max_file_chars: int = 200_000
+
     # ------------------------------------------------------------------
     # ACP startup diagnostics (redaction + truncation)
     # ------------------------------------------------------------------
@@ -107,6 +110,8 @@ class Settings(BaseSettings):
     ttadk_default_tool: str = "coco"
     ttadk_default_model: str = ""
     ttadk_yolo_default_enabled: bool = False
+    # Max models to probe in interactive PTY discovery (clamped to [1, 50])
+    ttadk_interactive_max_models: int = 12
 
     # TTADK common tool model preheating (probe-based, best-effort)
     # - enabled: master switch
@@ -298,6 +303,8 @@ class Settings(BaseSettings):
     spec_max_retries: int = 3
     spec_model_switch_enabled: bool = True
     spec_generated_specs_retention: int = 1000
+    # Override hint: when set (non-empty), mask BUILD phase errors to "Internal error"
+    spec_failed_task_id_override: str = ""
 
     streaming_enabled: bool = True
 

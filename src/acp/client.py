@@ -50,7 +50,17 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 
+# Default fallback; prefer Settings.acp_max_file_chars at runtime.
 _MAX_FILE_CHARS = 200_000
+
+
+def _get_max_file_chars() -> int:
+    """Read acp_max_file_chars from Settings (lazy, best-effort)."""
+    try:
+        from ..config import get_settings
+        return getattr(get_settings(), "acp_max_file_chars", _MAX_FILE_CHARS)
+    except Exception:
+        return _MAX_FILE_CHARS
 
 
 def _safe_session_filename(session_id: str) -> str:
@@ -403,14 +413,15 @@ class GhostAPClient(Client):
         try:
             resolved = _safe_resolve_path(self._root_dir, path)
             content = resolved.read_text(encoding="utf-8")
-            if len(content) > _MAX_FILE_CHARS:
-                content = content[:_MAX_FILE_CHARS]
+            max_chars = _get_max_file_chars()
+            if len(content) > max_chars:
+                content = content[:max_chars]
                 self._record(
-                    session_id, "read_file", {"path": str(resolved), "truncated": True, "max_chars": _MAX_FILE_CHARS}
+                    session_id, "read_file", {"path": str(resolved), "truncated": True, "max_chars": max_chars}
                 )
                 return ReadTextFileResponse(
                     content=content,
-                    field_meta={"truncated": True, "path": str(resolved), "max_chars": _MAX_FILE_CHARS},
+                    field_meta={"truncated": True, "path": str(resolved), "max_chars": max_chars},
                 )
             self._record(session_id, "read_file", {"path": str(resolved), "truncated": False, "chars": len(content)})
             return ReadTextFileResponse(content=content)
