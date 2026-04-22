@@ -29,7 +29,7 @@ from enum import Enum
 from typing import Callable, Optional
 
 from ..engine_base import PerspectiveReview, ReviewPerspective
-from ..utils.errors import get_error_detail
+from ..utils.errors import classify_timeout, get_error_detail
 from ..utils.retry import RetryPolicy
 from .prompts import build_single_perspective_review_prompt
 from .review_artifacts import ReviewArtifacts
@@ -154,19 +154,15 @@ class PerspectiveWorker:
             raw = prompt_runner(prompt, self._on_event, self.timeout) or ""
         except Exception as e:
             err = get_error_detail(e) or repr(e)
-            if isinstance(e, TimeoutError):
-                err_code = ReviewErrorCode.TIMEOUT
-            else:
-                from ..utils.errors import _has_timeout_in_chain
-                if _has_timeout_in_chain(e):
-                    err_code = ReviewErrorCode.TIMEOUT
-                else:
-                    err_code = ReviewErrorCode.WORKER_ERROR
+            err_code = ReviewErrorCode.TIMEOUT if classify_timeout(e) else ReviewErrorCode.WORKER_ERROR
             logger.warning(
                 "[PerspectiveWorker:%s] prompt failed: %s",
                 self.perspective.name,
                 err,
             )
+            # Converge timeout errors to domain-semantic message for user-facing suggestions.
+            if err_code == ReviewErrorCode.TIMEOUT:
+                err = "当前系统较繁忙，操作已超时"
 
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 
@@ -236,20 +232,16 @@ def run_workers_parallel(
                     outcomes.append(fut.result())
                 except Exception as e:
                     err = get_error_detail(e) or repr(e)
-                    if isinstance(e, TimeoutError):
-                        err_code = ReviewErrorCode.TIMEOUT
-                    else:
-                        from ..utils.errors import _has_timeout_in_chain
-                        if _has_timeout_in_chain(e):
-                            err_code = ReviewErrorCode.TIMEOUT
-                        else:
-                            err_code = ReviewErrorCode.WORKER_ERROR
+                    err_code = ReviewErrorCode.TIMEOUT if classify_timeout(e) else ReviewErrorCode.WORKER_ERROR
 
                     logger.warning(
                         "[run_workers_parallel] worker %s raised: %s",
                         b.worker.perspective.name,
                         err,
                     )
+                    # Converge timeout errors to domain-semantic message for user-facing suggestions.
+                    if err_code == ReviewErrorCode.TIMEOUT:
+                        err = "当前系统较繁忙，操作已超时"
                     outcomes.append(
                         PerspectiveOutcome(
                             perspective=b.worker.perspective,

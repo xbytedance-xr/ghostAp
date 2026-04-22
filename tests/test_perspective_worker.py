@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -148,8 +149,8 @@ def test_run_workers_parallel_empty_returns_empty():
 
 
 def test_run_workers_parallel_actually_concurrent():
-    """With 3 workers each sleeping 0.2s, parallel elapsed must be < serial (0.6s)."""
-    delay = 0.2
+    """With 3 workers each sleeping 0.05s, parallel elapsed must be < serial (0.15s)."""
+    delay = 0.05
     bindings = [
         WorkerBinding(
             PerspectiveWorker(p, timeout=5.0),
@@ -162,26 +163,29 @@ def test_run_workers_parallel_actually_concurrent():
     elapsed = time.monotonic() - t0
     assert len(outs) == 3
     assert all(o.ok for o in outs)
-    # Serial would be ~0.6s; parallel should be ~0.2-0.35s. Leave slack for CI.
-    assert elapsed < 0.5, f"workers did not run in parallel (elapsed={elapsed:.2f}s)"
+    # Serial would be ~0.15s; parallel should be ~0.05-0.1s. Leave slack for CI.
+    assert elapsed < 0.12, f"workers did not run in parallel (elapsed={elapsed:.2f}s)"
 
 def test_run_workers_parallel_race_condition():
     """Tests that no results are lost when futures complete at the exact moment of a timeout."""
-    
+
     # We want one worker to be fast and complete normally
     # We want another worker to be slow, but finish RIGHT when the timeout happens
-    
+    # We want a third to block indefinitely (cancelled by timeout)
+
+    _blocked = threading.Event()
+
     def _runner_fast(prompt: str, on_event, timeout: float) -> str:
         return "[ARCHITECT]\nPASS\n"
-        
+
     def _runner_exact_timeout(prompt: str, on_event, timeout: float) -> str:
-        time.sleep(0.3)  # Matches per_worker_timeout
+        time.sleep(0.08)  # Matches per_worker_timeout closely
         return "[PRODUCT]\nPASS\n"
-        
+
     def _runner_very_slow(prompt: str, on_event, timeout: float) -> str:
-        time.sleep(2.0)
+        _blocked.wait(timeout=5)  # Blocks until cancelled by per_worker_timeout
         return "[USER]\nPASS\n"
-        
+
     bindings = [
         WorkerBinding(
             PerspectiveWorker(ReviewPerspective.ARCHITECT, timeout=5.0),
@@ -196,34 +200,38 @@ def test_run_workers_parallel_race_condition():
             _runner_very_slow,
         )
     ]
-    
-    # Run with a 0.3s timeout.
-    outs = run_workers_parallel(bindings, _make_artifacts(), per_worker_timeout=0.3)
-    
+
+    # Run with a 0.1s timeout.
+    outs = run_workers_parallel(bindings, _make_artifacts(), per_worker_timeout=0.1)
+
     assert len(outs) == 3
-    
+
     # Fast one must succeed
     assert outs[0].perspective == ReviewPerspective.ARCHITECT
     assert outs[0].ok is True
-    
+
     # At least one must fail due to timeout (the very slow one)
     assert any(not o.ok and o.perspective == ReviewPerspective.USER for o in outs)
+    _blocked.set()  # Unblock any lingering threads
 
 
 def test_run_workers_parallel_timeout():
+    _blocked = threading.Event()
+
     def slow_runner(prompt, on_event, timeout):
-        time.sleep(0.5)
+        _blocked.wait(timeout=5)  # Blocks until per_worker_timeout cancels it
         return "slow"
-        
+
     b1 = WorkerBinding(
         worker=PerspectiveWorker(perspective=ReviewPerspective.ARCHITECT, timeout=0.1),
         prompt_runner=slow_runner
     )
-    
+
     outcomes = run_workers_parallel([b1], _make_artifacts(), max_workers=1, per_worker_timeout=0.1)
-    
+
     assert len(outcomes) == 1
     assert not outcomes[0].review.passed
     assert outcomes[0].error == "当前系统较繁忙，操作已超时"
     assert outcomes[0].review.suggestions == ["审查异常：当前系统较繁忙，操作已超时"]
+    _blocked.set()  # Unblock any lingering threads
 

@@ -10,6 +10,14 @@ from src.utils.circuit_breaker import (
 )
 
 
+def _advance_time(cb: CircuitBreaker, seconds: float) -> None:
+    """Simulate time passing by shifting internal timestamps backward."""
+    cb._last_failure_time -= seconds
+    shifted = [t - seconds for t in cb._failure_timestamps]
+    cb._failure_timestamps.clear()
+    cb._failure_timestamps.extend(shifted)
+
+
 class TestCircuitBreakerBasic:
     def test_initial_state_is_closed(self):
         cb = CircuitBreaker()
@@ -39,14 +47,14 @@ class TestCircuitBreakerBasic:
         with pytest.raises(RuntimeError):
             cb.call(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
         assert cb.state == CircuitState.OPEN
-        time.sleep(0.02)
+        _advance_time(cb, 0.02)
         assert cb.state == CircuitState.HALF_OPEN
 
     def test_half_open_success_closes_circuit(self):
         cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.01)
         with pytest.raises(RuntimeError):
             cb.call(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
-        time.sleep(0.02)
+        _advance_time(cb, 0.02)
         result = cb.call(lambda: "recovered")
         assert result == "recovered"
         assert cb.state == CircuitState.CLOSED
@@ -55,7 +63,7 @@ class TestCircuitBreakerBasic:
         cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.01)
         with pytest.raises(RuntimeError):
             cb.call(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
-        time.sleep(0.02)
+        _advance_time(cb, 0.02)
         assert cb.state == CircuitState.HALF_OPEN
         with pytest.raises(RuntimeError):
             cb.call(lambda: (_ for _ in ()).throw(RuntimeError("again")))
@@ -142,7 +150,7 @@ class TestAsyncCall:
         with pytest.raises(RuntimeError):
             await cb.async_call(fail)
 
-        time.sleep(0.02)
+        _advance_time(cb, 0.02)
 
         async def ok():
             return "recovered"
@@ -177,7 +185,7 @@ class TestReset:
         cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.01)
         with pytest.raises(RuntimeError):
             cb.call(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
-        time.sleep(0.02)
+        _advance_time(cb, 0.02)
         assert cb.state == CircuitState.HALF_OPEN
         cb.reset()
         assert cb.state == CircuitState.CLOSED
@@ -229,7 +237,7 @@ class TestOnStateChange:
         )
         with pytest.raises(RuntimeError):
             cb.call(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
-        time.sleep(0.02)
+        _advance_time(cb, 0.02)
         _ = cb.state
         assert (CircuitState.OPEN, CircuitState.HALF_OPEN) in transitions
 
@@ -242,7 +250,7 @@ class TestOnStateChange:
         )
         with pytest.raises(RuntimeError):
             cb.call(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
-        time.sleep(0.02)
+        _advance_time(cb, 0.02)
         cb.call(lambda: "ok")
         assert (CircuitState.HALF_OPEN, CircuitState.CLOSED) in transitions
 
@@ -290,7 +298,7 @@ class TestOnStateChange:
         )
         with pytest.raises(RuntimeError):
             cb.call(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
-        time.sleep(0.02)
+        _advance_time(cb, 0.02)
         cb.call(lambda: "ok")
         assert transitions == [
             (CircuitState.CLOSED, CircuitState.OPEN),
@@ -320,7 +328,7 @@ class TestSlidingWindow:
             with pytest.raises(RuntimeError):
                 cb.call(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
         assert cb._failures == 2
-        time.sleep(0.06)
+        _advance_time(cb, 0.06)
         assert cb._failures == 0
 
     def test_expired_failures_dont_open_circuit(self):
@@ -328,7 +336,7 @@ class TestSlidingWindow:
         for _ in range(2):
             with pytest.raises(RuntimeError):
                 cb.call(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
-        time.sleep(0.06)
+        _advance_time(cb, 0.06)
         with pytest.raises(RuntimeError):
             cb.call(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
         assert cb.state == CircuitState.CLOSED
@@ -338,10 +346,12 @@ class TestSlidingWindow:
         cb = CircuitBreaker(failure_threshold=3, window_duration=0.05, recovery_timeout=60.0)
         with pytest.raises(RuntimeError):
             cb.call(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
-        time.sleep(0.03)
+        # Shift first failure so it's "old" by ~0.03s
+        _advance_time(cb, 0.03)
         with pytest.raises(RuntimeError):
             cb.call(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
-        time.sleep(0.03)
+        # Advance another 0.03s — first failure now > window_duration old
+        _advance_time(cb, 0.03)
         assert cb._failures == 1
 
     def test_rapid_failures_within_window_open_circuit(self):
@@ -358,5 +368,6 @@ class TestSlidingWindow:
                 cb.call(lambda: (_ for _ in ()).throw(RuntimeError("boom")))
         cb.reset()
         assert cb._failures == 0
-        time.sleep(0.06)
+        # Even after "time passes", no phantom failures
+        _advance_time(cb, 0.06)
         assert cb._failures == 0

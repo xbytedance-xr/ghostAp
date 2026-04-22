@@ -58,19 +58,19 @@ class TestKeepaliveThreadLifecycle:
 
 class TestKeepaliveSessionCleanup:
     def test_keepalive_cleans_dead_session(self):
-        mgr = ACPSessionManager("coco", keepalive_interval=1, idle_healthcheck_s=0)
+        mgr = ACPSessionManager("coco", keepalive_interval=0.05, idle_healthcheck_s=0)
         try:
             session = _make_mock_session(last_active=time.time() - 300, server_running=False)
             key = "chat1:proj1"
             with mgr._lock:
                 mgr._sessions[key] = session
 
-            deadline = time.time() + 5
+            deadline = time.time() + 3
             while time.time() < deadline:
                 with mgr._lock:
                     if key not in mgr._sessions:
                         break
-                time.sleep(0.1)
+                time.sleep(0.02)
 
             with mgr._lock:
                 assert key not in mgr._sessions
@@ -79,14 +79,14 @@ class TestKeepaliveSessionCleanup:
             mgr.cleanup_all()
 
     def test_keepalive_keeps_active_session(self):
-        mgr = ACPSessionManager("coco", keepalive_interval=1, idle_healthcheck_s=0)
+        mgr = ACPSessionManager("coco", keepalive_interval=0.05, idle_healthcheck_s=0)
         try:
             session = _make_mock_session(last_active=time.time() - 300, server_running=True)
             key = "chat2:proj2"
             with mgr._lock:
                 mgr._sessions[key] = session
 
-            time.sleep(2.5)
+            time.sleep(0.3)
 
             with mgr._lock:
                 assert key in mgr._sessions
