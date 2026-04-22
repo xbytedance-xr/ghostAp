@@ -48,6 +48,11 @@ class Settings(BaseSettings):
 
     # Auto-update agent CLI when ACP server mode is not supported
     acp_auto_update: bool = True
+    # Timeout for agent CLI auto-update subprocess (seconds)
+    acp_auto_update_timeout: int = 120
+
+    # Engine eval prompt timeout (seconds) — used by Loop and Spec engines
+    engine_eval_prompt_timeout: int = 60
 
     # ACP stdio stream buffer limit (bytes). Default asyncio limit is 64KB which
     # is too small for large agent responses (code generation, file contents).

@@ -593,7 +593,7 @@ CRITERIA_2: FAIL
                 if event.event_type == ACPEventType.TEXT_CHUNK and event.text:
                     eval_text.append(event.text)
 
-            self._session.send_prompt(eval_prompt, on_event=on_eval_event, timeout=60)
+            self._session.send_prompt(eval_prompt, on_event=on_eval_event, timeout=self.settings.engine_eval_prompt_timeout)
             full_text = "".join(eval_text).upper()
 
             # Parse per-criteria results: look for "CRITERIA_N: PASS" or "CRITERIA_N: FAIL"

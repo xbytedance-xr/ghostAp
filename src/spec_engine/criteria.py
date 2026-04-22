@@ -85,10 +85,11 @@ CRITERIA_2: FAIL
             if event.event_type == ACPEventType.TEXT_CHUNK and event.text:
                 eval_text.append(event.text)
 
+        eval_timeout = getattr(settings, "engine_eval_prompt_timeout", 60) if settings else 60
         send_prompt_fn(
             eval_prompt,
             on_event=on_eval_event,
-            timeout=60,
+            timeout=eval_timeout,
             retry_policy=RetryPolicy(max_retries=1, retry_delay=2.0),
         )
         full_text = "".join(eval_text).upper()

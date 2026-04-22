@@ -658,13 +658,15 @@ def _auto_update_agent(command: str) -> bool:
         logger.debug("[ACP] Auto-update disabled by config (acp_auto_update=False)")
         return False
 
+    auto_update_timeout = getattr(settings, "acp_auto_update_timeout", 120)
+
     logger.info("[ACP] %s does not support ACP server mode, attempting auto-update...", command)
     try:
         p = subprocess.run(
             [command, "update"],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=auto_update_timeout,
         )
         stdout = (p.stdout or "").strip()
         stderr = (p.stderr or "").strip()
