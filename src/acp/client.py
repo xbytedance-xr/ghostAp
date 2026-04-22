@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -271,6 +272,7 @@ class GhostAPClient(Client):
         self._root_dir = os.path.abspath(os.path.expanduser(root_dir or "."))
         self._sandbox = sandbox or SandboxExecutor()
         self._terminals: dict[str, _TerminalRecord] = {}
+        self._terminals_lock = threading.Lock()
         self._history = history_store or ACPHistoryStore()
 
     def _record(self, session_id: str, kind: str, data: dict) -> None:
@@ -455,12 +457,13 @@ class GhostAPClient(Client):
         if not ok:
             # Create a virtual terminal that immediately returns the safety error.
             term_id = f"term_{uuid.uuid4().hex[:8]}"
-            self._terminals[term_id] = _TerminalRecord(
-                output=f"❌ 安全检查未通过: {reason}",
-                exit_code=-1,
-                truncated=False,
-                created_at=time.time(),
-            )
+            with self._terminals_lock:
+                self._terminals[term_id] = _TerminalRecord(
+                    output=f"❌ 安全检查未通过: {reason}",
+                    exit_code=-1,
+                    truncated=False,
+                    created_at=time.time(),
+                )
             self._record(session_id, "execute", {"command": command, "blocked": True, "reason": reason})
             return CreateTerminalResponse(terminal_id=term_id, field_meta={"blocked": True, "reason": reason})
 
@@ -491,25 +494,28 @@ class GhostAPClient(Client):
         )
 
         term_id = f"term_{uuid.uuid4().hex[:8]}"
-        self._terminals[term_id] = _TerminalRecord(
-            output=output,
-            exit_code=result.return_code,
-            truncated=truncated,
-            created_at=time.time(),
-        )
+        with self._terminals_lock:
+            self._terminals[term_id] = _TerminalRecord(
+                output=output,
+                exit_code=result.return_code,
+                truncated=truncated,
+                created_at=time.time(),
+            )
         return CreateTerminalResponse(terminal_id=term_id)
 
     def _cleanup_expired_terminals(self) -> None:
         """Remove terminal records older than _TERMINAL_TTL."""
-        if not self._terminals:
-            return
-        now = time.time()
-        expired = [tid for tid, rec in self._terminals.items() if now - rec.created_at > _TERMINAL_TTL]
-        for tid in expired:
-            del self._terminals[tid]
+        with self._terminals_lock:
+            if not self._terminals:
+                return
+            now = time.time()
+            expired = [tid for tid, rec in self._terminals.items() if now - rec.created_at > _TERMINAL_TTL]
+            for tid in expired:
+                del self._terminals[tid]
 
     async def terminal_output(self, session_id: str, terminal_id: str, **kwargs: Any) -> TerminalOutputResponse:
-        rec = self._terminals.get(terminal_id)
+        with self._terminals_lock:
+            rec = self._terminals.get(terminal_id)
         if not rec:
             return TerminalOutputResponse(output="", truncated=False, field_meta={"error": "unknown_terminal"})
         chunk = rec.output[rec.cursor :]
@@ -523,7 +529,8 @@ class GhostAPClient(Client):
     async def wait_for_terminal_exit(
         self, session_id: str, terminal_id: str, **kwargs: Any
     ) -> WaitForTerminalExitResponse:
-        rec = self._terminals.get(terminal_id)
+        with self._terminals_lock:
+            rec = self._terminals.get(terminal_id)
         if not rec:
             return WaitForTerminalExitResponse(exit_code=None, signal=None, field_meta={"error": "unknown_terminal"})
         return WaitForTerminalExitResponse(exit_code=rec.exit_code, signal=None)
@@ -531,13 +538,15 @@ class GhostAPClient(Client):
     async def kill_terminal(
         self, session_id: str, terminal_id: str, **kwargs: Any
     ) -> Optional[KillTerminalCommandResponse]:
-        self._terminals.pop(terminal_id, None)
+        with self._terminals_lock:
+            self._terminals.pop(terminal_id, None)
         return KillTerminalCommandResponse()
 
     async def release_terminal(
         self, session_id: str, terminal_id: str, **kwargs: Any
     ) -> Optional[ReleaseTerminalResponse]:
-        self._terminals.pop(terminal_id, None)
+        with self._terminals_lock:
+            self._terminals.pop(terminal_id, None)
         return ReleaseTerminalResponse()
 
     # ------------------------------------------------------------------

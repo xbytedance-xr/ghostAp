@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import time
 from typing import Any, Callable, Optional
 
@@ -122,6 +123,7 @@ class ACPSession:
             cwd=cwd,
         )
         self._event_handler: Optional[Callable[[ACPEvent], None]] = None
+        self._handler_lock = threading.Lock()
 
     @property
     def session_id(self) -> Optional[str]:
@@ -282,7 +284,8 @@ class ACPSession:
                 except Exception as exc:
                     logger.warning("[ACP] on_event callback error: %s", get_error_detail(exc))
 
-        self._event_handler = _collector
+        with self._handler_lock:
+            self._event_handler = _collector
         self._state.message_count += 1
 
         self._state.last_active = time.time()
@@ -304,7 +307,8 @@ class ACPSession:
         except Exception:
             pass
 
-        self._event_handler = None
+        with self._handler_lock:
+            self._event_handler = None
 
         # Finalize aggregated tool call list (preserve insertion order by first-seen)
         try:
@@ -367,8 +371,10 @@ class ACPSession:
 
     def _dispatch_event(self, event: ACPEvent) -> None:
         """Dispatch event to the current handler."""
-        if self._event_handler:
+        with self._handler_lock:
+            handler = self._event_handler
+        if handler:
             try:
-                self._event_handler(event)
+                handler(event)
             except Exception as e:
                 logger.debug("[ACP] Event handler error: %s", get_error_detail(e))

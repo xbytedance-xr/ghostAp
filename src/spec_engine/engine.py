@@ -360,12 +360,13 @@ class SpecEngine(BaseEngine):
     ) -> SpecProject:
         """Run the spec engine: analyze → cycle(spec→plan→task→build→review) → repeat."""
         callbacks = self._wrap_callbacks(callbacks or SpecEngineCallbacks())
-        self._run_state = EngineRunState.RUNNING
-        self._on_rate_limit = on_rate_limit
-        self._saved_task_id = None
-        self._saved_task_signature = None
+        with self._lock:
+            self._run_state = EngineRunState.RUNNING
+            self._on_rate_limit = on_rate_limit
+            self._saved_task_id = None
+            self._saved_task_signature = None
+            self._termination_reason = None
         max_cycles = self._resolve_max_cycles(self.settings.spec_max_cycles)
-        self._termination_reason = None
 
         project_name = os.path.basename(self.root_path) or "spec_project"
         self._project = SpecProject.create(name=project_name, root_path=self.root_path)
@@ -1216,8 +1217,10 @@ class SpecEngine(BaseEngine):
             logger.debug("[Spec] resume circuit restore skipped: %s", get_error_detail(e))
 
         callbacks = self._wrap_callbacks(callbacks or SpecEngineCallbacks())
-        self._run_state = EngineRunState.RUNNING
-        self._project.status = SpecProjectStatus.RUNNING
+        with self._lock:
+            self._run_state = EngineRunState.RUNNING
+            self._project.status = SpecProjectStatus.RUNNING
+            self._termination_reason = None
         additional_cycles = self._resolve_max_cycles(self.settings.spec_max_cycles)
 
         last_cycle_num = 0
@@ -1225,8 +1228,6 @@ class SpecEngine(BaseEngine):
             last_cycle_num = self._project.cycles[-1].cycle_number
         start_cycle = max(last_cycle_num, self._project.cycle_count_total) + 1
         max_cycles = start_cycle + additional_cycles - 1
-
-        self._termination_reason = None
 
         try:
             self._close_session_safely()
