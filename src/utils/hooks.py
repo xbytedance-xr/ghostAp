@@ -1,4 +1,5 @@
 import logging
+import threading
 from enum import Enum
 from typing import Any, Callable
 
@@ -18,22 +19,27 @@ class HookEvent(str, Enum):
 
 
 _hooks: dict[HookEvent, list[Callable]] = {}
+_hooks_lock = threading.Lock()
 
 
 def register_hook(event: HookEvent, callback: Callable) -> Callable[[], None]:
-    _hooks.setdefault(event, []).append(callback)
+    with _hooks_lock:
+        _hooks.setdefault(event, []).append(callback)
 
     def unregister() -> None:
-        try:
-            _hooks[event].remove(callback)
-        except (KeyError, ValueError):
-            pass
+        with _hooks_lock:
+            try:
+                _hooks[event].remove(callback)
+            except (KeyError, ValueError):
+                pass
 
     return unregister
 
 
 def fire_hooks(event: HookEvent, **kwargs: Any) -> None:
-    for cb in _hooks.get(event, []):
+    with _hooks_lock:
+        callbacks = list(_hooks.get(event, []))
+    for cb in callbacks:
         try:
             cb(**kwargs)
         except Exception:
@@ -41,4 +47,5 @@ def fire_hooks(event: HookEvent, **kwargs: Any) -> None:
 
 
 def clear_hooks() -> None:
-    _hooks.clear()
+    with _hooks_lock:
+        _hooks.clear()
