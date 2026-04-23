@@ -845,6 +845,7 @@ class SystemHandler(BaseHandler):
                 message=UI_TEXT["system_worktree_selection_finished_banner"].format(tool=option.display_name),
                 goal=goal,
             )
+            self.patch_message(message_id, card, msg_type=msg_type)
         else:
             # Auto-add pending item, picking a model if available
             model_name = None
@@ -860,23 +861,13 @@ class SystemHandler(BaseHandler):
             )
             mgr.back_to_tool_selection(project)
 
-            # Fast path: goal exists -> skip tool list, auto-execute
+            # Fast path: goal exists -> skip tool list, auto-execute directly
             if goal:
-                # Provide immediate feedback on the current card
-                selected_dicts = [item.to_dict() for item in mgr.get_state(project).selection.selected_items]
-                self.patch_message(
-                    message_id,
-                    CardBuilder.build_worktree_tool_select_card(
-                        self._get_available_worktree_tools(),
-                        selected_dicts,
-                        pid,
-                        message=UI_TEXT["worktree_auto_executing_banner"],
-                        goal=goal,
-                    )[1]
-                )
+                # Directly proceed to finish and auto-execute, skipping intermediate card update
                 self.handle_finish_worktree_selection(message_id, chat_id, project_id=pid, value=value)
                 return
 
+            # No goal - show updated tool selection card
             state = mgr.get_state(project)
             tools = self._get_available_worktree_tools()
             selected_dicts = [item.to_dict() for item in state.selection.selected_items]
@@ -887,8 +878,7 @@ class SystemHandler(BaseHandler):
                 message=msg,
                 goal=goal,
             )
-
-        self.patch_message(message_id, card, msg_type=msg_type)
+            self.patch_message(message_id, card, msg_type=msg_type)
 
     def handle_worktree_select_model(
         self,
@@ -921,34 +911,13 @@ class SystemHandler(BaseHandler):
         # Back to tool selection for next tool
         mgr.back_to_tool_selection(project)
 
-        # Fast path: goal exists -> skip tool list, auto-execute
+        # Fast path: goal exists -> skip tool list, auto-execute directly
         if goal:
-            # Provide immediate feedback on the current card
-            if pending_tool:
-                cwd = (project.root_path if project else None) or self.get_working_dir(chat_id)
-                current_model = None
-                if project and getattr(project, "acp_tool_name", "") == pending_tool.tool_name:
-                    current_model = getattr(project, "acp_model_name", None)
-
-                self.patch_message(
-                    message_id,
-                    CardBuilder.build_worktree_model_select_card(
-                        self._get_models_for_tool(
-                            pending_tool.tool_name,
-                            provider=pending_tool.provider,
-                            cwd=cwd,
-                            current_model=current_model,
-                        ),
-                        pending_tool.display_name,
-                        [item.to_dict() for item in state.selection.selected_items],
-                        project.project_id,
-                        message=UI_TEXT["worktree_auto_executing_banner"],
-                        goal=goal,
-                    )[1]
-                )
+            # Directly proceed to finish and auto-execute, skipping intermediate card update
             self.handle_finish_worktree_selection(message_id, chat_id, project_id=project_id, value=value)
             return
 
+        # No goal - show updated tool selection card
         state = mgr.get_state(project)
         selected_dicts = [item.to_dict() for item in state.selection.selected_items]
         tools = self._get_available_worktree_tools()
