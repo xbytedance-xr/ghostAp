@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from ..config import get_settings
+from ..utils.env import is_test_environment
 from ..utils.errors import get_error_detail
 from .cache import TTADKModelCache
 from .command_exec import (
@@ -1691,6 +1692,25 @@ _ttadk_update_attempted: bool = False
 _ttadk_update_lock = threading.Lock()
 
 
+def set_ttadk_manager(manager: TTADKManager) -> None:
+    """Set the global TTADKManager singleton. For dependency injection/testing.
+    
+    Args:
+        manager: The TTADKManager instance to use globally
+    
+    Raises:
+        RuntimeError: If called in a production (non-test) environment
+    """
+    if not is_test_environment():
+        raise RuntimeError(
+            "set_ttadk_manager() is only allowed in test environments. "
+            "Modifying global singletons in production can cause race conditions."
+        )
+    global _manager
+    with _manager_lock:
+        _manager = manager
+
+
 def auto_update_ttadk() -> None:
     global _ttadk_update_attempted
     with _ttadk_update_lock:
@@ -1822,7 +1842,16 @@ def get_ttadk_manager(default_tool: Optional[str] = None, default_model: Optiona
 
 
 def _reset_ttadk_manager_for_testing() -> None:
-    """Reset the global TTADKManager singleton and update flag. **Test-only.**"""
+    """Reset the global TTADKManager singleton and update flag. **Test-only.**
+    
+    Raises:
+        RuntimeError: If called in a production (non-test) environment
+    """
+    if not is_test_environment():
+        raise RuntimeError(
+            "_reset_ttadk_manager_for_testing() is only allowed in test environments. "
+            "Modifying global singletons in production can cause race conditions."
+        )
     global _manager, _ttadk_update_attempted, _legacy_store_migrated
     with _manager_lock:
         _manager = None

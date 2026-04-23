@@ -4,6 +4,8 @@ from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from src.utils.env import is_test_environment
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -441,8 +443,36 @@ def get_settings() -> Settings:
     return _settings
 
 
+def set_settings(settings: Settings) -> None:
+    """Set the global settings singleton. For dependency injection/testing.
+    
+    Args:
+        settings: The Settings instance to use globally
+    
+    Raises:
+        RuntimeError: If called in a production (non-test) environment
+    """
+    if not is_test_environment():
+        raise RuntimeError(
+            "set_settings() is only allowed in test environments. "
+            "Modifying global singletons in production can cause race conditions."
+        )
+    global _settings
+    with _settings_lock:
+        _settings = settings
+
+
 def _reset_settings_for_testing() -> None:
-    """Reset the global settings singleton. **Test-only.**"""
+    """Reset the global settings singleton. **Test-only.**
+    
+    Raises:
+        RuntimeError: If called in a production (non-test) environment
+    """
+    if not is_test_environment():
+        raise RuntimeError(
+            "_reset_settings_for_testing() is only allowed in test environments. "
+            "Modifying global singletons in production can cause race conditions."
+        )
     global _settings
     with _settings_lock:
         _settings = None
