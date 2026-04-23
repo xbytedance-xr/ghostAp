@@ -1390,8 +1390,10 @@ class SystemHandler(BaseHandler):
                 models_by_tool[tool.name] = []
 
         yolo_enabled = self._resolve_ttadk_yolo_enabled(chat_id, project=project, project_id=project_id)
+        current_tool = project.ttadk_tool_name if project else None
+        current_model = project.ttadk_model_name if project else None
         msg_type, card_content = CardBuilder.build_ttadk_combined_select_card(
-            result.tools, models_by_tool, project_id, yolo_enabled=yolo_enabled
+            result.tools, models_by_tool, project_id, yolo_enabled=yolo_enabled, current_tool=current_tool, current_model=current_model
         )
         self.reply_message(message_id, card_content, msg_type=msg_type)
 
@@ -1464,8 +1466,9 @@ class SystemHandler(BaseHandler):
             self.reply_message(message_id, msg)
 
         yolo_enabled = self._resolve_ttadk_yolo_enabled(chat_id, project=project, project_id=project_id)
+        current_model = project.ttadk_model_name if project else None
         msg_type, card_content = CardBuilder.build_ttadk_model_select_card(
-            result.models, tool_name, project_id, yolo_enabled=yolo_enabled
+            result.models, tool_name, project_id, yolo_enabled=yolo_enabled, current_model=current_model
         )
         patched = self.patch_message(message_id, card_content)
         if not patched:
@@ -1574,8 +1577,10 @@ class SystemHandler(BaseHandler):
             return
 
         yolo_enabled = self._resolve_ttadk_yolo_enabled(chat_id, project_id=project_id)
+        project = self.project_manager.get_project(project_id) if project_id else self.project_manager.get_active_project(chat_id)
+        current_model = project.ttadk_model_name if project else None
         msg_type, card_content = CardBuilder.build_ttadk_model_select_card(
-            result.models or [], tool, project_id, yolo_enabled=yolo_enabled
+            result.models or [], tool, project_id, yolo_enabled=yolo_enabled, current_model=current_model
         )
         patched = self.patch_message(message_id, card_content)
         if not patched:
@@ -1614,8 +1619,9 @@ class SystemHandler(BaseHandler):
             if result.error:
                 self.reply_error(message_id, result.error, title=UI_TEXT["system_ttadk_get_tools_error"])
                 return
+            current_model = target_project.ttadk_model_name if target_project else None
             msg_type, card_content = CardBuilder.build_ttadk_model_select_card(
-                result.models or [], tool, project_id, yolo_enabled=yolo_enabled
+                result.models or [], tool, project_id, yolo_enabled=yolo_enabled, current_model=current_model
             )
             patched = self.patch_message(message_id, card_content)
             if not patched:
@@ -1626,8 +1632,9 @@ class SystemHandler(BaseHandler):
         if tools_result.error:
             self.reply_error(message_id, tools_result.error, title=UI_TEXT["system_ttadk_get_tools_error"])
             return
+        current_tool = target_project.ttadk_tool_name if target_project else None
         msg_type, card_content = CardBuilder.build_ttadk_tool_select_card(
-            tools_result.tools, project_id, yolo_enabled=yolo_enabled
+            tools_result.tools, project_id, yolo_enabled=yolo_enabled, current_tool=current_tool
         )
         patched = self.patch_message(message_id, card_content)
         if not patched:

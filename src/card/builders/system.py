@@ -274,7 +274,7 @@ class SystemBuilder:
 
     @staticmethod
     def build_ttadk_tool_select_card(
-        tools: list, project_id: Optional[str] = None, yolo_enabled: bool = False
+        tools: list, project_id: Optional[str] = None, yolo_enabled: bool = False, current_tool: Optional[str] = None
     ) -> tuple[str, str]:
         elements = [{"tag": "markdown", "content": UI_TEXT["system_ttadk_select_tool_prompt"]}]
 
@@ -301,6 +301,7 @@ class SystemBuilder:
             {
                 "tag": "select_static",
                 "placeholder": {"tag": "plain_text", "content": UI_TEXT["system_ttadk_select_tool_placeholder"]},
+                "initial_option": current_tool,
                 "value": {
                     "action": "select_ttadk_tool",
                     "project_id": project_id,
@@ -314,7 +315,7 @@ class SystemBuilder:
 
     @staticmethod
     def build_ttadk_model_select_card(
-        models: list, tool_name: str, project_id: Optional[str] = None, yolo_enabled: bool = False
+        models: list, tool_name: str, project_id: Optional[str] = None, yolo_enabled: bool = False, current_model: Optional[str] = None
     ) -> tuple[str, str]:
         elements = [
             {
@@ -349,6 +350,7 @@ class SystemBuilder:
             {
                 "tag": "select_static",
                 "placeholder": {"tag": "plain_text", "content": UI_TEXT["system_ttadk_select_model_placeholder"]},
+                "initial_option": current_model,
                 "value": {
                     "action": "select_ttadk_model",
                     "tool_name": tool_name,
@@ -386,6 +388,8 @@ class SystemBuilder:
         models_by_tool: dict,
         project_id: Optional[str] = None,
         yolo_enabled: bool = False,
+        current_tool: Optional[str] = None,
+        current_model: Optional[str] = None,
     ) -> tuple[str, str]:
         """Build a combined TTADK tool + model selection card (single step)."""
         elements = [{"tag": "markdown", "content": UI_TEXT["system_ttadk_combined_select_prompt"]}]
@@ -415,6 +419,7 @@ class SystemBuilder:
             {
                 "tag": "select_static",
                 "placeholder": {"tag": "plain_text", "content": UI_TEXT["system_ttadk_select_tool_placeholder"]},
+                "initial_option": current_tool,
                 "value": {
                     "action": "select_ttadk_combined_tool",
                     "project_id": project_id,
@@ -423,13 +428,15 @@ class SystemBuilder:
             }
         )
 
-        # Model selection per tool (show first tool's models by default)
+        # Model selection per tool (show current_tool's models or first tool's models by default)
         if tools and models_by_tool:
-            first_tool = tools[0].name
-            models = models_by_tool.get(first_tool, [])
+            selected_tool = current_tool
+            if not selected_tool or selected_tool not in models_by_tool:
+                selected_tool = tools[0].name
+            models = models_by_tool.get(selected_tool, [])
             if models:
                 elements.append({"tag": "hr"})
-                elements.append({"tag": "markdown", "content": UI_TEXT["system_ttadk_label_model"].format(tool=first_tool)})
+                elements.append({"tag": "markdown", "content": UI_TEXT["system_ttadk_label_model"].format(tool=selected_tool)})
 
                 model_options = []
                 for model in models:
@@ -447,9 +454,10 @@ class SystemBuilder:
                     {
                         "tag": "select_static",
                         "placeholder": {"tag": "plain_text", "content": UI_TEXT["system_ttadk_select_model_placeholder"]},
+                        "initial_option": current_model,
                         "value": {
                             "action": "select_ttadk_combined",
-                            "tool_name": first_tool,
+                            "tool_name": selected_tool,
                             "project_id": project_id,
                         },
                         "options": model_options,

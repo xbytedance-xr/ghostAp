@@ -324,15 +324,15 @@ class CardBuilder:
 
     @staticmethod
     def build_ttadk_tool_select_card(
-        tools: list, project_id: Optional[str] = None, yolo_enabled: bool = False
+        tools: list, project_id: Optional[str] = None, yolo_enabled: bool = False, current_tool: Optional[str] = None
     ) -> tuple[str, str]:
-        return SystemBuilder.build_ttadk_tool_select_card(tools, project_id, yolo_enabled=yolo_enabled)
+        return SystemBuilder.build_ttadk_tool_select_card(tools, project_id, yolo_enabled=yolo_enabled, current_tool=current_tool)
 
     @staticmethod
     def build_ttadk_model_select_card(
-        models: list, tool_name: str, project_id: Optional[str] = None, yolo_enabled: bool = False
+        models: list, tool_name: str, project_id: Optional[str] = None, yolo_enabled: bool = False, current_model: Optional[str] = None
     ) -> tuple[str, str]:
-        return SystemBuilder.build_ttadk_model_select_card(models, tool_name, project_id, yolo_enabled=yolo_enabled)
+        return SystemBuilder.build_ttadk_model_select_card(models, tool_name, project_id, yolo_enabled=yolo_enabled, current_model=current_model)
 
     @staticmethod
     def build_ttadk_combined_select_card(
@@ -340,8 +340,10 @@ class CardBuilder:
         models_by_tool: dict,
         project_id: Optional[str] = None,
         yolo_enabled: bool = False,
+        current_tool: Optional[str] = None,
+        current_model: Optional[str] = None,
     ) -> tuple[str, str]:
-        return SystemBuilder.build_ttadk_combined_select_card(tools, models_by_tool, project_id, yolo_enabled=yolo_enabled)
+        return SystemBuilder.build_ttadk_combined_select_card(tools, models_by_tool, project_id, yolo_enabled=yolo_enabled, current_tool=current_tool, current_model=current_model)
 
     @staticmethod
     def build_ttadk_soft_failure_card(
