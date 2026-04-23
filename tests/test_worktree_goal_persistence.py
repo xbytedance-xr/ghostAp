@@ -29,7 +29,8 @@ class TestWorktreeGoalPersistence(unittest.TestCase):
         
         with patch.object(self.handler, "_get_available_worktree_tools", return_value=[]), \
              patch.object(self.handler, "_get_models_for_tool", return_value=[]), \
-             patch.object(self.handler, "patch_message"):
+             patch.object(self.handler, "patch_message"), \
+             patch.object(self.handler, "handle_finish_worktree_selection"):  # 阻止 auto-execute
             self.handler.handle_worktree_select_tool("m1", "c1", "p1", value)
             
         # 验证目标已持久化
