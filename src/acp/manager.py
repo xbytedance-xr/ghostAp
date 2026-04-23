@@ -582,7 +582,7 @@ class ACPSessionManager:
                     _, err_repr = _format_error_type_and_repr(last_err)
                     detail = err_repr or "unknown"
                 safe_detail = _sanitize_startup_detail(detail) or "start_failed"
-                logger.warning("TTADK CLI startup failed: %s", safe_detail)
+                logger.warning("Error while starting TTADK CLI: %s", safe_detail)
                 try:
                     self._session_telemetry.on_session_start_failed(
                         manager_agent_type=self._agent_type,

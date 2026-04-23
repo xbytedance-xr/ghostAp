@@ -94,7 +94,7 @@ def test_acp_manager_ttadk_start_failure_no_coco_acp_fallback(monkeypatch, caplo
         m.start_session("chat1", cwd=".", startup_timeout=0.01, agent_type_override="ttadk_coco")
 
     joined = "\n".join(r.getMessage() for r in caplog.records)
-    assert "TTADK CLI startup failed" in joined
+    assert "Error while starting TTADK CLI" in joined
 
 
 def test_supports_acp_serve_unsets_claudecode(monkeypatch):

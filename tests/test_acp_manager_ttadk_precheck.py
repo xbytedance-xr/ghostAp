@@ -179,7 +179,7 @@ def test_acp_session_manager_ttadk_startup_fail_log_has_non_empty_error_blob(mon
         )
 
     logs = "\n".join([r.getMessage() for r in caplog.records])
-    assert "TTADK CLI startup failed" in logs or "启动 ttadk_codex CLI 失败" in logs
+    assert "Error while starting TTADK CLI" in logs or "启动 ttadk_codex CLI 失败" in logs
     # The new logic just raises "启动 ... CLI 失败: ", it might not do complex formatting unless fallback fails
     # But fallback to coco is attempted.
 
