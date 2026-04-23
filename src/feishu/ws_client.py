@@ -418,14 +418,14 @@ class FeishuWSClient:
         value = getattr(self.settings, "feishu_ws_watchdog_interval", 15.0)
         try:
             return max(1.0, float(value))
-        except Exception:
+        except (ValueError, TypeError):
             return 15.0
 
     def _get_ws_stale_timeout(self) -> float:
         configured = getattr(self.settings, "feishu_ws_stale_timeout", 300.0)
         try:
             configured_timeout = max(60.0, float(configured))
-        except Exception:
+        except (ValueError, TypeError):
             configured_timeout = 300.0
 
         ping_interval = 120.0
@@ -433,13 +433,13 @@ class FeishuWSClient:
         if client is not None:
             try:
                 ping_interval = max(1.0, float(getattr(client, "_ping_interval", 120.0) or 120.0))
-            except Exception:
+            except (ValueError, TypeError):
                 ping_interval = 120.0
 
         grace = getattr(self.settings, "feishu_ws_stale_grace_seconds", 30.0)
         try:
             grace_seconds = max(5.0, float(grace))
-        except Exception:
+        except (ValueError, TypeError):
             grace_seconds = 30.0
 
         return max(configured_timeout, ping_interval * 2 + grace_seconds)

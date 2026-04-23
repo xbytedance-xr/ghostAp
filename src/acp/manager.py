@@ -106,9 +106,8 @@ def _sanitize_startup_detail(text: str) -> str:
             )
         lim = int(getattr(cfg, "snippet_limit", 240) or 240)
         s = truncate_text(s, max(1, lim))
-    except Exception as e:
-        logger.warning("Unexpected error in manager", exc_info=True)
-        pass
+    except (AttributeError, TypeError, ValueError) as e:
+        logger.warning("Error sanitizing startup detail", exc_info=True)
     return s
 
 
@@ -471,8 +470,8 @@ class ACPSessionManager:
                     # best-effort：保留可读 agent spec
                     try:
                         last_spec = session.describe_agent()
-                    except Exception as e:
-                        logger.warning("Unexpected error in manager", exc_info=True)
+                    except (AttributeError, TypeError) as e:
+                        logger.warning("Error describing agent", exc_info=True)
                         last_spec = ""
                     logger.info(
                         "[ACP:%s] Session started via injected starter: key=%s, session=%s",
@@ -506,12 +505,10 @@ class ACPSessionManager:
                         raw_cwd,
                         norm_cwd,
                     )
-            except Exception as e:
-                logger.warning("Unexpected error in manager", exc_info=True)
-                pass
-        except Exception as e:
-            logger.warning("Unexpected error in manager", exc_info=True)
-            pass
+            except (AttributeError, TypeError) as e:
+                logger.warning("Error checking TTADK CWD debug flag", exc_info=True)
+        except (ImportError, AttributeError, TypeError) as e:
+            logger.warning("Error normalizing TTADK CWD", exc_info=True)
 
         # 強制拦截 ttadk_ 模式并分配 CLI session，绝不触发 ACP Server
         # （不判断其底层工具是否支持 ACP，只要在 TTADK 模式下就必须 CLI 交互）
@@ -528,8 +525,8 @@ class ACPSessionManager:
                 mgr_cls = SyncTTADKCLISession
                 try:
                     agent_cls = getattr(_agent_session_mod, "SyncTTADKCLISession", None)
-                except Exception as e:
-                    logger.warning("Unexpected error in manager", exc_info=True)
+                except (AttributeError, TypeError) as e:
+                    logger.warning("Error getting TTADK CLI session class", exc_info=True)
                     agent_cls = None
 
                 eff_cls = mgr_cls
@@ -578,8 +575,8 @@ class ACPSessionManager:
                             if v:
                                 detail = v
                                 break
-                        except Exception as e:
-                            logger.warning("Unexpected error in manager", exc_info=True)
+                        except (AttributeError, TypeError) as e:
+                            logger.warning("Error extracting error detail from attribute %s", k, exc_info=True)
                             continue
                 if not detail:
                     _, err_repr = _format_error_type_and_repr(last_err)
@@ -621,8 +618,8 @@ class ACPSessionManager:
 
                     try:
                         last_spec = session.describe_agent()
-                    except Exception as e:
-                        logger.warning("Unexpected error in manager", exc_info=True)
+                    except (AttributeError, TypeError) as e:
+                        logger.warning("Error describing agent", exc_info=True)
                         last_spec = ""
 
                     # Progressive timeout: allow more time on later attempts.
