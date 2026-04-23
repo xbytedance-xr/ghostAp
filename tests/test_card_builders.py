@@ -90,27 +90,27 @@ def test_model_option_view_defaults():
 def test_core_builder_banner_element():
     """Verify that CoreBuilder._build_banner_element produces the correct column_set structure."""
     message = "Test Banner Message"
-    
+
     # Test info banner (default)
     banner = CoreBuilder._build_banner_element(message, type="info")
     assert banner["tag"] == "column_set"
-    assert banner["background_style"] == "blue"
+    assert banner["background_style"] == "wathet"  # info 使用浅蓝色
     assert "ℹ️" in banner["columns"][0]["elements"][0]["content"]
     assert message in banner["columns"][0]["elements"][0]["content"]
-    
+
     # Test success banner
     banner = CoreBuilder._build_banner_element(message, type="success")
-    assert banner["background_style"] == "green"
+    assert banner["background_style"] == "green"  # success 使用绿色
     assert "✅" in banner["columns"][0]["elements"][0]["content"]
-    
-    # Test warning banner
+
+    # Test warning banner - Apple 风格优化：使用橙色代替黄色
     banner = CoreBuilder._build_banner_element(message, type="warning")
-    assert banner["background_style"] == "yellow"
+    assert banner["background_style"] == "orange"  # warning 使用橙色（更温和、更现代）
     assert "⚠️" in banner["columns"][0]["elements"][0]["content"]
-    
+
     # Test error banner
     banner = CoreBuilder._build_banner_element(message, type="error")
-    assert banner["background_style"] == "red"
+    assert banner["background_style"] == "red"  # error 使用红色
     assert "❌" in banner["columns"][0]["elements"][0]["content"]
 
 
@@ -130,7 +130,7 @@ def test_project_builder_with_banner():
     # Banner should be the third element (Directory, HR, Banner, HR, Content, Buttons)
     elements = card["body"]["elements"]
     assert elements[2]["tag"] == "column_set"
-    assert elements[2]["background_style"] == "green"
+    assert elements[2]["background_style"] == "green"  # success 使用绿色
     assert message in elements[2]["columns"][0]["elements"][0]["content"]
 
 
@@ -146,7 +146,7 @@ def test_worktree_builder_with_message_banner():
     card = json.loads(card_json)
     elements = card["body"]["elements"]
     assert elements[0]["tag"] == "column_set"
-    assert elements[0]["background_style"] == "green"
+    assert elements[0]["background_style"] == "green"  # worktree 使用 success 类型
     assert message in elements[0]["columns"][0]["elements"][0]["content"]
     
     # 2. Model select card
@@ -156,6 +156,7 @@ def test_worktree_builder_with_message_banner():
     card = json.loads(card_json)
     elements = card["body"]["elements"]
     assert elements[0]["tag"] == "column_set"
+    assert elements[0]["background_style"] == "green"  # worktree 使用 success 类型
     
     # 3. Progress card (uses info banner)
     msg_type, card_json = WorktreeBuilder.build_worktree_progress_card(
@@ -164,18 +165,18 @@ def test_worktree_builder_with_message_banner():
     card = json.loads(card_json)
     elements = card["body"]["elements"]
     assert elements[0]["tag"] == "column_set"
-    assert elements[0]["background_style"] == "blue"
+    assert elements[0]["background_style"] == "wathet"  # progress card 使用 info 类型
 
 
 def test_system_builder_soft_failure_banner():
     """Verify that SystemBuilder.build_ttadk_soft_failure_card uses the banner."""
     message = "TTADK Timeout"
     msg_type, card_json = SystemBuilder.build_ttadk_soft_failure_card(message)
-    
+
     card = json.loads(card_json)
     elements = card["body"]["elements"]
     assert elements[0]["tag"] == "column_set"
-    assert elements[0]["background_style"] == "yellow"
+    assert elements[0]["background_style"] == "orange"  # soft failure 使用 warning 类型（Apple 风格优化：橙色）
     assert message in elements[0]["columns"][0]["elements"][0]["content"]
 
 
@@ -188,19 +189,19 @@ def test_deep_builder_warning_banner():
         engine_name="Coco",
         warning_banner="Low credits warning"
     )
-    
+
     msg_type, card_json = DeepBuilder.build_engine_card(project, state)
     card = json.loads(card_json)
     elements = card["body"]["elements"]
-    
+
     # Find the banner in elements
     banner_found = False
     for el in elements:
-        if el.get("tag") == "column_set" and el.get("background_style") == "yellow":
+        if el.get("tag") == "column_set" and el.get("background_style") == "orange":  # warning 使用橙色（Apple 风格优化）
             assert "Low credits warning" in el["columns"][0]["elements"][0]["content"]
             banner_found = True
             break
-    
+
     assert banner_found is True
 
 

@@ -67,14 +67,18 @@ class CoreBuilder:
 
     @staticmethod
     def _build_banner_element(message: str, type: str = "info") -> dict:
-        """Build a prominent banner element using column_set and background_style."""
+        """Build a prominent banner element using column_set and background_style.
+
+        语义化配色方案（Apple 风格优化）：使用更现代、更柔和的颜色，确保产品一致性和更好的用户体验。
+        """
+        # Apple 风格语义化配色方案：更柔和、更现代的颜色，保持一致性的同时传递语义
         style_map = {
-            "success": ("green", "✅"),
-            "warning": ("yellow", "⚠️"),
-            "error": ("red", "❌"),
-            "info": ("blue", "ℹ️"),
+            "success": ("green", "✅"),   # 成功使用绿色
+            "warning": ("orange", "⚠️"),  # 警告使用橙色（更温和、更符合现代设计）
+            "error": ("red", "❌"),      # 错误使用红色
+            "info": ("wathet", "ℹ️"),    # 信息使用浅蓝色
         }
-        bg_style, emoji = style_map.get(type, ("blue", "ℹ️"))
+        bg_style, emoji = style_map.get(type, ("wathet", "ℹ️"))
 
         return {
             "tag": "column_set",
