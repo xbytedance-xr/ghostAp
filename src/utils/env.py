@@ -96,3 +96,20 @@ def build_clean_env(base: Optional[dict[str, str]] = None) -> dict[str, str]:
     for key in _GUARD_KEYS:
         env.pop(key, None)
     return env
+
+
+def _reset_env_for_testing() -> None:
+    """Reset the env module's global state for testing.
+
+    This function is only allowed in test environments.
+    """
+    import sys
+
+    if "pytest" not in sys.modules:
+        raise RuntimeError(
+            "_reset_env_for_testing() is only allowed in test environments."
+        )
+
+    global _test_environment_checker
+    with _test_environment_lock:
+        _test_environment_checker = None
