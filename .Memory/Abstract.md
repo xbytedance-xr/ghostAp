@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-04-23
+- **实现 TTADK 最后使用的工具/模型智能默认值** — 实现 TTADK 工具/模型选择时的智能默认值，让用户进入 TTADK 时，卡片上一次选择的工具/模型自动显示为选中状态，减少重复选择次数；利用 ProjectContext 已有字段，修改卡片构建器和处理器；全量 2814 tests 零回归 → [详细记录](2026-04-23.md)
 - **补充测试验证 log_level 核心效果** — 测试 `test_fail_unit_log_level_type_safety` 仅验证类型安全和不抛异常，未验证 `log_level` 参数核心效果。新增 `test_fail_unit_logs_at_specified_level` 测试，使用 `unittest.mock.patch` 捕获 logger 输出，验证不同 `log_level` 值对应的日志级别是否正确；所有 9 个 worktree dispatcher 测试通过 → [详细记录](2026-04-23.md)
 - **落实审计建议：_fail_unit 使用 log_level 参数记录日志** — `_fail_unit` 方法中定义了 `log_level` 参数但完全没有使用，测试也没有验证该参数的实际效果。在 `_fail_unit` 中添加 `logger.log(log_level, "[Worktree] 单元失败: unit=%s, error=%s", unit.unit_id, error_msg)` 记录日志，并移除 `_run_single_unit` 方法中重复的日志记录；8 个 tests 全部通过 → [详细记录](2026-04-23.md)
 - **Scope-Creep 变更二次拆分 — 仅保留 _fail_unit 类型安全修复** — 将工作树中混合的审计缺口增量加固完全移除，仅保留对 `worktree_engine/dispatcher.py` 的最小改动：提取 `_fail_unit` 辅助方法并将 `log_level` 类型从隐式 str 改为 `int = logging.ERROR`；`tests/test_worktree_dispatcher.py` 追加 1 个类型安全测试；所有 scope creep 项录入 Backlog.md；全量 2820 tests 零回归 → [详细记录](2026-04-23.md)
