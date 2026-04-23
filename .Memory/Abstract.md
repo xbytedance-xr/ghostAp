@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-04-23
+- **提交信息与变更范围一致性方案** — 建立一套预防和解决提交信息与变更范围不一致的方案，包括提交信息规范文档、Git Hooks（pre-commit 和 commit-msg）、修复脚本，并更新 AGENTS.md；全量 2651 tests 零回归 → [详细记录](2026-04-23.md)
 - **统一 CardBuilder 和 SystemBuilder 参数名并添加 ACP 工具/模型智能默认值** — 解决 build_acp_tool_select_card 方法中参数名不一致问题（CardBuilder 用 tools，SystemBuilder 用 available_providers）；同时为 ACP 工具选择添加智能默认值支持；所有相关测试通过 → [详细记录](2026-04-23.md)
 - **实现 TTADK 最后使用的工具/模型智能默认值** — 实现 TTADK 工具/模型选择时的智能默认值，让用户进入 TTADK 时，卡片上一次选择的工具/模型自动显示为选中状态，减少重复选择次数；利用 ProjectContext 已有字段，修改卡片构建器和处理器；全量 2814 tests 零回归 → [详细记录](2026-04-23.md)
 - **补充测试验证 log_level 核心效果** — 测试 `test_fail_unit_log_level_type_safety` 仅验证类型安全和不抛异常，未验证 `log_level` 参数核心效果。新增 `test_fail_unit_logs_at_specified_level` 测试，使用 `unittest.mock.patch` 捕获 logger 输出，验证不同 `log_level` 值对应的日志级别是否正确；所有 9 个 worktree dispatcher 测试通过 → [详细记录](2026-04-23.md)
