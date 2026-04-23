@@ -27,12 +27,13 @@ class ContinuationPolicy:
         converged: bool,
         metrics: SpecCycleMetrics,
         backlog_stuck: bool = False,
+        ignore_backlog: bool = True,
     ) -> Optional[str]:
         if cycle_num < self.min_cycles and cycle_num < self.max_cycles:
             return None
 
         if all_satisfied and review_passed:
-            if metrics.backlog_pending > 0:
+            if not ignore_backlog and metrics.backlog_pending > 0:
                 return None
             return "success"
 
@@ -185,12 +186,12 @@ def compute_cycle_metrics(
     improvement_space = 0.0
     if new_satisfied > 0:
         improvement_space = 1.0
-    elif backlog_pending > 0:
-        improvement_space = 0.7
     elif review_suggestions > 0:
         improvement_space = 0.5
+    elif backlog_pending > 0:
+        improvement_space = 0.15
     else:
-        improvement_space = 0.2
+        improvement_space = 0.1
 
     termination_hint = ""
     if goal_attainment >= 0.999 and improvement_space <= 0.2:

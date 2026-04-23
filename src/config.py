@@ -291,6 +291,13 @@ class Settings(BaseSettings):
     spec_discovery_max_questions: int = 5
     spec_discovery_force_nonempty: bool = True
     spec_generated_specs_per_cycle: int = 3
+    # Discovery 门控（防空转）
+    spec_discovery_gate_on_satisfied: bool = True  # AC 全满足后关闭 discovery
+    spec_discovery_max_pending: int = 5  # backlog 达上限时跳过 discovery
+    spec_discovery_cooldown_cycles: int = 3  # 无进展时每 N 轮才触发一次
+    # Termination 增强
+    spec_backlog_stuck_window: int = 3  # backlog_stuck 检测窗口
+    spec_success_ignore_backlog: bool = True  # success 判定时忽略 backlog
     # Persistence cadence
     spec_persist_every_phase: bool = True
     spec_allow_resume_from_disk: bool = True

@@ -76,6 +76,7 @@ from .review import (
 from .convergence import (
     ContinuationPolicy,
     compute_cycle_metrics,
+    detect_backlog_stuck,
     detect_convergence,
 )
 from .criteria import (
@@ -453,6 +454,9 @@ class SpecEngine(BaseEngine):
                         f"收敛终止：连续{self.settings.spec_convergence_window}轮无有效改进，"
                         "仍有未满足验收标准或审查未通过"
                     )
+                    self._project.abort(msg)
+                elif reason == "backlog_stuck":
+                    msg = "Backlog 停滞终止：连续多轮 backlog 未消减"
                     self._project.abort(msg)
                 elif reason == "max_cycles":
                     self._handle_max_cycles_termination(max_cycles)
@@ -912,8 +916,16 @@ class SpecEngine(BaseEngine):
             all_satisfied = criteria_result.get("all_satisfied", False)
 
             # --- POST-CYCLE PROBLEM DISCOVERY + SPEC GENERATION ---
+            _backlog_pending = sum(
+                1 for w in self._project.work_items
+                if w.status == SpecWorkItemStatus.PENDING
+            )
             if self.settings.spec_discovery_enabled and self._run_state == EngineRunState.RUNNING:
-                discovery = self._discover_optimization_questions(cycle_num)
+                discovery = self._discover_optimization_questions(
+                    cycle_num,
+                    all_satisfied=all_satisfied,
+                    backlog_pending=_backlog_pending,
+                )
                 cycle.discovery_path = _persist_cycle_artifact(
                     self.root_path, self.settings, self._project, cycle_num, "discovery", json.dumps(discovery, ensure_ascii=False, indent=2), "json"
                 )
@@ -966,12 +978,21 @@ class SpecEngine(BaseEngine):
             if converged:
                 logger.info("[Spec:%s] 收敛检测触发, 循环 %d 轮", self._project.name, cycle_num)
 
+            _backlog_stuck = detect_backlog_stuck(
+                self._project,
+                window=getattr(self.settings, "spec_backlog_stuck_window", 3),
+            )
+            if _backlog_stuck:
+                logger.info("[Spec:%s] backlog stuck 检测触发, 循环 %d 轮", self._project.name, cycle_num)
+
             decision = policy.should_stop(
                 cycle_num=cycle_num,
                 all_satisfied=all_satisfied,
                 review_passed=review_passed,
                 converged=converged,
                 metrics=metrics,
+                backlog_stuck=_backlog_stuck,
+                ignore_backlog=getattr(self.settings, "spec_success_ignore_backlog", True),
             )
             if decision == "success":
                 logger.info("[Spec:%s] 所有标准+审查通过, 循环 %d 轮", self._project.name, cycle_num)
@@ -979,6 +1000,10 @@ class SpecEngine(BaseEngine):
                 break
             if decision == "converged":
                 termination = "converged"
+                break
+            if decision == "backlog_stuck":
+                logger.info("[Spec:%s] backlog stuck 终止, 循环 %d 轮", self._project.name, cycle_num)
+                termination = "backlog_stuck"
                 break
 
             if self.settings.spec_rebuild_session_between_cycles:
@@ -1016,7 +1041,12 @@ class SpecEngine(BaseEngine):
             requested = 1
         return min(requested, limit)
 
-    def _discover_optimization_questions(self, cycle_num: int) -> list[dict]:
+    def _discover_optimization_questions(
+        self,
+        cycle_num: int,
+        all_satisfied: bool = False,
+        backlog_pending: int = 0,
+    ) -> list[dict]:
         return _discover_optimization_questions(
             project=self._project,
             session=self._session,
@@ -1024,6 +1054,8 @@ class SpecEngine(BaseEngine):
             last_review=self._last_review,
             cycle_num=cycle_num,
             settings=self.settings,
+            all_satisfied=all_satisfied,
+            backlog_pending=backlog_pending,
         )
 
     def _generate_specs_from_discovery(self, cycle_num: int, discovery: list[dict]) -> list:
@@ -1256,6 +1288,9 @@ class SpecEngine(BaseEngine):
                         f"收敛终止：连续{self.settings.spec_convergence_window}轮无有效改进，"
                         "仍有未满足验收标准或审查未通过"
                     )
+                    self._project.abort(msg)
+                elif reason == "backlog_stuck":
+                    msg = "Backlog 停滞终止：连续多轮 backlog 未消减"
                     self._project.abort(msg)
                 elif reason == "max_cycles":
                     self._handle_max_cycles_termination(max_cycles)

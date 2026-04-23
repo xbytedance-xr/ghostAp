@@ -10,6 +10,7 @@ from src.spec_engine.convergence import (
     detect_convergence,
 )
 from src.spec_engine.models import (
+    CriteriaTracker,
     SpecCycle,
     SpecCycleMetrics,
     SpecProject,
@@ -445,3 +446,185 @@ class TestContinuationPolicyBacklogStuck:
             backlog_stuck=True,
         )
         assert result == "backlog_stuck"
+
+
+# ── Bug 2 fix: ignore_backlog 参数 ──────────────────────────────────
+
+
+class TestShouldStopIgnoreBacklog:
+    """should_stop() 的 ignore_backlog 参数控制 backlog 是否阻塞 success。"""
+
+    def _make_metrics(self, backlog_pending=0, **kw):
+        return _make_metrics(1, backlog_pending=backlog_pending, **kw)
+
+    def test_ignore_backlog_true_success_despite_backlog(self):
+        """ignore_backlog=True（默认）时，backlog > 0 也返回 success。"""
+        policy = ContinuationPolicy(max_cycles=10)
+        metrics = self._make_metrics(backlog_pending=5)
+        result = policy.should_stop(
+            cycle_num=5,
+            all_satisfied=True,
+            review_passed=True,
+            converged=False,
+            metrics=metrics,
+            ignore_backlog=True,
+        )
+        assert result == "success"
+
+    def test_ignore_backlog_false_blocked_by_backlog(self):
+        """ignore_backlog=False 时，backlog > 0 阻塞 success（向后兼容）。"""
+        policy = ContinuationPolicy(max_cycles=10)
+        metrics = self._make_metrics(backlog_pending=5)
+        result = policy.should_stop(
+            cycle_num=5,
+            all_satisfied=True,
+            review_passed=True,
+            converged=False,
+            metrics=metrics,
+            ignore_backlog=False,
+        )
+        assert result is None
+
+    def test_ignore_backlog_default_is_true(self):
+        """默认参数下 backlog 不阻塞 success。"""
+        policy = ContinuationPolicy(max_cycles=10)
+        metrics = self._make_metrics(backlog_pending=3)
+        result = policy.should_stop(
+            cycle_num=5,
+            all_satisfied=True,
+            review_passed=True,
+            converged=False,
+            metrics=metrics,
+        )
+        assert result == "success"
+
+
+# ── Bug 4 fix: improvement_space 不再被 backlog 撑高 ────────────────
+
+
+class TestImprovementSpacePriority:
+    """compute_cycle_metrics() 中 improvement_space 的优先级和数值。"""
+
+    def _make_project(self, backlog_count=0):
+        project = SpecProject.create(name="t", root_path="/tmp")
+        project.requirement = "r"
+        project.acceptance_criteria = ["C1", "C2"]
+        project.criteria_tracker = CriteriaTracker(criteria=["C1", "C2"])
+        for i in range(backlog_count):
+            project.work_items.append(
+                SpecWorkItem(
+                    item_id=f"Q-{i}",
+                    question=f"q{i}",
+                    created_in_cycle=1,
+                    spec_path=f"/tmp/s{i}.json",
+                    status=SpecWorkItemStatus.PENDING,
+                )
+            )
+        return project
+
+    def test_backlog_only_gives_low_improvement_space(self):
+        """backlog > 0 但无新满足、无审查建议时，improvement_space < 0.2。"""
+        project = self._make_project(backlog_count=5)
+        project.metrics_history.append(_make_metrics(0, satisfied_count=0))
+        cycle = SpecCycle(cycle_number=1)
+        m = compute_cycle_metrics(cycle, project)
+        assert m.improvement_space <= 0.2
+        assert m.improvement_space == pytest.approx(0.15)
+
+    def test_review_suggestions_higher_than_backlog(self):
+        """有 review 建议时 improvement_space = 0.5，高于纯 backlog。"""
+        project = self._make_project(backlog_count=5)
+        project.metrics_history.append(_make_metrics(0, satisfied_count=0))
+        cycle = SpecCycle(cycle_number=1)
+        cycle.review_result = _make_review(1, passed=False)
+        m = compute_cycle_metrics(cycle, project)
+        assert m.improvement_space == pytest.approx(0.5)
+
+    def test_no_signals_gives_lowest_improvement_space(self):
+        """无 backlog、无建议、无新满足时，improvement_space 最低。"""
+        project = self._make_project(backlog_count=0)
+        project.metrics_history.append(_make_metrics(0, satisfied_count=0))
+        cycle = SpecCycle(cycle_number=1)
+        m = compute_cycle_metrics(cycle, project)
+        assert m.improvement_space == pytest.approx(0.1)
+
+
+# ── Bug 1 fix: Discovery 门控 ───────────────────────────────────────
+
+
+class TestDiscoveryGating:
+    """discover_optimization_questions() 的门控逻辑。"""
+
+    def _make_settings(self):
+        class _S:
+            spec_discovery_max_questions = 5
+            spec_discovery_force_nonempty = True
+            spec_discovery_gate_on_satisfied = True
+            spec_discovery_max_pending = 3
+            spec_discovery_cooldown_cycles = 3
+        return _S()
+
+    def _make_project(self):
+        project = SpecProject.create(name="t", root_path="/tmp")
+        project.requirement = "r"
+        project.acceptance_criteria = ["C1"]
+        project.criteria_tracker = CriteriaTracker(criteria=["C1"])
+        return project
+
+    def test_gate_on_all_satisfied(self):
+        """所有标准满足后 discovery 返回空列表。"""
+        from src.spec_engine.discovery import discover_optimization_questions
+
+        project = self._make_project()
+        result = discover_optimization_questions(
+            project=project, session=object(), send_prompt_fn=lambda *a, **k: None,
+            last_review=None, cycle_num=1, settings=self._make_settings(),
+            all_satisfied=True, backlog_pending=0,
+        )
+        assert result == []
+
+    def test_gate_on_backlog_full(self):
+        """backlog 达到上限时 discovery 返回空列表。"""
+        from src.spec_engine.discovery import discover_optimization_questions
+
+        project = self._make_project()
+        result = discover_optimization_questions(
+            project=project, session=object(), send_prompt_fn=lambda *a, **k: None,
+            last_review=None, cycle_num=1, settings=self._make_settings(),
+            all_satisfied=False, backlog_pending=5,
+        )
+        assert result == []
+
+    def test_gate_cooldown_skips(self):
+        """连续无进展时非冷却轮跳过 discovery。"""
+        from src.spec_engine.discovery import discover_optimization_questions
+
+        project = self._make_project()
+        # 2 轮无进展，cooldown=3 → 2 % 3 != 0 → 跳过
+        project.metrics_history.append(_make_metrics(1, new_satisfied=0))
+        project.metrics_history.append(_make_metrics(2, new_satisfied=0))
+        result = discover_optimization_questions(
+            project=project, session=object(), send_prompt_fn=lambda *a, **k: None,
+            last_review=None, cycle_num=3, settings=self._make_settings(),
+            all_satisfied=False, backlog_pending=0,
+        )
+        assert result == []
+
+    def test_gate_cooldown_triggers(self):
+        """连续无进展达到冷却周期时允许 discovery（不被门控拦截）。"""
+        from src.spec_engine.discovery import discover_optimization_questions
+
+        project = self._make_project()
+        # 3 轮无进展，cooldown=3 → 3 % 3 == 0 → 不被冷却拦截
+        project.metrics_history.append(_make_metrics(1, new_satisfied=0))
+        project.metrics_history.append(_make_metrics(2, new_satisfied=0))
+        project.metrics_history.append(_make_metrics(3, new_satisfied=0))
+        settings = self._make_settings()
+        result = discover_optimization_questions(
+            project=project, session=object(), send_prompt_fn=lambda *a, **k: None,
+            last_review=None, cycle_num=4, settings=settings,
+            all_satisfied=False, backlog_pending=0,
+        )
+        # 不被门控拦截，但 send_prompt_fn 是空函数会走 fallback
+        # spec_discovery_force_nonempty=True → 返回兜底问题
+        assert len(result) >= 1

@@ -47,9 +47,44 @@ def discover_optimization_questions(
     last_review,
     cycle_num: int,
     settings,
+    all_satisfied: bool = False,
+    backlog_pending: int = 0,
 ) -> list[dict]:
     if not session or not project:
         return []
+
+    # === Discovery 门控（防空转）===
+    # Gate 1: AC 全满足 → 不再发现新问题
+    if getattr(settings, "spec_discovery_gate_on_satisfied", True) and all_satisfied:
+        logger.debug("[Spec] Discovery 门控：所有标准已满足，跳过")
+        return []
+
+    # Gate 2: backlog 达上限 → 背压
+    max_pending = getattr(settings, "spec_discovery_max_pending", 5)
+    if backlog_pending >= max_pending:
+        logger.debug(
+            "[Spec] Discovery 门控：backlog(%d) >= 上限(%d)，跳过",
+            backlog_pending,
+            max_pending,
+        )
+        return []
+
+    # Gate 3: 连续无进展时冷却（每 N 轮触发一次）
+    cooldown = getattr(settings, "spec_discovery_cooldown_cycles", 3)
+    if cooldown > 1 and project.metrics_history:
+        recent_no_progress = 0
+        for m in reversed(project.metrics_history):
+            if m.new_satisfied == 0:
+                recent_no_progress += 1
+            else:
+                break
+        if recent_no_progress > 0 and recent_no_progress % cooldown != 0:
+            logger.debug(
+                "[Spec] Discovery 冷却中：连续 %d 轮无新进展，每 %d 轮触发一次",
+                recent_no_progress,
+                cooldown,
+            )
+            return []
 
     tracker = project.criteria_tracker
     unsatisfied = tracker.unsatisfied_criteria

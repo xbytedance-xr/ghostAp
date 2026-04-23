@@ -1233,6 +1233,11 @@ class TestSpecEngine:
         s.spec_discovery_max_questions = 3
         s.spec_discovery_force_nonempty = True
         s.spec_generated_specs_per_cycle = 1
+        s.spec_discovery_gate_on_satisfied = True
+        s.spec_discovery_max_pending = 5
+        s.spec_discovery_cooldown_cycles = 3
+        s.spec_backlog_stuck_window = 3
+        s.spec_success_ignore_backlog = True
         s.spec_allow_resume_from_disk = True
         s.ark_api_key = ""
         s.ark_model = ""
@@ -2257,6 +2262,11 @@ class TestSpecEngineExecution:
         s.spec_discovery_max_questions = 3
         s.spec_discovery_force_nonempty = True
         s.spec_generated_specs_per_cycle = 1
+        s.spec_discovery_gate_on_satisfied = True
+        s.spec_discovery_max_pending = 5
+        s.spec_discovery_cooldown_cycles = 3
+        s.spec_backlog_stuck_window = 3
+        s.spec_success_ignore_backlog = True
         s.spec_allow_resume_from_disk = True
         s.ark_api_key = ""
         s.ark_model = ""
@@ -2854,6 +2864,11 @@ class TestSpecEngineExecution:
         s.spec_discovery_enabled = True
         s.spec_discovery_max_questions = 1
         s.spec_generated_specs_per_cycle = 1
+        s.spec_discovery_gate_on_satisfied = True
+        s.spec_discovery_max_pending = 5
+        s.spec_discovery_cooldown_cycles = 3
+        s.spec_backlog_stuck_window = 3
+        s.spec_success_ignore_backlog = True
         s.spec_convergence_window = 0
         # Keep artifacts tiny for test
         s.spec_cycle_artifact_retention = 1
@@ -2870,8 +2885,9 @@ class TestSpecEngineExecution:
         )
         gen2 = """```json\n[{"id":"Q-2","spec":{"goals":["补齐测试"],"functional_spec":["新增单元测试"],"non_functional_requirements":[],"acceptance_criteria":["关键路径有单测"],"out_of_scope":[],"risks":[],"clarification_questions":[],"decisions":[],"version":"1.0"}}]\n```"""
 
-        # Cycle 1: spec, plan, task, build, criteria, discovery, gen
-        # Cycle 2: (spec loaded from file), plan, task, build, criteria, discovery, gen
+        # Cycle 1: spec, plan, task, build, criteria(FAIL), discovery, gen
+        # Cycle 2: (spec loaded from file), plan, task, build, criteria(PASS)
+        #          discovery 被门控跳过（all_satisfied=True + gate_on_satisfied=True）
         session = self._make_mock_session(
             [
                 spec_json,
@@ -2885,8 +2901,6 @@ class TestSpecEngineExecution:
                 "1. T2 (依赖: 无)",
                 "build ok 2",
                 "CRITERIA_1: PASS",
-                discovery2,
-                gen2,
             ]
         )
         mock_create.return_value = session
@@ -2894,12 +2908,11 @@ class TestSpecEngineExecution:
         engine = SpecEngine(chat_id="c1", root_path=str(tmp_path))
         project = engine.execute("- 实现登录功能")
 
-        # 期望状态：由于 backlog 非空导致超过 max_cycles(2)，但 criteria/review 已满足，
-        # 故应进入 PAUSED 状态而非 ABORTED，且提示有待办项。
-        assert project.status == SpecProjectStatus.PAUSED
-        assert "仍有待办优化项" in (project.error or "")
+        # 修复后行为：all_satisfied + review_passed 时 ignore_backlog=True
+        # → 直接 success，不再被 backlog 阻塞
+        assert project.status == SpecProjectStatus.COMPLETED
         assert len(project.cycles) == 2
-        assert len(project.work_items) >= 2
+        assert len(project.work_items) >= 1
         # The first generated item should have been consumed in cycle 2
         assert project.work_items[0].used_in_cycle in (1, 2)
         assert os.path.exists(project.work_items[0].spec_path)
@@ -2927,12 +2940,18 @@ class TestSpecEngineExecution:
         s.spec_discovery_max_questions = 1
         s.spec_discovery_force_nonempty = True
         s.spec_generated_specs_per_cycle = 1
+        # 稳定性测试：关闭门控以保证能跑满 cycles
+        s.spec_discovery_gate_on_satisfied = False
+        s.spec_discovery_max_pending = 999
+        s.spec_discovery_cooldown_cycles = 1
+        s.spec_backlog_stuck_window = 999
+        s.spec_success_ignore_backlog = False
         s.spec_allow_resume_from_disk = True
         s.ark_api_key = ""
         s.ark_model = ""
         s.spec_infinite_mode = False
         s.spec_disable_convergence = False
-        s.spec_disable_early_stop = False
+        s.spec_disable_early_stop = True
         s.spec_min_cycles = 1
         s.spec_history_log_filename = "history.jsonl"
         s.spec_generated_specs_retention = 1000
@@ -3039,6 +3058,11 @@ class TestSpecEngineProjectTypes:
         s.spec_discovery_max_questions = 3
         s.spec_discovery_force_nonempty = True
         s.spec_generated_specs_per_cycle = 1
+        s.spec_discovery_gate_on_satisfied = True
+        s.spec_discovery_max_pending = 5
+        s.spec_discovery_cooldown_cycles = 3
+        s.spec_backlog_stuck_window = 3
+        s.spec_success_ignore_backlog = True
         s.spec_allow_resume_from_disk = True
         s.ark_api_key = ""
         s.ark_model = ""
