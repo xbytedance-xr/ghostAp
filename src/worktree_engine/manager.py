@@ -339,6 +339,15 @@ class WorktreeManager:
         state.summary_lines = format_selection_lines(state.selection.selected_items)
         state.selection.last_error = ""
         state.selection.last_message = "已进入 worktree 模式" if state.enabled else "请至少选择一个工具"
+        
+        # 如果存在 pending_goal 时，更新旅程状态和 last_user_goal
+        if state.enabled and state.selection.pending_goal:
+            goal = state.selection.pending_goal.strip()
+            if goal:
+                state.last_user_goal = goal
+                # 触发 goal_created 事件，更新旅程状态
+                self.apply_journey_event(state, event="goal_created", goal=goal)
+        
         return state
 
     def ensure_worktrees(
