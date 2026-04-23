@@ -109,6 +109,16 @@ _CHAIN_MAX_DEPTH = 10
 _FUTURES_UNFINISHED_RE = re.compile(r"\d+\s*\(of\s*\d+\)\s*futures?\s*unfinished")
 
 
+def sanitize_futures_msg(msg: str) -> str:
+    """清洗 stdlib 的 \"N (of M) futures unfinished\" 内部诊断信息。
+
+    当 concurrent.futures.as_completed(timeout) 超时时，会抛出包含该格式信息的 TimeoutError，
+    这对用户没有帮助，应该被替换成干净的中文提示或直接去掉。
+    """
+    cleaned = _FUTURES_UNFINISHED_RE.sub("", str(msg)).strip()
+    return cleaned if cleaned else "操作超时，请稍后重试"
+
+
 def classify_timeout(exc: BaseException) -> bool:
     """Determine whether *exc* should be classified as a timeout error.
 

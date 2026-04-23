@@ -232,3 +232,49 @@ def test_generic_exception_empty_message_has_fallback(tmp_path):
     assert executed[0].status == "failed"
     assert executed[0].error  # non-empty — fallback kicks in
 
+
+def test_fail_unit_log_level_type_safety():
+    """验证 _fail_unit 的 log_level 参数是 int 类型（类型安全），且不抛异常."""
+    import logging
+    from unittest.mock import MagicMock
+
+    unit = WorktreeUnit(unit_id="u0")
+    dispatcher = WorktreeDispatcher()
+    on_update = MagicMock()
+
+    # 测试 log_level=logging.WARNING (int)
+    dispatcher._fail_unit(unit, "test error", log_level=logging.WARNING, on_unit_update=on_update)
+    assert unit.status == "failed"
+    assert unit.error == "test error"
+    assert unit.summary == "test error"
+    on_update.assert_called_once_with(unit)
+
+    # 测试默认值 logging.ERROR
+    unit2 = WorktreeUnit(unit_id="u1")
+    on_update2 = MagicMock()
+    dispatcher._fail_unit(unit2, "another error", on_unit_update=on_update2)
+    assert unit2.status == "failed"
+    on_update2.assert_called_once_with(unit2)
+
+
+def test_fail_unit_logs_at_specified_level():
+    """验证 _fail_unit 按 log_level 指定的级别记录日志（核心效果）。"""
+    import logging
+    from unittest.mock import MagicMock, patch
+
+    unit = WorktreeUnit(unit_id="u0")
+    dispatcher = WorktreeDispatcher()
+    on_update = MagicMock()
+
+    # 测试 log_level=logging.WARNING 确实调用 logger.warning
+    with patch('src.worktree_engine.dispatcher.logger') as mock_logger:
+        dispatcher._fail_unit(unit, "test error", log_level=logging.WARNING, on_unit_update=on_update)
+        mock_logger.log.assert_called_once_with(logging.WARNING, "[Worktree] 单元失败: unit=%s, error=%s", "u0", "test error")
+
+    # 测试默认值 logging.ERROR 确实调用 logger.error
+    unit2 = WorktreeUnit(unit_id="u1")
+    on_update2 = MagicMock()
+    with patch('src.worktree_engine.dispatcher.logger') as mock_logger:
+        dispatcher._fail_unit(unit2, "another error", on_unit_update=on_update2)
+        mock_logger.log.assert_called_once_with(logging.ERROR, "[Worktree] 单元失败: unit=%s, error=%s", "u1", "another error")
+

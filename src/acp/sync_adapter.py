@@ -31,7 +31,7 @@ from .diagnostics import (
 )
 from .models import ACPEvent, PromptResult
 from .session import ACPSession, ACPStartupError
-from ..utils.errors import ACPError, get_error_detail
+from ..utils.errors import ACPError, get_error_detail, sanitize_futures_msg
 
 logger = logging.getLogger(__name__)
 
@@ -1599,8 +1599,8 @@ class SyncACPSession:
             return future.result(timeout=timeout)
         except TimeoutError as e:
             future.cancel()
-            msg = str(e).strip()
-            if not msg:
+            msg = sanitize_futures_msg(str(e))
+            if not msg or msg == "操作超时，请稍后重试":
                 msg = f"ACP 异步操作超时 ({timeout}s): agent={self._agent_type}"
             logger.error("[ACP:%s] _run_async 超时 (timeout=%ss): %s", self._agent_type, timeout, get_error_detail(e))
             raise TimeoutError(msg) from e

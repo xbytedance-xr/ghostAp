@@ -7,7 +7,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Callable, Iterable, Optional
 
 from .models import WorktreeSelectionItem, WorktreeUnit
-from ..utils.errors import get_error_detail
+from ..config import get_settings
+from ..utils.errors import classify_timeout, get_error_detail, sanitize_futures_msg
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,24 @@ class WorktreeDispatcher:
             unit.status = "planned"
         return planned_units
 
+    def _fail_unit(
+        self,
+        unit: WorktreeUnit,
+        error_msg: str,
+        *,
+        log_level: int = logging.ERROR,
+        on_unit_update: Optional[Callable[[WorktreeUnit], None]] = None,
+    ) -> None:
+        unit.status = "failed"
+        unit.error = error_msg
+        unit.summary = error_msg
+        logger.log(log_level, "[Worktree] 单元失败: unit=%s, error=%s", unit.unit_id, error_msg)
+        if on_unit_update:
+            try:
+                on_unit_update(unit)
+            except Exception:
+                pass
+
     def execute_units(
         self,
         units: Iterable[WorktreeUnit],
@@ -83,29 +102,47 @@ class WorktreeDispatcher:
         timeout: Optional[int] = None,
         max_workers: Optional[int] = None,
         on_unit_update: Optional[Callable[[WorktreeUnit], None]] = None,
+        pool_timeout: Optional[int] = None,
     ) -> list[WorktreeUnit]:
         planned_units = list(units)
         if not planned_units:
             return []
 
+        if pool_timeout is None:
+            settings = get_settings()
+            pool_timeout = getattr(settings, "worktree_pool_timeout", 600)
+
         workers = max(1, min(max_workers or len(planned_units), len(planned_units)))
         with ThreadPoolExecutor(max_workers=workers) as executor:
             future_map = {executor.submit(self._run_single_unit, unit, timeout=timeout, on_unit_update=on_unit_update): unit for unit in planned_units}
-            for future in as_completed(future_map):
-                unit = future_map[future]
-                try:
-                    future.result()
-                except Exception as exc:
-                    unit.status = "failed"
-                    unit.error = get_error_detail(exc)
-                    if on_unit_update:
-                        try:
-                            on_unit_update(unit)
-                        except Exception:
-                            pass
+            processed_futures = set()
+            try:
+                for future in as_completed(future_map, timeout=pool_timeout):
+                    unit = future_map[future]
+                    processed_futures.add(future)
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        # 使用 classify_timeout 区分超时和其他错误
+                        err_msg = get_error_detail(exc)
+                        log_level = logging.WARNING if classify_timeout(exc) else logging.ERROR
+                        self._fail_unit(unit, err_msg, log_level=log_level, on_unit_update=on_unit_update)
+            except TimeoutError:
+                # 处理 pool-level timeout
+                unprocessed_futures = set(future_map.keys()) - processed_futures
+                # 使用域语义文案
+                err = "当前系统较繁忙，操作已超时"
+                for fut in unprocessed_futures:
+                    unit = future_map[fut]
+                    fut.cancel()
+                    logger.warning("[Worktree] unit %s timeout: %s", unit.unit_id, err)
+                    self._fail_unit(unit, err, log_level=logging.WARNING, on_unit_update=on_unit_update)
         return planned_units
 
     def _run_single_unit(self, unit: WorktreeUnit, *, timeout: Optional[int] = None, on_unit_update: Optional[Callable[[WorktreeUnit], None]] = None) -> None:
+        # 防止 pool-level timeout 设置的 failed 状态被覆盖
+        if unit.status == "failed":
+            return
         unit.status = "running"
         if on_unit_update:
             try:
@@ -115,13 +152,7 @@ class WorktreeDispatcher:
         
         # 如果尚未分配具体工具（理论上 plan 阶段已完成分配，这里做安全检查）
         if not all([unit.provider, unit.tool_name]):
-            unit.status = "failed"
-            unit.error = "工作单元未绑定执行工具"
-            if on_unit_update:
-                try:
-                    on_unit_update(unit)
-                except Exception:
-                    pass
+            self._fail_unit(unit, "工作单元未绑定执行工具", on_unit_update=on_unit_update)
             return
 
         session = self._session_factory(
@@ -143,25 +174,9 @@ class WorktreeDispatcher:
                 except Exception:
                     pass
         except TimeoutError as te:
-            logger.warning("[Worktree] 单元执行超时: unit=%s, error=%s", unit.unit_id, get_error_detail(te))
-            unit.status = "failed"
-            unit.error = f"执行超时: {get_error_detail(te)}"
-            unit.summary = unit.error
-            if on_unit_update:
-                try:
-                    on_unit_update(unit)
-                except Exception:
-                    pass
+            self._fail_unit(unit, f"执行超时: {get_error_detail(te)}", log_level=logging.WARNING, on_unit_update=on_unit_update)
         except Exception as exc:
-            logger.error("[Worktree] 单元执行异常: unit=%s, error=%s", unit.unit_id, get_error_detail(exc))
-            unit.status = "failed"
-            unit.error = f"执行异常: {get_error_detail(exc)}"
-            unit.summary = unit.error
-            if on_unit_update:
-                try:
-                    on_unit_update(unit)
-                except Exception:
-                    pass
+            self._fail_unit(unit, f"执行异常: {get_error_detail(exc)}", log_level=logging.ERROR, on_unit_update=on_unit_update)
         finally:
             try:
                 session.close()

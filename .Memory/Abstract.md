@@ -2,9 +2,13 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-04-23
+- **补充测试验证 log_level 核心效果** — 测试 `test_fail_unit_log_level_type_safety` 仅验证类型安全和不抛异常，未验证 `log_level` 参数核心效果。新增 `test_fail_unit_logs_at_specified_level` 测试，使用 `unittest.mock.patch` 捕获 logger 输出，验证不同 `log_level` 值对应的日志级别是否正确；所有 9 个 worktree dispatcher 测试通过 → [详细记录](2026-04-23.md)
+- **落实审计建议：_fail_unit 使用 log_level 参数记录日志** — `_fail_unit` 方法中定义了 `log_level` 参数但完全没有使用，测试也没有验证该参数的实际效果。在 `_fail_unit` 中添加 `logger.log(log_level, "[Worktree] 单元失败: unit=%s, error=%s", unit.unit_id, error_msg)` 记录日志，并移除 `_run_single_unit` 方法中重复的日志记录；8 个 tests 全部通过 → [详细记录](2026-04-23.md)
+- **Scope-Creep 变更二次拆分 — 仅保留 _fail_unit 类型安全修复** — 将工作树中混合的审计缺口增量加固完全移除，仅保留对 `worktree_engine/dispatcher.py` 的最小改动：提取 `_fail_unit` 辅助方法并将 `log_level` 类型从隐式 str 改为 `int = logging.ERROR`；`tests/test_worktree_dispatcher.py` 追加 1 个类型安全测试；所有 scope creep 项录入 Backlog.md；全量 2820 tests 零回归 → [详细记录](2026-04-23.md)
 - **消除 DeepEngineCallbacks 重复定义** — 删除 `src/deep_engine/callbacks.py` 中与 `engine.py` 重复的 `DeepEngineCallbacks`，统一到 `engine.py` 的规范版本（`on_error: Optional[Callable[[str], None]]`），使其与 `HasOnError` Protocol 类型兼容；更新测试导入路径；全量 2761 tests 零回归 → [详细记录](2026-04-23.md)
 - **Scope-Creep 变更拆分** — 将工作树中 22+ 个混合变更通过 `git rebase -i` 拆分为 6 个语义 commit（`f2baa02`~`b1eb055`：废弃代码清理→配置收口→三引擎重构→线程锁→测试改进→文档更新）+ 本任务 1 commit（`7aaaabd`），消除 diff 范围膨胀；全量 2761 tests 零回归 → [详细记录](2026-04-23.md)
 - **落实审计改进建议：异常精确化 + 领域异常层级 + 代码去重与配置收口** — 在 `errors.py` 新增 5 个领域异常子类；52 处 `except Exception` → 精确异常类型（sync_adapter/agent_session/ws_client/ttadk）；gc.collect 下沉 GCMonitor；ProjectContext 6 模式方法 table-driven 合并；card_max_chars 配置化；新增 48 个测试；5 个语义 commit，每个后全量 2807 tests 零回归 → [详细记录](2026-04-23.md)
+- **落实残余审计缺口：dispatcher timeout 防御 + _run_async 正则清洗 + repr 回退消除** — dispatcher.py 的 `as_completed` 添加 timeout + TimeoutError handler 对齐黄金模式；sync_adapter `_run_async` 引入 `sanitize_futures_msg` 正则清洗；perspective_worker 移除 `repr(e)` 回退统一用 `get_error_detail(default=)`；新增 13 个测试；全量 2820 tests 零回归 → [详细记录](2026-04-23.md)
 
 ## 2026-04-22
 - **并发风险排查与锁竞争优化** — 解决 ACP `manager.py` 和 `sync_adapter.py` 中由异步超时引发的任务泄露，将长达 5 秒的会话关闭（`session.close`）操作异步化以消除对全局字典锁的竞争，并修复依赖注入重构遗留的 Mock 测试。 → [详细记录](2026-04-22.md)

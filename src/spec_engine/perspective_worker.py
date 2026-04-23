@@ -153,7 +153,7 @@ class PerspectiveWorker:
         try:
             raw = prompt_runner(prompt, self._on_event, self.timeout) or ""
         except Exception as e:
-            err = get_error_detail(e) or repr(e)
+            err = get_error_detail(e, default="未知错误")
             err_code = ReviewErrorCode.TIMEOUT if classify_timeout(e) else ReviewErrorCode.WORKER_ERROR
             logger.warning(
                 "[PerspectiveWorker:%s] prompt failed: %s",
@@ -231,7 +231,7 @@ def run_workers_parallel(
                 try:
                     outcomes.append(fut.result())
                 except Exception as e:
-                    err = get_error_detail(e) or repr(e)
+                    err = get_error_detail(e, default="未知错误")
                     err_code = ReviewErrorCode.TIMEOUT if classify_timeout(e) else ReviewErrorCode.WORKER_ERROR
 
                     logger.warning(

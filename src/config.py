@@ -251,6 +251,9 @@ class Settings(BaseSettings):
     spec_review_min_timeout: int = 30
     spec_review_hard_floor: int = 15
 
+    # Worktree dispatcher pool-level timeout (seconds)
+    worktree_pool_timeout: int = 600
+
     # Review metrics exporter
     # - "logger" (default): output via logging.info (original behaviour)
     # - "jsonl": append JSON Lines to review_metrics_jsonl_path
