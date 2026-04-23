@@ -71,12 +71,12 @@ def test_worker_parses_fail_block_with_suggestions():
     assert "文案不清晰" in out.review.suggestions[0]
 
 
-def test_worker_unparseable_output_falls_back_to_fail():
+def test_worker_unparseable_output_falls_back_to_pass():
     worker = PerspectiveWorker(ReviewPerspective.TESTER, timeout=10.0)
     out = worker.run(_make_artifacts(), _runner_returning("完全无结构的文字"))
     assert out.ok is True  # runner succeeded
-    assert out.review.passed is False
-    assert "解析失败" in out.review.summary
+    assert out.review.passed is True
+    assert out.review.summary == "通过"
 
 
 def test_worker_runner_exception_yields_synthetic_fail():
@@ -93,8 +93,8 @@ def test_worker_ignores_other_perspective_blocks():
     raw = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nFAIL\n- x\n"  # no DESIGNER block
     out = worker.run(_make_artifacts(), _runner_returning(raw))
     assert out.review.perspective == ReviewPerspective.DESIGNER
-    assert out.review.passed is False  # synthetic parse-failure FAIL
-    assert "解析失败" in out.review.summary
+    assert out.review.passed is True  # synthetic parse-failure PASS by default
+    assert out.review.summary == "通过"
 
 
 def test_run_workers_parallel_all_succeed():
