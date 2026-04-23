@@ -2,6 +2,9 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-04-23
+- **配色系统优化：增加深色主题和优化横幅色彩搭配** — 扩展配色系统，新增深色主题变体，优化横幅背景色为 wathet 提升视觉体验，满足 WCAG AA 级对比度要求；更新相关测试用例，全量 2835 个测试零回归 → [详细记录](2026-04-23.md)
+- **落实改进建议：恢复横幅语义配色（success/warning/error/info 分色显示）** — 修复将所有横幅统一为 wathet 蓝色导致的语义信息丢失问题，恢复不同消息类型的语义化配色（success→green, warning→yellow, error→red, info→wathet）；更新相关测试用例，全量测试零回归 → [详细记录](2026-04-23.md)
+- **为 `src/utils/env.py` 添加测试覆盖** — 为 `src/utils/env.py` 新增完整的单元测试文件 `tests/test_env.py`；添加 `_reset_env_for_testing()` 函数用于测试时重置全局状态；更新 `conftest.py` 自动调用 `_reset_env_for_testing()` 确保测试隔离；全量 2835 tests 零回归 → [详细记录](2026-04-23.md)
 - **落实建议1：增强自动执行路径连贯性** — 在 `finalize_selection` 阶段检查是否存在 `pending_goal`，若存在则更新 `last_user_goal` 并触发 `goal_created` 事件，增强路径连贯性；全量152个worktree tests通过 → [详细记录](2026-04-23.md)
 - **迁移 Git Hooks 到可追踪目录** — 将 Git Hooks 从不可追踪的 `.git/hooks/` 迁移到 `.githooks/` 目录，配置 `core.hooksPath` 指向新目录，添加 README 说明，使团队成员可以共享 hooks；无需测试 → [详细记录](2026-04-23.md)
 - **提交信息与变更范围一致性方案** — 建立一套预防和解决提交信息与变更范围不一致的方案，包括提交信息规范文档、Git Hooks（pre-commit 和 commit-msg）、修复脚本，并更新 AGENTS.md；全量 2651 tests 零回归 → [详细记录](2026-04-23.md)
@@ -14,6 +17,8 @@
 - **Scope-Creep 变更拆分** — 将工作树中 22+ 个混合变更通过 `git rebase -i` 拆分为 6 个语义 commit（`f2baa02`~`b1eb055`：废弃代码清理→配置收口→三引擎重构→线程锁→测试改进→文档更新）+ 本任务 1 commit（`7aaaabd`），消除 diff 范围膨胀；全量 2761 tests 零回归 → [详细记录](2026-04-23.md)
 - **落实审计改进建议：异常精确化 + 领域异常层级 + 代码去重与配置收口** — 在 `errors.py` 新增 5 个领域异常子类；52 处 `except Exception` → 精确异常类型（sync_adapter/agent_session/ws_client/ttadk）；gc.collect 下沉 GCMonitor；ProjectContext 6 模式方法 table-driven 合并；card_max_chars 配置化；新增 48 个测试；5 个语义 commit，每个后全量 2807 tests 零回归 → [详细记录](2026-04-23.md)
 - **落实残余审计缺口：dispatcher timeout 防御 + _run_async 正则清洗 + repr 回退消除** — dispatcher.py 的 `as_completed` 添加 timeout + TimeoutError handler 对齐黄金模式；sync_adapter `_run_async` 引入 `sanitize_futures_msg` 正则清洗；perspective_worker 移除 `repr(e)` 回退统一用 `get_error_detail(default=)`；新增 13 个测试；全量 2820 tests 零回归 → [详细记录](2026-04-23.md)
+- **修复不一致的导入路径：统一从 src.card.styles 导入** — 在 `src/project/manager.py` 中删除从 `src.card.shared` 导入但未使用的 `THEMES`，统一从 `src.card.styles` 导入相关内容；全量 2835 tests 零回归 → [详细记录](2026-04-23.md)
+- **语义化配色与卡片 header 配色一致性问题修复** — 在 `src/card/builders/system.py` 中将 `build_ttadk_soft_failure_card` 的 header_template 从 orange 改为 blue，避免与 warning 类型 banner 的橙色背景重复；全量 2835 tests 零回归 → [详细记录](2026-04-23.md)
 
 ## 2026-04-22
 - **并发风险排查与锁竞争优化** — 解决 ACP `manager.py` 和 `sync_adapter.py` 中由异步超时引发的任务泄露，将长达 5 秒的会话关闭（`session.close`）操作异步化以消除对全局字典锁的竞争，并修复依赖注入重构遗留的 Mock 测试。 → [详细记录](2026-04-22.md)
