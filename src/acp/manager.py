@@ -60,12 +60,12 @@ def _format_error_type_and_repr(err: object) -> tuple[str, str]:
     try:
         err_type = type(err).__name__
     except Exception as e:
-        logger.warning("Unexpected error in manager", exc_info=True)
+        logger.warning("Error while formatting error type", exc_info=True)
         err_type = "Exception"
     try:
         err_repr = repr(err)
     except Exception as e:
-        logger.warning("Unexpected error in manager", exc_info=True)
+        logger.warning("Error while formatting error representation", exc_info=True)
         err_repr = ""
     if not (err_repr or "").strip():
         err_repr = f"<{err_type}>"
@@ -87,7 +87,7 @@ def _format_ttadk_startup_attempts(diagnostics: object, *, per_item_limit: int =
             attempts, per_item_limit=per_item_limit, total_limit=total_limit, get_settings_fn=get_settings
         )
     except Exception as e:
-        logger.warning("Unexpected error in manager", exc_info=True)
+        logger.warning("Error while formatting TTADK startup attempts", exc_info=True)
         return ""
 
 
@@ -107,7 +107,7 @@ def _sanitize_startup_detail(text: str) -> str:
         lim = int(getattr(cfg, "snippet_limit", 240) or 240)
         s = truncate_text(s, max(1, lim))
     except (AttributeError, TypeError, ValueError) as e:
-        logger.warning("Error sanitizing startup detail", exc_info=True)
+        logger.warning("Error while sanitizing startup detail", exc_info=True)
     return s
 
 
@@ -157,7 +157,7 @@ def _degrade_ttadk_to_coco_acp(
         et = (et or "").strip() or (repr(reason) if reason is not None else "<Exception> (empty)")
         s._degraded_reason = f"{fr}: {et}"
     except Exception as e:
-        logger.warning("Unexpected error in manager", exc_info=True)
+        logger.warning("Error while building TTADK degraded reason", exc_info=True)
         s._degraded_reason = str(reason) or (repr(reason) if reason is not None else "")
     return (s, sid)
 
@@ -181,7 +181,7 @@ def _build_startup_diagnostics(
             timeout_s=float(timeout or 0),
         )
     except Exception as e:
-        logger.warning("Unexpected error in manager", exc_info=True)
+        logger.warning("Error while building startup diagnostics", exc_info=True)
         # 极端兜底：保证返回可序列化 dict
         return {
             "agent_type": agent_type or "",
@@ -280,7 +280,7 @@ class ACPSessionManager:
                     "build_idle_health_config_for_manager(...) 注入 IdleHealth 协作者。"
                 )
         except Exception as e:
-            logger.warning("Unexpected error in manager", exc_info=True)
+            logger.warning("Error while logging deprecated parameters warning", exc_info=True)
             # 不因日志问题影响核心逻辑。
             pass
 
@@ -471,7 +471,7 @@ class ACPSessionManager:
                     try:
                         last_spec = session.describe_agent()
                     except (AttributeError, TypeError) as e:
-                        logger.warning("Error describing agent", exc_info=True)
+                        logger.warning("Error while describing agent", exc_info=True)
                         last_spec = ""
                     logger.info(
                         "[ACP:%s] Session started via injected starter: key=%s, session=%s",
@@ -506,9 +506,9 @@ class ACPSessionManager:
                         norm_cwd,
                     )
             except (AttributeError, TypeError) as e:
-                logger.warning("Error checking TTADK CWD debug flag", exc_info=True)
+                logger.warning("Error while checking TTADK CWD debug flag", exc_info=True)
         except (ImportError, AttributeError, TypeError) as e:
-            logger.warning("Error normalizing TTADK CWD", exc_info=True)
+            logger.warning("Error while normalizing TTADK CWD", exc_info=True)
 
         # 強制拦截 ttadk_ 模式并分配 CLI session，绝不触发 ACP Server
         # （不判断其底层工具是否支持 ACP，只要在 TTADK 模式下就必须 CLI 交互）
@@ -526,7 +526,7 @@ class ACPSessionManager:
                 try:
                     agent_cls = getattr(_agent_session_mod, "SyncTTADKCLISession", None)
                 except (AttributeError, TypeError) as e:
-                    logger.warning("Error getting TTADK CLI session class", exc_info=True)
+                    logger.warning("Error while getting TTADK CLI session class", exc_info=True)
                     agent_cls = None
 
                 eff_cls = mgr_cls
@@ -576,7 +576,7 @@ class ACPSessionManager:
                                 detail = v
                                 break
                         except (AttributeError, TypeError) as e:
-                            logger.warning("Error extracting error detail from attribute %s", k, exc_info=True)
+                            logger.warning("Error while extracting error detail from attribute %s", k, exc_info=True)
                             continue
                 if not detail:
                     _, err_repr = _format_error_type_and_repr(last_err)
@@ -619,7 +619,7 @@ class ACPSessionManager:
                     try:
                         last_spec = session.describe_agent()
                     except (AttributeError, TypeError) as e:
-                        logger.warning("Error describing agent", exc_info=True)
+                        logger.warning("Error while describing agent", exc_info=True)
                         last_spec = ""
 
                     # Progressive timeout: allow more time on later attempts.
@@ -661,10 +661,10 @@ class ACPSessionManager:
                                     if not (str(e) or "").strip() or (str(e) or "").strip() in ("(empty)", "None"):
                                         e.args = (et,)
                                 except Exception as e:
-                                    logger.warning("Unexpected error in manager", exc_info=True)
+                                    logger.warning("Error while setting error args", exc_info=True)
                                     pass
                     except Exception as e:
-                        logger.warning("Unexpected error in manager", exc_info=True)
+                        logger.warning("Error while processing diagnostics", exc_info=True)
                         pass
 
                     # 统一失败日志（SSOT=src.acp.diagnostics.format_startup_failure_log_line）
@@ -685,7 +685,7 @@ class ACPSessionManager:
                         if session:
                             session.close()
                     except Exception as e:
-                        logger.warning("Unexpected error in manager", exc_info=True)
+                        logger.warning("Error while closing session", exc_info=True)
                         pass
                     session = None
                     if attempt < retries:
@@ -723,7 +723,7 @@ class ACPSessionManager:
         try:
             session.load_local_history(session.session_id)
         except Exception as e:
-            logger.warning("Unexpected error in manager", exc_info=True)
+            logger.warning("Error while loading local history", exc_info=True)
             pass
 
         with self._acquire_lock():
@@ -814,7 +814,7 @@ class ACPSessionManager:
                             if bool(pre.get("validated")):
                                 target_model = str(pre.get("model") or "").strip() or None
                         except Exception as e:
-                            logger.warning("Unexpected error in manager", exc_info=True)
+                            logger.warning("Error while prechecking TTADK startup model", exc_info=True)
                             target_model = None
 
                     if target_model:
@@ -1066,7 +1066,7 @@ class ACPSessionManager:
                     }
                 )
             except Exception as e:
-                logger.warning("Unexpected error in manager", exc_info=True)
+                logger.warning("Error while building session status", exc_info=True)
                 continue
         return out
 
