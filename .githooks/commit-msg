@@ -1,0 +1,42 @@
+#!/bin/bash
+# commit-msg hook: Check if commit message mentions key changed files
+
+COMMIT_MSG_FILE=$1
+COMMIT_MSG=$(cat "$COMMIT_MSG_FILE")
+
+# Get list of changed files
+CHANGED_FILES=$(git diff --cached --name-only)
+
+echo "=== 检查提交信息 ==="
+echo "修改的文件:"
+echo "$CHANGED_FILES"
+echo ""
+
+# Simple check: see if commit message mentions any of the directories
+# or key files that were changed
+WARNING_ISSUED=0
+
+for FILE in $CHANGED_FILES; do
+    # Get the directory part
+    DIR=$(dirname "$FILE")
+    BASENAME=$(basename "$FILE")
+    
+    # Check if commit message contains the directory or filename
+    if [[ "$COMMIT_MSG" != *"$DIR"* ]] && [[ "$COMMIT_MSG" != *"$BASENAME"* ]]; then
+        if [ "$WARNING_ISSUED" -eq 0 ]; then
+            echo "⚠️  提示: 您的提交信息中可能没有提到以下修改的文件/目录:"
+            WARNING_ISSUED=1
+        fi
+        echo "  - $FILE"
+    fi
+done
+
+if [ "$WARNING_ISSUED" -eq 1 ]; then
+    echo ""
+    echo "建议更新您的提交信息，以准确描述所有修改的内容。"
+    echo "如需绕过此检查，请使用: git commit --no-verify"
+    echo ""
+fi
+
+# Always allow the commit to proceed (just a warning)
+exit 0

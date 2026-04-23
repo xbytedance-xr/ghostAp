@@ -1,0 +1,13 @@
+#!/bin/bash
+# pre-commit hook: Display changed files and remind to check commit message
+
+echo "=== 即将提交的文件 ==="
+git diff --cached --name-status
+
+echo ""
+echo "=== 提醒 ==="
+echo "请确保您的提交信息准确描述了所有修改的文件！"
+echo "如需绕过此检查，请使用: git commit --no-verify"
+echo ""
+
+exit 0
