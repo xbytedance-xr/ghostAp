@@ -31,6 +31,7 @@ from typing import Callable, Optional
 from ..engine_base import PerspectiveReview, ReviewPerspective
 from ..utils.errors import classify_timeout, get_error_detail
 from ..utils.retry import RetryPolicy
+from ..utils.spec_utils import parse_review_output_strict_tolerant
 from .prompts import build_single_perspective_review_prompt
 from .review_artifacts import ReviewArtifacts
 
@@ -117,8 +118,6 @@ class PerspectiveWorker:
             logger.debug("[PerspectiveWorker:%s] on_event error: %s", self.perspective.name, repr(e))
 
     def _parse(self, raw: str) -> PerspectiveReview:
-        from ..utils.spec_utils import parse_review_output_strict_tolerant
-
         reviews = parse_review_output_strict_tolerant(raw or "", 0)
         for r in reviews:
             if r.perspective == self.perspective:

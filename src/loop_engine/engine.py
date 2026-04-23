@@ -31,6 +31,7 @@ from ..utils.spec_utils import (
 )
 from ..utils.spec_utils import (
     parse_review_output_loose as _parse_review_output_loose,
+    parse_review_output_strict_tolerant,
 )
 from ..utils.trace import TraceContext
 from .models import (
@@ -695,8 +696,6 @@ FAIL
         raw = (text or "").replace("\r\n", "\n")
 
         # 1) strict/tolerant parsing (shared utils)
-        from ..utils.spec_utils import parse_review_output_strict_tolerant
-
         reviews = parse_review_output_strict_tolerant(raw, iteration)
 
         # 2.5) loose parsing: keyword-pair / JSON / table formats
