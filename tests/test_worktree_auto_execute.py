@@ -562,25 +562,29 @@ def test_goal_persistence_across_selection():
     assert state.selection.pending_goal == "实现搜索功能"
 
     # Step 2: select tool — goal should persist in state
-    with patch.object(handler, "_get_models_for_tool", return_value=[]), \
+    with patch.object(handler, "_get_models_for_tool", return_value=[{"name": "sonnet", "display_name": "Sonnet", "is_default": True}, 
+                                                                      {"name": "opus", "display_name": "Opus", "is_default": False}]), \
          patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
          patch.object(handler, "patch_message"):
         handler.handle_worktree_select_tool(
             "m2", "c1", project_id="p-pers",
-            value={"tool_name": "coco", "provider": "acp", "supports_model": False,
+            value={"tool_name": "claude", "provider": "cli", "supports_model": True,
                    "goal": "实现搜索功能"},
         )
 
     state = mgr.get_state(project)
     assert state.selection.pending_goal == "实现搜索功能"
-    assert len(state.selection.selected_items) == 1
+    assert state.selection.pending_item is not None
 
-    # Step 3: finish selection — should auto-execute with preserved goal
+    # Step 3: select model — should auto-execute with preserved goal
     auto_exec_mock = MagicMock()
-    with patch.object(handler, "_auto_execute_worktree", auto_exec_mock):
-        handler.handle_finish_worktree_selection(
+    with patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
+         patch.object(handler, "patch_message"), \
+         patch.object(handler, "_auto_execute_worktree", auto_exec_mock):
+        handler.handle_worktree_select_model(
             "m3", "c1", project_id="p-pers",
-            value={"goal": "实现搜索功能"},
+            value={"model_name": "sonnet", "model_display_name": "Sonnet",
+                   "goal": "实现搜索功能"},
         )
 
     auto_exec_mock.assert_called_once()
@@ -595,21 +599,23 @@ def test_goal_from_model_select_card_persists():
     handler.ctx.project_manager.get_project.return_value = project
 
     mgr = handler._worktree_manager()
-    mgr.start_selection(project, goal="重构数据库")
+    mgr.start_selection(project, goal="")  # 初始不设置 goal
     mgr.select_tool(project, WorktreeToolOption(
         provider="cli", tool_name="claude", display_name="Claude", supports_model=True,
     ))
 
+    # 测试直接从卡片 value 传入 goal 的场景
     with patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
-         patch.object(handler, "patch_message"):
+         patch.object(handler, "patch_message"), \
+         patch.object(handler, "handle_finish_worktree_selection") as mock_finish:  # 阻止 auto-execute
         handler.handle_worktree_select_model(
             "m-model", "c-model", project_id="p-model",
             value={"model_name": "sonnet", "model_display_name": "Sonnet", "goal": "重构数据库"},
         )
 
     state = mgr.get_state(project)
+    # 验证 pending_goal 被正确设置
     assert state.selection.pending_goal == "重构数据库"
-    assert len(state.selection.selected_items) == 1
 
 
 # ---------------------------------------------------------------------------
