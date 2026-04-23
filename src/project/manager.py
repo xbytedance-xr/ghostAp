@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
-from ..card.shared import THEMES
+from ..card.styles import get_available_themes
 from ..config import get_settings
 from ..utils.errors import get_error_detail
 from .context import ProjectContext, ProjectStatus
@@ -65,7 +65,9 @@ class ProjectManager:
                     pass
 
     def _get_next_theme(self) -> tuple[str, str]:
-        theme_list = list(THEMES.values())
+        # 使用 get_available_themes() 获取非深色主题列表进行自动分配
+        available_themes = get_available_themes(include_dark=False)
+        theme_list = list(available_themes.values())
         theme = theme_list[self._color_index % len(theme_list)]
         self._color_index += 1
         return theme.color, theme.emoji
