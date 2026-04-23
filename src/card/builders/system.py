@@ -507,7 +507,7 @@ class SystemBuilder:
         }
         elements.extend(build_responsive_layout([button]))
 
-        card = CoreBuilder._wrap_card("⚠️ TTADK 暂不可用", "orange", elements)
+        card = CoreBuilder._wrap_card("⚠️ TTADK 暂不可用", "blue", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
 
     @staticmethod
