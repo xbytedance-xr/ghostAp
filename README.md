@@ -190,6 +190,8 @@ ARK_BASE_URL=https://ark-cn-beijing.bytedance.net/api/v3
 # Shell 沙箱
 SANDBOX_TIMEOUT=30                    # 命令超时（秒）
 SANDBOX_MAX_OUTPUT_LENGTH=4000        # 输出截断长度
+SANDBOX_USE_WHITELIST=false           # 启用白名单模式（true/false）
+SANDBOX_COMMAND_WHITELIST=            # 白名单命令列表（逗号分隔，如 ls,cd,pwd,git）
 
 # AI 会话
 COCO_EXECUTION_TIMEOUT=7200           # Coco 单次执行超时
@@ -300,8 +302,30 @@ uv run python -m src.main
 
 - **20+ 危险模式正则** — `rm -rf /`、`mkfs`、`dd`、`shutdown` 等
 - **命令黑名单** — 可通过 `SANDBOX_COMMAND_BLACKLIST` 配置
+- **命令白名单** — 可选更严格的白名单模式，通过 `SANDBOX_USE_WHITELIST` 和 `SANDBOX_COMMAND_WHITELIST` 配置
 - **执行超时** — 默认 30 秒
 - **输出截断** — 默认 4000 字符
+
+#### 白名单模式使用说明
+
+为了提供更高的安全性，沙箱支持白名单模式。在白名单模式下，只有明确配置的命令才能执行。
+
+**配置方式：**
+
+```env
+# 启用白名单模式
+SANDBOX_USE_WHITELIST=true
+
+# 配置允许的命令列表（逗号分隔）
+SANDBOX_COMMAND_WHITELIST=ls,cd,pwd,echo,cat,git
+```
+
+**白名单模式特点：**
+- 仅允许配置的命令执行
+- 禁止包含 `;`、`&&`、`||`、`|`、\`、`$()` 等控制字符
+- 禁止包含括号字符 `()`、`{}`
+- 按命令名精确匹配（不区分大小写）
+- 当启用白名单时，黑名单检查将被跳过
 
 ### ACP 权限控制
 

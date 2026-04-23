@@ -1,11 +1,156 @@
 import re
+import shlex
 import subprocess
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Callable, List, Dict, Any
 
 from ..config import get_settings
 from ..utils.errors import get_error_detail
 from ..utils.text import truncate_output
+
+
+class SubprocessExecutor(ABC):
+    """子进程执行抽象接口，便于测试模拟"""
+    
+    @abstractmethod
+    def run(
+        self,
+        cmd_args: List[str],
+        shell: bool = False,
+        capture_output: bool = True,
+        text: bool = True,
+        timeout: Optional[float] = None,
+        cwd: Optional[str] = None,
+        env: Optional[Dict[str, str]] = None,
+    ) -> Any:
+        pass
+
+
+class DefaultSubprocessExecutor(SubprocessExecutor):
+    """默认的子进程执行实现，直接调用 subprocess.run"""
+    
+    def run(
+        self,
+        cmd_args: List[str],
+        shell: bool = False,
+        capture_output: bool = True,
+        text: bool = True,
+        timeout: Optional[float] = None,
+        cwd: Optional[str] = None,
+        env: Optional[Dict[str, str]] = None,
+    ) -> Any:
+        return subprocess.run(
+            cmd_args,
+            shell=shell,
+            capture_output=capture_output,
+            text=text,
+            timeout=timeout,
+            cwd=cwd,
+            env=env,
+        )
+
+
+class SecurityCheckStrategy(ABC):
+    """安全检查策略抽象基类"""
+    
+    @abstractmethod
+    def check(self, command: str, settings) -> tuple[bool, Optional[str]]:
+        """
+        检查命令是否安全
+        
+        Returns:
+            (is_safe, reason): 第一个元素表示是否安全，第二个元素表示拒绝原因（如果不安全）
+        """
+        pass
+
+
+class WhitelistCheckStrategy(SecurityCheckStrategy):
+    """白名单检查策略"""
+    
+    def check(self, command: str, settings) -> tuple[bool, Optional[str]]:
+        if not settings.sandbox_use_whitelist:
+            return True, None
+        
+        whitelist = settings.command_whitelist
+        if not whitelist:
+            return False, "白名单模式已启用但白名单为空"
+        
+        # 首先检查是否包含 shell 控制字符，这些字符可能用于执行多个命令
+        shell_control_chars = [';', '&&', '||', '|', '`', '$(']
+        for char in shell_control_chars:
+            if char in command:
+                return False, f"命令包含不允许的控制字符: {char}"
+        
+        # 检查括号等特殊字符
+        if '(' in command or ')' in command or '{' in command or '}' in command:
+            return False, "命令包含不允许的括号字符"
+        
+        try:
+            # 使用 shlex.split() 安全解析命令，获取第一个 token（实际执行的命令）
+            tokens = shlex.split(command.strip())
+            if not tokens:
+                return False, "命令为空"
+            
+            cmd_name = tokens[0].lower()
+            
+            # 检查命令名是否匹配白名单
+            for allowed in whitelist:
+                allowed_lower = allowed.strip().lower()
+                if allowed_lower and (cmd_name == allowed_lower):
+                    # 白名单匹配通过，继续后续检查
+                    break
+            else:
+                return False, f"命令不在白名单中: {command}"
+        except ValueError as e:
+            # shlex.split() 在处理不匹配的引号时会抛出 ValueError
+            return False, f"命令解析失败: {str(e)}"
+        
+        return True, None
+
+
+class DangerousPatternCheckStrategy(SecurityCheckStrategy):
+    """危险模式检查策略"""
+    
+    DANGEROUS_PATTERNS = [
+        r"rm\s+(-[rf]+\s+)?/($|\s)",
+        r"rm\s+(-[rf]+\s+)?/\*",
+        r"mkfs\.",
+        r"dd\s+if=",
+        r">\s*/dev/sd[a-z]",
+        r"shutdown",
+        r"reboot",
+        r"halt\b",
+        r"poweroff",
+        r"init\s+[06]",
+        r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;",
+        r"fork\s*bomb",
+        r"chmod\s+(-[rR]+\s+)?777\s+/",
+        r"chown\s+.*\s+/($|\s)",
+    ]
+    
+    def __init__(self):
+        self._compiled_patterns = [re.compile(p, re.IGNORECASE) for p in self.DANGEROUS_PATTERNS]
+    
+    def check(self, command: str, settings) -> tuple[bool, Optional[str]]:
+        for pattern in self._compiled_patterns:
+            if pattern.search(command):
+                return False, f"命令包含危险操作模式: {pattern.pattern}"
+        return True, None
+
+
+class BlacklistCheckStrategy(SecurityCheckStrategy):
+    """黑名单检查策略"""
+    
+    def check(self, command: str, settings) -> tuple[bool, Optional[str]]:
+        # 仅在非白名单模式下强制检查黑名单
+        if settings.sandbox_use_whitelist:
+            return True, None
+        
+        for blacklisted in settings.command_blacklist:
+            if blacklisted in command:
+                return False, f"命令包含黑名单内容: {blacklisted}"
+        return True, None
 
 
 @dataclass
@@ -33,36 +178,26 @@ class ExecutionResult:
 
 
 class SandboxExecutor:
-    DANGEROUS_PATTERNS = [
-        r"rm\s+(-[rf]+\s+)?/($|\s)",
-        r"rm\s+(-[rf]+\s+)?/\*",
-        r"mkfs\.",
-        r"dd\s+if=",
-        r">\s*/dev/sd[a-z]",
-        r"shutdown",
-        r"reboot",
-        r"halt\b",
-        r"poweroff",
-        r"init\s+[06]",
-        r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;",
-        r"fork\s*bomb",
-        r"chmod\s+(-[rR]+\s+)?777\s+/",
-        r"chown\s+.*\s+/($|\s)",
-    ]
-
-    def __init__(self):
-        self.settings = get_settings()
-        self._compiled_patterns = [re.compile(p, re.IGNORECASE) for p in self.DANGEROUS_PATTERNS]
+    def __init__(self, settings=None, subprocess_executor: Optional[SubprocessExecutor] = None, security_strategies: Optional[List[SecurityCheckStrategy]] = None):
+        self.settings = settings if settings is not None else get_settings()
+        self.subprocess_executor = subprocess_executor if subprocess_executor is not None else DefaultSubprocessExecutor()
+        
+        # 如果未提供策略，则使用默认策略链
+        if security_strategies is None:
+            self.security_strategies = [
+                DangerousPatternCheckStrategy(),
+                WhitelistCheckStrategy(),
+                BlacklistCheckStrategy(),
+            ]
+        else:
+            self.security_strategies = security_strategies
 
     def is_command_safe(self, command: str) -> tuple[bool, Optional[str]]:
-        for pattern in self._compiled_patterns:
-            if pattern.search(command):
-                return False, f"命令包含危险操作模式: {pattern.pattern}"
-
-        for blacklisted in self.settings.command_blacklist:
-            if blacklisted in command:
-                return False, f"命令包含黑名单内容: {blacklisted}"
-
+        # 依次执行所有安全检查策略
+        for strategy in self.security_strategies:
+            is_safe, reason = strategy.check(command, self.settings)
+            if not is_safe:
+                return False, reason
         return True, None
 
     def execute(self, command: str, cwd: Optional[str] = None, interactive: bool = True) -> ExecutionResult:
@@ -105,7 +240,7 @@ class SandboxExecutor:
                 # even in non-interactive mode. This fixes "command not found" for user-installed tools.
                 cmd_args = [shell_path, "-l", "-c", command]
 
-            process = subprocess.run(
+            process = self.subprocess_executor.run(
                 cmd_args,
                 shell=False,
                 capture_output=True,

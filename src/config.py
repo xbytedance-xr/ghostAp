@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     sandbox_command_blacklist: str = (
         "rm -rf /,rm -rf /*,mkfs,dd if=,shutdown,reboot,halt,poweroff,init 0,init 6,:(){ :|:& };:"
     )
+    sandbox_use_whitelist: bool = False
+    sandbox_command_whitelist: str = ""
 
     coco_execution_timeout: int = 7200
     coco_session_timeout: int = 86400
@@ -413,6 +415,10 @@ class Settings(BaseSettings):
     @property
     def command_blacklist(self) -> list[str]:
         return [cmd.strip() for cmd in self.sandbox_command_blacklist.split(",") if cmd.strip()]
+    
+    @property
+    def command_whitelist(self) -> list[str]:
+        return [cmd.strip() for cmd in self.sandbox_command_whitelist.split(",") if cmd.strip()]
 
     def validate_feishu_config(self) -> bool:
         return bool(self.app_id and self.app_secret)
