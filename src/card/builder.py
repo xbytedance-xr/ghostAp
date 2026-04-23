@@ -376,12 +376,12 @@ class CardBuilder:
         )
 
     @staticmethod
-    def build_acp_tool_select_card(tools: list, project_id: Optional[str] = None) -> tuple[str, str]:
-        return SystemBuilder.build_acp_tool_select_card(tools, project_id)
+    def build_acp_tool_select_card(tools: list, project_id: Optional[str] = None, current_tool: Optional[str] = None) -> tuple[str, str]:
+        return SystemBuilder.build_acp_tool_select_card(tools, current_tool=current_tool, project_id=project_id)
 
     @staticmethod
-    def build_acp_model_select_card(models: list, tool_name: str, project_id: Optional[str] = None) -> tuple[str, str]:
-        return SystemBuilder.build_acp_model_select_card(models, tool_name, project_id)
+    def build_acp_model_select_card(models: list, tool_name: str, project_id: Optional[str] = None, current_model: Optional[str] = None) -> tuple[str, str]:
+        return SystemBuilder.build_acp_model_select_card(models, tool_name, current_model=current_model, project_id=project_id)
 
     @staticmethod
     def build_command_menu_card(project: Optional[ProjectContext] = None) -> tuple[str, str]:

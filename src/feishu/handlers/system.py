@@ -407,11 +407,12 @@ class SystemHandler(BaseHandler):
 
     def handle_acp_command(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         project_id = project.project_id if project else None
+        current_tool = project.acp_tool_name if project else None
         tools = list_acp_tools()
         if not tools:
             self.reply_error(message_id, UI_TEXT["system_acp_no_available_tools"])
             return
-        msg_type, card_content = CardBuilder.build_acp_tool_select_card(tools, project_id)
+        msg_type, card_content = CardBuilder.build_acp_tool_select_card(tools, project_id, current_tool=current_tool)
         self.reply_message(message_id, card_content, msg_type=msg_type)
 
     def _fetch_acp_models(
@@ -446,7 +447,7 @@ class SystemHandler(BaseHandler):
             self.reply_error(message_id, UI_TEXT["system_acp_get_models_failed"].format(tool=tool))
             return
 
-        msg_type, card_content = CardBuilder.build_acp_model_select_card(models, tool, project_id)
+        msg_type, card_content = CardBuilder.build_acp_model_select_card(models, tool, project_id, current_model=current_model)
         self.reply_message(message_id, card_content, msg_type=msg_type)
 
     def handle_refresh_acp_models(self, message_id: str, chat_id: str, tool_name: str, project_id: Optional[str] = None):
@@ -536,7 +537,7 @@ class SystemHandler(BaseHandler):
             if not models:
                 self.reply_error(message_id, UI_TEXT["system_acp_get_models_failed"].format(tool_name=tool_name))
                 return
-            msg_type, card_content = CardBuilder.build_acp_model_select_card(models, tool_name, project_id)
+            msg_type, card_content = CardBuilder.build_acp_model_select_card(models, tool_name, project_id, current_model=current_model)
             self.reply_message(message_id, card_content, msg_type=msg_type)
             return
 

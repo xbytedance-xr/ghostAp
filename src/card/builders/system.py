@@ -535,23 +535,23 @@ class SystemBuilder:
 
     @staticmethod
     def build_acp_tool_select_card(
-        available_providers: list,
-        current_tool: Optional[str] = None,
+        tools: list,
         project_id: Optional[str] = None,
+        current_tool: Optional[str] = None,
     ) -> tuple[str, str]:
         """Build an interactive card for ACP tool selection.
 
-        ``available_providers`` 可以是：
+        ``tools`` 可以是：
         - ``ToolOptionView`` 列表（首选，卡片层通用视图模型）；
         - 旧版的字符串列表或带 ``name`` 属性的对象列表（向后兼容）。
         """
 
         elements = [{"tag": "markdown", "content": UI_TEXT["system_acp_select_tool_prompt"]}]
 
-        tools: list[ToolOptionView] = []
-        for item in available_providers or []:
+        tool_options: list[ToolOptionView] = []
+        for item in tools or []:
             if isinstance(item, ToolOptionView):
-                tools.append(item)
+                tool_options.append(item)
                 continue
 
             name = getattr(item, "name", None) or str(item)
@@ -566,7 +566,7 @@ class SystemBuilder:
             is_default = bool(getattr(item, "is_default", False))
             disabled = bool(getattr(item, "disabled", False))
 
-            tools.append(
+            tool_options.append(
                 ToolOptionView(
                     name=name,
                     description=str(desc or ""),
@@ -577,7 +577,7 @@ class SystemBuilder:
             )
 
         buttons = []
-        for t in tools:
+        for t in tool_options:
             btn_text = f"{t.emoji} {t.name}"
             if t.description:
                 btn_text += f" ({t.description})"
@@ -605,8 +605,8 @@ class SystemBuilder:
     def build_acp_model_select_card(
         models: list,
         tool_name: str,
-        current_model: Optional[str] = None,
         project_id: Optional[str] = None,
+        current_model: Optional[str] = None,
     ) -> tuple[str, str]:
         """Build an interactive card for ACP model selection.
 
