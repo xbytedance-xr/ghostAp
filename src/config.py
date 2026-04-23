@@ -1,6 +1,6 @@
 import shlex
 import threading
-from typing import Optional
+from typing import Optional, Callable
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -443,16 +443,23 @@ def get_settings() -> Settings:
     return _settings
 
 
-def set_settings(settings: Settings) -> None:
+def set_settings(
+    settings: Settings, 
+    *, 
+    is_test_env_check: Optional[Callable[[], bool]] = None
+) -> None:
     """Set the global settings singleton. For dependency injection/testing.
     
     Args:
         settings: The Settings instance to use globally
+        is_test_env_check: Optional custom function to check if we're in a test environment.
+                           If not provided, uses the default `is_test_environment()` function.
     
     Raises:
         RuntimeError: If called in a production (non-test) environment
     """
-    if not is_test_environment():
+    check_fn = is_test_env_check if is_test_env_check is not None else is_test_environment
+    if not check_fn():
         raise RuntimeError(
             "set_settings() is only allowed in test environments. "
             "Modifying global singletons in production can cause race conditions."
@@ -462,13 +469,21 @@ def set_settings(settings: Settings) -> None:
         _settings = settings
 
 
-def _reset_settings_for_testing() -> None:
+def _reset_settings_for_testing(
+    *, 
+    is_test_env_check: Optional[Callable[[], bool]] = None
+) -> None:
     """Reset the global settings singleton. **Test-only.**
+    
+    Args:
+        is_test_env_check: Optional custom function to check if we're in a test environment.
+                           If not provided, uses the default `is_test_environment()` function.
     
     Raises:
         RuntimeError: If called in a production (non-test) environment
     """
-    if not is_test_environment():
+    check_fn = is_test_env_check if is_test_env_check is not None else is_test_environment
+    if not check_fn():
         raise RuntimeError(
             "_reset_settings_for_testing() is only allowed in test environments. "
             "Modifying global singletons in production can cause race conditions."

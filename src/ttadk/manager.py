@@ -1692,16 +1692,23 @@ _ttadk_update_attempted: bool = False
 _ttadk_update_lock = threading.Lock()
 
 
-def set_ttadk_manager(manager: TTADKManager) -> None:
+def set_ttadk_manager(
+    manager: TTADKManager, 
+    *, 
+    is_test_env_check: Optional[Callable[[], bool]] = None
+) -> None:
     """Set the global TTADKManager singleton. For dependency injection/testing.
     
     Args:
         manager: The TTADKManager instance to use globally
+        is_test_env_check: Optional custom function to check if we're in a test environment.
+                           If not provided, uses the default `is_test_environment()` function.
     
     Raises:
         RuntimeError: If called in a production (non-test) environment
     """
-    if not is_test_environment():
+    check_fn = is_test_env_check if is_test_env_check is not None else is_test_environment
+    if not check_fn():
         raise RuntimeError(
             "set_ttadk_manager() is only allowed in test environments. "
             "Modifying global singletons in production can cause race conditions."
@@ -1841,13 +1848,21 @@ def get_ttadk_manager(default_tool: Optional[str] = None, default_model: Optiona
     return _get_or_create_singleton(default_tool, default_model)
 
 
-def _reset_ttadk_manager_for_testing() -> None:
+def _reset_ttadk_manager_for_testing(
+    *, 
+    is_test_env_check: Optional[Callable[[], bool]] = None
+) -> None:
     """Reset the global TTADKManager singleton and update flag. **Test-only.**
+    
+    Args:
+        is_test_env_check: Optional custom function to check if we're in a test environment.
+                           If not provided, uses the default `is_test_environment()` function.
     
     Raises:
         RuntimeError: If called in a production (non-test) environment
     """
-    if not is_test_environment():
+    check_fn = is_test_env_check if is_test_env_check is not None else is_test_environment
+    if not check_fn():
         raise RuntimeError(
             "_reset_ttadk_manager_for_testing() is only allowed in test environments. "
             "Modifying global singletons in production can cause race conditions."
