@@ -113,6 +113,8 @@ Feishu WebSocket message
 - Tests and temp code go in `tests/`, keep root directory clean
 - When solving problems, consider at least two approaches and pick the best one
 - **编程模式兼容**: 所有编程模式（Coco/Claude/Aiden/Codex/Gemini/TTADK）相关的后续功能，默认必须实现全模式兼容，除非用户明确指定不需要兼容
+- **提交信息规范**: 提交信息必须准确描述所有修改的文件和变更范围，详细规范请参考 [docs/commit-message-guidelines.md](docs/commit-message-guidelines.md)
+- **Git Hooks**: 项目已配置 pre-commit 和 commit-msg hooks 来帮助确保提交信息质量，这些 hooks 会在提交时自动运行并提供提示
 
 ## Workflow Rules
 
