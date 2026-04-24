@@ -247,6 +247,7 @@ class SpecCycle:
     discovery_path: Optional[str] = None
     metrics_path: Optional[str] = None
     status: str = "running"  # running/completed/failed
+    error_message: Optional[str] = None  # 异常失败时的错误描述
     started_at: float = field(default_factory=time.time)
     completed_at: Optional[float] = None
     duration: Optional[float] = None
@@ -285,6 +286,7 @@ class SpecCycle:
             "discovery_path": self.discovery_path,
             "metrics_path": self.metrics_path,
             "status": self.status,
+            "error_message": self.error_message,
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "duration": self.duration,
@@ -320,6 +322,7 @@ class SpecCycle:
             discovery_path=data.get("discovery_path"),
             metrics_path=data.get("metrics_path"),
             status=data.get("status", "running"),
+            error_message=data.get("error_message"),
             started_at=data.get("started_at", time.time()),
             completed_at=data.get("completed_at"),
             duration=data.get("duration"),

@@ -296,8 +296,8 @@ class Settings(BaseSettings):
     spec_discovery_max_pending: int = 5  # backlog 达上限时跳过 discovery
     spec_discovery_cooldown_cycles: int = 3  # 无进展时每 N 轮才触发一次
     # Termination 增强
-    spec_backlog_stuck_window: int = 3  # backlog_stuck 检测窗口
-    spec_success_ignore_backlog: bool = True  # success 判定时忽略 backlog
+    spec_backlog_stuck_window: int = 0  # backlog_stuck 检测窗口 (0=禁用，要求全部消化)
+    spec_success_ignore_backlog: bool = False  # success 判定时要求 backlog 清零
     # Persistence cadence
     spec_persist_every_phase: bool = True
     spec_allow_resume_from_disk: bool = True
@@ -315,6 +315,8 @@ class Settings(BaseSettings):
     # History / retention
     spec_history_log_filename: str = "history.jsonl"
     spec_max_retries: int = 3
+    # Max consecutive cycle failures before aborting (prevents infinite empty loops).
+    spec_max_consecutive_failures: int = 3
     spec_model_switch_enabled: bool = True
     spec_generated_specs_retention: int = 1000
     # Override hint: when set (non-empty), mask BUILD phase errors to "Internal error"

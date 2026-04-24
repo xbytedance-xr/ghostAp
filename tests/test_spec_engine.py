@@ -3874,3 +3874,322 @@ def test_resume_restores_circuit_state_from_disk(mock_settings, mock_create, tmp
     assert engine._review_circuit.review_failure_consecutive == 2
     assert engine._review_circuit.review_circuit_open_until_cycle == 8
     assert engine._review_circuit.consecutive_skips == 4
+
+
+class TestSpecEngineCycleResilience:
+    """Tests for cycle-level exception digestion: exceptions inside a cycle
+    should NOT abort the engine but instead mark the cycle failed and continue."""
+
+    _SPEC_JSON = '```json\n{"goals":["G"],"functional_spec":["F"],"non_functional_requirements":[],"acceptance_criteria":["实现功能"],"out_of_scope":[],"risks":[],"clarification_questions":[],"decisions":[],"version":"1.0"}\n```'
+    _PLAN_JSON = '```json\n{"architecture":"A","tech_stack":[],"steps":["S1"],"file_changes":[],"test_plan":[],"risks":[],"version":"1.0"}\n```'
+
+    def _mock_settings(self):
+        s = MagicMock()
+        s.spec_max_cycles = 2
+        s.spec_max_cycles_limit = 5000
+        s.spec_convergence_window = 1
+        s.spec_execution_timeout = 300
+        s.spec_review_enabled = False
+        s.spec_infinite_mode = False
+        s.spec_disable_convergence = False
+        s.spec_disable_early_stop = False
+        s.spec_min_cycles = 1
+        s.spec_max_retries = 1
+        s.spec_max_consecutive_failures = 3
+        s.spec_cycle_tasks_max = 50
+        s.spec_cycle_output_max_chars = 4000
+        s.spec_state_filename = ".spec_engine_state.json"
+        s.spec_artifacts_dirname = ".spec_engine"
+        s.spec_persist_phase_artifacts = False
+        s.spec_persist_every_phase = False
+        s.spec_discovery_enabled = False
+        s.spec_discovery_max_questions = 3
+        s.spec_discovery_force_nonempty = True
+        s.spec_generated_specs_per_cycle = 1
+        s.spec_discovery_gate_on_satisfied = True
+        s.spec_discovery_max_pending = 5
+        s.spec_discovery_cooldown_cycles = 3
+        s.spec_backlog_stuck_window = 0
+        s.spec_success_ignore_backlog = True
+        s.spec_allow_resume_from_disk = False
+        s.ark_api_key = ""
+        s.ark_model = ""
+        s.spec_history_log_filename = "history.jsonl"
+        s.spec_phase_output_persist_max_chars = 20000
+        s.spec_cycle_artifact_retention = 50
+        s.spec_generated_specs_retention = 1000
+        s.spec_review_failure_circuit_enabled = False
+        s.spec_review_failure_max_consecutive = 3
+        s.spec_review_failure_cooldown_cycles = 3
+        s.spec_state_cycles_tail = 50
+        s.spec_state_work_items_tail = 200
+        s.spec_state_metrics_tail = 200
+        s.ark_base_url = "https://example.com"
+        s.spec_rebuild_session_between_cycles = False
+        s.spec_review_parallel_enabled = False
+        s.spec_model_switch_enabled = False
+        s.spec_failed_task_id_override = ""
+        s.spec_review_timeout = 60
+        s.spec_review_max_parallel = 2
+        s.spec_review_failure_max_cooldown_cycles = 12
+        s.spec_review_min_timeout = 30
+        s.spec_review_hard_floor = 15
+        s.review_circuit_window_size = 10
+        s.review_circuit_success_rate_threshold = 0.3
+        s.review_circuit_lint_fallback_enabled = False
+        s.review_circuit_lint_timeout = 10
+        return s
+
+    def _make_mock_session(self, send_fn):
+        session = MagicMock()
+        session.send_prompt = send_fn
+        session.send_prompt_with_retry = send_fn
+        return session
+
+    def _apply_engine_mocks(self, engine):
+        """Prevent real session creation / model switching in tests."""
+        engine._recreate_session_best_effort = lambda: None
+        engine._try_switch_model = lambda callbacks: False
+
+    @patch("src.spec_engine.engine.create_engine_session")
+    @patch("src.engine_base.get_settings")
+    def test_cycle_exception_digested_continues_next_cycle(self, mock_settings, mock_create, tmp_path):
+        """Cycle 1 raises RuntimeError in SPEC phase → cycle marked failed → cycle 2 succeeds → COMPLETED."""
+        s = self._mock_settings()
+        s.spec_max_cycles = 2
+        s.spec_success_ignore_backlog = True
+        mock_settings.return_value = s
+
+        call_count = [0]
+        review_text = "[ARCHITECT]\nPASS\n[PRODUCT]\nPASS\n[USER]\nPASS\n[TESTER]\nPASS\n[DESIGNER]\nPASS\n"
+        criteria_text = "CRITERIA_1: PASS"
+
+        def fake_send(prompt, on_event=None, timeout=None, **kw):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("模型切换失败")
+            # Cycle 2: spec, plan, task, build, criteria
+            texts = [self._SPEC_JSON, self._PLAN_JSON, "1. T1 (依赖: 无)", "build done " * 10, criteria_text]
+            idx = call_count[0] - 2
+            text = texts[idx] if idx < len(texts) else "ok"
+            if on_event and text:
+                on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=text))
+            return MagicMock(stop_reason="end_turn")
+
+        session = self._make_mock_session(fake_send)
+        mock_create.return_value = session
+
+        engine = SpecEngine(chat_id="c1", root_path=str(tmp_path))
+        self._apply_engine_mocks(engine)
+        project = engine.execute("- 实现功能")
+
+        assert project.status == SpecProjectStatus.COMPLETED
+        assert len(project.cycles) == 2
+        assert project.cycles[0].status == "failed"
+        assert project.cycles[0].error_message is not None
+        assert "模型切换失败" in project.cycles[0].error_message
+        assert project.cycles[1].status == "completed"
+
+    @patch("src.spec_engine.engine.create_engine_session")
+    @patch("src.engine_base.get_settings")
+    def test_consecutive_failures_aborts_engine(self, mock_settings, mock_create, tmp_path):
+        """All cycles fail → consecutive_failures termination → ABORTED."""
+        s = self._mock_settings()
+        s.spec_max_cycles = 10
+        s.spec_max_consecutive_failures = 2
+        mock_settings.return_value = s
+
+        def always_fail(prompt, on_event=None, timeout=None, **kw):
+            raise RuntimeError("always fail")
+
+        session = self._make_mock_session(always_fail)
+        mock_create.return_value = session
+
+        engine = SpecEngine(chat_id="c1", root_path=str(tmp_path))
+        self._apply_engine_mocks(engine)
+        project = engine.execute("- test req")
+
+        assert project.status == SpecProjectStatus.ABORTED
+        assert "连续异常终止" in (project.error or "")
+        assert len(project.cycles) == 2
+        assert all(c.status == "failed" for c in project.cycles)
+
+    @patch("src.spec_engine.engine.create_engine_session")
+    @patch("src.engine_base.get_settings")
+    def test_successful_cycle_resets_failure_counter(self, mock_settings, mock_create, tmp_path):
+        """Fail → success → fail → should NOT trigger consecutive_failures (max=2)."""
+        s = self._mock_settings()
+        s.spec_max_cycles = 3
+        s.spec_max_consecutive_failures = 2
+        s.spec_success_ignore_backlog = True
+        mock_settings.return_value = s
+
+        call_count = [0]
+        criteria_text = "CRITERIA_1: PASS"
+
+        def fake_send(prompt, on_event=None, timeout=None, **kw):
+            call_count[0] += 1
+            # Cycle 1 (calls 1): fail at SPEC
+            if call_count[0] == 1:
+                raise RuntimeError("cycle 1 fail")
+            # Cycle 2 (calls 2-6): succeed — spec, plan, task, build, criteria
+            if 2 <= call_count[0] <= 6:
+                texts = [self._SPEC_JSON, self._PLAN_JSON, "1. T1 (依赖: 无)", "build done " * 10, criteria_text]
+                idx = call_count[0] - 2
+                text = texts[idx] if idx < len(texts) else "ok"
+                if on_event and text:
+                    on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=text))
+                return MagicMock(stop_reason="end_turn")
+            # Cycle 3 would fail but should not get here — cycle 2 should succeed and terminate
+            raise RuntimeError("cycle 3 fail")
+
+        session = self._make_mock_session(fake_send)
+        mock_create.return_value = session
+
+        engine = SpecEngine(chat_id="c1", root_path=str(tmp_path))
+        self._apply_engine_mocks(engine)
+        project = engine.execute("- 实现功能")
+
+        # Cycle 2 should succeed and terminate engine
+        assert project.status == SpecProjectStatus.COMPLETED
+        assert project.cycles[0].status == "failed"
+        assert project.cycles[1].status == "completed"
+
+    @patch("src.spec_engine.engine.create_engine_session")
+    @patch("src.engine_base.get_settings")
+    def test_timeout_error_digested_in_cycle(self, mock_settings, mock_create, tmp_path):
+        """TimeoutError should be digested inside the cycle, not bubble to execute()."""
+        s = self._mock_settings()
+        s.spec_max_cycles = 2
+        s.spec_success_ignore_backlog = True
+        mock_settings.return_value = s
+
+        call_count = [0]
+        criteria_text = "CRITERIA_1: PASS"
+
+        def fake_send(prompt, on_event=None, timeout=None, **kw):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise TimeoutError("phase timeout")
+            texts = [self._SPEC_JSON, self._PLAN_JSON, "1. T1 (依赖: 无)", "build done " * 10, criteria_text]
+            idx = call_count[0] - 2
+            text = texts[idx] if idx < len(texts) else "ok"
+            if on_event and text:
+                on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=text))
+            return MagicMock(stop_reason="end_turn")
+
+        session = self._make_mock_session(fake_send)
+        mock_create.return_value = session
+
+        engine = SpecEngine(chat_id="c1", root_path=str(tmp_path))
+        self._apply_engine_mocks(engine)
+        project = engine.execute("- 实现功能")
+
+        assert project.status == SpecProjectStatus.COMPLETED
+        assert project.cycles[0].status == "failed"
+        assert project.cycles[0].error_message is not None
+        assert project.cycles[1].status == "completed"
+
+    @patch("src.spec_engine.engine.create_engine_session")
+    @patch("src.engine_base.get_settings")
+    def test_session_recreated_after_cycle_exception(self, mock_settings, mock_create, tmp_path):
+        """After cycle exception, _recreate_session_best_effort should be called."""
+        s = self._mock_settings()
+        s.spec_max_cycles = 2
+        s.spec_max_consecutive_failures = 3
+        s.spec_success_ignore_backlog = True
+        mock_settings.return_value = s
+
+        call_count = [0]
+        criteria_text = "CRITERIA_1: PASS"
+
+        def fake_send(prompt, on_event=None, timeout=None, **kw):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("fail")
+            texts = [self._SPEC_JSON, self._PLAN_JSON, "1. T1 (依赖: 无)", "build done " * 10, criteria_text]
+            idx = call_count[0] - 2
+            text = texts[idx] if idx < len(texts) else "ok"
+            if on_event and text:
+                on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=text))
+            return MagicMock(stop_reason="end_turn")
+
+        session = self._make_mock_session(fake_send)
+        mock_create.return_value = session
+
+        engine = SpecEngine(chat_id="c1", root_path=str(tmp_path))
+        engine._try_switch_model = lambda callbacks: False
+
+        recreate_calls = []
+
+        def tracked_recreate():
+            recreate_calls.append(1)
+
+        engine._recreate_session_best_effort = tracked_recreate
+
+        project = engine.execute("- 实现功能")
+
+        # At least one recreate call after cycle 1 failure
+        assert len(recreate_calls) >= 1
+
+    @patch("src.spec_engine.engine.create_engine_session")
+    @patch("src.engine_base.get_settings")
+    def test_stopping_during_exception_still_pauses(self, mock_settings, mock_create, tmp_path):
+        """If engine is STOPPING when exception occurs, should result in PAUSED, not digest."""
+        s = self._mock_settings()
+        s.spec_max_cycles = 5
+        s.spec_max_consecutive_failures = 10
+        mock_settings.return_value = s
+
+        def fail_then_stop(prompt, on_event=None, timeout=None, **kw):
+            raise RuntimeError("session cancelled")
+
+        session = self._make_mock_session(fail_then_stop)
+        mock_create.return_value = session
+
+        engine = SpecEngine(chat_id="c1", root_path=str(tmp_path))
+        self._apply_engine_mocks(engine)
+
+        # Set engine to STOPPING before the exception is caught
+        original_run_phase = engine._run_phase
+
+        def patched_run_phase(*args, **kwargs):
+            engine._run_state = EngineRunState.STOPPING
+            return original_run_phase(*args, **kwargs)
+
+        engine._run_phase = patched_run_phase
+
+        project = engine.execute("- test")
+
+        assert project.status == SpecProjectStatus.PAUSED
+
+    @patch("src.spec_engine.engine.create_engine_session")
+    @patch("src.engine_base.get_settings")
+    def test_error_message_field_persisted_on_failed_cycle(self, mock_settings, mock_create, tmp_path):
+        """SpecCycle.error_message should be set and serializable."""
+        s = self._mock_settings()
+        s.spec_max_cycles = 1
+        s.spec_max_consecutive_failures = 5
+        mock_settings.return_value = s
+
+        def fail_send(prompt, on_event=None, timeout=None, **kw):
+            raise RuntimeError("test error detail xyz")
+
+        session = self._make_mock_session(fail_send)
+        mock_create.return_value = session
+
+        engine = SpecEngine(chat_id="c1", root_path=str(tmp_path))
+        self._apply_engine_mocks(engine)
+        project = engine.execute("- test req")
+
+        assert len(project.cycles) == 1
+        cycle = project.cycles[0]
+        assert cycle.status == "failed"
+        assert cycle.error_message is not None
+        assert "test error detail xyz" in cycle.error_message
+
+        # Verify serialization roundtrip
+        d = cycle.to_dict()
+        assert "error_message" in d
+        restored = SpecCycle.from_dict(d)
+        assert restored.error_message == cycle.error_message
