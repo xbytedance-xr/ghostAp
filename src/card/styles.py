@@ -208,6 +208,7 @@ UI_TEXT = {
     "system_switching_to": "🔄 正在切换到 {tool} / {model}...",
     "system_already_in_mode": "🧠 当前已经在智能模式中",
     "system_not_set": "未设置",
+    "system_default": "默认",
     "system_no_active_project": "⚠️ 当前没有活跃项目，请先创建或切换到一个项目。\n\n发送 `/projects` 查看项目看板",
     "system_auto": "自动",
     "system_on": "开启",
@@ -262,17 +263,18 @@ UI_TEXT = {
     "system_acp_specify_model_prompt": "请指定模型名称，例如：{example}",
     "system_model_usage_example": "\n• `/model list` — 查看可用模型\n• `/model <name>` — 切换到指定模型",
     "system_worktree_no_selection_error": "请至少选择一个工具-模型组合",
-    "system_worktree_created_prompt": "Worktree 已创建，请发送任务需求开始并行执行。",
+    "system_worktree_created_prompt": "Worktree 已创建，请发送任务目标开始并行执行。",
     "system_worktree_create_failed": "Worktree 创建失败: {error}",
     "system_worktree_cleanup_success": "✅ 所有 Worktree 已清理完成",
-    "system_worktree_goal_required": "⚠️ 请先在输入框中填写任务需求",
+    "system_worktree_cleanup_warnings": "⚠️ 清理完成，但以下 Worktree 存在未处理的变更：\n{details}\n\n请手动检查后再次清理。",
+    "system_worktree_goal_required": "⚠️ 请先在输入框中填写任务目标",
     "system_worktree_unit_running_error": "⚠️ 存在正在执行的单元，请等待完成后再重试",
     "system_worktree_retry_starting": "🔄 正在重试失败单元...",
     "system_worktree_retry_completed": "重试完成",
     "system_worktree_retry_goal": "重试执行",
     "system_worktree_confirm_title": "🌳 Worktree — 确认组合",
     "system_worktree_confirm_header": "**即将启动以下工具-模型组合：**\n",
-    "system_worktree_confirm_banner": "请在下方输入您的任务需求，点击按钮一键开启执行",
+    "system_worktree_confirm_banner": "请在下方输入您的任务目标，点击按钮一键开启执行",
     "system_worktree_btn_confirm": "确认并开始执行",
     "system_worktree_btn_reselect": "重新选择",
     "system_worktree_progress_title": "🌳 Worktree — {status}",
@@ -288,7 +290,7 @@ UI_TEXT = {
     "system_worktree_merge_failed": "❌ 合并到 {base} 失败: {error}",
     "system_worktree_cleanup_title": "🌳 Worktree — 清理完成",
     "system_worktree_select_tool_error": "未选择工具",
-    "system_worktree_project_not_found": "找不到关联的项目",
+    "system_worktree_project_not_found": "找不到关联的项目，请先通过 /projects 关联一个项目",
     "system_worktree_no_available_tools": "当前环境没有可用的编程工具",
     "system_worktree_select_tool_prompt": "请选择要使用的工具：",
     "system_worktree_select_model_prompt": "为 {tool} 选择模型：",
@@ -387,12 +389,18 @@ UI_TEXT = {
         "`/ttadk_refresh` · 强制刷新模型列表\n"
         "`/ttadk_info` · 查看当前工具和模型"
     ),
+    "system_help_section_worktree": "🌳 Worktree · 多工具并行执行",
+    "system_help_section_worktree_body": (
+        "`/wt <目标>` · 启动 Worktree 并行执行\n"
+        "`/wt` · 进入工具选择流程\n"
+        "支持多工具组合并行：选择工具 → 设定目标 → 自动分配 → 并行执行 → 合并结果"
+    ),
     "system_help_tips": (
         "**💡 使用提示**\n"
         "1. 手机端优先点按上方 **⚡ 快捷入口**，无需输入指令\n"
         "2. 发送 `/menu` 打开完整快捷菜单；`/tools` 查看可用工具\n"
         "3. 智能模式下可直接输入 Shell 命令或自然语言\n"
-        "4. 复杂任务用 `/deep`，迭代任务用 `/loop`，规范交付用 `/spec`"
+        "4. 复杂任务用 `/deep`，迭代任务用 `/loop`，规范交付用 `/spec`，多工具并行用 `/wt`"
     ),
     "system_tools_list_title": "🛠️ 工具选择",
     "system_tools_list_header": "**🔧 可用工具列表**",
@@ -411,8 +419,8 @@ UI_TEXT = {
     "worktree_skip_model_btn": "跳过（使用默认模型）",
     "worktree_select_model_title": "🌳 Worktree — 选择模型",
     "worktree_confirm_header": "**即将启动以下工具-模型组合：**\n",
-    "worktree_confirm_banner": "请在下方输入您的任务需求，点击按钮一键开启执行",
-    "worktree_input_placeholder": "任务需求",
+    "worktree_confirm_banner": "请在下方输入您的任务目标，点击按钮一键开启执行",
+    "worktree_input_placeholder": "输入任务目标，点击确认后开始执行",
     "worktree_btn_confirm": "确认并开始执行",
     "worktree_btn_reselect": "重新选择",
     "worktree_confirm_title": "🌳 Worktree — 确认组合",
@@ -596,11 +604,12 @@ UI_TEXT = {
     "mode_session_fail_msg": "{name} 会话启动失败，请重新发送 /{cmd} 开始",
     "ttadk_extra_hint": "\n\n可点击「切换TTADK工具」重新选择工具链",
     # ── Worktree Engine Card Prompts ──
+    "worktree_ready_intercept_hint": "💡 提示：直接发送消息即可作为任务目标开始执行",
     "worktree_start_silent": "🚀 已开始执行: {goal}\n完成后将自动通知，请稍候…",
     "worktree_executing": "⏳ 正在并行执行: {goal}",
     "worktree_still_running": "⏳ 仍在执行中 ({elapsed}min)，请耐心等待…",
     "worktree_executing_live": "🔄 执行中: {goal}",
-    "worktree_completed_no_change": "执行完成（无可合并的变更）",
+    "worktree_completed_no_change": "执行完成（无可合并的变更）\n\n可能原因：目标描述不够具体，或工具未产生文件修改。建议检查目标后重试。",
     "worktree_auto_executing_banner": "🚀 正在启动并执行任务...",
     # ── Deep Engine Card Prompts ──
     "deep_error_no_detail": "发生错误 (无详细信息)",
@@ -653,4 +662,17 @@ THRESHOLDS = {
     "STREAMING_VISIBLE_CHARS": 25000,
     # Streaming card pagination step
     "PAGINATION_STEP": 5000,
+}
+
+# ──────────────────────────────────────────────────────────────
+# Worktree display constants
+# ──────────────────────────────────────────────────────────────
+
+STATUS_DISPLAY_MAP: dict[str, str] = {
+    "completed": "已完成",
+    "failed": "失败",
+    "running": "执行中",
+    "planned": "已规划",
+    "ready": "就绪",
+    "pending": "等待中",
 }

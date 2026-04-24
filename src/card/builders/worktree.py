@@ -6,7 +6,7 @@ from typing import Optional
 
 from ..styles import UI_TEXT
 from .core import CoreBuilder
-from ..models import WorktreeBannerContext
+from ..models import BannerKind, WorktreeBannerContext
 
 _WHITESPACE_RE = re.compile(r'\s+')
 
@@ -106,6 +106,29 @@ class WorktreeBuilder:
         return "\n".join(banner_lines)
 
     @staticmethod
+    def _resolve_banner_text(
+        message: str,
+        *,
+        goal: str = "",
+        selected_items: Optional[list[dict]] = None,
+        banner_ctx: Optional[WorktreeBannerContext] = None,
+    ) -> str:
+        """Resolve banner text, enriching auto-execute banners with goal/tool info."""
+        if message != UI_TEXT["worktree_auto_executing_banner"]:
+            return message
+        ctx = banner_ctx or WorktreeBannerContext()
+        ctx = WorktreeBannerContext(
+            message=message,
+            goal=goal or ctx.goal,
+            tool_name=ctx.tool_name,
+            model_name=ctx.model_name,
+            is_auto_execute=ctx.is_auto_execute,
+            selected_items=selected_items or ctx.selected_items,
+            banner_kind=ctx.banner_kind or BannerKind.AUTO_EXECUTE,
+        )
+        return WorktreeBuilder._build_auto_execute_banner_text(ctx)
+
+    @staticmethod
     def build_worktree_tool_select_card(
         tools: list[dict],
         selected_items: list[dict],
@@ -128,20 +151,9 @@ class WorktreeBuilder:
 
         elements: list[dict] = []
         if message:
-            banner_text = message
-            if message == UI_TEXT["worktree_auto_executing_banner"]:
-                # 统一从 WorktreeBannerContext 构造 Banner，上层仅负责汇总上下文
-                ctx = banner_ctx or WorktreeBannerContext()
-                ctx = WorktreeBannerContext(
-                    message=message,
-                    goal=goal or ctx.goal,
-                    tool_name=ctx.tool_name,
-                    model_name=ctx.model_name,
-                    is_auto_execute=ctx.is_auto_execute,
-                    selected_items=selected_items or ctx.selected_items,
-                    banner_kind=ctx.banner_kind or "auto_execute",
-                )
-                banner_text = WorktreeBuilder._build_auto_execute_banner_text(ctx)
+            banner_text = WorktreeBuilder._resolve_banner_text(
+                message, goal=goal, selected_items=selected_items, banner_ctx=banner_ctx,
+            )
             elements.append(CoreBuilder._build_banner_element(banner_text, type="success"))
 
         # Goal area: show read-only display if goal is set, otherwise input box
@@ -230,19 +242,9 @@ class WorktreeBuilder:
         """
         elements: list[dict] = []
         if message:
-            banner_text = message
-            if message == UI_TEXT["worktree_auto_executing_banner"]:
-                ctx = banner_ctx or WorktreeBannerContext()
-                ctx = WorktreeBannerContext(
-                    message=message,
-                    goal=goal or ctx.goal,
-                    tool_name=ctx.tool_name,
-                    model_name=ctx.model_name,
-                    is_auto_execute=ctx.is_auto_execute,
-                    selected_items=selected_items or ctx.selected_items,
-                    banner_kind=ctx.banner_kind or "auto_execute",
-                )
-                banner_text = WorktreeBuilder._build_auto_execute_banner_text(ctx)
+            banner_text = WorktreeBuilder._resolve_banner_text(
+                message, goal=goal, selected_items=selected_items, banner_ctx=banner_ctx,
+            )
             elements.append(CoreBuilder._build_banner_element(banner_text, type="success"))
 
         # Show goal if present
@@ -270,7 +272,7 @@ class WorktreeBuilder:
         for m in models:
             label = m.get("display_name") or m["name"]
             if m.get("is_default"):
-                label += f" ({UI_TEXT['system_not_set']})"
+                label += f" ({UI_TEXT['system_default']})"
             buttons.append(
                 {
                     "tag": "button",
@@ -336,22 +338,9 @@ class WorktreeBuilder:
 
         elements: list[dict] = []
         if message:
-            # 在 Banner 中同时展示执行状态 + 精简后的 goal 与工具/模型摘要，
-            # 让用户在自动执行/跳过确认时也能一眼看到“在用什么帮我做什么”。
-            banner_text = message
-            if message == UI_TEXT["worktree_auto_executing_banner"]:
-                ctx = banner_ctx or WorktreeBannerContext()
-                ctx = WorktreeBannerContext(
-                    message=message,
-                    goal=goal or ctx.goal,
-                    tool_name=ctx.tool_name,
-                    model_name=ctx.model_name,
-                    is_auto_execute=ctx.is_auto_execute,
-                    selected_items=selected_items or ctx.selected_items,
-                    banner_kind=ctx.banner_kind or "auto_execute",
-                )
-                banner_text = WorktreeBuilder._build_auto_execute_banner_text(ctx)
-
+            banner_text = WorktreeBuilder._resolve_banner_text(
+                message, goal=goal, selected_items=selected_items, banner_ctx=banner_ctx,
+            )
             elements.append(CoreBuilder._build_banner_element(banner_text, type="info"))
 
         elements.append(CoreBuilder._build_content_element("\n".join(parts)))

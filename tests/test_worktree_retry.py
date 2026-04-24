@@ -97,7 +97,7 @@ def _make_project_with_units(tmp_path, statuses: list[str]) -> tuple[ProjectCont
     state = project.worktree_state
     state.units = units
     state.enabled = True
-    state.last_user_goal = "实现功能"
+    state.journey.goal = "实现功能"
     state.selection.selected_items = [
         WorktreeSelectionItem(provider="acp", tool_name="coco", display_name="Coco"),
     ]
@@ -127,24 +127,24 @@ def test_retry_resets_only_failed_units(tmp_path):
 
 
 def test_retry_preserves_last_user_goal(tmp_path):
-    """Retry uses the last_user_goal from state without requiring new input."""
+    """Retry uses the journey.goal from state without requiring new input."""
     project, manager = _make_project_with_units(tmp_path, ["failed"])
 
     state = manager.get_state(project)
-    assert state.last_user_goal == "实现功能"
+    assert state.journey.goal == "实现功能"
 
     state = manager.retry_failed_units(project)
 
     # Goal should still be preserved
-    assert state.last_user_goal == "实现功能"
+    assert state.journey.goal == "实现功能"
     # The retried unit should be completed now
     assert state.units[0].status == "completed"
 
 
 def test_retry_returns_error_when_no_goal(tmp_path):
-    """If last_user_goal is empty, retry returns an error."""
+    """If journey.goal is empty, retry returns an error."""
     project, manager = _make_project_with_units(tmp_path, ["failed"])
-    project.worktree_state.last_user_goal = ""
+    project.worktree_state.journey.goal = ""
 
     state = manager.retry_failed_units(project)
 

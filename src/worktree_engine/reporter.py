@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from .models import WorktreeInfo, WorktreeRuntimeState, WorktreeUnit
+from .models import WorktreeInfo, WorktreeRuntimeState, WorktreeUnit, WorktreeUnitStatus
+
+from ..card.styles import STATUS_DISPLAY_MAP
 
 
 class WorktreeReporter:
@@ -9,7 +11,7 @@ class WorktreeReporter:
         state.merge_notes = self.build_merge_notes(state.units, state.base_branch)
         # Allow merge when at least one unit completed (partial success is mergeable)
         state.merge_entry_ready = bool(state.units) and any(
-            unit.status == "completed" for unit in state.units
+            unit.status == WorktreeUnitStatus.COMPLETED for unit in state.units
         )
         if state.last_error:
             state.summary_lines.insert(0, f"- 总体错误：{state.last_error}")
@@ -44,18 +46,18 @@ class WorktreeReporter:
         lines: list[str] = []
         status_icon = {"completed": "✅", "failed": "❌", "running": "🔄", "planned": "📋", "ready": "⏳"}
         for unit in units:
-            status = unit.status or "pending"
+            status = unit.status or WorktreeUnitStatus.PENDING
             icon = status_icon.get(status, "⏳")
             change_text = "有代码变更" if unit.has_changes else "无代码变更"
             task_text = unit.task_title or "未分配任务"
 
             display_name = WorktreeReporter._get_unit_display_name(unit)
 
-            if status == "failed":
+            if status == WorktreeUnitStatus.FAILED:
                 summary = f"🔍 失败原因：{unit.error or '未知执行异常'}"
             else:
                 summary = unit.summary or "暂无摘要"
-            lines.append(f"- {icon} `{display_name}` · `{status}` · {task_text} · {change_text} · {summary}")
+            lines.append(f"- {icon} `{display_name}` · `{STATUS_DISPLAY_MAP.get(status, status)}` · {task_text} · {change_text} · {summary}")
         return lines
 
     @staticmethod

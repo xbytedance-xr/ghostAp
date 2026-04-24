@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-04-23
+- **Worktree 自动执行功能验证加固** — 全面验证 8 个 AC 已满足：代码路径审查确认快速路径无 card action 等待、silent_mode 30s throttle + 10min 安全阀、cleanup_card 自动发送、空选择校验、无 goal 回退确认卡；新增 4 个边界测试（纯空白 goal、换行符 goal、超时安全阀触发、AUTO_EXECUTING + running units 不拦截）；全量 2857 tests 零回归 → [详细记录](2026-04-23.md)
 - **配色系统优化：增加深色主题和优化横幅色彩搭配** — 扩展配色系统，新增深色主题变体，优化横幅背景色为 wathet 提升视觉体验，满足 WCAG AA 级对比度要求；更新相关测试用例，全量 2835 个测试零回归 → [详细记录](2026-04-23.md)
 - **落实改进建议：恢复横幅语义配色（success/warning/error/info 分色显示）** — 修复将所有横幅统一为 wathet 蓝色导致的语义信息丢失问题，恢复不同消息类型的语义化配色（success→green, warning→yellow, error→red, info→wathet）；更新相关测试用例，全量测试零回归 → [详细记录](2026-04-23.md)
 - **为 `src/utils/env.py` 添加测试覆盖** — 为 `src/utils/env.py` 新增完整的单元测试文件 `tests/test_env.py`；添加 `_reset_env_for_testing()` 函数用于测试时重置全局状态；更新 `conftest.py` 自动调用 `_reset_env_for_testing()` 确保测试隔离；全量 2835 tests 零回归 → [详细记录](2026-04-23.md)

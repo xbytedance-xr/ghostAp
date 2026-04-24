@@ -657,7 +657,7 @@ def test_model_select_card_passes_goal_in_buttons():
 
 
 def test_plan_goal_emits_goal_created_and_updates_journey():
-    """WorktreeManager.plan_goal 应触发 goal_created 并记录 last_user_goal。"""
+    """WorktreeManager.plan_goal 应触发 goal_created 并记录 journey.goal。"""
     project = _make_project("p-plan")
     mgr = WorktreeManager(project_manager=None)
 
@@ -669,7 +669,6 @@ def test_plan_goal_emits_goal_created_and_updates_journey():
 
     state = mgr.plan_goal(project, "实现搜索功能")
 
-    assert state.last_user_goal == "实现搜索功能"
     assert state.journey.status == WorktreeJourneyStatus.PENDING
     assert state.journey.goal == "实现搜索功能"
 
@@ -778,3 +777,281 @@ def test_is_interceptable_command_wt_with_goal():
     assert SystemHandler.is_interceptable_command("/wt")
     assert SystemHandler.is_interceptable_command("/worktree")
     assert not SystemHandler.is_interceptable_command("/wtzzzz")
+
+
+# ---------------------------------------------------------------------------
+# Edge-case tests (boundary hardening)
+# ---------------------------------------------------------------------------
+
+
+def test_whitespace_only_goal_falls_back_to_confirm_card():
+    """Goal that is pure whitespace (e.g. '   ') should be treated as empty → confirm card."""
+    handler = _make_system_handler()
+    project = _make_project("p-ws")
+    handler.ctx.project_manager.get_active_project.return_value = project
+    handler.ctx.project_manager.get_project.return_value = project
+
+    mgr = handler._worktree_manager()
+    mgr.start_selection(project)
+    mgr.select_tool(project, WorktreeToolOption(
+        provider="acp", tool_name="coco", display_name="Coco", supports_model=False,
+    ))
+    mgr.add_pending_item(project)
+    mgr.back_to_tool_selection(project)
+
+    patch_mock = MagicMock()
+    auto_exec_mock = MagicMock()
+    with patch.object(handler, "patch_message", patch_mock), \
+         patch.object(handler, "_auto_execute_worktree", auto_exec_mock):
+        handler.handle_finish_worktree_selection(
+            "msg-ws", "chat-ws", project_id="p-ws",
+            value={"worktree_goal": "   "},
+        )
+
+    # Should NOT trigger auto-execute
+    auto_exec_mock.assert_not_called()
+    # Should show confirm card
+    patch_mock.assert_called_once()
+    card_json = patch_mock.call_args[0][1]
+    assert "确认组合" in card_json
+
+
+def test_goal_with_newlines_preserved():
+    """Goal containing newlines should be passed through without truncation."""
+    handler = _make_system_handler()
+    project = _make_project("p-nl")
+    handler.ctx.project_manager.get_active_project.return_value = project
+    handler.ctx.project_manager.get_project.return_value = project
+
+    mgr = handler._worktree_manager()
+    mgr.start_selection(project)
+    mgr.select_tool(project, WorktreeToolOption(
+        provider="acp", tool_name="coco", display_name="Coco", supports_model=False,
+    ))
+    mgr.add_pending_item(project)
+
+    multiline_goal = "第一步：实现登录\n第二步：添加测试"
+    auto_exec_mock = MagicMock()
+    with patch.object(handler, "_auto_execute_worktree", auto_exec_mock), \
+         patch.object(handler, "patch_message"):
+        handler.handle_finish_worktree_selection(
+            "msg-nl", "chat-nl", project_id="p-nl",
+            value={"worktree_goal": multiline_goal},
+        )
+
+    auto_exec_mock.assert_called_once()
+    actual_goal = auto_exec_mock.call_args[0][2]
+    assert "第一步" in actual_goal
+    assert "第二步" in actual_goal
+
+
+def test_silent_mode_timeout_notification_fires():
+    """Silent mode 10-min safety valve: callback at >=600s patches card with timeout msg.
+
+    The closure captures time from module globals and self.patch_message from the handler.
+    We must mock both during handle_worktree_execute (to capture the callback) and again
+    when invoking the callback (so the closure sees mocked time + mocked patch_message).
+    """
+    handler = _make_system_handler()
+    project = _make_project("p-timeout")
+    handler.ctx.project_manager.get_active_project.return_value = project
+
+    mgr = handler._worktree_manager()
+    mgr.start_selection(project)
+    mgr.select_tool(project, WorktreeToolOption(
+        provider="acp", tool_name="coco", display_name="Coco", supports_model=False,
+    ))
+    mgr.add_pending_item(project)
+    mgr.finalize_selection(project)
+
+    state = mgr.get_state(project)
+    state.units = [WorktreeUnit(unit_id="u1", status="ready")]
+
+    send_mock = MagicMock(return_value="progress-mid")
+    patch_msg_mock = MagicMock()
+    captured_callback = [None]
+
+    _fake_now = [1000.0]  # starting fake clock
+
+    def fake_execute(proj, goal, on_unit_update=None, **kw):
+        captured_callback[0] = on_unit_update
+        state.units[0].status = "completed"
+        state.merge_entry_ready = False
+        state.last_error = ""
+        return state
+
+    import src.feishu.handlers.system as _sys_mod
+    original_time = _sys_mod.time
+
+    fake_time = MagicMock()
+    fake_time.time = lambda: _fake_now[0]
+
+    # Keep patch_message mock active for the entire test so the closure sees it
+    with patch.object(handler, "send_message", send_mock), \
+         patch.object(handler, "patch_message", patch_msg_mock):
+        try:
+            _sys_mod.time = fake_time
+            with patch.object(mgr, "execute_goal", side_effect=fake_execute):
+                handler.handle_worktree_execute("msg-to", "chat-to", "测试超时", project=project, silent_mode=True)
+        finally:
+            _sys_mod.time = original_time
+
+        assert captured_callback[0] is not None
+        cb = captured_callback[0]
+
+        # Advance clock past 600s timeout
+        patch_msg_mock.reset_mock()
+        _fake_now[0] = 1000.0 + 601
+        try:
+            _sys_mod.time = fake_time
+            cb(state.units[0])
+        finally:
+            _sys_mod.time = original_time
+
+    # The 10-min safety valve should have triggered a patch_message call
+    assert patch_msg_mock.call_count >= 1
+
+
+def test_auto_executing_with_running_units_not_awaiting_goal():
+    """AUTO_EXECUTING + running units → is_awaiting_goal returns False (no interception)."""
+    state = WorktreeRuntimeState()
+    state.journey.status = WorktreeJourneyStatus.AUTO_EXECUTING
+    state.units = [WorktreeUnit(unit_id="u1", status="running")]
+
+    assert WorktreeManager.is_awaiting_goal(state) is False
+
+
+# ──────────────────────────────────────────────────────────────
+# Phase-6: New API tests — enum, ensure_worktree_state, truncate_goal, from_dict migration
+# ──────────────────────────────────────────────────────────────
+
+from src.worktree_engine.models import (
+    WorktreeUnitStatus,
+    ensure_worktree_state,
+    truncate_goal,
+)
+
+
+class TestWorktreeUnitStatusEnum:
+    """WorktreeUnitStatus 枚举的 str-Enum 兼容性测试。"""
+
+    def test_enum_values_equal_strings(self):
+        """str Enum members should be equal to their string values."""
+        assert WorktreeUnitStatus.PENDING == "pending"
+        assert WorktreeUnitStatus.READY == "ready"
+        assert WorktreeUnitStatus.PLANNED == "planned"
+        assert WorktreeUnitStatus.RUNNING == "running"
+        assert WorktreeUnitStatus.COMPLETED == "completed"
+        assert WorktreeUnitStatus.FAILED == "failed"
+
+    def test_enum_in_dict_lookup(self):
+        """str Enum members should work as dict keys alongside string keys."""
+        d = {"completed": "done", "failed": "err"}
+        assert d.get(WorktreeUnitStatus.COMPLETED) == "done"
+        assert d.get(WorktreeUnitStatus.FAILED) == "err"
+        assert d.get(WorktreeUnitStatus.PENDING) is None
+
+    def test_unit_default_status_is_enum(self):
+        """New WorktreeUnit should default to WorktreeUnitStatus.PENDING."""
+        unit = WorktreeUnit(unit_id="u1")
+        assert unit.status is WorktreeUnitStatus.PENDING
+        assert unit.status == "pending"
+
+    def test_unit_from_dict_parses_status_to_enum(self):
+        """from_dict should parse string status into WorktreeUnitStatus."""
+        unit = WorktreeUnit.from_dict({"unit_id": "u1", "status": "running"})
+        assert unit.status is WorktreeUnitStatus.RUNNING
+
+    def test_unit_from_dict_unknown_status_defaults_pending(self):
+        """from_dict with unknown status should default to PENDING."""
+        unit = WorktreeUnit.from_dict({"unit_id": "u1", "status": "unknown_xyz"})
+        assert unit.status is WorktreeUnitStatus.PENDING
+
+
+class TestEnsureWorktreeState:
+    """ensure_worktree_state 共享 getter 测试。"""
+
+    def test_creates_state_on_bare_project(self):
+        """Should create WorktreeRuntimeState on a project without worktree_state."""
+        project = _make_project("p-ensure-1")
+        if hasattr(project, "worktree_state"):
+            delattr(project, "worktree_state")
+        state = ensure_worktree_state(project)
+        assert isinstance(state, WorktreeRuntimeState)
+        assert project.worktree_state is state
+
+    def test_returns_existing_state(self):
+        """Should return existing state without replacing it."""
+        project = _make_project("p-ensure-2")
+        existing = WorktreeRuntimeState(enabled=True)
+        project.worktree_state = existing
+        state = ensure_worktree_state(project)
+        assert state is existing
+        assert state.enabled is True
+
+    def test_replaces_non_state_attribute(self):
+        """Should replace a non-WorktreeRuntimeState attribute."""
+        project = _make_project("p-ensure-3")
+        project.worktree_state = "not a state"
+        state = ensure_worktree_state(project)
+        assert isinstance(state, WorktreeRuntimeState)
+
+
+class TestTruncateGoal:
+    """truncate_goal Unicode-safe 截断测试。"""
+
+    def test_short_goal_unchanged(self):
+        assert truncate_goal("hello") == "hello"
+
+    def test_empty_goal(self):
+        assert truncate_goal("") == ""
+        assert truncate_goal(None) == ""
+
+    def test_exact_length_unchanged(self):
+        goal = "x" * 80
+        assert truncate_goal(goal) == goal
+
+    def test_over_length_truncated_with_ellipsis(self):
+        goal = "x" * 100
+        result = truncate_goal(goal)
+        assert result.endswith("...")
+        assert len(result) == 83  # 80 + len("...")
+
+    def test_unicode_safe(self):
+        goal = "你好世界" * 30  # 120 chars
+        result = truncate_goal(goal, max_len=10)
+        assert result.endswith("...")
+        assert len(result) == 13  # 10 + len("...")
+
+    def test_custom_max_len(self):
+        goal = "a" * 50
+        result = truncate_goal(goal, max_len=20)
+        assert result == "a" * 20 + "..."
+
+
+class TestFromDictLastUserGoalMigration:
+    """WorktreeRuntimeState.from_dict 的 last_user_goal → journey.goal 迁移测试。"""
+
+    def test_legacy_goal_migrates_to_journey(self):
+        """Legacy last_user_goal should migrate to journey.goal when journey.goal is empty."""
+        data = {"last_user_goal": "旧目标", "journey": {"status": "idle", "goal": ""}}
+        state = WorktreeRuntimeState.from_dict(data)
+        assert state.journey.goal == "旧目标"
+
+    def test_journey_goal_takes_precedence(self):
+        """If journey.goal is already set, last_user_goal should NOT overwrite it."""
+        data = {"last_user_goal": "旧目标", "journey": {"status": "pending", "goal": "新目标"}}
+        state = WorktreeRuntimeState.from_dict(data)
+        assert state.journey.goal == "新目标"
+
+    def test_no_legacy_goal(self):
+        """Without last_user_goal, journey.goal should remain as-is."""
+        data = {"journey": {"status": "idle", "goal": "existing"}}
+        state = WorktreeRuntimeState.from_dict(data)
+        assert state.journey.goal == "existing"
+
+    def test_empty_both(self):
+        """Both empty should result in empty goal."""
+        data = {"last_user_goal": "", "journey": {"status": "idle", "goal": ""}}
+        state = WorktreeRuntimeState.from_dict(data)
+        assert state.journey.goal == ""

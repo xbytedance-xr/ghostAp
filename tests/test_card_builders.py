@@ -9,6 +9,7 @@ from src.card.styles import UI_TEXT
 from src.card.builders.system import SystemBuilder
 from src.card.builders.deep import DeepBuilder
 from src.card.models import (
+    BannerKind,
     EngineCardState,
     EngineStatusEntry,
     ModelOptionView,
@@ -212,7 +213,7 @@ def test_worktree_auto_execute_banner_helper_basic():
         message=UI_TEXT["worktree_auto_executing_banner"],
         goal="Refactor everything",
         selected_items=[{"display_label": "Coco / gpt-5.1"}],
-        banner_kind="auto_execute",
+        banner_kind=BannerKind.AUTO_EXECUTE,
     )
 
     banner = WorktreeBuilder._build_auto_execute_banner_text(ctx)
@@ -232,7 +233,7 @@ def test_worktree_auto_execute_banner_helper_empty_fields():
         message=UI_TEXT["worktree_auto_executing_banner"],
         goal="",
         selected_items=None,
-        banner_kind="auto_execute",
+        banner_kind=BannerKind.AUTO_EXECUTE,
     )
 
     banner = WorktreeBuilder._build_auto_execute_banner_text(ctx)
@@ -265,7 +266,7 @@ def test_worktree_confirm_card_grouping():
     assert "即将启动以下工具-模型组合" in elements[0]["content"]
 
     assert elements[1]["tag"] == "column_set"
-    assert "请在下方输入您的任务需求" in elements[1]["columns"][0]["elements"][0]["content"]
+    assert "请在下方输入您的任务目标" in elements[1]["columns"][0]["elements"][0]["content"]
 
     hot_area = elements[2]
     assert hot_area["tag"] == "column_set"

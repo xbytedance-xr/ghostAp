@@ -851,6 +851,10 @@ class SystemBuilder:
                 UI_TEXT["system_help_section_ttadk"],
                 UI_TEXT["system_help_section_ttadk_body"]
             ),
+            (
+                UI_TEXT["system_help_section_worktree"],
+                UI_TEXT["system_help_section_worktree_body"]
+            ),
         ]
 
         tips = UI_TEXT["system_help_tips"]

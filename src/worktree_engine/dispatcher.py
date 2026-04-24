@@ -6,7 +6,7 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Callable, Iterable, Optional
 
-from .models import WorktreeSelectionItem, WorktreeUnit
+from .models import WorktreeSelectionItem, WorktreeUnit, WorktreeUnitStatus
 from ..config import get_settings
 from ..utils.errors import classify_timeout, get_error_detail, sanitize_futures_msg
 
@@ -74,7 +74,7 @@ class WorktreeDispatcher:
                 f"你的角色：{role_prompt}\n"
                 "请只在当前 worktree 中工作，并输出清晰结论与必要修改。"
             )
-            unit.status = "planned"
+            unit.status = WorktreeUnitStatus.PLANNED
         return planned_units
 
     def _fail_unit(
@@ -85,7 +85,7 @@ class WorktreeDispatcher:
         log_level: int = logging.ERROR,
         on_unit_update: Optional[Callable[[WorktreeUnit], None]] = None,
     ) -> None:
-        unit.status = "failed"
+        unit.status = WorktreeUnitStatus.FAILED
         unit.error = error_msg
         unit.summary = error_msg
         logger.log(log_level, "[Worktree] 单元失败: unit=%s, error=%s", unit.unit_id, error_msg)
@@ -141,9 +141,9 @@ class WorktreeDispatcher:
 
     def _run_single_unit(self, unit: WorktreeUnit, *, timeout: Optional[int] = None, on_unit_update: Optional[Callable[[WorktreeUnit], None]] = None) -> None:
         # 防止 pool-level timeout 设置的 failed 状态被覆盖
-        if unit.status == "failed":
+        if unit.status == WorktreeUnitStatus.FAILED:
             return
-        unit.status = "running"
+        unit.status = WorktreeUnitStatus.RUNNING
         if on_unit_update:
             try:
                 on_unit_update(unit)
@@ -165,8 +165,8 @@ class WorktreeDispatcher:
             session.start()
             result = session.send_prompt(unit.task_prompt or unit.task_title, timeout=timeout)
             unit.summary = (getattr(result, "text", "") or "").strip()
-            unit.status = "completed" if getattr(result, "stop_reason", "") not in {"failed", "error", "cancelled"} else "failed"
-            unit.error = "" if unit.status == "completed" else unit.summary
+            unit.status = WorktreeUnitStatus.COMPLETED if getattr(result, "stop_reason", "") not in {"failed", "error", "cancelled"} else WorktreeUnitStatus.FAILED
+            unit.error = "" if unit.status == WorktreeUnitStatus.COMPLETED else unit.summary
             unit.has_changes = _detect_worktree_changes(unit.worktree_path)
             if on_unit_update:
                 try:

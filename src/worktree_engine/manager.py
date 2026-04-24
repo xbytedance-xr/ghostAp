@@ -1,29 +1,26 @@
 from __future__ import annotations
 
 import logging
-import shutil
 from typing import Callable, Optional
 
-from ..acp.helper import fetch_acp_models, list_acp_tools
-from ..acp.providers import tool_registry
 from ..project.context import ProjectContext
-from ..ttadk import get_ttadk_manager
 from .dispatcher import WorktreeDispatcher
 from .git_service import WorktreeGitService
 from .models import (
     DeleteWarning,
     WorktreeJourneyStatus,
     WorktreeRuntimeState,
+    WorktreeUnitStatus,
+    ensure_worktree_state,
     transition_journey_state,
 )
 from .reporter import WorktreeReporter
 from .selection import (
-    WorktreeModelOption,
     WorktreeToolOption,
-    apply_model_to_item,
-    build_selection_item,
     format_selection_lines,
 )
+from .selection_controller import WorktreeSelectionController
+from .tool_discovery import WorktreeToolDiscovery
 
 logger = logging.getLogger(__name__)
 
@@ -34,81 +31,15 @@ class WorktreeManager:
         self._git = WorktreeGitService()
         self._dispatcher = WorktreeDispatcher()
         self._reporter = WorktreeReporter()
+        self._discovery = WorktreeToolDiscovery()
+        self._selection = WorktreeSelectionController()
+
+    # ------------------------------------------------------------------
+    # Tool discovery (delegated)
+    # ------------------------------------------------------------------
 
     def get_available_tools(self) -> list[dict]:
-        """Return available tools as dicts suitable for card builders.
-
-        Probes three provider categories:
-        1. ACP direct tools (coco, aiden, codex, gemini)
-        2. CLI tools (claude)
-        3. TTADK-managed tools (filtered by shutil.which)
-        """
-        tools: list[dict] = []
-        seen: set[str] = set()
-
-        # --- ACP tools ---
-        acp_tools = list_acp_tools()
-        for t in acp_tools:
-            name = t.name
-            if name in seen:
-                continue
-            if shutil.which(name):
-                provider = tool_registry.get_provider(name)
-                skip = (
-                    getattr(provider, "skip_model_selection", False)
-                    if provider
-                    else False
-                )
-                tools.append(
-                    WorktreeToolOption(
-                        provider="acp",
-                        tool_name=name,
-                        display_name=name.capitalize(),
-                        description=t.description,
-                        supports_model=True,
-                        model_optional=True,
-                        skip_model_selection=skip,
-                    ).__dict__
-                )
-                seen.add(name)
-
-        # --- CLI tools ---
-        if "claude" not in seen and shutil.which("claude"):
-            tools.append(
-                WorktreeToolOption(
-                    provider="cli",
-                    tool_name="claude",
-                    display_name="Claude",
-                    description="Anthropic Claude CLI",
-                    supports_model=False,
-                ).__dict__
-            )
-            seen.add("claude")
-
-        # --- TTADK tools ---
-        try:
-            manager = get_ttadk_manager()
-            result = manager.get_tools()
-            for t in result.tools:
-                name = t.name
-                if name in seen:
-                    continue
-                tools.append(
-                    WorktreeToolOption(
-                        provider="ttadk",
-                        tool_name=name,
-                        display_name=t.description or name,
-                        description=f"TTADK · {name}",
-                        supports_model=True,
-                        model_optional=True,
-                        skip_model_selection=getattr(t, "skip_model_selection", False),
-                    ).__dict__
-                )
-                seen.add(name)
-        except Exception:
-            pass
-
-        return tools
+        return self._discovery.get_available_tools()
 
     def get_models_for_tool(
         self,
@@ -117,40 +48,11 @@ class WorktreeManager:
         cwd: Optional[str] = None,
         current_model: Optional[str] = None,
     ) -> list[dict]:
-        """Return available models for a tool (ACP or TTADK) as dicts for card builder."""
-        if provider == "acp":
-            try:
-                acp_models = fetch_acp_models(
-                    tool_name, cwd=cwd, current_model=current_model
-                )
-                return [
-                    {
-                        "name": m.name,
-                        "display_name": m.description or m.name,
-                        "is_default": m.is_default,
-                    }
-                    for m in acp_models
-                ]
-            except Exception:
-                return []
+        return self._discovery.get_models_for_tool(tool_name, provider, cwd, current_model)
 
-        try:
-            manager = get_ttadk_manager()
-            models_result = manager.get_models(tool_name=tool_name, cwd=cwd)
-            models = []
-            for m in (models_result.models if models_result else []):
-                models.append(
-                    {
-                        "name": m.name,
-                        "display_name": getattr(m, "friendly_name", None)
-                        or getattr(m, "display_name", None)
-                        or m.name,
-                        "is_default": getattr(m, "is_default", False),
-                    }
-                )
-            return models
-        except Exception:
-            return []
+    # ------------------------------------------------------------------
+    # Project / state helpers
+    # ------------------------------------------------------------------
 
     def ensure_project(self, chat_id: str, project: Optional[ProjectContext] = None) -> Optional[ProjectContext]:
         if project is not None:
@@ -161,11 +63,7 @@ class WorktreeManager:
 
     @staticmethod
     def get_state(project: ProjectContext) -> WorktreeRuntimeState:
-        state = getattr(project, "worktree_state", None)
-        if not isinstance(state, WorktreeRuntimeState):
-            state = WorktreeRuntimeState()
-            project.worktree_state = state
-        return state
+        return ensure_worktree_state(project)
 
     # ------------------------------------------------------------------
     # Awaiting-goal helper
@@ -220,7 +118,7 @@ class WorktreeManager:
                 return False
 
             units = getattr(state, "units", None) or []
-            return any(getattr(u, "status", "") == "ready" for u in units)
+            return any(getattr(u, "status", "") == WorktreeUnitStatus.READY for u in units)
         except Exception:
             # 保守兜底：出现异常时视为“未处于等待目标阶段”，交由上层走常规路径。
             return False
@@ -264,33 +162,13 @@ class WorktreeManager:
             state.journey.last_error = state.journey.last_error or msg
 
     def start_selection(self, project: ProjectContext, goal: str = "") -> WorktreeRuntimeState:
-        state = self.get_state(project)
-        # 每次开始新的选择流程时，将旅程重置为 IDLE，避免复用上一次执行残留的 goal / 错误信息。
-        self.apply_journey_event(state, event="reset")
-        state.selection.active = True
-        state.selection.stage = "tool_select"
-        state.selection.pending_item = None
-        state.selection.pending_goal = str(goal or "").strip()
-        state.selection.last_error = ""
-        state.selection.last_message = "请选择一个工具开始 worktree 组合"
-        return state
+        return self._selection.start_selection(project, goal)
 
     def reset_selection(self, project: ProjectContext) -> WorktreeRuntimeState:
-        project.worktree_state = WorktreeRuntimeState()
-        state = self.get_state(project)
-        state.selection.active = True
-        state.selection.stage = "tool_select"
-        state.selection.last_message = "已清空已有选择，请重新开始"
-        return state
+        return self._selection.reset_selection(project)
 
     def select_tool(self, project: ProjectContext, option: WorktreeToolOption) -> WorktreeRuntimeState:
-        state = self.get_state(project)
-        state.selection.active = True
-        state.selection.pending_item = build_selection_item(option)
-        state.selection.stage = "model_select" if option.supports_model else "review"
-        state.selection.last_error = ""
-        state.selection.last_message = f"已选择 {option.display_name}"
-        return state
+        return self._selection.select_tool(project, option)
 
     def add_pending_item(
         self,
@@ -299,51 +177,19 @@ class WorktreeManager:
         model_name: Optional[str] = None,
         model_display_name: Optional[str] = None,
     ) -> tuple[WorktreeRuntimeState, bool, str]:
-        state = self.get_state(project)
-        pending_item = state.selection.pending_item
-        if pending_item is None:
-            state.selection.last_error = "当前没有待确认的工具选择"
-            return state, False, state.selection.last_error
-
-        final_item = apply_model_to_item(
-            pending_item,
-            model_name=model_name,
-            model_display_name=model_display_name,
-        )
-        added, existing = state.selection.add_item(final_item)
-        state.selection.pending_item = None
-        state.selection.stage = "review"
-        if added:
-            state.selection.last_error = ""
-            state.selection.last_message = f"已添加 {final_item.display_label}"
-            return state, True, state.selection.last_message
-        state.selection.last_error = ""
-        state.selection.last_message = f"已忽略重复选择：{existing.display_label}"
-        return state, False, state.selection.last_message
+        return self._selection.add_pending_item(project, model_name=model_name, model_display_name=model_display_name)
 
     def back_to_tool_selection(self, project: ProjectContext) -> WorktreeRuntimeState:
-        state = self.get_state(project)
-        state.selection.pending_item = None
-        state.selection.active = True
-        state.selection.stage = "tool_select"
-        state.selection.last_error = ""
-        state.selection.last_message = "请继续选择工具"
-        return state
+        return self._selection.back_to_tool_selection(project)
 
     def finalize_selection(self, project: ProjectContext) -> WorktreeRuntimeState:
-        state = self.get_state(project)
-        state.enabled = bool(state.selection.selected_items)
-        state.selection.active = False
-        state.selection.pending_item = None
-        state.selection.stage = "ready" if state.enabled else "tool_select"
-        state.summary_lines = format_selection_lines(state.selection.selected_items)
-        state.selection.last_error = ""
-        state.selection.last_message = "已进入 worktree 模式" if state.enabled else "请至少选择一个工具"
-        
-        # 清空 pending_goal，避免对后续流程造成干扰
-        state.selection.pending_goal = ""
-        
-        return state
+        return self._selection.finalize_selection(project)
+
+    def set_pending_goal(self, project: ProjectContext, goal: str) -> None:
+        self._selection.set_pending_goal(project, goal)
+
+    def mark_units_ready(self, project: ProjectContext) -> None:
+        self._selection.mark_units_ready(project)
 
     def ensure_worktrees(
         self,
@@ -383,17 +229,17 @@ class WorktreeManager:
         """根据用户目标规划各 worktree 单元并更新旅程状态。
 
         语义：
-        - 记录 ``last_user_goal`` 作为本次旅程的语义目标；
-        - 触发 ``goal_created`` 事件，将旅程从 IDLE 推进到 PENDING；
+        - 通过 ``goal_created`` 事件将目标记录到 ``journey.goal``；
+        - 将旅程从 IDLE 推进到 PENDING；
         - 调用 dispatcher 生成 unit 级计划，并通过 reporter 刷新摘要信息。
         """
 
         state = self.get_state(project)
-        state.last_user_goal = str(goal or "").strip()
+        normalized_goal = str(goal or "").strip()
         # 先更新旅程高层状态，再进行具体的 unit 规划。
-        self.apply_journey_event(state, event="goal_created", goal=state.last_user_goal)
+        self.apply_journey_event(state, event="goal_created", goal=normalized_goal)
         state.units = self._dispatcher.plan_user_goal(
-            state.last_user_goal, state.units, state.selection.selected_items
+            normalized_goal, state.units, state.selection.selected_items
         )
         return self._reporter.refresh_state(state)
 
@@ -423,7 +269,7 @@ class WorktreeManager:
 
         # 规划目标并进入 RUNNING 之前，先更新旅程事件流。
         state = self.plan_goal(project, goal)
-        self.apply_journey_event(state, event="execution_started", goal=state.last_user_goal)
+        self.apply_journey_event(state, event="execution_started", goal=state.journey.goal)
 
         try:
             state.units = self._dispatcher.execute_units(
@@ -451,36 +297,36 @@ class WorktreeManager:
     ) -> WorktreeRuntimeState:
         """Re-execute only the failed units, preserving completed ones.
 
-        Reuses ``last_user_goal`` — caller does not need to re-supply the goal.
+        Reuses ``journey.goal`` — caller does not need to re-supply the goal.
         """
         state = self.get_state(project)
 
         # Guard: need a goal from the previous run
-        if not state.last_user_goal:
+        if not state.journey.goal:
             state.last_error = "没有可重试的目标（上次执行目标为空）"
             return self._reporter.refresh_state(state)
 
         # Guard: must have failed units to retry
-        failed_units = [u for u in state.units if u.status == "failed"]
+        failed_units = [u for u in state.units if u.status == WorktreeUnitStatus.FAILED]
         if not failed_units:
             state.last_error = "当前没有失败的工作单元需要重试"
             return self._reporter.refresh_state(state)
 
         # Guard: no units should be running (concurrent safety)
-        if any(u.status == "running" for u in state.units):
+        if any(u.status == WorktreeUnitStatus.RUNNING for u in state.units):
             state.last_error = "存在正在执行的单元，请等待执行完成后再重试"
             return self._reporter.refresh_state(state)
 
         # Reset failed units' state fields
         for unit in failed_units:
-            unit.status = "pending"
+            unit.status = WorktreeUnitStatus.PENDING
             unit.error = ""
             unit.summary = ""
             unit.has_changes = False
 
         # Re-plan only failed units (keep completed units unchanged)
         failed_units = self._dispatcher.plan_user_goal(
-            state.last_user_goal, failed_units, state.selection.selected_items
+            state.journey.goal, failed_units, state.selection.selected_items
         )
 
         # Execute only the re-planned (previously-failed) units
@@ -512,7 +358,7 @@ class WorktreeManager:
 
         merge_results: list[dict] = []
         for unit in state.units:
-            if unit.status != "completed" or not unit.has_changes:
+            if unit.status != WorktreeUnitStatus.COMPLETED or not unit.has_changes:
                 merge_results.append(
                     {"display_name": unit.display_name, "branch_name": unit.branch_name, "success": False, "detail": "跳过（未完成或无变更）"}
                 )
@@ -535,7 +381,7 @@ class WorktreeManager:
         self,
         project: ProjectContext,
         *,
-        force: bool = True,
+        force: bool = False,
     ) -> tuple[WorktreeRuntimeState, list[DeleteWarning]]:
         """Remove all worktree directories and branches, reset state.
 

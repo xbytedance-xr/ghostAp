@@ -21,6 +21,15 @@ def _clean_str(value: object, default: str = "") -> str:
     return text or default
 
 
+def _parse_unit_status(value: object) -> "WorktreeUnitStatus":
+    """Parse a raw status value into a WorktreeUnitStatus enum, defaulting to PENDING."""
+    raw = _clean_str(value, default=WorktreeUnitStatus.PENDING.value)
+    try:
+        return WorktreeUnitStatus(raw)
+    except ValueError:
+        return WorktreeUnitStatus.PENDING
+
+
 @dataclass
 class WorktreeSelectionItem:
     provider: str
@@ -74,6 +83,27 @@ class WorktreeSelectionItem:
         )
 
 
+class WorktreeSelectionStage(str, Enum):
+    """选择流程阶段枚举，替代裸字符串确保类型安全。"""
+
+    IDLE = "idle"
+    TOOL_SELECT = "tool_select"
+    MODEL_SELECT = "model_select"
+    REVIEW = "review"
+    READY = "ready"
+
+
+class WorktreeUnitStatus(str, Enum):
+    """Worktree 工作单元状态枚举，替代裸字符串确保类型安全。"""
+
+    PENDING = "pending"
+    READY = "ready"
+    PLANNED = "planned"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class WorktreeJourneyStatus(str, Enum):
     """高层 Worktree 旅程状态机枚举。
 
@@ -81,7 +111,7 @@ class WorktreeJourneyStatus(str, Enum):
 
     - ``IDLE``: 尚未进入 /wt 流程，或上一次执行已被完全重置；
     - ``PENDING``: 目标已解析/记入，但尚未发起自动执行（选择工具/模型阶段）；
-    - ``AUTO_EXECUTING``: 已进入自动执行关键路径，控制器负责串联“确认 / 创建 / 执行”逻辑；
+    - ``AUTO_EXECUTING``: 已进入自动执行关键路径，控制器负责串联"确认 / 创建 / 执行"逻辑；
     - ``RUNNING``: 调度器已开始实际执行 worktree 单元，进度通过回调推送；
     - ``COMPLETED``: 本次旅程成功完成且无致命错误；
     - ``FAILED``: 旅程在某个阶段出现不可忽略的错误（可由上层触发重试）。
@@ -151,7 +181,7 @@ class WorktreeJourneyState:
 @dataclass
 class WorktreeSelectionState:
     active: bool = False
-    stage: str = "idle"
+    stage: WorktreeSelectionStage = WorktreeSelectionStage.IDLE
     pending_item: Optional[WorktreeSelectionItem] = None
     selected_items: list[WorktreeSelectionItem] = field(default_factory=list)
     pending_goal: str = ""
@@ -169,7 +199,7 @@ class WorktreeSelectionState:
     def to_dict(self) -> dict[str, Any]:
         return {
             "active": bool(self.active),
-            "stage": _clean_str(self.stage, default="idle"),
+            "stage": self.stage.value if isinstance(self.stage, WorktreeSelectionStage) else _clean_str(self.stage, default="idle"),
             "pending_item": self.pending_item.to_dict() if self.pending_item else None,
             "selected_items": [item.to_dict() for item in self.selected_items],
             "pending_goal": self.pending_goal,
@@ -187,9 +217,16 @@ class WorktreeSelectionState:
             item = WorktreeSelectionItem.from_dict(raw)
             if item:
                 selected_items.append(item)
+
+        raw_stage = _clean_str(data.get("stage"), default="idle")
+        try:
+            stage = WorktreeSelectionStage(raw_stage)
+        except ValueError:
+            stage = WorktreeSelectionStage.IDLE
+
         return cls(
             active=bool(data.get("active", False)),
-            stage=_clean_str(data.get("stage"), default="idle"),
+            stage=stage,
             pending_item=pending_item,
             selected_items=selected_items,
             pending_goal=_clean_str(data.get("pending_goal")),
@@ -210,7 +247,7 @@ class WorktreeUnit:
     worktree_path: str = ""
     task_title: str = ""
     task_prompt: str = ""
-    status: str = "pending"
+    status: WorktreeUnitStatus = WorktreeUnitStatus.PENDING
     has_changes: bool = False
     summary: str = ""
     error: str = ""
@@ -237,7 +274,7 @@ class WorktreeUnit:
             worktree_path=_clean_str(data.get("worktree_path")),
             task_title=_clean_str(data.get("task_title")),
             task_prompt=_clean_str(data.get("task_prompt")),
-            status=_clean_str(data.get("status"), default="pending"),
+            status=_parse_unit_status(data.get("status")),
             has_changes=bool(data.get("has_changes", False)),
             summary=_clean_str(data.get("summary")),
             error=_clean_str(data.get("error")),
@@ -295,7 +332,6 @@ class WorktreeRuntimeState:
     git_root: str = ""
     base_branch: str = ""
     merge_entry_ready: bool = False
-    last_user_goal: str = ""
     selection: WorktreeSelectionState = field(default_factory=WorktreeSelectionState)
     units: list[WorktreeUnit] = field(default_factory=list)
     summary_lines: list[str] = field(default_factory=list)
@@ -311,7 +347,6 @@ class WorktreeRuntimeState:
             "git_root": self.git_root,
             "base_branch": self.base_branch,
             "merge_entry_ready": bool(self.merge_entry_ready),
-            "last_user_goal": self.last_user_goal,
             "selection": self.selection.to_dict(),
             "units": [unit.to_dict() for unit in self.units],
             "summary_lines": list(self.summary_lines),
@@ -329,20 +364,44 @@ class WorktreeRuntimeState:
             unit = WorktreeUnit.from_dict(raw)
             if unit:
                 units.append(unit)
+        journey = WorktreeJourneyState.from_dict(data.get("journey"))
+        # 向前兼容：历史数据中 last_user_goal 迁移到 journey.goal
+        legacy_goal = _clean_str(data.get("last_user_goal"))
+        if legacy_goal and not journey.goal:
+            journey.goal = legacy_goal
         return cls(
             enabled=bool(data.get("enabled", False)),
             git_initialized_locally=bool(data.get("git_initialized_locally", False)),
             git_root=_clean_str(data.get("git_root")),
             base_branch=_clean_str(data.get("base_branch")),
             merge_entry_ready=bool(data.get("merge_entry_ready", False)),
-            last_user_goal=_clean_str(data.get("last_user_goal")),
             selection=WorktreeSelectionState.from_dict(data.get("selection")),
             units=units,
             summary_lines=[_clean_str(x) for x in list(data.get("summary_lines") or []) if _clean_str(x)],
             merge_notes=[_clean_str(x) for x in list(data.get("merge_notes") or []) if _clean_str(x)],
             last_error=_clean_str(data.get("last_error")),
-            journey=WorktreeJourneyState.from_dict(data.get("journey")),
+            journey=journey,
         )
+
+
+def ensure_worktree_state(project: object) -> "WorktreeRuntimeState":
+    """获取或懒初始化 project 上的 WorktreeRuntimeState，作为唯一入口消除重复实现。"""
+    state = getattr(project, "worktree_state", None)
+    if not isinstance(state, WorktreeRuntimeState):
+        state = WorktreeRuntimeState()
+        project.worktree_state = state  # type: ignore[attr-defined]
+    return state
+
+
+def truncate_goal(goal: object, max_len: int = 80) -> str:
+    """按 Unicode 码点安全截断 goal 文本，超长时添加 '...' 后缀。
+
+    ``max_len`` 默认值与 ``GOAL_DISPLAY_MAX_LEN`` 保持一致（80）。
+    """
+    text = _clean_str(goal)
+    if not text or len(text) <= max_len:
+        return text
+    return text[:max_len] + "..."
 
 
 def transition_journey_state(

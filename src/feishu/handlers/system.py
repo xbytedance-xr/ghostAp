@@ -18,6 +18,7 @@ from ...acp.providers import tool_registry
 from ...card import CardBuilder
 from ...card.builders.system import SystemBuilder
 from ...card.styles import UI_TEXT
+from ...worktree_engine.models import WorktreeUnitStatus, truncate_goal
 from ...coco_model import get_coco_model_manager
 from ...tasking import TaskPriority, TaskSpec
 from ...ttadk import get_ttadk_manager
@@ -774,6 +775,84 @@ class SystemHandler(BaseHandler):
         else:
             self.reply_message(message_id, card, msg_type=msg_type)
 
+    @staticmethod
+    def _resolve_worktree_goal(value: dict, state: Optional["WorktreeRuntimeState"] = None) -> str:
+        """Unify goal resolution from card value + state fallback.
+
+        Priority: value["goal"] > value["worktree_goal"] > value["_input_value"] > state.selection.pending_goal
+        """
+        return str(
+            value.get("goal")
+            or value.get("worktree_goal")
+            or value.get("_input_value")
+            or (state.selection.pending_goal if state else "")
+            or ""
+        ).strip()
+
+    def _make_throttled_progress_callback(
+        self,
+        mgr,
+        project,
+        progress_mid: str,
+        goal: str,
+        *,
+        silent_mode: bool = False,
+        clock=None,
+    ):
+        """Build a throttled on_unit_update closure for live progress updates.
+
+        Args:
+            clock: Injectable time source (default: time.time). Used for testability.
+        """
+        if clock is None:
+            clock = time.time
+        _update_lock = threading.Lock()
+        _last_update: list[float] = [0.0]
+        _THROTTLE_INTERVAL = 30.0 if silent_mode else 0.5
+        _exec_start = clock()
+        _TIMEOUT_NOTIFY = 600.0
+        _timeout_notified: list[bool] = [False]
+        pid = project.project_id
+
+        def _on_unit_update(unit):
+            now = clock()
+            elapsed = now - _exec_start
+            with _update_lock:
+                if silent_mode and elapsed >= _TIMEOUT_NOTIFY and not _timeout_notified[0]:
+                    _timeout_notified[0] = True
+                    _last_update[0] = now
+                    try:
+                        cur_state = mgr.get_state(project)
+                        cur_dicts = [u.to_dict() for u in cur_state.units]
+                        msg = UI_TEXT["worktree_still_running"].format(
+                            elapsed=int(elapsed // 60)
+                        )
+                        mt, cd = CardBuilder.build_worktree_progress_card(
+                            cur_dicts, pid, message=msg,
+                        )
+                        if progress_mid:
+                            self.patch_message(progress_mid, cd, msg_type=mt)
+                    except Exception:
+                        logger.debug("worktree progress update failed", exc_info=True)
+                    return
+
+                if now - _last_update[0] < _THROTTLE_INTERVAL:
+                    return
+                _last_update[0] = now
+            try:
+                cur_state = mgr.get_state(project)
+                cur_dicts = [u.to_dict() for u in cur_state.units]
+                msg = UI_TEXT["worktree_executing_live"].format(goal=truncate_goal(goal))
+                mt, cd = CardBuilder.build_worktree_progress_card(
+                    cur_dicts, pid, message=msg,
+                )
+                if progress_mid:
+                    self.patch_message(progress_mid, cd, msg_type=mt)
+            except Exception:
+                logger.debug("worktree progress update failed", exc_info=True)
+
+        return _on_unit_update
+
     def handle_worktree_select_tool(
         self,
         message_id: str,
@@ -800,9 +879,9 @@ class SystemHandler(BaseHandler):
         # Resolve goal: card value > state.selection.pending_goal
         mgr = self._worktree_manager()
         state = mgr.get_state(project)
-        goal = str(value.get("goal") or value.get("_input_value") or state.selection.pending_goal or "").strip()
+        goal = self._resolve_worktree_goal(value, state)
         if goal:
-            state.selection.pending_goal = goal
+            mgr.set_pending_goal(project, goal)
 
         from ...worktree_engine.selection import WorktreeToolOption
 
@@ -900,9 +979,9 @@ class SystemHandler(BaseHandler):
         mgr = self._worktree_manager()
 
         state = mgr.get_state(project)
-        goal = str(value.get("goal") or state.selection.pending_goal or "").strip()
+        goal = self._resolve_worktree_goal(value, state)
         if goal:
-            state.selection.pending_goal = goal
+            mgr.set_pending_goal(project, goal)
 
         # Capture pending tool info BEFORE add_pending_item clears it
         pending_tool = state.selection.pending_item
@@ -945,13 +1024,7 @@ class SystemHandler(BaseHandler):
 
         # Resolve goal: card button value > card input > state.selection.pending_goal
         state = mgr.get_state(project)
-        goal = str(
-            value.get("goal")
-            or value.get("worktree_goal")
-            or value.get("_input_value")
-            or state.selection.pending_goal
-            or ""
-        ).strip()
+        goal = self._resolve_worktree_goal(value, state)
 
         state = mgr.finalize_selection(project)
         pid = project.project_id
@@ -998,14 +1071,23 @@ class SystemHandler(BaseHandler):
         state = mgr.ensure_worktrees(project)
 
         if state.last_error:
-            self.reply_error(message_id, UI_TEXT["system_worktree_create_failed"].format(error=state.last_error))
+            # Patch the auto-executing banner card back to error state
+            # to avoid "启动中" and "失败" coexisting on screen.
+            error_msg = UI_TEXT["system_worktree_create_failed"].format(error=state.last_error)
+            pid = project.project_id
+            units_dicts = [u.to_dict() for u in state.units] if state.units else []
+            if units_dicts:
+                _, error_card = CardBuilder.build_worktree_progress_card(
+                    units_dicts, pid, message=error_msg,
+                )
+                self.patch_message(message_id, error_card)
+            self.reply_error(message_id, error_msg)
             return
 
         # 静默自动执行路径：标记旅程已进入 AUTO_EXECUTING 阶段，并记录目标与 silent_mode。
         mgr.apply_journey_event(state, event="auto_execute_started", goal=goal, silent_mode=True)
 
-        for unit in state.units:
-            unit.status = "ready"
+        mgr.mark_units_ready(project)
 
         self.handle_worktree_execute(message_id, chat_id, goal, project=project, silent_mode=True)
 
@@ -1032,11 +1114,11 @@ class SystemHandler(BaseHandler):
 
         # Mark all units as "ready" so the message-routing interception can
         # detect that worktree mode is awaiting a user goal.
-        for unit in state.units:
-            unit.status = "ready"
+        mgr.mark_units_ready(project)
 
         # Check if user provided a goal in the input box
-        goal = str(value.get("worktree_goal") or value.get("_input_value") or "").strip()
+        state = mgr.get_state(project)
+        goal = self._resolve_worktree_goal(value, state)
 
         if goal:
             # Provide immediate feedback on the current card
@@ -1058,8 +1140,9 @@ class SystemHandler(BaseHandler):
         # Show progress card with "ready" status
         units_dicts = [u.to_dict() for u in state.units]
         pid = project.project_id
+        ready_msg = UI_TEXT["system_worktree_created_prompt"] + "\n" + UI_TEXT["worktree_ready_intercept_hint"]
         msg_type, card = CardBuilder.build_worktree_progress_card(
-            units_dicts, pid, message=UI_TEXT["system_worktree_created_prompt"],
+            units_dicts, pid, message=ready_msg,
         )
         self.patch_message(message_id, card, msg_type=msg_type)
 
@@ -1095,61 +1178,19 @@ class SystemHandler(BaseHandler):
         units_dicts = [u.to_dict() for u in state.units]
         if silent_mode:
             init_msg = UI_TEXT["worktree_start_silent"].format(
-                goal=goal[:80]
+                goal=truncate_goal(goal)
             )
         else:
-            init_msg = UI_TEXT["worktree_executing"].format(goal=goal[:80])
+            init_msg = UI_TEXT["worktree_executing"].format(goal=truncate_goal(goal))
         msg_type, card = CardBuilder.build_worktree_progress_card(
             units_dicts, pid, message=init_msg,
         )
         progress_mid = self.send_message(chat_id, card, msg_type=msg_type)
 
         # Build a throttled callback for live progress updates
-        _update_lock = threading.Lock()
-        _last_update: list[float] = [0.0]
-        _THROTTLE_INTERVAL = 30.0 if silent_mode else 0.5  # seconds
-        _exec_start = time.time()
-        _TIMEOUT_NOTIFY = 600.0  # 10 minutes
-        _timeout_notified: list[bool] = [False]
-
-        def _on_unit_update(unit):
-            now = time.time()
-            elapsed = now - _exec_start
-            with _update_lock:
-                # Silent mode 10-min timeout safety-valve
-                if silent_mode and elapsed >= _TIMEOUT_NOTIFY and not _timeout_notified[0]:
-                    _timeout_notified[0] = True
-                    _last_update[0] = now
-                    try:
-                        cur_state = mgr.get_state(project)
-                        cur_dicts = [u.to_dict() for u in cur_state.units]
-                        msg = UI_TEXT["worktree_still_running"].format(
-                            elapsed=int(elapsed // 60)
-                        )
-                        mt, cd = CardBuilder.build_worktree_progress_card(
-                            cur_dicts, pid,
-                            message=msg,
-                        )
-                        if progress_mid:
-                            self.patch_message(progress_mid, cd, msg_type=mt)
-                    except Exception:
-                        pass
-                    return
-
-                if now - _last_update[0] < _THROTTLE_INTERVAL:
-                    return
-                _last_update[0] = now
-            try:
-                cur_state = mgr.get_state(project)
-                cur_dicts = [u.to_dict() for u in cur_state.units]
-                msg = UI_TEXT["worktree_executing_live"].format(goal=goal[:60])
-                mt, cd = CardBuilder.build_worktree_progress_card(
-                    cur_dicts, pid, message=msg,
-                )
-                if progress_mid:
-                    self.patch_message(progress_mid, cd, msg_type=mt)
-            except Exception:
-                pass
+        _on_unit_update = self._make_throttled_progress_callback(
+            mgr, project, progress_mid, goal, silent_mode=silent_mode,
+        )
 
         # Execute in the current thread (already inside a task-scheduler slot)
         state = mgr.execute_goal(project, goal, on_unit_update=_on_unit_update)
@@ -1214,8 +1255,22 @@ class SystemHandler(BaseHandler):
             return
 
         mgr = self._worktree_manager()
-        mgr.cleanup_worktrees(project)
-        self.reply_message(message_id, UI_TEXT["system_worktree_cleanup_success"])
+        # Phase 1: safe check (force=False) — returns warnings for unsafe worktrees
+        force = bool((value or {}).get("force", False))
+        state, warnings = mgr.cleanup_worktrees(project, force=force)
+        if warnings and not force:
+            details = "\n".join(
+                f"- {'未提交变更' if w.has_uncommitted else ''}"
+                f"{'、' if w.has_uncommitted and w.has_unmerged else ''}"
+                f"{'未合并分支 ' + w.unmerged_branch if w.has_unmerged else ''}"
+                for w in warnings
+            )
+            self.reply_message(
+                message_id,
+                UI_TEXT["system_worktree_cleanup_warnings"].format(details=details),
+            )
+        else:
+            self.reply_message(message_id, UI_TEXT["system_worktree_cleanup_success"])
 
     def handle_worktree_execute_action(
         self,
@@ -1231,7 +1286,7 @@ class SystemHandler(BaseHandler):
             self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
             return
 
-        goal = str(value.get("worktree_goal") or value.get("_input_value") or "").strip()
+        goal = self._resolve_worktree_goal(value)
         if not goal:
             self.reply_message(message_id, UI_TEXT["system_worktree_goal_required"])
             return
@@ -1256,7 +1311,7 @@ class SystemHandler(BaseHandler):
         state = mgr.get_state(project)
 
         # Guard: reject if any unit is still running
-        if any(u.status == "running" for u in state.units):
+        if any(u.status == WorktreeUnitStatus.RUNNING for u in state.units):
             self.reply_message(message_id, UI_TEXT["system_worktree_unit_running_error"])
             return
 
@@ -1268,26 +1323,10 @@ class SystemHandler(BaseHandler):
         progress_mid = self.send_message(chat_id, card, msg_type=msg_type)
 
         # Throttled live progress callback (same pattern as handle_worktree_execute)
-        _update_lock = threading.Lock()
-        _last_update: list[float] = [0.0]
-        _THROTTLE_INTERVAL = 0.5
-
-        def _on_unit_update(unit):
-            now = time.time()
-            with _update_lock:
-                if now - _last_update[0] < _THROTTLE_INTERVAL:
-                    return
-                _last_update[0] = now
-            try:
-                cur_state = mgr.get_state(project)
-                cur_dicts = [u.to_dict() for u in cur_state.units]
-                mt, cd = CardBuilder.build_worktree_progress_card(
-                    cur_dicts, pid, message=UI_TEXT["worktree_executing_live"].format(goal=UI_TEXT["system_worktree_retry_goal"]),
-                )
-                if progress_mid:
-                    self.patch_message(progress_mid, cd, msg_type=mt)
-            except Exception:
-                pass
+        retry_goal = state.journey.goal or UI_TEXT["system_worktree_retry_goal"]
+        _on_unit_update = self._make_throttled_progress_callback(
+            mgr, project, progress_mid, retry_goal,
+        )
 
         # Execute retry
         state = mgr.retry_failed_units(project, on_unit_update=_on_unit_update)
