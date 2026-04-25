@@ -352,6 +352,11 @@ class SpecReporter:
         if project.duration():
             lines.append(f"⏱️ 总耗时: {format_duration(project.duration())}")
 
+        # Operation summary (tool calls, modified files)
+        operation_summary = self.format_operation_summary(project)
+        if operation_summary:
+            lines.append(f"\n{operation_summary}")
+
         # Full criteria list as appendix (for scanability)
         lines.append("\n**验收标准（完整列表）:**")
         tracker = project.criteria_tracker
@@ -359,6 +364,49 @@ class SpecReporter:
             satisfied = tracker.satisfied.get(i, False)
             marker = "✅" if satisfied else "🔲"
             lines.append(f"  {marker} {i + 1}. {criterion}")
+
+        return "\n".join(lines)
+
+    def format_operation_summary(self, project: SpecProject) -> str:
+        """格式化操作总结：工具调用统计、修改文件列表。"""
+        if not project.cycles:
+            return ""
+
+        total_tool_calls = sum(c.tool_call_count for c in project.cycles)
+        all_modified: set[str] = set()
+        for c in project.cycles:
+            all_modified.update(c.modified_files)
+
+        if total_tool_calls == 0 and not all_modified:
+            return ""
+
+        lines: list[str] = ["**📊 操作总结**\n"]
+        if total_tool_calls:
+            lines.append(f"🛠️ 工具调用: {total_tool_calls} 次")
+        if all_modified:
+            lines.append(f"🗂️ 涉及文件: {len(all_modified)} 个")
+
+        # Per-cycle breakdown (last 5)
+        cycles_with_stats = [c for c in project.cycles if c.tool_call_count > 0]
+        if len(cycles_with_stats) > 1:
+            lines.append("\n**各轮次摘要（最近 5 轮）:**")
+            for c in cycles_with_stats[-5:]:
+                phase_parts = []
+                for p_name, p_count in (c.phase_tool_stats or {}).items():
+                    if p_count > 0:
+                        phase_parts.append(f"{p_name}:{p_count}")
+                tool_info = f" ({', '.join(phase_parts)})" if phase_parts else ""
+                status_emoji = "✅" if c.status == "completed" else "❌"
+                lines.append(f"  {status_emoji} 循环 {c.cycle_number}: {c.tool_call_count} 次调用{tool_info}")
+
+        # Modified files list (max 10)
+        if all_modified:
+            lines.append("\n**修改的文件:**")
+            sorted_files = sorted(all_modified)
+            for f in sorted_files[:10]:
+                lines.append(f"  - `{f}`")
+            if len(sorted_files) > 10:
+                lines.append(f"  - ...及其他 {len(sorted_files) - 10} 个文件")
 
         return "\n".join(lines)
 

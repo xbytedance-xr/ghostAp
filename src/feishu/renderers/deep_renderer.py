@@ -44,7 +44,9 @@ class DeepRenderer(BaseRenderer):
         reporter = self.ctx.progress_reporter
 
         sender = SmartSender(
-            handler=self.handler, message_id=message_id, chat_id=chat_id, initial_message_id=initial_message_id
+            handler=self.handler, message_id=message_id, chat_id=chat_id,
+            initial_message_id=initial_message_id,
+            payload_guard=self._check_and_truncate_payload,
         )
 
         renderer = ACPEventRenderer()

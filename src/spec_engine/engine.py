@@ -572,6 +572,12 @@ class SpecEngine(BaseEngine):
                 project_name, cycle_num, phase.value, len(output),
             )
 
+            # Expose phase stats for cycle-level accumulation
+            self._last_phase_stats = {
+                "tool_call_count": len(tracker.tool_calls),
+                "modified_files": list(tracker.modified_files),
+            }
+
             if callbacks.on_phase_done:
                 callbacks.on_phase_done(cycle_num, phase, output)
 
@@ -697,6 +703,18 @@ class SpecEngine(BaseEngine):
     # ------------------------------------------------------------------
     # Cycle loop (shared by execute / resume)
     # ------------------------------------------------------------------
+    def _accumulate_phase_stats(self, cycle: "SpecCycle", phase_name: str) -> None:
+        """Accumulate _last_phase_stats into the current cycle."""
+        stats = getattr(self, "_last_phase_stats", None)
+        if not stats:
+            return
+        cycle.tool_call_count += stats.get("tool_call_count", 0)
+        new_files = stats.get("modified_files", [])
+        if new_files:
+            cycle.modified_files = list(set(cycle.modified_files) | set(new_files))
+        cycle.phase_tool_stats[phase_name] = stats.get("tool_call_count", 0)
+        self._last_phase_stats = None
+
     def _run_cycle_loop(
         self,
         start_cycle: int,
@@ -768,6 +786,7 @@ class SpecEngine(BaseEngine):
                         timeout,
                     )
                 cycle.spec_content = _truncate_output(spec_output, self.settings)
+                self._accumulate_phase_stats(cycle, SpecPhase.SPEC.value)
                 if self.settings.spec_persist_phase_artifacts:
                     cycle.spec_path = _persist_cycle_artifact(self.root_path, self.settings, self._project, cycle_num, "spec", spec_output, "json")
                 cycle.spec_artifact, cycle.spec_artifact_errors = parse_spec_artifact(spec_output)
@@ -812,6 +831,7 @@ class SpecEngine(BaseEngine):
                     timeout,
                 )
                 cycle.plan_content = _truncate_output(plan_output, self.settings)
+                self._accumulate_phase_stats(cycle, SpecPhase.PLAN.value)
                 if self.settings.spec_persist_phase_artifacts:
                     cycle.plan_path = _persist_cycle_artifact(self.root_path, self.settings, self._project, cycle_num, "plan", plan_output, "json")
                 cycle.plan_artifact, cycle.plan_artifact_errors = parse_plan_artifact(plan_output)
@@ -836,6 +856,7 @@ class SpecEngine(BaseEngine):
                     callbacks,
                     timeout,
                 )
+                self._accumulate_phase_stats(cycle, SpecPhase.TASK.value)
                 parsed_tasks = parse_tasks(task_output)
                 cycle.tasks_total = len(parsed_tasks)
                 cycle.tasks = parsed_tasks[: self.settings.spec_cycle_tasks_max]
@@ -868,6 +889,7 @@ class SpecEngine(BaseEngine):
                     timeout,
                 )
                 cycle.build_output = _truncate_output(build_output, self.settings)
+                self._accumulate_phase_stats(cycle, SpecPhase.BUILD.value)
                 if self.settings.spec_persist_phase_artifacts:
                     cycle.build_path = _persist_cycle_artifact(self.root_path, self.settings, self._project, cycle_num, "build", build_output, "txt")
 

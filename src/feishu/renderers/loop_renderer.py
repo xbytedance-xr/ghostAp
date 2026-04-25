@@ -43,7 +43,10 @@ class LoopRenderer(BaseRenderer):
         )
         reporter = self.ctx.loop_reporter
 
-        sender = SmartSender(handler=self.handler, message_id=message_id, chat_id=chat_id, initial_message_id=None)
+        sender = SmartSender(
+            handler=self.handler, message_id=message_id, chat_id=chat_id, initial_message_id=None,
+            payload_guard=self._check_and_truncate_payload,
+        )
 
         # Calculate loop_project_id once for UI state lookups in this closure
         loop_project_id = project.project_id if project else self.handler.get_working_dir(chat_id)

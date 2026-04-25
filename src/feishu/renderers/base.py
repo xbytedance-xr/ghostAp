@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from src.card.styles import THRESHOLDS
 from ...utils.errors import get_error_detail
@@ -37,7 +37,9 @@ class SmartSender:
     """
 
     def __init__(
-        self, handler: "BaseHandler", message_id: str, chat_id: str, initial_message_id: Optional[str] = None
+        self, handler: "BaseHandler", message_id: str, chat_id: str,
+        initial_message_id: Optional[str] = None,
+        payload_guard: Optional[Callable[[str], str]] = None,
     ) -> None:
         self.handler = handler
         self.settings = handler.settings
@@ -46,6 +48,9 @@ class SmartSender:
 
         self.current_message_id: Optional[str] = initial_message_id
         self.thread_root_message_id: Optional[str] = initial_message_id
+
+        # Payload safety: truncate oversized interactive cards before send/patch
+        self._payload_guard = payload_guard
 
         # Throttling state
         self.last_stream_ts: float = 0.0
@@ -103,6 +108,10 @@ class SmartSender:
         Smart send/patch logic with auto-re-anchoring.
         Returns the message_id of the sent/updated message.
         """
+        # Payload safety: truncate oversized interactive cards
+        if msg_type == "interactive" and self._payload_guard:
+            card_content = self._payload_guard(card_content)
+
         # 1. Try update existing card
         if is_update and self.current_message_id:
             if self.handler.patch_message(self.current_message_id, card_content, max_retries=1, throttle=throttle):

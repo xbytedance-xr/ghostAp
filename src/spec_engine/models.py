@@ -251,6 +251,10 @@ class SpecCycle:
     started_at: float = field(default_factory=time.time)
     completed_at: Optional[float] = None
     duration: Optional[float] = None
+    # 操作统计（由 PhaseTracker 累积）
+    tool_call_count: int = 0
+    modified_files: list[str] = field(default_factory=list)
+    phase_tool_stats: dict[str, int] = field(default_factory=dict)
 
     def complete(self):
         self.status = "completed"
@@ -290,6 +294,9 @@ class SpecCycle:
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "duration": self.duration,
+            "tool_call_count": self.tool_call_count,
+            "modified_files": self.modified_files,
+            "phase_tool_stats": self.phase_tool_stats,
         }
 
     @classmethod
@@ -326,6 +333,9 @@ class SpecCycle:
             started_at=data.get("started_at", time.time()),
             completed_at=data.get("completed_at"),
             duration=data.get("duration"),
+            tool_call_count=int(data.get("tool_call_count") or 0),
+            modified_files=list(data.get("modified_files") or []),
+            phase_tool_stats=dict(data.get("phase_tool_stats") or {}),
         )
 
 

@@ -5,6 +5,7 @@ import re
 from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder, EngineCardState
+from ...acp import ACPEventRenderer, ACPEventType
 from ...spec_engine import SpecEngineCallbacks
 from ...spec_engine.models import (
     ReviewResult,
@@ -42,11 +43,18 @@ class SpecRenderer(BaseRenderer):
         )
         reporter = self.ctx.spec_reporter
 
-        sender = SmartSender(handler=self.handler, message_id=message_id, chat_id=chat_id, initial_message_id=None)
+        sender = SmartSender(
+            handler=self.handler, message_id=message_id, chat_id=chat_id, initial_message_id=None,
+            payload_guard=self._check_and_truncate_payload,
+        )
 
         spec_project_id = project.project_id if project else self.handler.get_working_dir(chat_id)
 
         _max_cycles = 0
+
+        # ACP event renderer for real-time tool call display
+        acp_renderer = ACPEventRenderer()
+        _footer_status: list[Optional[str]] = [None]
 
         def _send_spec_message(
             card_content: str, msg_type: str = "interactive", is_update: bool = False, throttle: bool = False
@@ -319,15 +327,64 @@ class SpecRenderer(BaseRenderer):
             _send_spec_message(card_content, msg_type, is_update=True, throttle=throttle)
 
         def on_phase_start(cycle_num: int, phase: SpecPhase):
+            # Reset renderer for new phase
+            acp_renderer.reset()
+            _footer_status[0] = "tool_running"
+
             _, spec_project, state, max_c = _get_engine_and_state()
             content = reporter.format_phase_start_content(cycle_num, phase, max_c)
             title = reporter.get_cycle_start_title(cycle_num, max_c)
             title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
             _build_phase_card(title, content, spec_project, state, show_buttons=False, throttle=True, footer_status="tool_running")
 
+        def on_phase_event(cycle_num: int, phase: SpecPhase, event):
+            """Real-time ACP event processing — renders tool call details into phase card."""
+            acp_renderer.process_event(event)
+
+            # Track footer_status
+            if event.event_type == ACPEventType.THOUGHT_CHUNK:
+                _footer_status[0] = "thinking"
+            elif event.event_type in (ACPEventType.TOOL_CALL_START, ACPEventType.TOOL_CALL_UPDATE):
+                _footer_status[0] = "tool_running"
+            elif event.event_type == ACPEventType.TEXT_CHUNK:
+                _footer_status[0] = None
+
+            # Only trigger card update on meaningful events (throttled)
+            if event.event_type not in (
+                ACPEventType.TOOL_CALL_DONE,
+                ACPEventType.PLAN_UPDATE,
+            ):
+                return
+
+            tool_summary = acp_renderer.render_summary()
+            if not sender.check_throttle(len(tool_summary), force=False, min_interval=2.0, min_new_chars=10):
+                return
+
+            _, spec_project, state, max_c = _get_engine_and_state()
+            base_content = reporter.format_phase_start_content(cycle_num, phase, max_c)
+
+            # Append tool call summary
+            if tool_summary:
+                base_content += f"\n---\n{tool_summary}"
+
+            title = reporter.get_cycle_start_title(cycle_num, max_c)
+            title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
+            _build_phase_card(
+                title, base_content, spec_project, state,
+                show_buttons=False, throttle=True, footer_status=_footer_status[0],
+            )
+            sender.update_stream_state(len(tool_summary))
+
         def on_phase_done(cycle_num: int, phase: SpecPhase, output: str):
             _, spec_project, state, max_c = _get_engine_and_state()
             content = reporter.format_phase_done_content(cycle_num, phase, max_c, output)
+
+            # Append tool call summary from this phase
+            tool_summary = acp_renderer.render_summary()
+            if tool_summary:
+                content += f"\n---\n{tool_summary}"
+            _footer_status[0] = None
+
             title = reporter.get_cycle_start_title(cycle_num, max_c)
             title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
             _build_phase_card(title, content, spec_project, state, show_buttons=False, throttle=True)
@@ -336,6 +393,7 @@ class SpecRenderer(BaseRenderer):
             on_analyzing_done=on_analyzing_done,
             on_cycle_start=on_cycle_start,
             on_phase_start=on_phase_start,
+            on_phase_event=on_phase_event,
             on_phase_done=on_phase_done,
             on_cycle_done=on_cycle_done,
             on_review_done=on_review_done,
