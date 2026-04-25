@@ -520,7 +520,7 @@ class ProjectBuilder:
 
         if not snapshot:
             return ProjectBuilder.build_project_response_card(
-                project, f"{mode_name} 模式", UI_TEXT["project_resume_no_session"], show_buttons=True
+                project, f"{mode_name}{UI_TEXT['system_mode_label']}", UI_TEXT["project_resume_no_session"], show_buttons=True
             )
 
         content = (

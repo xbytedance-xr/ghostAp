@@ -1,6 +1,13 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
+## 2026-04-25
+- **卡片系统统一重构 Phase 1+2** — 创建 `UnifiedCardLayout` 统一布局构建器 + `CardLayoutSpec` 数据模型，让 StreamingCardManager（6 个编程模式）和 DeepBuilder（Deep/Loop/Spec 引擎）共享同一套卡片布局模板；引擎卡片新增折叠面板支持（`rendered_content` → `collapsible_panel`）；新增 `engine_collapsible_enabled` 配置开关；新建 `src/card/builders/layout.py`，修改 `models.py`/`streaming.py`/`deep.py`/`deep_renderer.py`/`config.py`；2934 全量测试零回归 → [详细记录](2026-04-25.md)
+- **卡片优化 Phase 3: pokoclaw 对齐 + 内容消失 bug 修复** — 新增 `truncation.py` 统一截断模块（`truncate_card_string`/`truncate_bash_output`/`cap_reasoning_tail`/`truncate_terminal_message`）；新增 `PANEL_STYLES`/`TERMINAL_MARKERS`/`FOOTER_STATUS`/`TRUNCATION_LIMITS` 常量集；`EngineCardState`/`CardLayoutSpec` 新增 `terminal_state`/`footer_status`/`is_read` 驱动字段；终态标记行 + footer 状态行 + danger 停止按钮 + 未读标记 + payload 27KB + 180 节点预算；**修复关键 bug：`to_elements()` 返回空列表时 `content_markdown` 被丢弃导致卡片只有进度没有文本**（`deep.py` 增加非空检查 + `layout.py` truthy guard）；字符串集中化审查（5 处硬编码中文替换为 `UI_TEXT` 常量）；2996 全量测试零回归 → [详细记录](2026-04-25.md)
+
+## 2026-04-24
+- **流式卡片增强：折叠面板 + 自动续接 + Worktree 路由修复** — 修复 `/wt` 在话题编程模式下无响应（`_dispatch_message_logic` 缺少 interceptable command 检查）；实现飞书 Schema 2.0 `collapsible_panel` 折叠面板（工具调用组/思考过程默认折叠），自动续接卡片（内容超阈值时在同一话题创建新卡片继续输出）；新增 `ContentSection`/`RenderedContent` 结构化渲染模型，`process_event_structured()` 方法；3 个配置开关（`card_collapsible_enabled`/`card_continuation_enabled`/`card_continuation_threshold_pct`）；PATCH 失败自动回退到平坦 markdown；29 个新测试，2920 全量通过零回归 → [详细记录](2026-04-24.md)
+
 ## 2026-04-23
 - **Worktree 自动执行功能验证加固** — 全面验证 8 个 AC 已满足：代码路径审查确认快速路径无 card action 等待、silent_mode 30s throttle + 10min 安全阀、cleanup_card 自动发送、空选择校验、无 goal 回退确认卡；新增 4 个边界测试（纯空白 goal、换行符 goal、超时安全阀触发、AUTO_EXECUTING + running units 不拦截）；全量 2857 tests 零回归 → [详细记录](2026-04-23.md)
 - **配色系统优化：增加深色主题和优化横幅色彩搭配** — 扩展配色系统，新增深色主题变体，优化横幅背景色为 wathet 提升视觉体验，满足 WCAG AA 级对比度要求；更新相关测试用例，全量 2835 个测试零回归 → [详细记录](2026-04-23.md)

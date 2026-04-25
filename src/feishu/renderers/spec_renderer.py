@@ -125,6 +125,7 @@ class SpecRenderer(BaseRenderer):
                     expand_ac=state.get("expand_ac", False),
                     action_prefix="spec",
                     warning_banner=warning_banner,
+                    footer_status="tool_running",
                 ),
             )
             # Cycle start is significant, immediate flush
@@ -232,6 +233,8 @@ class SpecRenderer(BaseRenderer):
             progress_bar = self._generate_progress_bar(spec_project.satisfied_count, spec_project.total_criteria)
             duration_line = reporter.format_duration_line(spec_project)
 
+            terminal_state = "completed" if spec_project.status.value == "completed" else "failed"
+
             state = self.get_ui_state(spec_project_id)
             msg_type, card_content = CardBuilder.build_engine_card(
                 project=project,
@@ -247,6 +250,7 @@ class SpecRenderer(BaseRenderer):
                     expanded=state["expanded"],
                     expand_ac=state.get("expand_ac", False),
                     action_prefix="spec",
+                    terminal_state=terminal_state,
                 ),
             )
             # Project done: independent message
@@ -268,6 +272,7 @@ class SpecRenderer(BaseRenderer):
                 state=state,
                 project_id=resolved_project_id,
                 engine_project_id=spec_project_id,
+                terminal_state="failed",
             )
             _send_spec_message(card_content, msg_type, is_update=True)
             self.handler.add_reaction(message_id, EmojiReaction.on_error())
@@ -280,7 +285,8 @@ class SpecRenderer(BaseRenderer):
             return engine, spec_project, state, max_c
 
         def _build_phase_card(
-            title: str, content: str, spec_project, state: dict, *, show_buttons: bool = False, throttle: bool = True
+            title: str, content: str, spec_project, state: dict, *, show_buttons: bool = False, throttle: bool = True,
+            footer_status: Optional[str] = None,
         ):
             progress_bar = None
             status_line = None
@@ -307,6 +313,7 @@ class SpecRenderer(BaseRenderer):
                     expand_ac=state.get("expand_ac", False),
                     action_prefix="spec",
                     show_buttons=show_buttons,
+                    footer_status=footer_status,
                 ),
             )
             _send_spec_message(card_content, msg_type, is_update=True, throttle=throttle)
@@ -316,7 +323,7 @@ class SpecRenderer(BaseRenderer):
             content = reporter.format_phase_start_content(cycle_num, phase, max_c)
             title = reporter.get_cycle_start_title(cycle_num, max_c)
             title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
-            _build_phase_card(title, content, spec_project, state, show_buttons=False, throttle=True)
+            _build_phase_card(title, content, spec_project, state, show_buttons=False, throttle=True, footer_status="tool_running")
 
         def on_phase_done(cycle_num: int, phase: SpecPhase, output: str):
             _, spec_project, state, max_c = _get_engine_and_state()
@@ -525,6 +532,7 @@ class SpecRenderer(BaseRenderer):
         project_id: Optional[str] = None,
         engine_project_id: Optional[str] = None,
         footer_note: Optional[str] = None,
+        terminal_state: Optional[str] = None,
     ) -> tuple[str, str]:
         reporter = self.ctx.spec_reporter
         ui_state = state or self.get_default_ui_state()
@@ -576,6 +584,7 @@ class SpecRenderer(BaseRenderer):
                 action_prefix="spec",
                 extra_buttons=extra_buttons,
                 footer_note=footer_note,
+                terminal_state=terminal_state,
             ),
         )
 

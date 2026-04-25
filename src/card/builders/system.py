@@ -212,12 +212,17 @@ class SystemBuilder:
                 }
             )
         elif result.stdout or result.stderr:
-            MAX_OUTPUT_LEN = THRESHOLDS["SHELL_STDOUT_MAX"]
+            from ..truncation import truncate_bash_output
+
+            _shell_notice = UI_TEXT["shell_truncated"]
 
             if result.stdout:
-                stdout_content = result.stdout
-                if len(stdout_content) > MAX_OUTPUT_LEN:
-                    stdout_content = stdout_content[:MAX_OUTPUT_LEN] + UI_TEXT["shell_truncated"]
+                stdout_content = truncate_bash_output(
+                    result.stdout,
+                    max_chars=THRESHOLDS["SHELL_STDOUT_MAX"],
+                    max_lines=999999,  # no line limit for shell result cards
+                    notice=_shell_notice,
+                )
                 elements.append(
                     {
                         "tag": "markdown",
@@ -225,9 +230,12 @@ class SystemBuilder:
                     }
                 )
             if result.stderr:
-                stderr_content = result.stderr
-                if len(stderr_content) > THRESHOLDS["SHELL_STDERR_MAX"]:
-                    stderr_content = stderr_content[:THRESHOLDS["SHELL_STDERR_MAX"]] + UI_TEXT["shell_truncated"]
+                stderr_content = truncate_bash_output(
+                    result.stderr,
+                    max_chars=THRESHOLDS["SHELL_STDERR_MAX"],
+                    max_lines=999999,
+                    notice=_shell_notice,
+                )
                 elements.append(
                     {
                         "tag": "markdown",
@@ -491,7 +499,7 @@ class SystemBuilder:
         project_id: Optional[str] = None,
         *,
         action: str = "show_ttadk_menu",
-        button_text: str = "🔄 重新进入TTADK",
+        button_text: str = "",
     ) -> tuple[str, str]:
         # Clean the message for the banner (CoreBuilder adds its own emoji)
         banner_msg = message.replace("⚠️ ", "").strip()
@@ -499,15 +507,16 @@ class SystemBuilder:
             CoreBuilder._build_banner_element(banner_msg, type="warning")
         ]
 
+        effective_text = button_text or UI_TEXT["system_ttadk_btn_reenter"]
         button = {
             "tag": "button",
-            "text": {"tag": "plain_text", "content": button_text},
+            "text": {"tag": "plain_text", "content": effective_text},
             "type": "primary",
             "value": {"action": action, "project_id": project_id},
         }
         elements.extend(build_responsive_layout([button]))
 
-        card = CoreBuilder._wrap_card("⚠️ TTADK 暂不可用", "blue", elements)
+        card = CoreBuilder._wrap_card(UI_TEXT["system_ttadk_unavailable_title"], "blue", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
 
     @staticmethod
@@ -523,14 +532,14 @@ class SystemBuilder:
         project_id: Optional[str] = None,
         *,
         action: str = "show_ttadk_menu",
-        button_text: str = "继续进入TTADK",
+        button_text: str = "",
     ) -> tuple[str, str]:
         message = SystemBuilder._format_ttadk_soft_failure_message(reason)
         return SystemBuilder.build_ttadk_soft_failure_card(
             message,
             project_id,
             action=action,
-            button_text=button_text,
+            button_text=button_text or UI_TEXT["system_ttadk_btn_continue"],
         )
 
     @staticmethod

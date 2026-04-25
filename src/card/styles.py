@@ -82,6 +82,18 @@ ENGINE_STYLES = {
     },
 }
 
+# ──────────────────────────────────────────────────────────────
+# Collapsible Panel Styles — aligned with pokoclaw tool-calls.ts
+# ──────────────────────────────────────────────────────────────
+PANEL_STYLES = {
+    "corner_radius": "5px",
+    "padding": "8px 8px 8px 8px",
+    "vertical_spacing": "8px",
+    "border_normal": "grey",
+    "border_failed": "red",
+    "border_history": "blue",
+}
+
 # Button Configuration
 BUTTON_CONFIG = {
     # Deep/Loop Engine Buttons
@@ -106,6 +118,7 @@ BUTTON_CONFIG = {
     "enter_ttadk": {"text": "🎮 TTADK模式", "type": "default"},
     "switch_ttadk_tool": {"text": "🔧 切换TTADK工具", "type": "primary"},
     "switch_project": {"text": "🔄 切换项目", "type": "default"},
+    "stop_danger": {"text": "⏹ 停止", "type": "danger"},
 }
 
 # UI Text Constants
@@ -327,6 +340,7 @@ UI_TEXT = {
     "system_ttadk_unavailable_title": "⚠️ TTADK 暂不可用",
     "system_ttadk_soft_failure_msg": "⚠️ {reason}\n\n已为你保留选择，可点击继续或稍后重试。",
     "system_ttadk_btn_continue": "继续进入TTADK",
+    "system_ttadk_btn_reenter": "🔄 重新进入TTADK",
     "system_acp_tool_select_title": "🧩 ACP 工具选择",
     "system_acp_model_select_title": "🧠 {tool} 模型选择",
     "system_menu_title": "📱 快捷菜单",
@@ -625,12 +639,51 @@ UI_TEXT = {
     "deep_status_analyzing_zh": "分析",
     # ── Shell Truncation ──
     "shell_truncated": "\n...(已截断)...",
+    # ── Streaming Card Collapsible / Continuation ──
+    "streaming_continuation_footer": "\n\n---\n⬇️ 后续内容见下方",
+    "streaming_continuation_title_suffix": " (续 #{n})",
+    "streaming_continuation_initial": "🔄 继续输出...",
+    "continuation_stale_stub": "ℹ️ **此页已收起，请查看下方更新后的卡片。**",
     # ── ws_client Prompts ──
     "ws_session_fail_msg": "⚠️ {name} 会话启动失败，已退回智能模式，请重新发送 /{cmd} 重试",
     "ws_thread_pending_msg": "📝 当前已开启{name}编程模式\n\n请发送你的编程需求，将自动创建编程话题",
     "ws_topic_hint_msg": "💡 当前话题已在编程模式中，直接发送你的需求即可\n\n如需切换工具，请在主对话中发送对应命令创建新话题",
     "ws_exit_deferred_msg": "✅ 已收到 /exit，将在当前任务完成后退出（不中断执行）",
     "ws_active_topic_msg": "💡 你有一个活跃的 {name} 编程话题正在进行中\n\n请在话题中回复继续对话\n如需新建编程环境，请先发送对应的编程模式命令（如 /coco）",
+}
+
+# ──────────────────────────────────────────────────────────────
+# Terminal State Markers — emoji-prefixed markdown for card endings
+# ──────────────────────────────────────────────────────────────
+TERMINAL_MARKERS: dict[str, str] = {
+    "completed": "✅ **已完成**",
+    "failed": "❌ **执行失败**",
+    "blocked": "⏸ **任务已阻塞**",
+    "cancelled": "⏹ **已停止**",
+    "awaiting_approval": "🔐 **等待授权**",
+    "denied": "❌ **授权已拒绝**",
+    "continued": "✅ **已获得授权**",
+}
+
+# ──────────────────────────────────────────────────────────────
+# Footer Status — real-time phase indicator shown at card bottom
+# ──────────────────────────────────────────────────────────────
+FOOTER_STATUS: dict[str, str] = {
+    "thinking": "🧠 正在思考",
+    "tool_running": "🧰 正在调用工具",
+    "waiting_approval": "🔐 等待批复",
+}
+
+# ──────────────────────────────────────────────────────────────
+# Truncation Limits — aligned with pokoclaw card-truncation.ts
+# ──────────────────────────────────────────────────────────────
+TRUNCATION_LIMITS: dict[str, int] = {
+    "card_string_max_chars": 220,
+    "card_string_max_lines": 6,
+    "bash_max_chars": 240,
+    "bash_max_lines": 8,
+    "reasoning_tail_max": 500,
+    "terminal_message_max": 1600,
 }
 
 # ──────────────────────────────────────────────────────────────
@@ -662,6 +715,16 @@ THRESHOLDS = {
     "STREAMING_VISIBLE_CHARS": 25000,
     # Streaming card pagination step
     "PAGINATION_STEP": 5000,
+    # Max continuation cards before giving up
+    "CONTINUATION_MAX_CARDS": 10,
+    # Min content length to enable collapsible panels (avoid overhead for short content)
+    "COLLAPSIBLE_MIN_CHARS": 2000,
+    # Max collapsible elements before falling back to flat markdown
+    "COLLAPSIBLE_MAX_ELEMENTS": 20,
+    # Card payload byte budget (aligned with pokoclaw: 27 * 1024)
+    "CARD_BYTE_BUDGET": 27 * 1024,
+    # Card node budget (max tagged nodes per card)
+    "CARD_NODE_BUDGET": 180,
 }
 
 # ──────────────────────────────────────────────────────────────

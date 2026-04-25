@@ -1260,6 +1260,154 @@ class TestBuildDeepCardStructuredParams:
         assert "Powered by Spec" in all_content
         assert "Main content" in all_content
 
+
+class TestTerminalMarkers:
+    """Task 9: terminal_state marker lines appear at card bottom."""
+
+    def test_completed_marker(self):
+        _, card_content = CardBuilder.build_engine_card(
+            project=None,
+            state=EngineCardState(
+                title="Done", content="ok", engine_name="Coco",
+                show_buttons=False, terminal_state="completed",
+            ),
+        )
+        card = json.loads(card_content)
+        last_md = [e for e in card["body"]["elements"] if e.get("tag") == "markdown"][-1]
+        assert "✅" in last_md["content"]
+        assert "已完成" in last_md["content"]
+
+    def test_failed_marker(self):
+        _, card_content = CardBuilder.build_engine_card(
+            project=None,
+            state=EngineCardState(
+                title="Err", content="err", engine_name="Coco",
+                show_buttons=False, terminal_state="failed",
+            ),
+        )
+        card = json.loads(card_content)
+        last_md = [e for e in card["body"]["elements"] if e.get("tag") == "markdown"][-1]
+        assert "❌" in last_md["content"]
+
+    def test_no_marker_when_none(self):
+        _, card_content = CardBuilder.build_engine_card(
+            project=None,
+            state=EngineCardState(
+                title="Running", content="running", engine_name="Coco",
+                show_buttons=False, terminal_state=None,
+            ),
+        )
+        card = json.loads(card_content)
+        from src.card.styles import TERMINAL_MARKERS
+        all_text = " ".join(str(e.get("content", "")) for e in card["body"]["elements"])
+        for marker in TERMINAL_MARKERS.values():
+            assert marker not in all_text
+
+
+class TestFooterStatus:
+    """Task 10: footer_status line appears before buttons."""
+
+    def test_thinking_footer(self):
+        _, card_content = CardBuilder.build_engine_card(
+            project=None,
+            state=EngineCardState(
+                title="Test", content="body", engine_name="Coco",
+                is_executing=True, footer_status="thinking",
+            ),
+        )
+        card = json.loads(card_content)
+        notation_elems = [e for e in card["body"]["elements"]
+                          if e.get("text_size") == "notation" and "🧠" in str(e.get("content", ""))]
+        assert len(notation_elems) >= 1
+        assert "正在思考" in notation_elems[0]["content"]
+
+    def test_tool_running_footer(self):
+        _, card_content = CardBuilder.build_engine_card(
+            project=None,
+            state=EngineCardState(
+                title="Test", content="body", engine_name="Coco",
+                is_executing=True, footer_status="tool_running",
+            ),
+        )
+        card = json.loads(card_content)
+        all_text = " ".join(str(e.get("content", "")) for e in card["body"]["elements"])
+        assert "🧰" in all_text
+        assert "正在调用工具" in all_text
+
+    def test_no_footer_when_none(self):
+        _, card_content = CardBuilder.build_engine_card(
+            project=None,
+            state=EngineCardState(
+                title="Test", content="body", engine_name="Coco",
+                show_buttons=False, footer_status=None,
+            ),
+        )
+        card = json.loads(card_content)
+        from src.card.styles import FOOTER_STATUS
+        all_text = " ".join(str(e.get("content", "")) for e in card["body"]["elements"])
+        for fs in FOOTER_STATUS.values():
+            assert fs not in all_text
+
+
+class TestStopDangerButton:
+    """Task 11: stop_danger button appears during execution."""
+
+    def test_stop_danger_appears_when_executing(self):
+        _, card_content = CardBuilder.build_engine_card(
+            project=None,
+            state=EngineCardState(
+                title="Running", content="work",
+                engine_name="Coco", is_executing=True,
+            ),
+        )
+        card = json.loads(card_content)
+        all_text = json.dumps(card, ensure_ascii=False)
+        assert "⏹ 停止" in all_text
+
+    def test_stop_danger_appears_when_paused(self):
+        _, card_content = CardBuilder.build_engine_card(
+            project=None,
+            state=EngineCardState(
+                title="Paused", content="paused",
+                engine_name="Coco", is_paused=True,
+            ),
+        )
+        card = json.loads(card_content)
+        all_text = json.dumps(card, ensure_ascii=False)
+        assert "⏹ 停止" in all_text
+
+
+class TestReadUnreadMarker:
+    """Task 12: is_read=False adds 🔴 prefix to title."""
+
+    def test_unread_marker_prefix(self):
+        _, card_content = CardBuilder.build_engine_card(
+            project=None,
+            state=EngineCardState(
+                title="New Task", content="body",
+                engine_name="Coco", show_buttons=False, is_read=False,
+            ),
+        )
+        card = json.loads(card_content)
+        header_title = card["header"]["title"]["content"]
+        assert header_title.startswith("🔴 ")
+
+    def test_read_no_marker(self):
+        _, card_content = CardBuilder.build_engine_card(
+            project=None,
+            state=EngineCardState(
+                title="Task", content="body",
+                engine_name="Coco", show_buttons=False, is_read=True,
+            ),
+        )
+        card = json.loads(card_content)
+        header_title = card["header"]["title"]["content"]
+        assert not header_title.startswith("🔴")
+
+    def test_default_is_read(self):
+        state = EngineCardState()
+        assert state.is_read is True
+
 class TestTTADKCards:
     """测试 TTADK 工具和模型选择卡片"""
 

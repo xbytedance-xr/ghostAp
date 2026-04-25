@@ -126,6 +126,7 @@ class LoopRenderer(BaseRenderer):
                     expand_ac=state.get("expand_ac", False),
                     action_prefix="loop",
                     warning_banner=warning_banner,
+                    footer_status="tool_running",
                 ),
             )
             # Iteration start: updates existing card, can be throttled or immediate.
@@ -236,6 +237,7 @@ class LoopRenderer(BaseRenderer):
                     expand_ac=state.get("expand_ac", False),
                     action_prefix="loop",
                     warning_banner=warning_banner,
+                    footer_status="thinking",
                 ),
             )
             # Review done: immediate flush
@@ -249,6 +251,8 @@ class LoopRenderer(BaseRenderer):
             title = reporter.get_project_done_title(loop_project)
             progress_bar = self._generate_progress_bar(loop_project.satisfied_count, loop_project.total_criteria)
             duration_line = reporter.format_duration_line(loop_project)
+
+            terminal_state = "completed" if loop_project.status.value == "completed" else "failed"
 
             state = self.get_ui_state(loop_project_id)
             msg_type, card_content = CardBuilder.build_engine_card(
@@ -264,6 +268,7 @@ class LoopRenderer(BaseRenderer):
                     expanded=state["expanded"],
                     expand_ac=state.get("expand_ac", False),
                     action_prefix="loop",
+                    terminal_state=terminal_state,
                 ),
             )
             # Project done: independent message
@@ -300,6 +305,7 @@ class LoopRenderer(BaseRenderer):
                     extra_buttons=extra_buttons,
                     action_prefix="loop",
                     engine_project_id=loop_project_id,
+                    terminal_state="failed",
                 ),
             )
             _send_loop_message(card_content, msg_type, is_update=True)

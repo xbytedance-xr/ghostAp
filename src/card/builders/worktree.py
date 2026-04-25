@@ -419,7 +419,7 @@ class WorktreeBuilder:
         5. fallback               → ("准备中", "blue")
         """
         if not units:
-            return "执行中", "blue"
+            return UI_TEXT["system_status_executing"], "blue"
 
         statuses = [u.get("status", "pending") for u in units]
         has_running = "running" in statuses

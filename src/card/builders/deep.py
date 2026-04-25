@@ -42,8 +42,23 @@ class DeepBuilder:
         return f"{icon} {label}"
 
     @staticmethod
-    def _pick_deep_template(engine_name: str, status: str = "running") -> str:
-        """Pick header template color based on engine and status."""
+    def _pick_deep_template(engine_name: str, status: str = "running", terminal_state: str | None = None) -> str:
+        """Pick header template color based on engine, status, and optional terminal_state."""
+        # terminal_state takes priority when present
+        if terminal_state:
+            TERMINAL_COLORS = {
+                "running": "blue",
+                "completed": "green",
+                "failed": "red",
+                "cancelled": "red",
+                "blocked": "grey",
+                "awaiting_approval": "blue",
+                "denied": "red",
+                "continued": "green",
+            }
+            if terminal_state in TERMINAL_COLORS:
+                return TERMINAL_COLORS[terminal_state]
+
         status = status.lower()
         STATUS_COLORS = {
             "error": "red",
@@ -134,10 +149,10 @@ class DeepBuilder:
         # 1. Collect Control Buttons (Pause/Resume, Stop)
         if state.is_executing:
             control_buttons.append(DeepBuilder._create_button("pause", state))
-            control_buttons.append(DeepBuilder._create_button("stop", state))
+            control_buttons.append(DeepBuilder._create_button("stop_danger", state, action_suffix="stop"))
         elif state.is_paused:
             control_buttons.append(DeepBuilder._create_button("resume", state))
-            control_buttons.append(DeepBuilder._create_button("stop", state))
+            control_buttons.append(DeepBuilder._create_button("stop_danger", state, action_suffix="stop"))
 
         # 2. Collect View/Mode Buttons
         # Only show these auxiliary buttons if we don't have high-priority extra buttons (like Retry)
@@ -198,7 +213,10 @@ class DeepBuilder:
         project: Optional[ProjectContext],
         state: EngineCardState,
     ) -> tuple[str, str]:
-        # Determine status for color mapping
+        from .layout import UnifiedCardLayout
+        from ..models import CardLayoutSpec
+
+        # ---- 1. 状态判断（用于颜色映射） ----
         status_key = "running"
         title_lower = state.title.lower()
         if "error" in title_lower or UI_TEXT["deep_status_failed_zh"] in state.title:
@@ -221,14 +239,13 @@ class DeepBuilder:
         ):
             status_key = "planning"
 
-        header_template = DeepBuilder._pick_deep_template(state.engine_name, status_key)
+        header_template = DeepBuilder._pick_deep_template(state.engine_name, status_key, terminal_state=getattr(state, 'terminal_state', None))
         theme = get_theme(header_template)
 
-        # Optimize Title with Icons based on status if not already present
+        # ---- 2. 标题 ----
         if not state.title:
             header_title = DeepBuilder._build_deep_header_title(project, state.engine_name)
         else:
-            # Force loop emoji if loop engine
             style = DeepBuilder._resolve_style(state.engine_name)
             icon = style["icon"]
             if icon not in state.title:
@@ -236,72 +253,25 @@ class DeepBuilder:
             else:
                 header_title = state.title
 
-        elements = [
-            CoreBuilder._build_directory_element(project, state.working_dir),
-            {"tag": "hr"},
-        ]
+        # 未读标记
+        if not state.is_read:
+            header_title = f"🔴 {header_title}"
 
-        # Progress bar
-        if state.progress_bar and (not state.content or state.progress_bar not in state.content):
-            elements.append({"tag": "markdown", "content": f"📊 {state.progress_bar}"})
-
-        # Status + duration line (compact, notation-size)
-        # 智能拼接元数据，针对 Spec Engine 等多维度状态场景优化显示，确保移动端可见性
-        meta_items = []
-        if state.status_line:
-            # 如果状态行已经包含分隔符，拆分为独立项以便后续智能换行
-            if " · " in state.status_line:
-                meta_items.extend([s.strip() for s in state.status_line.split(" · ") if s.strip()])
-            else:
-                meta_items.append(state.status_line.strip())
-
-        if state.duration_line:
-            meta_items.append(state.duration_line.strip())
-
-        if meta_items:
-            style = DeepBuilder._resolve_style(state.engine_name)
-            separator = style.get("meta_separator", " · ")
-
-            # 策略：如果元数据项过多（例如增加了规格单元进度），则强制换行展示，避免在移动端被截断或重叠
-            if len(meta_items) > 3:
-                separator = "\n"
-
-            elements.append(
-                {
-                    "tag": "markdown",
-                    "content": separator.join(meta_items),
-                    "text_size": "notation",
-                }
-            )
-
-        # Separator before main content (only if we have meta above)
-        if meta_items:
-            elements.append({"tag": "hr"})
-
-        # Warning banner
-        if state.warning_banner:
-            elements.append(CoreBuilder._build_banner_element(state.warning_banner, type="warning"))
-
-        # Main content processing
+        # ---- 3. 内容截断（compact/expanded/full 模式） ----
         display_content = state.content if isinstance(state.content, str) else str(state.content or "")
 
         if state.expanded:
-            # If expanded, show full content regardless of mode
-            pass
+            pass  # 全展开，不截断
         elif state.compact:
-            # Error check - show more context for errors
             is_error = status_key == "error"
-
             if is_error:
                 if not display_content:
                     display_content = UI_TEXT["deep_error_no_detail"]
                 else:
                     lines = display_content.split("\n")
-                    # Show first N lines for errors
                     if len(lines) > THRESHOLDS["COMPACT_LINE_THRESHOLD"]:
                         display_content = "\n".join(lines[:THRESHOLDS["COMPACT_LINE_THRESHOLD"]]) + UI_TEXT["deep_error_expand_hint"]
             else:
-                # Compact mode: show last N lines for running/paused to avoid scroll trap
                 if not display_content:
                     display_content = UI_TEXT["deep_executing_placeholder"]
                 else:
@@ -309,10 +279,8 @@ class DeepBuilder:
                     if len(lines) > THRESHOLDS["COMPACT_LINE_THRESHOLD"]:
                         display_content = "...\n" + "\n".join(lines[-THRESHOLDS["COMPACT_LINE_THRESHOLD"]:]) + UI_TEXT["deep_content_expand_hint"]
                     elif len(display_content) > THRESHOLDS["COMPACT_CHAR_FALLBACK"]:
-                        # Fallback for very long lines
                         display_content = "..." + display_content[-THRESHOLDS["COMPACT_CHAR_FALLBACK"]:]
         else:
-            # Full mode: Line-based truncation if not expanded
             if display_content:
                 lines = display_content.split("\n")
                 if len(lines) > THRESHOLDS["FULL_LINE_THRESHOLD"]:
@@ -320,71 +288,88 @@ class DeepBuilder:
                         lines[-THRESHOLDS["FULL_LINE_THRESHOLD"]:]
                     )
 
-        elements.append(CoreBuilder._build_content_element(display_content))
-
-        # Criteria section (independent element) - Skip in compact mode unless very short
+        # ---- 4. 验收标准截断 ----
+        criteria = None
         if state.criteria_section and not state.compact:
-            elements.append({"tag": "hr"})
-
-            # Smart truncation for Criteria Section
-            display_ac = state.criteria_section
+            criteria = state.criteria_section
             if not state.expand_ac:
-                ac_lines = display_ac.split("\n")
+                ac_lines = criteria.split("\n")
                 if len(ac_lines) > THRESHOLDS["AC_LINE_THRESHOLD"]:
-                    display_ac = "\n".join(ac_lines[:THRESHOLDS["AC_LINE_THRESHOLD"]]) + UI_TEXT["deep_ac_expand_hint"]
+                    criteria = "\n".join(ac_lines[:THRESHOLDS["AC_LINE_THRESHOLD"]]) + UI_TEXT["deep_ac_expand_hint"]
 
-            elements.append({"tag": "markdown", "content": display_ac})
-
-        # Footer note
-        if state.footer_note:
-            elements.append(
-                {
-                    "tag": "markdown",
-                    "content": state.footer_note,
-                    "text_size": "notation",
-                }
-            )
-
+        # ---- 5. 按钮构建（保留 grouped layout 逻辑） ----
+        btn_elements: list[dict] | None = None
         if state.show_buttons:
             if state.is_executing or state.is_paused:
-                # New grouped layout for running states
-                layout_elements = DeepBuilder._build_grouped_layout(state)
-                if layout_elements:
-                    elements.append({"tag": "hr"})
-                    elements.extend(layout_elements)
+                btn_elements = DeepBuilder._build_grouped_layout(state)
             else:
                 buttons = []
-                # Finished or not started, still show mode switch
                 from src.mode.manager import InteractionMode
                 base_buttons = CoreBuilder._build_footer_buttons(project, mode=InteractionMode.SMART)
 
-                # Custom extra buttons (e.g. retry/recover) should be first
                 if state.extra_buttons:
                     for b in state.extra_buttons:
                         if b:
                             buttons.append(apply_compact_style(b))
 
-                # If we have extra buttons (like Retry), hide the noise like expand/collapse and mode switch
                 if not state.extra_buttons:
-                    # Also add expand/collapse if there is enough content
                     lines = (state.content or "").split("\n")
                     threshold = THRESHOLDS["COMPACT_LINE_THRESHOLD"] if state.compact else THRESHOLDS["FULL_LINE_THRESHOLD"]
                     if len(lines) > threshold:
                         action_key = "collapse" if state.expanded else "expand"
-                        expand_btn = apply_compact_style(DeepBuilder._create_button(action_key, state))
-                        buttons.append(expand_btn)
+                        buttons.append(apply_compact_style(DeepBuilder._create_button(action_key, state)))
 
-                    # Add mode switch button
                     mode_key = "mode_full" if state.compact else "mode_compact"
                     mode_btn = apply_compact_style(DeepBuilder._create_button(mode_key, state))
                     if mode_btn:
                         buttons.append(mode_btn)
 
                 buttons.extend(base_buttons)
-
                 if buttons:
-                    elements.append({"tag": "hr"})
-                    elements.extend(build_responsive_layout(buttons))
+                    btn_elements = build_responsive_layout(buttons)
+
+        # ---- 6. 通过 UnifiedCardLayout 组装 ----
+        # 解析引擎的 meta_separator
+        style = DeepBuilder._resolve_style(state.engine_name)
+        meta_sep = style.get("meta_separator", " · ")
+
+        # 项目路径
+        working_path = None
+        if project:
+            working_path = project.root_path
+        elif state.working_dir:
+            working_path = state.working_dir
+
+        # 结构化内容（折叠面板）：非 compact 模式下，如果有 rendered_content，
+        # 使用 to_elements(collapsible=True) 替代纯 markdown
+        content_elements = None
+        use_content_markdown = display_content
+        if state.rendered_content is not None and not state.compact:
+            try:
+                els = state.rendered_content.to_elements(collapsible=True)
+                if els:  # 仅当结构化内容非空时才替代 markdown
+                    content_elements = els
+                    use_content_markdown = None
+                # else: 保留 markdown 内容作为 fallback
+            except Exception:
+                pass  # 降级为纯 markdown
+
+        spec = CardLayoutSpec(
+            project_path=working_path,
+            progress_bar=state.progress_bar,
+            status_line=state.status_line,
+            duration_line=state.duration_line,
+            engine_meta_separator=meta_sep,
+            warning_banner=state.warning_banner,
+            content_markdown=use_content_markdown,
+            content_elements=content_elements,
+            criteria_section=criteria,
+            footer_note=state.footer_note,
+            button_elements=btn_elements,
+            footer_status=state.footer_status,
+            terminal_state=state.terminal_state,
+        )
+        elements = UnifiedCardLayout.build(spec)
 
         card = CoreBuilder._wrap_card(header_title, theme.header_template, elements)
         return "interactive", json.dumps(card, ensure_ascii=False)

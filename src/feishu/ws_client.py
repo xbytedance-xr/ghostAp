@@ -1601,6 +1601,12 @@ class FeishuWSClient:
             if self._is_deep_command(text) or self._is_loop_command(text) or self._is_spec_command(text):
                 self._process_with_intent(message_id, chat_id, text, project, shell_fast_tracked=shell_fast_tracked)
                 return
+            # Interceptable system commands (/wt, /worktree, /help, /status, etc.)
+            # must be routed to the system handler even inside thread programming mode,
+            # otherwise they are swallowed by the programming mode handler silently.
+            if self._is_interceptable_command(text):
+                self._process_with_intent(message_id, chat_id, text, project, shell_fast_tracked=shell_fast_tracked)
+                return
         if auto_enter_mode and auto_enter_mode in {"coco", "claude", "aiden", "codex", "gemini", "ttadk"}:
             from ..mode import InteractionMode
             handler = self._get_mode_handler(InteractionMode(auto_enter_mode))

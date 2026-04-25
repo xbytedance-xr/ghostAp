@@ -411,15 +411,17 @@ class TestACPEventRenderer:
         """get_final_content() with no events returns empty string."""
         assert self.renderer.get_final_content() == ""
 
-    def test_get_final_content_thought_only_returns_empty(self):
-        """get_final_content() when only THOUGHT_CHUNKs were received returns empty."""
+    def test_get_final_content_thought_only_returns_thought_fallback(self):
+        """get_final_content() when only THOUGHT_CHUNKs were received returns thought content as fallback."""
         self.renderer.process_event(
             ACPEvent(
                 event_type=ACPEventType.THOUGHT_CHUNK,
                 text="thinking hard...",
             )
         )
-        assert self.renderer.get_final_content() == ""
+        result = self.renderer.get_final_content()
+        assert "thinking hard..." in result
+        assert "思考过程" in result
 
 
 class TestParseToolCallTodoWrite:

@@ -40,6 +40,7 @@ def test_output_is_fully_accessible_via_pagination_sliding_window():
 
     manager = StreamingCardManager(mock_client)
     manager._max_card_chars = 28000
+    manager._settings.card_continuation_enabled = False  # test pagination only
 
     card = manager.create_streaming_card(chat_id="c")
     card.message_id = "mid"
@@ -83,6 +84,7 @@ def test_output_can_still_be_paged_after_close_streaming():
 
     manager = StreamingCardManager(mock_client)
     manager._max_card_chars = 28000
+    manager._settings.card_continuation_enabled = False  # test pagination only
 
     card = manager.create_streaming_card(chat_id="c")
     card.message_id = "mid"

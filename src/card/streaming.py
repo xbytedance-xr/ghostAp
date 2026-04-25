@@ -4,7 +4,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 from src.mode.manager import InteractionMode
 
 import lark_oapi as lark
@@ -82,6 +82,15 @@ class StreamingCard:
     lock: threading.Lock = field(default_factory=threading.Lock)
     inflight_done: threading.Event = field(default_factory=lambda: _make_set_event())
 
+    # Structured rendering support (collapsible panels / continuation)
+    continuation_index: int = 0
+    structured_sections: Optional[list] = None  # list[ContentSection] from renderer
+    _collapsible_patch_failed: bool = False  # auto-fallback flag
+
+    # Continuation callback — invoked when a continuation card is created.
+    # Allows external code (e.g. programming handler) to reset renderer state.
+    on_continuation: Optional[Callable[[], None]] = None
+
 
 def _normalize_streaming_markdown(content: str, *, is_final: bool, max_chars: int) -> str:
     """让卡片在“增量渲染”时更稳定。
@@ -156,72 +165,27 @@ class StreamingCardManager:
         progress_text: str = "",
         sticky_message: Optional[str] = None,
     ) -> list[dict]:
-        """构建卡片内容元素列表。
+        """构建卡片内容元素列表（委托给 UnifiedCardLayout）。
 
         注意：飞书消息 PATCH 更新（`im/v1/message.update`）对卡片字段校验更严格。
         PATCH 载荷使用 schema 2.0，但元素需采用 legacy-safe 字段（避免 `text_size`/`element_id`）。
         """
-        path_display = project_path or "~"
-        button_elements = self._build_button_elements(buttons or [])
+        from .builders.layout import UnifiedCardLayout
+        from .models import CardLayoutSpec
 
-        def _maybe_attach(target: dict, **kv):
-            if legacy:
-                return target
-            for k, v in kv.items():
-                if v is not None:
-                    target[k] = v
-            return target
-
-        # Status Bar
-        status_icon = {"green": "🟢", "red": "🔴", "blue": "🔵", "grey": "⚪"}.get(status_color, "🔵")
-        status_info = f"{status_icon} **状态**: {status_color.upper()}"
-        if error_count > 0:
-            status_info += f" | ❌ 错误: {error_count}"
-        if progress_text:
-            status_info += f" | {progress_text}"
-
-        elements = [
-            _maybe_attach(
-                {"tag": "markdown", "content": f"📁 `{path_display}`\n{status_info}"},
-                element_id="path_md",
-                text_size="notation",
-            ),
-        ]
-
-        if sticky_message:
-            elements.append(
-                {
-                    "tag": "note",
-                    "elements": [{"tag": "plain_text", "content": f"⚠️ {sticky_message}"}],
-                }
-            )
-
-        elements.append({"tag": "hr"})
-
-        if image_keys:
-            for i, key in enumerate(image_keys):
-                elements.append(
-                    {
-                        "tag": "img",
-                        "img_key": key,
-                        "alt": {"tag": "plain_text", "content": f"图片 {i + 1}"},
-                    }
-                )
-            elements.append({"tag": "hr"})
-
-        elements.append(
-            _maybe_attach(
-                {"tag": "markdown", "content": initial_content},
-                element_id=element_id,
-                text_size="normal",
-            )
+        spec = CardLayoutSpec(
+            project_path=project_path,
+            image_keys=image_keys,
+            buttons=buttons,
+            status_color=status_color,
+            error_count=error_count,
+            progress_text=progress_text,
+            sticky_message=sticky_message,
+            content_markdown=initial_content,
+            legacy_safe=legacy,
+            content_element_id=element_id,
         )
-
-        if button_elements:
-            elements.append({"tag": "hr"})
-            elements.extend(button_elements)
-
-        return elements
+        return UnifiedCardLayout.build(spec)
 
     def _build_card_json(
         self,
@@ -474,6 +438,60 @@ class StreamingCardManager:
             return []
         return build_responsive_layout(buttons)
 
+    def _build_structured_elements(
+        self,
+        project_path: Optional[str],
+        content_elements: list[dict],
+        image_keys: Optional[list[str]],
+        buttons: Optional[list[dict]],
+        *,
+        status_color: str = "blue",
+        error_count: int = 0,
+        progress_text: str = "",
+        sticky_message: Optional[str] = None,
+    ) -> list[dict]:
+        """Build card elements using pre-built content elements (委托给 UnifiedCardLayout).
+
+        This replaces the single markdown element with multiple elements that may
+        include collapsible_panel sections.
+        """
+        from .builders.layout import UnifiedCardLayout
+        from .models import CardLayoutSpec
+
+        spec = CardLayoutSpec(
+            project_path=project_path,
+            image_keys=image_keys,
+            buttons=buttons,
+            status_color=status_color,
+            error_count=error_count,
+            progress_text=progress_text,
+            sticky_message=sticky_message,
+            content_elements=content_elements,
+            legacy_safe=True,  # structured elements are used in PATCH context
+        )
+        return UnifiedCardLayout.build(spec)
+
+    def update_structured(self, card: StreamingCard, rendered: "RenderedContent", force: bool = False, is_typing: bool = False) -> bool:
+        """Update card with structured RenderedContent.
+
+        Stores sections on card for _do_patch_task to build collapsible elements.
+        Falls back to flat markdown via update_content when collapsible is disabled
+        or card has experienced a collapsible PATCH failure.
+        """
+        if not card.message_id:
+            return False
+
+        with card.lock:
+            if card._collapsible_patch_failed or not self._settings.card_collapsible_enabled:
+                # Fallback to flat markdown
+                pass
+            else:
+                card.structured_sections = rendered.sections
+
+        # Always update full_content with flat markdown (for pagination, continuation, etc.)
+        flat_md = rendered.to_markdown()
+        return self.update_content(card, flat_md, force=force, is_typing=is_typing)
+
     # ---- 发送/更新/关闭 ----
 
     def _maybe_cleanup(self) -> None:
@@ -684,6 +702,130 @@ class StreamingCardManager:
         self._executor.submit(self._do_patch_task, card)
         return True
 
+    def _maybe_create_continuation(self, card: StreamingCard, content: str) -> bool:
+        """Check if content exceeds threshold and create a continuation card.
+
+        Returns True if a continuation was created (card object mutated in-place).
+
+        Safety: creates new card FIRST, then closes old card. If new card creation
+        fails, the old card remains active and continues receiving updates.
+        """
+        if not self._settings.card_continuation_enabled:
+            return False
+
+        max_cards = THRESHOLDS.get("CONTINUATION_MAX_CARDS", 10)
+        if card.continuation_index >= max_cards:
+            return False
+
+        threshold = int(self._max_card_chars * self._settings.card_continuation_threshold_pct)
+        if len(content) < threshold:
+            return False
+
+        from .styles import UI_TEXT
+        footer = UI_TEXT.get("streaming_continuation_footer", "\n\n---\n⬇️ 后续内容见下方")
+        suffix_template = UI_TEXT.get("streaming_continuation_title_suffix", " (续 #{n})")
+        initial_text = UI_TEXT.get("streaming_continuation_initial", "🔄 继续输出...")
+
+        old_message_id = card.message_id
+        new_index = card.continuation_index + 1
+        new_title = card.title + suffix_template.replace("{n}", str(new_index))
+
+        # 1. Create new card FIRST (safe: old card still active if this fails)
+        new_card_json = self._build_update_card_json(
+            title=new_title,
+            header_template=card.header_template,
+            project_path=card.project_path,
+            initial_content=initial_text,
+            image_keys=None,
+            buttons=[],
+            streaming_mode=True,
+            status_color=card.status_color,
+        )
+        try:
+            reply_msg_id = card.reply_to_message_id or old_message_id
+            msg_content = json.dumps(new_card_json, ensure_ascii=False)
+            request = (
+                ReplyMessageRequest.builder()
+                .message_id(reply_msg_id)
+                .request_body(
+                    ReplyMessageRequestBody.builder()
+                    .msg_type("interactive")
+                    .content(msg_content)
+                    .reply_in_thread(True)
+                    .build()
+                )
+                .build()
+            )
+            response = self._client.im.v1.message.reply(request)
+            if not response.success():
+                logger.warning("续接：创建新卡片失败: code=%s, msg=%s", response.code, response.msg)
+                return False
+            new_message_id = response.data.message_id
+        except Exception as e:
+            logger.warning("续接：创建新卡片异常: %s", str(e))
+            return False
+
+        # 2. Close old card with stub message (best-effort: new card already exists)
+        stub_text = UI_TEXT.get("continuation_stale_stub", "ℹ️ **此页已收起，请查看下方更新后的卡片。**")
+        normalized = _normalize_streaming_markdown(stub_text, is_final=True, max_chars=0)
+        buttons = self._build_buttons(card.mode, card.project_id, thread_root_id=card.thread_root_id)
+        close_json = self._build_update_card_json(
+            title=card.title,
+            header_template=card.header_template,
+            project_path=card.project_path,
+            initial_content=normalized,
+            image_keys=card.image_keys,
+            buttons=buttons,
+            streaming_mode=False,
+            status_color=card.status_color,
+            error_count=card.error_count,
+            progress_text=card.progress_text,
+        )
+        try:
+            req = (
+                PatchMessageRequest.builder()
+                .message_id(old_message_id)
+                .request_body(
+                    PatchMessageRequestBody.builder().content(json.dumps(close_json, ensure_ascii=False)).build()
+                )
+                .build()
+            )
+            resp = self._client.im.v1.message.patch(req)
+            if not resp.success():
+                logger.warning("续接：关闭旧卡片失败(非致命): code=%s, msg=%s", resp.code, resp.msg)
+                # Non-fatal: new card already created, continue with it
+        except Exception as e:
+            logger.warning("续接：关闭旧卡片异常(非致命): %s", str(e))
+            # Non-fatal: new card already created, continue with it
+
+        # 3. Mutate card in-place to point to new card
+        with card.lock:
+            card.continuation_index = new_index
+            card.title = new_title
+            card.full_content = ""
+            card.last_content = ""
+            card.last_content_len = 0
+            card.view_start = 0
+            card.structured_sections = None
+            card._collapsible_patch_failed = False
+            old_mid = card.message_id
+            card.message_id = new_message_id
+
+        # 4. Update _cards dict
+        with self._lock:
+            self._cards.pop(old_mid, None)
+            self._cards[new_message_id] = card
+
+        # 5. Notify external listener to reset renderer state
+        if card.on_continuation is not None:
+            try:
+                card.on_continuation()
+            except Exception as exc:
+                logger.warning("on_continuation callback error: %s", str(exc))
+
+        logger.info("续接卡片创建成功: #%d, old=%s, new=%s", new_index, old_mid, new_message_id)
+        return True
+
     def _do_patch_task(self, card: StreamingCard) -> None:
         try:
             while True:
@@ -696,6 +838,21 @@ class StreamingCardManager:
 
                     content = card.full_content
                     is_typing = card.is_typing
+                    structured = card.structured_sections  # snapshot
+                    use_collapsible = (
+                        structured is not None
+                        and not card._collapsible_patch_failed
+                        and self._settings.card_collapsible_enabled
+                    )
+
+                # Check continuation (outside lock — may do API calls)
+                if self._maybe_create_continuation(card, content):
+                    # Card was mutated in-place, content reset. Re-read and continue.
+                    with card.lock:
+                        content = card.full_content
+                        card.pending_update = True  # ensure we process remaining content
+
+                with card.lock:
                     display_content, has_prev, has_more = self._slice_window(card, content)
 
                     now = time.time()
@@ -746,19 +903,57 @@ class StreamingCardManager:
                         }
                     )
 
-                card_json = self._build_update_card_json(
-                    title=card.title,
-                    header_template=card.header_template,
-                    project_path=card.project_path,
-                    initial_content=normalized,
-                    image_keys=card.image_keys,
-                    buttons=buttons,
-                    streaming_mode=True,
-                    status_color=card.status_color,
-                    error_count=card.error_count,
-                    progress_text=card.progress_text,
-                    sticky_message=card.sticky_message,
-                )
+                # Try structured (collapsible) rendering if available
+                card_json = None
+                tried_collapsible = False
+                if use_collapsible and not has_prev and not has_more:
+                    from ..acp.renderer import RenderedContent
+                    rc = RenderedContent(sections=structured)
+                    content_elements = rc.to_elements(collapsible=True)
+                    max_elements = THRESHOLDS.get("COLLAPSIBLE_MAX_ELEMENTS", 20)
+                    if len(content_elements) <= max_elements:
+                        tried_collapsible = True
+                        elements = self._build_structured_elements(
+                            project_path=card.project_path,
+                            content_elements=content_elements,
+                            image_keys=card.image_keys,
+                            buttons=buttons,
+                            status_color=card.status_color,
+                            error_count=card.error_count,
+                            progress_text=card.progress_text,
+                            sticky_message=card.sticky_message,
+                        )
+                        config: dict = {
+                            "wide_screen_mode": True,
+                            "update_multi": True,
+                            "streaming_mode": True,
+                            "streaming_config": _STREAMING_CONFIG,
+                        }
+                        card_json = {
+                            "schema": "2.0",
+                            "config": config,
+                            "header": {
+                                "title": {"tag": "plain_text", "content": card.title},
+                                "template": card.header_template,
+                            },
+                            "body": {"elements": elements},
+                        }
+
+                # Fallback to flat markdown
+                if card_json is None:
+                    card_json = self._build_update_card_json(
+                        title=card.title,
+                        header_template=card.header_template,
+                        project_path=card.project_path,
+                        initial_content=normalized,
+                        image_keys=card.image_keys,
+                        buttons=buttons,
+                        streaming_mode=True,
+                        status_color=card.status_color,
+                        error_count=card.error_count,
+                        progress_text=card.progress_text,
+                        sticky_message=card.sticky_message,
+                    )
 
                 req = (
                     PatchMessageRequest.builder()
@@ -774,6 +969,11 @@ class StreamingCardManager:
                 with card.lock:
                     if not resp.success():
                         logger.warning("卡片消息更新失败: code=%s, msg=%s", resp.code, resp.msg)
+                        # If collapsible failed, mark fallback and retry with flat markdown
+                        if tried_collapsible:
+                            card._collapsible_patch_failed = True
+                            card.pending_update = True  # retry next iteration with flat
+                            logger.info("Collapsible PATCH 失败，已切换到平坦 markdown 回退模式")
                     else:
                         card.last_content = normalized
                         card.last_content_len = len(content)
@@ -789,8 +989,10 @@ class StreamingCardManager:
         if not card.message_id:
             return False
 
-        # Wait for any in-flight update to finish to avoid race conditions
-        card.inflight_done.wait(timeout=2.0)
+        # Wait for any in-flight update to finish to avoid race conditions.
+        # Use a longer timeout (5s) to accommodate slow Feishu API responses.
+        if not card.inflight_done.wait(timeout=5.0):
+            logger.warning("close_streaming: in-flight update did not complete within 5s, proceeding anyway")
 
         with card.lock:
             # Prevent new updates
@@ -827,19 +1029,59 @@ class StreamingCardManager:
                         "value": {"action": "load_more", "message_id": card.message_id},
                     }
                 )
-            card_json = self._build_update_card_json(
-                title=card.title,
-                header_template=card.header_template,
-                project_path=card.project_path,
-                initial_content=normalized,
-                image_keys=card.image_keys,
-                buttons=buttons,
-                streaming_mode=False,
-                status_color=card.status_color,
-                error_count=card.error_count,
-                progress_text=card.progress_text,
-                sticky_message=card.sticky_message,
-            )
+
+            # Try structured (collapsible) rendering for the final card
+            card_json = None
+            with card.lock:
+                structured = card.structured_sections
+                use_collapsible = (
+                    structured is not None
+                    and not card._collapsible_patch_failed
+                    and self._settings.card_collapsible_enabled
+                )
+            if use_collapsible and not has_prev and not has_more:
+                try:
+                    from ..acp.renderer import RenderedContent
+                    rc = RenderedContent(sections=structured)
+                    content_elements = rc.to_elements(collapsible=True)
+                    max_elements = THRESHOLDS.get("COLLAPSIBLE_MAX_ELEMENTS", 20)
+                    if len(content_elements) <= max_elements:
+                        elements = self._build_structured_elements(
+                            project_path=card.project_path,
+                            content_elements=content_elements,
+                            image_keys=card.image_keys,
+                            buttons=buttons,
+                            status_color=card.status_color,
+                            error_count=card.error_count,
+                            progress_text=card.progress_text,
+                            sticky_message=card.sticky_message,
+                        )
+                        card_json = {
+                            "schema": "2.0",
+                            "config": {"wide_screen_mode": True, "update_multi": True},
+                            "header": {
+                                "title": {"tag": "plain_text", "content": card.title},
+                                "template": card.header_template,
+                            },
+                            "body": {"elements": elements},
+                        }
+                except Exception:
+                    logger.debug("close_streaming: collapsible build 失败，回退到平坦 markdown")
+
+            if card_json is None:
+                card_json = self._build_update_card_json(
+                    title=card.title,
+                    header_template=card.header_template,
+                    project_path=card.project_path,
+                    initial_content=normalized,
+                    image_keys=card.image_keys,
+                    buttons=buttons,
+                    streaming_mode=False,
+                    status_color=card.status_color,
+                    error_count=card.error_count,
+                    progress_text=card.progress_text,
+                    sticky_message=card.sticky_message,
+                )
             req = (
                 PatchMessageRequest.builder()
                 .message_id(card.message_id)

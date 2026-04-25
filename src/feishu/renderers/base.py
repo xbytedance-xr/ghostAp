@@ -13,6 +13,20 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _count_tagged_nodes(obj: Any) -> int:
+    """Recursively count dicts containing a ``"tag"`` key (Feishu element nodes)."""
+    count = 0
+    if isinstance(obj, dict):
+        if "tag" in obj:
+            count += 1
+        for v in obj.values():
+            count += _count_tagged_nodes(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            count += _count_tagged_nodes(item)
+    return count
+
+
 class SmartSender:
     """
     Helper for sending messages with smart state management:
@@ -260,15 +274,35 @@ class BaseRenderer:
 
         return "\n".join(final_lines)
 
-    def _check_and_truncate_payload(self, card_content: str, max_size: int = 30 * 1024) -> str:
+    def _check_and_truncate_payload(self, card_content: str, max_size: int | None = None) -> str:
         """
         Check if card content exceeds size limit and truncate if necessary.
         Attempts to preserve JSON structure while truncating text fields.
+        Also checks tagged-node count against CARD_NODE_BUDGET.
         """
         import json
+        from src.card.styles import THRESHOLDS
+
+        if max_size is None:
+            max_size = THRESHOLDS["CARD_BYTE_BUDGET"]
 
         if len(card_content.encode("utf-8")) <= max_size:
-            return card_content
+            # Still check node count even if byte size is OK
+            try:
+                card_check = json.loads(card_content)
+                node_budget = THRESHOLDS["CARD_NODE_BUDGET"]
+                if _count_tagged_nodes(card_check) > node_budget:
+                    logger.warning(
+                        "Card node count %d exceeds budget %d, will truncate",
+                        _count_tagged_nodes(card_check), node_budget,
+                    )
+                    # Fall through to truncation logic
+                else:
+                    return card_content
+            except (json.JSONDecodeError, Exception):
+                return card_content
+        else:
+            pass  # Fall through to truncation logic
 
         logger.warning(
             "Card payload size %d exceeds limit %d, attempting truncation", len(card_content.encode("utf-8")), max_size
@@ -333,18 +367,43 @@ class BaseRenderer:
             # Double check size after smart truncation
             if len(truncated_content.encode("utf-8")) > max_size:
                 # If still too big, try more aggressive truncation
-                # Just keep header and a simple body
+                # Keep header and extract a brief text summary from the original card
+                summary_text = "内容过长无法完整展示。"
+                try:
+                    # Try to extract some meaningful text from the original content fields
+                    def _extract_text(obj, limit=2000):
+                        if isinstance(obj, str) and len(obj) > 50:
+                            return obj[:limit]
+                        if isinstance(obj, dict):
+                            for k in ("content", "text"):
+                                v = obj.get(k)
+                                if isinstance(v, str) and len(v) > 50:
+                                    return v[:limit]
+                            for v in obj.values():
+                                r = _extract_text(v, limit)
+                                if r:
+                                    return r
+                        if isinstance(obj, list):
+                            for item in obj[:5]:
+                                r = _extract_text(item, limit)
+                                if r:
+                                    return r
+                        return ""
+
+                    extracted = _extract_text(card)
+                    if extracted:
+                        summary_text = extracted[:2000] + "\n\n...(内容过长已截断)"
+                except Exception:
+                    pass
+
                 fallback_card = {
                     "config": card.get("config", {"wide_screen_mode": True}),
                     "header": card.get("header", {"title": {"tag": "plain_text", "content": "⚠️ 卡片过大"}}),
                     "body": {
                         "elements": [
                             {
-                                "tag": "div",
-                                "text": {
-                                    "tag": "plain_text",
-                                    "content": "内容极其庞大，无法展示摘要。请在电脑端查看。",
-                                },
+                                "tag": "markdown",
+                                "content": summary_text,
                             }
                         ]
                     },

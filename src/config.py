@@ -258,6 +258,16 @@ class Settings(BaseSettings):
     # Worktree dispatcher pool-level timeout (seconds)
     worktree_pool_timeout: int = 600
 
+    # Streaming card collapsible panels (tool calls / thoughts folded by default)
+    card_collapsible_enabled: bool = True
+
+    # Engine card collapsible panels (Deep/Loop/Spec: structured content with collapsible panels)
+    engine_collapsible_enabled: bool = True
+
+    # Streaming card auto-continuation (create new card when content exceeds threshold)
+    card_continuation_enabled: bool = True
+    card_continuation_threshold_pct: float = 0.85
+
     # Review metrics exporter
     # - "logger" (default): output via logging.info (original behaviour)
     # - "jsonl": append JSON Lines to review_metrics_jsonl_path

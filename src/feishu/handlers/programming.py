@@ -692,6 +692,15 @@ class ProgrammingModeHandler(BaseHandler):
         renderer = ACPEventRenderer()
         timeout = self.settings.coco_execution_timeout if self.is_coco else self.settings.claude_execution_timeout
 
+        # Register continuation callback: when a new card is created,
+        # reset renderer state so it only produces new content + brief summary.
+        if streaming_card:
+            def _on_continuation():
+                summary = renderer.render_continuation_summary()
+                renderer.reset_for_continuation(summary)
+
+            streaming_card.on_continuation = _on_continuation
+
         if not streaming_card or not card_message_id:
             logger.warning("创建流式卡片失败，回退到纯文本模式")
             try:
@@ -711,9 +720,14 @@ class ProgrammingModeHandler(BaseHandler):
 
             def on_event(event: ACPEvent):
                 update_count[0] += 1
-                rendered = renderer.process_event(event)
-                if rendered and streaming_card:
-                    streaming_manager.update_content(streaming_card, rendered)
+                if self.settings.card_collapsible_enabled:
+                    structured = renderer.process_event_structured(event)
+                    if structured.sections and streaming_card:
+                        streaming_manager.update_structured(streaming_card, structured)
+                else:
+                    rendered = renderer.process_event(event)
+                    if rendered and streaming_card:
+                        streaming_manager.update_content(streaming_card, rendered)
 
             try:
                 result = session.send_prompt(text, on_event=on_event, timeout=timeout)

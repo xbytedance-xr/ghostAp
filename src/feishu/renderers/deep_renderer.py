@@ -49,6 +49,10 @@ class DeepRenderer(BaseRenderer):
 
         renderer = ACPEventRenderer()
 
+        # 保存最近的结构化渲染结果，用于引擎卡片折叠面板
+        _last_structured = [None]  # mutable container for closure
+        _footer_status = [None]  # mutable container for footer_status tracking
+
         def _send_deep_message(
             card_content: str, msg_type: str = "interactive", is_update: bool = False, throttle: bool = False
         ):
@@ -156,6 +160,8 @@ class DeepRenderer(BaseRenderer):
                     expand_ac=state.get("expand_ac", False),
                     action_prefix="deep",
                     warning_banner=warning_banner,
+                    rendered_content=_last_structured[0],
+                    footer_status=_footer_status[0],
                 ),
             )
             # Streaming updates: use throttling
@@ -164,7 +170,19 @@ class DeepRenderer(BaseRenderer):
 
         def on_event(event: ACPEvent):
             """Process ACP events and update streaming display."""
-            renderer.process_event(event)
+            if self.settings.engine_collapsible_enabled:
+                structured = renderer.process_event_structured(event)
+                _last_structured[0] = structured
+            else:
+                renderer.process_event(event)
+
+            # Determine footer_status based on event type
+            if event.event_type == ACPEventType.THOUGHT_CHUNK:
+                _footer_status[0] = "thinking"
+            elif event.event_type in (ACPEventType.TOOL_CALL_START, ACPEventType.TOOL_CALL_UPDATE):
+                _footer_status[0] = "tool_running"
+            elif event.event_type == ACPEventType.TEXT_CHUNK:
+                _footer_status[0] = None  # clear footer during text streaming
 
             # 1) Plan updates: send plan-only view (throttled)
             if event.event_type == ACPEventType.PLAN_UPDATE and event.plan:
@@ -249,6 +267,7 @@ class DeepRenderer(BaseRenderer):
             except (TypeError, ValueError, AttributeError):
                 has_steps = False
             progress_bar = progress.progress_bar if has_steps else None
+            terminal_state = "completed" if deep_project.status == DeepProjectStatus.COMPLETED else "failed"
             msg_type, card_content = CardBuilder.build_engine_card(
                 project=project,
                 state=EngineCardState(
@@ -257,6 +276,8 @@ class DeepRenderer(BaseRenderer):
                     progress_bar=progress_bar,
                     engine_project_id=deep_project.project_id,
                     engine_name=engine_name,
+                    rendered_content=_last_structured[0],
+                    terminal_state=terminal_state,
                 ),
             )
             # Final completion: immediate flush
@@ -310,6 +331,7 @@ class DeepRenderer(BaseRenderer):
                     extra_buttons=extra_buttons,
                     action_prefix="deep",
                     engine_project_id=deep_project_id,
+                    terminal_state="failed",
                 ),
             )
             # Error state: immediate flush

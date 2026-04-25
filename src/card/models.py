@@ -37,6 +37,14 @@ class ModelOptionView:
 
 
 @dataclass
+class ReasoningState:
+    """Reasoning block state for card rendering."""
+    content: str = ""
+    active: bool = False
+    expanded: bool = False
+
+
+@dataclass
 class EngineCardState:
     title: str = ""
     content: str = ""
@@ -58,6 +66,14 @@ class EngineCardState:
     action_prefix: str = "deep"
     extra_buttons: Optional[list[dict]] = None
     warning_banner: Optional[str] = None
+    # 结构化内容（Phase 2: 引擎折叠面板支持）
+    # 当 rendered_content 存在时，DeepBuilder 会使用 to_elements(collapsible=True) 替代纯 markdown
+    rendered_content: Optional[object] = None  # RenderedContent from acp.renderer
+    # ── 消息卡片优化新增字段 ──
+    terminal_state: Optional[str] = None  # running/completed/failed/cancelled/blocked/awaiting_approval/denied/continued
+    is_read: bool = True  # 未读标记 (False → 标题前缀 🔴)
+    footer_status: Optional[str] = None  # thinking/tool_running/waiting_approval
+    reasoning: Optional[ReasoningState] = None  # Reasoning block state
 
     @property
     def deep_project_id(self):
@@ -76,6 +92,50 @@ class EngineStatusEntry:
 
 
 DeepCardState = EngineCardState
+
+
+@dataclass
+class CardLayoutSpec:
+    """统一卡片布局规格 — 所有编程模式和引擎模式共享的布局参数。
+
+    该 dataclass 是两套卡片系统（StreamingCardManager / DeepBuilder）的通用 layout 输入，
+    UnifiedCardLayout.build() 根据字段是否存在自动选择输出对应 element。
+    """
+
+    # ---- 通用字段 ----
+    project_path: Optional[str] = None
+    image_keys: Optional[list[str]] = None
+    buttons: Optional[list[dict]] = None
+
+    # ---- 状态栏（流式卡片风格） ----
+    status_color: str = "blue"
+    error_count: int = 0
+    progress_text: str = ""
+    sticky_message: Optional[str] = None
+
+    # ---- 引擎特有区域 ----
+    progress_bar: Optional[str] = None
+    status_line: Optional[str] = None
+    duration_line: Optional[str] = None
+    criteria_section: Optional[str] = None
+    warning_banner: Optional[str] = None
+    footer_note: Optional[str] = None
+    engine_meta_separator: str = " · "
+
+    # ---- 内容（二选一） ----
+    content_markdown: Optional[str] = None
+    content_elements: Optional[list[dict]] = None  # 预构建 Feishu elements (collapsible panels 等)
+
+    # ---- 渲染选项 ----
+    legacy_safe: bool = False  # PATCH 更新时需要 legacy-safe 元素（不含 text_size/element_id）
+    content_element_id: str = "content_md"  # 非 legacy 模式的 element_id
+
+    # ---- 预构建按钮 elements（引擎模式用，跳过 build_responsive_layout） ----
+    button_elements: Optional[list[dict]] = None
+
+    # ---- 消息卡片优化新增字段 ----
+    footer_status: Optional[str] = None  # thinking/tool_running/waiting_approval
+    terminal_state: Optional[str] = None  # completed/failed/cancelled/blocked etc.
 
 
 class BannerKind(str, Enum):
