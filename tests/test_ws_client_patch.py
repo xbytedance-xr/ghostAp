@@ -207,6 +207,7 @@ class TestCardActionHandler(unittest.TestCase):
 
             project = SimpleNamespace(project_id="p1")
             client._project_manager.get_project.return_value = project
+            client._project_manager.get_project_for_chat.return_value = project
 
             data = SimpleNamespace(
                 event=SimpleNamespace(
@@ -303,6 +304,7 @@ class TestCardActionHandler(unittest.TestCase):
             )
             # Mock at handler level: project_manager lives inside handler context
             client._claude_handler.project_manager.get_project.return_value = project
+            client._claude_handler.project_manager.get_project_for_chat.return_value = project
             client._claude_handler.enter_mode = MagicMock()
 
             client._handle_card_enter_claude("om_1", "oc_1", "p1")
@@ -343,6 +345,7 @@ class TestCardActionHandler(unittest.TestCase):
             )
             # Mock at handler level: project_manager lives inside handler context
             client._ttadk_handler.project_manager.get_project.return_value = project
+            client._ttadk_handler.project_manager.get_project_for_chat.return_value = project
             client._ttadk_handler.enter_mode = MagicMock()
 
             client._handle_card_enter_ttadk("om_1", "oc_1", "p1")
@@ -634,15 +637,14 @@ class TestCardActionHandler(unittest.TestCase):
             client = FeishuWSClient(MagicMock())
             project = MagicMock(
                 project_name="demo",
-                ttadk_mode=False,
-                gemini_mode=True,
-                codex_mode=False,
-                aiden_mode=False,
-                claude_mode=False,
-                coco_mode=False,
+                project_id="p1",
             )
             client._message_mapper.get_project_id.return_value = "p1"
             client._project_manager.get_project.return_value = project
+            client._project_manager.get_project_for_chat.return_value = project
+            # ModeManager is now the source of truth for mode routing.
+            from src.mode.manager import InteractionMode
+            client._mode_manager.get_mode.return_value = InteractionMode.GEMINI
 
             resolved_project, auto_enter_mode = client._resolve_project_from_message("msg_1", "chat_1", "parent_1")
 
@@ -1484,6 +1486,7 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
 
         client._project_manager = MagicMock()
         client._project_manager.get_project.return_value = None
+        client._project_manager.get_project_for_chat.return_value = None
         fallback_project = MagicMock()
         fallback_project.project_id = "proj_fallback"
         client._project_manager.get_active_project.return_value = fallback_project
@@ -1516,6 +1519,7 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
         direct_project.project_id = "proj1"
         client._project_manager = MagicMock()
         client._project_manager.get_project.return_value = direct_project
+        client._project_manager.get_project_for_chat.return_value = direct_project
 
         message = MagicMock()
         message.message_id = "m1"
@@ -1545,6 +1549,7 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
         project_obj.project_id = "proj1"
         client._project_manager = MagicMock()
         client._project_manager.get_project.return_value = project_obj
+        client._project_manager.get_project_for_chat.return_value = project_obj
         client._resolve_project_from_message = MagicMock(return_value=(MagicMock(), None))
 
         message = MagicMock()
@@ -1576,6 +1581,7 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
         project.project_id = "proj1"
         client._project_manager = MagicMock()
         client._project_manager.get_project.return_value = project
+        client._project_manager.get_project_for_chat.return_value = project
         client._project_manager.get_active_project.return_value = project
 
         client._validate_message = MagicMock(return_value=True)
@@ -1658,6 +1664,7 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
             project.project_id = "proj1"
             client._project_manager = MagicMock()
             client._project_manager.get_project.return_value = project
+            client._project_manager.get_project_for_chat.return_value = project
 
             message = MagicMock()
             message.message_id = "m1"
@@ -1707,6 +1714,7 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
         project.project_id = "proj1"
         client._project_manager = MagicMock()
         client._project_manager.get_project.return_value = project
+        client._project_manager.get_project_for_chat.return_value = project
         client._project_manager.get_active_project.return_value = project
 
         client._validate_message = MagicMock(return_value=True)
@@ -1845,6 +1853,7 @@ class TestDualKeyThreadContext(unittest.TestCase):
         project = MagicMock()
         project.project_id = "p1"
         client._project_manager.get_project.return_value = project
+        client._project_manager.get_project_for_chat.return_value = project
 
         message = MagicMock()
         message.message_id = "m2"
@@ -1911,6 +1920,7 @@ class TestDualKeyThreadContext(unittest.TestCase):
         project = MagicMock()
         project.project_id = "p1"
         client._project_manager.get_project.return_value = None
+        client._project_manager.get_project_for_chat.return_value = None
         client._project_manager.get_active_project.return_value = project
 
         message = MagicMock()
@@ -1944,6 +1954,7 @@ class TestDualKeyThreadContext(unittest.TestCase):
         project = MagicMock()
         project.project_id = "p1"
         client._project_manager.get_project.return_value = project
+        client._project_manager.get_project_for_chat.return_value = project
 
         message = MagicMock()
         message.message_id = "m3"
@@ -1991,6 +2002,7 @@ class TestDualKeyThreadContext(unittest.TestCase):
         project = MagicMock()
         project.project_id = "p1"
         client._project_manager.get_project.return_value = project
+        client._project_manager.get_project_for_chat.return_value = project
 
         message = MagicMock()
         message.message_id = "m2"
@@ -2019,6 +2031,7 @@ class TestDualKeyThreadContext(unittest.TestCase):
         project = MagicMock()
         project.project_id = "p1"
         client._project_manager.get_project.return_value = None
+        client._project_manager.get_project_for_chat.return_value = None
         client._project_manager.get_active_project.return_value = project
 
         message = MagicMock()
@@ -2036,3 +2049,287 @@ class TestDualKeyThreadContext(unittest.TestCase):
         self.assertEqual(get_current_thread_id(), "reply_id_1")
         set_current_thread_id(None)
         real_mgr.close()
+
+
+# ======================================================================
+# Chat lock interception tests
+# ======================================================================
+
+
+class TestChatLockInterception(unittest.TestCase):
+    """Tests for chat lock interception on the card action path."""
+
+    def test_card_action_blocked_when_locked(self):
+        """Non-exempt card action is blocked when chat is locked for non-admin."""
+        from src.chat_lock import ChatLockManager, _reset_chat_lock_manager_for_testing
+
+        _reset_chat_lock_manager_for_testing()
+        try:
+            clm = ChatLockManager()
+            with patch("src.chat_lock.get_settings") as mock_gs:
+                mock_gs.return_value = MagicMock(admin_user_ids={"admin_1"})
+                clm.lock_chat("chat-1", "admin_1")
+
+                # Non-admin, non-exempt action should be blocked
+                assert clm.should_block_card_action("chat-1", "user_2", "enter_coco") is True
+
+                # Admin should not be blocked
+                assert clm.should_block_card_action("chat-1", "admin_1", "enter_coco") is False
+        finally:
+            _reset_chat_lock_manager_for_testing()
+
+    def test_exempt_actions_pass_through(self):
+        """Exempt card actions (stop, show_, CARD_EXEMPT_ACTIONS) pass through even when locked."""
+        from src.chat_lock import ChatLockManager, _reset_chat_lock_manager_for_testing
+
+        _reset_chat_lock_manager_for_testing()
+        try:
+            clm = ChatLockManager()
+            with patch("src.chat_lock.get_settings") as mock_gs:
+                mock_gs.return_value = MagicMock(admin_user_ids={"admin_1"})
+                clm.lock_chat("chat-1", "admin_1")
+
+                # *_stop suffix → exempt
+                assert clm.should_block_card_action("chat-1", "user_2", "deep_stop") is False
+                assert clm.should_block_card_action("chat-1", "user_2", "loop_stop") is False
+
+                # show_* prefix → exempt
+                assert clm.should_block_card_action("chat-1", "user_2", "show_help_menu") is False
+
+                # CARD_EXEMPT_ACTIONS → exempt
+                assert clm.should_block_card_action("chat-1", "user_2", "force_release_repo_lock") is False
+                assert clm.should_block_card_action("chat-1", "user_2", "retry_command") is False
+                assert clm.should_block_card_action("chat-1", "user_2", "help_category") is False
+                assert clm.should_block_card_action("chat-1", "user_2", "confirm_lock") is False
+                assert clm.should_block_card_action("chat-1", "user_2", "cancel_lock") is False
+        finally:
+            _reset_chat_lock_manager_for_testing()
+
+    def test_unlocked_chat_allows_all(self):
+        """When chat is not locked, all actions pass through."""
+        from src.chat_lock import ChatLockManager, _reset_chat_lock_manager_for_testing
+
+        _reset_chat_lock_manager_for_testing()
+        try:
+            clm = ChatLockManager()
+            with patch("src.chat_lock.get_settings") as mock_gs:
+                mock_gs.return_value = MagicMock(admin_user_ids={"admin_1"})
+
+                assert clm.should_block_card_action("chat-1", "user_2", "enter_coco") is False
+                assert clm.should_block_card_action("chat-1", "user_2", "dangerous_action") is False
+        finally:
+            _reset_chat_lock_manager_for_testing()
+
+
+class TestLockBlockDedupThreadSafety(unittest.TestCase):
+    """AC-R04: ChatLockGate dedup (MessageCache) must be thread-safe."""
+
+    def test_concurrent_should_send_intercept(self):
+        """Multiple threads calling ChatLockGate._should_send_intercept must not lose data or raise."""
+        import threading
+
+        from src.feishu.chat_lock_gate import ChatLockGate
+        from src.feishu.message_cache import MessageCache
+
+        cache = MessageCache(ttl=30, max_size=10_000, cleanup_interval=60)
+        gate = ChatLockGate(chat_lock_manager=None, dedup_cache=cache, host=MagicMock())
+
+        errors: list[Exception] = []
+        results: list[bool] = []
+        lock = threading.Lock()
+
+        def worker(thread_idx: int):
+            try:
+                for i in range(50):
+                    r = gate._should_send_intercept(
+                        f"chat_{i % 5}", f"user_{thread_idx}"
+                    )
+                    with lock:
+                        results.append(r)
+            except Exception as exc:
+                with lock:
+                    errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(t,)) for t in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert not errors, f"Threads raised errors: {errors}"
+        # Each (chat, user) pair should get True on first call
+        assert any(results), "Expected at least some True results"
+
+    def test_dedup_cache_in_gate(self):
+        """Verify ChatLockGate wraps a MessageCache for dedup."""
+        from src.feishu.chat_lock_gate import ChatLockGate
+        from src.feishu.message_cache import MessageCache
+
+        cache = MessageCache(ttl=30, max_size=10_000, cleanup_interval=60)
+        gate = ChatLockGate(chat_lock_manager=None, dedup_cache=cache, host=MagicMock())
+
+        assert gate._dedup is cache
+        assert isinstance(gate._dedup, MessageCache)
+
+
+class TestSendLockConflictCardFacade(unittest.TestCase):
+    """Tests for FeishuWSClient.send_lock_conflict_card — ensures it delegates
+    via _get_handler('system') instead of getattr-based private attribute access."""
+
+    def _make_client(self):
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            mock_settings = MagicMock()
+            mock_settings.app_id = "test_app_id"
+            mock_settings.app_secret = "test_app_secret"
+            mock_settings.streaming_enabled = False
+            mock_settings.task_scheduler_max_concurrent = 2
+            mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_get_settings.return_value = mock_settings
+            return FeishuWSClient(MagicMock())
+
+    def test_delegates_to_system_handler_via_get_handler(self):
+        """send_lock_conflict_card should use _get_handler('system'), not getattr.
+
+        To distinguish from the old ``getattr(self, '_system_handler')`` path,
+        we set ``client._system_handler`` to a *different* sentinel object.
+        Only the handler registered in ``_handler_ctx.handlers["system"]``
+        should be invoked.
+        """
+        client = self._make_client()
+
+        mock_system_handler = MagicMock(name="handlers_dict_handler")
+        sentinel_obj = MagicMock(name="sentinel_should_not_be_called")
+
+        client._handler_ctx.handlers["system"] = mock_system_handler
+        client._system_handler = sentinel_obj  # old path would use this
+
+        err = RuntimeError("lock conflict")
+        client.send_lock_conflict_card(err, "msg_1", "/deep fix", retry_count=2)
+
+        mock_system_handler.send_lock_conflict_card.assert_called_once_with(
+            err, "msg_1", "/deep fix", retry_count=2,
+        )
+        sentinel_obj.send_lock_conflict_card.assert_not_called()
+
+    def test_fallback_when_system_handler_is_none(self):
+        """When handlers['system'] is None, fallback text should be sent."""
+        client = self._make_client()
+        client._handler_ctx.handlers["system"] = None
+        client.reply_message = MagicMock()
+
+        err = RuntimeError("lock conflict")
+        client.send_lock_conflict_card(err, "msg_2", "/loop test")
+
+        client.reply_message.assert_called_once()
+        call_args = client.reply_message.call_args
+        self.assertEqual(call_args[0][0], "msg_2")
+        self.assertIn("🔒", call_args[0][1])
+
+    def test_fallback_when_system_handler_key_missing(self):
+        """When 'system' key is absent from handlers dict, fallback text should be sent."""
+        client = self._make_client()
+        client._handler_ctx.handlers.pop("system", None)
+        client.reply_message = MagicMock()
+
+        err = RuntimeError("lock conflict")
+        client.send_lock_conflict_card(err, "msg_3", "/spec run")
+
+        client.reply_message.assert_called_once()
+        call_args = client.reply_message.call_args
+        self.assertEqual(call_args[0][0], "msg_3")
+        self.assertIn("🔒", call_args[0][1])
+
+
+class TestNoGetAttrSystemHandlerPattern(unittest.TestCase):
+    """Static regression guard: ensure ``getattr(self, '_system_handler' ...)``
+    is never reintroduced in ws_client.py.
+
+    This test scans source code via regex.  If ws_client.py undergoes a major
+    rename/restructure, update the ``_SOURCE_PATH`` constant below.
+    """
+
+    _SOURCE_PATH = "src/feishu/ws_client.py"
+
+    def test_no_getattr_system_handler_pattern(self):
+        """ws_client.py must not contain getattr(self, '_system_handler'...)."""
+        import re
+        with open(self._SOURCE_PATH, "r", encoding="utf-8") as f:
+            source = f.read()
+        matches = re.findall(r"getattr\(self,\s*[\"']_system_handler", source)
+        self.assertEqual(
+            len(matches), 0,
+            f"Found {len(matches)} getattr(self, '_system_handler'...) pattern(s) in {self._SOURCE_PATH}. "
+            "All handler access should use self._get_handler('system').",
+        )
+
+
+class TestChatLockHandlerDelegation(unittest.TestCase):
+    """Verify that ChatLockGate._try_block delegates card sending to the
+    system handler obtained via host._get_handler('system')."""
+
+    def _make_gate(self, *, mock_clm=None, mock_handler=None, sentinel=None):
+        """Build a ChatLockGate with mocked dependencies."""
+        from src.feishu.chat_lock_gate import ChatLockGate
+        from src.feishu.message_cache import MessageCache
+
+        host = MagicMock()
+        if mock_handler is not None:
+            host._get_handler.return_value = mock_handler
+        else:
+            host._get_handler.return_value = None
+
+        cache = MessageCache(ttl=30, max_size=10_000, cleanup_interval=60)
+        gate = ChatLockGate(chat_lock_manager=mock_clm, dedup_cache=cache, host=host)
+        return gate, host
+
+    def test_try_block_uses_get_handler(self):
+        """ChatLockGate._try_block should use host._get_handler('system')."""
+        mock_clm = MagicMock()
+        mock_clm.should_block.return_value = True
+        mock_handler = MagicMock(name="dict_handler")
+
+        gate, host = self._make_gate(mock_clm=mock_clm, mock_handler=mock_handler)
+
+        result = gate._try_block("chat_1", "user_1", "msg_1")
+
+        self.assertTrue(result)
+        host._get_handler.assert_called_with("system")
+        mock_handler.send_chat_lock_intercept_card.assert_called_once_with(
+            "msg_1", "chat_1", mock_clm,
+        )
+
+    def test_try_block_fallback_when_handler_none(self):
+        """ChatLockGate._try_block should fall back to host._reply_message when handler is None."""
+        mock_clm = MagicMock()
+        mock_clm.should_block.return_value = True
+
+        gate, host = self._make_gate(mock_clm=mock_clm, mock_handler=None)
+
+        result = gate._try_block("chat_1", "user_1", "msg_1")
+
+        self.assertTrue(result)
+        host._reply_message.assert_called_once()
+
+    def test_try_block_throttled_uses_get_handler(self):
+        """When dedup suppresses the full card, throttled reply should use host._get_handler."""
+        mock_clm = MagicMock()
+        mock_clm.should_block.return_value = True
+        mock_handler = MagicMock(name="dict_handler")
+
+        gate, host = self._make_gate(mock_clm=mock_clm, mock_handler=mock_handler)
+        # First call consumes the dedup slot
+        gate._should_send_intercept("chat_1", "user_1")
+        # Second call should be throttled
+        result = gate._try_block("chat_1", "user_1", "msg_1")
+
+        self.assertTrue(result)
+        mock_handler.send_chat_lock_throttled_reply.assert_called_once()

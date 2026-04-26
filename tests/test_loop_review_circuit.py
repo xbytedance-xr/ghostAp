@@ -340,7 +340,7 @@ class TestLoopAdaptiveTimeout:
         for i in range(1, 4):
             engine._conduct_review(i, callbacks)
 
-        assert captured_timeouts == [120, 60, 30]
+        assert captured_timeouts == [120, 80, 53]
 
     def test_timeout_resets_after_success(self, engine, callbacks):
         """After success, timeout returns to base."""

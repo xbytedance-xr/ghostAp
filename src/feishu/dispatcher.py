@@ -503,7 +503,7 @@ class MessageDispatcher:
             elif intent == IntentType.SWITCH_PROJECT:
                 name = data.get("name", "")
                 if name:
-                    found_project = self.client._project_manager.find_project_by_name(name)
+                    found_project = self.client._project_manager.find_project_by_name(name, chat_id=chat_id)
                     if found_project:
                         success, msg = self.client._project_manager.set_active_project(chat_id, found_project.project_id)
                         if success:

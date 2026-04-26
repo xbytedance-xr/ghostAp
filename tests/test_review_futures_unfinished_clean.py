@@ -59,5 +59,5 @@ def test_review_futures_unfinished_cleaned(monkeypatch):
     assert diag is not None
     assert "futures unfinished" not in diag.get("err_type", "")
     assert "个视角未完成" not in diag.get("err_type", "")
-    assert diag.get("err_type", "") == "当前系统较繁忙，操作已超时"
+    assert diag.get("err_type", "") == "当前系统较繁忙，操作已超时。建议：稍后自动重试，或通过 /spec resume 手动恢复"
 

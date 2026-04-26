@@ -636,6 +636,7 @@ class SpecEngine(BaseEngine):
             self._project.verify_command,
             cwd=self.root_path,
             interactive=False,
+            chat_id=self.chat_id,
         )
         output = result.stdout
         if result.stderr:

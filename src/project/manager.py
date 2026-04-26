@@ -4,14 +4,16 @@ import logging
 import os
 import threading
 import time
+from collections import OrderedDict
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 
 from ..card.styles import get_available_themes
 from ..config import get_settings
 from ..utils.errors import get_error_detail
-from .context import ProjectContext, ProjectStatus
+from ..utils.lock_order import LockLevel, ordered_rlock
+from .context import ADD_CHAT_ID_REJECTED, ProjectContext, ProjectStatus
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +22,16 @@ class ProjectManager:
     def __init__(self, storage_path: Optional[str] = None):
         self._projects: dict[str, ProjectContext] = {}
         self._active_project: dict[str, str] = {}
-        self._lock = threading.Lock()
+        self._lock = ordered_rlock(LockLevel.PROJECT_MANAGER, name="ProjectManager._lock")
         self._color_index = 0
+
+        # Fire-and-forget callback invoked on LRU eviction.
+        # Signature: on_eviction(evicted_chat_id: str, project_name: str, project_id: str)
+        self.on_eviction: Optional[Callable[[str, str, str], None]] = None
+
+        # Optional ModeManager reference — used to clean up stale
+        # _project_modes entries when a chat_id is LRU-evicted.
+        self.mode_manager: Any = None
 
         if storage_path:
             self._storage_path = Path(storage_path)
@@ -110,6 +120,8 @@ class ProjectManager:
                 theme_color=theme_color,
                 emoji_prefix=emoji_prefix,
                 ttadk_yolo_enabled=yolo_enabled,
+                owner_chat_id=chat_id or "",
+                allowed_chat_ids=OrderedDict([(chat_id, time.time())]) if chat_id else OrderedDict(),
             )
 
             self._projects[project_id] = ctx
@@ -120,19 +132,61 @@ class ProjectManager:
             self._save_projects()
             return True, f"项目 {project_name} 创建成功", ctx
 
-    def get_project(self, project_id: str) -> Optional[ProjectContext]:
-        return self._projects.get(project_id)
+    def get_project_for_diagnostics(self, project_id: str) -> Optional[ProjectContext]:
+        """Get a project WITHOUT chat-scoped visibility check.
 
-    def get_all_projects(self, sort_by_recent: bool = True) -> list[ProjectContext]:
-        projects = list(self._projects.values())
+        **For diagnostics and system-internal use only.**
+        Must NOT be called from user-facing handler code — use
+        ``get_project_for_chat`` instead for chat-scoped access.
+        """
+        with self._lock:
+            return self._projects.get(project_id)
+
+    def get_project_for_chat(self, project_id: str, chat_id: Optional[str] = None) -> Optional[ProjectContext]:
+        """Get a project with chat-scoped visibility check.
+
+        Returns the project if it exists and is visible to *chat_id*,
+        otherwise ``None``.  This is the safe entry point for card-action
+        handlers where *project_id* comes from an untrusted payload
+        (e.g. a card forwarded to another chat).
+        """
+        with self._lock:
+            ctx = self._projects.get(project_id)
+            if ctx is None:
+                return None
+            if not self._is_visible(ctx, chat_id):
+                return None
+            return ctx
+
+    @staticmethod
+    def _is_visible(ctx: ProjectContext, chat_id: Optional[str]) -> bool:
+        """Check if a project is visible to the given chat_id.
+
+        Visibility rules:
+        - If chat_id is None (no filter), always visible.
+        - If allowed_chat_ids is empty (legacy project), visible to all.
+        - Otherwise, chat_id must be in allowed_chat_ids.
+        """
+        if chat_id is None:
+            return True
+        if not ctx.allowed_chat_ids:
+            return True
+        return chat_id in ctx.allowed_chat_ids
+
+    def get_all_projects(self, sort_by_recent: bool = True, chat_id: Optional[str] = None) -> list[ProjectContext]:
+        with self._lock:
+            snapshot = list(self._projects.values())
+        projects = [p for p in snapshot if self._is_visible(p, chat_id)]
         if sort_by_recent:
             projects.sort(key=lambda p: p.last_active, reverse=True)
         return projects
 
-    def find_project_by_path(self, path: str) -> Optional[ProjectContext]:
+    def find_project_by_path(self, path: str, chat_id: Optional[str] = None) -> Optional[ProjectContext]:
         expanded = os.path.expanduser(os.path.abspath(path))
-        for ctx in self._projects.values():
-            if ctx.root_path == expanded:
+        with self._lock:
+            snapshot = list(self._projects.values())
+        for ctx in snapshot:
+            if ctx.root_path == expanded and self._is_visible(ctx, chat_id):
                 return ctx
         return None
 
@@ -143,7 +197,7 @@ class ProjectManager:
     ) -> tuple[ProjectContext, bool]:
         expanded = os.path.expanduser(os.path.abspath(path))
 
-        existing = self.find_project_by_path(expanded)
+        existing = self.find_project_by_path(expanded, chat_id=chat_id)
         if existing:
             if chat_id:
                 self.set_active_project(chat_id, existing.project_id)
@@ -175,10 +229,14 @@ class ProjectManager:
         else:
             raise RuntimeError(f"创建项目失败: {msg}")
 
-    def search_projects(self, query: str) -> list[ProjectContext]:
+    def search_projects(self, query: str, chat_id: Optional[str] = None) -> list[ProjectContext]:
         query_lower = query.lower()
+        with self._lock:
+            snapshot = list(self._projects.values())
         results = []
-        for ctx in self._projects.values():
+        for ctx in snapshot:
+            if not self._is_visible(ctx, chat_id):
+                continue
             if (
                 query_lower in ctx.project_name.lower()
                 or query_lower in ctx.project_id.lower()
@@ -188,45 +246,112 @@ class ProjectManager:
         results.sort(key=lambda p: p.last_active, reverse=True)
         return results
 
-    def validate_project_path(self, project_id: str) -> tuple[bool, str]:
-        ctx = self._projects.get(project_id)
-        if not ctx:
-            return False, f"项目 {project_id} 不存在"
+    def validate_project_path(self, project_id: str, chat_id: Optional[str] = None) -> tuple[bool, str]:
+        with self._lock:
+            ctx = self._projects.get(project_id)
+            if not ctx:
+                return False, f"项目 {project_id} 不存在"
 
-        if not os.path.isdir(ctx.root_path):
-            return False, f"项目路径不存在: {ctx.root_path}"
+            if chat_id is not None and not self._is_visible(ctx, chat_id):
+                return False, "无权访问该项目"
 
-        return True, ctx.root_path
+            if not os.path.isdir(ctx.root_path):
+                return False, f"项目路径不存在: {ctx.root_path}"
+
+            return True, ctx.root_path
 
     def get_active_project(self, chat_id: str) -> Optional[ProjectContext]:
-        project_id = self._active_project.get(chat_id)
-        if project_id:
-            return self._projects.get(project_id)
-        return None
+        with self._lock:
+            project_id = self._active_project.get(chat_id)
+            ctx = self._projects.get(project_id) if project_id else None
+            if ctx and not self._is_visible(ctx, chat_id):
+                return None
+            return ctx
 
     def set_active_project(self, chat_id: str, project_id: str) -> tuple[bool, str]:
+        eviction_info: tuple[str, str, str] | None = None  # (evicted_chat_id, project_name, project_id)
         with self._lock:
             if project_id not in self._projects:
                 return False, f"项目 {project_id} 不存在"
 
             ctx = self._projects[project_id]
+
+            # Legacy project backfill: inject chat_id into empty allowed_chat_ids
+            # so isolation gradually takes effect for pre-upgrade projects.
+            if not ctx.allowed_chat_ids and chat_id:
+                ctx.owner_chat_id = ctx.owner_chat_id or chat_id
+                logger.info(
+                    "Legacy backfill: injecting chat_id=%s into project=%s",
+                    chat_id[:12], project_id,
+                )
+
             old_project_id = self._active_project.get(chat_id)
             if old_project_id == project_id and ctx.status == ProjectStatus.ACTIVE:
+                refresh_result = ctx.add_chat_id(chat_id)  # Refresh LRU timestamp
+                if refresh_result == ADD_CHAT_ID_REJECTED:
+                    return False, f"项目 {ctx.project_name} 的群绑定数已满，无法关联当前群"
                 ctx.touch()
                 self._save_projects()
                 return True, f"已切换到项目 {ctx.project_name}"
 
+            old_status = None
             if old_project_id and old_project_id in self._projects:
                 old_ctx = self._projects[old_project_id]
+                old_status = old_ctx.status
                 if old_ctx.status == ProjectStatus.ACTIVE:
                     old_ctx.status = ProjectStatus.IDLE
 
             self._active_project[chat_id] = project_id
             ctx.status = ProjectStatus.ACTIVE
+            evicted = ctx.add_chat_id(chat_id)
+            if evicted == ADD_CHAT_ID_REJECTED:
+                # Rollback: undo the _active_project write
+                if old_project_id is not None:
+                    self._active_project[chat_id] = old_project_id
+                else:
+                    self._active_project.pop(chat_id, None)
+                # Restore old project status to its original value
+                if old_project_id and old_project_id in self._projects:
+                    old_ctx = self._projects[old_project_id]
+                    old_ctx.status = old_status
+                ctx.status = ProjectStatus.IDLE
+                return False, f"项目 {ctx.project_name} 的群绑定数已满，无法关联当前群"
+            if evicted:
+                logger.warning(
+                    "LRU eviction: chat=%s removed from project=%s (project_name=%s) "
+                    "due to allowed_chat_ids capacity limit",
+                    evicted[:12], project_id, ctx.project_name,
+                )
+                # Capture eviction info — callback fires AFTER lock release (F-01).
+                eviction_info = (evicted, ctx.project_name, project_id)
+                # Clean up orphan _active_project entry INSIDE the lock (Q-30-1 fix).
+                # Conditional pop: only remove if the entry still points to the
+                # current project_id.  Another thread may have already re-bound
+                # the evicted chat_id to a different project between add_chat_id
+                # and this line; unconditional pop would clobber that new binding.
+                if self._active_project.get(evicted) == project_id:
+                    self._active_project.pop(evicted, None)
             ctx.touch()
 
             self._save_projects()
-            return True, f"已切换到项目 {ctx.project_name}"
+            result = True, f"已切换到项目 {ctx.project_name}"
+
+        # Fire eviction callback OUTSIDE the lock to avoid blocking (F-01).
+        if eviction_info:
+            evicted_cid, ev_proj_name, ev_proj_id = eviction_info
+            # Clean up stale ModeManager entries for the evicted chat (AC-R01).
+            if self.mode_manager is not None:
+                try:
+                    self.mode_manager.clear_modes_for_chat(evicted_cid)
+                except Exception as mm_err:
+                    logger.warning("mode_manager.clear_modes_for_chat failed: %s", mm_err)
+            if self.on_eviction:
+                try:
+                    self.on_eviction(evicted_cid, ev_proj_name, ev_proj_id)
+                except Exception as cb_err:
+                    logger.warning("on_eviction callback failed: %s", cb_err)
+
+        return result
 
     def close_project(self, project_id: str) -> tuple[bool, str]:
         with self._lock:
@@ -262,15 +387,46 @@ class ProjectManager:
             self._save_projects()
             return True, expanded
 
-    def find_project_by_name(self, name: str) -> Optional[ProjectContext]:
+    def find_project_by_name(self, name: str, chat_id: Optional[str] = None) -> Optional[ProjectContext]:
         name_lower = name.lower()
-        for ctx in self._projects.values():
+        with self._lock:
+            snapshot = list(self._projects.values())
+        for ctx in snapshot:
+            if not self._is_visible(ctx, chat_id):
+                continue
             if ctx.project_name.lower() == name_lower or ctx.project_id.lower() == name_lower:
                 return ctx
-        for ctx in self._projects.values():
+        for ctx in snapshot:
+            if not self._is_visible(ctx, chat_id):
+                continue
             if name_lower in ctx.project_name.lower() or name_lower in ctx.project_id.lower():
                 return ctx
         return None
+
+    def find_project_by_name_with_hint(
+        self, name: str, chat_id: Optional[str] = None
+    ) -> tuple[Optional[ProjectContext], Optional[str]]:
+        """Like ``find_project_by_name`` but returns a hint when a project exists
+        globally but is not visible to *chat_id*.
+
+        Returns ``(project, None)`` on success or ``(None, hint_message)`` when
+        the project exists in another chat's scope.
+        """
+        result = self.find_project_by_name(name, chat_id=chat_id)
+        if result is not None:
+            return result, None
+        # Check globally (no chat filter) to detect cross-chat case
+        if chat_id is not None:
+            global_result = self.find_project_by_name(name, chat_id=None)
+            if global_result is not None:
+                # Disambiguate: was the chat previously bound but evicted by LRU?
+                if chat_id in global_result.evicted_chat_ids:
+                    return None, (
+                        "该项目因关联群数达上限已自动解绑，"
+                        "如需重新关联，请使用 /new 创建新项目"
+                    )
+                return None, "该项目已绑定到其他群聊，如需在当前群使用同一仓库，请使用 /new 创建新项目"
+        return None, None
 
     def _save_projects(self):
         try:

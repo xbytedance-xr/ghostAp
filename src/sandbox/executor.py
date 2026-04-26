@@ -1,3 +1,4 @@
+import logging
 import re
 import shlex
 import subprocess
@@ -8,6 +9,8 @@ from typing import Optional, Callable, List, Dict, Any
 from ..config import get_settings
 from ..utils.errors import get_error_detail
 from ..utils.text import truncate_output
+
+logger = logging.getLogger(__name__)
 
 
 class SubprocessExecutor(ABC):
@@ -200,13 +203,50 @@ class SandboxExecutor:
                 return False, reason
         return True, None
 
-    def execute(self, command: str, cwd: Optional[str] = None, interactive: bool = True) -> ExecutionResult:
+    def execute(self, command: str, cwd: Optional[str] = None, interactive: bool = True, chat_id: Optional[str] = None) -> ExecutionResult:
         is_safe, reason = self.is_command_safe(command)
         if not is_safe:
             return ExecutionResult(
                 success=False, stdout="", stderr="", return_code=-1, error_message=f"安全检查未通过: {reason}"
             )
 
+        # Debug sentinel: handler layer should already hold the repo lock.
+        # Log a warning if we detect the lock is held by a different chat.
+        # When sandbox_strict_lock_mode is True, raise LockConflictError
+        # instead of just warning (AC-R05).
+        if cwd and chat_id:
+            try:
+                from ..repo_lock import get_repo_lock_manager, LockConflictError
+                from ..config import get_settings as _get_settings
+                _rlm = get_repo_lock_manager()
+                _info = _rlm.get_lock_info(cwd)
+                if _info and _info.chat_id != chat_id:
+                    _strict = True  # fail-close default
+                    try:
+                        _strict = _get_settings().sandbox_strict_lock_mode
+                    except Exception:
+                        pass  # fail-close: _strict stays True on settings error
+                    if _strict:
+                        raise LockConflictError(
+                            holder_chat_id=_info.chat_id,
+                            locked_since=_info.acquired_at,
+                            last_active=_info.last_active_time,
+                        )
+                    logger.warning(
+                        "SandboxExecutor: repo %s locked by chat=%s but executing for chat=%s — "
+                        "handler layer may have missed lock acquisition",
+                        cwd, _info.chat_id[:12] if _info.chat_id else "?",
+                        chat_id[:12] if chat_id else "?",
+                    )
+            except LockConflictError:
+                raise  # re-raise strict-mode conflict
+            except Exception:
+                pass  # best-effort sentinel
+
+        return self._execute_command(command, cwd, interactive)
+
+    def _execute_command(self, command: str, cwd: Optional[str], interactive: bool) -> ExecutionResult:
+        """Inner command execution logic (subprocess call)."""
         try:
             # 1) 尽可能把“会打开 pager 的命令”变成非交互式
             command = self._sanitize_command_for_noninteractive(command)

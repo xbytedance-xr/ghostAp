@@ -231,7 +231,7 @@ def test_run_workers_parallel_timeout():
 
     assert len(outcomes) == 1
     assert not outcomes[0].review.passed
-    assert outcomes[0].error == "当前系统较繁忙，操作已超时"
-    assert outcomes[0].review.suggestions == ["审查异常：当前系统较繁忙，操作已超时"]
+    assert outcomes[0].error == "当前系统较繁忙，操作已超时。建议：稍后自动重试，或通过 /spec resume 手动恢复"
+    assert outcomes[0].review.suggestions == ["审查异常：当前系统较繁忙，操作已超时。建议：稍后自动重试，或通过 /spec resume 手动恢复"]
     _blocked.set()  # Unblock any lingering threads
 

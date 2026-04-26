@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Callable, Iterable, Optional
 
 from .models import WorktreeSelectionItem, WorktreeUnit, WorktreeUnitStatus
+from ..card.styles import UI_TEXT as _UI_TEXT
 from ..config import get_settings
 from ..utils.errors import classify_timeout, get_error_detail, sanitize_futures_msg
 
@@ -131,7 +132,7 @@ class WorktreeDispatcher:
                 # 处理 pool-level timeout
                 unprocessed_futures = set(future_map.keys()) - processed_futures
                 # 使用域语义文案
-                err = "当前系统较繁忙，操作已超时"
+                err = _UI_TEXT["timeout_busy_worktree"]
                 for fut in unprocessed_futures:
                     unit = future_map[fut]
                     fut.cancel()

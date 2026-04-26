@@ -166,6 +166,7 @@ class LoopHandler(BaseEngineHandler):
                 reporter=reporter,
                 request_id=request_id,
                 action_prefix="loop",
+                command_text=f"/loop {requirement}",
             )
 
         spec = TaskSpec(
@@ -291,14 +292,14 @@ class LoopHandler(BaseEngineHandler):
         # but in Loop context it might be root_path or project_id.
         loop_project_id = value.get("deep_project_id", "")
 
-        # Resolve target project
-        target_project = self.project_manager.get_project(project_id) if project_id else None
+        # Resolve target project (chat-scoped to prevent cross-chat leakage)
+        target_project = self.project_manager.get_project_for_chat(project_id, open_chat_id) if project_id else None
         if not target_project and loop_project_id:
             try:
                 if os.path.isabs(loop_project_id):
-                    target_project = self.project_manager.find_project_by_path(loop_project_id)
+                    target_project = self.project_manager.find_project_by_path(loop_project_id, chat_id=open_chat_id)
                 else:
-                    target_project = self.project_manager.get_project(loop_project_id)
+                    target_project = self.project_manager.get_project_for_chat(loop_project_id, open_chat_id)
             except Exception:
                 pass
 

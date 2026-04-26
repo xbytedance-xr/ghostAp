@@ -439,7 +439,7 @@ def test_card_builder_diagnostics_task_board_grouped_view():
             self.project_name = name
 
     class DummyProjectManager:
-        def get_project(self, pid: str) -> DummyProject:
+        def get_project_for_diagnostics(self, pid: str) -> DummyProject:
             return DummyProject(f"Project-{pid}")
 
     state = DummyState()

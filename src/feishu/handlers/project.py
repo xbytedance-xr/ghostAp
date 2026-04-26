@@ -36,7 +36,7 @@ class ProjectHandler(BaseHandler):
             self.reply_error(message_id, UI_TEXT["project_create_error"].format(error=msg))
 
     def show_project_board(self, message_id: str, chat_id: str, origin_message_id: Optional[str] = None, page: int = 1):
-        projects = self.project_manager.get_all_projects()
+        projects = self.project_manager.get_all_projects(chat_id=chat_id)
         active_project = self.project_manager.get_active_project(chat_id)
         current_id = active_project.project_id if active_project else None
 
@@ -172,9 +172,12 @@ class ProjectHandler(BaseHandler):
         *coco_handler* and *claude_handler* are the programming-mode handlers
         used to exit the current mode safely when switching projects.
         """
-        project = self.project_manager.find_project_by_name(name)
+        project, hint = self.project_manager.find_project_by_name_with_hint(name, chat_id=chat_id)
         if not project:
-            results = self.project_manager.search_projects(name)
+            if hint:
+                self.reply_error(message_id, hint)
+                return
+            results = self.project_manager.search_projects(name, chat_id=chat_id)
             content = CardBuilder.build_project_not_found_content(name, results)
             self.reply_error(message_id, content, title=UI_TEXT["project_not_found_title"])
             return
@@ -224,9 +227,9 @@ class ProjectHandler(BaseHandler):
                 self.register_message_project(response_id, project)
 
     def close_project(self, message_id: str, chat_id: str, name: str):
-        project = self.project_manager.find_project_by_name(name)
+        project, hint = self.project_manager.find_project_by_name_with_hint(name, chat_id=chat_id)
         if not project:
-            self.reply_error(message_id, UI_TEXT["project_not_found"].format(name=name))
+            self.reply_error(message_id, hint or UI_TEXT["project_not_found"].format(name=name))
             return
 
         success, msg = self.project_manager.close_project(project.project_id)

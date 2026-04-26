@@ -219,14 +219,14 @@ class TestModeManagerProjectLevel:
     def test_clear_project_mode(self):
         mgr = ModeManager()
         mgr.enter_coco_mode("chat1", project_id="proj1")
-        old = mgr.clear_project_mode("proj1")
+        old = mgr.clear_project_mode("chat1", "proj1")
         assert old == InteractionMode.COCO
-        assert mgr.get_project_mode("proj1") is None
+        assert mgr.get_project_mode("chat1", "proj1") is None
         assert mgr.get_mode("chat1", project_id="proj1") == InteractionMode.SMART
 
     def test_get_project_mode_returns_none_for_unset(self):
         mgr = ModeManager()
-        assert mgr.get_project_mode("proj_never_set") is None
+        assert mgr.get_project_mode("chat1", "proj_never_set") is None
 
     def test_project_mode_predicates(self):
         mgr = ModeManager()

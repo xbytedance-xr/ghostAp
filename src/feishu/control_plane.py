@@ -119,7 +119,7 @@ class ControlPlane:
             proj = None
             try:
                 if pending.project_id:
-                    proj = self._project_manager.get_project(pending.project_id)
+                    proj = self._project_manager.get_project_for_chat(pending.project_id, pending.chat_id)
                 if proj is None:
                     proj = self._project_manager.get_active_project(pending.chat_id)
             except Exception:

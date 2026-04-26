@@ -8,6 +8,8 @@ subclasses that supply mode-specific attributes (name, emoji, session manager, �
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from abc import abstractmethod
 from typing import TYPE_CHECKING, Optional
 
@@ -631,13 +633,36 @@ class ProgrammingModeHandler(BaseHandler):
         text = self.inject_bridge_context(text, project)
         global_working_dir = self.get_working_dir(chat_id)
         cwd = project.root_path if project else global_working_dir
-        self.handle_response(message_id, chat_id, text, session, project, cwd, global_working_dir)
+
+        # Repo lock: acquire before prompt execution, release after streaming.
+        # The lock is held across the entire streaming phase; periodic touch()
+        # in the on_event callback keeps last_active_time fresh to prevent
+        # idle-timeout release.
+        root_path = getattr(project, "root_path", None) if project else None
+
+        from ...repo_lock import LockConflictError
+
+        repo_lock_mgr = None
+        needs_release = False
+        try:
+            _, repo_lock_mgr, needs_release = self._acquire_repo_lock(root_path, chat_id)
+        except LockConflictError as err:
+            self.send_lock_conflict_card(err, message_id, text)
+            return
+
+        try:
+            self.handle_response(message_id, chat_id, text, session, project, cwd, global_working_dir,
+                                 _repo_lock_mgr=repo_lock_mgr, _root_path=root_path)
+        finally:
+            if needs_release:
+                self._release_repo_lock(root_path, chat_id, repo_lock_mgr)
 
     # ------------------------------------------------------------------
     # handle_response (streaming / non-streaming)
     # ------------------------------------------------------------------
     def handle_response(
-        self, message_id: str, chat_id: str, text: str, session: SyncSession, project, cwd: str, global_working_dir: str
+        self, message_id: str, chat_id: str, text: str, session: SyncSession, project, cwd: str, global_working_dir: str,
+        *, _repo_lock_mgr=None, _root_path: str | None = None,
     ):
         from ...acp.models import ACPEvent
 
@@ -703,6 +728,29 @@ class ProgrammingModeHandler(BaseHandler):
 
         if not streaming_card or not card_message_id:
             logger.warning("创建流式卡片失败，回退到纯文本模式")
+            # Heartbeat: keep repo lock alive during blocking send_prompt
+            _TOUCH_INTERVAL = 30  # seconds
+            _hb_stop = threading.Event()
+            _hb_thread = None
+            try:
+                _max_beats = max(1, int(self.settings.repo_lock_hard_timeout // _TOUCH_INTERVAL))
+            except Exception:
+                _max_beats = 120  # fallback: 3600 / 30
+
+            if _repo_lock_mgr and _root_path:
+                from ...utils.heartbeat import RepoLockHeartbeat
+
+                _hb = RepoLockHeartbeat(
+                    _hb_stop,
+                    lambda: _repo_lock_mgr.touch(_root_path, chat_id),
+                    interval=_TOUCH_INTERVAL,
+                    max_beats=_max_beats,
+                    name=f"prog-nonstream-{_root_path}",
+                )
+                _hb.start()
+            else:
+                _hb = None
+
             try:
                 result = session.send_prompt(text, on_event=None, timeout=timeout)
                 final_response = renderer.get_final_content() or "✅ 执行完成"
@@ -715,11 +763,47 @@ class ProgrammingModeHandler(BaseHandler):
             except Exception as e:
                 msg_type, content = CardBuilder.build_error_card(e, title="执行异常", project=project)
                 self.reply_message(message_id, content, msg_type)
+            finally:
+                _hb_stop.set()
+                if _hb is not None:
+                    _hb.join(timeout=2)
         else:
             update_count = [0]
+            _last_touch = [time.monotonic()]
+            _TOUCH_INTERVAL = 30  # seconds
+
+            # Fallback heartbeat: keep repo lock alive even when ACP
+            # backend produces no events for extended periods (e.g. long model
+            # thinking time, network stalls).  The on_event passive touch
+            # remains for normal operation; this thread is the safety net.
+            _streaming_hb_stop = threading.Event()
+            try:
+                _streaming_max_beats = max(1, int(self.settings.repo_lock_hard_timeout // _TOUCH_INTERVAL))
+            except Exception:
+                _streaming_max_beats = 120  # fallback: 3600 / 30
+
+            if _repo_lock_mgr and _root_path:
+                from ...utils.heartbeat import RepoLockHeartbeat
+
+                _streaming_hb = RepoLockHeartbeat(
+                    _streaming_hb_stop,
+                    lambda: _repo_lock_mgr.touch(_root_path, chat_id),
+                    interval=_TOUCH_INTERVAL,
+                    max_beats=_streaming_max_beats,
+                    name=f"prog-stream-{_root_path}",
+                )
+                _streaming_hb.start()
+            else:
+                _streaming_hb = None
 
             def on_event(event: ACPEvent):
                 update_count[0] += 1
+                # Heartbeat touch: keep repo lock active during streaming
+                if _repo_lock_mgr and _root_path:
+                    now = time.monotonic()
+                    if now - _last_touch[0] >= _TOUCH_INTERVAL:
+                        _repo_lock_mgr.touch(_root_path, chat_id)
+                        _last_touch[0] = now
                 if self.settings.card_collapsible_enabled:
                     structured = renderer.process_event_structured(event)
                     if structured.sections and streaming_card:
@@ -748,6 +832,10 @@ class ProgrammingModeHandler(BaseHandler):
 
                 if isinstance(e, GhostAPError) and e.quick_actions:
                     self.send_error_card(chat_id, e, title="执行异常", origin_message_id=message_id)
+            finally:
+                _streaming_hb_stop.set()
+                if _streaming_hb is not None:
+                    _streaming_hb.join(timeout=2)
 
             # Append completion summary (tool calls / modified files)
             summary = renderer.render_summary()
@@ -806,7 +894,7 @@ class ProgrammingModeHandler(BaseHandler):
     # ------------------------------------------------------------------
     def handle_card_enter(self, message_id: str, chat_id: str, project_id: str, value: Optional[dict] = None):
         if project_id:
-            project = self.project_manager.get_project(project_id)
+            project = self.project_manager.get_project_for_chat(project_id, chat_id)
             if project:
                 self.project_manager.set_active_project(chat_id, project_id)
 
@@ -831,7 +919,7 @@ class ProgrammingModeHandler(BaseHandler):
     def handle_card_exit(self, message_id: str, chat_id: str, project_id: str, value: Optional[dict] = None):
         from ...thread import get_current_thread_id
         if project_id:
-            project = self.project_manager.get_project(project_id)
+            project = self.project_manager.get_project_for_chat(project_id, chat_id)
             if project and not get_current_thread_id():
                 self._set_mode_on_project(project, False)
             self.exit_mode(message_id, chat_id, project=project)
@@ -842,7 +930,7 @@ class ProgrammingModeHandler(BaseHandler):
         from ...thread import get_current_thread_id
 
         thread_id = get_current_thread_id()
-        project = self.project_manager.get_project(project_id) if project_id else None
+        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else None
         pid = project.project_id if project else None
         if project:
             self.project_manager.set_active_project(chat_id, project_id)
@@ -930,7 +1018,7 @@ class ProgrammingModeHandler(BaseHandler):
             self.reply_message(message_id, f"🔄 已恢复 {self.mode_name} 会话: `{session_id}`")
 
     def handle_card_new(self, message_id: str, chat_id: str, project_id: str, value: Optional[dict] = None):
-        project = self.project_manager.get_project(project_id) if project_id else None
+        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else None
         if project:
             self.project_manager.set_active_project(chat_id, project_id)
             self._clear_snapshot_on_project(project)

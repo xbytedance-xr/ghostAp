@@ -11,6 +11,7 @@ from langchain_openai import ChatOpenAI
 
 from ..acp import ACPEvent, ACPEventType
 from ..engine_base import PerspectiveReview, ReviewPerspective, ReviewResult
+from ..card.styles import UI_TEXT
 from ..utils.errors import get_error_detail
 from ..utils.llm import ChatOpenAICacheKey, get_cached_chat_openai
 from ..utils.review_diagnostics import (
@@ -211,9 +212,12 @@ def conduct_review(
             diag_raw.get("open_until_cycle"),
             diag_raw.get("consecutive_failures"),
         )
-        _base_msg = f"审查熔断：连续{int(circuit.review_failure_consecutive or 0)}次异常，跳过本轮审查"
+        _base_msg = UI_TEXT["circuit_breaker_skip_with_count"].format(n=int(circuit.review_failure_consecutive or 0))
         if is_skip_overrun:
-            _base_msg += f"（⚠ 跳过次数异常偏高：已连续跳过{circuit.consecutive_skips}次，熔断器可能卡住，建议排查）"
+            logger.warning(
+                "[Spec] skip-overrun: consecutive_skips=%d, 熔断器可能卡住，建议排查",
+                circuit.consecutive_skips,
+            )
 
         # Lightweight lint fallback: run local lint when circuit is open
         _lint_msg = ""
@@ -388,7 +392,7 @@ def _conduct_review_pipeline(
     multiplier = math.ceil(perspective_count / max_parallel)
     
     # 我们给予一定冗余（默认原先是 * 2，现在可以动态放大预估值）。
-    budget_seconds = float(base_timeout * max(2, multiplier + 1))
+    budget_seconds = float(base_timeout * max(2, multiplier + 2))
     budget = CycleBudget(total_seconds=budget_seconds, label=f"spec_review_c{cycle}")
 
     circuit.last_review_failure_diag = None
@@ -422,8 +426,16 @@ def _conduct_review_pipeline(
             # Record diagnostics so the engine can persist them to the cycle.
             failed_workers = [o for o in outcomes if o.error and o.error != "lint_gate_short_circuit"]
             err_type_val = failed_workers[0].error if failed_workers else "unknown"
-            if failed_workers and failed_workers[0].error_code == ReviewErrorCode.TIMEOUT:
-                err_type_val = "当前系统较繁忙，操作已超时"
+            all_timeout = failed_workers and all(
+                o.error_code == ReviewErrorCode.TIMEOUT for o in failed_workers
+            )
+            if all_timeout:
+                err_type_val = "当前系统较繁忙，操作已超时。建议：稍后自动重试，或通过 /spec resume 手动恢复"
+                # Propagate timeout signal to circuit so adaptive timeout kicks in
+                circuit.consecutive_timeouts = int(circuit.consecutive_timeouts or 0) + 1
+                circuit.review_failure_consecutive = int(circuit.review_failure_consecutive or 0) + 1
+            elif failed_workers and failed_workers[0].error_code == ReviewErrorCode.TIMEOUT:
+                err_type_val = "当前系统较繁忙，操作已超时。建议：稍后自动重试，或通过 /spec resume 手动恢复"
 
             circuit.last_review_failure_diag = normalize_review_diagnostics({
                 "phase": "review",
@@ -512,7 +524,7 @@ def parse_review_output(
                 PerspectiveReview(
                     perspective=p,
                     passed=False,
-                    suggestions=["审查输出解析失败，请检查实现质量"],
+                    suggestions=[UI_TEXT["review_parse_fail_system"]],
                     summary="解析失败",
                 )
             )

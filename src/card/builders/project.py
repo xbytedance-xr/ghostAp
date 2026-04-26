@@ -271,6 +271,11 @@ class ProjectBuilder:
             if extra_buttons:
                 buttons.extend([apply_compact_style(b) for b in extra_buttons])
             elements.extend(build_responsive_layout(buttons))
+        elif extra_buttons:
+            # Render extra buttons without the standard footer buttons
+            elements.extend(build_responsive_layout(
+                [apply_compact_style(b) for b in extra_buttons]
+            ))
 
         card = CoreBuilder._wrap_card(header_title, theme.header_template, elements)
         return "interactive", json.dumps(card, ensure_ascii=False)

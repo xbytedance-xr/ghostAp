@@ -2215,6 +2215,30 @@ class TestConfigSpec:
         assert s.spec_review_enabled is True
         assert s.spec_discovery_enabled is True
 
+    def test_spec_review_circuit_breaker_defaults(self):
+        """FS-17: review circuit breaker settings have sensible defaults."""
+        from src.config import Settings
+
+        s = Settings(app_id="", app_secret="", _env_file=None)
+        assert s.spec_review_failure_circuit_enabled is True
+        assert s.spec_review_failure_max_consecutive == 4
+        assert s.spec_review_failure_cooldown_cycles == 2
+        assert s.spec_review_failure_max_cooldown_cycles == 12
+        assert s.spec_review_timeout == 180
+        assert s.spec_review_min_timeout == 45
+        assert s.spec_review_hard_floor == 20
+
+    def test_lock_settings_defaults(self):
+        """FS-17: lock-related settings have sensible defaults."""
+        from src.config import Settings
+
+        s = Settings(app_id="", app_secret="", _env_file=None)
+        assert s.repo_lock_idle_timeout == 300
+        assert s.repo_lock_cleanup_interval == 60
+        assert s.repo_lock_hard_timeout == 3600
+        assert s.chat_lock_max_duration == 86400
+        assert s.chat_lock_cleanup_interval == 60
+
 
 # ======================================================================
 # TestCardBuilder — spec color
@@ -3543,7 +3567,7 @@ def test_non_timeout_error_empty_message_still_uses_empty_message_fallback():
 
 
 def test_spec_review_timeout_config_exists_and_defaults():
-    """spec_review_timeout 配置项应存在且默认值为 120。"""
+    """spec_review_timeout 配置项应存在且默认值为 180。"""
     from src.config import Settings
 
     s = Settings(
@@ -3553,7 +3577,7 @@ def test_spec_review_timeout_config_exists_and_defaults():
         ark_model="x",
     )
     assert hasattr(s, "spec_review_timeout")
-    assert s.spec_review_timeout == 120
+    assert s.spec_review_timeout == 180
 
 
 def test_spec_review_timeout_passed_to_send_prompt(monkeypatch):

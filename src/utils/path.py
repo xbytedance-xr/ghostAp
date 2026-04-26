@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -31,5 +32,24 @@ def normalize_ttadk_cwd(cwd: Optional[str]) -> Optional[str]:
         if not p.is_absolute():
             p = Path.cwd() / p
         return str(p.absolute())
+    except Exception:
+        return None
+
+
+def normalize_repo_path(path: Optional[str]) -> Optional[str]:
+    """将仓库路径归一化为唯一的绝对路径（用于仓库锁 key）。
+
+    - None/空串 -> None
+    - 其他 -> ``os.path.realpath(os.path.expanduser(path))``
+
+    与 :func:`normalize_ttadk_cwd` 的区别：这里**会**展开符号链接（realpath），
+    确保 ``~/repo``、``/home/user/repo``、``/home/user/./repo`` 等价路径
+    归一化后产出相同字符串，用于仓库级互斥锁的 key 比较。
+    """
+    raw = (path or "").strip()
+    if not raw:
+        return None
+    try:
+        return os.path.realpath(os.path.expanduser(raw))
     except Exception:
         return None

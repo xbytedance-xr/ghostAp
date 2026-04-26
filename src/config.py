@@ -1,7 +1,8 @@
 import shlex
 import threading
-from typing import Optional, Callable
+from typing import Literal, Optional, Callable
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.utils.env import is_test_environment
@@ -216,7 +217,7 @@ class Settings(BaseSettings):
     # Loop Engine multi-perspective review (Ralph Loop)
     loop_review_enabled: bool = True
     loop_review_extra_iterations: int = 3
-    loop_review_timeout: int = 120
+    loop_review_timeout: int = 180
 
     # Loop Engine review failure circuit breaker
     # - enabled: master switch
@@ -226,8 +227,8 @@ class Settings(BaseSettings):
     loop_review_failure_max_consecutive: int = 3
     loop_review_failure_cooldown_iterations: int = 3
     loop_review_failure_max_cooldown_iterations: int = 12
-    loop_review_min_timeout: int = 30
-    loop_review_hard_floor: int = 15
+    loop_review_min_timeout: int = 45
+    loop_review_hard_floor: int = 20
 
     # Loop Watchdog
     loop_watchdog_timeout: float = 300.0
@@ -241,19 +242,19 @@ class Settings(BaseSettings):
     spec_convergence_window: int = 2
     spec_min_cycles: int = 2
     spec_review_enabled: bool = True
-    spec_review_timeout: int = 120
-    spec_review_max_parallel: int = 2
+    spec_review_timeout: int = 180
+    spec_review_max_parallel: int = 3
 
     # Spec Engine review failure circuit breaker
     # - enabled: master switch
     # - max_consecutive: open circuit after N consecutive review failures
     # - cooldown_cycles: keep circuit open for next K cycles (skip review)
     spec_review_failure_circuit_enabled: bool = True
-    spec_review_failure_max_consecutive: int = 3
-    spec_review_failure_cooldown_cycles: int = 3
+    spec_review_failure_max_consecutive: int = 4
+    spec_review_failure_cooldown_cycles: int = 2
     spec_review_failure_max_cooldown_cycles: int = 12
-    spec_review_min_timeout: int = 30
-    spec_review_hard_floor: int = 15
+    spec_review_min_timeout: int = 45
+    spec_review_hard_floor: int = 20
 
     # Worktree dispatcher pool-level timeout (seconds)
     worktree_pool_timeout: int = 600
@@ -430,6 +431,79 @@ class Settings(BaseSettings):
 
     # ref-note 关联信息开关（默认关闭，调试时可通过 .env 设置 REF_NOTE_ENABLED=true）
     ref_note_enabled: bool = False
+
+    # ------------------------------------------------------------------
+    # RepoLockManager — 仓库操作锁
+    # ------------------------------------------------------------------
+    repo_lock_idle_timeout: int = 300  # 锁空闲超时（秒），超时自动释放（仅 refcount=0 时生效）
+    repo_lock_cleanup_interval: int = 60  # 清理线程扫描间隔（秒）
+    repo_lock_hard_timeout: int = 3600  # 锁绝对持有上限（秒），refcount>0 超此时长强制回收
+
+    # ChatLockManager — 群锁 TTL
+    chat_lock_max_duration: int = 86400  # 群锁最大持续时间（秒，默认 24h），超时自动释放
+    chat_lock_cleanup_interval: int = 60  # 群锁清理线程扫描间隔（秒）
+
+    # /lock 确认卡片有效期（秒），超时后确认按钮失效
+    lock_confirm_timeout: int = 120
+
+    # 锁后端实现 ("memory" = 纯内存单进程，未来可扩展 "redis" 等分布式后端)
+    lock_backend: Literal["memory"] = "memory"
+
+    # SandboxExecutor 严格锁模式 — True 时检测到锁冲突 raise LockConflictError，False 仅 warning
+    sandbox_strict_lock_mode: bool = False
+
+    # ------------------------------------------------------------------
+    # 签名回退兼容窗口 — 升级后旧按钮的 plain SHA-256 签名过渡期
+    # ------------------------------------------------------------------
+    sig_compat_deploy_date: str = ""  # ISO 格式部署日期，回退窗口起点；空值时以进程启动日期为起点
+    sig_compat_window_days: int = 7  # 回退兼容天数，超过后仅接受 HMAC 签名
+
+    # ------------------------------------------------------------------
+    # 管理员用户列表（用于群级锁权限判定）
+    # Stored as frozenset for O(1) membership checks on hot paths.
+    # Pydantic parses the env var as list[str] first; the validator below
+    # converts it to frozenset after parsing.
+    # ------------------------------------------------------------------
+    admin_user_ids: frozenset[str] = frozenset()
+
+    @field_validator("admin_user_ids", mode="before")
+    @classmethod
+    def _coerce_admin_user_ids(cls, v):
+        """Accept list / comma-separated string and convert to frozenset."""
+        if isinstance(v, str):
+            v = [s.strip() for s in v.split(",") if s.strip()]
+        if isinstance(v, (list, tuple, set)):
+            return frozenset(v)
+        if isinstance(v, frozenset):
+            return v
+        return frozenset()
+
+    # ------------------------------------------------------------------
+    # 项目 chat 隔离 — allowed_chat_ids 上限
+    # ------------------------------------------------------------------
+    max_allowed_chat_ids: int = 50  # 每个 project 最多关联的 chat_id 数量
+    max_evicted_cache: int = 200  # evicted_chat_ids 有界 LRU 上限
+
+    @field_validator("max_allowed_chat_ids", mode="before")
+    @classmethod
+    def _max_allowed_chat_ids_must_be_positive(cls, v: int) -> int:
+        if int(v) < 1:
+            raise ValueError("max_allowed_chat_ids must be >= 1")
+        return int(v)
+
+    @field_validator("repo_lock_idle_timeout", "repo_lock_cleanup_interval", "repo_lock_hard_timeout", mode="before")
+    @classmethod
+    def _repo_lock_timers_must_be_positive(cls, v: int, info) -> int:
+        if int(v) < 1:
+            raise ValueError(f"{info.field_name} must be > 0, got {v}")
+        return int(v)
+
+    @field_validator("chat_lock_max_duration", "chat_lock_cleanup_interval", mode="before")
+    @classmethod
+    def _chat_lock_timers_must_be_positive(cls, v: int, info) -> int:
+        if int(v) < 1:
+            raise ValueError(f"{info.field_name} must be > 0, got {v}")
+        return int(v)
 
     @property
     def command_blacklist(self) -> list[str]:

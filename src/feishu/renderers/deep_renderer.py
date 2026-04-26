@@ -390,7 +390,7 @@ class DeepRenderer(BaseRenderer):
 
         if project is None:
             try:
-                project = self.handler.project_manager.find_project_by_path(engine.root_path)
+                project = self.handler.project_manager.find_project_by_path(engine.root_path, chat_id=chat_id)
             except Exception:
                 project = None
 

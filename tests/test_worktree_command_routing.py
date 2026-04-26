@@ -41,6 +41,7 @@ class TestWorktreeCommandRouting(unittest.TestCase):
 
             project = SimpleNamespace(project_id="p1")
             client._project_manager.get_project.return_value = project
+            client._project_manager.get_project_for_chat.return_value = project
 
             data = SimpleNamespace(
                 event=SimpleNamespace(
@@ -397,6 +398,7 @@ class TestWorktreeCommandRouting(unittest.TestCase):
         project = MagicMock()
         project.project_id = "p1"
         handler.project_manager.get_project.return_value = project
+        handler.project_manager.get_project_for_chat.return_value = project
     
         handler._worktree_manager = MagicMock()
         mock_state = MagicMock()

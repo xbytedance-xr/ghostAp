@@ -1508,9 +1508,10 @@ class TestLoopReviewSkipOverrun:
         assert decision == "review_circuit_open_skip"
         assert engine._review_circuit.consecutive_skips == 6
         assert any("review_skip_overrun" in r.message for r in caplog.records)
-        # Verify suggestions surface overrun info to user
+        # FS-14: skip-overrun warning moved to logger-only, not in user-visible suggestions
+        assert any("熔断器可能卡住" in r.message for r in caplog.records)
         for rev in result.reviews:
-            assert any("跳过次数异常偏高" in s for s in rev.suggestions)
+            assert not any("跳过次数异常偏高" in s for s in rev.suggestions)
 
     def test_no_warning_below_threshold(self, tmp_path, caplog):
         """Below threshold, no overrun warning and suggestions have no overrun text."""

@@ -33,12 +33,13 @@ class ModeManager:
     2. Otherwise, fall back to chat-level mode
     3. Default is SMART mode
 
-    This allows different projects to have independent coding modes
-    while maintaining backward compatibility with chat-level mode.
+    Project-level modes are keyed by ``{chat_id}:{project_id}`` so that
+    different chats operating on the same project maintain independent modes.
     """
 
     def __init__(self):
         self._chat_modes: dict[str, ModeState] = {}
+        # Key format: "{chat_id}:{project_id}" — ensures cross-chat isolation.
         self._project_modes: dict[str, ModeState] = {}
         self._lock = threading.Lock()
         self._programming_modes = (
@@ -49,6 +50,11 @@ class ModeManager:
             InteractionMode.GEMINI,
             InteractionMode.TTADK,
         )
+
+    @staticmethod
+    def _project_key(chat_id: str, project_id: str) -> str:
+        """Build the composite key for ``_project_modes``."""
+        return f"{chat_id}:{project_id}"
 
     def get_mode(self, chat_id: str, project_id: Optional[str] = None) -> InteractionMode:
         """Get the current interaction mode.
@@ -62,7 +68,8 @@ class ModeManager:
         """
         with self._lock:
             if project_id:
-                project_state = self._project_modes.get(project_id)
+                key = self._project_key(chat_id, project_id)
+                project_state = self._project_modes.get(key)
                 if project_state:
                     return project_state.mode
             chat_state = self._chat_modes.get(chat_id)
@@ -78,9 +85,9 @@ class ModeManager:
         """设置交互模式（chat 级或 project 级）。
 
         设计说明：
-        - `project_id` 非空：只影响该项目；同一 chat 的其他项目不受影响。
+        - `project_id` 非空：只影响该 chat+project 组合；不同 chat 对同一 project 互不干扰。
         - `project_id` 为空：设置 chat 级默认模式（兼容旧行为）。
-        - `auto_entered=True`：标记为“自动进入”（例如回复链路自动切换），便于 UI/审计区分。
+        - `auto_entered=True`：标记为"自动进入"（例如回复链路自动切换），便于 UI/审计区分。
 
         Args:
             chat_id: The chat identifier
@@ -93,33 +100,61 @@ class ModeManager:
         """
         with self._lock:
             if project_id:
-                old_state = self._project_modes.get(project_id, ModeState())
+                key = self._project_key(chat_id, project_id)
+                old_state = self._project_modes.get(key, ModeState())
                 old_mode = old_state.mode
-                self._project_modes[project_id] = ModeState(mode=mode, auto_entered=auto_entered)
+                self._project_modes[key] = ModeState(mode=mode, auto_entered=auto_entered)
             else:
                 old_state = self._chat_modes.get(chat_id, ModeState())
                 old_mode = old_state.mode
                 self._chat_modes[chat_id] = ModeState(mode=mode, auto_entered=auto_entered)
             return old_mode
 
-    def clear_project_mode(self, project_id: str) -> Optional[InteractionMode]:
-        """Clear the mode for a specific project.
+    def clear_project_mode(self, chat_id: str, project_id: str) -> Optional[InteractionMode]:
+        """Clear the mode for a specific chat+project combination.
+
+        Args:
+            chat_id: The chat identifier
+            project_id: The project identifier
 
         Returns:
             The previous mode if it existed, None otherwise
         """
         with self._lock:
-            old_state = self._project_modes.pop(project_id, None)
+            key = self._project_key(chat_id, project_id)
+            old_state = self._project_modes.pop(key, None)
             return old_state.mode if old_state else None
 
-    def get_project_mode(self, project_id: str) -> Optional[InteractionMode]:
-        """Get the mode for a specific project (without fallback).
+    def clear_modes_for_chat(self, chat_id: str) -> int:
+        """Remove all project-mode entries for *chat_id*.
+
+        Called when a chat_id is evicted from a project's allowed_chat_ids
+        via LRU, so that stale ``{chat_id}:{project_id}`` keys do not
+        accumulate in ``_project_modes`` indefinitely.
+
+        Returns:
+            Number of entries removed.
+        """
+        prefix = f"{chat_id}:"
+        with self._lock:
+            stale_keys = [k for k in self._project_modes if k.startswith(prefix)]
+            for k in stale_keys:
+                del self._project_modes[k]
+            return len(stale_keys)
+
+    def get_project_mode(self, chat_id: str, project_id: str) -> Optional[InteractionMode]:
+        """Get the mode for a specific chat+project (without fallback).
+
+        Args:
+            chat_id: The chat identifier
+            project_id: The project identifier
 
         Returns:
             The project's mode if set, None otherwise
         """
         with self._lock:
-            state = self._project_modes.get(project_id)
+            key = self._project_key(chat_id, project_id)
+            state = self._project_modes.get(key)
             return state.mode if state else None
 
     def enter_programming_mode(

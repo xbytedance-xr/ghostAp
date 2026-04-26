@@ -1,7 +1,9 @@
 import os
 import tempfile
 import time
+from collections import OrderedDict
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -175,7 +177,7 @@ class TestProjectManager:
         manager = ProjectManager(storage_path=temp_storage)
         manager.create_project("test", "Test", project_dir)
 
-        project = manager.get_project("test")
+        project = manager.get_project_for_diagnostics("test")
 
         assert project is not None
         assert project.project_id == "test"
@@ -207,16 +209,16 @@ class TestProjectManager:
         manager = ProjectManager(storage_path=temp_storage)
         manager.create_project("test", "Test", project_dir)
         manager.set_active_project("chat_123", "test")
-        first_active = manager.get_project("test").last_active
+        first_active = manager.get_project_for_diagnostics("test").last_active
 
         time.sleep(0.01)
         success, _ = manager.set_active_project("chat_123", "test")
 
         assert success is True
-        second_active = manager.get_project("test").last_active
+        second_active = manager.get_project_for_diagnostics("test").last_active
         assert second_active > first_active
 
-        reloaded = ProjectManager(storage_path=temp_storage).get_project("test")
+        reloaded = ProjectManager(storage_path=temp_storage).get_project_for_diagnostics("test")
         assert reloaded is not None
         assert reloaded.last_active == second_active
 
@@ -227,7 +229,7 @@ class TestProjectManager:
         success, msg = manager.close_project("test")
 
         assert success is True
-        assert manager.get_project("test") is None
+        assert manager.get_project_for_diagnostics("test") is None
 
     def test_find_project_by_name(self, temp_storage, project_dir):
         manager = ProjectManager(storage_path=temp_storage)
@@ -248,7 +250,7 @@ class TestProjectManager:
         manager1.create_project("test", "Test", project_dir)
 
         manager2 = ProjectManager(storage_path=temp_storage)
-        project = manager2.get_project("test")
+        project = manager2.get_project_for_diagnostics("test")
 
         assert project is not None
         assert project.project_name == "Test"
@@ -280,7 +282,7 @@ class TestProjectManager:
         assert projects[1].project_id == "proj_b"
         assert projects[2].project_id == "proj_a"
 
-        manager.get_project("proj_a").touch()
+        manager.get_project_for_diagnostics("proj_a").touch()
         projects = manager.get_all_projects(sort_by_recent=True)
         assert projects[0].project_id == "proj_a"
 
@@ -331,7 +333,7 @@ class TestProjectManager:
     def test_get_or_create_project_for_path_existing_persists_touch_without_chat(self, temp_storage, project_dir):
         manager = ProjectManager(storage_path=temp_storage)
         manager.create_project("existing", "Existing Project", project_dir)
-        project = manager.get_project("existing")
+        project = manager.get_project_for_diagnostics("existing")
         old_active = project.last_active
 
         time.sleep(0.01)
@@ -341,7 +343,7 @@ class TestProjectManager:
         assert found.project_id == "existing"
         assert found.last_active > old_active
 
-        reloaded = ProjectManager(storage_path=temp_storage).get_project("existing")
+        reloaded = ProjectManager(storage_path=temp_storage).get_project_for_diagnostics("existing")
         assert reloaded is not None
         assert reloaded.last_active == found.last_active
 
@@ -450,7 +452,7 @@ class TestProjectManager:
         manager = ProjectManager(storage_path=temp_storage)
         manager.create_project("valid_proj", "Valid Project", project_dir)
 
-        project = manager.get_project("valid_proj")
+        project = manager.get_project_for_diagnostics("valid_proj")
         project.root_path = "/nonexistent/path/12345"
 
         valid, msg = manager.validate_project_path("valid_proj")
@@ -470,7 +472,7 @@ class TestProjectManager:
         assert success is True
         assert result == subdir
 
-        project = manager.get_project("test_proj")
+        project = manager.get_project_for_diagnostics("test_proj")
         assert project.working_dir == subdir
 
     def test_update_working_dir_relative_path(self, temp_storage, project_dir):
@@ -503,7 +505,7 @@ class TestProjectManager:
         manager1.update_working_dir("test_proj", subdir)
 
         manager2 = ProjectManager(storage_path=temp_storage)
-        project = manager2.get_project("test_proj")
+        project = manager2.get_project_for_diagnostics("test_proj")
 
         assert project.working_dir == subdir
 
@@ -524,10 +526,10 @@ class TestProjectManager:
 
         manager.set_active_project("chat1", "proj2")
 
-        proj1 = manager.get_project("proj1")
+        proj1 = manager.get_project_for_diagnostics("proj1")
         assert proj1.working_dir == subdir1
 
-        proj2 = manager.get_project("proj2")
+        proj2 = manager.get_project_for_diagnostics("proj2")
         assert proj2.working_dir == proj2_dir
 
 
@@ -611,3 +613,263 @@ class TestMessageLinker:
         assert linker.query(reply1)["origin_message_id"] == origin
         assert linker.query(run2)["origin_message_id"] == origin
         assert linker.query(request_id)["origin_message_id"] == origin
+
+
+class TestEvictionCallbackOutsideLock:
+    """AC-R01: on_eviction fires outside _lock — callback can safely use ProjectManager."""
+
+    @pytest.fixture
+    def temp_storage(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield os.path.join(tmpdir, "projects.json")
+
+    @pytest.fixture
+    def project_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield tmpdir
+
+    def test_callback_can_call_get_all_projects_without_deadlock(
+        self, temp_storage, project_dir
+    ):
+        """on_eviction callback calling get_all_projects() must not deadlock."""
+        from unittest.mock import patch, MagicMock
+        import threading
+
+        settings = MagicMock()
+        settings.max_allowed_chat_ids = 2
+        settings.ttadk_yolo_default_enabled = False
+        settings.max_evicted_cache = 200
+
+        with patch("src.config.get_settings", return_value=settings):
+            manager = ProjectManager(storage_path=temp_storage)
+
+            callback_result = {}
+            callback_completed = threading.Event()
+
+            def on_eviction_cb(evicted_cid, proj_name, proj_id):
+                # This would deadlock if on_eviction fires inside _lock
+                result = manager.get_all_projects(chat_id=None)
+                callback_result["projects"] = result
+                callback_completed.set()
+
+            manager.on_eviction = on_eviction_cb
+
+            manager.create_project("p1", "Proj1", project_dir, chat_id="chatA")
+            manager.set_active_project("chatA", "p1")
+            manager.set_active_project("chatB", "p1")
+            # chatC should evict chatA (limit=2, owner=chatA but LRU oldest)
+            manager.set_active_project("chatC", "p1")
+
+            # Must complete within 5s, otherwise it's a deadlock
+            assert callback_completed.wait(timeout=5), "on_eviction callback deadlocked"
+            assert "projects" in callback_result
+
+
+class TestEvictionCleansActiveProject:
+    """AC-R02: LRU eviction must remove orphan _active_project entries."""
+
+    @pytest.fixture
+    def temp_storage(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield os.path.join(tmpdir, "projects.json")
+
+    @pytest.fixture
+    def project_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield tmpdir
+
+    def test_evicted_chat_removed_from_active_project(
+        self, temp_storage, project_dir
+    ):
+        from unittest.mock import patch, MagicMock
+
+        settings = MagicMock()
+        settings.max_allowed_chat_ids = 2
+        settings.ttadk_yolo_default_enabled = False
+        settings.max_evicted_cache = 200
+
+        with patch("src.config.get_settings", return_value=settings):
+            manager = ProjectManager(storage_path=temp_storage)
+            manager.create_project("p1", "Proj1", project_dir, chat_id="owner")
+
+            manager.set_active_project("owner", "p1")
+            manager.set_active_project("chatB", "p1")
+            # chatC evicts 'owner' (oldest non-owner would be 'chatB' if owner != owner
+            # Actually: owner_chat_id is 'owner', so chatB is evicted)
+            manager.set_active_project("chatC", "p1")
+
+            # chatB was evicted — must not be in _active_project
+            assert manager._active_project.get("chatB") is None
+            # chatC and owner should still be present
+            assert manager._active_project.get("chatC") == "p1"
+
+    def test_eviction_does_not_clobber_new_binding(
+        self, temp_storage, project_dir
+    ):
+        """Conditional pop must not remove _active_project entry that was
+        re-bound to a *different* project between add_chat_id and pop.
+
+        Scenario:
+          - p1 (limit=2) has [owner, chatB].
+          - chatB is also active on p2 (_active_project["chatB"] = "p2")
+            because another thread just switched it.
+          - chatC joins p1, evicting chatB from p1's allowed_chat_ids.
+          - The conditional pop must NOT remove _active_project["chatB"]
+            because it now points to "p2", not "p1".
+        """
+        from unittest.mock import patch, MagicMock
+
+        settings = MagicMock()
+        settings.max_allowed_chat_ids = 2
+        settings.ttadk_yolo_default_enabled = False
+        settings.max_evicted_cache = 200
+
+        with patch("src.config.get_settings", return_value=settings):
+            manager = ProjectManager(storage_path=temp_storage)
+            proj2_dir = os.path.join(project_dir, "p2")
+            os.makedirs(proj2_dir, exist_ok=True)
+
+            manager.create_project("p1", "Proj1", project_dir, chat_id="owner")
+            manager.create_project("p2", "Proj2", proj2_dir)
+
+            manager.set_active_project("owner", "p1")
+            manager.set_active_project("chatB", "p1")
+
+            # Simulate another thread switching chatB to p2 right before
+            # eviction pop executes.  We poke _active_project directly
+            # (still inside the same thread — the lock is reentrant).
+            manager._active_project["chatB"] = "p2"
+
+            # chatC joins p1 → evicts chatB from p1's allowed list
+            manager.set_active_project("chatC", "p1")
+
+            # chatB's binding to p2 must survive the eviction
+            assert manager._active_project.get("chatB") == "p2"
+            assert manager._active_project.get("chatC") == "p1"
+
+
+class TestConcurrentSetActiveNoTOCTOU:
+    """Stress-test: concurrent set_active_project must not produce ghost
+    entries or clobber valid bindings in _active_project."""
+
+    @pytest.fixture
+    def temp_storage(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield os.path.join(tmpdir, "projects.json")
+
+    def test_concurrent_set_active_no_toctou(self, temp_storage):
+        import threading
+        from unittest.mock import patch, MagicMock
+
+        settings = MagicMock()
+        settings.max_allowed_chat_ids = 3
+        settings.ttadk_yolo_default_enabled = False
+        settings.max_evicted_cache = 200
+
+        with patch("src.config.get_settings", return_value=settings):
+            manager = ProjectManager(storage_path=temp_storage)
+
+            # Create 4 projects, each in its own directory
+            proj_dirs = []
+            for i in range(4):
+                d = os.path.join(os.path.dirname(temp_storage), f"proj{i}")
+                os.makedirs(d, exist_ok=True)
+                proj_dirs.append(d)
+                manager.create_project(
+                    f"p{i}", f"Proj{i}", d, chat_id=f"owner{i}"
+                )
+
+            num_threads = 12
+            barrier = threading.Barrier(num_threads)
+            errors: list[str] = []
+
+            def worker(idx: int):
+                try:
+                    barrier.wait(timeout=5)
+                    chat_id = f"chat_{idx}"
+                    project_id = f"p{idx % 4}"
+                    manager.set_active_project(chat_id, project_id)
+                except Exception as e:
+                    errors.append(f"thread-{idx}: {e}")
+
+            threads = [
+                threading.Thread(target=worker, args=(i,))
+                for i in range(num_threads)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10)
+
+            assert not errors, f"Thread errors: {errors}"
+
+            # Invariant 1: every chat_id in _active_project must point to
+            # an existing project
+            for cid, pid in manager._active_project.items():
+                assert pid in ("p0", "p1", "p2", "p3"), (
+                    f"Ghost entry: {cid} -> {pid}"
+                )
+
+            # Invariant 2: every worker's chat_id that succeeded should
+            # appear in _active_project
+            for i in range(num_threads):
+                cid = f"chat_{i}"
+                pid = manager._active_project.get(cid)
+                # It's possible the binding was evicted by a later thread,
+                # but if present it must point to a valid project.
+                if pid is not None:
+                    assert pid in ("p0", "p1", "p2", "p3")
+
+
+# ---------------------------------------------------------------------------
+# AC-R01 / AC-R03: _is_visible + create_project type correctness
+# ---------------------------------------------------------------------------
+
+class TestIsVisibleNoFrozensetAllocation:
+    """AC-R01: _is_visible must NOT call _chat_id_set (zero allocation)."""
+
+    def test_is_visible_uses_allowed_chat_ids_directly(self):
+        ctx = ProjectContext(
+            project_id="p1",
+            project_name="P1",
+            root_path="/tmp/test_vis",
+            owner_chat_id="chatA",
+            allowed_chat_ids=OrderedDict([("chatA", time.time())]),
+        )
+        # Monkey-patch _chat_id_set to detect unwanted calls
+        original = ctx._chat_id_set
+        call_count = 0
+        def spy():
+            nonlocal call_count
+            call_count += 1
+            return original()
+        ctx._chat_id_set = spy
+
+        assert ProjectManager._is_visible(ctx, "chatA") is True
+        assert ProjectManager._is_visible(ctx, "chatX") is False
+        assert call_count == 0, f"_chat_id_set was called {call_count} times; expected 0"
+
+
+class TestCreateProjectPassesOrderedDict:
+    """AC-R03: create_project must pass OrderedDict, not list[tuple]."""
+
+    @pytest.fixture
+    def temp_storage(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield os.path.join(tmpdir, "projects.json")
+
+    def test_allowed_chat_ids_is_ordered_dict(self, temp_storage):
+        settings = MagicMock()
+        settings.max_allowed_chat_ids = 50
+        settings.ttadk_yolo_default_enabled = False
+        settings.max_evicted_cache = 200
+
+        with patch("src.config.get_settings", return_value=settings):
+            manager = ProjectManager(storage_path=temp_storage)
+            d = os.path.join(os.path.dirname(temp_storage), "proj_od")
+            os.makedirs(d, exist_ok=True)
+            ok, _, ctx = manager.create_project("od_test", "OD Test", d, chat_id="chatOD")
+            assert ok
+            # Must be OrderedDict, not converted from list by __post_init__
+            assert type(ctx.allowed_chat_ids) is OrderedDict
+            assert "chatOD" in ctx.allowed_chat_ids

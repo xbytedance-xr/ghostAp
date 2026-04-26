@@ -31,6 +31,7 @@ class EmojiType:
     FLASH = "JIAYI"
     READING = "THINKING"
     BUSY = "OneSecond"
+    LOCK = "LOCK"
 
 
 class EmojiReaction:
@@ -101,3 +102,7 @@ class EmojiReaction:
     @staticmethod
     def on_coco_mode() -> str:
         return EmojiType.GET
+
+    @staticmethod
+    def on_chat_locked() -> str:
+        return EmojiType.LOCK

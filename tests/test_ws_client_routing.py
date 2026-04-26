@@ -180,6 +180,8 @@ def test_card_action_deduplication_and_routing(mock_ws_client: FeishuWSClient):
     data.event.context.open_message_id = "msg_123"
     data.event.context.open_chat_id = "chat_456"
     data.event.action.value = '{"action": "show_status", "project_id": "proj_1"}'
+    data.event.operator.open_id = "ou_test"
+    data.event.operator.user_id = "u_test"
     
     # Mock deduplication cache to False
     mock_ws_client._card_event_cache.is_duplicate = MagicMock(return_value=False)
@@ -212,3 +214,91 @@ def test_card_action_deduplication_and_routing(mock_ws_client: FeishuWSClient):
     assert args[2] == "chat_456"
     assert args[3] == "proj_1"
     assert args[4]["action"] == "show_status"
+
+
+# ---------------------------------------------------------------------------
+# AC-18: chat-lock intercept card fallback on card send failure
+# ---------------------------------------------------------------------------
+
+
+class TestChatLockInterceptFallback:
+    """AC-18: when the chat-lock intercept card fails to send, a plain text
+    fallback message is delivered to the user.
+
+    The card building + sending now lives in BaseHandler; ws_client delegates.
+    """
+
+    def test_fallback_text_on_card_build_failure(self, mock_ws_client):
+        """Card build failure in handler → fallback plain text with 🔒."""
+        from unittest.mock import MagicMock, patch
+        from src.feishu.handlers.lock_helper import LockHelper
+
+        handler = MagicMock()
+
+        # Simulate card build failure inside handler method
+        clm = MagicMock()
+        clm.get_lock_info.side_effect = RuntimeError("db error")
+
+        # Use the real LockHelper with the mock handler
+        lock_helper = LockHelper(handler)
+        lock_helper.send_chat_lock_intercept_card("msg_1", "chat_1", clm)
+
+        # Fallback should have been called via reply_message
+        handler.reply_message.assert_called_once()
+        args = handler.reply_message.call_args[0]
+        assert args[0] == "msg_1"
+        assert "text" == handler.reply_message.call_args[1].get("msg_type", args[2] if len(args) > 2 else "")
+
+    def test_no_exception_when_both_fail(self, mock_ws_client):
+        """Even if fallback also fails, no exception escapes."""
+        from unittest.mock import MagicMock
+        from src.feishu.handlers.lock_helper import LockHelper
+
+        handler = MagicMock()
+        handler.reply_message.side_effect = RuntimeError("all fail")
+
+        clm = MagicMock()
+        clm.get_lock_info.side_effect = RuntimeError("db error")
+
+        # Should NOT raise
+        lock_helper = LockHelper(handler)
+        lock_helper.send_chat_lock_intercept_card("msg_2", "chat_2", clm)
+
+    def test_chat_lock_gate_delegates_to_handler(self, mock_ws_client):
+        """ChatLockGate._try_block delegates to handler layer via host._get_handler('system')."""
+        from unittest.mock import MagicMock
+        from src.feishu.chat_lock_gate import ChatLockGate
+        from src.feishu.message_cache import MessageCache
+
+        clm = MagicMock()
+        clm.should_block.return_value = True
+
+        handler = MagicMock()
+        host = MagicMock()
+        host._get_handler.return_value = handler
+
+        cache = MessageCache(ttl=30, max_size=10_000, cleanup_interval=60)
+        gate = ChatLockGate(chat_lock_manager=clm, dedup_cache=cache, host=host)
+
+        blocked = gate._try_block(
+            "chat_1", "user_1", "msg_1", command="/test", raw_text="/test",
+        )
+        assert blocked is True
+        handler.send_chat_lock_intercept_card.assert_called_once_with("msg_1", "chat_1", clm)
+
+
+# ---------------------------------------------------------------------------
+# AC-19: on_eviction callback wired in ws_client
+# ---------------------------------------------------------------------------
+
+
+class TestOnEvictionWiring:
+    """AC-19: ProjectManager.on_eviction is wired to _on_project_evicted."""
+
+    def test_on_eviction_is_wired(self, mock_ws_client):
+        """After init, ProjectManager.on_eviction should not be None."""
+        assert mock_ws_client._project_manager.on_eviction is not None
+
+    def test_on_eviction_callback_callable(self, mock_ws_client):
+        """The wired callback should be callable."""
+        assert callable(mock_ws_client._project_manager.on_eviction)

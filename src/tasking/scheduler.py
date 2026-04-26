@@ -51,6 +51,8 @@ class TaskSpec(BaseModel):
     task_id: Optional[str] = None  # Human-readable ID e.g. "myproject_20260227_143025_a1b2"
     priority: TaskPriority = TaskPriority.NORMAL
     is_system_command: bool = False
+    is_p2p: bool = False  # True when message originates from a private (p2p) chat
+    sender_id: str = ""  # Feishu open_id of the message sender
 
     def get_effective_queue_key(self) -> str:
         """Calculate the effective queue key for routing.
@@ -482,24 +484,30 @@ class TaskScheduler:
         with self._lock:
             return self._states.get(run_id)
 
-    def get_state_by_task_id(self, task_id: str) -> Optional[TaskRunState]:
+    def get_state_by_task_id(self, task_id: str, chat_id: str) -> Optional[TaskRunState]:
         """Look up a task by its human-readable task_id.
 
         Supports exact match and partial suffix match (last 6+ chars).
+        *chat_id* is required — only returns the task if it belongs to that chat
+        (enforces cross-chat isolation at the API level).
         """
         with self._lock:
+            state: Optional[TaskRunState] = None
             # Exact match
             run_id = self._by_task_id.get(task_id)
             if run_id:
-                return self._states.get(run_id)
+                state = self._states.get(run_id)
             # Partial suffix match (for short-id queries like "a1b2" or "143025_a1b2")
-            if len(task_id) >= 4:
+            elif len(task_id) >= 4:
                 matches = [
                     (tid, rid) for tid, rid in self._by_task_id.items() if tid.endswith(task_id) or task_id in tid
                 ]
                 if len(matches) == 1:
-                    return self._states.get(matches[0][1])
-            return None
+                    state = self._states.get(matches[0][1])
+            # Chat-level isolation check
+            if state and state.spec.chat_id != chat_id:
+                return None
+            return state
 
     def list_tasks(
         self,

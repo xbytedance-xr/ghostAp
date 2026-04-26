@@ -342,6 +342,7 @@ def test_no_goal_fallback_confirm_card():
     project = _make_project("p-fb")
     handler.ctx.project_manager.get_active_project.return_value = project
     handler.ctx.project_manager.get_project.return_value = project
+    handler.ctx.project_manager.get_project_for_chat.return_value = project
 
     mgr = handler._worktree_manager()
     mgr.start_selection(project)
@@ -371,6 +372,7 @@ def test_goal_from_card_input_triggers_auto_execute():
     project = _make_project("p-inp")
     handler.ctx.project_manager.get_active_project.return_value = project
     handler.ctx.project_manager.get_project.return_value = project
+    handler.ctx.project_manager.get_project_for_chat.return_value = project
 
     mgr = handler._worktree_manager()
     mgr.start_selection(project)
@@ -401,6 +403,7 @@ def test_finish_selection_with_pending_goal_auto_executes():
     project = _make_project("p-pend")
     handler.ctx.project_manager.get_active_project.return_value = project
     handler.ctx.project_manager.get_project.return_value = project
+    handler.ctx.project_manager.get_project_for_chat.return_value = project
 
     mgr = handler._worktree_manager()
     mgr.start_selection(project, goal="添加单元测试")
@@ -466,6 +469,7 @@ def test_zero_tools_error_blocks_execution():
     project = _make_project("p-zero")
     handler.ctx.project_manager.get_active_project.return_value = project
     handler.ctx.project_manager.get_project.return_value = project
+    handler.ctx.project_manager.get_project_for_chat.return_value = project
 
     mgr = handler._worktree_manager()
     mgr.start_selection(project, goal="不该执行")
@@ -550,6 +554,7 @@ def test_goal_persistence_across_selection():
     project = _make_project("p-pers")
     handler.ctx.project_manager.get_active_project.return_value = project
     handler.ctx.project_manager.get_project.return_value = project
+    handler.ctx.project_manager.get_project_for_chat.return_value = project
 
     mgr = handler._worktree_manager()
 
@@ -597,6 +602,7 @@ def test_goal_from_model_select_card_persists():
     project = _make_project("p-model")
     handler.ctx.project_manager.get_active_project.return_value = project
     handler.ctx.project_manager.get_project.return_value = project
+    handler.ctx.project_manager.get_project_for_chat.return_value = project
 
     mgr = handler._worktree_manager()
     mgr.start_selection(project, goal="")  # 初始不设置 goal
@@ -717,6 +723,7 @@ def test_auto_execute_after_model_selection():
     project = _make_project("p-auto-model")
     handler.ctx.project_manager.get_active_project.return_value = project
     handler.ctx.project_manager.get_project.return_value = project
+    handler.ctx.project_manager.get_project_for_chat.return_value = project
 
     mgr = handler._worktree_manager()
     mgr.start_selection(project, goal="自动执行任务")
@@ -745,6 +752,7 @@ def test_auto_execute_after_tool_selection_skipping_model():
     project = _make_project("p-auto-tool")
     handler.ctx.project_manager.get_active_project.return_value = project
     handler.ctx.project_manager.get_project.return_value = project
+    handler.ctx.project_manager.get_project_for_chat.return_value = project
 
     mgr = handler._worktree_manager()
     mgr.start_selection(project, goal="直接开始任务")
@@ -790,6 +798,7 @@ def test_whitespace_only_goal_falls_back_to_confirm_card():
     project = _make_project("p-ws")
     handler.ctx.project_manager.get_active_project.return_value = project
     handler.ctx.project_manager.get_project.return_value = project
+    handler.ctx.project_manager.get_project_for_chat.return_value = project
 
     mgr = handler._worktree_manager()
     mgr.start_selection(project)
@@ -822,6 +831,7 @@ def test_goal_with_newlines_preserved():
     project = _make_project("p-nl")
     handler.ctx.project_manager.get_active_project.return_value = project
     handler.ctx.project_manager.get_project.return_value = project
+    handler.ctx.project_manager.get_project_for_chat.return_value = project
 
     mgr = handler._worktree_manager()
     mgr.start_selection(project)

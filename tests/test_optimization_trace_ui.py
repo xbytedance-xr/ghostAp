@@ -135,7 +135,7 @@ class TestOptimizationTraceUI(unittest.TestCase):
         handler.reply_error = MagicMock()
 
         # Test case: project not found
-        handler.project_manager.find_project_by_name.return_value = None
+        handler.project_manager.find_project_by_name_with_hint.return_value = (None, "")
         handler.project_manager.search_projects.return_value = []
 
         handler.switch_project("msg_1", "chat_1", "nonexistent")

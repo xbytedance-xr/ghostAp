@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import uuid
+from dataclasses import dataclass as _dataclass
 from typing import TYPE_CHECKING, Callable, Optional, Any
 
 from ...card.styles import UI_TEXT
@@ -23,6 +24,7 @@ from ...utils.errors import get_error_detail
 
 if TYPE_CHECKING:
     from ...card.streaming import StreamingCardManager
+    from ...repo_lock import LockConflictError
     from ...project import ContextSourceMode, ProjectContext
     from ..handler_context import HandlerContext
 
@@ -38,6 +40,9 @@ class BaseHandler:
         # Throttling state: message_id -> (content, task)
         self._pending_patches: dict[str, str] = {}
         self._patch_tasks: dict[str, asyncio.Task] = {}
+        # Lock helper (composition — keeps BaseHandler focused on messaging)
+        from .lock_helper import LockHelper
+        self.lock_helper = LockHelper(self)
 
     # ------------------------------------------------------------------
     # Convenience accessors
@@ -666,7 +671,7 @@ class BaseHandler:
         project = None
         if project_id:
             try:
-                project = self.project_manager.get_project(project_id)
+                project = self.project_manager.get_project_for_chat(project_id, chat_id)
             except Exception:
                 project = None
         identity = resolve_engine_identity(
@@ -677,3 +682,28 @@ class BaseHandler:
             acp_model_name=getattr(project, "acp_model_name", None) if project else None,
         )
         return identity.engine_name
+
+    # ------------------------------------------------------------------
+    # Repo lock helper (delegated to LockHelper)
+    # ------------------------------------------------------------------
+
+    def _with_repo_lock(self, root_path, chat_id, body_func):
+        return self.lock_helper._with_repo_lock(root_path, chat_id, body_func)
+
+    def _acquire_repo_lock(self, root_path, chat_id):
+        return self.lock_helper._acquire_repo_lock(root_path, chat_id)
+
+    def _release_repo_lock(self, root_path, chat_id, repo_lock_mgr=None):
+        return self.lock_helper._release_repo_lock(root_path, chat_id, repo_lock_mgr)
+
+    def send_lock_conflict_card(self, e: "LockConflictError", message_id: str, command_text: str, *, retry_count: int = 0):
+        return self.lock_helper.send_lock_conflict_card(e, message_id, command_text, retry_count=retry_count)
+
+    def _collect_lock_conflict_context(self, e):
+        return self.lock_helper._collect_lock_conflict_context(e)
+
+    def send_chat_lock_intercept_card(self, message_id, chat_id, chat_lock_manager):
+        return self.lock_helper.send_chat_lock_intercept_card(message_id, chat_id, chat_lock_manager)
+
+    def send_chat_lock_throttled_reply(self, message_id, chat_id, chat_lock_manager):
+        return self.lock_helper.send_chat_lock_throttled_reply(message_id, chat_id, chat_lock_manager)

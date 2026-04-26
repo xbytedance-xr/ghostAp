@@ -68,20 +68,24 @@ def compute_adaptive_timeout(
 ) -> int:
     """Compute progressively shorter review timeout after consecutive timeouts.
 
-    Formula: ``max(base_timeout // 2**n, min_timeout, hard_floor)``
+    Formula: ``max(int(base_timeout / 1.5**n), min_timeout, hard_floor)``
+
+    Uses a 1.5x decay factor (instead of 2x) for a gentler curve that avoids
+    cascading instant timeouts after a few consecutive failures.
 
     The *hard_floor* (default 15 s) ensures the timeout never drops below
     the minimum viable ACP communication round-trip, preventing cascading
     instant timeouts.
 
-    Examples (base=120, min=30, hard_floor=15):
-        n=0 → 120
-        n=1 → 60
-        n=2 → 30
-        n=3 → 30  (floored)
+    Examples (base=180, min=45, hard_floor=20):
+        n=0 → 180
+        n=1 → 120
+        n=2 → 80
+        n=3 → 53
+        n=4 → 45  (floored by min_timeout)
     """
     n = max(0, int(consecutive_timeouts))
-    return max(base_timeout // (2 ** n), min_timeout, hard_floor)
+    return max(int(base_timeout / (1.5 ** n)), min_timeout, hard_floor)
 
 
 # ---------------------------------------------------------------------------

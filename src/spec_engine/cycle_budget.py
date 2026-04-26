@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from ..engine_base import PerspectiveReview, ReviewPerspective
+from ..card.styles import UI_TEXT
 from .perspective_worker import (
     PerspectiveOutcome,
     ReviewErrorCode,
@@ -102,7 +103,7 @@ def _budget_exceeded_outcome(perspective: ReviewPerspective, elapsed_ms: int) ->
         review=PerspectiveReview(
             perspective=perspective,
             passed=False,
-            suggestions=["审查预算超时：本视角未在周期内完成，已跳过"],
+            suggestions=[UI_TEXT["review_budget_timeout"]],
             summary="预算超时",
         ),
         elapsed_ms=elapsed_ms,

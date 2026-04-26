@@ -213,6 +213,8 @@ class FeishuWSClient:
         self._card_event_cache = MessageCache(ttl=300, max_size=1000, cleanup_interval=60)
         # Card action dedupe (user rapid clicks): short TTL, per-action key.
         self._card_action_dedup_cache = MessageCache(ttl=1, max_size=5000, cleanup_interval=30)
+        # Chat lock gate: initialized after handler_ctx is available (see below).
+        self._chat_lock_gate = None  # type: ignore[assignment]
         self._scheduler = TaskScheduler(
             max_concurrent=self.settings.task_scheduler_max_concurrent,
             per_key_concurrency=self.settings.task_scheduler_per_key_concurrency,
@@ -252,12 +254,16 @@ class FeishuWSClient:
         self._system_cmd_inflight_by_chat: dict[str, int] = {}
 
         self._project_manager = ProjectManager()
+        self._project_manager.on_eviction = self._on_project_evicted
         self._message_mapper = MessageProjectMapper()
         self._message_linker = MessageLinker()
 
         from ..mode import ModeManager
 
         self._mode_manager = ModeManager()
+        # Inject mode_manager into project_manager so LRU eviction
+        # automatically cleans up stale _project_modes entries (AC-R01).
+        self._project_manager.mode_manager = self._mode_manager
         self._thread_manager = get_thread_manager()
         self._thread_manager._on_evict = self._on_thread_evicted
 
@@ -284,6 +290,21 @@ class FeishuWSClient:
         self._spec_reporter = SpecReporter()
 
         self._context_manager = ProjectContextManager()
+
+        # Initialize lock managers before HandlerContext construction
+        _repo_lock_mgr = None
+        try:
+            from ..repo_lock import get_repo_lock_manager
+            _repo_lock_mgr = get_repo_lock_manager()
+        except Exception:
+            logger.warning("RepoLockManager initialization failed", exc_info=True)
+
+        _chat_lock_mgr = None
+        try:
+            from ..chat_lock import get_chat_lock_manager
+            _chat_lock_mgr = get_chat_lock_manager()
+        except Exception:
+            logger.warning("ChatLockManager initialization failed", exc_info=True)
 
         # ------------------------------------------------------------------
         # Handler infrastructure
@@ -319,6 +340,8 @@ class FeishuWSClient:
             pending_image_keys=self._pending_image_keys,
             pending_image_lock=self._pending_image_lock,
             enable_streaming=self._enable_streaming,
+            repo_lock_manager=_repo_lock_mgr,
+            chat_lock_manager=_chat_lock_mgr,
         )
 
         # Instantiate handlers (temp locals for registry population)
@@ -374,6 +397,35 @@ class FeishuWSClient:
             "system": system_handler,
             "diagnostics": diagnostics_handler,
         })
+
+        # Subscribe to hard-timeout reclaim events on RepoLockManager
+        # (fire-and-forget notification to the displaced lock holder chat).
+        repo_lock_mgr = self._handler_ctx.repo_lock_manager
+        if repo_lock_mgr is not None:
+            _send_msg = system_handler.send_message  # narrow reference
+
+            def _notify_hard_timeout_reclaim(root_path: str, holder_chat_id: str) -> None:
+                try:
+                    from pathlib import Path as _Path
+                    from ..card.builders.lock import build_lock_reclaim_notify_card
+                    repo_name = _Path(root_path).name or root_path
+                    _send_msg(
+                        holder_chat_id,
+                        build_lock_reclaim_notify_card(repo_name, reason="hard_timeout"),
+                    )
+                except Exception as _exc:
+                    logger.warning(
+                        "Failed to notify hard-timeout reclaim to chat=%s: %s",
+                        holder_chat_id[:12], _exc,
+                    )
+
+            repo_lock_mgr.on_reclaim.subscribe(_notify_hard_timeout_reclaim)
+
+        # Initialize ChatLockGate (ingress-level chat-lock interception).
+        from .chat_lock_gate import ChatLockGate
+        _clm = getattr(self._handler_ctx, "chat_lock_manager", None)
+        _lock_dedup = MessageCache(ttl=30, max_size=10_000, cleanup_interval=60)
+        self._chat_lock_gate = ChatLockGate(_clm, _lock_dedup, host=self)
 
         # Bind forwarding methods directly on instance (replaces __getattr__ dispatch)
         from .router import bind_forwarding_methods
@@ -594,7 +646,7 @@ class FeishuWSClient:
             proj = None
             try:
                 if pending.project_id:
-                    proj = self._project_manager.get_project(pending.project_id)
+                    proj = self._project_manager.get_project_for_chat(pending.project_id, pending.chat_id)
                 if proj is None:
                     proj = self._project_manager.get_active_project(pending.chat_id)
             except Exception:
@@ -642,6 +694,12 @@ class FeishuWSClient:
         self._closed = True
 
         self._stop_ws_watchdog()
+
+        # Stop chat lock gate dedup cache cleanup
+        try:
+            self._chat_lock_gate.close()
+        except Exception:
+            pass
 
         try:
             self._control_plane_stop.set()
@@ -794,6 +852,60 @@ class FeishuWSClient:
             except Exception:
                 pass
 
+    def _on_project_evicted(self, evicted_chat_id: str, project_name: str, project_id: str) -> None:
+        """Notify a chat that its project binding was evicted due to LRU capacity.
+
+        Convergence: cleans up ACP sessions for the evicted project, then sends
+        a rebind notification card.  Both run in a daemon thread to avoid blocking
+        ProjectManager's critical section (which holds _lock when calling
+        this callback).
+        """
+        def _send_notification():
+            # Phase 1: Clean up ACP sessions for the evicted project.
+            for mgr in (
+                self._coco_manager,
+                self._claude_manager,
+                self._aiden_manager,
+                self._codex_manager,
+                self._gemini_manager,
+                self._ttadk_manager,
+            ):
+                try:
+                    mgr.end_session(evicted_chat_id, project_id=project_id)
+                except Exception:
+                    pass
+
+            # Phase 2: Send rebind notification card.
+            try:
+                from ..card.builders.project import ProjectBuilder
+                content = UI_TEXT["eviction_notify_body"].format(name=project_name)
+                buttons = [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": UI_TEXT["eviction_notify_btn_rebind"]},
+                        "type": "primary",
+                        "value": {"action": "show_board"},
+                    }
+                ]
+                msg_type, card_json = ProjectBuilder.build_project_response_card(
+                    project=None,
+                    title=UI_TEXT["eviction_notify_title"],
+                    content=content,
+                    show_buttons=False,
+                    extra_buttons=buttons,
+                )
+                self.reply(evicted_chat_id, card_json, msg_type=msg_type, chat_id=evicted_chat_id)
+            except Exception as send_err:
+                # Fallback to plain text
+                try:
+                    msg = UI_TEXT["ws_project_eviction_notify"].format(name=project_name)
+                    self.reply(evicted_chat_id, msg, msg_type="text", chat_id=evicted_chat_id)
+                except Exception:
+                    pass
+                logger.warning("Failed to send LRU eviction notification to %s: %s", evicted_chat_id[:12], send_err)
+
+        threading.Thread(target=_send_notification, daemon=True).start()
+
     def _is_message_expired(self, create_time: int) -> bool:
         """判断消息是否过期。
 
@@ -850,6 +962,24 @@ class FeishuWSClient:
     def add_reaction(self, message_id: str, emoji_type: str):
         """轻量表情反馈封装：委托到 handler 的 `add_reaction`。"""
         self._add_reaction(message_id, emoji_type)
+
+    def send_lock_conflict_card(
+        self, e, message_id: str, command_text: str, *, retry_count: int = 0,
+    ) -> None:
+        """Public facade: send a repo-lock conflict card via the system handler.
+
+        Delegates to ``SystemHandler.send_lock_conflict_card`` obtained via
+        ``_get_handler("system")``, consistent with other handler access
+        patterns (e.g. ``_switch_project``).
+        """
+        handler = self._get_handler("system")
+        if handler:
+            handler.send_lock_conflict_card(e, message_id, command_text, retry_count=retry_count)
+        else:
+            from .handlers.lock_helper import logger as _lock_logger
+            from ..card.styles import UI_TEXT
+            _lock_logger.warning("send_lock_conflict_card: _system_handler unavailable, sending fallback text")
+            self.reply_message(message_id, UI_TEXT["repo_lock_conflict_fallback"])
 
     def _get_handler(self, key: str) -> Any:
         return self._handler_ctx.handlers.get(key)
@@ -937,23 +1067,15 @@ class FeishuWSClient:
         if parent_id:
             project_id = self._message_mapper.get_project_id(parent_id)
             if project_id:
-                project = self._project_manager.get_project(project_id)
+                project = self._project_manager.get_project_for_chat(project_id, chat_id)
                 if project:
                     self._project_manager.set_active_project(chat_id, project_id)
                     logger.info("通过消息引用切换到项目: %s", project.project_name)
 
-                    if project.ttadk_mode:
-                        auto_enter_mode = "ttadk"
-                    elif project.gemini_mode:
-                        auto_enter_mode = "gemini"
-                    elif project.codex_mode:
-                        auto_enter_mode = "codex"
-                    elif project.aiden_mode:
-                        auto_enter_mode = "aiden"
-                    elif project.claude_mode:
-                        auto_enter_mode = "claude"
-                    elif project.coco_mode:
-                        auto_enter_mode = "coco"
+                    # Resolve mode from ModeManager (single source of truth).
+                    _proj_mode = self._mode_manager.get_mode(chat_id, project_id=project_id)
+                    if _proj_mode.value in {"coco", "claude", "aiden", "codex", "gemini", "ttadk"}:
+                        auto_enter_mode = _proj_mode.value
 
                     if auto_enter_mode:
                         logger.info("自动进入 %s 模式 (回复编程消息)", auto_enter_mode)
@@ -971,6 +1093,17 @@ class FeishuWSClient:
         except (AttributeError, TypeError):
             message_id = None
             chat_id = "unknown"
+
+        # Extract chat_type for p2p privilege detection
+        chat_type = getattr(getattr(data.event, "message", None), "chat_type", None)
+        is_p2p = chat_type == "p2p"
+
+        # Extract sender_id for explicit passing via TaskSpec
+        _raw_sender = getattr(
+            getattr(getattr(data.event, "sender", None), "sender_id", None),
+            "open_id", None,
+        )
+        _sender_id = _raw_sender if isinstance(_raw_sender, str) else ""
 
         project_id = None
         thread_root_id = None
@@ -1060,6 +1193,8 @@ class FeishuWSClient:
                 request_id=request_id,
                 priority=TaskPriority.HIGH if is_system else TaskPriority.NORMAL,
                 is_system_command=is_system,
+                is_p2p=is_p2p,
+                sender_id=_sender_id,
                 queue_key=queue_key,
             )
             try:
@@ -1072,9 +1207,9 @@ class FeishuWSClient:
             except (RateLimitExceededException, CircuitBreakerOpenException) as e:
                 logger.warning(f"Backpressure applied: {get_error_detail(e)}")
                 if is_spec:
-                    self._reply_message(message_id, "⚠️ 系统繁忙 (Spec 模式)，请稍后再试。")
+                    self._reply_message(message_id, UI_TEXT["ws_backpressure_spec"])
                 else:
-                    self._reply_message(message_id, "⚠️ 当前服务繁忙，请稍后再试。")
+                    self._reply_message(message_id, UI_TEXT["ws_backpressure_generic"])
                 return
             try:
                 if message_id:
@@ -1165,7 +1300,7 @@ class FeishuWSClient:
 
         大致流程：校验 → 解析文本/图片 → 解析项目上下文 → 路由到对应模式/引擎。
         """
-        from ..thread import set_current_thread_id
+        from ..thread import set_current_thread_id, set_current_sender_id, set_current_is_p2p, set_current_sender_name
 
         try:
             event = data.event
@@ -1173,6 +1308,28 @@ class FeishuWSClient:
             message_id = message.message_id
             chat_id = message.chat_id
             request_id = self._ensure_request_id(message_id, chat_id=chat_id)
+
+            # sender_id is carried in task_ctx.spec (set at submit time);
+            # fall back to event extraction only when task_ctx is unavailable.
+            _sender_id = (
+                task_ctx.spec.sender_id
+                if task_ctx and hasattr(task_ctx, "spec") and task_ctx.spec.sender_id
+                else (
+                    getattr(
+                        getattr(getattr(event, "sender", None), "sender_id", None),
+                        "open_id", None,
+                    ) or ""
+                )
+            )
+            # Propagate to thread-local so downstream handlers (e.g. /lock) can access it.
+            set_current_sender_id(_sender_id)
+            # Resolve display name via cached Feishu contact API lookup;
+            # falls back to truncated sender_id if unavailable.
+            from .user_cache import resolve_display_name
+            _display_name = resolve_display_name(_sender_id, self._get_api_client) if _sender_id else ""
+            set_current_sender_name(_display_name or (_sender_id[:8] if _sender_id else ""))
+            _is_p2p = task_ctx.spec.is_p2p if task_ctx and hasattr(task_ctx, "spec") else False
+            set_current_is_p2p(_is_p2p)
 
             root_id = getattr(message, "root_id", None)
             if root_id and self.settings.thread_programming_enabled:
@@ -1186,6 +1343,19 @@ class FeishuWSClient:
 
             # 1. Validation
             if not self._validate_message(message, request_id):
+                return
+
+            # 1b. Chat lock interception (fail-close: non-admin blocked on exception).
+            try:
+                _early_text = self._extract_text_from_message(data)
+                _cmd = _early_text.strip().split()[0] if _early_text.strip() else None
+            except Exception:
+                _early_text = ""
+                _cmd = None
+            if self._chat_lock_gate.check(
+                chat_id, _sender_id, message_id,
+                command=_cmd, raw_text=_early_text,
+            ):
                 return
 
             # 2. Parse Content
@@ -1214,7 +1384,7 @@ class FeishuWSClient:
                         auto_enter_mode = _tctx.mode
                         set_current_thread_id(_tctx.thread_root_id)
                         if not project:
-                            project = self._project_manager.get_project(_tctx.project_id) or self._project_manager.get_active_project(chat_id)
+                            project = self._project_manager.get_project_for_chat(_tctx.project_id, chat_id) or self._project_manager.get_active_project(chat_id)
                         logger.info(
                             "[Thread] Safety-net resolved mode: root=%s canonical=%s mode=%s",
                             _root[:12], _tctx.thread_root_id[:12], auto_enter_mode,
@@ -1227,7 +1397,7 @@ class FeishuWSClient:
                             auto_enter_mode = _best.mode
                             set_current_thread_id(_best.thread_root_id)
                             if not project:
-                                project = self._project_manager.get_project(_best.project_id) or self._project_manager.get_active_project(chat_id)
+                                project = self._project_manager.get_project_for_chat(_best.project_id, chat_id) or self._project_manager.get_active_project(chat_id)
                             logger.info(
                                 "[Thread] Safety-net fallback by chat: chat=%s canonical=%s mode=%s",
                                 chat_id[:12], _best.thread_root_id[:12], auto_enter_mode,
@@ -1259,17 +1429,20 @@ class FeishuWSClient:
         except asyncio.TimeoutError as e:
             logger.warning("处理消息超时: %s", get_error_detail(e))
             try:
-                self._reply_message(message_id, "⏳ 处理消息超时，请稍后重试")
+                self._reply_message(message_id, UI_TEXT["ws_message_timeout"])
             except Exception:
                 pass
         except Exception as e:
             logger.error("处理消息异常: %s", e, exc_info=True)
             try:
-                self._reply_message(message_id, "❌ 处理消息时发生内部错误，请稍后重试")
+                self._reply_message(message_id, UI_TEXT["ws_message_internal_error"])
             except Exception:
                 pass
         finally:
             set_current_thread_id(None)
+            set_current_sender_id(None)
+            set_current_sender_name("")
+            set_current_is_p2p(False)
             with self._pending_image_lock:
                 self._pending_image_keys.pop(message_id, None)
                 self._pending_image_only.discard(message_id)
@@ -1286,7 +1459,7 @@ class FeishuWSClient:
 
         supported_types = {"text", "image", "post"}
         if message.message_type not in supported_types:
-            self._reply_message(message.message_id, "⚠️ 目前仅支持文本、图片和富文本消息", request_id=request_id)
+            self._reply_message(message.message_id, UI_TEXT["ws_unsupported_msg_type"], request_id=request_id)
             return False
         return True
 
@@ -1341,7 +1514,7 @@ class FeishuWSClient:
             if text:
                 text += ref_text
             else:
-                text = "请查看并理解以下图片" + ref_text
+                text = UI_TEXT["ws_image_only_prefix"] + ref_text
 
         if download_result.failed_keys:
             logger.warning("部分图片下载失败: %s", download_result.failed_keys)
@@ -1368,7 +1541,7 @@ class FeishuWSClient:
                 from ..thread import set_current_thread_id
                 set_current_thread_id(thread_ctx.thread_root_id)
                 auto_enter_mode = thread_ctx.mode if thread_ctx.mode != "smart" else None
-                project = self._project_manager.get_project(thread_ctx.project_id)
+                project = self._project_manager.get_project_for_chat(thread_ctx.project_id, chat_id)
                 if not project:
                     project = self._project_manager.get_active_project(chat_id)
                 logger.info(
@@ -1385,7 +1558,7 @@ class FeishuWSClient:
                     from ..thread import set_current_thread_id
                     set_current_thread_id(best_ctx.thread_root_id)
                     auto_enter_mode = best_ctx.mode
-                    project = self._project_manager.get_project(best_ctx.project_id)
+                    project = self._project_manager.get_project_for_chat(best_ctx.project_id, chat_id)
                     if not project:
                         project = self._project_manager.get_active_project(chat_id)
                     logger.info(
@@ -1485,7 +1658,7 @@ class FeishuWSClient:
             )
 
         if not reply_id:
-            self._reply_message(message_id, "⚠️ 创建编程话题失败，请重试")
+            self._reply_message(message_id, UI_TEXT["ws_thread_create_failed"])
             return
 
         thread_root_id = reply_id
@@ -1660,6 +1833,10 @@ class FeishuWSClient:
             open_message_id = None
             open_chat_id = "unknown"
 
+        # Card actions: extract chat_type for p2p privilege detection
+        card_chat_type = getattr(getattr(data.event, "context", None), "chat_type", None)
+        card_is_p2p = card_chat_type == "p2p"
+
         action_type_preview = ""
         try:
             value_raw = data.event.action.value
@@ -1684,7 +1861,7 @@ class FeishuWSClient:
                 inflight = int(self._system_cmd_inflight_by_chat.get(open_chat_id, 0) or 0)
             if inflight > 0 and action_type_preview not in _READONLY_CARD_ACTIONS:
                 if open_message_id:
-                    self._reply_message(open_message_id, "⏳ 系统指令处理中，按钮暂不可用，请稍后重试")
+                    self._reply_message(open_message_id, UI_TEXT["ws_system_cmd_gate_blocked"])
                 return None
         except Exception:
             pass
@@ -1712,7 +1889,7 @@ class FeishuWSClient:
                     manager = self._get_streaming_manager()
                     card = manager.get_card(open_message_id)
                     if card:
-                        manager.set_sticky_message(open_message_id, "已收到操作，正在处理…", duration=2.5)
+                        manager.set_sticky_message(open_message_id, UI_TEXT["ws_card_action_ack"], duration=2.5)
                 except Exception:
                     pass
             except Exception:
@@ -1762,6 +1939,8 @@ class FeishuWSClient:
                 request_id=request_id,
                 priority=TaskPriority.HIGH if is_system else TaskPriority.NORMAL,
                 is_system_command=is_system,
+                is_p2p=card_is_p2p,
+                sender_id=operator_id,
             )
             handle = self._scheduler.submit(spec, lambda ctx: self._process_card_action_async(data, task_ctx=ctx))
             try:
@@ -1815,6 +1994,11 @@ class FeishuWSClient:
                 "worktree_merge",
                 "worktree_cleanup",
                 "worktree_retry_failed",
+                "force_release_repo_lock",
+                "confirm_lock",
+                "cancel_lock",
+                "confirm_force_release",
+                "cancel_force_release",
                 "enter_deep_prompt",
                 "help_category",
                 "deep_pause",
@@ -1837,7 +2021,7 @@ class FeishuWSClient:
         该方法会把 `action.value` normalize 为 dict，提取 `action/project_id`，并通过
         `ActionDispatcher` 做 exact/prefix 路由。
         """
-        from ..thread import set_current_thread_id
+        from ..thread import set_current_thread_id, set_current_sender_id, set_current_is_p2p, set_current_sender_name
 
         try:
             start_time = time.perf_counter()
@@ -1846,6 +2030,30 @@ class FeishuWSClient:
             operator = data.event.operator
             open_message_id = data.event.context.open_message_id
             open_chat_id = data.event.context.open_chat_id
+
+            # sender_id is carried in task_ctx.spec (set at submit time);
+            # fall back to event operator extraction only when task_ctx is unavailable.
+            _operator_id = (
+                task_ctx.spec.sender_id
+                if task_ctx and hasattr(task_ctx, "spec") and task_ctx.spec.sender_id
+                else (
+                    getattr(operator, "open_id", None)
+                    or getattr(operator, "user_id", None)
+                    or getattr(operator, "union_id", None)
+                    or ""
+                )
+            )
+            _card_is_p2p = (
+                task_ctx.spec.is_p2p
+                if task_ctx and hasattr(task_ctx, "spec")
+                else getattr(getattr(data.event, "context", None), "chat_type", None) == "p2p"
+            )
+            set_current_sender_id(_operator_id)
+            from .user_cache import resolve_display_name as _resolve_name
+            _op_name = _resolve_name(_operator_id, self._get_api_client) if _operator_id else ""
+            set_current_sender_name(_op_name or (_operator_id[:8] if _operator_id else ""))
+            set_current_is_p2p(_card_is_p2p)
+
             logger.debug(
                 "卡片回调上下文: operator_open_id=%s, operator_user_id=%s, value_raw_type=%s",
                 getattr(operator, "open_id", None),
@@ -1900,6 +2108,13 @@ class FeishuWSClient:
                 project_id,
                 list(value.keys()),
             )
+
+            # --- Chat lock interception for card actions (fail-close) ---
+            if self._chat_lock_gate.check_card_action(
+                open_chat_id, _operator_id, open_message_id,
+                action_type=action_type,
+            ):
+                return
 
             # --- Dispatch via ActionDispatcher ---
             matched = self._action_dispatcher.dispatch(action_type, open_message_id, open_chat_id, project_id, value)
@@ -1970,6 +2185,9 @@ class FeishuWSClient:
                 pass
         finally:
             set_current_thread_id(None)
+            set_current_sender_id(None)
+            set_current_sender_name("")
+            set_current_is_p2p(False)
 
     def _process_with_intent(
         self,

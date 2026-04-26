@@ -29,6 +29,7 @@ from enum import Enum
 from typing import Callable, Optional
 
 from ..engine_base import PerspectiveReview, ReviewPerspective
+from ..card.styles import UI_TEXT
 from ..utils.errors import classify_timeout, get_error_detail
 from ..utils.retry import RetryPolicy
 from ..utils.spec_utils import parse_review_output_strict_tolerant
@@ -101,7 +102,7 @@ class PerspectiveWorker:
     ):
         self.perspective = perspective
         self.timeout = float(timeout)
-        self.retry_policy = retry_policy or RetryPolicy(max_retries=1, retry_delay=1.0)
+        self.retry_policy = retry_policy or RetryPolicy(max_retries=2, retry_delay=1.5)
         self._buf: list[str] = []
         self._lock = threading.Lock()
 
@@ -190,13 +191,15 @@ class PerspectiveWorker:
             err = get_error_detail(e, default="未知错误")
             err_code = ReviewErrorCode.TIMEOUT if classify_timeout(e) else ReviewErrorCode.WORKER_ERROR
             logger.warning(
-                "[PerspectiveWorker:%s] prompt failed: %s",
+                "[PerspectiveWorker:%s] prompt failed: %s (elapsed_ms=%d, configured_timeout=%s)",
                 self.perspective.name,
                 err,
+                int((time.monotonic() - t0) * 1000),
+                self.timeout,
             )
             # Converge timeout errors to domain-semantic message for user-facing suggestions.
             if err_code == ReviewErrorCode.TIMEOUT:
-                err = "当前系统较繁忙，操作已超时"
+                err = UI_TEXT["timeout_busy_spec"]
 
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 
@@ -275,7 +278,7 @@ def run_workers_parallel(
                     )
                     # Converge timeout errors to domain-semantic message for user-facing suggestions.
                     if err_code == ReviewErrorCode.TIMEOUT:
-                        err = "当前系统较繁忙，操作已超时"
+                        err = UI_TEXT["timeout_busy_spec"]
                     outcomes.append(
                         PerspectiveOutcome(
                             perspective=b.worker.perspective,
@@ -296,7 +299,7 @@ def run_workers_parallel(
             unprocessed_futures = set(future_to_binding.keys()) - processed_futures
             
             # Use domain semantics, disregarding the stdlib's internal format
-            err = "当前系统较繁忙，操作已超时"
+            err = UI_TEXT["timeout_busy_spec"]
 
             for fut in unprocessed_futures:
                 b = future_to_binding[fut]
@@ -320,6 +323,11 @@ def run_workers_parallel(
                         error_code=ReviewErrorCode.TIMEOUT,
                     )
                 )
+            logger.warning(
+                "[run_workers_parallel] pool timeout summary: %d worker(s) unfinished, per_worker_timeout=%s",
+                len(unprocessed_futures),
+                per_worker_timeout,
+            )
 
     # Stable ordering by ReviewPerspective enum order (for reproducible UI).
     order = {p: i for i, p in enumerate(ReviewPerspective)}

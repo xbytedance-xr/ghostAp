@@ -620,8 +620,8 @@ class TestSpecAdaptiveTimeout:
                 cycle=cycle,
             )
 
-        # Timeout sequence: 120 (n=0), 60 (n=1), 30 (n=2)
-        assert captured_timeouts == [120, 60, 30]
+        # Timeout sequence with 1.5x decay: 120 (n=0), 80 (n=1), 53 (n=2)
+        assert captured_timeouts == [120, 80, 53]
 
     def test_timeout_resets_after_success(self):
         """After success, timeout should go back to base."""
@@ -822,9 +822,9 @@ class TestSpecSkipOverrunProtection:
         assert circuit.consecutive_skips == 6
         overrun_calls = [c for c in mock_warn.call_args_list if "review_skip_overrun" in str(c)]
         assert len(overrun_calls) >= 1
-        # Verify suggestions surface overrun info to user
+        # FS-14: skip-overrun warning moved to logger-only, not in user-visible suggestions
         for rev in result.reviews:
-            assert any("跳过次数异常偏高" in s for s in rev.suggestions)
+            assert not any("跳过次数异常偏高" in s for s in rev.suggestions)
 
     def test_consecutive_skips_reset_on_success(self):
         """Successful review resets consecutive_skips to 0."""
@@ -898,3 +898,132 @@ class TestNormalizeDiagnosticsErrorTextTruncation:
         diag = {"error_text": "", "err_repr": "TimeoutError()"}
         result = self._normalize(diag)
         assert result["error_text"] == "TimeoutError()"
+
+
+# ===========================================================================
+# T-Pipeline: Pipeline全量超时时 circuit 计数器递增
+# ===========================================================================
+
+
+class TestPipelineAllTimeoutIncrementsCircuit:
+    """When all workers in the pipeline path fail with TIMEOUT,
+    circuit.consecutive_timeouts and review_failure_consecutive must increment."""
+
+    def test_pipeline_all_timeout_increments_circuit(self):
+        from src.spec_engine.perspective_worker import PerspectiveOutcome, ReviewErrorCode
+        from src.spec_engine.review_artifacts import ReviewArtifacts
+
+        circuit = ReviewCircuitState()
+        assert circuit.consecutive_timeouts == 0
+        assert circuit.review_failure_consecutive == 0
+
+        settings = _make_settings(
+            spec_review_timeout=180,
+            spec_review_max_parallel=3,
+        )
+
+        artifacts = ReviewArtifacts(
+            cycle_number=1,
+            cwd="/tmp",
+            requirement="test",
+            diff_patch="patch",
+            touched_files=["a.py"],
+            spec_output="spec",
+            plan_output="plan",
+            build_output="build",
+        )
+
+        # Build fake all-timeout outcomes
+        timeout_outcomes = [
+            PerspectiveOutcome(
+                perspective=p,
+                review=PerspectiveReview(
+                    perspective=p,
+                    passed=False,
+                    suggestions=["审查异常：超时"],
+                    summary="异常",
+                ),
+                elapsed_ms=180000,
+                error="当前系统较繁忙",
+                error_code=ReviewErrorCode.TIMEOUT,
+            )
+            for p in ReviewPerspective
+        ]
+
+        with patch("src.spec_engine.review_pipeline.run_review_pipeline", return_value=timeout_outcomes):
+            result = conduct_review(
+                session=MagicMock(),
+                settings=settings,
+                project=_make_project(),
+                send_prompt_with_retry_fn=MagicMock(),
+                build_review_exception_diagnostics_fn=MagicMock(return_value={}),
+                circuit=circuit,
+                cycle=1,
+                artifacts=artifacts,
+                agent_type="coco",
+            )
+
+        assert circuit.consecutive_timeouts == 1
+        assert circuit.review_failure_consecutive == 1
+        assert isinstance(result, ReviewResult)
+
+
+# ===========================================================================
+# T-Budget: max_parallel=3 时 budget_seconds 计算验证
+# ===========================================================================
+
+
+class TestBudgetSecondsWithMaxParallel3:
+    """Verify budget_seconds formula with max_parallel=3."""
+
+    def test_budget_seconds_with_max_parallel_3(self):
+        import math
+        from src.spec_engine.perspective_worker import PerspectiveOutcome, ReviewErrorCode
+        from src.spec_engine.review_artifacts import ReviewArtifacts
+
+        settings = _make_settings(
+            spec_review_timeout=180,
+            spec_review_max_parallel=3,
+        )
+        circuit = ReviewCircuitState()
+
+        artifacts = ReviewArtifacts(
+            cycle_number=1,
+            cwd="/tmp",
+            requirement="test",
+            diff_patch="patch",
+            touched_files=["a.py"],
+            spec_output="spec",
+            plan_output="plan",
+            build_output="build",
+        )
+
+        captured_budget = []
+
+        def fake_pipeline(arts, budget, **kwargs):
+            captured_budget.append(budget.total_seconds)
+            return [
+                PerspectiveOutcome(
+                    perspective=p,
+                    review=PerspectiveReview(perspective=p, passed=True, suggestions=[]),
+                    elapsed_ms=100,
+                )
+                for p in ReviewPerspective
+            ]
+
+        with patch("src.spec_engine.review_pipeline.run_review_pipeline", side_effect=fake_pipeline):
+            conduct_review(
+                session=MagicMock(),
+                settings=settings,
+                project=_make_project(),
+                send_prompt_with_retry_fn=MagicMock(),
+                build_review_exception_diagnostics_fn=MagicMock(return_value={}),
+                circuit=circuit,
+                cycle=1,
+                artifacts=artifacts,
+                agent_type="coco",
+            )
+
+        # max_parallel=3 → multiplier=ceil(5/3)=2 → budget=180*max(2,2+2)=180*4=720
+        assert len(captured_budget) == 1
+        assert captured_budget[0] == 720.0

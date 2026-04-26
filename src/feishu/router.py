@@ -149,6 +149,11 @@ FORWARDING_MAP: dict[str, tuple[str, str]] = {
     "_submit_shell_command": ("system", "submit_shell_command"),
     "_change_directory": ("system", "change_directory"),
     "_handle_intercepted_command": ("system", "handle_intercepted_command"),
+    "_handle_force_release_repo_lock": ("system", "handle_force_release_repo_lock"),
+    "_handle_confirm_lock": ("system", "handle_confirm_lock"),
+    "_handle_cancel_lock": ("system", "handle_cancel_lock"),
+    "_handle_confirm_force_release": ("system", "handle_confirm_force_release"),
+    "_handle_cancel_force_release": ("system", "handle_cancel_force_release"),
     # --- Diagnostics ---
     "_show_task_board": ("diagnostics", "show_task_board"),
     "_show_context_diff": ("diagnostics", "show_context_diff"),

@@ -11,9 +11,15 @@ from ..models import ModelOptionView, ToolOptionView
 from ..shared import build_responsive_layout
 from ..styles import THRESHOLDS, UI_TEXT
 from .core import CoreBuilder
+from .lock import _build_lock_help_body
 
 if TYPE_CHECKING:
     from src.sandbox.executor import ExecutionResult
+
+# Sentinel injected into the lru_cache'd help card; replaced post-cache
+# with live lock state so dynamic info is never frozen.
+# Use a UUID-based token to avoid any collision with user-generated content.
+_LOCK_BODY_PLACEHOLDER = "{{__LOCK_BODY_c0f1e2d3a4b5__}}"
 
 
 class SystemBuilder:
@@ -764,6 +770,9 @@ class SystemBuilder:
         category: str = "main",
         working_dir: Optional[str] = None,
         current_mode: any = None,
+        is_admin: bool = False,
+        lock_enabled: bool = False,
+        chat_id: str = "",
     ) -> tuple[str, str]:
         """Build a categorized help card."""
         from ...mode import InteractionMode
@@ -785,14 +794,27 @@ class SystemBuilder:
         root_path = project.root_path if project else None
         project_id = project.project_id if project else None
 
-        return SystemBuilder._build_help_card_cached(
+        msg_type, card_json = SystemBuilder._build_help_card_cached(
             project_name=project_name,
             root_path=root_path,
             project_id=project_id,
             category=category,
             working_dir=working_dir,
             current_mode_str=current_mode_str,
+            is_admin=is_admin,
+            lock_enabled=lock_enabled,
         )
+
+        # Post-cache injection: replace the lock-body placeholder with
+        # live lock state so that lru_cache never freezes stale lock info.
+        if lock_enabled and _LOCK_BODY_PLACEHOLDER in card_json:
+            live_body = _build_lock_help_body(is_admin=is_admin, chat_id=chat_id)
+            # The placeholder lives inside a json.dumps'd string, so we must
+            # escape the replacement to keep the JSON valid (e.g. \n → \\n).
+            _escaped = json.dumps(live_body, ensure_ascii=False)[1:-1]  # strip surrounding quotes
+            card_json = card_json.replace(_LOCK_BODY_PLACEHOLDER, _escaped)
+
+        return msg_type, card_json
 
     @staticmethod
     @lru_cache(maxsize=64)
@@ -803,6 +825,8 @@ class SystemBuilder:
         category: str,
         working_dir: Optional[str],
         current_mode_str: str,
+        is_admin: bool = False,
+        lock_enabled: bool = False,
     ) -> tuple[str, str]:
         """Build the help card with all commands expanded and mobile-friendly quick actions.
 
@@ -865,6 +889,14 @@ class SystemBuilder:
                 UI_TEXT["system_help_section_worktree_body"]
             ),
         ]
+
+        # F-12: Only show lock section when lock feature is enabled
+        if lock_enabled:
+            _lock_title = UI_TEXT["system_help_section_lock"] if is_admin else UI_TEXT["system_help_section_lock_nonadmin"]
+            sections.append((
+                _lock_title,
+                _LOCK_BODY_PLACEHOLDER,
+            ))
 
         tips = UI_TEXT["system_help_tips"]
 

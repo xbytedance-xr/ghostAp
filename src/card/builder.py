@@ -393,8 +393,11 @@ class CardBuilder:
         category: str = "main",
         working_dir: Optional[str] = None,
         current_mode: any = None,
+        is_admin: bool = False,
+        lock_enabled: bool = False,
+        chat_id: str = "",
     ) -> tuple[str, str]:
-        return SystemBuilder.build_help_card(project, category, working_dir, current_mode)
+        return SystemBuilder.build_help_card(project, category, working_dir, current_mode, is_admin=is_admin, lock_enabled=lock_enabled, chat_id=chat_id)
 
     @staticmethod
     def _build_help_card_cached(
@@ -404,9 +407,10 @@ class CardBuilder:
         category: str,
         working_dir: Optional[str],
         current_mode_str: str,
+        is_admin: bool = False,
     ) -> tuple[str, str]:
         return SystemBuilder._build_help_card_cached(
-            project_name, root_path, project_id, category, working_dir, current_mode_str
+            project_name, root_path, project_id, category, working_dir, current_mode_str, is_admin=is_admin
         )
 
     # --- Deep Delegates ---

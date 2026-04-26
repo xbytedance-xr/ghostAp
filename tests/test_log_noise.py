@@ -260,6 +260,8 @@ class TestLogNoise(unittest.TestCase):
             client._ensure_request_id = MagicMock(return_value="req_id")
             client._is_message_expired = MagicMock(return_value=False)
             client._is_duplicate_message = MagicMock(return_value=False)
+            client._chat_lock_gate = MagicMock()
+            client._chat_lock_gate.check = MagicMock(return_value=False)
             client._reply_message = MagicMock()
 
             # Mock _get_image_handler to return a mock that raises TimeoutError on parse_message
@@ -324,6 +326,8 @@ class TestLogNoise(unittest.TestCase):
             mock_data.event.context.open_chat_id = "cid"
 
             client._card_event_cache.is_duplicate = MagicMock(return_value=False)
+            client._chat_lock_gate = MagicMock()
+            client._chat_lock_gate.check_card_action = MagicMock(return_value=False)
             client._action_dispatcher.dispatch.side_effect = asyncio.TimeoutError("Timeout in dispatch")
             client._reply_message = MagicMock()
 

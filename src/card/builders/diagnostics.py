@@ -48,7 +48,7 @@ class DiagnosticsBuilder:
                 proj_name = UI_TEXT["system_no_project_display"]
                 if pid and project_manager:
                     try:
-                        p = project_manager.get_project(pid)
+                        p = project_manager.get_project_for_diagnostics(pid)
                         if p:
                             proj_name = p.project_name
                     except Exception:

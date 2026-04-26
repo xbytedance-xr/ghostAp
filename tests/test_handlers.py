@@ -871,7 +871,7 @@ class TestProgrammingModeEnterExit:
         project.root_path = "/tmp"
         project.project_name = "test"
         project.project_id = "p1"
-        ctx.project_manager.get_project.return_value = project
+        ctx.project_manager.get_project_for_chat.return_value = project
         h.enter_mode = MagicMock()
         h.handle_card_enter("m1", "c1", "p1")
         ctx.project_manager.set_active_project.assert_called_once_with("c1", "p1")
@@ -880,7 +880,7 @@ class TestProgrammingModeEnterExit:
     def test_card_exit(self):
         h, ctx = self._make_coco()
         project = MagicMock()
-        ctx.project_manager.get_project.return_value = project
+        ctx.project_manager.get_project_for_chat.return_value = project
         h.exit_mode = MagicMock()
         h.handle_card_exit("m1", "c1", "p1")
         project.set_coco_mode.assert_called_once_with(False)
@@ -1112,7 +1112,7 @@ class TestProjectHandler:
     def test_close_project_success(self):
         h, ctx = self._make()
         project = MagicMock()
-        ctx.project_manager.find_project_by_name.return_value = project
+        ctx.project_manager.find_project_by_name_with_hint.return_value = (project, "")
         ctx.project_manager.close_project.return_value = (True, "closed")
         h.close_project("m1", "c1", "test")
         h.reply_message.assert_called_once()
@@ -1120,7 +1120,7 @@ class TestProjectHandler:
 
     def test_close_project_not_found(self):
         h, ctx = self._make()
-        ctx.project_manager.find_project_by_name.return_value = None
+        ctx.project_manager.find_project_by_name_with_hint.return_value = (None, "")
         h.close_project("m1", "c1", "test")
         h.reply_message.assert_called_once()
         assert "❌" in str(h.reply_message.call_args)
@@ -1581,3 +1581,858 @@ class TestHelpCategoryPatch:
             h.patch_message = MagicMock()
             h.patch_message.assert_not_called()
             h.reply_message.assert_called_once()
+
+
+# ======================================================================
+# AC-16: _with_repo_lock signature (no message_id/sender_id)
+# ======================================================================
+
+
+class TestWithRepoLockSignature:
+    """AC-16: _with_repo_lock accepts only (root_path, chat_id, body_func)."""
+
+    def test_signature_has_three_params(self):
+        import inspect
+        sig = inspect.signature(BaseHandler._with_repo_lock)
+        # Parameters: self, root_path, chat_id, body_func
+        param_names = list(sig.parameters.keys())
+        assert param_names == ["self", "root_path", "chat_id", "body_func"]
+
+    def test_invokes_body_func(self):
+        ctx = _make_handler_context()
+        h = BaseHandler(ctx)
+        ctx.repo_lock_manager = None  # no lock manager → direct call
+
+        called = []
+        h._with_repo_lock("/tmp/repo", "chat_1", lambda: called.append(True))
+        assert called == [True]
+
+
+# ======================================================================
+# AC-17: send_lock_conflict_card has type annotation
+# ======================================================================
+
+
+class TestSendLockConflictCardAnnotation:
+    """AC-17: send_lock_conflict_card has 'LockConflictError' annotation on first arg."""
+
+    def test_type_annotation_present(self):
+        import inspect
+        hints = inspect.get_annotations(BaseHandler.send_lock_conflict_card)
+        assert "e" in hints
+        # The annotation is a string (TYPE_CHECKING forward ref)
+        assert "LockConflictError" in str(hints["e"])
+
+
+# ======================================================================
+# AC-22: _build_lock_help_body non-admin hides /lock /unlock
+# ======================================================================
+
+
+class TestLockHelpBodyVisibility:
+    """AC-22: Non-admin help card shows '联系 Bot 管理员' instead of /lock /unlock."""
+
+    def test_non_admin_sees_contact_hint(self):
+        from src.card.builders.lock import _build_lock_help_body
+        body = _build_lock_help_body(is_admin=False)
+        assert "联系 Bot 管理员" in body
+        assert "`/lock`" not in body
+        assert "`/unlock`" not in body
+
+    def test_admin_sees_lock_commands(self):
+        from src.card.builders.lock import _build_lock_help_body
+        body = _build_lock_help_body(is_admin=True)
+        assert "`/lock`" in body
+        assert "`/unlock`" in body
+
+
+# ======================================================================
+# AC-23: _build_lock_status_lines — no active locks → idle summary
+# ======================================================================
+
+
+class TestLockStatusNoiseReduction:
+    """AC-23: /status shows lock section with placeholder when no active locks."""
+
+    def test_no_active_locks_returns_placeholder(self):
+        """When no locks are active, _build_lock_status_lines returns placeholder."""
+        ctx = _make_handler_context()
+        h = DiagnosticsHandler(ctx)
+
+        # Both managers present but no active locks
+        mock_chat_lock = MagicMock()
+        mock_chat_lock.get_lock_info.return_value = None
+        mock_repo_lock = MagicMock()
+
+        ctx.chat_lock_manager = mock_chat_lock
+        ctx.repo_lock_manager = mock_repo_lock
+
+        result = h._build_lock_status_lines("chat_1")
+        # F-11: when lock subsystem is enabled but no active locks, show "unlocked"
+        assert "未锁定" in result
+
+    def test_no_managers_returns_placeholder(self):
+        """When neither lock manager is configured, returns empty string."""
+        ctx = _make_handler_context()
+        h = DiagnosticsHandler(ctx)
+        ctx.chat_lock_manager = None
+        ctx.repo_lock_manager = None
+
+        result = h._build_lock_status_lines("chat_1")
+        assert result == ""
+
+    def test_active_chat_lock_shows_section(self):
+        """When chat lock IS active, section is shown."""
+        ctx = _make_handler_context()
+        h = DiagnosticsHandler(ctx)
+
+        mock_chat_lock = MagicMock()
+        mock_entry = MagicMock()
+        mock_entry.locked_by = "ou_admin123"
+        mock_entry.locked_by_name = "Admin"
+        mock_entry.locked_at_wall = 1700000000.0
+        mock_entry.locked_at = 1000.0  # monotonic timestamp for format_lock_duration
+        mock_chat_lock.get_lock_info.return_value = mock_entry
+
+        ctx.chat_lock_manager = mock_chat_lock
+        ctx.repo_lock_manager = None
+
+        result = h._build_lock_status_lines("chat_1")
+        assert "锁状态" in result
+        assert "已锁定" in result
+
+
+# ======================================================================
+# AC-19: Spec handler lock integration
+# ======================================================================
+
+
+class TestSpecHandlerLockIntegration:
+    """AC-19: start_spec_engine wraps execution in _with_repo_lock."""
+
+    def _make_spec_handler(self):
+        from src.feishu.handlers.spec import SpecHandler
+
+        ctx = _make_handler_context()
+        h = SpecHandler(ctx)
+        h.reply_message = MagicMock()
+        h.reply_message_with_id = MagicMock(return_value="reply_1")
+        h.add_reaction = MagicMock()
+        h.register_message_project = MagicMock()
+        h.get_working_dir = MagicMock(return_value="/tmp/spec_repo")
+        h.ensure_request_id = MagicMock(return_value="req-1")
+        h.send_message = MagicMock()
+
+        mock_project = MagicMock()
+        mock_project.project_id = "proj-1"
+        mock_project.project_name = "myproj"
+        mock_project.root_path = "/tmp/spec_repo"
+
+        mock_engine = MagicMock()
+        mock_engine.is_running = False
+        ctx.spec_engine_manager.get.return_value = None
+        ctx.spec_engine_manager.get_or_create.return_value = mock_engine
+
+        return h, ctx, mock_project
+
+    def test_scheduled_run_calls_with_repo_lock(self):
+        """The task submitted to scheduler invokes _with_repo_lock."""
+        h, ctx, mock_project = self._make_spec_handler()
+
+        # Capture the lambda submitted to scheduler
+        submitted_fn = None
+        def capture_submit(spec, fn):
+            nonlocal submitted_fn
+            submitted_fn = fn
+            handle = MagicMock()
+            handle.run_id = "run-1"
+            return handle
+        ctx.scheduler.submit = capture_submit
+
+        # Mock _with_repo_lock to track call
+        lock_calls = []
+        def mock_with_repo_lock(root_path, chat_id, body_func):
+            lock_calls.append((root_path, chat_id))
+            body_func()
+        h.lock_helper._with_repo_lock = mock_with_repo_lock
+
+        with patch("src.feishu.handlers.spec.CardBuilder") as mock_cb:
+            mock_cb.build_engine_card.return_value = ("interactive", "{}")
+            # start_spec_engine(message_id, chat_id, requirement, project)
+            h.start_spec_engine("msg-1", "chat-1", "fix the bug", mock_project)
+
+        assert submitted_fn is not None
+        submitted_fn(MagicMock())
+
+        assert len(lock_calls) == 1
+        assert lock_calls[0][0] == "/tmp/spec_repo"
+
+    def test_scheduled_run_catches_lock_conflict(self):
+        """LockConflictError from _with_repo_lock triggers conflict card."""
+        import time
+        from src.repo_lock import LockConflictError
+
+        h, ctx, mock_project = self._make_spec_handler()
+
+        submitted_fn = None
+        def capture_submit(spec, fn):
+            nonlocal submitted_fn
+            submitted_fn = fn
+            handle = MagicMock()
+            handle.run_id = "run-1"
+            return handle
+        ctx.scheduler.submit = capture_submit
+
+        def mock_with_repo_lock(root_path, chat_id, body_func):
+            raise LockConflictError(
+                "conflict", holder_chat_id="other_chat",
+                locked_since=time.monotonic() - 60, root_path=root_path,
+            )
+        h.lock_helper._with_repo_lock = mock_with_repo_lock
+        h.lock_helper.send_lock_conflict_card = MagicMock()
+
+        with patch("src.feishu.handlers.spec.CardBuilder") as mock_cb:
+            mock_cb.build_engine_card.return_value = ("interactive", "{}")
+            h.start_spec_engine("msg-1", "chat-1", "fix the bug", mock_project)
+
+        assert submitted_fn is not None
+        submitted_fn(MagicMock())
+
+        h.lock_helper.send_lock_conflict_card.assert_called_once()
+        call_args = h.lock_helper.send_lock_conflict_card.call_args[0]
+        assert isinstance(call_args[0], LockConflictError)
+        assert "/spec fix the bug" in call_args[2]
+
+
+# ======================================================================
+# ForceReleaseRepoLock handler tests
+# ======================================================================
+
+
+class TestForceReleaseRepoLockHandler:
+    """Tests for SystemHandler.handle_force_release_repo_lock (two-step confirmation)."""
+
+    def _make(self, *, admin_ids=None):
+        ctx = _make_handler_context()
+        ctx.chat_lock_manager = MagicMock()
+        ctx.repo_lock_manager = MagicMock()
+        if admin_ids is not None:
+            ctx.chat_lock_manager.is_admin.side_effect = lambda uid: uid in admin_ids
+        else:
+            ctx.chat_lock_manager.is_admin.return_value = True
+        h = SystemHandler(ctx)
+        h.reply_message = MagicMock()
+        h.reply_error = MagicMock()
+        h.send_message = MagicMock()
+        return h, ctx
+
+    @patch("src.thread.get_current_sender_id", return_value="admin_1")
+    def test_admin_sees_confirm_card(self, _mock_sender):
+        """F-22: force release now shows a confirmation card instead of releasing immediately."""
+        h, ctx = self._make(admin_ids={"admin_1"})
+        ctx.repo_lock_manager.token_to_path.return_value = "/tmp/repo"
+        ctx.repo_lock_manager.path_to_token.return_value = "tok123"
+
+        h.handle_force_release_repo_lock(
+            "msg-1", "chat-1", "proj-1",
+            {"repo_token": "tok123"},
+        )
+
+        # Should NOT have force-released yet
+        ctx.repo_lock_manager.force_release.assert_not_called()
+        # Should have sent a confirmation card
+        h.reply_message.assert_called_once()
+        card_json = h.reply_message.call_args[0][1]
+        assert "确认" in card_json or "confirm" in card_json.lower()
+
+    @patch("src.thread.get_current_sender_id", return_value="admin_1")
+    def test_confirm_force_release_executes(self, _mock_sender):
+        """F-22: handle_confirm_force_release actually releases the lock."""
+        import time as _t
+        h, ctx = self._make(admin_ids={"admin_1"})
+        lock_info = MagicMock()
+        lock_info.chat_id = "chat_holder"
+        ctx.repo_lock_manager.get_lock_info.return_value = lock_info
+        ctx.repo_lock_manager.token_to_path.return_value = "/tmp/repo"
+
+        h.handle_confirm_force_release(
+            "msg-1", "chat-1", "proj-1",
+            {"repo_token": "tok123", "timestamp": _t.time()},
+        )
+
+        ctx.repo_lock_manager.force_release.assert_called_once_with("/tmp/repo")
+        h.reply_message.assert_called_once()
+        assert "强制释放" in h.reply_message.call_args[0][1]
+
+    @patch("src.thread.get_current_sender_id", return_value="admin_1")
+    def test_confirm_force_release_expired(self, _mock_sender):
+        """F-22: expired confirmation token is rejected."""
+        import time as _t
+        h, ctx = self._make(admin_ids={"admin_1"})
+
+        h.handle_confirm_force_release(
+            "msg-1", "chat-1", "proj-1",
+            {"repo_token": "tok123", "timestamp": _t.time() - 9999},
+        )
+
+        ctx.repo_lock_manager.force_release.assert_not_called()
+        h.reply_message.assert_called_once()
+        assert "过期" in h.reply_message.call_args[0][1]
+
+    @patch("src.thread.get_current_sender_id", return_value="admin_1")
+    def test_cancel_force_release(self, _mock_sender):
+        h, ctx = self._make(admin_ids={"admin_1"})
+        h.handle_cancel_force_release("msg-1", "chat-1", "proj-1", {})
+        h.reply_message.assert_called_once()
+        assert "取消" in h.reply_message.call_args[0][1]
+
+    @patch("src.thread.get_current_sender_id", return_value="user_2")
+    def test_non_admin_rejected(self, _mock_sender):
+        h, ctx = self._make(admin_ids={"admin_1"})
+
+        h.handle_force_release_repo_lock("msg-1", "chat-1", "proj-1", {"repo_token": "tok"})
+
+        ctx.repo_lock_manager.force_release.assert_not_called()
+        h.reply_error.assert_called_once()
+        assert "权限不足" in h.reply_error.call_args[0][1]
+
+    @patch("src.thread.get_current_sender_id", return_value="admin_1")
+    def test_missing_path_error(self, _mock_sender):
+        h, ctx = self._make(admin_ids={"admin_1"})
+        ctx.repo_lock_manager.token_to_path.return_value = None
+
+        h.handle_force_release_repo_lock("msg-1", "chat-1", "proj-1", {"repo_token": "bad"})
+
+        ctx.repo_lock_manager.force_release.assert_not_called()
+        h.reply_error.assert_called_once()
+
+    @patch("src.thread.get_current_sender_id", return_value="admin_1")
+    def test_no_chat_lock_manager_rejected(self, _mock_sender):
+        """When chat_lock_manager is None, fail-close rejects the request."""
+        h, ctx = self._make()
+        ctx.chat_lock_manager = None
+
+        h.handle_force_release_repo_lock("msg-1", "chat-1", "proj-1", {"repo_token": "tok"})
+
+        ctx.repo_lock_manager.force_release.assert_not_called()
+        h.reply_error.assert_called_once()
+
+
+# ======================================================================
+# RetryCommand handler tests
+# ======================================================================
+
+
+class TestRetryCommandHandler:
+    """Tests for the retry_command card action handler in action_registry."""
+
+    def test_retry_command_dispatches_to_process_with_intent(self):
+        """retry_command should call _process_with_intent with command_text."""
+        client = MagicMock()
+        mock_project = MagicMock()
+        client._project_manager.get_project_for_chat.return_value = mock_project
+
+        # Simulate the handler logic directly (same as action_registry)
+        val = {"command_text": "/status"}
+        cmd = val.get("command_text", "").strip()
+        assert cmd == "/status"
+        project = client._project_manager.get_project_for_chat("proj-1", "chat-1")
+        client._process_with_intent("msg-1", "chat-1", cmd, project)
+
+        client._process_with_intent.assert_called_once_with("msg-1", "chat-1", "/status", mock_project)
+
+    def test_retry_command_empty_command_replies(self):
+        """retry_command with empty command_text should reply with retry_empty_command."""
+        from src.feishu.retry_handler import RetryCommandHandler
+        dispatch = MagicMock()
+        handler = RetryCommandHandler(dispatch)
+        handler("mid_1", "chat_1", None, {"command_text": ""})
+        dispatch.reply_message.assert_called_once()
+        msg = dispatch.reply_message.call_args[0][1]
+        assert "无法获取重试命令" in msg
+        dispatch.process_with_intent.assert_not_called()
+
+    def test_retry_command_falls_back_to_active_project(self):
+        """When project_id is None, retry_command falls back to get_active_project."""
+        client = MagicMock()
+        mock_project = MagicMock()
+        client._project_manager.get_project_for_chat.return_value = None
+        client._project_manager.get_active_project.return_value = mock_project
+
+        val = {"command_text": "/help"}
+        cmd = val.get("command_text", "").strip()
+        pid = None
+        project = client._project_manager.get_project_for_chat(pid, "chat-1") if pid else None
+        if not project:
+            project = client._project_manager.get_active_project("chat-1")
+        client._process_with_intent("msg-1", "chat-1", cmd, project)
+
+        client._process_with_intent.assert_called_once_with("msg-1", "chat-1", "/help", mock_project)
+
+
+# ======================================================================
+# Engine base LockConflictError tests
+# ======================================================================
+
+
+class TestEngineBaseLockConflict:
+    """_safe_execute_engine catches LockConflictError and sends conflict card."""
+
+    def test_lock_conflict_sends_card(self):
+        ctx = _make_handler_context()
+        from src.feishu.handlers.engine_base import BaseEngineHandler
+        h = BaseEngineHandler(ctx)
+
+        mock_project = MagicMock()
+        mock_project.root_path = "/tmp/test"
+
+        # Make _with_repo_lock raise LockConflictError
+        from src.repo_lock import LockConflictError
+        h.lock_helper._with_repo_lock = MagicMock(
+            side_effect=LockConflictError(
+                "conflict", holder_chat_id="chat_holder",
+                locked_since=0.0, root_path="/tmp/test",
+            )
+        )
+        h.lock_helper.send_lock_conflict_card = MagicMock()
+        h.reply_message = MagicMock()
+
+        h._safe_execute_engine(
+            executor_func=MagicMock(),
+            task_id="task-1",
+            chat_id="chat-1",
+            message_id="msg-1",
+            project=mock_project,
+            engine_name="TestEngine",
+            reporter=MagicMock(),
+            request_id="req-1",
+        )
+
+        h.lock_helper.send_lock_conflict_card.assert_called_once()
+        err = h.lock_helper.send_lock_conflict_card.call_args[0][0]
+        assert isinstance(err, LockConflictError)
+        assert err.holder_chat_id == "chat_holder"
+
+    def test_no_project_skips_lock(self):
+        """When project is None, no lock is attempted."""
+        ctx = _make_handler_context()
+        from src.feishu.handlers.engine_base import BaseEngineHandler
+        h = BaseEngineHandler(ctx)
+
+        executor = MagicMock()
+        h.reply_message = MagicMock()
+        h.lock_helper.send_lock_conflict_card = MagicMock()
+
+        h._safe_execute_engine(
+            executor_func=executor,
+            task_id="task-1",
+            chat_id="chat-1",
+            message_id="msg-1",
+            project=None,
+            engine_name="TestEngine",
+            reporter=MagicMock(),
+            request_id="req-1",
+        )
+
+        # Should execute body directly (no conflict)
+        executor.assert_called_once()
+        h.lock_helper.send_lock_conflict_card.assert_not_called()
+
+    def test_lock_conflict_from_executor_passthrough(self):
+        """AC-R04: LockConflictError thrown by executor_func must NOT be swallowed by _body's except Exception."""
+        ctx = _make_handler_context()
+        from src.feishu.handlers.engine_base import BaseEngineHandler
+        from src.repo_lock import LockConflictError
+        h = BaseEngineHandler(ctx)
+
+        mock_project = MagicMock()
+        mock_project.root_path = "/tmp/test"
+
+        # executor_func itself raises LockConflictError (e.g. nested locking)
+        executor = MagicMock(side_effect=LockConflictError(
+            "nested conflict", holder_chat_id="chat_nested",
+            locked_since=0.0, root_path="/tmp/nested",
+        ))
+
+        # _with_repo_lock should just call the body (no lock conflict at the guard level)
+        h.lock_helper._with_repo_lock = MagicMock(side_effect=lambda rp, cid, body: body())
+        h.lock_helper.send_lock_conflict_card = MagicMock()
+        h.reply_message = MagicMock()
+
+        h._safe_execute_engine(
+            executor_func=executor,
+            task_id="task-1",
+            chat_id="chat-1",
+            message_id="msg-1",
+            project=mock_project,
+            engine_name="TestEngine",
+            reporter=MagicMock(),
+            request_id="req-1",
+        )
+
+        # The LockConflictError should have been re-raised through _body,
+        # caught by the outer except in _safe_execute_engine, and handled via conflict card.
+        h.lock_helper.send_lock_conflict_card.assert_called_once()
+        err = h.lock_helper.send_lock_conflict_card.call_args[0][0]
+        assert isinstance(err, LockConflictError)
+        assert err.holder_chat_id == "chat_nested"
+
+
+# ======================================================================
+# Programming handler LockConflictError tests
+# ======================================================================
+
+
+class TestProgrammingHandlerLockConflict:
+    """CocoModeHandler.handle_message catches LockConflictError."""
+
+    def test_lock_conflict_sends_card(self):
+        ctx = _make_handler_context()
+        ctx.settings.coco_execution_timeout = 30
+        ctx.settings.card_collapsible_enabled = False
+
+        h = CocoModeHandler(ctx)
+        h.reply_message = MagicMock()
+        h.reply_message_with_id = MagicMock(return_value="reply_1")
+        h.add_reaction = MagicMock()
+        h.register_message_project = MagicMock()
+        h.record_mode_transition = MagicMock()
+        h.inject_bridge_context = MagicMock(side_effect=lambda t, p: t)
+        h.get_working_dir = MagicMock(return_value="/tmp/test")
+        h.ensure_request_id = MagicMock(return_value="req-1")
+
+        mock_project = MagicMock()
+        mock_project.project_id = "proj-1"
+        mock_project.root_path = "/tmp/test"
+
+        # Make repo_lock_manager.acquire return failure (conflict)
+        from src.repo_lock import AcquireResult
+        mock_repo_lock = MagicMock()
+        mock_repo_lock.acquire.return_value = AcquireResult(
+            success=False, holder_chat_id="chat_other",
+            locked_since=0.0, last_active_time=0.0,
+        )
+        ctx.repo_lock_manager = mock_repo_lock
+        h.send_lock_conflict_card = MagicMock()
+
+        mock_session = MagicMock()
+        mock_session.session_id = "sess-1"
+        mock_session.message_count = 1
+        mock_session.last_query = "test"
+        ctx.coco_manager.get_session.return_value = mock_session
+
+        with patch("src.thread.get_current_is_p2p", return_value=False):
+            h.handle_message("msg-1", "chat-1", "hello", project=mock_project)
+
+        h.send_lock_conflict_card.assert_called_once()
+        from src.repo_lock import LockConflictError
+        err = h.send_lock_conflict_card.call_args[0][0]
+        assert isinstance(err, LockConflictError)
+        assert err.holder_chat_id == "chat_other"
+
+
+# ---------------------------------------------------------------------------
+# AC-R05 / AC-R06: Non-streaming heartbeat for repo lock
+# ---------------------------------------------------------------------------
+
+
+class TestNonStreamingHeartbeat:
+    """Verify that the non-streaming fallback path in ProgrammingModeHandler
+    keeps the repo lock alive via periodic Event+Thread heartbeat and cleans up."""
+
+    def _make_handler_and_mocks(self):
+        """Create a minimal CocoModeHandler with mocked dependencies."""
+        from unittest.mock import MagicMock, PropertyMock, patch
+        from src.feishu.handlers.programming import CocoModeHandler
+
+        ctx = MagicMock()
+        ctx.settings = MagicMock()
+        ctx.settings.coco_execution_timeout = 600
+        ctx.settings.card_collapsible_enabled = False
+        ctx.api_client_factory = MagicMock()
+
+        with patch.object(CocoModeHandler, "settings", new_callable=PropertyMock, return_value=ctx.settings):
+            handler = CocoModeHandler.__new__(CocoModeHandler)
+            handler.ctx = ctx
+            handler.im_client = MagicMock()
+            handler._settings = ctx.settings
+
+        handler.reply_message = MagicMock()
+        handler.send_error_card = MagicMock()
+
+        mock_session = MagicMock()
+        mock_renderer = MagicMock()
+        mock_renderer.get_final_content.return_value = "done"
+        mock_streaming_mgr = MagicMock()
+
+        return handler, mock_session, mock_renderer, mock_streaming_mgr, ctx
+
+    def test_touch_called_during_blocking_prompt(self):
+        """AC-R05: touch() is called at least once during a blocking send_prompt."""
+        import threading as _threading
+        from unittest.mock import MagicMock, patch
+
+        handler, mock_session, mock_renderer, mock_streaming_mgr, ctx = self._make_handler_and_mocks()
+
+        repo_lock_mgr = MagicMock()
+        root_path = "/tmp/test_repo"
+
+        # Make send_prompt block for ~1 second (enough for 0.2s interval)
+        _done = _threading.Event()
+
+        def blocking_prompt(*args, **kwargs):
+            _done.wait(timeout=3)
+            result = MagicMock()
+            result.text = "ok"
+            return result
+
+        mock_session.send_prompt = blocking_prompt
+
+        mock_streaming_mgr.create_streaming_card.return_value = None
+        handler.get_streaming_manager = MagicMock(return_value=mock_streaming_mgr)
+        handler.thinking_text = "🤔"
+        handler._get_interaction_mode = MagicMock()
+        handler._get_ttadk_tool_display = MagicMock()
+        handler._get_ttadk_model_display = MagicMock()
+        handler.mode_name = "Coco"
+        handler.is_coco = True
+        handler.ensure_request_id = MagicMock(return_value="req-1")
+
+        # Patch Event.wait to use a short interval so heartbeat fires quickly
+        _orig_event_wait = _threading.Event.wait
+
+        def _fast_wait(self_event, timeout=None):
+            if timeout and timeout >= 10:  # only shorten the 30s heartbeat wait
+                return _orig_event_wait(self_event, timeout=0.2)
+            return _orig_event_wait(self_event, timeout=timeout)
+
+        with patch.object(_threading.Event, "wait", _fast_wait):
+            # Release after 0.8 second so touch fires at least once at 0.2s
+            def release_later():
+                import time
+                time.sleep(0.8)
+                _done.set()
+            t = _threading.Thread(target=release_later, daemon=True)
+            t.start()
+
+            handler.handle_response(
+                "msg-1", "chat-1", "hello", mock_session, None, "/tmp", "/tmp",
+                _repo_lock_mgr=repo_lock_mgr, _root_path=root_path,
+            )
+            t.join(timeout=5)
+
+        assert repo_lock_mgr.touch.call_count >= 1, (
+            f"Expected touch() called at least once, got {repo_lock_mgr.touch.call_count}"
+        )
+
+    def test_heartbeat_thread_joined_on_success(self):
+        """AC-R06: Heartbeat thread is stopped (Event.set + join) after send_prompt returns."""
+        import threading as _threading
+        from unittest.mock import MagicMock, patch
+
+        handler, mock_session, mock_renderer, mock_streaming_mgr, ctx = self._make_handler_and_mocks()
+
+        repo_lock_mgr = MagicMock()
+        root_path = "/tmp/test_repo"
+
+        # send_prompt returns immediately
+        mock_session.send_prompt.return_value = MagicMock(text="ok")
+
+        mock_streaming_mgr.create_streaming_card.return_value = None
+        handler.get_streaming_manager = MagicMock(return_value=mock_streaming_mgr)
+        handler.thinking_text = "🤔"
+        handler._get_interaction_mode = MagicMock()
+        handler.mode_name = "Coco"
+        handler.is_coco = True
+        handler.ensure_request_id = MagicMock(return_value="req-1")
+
+        # Track threads started during handle_response
+        _threads_before = set(_threading.enumerate())
+
+        handler.handle_response(
+            "msg-1", "chat-1", "hello", mock_session, None, "/tmp", "/tmp",
+            _repo_lock_mgr=repo_lock_mgr, _root_path=root_path,
+        )
+
+        # After handle_response, all heartbeat threads should have been joined
+        import time
+        time.sleep(0.1)  # give daemon threads time to exit
+        _threads_after = set(_threading.enumerate())
+        _new_threads = _threads_after - _threads_before
+        hb_threads = [t for t in _new_threads if t.is_alive() and "heartbeat" in t.name.lower()]
+        assert len(hb_threads) == 0, f"Heartbeat thread still alive: {hb_threads}"
+
+    def test_heartbeat_thread_joined_on_exception(self):
+        """AC-R06: Heartbeat thread is stopped even when send_prompt raises."""
+        import threading as _threading
+        from unittest.mock import MagicMock, patch
+
+        handler, mock_session, mock_renderer, mock_streaming_mgr, ctx = self._make_handler_and_mocks()
+
+        repo_lock_mgr = MagicMock()
+        root_path = "/tmp/test_repo"
+
+        mock_session.send_prompt.side_effect = RuntimeError("boom")
+
+        mock_streaming_mgr.create_streaming_card.return_value = None
+        handler.get_streaming_manager = MagicMock(return_value=mock_streaming_mgr)
+        handler.thinking_text = "🤔"
+        handler._get_interaction_mode = MagicMock()
+        handler.mode_name = "Coco"
+        handler.is_coco = True
+        handler.ensure_request_id = MagicMock(return_value="req-1")
+
+        _threads_before = set(_threading.enumerate())
+
+        handler.handle_response(
+            "msg-1", "chat-1", "hello", mock_session, None, "/tmp", "/tmp",
+            _repo_lock_mgr=repo_lock_mgr, _root_path=root_path,
+        )
+
+        import time
+        time.sleep(0.1)
+        _threads_after = set(_threading.enumerate())
+        _new_threads = _threads_after - _threads_before
+        hb_threads = [t for t in _new_threads if t.is_alive() and "heartbeat" in t.name.lower()]
+        assert len(hb_threads) == 0, f"Heartbeat thread still alive after exception: {hb_threads}"
+
+    def test_no_heartbeat_thread_when_no_lock_mgr(self):
+        """No heartbeat thread is started when _repo_lock_mgr is None."""
+        import threading as _threading
+        from unittest.mock import MagicMock, patch
+
+        handler, mock_session, mock_renderer, mock_streaming_mgr, ctx = self._make_handler_and_mocks()
+
+        mock_session.send_prompt.return_value = MagicMock(text="ok")
+
+        mock_streaming_mgr.create_streaming_card.return_value = None
+        handler.get_streaming_manager = MagicMock(return_value=mock_streaming_mgr)
+        handler.thinking_text = "🤔"
+        handler._get_interaction_mode = MagicMock()
+        handler.mode_name = "Coco"
+        handler.is_coco = True
+        handler.ensure_request_id = MagicMock(return_value="req-1")
+
+        _threads_before = set(_threading.enumerate())
+
+        handler.handle_response(
+            "msg-1", "chat-1", "hello", mock_session, None, "/tmp", "/tmp",
+            _repo_lock_mgr=None, _root_path=None,
+        )
+
+        import time
+        time.sleep(0.1)
+        _threads_after = set(_threading.enumerate())
+        _new_threads = _threads_after - _threads_before
+        hb_threads = [t for t in _new_threads if t.is_alive() and "heartbeat" in t.name.lower()]
+        assert len(hb_threads) == 0, "No heartbeat thread should be created when lock mgr is None"
+
+
+# ======================================================================
+# AC-18: /help always shows lock section even when admin_user_ids empty
+# ======================================================================
+
+
+class TestHelpCardLockAlwaysVisible:
+    """F-20/AC-18: lock_enabled=True ensures /help always contains lock section."""
+
+    def test_lock_section_present_when_no_admin_ids(self):
+        """Even with admin_user_ids=frozenset(), the help card includes lock content."""
+        from src.card.builders.system import SystemBuilder
+
+        # lock_enabled=True is now hardcoded in system.py; verify the card builder
+        # produces a lock section regardless of admin status.
+        _msg_type, card_json = SystemBuilder.build_help_card(
+            project=None,
+            category="main",
+            is_admin=False,
+            lock_enabled=True,
+            chat_id="",
+        )
+        # The non-admin lock section title should be present
+        assert "群锁定" in card_json
+
+    def test_lock_section_absent_when_lock_disabled(self):
+        """Baseline: lock_enabled=False should NOT include the lock section."""
+        from src.card.builders.system import SystemBuilder
+
+        _msg_type, card_json = SystemBuilder.build_help_card(
+            project=None,
+            category="main",
+            is_admin=False,
+            lock_enabled=False,
+            chat_id="",
+        )
+        assert "群锁定" not in card_json
+
+
+# ======================================================================
+# AC-16: _collect_lock_conflict_context auto-detects same-sender
+# ======================================================================
+
+
+class TestSameSenderAutoDetection:
+    """F-18/AC-16: _collect_lock_conflict_context sets is_same_sender automatically."""
+
+    def test_same_sender_detected(self):
+        """When current sender matches lock holder's last_sender_id → is_same_sender=True."""
+        from src.feishu.handlers.lock_helper import LockHelper
+        from src.repo_lock import LockConflictError
+
+        mock_handler = MagicMock()
+        # Set up repo_lock_manager mock
+        mock_repo_lock_mgr = MagicMock()
+        mock_handler.ctx = MagicMock()
+        mock_handler.ctx.repo_lock_manager = mock_repo_lock_mgr
+        mock_handler.ctx.chat_lock_manager = MagicMock()
+        mock_handler.ctx.chat_lock_manager.is_admin.return_value = False
+
+        # Lock info where last_sender_id == current sender
+        mock_lock_info = MagicMock()
+        mock_lock_info.last_sender_id = "user_123"
+        mock_repo_lock_mgr.get_lock_info.return_value = mock_lock_info
+        mock_repo_lock_mgr.path_to_token.return_value = "tok_abc"
+
+        helper = LockHelper(mock_handler)
+        err = LockConflictError(
+            "conflict", holder_chat_id="chat_other", locked_since=100.0,
+            root_path="/tmp/repo", last_active_time=200.0,
+        )
+
+        with patch("src.thread.get_current_sender_id", return_value="user_123"), \
+             patch("src.config.get_settings") as mock_settings:
+            mock_settings.return_value.app_id = "app_test"
+            ctx = helper._collect_lock_conflict_context(err)
+
+        assert ctx.is_same_sender is True
+        assert ctx.sender_id == "user_123"
+
+    def test_different_sender_not_flagged(self):
+        """When current sender differs from lock holder → is_same_sender=False."""
+        from src.feishu.handlers.lock_helper import LockHelper
+        from src.repo_lock import LockConflictError
+
+        mock_handler = MagicMock()
+        mock_repo_lock_mgr = MagicMock()
+        mock_handler.ctx = MagicMock()
+        mock_handler.ctx.repo_lock_manager = mock_repo_lock_mgr
+        mock_handler.ctx.chat_lock_manager = MagicMock()
+        mock_handler.ctx.chat_lock_manager.is_admin.return_value = False
+
+        mock_lock_info = MagicMock()
+        mock_lock_info.last_sender_id = "user_999"
+        mock_repo_lock_mgr.get_lock_info.return_value = mock_lock_info
+        mock_repo_lock_mgr.path_to_token.return_value = "tok_xyz"
+
+        helper = LockHelper(mock_handler)
+        err = LockConflictError(
+            "conflict", holder_chat_id="chat_other", locked_since=100.0,
+            root_path="/tmp/repo", last_active_time=200.0,
+        )
+
+        with patch("src.thread.get_current_sender_id", return_value="user_123"), \
+             patch("src.config.get_settings") as mock_settings:
+            mock_settings.return_value.app_id = "app_test"
+            ctx = helper._collect_lock_conflict_context(err)
+
+        assert ctx.is_same_sender is False

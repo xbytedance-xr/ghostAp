@@ -20,6 +20,21 @@ class BaseEngineHandler(BaseHandler):
     Provides common lifecycle management logic.
     """
 
+    # ------------------------------------------------------------------
+    # Repo-lock + conflict-card helper (DRY for scheduled closures)
+    # ------------------------------------------------------------------
+
+    def _run_with_repo_lock_or_conflict_card(
+        self, root_path: str, chat_id: str, body_fn, message_id: str, command_text: str,
+    ) -> None:
+        """Execute *body_fn* under the repo lock, sending a conflict card on failure.
+
+        Delegates to :meth:`LockHelper.handle_lock_conflict`.
+        """
+        self.lock_helper.handle_lock_conflict(
+            body_fn, root_path, chat_id, message_id, command_text,
+        )
+
     def _get_engine_manager(self):
         """Subclasses must return their specific engine manager."""
         raise NotImplementedError
@@ -85,7 +100,7 @@ class BaseEngineHandler(BaseHandler):
         if engine and engine.project and engine.project.status == status_paused_enum:
             if project is None:
                 try:
-                    project = self.project_manager.find_project_by_path(engine.root_path)
+                    project = self.project_manager.find_project_by_path(engine.root_path, chat_id=chat_id)
                 except Exception:
                     project = None
 
@@ -162,65 +177,63 @@ class BaseEngineHandler(BaseHandler):
         reporter: Any,
         request_id: Optional[str],
         action_prefix: str = "deep",
+        command_text: str = "",
     ):
         """
         Execute engine logic with standardized error handling and reporting.
 
-        Args:
-            executor_func: Lambda or function to execute the core engine logic
-            task_id: Unique task identifier for logging
-            chat_id: Chat ID for messaging
-            message_id: Origin message ID
-            project: Project context
-            engine_name: Name of the engine (e.g. "Coco", "Loop(Coco)")
-            reporter: Reporter instance for formatting error messages
-            request_id: Request ID for tracing
-            action_prefix: Prefix for card actions (default "deep", use "loop" for Loop engine)
+        Acquires the repo lock, runs *executor_func*, and on conflict renders
+        a conflict card.  The ``_run_engine_body`` indirection has been inlined
+        as a closure for clarity.
         """
         import asyncio
 
         from ...card import CardBuilder, EngineCardState
+        from ...repo_lock import LockConflictError
         from ...utils.errors import get_error_detail
 
-        try:
-            executor_func()
-        except Exception as e:
-            # 1. Log based on exception type
-            if isinstance(e, (TimeoutError, asyncio.TimeoutError)):
-                logger.warning(f"{self._get_engine_name_prefix()} Engine 执行超时 (task_id={task_id}): {get_error_detail(e)}")
-            else:
-                logger.error(f"{self._get_engine_name_prefix()} Engine 执行异常: {get_error_detail(e)}", exc_info=True)
+        root_path = getattr(project, "root_path", None) if project else None
 
-            # 2. Format error message
-            err_msg = get_error_detail(e)
-
-            # 3. Build and send error card
-            error_content = reporter.format_error(err_msg)
-            error_title = reporter.get_error_title()
-
-            # Use ref note if available
-            ref_note = self.format_ref_note(message_id, request_id) if request_id else ""
-            final_content = f"{error_content}\n\n{ref_note}" if ref_note else error_content
-
-            err_msg_type, err_card = CardBuilder.build_engine_card(
-                project=project,
-                state=EngineCardState(
-                    title=error_title,
-                    content=final_content,
-                    engine_name=f"{self._get_engine_name_prefix()}({engine_name})"
-                    if not engine_name.startswith(self._get_engine_name_prefix())
-                    else engine_name,
-                    show_buttons=False,
-                    action_prefix=action_prefix,
-                ),
-            )
-            # Send the error card to user
+        def _body():
             try:
-                self.reply_message(message_id, err_card, msg_type=err_msg_type)
-            except Exception as send_err:
-                logger.error(
-                    "%s Engine 发送错误卡片失败: %s", self._get_engine_name_prefix(), send_err
+                executor_func()
+            except LockConflictError:
+                raise
+            except Exception as e:
+                if isinstance(e, (TimeoutError, asyncio.TimeoutError)):
+                    logger.warning(f"{self._get_engine_name_prefix()} Engine 执行超时 (task_id={task_id}): {get_error_detail(e)}")
+                else:
+                    logger.error(f"{self._get_engine_name_prefix()} Engine 执行异常: {get_error_detail(e)}", exc_info=True)
+
+                err_msg = get_error_detail(e)
+                error_content = reporter.format_error(err_msg)
+                error_title = reporter.get_error_title()
+
+                ref_note = self.format_ref_note(message_id, request_id) if request_id else ""
+                final_content = f"{error_content}\n\n{ref_note}" if ref_note else error_content
+
+                err_msg_type, err_card = CardBuilder.build_engine_card(
+                    project=project,
+                    state=EngineCardState(
+                        title=error_title,
+                        content=final_content,
+                        engine_name=f"{self._get_engine_name_prefix()}({engine_name})"
+                        if not engine_name.startswith(self._get_engine_name_prefix())
+                        else engine_name,
+                        show_buttons=False,
+                        action_prefix=action_prefix,
+                    ),
                 )
+                try:
+                    self.reply_message(message_id, err_card, msg_type=err_msg_type)
+                except Exception as send_err:
+                    logger.error(
+                        "%s Engine 发送错误卡片失败: %s", self._get_engine_name_prefix(), send_err
+                    )
+
+        self.lock_helper.handle_lock_conflict(
+            _body, root_path, chat_id, message_id, command_text,
+        )
 
     def _safe_lifecycle_action(
         self,

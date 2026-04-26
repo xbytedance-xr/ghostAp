@@ -18,11 +18,13 @@ if TYPE_CHECKING:
     from ..acp.manager import ACPSessionManager
     from ..agent.intent_recognizer import IntentRecognizer
     from ..card.streaming import StreamingCardManager
+    from ..chat_lock import ChatLockManager
     from ..deep_engine import DeepEngineManager, ProgressReporter
     from ..loop_engine import LoopEngineManager, LoopReporter
     from ..mode import ModeManager
     from ..project import MessageProjectMapper, ProjectContextManager, ProjectManager
     from ..project.mapper import MessageLinker
+    from ..repo_lock import RepoLockManager
     from ..spec_engine import SpecEngineManager, SpecReporter
     from ..tasking import TaskScheduler
     from ..thread import ThreadContextManager
@@ -75,3 +77,7 @@ class HandlerContext:
     # Registry containers for decoupling
     managers: dict[str, "ACPSessionManager"] = field(default_factory=dict)
     handlers: dict[str, Any] = field(default_factory=dict)
+
+    # Lock managers (multi-chat isolation)
+    repo_lock_manager: Optional["RepoLockManager"] = None
+    chat_lock_manager: Optional["ChatLockManager"] = None

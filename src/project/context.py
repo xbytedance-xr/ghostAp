@@ -1,11 +1,21 @@
 import os
+import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 
+from ..utils.lock_order import LockLevel, ordered_lock
+
 if TYPE_CHECKING:
     from ..worktree_engine.models import WorktreeRuntimeState
+
+# Sentinel returned by add_chat_id() when the chat cannot be added
+# (capacity full and all entries are owner).  Callers must check for
+# this value to distinguish rejection from normal eviction (str) or
+# no-eviction (None).
+ADD_CHAT_ID_REJECTED = "__REJECTED__"
 
 
 class ProjectStatus(Enum):
@@ -100,9 +110,28 @@ class ProjectContext:
 
     env_vars: dict = field(default_factory=dict)
 
+    # ── Chat isolation fields ──
+    # OrderedDict[chat_id, timestamp] ordered by last-access time (oldest first).
+    # True LRU: move_to_end() on re-access (O(1)), evict via popitem(last=False).
+    # Supports O(1) membership checks (``chat_id in allowed_chat_ids``).
+    owner_chat_id: str = ""
+    allowed_chat_ids: OrderedDict[str, float] = field(default_factory=OrderedDict)
+    # In-memory only (not serialized): tracks chat_ids evicted by LRU for hint disambiguation.
+    # Bounded OrderedDict — oldest entries are pruned when capacity exceeds max_evicted_cache.
+    evicted_chat_ids: OrderedDict[str, float] = field(default_factory=OrderedDict, repr=False)
+
     worktree_state: Any = None
 
     def __post_init__(self):
+        # Lightweight lock protecting add_chat_id() mutations on
+        # allowed_chat_ids and evicted_chat_ids.  Callers via
+        # ProjectManager already hold _lock (RLock) — acquisition order
+        # is always RLock → _chat_lock to avoid deadlocks.
+        self._chat_lock = ordered_lock(LockLevel.CHAT_LOCK_CTX, name="ProjectContext._chat_lock")
+        # Backward-compat: coerce list[tuple] from legacy callers/tests.
+        # New code should pass OrderedDict directly (see create_project).
+        if isinstance(self.allowed_chat_ids, list):
+            self.allowed_chat_ids = OrderedDict(self.allowed_chat_ids)
         if self.worktree_state is None:
             from ..worktree_engine.models import WorktreeRuntimeState
             self.worktree_state = WorktreeRuntimeState()
@@ -113,6 +142,77 @@ class ProjectContext:
 
     def touch(self):
         self.last_active = time.time()
+
+    def _chat_id_set(self) -> frozenset[str]:
+        """Return a frozenset of chat_ids — **test-only helper**.
+
+        Hot-path callers should use ``chat_id in self.allowed_chat_ids``
+        directly for O(1) lookup with zero allocation.  This method is
+        retained solely for test assertions that compare against plain
+        ``set`` / ``frozenset`` literals.
+        """
+        return frozenset(self.allowed_chat_ids)
+
+    def add_chat_id(self, chat_id: str) -> Optional[str]:
+        """Add *chat_id* to *allowed_chat_ids* with true LRU semantics.
+
+        - If *chat_id* already exists, move it to the end (refresh timestamp).
+        - If at capacity, evict the oldest non-owner entry.
+        - Returns the evicted chat_id if eviction occurred, else ``None``.
+        - Returns :data:`ADD_CHAT_ID_REJECTED` when the chat cannot be added
+          (capacity full and all entries are owner).  Callers **must** check
+          for this sentinel to detect rejection.
+        """
+        with self._chat_lock:
+            now = time.time()
+            # Move-to-end if already present — O(1)
+            if chat_id in self.allowed_chat_ids:
+                self.allowed_chat_ids[chat_id] = now
+                self.allowed_chat_ids.move_to_end(chat_id)
+                return None
+
+            from ..config import get_settings
+            limit = get_settings().max_allowed_chat_ids
+            evicted_chat_id: Optional[str] = None
+
+            # Evict oldest non-owner entry when at capacity
+            _eviction_failed = False
+            while len(self.allowed_chat_ids) >= limit:
+                # Iterate from oldest (front) to find a non-owner entry
+                victim_cid: Optional[str] = None
+                for cid in self.allowed_chat_ids:
+                    if cid != self.owner_chat_id:
+                        victim_cid = cid
+                        break
+                if victim_cid is None:
+                    # All entries are owner — cannot evict without violating invariant
+                    _eviction_failed = True
+                    break
+                evicted_chat_id = victim_cid
+                del self.allowed_chat_ids[victim_cid]
+                # Record eviction in bounded OrderedDict (LRU pruning)
+                self.evicted_chat_ids[victim_cid] = now
+                self.evicted_chat_ids.move_to_end(victim_cid)
+                try:
+                    _evicted_limit = int(get_settings().max_evicted_cache)
+                except (TypeError, ValueError, AttributeError):
+                    _evicted_limit = 200
+                while len(self.evicted_chat_ids) > _evicted_limit:
+                    self.evicted_chat_ids.popitem(last=False)
+
+            if _eviction_failed and len(self.allowed_chat_ids) >= limit:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "add_chat_id: cannot evict (all entries are owner), "
+                    "rejecting chat_id=%s for project=%s (limit=%d)",
+                    chat_id[:12] if chat_id else chat_id,
+                    self.project_id,
+                    limit,
+                )
+                return ADD_CHAT_ID_REJECTED
+
+            self.allowed_chat_ids[chat_id] = now
+            return evicted_chat_id
 
     def add_conversation(self, role: str, content: str, message_id: Optional[str] = None):
         item = ConversationItem(role=role, content=content, message_id=message_id)
@@ -230,6 +330,8 @@ class ProjectContext:
             "theme_color": self.theme_color,
             "emoji_prefix": self.emoji_prefix,
             "env_vars": self.env_vars,
+            "owner_chat_id": self.owner_chat_id,
+            "allowed_chat_ids": [[cid, ts] for cid, ts in self.allowed_chat_ids.items()],
             "conversation_history": [
                 {
                     "role": item.role,
@@ -244,6 +346,24 @@ class ProjectContext:
             d[mode_flag] = getattr(self, mode_flag)
             d[snap_attr] = self._snap_to_dict(getattr(self, snap_attr))
         return d
+
+    @staticmethod
+    def _parse_allowed_chat_ids(raw: list) -> OrderedDict[str, float]:
+        """Parse allowed_chat_ids from snapshot with backward compatibility.
+
+        Accepts two formats:
+        - New: ``[[chat_id, timestamp], ...]``
+        - Legacy: ``["chat_id_1", "chat_id_2", ...]`` (assigns incremental timestamps)
+        """
+        if not raw:
+            return OrderedDict()
+        first = raw[0]
+        if isinstance(first, (list, tuple)) and len(first) == 2:
+            # New format: list of [chat_id, timestamp] pairs
+            return OrderedDict((str(entry[0]), float(entry[1])) for entry in raw)
+        # Legacy format: list of plain strings — assign incremental timestamps
+        base_ts = time.time() - len(raw)
+        return OrderedDict((str(entry), base_ts + i) for i, entry in enumerate(raw))
 
     @classmethod
     def from_snapshot(cls, data: dict) -> "ProjectContext":
@@ -276,6 +396,8 @@ class ProjectContext:
             theme_color=data.get("theme_color", "green"),
             emoji_prefix=data.get("emoji_prefix", "🟢"),
             env_vars=data.get("env_vars", {}),
+            owner_chat_id=data.get("owner_chat_id", ""),
+            allowed_chat_ids=cls._parse_allowed_chat_ids(data.get("allowed_chat_ids", [])),
         )
         if data.get("coco_session_snapshot"):
             snap = data["coco_session_snapshot"]

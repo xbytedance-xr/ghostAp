@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import logging
 import threading
 import time
@@ -201,7 +202,10 @@ class ThreadContextManager:
 _manager: Optional[ThreadContextManager] = None
 _manager_lock = threading.Lock()
 
-_current_thread_id: threading.local = threading.local()
+_current_thread_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("current_thread_id", default=None)
+_current_sender_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("current_sender_id", default=None)
+_current_sender_name: contextvars.ContextVar[str] = contextvars.ContextVar("current_sender_name", default="")
+_current_is_p2p: contextvars.ContextVar[bool] = contextvars.ContextVar("current_is_p2p", default=False)
 
 
 def get_thread_manager() -> ThreadContextManager:
@@ -221,8 +225,32 @@ def _reset_thread_manager_for_testing() -> None:
 
 
 def set_current_thread_id(thread_id: Optional[str]) -> None:
-    _current_thread_id.value = thread_id
+    _current_thread_id.set(thread_id)
 
 
 def get_current_thread_id() -> Optional[str]:
-    return getattr(_current_thread_id, "value", None)
+    return _current_thread_id.get()
+
+
+def set_current_sender_id(sender_id: Optional[str]) -> None:
+    _current_sender_id.set(sender_id)
+
+
+def get_current_sender_id() -> Optional[str]:
+    return _current_sender_id.get()
+
+
+def set_current_is_p2p(is_p2p: bool) -> None:
+    _current_is_p2p.set(is_p2p)
+
+
+def get_current_is_p2p() -> bool:
+    return _current_is_p2p.get()
+
+
+def set_current_sender_name(name: str) -> None:
+    _current_sender_name.set(name)
+
+
+def get_current_sender_name() -> str:
+    return _current_sender_name.get()

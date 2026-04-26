@@ -19,6 +19,7 @@ from langchain_openai import ChatOpenAI
 from ..acp import ACPEvent, ACPEventType
 from ..agent_session import create_engine_session
 from ..engine_base import BaseEngine, BaseEngineManager, EngineRunState
+from ..card.styles import UI_TEXT as _UI_TEXT
 from ..utils.errors import get_error_detail
 from ..utils.gc_monitor import get_gc_monitor
 from ..utils.llm import ChatOpenAICacheKey, get_cached_chat_openai
@@ -716,7 +717,7 @@ FAIL
                     PerspectiveReview(
                         perspective=p,
                         passed=False,
-                        suggestions=["审查输出解析失败，请检查实现质量"],
+                        suggestions=[_UI_TEXT["review_parse_fail_system"]],
                         summary="解析失败",
                     )
                 )
@@ -857,9 +858,12 @@ FAIL
                 iteration,
                 circuit.review_circuit_open_until_iter,
             )
-            _base_msg = "审查熔断中，跳过本轮审查"
+            _base_msg = _UI_TEXT["circuit_breaker_skip_with_count"].format(n=int(circuit.review_failure_consecutive or 0))
             if is_skip_overrun:
-                _base_msg += f"（⚠ 跳过次数异常偏高：已连续跳过{circuit.consecutive_skips}次，熔断器可能卡住，建议排查）"
+                logger.warning(
+                    "[Loop] skip-overrun: consecutive_skips=%d, 熔断器可能卡住，建议排查",
+                    circuit.consecutive_skips,
+                )
 
             # Lightweight lint fallback
             _lint_msg = ""

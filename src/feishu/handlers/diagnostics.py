@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
@@ -86,6 +87,104 @@ class DiagnosticsHandler(BaseHandler):
     # ------------------------------------------------------------------
     # Unified status — /status [task_id|all]
     # ------------------------------------------------------------------
+
+    def _build_lock_status_lines(self, chat_id: str, project: Optional["ProjectContext"] = None, is_admin: bool = False) -> str:
+        """Build a Markdown snippet summarizing lock state as an independent section.
+
+        Always shows subsystem enablement status.  Active lock details are
+        appended when present.
+        """
+        from datetime import datetime
+        from ...card.builders.lock import format_elapsed_ago, format_lock_duration
+        from ...card.styles import UI_TEXT
+
+        parts: list[str] = []
+
+        chat_lock_mgr = getattr(self.ctx, "chat_lock_manager", None)
+        repo_lock_mgr_obj = getattr(self.ctx, "repo_lock_manager", None)
+
+        # --- Chat lock detail (only when active) ---
+        if chat_lock_mgr is not None:
+            lock_entry = chat_lock_mgr.get_lock_info(chat_id)
+            if lock_entry:
+                display_name = lock_entry.locked_by_name or (
+                    lock_entry.locked_by[:8] + "..." if len(lock_entry.locked_by) > 8 else lock_entry.locked_by
+                )
+                try:
+                    lock_dt = datetime.fromtimestamp(lock_entry.locked_at_wall)
+                    if lock_dt.date() == datetime.now().date():
+                        lock_time_str = lock_dt.strftime("%H:%M")
+                    else:
+                        lock_time_str = lock_dt.strftime("%m-%d %H:%M")
+                except Exception:
+                    lock_time_str = UI_TEXT["lock_status_time_unknown"]
+                _chat_lock_line = UI_TEXT["lock_status_chat_locked"].format(name=display_name, time=lock_time_str)
+                # Append duration on a new indented sub-line for visual clarity
+                _chat_lock_line += f"\n  {format_lock_duration(lock_entry.locked_at)}"
+                # Append auto-unlock countdown on its own sub-line (hours/minutes mixed format)
+                try:
+                    _max_dur = getattr(chat_lock_mgr, "_max_duration", 86400)
+                    _remaining = max(0, _max_dur - (time.monotonic() - lock_entry.locked_at))
+                    if _remaining > 3600:
+                        _rh = int(_remaining // 3600)
+                        _rm = int((_remaining % 3600) // 60)
+                        _countdown_str = f"约 {_rh} 小时 {_rm} 分钟" if _rm else f"约 {_rh} 小时"
+                    elif _remaining > 60:
+                        _countdown_str = f"约 {int(_remaining // 60)} 分钟"
+                    else:
+                        _countdown_str = None
+                    if _countdown_str:
+                        _chat_lock_line += f"\n  ⏰ 预计 {_countdown_str}后自动释放"
+                    else:
+                        _chat_lock_line += f"\n  {UI_TEXT['lock_status_release_imminent'].strip()}"
+                except Exception:
+                    pass
+                if is_admin:
+                    _chat_lock_line += UI_TEXT["lock_status_admin_unlock_hint"]
+                parts.append(_chat_lock_line)
+
+        # --- Repo lock detail (only when active) ---
+        root_path = getattr(project, "root_path", None) if project else None
+        if root_path and repo_lock_mgr_obj is not None:
+            try:
+                info = repo_lock_mgr_obj.get_lock_info(root_path)
+                if info:
+                    from pathlib import Path
+                    repo_name = Path(root_path).name or root_path
+                    holder_display = UI_TEXT["lock_status_holder_self"] if info.chat_id == chat_id else UI_TEXT["lock_status_holder_other"]
+                    duration = format_elapsed_ago(time.monotonic() - info.acquired_at)
+                    # Calculate remaining auto-release time
+                    try:
+                        from ...config import get_settings
+                        idle_timeout = get_settings().repo_lock_idle_timeout
+                    except Exception:
+                        idle_timeout = 300
+                    remaining_secs = max(0, idle_timeout - info.idle_seconds)
+                    remaining_min = int(remaining_secs // 60)
+                    if remaining_min > 0:
+                        release_hint = UI_TEXT["lock_status_release_countdown"].format(minutes=remaining_min)
+                    else:
+                        release_hint = UI_TEXT["lock_status_release_imminent"]
+                    _repo_lock_line = UI_TEXT["lock_status_repo_locked"].format(
+                            repo_name=repo_name, holder=holder_display,
+                            duration=duration, release_hint=release_hint,
+                        )
+                    if is_admin and info.chat_id != chat_id:
+                        _repo_lock_line += UI_TEXT["lock_status_admin_force_release_hint"]
+                    elif not is_admin:
+                        _repo_lock_line += UI_TEXT["lock_status_nonadmin_repo_hint"]
+                    parts.append(_repo_lock_line)
+            except Exception:
+                pass
+
+        # When lock subsystem is enabled but no active locks, show "unlocked" status.
+        _lock_enabled = chat_lock_mgr is not None or repo_lock_mgr_obj is not None
+        if not parts:
+            if _lock_enabled:
+                return UI_TEXT["lock_status_section_header"] + UI_TEXT["lock_status_no_active_lock"]
+            return ""
+        return UI_TEXT["lock_status_section_header"] + "\n\n".join(parts)
+
     def show_unified_status(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"] = None):
         """Show unified status across all engine types (Deep/Loop/Spec).
 
@@ -113,6 +212,20 @@ class DiagnosticsHandler(BaseHandler):
 
         project_name = project.project_name if project else ""
         content = CardBuilder.build_unified_status_content(entries, include_done, project_name)
+
+        # Determine admin status for lock hints
+        _is_admin = False
+        _chat_lock_mgr = getattr(self.ctx, "chat_lock_manager", None)
+        if _chat_lock_mgr is not None:
+            from ...thread import get_current_sender_id
+            _sender = get_current_sender_id() or ""
+            if _sender:
+                _is_admin = _chat_lock_mgr.is_admin(_sender)
+
+        # Append lock status section
+        lock_lines = self._build_lock_status_lines(chat_id, project, is_admin=_is_admin)
+        if lock_lines:
+            content += "\n\n" + lock_lines
 
         msg_type, card_content = CardBuilder.build_smart_response_card(
             project=project,
@@ -186,7 +299,7 @@ class DiagnosticsHandler(BaseHandler):
                 return
 
         # Also check scheduler by task_id
-        state = self.scheduler.get_state_by_task_id(task_id)
+        state = self.scheduler.get_state_by_task_id(task_id, chat_id=chat_id)
         if state:
             content = CardBuilder.build_task_detail_content(state)
             msg_type, card_content = CardBuilder.build_smart_response_card(
@@ -423,10 +536,19 @@ class DiagnosticsHandler(BaseHandler):
             )
             return
 
+        # Chat-level isolation: reject trace data belonging to a different chat
+        trace_chat_id = data.get("chat_id")
+        if trace_chat_id and trace_chat_id != chat_id:
+            self.reply_message(
+                message_id,
+                UI_TEXT["diag_trace_not_found"].format(key=key)
+            )
+            return
+
         proj_id = data.get("project_id")
         if project is None and proj_id:
             try:
-                project = self.project_manager.get_project(proj_id)
+                project = self.project_manager.get_project_for_chat(proj_id, chat_id)
             except Exception:
                 project = None
 

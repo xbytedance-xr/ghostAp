@@ -1031,8 +1031,11 @@ class ACPSessionManager:
             except Exception as e:
                 logger.debug("Error cleaning up session for %s: %s", key[-16:], get_error_detail(e))
 
-    def list_active_sessions(self) -> list[dict]:
-        """Return lightweight snapshots for currently tracked sessions."""
+    def list_active_sessions(self, chat_id: Optional[str] = None) -> list[dict]:
+        """Return lightweight snapshots for currently tracked sessions.
+
+        When *chat_id* is given, only sessions belonging to that chat are returned.
+        """
         now = time.time()
         out: list[dict] = []
         with self._acquire_lock():
@@ -1040,6 +1043,12 @@ class ACPSessionManager:
 
         for key, session in items:
             try:
+                # Chat-level isolation: skip sessions not belonging to the requested chat
+                if chat_id is not None:
+                    key_chat_id, _, _ = SessionKeyCodec.decode(key)
+                    if key_chat_id != chat_id:
+                        continue
+
                 sid = str(getattr(session, "session_id", "") or "")
                 last_active = float(getattr(session, "last_active", 0.0) or 0.0)
                 message_count = int(getattr(session, "message_count", 0) or 0)

@@ -21,7 +21,7 @@ class TestCardDeduplication(unittest.TestCase):
     def tearDown(self):
         self.client.close()
 
-    def _create_mock_event(self, event_id: str):
+    def _create_mock_event(self, event_id: str, open_message_id: str = "msg_123"):
         mock_event = MagicMock(spec=P2CardActionTrigger)
         mock_event.header = MagicMock()
         mock_event.header.event_id = event_id
@@ -32,8 +32,13 @@ class TestCardDeduplication(unittest.TestCase):
         mock_event.event.action.tag = "button"
         mock_event.event.action.value = {"action": "test_action", "project_id": "test_proj_1"}
         mock_event.event.context = MagicMock()
-        mock_event.event.context.open_message_id = "msg_123"
+        mock_event.event.context.open_message_id = open_message_id
         mock_event.event.context.open_chat_id = "chat_123"
+
+        mock_event.event.operator = MagicMock()
+        mock_event.event.operator.open_id = "ou_test_operator"
+        mock_event.event.operator.user_id = None
+        mock_event.event.operator.union_id = None
 
         return mock_event
 
@@ -55,8 +60,8 @@ class TestCardDeduplication(unittest.TestCase):
         # Verify scheduler submit was NOT called
         self.assertEqual(self.client._scheduler.submit.call_count, 0)
 
-        # Third call with different event_id: should be processed
-        event3 = self._create_mock_event("evt_unique_2")
+        # Third call with different event_id and message_id: should be processed
+        event3 = self._create_mock_event("evt_unique_2", open_message_id="msg_456")
         self.client._handle_card_action(event3)
         # Verify scheduler submit was called again
         self.assertEqual(self.client._scheduler.submit.call_count, 1)

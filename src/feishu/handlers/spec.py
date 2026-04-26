@@ -184,6 +184,14 @@ class SpecHandler(BaseEngineHandler):
                 )
                 self.send_message(chat_id, err_card, err_msg_type, origin_message_id=message_id, request_id=request_id)
 
+        def _locked_run():
+            run_spec_engine()
+
+        def _scheduled_run():
+            self._run_with_repo_lock_or_conflict_card(
+                root_path, chat_id, _locked_run, message_id, f"/spec {requirement}",
+            )
+
         spec = TaskSpec(
             chat_id=chat_id,
             queue_key=f"{chat_id}:spec:{project.project_id if project else root_path}",
@@ -196,7 +204,7 @@ class SpecHandler(BaseEngineHandler):
             task_id=task_id or None,
             priority=TaskPriority.NORMAL,
         )
-        handle = self.scheduler.submit(spec, lambda ctx: run_spec_engine())
+        handle = self.scheduler.submit(spec, lambda ctx: _scheduled_run())
         try:
             self.ctx.message_linker.link_task(message_id, handle.run_id)
         except Exception as e:
@@ -470,6 +478,14 @@ class SpecHandler(BaseEngineHandler):
                 def run_resume():
                     engine.resume(callbacks)
 
+                def _locked_resume():
+                    run_resume()
+
+                def _scheduled_resume():
+                    self._run_with_repo_lock_or_conflict_card(
+                        root_path, chat_id, _locked_resume, message_id, "/spec_resume",
+                    )
+
                 request_id = self.ensure_request_id(
                     message_id, chat_id=chat_id, project_id=(proj.project_id if proj else None)
                 )
@@ -486,7 +502,7 @@ class SpecHandler(BaseEngineHandler):
                     request_id=request_id,
                     priority=TaskPriority.HIGH,
                 )
-                handle = self.scheduler.submit(spec, lambda ctx: run_resume())
+                handle = self.scheduler.submit(spec, lambda ctx: _scheduled_resume())
                 try:
                     self.ctx.message_linker.link_task(message_id, handle.run_id)
                 except Exception as e:
@@ -721,6 +737,14 @@ class SpecHandler(BaseEngineHandler):
                 )
                 self.send_message(chat_id, err_card, err_msg_type, origin_message_id=message_id, request_id=request_id)
 
+        def _locked_recover():
+            run_spec_engine()
+
+        def _scheduled_recover():
+            self._run_with_repo_lock_or_conflict_card(
+                project_path, chat_id, _locked_recover, message_id, f"/spec_recover {task_id}",
+            )
+
         spec = TaskSpec(
             chat_id=chat_id,
             queue_key=f"{chat_id}:spec:{project.project_id if project else project_path}",
@@ -733,7 +757,7 @@ class SpecHandler(BaseEngineHandler):
             task_id=task_id or None,
             priority=TaskPriority.NORMAL,
         )
-        handle = self.scheduler.submit(spec, lambda ctx: run_spec_engine())
+        handle = self.scheduler.submit(spec, lambda ctx: _scheduled_recover())
         try:
             self.ctx.message_linker.link_task(message_id, handle.run_id)
         except Exception as e:
@@ -751,14 +775,14 @@ class SpecHandler(BaseEngineHandler):
         # but in Spec context it might be root_path or project_id.
         spec_project_id = value.get("deep_project_id", "")
 
-        # Resolve target project
-        target_project = self.project_manager.get_project(project_id) if project_id else None
+        # Resolve target project (chat-scoped to prevent cross-chat leakage)
+        target_project = self.project_manager.get_project_for_chat(project_id, open_chat_id) if project_id else None
         if not target_project and spec_project_id:
             try:
                 if os.path.isabs(spec_project_id):
-                    target_project = self.project_manager.find_project_by_path(spec_project_id)
+                    target_project = self.project_manager.find_project_by_path(spec_project_id, chat_id=open_chat_id)
                 else:
-                    target_project = self.project_manager.get_project(spec_project_id)
+                    target_project = self.project_manager.get_project_for_chat(spec_project_id, open_chat_id)
             except Exception:
                 pass
 

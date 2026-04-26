@@ -15,6 +15,7 @@ class TestWorktreeGoalPersistence(unittest.TestCase):
             worktree_state=WorktreeRuntimeState()
         )
         self.handler.project_manager.get_project.return_value = self.project
+        self.handler.project_manager.get_project_for_chat.return_value = self.project
         self.handler.project_manager.get_active_project.return_value = self.project
 
     def test_handle_worktree_select_tool_persists_goal(self):

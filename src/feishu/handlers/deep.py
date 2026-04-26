@@ -192,6 +192,7 @@ class DeepHandler(BaseEngineHandler):
                 reporter=reporter,
                 request_id=request_id,
                 action_prefix="deep",
+                command_text=f"/deep {requirement}",
             )
 
         spec = TaskSpec(
@@ -258,7 +259,7 @@ class DeepHandler(BaseEngineHandler):
         for e in candidates[:10]:
             proj = None
             try:
-                proj = self.project_manager.find_project_by_path(e.root_path)
+                proj = self.project_manager.find_project_by_path(e.root_path, chat_id=chat_id)
             except Exception:
                 proj = None
             proj_name = proj.project_name if proj else (e.project.name or "unknown")
@@ -369,7 +370,7 @@ class DeepHandler(BaseEngineHandler):
 
         if project is None:
             try:
-                project = self.project_manager.find_project_by_path(engine.root_path)
+                project = self.project_manager.find_project_by_path(engine.root_path, chat_id=chat_id)
             except Exception:
                 project = None
 
@@ -390,13 +391,13 @@ class DeepHandler(BaseEngineHandler):
         project_id = value.get("project_id", "")
         deep_project_id = value.get("deep_project_id", "")
 
-        # Resolve target project
-        target_project = self.project_manager.get_project(project_id) if project_id else None
+        # Resolve target project (chat-scoped to prevent cross-chat leakage)
+        target_project = self.project_manager.get_project_for_chat(project_id, open_chat_id) if project_id else None
         if not target_project and deep_project_id:
             try:
                 engine = self.ctx.deep_engine_manager.find_by_deep_project_id(open_chat_id, deep_project_id)
                 if engine:
-                    target_project = self.project_manager.find_project_by_path(engine.root_path)
+                    target_project = self.project_manager.find_project_by_path(engine.root_path, chat_id=open_chat_id)
             except Exception as e:
                 logger.debug("resolve_deep_target_project失败: %s", get_error_detail(e))
                 target_project = None

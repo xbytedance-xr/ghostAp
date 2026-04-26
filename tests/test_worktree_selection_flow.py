@@ -289,6 +289,7 @@ def test_worktree_select_tool_skips_model_selection_if_only_one_model():
     project = ProjectContext(project_id="p-skip", project_name="SKIP", root_path="/tmp/skip")
     handler.ctx.project_manager.get_active_project.return_value = project
     handler.ctx.project_manager.get_project.return_value = project
+    handler.ctx.project_manager.get_project_for_chat.return_value = project
 
     # Mock tool with supports_model=True but only 1 model
     fake_tool_value = {
@@ -327,6 +328,7 @@ def test_worktree_select_tool_skips_model_selection_for_coco_even_with_multiple_
     project = ProjectContext(project_id="p-coco", project_name="COCO", root_path="/tmp/coco")
     handler.ctx.project_manager.get_active_project.return_value = project
     handler.ctx.project_manager.get_project.return_value = project
+    handler.ctx.project_manager.get_project_for_chat.return_value = project
 
     fake_tool_value = {
         "tool_name": "coco",

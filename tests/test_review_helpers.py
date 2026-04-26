@@ -108,14 +108,17 @@ class TestComputeAdaptiveTimeout:
     def test_n0_returns_base(self):
         assert compute_adaptive_timeout(0, base_timeout=120, min_timeout=30) == 120
 
-    def test_n1_halves(self):
-        assert compute_adaptive_timeout(1, base_timeout=120, min_timeout=30) == 60
+    def test_n1_decays_by_1_5x(self):
+        assert compute_adaptive_timeout(1, base_timeout=120, min_timeout=30) == 80
 
-    def test_n2_quarters(self):
-        assert compute_adaptive_timeout(2, base_timeout=120, min_timeout=30) == 30
+    def test_n2_decays_by_1_5x_squared(self):
+        assert compute_adaptive_timeout(2, base_timeout=120, min_timeout=30) == 53
 
-    def test_n3_floored(self):
-        assert compute_adaptive_timeout(3, base_timeout=120, min_timeout=30) == 30
+    def test_n3_decays_further(self):
+        assert compute_adaptive_timeout(3, base_timeout=120, min_timeout=30) == 35
+
+    def test_n4_floored(self):
+        assert compute_adaptive_timeout(4, base_timeout=120, min_timeout=30) == 30
 
     def test_n10_floored(self):
         assert compute_adaptive_timeout(10, base_timeout=120, min_timeout=30) == 30
@@ -125,9 +128,30 @@ class TestComputeAdaptiveTimeout:
 
     def test_custom_base_and_min(self):
         assert compute_adaptive_timeout(0, base_timeout=60, min_timeout=10) == 60
-        assert compute_adaptive_timeout(1, base_timeout=60, min_timeout=10) == 30
-        assert compute_adaptive_timeout(2, base_timeout=60, min_timeout=10) == 15
-        assert compute_adaptive_timeout(3, base_timeout=60, min_timeout=10) == 15  # hard_floor=15
+        assert compute_adaptive_timeout(1, base_timeout=60, min_timeout=10) == 40
+        assert compute_adaptive_timeout(2, base_timeout=60, min_timeout=10) == 26
+        assert compute_adaptive_timeout(3, base_timeout=60, min_timeout=10) == 17
+        assert compute_adaptive_timeout(4, base_timeout=60, min_timeout=10) == 15  # hard_floor=15
+
+    # -- 1.5x decay with new defaults (base=180, min=45, hard_floor=20) --
+
+    def test_new_defaults_n0(self):
+        assert compute_adaptive_timeout(0, base_timeout=180, min_timeout=45, hard_floor=20) == 180
+
+    def test_new_defaults_n1(self):
+        assert compute_adaptive_timeout(1, base_timeout=180, min_timeout=45, hard_floor=20) == 120
+
+    def test_new_defaults_n2(self):
+        assert compute_adaptive_timeout(2, base_timeout=180, min_timeout=45, hard_floor=20) == 80
+
+    def test_new_defaults_n3(self):
+        assert compute_adaptive_timeout(3, base_timeout=180, min_timeout=45, hard_floor=20) == 53
+
+    def test_new_defaults_n4_floored(self):
+        assert compute_adaptive_timeout(4, base_timeout=180, min_timeout=45, hard_floor=20) == 45
+
+    def test_new_defaults_n10_floored(self):
+        assert compute_adaptive_timeout(10, base_timeout=180, min_timeout=45, hard_floor=20) == 45
 
     # -- hard_floor protection tests --
 
@@ -521,12 +545,12 @@ class TestHardFloorConfigWiring:
     def test_config_spec_review_hard_floor_default(self):
         from src.config import Settings
         s = Settings()
-        assert s.spec_review_hard_floor == 15
+        assert s.spec_review_hard_floor == 20
 
     def test_config_loop_review_hard_floor_default(self):
         from src.config import Settings
         s = Settings()
-        assert s.loop_review_hard_floor == 15
+        assert s.loop_review_hard_floor == 20
 
     def test_hard_floor_passed_to_compute_adaptive_timeout(self):
         """hard_floor parameter actually affects the result."""
