@@ -1,6 +1,9 @@
 import json
+import logging
 import os
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from ..engine_base import BaseEngineManager
 from ..utils.engine_identity import resolve_engine_identity
@@ -182,5 +185,5 @@ class SpecEngineManager(BaseEngineManager["SpecEngine"]):
                     "compact": persisted_compact,
                 }
             except Exception:
-                pass
+                logger.debug("failed to attach persistence metadata", exc_info=True)
         return engine

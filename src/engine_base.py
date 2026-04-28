@@ -13,6 +13,7 @@ from .config import get_settings
 from .utils.engine_identity import resolve_engine_identity
 from .utils.errors import get_error_detail
 from .utils.gc_monitor import get_gc_monitor
+from .utils.lock_order import LockLevel, ordered_lock, ordered_rlock
 
 logger = logging.getLogger(__name__)
 
@@ -30,21 +31,32 @@ class ReviewPerspective(Enum):
     TESTER = "tester"
     DESIGNER = "designer"
 
+    @classmethod
+    def register_display_names(cls, mapping: dict[str, str]) -> None:
+        """Inject display-name mapping (called by spec_engine on init).
+
+        *mapping* keys are ``"perspective_<member>"`` strings, values are
+        localised display names.  This keeps the dependency direction
+        spec_engine → engine_base (not the reverse).
+        """
+        cls._display_names.update(mapping)
+
     @property
     def display_name(self) -> str:
-        return {
-            ReviewPerspective.ARCHITECT: "架构师",
-            ReviewPerspective.PRODUCT: "产品经理",
-            ReviewPerspective.USER: "用户",
-            ReviewPerspective.TESTER: "测试",
-            ReviewPerspective.DESIGNER: "设计师",
-        }[self]
+        _key_map = {
+            ReviewPerspective.ARCHITECT: "perspective_architect",
+            ReviewPerspective.PRODUCT: "perspective_product",
+            ReviewPerspective.USER: "perspective_user",
+            ReviewPerspective.TESTER: "perspective_tester",
+            ReviewPerspective.DESIGNER: "perspective_designer",
+        }
+        return self._display_names.get(_key_map[self], self.value)
 
     @property
     def emoji(self) -> str:
         return {
             ReviewPerspective.ARCHITECT: "🏗️",
-            ReviewPerspective.PRODUCT: "📦",
+            ReviewPerspective.PRODUCT: "📋",
             ReviewPerspective.USER: "👤",
             ReviewPerspective.TESTER: "🧪",
             ReviewPerspective.DESIGNER: "🎨",
@@ -65,6 +77,11 @@ class ReviewPerspective(Enum):
         return {
             ReviewPerspective.DESIGNER: "🎨 视觉/交互建议",
         }.get(self, "❌ 有建议")
+
+
+# Storage for injected display names — kept outside the Enum body to avoid
+# creating an enum member.  Accessed as ReviewPerspective._display_names.
+ReviewPerspective._display_names = {}  # type: ignore[attr-defined]
 
 
 @dataclass
@@ -162,7 +179,7 @@ class BaseEngine:
         self._project = None
         self._renderer = ACPEventRenderer()
         self._run_state = EngineRunState.IDLE
-        self._lock = threading.RLock()
+        self._lock = ordered_rlock(LockLevel.ENGINE_INSTANCE, name="BaseEngine._lock")
 
     @property
     def project(self):
@@ -183,6 +200,13 @@ class BaseEngine:
         close_session_safely(self._session)
         self._session = None
 
+    def _on_stop(self) -> None:
+        """Hook for subclasses to execute custom stop logic (e.g. cancel events).
+
+        Called at the end of :meth:`stop`. Override in subclasses instead of
+        relying on duck-typed attributes.  Default implementation is a no-op.
+        """
+
     def stop(self):
         with self._lock:
             self._run_state = EngineRunState.STOPPING
@@ -192,24 +216,35 @@ class BaseEngine:
                 session.cancel()
             except Exception:
                 pass
+        self._on_stop()
 
     def cleanup(self):
-        if self._run_state != EngineRunState.IDLE:
-            self._run_state = EngineRunState.STOPPING
-            if self._session:
+        # Snapshot under lock (mirrors stop() pattern to avoid TOCTOU with concurrent stop())
+        with self._lock:
+            state = self._run_state
+            session = self._session
+            if state != EngineRunState.IDLE:
+                self._run_state = EngineRunState.STOPPING
+            else:
+                # IDLE path: clear references under lock, close session outside
+                self._session = None
+                self._project = None
+
+        if state != EngineRunState.IDLE:
+            if session:
                 try:
-                    self._session.cancel()
+                    session.cancel()
                 except Exception:
                     pass
+            self._on_stop()
             return
-        if self._session:
+
+        # IDLE path: close session and run GC outside lock
+        if session:
             try:
-                self._session.close()
+                session.close()
             except Exception as e:
                 logger.debug("关闭ACP session失败: %s", get_error_detail(e))
-            self._session = None
-        self._project = None
-        self._run_state = EngineRunState.IDLE
         mem_snapshot = getattr(self, "_mem_snapshot", None)
         gc_kwargs: dict = {"label": self._gc_label}
         if mem_snapshot is not None:
@@ -257,8 +292,10 @@ class BaseEngine:
         Returns:
             The formatted user-facing error message.
         """
+        from .card.styles import UI_TEXT
+
         detail = get_error_detail(error)
-        kind = "超时" if is_timeout else "异常"
+        kind = UI_TEXT.get("engine_error_timeout", "超时") if is_timeout else UI_TEXT.get("engine_error_exception", "异常")
         error_msg = f"{label}{kind}: {detail}"
         project_name = getattr(self._project, "name", None) or "unknown"
         log_fn = logger.warning if is_timeout else logger.error
@@ -276,7 +313,7 @@ class BaseEngineManager(Generic[T]):
     def __init__(self):
         self._engines: dict[str, T] = {}
         self._chat_keys: dict[str, set[str]] = {}
-        self._lock = threading.Lock()
+        self._lock = ordered_lock(LockLevel.ENGINE_MANAGER, name="BaseEngineManager._lock")
 
     def _add_index(self, chat_id: str, key: str) -> None:
         self._chat_keys.setdefault(chat_id, set()).add(key)

@@ -197,7 +197,7 @@ def _make_probe_checker_with_cache_handle(
 
 _checkers: dict[str, tuple] | None = None
 _providers: dict[str, GenericACPProvider] | None = None
-_init_lock = threading.Lock()
+_init_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
 
 def _ensure_providers() -> dict[str, GenericACPProvider]:

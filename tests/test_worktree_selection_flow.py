@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 from src.card import CardBuilder
 from src.feishu.handler_context import HandlerContext
-from src.feishu.handlers.system import SystemHandler
+from src.feishu.handlers.worktree import WorktreeHandler
 from src.project.context import ProjectContext
 from src.worktree_engine.manager import WorktreeManager
 from src.worktree_engine.selection import WorktreeToolOption
@@ -202,19 +202,19 @@ def test_handle_worktree_command_enters_selection_and_sends_tool_card():
 
 
 # ---------------------------------------------------------------------------
-# Helper: create a minimally-mocked SystemHandler for integration tests
+# Helper: create a minimally-mocked WorktreeHandler for integration tests
 # ---------------------------------------------------------------------------
 
-def _make_system_handler() -> SystemHandler:
-    """Construct a SystemHandler with a fully-mocked HandlerContext."""
+def _make_system_handler() -> WorktreeHandler:
+    """Construct a WorktreeHandler with a fully-mocked HandlerContext."""
     ctx = MagicMock()
     ctx.settings.ref_note_enabled = False
-    handler = SystemHandler(ctx)
+    handler = WorktreeHandler(ctx)
     return handler
 
 
 # ---------------------------------------------------------------------------
-# Integration tests: /wt command through SystemHandler.handle_worktree_command
+# Integration tests: /wt command through WorktreeHandler.handle_worktree_command
 # ---------------------------------------------------------------------------
 
 def test_wt_command_enters_selection_mode_and_shows_tool_prompt():

@@ -78,6 +78,7 @@ from .handlers import (
     SystemHandler,
     TTADKModeHandler,
 )
+from .handlers.worktree import WorktreeHandler
 from .image_handler import FeishuImageHandler
 from .message_cache import MessageCache
 from .message_formatter import FeishuMessageFormatter as fmt
@@ -228,15 +229,15 @@ class FeishuWSClient:
             circuit_breaker=CircuitBreaker(failure_threshold=10, recovery_timeout=5.0),
         )
         self._working_dirs: dict[str, str] = {}
-        self._working_dir_lock = threading.Lock()
+        self._working_dir_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
         # ------------------------------------------------------------------
         # Control-plane bookkeeping (deferred /exit)
         # ------------------------------------------------------------------
-        self._pending_exit_lock = threading.Lock()
+        self._pending_exit_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._pending_exits: dict[str, _PendingExit] = {}  # key -> pending exit
         self._control_plane_event_q: Deque[str] = deque()
-        self._control_plane_event_lock = threading.Lock()
+        self._control_plane_event_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._control_plane_wakeup = threading.Event()
         self._control_plane_stop = threading.Event()
         # IMPORTANT: scheduler listeners are invoked under scheduler locks;
@@ -250,7 +251,7 @@ class FeishuWSClient:
         self._control_plane_thread.start()
 
         # System command gate: while /help or /exit is being handled, card actions are blocked.
-        self._system_cmd_gate_lock = threading.Lock()
+        self._system_cmd_gate_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._system_cmd_inflight_by_chat: dict[str, int] = {}
 
         self._project_manager = ProjectManager()
@@ -271,10 +272,10 @@ class FeishuWSClient:
         self._image_handler: Optional[FeishuImageHandler] = None
         self._pending_image_keys: dict[str, list[str]] = {}
         self._pending_image_only: set[str] = set()  # message_ids that are image-only (no user text)
-        self._pending_image_lock = threading.Lock()
+        self._pending_image_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._enable_streaming = self.settings.streaming_enabled
 
-        self._ws_health_lock = threading.Lock()
+        self._ws_health_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._ws_last_connect_at = 0.0
         self._ws_last_frame_at = 0.0
         self._ws_last_pong_at = 0.0
@@ -356,6 +357,7 @@ class FeishuWSClient:
         spec_handler = SpecHandler(self._handler_ctx)
         project_handler = ProjectHandler(self._handler_ctx)
         system_handler = SystemHandler(self._handler_ctx)
+        worktree_handler = WorktreeHandler(self._handler_ctx)
         diagnostics_handler = DiagnosticsHandler(self._handler_ctx)
 
         # ------------------------------------------------------------------
@@ -373,6 +375,7 @@ class FeishuWSClient:
         self._spec_handler = spec_handler
         self._project_handler = project_handler
         self._system_handler = system_handler
+        self._worktree_handler = worktree_handler
         self._diagnostics_handler = diagnostics_handler
 
         self._handler_ctx.managers.update({
@@ -395,6 +398,7 @@ class FeishuWSClient:
             "spec": spec_handler,
             "project": project_handler,
             "system": system_handler,
+            "worktree": worktree_handler,
             "diagnostics": diagnostics_handler,
         })
 
@@ -411,7 +415,10 @@ class FeishuWSClient:
                     repo_name = _Path(root_path).name or root_path
                     _send_msg(
                         holder_chat_id,
-                        build_lock_reclaim_notify_card(repo_name, reason="hard_timeout"),
+                        build_lock_reclaim_notify_card(
+                            repo_name, reason="hard_timeout",
+                            hard_timeout_seconds=getattr(self.settings, "repo_lock_hard_timeout", None),
+                        ),
                     )
                 except Exception as _exc:
                     logger.warning(
@@ -420,6 +427,38 @@ class FeishuWSClient:
                     )
 
             repo_lock_mgr.on_reclaim.subscribe(_notify_hard_timeout_reclaim)
+
+            # Subscribe to lock release events — notify previously blocked chats.
+            def _notify_lock_released(root_path: str, blocked_chat_ids: set) -> None:
+                try:
+                    import json as _json
+                    from pathlib import Path as _Path
+                    from ..card.styles import UI_TEXT
+                    from ..card.builders.lock_common import _compute_command_sig
+                    repo_name = _Path(root_path).name or root_path
+                    _text = UI_TEXT["repo_lock_released_notify"].format(repo_name=repo_name)
+                    _btn = {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "📊 查看状态"},
+                        "type": "default",
+                        "value": {"action": "retry_command", "_t": "/status", "_s": _compute_command_sig("/status")},
+                    }
+                    _card = _json.dumps({
+                        "config": {"wide_screen_mode": True},
+                        "elements": [
+                            {"tag": "markdown", "content": _text},
+                            {"tag": "action", "actions": [_btn]},
+                        ],
+                    }, ensure_ascii=False)
+                    for _cid in blocked_chat_ids:
+                        try:
+                            _send_msg(_cid, _card, msg_type="interactive")
+                        except Exception as _inner:
+                            logger.debug("Failed to notify release to chat=%s: %s", _cid[:12], _inner)
+                except Exception as _exc:
+                    logger.warning("Failed to send lock release notifications: %s", _exc)
+
+            repo_lock_mgr.on_release.subscribe(_notify_lock_released)
 
         # Initialize ChatLockGate (ingress-level chat-lock interception).
         from .chat_lock_gate import ChatLockGate
@@ -837,6 +876,19 @@ class FeishuWSClient:
             self._scheduler.stop(wait=True, shutdown_executor=True)
         except Exception as e:
             logger.debug("停止scheduler失败: %s", get_error_detail(e))
+
+        # Best-effort shutdown lock-manager daemon threads so non-Application
+        # callers (e.g. tests) do not leak background threads.
+        try:
+            from ..chat_lock import shutdown_if_active as _chat_sd
+            _chat_sd()
+        except Exception:
+            logger.debug("ChatLockManager shutdown in close() skipped", exc_info=True)
+        try:
+            from ..repo_lock import shutdown_if_active as _repo_sd
+            _repo_sd()
+        except Exception:
+            logger.debug("RepoLockManager shutdown in close() skipped", exc_info=True)
 
     def _on_thread_evicted(self, ctx) -> None:
         for mgr in (
@@ -2010,6 +2062,7 @@ class FeishuWSClient:
                 "spec_pause",
                 "spec_stop",
                 "spec_resume",
+                "spec_skip_retry",
             }
             return action_type in system_actions
         except (json.JSONDecodeError, AttributeError, KeyError, TypeError):

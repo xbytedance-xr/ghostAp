@@ -17,12 +17,13 @@ code path stays the same.
 from __future__ import annotations
 
 import logging
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from ..engine_base import ReviewResult
-from .review import ReviewCircuitState, conduct_review
+from .review import ReviewCircuitState, ReviewPipelineConfig, conduct_review
 from .review_artifacts import ReviewArtifacts
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,10 @@ class ReviewContext:
     circuit: ReviewCircuitState
     on_review_done: Optional[Callable] = None
     artifacts: Optional[ReviewArtifacts] = None
+    cancel_event: Optional[threading.Event] = None
+    on_retry_status: Optional[Callable[[str], None]] = None
+    agent_type: str = "coco"
+    model_name: Optional[str] = None
 
 
 class ReviewStrategy(ABC):
@@ -92,14 +97,20 @@ class MultiPerspectiveStrategy(ReviewStrategy):
 
     def run(self, ctx: ReviewContext) -> ReviewResult:
         return conduct_review(
-            session=ctx.session,
-            settings=ctx.settings,
-            project=ctx.project,
-            send_prompt_with_retry_fn=ctx.send_prompt_with_retry_fn,
-            build_review_exception_diagnostics_fn=ctx.build_review_exception_diagnostics_fn,
-            circuit=ctx.circuit,
-            cycle=ctx.cycle,
-            on_review_done=ctx.on_review_done,
+            pipeline_cfg=ReviewPipelineConfig(
+                settings=ctx.settings,
+                circuit=ctx.circuit,
+                cycle=ctx.cycle,
+                session=ctx.session,
+                project=ctx.project,
+                send_prompt_with_retry_fn=ctx.send_prompt_with_retry_fn,
+                build_review_exception_diagnostics_fn=ctx.build_review_exception_diagnostics_fn,
+                on_review_done=ctx.on_review_done,
+                cancel_event=ctx.cancel_event,
+                on_retry_status=ctx.on_retry_status,
+                agent_type=ctx.agent_type,
+                model_name=ctx.model_name,
+            ),
         )
 
 

@@ -26,7 +26,7 @@ class GCMonitor:
         self._memory_threshold_percent = memory_threshold_percent
         self._check_interval_seconds = check_interval_seconds
         self._last_mem_check = 0.0
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     def check_and_collect(self, label: str = "Engine", mem_snapshot=None) -> None:
         """Check memory usage and trigger garbage collection if threshold is exceeded.

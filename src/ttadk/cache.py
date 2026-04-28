@@ -45,7 +45,7 @@ class TTADKModelCache:
         # cache 侧支持注入 get_settings_fn，避免硬编码依赖 `src.config.get_settings`。
         get_settings_fn=None,
     ) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
         self._default_models = list(default_models)
         # legacy fallback path (only used when caller does not pass cwd)

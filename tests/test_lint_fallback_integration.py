@@ -63,7 +63,7 @@ class TestSpecLintFallbackIntegration:
             all_suggestions.extend(pr.suggestions)
 
         # Should contain both circuit message and lint message
-        assert any("熔断" in s for s in all_suggestions)
+        assert any("审查暂停" in s for s in all_suggestions)
         assert any("降级 lint" in s for s in all_suggestions)
         assert any("发现" in s for s in all_suggestions)
 
@@ -126,7 +126,7 @@ class TestSpecLintFallbackIntegration:
         for pr in result.reviews:
             all_suggestions.extend(pr.suggestions)
 
-        assert any("熔断" in s for s in all_suggestions)
+        assert any("审查暂停" in s for s in all_suggestions)
         assert not any("降级 lint" in s for s in all_suggestions)
 
     def test_lint_exception_does_not_crash(self, tmp_path):
@@ -156,4 +156,4 @@ class TestSpecLintFallbackIntegration:
 
         # Should still return a valid result
         assert len(result.reviews) > 0
-        assert any("熔断" in pr.suggestions[0] for pr in result.reviews)
+        assert any("审查暂停" in pr.suggestions[0] for pr in result.reviews)

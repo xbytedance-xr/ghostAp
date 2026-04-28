@@ -372,7 +372,8 @@ class LoopEngine(BaseEngine):
             return self._project
 
         finally:
-            self._run_state = EngineRunState.IDLE
+            with self._lock:
+                self._run_state = EngineRunState.IDLE
             get_gc_monitor(memory_threshold_percent=self._gc_threshold_default).check_and_collect(label=self._gc_label)
 
     def _make_on_event(
@@ -858,7 +859,7 @@ FAIL
                 iteration,
                 circuit.review_circuit_open_until_iter,
             )
-            _base_msg = _UI_TEXT["circuit_breaker_skip_with_count"].format(n=int(circuit.review_failure_consecutive or 0))
+            _base_msg = _UI_TEXT["circuit_breaker_skip_with_count"].format(count=int(circuit.review_failure_consecutive or 0))
             if is_skip_overrun:
                 logger.warning(
                     "[Loop] skip-overrun: consecutive_skips=%d, 熔断器可能卡住，建议排查",
@@ -1073,8 +1074,12 @@ FAIL
             if self._project:
                 self._project.status = LoopProjectStatus.PAUSED
             self._run_state = EngineRunState.STOPPING
-            if self._session:
-                self._session.cancel()
+            session = self._session
+        if session:
+            try:
+                session.cancel()
+            except Exception:
+                pass
 
     def resume(self, callbacks: Optional[LoopEngineCallbacks] = None) -> Optional[LoopProject]:
         """Resume a paused loop execution — continue iterating from where we left off."""
@@ -1093,7 +1098,8 @@ FAIL
             logger.debug("[Loop] resume circuit restore skipped: %s", get_error_detail(e))
 
         callbacks = callbacks or LoopEngineCallbacks()
-        self._run_state = EngineRunState.RUNNING
+        with self._lock:
+            self._run_state = EngineRunState.RUNNING
         self._project.status = LoopProjectStatus.RUNNING
         max_iterations = self.settings.loop_max_iterations
         start_iteration = len(self._project.iterations) + 1
@@ -1218,7 +1224,8 @@ FAIL
             self._project.completed_at = time.time()
 
         finally:
-            self._run_state = EngineRunState.IDLE
+            with self._lock:
+                self._run_state = EngineRunState.IDLE
             get_gc_monitor(memory_threshold_percent=self._gc_threshold_default).check_and_collect(label=self._gc_label)
 
         return self._project

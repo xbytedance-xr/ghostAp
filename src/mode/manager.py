@@ -41,7 +41,7 @@ class ModeManager:
         self._chat_modes: dict[str, ModeState] = {}
         # Key format: "{chat_id}:{project_id}" — ensures cross-chat isolation.
         self._project_modes: dict[str, ModeState] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._programming_modes = (
             InteractionMode.COCO,
             InteractionMode.CLAUDE,

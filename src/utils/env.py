@@ -17,7 +17,7 @@ TestEnvironmentChecker = Callable[[], bool]
 
 # Global state for injected test environment checker
 _test_environment_checker: Optional[TestEnvironmentChecker] = None
-_test_environment_lock = threading.Lock()
+_test_environment_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
 
 def _default_is_test_environment() -> bool:

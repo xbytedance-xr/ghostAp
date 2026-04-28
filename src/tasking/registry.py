@@ -16,7 +16,7 @@ class TaskRegistry:
     
     def __init__(self) -> None:
         self._tasks: Set[asyncio.Task] = set()
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._is_closing = False
 
     def track(self, task: asyncio.Task) -> asyncio.Task:

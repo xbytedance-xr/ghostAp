@@ -47,6 +47,85 @@ class TestDeepEngine:
         engine._project.pause.assert_called_once()
         assert engine.run_state == EngineRunState.STOPPING
 
+    def test_pause_holds_lock(self):
+        """pause() must acquire self._lock when writing _run_state."""
+        engine = self._make_engine()
+        engine._project = MagicMock()
+        engine._session = None
+        engine._run_state = EngineRunState.RUNNING
+
+        lock_acquired = False
+        original_lock = engine._lock
+
+        class TrackedLock:
+            def __enter__(self_lock):
+                nonlocal lock_acquired
+                lock_acquired = True
+                return original_lock.__enter__()
+
+            def __exit__(self_lock, *args):
+                return original_lock.__exit__(*args)
+
+        engine._lock = TrackedLock()
+        engine.pause()
+        assert lock_acquired, "pause() should acquire self._lock"
+        assert engine._run_state == EngineRunState.STOPPING
+
+    def test_pause_session_cancel_raises(self):
+        """pause() swallows exceptions from session.cancel() and still sets STOPPING."""
+        engine = self._make_engine()
+        engine._project = MagicMock()
+        engine._run_state = EngineRunState.RUNNING
+
+        session = MagicMock()
+        session.cancel.side_effect = RuntimeError("connection lost")
+        engine._session = session
+
+        engine.pause()
+
+        assert engine._run_state == EngineRunState.STOPPING
+        session.cancel.assert_called_once()
+
+    def test_pause_project_none(self):
+        """pause() when _project is None must still set STOPPING without raising."""
+        engine = self._make_engine()
+        engine._project = None
+        engine._session = MagicMock()
+        engine._run_state = EngineRunState.RUNNING
+
+        engine.pause()
+
+        assert engine._run_state == EngineRunState.STOPPING
+        engine._session.cancel.assert_called_once()
+
+    def test_pause_concurrent(self):
+        """Concurrent pause() calls must not raise and final state is STOPPING."""
+        import threading
+
+        engine = self._make_engine()
+        engine._project = MagicMock()
+        engine._session = MagicMock()
+        engine._run_state = EngineRunState.RUNNING
+
+        errors = []
+        barrier = threading.Barrier(10, timeout=5)
+
+        def call_pause():
+            try:
+                barrier.wait()
+                engine.pause()
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=call_pause) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert not errors, f"Concurrent pause() raised: {errors}"
+        assert engine._run_state == EngineRunState.STOPPING
+
     def test_cleanup(self):
         engine = self._make_engine()
         engine._session = MagicMock()

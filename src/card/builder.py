@@ -396,8 +396,9 @@ class CardBuilder:
         is_admin: bool = False,
         lock_enabled: bool = False,
         chat_id: str = "",
+        no_admin_configured: bool = False,
     ) -> tuple[str, str]:
-        return SystemBuilder.build_help_card(project, category, working_dir, current_mode, is_admin=is_admin, lock_enabled=lock_enabled, chat_id=chat_id)
+        return SystemBuilder.build_help_card(project, category, working_dir, current_mode, is_admin=is_admin, lock_enabled=lock_enabled, chat_id=chat_id, no_admin_configured=no_admin_configured)
 
     @staticmethod
     def _build_help_card_cached(

@@ -131,3 +131,102 @@ class TestIntegrationWithRealManagers:
             assert mgr._mu._level == int(LockLevel.REPO_LOCK)
         finally:
             mgr.shutdown()
+
+
+class TestEngineManagerLockLevel:
+    """AC-R32: ENGINE_MANAGER is the outermost lock level (-1)."""
+
+    def test_engine_manager_is_outermost(self):
+        assert LockLevel.ENGINE_MANAGER == -1
+        assert LockLevel.ENGINE_MANAGER < LockLevel.ENGINE_INSTANCE
+        # ENGINE_MANAGER should be the minimum of all levels
+        assert LockLevel.ENGINE_MANAGER == min(LockLevel)
+
+    def test_engine_manager_to_inner_no_warning(self, caplog):
+        """Acquiring ENGINE_MANAGER then inner lock should not warn."""
+        import logging
+        outer = ordered_lock(LockLevel.ENGINE_MANAGER, name="em")
+        inner = ordered_rlock(LockLevel.ENGINE_INSTANCE, name="ei")
+        with caplog.at_level(logging.WARNING):
+            with outer:
+                with inner:
+                    pass
+        assert "Lock ordering violation" not in caplog.text
+
+    def test_inner_to_engine_manager_warns(self, caplog):
+        """Acquiring inner lock then ENGINE_MANAGER should warn."""
+        import logging
+        inner = ordered_rlock(LockLevel.ENGINE_INSTANCE, name="ei")
+        outer = ordered_lock(LockLevel.ENGINE_MANAGER, name="em")
+        with caplog.at_level(logging.WARNING):
+            with inner:
+                with outer:
+                    pass
+        assert "Lock ordering violation" in caplog.text
+
+
+class TestLeafLockAnnotationScan:
+    """AC-T23: Every threading.Lock()/RLock() in src/ has the leaf lock comment.
+
+    Excludes src/utils/lock_order.py (internal infrastructure).
+    """
+
+    def test_all_leaf_locks_annotated(self):
+        """Scan all .py files under src/ for un-annotated leaf locks."""
+        from pathlib import Path
+        import re
+
+        src_dir = Path(__file__).resolve().parent.parent / "src"
+        lock_pattern = re.compile(r"threading\.(Lock|RLock)\(\)")
+        comment = "# leaf lock: never held while acquiring a LockLevel lock"
+
+        missing = []
+        for py_file in sorted(src_dir.rglob("*.py")):
+            # Exclude the lock_order infrastructure itself
+            if py_file.name == "lock_order.py":
+                continue
+            lines = py_file.read_text().splitlines()
+            for i, line in enumerate(lines, 1):
+                if lock_pattern.search(line) and comment not in line:
+                    rel = py_file.relative_to(src_dir.parent)
+                    missing.append(f"{rel}:{i}")
+
+        assert not missing, (
+            f"Found {len(missing)} unannotated leaf lock(s):\n" + "\n".join(missing)
+        )
+
+
+# ---------------------------------------------------------------------------
+# Task 19: Strict mode raises RuntimeError on violation
+# ---------------------------------------------------------------------------
+
+
+class TestStrictModeRaises:
+    """GHOSTAP_LOCK_ORDER_CHECK=strict raises RuntimeError on ordering violation."""
+
+    def test_strict_mode_raises_on_violation(self):
+        """enable_lock_order_check(strict=True) → violation raises RuntimeError."""
+        enable_lock_order_check(strict=True)
+        try:
+            outer = ordered_lock(LockLevel.REPO_LOCK, name="inner_first")
+            inner = ordered_lock(LockLevel.PROJECT_MANAGER, name="outer_second")
+            with outer:
+                with pytest.raises(RuntimeError, match="Lock ordering violation"):
+                    inner.acquire()
+                # If we got here, the acquire raised (good). Clean up outer.
+        finally:
+            _get_held().clear()
+            disable_lock_order_check()
+
+    def test_strict_mode_correct_order_no_raise(self):
+        """Correct ordering with strict=True does not raise."""
+        enable_lock_order_check(strict=True)
+        try:
+            outer = ordered_lock(LockLevel.PROJECT_MANAGER, name="outer")
+            inner = ordered_lock(LockLevel.REPO_LOCK, name="inner")
+            with outer:
+                with inner:
+                    pass
+        finally:
+            _get_held().clear()
+            disable_lock_order_check()

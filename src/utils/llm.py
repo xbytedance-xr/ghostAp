@@ -7,7 +7,7 @@ from langchain_openai import ChatOpenAI
 
 
 ChatOpenAICacheKey = tuple[object, str, str, float, int]
-_CACHE_LOCK = threading.Lock()
+_CACHE_LOCK = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
 
 def _cache_key(settings, temperature: float, llm_cls: object) -> ChatOpenAICacheKey:

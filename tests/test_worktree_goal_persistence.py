@@ -1,15 +1,15 @@
 import unittest
 from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
-from src.feishu.handlers.system import SystemHandler
+from src.feishu.handlers.worktree import WorktreeHandler
 from src.worktree_engine.models import WorktreeRuntimeState
 
 class TestWorktreeGoalPersistence(unittest.TestCase):
     def setUp(self):
         self.ctx = MagicMock()
-        # Mock handlers dict for SystemHandler init
+        # Mock handlers dict for WorktreeHandler init
         self.ctx.handlers = {}
-        self.handler = SystemHandler(self.ctx)
+        self.handler = WorktreeHandler(self.ctx)
         self.project = SimpleNamespace(
             project_id="p1",
             worktree_state=WorktreeRuntimeState()

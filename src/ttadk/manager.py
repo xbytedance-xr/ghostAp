@@ -439,7 +439,7 @@ TOOL_KEYS = ("tools", "ai_tools", "providers", "toolkits")
 
 class TTADKManager:
     def __init__(self, default_tool: Optional[str] = None, default_model: Optional[str] = None):
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._current_tool: Optional[str] = default_tool
         self._current_model: Optional[str] = default_model
         self._known_tools: set[str] = set()
@@ -1686,10 +1686,10 @@ class TTADKManager:
 
 
 _manager: Optional[TTADKManager] = None
-_manager_lock = threading.Lock()
+_manager_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
 _ttadk_update_attempted: bool = False
-_ttadk_update_lock = threading.Lock()
+_ttadk_update_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
 
 def set_ttadk_manager(

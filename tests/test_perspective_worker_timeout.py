@@ -1,6 +1,10 @@
 from concurrent.futures import TimeoutError
 import logging
 
+from src.card.styles import UI_TEXT
+
+_RETRY_NO_RETRY = UI_TEXT["retry_no_retry"]
+
 
 def test_run_workers_parallel_timeout():
     from src.spec_engine.perspective_worker import run_workers_parallel, PerspectiveWorker, ReviewArtifacts, WorkerBinding
@@ -31,8 +35,9 @@ def test_run_workers_parallel_timeout():
     
     assert len(outcomes) == 1
     assert not outcomes[0].review.passed
-    assert outcomes[0].error == "当前系统较繁忙，操作已超时。建议：稍后自动重试，或通过 /spec resume 手动恢复"
-    assert outcomes[0].review.suggestions == ["审查异常：当前系统较繁忙，操作已超时。建议：稍后自动重试，或通过 /spec resume 手动恢复"]
+    assert outcomes[0].error == _RETRY_NO_RETRY
+    assert len(outcomes[0].review.suggestions) == 1
+    assert outcomes[0].review.suggestions[0].startswith(f"审查异常：{_RETRY_NO_RETRY}（视角=")
     assert "futures unfinished" not in outcomes[0].error
     assert "futures unfinished" not in outcomes[0].review.suggestions[0]
 
@@ -63,7 +68,7 @@ def test_worker_run_timeout_with_futures_unfinished_message():
     assert not outcome.ok
     assert outcome.error_code == ReviewErrorCode.TIMEOUT
     assert "futures unfinished" not in outcome.error
-    assert outcome.error == "当前系统较繁忙，操作已超时。建议：稍后自动重试，或通过 /spec resume 手动恢复"
+    assert outcome.error == _RETRY_NO_RETRY
     for s in outcome.review.suggestions:
         assert "futures unfinished" not in s
 
@@ -100,7 +105,7 @@ def test_run_workers_parallel_inner_worker_timeout_sanitized():
     assert len(outcomes) == 1
     assert not outcomes[0].review.passed
     assert "futures unfinished" not in outcomes[0].error
-    assert outcomes[0].error == "当前系统较繁忙，操作已超时。建议：稍后自动重试，或通过 /spec resume 手动恢复"
+    assert outcomes[0].error == _RETRY_NO_RETRY
     for s in outcomes[0].review.suggestions:
         assert "futures unfinished" not in s
 

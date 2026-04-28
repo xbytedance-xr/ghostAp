@@ -1053,6 +1053,7 @@ class TestSpecReviewMetricsLog:
         settings.spec_review_failure_cooldown_cycles = 3
         settings.spec_review_timeout = 120
         settings.spec_review_min_timeout = 30
+        settings.spec_review_hard_floor = 15
         settings.spec_review_failure_max_cooldown_cycles = 12
 
         def raise_exc(*a, **kw):
@@ -1751,4 +1752,49 @@ class TestBanStrOrReprPattern:
         assert not violations, (
             f"Found {len(violations)} occurrence(s) of banned `str(x) or repr(x)` pattern "
             f"(use get_error_detail instead):\n" + "\n".join(violations)
+        )
+
+
+# ---------------------------------------------------------------------------
+# Task 44: No bare `except Exception: pass` in lock-related source files
+# ---------------------------------------------------------------------------
+
+
+class TestNoBareSilentExceptInLockFiles:
+    """Lock-related files must not swallow exceptions silently with `except Exception: pass`."""
+
+    # Only scan files that are purely lock-related (not general-purpose handlers)
+    _LOCK_FILES = [
+        "src/chat_lock.py",
+        "src/repo_lock.py",
+        "src/card/builders/lock_chat.py",
+        "src/card/builders/lock_repo.py",
+        "src/card/builders/lock_common.py",
+        "src/feishu/handlers/lock_helper.py",
+    ]
+
+    def test_no_except_exception_pass(self):
+        import re
+        from pathlib import Path
+        root = Path(__file__).resolve().parent.parent
+        pattern = re.compile(r'except\s+Exception\s*:\s*$')
+        violations = []
+        for rel_path in self._LOCK_FILES:
+            fpath = root / rel_path
+            if not fpath.exists():
+                continue
+            lines = fpath.read_text(encoding="utf-8").splitlines()
+            for i, line in enumerate(lines, 1):
+                if pattern.search(line.strip()):
+                    # Check if the next non-empty line is just `pass`
+                    for j in range(i, min(i + 3, len(lines))):
+                        next_line = lines[j].strip()
+                        if next_line == "pass":
+                            violations.append(f"{rel_path}:{j + 1}: {next_line}  (after except at line {i})")
+                            break
+                        elif next_line:
+                            break
+        assert not violations, (
+            "Found bare `except Exception: pass` (should use logger.debug with exc_info=True):\n"
+            + "\n".join(violations)
         )

@@ -435,6 +435,7 @@ class MessageDispatcher:
                 self.client._context_manager.update_context(
                     project.project_id,
                     conversation={"role": "user", "content": cmd, "source_mode": "shell", "message_id": message_id},
+                    chat_id=chat_id,
                 )
 
         elif intent == IntentType.UNKNOWN:

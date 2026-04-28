@@ -55,7 +55,7 @@ class ToolRegistry:
         self._availability_cache: "OrderedDict[str, tuple[bool, float]]" = OrderedDict()
         self._availability_cache_maxsize: int = 64
         self._availability_cache_ttl_s: float = 60.0
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._preheated: bool = False
         self._probe_inflight: set[str] = set()
 

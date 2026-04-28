@@ -17,6 +17,7 @@ import time
 from unittest.mock import MagicMock, patch, call
 
 from src.card import CardBuilder
+from src.feishu.handlers.worktree import WorktreeHandler
 from src.feishu.handlers.system import SystemHandler
 from src.project.context import ProjectContext
 from src.worktree_engine.manager import WorktreeManager
@@ -36,10 +37,10 @@ from src.worktree_engine.selection import WorktreeToolOption
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_system_handler() -> SystemHandler:
+def _make_system_handler() -> WorktreeHandler:
     ctx = MagicMock()
     ctx.settings.ref_note_enabled = False
-    handler = SystemHandler(ctx)
+    handler = WorktreeHandler(ctx)
     return handler
 
 
@@ -299,7 +300,7 @@ def test_is_awaiting_goal_handles_none_and_invalid_state_gracefully():
     assert WorktreeManager.is_awaiting_goal(object()) is False  # type: ignore[arg-type]
 
 def test_wt_prefix_command_parses_goal():
-    """_handle_worktree_prefix_command extracts goal from '/wt 实现登录'."""
+    """handle_worktree_prefix_command extracts goal from '/wt 实现登录'."""
     handler = _make_system_handler()
     project = _make_project()
     handler.ctx.project_manager.get_active_project.return_value = project
@@ -307,7 +308,7 @@ def test_wt_prefix_command_parses_goal():
     reply_mock = MagicMock()
     with patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
          patch.object(handler, "reply_message", reply_mock):
-        handler._handle_worktree_prefix_command("msg1", "chat1", "/wt 实现登录", project)
+        handler.handle_worktree_prefix_command("msg1", "chat1", "/wt 实现登录", project)
 
     state = WorktreeManager.get_state(project)
     assert state.selection.pending_goal == "实现登录"
@@ -316,7 +317,7 @@ def test_wt_prefix_command_parses_goal():
 
 
 def test_worktree_prefix_command_parses_goal():
-    """_handle_worktree_prefix_command extracts goal from '/worktree 重构认证'."""
+    """handle_worktree_prefix_command extracts goal from '/worktree 重构认证'."""
     handler = _make_system_handler()
     project = _make_project("p-wt2")
     handler.ctx.project_manager.get_active_project.return_value = project
@@ -324,7 +325,7 @@ def test_worktree_prefix_command_parses_goal():
     reply_mock = MagicMock()
     with patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
          patch.object(handler, "reply_message", reply_mock):
-        handler._handle_worktree_prefix_command("msg2", "chat2", "/worktree 重构认证", project)
+        handler.handle_worktree_prefix_command("msg2", "chat2", "/worktree 重构认证", project)
 
     state = WorktreeManager.get_state(project)
     assert state.selection.pending_goal == "重构认证"

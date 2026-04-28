@@ -80,7 +80,7 @@ class TestLoopReviewCircuitBreaker:
             engine._session.send_prompt_with_retry.assert_not_called()
             # Fallback result should have all perspectives failed
             assert not result.all_passed
-            assert any("熔断" in s for pr in result.reviews for s in pr.suggestions)
+            assert any("审查暂停" in s for pr in result.reviews for s in pr.suggestions)
 
     def test_review_resumes_after_cooldown(self, engine, callbacks):
         """冷却期结束后 review 恢复执行."""
@@ -340,7 +340,7 @@ class TestLoopAdaptiveTimeout:
         for i in range(1, 4):
             engine._conduct_review(i, callbacks)
 
-        assert captured_timeouts == [120, 80, 53]
+        assert captured_timeouts == [120, 92, 71]
 
     def test_timeout_resets_after_success(self, engine, callbacks):
         """After success, timeout returns to base."""

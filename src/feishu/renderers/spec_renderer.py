@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder, EngineCardState
 from ...acp import ACPEventRenderer, ACPEventType
+from ...card.styles import UI_TEXT
 from ...spec_engine import SpecEngineCallbacks
 from ...spec_engine.models import (
     ReviewResult,
@@ -13,6 +14,7 @@ from ...spec_engine.models import (
     SpecPhase,
     SpecProject,
 )
+from ...spec_engine.retry_status import RetryEvent, RetryStatus
 from ...utils.text import append_duration_to_title
 from ..emoji import EmojiReaction
 from .base import BaseRenderer, SmartSender
@@ -55,6 +57,7 @@ class SpecRenderer(BaseRenderer):
         # ACP event renderer for real-time tool call display
         acp_renderer = ACPEventRenderer()
         _footer_status: list[Optional[str]] = [None]
+        _last_phase_content: list[str] = [""]
 
         def _send_spec_message(
             card_content: str, msg_type: str = "interactive", is_update: bool = False, throttle: bool = False
@@ -294,7 +297,7 @@ class SpecRenderer(BaseRenderer):
 
         def _build_phase_card(
             title: str, content: str, spec_project, state: dict, *, show_buttons: bool = False, throttle: bool = True,
-            footer_status: Optional[str] = None,
+            footer_status: Optional[str] = None, extra_buttons: Optional[list] = None,
         ):
             progress_bar = None
             status_line = None
@@ -322,6 +325,7 @@ class SpecRenderer(BaseRenderer):
                     action_prefix="spec",
                     show_buttons=show_buttons,
                     footer_status=footer_status,
+                    extra_buttons=extra_buttons,
                 ),
             )
             _send_spec_message(card_content, msg_type, is_update=True, throttle=throttle)
@@ -333,6 +337,7 @@ class SpecRenderer(BaseRenderer):
 
             _, spec_project, state, max_c = _get_engine_and_state()
             content = reporter.format_phase_start_content(cycle_num, phase, max_c)
+            _last_phase_content[0] = content
             title = reporter.get_cycle_start_title(cycle_num, max_c)
             title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
             _build_phase_card(title, content, spec_project, state, show_buttons=False, throttle=True, footer_status="tool_running")
@@ -367,6 +372,7 @@ class SpecRenderer(BaseRenderer):
             if tool_summary:
                 base_content += f"\n---\n{tool_summary}"
 
+            _last_phase_content[0] = base_content
             title = reporter.get_cycle_start_title(cycle_num, max_c)
             title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
             _build_phase_card(
@@ -384,10 +390,87 @@ class SpecRenderer(BaseRenderer):
             if tool_summary:
                 content += f"\n---\n{tool_summary}"
             _footer_status[0] = None
+            _last_phase_content[0] = content
 
             title = reporter.get_cycle_start_title(cycle_num, max_c)
             title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
             _build_phase_card(title, content, spec_project, state, show_buttons=False, throttle=True)
+
+        # RetryStatus → UI_TEXT key mapping for review retry
+        _RETRY_STATUS_TEXT: dict[RetryStatus, str] = {
+            RetryStatus.WAITING: "retry_waiting",
+            RetryStatus.EXECUTING: "retry_executing",
+            RetryStatus.EXHAUSTED: "retry_exhausted",
+            RetryStatus.NO_RETRY: "retry_no_retry",
+        }
+
+        def on_phase_retry(attempt: int, max_attempts: int, detail: str):
+            """Push phase-level retry status (ACP call retry) to card."""
+            _, spec_project, state, max_c = _get_engine_and_state()
+            retry_text = UI_TEXT["phase_retry_progress"].format(attempt=attempt, max_attempts=max_attempts)
+            if detail:
+                retry_text += f" — {detail[:80]}"
+            _footer_status[0] = retry_text
+            # Use cycle_start_title (current cycle) as the card title during phase retry
+            cycle_num = state.get("current_cycle", 1) if state else 1
+            title = reporter.get_cycle_start_title(cycle_num, max_c)
+            title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
+            _build_phase_card(
+                title, _last_phase_content[0], spec_project, state,
+                show_buttons=False, throttle=False, footer_status=retry_text,
+            )
+
+        def _make_retry_button(text: str, action: str) -> dict:
+            """Create a small inline button for retry card actions."""
+            return {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": text},
+                "type": "default",
+                "size": "small",
+                "behaviors": [{"type": "callback", "value": {"action": action}}],
+            }
+
+        def on_review_retry(cycle: int, event: RetryEvent):
+            """Push review-level retry status to card footer."""
+            # SUCCEEDED: don't push card — let subsequent phase flow naturally override
+            if event.status == RetryStatus.SUCCEEDED:
+                return
+            _, spec_project, state, max_c = _get_engine_and_state()
+            # Map RetryStatus → formatted UI text
+            text_key = _RETRY_STATUS_TEXT.get(event.status, "retry_executing")
+            if event.status == RetryStatus.WAITING:
+                detail_msg = UI_TEXT[text_key].format(sec=int(event.delay_sec), i=event.attempt, n=event.max_attempts)
+            elif event.status == RetryStatus.EXECUTING:
+                detail_msg = UI_TEXT[text_key].format(i=event.attempt, n=event.max_attempts)
+            elif event.status == RetryStatus.EXHAUSTED:
+                detail_msg = UI_TEXT[text_key].format(n=event.max_attempts)
+            elif event.status == RetryStatus.NO_RETRY:
+                # Distinguish: config disabled (max_attempts==0) vs budget exhausted
+                if event.max_attempts == 0:
+                    detail_msg = UI_TEXT["retry_no_retry_disabled"]
+                else:
+                    detail_msg = UI_TEXT["retry_no_retry_budget"]
+            else:
+                detail_msg = UI_TEXT[text_key]
+            _footer_status[0] = detail_msg
+
+            # Build inline buttons based on retry state
+            buttons = None
+            if event.status in (RetryStatus.WAITING, RetryStatus.EXECUTING):
+                buttons = [
+                    _make_retry_button(UI_TEXT["btn_stop_review"], "spec_stop"),
+                    _make_retry_button(UI_TEXT["btn_skip_retry"], "spec_skip_retry"),
+                ]
+            elif event.status in (RetryStatus.EXHAUSTED, RetryStatus.NO_RETRY):
+                buttons = [_make_retry_button(UI_TEXT["btn_continue"], "spec_resume")]
+
+            title = reporter.get_cycle_start_title(cycle, max_c)
+            title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
+            _build_phase_card(
+                title, _last_phase_content[0], spec_project, state,
+                show_buttons=False, throttle=False, footer_status=detail_msg,
+                extra_buttons=buttons,
+            )
 
         return SpecEngineCallbacks(
             on_analyzing_done=on_analyzing_done,
@@ -399,6 +482,8 @@ class SpecRenderer(BaseRenderer):
             on_review_done=on_review_done,
             on_project_done=on_project_done,
             on_error=on_error,
+            on_phase_retry=on_phase_retry,
+            on_review_retry=on_review_retry,
         )
 
     def render_current_view(

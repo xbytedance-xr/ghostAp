@@ -129,7 +129,7 @@ class StreamingCardManager:
         self._settings = get_settings()
         # key 使用 message_id（发送成功后才会写入）
         self._cards: dict[str, StreamingCard] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
         # Initialize Flow Control Strategy
         self._flow_control = FlowControlStrategy(

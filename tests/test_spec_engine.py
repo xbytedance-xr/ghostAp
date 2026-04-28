@@ -317,6 +317,13 @@ def test_spec_engine_review_failure_diagnostics_written_to_cycle_and_metrics(mon
         spec_review_failure_circuit_enabled = False
         spec_review_failure_max_consecutive = 3
         spec_review_failure_cooldown_cycles = 3
+        # Add for review pipeline settings
+        spec_review_timeout = 120
+        spec_review_min_timeout = 30
+        spec_review_hard_floor = 15
+        spec_review_max_parallel = 4
+        spec_review_retry_max_attempts = 1
+        spec_review_retry_max_delay = 30
 
     engine.settings = _S()
 
@@ -426,6 +433,14 @@ def test_spec_engine_review_failure_circuit_breaker_skips_review(monkeypatch, ca
         spec_review_failure_max_consecutive = 1
         spec_review_failure_cooldown_cycles = 10
 
+        # Add for review pipeline settings
+        spec_review_timeout = 120
+        spec_review_min_timeout = 30
+        spec_review_hard_floor = 15
+        spec_review_max_parallel = 4
+        spec_review_retry_max_attempts = 1
+        spec_review_retry_max_delay = 30
+
         # review llm fallback disabled
         ark_api_key = ""
         ark_model = ""
@@ -500,7 +515,7 @@ def test_spec_engine_review_failure_circuit_breaker_skips_review(monkeypatch, ca
     # Second call to _conduct_review in same engine instance should be skipped by circuit breaker
     r2 = engine._conduct_review(cycle=2, callbacks=SpecEngineCallbacks())
     assert r2 is not None
-    assert any("审查熔断" in (s or "") for rev in r2.reviews for s in (rev.suggestions or []))
+    assert any("审查暂停" in (s or "") for rev in r2.reviews for s in (rev.suggestions or []))
 
     msgs = [r.getMessage() for r in caplog.records]
     assert any("review_circuit_open" in m for m in msgs)
@@ -529,6 +544,14 @@ def test_spec_engine_review_circuit_skip_does_not_block_main_loop(monkeypatch, t
         spec_review_failure_circuit_enabled = True
         spec_review_failure_max_consecutive = 1
         spec_review_failure_cooldown_cycles = 10
+
+        # Add for review pipeline settings
+        spec_review_timeout = 120
+        spec_review_min_timeout = 30
+        spec_review_hard_floor = 15
+        spec_review_max_parallel = 4
+        spec_review_retry_max_attempts = 1
+        spec_review_retry_max_delay = 30
 
         # review llm fallback disabled
         ark_api_key = ""
@@ -1270,6 +1293,79 @@ class TestSpecEngine:
         engine.pause()
         assert engine.run_state == EngineRunState.STOPPING
 
+    def test_pause_holds_lock(self):
+        """pause() must acquire self._lock when writing _run_state."""
+        engine = self._make_engine()
+        engine._project = MagicMock()
+        engine._session = None
+        engine._run_state = EngineRunState.RUNNING
+
+        lock_acquired = False
+        original_lock = engine._lock
+
+        class TrackedLock:
+            def __enter__(self_lock):
+                nonlocal lock_acquired
+                lock_acquired = True
+                return original_lock.__enter__()
+
+            def __exit__(self_lock, *args):
+                return original_lock.__exit__(*args)
+
+        engine._lock = TrackedLock()
+        engine.pause()
+        assert lock_acquired, "pause() should acquire self._lock"
+        assert engine._run_state == EngineRunState.STOPPING
+
+    def test_pause_session_cancel_raises(self):
+        """pause() swallows exceptions from session.cancel() and still sets STOPPING."""
+        engine = self._make_engine()
+        engine._project = MagicMock()
+        engine._run_state = EngineRunState.RUNNING
+
+        session = MagicMock()
+        session.cancel.side_effect = RuntimeError("connection lost")
+        engine._session = session
+
+        # Should NOT raise
+        engine.pause()
+
+        assert engine._run_state == EngineRunState.STOPPING
+        session.cancel.assert_called_once()
+
+    def test_pause_stop_concurrent(self):
+        """Concurrent pause() and stop() must not raise and _run_state ends as STOPPING."""
+        engine = self._make_engine()
+        engine._project = MagicMock()
+        engine._session = MagicMock()
+        engine._run_state = EngineRunState.RUNNING
+
+        errors = []
+
+        def call_pause():
+            try:
+                engine.pause()
+            except Exception as e:
+                errors.append(e)
+
+        def call_stop():
+            try:
+                engine.stop()
+            except Exception as e:
+                errors.append(e)
+
+        threads = []
+        for _ in range(10):
+            threads.append(threading.Thread(target=call_pause))
+            threads.append(threading.Thread(target=call_stop))
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert not errors, f"Concurrent pause/stop raised: {errors}"
+        assert engine._run_state == EngineRunState.STOPPING
+
     def test_cleanup(self):
         engine = self._make_engine()
         engine._session = MagicMock()
@@ -1702,6 +1798,83 @@ PASS
         result = engine._parse_review_output("random garbage", 1)
         assert len(result.reviews) == 5
         assert all(not r.passed for r in result.reviews)
+
+
+# ======================================================================
+# TestResetCancelEvent — _reset_cancel_event behavior
+# ======================================================================
+
+
+class TestResetCancelEvent:
+    @patch("src.engine_base.get_settings")
+    def _make_engine(self, mock_settings):
+        s = MagicMock()
+        s.spec_max_cycles = 10
+        s.spec_max_cycles_limit = 5000
+        s.spec_convergence_window = 2
+        s.spec_execution_timeout = 300
+        s.spec_cycle_tasks_max = 50
+        s.spec_cycle_output_max_chars = 4000
+        s.spec_state_filename = ".spec_engine_state.json"
+        s.spec_artifacts_dirname = ".spec_engine"
+        s.spec_persist_phase_artifacts = True
+        s.spec_persist_every_phase = True
+        s.spec_discovery_enabled = False
+        s.spec_discovery_max_questions = 3
+        s.spec_discovery_force_nonempty = True
+        s.spec_generated_specs_per_cycle = 1
+        s.spec_discovery_gate_on_satisfied = True
+        s.spec_discovery_max_pending = 5
+        s.spec_discovery_cooldown_cycles = 3
+        s.spec_backlog_stuck_window = 3
+        s.spec_success_ignore_backlog = True
+        s.spec_allow_resume_from_disk = True
+        s.ark_api_key = ""
+        s.ark_model = ""
+        s.spec_infinite_mode = False
+        s.spec_disable_convergence = False
+        s.spec_disable_early_stop = False
+        s.spec_min_cycles = 1
+        mock_settings.return_value = s
+        return SpecEngine(chat_id="c1", root_path="/tmp/test")
+
+    def test_reset_cancel_event_running(self):
+        """RUNNING state: _reset_cancel_event clears event and returns True."""
+        engine = self._make_engine()
+        engine._run_state = EngineRunState.RUNNING
+        engine._review_cancel_event.set()  # pre-set to verify it gets cleared
+        result = engine._reset_cancel_event()
+        assert result is True
+        assert not engine._review_cancel_event.is_set()
+
+    def test_reset_cancel_event_stopping(self):
+        """STOPPING state: _reset_cancel_event sets event and returns False."""
+        engine = self._make_engine()
+        engine._run_state = EngineRunState.STOPPING
+        engine._review_cancel_event.clear()  # pre-clear
+        result = engine._reset_cancel_event()
+        assert result is False
+        assert engine._review_cancel_event.is_set()
+
+    def test_stop_sets_cancel_event_e2e(self):
+        """engine.stop() triggers _review_cancel_event.set() end-to-end."""
+        engine = self._make_engine()
+        engine._run_state = EngineRunState.RUNNING
+        engine._session = MagicMock()
+        engine._review_cancel_event.clear()
+        engine.stop()
+        assert engine._review_cancel_event.is_set()
+
+    def test_pause_sets_cancel_event(self):
+        """engine.pause() sets _review_cancel_event to interrupt retry waits."""
+        engine = self._make_engine()
+        engine._run_state = EngineRunState.RUNNING
+        engine._project = MagicMock()
+        engine._session = MagicMock()
+        engine._review_cancel_event.clear()
+        engine.pause()
+        assert engine._review_cancel_event.is_set()
+        assert engine.run_state == EngineRunState.STOPPING
 
 
 # ======================================================================
@@ -2224,8 +2397,8 @@ class TestConfigSpec:
         assert s.spec_review_failure_max_consecutive == 4
         assert s.spec_review_failure_cooldown_cycles == 2
         assert s.spec_review_failure_max_cooldown_cycles == 12
-        assert s.spec_review_timeout == 180
-        assert s.spec_review_min_timeout == 45
+        assert s.spec_review_timeout == 240
+        assert s.spec_review_min_timeout == 60
         assert s.spec_review_hard_floor == 20
 
     def test_lock_settings_defaults(self):
@@ -2305,6 +2478,13 @@ class TestSpecEngineExecution:
         s.spec_review_failure_circuit_enabled = False
         s.spec_review_failure_max_consecutive = 3
         s.spec_review_failure_cooldown_cycles = 3
+
+        s.spec_review_timeout = 120
+        s.spec_review_min_timeout = 30
+        s.spec_review_hard_floor = 15
+        s.spec_review_max_parallel = 4
+        s.spec_review_retry_max_attempts = 1
+        s.spec_review_retry_max_delay = 30
         s.spec_state_cycles_tail = 50
         s.spec_state_work_items_tail = 200
         s.spec_state_metrics_tail = 200
@@ -3101,6 +3281,13 @@ class TestSpecEngineProjectTypes:
         s.spec_review_failure_circuit_enabled = False
         s.spec_review_failure_max_consecutive = 3
         s.spec_review_failure_cooldown_cycles = 3
+
+        s.spec_review_timeout = 120
+        s.spec_review_min_timeout = 30
+        s.spec_review_hard_floor = 15
+        s.spec_review_max_parallel = 4
+        s.spec_review_retry_max_attempts = 1
+        s.spec_review_retry_max_delay = 30
         s.spec_state_cycles_tail = 50
         s.spec_state_work_items_tail = 200
         s.spec_state_metrics_tail = 200
@@ -3567,7 +3754,7 @@ def test_non_timeout_error_empty_message_still_uses_empty_message_fallback():
 
 
 def test_spec_review_timeout_config_exists_and_defaults():
-    """spec_review_timeout 配置项应存在且默认值为 180。"""
+    """spec_review_timeout 配置项应存在且默认值为 240。"""
     from src.config import Settings
 
     s = Settings(
@@ -3577,7 +3764,7 @@ def test_spec_review_timeout_config_exists_and_defaults():
         ark_model="x",
     )
     assert hasattr(s, "spec_review_timeout")
-    assert s.spec_review_timeout == 180
+    assert s.spec_review_timeout == 240
 
 
 def test_spec_review_timeout_passed_to_send_prompt(monkeypatch):
@@ -3598,6 +3785,8 @@ def test_spec_review_timeout_passed_to_send_prompt(monkeypatch):
         spec_review_failure_max_consecutive = 3
         spec_review_failure_cooldown_cycles = 3
         spec_review_timeout = 42
+        spec_review_min_timeout = 15
+        spec_review_hard_floor = 10
         ark_api_key = ""
         ark_model = ""
         ark_base_url = ""
@@ -3631,6 +3820,8 @@ def test_timeout_fallback_review_result_has_friendly_suggestion():
         spec_review_failure_max_consecutive = 3
         spec_review_failure_cooldown_cycles = 3
         spec_review_timeout = 10
+        spec_review_min_timeout = 5
+        spec_review_hard_floor = 3
         ark_api_key = ""
         ark_model = ""
         ark_base_url = ""
@@ -3667,6 +3858,8 @@ def test_non_timeout_fallback_review_result_keeps_generic_format():
         spec_review_failure_max_consecutive = 3
         spec_review_failure_cooldown_cycles = 3
         spec_review_timeout = 10
+        spec_review_min_timeout = 5
+        spec_review_hard_floor = 3
         ark_api_key = ""
         ark_model = ""
         ark_base_url = ""
@@ -3822,6 +4015,13 @@ def test_resume_restores_circuit_state_from_disk(mock_settings, mock_create, tmp
     s.spec_review_failure_circuit_enabled = True
     s.spec_review_failure_max_consecutive = 3
     s.spec_review_failure_cooldown_cycles = 3
+
+    s.spec_review_timeout = 120
+    s.spec_review_min_timeout = 30
+    s.spec_review_hard_floor = 15
+    s.spec_review_max_parallel = 4
+    s.spec_review_retry_max_attempts = 1
+    s.spec_review_retry_max_delay = 30
     s.spec_review_failure_max_cooldown_cycles = 12
     s.spec_review_enabled = True
     s.spec_infinite_mode = False

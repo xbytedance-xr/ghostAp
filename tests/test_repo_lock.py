@@ -400,7 +400,7 @@ class TestIsP2PThreadLocalPropagation:
             handler.add_reaction = MagicMock()
             handler.register_message_project = MagicMock()
             handler.record_mode_transition = MagicMock()
-            handler.inject_bridge_context = MagicMock(side_effect=lambda t, p: t)
+            handler.inject_bridge_context = MagicMock(side_effect=lambda t, p, **kw: t)
             handler.get_working_dir = MagicMock(return_value="/tmp/test")
             handler.ensure_request_id = MagicMock(return_value="req-1")
 
@@ -455,7 +455,7 @@ class TestIsP2PThreadLocalPropagation:
             handler.add_reaction = MagicMock()
             handler.register_message_project = MagicMock()
             handler.record_mode_transition = MagicMock()
-            handler.inject_bridge_context = MagicMock(side_effect=lambda t, p: t)
+            handler.inject_bridge_context = MagicMock(side_effect=lambda t, p, **kw: t)
             handler.get_working_dir = MagicMock(return_value="/tmp/test")
             handler.ensure_request_id = MagicMock(return_value="req-1")
 
@@ -540,8 +540,8 @@ class TestIsP2PThreadLocalPropagation:
             mock_ctx = MagicMock()
             mock_ctx.settings.thread_programming_enabled = False
 
-            from src.feishu.handlers.system import SystemHandler
-            handler = SystemHandler(mock_ctx)
+            from src.feishu.handlers.worktree import WorktreeHandler
+            handler = WorktreeHandler(mock_ctx)
 
             mock_project = MagicMock()
             mock_project.project_id = "proj-1"
@@ -1111,3 +1111,289 @@ class TestRepoLockDoubleRelease:
             assert m.get_lock_info("/tmp/fr_repo") is None
         finally:
             m.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# AC-R1: is_held_by() tests
+# ---------------------------------------------------------------------------
+
+
+class TestIsHeldBy:
+    """AC-R1: is_held_by returns correct bool and is thread-safe."""
+
+    def test_is_held_by_basic(self, mgr):
+        """acquire → is_held_by True; release → is_held_by False."""
+        mgr.acquire("/tmp/held_repo", "chat_x")
+        assert mgr.is_held_by("/tmp/held_repo", "chat_x") is True
+        assert mgr.is_held_by("/tmp/held_repo", "chat_y") is False
+        mgr.release("/tmp/held_repo", "chat_x")
+        assert mgr.is_held_by("/tmp/held_repo", "chat_x") is False
+
+    def test_is_held_by_invalid_path(self, mgr):
+        """Invalid/empty path returns False without error."""
+        assert mgr.is_held_by("", "chat_x") is False
+
+    def test_is_held_by_not_locked(self, mgr):
+        """Non-existent lock returns False."""
+        assert mgr.is_held_by("/tmp/nonexistent_path_xyz", "chat_x") is False
+
+    def test_is_held_by_thread_safety(self, mgr):
+        """100 concurrent threads calling is_held_by produce no exceptions."""
+        mgr.acquire("/tmp/ts_repo", "chat_ts")
+        barrier = threading.Barrier(100)
+        errors = []
+
+        def worker():
+            try:
+                barrier.wait(timeout=5)
+                for _ in range(50):
+                    mgr.is_held_by("/tmp/ts_repo", "chat_ts")
+                    mgr.is_held_by("/tmp/ts_repo", "chat_other")
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker) for _ in range(100)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert not errors, f"Thread safety errors: {errors}"
+        mgr.release("/tmp/ts_repo", "chat_ts")
+
+
+class TestRepoLockE2ELifecycle:
+    """End-to-end lock lifecycle integration test with a real RepoLockManager."""
+
+    def test_e2e_lock_lifecycle(self, mgr: RepoLockManager):
+        """acquire(A) → list_locks visible → release(A) → acquire(B) succeeds."""
+        # Step 1: chat_A acquires
+        result_a = mgr.acquire("/tmp/e2e_repo", "chat_A")
+        assert result_a.success is True
+
+        # Step 2: lock is visible in list_locks
+        locks = mgr.list_locks()
+        assert any(lock.chat_id == "chat_A" and "/tmp/e2e_repo" in lock.root_path for lock in locks)
+
+        # Step 3: chat_B cannot acquire while A holds
+        result_b_conflict = mgr.acquire("/tmp/e2e_repo", "chat_B")
+        assert result_b_conflict.success is False
+
+        # Step 4: chat_A releases
+        mgr.release("/tmp/e2e_repo", "chat_A")
+
+        # Step 5: lock is no longer visible
+        locks_after = mgr.list_locks()
+        assert not any("/tmp/e2e_repo" in lock.root_path for lock in locks_after)
+
+        # Step 6: chat_B can now acquire
+        result_b_ok = mgr.acquire("/tmp/e2e_repo", "chat_B")
+        assert result_b_ok.success is True
+
+        # Cleanup
+        mgr.release("/tmp/e2e_repo", "chat_B")
+
+    def test_shutdown_during_active_hold(self):
+        """shutdown() while a thread holds a lock must not deadlock or raise."""
+        m = RepoLockManager(idle_timeout=300, cleanup_interval=9999)
+        errors = []
+
+        def hold_lock():
+            try:
+                m.acquire("/tmp/shutdown_repo", "chat_hold")
+                time.sleep(2)
+                m.release("/tmp/shutdown_repo", "chat_hold")
+            except Exception as e:
+                errors.append(e)
+
+        t = threading.Thread(target=hold_lock)
+        t.start()
+        time.sleep(0.1)  # Ensure thread has acquired the lock
+
+        # shutdown() should not deadlock
+        m.shutdown()
+        t.join(timeout=5)
+
+        assert not t.is_alive(), "Thread is still alive — possible deadlock"
+        assert not errors, f"Unexpected errors during hold: {errors}"
+
+
+# ---------------------------------------------------------------------------
+# Task 15: Path normalization edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizePathEdgeCases:
+    """Edge cases for normalize_repo_path: ../, trailing slash, symlinks."""
+
+    def test_dot_dot_relative_path(self, mgr: RepoLockManager):
+        """../bar and the resolved equivalent must be the same lock key."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # tmpdir/foo/../bar == tmpdir/bar
+            path_with_dotdot = os.path.join(tmpdir, "foo", "..", "bar")
+            path_resolved = os.path.join(tmpdir, "bar")
+
+            mgr.acquire(path_resolved, "chat_A")
+            result = mgr.acquire(path_with_dotdot, "chat_B")
+            assert result.success is False
+            assert result.holder_chat_id == "chat_A"
+
+    def test_trailing_slash_normalization(self, mgr: RepoLockManager):
+        """/tmp/repo/ and /tmp/repo must resolve to the same lock key."""
+        mgr.acquire("/tmp/trailing_slash_repo", "chat_A")
+        result = mgr.acquire("/tmp/trailing_slash_repo/", "chat_B")
+        assert result.success is False
+
+    def test_symlink_resolution(self, mgr: RepoLockManager):
+        """Symlinked path resolves to the same key as the real target."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            real_dir = os.path.join(tmpdir, "real_repo")
+            os.makedirs(real_dir)
+            link_path = os.path.join(tmpdir, "link_repo")
+            os.symlink(real_dir, link_path)
+
+            mgr.acquire(real_dir, "chat_A")
+            result = mgr.acquire(link_path, "chat_B")
+            assert result.success is False
+            assert result.holder_chat_id == "chat_A"
+
+
+# ---------------------------------------------------------------------------
+# Task 16: Blocked chats notification tests
+# ---------------------------------------------------------------------------
+
+
+class TestBlockedChatsNotification:
+    """on_release fires with correct blocked chat_ids when lock is released."""
+
+    def test_release_notifies_blocked_chats(self, mgr: RepoLockManager):
+        """When a lock is released, on_release fires with path and blocked chats."""
+        notifications: list[tuple] = []
+
+        def handler(path, chats):
+            notifications.append((path, chats))
+
+        mgr.on_release.subscribe(handler)
+
+        mgr.acquire("/tmp/notify_repo", "chat_A")
+        # chat_B and chat_C try and fail → become blocked
+        mgr.acquire("/tmp/notify_repo", "chat_B")
+        mgr.acquire("/tmp/notify_repo", "chat_C")
+
+        # Release → should notify chat_B and chat_C
+        mgr.release("/tmp/notify_repo", "chat_A")
+
+        assert len(notifications) == 1
+        path, chats = notifications[0]
+        assert "/tmp/notify_repo" in path or path == os.path.realpath("/tmp/notify_repo")
+        assert "chat_B" in chats
+        assert "chat_C" in chats
+
+    def test_blocked_chats_bounded(self, mgr: RepoLockManager):
+        """At most 10 blocked chat_ids are tracked per lock."""
+        mgr.acquire("/tmp/bounded_repo", "holder_chat")
+
+        # 15 different chats try to acquire (all fail)
+        for i in range(15):
+            mgr.acquire("/tmp/bounded_repo", f"blocked_{i}")
+
+        # Check internal state: at most 10
+        key = os.path.realpath("/tmp/bounded_repo")
+        with mgr._mu:
+            blocked = mgr._blocked_chats.get(key, set())
+            assert len(blocked) <= 10
+
+    def test_force_release_notifies_blocked_chats(self, mgr: RepoLockManager):
+        """force_release also fires on_release for blocked chats."""
+        notifications: list[tuple] = []
+        mgr.on_release.subscribe(lambda p, c: notifications.append((p, c)))
+
+        mgr.acquire("/tmp/force_notify", "chat_A")
+        mgr.acquire("/tmp/force_notify", "chat_B")  # blocked
+        mgr.force_release("/tmp/force_notify")
+
+        assert len(notifications) == 1
+        assert "chat_B" in notifications[0][1]
+
+
+# ---------------------------------------------------------------------------
+# Task 17: Singleton thread safety
+# ---------------------------------------------------------------------------
+
+
+class TestSingletonThreadSafety:
+    """get_repo_lock_manager() must return the same instance from concurrent threads."""
+
+    def test_concurrent_get_returns_same_instance(self):
+        from src.repo_lock import get_repo_lock_manager, _reset_repo_lock_manager_for_testing
+
+        _reset_repo_lock_manager_for_testing()
+        try:
+            instances: list = []
+            barrier = threading.Barrier(10)
+
+            def getter():
+                barrier.wait()
+                instances.append(id(get_repo_lock_manager()))
+
+            threads = [threading.Thread(target=getter) for _ in range(10)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            # All threads should get the same instance
+            assert len(set(instances)) == 1
+        finally:
+            _reset_repo_lock_manager_for_testing()
+
+
+# ---------------------------------------------------------------------------
+# Task 18: Lock after shutdown
+# ---------------------------------------------------------------------------
+
+
+class TestLockAfterShutdown:
+    """acquire() after shutdown() must not crash."""
+
+    def test_acquire_after_shutdown_no_crash(self):
+        m = RepoLockManager(idle_timeout=300, cleanup_interval=9999)
+        m.acquire("/tmp/pre_shutdown", "chat_A")
+        m.shutdown()
+
+        # acquire after shutdown should still work (creates new thread)
+        result = m.acquire("/tmp/post_shutdown", "chat_B")
+        assert result.success is True
+        m.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Task 37: shutdown_if_active idempotent module-level function
+# ---------------------------------------------------------------------------
+
+
+class TestRepoShutdownIfActive:
+    """shutdown_if_active() is idempotent and safe when no instance exists."""
+
+    def test_no_instance_is_noop(self):
+        from src import repo_lock as _mod
+        _orig = _mod._instance
+        try:
+            _mod._instance = None
+            _mod.shutdown_if_active()  # should not raise
+        finally:
+            _mod._instance = _orig
+
+    def test_double_call_is_idempotent(self):
+        from src import repo_lock as _mod
+        m = RepoLockManager(idle_timeout=300, cleanup_interval=9999)
+        _mod._instance = m
+        try:
+            _mod.shutdown_if_active()
+            _mod.shutdown_if_active()  # second call should not raise
+        finally:
+            _mod._instance = None

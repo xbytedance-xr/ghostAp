@@ -240,6 +240,7 @@ class ProgrammingModeHandler(BaseHandler):
                     previous_mode,
                     self._get_interaction_mode(),
                     reason=f"enter_{self.mode_name.lower()}_mode(thread_pending)",
+                    chat_id=chat_id,
                 )
             return
 
@@ -379,6 +380,7 @@ class ProgrammingModeHandler(BaseHandler):
                 previous_mode,
                 self._get_interaction_mode(),
                 reason=f"enter_{self.mode_name.lower()}_mode",
+                chat_id=chat_id,
             )
 
     # ------------------------------------------------------------------
@@ -535,6 +537,7 @@ class ProgrammingModeHandler(BaseHandler):
                         "data": session.to_snapshot(),
                         "source_mode": self.context_source.value,
                     },
+                    chat_id=chat_id,
                 )
             if not thread_id:
                 self._set_mode_on_project(project, False)
@@ -630,7 +633,7 @@ class ProgrammingModeHandler(BaseHandler):
                 )
                 return
 
-        text = self.inject_bridge_context(text, project)
+        text = self.inject_bridge_context(text, project, chat_id=chat_id)
         global_working_dir = self.get_working_dir(chat_id)
         cwd = project.root_path if project else global_working_dir
 
@@ -854,9 +857,12 @@ class ProgrammingModeHandler(BaseHandler):
             self.context_manager.update_context(
                 project.project_id,
                 conversation={"role": "user", "content": text, "source_mode": source, "message_id": message_id},
+                chat_id=chat_id,
             )
             self.context_manager.update_context(
-                project.project_id, conversation={"role": "assistant", "content": final_response, "source_mode": source}
+                project.project_id,
+                conversation={"role": "assistant", "content": final_response, "source_mode": source},
+                chat_id=chat_id,
             )
 
         self.add_reaction(message_id, EmojiReaction.on_coco_response())
@@ -1003,6 +1009,7 @@ class ProgrammingModeHandler(BaseHandler):
                 previous_mode,
                 self._get_interaction_mode(),
                 reason=f"resume_{self.mode_name.lower()}_session",
+                chat_id=chat_id,
             )
             content = f"🔄 已恢复 {self.mode_name} 会话\n\n会话 ID: `{session_id}`\n\n现在可以继续之前的对话了"
             msg_type, card_content = CardBuilder.build_project_response_card(

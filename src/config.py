@@ -1,11 +1,42 @@
+import logging as _logging
 import shlex
+import sys
 import threading
+from dataclasses import dataclass as _dataclass
 from typing import Literal, Optional, Callable
 
-from pydantic import field_validator
+from pydantic import ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.utils.env import is_test_environment
+
+
+class ConfigurationError(Exception):
+    """Raised when Settings validation fails. Carries a human-readable message."""
+    pass
+
+
+@_dataclass(frozen=True)
+class SpecReviewConfig:
+    """Read-only view grouping spec review / retry / circuit-breaker settings.
+
+    Accessed via ``get_settings().spec_review``.  Individual fields remain on
+    Settings for backward compatibility; this provides a structured namespace.
+    """
+    enabled: bool
+    timeout: int
+    max_parallel: int
+    min_timeout: int
+    hard_floor: int
+    retry_max_delay: int
+    retry_max_attempts: int
+    retry_base_delay: float
+    retry_decay_factor: float
+    failure_circuit_enabled: bool
+    failure_max_consecutive: int
+    failure_cooldown_cycles: int
+    failure_max_cooldown_cycles: int
+    parse_failure_default: str
 
 
 class Settings(BaseSettings):
@@ -242,7 +273,7 @@ class Settings(BaseSettings):
     spec_convergence_window: int = 2
     spec_min_cycles: int = 2
     spec_review_enabled: bool = True
-    spec_review_timeout: int = 180
+    spec_review_timeout: int = 240
     spec_review_max_parallel: int = 3
 
     # Spec Engine review failure circuit breaker
@@ -253,8 +284,37 @@ class Settings(BaseSettings):
     spec_review_failure_max_consecutive: int = 4
     spec_review_failure_cooldown_cycles: int = 2
     spec_review_failure_max_cooldown_cycles: int = 12
-    spec_review_min_timeout: int = 45
+    spec_review_min_timeout: int = 60
     spec_review_hard_floor: int = 20
+
+    # Spec Engine review in-cycle auto-retry (max_attempts=0 disables retry)
+    spec_review_retry_max_delay: int = 30
+    spec_review_retry_max_attempts: int = 2
+    spec_review_retry_base_delay: float = 8.0
+    spec_review_retry_decay_factor: float = 1.5
+
+    # 审查解析失败时的默认判定 ("fail" = 视为未通过, "pass" = 视为通过)
+    spec_review_parse_failure_default: Literal["pass", "fail"] = "fail"
+
+    @property
+    def spec_review(self) -> "SpecReviewConfig":
+        """Structured view of spec review / retry / circuit-breaker settings."""
+        return SpecReviewConfig(
+            enabled=self.spec_review_enabled,
+            timeout=self.spec_review_timeout,
+            max_parallel=self.spec_review_max_parallel,
+            min_timeout=self.spec_review_min_timeout,
+            hard_floor=self.spec_review_hard_floor,
+            retry_max_delay=self.spec_review_retry_max_delay,
+            retry_max_attempts=self.spec_review_retry_max_attempts,
+            retry_base_delay=self.spec_review_retry_base_delay,
+            retry_decay_factor=self.spec_review_retry_decay_factor,
+            failure_circuit_enabled=self.spec_review_failure_circuit_enabled,
+            failure_max_consecutive=self.spec_review_failure_max_consecutive,
+            failure_cooldown_cycles=self.spec_review_failure_cooldown_cycles,
+            failure_max_cooldown_cycles=self.spec_review_failure_max_cooldown_cycles,
+            parse_failure_default=self.spec_review_parse_failure_default,
+        )
 
     # Worktree dispatcher pool-level timeout (seconds)
     worktree_pool_timeout: int = 600
@@ -446,9 +506,6 @@ class Settings(BaseSettings):
     # /lock 确认卡片有效期（秒），超时后确认按钮失效
     lock_confirm_timeout: int = 120
 
-    # 锁后端实现 ("memory" = 纯内存单进程，未来可扩展 "redis" 等分布式后端)
-    lock_backend: Literal["memory"] = "memory"
-
     # SandboxExecutor 严格锁模式 — True 时检测到锁冲突 raise LockConflictError，False 仅 warning
     sandbox_strict_lock_mode: bool = False
 
@@ -486,24 +543,109 @@ class Settings(BaseSettings):
 
     @field_validator("max_allowed_chat_ids", mode="before")
     @classmethod
-    def _max_allowed_chat_ids_must_be_positive(cls, v: int) -> int:
+    def _max_allowed_chat_ids_must_be_positive(cls, v: int, info) -> int:
         if int(v) < 1:
-            raise ValueError("max_allowed_chat_ids must be >= 1")
+            raise ValueError(f"{info.field_name.upper()} 必须 ≥ 1（当前值: {v}）")
+        return int(v)
+
+    @field_validator("lock_confirm_timeout", "max_evicted_cache", mode="before")
+    @classmethod
+    def _lock_confirm_and_evicted_cache_must_be_positive(cls, v: int, info) -> int:
+        if int(v) < 1:
+            raise ValueError(f"{info.field_name.upper()} 必须 > 0（当前值: {v}）")
         return int(v)
 
     @field_validator("repo_lock_idle_timeout", "repo_lock_cleanup_interval", "repo_lock_hard_timeout", mode="before")
     @classmethod
     def _repo_lock_timers_must_be_positive(cls, v: int, info) -> int:
         if int(v) < 1:
-            raise ValueError(f"{info.field_name} must be > 0, got {v}")
+            raise ValueError(f"{info.field_name.upper()} 必须 > 0（当前值: {v}）")
         return int(v)
 
     @field_validator("chat_lock_max_duration", "chat_lock_cleanup_interval", mode="before")
     @classmethod
     def _chat_lock_timers_must_be_positive(cls, v: int, info) -> int:
         if int(v) < 1:
-            raise ValueError(f"{info.field_name} must be > 0, got {v}")
+            raise ValueError(f"{info.field_name.upper()} 必须 > 0（当前值: {v}）")
         return int(v)
+
+    @field_validator(
+        "spec_review_timeout", "spec_review_min_timeout", "spec_review_hard_floor",
+        mode="before",
+    )
+    @classmethod
+    def _spec_review_timeout_fields_must_be_positive(cls, v: int, info) -> int:
+        val = int(v)
+        if val < 1:
+            raise ValueError(f"{info.field_name} 必须 > 0，当前值为 {v}")
+        return val
+
+    @field_validator("spec_review_max_parallel", mode="before")
+    @classmethod
+    def _spec_review_max_parallel_must_be_in_range(cls, v: int, info) -> int:
+        val = int(v)
+        if val < 1:
+            raise ValueError(f"{info.field_name} 必须 ≥ 1，当前值为 {v}")
+        if val > 20:
+            raise ValueError(f"{info.field_name} 必须 ≤ 20，当前值为 {v}")
+        return val
+
+    @field_validator("spec_review_retry_max_delay", mode="before")
+    @classmethod
+    def _spec_retry_max_delay_must_be_positive(cls, v: int, info) -> int:
+        if int(v) < 1:
+            raise ValueError(f"{info.field_name} 必须 > 0，当前值为 {v}")
+        return int(v)
+
+    @field_validator("spec_review_retry_max_attempts", mode="before")
+    @classmethod
+    def _spec_retry_max_attempts_must_be_non_negative(cls, v: int, info) -> int:
+        val = int(v)
+        if val < 0:
+            raise ValueError(
+                f"{info.field_name} 必须 ≥ 0（设为 0 可禁用重试），当前值为 {v}"
+            )
+        # 上限 10：单次 retry 耗时 ≈ max_delay + adaptive_timeout * multiplier，
+        # 10 次重试可能导致单 cycle 总耗时超过 cycle budget，不建议生产使用（推荐 1-3）。
+        if val > 10:
+            raise ValueError(
+                f"{info.field_name} 必须 ≤ 10（推荐 1-3），当前值为 {v}"
+            )
+        return val
+
+    @model_validator(mode="after")
+    def _validate_spec_review_cross_fields(self) -> "Settings":
+        """Cross-field validation for spec review timing parameters."""
+        # 排序约束: hard_floor <= min_timeout <= timeout
+        if self.spec_review_hard_floor > self.spec_review_min_timeout:
+            raise ValueError(
+                f"spec_review_hard_floor 必须 ≤ spec_review_min_timeout，"
+                f"当前分别为 {self.spec_review_hard_floor} 和 {self.spec_review_min_timeout}"
+            )
+        if self.spec_review_min_timeout > self.spec_review_timeout:
+            raise ValueError(
+                f"spec_review_min_timeout 必须 ≤ spec_review_timeout，"
+                f"当前分别为 {self.spec_review_min_timeout} 和 {self.spec_review_timeout}"
+            )
+        # 重试最大延迟不能超过审查超时
+        if self.spec_review_retry_max_delay > self.spec_review_timeout:
+            raise ValueError(
+                f"spec_review_retry_max_delay 必须 ≤ spec_review_timeout，"
+                f"当前分别为 {self.spec_review_retry_max_delay} 和 {self.spec_review_timeout}"
+            )
+        # 下界估算：实际每次 retry 耗时由 compute_adaptive_timeout 动态决定，
+        # 可能大于 min_timeout；此处使用 min_timeout 作为保守下界验证总预算合理性。
+        total_retry_budget = (
+            self.spec_review_retry_max_delay + self.spec_review_min_timeout
+        ) * self.spec_review_retry_max_attempts
+        budget_limit = self.spec_review_timeout * 2
+        if total_retry_budget > budget_limit:
+            raise ValueError(
+                "请减小 SPEC_REVIEW_RETRY_MAX_ATTEMPTS 或 SPEC_REVIEW_RETRY_MAX_DELAY"
+                "（当前组合超出允许范围）"
+            )
+        # NOTE: realistic budget check moved to _post_validate_warnings()
+        return self
 
     @property
     def command_blacklist(self) -> list[str]:
@@ -530,7 +672,43 @@ class Settings(BaseSettings):
 
 
 _settings: Optional[Settings] = None
-_settings_lock = threading.Lock()
+_settings_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+
+
+def _post_validate_warnings(settings: Settings) -> None:
+    """Emit soft-constraint warnings AFTER Settings construction (not inside validator)."""
+    try:
+        budget_limit = settings.spec_review_timeout * 2
+        realistic_budget = (
+            settings.spec_review_retry_max_delay + settings.spec_review_timeout
+        ) * settings.spec_review_retry_max_attempts
+        if realistic_budget > budget_limit and settings.spec_review_retry_max_attempts > 0:
+            _logging.getLogger(__name__).warning(
+                "重试实际预算可能超限：(retry_max_delay + base_timeout) × max_attempts = %d，"
+                "超过 timeout × 2 = %d。首次 retry 耗时可能远超预期",
+                realistic_budget, budget_limit,
+            )
+    except (TypeError, AttributeError):
+        pass  # gracefully handle mock/proxy settings objects
+
+
+def _build_recommended_hint() -> str:
+    """Dynamically build recommended combination from Settings field defaults."""
+    fields_of_interest = [
+        "spec_review_hard_floor",
+        "spec_review_min_timeout",
+        "spec_review_timeout",
+        "spec_review_retry_max_delay",
+        "spec_review_retry_max_attempts",
+    ]
+    parts = []
+    for name in fields_of_interest:
+        fi = Settings.model_fields.get(name)
+        if fi and fi.default is not None:
+            parts.append(f"{name.upper()}={fi.default}")
+    if not parts:
+        return ""
+    return f"\n（推荐组合: {', '.join(parts)}）"
 
 
 def get_settings() -> Settings:
@@ -538,7 +716,31 @@ def get_settings() -> Settings:
     if _settings is None:
         with _settings_lock:
             if _settings is None:
-                _settings = Settings()
+                try:
+                    _settings = Settings()
+                except Exception as e:
+                    # Friendly error for pydantic ValidationError
+                    if isinstance(e, ValidationError):
+                        errors = e.errors()
+                        lines = ["配置错误:"]
+                        for err in errors:
+                            loc = ".".join(str(x) for x in err.get("loc", []))
+                            msg = err.get("msg", "")
+                            # Attempt to show field default value for recovery guidance
+                            default_hint = ""
+                            if loc and loc in Settings.model_fields:
+                                fi = Settings.model_fields[loc]
+                                _default = fi.default
+                                if _default is not None and str(_default) != "PydanticUndefined":
+                                    default_hint = f"（默认值: {_default}）"
+                            # For cross-field validation errors, provide recommended combination
+                            if not default_hint and ("value_error" in err.get("type", "") or not loc):
+                                default_hint = _build_recommended_hint()
+                            lines.append(f"  - {(loc.upper() or '[跨字段校验]')}: {msg} {default_hint}".rstrip())
+                        lines.append("建议: 检查 .env 文件中对应配置项的值是否合法")
+                        raise ConfigurationError("\n".join(lines)) from e
+                    raise
+                _post_validate_warnings(_settings)
     return _settings
 
 

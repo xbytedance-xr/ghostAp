@@ -8,7 +8,6 @@ auto-release via a background daemon thread.
 - 纯内存单进程实现，进程重启后所有仓库锁状态丢失（重启后所有子进程已终止，
   不存在活跃操作，因此丢失锁状态是安全的）。
 - 多实例部署场景下锁不互通，不适用于分布式部署。
-- 未来可通过 ``lock_backend`` 配置切换为持久化/分布式后端。
 """
 
 from __future__ import annotations
@@ -46,7 +45,7 @@ class SimpleEvent:
 
     def __init__(self) -> None:
         self._handlers: list[Callable] = []
-        self._mu = threading.Lock()
+        self._mu = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     def subscribe(self, handler: Callable) -> Callable[[], None]:
         """Add *handler*; return an unsubscribe callable."""
@@ -156,7 +155,9 @@ class RepoLockManager:
         self.on_reclaim = SimpleEvent()
         if on_hard_timeout_reclaim is not None:
             self.on_reclaim.subscribe(on_hard_timeout_reclaim)
+        self.on_release = SimpleEvent()
         self._locks: dict[str, RepoLockEntry] = {}
+        self._blocked_chats: dict[str, set[str]] = {}  # normalized_path → set of blocked chat_ids (max 10)
         self._mu = ordered_lock(LockLevel.REPO_LOCK, name="RepoLockManager._mu")
 
         # Opaque token ↔ normalized path mapping (for card actions).
@@ -168,7 +169,7 @@ class RepoLockManager:
         # accumulating orphan threads during testing / repeated resets.
         self._stop_event = threading.Event()
         self._cleanup_thread: Optional[threading.Thread] = None
-        self._thread_mu = threading.Lock()  # guards _cleanup_thread init
+        self._thread_mu = threading.Lock()  # guards _cleanup_thread init  # leaf lock: never held while acquiring a LockLevel lock
 
     def _ensure_cleanup_thread(self) -> None:
         """Start the background cleanup daemon on first use (double-checked locking)."""
@@ -281,6 +282,10 @@ class RepoLockManager:
                 "RepoLock: conflict %s requested by chat=%s, held by chat=%s",
                 key, chat_id[:12], entry.chat_id[:12],
             )
+            # Track blocked chat for release notification (bounded to 10).
+            blocked = self._blocked_chats.setdefault(key, set())
+            if len(blocked) < 10:
+                blocked.add(chat_id)
             return AcquireResult(
                 success=False,
                 holder_chat_id=entry.chat_id,
@@ -294,6 +299,7 @@ class RepoLockManager:
         if key is None:
             return
 
+        notify_chats: set[str] = set()
         with self._mu:
             entry = self._locks.get(key)
             if entry is None or entry.chat_id != chat_id:
@@ -305,15 +311,21 @@ class RepoLockManager:
                 token = self._path_to_token.pop(key, None)
                 if token is not None:
                     self._token_to_path.pop(token, None)
+                notify_chats = self._blocked_chats.pop(key, set())
                 logger.info("RepoLock: released %s by chat=%s", key, chat_id[:12])
             else:
                 entry.last_active_time = time.monotonic()
+
+        # Notify blocked chats outside the lock.
+        if notify_chats:
+            self.on_release.emit(key, notify_chats)
 
     def force_release(self, root_path: str) -> None:
         """Forcefully release the lock regardless of holder (admin use)."""
         key = normalize_repo_path(root_path)
         if key is None:
             return
+        notify_chats: set[str] = set()
         with self._mu:
             entry = self._locks.pop(key, None)
             if entry:
@@ -321,7 +333,12 @@ class RepoLockManager:
                 token = self._path_to_token.pop(key, None)
                 if token is not None:
                     self._token_to_path.pop(token, None)
+                notify_chats = self._blocked_chats.pop(key, set())
                 logger.warning("RepoLock: force-released %s (was held by chat=%s)", key, entry.chat_id[:12])
+
+        # Notify blocked chats outside the lock.
+        if notify_chats:
+            self.on_release.emit(key, notify_chats)
 
     def touch(self, root_path: str, chat_id: str) -> None:
         """Refresh ``last_active_time`` to prevent idle-timeout release."""
@@ -372,6 +389,21 @@ class RepoLockManager:
                 idle_seconds=now - entry.last_active_time,
                 last_sender_id=entry.last_sender_id,
             )
+
+    def is_held_by(self, root_path: str, chat_id: str) -> bool:
+        """Check whether the repo lock for *root_path* is currently held by *chat_id*.
+
+        Thread-safe: reads ``_locks`` under ``_mu``.
+        Returns ``False`` if the path is invalid or not locked.
+        """
+        key = normalize_repo_path(root_path)
+        if key is None:
+            return False
+        with self._mu:
+            entry = self._locks.get(key)
+            if entry is None:
+                return False
+            return entry.chat_id == chat_id
 
     # ------------------------------------------------------------------
     # Context manager
@@ -439,6 +471,7 @@ class RepoLockManager:
     def _cleanup_idle(self) -> None:
         now = time.monotonic()
         hard_reclaimed: list[tuple[str, str]] = []  # (path, chat_id) for callback
+        released_blocked: list[tuple[str, set[str]]] = []  # (path, blocked_chat_ids)
 
         with self._mu:
             # Phase 1: idle_timeout — only evict entries with refcount <= 0
@@ -451,6 +484,9 @@ class RepoLockManager:
                 token = self._path_to_token.pop(path, None)
                 if token is not None:
                     self._token_to_path.pop(token, None)
+                blocked = self._blocked_chats.pop(path, set())
+                if blocked:
+                    released_blocked.append((path, blocked))
                 logger.warning(
                     "RepoLock: idle-timeout released %s (chat=%s, idle=%.0fs)",
                     path, entry.chat_id[:12], now - entry.last_active_time,
@@ -467,6 +503,9 @@ class RepoLockManager:
                 token = self._path_to_token.pop(path, None)
                 if token is not None:
                     self._token_to_path.pop(token, None)
+                blocked = self._blocked_chats.pop(path, set())
+                if blocked:
+                    released_blocked.append((path, blocked))
                 logger.critical(
                     "RepoLock: hard-timeout force-reclaimed %s (chat=%s, refcount=%d, held=%.0fs)",
                     path, entry.chat_id[:12], entry.refcount, now - entry.acquired_at,
@@ -499,6 +538,10 @@ class RepoLockManager:
         for path, chat_id in hard_reclaimed:
             self.on_reclaim.emit(path, chat_id)
 
+        # Notify blocked chats about released locks.
+        for path, blocked in released_blocked:
+            self.on_release.emit(path, blocked)
+
     def register_hard_timeout_callback(
         self, callback: Callable[[str, str], None],
     ) -> None:
@@ -523,7 +566,7 @@ class RepoLockManager:
 # ---------------------------------------------------------------------------
 
 _instance: Optional[RepoLockManager] = None
-_instance_lock = threading.Lock()
+_instance_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
 
 def get_repo_lock_manager(
@@ -550,6 +593,19 @@ def get_repo_lock_manager(
     if on_hard_timeout_reclaim is not None:
         _instance.register_hard_timeout_callback(on_hard_timeout_reclaim)
     return _instance
+
+
+def shutdown_if_active() -> None:
+    """Best-effort shutdown of the singleton if it was ever created.
+
+    Safe to call multiple times (idempotent) and even before the singleton
+    is initialized — in that case it simply does nothing.
+    """
+    if _instance is not None:
+        try:
+            _instance.shutdown()
+        except Exception:
+            logger.debug("RepoLockManager shutdown error", exc_info=True)
 
 
 def _reset_repo_lock_manager_for_testing() -> None:

@@ -34,7 +34,7 @@ class ServiceRegistry:
         self._instances: Dict[Union[str, Type], Any] = {}
         self._factories: Dict[Union[str, Type], Callable[..., Any]] = {}
         self._transient_factories: Dict[Union[str, Type], Callable[..., Any]] = {}
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._closed = False
 
     def register_instance(self, key: Union[str, Type[T]], instance: T, override: bool = False) -> None:
@@ -232,7 +232,7 @@ class CleanupRegistry:
     def __init__(self, name: str = "Global"):
         self.name = name
         self._items: list[CleanupTask] = []
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._cleaned = False
 
     @property

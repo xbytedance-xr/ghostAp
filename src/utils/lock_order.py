@@ -2,10 +2,12 @@
 
 Implements the partial order defined in ``docs/adr-lock-ordering.md``::
 
-    ProjectManager._lock  (level 1, outermost)
-      → ProjectContext._chat_lock  (level 2)
-        → ChatLockManager._mu  (level 3)
-          → RepoLockManager._mu  (level 4, innermost)
+    BaseEngineManager._lock  (level -1, outermost)
+      → BaseEngine._lock  (level 0)
+        → ProjectManager._lock  (level 1)
+          → ProjectContext._chat_lock  (level 2)
+            → ChatLockManager._mu  (level 3)
+              → RepoLockManager._mu  (level 4, innermost)
 
 Each thread tracks the *highest* level it currently holds.  Acquiring a lock
 whose level is ≤ the current max constitutes a potential deadlock and is
@@ -49,6 +51,8 @@ class LockLevel(IntEnum):
     Values correspond to the ADR-defined partial order.  Lower = outer.
     """
 
+    ENGINE_MANAGER = -1  # BaseEngineManager._lock (Lock)
+    ENGINE_INSTANCE = 0  # BaseEngine._lock (RLock)
     PROJECT_MANAGER = 1  # ProjectManager._lock (RLock)
     CHAT_LOCK_CTX = 2  # ProjectContext._chat_lock
     CHAT_LOCK_MGR = 3  # ChatLockManager._mu
@@ -62,26 +66,39 @@ class LockLevel(IntEnum):
 _tls = threading.local()
 
 _ENABLED: Optional[bool] = None
+_STRICT: Optional[bool] = None
 
 
 def _is_enabled() -> bool:
     """Return True when lock-order checking is active (cached)."""
     global _ENABLED
     if _ENABLED is None:
-        _ENABLED = os.environ.get("GHOSTAP_LOCK_ORDER_CHECK", "").strip() in {"1", "true", "yes"}
+        val = os.environ.get("GHOSTAP_LOCK_ORDER_CHECK", "").strip().lower()
+        _ENABLED = val in {"1", "true", "yes", "strict"}
     return _ENABLED
 
 
-def enable_lock_order_check() -> None:
+def _is_strict() -> bool:
+    """Return True when strict mode is active (violations raise RuntimeError)."""
+    global _STRICT
+    if _STRICT is None:
+        val = os.environ.get("GHOSTAP_LOCK_ORDER_CHECK", "").strip().lower()
+        _STRICT = val == "strict"
+    return _STRICT
+
+
+def enable_lock_order_check(*, strict: bool = False) -> None:
     """Programmatically enable lock-order checking (useful for tests)."""
-    global _ENABLED
+    global _ENABLED, _STRICT
     _ENABLED = True
+    _STRICT = strict
 
 
 def disable_lock_order_check() -> None:
     """Programmatically disable lock-order checking."""
-    global _ENABLED
+    global _ENABLED, _STRICT
     _ENABLED = False
+    _STRICT = False
 
 
 def _get_held() -> list[int]:
@@ -99,14 +116,13 @@ def _on_acquire(level: int, name: str) -> None:
     if held:
         max_held = max(held)
         if level <= max_held:
-            logger.warning(
-                "Lock ordering violation: acquiring %s (level=%d) while holding level=%d "
-                "(thread=%s). See docs/adr-lock-ordering.md.",
-                name,
-                level,
-                max_held,
-                threading.current_thread().name,
+            msg = (
+                f"Lock ordering violation: acquiring {name} (level={level}) while holding level={max_held} "
+                f"(thread={threading.current_thread().name}). See docs/adr-lock-ordering.md."
             )
+            if _is_strict():
+                raise RuntimeError(msg)
+            logger.warning(msg)
     held.append(level)
 
 

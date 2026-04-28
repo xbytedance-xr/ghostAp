@@ -21,7 +21,7 @@ __all__ = [
     "build_chat_lock_card",
     "build_lock_success_card",
     "build_lock_confirm_card",
-    "_build_lock_help_body",
+    "build_lock_help_body",
 ]
 
 
@@ -64,13 +64,17 @@ def build_chat_lock_card(
             else:
                 locked_at_line = UI_TEXT["chat_lock_locked_at"].format(time=_dt.strftime("%m-%d %H:%M"))
         except Exception:
-            pass
+            logger.debug("Failed to format locked_at_wall timestamp", exc_info=True)
 
     # Build contact line: provide actionable path for non-admin users
     if admin_name:
         contact_line = UI_TEXT["chat_lock_contact_named"].format(name=admin_name)
     else:
         contact_line = UI_TEXT["chat_lock_contact_admin"]
+    # When locked_by_name is empty, suppress the separate locker line —
+    # the contact line alone is sufficient and avoids exposing raw IDs.
+    if not locked_by_name:
+        locker_line = ""
 
     # Show a concise list of representative commands dynamically from
     # the domain layer (ChatLockManager.get_allowed_commands_display).
@@ -88,21 +92,14 @@ def build_chat_lock_card(
     if locked_at_wall is not None:
         try:
             import time as _t
-            if max_duration_seconds is None:
-                from ...config import get_settings as _gs
-                max_dur = _gs().chat_lock_max_duration
-            else:
-                max_dur = max_duration_seconds
+            from .lock_common import format_friendly_duration
+            max_dur = max_duration_seconds if max_duration_seconds is not None else 86400
             remaining = max_dur - (_t.time() - locked_at_wall)
-            if remaining > 3600:
-                _h = int(remaining // 3600)
-                _m = int((remaining % 3600) // 60)
-                auto_unlock_line = f"\n{UI_TEXT['chat_lock_auto_unlock_hint'].format(time=f'{_h} 小时 {_m} 分钟')}\n"
-            elif remaining > 60:
-                _m = int(remaining // 60)
-                auto_unlock_line = f"\n{UI_TEXT['chat_lock_auto_unlock_hint'].format(time=f'{_m} 分钟')}\n"
+            if remaining > 60:
+                _time_str = format_friendly_duration(remaining)
+                auto_unlock_line = f"\n{UI_TEXT['chat_lock_auto_unlock_hint'].format(time=_time_str)}\n"
         except Exception:
-            pass
+            logger.debug("Failed to compute auto-unlock remaining time", exc_info=True)
 
     markdown = (
         f"{UI_TEXT['chat_lock_card_title']}\n\n"
@@ -112,6 +109,8 @@ def build_chat_lock_card(
         f"{contact_line}"
         f"{UI_TEXT['chat_lock_allowed_cmds'].format(cmd_list=cmd_list)}"
         f"{auto_unlock_line}"
+        f"\n\n---\n{UI_TEXT['chat_lock_concept_note']}"
+        f"\n{UI_TEXT['chat_lock_p2p_guide']}"
     )
 
     buttons: list[dict] = [
@@ -223,58 +222,15 @@ def build_lock_confirm_card(chat_id: str, *, confirm_timeout: Optional[int] = No
 
     .. deprecated::
         The /lock command now executes directly without a two-step confirmation
-        flow (see design doc Q11).  This function is retained only to support
-        historical ``confirm_lock`` / ``cancel_lock`` card actions that may still
-        exist in chat histories.
-
-    Returns ``(markdown_content, buttons)`` where buttons contain a
-    "confirm lock" and a "cancel" button.  The confirm button embeds
-    ``chat_id`` and ``timestamp`` for expiry validation.
+        flow.  This function now returns a single-line deprecation notice so
+        that historical ``confirm_lock`` / ``cancel_lock`` card actions still
+        get a graceful response instead of an error.
     """
-    import time as _t
-
-    # Read confirm timeout from settings for the expiry hint
-    if confirm_timeout is not None:
-        _confirm_timeout_sec = confirm_timeout
-    else:
-        try:
-            from ...config import get_settings
-            _confirm_timeout_sec = get_settings().lock_confirm_timeout
-        except Exception:
-            _confirm_timeout_sec = 120
-    _confirm_minutes = max(1, _confirm_timeout_sec // 60)
-
-    markdown = (
-        UI_TEXT["lock_confirm_title"]
-        + UI_TEXT["lock_confirm_desc"]
-        + UI_TEXT["lock_confirm_admin_only"]
-        + UI_TEXT["lock_confirm_expiry"].format(minutes=_confirm_minutes)
-    )
-    now = _t.time()
-    buttons = [
-        {
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": UI_TEXT["lock_confirm_btn"]},
-            "type": "primary",
-            "value": {
-                "action": "confirm_lock",
-                "chat_id": chat_id,
-                "_ts": now,
-            },
-        },
-        {
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": UI_TEXT["lock_btn_cancel"]},
-            "type": "default",
-            "value": {
-                "action": "cancel_lock",
-            },
-        },
-    ]
-    return markdown, buttons
+    logger.warning("build_lock_confirm_card is deprecated — /lock now executes directly")
+    return "此功能已更新，请重新发送 /lock", []
 
 
-def _build_lock_help_body(is_admin: bool = False, chat_id: str = "", *, chat_lock_manager=None, allowed_commands_display: Optional[str] = None) -> str:
+def build_lock_help_body(is_admin: bool = False, chat_id: str = "", *, chat_lock_manager=None, allowed_commands_display: Optional[str] = None) -> str:
     """Generate lock help section body dynamically from authoritative command sets.
 
     When *chat_id* is provided and the chat is locked, non-admin users see
@@ -292,7 +248,7 @@ def _build_lock_help_body(is_admin: bool = False, chat_id: str = "", *, chat_loc
         _user_cmds_display = ChatLockManager.get_allowed_commands_display()
     lines: list[str] = []
     if is_admin:
-        lines.append(UI_TEXT["lock_help_concept_explain"])
+        lines.append(UI_TEXT["lock_dual_concept_explain"])
         lines.append(UI_TEXT["lock_help_admin_group_mgmt"])
         lines.append(UI_TEXT["lock_help_admin_lock_cmd"])
         lines.append(UI_TEXT["lock_help_admin_unlock_cmd"])
@@ -312,9 +268,9 @@ def _build_lock_help_body(is_admin: bool = False, chat_id: str = "", *, chat_loc
                 else:
                     lines.append(UI_TEXT["lock_help_admin_chat_unlocked"])
             except Exception:
-                pass
+                logger.debug("Failed to check lock status for admin help body", exc_info=True)
     else:
-        lines.append(UI_TEXT["lock_help_concept_explain_nonadmin"])
+        lines.append(UI_TEXT["lock_dual_concept_explain_nonadmin"])
         # Show lock holder info when the chat is currently locked
         _locker_hint = ""
         if chat_id:
@@ -329,7 +285,7 @@ def _build_lock_help_body(is_admin: bool = False, chat_id: str = "", *, chat_loc
                 elif _lock_info:
                     _locker_hint = UI_TEXT["lock_help_locked_by_admin"]
             except Exception:
-                pass
+                logger.debug("Failed to check lock holder for non-admin help body", exc_info=True)
         lines.append(UI_TEXT["lock_help_nonadmin_contact"])
         lines.append(UI_TEXT["lock_help_nonadmin_repo_hint"])
         lines.append(UI_TEXT["lock_help_nonadmin_exempt_cmds"].format(cmd_list=_user_cmds_display))

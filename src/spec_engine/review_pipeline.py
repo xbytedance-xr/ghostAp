@@ -76,7 +76,11 @@ def run_review_pipeline(
     for p in perspectives:
         # Each worker gets a slice of the remaining budget.
         # run_workers_parallel uses this as the aggregate wait timeout.
-        worker = PerspectiveWorker(p, timeout=budget.remaining())
+        worker = PerspectiveWorker(
+            p,
+            timeout=budget.remaining(),
+            parse_failure_default=getattr(settings, "spec_review_parse_failure_default", "fail"),
+        )
         binding = WorkerBinding(
             worker=worker,
             prompt_runner=_create_ephemeral_runner(p),

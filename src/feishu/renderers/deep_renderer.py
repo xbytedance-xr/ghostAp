@@ -290,8 +290,9 @@ class DeepRenderer(BaseRenderer):
                 self.handler.context_manager.update_context(
                     project.project_id,
                     deep_result={"data": deep_project.to_dict()},
+                    chat_id=chat_id,
                 )
-                ctx = self.handler.context_manager.store.get(project.project_id)
+                ctx = self.handler.context_manager.store.get(project.project_id, chat_id=chat_id)
                 if ctx:
                     ctx.create_version(
                         reason=f"deep_engine_done: {deep_project.name}",

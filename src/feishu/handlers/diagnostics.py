@@ -95,7 +95,7 @@ class DiagnosticsHandler(BaseHandler):
         appended when present.
         """
         from datetime import datetime
-        from ...card.builders.lock import format_elapsed_ago, format_lock_duration
+        from ...card.builders.lock import format_elapsed_ago, format_friendly_duration, format_lock_duration
         from ...card.styles import UI_TEXT
 
         parts: list[str] = []
@@ -125,15 +125,8 @@ class DiagnosticsHandler(BaseHandler):
                 try:
                     _max_dur = getattr(chat_lock_mgr, "_max_duration", 86400)
                     _remaining = max(0, _max_dur - (time.monotonic() - lock_entry.locked_at))
-                    if _remaining > 3600:
-                        _rh = int(_remaining // 3600)
-                        _rm = int((_remaining % 3600) // 60)
-                        _countdown_str = f"约 {_rh} 小时 {_rm} 分钟" if _rm else f"约 {_rh} 小时"
-                    elif _remaining > 60:
-                        _countdown_str = f"约 {int(_remaining // 60)} 分钟"
-                    else:
-                        _countdown_str = None
-                    if _countdown_str:
+                    if _remaining > 60:
+                        _countdown_str = format_friendly_duration(_remaining)
                         _chat_lock_line += f"\n  ⏰ 预计 {_countdown_str}后自动释放"
                     else:
                         _chat_lock_line += f"\n  {UI_TEXT['lock_status_release_imminent'].strip()}"
@@ -151,7 +144,17 @@ class DiagnosticsHandler(BaseHandler):
                 if info:
                     from pathlib import Path
                     repo_name = Path(root_path).name or root_path
-                    holder_display = UI_TEXT["lock_status_holder_self"] if info.chat_id == chat_id else UI_TEXT["lock_status_holder_other"]
+                    if info.chat_id == chat_id:
+                        # Cross-check: if chat is also under /lock, warn non-admins
+                        _chat_also_locked = False
+                        if chat_lock_mgr is not None:
+                            try:
+                                _chat_also_locked = chat_lock_mgr.is_locked(chat_id)
+                            except Exception:
+                                logger.debug("Failed to cross-check chat lock in status", exc_info=True)
+                        holder_display = UI_TEXT["lock_status_holder_self_but_chat_locked"] if _chat_also_locked else UI_TEXT["lock_status_holder_self"]
+                    else:
+                        holder_display = UI_TEXT["lock_status_holder_other"]
                     duration = format_elapsed_ago(time.monotonic() - info.acquired_at)
                     # Calculate remaining auto-release time
                     try:
@@ -175,15 +178,32 @@ class DiagnosticsHandler(BaseHandler):
                         _repo_lock_line += UI_TEXT["lock_status_nonadmin_repo_hint"]
                     parts.append(_repo_lock_line)
             except Exception:
-                pass
+                logger.debug("Failed to build repo lock status line", exc_info=True)
+
+        # Build admin display names suffix
+        _admin_suffix = ""
+        try:
+            from ...config import get_settings as _gs
+            _admin_ids = _gs().admin_user_ids
+            if _admin_ids:
+                from ..user_cache import resolve_display_name
+                _names = []
+                for _uid in list(_admin_ids)[:3]:
+                    _names.append(resolve_display_name(_uid) or _uid[:8])
+                _admin_line = "、".join(_names)
+                if len(_admin_ids) > 3:
+                    _admin_line += f" 等 {len(_admin_ids)} 人"
+                _admin_suffix = f"\n\n👤 Bot 管理员: {_admin_line}"
+        except Exception:
+            logger.debug("Failed to build admin suffix for lock status", exc_info=True)
 
         # When lock subsystem is enabled but no active locks, show "unlocked" status.
         _lock_enabled = chat_lock_mgr is not None or repo_lock_mgr_obj is not None
         if not parts:
             if _lock_enabled:
-                return UI_TEXT["lock_status_section_header"] + UI_TEXT["lock_status_no_active_lock"]
+                return UI_TEXT["lock_status_section_header"] + UI_TEXT["lock_status_no_active_lock"] + "\n" + UI_TEXT["lock_status_no_lock_explain"] + _admin_suffix
             return ""
-        return UI_TEXT["lock_status_section_header"] + "\n\n".join(parts)
+        return UI_TEXT["lock_status_section_header"] + "\n\n".join(parts) + _admin_suffix
 
     def show_unified_status(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"] = None):
         """Show unified status across all engine types (Deep/Loop/Spec).
@@ -328,7 +348,7 @@ class DiagnosticsHandler(BaseHandler):
     def _build_context_diff_report(
         self, chat_id: str, text: str, project: "ProjectContext"
     ) -> tuple[bool, str, Optional[str]]:
-        ctx = self.context_manager.store.get(project.project_id)
+        ctx = self.context_manager.store.get(project.project_id, chat_id=chat_id)
         if not ctx:
             return (
                 False,

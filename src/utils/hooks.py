@@ -19,7 +19,7 @@ class HookEvent(str, Enum):
 
 
 _hooks: dict[HookEvent, list[Callable]] = {}
-_hooks_lock = threading.Lock()
+_hooks_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
 
 def register_hook(event: HookEvent, callback: Callable) -> Callable[[], None]:

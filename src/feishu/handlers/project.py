@@ -114,6 +114,7 @@ class ProjectHandler(BaseHandler):
                 self.context_manager.update_context(
                     pid,
                     session_snapshot={"data": session.to_snapshot(), "source_mode": ContextSourceMode.COCO.value},
+                    chat_id=chat_id,
                 )
         elif current_mode == InteractionMode.CLAUDE:
             session = self.ctx.claude_manager.get_session(chat_id, project_id=pid)
@@ -124,10 +125,11 @@ class ProjectHandler(BaseHandler):
                 self.context_manager.update_context(
                     pid,
                     session_snapshot={"data": session.to_snapshot(), "source_mode": ContextSourceMode.CLAUDE.value},
+                    chat_id=chat_id,
                 )
 
-    def restore_project_context(self, project: "ProjectContext") -> dict:
-        ctx = self.context_manager.store.get(project.project_id)
+    def restore_project_context(self, project: "ProjectContext", *, chat_id: str = "") -> dict:
+        ctx = self.context_manager.store.get(project.project_id, chat_id=chat_id)
         if ctx is None:
             logger.debug("[恢复上下文] 项目 %s 无已有上下文", project.project_name)
             return {"has_context": False, "entry_count": 0, "version_count": 0, "last_mode": None, "has_bridge": False}
@@ -201,7 +203,7 @@ class ProjectHandler(BaseHandler):
             elif current_mode == InteractionMode.CLAUDE and claude_handler:
                 claude_handler.exit_mode(message_id, chat_id, project=old_project)
 
-            old_ctx = self.context_manager.store.get(old_project.project_id)
+            old_ctx = self.context_manager.store.get(old_project.project_id, chat_id=chat_id)
             if old_ctx:
                 old_ctx.create_version(
                     reason=f"project_switch: {old_project.project_name} -> {project.project_name}",
@@ -214,8 +216,8 @@ class ProjectHandler(BaseHandler):
             self.reply_error(message_id, UI_TEXT["project_switch_error"].format(error=msg))
             return
 
-        restore_info = self.restore_project_context(project)
-        self.context_manager.store.get_or_create(project.project_id)
+        restore_info = self.restore_project_context(project, chat_id=chat_id)
+        self.context_manager.store.get_or_create(project.project_id, chat_id=chat_id)
 
         if auto_enter_coco and coco_handler:
             coco_handler.enter_mode(message_id, chat_id, project=project)

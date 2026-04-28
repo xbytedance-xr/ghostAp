@@ -29,7 +29,7 @@ from enum import Enum
 from typing import Callable, Optional
 
 from ..engine_base import PerspectiveReview, ReviewPerspective
-from ..card.styles import UI_TEXT
+from .constants import SPEC_UI_TEXT
 from ..utils.errors import classify_timeout, get_error_detail
 from ..utils.retry import RetryPolicy
 from ..utils.spec_utils import parse_review_output_strict_tolerant
@@ -99,12 +99,16 @@ class PerspectiveWorker:
         *,
         timeout: float,
         retry_policy: Optional[RetryPolicy] = None,
+        consecutive_timeouts: int = 0,
+        parse_failure_default: str = "fail",
     ):
         self.perspective = perspective
         self.timeout = float(timeout)
         self.retry_policy = retry_policy or RetryPolicy(max_retries=2, retry_delay=1.5)
+        self.consecutive_timeouts = int(consecutive_timeouts)
+        self.parse_failure_default = parse_failure_default
         self._buf: list[str] = []
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     def _on_event(self, event) -> None:
         from ..acp import ACPEventType
@@ -148,22 +152,23 @@ class PerspectiveWorker:
                 perspective=self.perspective,
                 passed=True,
                 suggestions=[],
-                summary="通过",
+                summary=SPEC_UI_TEXT["worker_summary_passed"],
             )
         elif verdict == "FAIL" or suggestions:
             return PerspectiveReview(
                 perspective=self.perspective,
                 passed=verdict == "PASS",
-                suggestions=suggestions if suggestions else ["需要关注实现质量"],
-                summary=f"{len(suggestions)}条建议" if suggestions else "有建议",
+                suggestions=suggestions if suggestions else [SPEC_UI_TEXT["worker_suggestion_default"]],
+                summary=SPEC_UI_TEXT["worker_summary_n_suggestions"].format(n=len(suggestions)) if suggestions else SPEC_UI_TEXT["worker_summary_has_suggestions"],
             )
         
-        # 最后，默认返回通过
+        # Fallback: parse failure — use config-driven default (fail-safe)
+        _passed = self.parse_failure_default == "pass"
         return PerspectiveReview(
             perspective=self.perspective,
-            passed=True,  # 默认通过，避免误报
+            passed=_passed,
             suggestions=[],
-            summary="通过",
+            summary=SPEC_UI_TEXT["worker_summary_passed"] if _passed else SPEC_UI_TEXT["worker_summary_exception"],
         )
 
     def run(
@@ -188,7 +193,7 @@ class PerspectiveWorker:
         try:
             raw = prompt_runner(prompt, self._on_event, self.timeout) or ""
         except Exception as e:
-            err = get_error_detail(e, default="未知错误")
+            err = get_error_detail(e, default=SPEC_UI_TEXT["worker_error_unknown"])
             err_code = ReviewErrorCode.TIMEOUT if classify_timeout(e) else ReviewErrorCode.WORKER_ERROR
             logger.warning(
                 "[PerspectiveWorker:%s] prompt failed: %s (elapsed_ms=%d, configured_timeout=%s)",
@@ -199,7 +204,7 @@ class PerspectiveWorker:
             )
             # Converge timeout errors to domain-semantic message for user-facing suggestions.
             if err_code == ReviewErrorCode.TIMEOUT:
-                err = UI_TEXT["timeout_busy_spec"]
+                err = SPEC_UI_TEXT["retry_no_retry"]
 
         elapsed_ms = int((time.monotonic() - t0) * 1000)
 
@@ -209,11 +214,12 @@ class PerspectiveWorker:
                 raw = "".join(self._buf)
 
         if err:
+            _diag_suffix = f"（视角={self.perspective.name}, 配置超时={int(self.timeout)}s, 实际耗时={elapsed_ms}ms, 连续超时={self.consecutive_timeouts}次）"
             review = PerspectiveReview(
                 perspective=self.perspective,
                 passed=False,
-                suggestions=[f"审查异常：{err}"],
-                summary="异常",
+                suggestions=[f"审查异常：{err}{_diag_suffix}"],
+                summary=SPEC_UI_TEXT["worker_summary_exception"],
             )
         else:
             review = self._parse(raw)
@@ -268,7 +274,7 @@ def run_workers_parallel(
                 try:
                     outcomes.append(fut.result())
                 except Exception as e:
-                    err = get_error_detail(e, default="未知错误")
+                    err = get_error_detail(e, default=SPEC_UI_TEXT["worker_error_unknown"])
                     err_code = ReviewErrorCode.TIMEOUT if classify_timeout(e) else ReviewErrorCode.WORKER_ERROR
 
                     logger.warning(
@@ -278,15 +284,16 @@ def run_workers_parallel(
                     )
                     # Converge timeout errors to domain-semantic message for user-facing suggestions.
                     if err_code == ReviewErrorCode.TIMEOUT:
-                        err = UI_TEXT["timeout_busy_spec"]
+                        err = SPEC_UI_TEXT["retry_no_retry"]
+                    _diag_suffix = f"（视角={b.worker.perspective.name}, 配置超时={int(b.worker.timeout)}s, 实际耗时=N/A）"
                     outcomes.append(
                         PerspectiveOutcome(
                             perspective=b.worker.perspective,
                             review=PerspectiveReview(
                                 perspective=b.worker.perspective,
                                 passed=False,
-                                suggestions=[f"审查异常：{err}"],
-                                summary="异常",
+                                suggestions=[f"审查异常：{err}{_diag_suffix}"],
+                                summary=SPEC_UI_TEXT["worker_summary_exception"],
                             ),
                             elapsed_ms=0,
                             error=err,
@@ -299,11 +306,13 @@ def run_workers_parallel(
             unprocessed_futures = set(future_to_binding.keys()) - processed_futures
             
             # Use domain semantics, disregarding the stdlib's internal format
-            err = UI_TEXT["timeout_busy_spec"]
+            err = SPEC_UI_TEXT["retry_no_retry"]
 
             for fut in unprocessed_futures:
                 b = future_to_binding[fut]
                 fut.cancel()
+                _pool_elapsed_ms = int((per_worker_timeout or 0) * 1000)
+                _diag_suffix = f"（视角={b.worker.perspective.name}, 配置超时={int(b.worker.timeout)}s, 实际耗时={_pool_elapsed_ms}ms）"
                 logger.warning(
                     "[run_workers_parallel] worker %s timeout: %s",
                     b.worker.perspective.name,
@@ -315,10 +324,10 @@ def run_workers_parallel(
                         review=PerspectiveReview(
                             perspective=b.worker.perspective,
                             passed=False,
-                            suggestions=[f"审查异常：{err}"],
-                            summary="异常",
+                            suggestions=[f"审查异常：{err}{_diag_suffix}"],
+                            summary=SPEC_UI_TEXT["worker_summary_exception"],
                         ),
-                        elapsed_ms=int((per_worker_timeout or 0) * 1000),
+                        elapsed_ms=_pool_elapsed_ms,
                         error=err,
                         error_code=ReviewErrorCode.TIMEOUT,
                     )

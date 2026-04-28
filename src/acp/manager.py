@@ -254,7 +254,7 @@ class ACPSessionManager:
         self._agent_type = agent_type  # "coco" / "claude"
         self._sessions: dict[str, SyncSession] = {}  # key = _session_key(...)
         self._session_timeout = session_timeout
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._session_starter = session_starter
         self._keepalive_interval = keepalive_interval
         self._idle_healthcheck_s = idle_healthcheck_s

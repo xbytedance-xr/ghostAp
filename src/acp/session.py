@@ -123,7 +123,7 @@ class ACPSession:
             cwd=cwd,
         )
         self._event_handler: Optional[Callable[[ACPEvent], None]] = None
-        self._handler_lock = threading.Lock()
+        self._handler_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     @property
     def session_id(self) -> Optional[str]:

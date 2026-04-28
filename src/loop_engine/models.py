@@ -445,7 +445,7 @@ class LoopContextManager:
     """
 
     def __init__(self, max_context_tokens: int = 8000):
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._iterations: list[IterationRecord] = []
         self._user_guidances: list[str] = []
         self._max_tokens = max_context_tokens

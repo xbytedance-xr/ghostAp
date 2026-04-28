@@ -566,7 +566,7 @@ class TestReviewPerspective:
 
     def test_emoji(self):
         assert ReviewPerspective.ARCHITECT.emoji == "🏗️"
-        assert ReviewPerspective.PRODUCT.emoji == "📦"
+        assert ReviewPerspective.PRODUCT.emoji == "📋"
         assert ReviewPerspective.USER.emoji == "👤"
         assert ReviewPerspective.TESTER.emoji == "🧪"
         assert ReviewPerspective.DESIGNER.emoji == "🎨"

@@ -1,3 +1,4 @@
+import argparse
 import logging
 import os
 import signal
@@ -6,12 +7,12 @@ import threading
 from typing import Optional
 
 try:
-    from config import get_settings
+    from config import get_settings, ConfigurationError
     from feishu.message_formatter import FeishuMessageFormatter as fmt
     from feishu.ws_client import EmojiReaction, FeishuWSClient
     from utils.errors import get_error_detail
 except ImportError:
-    from .config import get_settings
+    from .config import get_settings, ConfigurationError
     from .feishu.message_formatter import FeishuMessageFormatter as fmt
     from .feishu.ws_client import EmojiReaction, FeishuWSClient
     from .utils.errors import get_error_detail
@@ -75,6 +76,21 @@ class Application:
             except Exception:
                 pass
 
+    @staticmethod
+    def _shutdown_lock_managers() -> None:
+        """Best-effort shutdown of lock-manager singletons (stops daemon threads)."""
+        try:
+            from chat_lock import shutdown_if_active as _chat_shutdown
+        except ImportError:
+            from .chat_lock import shutdown_if_active as _chat_shutdown
+        try:
+            from repo_lock import shutdown_if_active as _repo_shutdown
+        except ImportError:
+            from .repo_lock import shutdown_if_active as _repo_shutdown
+
+        _chat_shutdown()
+        _repo_shutdown()
+
     def run(self):
         logging.basicConfig(
             level=logging.INFO,
@@ -86,7 +102,7 @@ class Application:
         logger.info("=" * 50)
 
         if not self.settings.validate_feishu_config():
-            logger.error("配置错误: APP_ID 和 APP_SECRET 未配置或不完整，请在 .env 文件或环境变量中配置")
+            logger.error("配置错误: APP_ID 和 APP_SECRET 未配置或不完整，请参考 .env.example 模板配置 .env 文件")
             sys.exit(1)
 
         logger.info("APP_ID: %s...", self.settings.app_id[:8])
@@ -119,6 +135,16 @@ class Application:
             logger.error("服务异常: %s", get_error_detail(e))
             sys.exit(1)
         finally:
+            # Shut down lock-manager cleanup daemons before closing the WS client
+            # so that background threads do not fire callbacks on a half-torn-down
+            # Feishu client.
+            for _shutdown_fn in (
+                self._shutdown_lock_managers,
+            ):
+                try:
+                    _shutdown_fn()
+                except Exception:
+                    logger.debug("lock manager shutdown error", exc_info=True)
             try:
                 if self.feishu_client:
                     self.feishu_client.close()
@@ -126,8 +152,37 @@ class Application:
                 pass
 
 
-def main() -> None:
-    app = Application()
+def main(argv: Optional[list[str]] = None) -> None:
+    parser = argparse.ArgumentParser(description="GhostAP - 飞书机器人服务")
+    parser.add_argument(
+        "--validate", "--check-config",
+        action="store_true",
+        dest="validate",
+        help="仅校验配置后退出，不启动服务",
+    )
+    args, _ = parser.parse_known_args(argv)
+
+    if args.validate:
+        try:
+            settings = get_settings()
+            if not settings.validate_feishu_config():
+                sys.stderr.write(
+                    f"{'=' * 40}\n[配置校验失败]\n"
+                    "飞书应用配置不完整: APP_ID 和 APP_SECRET 不能为空\n"
+                    f"{'=' * 40}\n"
+                )
+                sys.exit(1)
+            print("配置校验通过")
+            sys.exit(0)
+        except ConfigurationError as e:
+            sys.stderr.write(f"{'=' * 40}\n[配置校验失败]\n{e}\n{'=' * 40}\n")
+            sys.exit(1)
+
+    try:
+        app = Application()
+    except ConfigurationError as e:
+        sys.stderr.write(f"{'=' * 40}\n[配置校验失败]\n{e}\n{'=' * 40}\n")
+        sys.exit(1)
     app.run()
 
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +16,6 @@ from ...acp.providers import tool_registry
 from ...card import CardBuilder
 from ...card.builders.system import SystemBuilder
 from ...card.styles import UI_TEXT
-from ...worktree_engine.models import WorktreeUnitStatus, truncate_goal
 from ...coco_model import get_coco_model_manager
 from ...tasking import TaskPriority, TaskSpec
 from ...ttadk import get_ttadk_manager
@@ -73,8 +71,8 @@ class SystemHandler(BaseHandler):
             "/switch": lambda m, c, t, p: self.get_handler("project").show_project_board(m, c),
             "/ttadk": lambda m, c, t, p: self.handle_ttadk_command(m, c, p),
             "/acp": lambda m, c, t, p: self.handle_acp_command(m, c, p),
-            "/wt": lambda m, c, t, p: self.handle_worktree_command(m, c, p),
-            "/worktree": lambda m, c, t, p: self.handle_worktree_command(m, c, p),
+            "/wt": lambda m, c, t, p: self.get_handler("worktree").handle_worktree_command(m, c, p),
+            "/worktree": lambda m, c, t, p: self.get_handler("worktree").handle_worktree_command(m, c, p),
             "/ttadk_info": lambda m, c, t, p: self.show_ttadk_info(m, c),
             "/ttadk_refresh": lambda m, c, t, p: self.refresh_ttadk_models(m, c, p),
             "/menu": lambda m, c, t, p: self.handle_menu_command(m, c, p),
@@ -92,8 +90,8 @@ class SystemHandler(BaseHandler):
             ("/tasks", lambda m, c, t, p: self.get_handler("diagnostics").show_task_board(m, c, t, p)),
             ("/diff", lambda m, c, t, p: self.get_handler("diagnostics").show_context_diff(m, c, t, p)),
             ("/trace", lambda m, c, t, p: self.get_handler("diagnostics").show_message_trace(m, c, t, p)),
-            ("/worktree ", self._handle_worktree_prefix_command),
-            ("/wt ", self._handle_worktree_prefix_command),
+            ("/worktree ", lambda m, c, t, p: self.get_handler("worktree").handle_worktree_prefix_command(m, c, t, p)),
+            ("/wt ", lambda m, c, t, p: self.get_handler("worktree").handle_worktree_prefix_command(m, c, t, p)),
             ("/switch ", self._handle_switch_command),
             ("/new ", self._handle_new_project_command),
             ("/close ", self._handle_close_command),
@@ -130,17 +128,6 @@ class SystemHandler(BaseHandler):
         name = text[7:].strip()
         if name:
             self.get_handler("project").close_project(message_id, chat_id, name)
-
-    def _handle_worktree_prefix_command(
-        self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"]
-    ):
-        """Parse '/wt <goal>' or '/worktree <goal>' and delegate to handle_worktree_command."""
-        text_lower = text.lower().strip()
-        if text_lower.startswith("/worktree"):
-            goal = text[len("/worktree"):].strip()
-        else:
-            goal = text[len("/wt"):].strip()
-        self.handle_worktree_command(message_id, chat_id, project, goal=goal)
 
     # ------------------------------------------------------------------
     # Command predicates
@@ -407,6 +394,19 @@ class SystemHandler(BaseHandler):
         from ...chat_lock import ChatLockCode
 
         _err_msg = self.resolve_lock_message(result)
+        # Append admin names for non-admin callers
+        if result.code == ChatLockCode.CONTACT_ADMIN_TO_LOCK:
+            try:
+                _admin_ids = self.settings.admin_user_ids
+                if _admin_ids:
+                    from ..user_cache import resolve_display_name
+                    _names = [resolve_display_name(uid) or uid[:8] for uid in list(_admin_ids)[:3]]
+                    _admin_line = "、".join(_names)
+                    if len(_admin_ids) > 3:
+                        _admin_line += f" 等 {len(_admin_ids)} 人"
+                    _err_msg += f"\n\n👤 Bot 管理员: {_admin_line}"
+            except Exception:
+                logger.debug("Failed to append admin list to lock error", exc_info=True)
         _non_admin_codes = {
             ChatLockCode.CONTACT_ADMIN_TO_LOCK,
             ChatLockCode.NO_ADMIN_CONFIG_USER,
@@ -438,7 +438,7 @@ class SystemHandler(BaseHandler):
                 self.reply_message(message_id, _card, msg_type=_mt)
                 return
             except Exception:
-                pass
+                logger.debug("Failed to build lock permission error card", exc_info=True)
         self.reply_error(message_id, _err_msg)
 
     def _check_confirm_card_expiry(
@@ -679,9 +679,18 @@ class SystemHandler(BaseHandler):
             if sender_id:
                 is_admin = chat_lock_mgr.is_admin(sender_id)
 
+        # FS-09: Inject guidance when ADMIN_USER_IDS is empty
+        no_admin_configured = False
+        try:
+            from ...config import get_settings as _gs
+            no_admin_configured = not _gs().admin_user_ids
+        except Exception:
+            pass
+
         msg_type, card_content = CardBuilder.build_help_card(
             project, category, current_dir, current_mode,
             is_admin=is_admin, lock_enabled=lock_enabled, chat_id=chat_id,
+            no_admin_configured=no_admin_configured,
         )
 
         if origin_message_id:
@@ -1072,672 +1081,6 @@ class SystemHandler(BaseHandler):
             project_id,
             where,
         )
-
-    # ------------------------------------------------------------------
-    # Worktree commands
-    # ------------------------------------------------------------------
-
-    def _worktree_manager(self):
-        """Lazy-init WorktreeManager instance."""
-        mgr = getattr(self, "_wt_manager", None)
-        if mgr is None:
-            from ...worktree_engine.manager import WorktreeManager
-
-            mgr = WorktreeManager(self.project_manager)
-            self._wt_manager = mgr
-        return mgr
-
-    def _get_available_worktree_tools(self) -> list[dict]:
-        """Helper to fetch available worktree tools for card builders.
-
-        Wrapped as an instance method so tests can easily monkeypatch
-        the tool list without touching the underlying WorktreeManager
-        implementation.
-        """
-        mgr = self._worktree_manager()
-        return mgr.get_available_tools()
-
-    def _get_models_for_tool(
-        self,
-        tool_name: str,
-        provider: str = "ttadk",
-        cwd: Optional[str] = None,
-        current_model: Optional[str] = None,
-    ) -> list[dict]:
-        """Helper to fetch models for a given worktree tool.
-
-        This thin wrapper around ``WorktreeManager.get_models_for_tool``
-        exists primarily to make unit tests easier to stub without
-        depending on the manager's internal behaviour.
-        """
-        mgr = self._worktree_manager()
-        return mgr.get_models_for_tool(
-            tool_name, provider=provider, cwd=cwd, current_model=current_model
-        )
-
-    def handle_worktree_command(
-        self,
-        message_id: str,
-        chat_id: str,
-        project: Optional["ProjectContext"] = None,
-        from_card: bool = False,
-        goal: str = "",
-    ):
-        """Handle /wt or /worktree command — start tool selection flow."""
-        project = project or self.project_manager.get_active_project(chat_id)
-        if not project:
-            self.reply_error(message_id, UI_TEXT["system_no_active_project"])
-            return
-
-        goal = str(goal or "").strip()[:500]  # cap at 500 chars
-
-        mgr = self._worktree_manager()
-        state = mgr.start_selection(project, goal=goal)
-        # 若用户在命令级直接提供了 goal，则将其记录到旅程高层状态机中，
-        # 以便后续卡片/执行路径统一从 WorktreeJourneyState 读取目标与阶段。
-        if goal:
-            mgr.apply_journey_event(state, event="goal_created", goal=goal)
-        tools = self._get_available_worktree_tools()
-        if not tools:
-            self.reply_error(message_id, UI_TEXT["system_worktree_no_available_tools"])
-            return
-
-        project_id = project.project_id if project else None
-        state = mgr.get_state(project)
-        selected_dicts = [item.to_dict() for item in state.selection.selected_items]
-        msg_type, card = CardBuilder.build_worktree_tool_select_card(
-            tools, selected_dicts, project_id, goal=goal,
-        )
-        if from_card:
-            self.patch_message(message_id, card, msg_type=msg_type)
-        else:
-            self.reply_message(message_id, card, msg_type=msg_type)
-
-    @staticmethod
-    def _resolve_worktree_goal(value: dict, state: Optional["WorktreeRuntimeState"] = None) -> str:
-        """Unify goal resolution from card value + state fallback.
-
-        Priority: value["goal"] > value["worktree_goal"] > value["_input_value"] > state.selection.pending_goal
-        """
-        return str(
-            value.get("goal")
-            or value.get("worktree_goal")
-            or value.get("_input_value")
-            or (state.selection.pending_goal if state else "")
-            or ""
-        ).strip()
-
-    def _make_throttled_progress_callback(
-        self,
-        mgr,
-        project,
-        progress_mid: str,
-        goal: str,
-        *,
-        silent_mode: bool = False,
-        clock=None,
-    ):
-        """Build a throttled on_unit_update closure for live progress updates.
-
-        Args:
-            clock: Injectable time source (default: time.time). Used for testability.
-        """
-        if clock is None:
-            clock = time.time
-        _update_lock = threading.Lock()
-        _last_update: list[float] = [0.0]
-        _THROTTLE_INTERVAL = 30.0 if silent_mode else 0.5
-        _exec_start = clock()
-        _TIMEOUT_NOTIFY = 600.0
-        _timeout_notified: list[bool] = [False]
-        pid = project.project_id
-
-        def _on_unit_update(unit):
-            now = clock()
-            elapsed = now - _exec_start
-            with _update_lock:
-                if silent_mode and elapsed >= _TIMEOUT_NOTIFY and not _timeout_notified[0]:
-                    _timeout_notified[0] = True
-                    _last_update[0] = now
-                    try:
-                        cur_state = mgr.get_state(project)
-                        cur_dicts = [u.to_dict() for u in cur_state.units]
-                        msg = UI_TEXT["worktree_still_running"].format(
-                            elapsed=int(elapsed // 60)
-                        )
-                        mt, cd = CardBuilder.build_worktree_progress_card(
-                            cur_dicts, pid, message=msg,
-                        )
-                        if progress_mid:
-                            self.patch_message(progress_mid, cd, msg_type=mt)
-                    except Exception:
-                        logger.debug("worktree progress update failed", exc_info=True)
-                    return
-
-                if now - _last_update[0] < _THROTTLE_INTERVAL:
-                    return
-                _last_update[0] = now
-            try:
-                cur_state = mgr.get_state(project)
-                cur_dicts = [u.to_dict() for u in cur_state.units]
-                msg = UI_TEXT["worktree_executing_live"].format(goal=truncate_goal(goal))
-                mt, cd = CardBuilder.build_worktree_progress_card(
-                    cur_dicts, pid, message=msg,
-                )
-                if progress_mid:
-                    self.patch_message(progress_mid, cd, msg_type=mt)
-            except Exception:
-                logger.debug("worktree progress update failed", exc_info=True)
-
-        return _on_unit_update
-
-    def handle_worktree_select_tool(
-        self,
-        message_id: str,
-        chat_id: str,
-        project_id: Optional[str] = None,
-        value: dict | None = None,
-    ):
-        """Card action: user selected a tool from the worktree tool list."""
-        value = value or {}
-        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else self.project_manager.get_active_project(chat_id)
-        if not project:
-            self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
-            return
-
-        tool_name = value.get("_option") or value.get("tool_name", "")
-        provider = value.get("provider", "")
-        supports_model = value.get("supports_model", False)
-        skip_model_selection = value.get("skip_model_selection", False)
-
-        if not tool_name:
-            self.reply_error(message_id, UI_TEXT["system_worktree_select_tool_error"])
-            return
-
-        # Resolve goal: card value > state.selection.pending_goal
-        mgr = self._worktree_manager()
-        state = mgr.get_state(project)
-        goal = self._resolve_worktree_goal(value, state)
-        if goal:
-            mgr.set_pending_goal(project, goal)
-
-        from ...worktree_engine.selection import WorktreeToolOption
-
-        option = WorktreeToolOption(
-            provider=provider,
-            tool_name=tool_name,
-            display_name=value.get("display_name") or tool_name,
-            supports_model=bool(supports_model),
-            model_optional=True,
-            skip_model_selection=bool(skip_model_selection),
-        )
-
-        mgr.select_tool(project, option)
-        state = mgr.get_state(project)
-        selected_dicts = [item.to_dict() for item in state.selection.selected_items]
-        pid = project.project_id
-
-        # Logic to skip model selection card if tool has only one model or is in skip-list
-        should_skip_model = not option.supports_model
-        models = []
-
-        if option.supports_model:
-            cwd = (project.root_path if project else None) or self.get_working_dir(chat_id)
-            current_model = None
-            if project and getattr(project, "acp_tool_name", "") == tool_name:
-                current_model = getattr(project, "acp_model_name", None)
-
-            models = self._get_models_for_tool(
-                tool_name, provider=provider, cwd=cwd, current_model=current_model
-            )
-            if len(models) <= 1 or option.skip_model_selection:
-                should_skip_model = True
-
-        if not should_skip_model:
-            msg_type, card = CardBuilder.build_worktree_model_select_card(
-                models,
-                option.display_name,
-                selected_dicts,
-                pid,
-                message=UI_TEXT["system_worktree_selection_finished_banner"].format(tool=option.display_name),
-                goal=goal,
-            )
-            self.patch_message(message_id, card, msg_type=msg_type)
-        else:
-            # Auto-add pending item, picking a model if available
-            model_name = None
-            model_display = None
-            if models:
-                # Use default model if marked, else first one
-                target = next((m for m in models if m.get("is_default")), models[0])
-                model_name = target["name"]
-                model_display = target.get("display_name")
-
-            state, _, msg = mgr.add_pending_item(
-                project, model_name=model_name, model_display_name=model_display
-            )
-            mgr.back_to_tool_selection(project)
-
-            # Fast path: goal exists -> skip tool list, auto-execute directly
-            if goal:
-                # Directly proceed to finish and auto-execute, skipping intermediate card update
-                self.handle_finish_worktree_selection(message_id, chat_id, project_id=pid, value=value)
-                return
-
-            # No goal - show updated tool selection card
-            state = mgr.get_state(project)
-            tools = self._get_available_worktree_tools()
-            selected_dicts = [item.to_dict() for item in state.selection.selected_items]
-            msg_type, card = CardBuilder.build_worktree_tool_select_card(
-                tools,
-                selected_dicts,
-                pid,
-                message=msg,
-                goal=goal,
-            )
-            self.patch_message(message_id, card, msg_type=msg_type)
-
-    def handle_worktree_select_model(
-        self,
-        message_id: str,
-        chat_id: str,
-        project_id: Optional[str] = None,
-        value: dict | None = None,
-    ):
-        """Card action: user selected a model for the pending tool."""
-        value = value or {}
-        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else self.project_manager.get_active_project(chat_id)
-        if not project:
-            self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
-            return
-
-        model_name = value.get("_option") or value.get("model_name") or None
-        model_display = value.get("model_display_name") or model_name
-
-        mgr = self._worktree_manager()
-
-        state = mgr.get_state(project)
-        goal = self._resolve_worktree_goal(value, state)
-        if goal:
-            mgr.set_pending_goal(project, goal)
-
-        # Capture pending tool info BEFORE add_pending_item clears it
-        pending_tool = state.selection.pending_item
-
-        state, added, msg = mgr.add_pending_item(project, model_name=model_name, model_display_name=model_display)
-        # Back to tool selection for next tool
-        mgr.back_to_tool_selection(project)
-
-        # Fast path: goal exists -> skip tool list, auto-execute directly
-        if goal:
-            # Directly proceed to finish and auto-execute, skipping intermediate card update
-            self.handle_finish_worktree_selection(message_id, chat_id, project_id=project_id, value=value)
-            return
-
-        # No goal - show updated tool selection card
-        state = mgr.get_state(project)
-        selected_dicts = [item.to_dict() for item in state.selection.selected_items]
-        tools = self._get_available_worktree_tools()
-        pid = project.project_id
-        msg_type, card = CardBuilder.build_worktree_tool_select_card(
-            tools, selected_dicts, pid, message=msg, goal=goal,
-        )
-        self.patch_message(message_id, card, msg_type=msg_type)
-
-    def handle_finish_worktree_selection(
-        self,
-        message_id: str,
-        chat_id: str,
-        project_id: Optional[str] = None,
-        value: dict | None = None,
-    ):
-        """Card action: user finished selecting tools — show confirm card or auto-execute."""
-        value = value or {}
-        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else self.project_manager.get_active_project(chat_id)
-        if not project:
-            self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
-            return
-
-        mgr = self._worktree_manager()
-
-        # Resolve goal: card button value > card input > state.selection.pending_goal
-        state = mgr.get_state(project)
-        goal = self._resolve_worktree_goal(value, state)
-
-        state = mgr.finalize_selection(project)
-        pid = project.project_id
-
-        if not state.enabled:
-            self.reply_error(message_id, UI_TEXT["system_worktree_no_selection_error"])
-            return
-
-        # Fast path: goal exists → skip confirm card, auto-execute
-        if goal:
-            # Provide immediate feedback on the current card
-            self.patch_message(
-                message_id,
-                CardBuilder.build_worktree_confirm_card(
-                    [item.to_dict() for item in state.selection.selected_items],
-                    pid,
-                    message=UI_TEXT["worktree_auto_executing_banner"],
-                    goal=goal,
-                )[1]
-            )
-            self._auto_execute_worktree(message_id, chat_id, goal, project=project)
-            return
-
-        # Fallback: no goal → show confirm card (backward compatible)
-        selected_dicts = [item.to_dict() for item in state.selection.selected_items]
-        msg_type, card = CardBuilder.build_worktree_confirm_card(selected_dicts, pid)
-        self.patch_message(message_id, card, msg_type=msg_type)
-
-    def _auto_execute_worktree(
-        self,
-        message_id: str,
-        chat_id: str,
-        goal: str,
-        project: Optional["ProjectContext"] = None,
-    ):
-        """Fast path: ensure_worktrees → set units ready → execute with silent_mode."""
-        if project is None:
-            project = self.project_manager.get_active_project(chat_id)
-        if not project:
-            self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
-            return
-
-        mgr = self._worktree_manager()
-        state = mgr.ensure_worktrees(project)
-
-        if state.last_error:
-            # Patch the auto-executing banner card back to error state
-            # to avoid "启动中" and "失败" coexisting on screen.
-            error_msg = UI_TEXT["system_worktree_create_failed"].format(error=state.last_error)
-            pid = project.project_id
-            units_dicts = [u.to_dict() for u in state.units] if state.units else []
-            if units_dicts:
-                _, error_card = CardBuilder.build_worktree_progress_card(
-                    units_dicts, pid, message=error_msg,
-                )
-                self.patch_message(message_id, error_card)
-            self.reply_error(message_id, error_msg)
-            return
-
-        # 静默自动执行路径：标记旅程已进入 AUTO_EXECUTING 阶段，并记录目标与 silent_mode。
-        mgr.apply_journey_event(state, event="auto_execute_started", goal=goal, silent_mode=True)
-
-        mgr.mark_units_ready(project)
-
-        self.handle_worktree_execute(message_id, chat_id, goal, project=project, silent_mode=True)
-
-    def handle_worktree_confirm_start(
-        self,
-        message_id: str,
-        chat_id: str,
-        project_id: Optional[str] = None,
-        value: dict | None = None,
-    ):
-        """Card action: user confirmed selections — create worktrees and await goal."""
-        value = value or {}
-        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else self.project_manager.get_active_project(chat_id)
-        if not project:
-            self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
-            return
-
-        mgr = self._worktree_manager()
-        state = mgr.ensure_worktrees(project)
-
-        if state.last_error:
-            self.reply_error(message_id, UI_TEXT["system_worktree_create_failed"].format(error=state.last_error))
-            return
-
-        # Mark all units as "ready" so the message-routing interception can
-        # detect that worktree mode is awaiting a user goal.
-        mgr.mark_units_ready(project)
-
-        # Check if user provided a goal in the input box
-        state = mgr.get_state(project)
-        goal = self._resolve_worktree_goal(value, state)
-
-        if goal:
-            # Provide immediate feedback on the current card
-            # 非静默路径：用户在确认卡中输入目标后直接开始执行，视作自动执行入口，silent_mode=False。
-            mgr.apply_journey_event(state, event="auto_execute_started", goal=goal, silent_mode=False)
-            self.patch_message(
-                message_id,
-                CardBuilder.build_worktree_confirm_card(
-                    [item.to_dict() for item in mgr.get_state(project).selection.selected_items],
-                    project.project_id,
-                    message=UI_TEXT["worktree_auto_executing_banner"],
-                    goal=goal,
-                )[1]
-            )
-            # If goal is present, skip the "waiting" step and go straight to execution
-            self.handle_worktree_execute(message_id, chat_id, goal, project=project)
-            return
-
-        # Show progress card with "ready" status
-        units_dicts = [u.to_dict() for u in state.units]
-        pid = project.project_id
-        ready_msg = UI_TEXT["system_worktree_created_prompt"] + "\n" + UI_TEXT["worktree_ready_intercept_hint"]
-        msg_type, card = CardBuilder.build_worktree_progress_card(
-            units_dicts, pid, message=ready_msg,
-        )
-        self.patch_message(message_id, card, msg_type=msg_type)
-
-    def handle_worktree_execute(
-        self,
-        message_id: str,
-        chat_id: str,
-        text: str,
-        project: Optional["ProjectContext"] = None,
-        silent_mode: bool = False,
-    ):
-        """Route user message as a worktree goal — trigger parallel execution.
-
-        When *silent_mode* is True (auto-execute fast path), throttle interval
-        is raised to 30s and a 10-min timeout safety-valve notification is sent.
-        """
-        if project is None:
-            project = self.project_manager.get_active_project(chat_id)
-        if not project:
-            self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
-            return
-
-        goal = str(text or "").strip()
-        if not goal:
-            self.reply_message(message_id, UI_TEXT["system_worktree_goal_required"])
-            return
-
-        mgr = self._worktree_manager()
-        pid = project.project_id
-
-        # Send an initial "executing" progress card
-        state = mgr.get_state(project)
-        units_dicts = [u.to_dict() for u in state.units]
-        if silent_mode:
-            init_msg = UI_TEXT["worktree_start_silent"].format(
-                goal=truncate_goal(goal)
-            )
-        else:
-            init_msg = UI_TEXT["worktree_executing"].format(goal=truncate_goal(goal))
-        msg_type, card = CardBuilder.build_worktree_progress_card(
-            units_dicts, pid, message=init_msg,
-        )
-        progress_mid = self.send_message(chat_id, card, msg_type=msg_type)
-
-        # Build a throttled callback for live progress updates
-        _on_unit_update = self._make_throttled_progress_callback(
-            mgr, project, progress_mid, goal, silent_mode=silent_mode,
-        )
-
-        # Repo lock: acquire before worktree execution
-        root_path = getattr(project, "root_path", None)
-
-        def _locked_body():
-            return mgr.execute_goal(project, goal, on_unit_update=_on_unit_update)
-
-        from ...repo_lock import LockConflictError
-        try:
-            state = self._with_repo_lock(root_path, chat_id, _locked_body)
-        except LockConflictError as e:
-            self.send_lock_conflict_card(e, message_id, goal)
-            return
-
-        # Show final result — cleanup card with merge/cleanup entry
-        if state.last_error:
-            self.reply_error(message_id, state.last_error)
-            return
-
-        final_dicts = [u.to_dict() for u in state.units]
-        if state.merge_entry_ready:
-            msg_type, card = CardBuilder.build_worktree_cleanup_card(
-                state.merge_notes, pid, state.base_branch or "main",
-                units=final_dicts,
-            )
-        else:
-            msg_type, card = CardBuilder.build_worktree_progress_card(
-                final_dicts, pid, message=UI_TEXT["worktree_completed_no_change"],
-            )
-        if progress_mid:
-            self.patch_message(progress_mid, card, msg_type=msg_type)
-        else:
-            self.reply_message(message_id, card, msg_type=msg_type)
-
-    def handle_worktree_merge(
-        self,
-        message_id: str,
-        chat_id: str,
-        project_id: Optional[str] = None,
-        value: dict | None = None,
-    ):
-        """Card action: merge all worktree branches back to base."""
-        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else self.project_manager.get_active_project(chat_id)
-        if not project:
-            self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
-            return
-
-        mgr = self._worktree_manager()
-        state, merge_results = mgr.merge_to_base(project)
-
-        if state.last_error:
-            self.reply_error(message_id, state.last_error)
-            return
-
-        pid = project.project_id
-        msg_type, card = CardBuilder.build_worktree_cleanup_card(
-            state.merge_notes, pid, state.base_branch or "main", merge_results=merge_results,
-        )
-        self.patch_message(message_id, card, msg_type=msg_type)
-
-    def handle_worktree_cleanup(
-        self,
-        message_id: str,
-        chat_id: str,
-        project_id: Optional[str] = None,
-        value: dict | None = None,
-    ):
-        """Card action: remove all worktrees and branches."""
-        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else self.project_manager.get_active_project(chat_id)
-        if not project:
-            self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
-            return
-
-        mgr = self._worktree_manager()
-        # Phase 1: safe check (force=False) — returns warnings for unsafe worktrees
-        force = bool((value or {}).get("force", False))
-        state, warnings = mgr.cleanup_worktrees(project, force=force)
-        if warnings and not force:
-            details = "\n".join(
-                f"- {'未提交变更' if w.has_uncommitted else ''}"
-                f"{'、' if w.has_uncommitted and w.has_unmerged else ''}"
-                f"{'未合并分支 ' + w.unmerged_branch if w.has_unmerged else ''}"
-                for w in warnings
-            )
-            self.reply_message(
-                message_id,
-                UI_TEXT["system_worktree_cleanup_warnings"].format(details=details),
-            )
-        else:
-            self.reply_message(message_id, UI_TEXT["system_worktree_cleanup_success"])
-
-    def handle_worktree_execute_action(
-        self,
-        message_id: str,
-        chat_id: str,
-        project_id: Optional[str] = None,
-        value: dict | None = None,
-    ):
-        """Card action: execute worktree goal from progress card input."""
-        value = value or {}
-        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else self.project_manager.get_active_project(chat_id)
-        if not project:
-            self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
-            return
-
-        goal = self._resolve_worktree_goal(value)
-        if not goal:
-            self.reply_message(message_id, UI_TEXT["system_worktree_goal_required"])
-            return
-
-        self.handle_worktree_execute(message_id, chat_id, goal, project=project)
-
-    def handle_worktree_retry_failed(
-        self,
-        message_id: str,
-        chat_id: str,
-        project_id: Optional[str] = None,
-        value: dict | None = None,
-    ):
-        """Card action: retry only the failed worktree units."""
-        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else self.project_manager.get_active_project(chat_id)
-        if not project:
-            self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
-            return
-
-        mgr = self._worktree_manager()
-        pid = project.project_id
-        state = mgr.get_state(project)
-
-        # Guard: reject if any unit is still running
-        if any(u.status == WorktreeUnitStatus.RUNNING for u in state.units):
-            self.reply_message(message_id, UI_TEXT["system_worktree_unit_running_error"])
-            return
-
-        # Send an initial progress card indicating retry is starting
-        units_dicts = [u.to_dict() for u in state.units]
-        msg_type, card = CardBuilder.build_worktree_progress_card(
-            units_dicts, pid, message=UI_TEXT["system_worktree_retry_starting"],
-        )
-        progress_mid = self.send_message(chat_id, card, msg_type=msg_type)
-
-        # Throttled live progress callback (same pattern as handle_worktree_execute)
-        retry_goal = state.journey.goal or UI_TEXT["system_worktree_retry_goal"]
-        _on_unit_update = self._make_throttled_progress_callback(
-            mgr, project, progress_mid, retry_goal,
-        )
-
-        # Execute retry
-        state = mgr.retry_failed_units(project, on_unit_update=_on_unit_update)
-
-        # Show final result
-        if state.last_error:
-            self.reply_error(message_id, state.last_error)
-            return
-
-        final_dicts = [u.to_dict() for u in state.units]
-        if state.merge_entry_ready:
-            msg_type, card = CardBuilder.build_worktree_cleanup_card(
-                state.merge_notes, pid, state.base_branch or "main",
-                units=final_dicts,
-            )
-        else:
-            msg_type, card = CardBuilder.build_worktree_progress_card(
-                final_dicts, pid, message=UI_TEXT["system_worktree_retry_completed"],
-            )
-        if progress_mid:
-            self.patch_message(progress_mid, card, msg_type=msg_type)
-        else:
-            self.reply_message(message_id, card, msg_type=msg_type)
 
     def _reply_ttadk_load_hint(self, message_id: str, text: str, project_id: Optional[str] = None) -> None:
         msg_type, card_content = CardBuilder.build_ttadk_soft_failure_card_for(text, project_id=project_id)

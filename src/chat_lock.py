@@ -6,7 +6,6 @@ are rejected (within GhostAP's message-processing scope).
 已知限制（V1）：
 - 纯内存单进程实现，进程重启后所有群锁状态丢失。
 - 多实例部署场景下锁不互通，不适用于分布式部署。
-- 未来可通过 ``lock_backend`` 配置切换为持久化/分布式后端。
 """
 
 from __future__ import annotations
@@ -48,7 +47,7 @@ logger = logging.getLogger(__name__)
 # Commands that are always allowed even when a chat is locked.
 # Add new read-only commands here when they are introduced.
 READONLY_COMMANDS: frozenset[str] = frozenset({
-    "/status", "/help", "/帮助", "/menu", "/projects", "/mode", "/model",
+    "/status", "/help", "/帮助", "/menu", "/projects",
     "/lock", "/unlock", "/exit", "/quit",
 })
 
@@ -147,7 +146,7 @@ class ChatLockManager:
         # Daemon cleanup thread (lazy-started on first lock)
         self._stop_event = threading.Event()
         self._cleanup_thread: Optional[threading.Thread] = None
-        self._thread_mu = threading.Lock()
+        self._thread_mu = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
         # Warn early if no admins are configured — /lock will be unusable.
         try:
@@ -158,7 +157,7 @@ class ChatLockManager:
                     "will be unavailable. Set ADMIN_USER_IDS in .env to enable."
                 )
         except Exception:
-            pass
+            logger.debug("Failed to check admin_user_ids during init", exc_info=True)
 
     def is_admin(self, user_id: str) -> bool:
         """Check if *user_id* is in the configured admin list."""
@@ -368,7 +367,7 @@ class ChatLockManager:
 # ---------------------------------------------------------------------------
 
 _instance: Optional[ChatLockManager] = None
-_instance_lock = threading.Lock()
+_instance_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
 
 def get_chat_lock_manager() -> ChatLockManager:
@@ -379,6 +378,19 @@ def get_chat_lock_manager() -> ChatLockManager:
             if _instance is None:
                 _instance = ChatLockManager()
     return _instance
+
+
+def shutdown_if_active() -> None:
+    """Best-effort shutdown of the singleton if it was ever created.
+
+    Safe to call multiple times (idempotent) and even before the singleton
+    is initialized — in that case it simply does nothing.
+    """
+    if _instance is not None:
+        try:
+            _instance.shutdown()
+        except Exception:
+            logger.debug("ChatLockManager shutdown error", exc_info=True)
 
 
 def _reset_chat_lock_manager_for_testing() -> None:

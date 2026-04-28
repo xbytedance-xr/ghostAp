@@ -6,7 +6,7 @@ from typing import Awaitable, Callable
 
 __all__ = ["register_cleanup", "run_all_cleanups", "cleanup_count"]
 
-_lock = threading.Lock()
+_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 _cleanup_fns: set[Callable[[], Awaitable[None]]] = set()
 
 

@@ -26,7 +26,7 @@ CACHE_TTL_SECONDS = 300
 
 class CocoModelManager:
     def __init__(self):
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._cached_models: Optional[list[CocoModel]] = None
         self._cache_time: float = 0
         self._current_model: Optional[str] = None
@@ -188,7 +188,7 @@ class CocoModelManager:
 
 
 _manager: Optional[CocoModelManager] = None
-_manager_lock = threading.Lock()
+_manager_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
 
 def get_coco_model_manager() -> CocoModelManager:

@@ -11,7 +11,7 @@ from ..models import ModelOptionView, ToolOptionView
 from ..shared import build_responsive_layout
 from ..styles import THRESHOLDS, UI_TEXT
 from .core import CoreBuilder
-from .lock import _build_lock_help_body
+from .lock import build_lock_help_body
 
 if TYPE_CHECKING:
     from src.sandbox.executor import ExecutionResult
@@ -773,6 +773,7 @@ class SystemBuilder:
         is_admin: bool = False,
         lock_enabled: bool = False,
         chat_id: str = "",
+        no_admin_configured: bool = False,
     ) -> tuple[str, str]:
         """Build a categorized help card."""
         from ...mode import InteractionMode
@@ -808,7 +809,10 @@ class SystemBuilder:
         # Post-cache injection: replace the lock-body placeholder with
         # live lock state so that lru_cache never freezes stale lock info.
         if lock_enabled and _LOCK_BODY_PLACEHOLDER in card_json:
-            live_body = _build_lock_help_body(is_admin=is_admin, chat_id=chat_id)
+            live_body = build_lock_help_body(is_admin=is_admin, chat_id=chat_id)
+            # FS-09: Append admin guidance when ADMIN_USER_IDS is empty
+            if no_admin_configured:
+                live_body += "\n\n💡 如需群锁定功能，请联系 Bot 部署者完成配置"
             # The placeholder lives inside a json.dumps'd string, so we must
             # escape the replacement to keep the JSON valid (e.g. \n → \\n).
             _escaped = json.dumps(live_body, ensure_ascii=False)[1:-1]  # strip surrounding quotes

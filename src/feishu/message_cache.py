@@ -18,7 +18,7 @@ class MessageCache:
         self._ttl = ttl
         self._max_size = max_size
         self._cleanup_interval = cleanup_interval
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._last_cleanup = time.time()
         self._cleanup_thread: Optional[threading.Thread] = None
         self._running = False

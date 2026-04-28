@@ -32,7 +32,7 @@ class _CacheEntry:
 
 
 _cache: OrderedDict[str, _CacheEntry] = OrderedDict()
-_cache_lock = threading.Lock()
+_cache_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
 
 def resolve_display_name(

@@ -22,10 +22,14 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NewType, Union
 
 from ..shared import build_responsive_layout
 from ..styles import FOOTER_STATUS, TERMINAL_MARKERS, UI_TEXT
+
+# Type-level distinction: FOOTER_STATUS dict keys vs pre-formatted display strings.
+# At runtime FooterStatusKey is just ``str`` (NewType is a no-op).
+FooterStatusKey = NewType("FooterStatusKey", str)
 
 if TYPE_CHECKING:
     from ..models import CardLayoutSpec
@@ -114,29 +118,14 @@ class UnifiedCardLayout:
             )
 
         # ---- 10+11. 按钮 ----
+        if spec.footer_status:
+            elements.extend(_build_footer_element(spec.footer_status))
+
         if spec.button_elements:
             # 引擎模式：预构建的按钮 elements（含 grouped layout 等）
-            # Footer status line before buttons (Task 10)
-            if spec.footer_status:
-                footer_text = FOOTER_STATUS.get(spec.footer_status, spec.footer_status)
-                elements.append({"tag": "hr"})
-                elements.append({
-                    "tag": "markdown",
-                    "content": footer_text,
-                    "text_size": "notation",
-                })
             elements.append({"tag": "hr"})
             elements.extend(spec.button_elements)
         elif spec.buttons:
-            # Footer status line before buttons
-            if spec.footer_status:
-                footer_text = FOOTER_STATUS.get(spec.footer_status, spec.footer_status)
-                elements.append({"tag": "hr"})
-                elements.append({
-                    "tag": "markdown",
-                    "content": footer_text,
-                    "text_size": "notation",
-                })
             button_elements = build_responsive_layout(spec.buttons)
             if button_elements:
                 elements.append({"tag": "hr"})
@@ -152,6 +141,19 @@ class UnifiedCardLayout:
 
 
 # ---- 内部辅助 ----
+
+
+def _build_footer_element(footer_status: Union[FooterStatusKey, str]) -> list[dict]:
+    """构建 footer 状态行元素（hr + notation markdown）。
+
+    ``footer_status`` may be a :class:`FooterStatusKey` (translated via
+    ``FOOTER_STATUS`` dict) or a pre-formatted display string (used as-is).
+    """
+    footer_text = FOOTER_STATUS.get(footer_status, footer_status)
+    return [
+        {"tag": "hr"},
+        {"tag": "markdown", "content": footer_text, "text_size": "notation"},
+    ]
 
 def _build_path_and_meta(spec: CardLayoutSpec) -> dict:
     """构建路径 + 状态/元数据行。

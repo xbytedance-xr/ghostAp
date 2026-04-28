@@ -1,0 +1,414 @@
+"""Configuration validation tests — cross-field constraints and friendly error output.
+
+Covers:
+- AC-R14: min_timeout > timeout is rejected
+- AC-R14: hard_floor > min_timeout is rejected
+- AC-R14: retry_max_delay > timeout is rejected
+- AC-R14: total retry budget exceeded is rejected
+- AC-R15: spec_review_max_parallel boundary values (0, -1, 21) rejected
+- AC-R16: get_settings() friendly error output includes default values
+- AC-R05: isinstance(e, pydantic.ValidationError) branch is hit
+- AC-R12: cross-field error includes recommended combination values
+- AC-R31: cross-field validation errors use '[跨字段校验]' label when loc is empty
+"""
+
+import sys
+from io import StringIO
+from unittest.mock import patch
+
+import pytest
+
+from src.config import Settings, _reset_settings_for_testing
+
+
+@pytest.fixture(autouse=True)
+def reset_singleton():
+    """Ensure config singleton is reset before each test."""
+    _reset_settings_for_testing()
+    yield
+    _reset_settings_for_testing()
+
+
+class TestMinTimeoutGtTimeoutRejected:
+    """AC-R14: spec_review_min_timeout > spec_review_timeout must raise ValidationError."""
+
+    def test_min_timeout_exceeds_timeout_raises(self):
+        with pytest.raises(Exception) as exc_info:
+            Settings(spec_review_min_timeout=150, spec_review_timeout=120)
+        error_str = str(exc_info.value)
+        assert "spec_review_min_timeout" in error_str or "min_timeout" in error_str
+
+    def test_min_timeout_equals_timeout_ok(self):
+        """Equal values should be acceptable (with compatible retry budget)."""
+        s = Settings(
+            spec_review_min_timeout=120,
+            spec_review_timeout=120,
+            spec_review_retry_max_attempts=0,  # Disable retry to avoid budget constraint
+        )
+        assert s.spec_review_min_timeout == 120
+
+    def test_min_timeout_less_than_timeout_ok(self):
+        s = Settings(spec_review_min_timeout=30, spec_review_timeout=120)
+        assert s.spec_review_min_timeout == 30
+
+
+class TestHardFloorGtMinTimeoutRejected:
+    """AC-R14: spec_review_hard_floor > spec_review_min_timeout must raise ValidationError."""
+
+    def test_hard_floor_exceeds_min_timeout_raises(self):
+        with pytest.raises(Exception) as exc_info:
+            Settings(spec_review_hard_floor=50, spec_review_min_timeout=30)
+        error_str = str(exc_info.value)
+        assert "hard_floor" in error_str or "min_timeout" in error_str
+
+    def test_hard_floor_equals_min_timeout_ok(self):
+        s = Settings(spec_review_hard_floor=30, spec_review_min_timeout=30)
+        assert s.spec_review_hard_floor == 30
+
+
+class TestRetryMaxDelayGtTimeoutRejected:
+    """AC-R14: spec_review_retry_max_delay > spec_review_timeout must raise ValidationError."""
+
+    def test_retry_max_delay_exceeds_timeout_raises(self):
+        with pytest.raises(Exception) as exc_info:
+            Settings(spec_review_retry_max_delay=150, spec_review_timeout=120)
+        error_str = str(exc_info.value)
+        assert "retry_max_delay" in error_str or "timeout" in error_str
+
+    def test_retry_max_delay_equals_timeout_ok(self):
+        s = Settings(
+            spec_review_retry_max_delay=120,
+            spec_review_timeout=120,
+            spec_review_retry_max_attempts=0,  # Disable retry to avoid budget constraint
+        )
+        assert s.spec_review_retry_max_delay == 120
+
+
+class TestRetryBudgetExceededRejected:
+    """AC-R14: (max_delay + min_timeout) * max_attempts > timeout * 2 must raise."""
+
+    def test_budget_exceeded_raises(self):
+        # (60 + 60) * 3 = 360 > 120 * 2 = 240
+        with pytest.raises(Exception) as exc_info:
+            Settings(
+                spec_review_retry_max_delay=60,
+                spec_review_min_timeout=60,
+                spec_review_hard_floor=20,
+                spec_review_timeout=120,
+                spec_review_retry_max_attempts=3,
+            )
+        error_str = str(exc_info.value)
+        assert "budget" in error_str.lower() or "预算" in error_str or "retry" in error_str.lower()
+
+    def test_budget_within_limit_ok(self):
+        # (30 + 30) * 2 = 120 <= 120 * 2 = 240
+        s = Settings(
+            spec_review_retry_max_delay=30,
+            spec_review_min_timeout=30,
+            spec_review_hard_floor=20,
+            spec_review_timeout=120,
+            spec_review_retry_max_attempts=2,
+        )
+        assert s.spec_review_retry_max_attempts == 2
+
+
+class TestMaxParallelBoundaryRejected:
+    """AC-R15: spec_review_max_parallel must be in [1, 20]."""
+
+    def test_zero_raises(self):
+        with pytest.raises(Exception) as exc_info:
+            Settings(spec_review_max_parallel=0)
+        assert "spec_review_max_parallel" in str(exc_info.value)
+
+    def test_negative_raises(self):
+        with pytest.raises(Exception) as exc_info:
+            Settings(spec_review_max_parallel=-1)
+        assert "spec_review_max_parallel" in str(exc_info.value)
+
+    def test_twenty_one_raises(self):
+        with pytest.raises(Exception) as exc_info:
+            Settings(spec_review_max_parallel=21)
+        assert "spec_review_max_parallel" in str(exc_info.value)
+
+    def test_one_ok(self):
+        s = Settings(spec_review_max_parallel=1)
+        assert s.spec_review_max_parallel == 1
+
+    def test_twenty_ok(self):
+        s = Settings(spec_review_max_parallel=20)
+        assert s.spec_review_max_parallel == 20
+
+
+class TestGetSettingsFriendlyErrorWithDefaults:
+    """AC-R16: get_settings() ValidationError output includes default values."""
+
+    def test_friendly_error_includes_default_value(self):
+        """When config validation fails, ConfigurationError should include the field's default value."""
+        from src.config import get_settings, ConfigurationError
+
+        # Patch environment to produce an invalid value for spec_review_max_parallel
+        env_override = {"SPEC_REVIEW_MAX_PARALLEL": "999"}
+
+        with patch.dict("os.environ", env_override, clear=False):
+            _reset_settings_for_testing()
+            with pytest.raises(ConfigurationError) as exc_info:
+                get_settings()
+
+        output = str(exc_info.value)
+        assert "配置错误" in output
+        assert "默认值" in output
+        # The default for spec_review_max_parallel is 3
+        assert "3" in output
+
+
+class TestCrossFieldErrorIncludesRecommendedValues:
+    """AC-R12: cross-field validation error output includes recommended combination values."""
+
+    def test_cross_field_error_includes_recommended_combination(self):
+        from src.config import get_settings, ConfigurationError
+
+        # hard_floor > min_timeout triggers cross-field validation
+        env_override = {
+            "SPEC_REVIEW_HARD_FLOOR": "50",
+            "SPEC_REVIEW_MIN_TIMEOUT": "30",
+        }
+
+        with patch.dict("os.environ", env_override, clear=False):
+            _reset_settings_for_testing()
+            with pytest.raises(ConfigurationError) as exc_info:
+                get_settings()
+
+        output = str(exc_info.value)
+        assert "配置错误" in output
+        assert "推荐组合" in output
+
+
+class TestMainCatchesConfigurationError:
+    """AC-R03: main() catches ConfigurationError and exits gracefully."""
+
+    def test_main_prints_error_and_exits(self):
+        from unittest.mock import patch
+        from src.config import ConfigurationError
+
+        with patch("src.main.Application", side_effect=ConfigurationError("test config error")):
+            with pytest.raises(SystemExit) as exc_info:
+                from src.main import main
+                main()
+
+        assert exc_info.value.code == 1
+
+
+class TestCrossFieldValidationLabel:
+    """AC-R31: cross-field validation errors use '[跨字段校验]' label when loc is empty."""
+
+    def test_cross_field_error_uses_label(self):
+        from src.config import get_settings, ConfigurationError
+
+        # hard_floor > min_timeout triggers @model_validator (cross-field, empty loc)
+        env_override = {
+            "SPEC_REVIEW_HARD_FLOOR": "50",
+            "SPEC_REVIEW_MIN_TIMEOUT": "30",
+        }
+
+        with patch.dict("os.environ", env_override, clear=False):
+            _reset_settings_for_testing()
+            with pytest.raises(ConfigurationError) as exc_info:
+                get_settings()
+
+        output = str(exc_info.value)
+        assert "[跨字段校验]" in output
+
+
+class TestSpecReviewConfigProperty:
+    """AC-T21: Settings.spec_review returns a SpecReviewConfig dataclass view."""
+
+    def test_spec_review_returns_dataclass(self):
+        from src.config import SpecReviewConfig
+        s = Settings()
+        cfg = s.spec_review
+        assert isinstance(cfg, SpecReviewConfig)
+
+    def test_spec_review_fields_match_settings(self):
+        s = Settings(
+            spec_review_timeout=200,
+            spec_review_min_timeout=50,
+            spec_review_hard_floor=25,
+            spec_review_max_parallel=5,
+            spec_review_retry_max_delay=20,
+            spec_review_retry_max_attempts=1,
+            spec_review_failure_circuit_enabled=False,
+            spec_review_failure_max_consecutive=6,
+            spec_review_failure_cooldown_cycles=3,
+            spec_review_failure_max_cooldown_cycles=10,
+        )
+        cfg = s.spec_review
+        assert cfg.timeout == 200
+        assert cfg.min_timeout == 50
+        assert cfg.hard_floor == 25
+        assert cfg.max_parallel == 5
+        assert cfg.retry_max_delay == 20
+        assert cfg.retry_max_attempts == 1
+        assert cfg.failure_circuit_enabled is False
+        assert cfg.failure_max_consecutive == 6
+        assert cfg.failure_cooldown_cycles == 3
+        assert cfg.failure_max_cooldown_cycles == 10
+
+    def test_spec_review_from_env(self):
+        """SpecReviewConfig reflects environment variable overrides."""
+        env_override = {
+            "SPEC_REVIEW_TIMEOUT": "300",
+            "SPEC_REVIEW_MAX_PARALLEL": "7",
+        }
+        with patch.dict("os.environ", env_override, clear=False):
+            s = Settings()
+        cfg = s.spec_review
+        assert cfg.timeout == 300
+        assert cfg.max_parallel == 7
+
+
+class TestPostValidateWarnings:
+    """_post_validate_warnings emits WARNING when realistic retry budget exceeds soft limit."""
+
+    def test_post_validate_warnings_emits_log(self, caplog):
+        """When (retry_max_delay + timeout) * max_attempts > timeout * 2, a WARNING is emitted."""
+        import logging
+        from src.config import _post_validate_warnings
+
+        # Construct settings where realistic_budget > budget_limit but within hard validator:
+        # (40 + 30) * 2 = 140 > 30 * 2 = 60 — triggers soft warning
+        # But (40 + 30) * 2 = 140 <= hard limit check uses min_timeout not base_timeout
+        # Use values that pass hard validation: budget check uses (max_delay + min_timeout) * max_attempts <= timeout * 2
+        # Hard validator: (retry_max_delay + min_timeout) * max_attempts <= timeout * 2
+        # We need: (retry_max_delay + min_timeout) * max_attempts <= timeout * 2 (pass hard)
+        # AND: (retry_max_delay + timeout) * max_attempts > timeout * 2 (trigger soft)
+        # Use: retry_max_delay=50, timeout=120, min_timeout=30, max_attempts=2
+        # Hard: (50 + 30) * 2 = 160 <= 120 * 2 = 240 ✓
+        # Soft: (50 + 120) * 2 = 340 > 120 * 2 = 240 ✓
+        s = Settings(
+            spec_review_retry_max_delay=50,
+            spec_review_timeout=120,
+            spec_review_min_timeout=30,
+            spec_review_hard_floor=20,
+            spec_review_retry_max_attempts=2,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="src.config"):
+            _post_validate_warnings(s)
+
+        assert any("重试实际预算可能超限" in r.message for r in caplog.records), (
+            f"Expected warning not found. Records: {[r.message for r in caplog.records]}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Task 22: Config validation uses uppercase field names
+# ---------------------------------------------------------------------------
+
+
+class TestConfigValidationUppercase:
+    """Validators for lock/chat fields emit uppercase field names in error messages."""
+
+    def test_max_allowed_chat_ids_error_uppercase(self):
+        """max_allowed_chat_ids validator error message contains uppercase field name."""
+        with pytest.raises(Exception) as exc_info:
+            Settings(max_allowed_chat_ids=0)
+        error_str = str(exc_info.value)
+        assert "MAX_ALLOWED_CHAT_IDS" in error_str
+
+    def test_repo_lock_idle_timeout_error_uppercase(self):
+        """repo_lock_idle_timeout validator error message contains uppercase field name."""
+        with pytest.raises(Exception) as exc_info:
+            Settings(repo_lock_idle_timeout=0)
+        error_str = str(exc_info.value)
+        assert "REPO_LOCK_IDLE_TIMEOUT" in error_str
+
+    def test_chat_lock_max_duration_error_uppercase(self):
+        """chat_lock_max_duration validator error message contains uppercase field name."""
+        with pytest.raises(Exception) as exc_info:
+            Settings(chat_lock_max_duration=0)
+        error_str = str(exc_info.value)
+        assert "CHAT_LOCK_MAX_DURATION" in error_str
+
+
+# ---------------------------------------------------------------------------
+# Step-01: lock_confirm_timeout and max_evicted_cache > 0 validators
+# ---------------------------------------------------------------------------
+
+
+class TestLockConfirmTimeoutValidation:
+    """AC-R16: lock_confirm_timeout must be > 0."""
+
+    def test_zero_raises(self):
+        with pytest.raises(Exception) as exc_info:
+            Settings(lock_confirm_timeout=0)
+        assert "LOCK_CONFIRM_TIMEOUT" in str(exc_info.value)
+
+    def test_negative_raises(self):
+        with pytest.raises(Exception) as exc_info:
+            Settings(lock_confirm_timeout=-1)
+        assert "LOCK_CONFIRM_TIMEOUT" in str(exc_info.value)
+
+    def test_positive_ok(self):
+        s = Settings(lock_confirm_timeout=60)
+        assert s.lock_confirm_timeout == 60
+
+
+class TestMaxEvictedCacheValidation:
+    """AC-R16: max_evicted_cache must be > 0."""
+
+    def test_zero_raises(self):
+        with pytest.raises(Exception) as exc_info:
+            Settings(max_evicted_cache=0)
+        assert "MAX_EVICTED_CACHE" in str(exc_info.value)
+
+    def test_negative_raises(self):
+        with pytest.raises(Exception) as exc_info:
+            Settings(max_evicted_cache=-1)
+        assert "MAX_EVICTED_CACHE" in str(exc_info.value)
+
+    def test_positive_ok(self):
+        s = Settings(max_evicted_cache=100)
+        assert s.max_evicted_cache == 100
+
+
+# ---------------------------------------------------------------------------
+# Step-02: lock_backend removed — residual env var silently ignored
+# ---------------------------------------------------------------------------
+
+
+class TestLockBackendRemoved:
+    """AC-R09: lock_backend field removed; residual LOCK_BACKEND env var is ignored."""
+
+    def test_residual_lock_backend_env_ignored(self):
+        with patch.dict("os.environ", {"LOCK_BACKEND": "memory"}, clear=False):
+            s = Settings()
+        assert not hasattr(s, "lock_backend")
+
+
+# ---------------------------------------------------------------------------
+# Step-03: spec_review_parse_failure_default validation
+# ---------------------------------------------------------------------------
+
+
+class TestSpecReviewParseFailureDefault:
+    """AC-R05: spec_review_parse_failure_default accepts 'pass'/'fail', rejects others."""
+
+    def test_default_is_fail(self):
+        s = Settings()
+        assert s.spec_review_parse_failure_default == "fail"
+
+    def test_pass_accepted(self):
+        s = Settings(spec_review_parse_failure_default="pass")
+        assert s.spec_review_parse_failure_default == "pass"
+
+    def test_fail_accepted(self):
+        s = Settings(spec_review_parse_failure_default="fail")
+        assert s.spec_review_parse_failure_default == "fail"
+
+    def test_invalid_value_raises(self):
+        with pytest.raises(Exception):
+            Settings(spec_review_parse_failure_default="maybe")
+
+    def test_spec_review_property_includes_parse_failure_default(self):
+        s = Settings(spec_review_parse_failure_default="pass")
+        assert s.spec_review.parse_failure_default == "pass"

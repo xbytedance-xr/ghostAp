@@ -29,4 +29,4 @@ def test_spec_backpressure(mock_scheduler_cls):
 
     client._reply_message.assert_called_once()
     args = client._reply_message.call_args[0]
-    assert "系统繁忙 (Spec 模式)" in args[1]
+    assert "系统繁忙" in args[1]

@@ -22,6 +22,8 @@ def _mock_settings(admin_ids: list[str]):
     """Return a context manager that patches get_settings to include admin_user_ids."""
     mock_settings = MagicMock()
     mock_settings.admin_user_ids = admin_ids
+    mock_settings.chat_lock_max_duration = 86400
+    mock_settings.chat_lock_cleanup_interval = 60
     return patch("src.chat_lock.get_settings", return_value=mock_settings)
 
 
@@ -395,14 +397,14 @@ class TestLockConfirmationFlow:
         assert self.chat_lock_mgr.is_locked("chat_1") is False
         self.handler.reply_message.assert_called_once()
         reply_text = self.handler.reply_message.call_args[0][1]
-        assert "失效" in reply_text or "/lock" in reply_text
+        assert "过期" in reply_text or "重新发送" in reply_text
 
     def test_cancel_lock_returns_deprecated_hint(self):
         """handle_cancel_lock replies with deprecation message."""
         self.handler.handle_cancel_lock("msg_1", "chat_1")
         self.handler.reply_message.assert_called_once()
         reply_text = self.handler.reply_message.call_args[0][1]
-        assert "失效" in reply_text or "/lock" in reply_text
+        assert "过期" in reply_text or "重新发送" in reply_text
 
 
 # ---------------------------------------------------------------------------
@@ -990,6 +992,7 @@ class TestShouldBlockCardActionExhaustive:
             self.mgr = ChatLockManager()
             self.mgr.lock_chat("chat1", ADMIN_ID)
         yield
+        self.mgr.shutdown()
 
     def test_not_locked_allows_all(self):
         with _mock_settings([ADMIN_ID]):
@@ -1047,6 +1050,7 @@ class TestChatLockInvalidChatId:
             mgr = ChatLockManager()
             result = mgr.lock_chat("", ADMIN_ID)
             assert result.success is True
+            mgr.shutdown()
 
     def test_is_locked_empty(self):
         with _mock_settings([ADMIN_ID]):
@@ -1066,3 +1070,156 @@ class TestChatLockInvalidChatId:
             assert result.success is True
             assert result.code == ChatLockCode.NOT_LOCKED
             assert result.idempotent is True
+
+
+# ---------------------------------------------------------------------------
+# Task 19: TestCleanupConcurrency (AC-R13)
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupConcurrency:
+    """AC-R13: _cleanup_expired() running concurrently with lock_chat() should not raise."""
+
+    def test_cleanup_with_concurrent_lock_no_runtime_error(self):
+        """10 threads lock/unlock + 1 thread runs _cleanup_expired — no RuntimeError."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import time
+
+        mgr = ChatLockManager()
+        # Use a very short max_duration so cleanup actually finds expired locks
+        mgr._max_duration = 0.01
+        errors = []
+        stop_flag = False
+
+        def _lock_worker(i: int):
+            try:
+                for _ in range(50):
+                    if stop_flag:
+                        break
+                    with _mock_settings([ADMIN_ID]):
+                        chat = f"chat_{i % 5}"
+                        r = mgr.lock_chat(chat, ADMIN_ID, sender_name="Worker")
+                        if r.success:
+                            time.sleep(0.001)
+                            mgr.unlock_chat(chat, ADMIN_ID)
+            except Exception as e:
+                errors.append(e)
+
+        def _cleanup_worker():
+            try:
+                for _ in range(50):
+                    if stop_flag:
+                        break
+                    mgr._cleanup_expired()
+                    time.sleep(0.002)
+            except Exception as e:
+                errors.append(e)
+
+        with ThreadPoolExecutor(max_workers=11) as pool:
+            futures = [pool.submit(_lock_worker, i) for i in range(10)]
+            futures.append(pool.submit(_cleanup_worker))
+            for f in as_completed(futures):
+                f.result()
+
+        stop_flag = True
+        assert errors == [], f"Concurrent cleanup raised: {errors}"
+        mgr.shutdown()
+
+
+class TestShutdownDuringActiveLock:
+    """shutdown() racing with active lock_chat must not deadlock or raise."""
+
+    def test_shutdown_during_active_lock(self):
+        import threading
+        import time
+
+        m = ChatLockManager(max_duration=86400, cleanup_interval=60)
+        errors = []
+
+        def hold_lock():
+            try:
+                with _mock_settings([ADMIN_ID]):
+                    m.lock_chat("chat_active", ADMIN_ID, sender_name="Holder")
+                time.sleep(2)
+            except Exception as e:
+                errors.append(e)
+
+        t = threading.Thread(target=hold_lock)
+        t.start()
+        time.sleep(0.1)  # Ensure thread has acquired the lock
+
+        # shutdown() should not deadlock
+        m.shutdown()
+        t.join(timeout=5)
+
+        assert not t.is_alive(), "Thread is still alive — possible deadlock"
+        assert not errors, f"Unexpected errors during active lock: {errors}"
+
+
+class TestLockChatAfterShutdown:
+    """AC-26: lock_chat() after shutdown() must not crash and return a clear result."""
+
+    def test_lock_chat_after_shutdown(self):
+        m = ChatLockManager(max_duration=86400, cleanup_interval=60)
+        m.shutdown()
+
+        # lock_chat after shutdown should not crash
+        with _mock_settings([ADMIN_ID]):
+            result = m.lock_chat("chat_post_shutdown", ADMIN_ID, sender_name="Admin")
+
+        # Behaviour: lock_chat still works (in-memory dict, no background thread needed)
+        # but cleanup thread won't restart because stop_event is already set.
+        assert result.success is True or result.code is not None, (
+            "lock_chat after shutdown must return a valid ChatLockResult"
+        )
+        # Verify no exception was raised — the test reaching here is sufficient.
+
+    def test_unlock_after_shutdown(self):
+        m = ChatLockManager(max_duration=86400, cleanup_interval=60)
+        with _mock_settings([ADMIN_ID]):
+            m.lock_chat("chat_x", ADMIN_ID)
+        m.shutdown()
+
+        # unlock after shutdown should still work
+        with _mock_settings([ADMIN_ID]):
+            result = m.unlock_chat("chat_x", ADMIN_ID)
+        assert result.success is True
+
+    def test_should_block_after_shutdown(self):
+        m = ChatLockManager(max_duration=86400, cleanup_interval=60)
+        with _mock_settings([ADMIN_ID]):
+            m.lock_chat("chat_y", ADMIN_ID)
+        m.shutdown()
+
+        # should_block must still work
+        with _mock_settings([ADMIN_ID]):
+            assert m.should_block("chat_y", "non_admin") is True
+            assert m.should_block("chat_y", ADMIN_ID) is False
+
+
+# ---------------------------------------------------------------------------
+# Task 37: shutdown_if_active idempotent module-level function
+# ---------------------------------------------------------------------------
+
+
+class TestShutdownIfActive:
+    """shutdown_if_active() is idempotent and safe when no instance exists."""
+
+    def test_no_instance_is_noop(self):
+        from src import chat_lock as _mod
+        _orig = _mod._instance
+        try:
+            _mod._instance = None
+            _mod.shutdown_if_active()  # should not raise
+        finally:
+            _mod._instance = _orig
+
+    def test_double_call_is_idempotent(self):
+        from src import chat_lock as _mod
+        m = ChatLockManager(max_duration=86400, cleanup_interval=60)
+        _mod._instance = m
+        try:
+            _mod.shutdown_if_active()
+            _mod.shutdown_if_active()  # second call should not raise
+        finally:
+            _mod._instance = None

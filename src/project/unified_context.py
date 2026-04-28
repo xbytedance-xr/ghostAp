@@ -237,6 +237,11 @@ class UnifiedContext:
     容量限制：
         - entries:  滚动窗口，默认保留最近 200 条
         - versions: 默认保留最近 50 个版本
+
+    Thread-safety:
+        All mutable state (_entries, _versions, _last_bridge, _entry_index,
+        _next_seq, _current_version_number) is protected by ``_mu``.
+        Callers may invoke any public method from any thread.
     """
 
     def __init__(self, project_id: str, max_entries: int = 200, max_versions: int = 50):
@@ -245,6 +250,9 @@ class UnifiedContext:
         self.max_versions: int = max_versions
         self.created_at: float = time.time()
         self.updated_at: float = time.time()
+
+        # Internal lock protecting all mutable state below.
+        self._mu = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
         self._entries: list[ContextEntry] = []
         self._versions: list[ContextVersion] = []
@@ -261,48 +269,54 @@ class UnifiedContext:
 
     @property
     def entries(self) -> list[ContextEntry]:
-        return list(self._entries)
+        with self._mu:
+            return list(self._entries)
 
     @property
     def versions(self) -> list[ContextVersion]:
-        return list(self._versions)
+        with self._mu:
+            return list(self._versions)
 
     @property
     def current_version_number(self) -> int:
-        return self._current_version_number
+        with self._mu:
+            return self._current_version_number
 
     @property
     def last_bridge_summary(self) -> Optional[ContextBridgeSummary]:
-        return self._last_bridge
+        with self._mu:
+            return self._last_bridge
 
     @property
     def entry_count(self) -> int:
-        return len(self._entries)
+        with self._mu:
+            return len(self._entries)
 
     # ---- Create: 添加条目 ----
 
     def add_entry(self, entry: ContextEntry) -> ContextEntry:
         """添加一条上下文记录，超出容量时淘汰最旧的条目"""
-        # 为新 entry 分配单调递增的 seq，便于版本 diff
-        try:
-            if getattr(entry, "seq", 0) <= 0:
-                entry.seq = self._next_seq
-                self._next_seq += 1
-        except Exception:
-            # 极端情况下（比如被外部替换为非 dataclass 对象）兜底不影响主流程
-            pass
+        with self._mu:
+            # 为新 entry 分配单调递增的 seq，便于版本 diff
+            try:
+                if getattr(entry, "seq", 0) <= 0:
+                    entry.seq = self._next_seq
+                    self._next_seq += 1
+            except Exception:
+                # 极端情况下（比如被外部替换为非 dataclass 对象）兜底不影响主流程
+                logger.debug("[Context] seq assignment failed", exc_info=True)
 
-        self._entries.append(entry)
-        self._entry_index[entry.entry_id] = len(self._entries) - 1
+            self._entries.append(entry)
+            self._entry_index[entry.entry_id] = len(self._entries) - 1
 
-        if self.max_entries > 0 and len(self._entries) > self.max_entries:
-            evicted = len(self._entries) - self.max_entries
-            self._entries = self._entries[-self.max_entries :]
-            self._rebuild_index()
-            logger.debug("[Context:%s] 淘汰 %d 条旧条目，当前 %d 条", self.project_id, evicted, len(self._entries))
+            if self.max_entries > 0 and len(self._entries) > self.max_entries:
+                evicted = len(self._entries) - self.max_entries
+                self._entries = self._entries[-self.max_entries :]
+                self._rebuild_index()
+                logger.debug("[Context:%s] 淘汰 %d 条旧条目，当前 %d 条", self.project_id, evicted, len(self._entries))
 
-        self.updated_at = time.time()
-        return entry
+            self.updated_at = time.time()
+            return entry
 
     def add_conversation(
         self,
@@ -367,33 +381,38 @@ class UnifiedContext:
 
     def get_entry(self, entry_id: str) -> Optional[ContextEntry]:
         """按 entry_id 精确查找，O(1)"""
-        idx = self._entry_index.get(entry_id)
-        if idx is not None and idx < len(self._entries):
-            entry = self._entries[idx]
-            if entry.entry_id == entry_id:
-                return entry
-        # 索引失效时回退线性查找
-        for entry in self._entries:
-            if entry.entry_id == entry_id:
-                return entry
-        return None
+        with self._mu:
+            idx = self._entry_index.get(entry_id)
+            if idx is not None and idx < len(self._entries):
+                entry = self._entries[idx]
+                if entry.entry_id == entry_id:
+                    return entry
+            # 索引失效时回退线性查找
+            for entry in self._entries:
+                if entry.entry_id == entry_id:
+                    return entry
+            return None
 
     def get_entries_by_type(self, entry_type: ContextEntryType) -> list[ContextEntry]:
         """按条目类型筛选"""
-        return [e for e in self._entries if e.entry_type == entry_type]
+        with self._mu:
+            return [e for e in self._entries if e.entry_type == entry_type]
 
     def get_entries_by_mode(self, source_mode: ContextSourceMode) -> list[ContextEntry]:
         """按来源模式筛选"""
-        return [e for e in self._entries if e.source_mode == source_mode]
+        with self._mu:
+            return [e for e in self._entries if e.source_mode == source_mode]
 
     def get_recent_entries(self, limit: int = 10) -> list[ContextEntry]:
         """获取最近 N 条条目"""
-        return list(self._entries[-limit:])
+        with self._mu:
+            return list(self._entries[-limit:])
 
     def get_conversations(self, limit: int = 20) -> list[ContextEntry]:
         """获取最近 N 条对话记录"""
-        convs = [e for e in self._entries if e.entry_type == ContextEntryType.CONVERSATION]
-        return convs[-limit:]
+        with self._mu:
+            convs = [e for e in self._entries if e.entry_type == ContextEntryType.CONVERSATION]
+            return convs[-limit:]
 
     def query_entries(
         self,
@@ -403,58 +422,63 @@ class UnifiedContext:
         limit: int = 50,
     ) -> list[ContextEntry]:
         """组合条件查询"""
-        results = self._entries
-        if entry_type is not None:
-            results = [e for e in results if e.entry_type == entry_type]
-        if source_mode is not None:
-            results = [e for e in results if e.source_mode == source_mode]
-        if since is not None:
-            results = [e for e in results if e.created_at >= since]
-        return results[-limit:]
+        with self._mu:
+            results = self._entries
+            if entry_type is not None:
+                results = [e for e in results if e.entry_type == entry_type]
+            if source_mode is not None:
+                results = [e for e in results if e.source_mode == source_mode]
+            if since is not None:
+                results = [e for e in results if e.created_at >= since]
+            return results[-limit:]
 
     # ---- Update: 更新条目 ----
 
     def update_entry(self, entry_id: str, content: Optional[str] = None, metadata: Optional[dict] = None) -> bool:
         """按 entry_id 更新条目的 content 或 metadata"""
-        entry = self.get_entry(entry_id)
-        if entry is None:
-            return False
-        if content is not None:
-            entry.content = content
-        if metadata is not None:
-            entry.metadata.update(metadata)
-        self.updated_at = time.time()
-        return True
+        with self._mu:
+            entry = self._get_entry_unlocked(entry_id)
+            if entry is None:
+                return False
+            if content is not None:
+                entry.content = content
+            if metadata is not None:
+                entry.metadata.update(metadata)
+            self.updated_at = time.time()
+            return True
 
     # ---- Delete: 删除条目 ----
 
     def remove_entry(self, entry_id: str) -> bool:
         """按 entry_id 删除条目"""
-        for i, entry in enumerate(self._entries):
-            if entry.entry_id == entry_id:
-                self._entries.pop(i)
-                self._rebuild_index()
-                self.updated_at = time.time()
-                return True
-        return False
+        with self._mu:
+            for i, entry in enumerate(self._entries):
+                if entry.entry_id == entry_id:
+                    self._entries.pop(i)
+                    self._rebuild_index()
+                    self.updated_at = time.time()
+                    return True
+            return False
 
     def clear_entries(self) -> int:
         """清空所有条目，返回被清除的数量"""
-        count = len(self._entries)
-        self._entries.clear()
-        self._entry_index.clear()
-        self.updated_at = time.time()
-        return count
+        with self._mu:
+            count = len(self._entries)
+            self._entries.clear()
+            self._entry_index.clear()
+            self.updated_at = time.time()
+            return count
 
     def clear_entries_by_mode(self, source_mode: ContextSourceMode) -> int:
         """清除指定模式的所有条目"""
-        before = len(self._entries)
-        self._entries = [e for e in self._entries if e.source_mode != source_mode]
-        self._rebuild_index()
-        removed = before - len(self._entries)
-        if removed > 0:
-            self.updated_at = time.time()
-        return removed
+        with self._mu:
+            before = len(self._entries)
+            self._entries = [e for e in self._entries if e.source_mode != source_mode]
+            self._rebuild_index()
+            removed = before - len(self._entries)
+            if removed > 0:
+                self.updated_at = time.time()
+            return removed
 
     # ---- 版本控制 ----
 
@@ -465,59 +489,63 @@ class UnifiedContext:
         summary: str = "",
     ) -> ContextVersion:
         """在当前时刻创建版本书签"""
-        self._current_version_number += 1
-        last_seq = 0
-        if self._entries:
-            try:
-                last_seq = getattr(self._entries[-1], "seq", 0) or 0
-            except Exception:
-                last_seq = 0
-        version = ContextVersion(
-            version_number=self._current_version_number,
-            reason=reason,
-            source_mode=source_mode,
-            summary=summary,
-            entry_count=len(self._entries),
-            last_seq=last_seq,
-        )
-        self._versions.append(version)
-        if len(self._versions) > self.max_versions:
-            self._versions = self._versions[-self.max_versions :]
-        self.updated_at = time.time()
-        logger.debug("[Context:%s] 创建版本 v%d: %s", self.project_id, version.version_number, reason)
-        return version
+        with self._mu:
+            self._current_version_number += 1
+            last_seq = 0
+            if self._entries:
+                try:
+                    last_seq = getattr(self._entries[-1], "seq", 0) or 0
+                except Exception:
+                    last_seq = 0
+            version = ContextVersion(
+                version_number=self._current_version_number,
+                reason=reason,
+                source_mode=source_mode,
+                summary=summary,
+                entry_count=len(self._entries),
+                last_seq=last_seq,
+            )
+            self._versions.append(version)
+            if len(self._versions) > self.max_versions:
+                self._versions = self._versions[-self.max_versions :]
+            self.updated_at = time.time()
+            logger.debug("[Context:%s] 创建版本 v%d: %s", self.project_id, version.version_number, reason)
+            return version
 
     def get_version(self, version_number: int) -> Optional[ContextVersion]:
         """按版本号查找"""
-        for v in self._versions:
-            if v.version_number == version_number:
-                return v
-        return None
+        with self._mu:
+            for v in self._versions:
+                if v.version_number == version_number:
+                    return v
+            return None
 
     def get_entries_since_version(self, version_number: int) -> list[ContextEntry]:
         """获取某个版本之后新增的所有条目（增量 diff）"""
-        version = self.get_version(version_number)
-        if version is None:
-            return list(self._entries)
+        with self._mu:
+            version = None
+            for v in self._versions:
+                if v.version_number == version_number:
+                    version = v
+                    break
+            if version is None:
+                return list(self._entries)
 
-        # 优先使用 seq 做增量 diff：即使滚动窗口淘汰了旧条目，也能正确返回“仍在窗口内”的新增条目
-        last_seq = getattr(version, "last_seq", 0) or 0
-        if last_seq > 0:
-            results: list[ContextEntry] = []
-            for e in self._entries:
-                try:
-                    if getattr(e, "seq", 0) > last_seq:
-                        results.append(e)
-                except Exception:
-                    continue
-            return results
+            # 优先使用 seq 做增量 diff
+            last_seq = getattr(version, "last_seq", 0) or 0
+            if last_seq > 0:
+                results: list[ContextEntry] = []
+                for e in self._entries:
+                    try:
+                        if getattr(e, "seq", 0) > last_seq:
+                            results.append(e)
+                    except Exception:
+                        continue
+                return results
 
-        # entry_count 记录的是版本创建时的列表长度
-        # 但由于滚动窗口淘汰，实际可用条目可能少于记录值
-        # 此处做安全处理：如果当前总数 <= 版本时的 entry_count，说明版本之后可能没有新增
-        if len(self._entries) <= version.entry_count:
-            return []
-        return list(self._entries[version.entry_count :])
+            if len(self._entries) <= version.entry_count:
+                return []
+            return list(self._entries[version.entry_count :])
 
     # ---- 跨模式桥接 ----
 
@@ -529,83 +557,81 @@ class UnifiedContext:
     ) -> ContextBridgeSummary:
         """
         从近期条目构建跨模式桥接摘要。
-
-        扫描最近的对话、AI 摘要和 Deep Engine 结果，
-        生成 ContextBridgeSummary 供新模式 session 首条 prompt 使用。
         """
-        # 取最近的相关条目
-        bridgeable_types = {
-            ContextEntryType.CONVERSATION,
-            ContextEntryType.AI_SUMMARY,
-            ContextEntryType.DEEP_ENGINE_RESULT,
-            ContextEntryType.FILE_CHANGE,
-        }
-        recent: list[ContextEntry] = []
-        for entry in reversed(self._entries):
-            if len(recent) >= max_items:
-                break
-            if entry.entry_type in bridgeable_types:
-                recent.append(entry)
-        recent.reverse()
+        with self._mu:
+            bridgeable_types = {
+                ContextEntryType.CONVERSATION,
+                ContextEntryType.AI_SUMMARY,
+                ContextEntryType.DEEP_ENGINE_RESULT,
+                ContextEntryType.FILE_CHANGE,
+            }
+            recent: list[ContextEntry] = []
+            for entry in reversed(self._entries):
+                if len(recent) >= max_items:
+                    break
+                if entry.entry_type in bridgeable_types:
+                    recent.append(entry)
+            recent.reverse()
 
-        # 构建摘要文本
-        conversation_lines: list[str] = []
-        files_modified: list[str] = []
-        for entry in recent:
-            if entry.entry_type == ContextEntryType.CONVERSATION:
-                role = entry.metadata.get("role", "unknown")
-                text = entry.content[:300]
-                conversation_lines.append(f"{role}: {text}")
-            elif entry.entry_type == ContextEntryType.DEEP_ENGINE_RESULT:
-                tasks = entry.metadata.get("tasks", [])
-                for t in tasks:
-                    if t.get("status") == "completed" and t.get("result"):
-                        conversation_lines.append(f"[completed task] {t.get('title', '')}: {t['result'][:150]}")
-            elif entry.entry_type == ContextEntryType.FILE_CHANGE:
-                files_modified.append(entry.content)
+            conversation_lines: list[str] = []
+            files_modified: list[str] = []
+            for entry in recent:
+                if entry.entry_type == ContextEntryType.CONVERSATION:
+                    role = entry.metadata.get("role", "unknown")
+                    text = entry.content[:300]
+                    conversation_lines.append(f"{role}: {text}")
+                elif entry.entry_type == ContextEntryType.DEEP_ENGINE_RESULT:
+                    tasks = entry.metadata.get("tasks", [])
+                    for t in tasks:
+                        if t.get("status") == "completed" and t.get("result"):
+                            conversation_lines.append(f"[completed task] {t.get('title', '')}: {t['result'][:150]}")
+                elif entry.entry_type == ContextEntryType.FILE_CHANGE:
+                    files_modified.append(entry.content)
 
-        bridge = ContextBridgeSummary(
-            from_mode=from_mode,
-            to_mode=to_mode,
-            summary_text="\n".join(conversation_lines[-8:]),
-            files_modified=files_modified,
-        )
-        self._last_bridge = bridge
-        self.updated_at = time.time()
-        logger.info(
-            "[Context:%s] 构建桥接摘要: %s -> %s, %d 条对话, %d 个文件变更",
-            self.project_id,
-            from_mode.value,
-            to_mode.value,
-            len(conversation_lines),
-            len(files_modified),
-        )
-        return bridge
+            bridge = ContextBridgeSummary(
+                from_mode=from_mode,
+                to_mode=to_mode,
+                summary_text="\n".join(conversation_lines[-8:]),
+                files_modified=files_modified,
+            )
+            self._last_bridge = bridge
+            self.updated_at = time.time()
+            logger.info(
+                "[Context:%s] 构建桥接摘要: %s -> %s, %d 条对话, %d 个文件变更",
+                self.project_id,
+                from_mode.value,
+                to_mode.value,
+                len(conversation_lines),
+                len(files_modified),
+            )
+            return bridge
 
     def consume_bridge_summary(self) -> Optional[ContextBridgeSummary]:
         """取出并消费桥接摘要（取出后清空，避免重复注入）"""
-        bridge = self._last_bridge
-        self._last_bridge = None
-        if bridge:
-            logger.info(
-                "[Context:%s] 消费桥接摘要: %s -> %s", self.project_id, bridge.from_mode.value, bridge.to_mode.value
-            )
-        return bridge
+        with self._mu:
+            bridge = self._last_bridge
+            self._last_bridge = None
+            if bridge:
+                logger.info(
+                    "[Context:%s] 消费桥接摘要: %s -> %s", self.project_id, bridge.from_mode.value, bridge.to_mode.value
+                )
+            return bridge
 
     # ---- 序列化 ----
 
     def to_dict(self) -> dict:
-        return {
-            "project_id": self.project_id,
-            "entries": [e.to_dict() for e in self._entries],
-            "versions": [v.to_dict() for v in self._versions],
-            "current_version_number": self._current_version_number,
-            "last_bridge_summary": self._last_bridge.to_dict() if self._last_bridge else None,
-            "max_entries": self.max_entries,
-            "max_versions": self.max_versions,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-        }
+        with self._mu:
+            return {
+                "project_id": self.project_id,
+                "entries": [e.to_dict() for e in self._entries],
+                "versions": [v.to_dict() for v in self._versions],
+                "current_version_number": self._current_version_number,
+                "last_bridge_summary": self._last_bridge.to_dict() if self._last_bridge else None,
+                "max_entries": self.max_entries,
+                "max_versions": self.max_versions,
+                "created_at": self.created_at,
+                "updated_at": self.updated_at,
+            }
 
     @classmethod
     def from_dict(cls, data: dict) -> "UnifiedContext":
@@ -634,8 +660,20 @@ class UnifiedContext:
 
     # ---- 内部方法 ----
 
+    def _get_entry_unlocked(self, entry_id: str) -> Optional[ContextEntry]:
+        """按 entry_id 查找（调用方必须已持有 _mu）。"""
+        idx = self._entry_index.get(entry_id)
+        if idx is not None and idx < len(self._entries):
+            entry = self._entries[idx]
+            if entry.entry_id == entry_id:
+                return entry
+        for entry in self._entries:
+            if entry.entry_id == entry_id:
+                return entry
+        return None
+
     def _rebuild_index(self):
-        """重建 entry_id -> index 映射"""
+        """重建 entry_id -> index 映射（调用方必须已持有 _mu）"""
         self._entry_index = {e.entry_id: i for i, e in enumerate(self._entries)}
 
 
@@ -649,7 +687,8 @@ class UnifiedContextStore:
     项目级上下文的内存存储管理器。
 
     特性：
-        - 以 project_id 为 key，每个项目独立的 UnifiedContext 实例
+        - 以 {chat_id}:{project_id} 复合键存储，每个群×项目独立的 UnifiedContext 实例
+        - 不同群绑定同一项目时对话历史、bridge summary、版本书签完全隔离
         - 服务运行期间持续生效，服务重启后自动重置
         - 线程安全（threading.Lock）
         - O(1) 的项目上下文查找
@@ -658,47 +697,56 @@ class UnifiedContextStore:
 
     def __init__(self, default_max_entries: int = 200, default_max_versions: int = 50):
         self._store: dict[str, UnifiedContext] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._default_max_entries = default_max_entries
         self._default_max_versions = default_max_versions
 
+    @staticmethod
+    def _composite_key(chat_id: str, project_id: str) -> str:
+        """Build the ``{chat_id}:{project_id}`` composite key."""
+        return f"{chat_id}:{project_id}"
+
     # ---- Create / Read ----
 
-    def get_or_create(self, project_id: str) -> UnifiedContext:
+    def get_or_create(self, project_id: str, *, chat_id: str = "") -> UnifiedContext:
         """获取项目的上下文，不存在则自动创建"""
+        key = self._composite_key(chat_id, project_id)
         with self._lock:
-            if project_id not in self._store:
-                self._store[project_id] = UnifiedContext(
+            if key not in self._store:
+                self._store[key] = UnifiedContext(
                     project_id=project_id,
                     max_entries=self._default_max_entries,
                     max_versions=self._default_max_versions,
                 )
-                logger.info("[ContextStore] 为项目 %s 创建统一上下文", project_id)
-            return self._store[project_id]
+                logger.info("[ContextStore] 为 %s 创建统一上下文", key)
+            return self._store[key]
 
-    def get(self, project_id: str) -> Optional[UnifiedContext]:
+    def get(self, project_id: str, *, chat_id: str = "") -> Optional[UnifiedContext]:
         """获取项目的上下文，不存在返回 None"""
+        key = self._composite_key(chat_id, project_id)
         with self._lock:
-            return self._store.get(project_id)
+            return self._store.get(key)
 
-    def has(self, project_id: str) -> bool:
+    def has(self, project_id: str, *, chat_id: str = "") -> bool:
         """检查项目上下文是否存在"""
+        key = self._composite_key(chat_id, project_id)
         with self._lock:
-            return project_id in self._store
+            return key in self._store
 
     def list_project_ids(self) -> list[str]:
-        """列出所有有上下文的项目 ID"""
+        """列出所有有上下文的复合键"""
         with self._lock:
             return list(self._store.keys())
 
     # ---- Delete ----
 
-    def remove(self, project_id: str) -> bool:
+    def remove(self, project_id: str, *, chat_id: str = "") -> bool:
         """移除项目的上下文，返回是否成功"""
+        key = self._composite_key(chat_id, project_id)
         with self._lock:
-            removed = self._store.pop(project_id, None) is not None
+            removed = self._store.pop(key, None) is not None
             if removed:
-                logger.info("[ContextStore] 移除项目 %s 的统一上下文", project_id)
+                logger.info("[ContextStore] 移除 %s 的统一上下文", key)
             return removed
 
     def clear(self) -> int:
@@ -790,6 +838,8 @@ class ProjectContextManager:
         initial_entries: Optional[list[ContextEntry]] = None,
         max_entries: int = 200,
         max_versions: int = 50,
+        *,
+        chat_id: str = "",
     ) -> ContextResult:
         """
         为指定项目创建上下文。
@@ -802,6 +852,7 @@ class ProjectContextManager:
             initial_entries: 可选的初始条目列表
             max_entries:     条目滚动窗口上限
             max_versions:    版本数上限
+            chat_id:         聊天会话标识，用于多会话隔离
 
         Returns:
             ContextResult，data 字段为创建的 UnifiedContext
@@ -813,11 +864,11 @@ class ProjectContextManager:
                 project_id=project_id,
             )
 
-        if self._store.has(project_id):
+        if self._store.has(project_id, chat_id=chat_id):
             return ContextResult(
                 success=False,
                 message=f"项目 {project_id} 的上下文已存在",
-                data=self._store.get(project_id),
+                data=self._store.get(project_id, chat_id=chat_id),
                 project_id=project_id,
             )
 
@@ -832,8 +883,9 @@ class ProjectContextManager:
                 ctx.add_entry(entry)
 
         # 直接写入 store 内部（需要穿过锁）
+        key = self._store._composite_key(chat_id, project_id)
         with self._store._lock:
-            self._store._store[project_id] = ctx
+            self._store._store[key] = ctx
 
         return ContextResult(
             success=True,
@@ -851,6 +903,8 @@ class ProjectContextManager:
         entry_type: Optional[ContextEntryType] = None,
         source_mode: Optional[ContextSourceMode] = None,
         recent_limit: Optional[int] = None,
+        *,
+        chat_id: str = "",
     ) -> ContextResult:
         """
         查询指定项目的上下文。
@@ -867,6 +921,7 @@ class ProjectContextManager:
             entry_type:      按条目类型筛选
             source_mode:     按来源模式筛选
             recent_limit:    只返回最近 N 条条目
+            chat_id:         聊天会话标识，用于多会话隔离
 
         Returns:
             ContextResult，data 字段为查询结果 dict
@@ -878,7 +933,7 @@ class ProjectContextManager:
                 project_id=project_id,
             )
 
-        ctx = self._store.get(project_id)
+        ctx = self._store.get(project_id, chat_id=chat_id)
         if ctx is None:
             return ContextResult(
                 success=False,
@@ -927,6 +982,8 @@ class ProjectContextManager:
         mode_transition: Optional[dict] = None,
         deep_result: Optional[dict] = None,
         create_if_missing: bool = True,
+        *,
+        chat_id: str = "",
     ) -> ContextResult:
         """
         更新指定项目的上下文：追加条目或批量写入。
@@ -956,7 +1013,7 @@ class ProjectContextManager:
                 project_id=project_id,
             )
 
-        ctx = self._store.get(project_id)
+        ctx = self._store.get(project_id, chat_id=chat_id)
         if ctx is None:
             if not create_if_missing:
                 return ContextResult(
@@ -964,7 +1021,7 @@ class ProjectContextManager:
                     message=f"项目 {project_id} 的上下文不存在",
                     project_id=project_id,
                 )
-            ctx = self._store.get_or_create(project_id)
+            ctx = self._store.get_or_create(project_id, chat_id=chat_id)
 
         added = 0
 
@@ -1029,6 +1086,8 @@ class ProjectContextManager:
         project_id: str,
         entry_id: Optional[str] = None,
         source_mode: Optional[ContextSourceMode] = None,
+        *,
+        chat_id: str = "",
     ) -> ContextResult:
         """
         删除上下文数据。
@@ -1055,7 +1114,7 @@ class ProjectContextManager:
 
         # 删除单条条目
         if entry_id is not None:
-            ctx = self._store.get(project_id)
+            ctx = self._store.get(project_id, chat_id=chat_id)
             if ctx is None:
                 return ContextResult(
                     success=False,
@@ -1078,7 +1137,7 @@ class ProjectContextManager:
 
         # 删除指定模式的所有条目
         if source_mode is not None:
-            ctx = self._store.get(project_id)
+            ctx = self._store.get(project_id, chat_id=chat_id)
             if ctx is None:
                 return ContextResult(
                     success=False,
@@ -1094,7 +1153,7 @@ class ProjectContextManager:
             )
 
         # 删除整个项目上下文
-        if self._store.remove(project_id):
+        if self._store.remove(project_id, chat_id=chat_id):
             return ContextResult(
                 success=True,
                 message=f"项目 {project_id} 的上下文已删除",
@@ -1110,12 +1169,13 @@ class ProjectContextManager:
 
     # ---- 5. contextExists ----
 
-    def context_exists(self, project_id: str) -> ContextResult:
+    def context_exists(self, project_id: str, *, chat_id: str = "") -> ContextResult:
         """
         检查指定项目的上下文是否存在。
 
         Args:
             project_id: 项目唯一标识
+            chat_id:    聊天会话标识，用于多会话隔离
 
         Returns:
             ContextResult，data 字段为 {"exists": bool, "entry_count": int}
@@ -1128,7 +1188,7 @@ class ProjectContextManager:
                 project_id=project_id,
             )
 
-        ctx = self._store.get(project_id)
+        ctx = self._store.get(project_id, chat_id=chat_id)
         exists = ctx is not None
         entry_count = ctx.entry_count if ctx else 0
 

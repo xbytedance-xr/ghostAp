@@ -27,6 +27,7 @@ __all__ = [
     "_verify_legacy_sha256_fallback",
     "verify_command_sig",
     "format_elapsed_ago",
+    "format_friendly_duration",
     "format_lock_duration",
 ]
 
@@ -74,6 +75,21 @@ def format_elapsed_ago(elapsed_seconds: float) -> str:
     days = int(elapsed // 86400)
     hours = int((elapsed % 86400) // 3600)
     return UI_TEXT["lock_duration_days"].format(d=days, h=hours)
+
+
+def format_friendly_duration(seconds: float) -> str:
+    """Format a duration into a friendly Chinese string without '前' suffix.
+
+    - < 60s  → "X 秒"
+    - < 3600s → "约 X 分钟"
+    - < 86400s → "约 X 小时 Y 分钟"
+    - >= 86400s → "约 X 天 Y 小时"
+
+    NOTE: Canonical implementation now lives in ``src.utils.text``.
+    This wrapper re-exports for backward compatibility.
+    """
+    from src.utils.text import format_friendly_duration as _impl
+    return _impl(seconds)
 
 
 def format_lock_duration(locked_at_mono: float) -> str:

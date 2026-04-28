@@ -15,13 +15,14 @@ Step 7 wires it into ReviewPipeline.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
 from typing import Optional
 
 from ..engine_base import PerspectiveReview, ReviewPerspective
-from ..card.styles import UI_TEXT
+from .constants import SPEC_UI_TEXT
 from .perspective_worker import (
     PerspectiveOutcome,
     ReviewErrorCode,
@@ -97,18 +98,23 @@ class CycleBudget:
         }
 
 
-def _budget_exceeded_outcome(perspective: ReviewPerspective, elapsed_ms: int) -> PerspectiveOutcome:
+def _budget_exceeded_outcome(
+    perspective: ReviewPerspective,
+    elapsed_ms: int,
+    budget_snapshot: str = "",
+) -> PerspectiveOutcome:
     return PerspectiveOutcome(
         perspective=perspective,
         review=PerspectiveReview(
             perspective=perspective,
             passed=False,
-            suggestions=[UI_TEXT["review_budget_timeout"]],
+            suggestions=[SPEC_UI_TEXT["review_budget_timeout"]],
             summary="预算超时",
         ),
         elapsed_ms=elapsed_ms,
         error="cycle_budget_exceeded",
         error_code=ReviewErrorCode.BUDGET_EXCEEDED,
+        raw_preview=budget_snapshot,
     )
 
 
@@ -141,7 +147,8 @@ def run_with_budget(
 
     if budget.exceeded():
         logger.warning("[CycleBudget] already exceeded at start; skipping all perspectives")
-        skipped = [_budget_exceeded_outcome(b.worker.perspective, 0) for b in bindings]
+        _snap = json.dumps(budget.snapshot(), ensure_ascii=False)
+        skipped = [_budget_exceeded_outcome(b.worker.perspective, 0, budget_snapshot=_snap) for b in bindings]
         skipped.sort(key=lambda o: order.get(o.perspective, 999))
         return skipped
 
@@ -155,7 +162,8 @@ def run_with_budget(
                 remaining,
                 min_per_worker_s,
             )
-            skipped = [_budget_exceeded_outcome(b.worker.perspective, 0) for b in bindings]
+            _snap = json.dumps(budget.snapshot(), ensure_ascii=False)
+            skipped = [_budget_exceeded_outcome(b.worker.perspective, 0, budget_snapshot=_snap) for b in bindings]
             skipped.sort(key=lambda o: order.get(o.perspective, 999))
             return skipped
         per_worker_timeout = remaining
@@ -179,7 +187,8 @@ def run_with_budget(
                 "[CycleBudget] missing outcome for %s; synthesizing budget-exceeded FAIL",
                 b.worker.perspective.name,
             )
-            outcomes.append(_budget_exceeded_outcome(b.worker.perspective, elapsed_ms))
+            _snap = json.dumps(budget.snapshot(), ensure_ascii=False)
+            outcomes.append(_budget_exceeded_outcome(b.worker.perspective, elapsed_ms, budget_snapshot=_snap))
 
     outcomes.sort(key=lambda o: order.get(o.perspective, 999))
     return outcomes

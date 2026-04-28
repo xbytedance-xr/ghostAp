@@ -19,7 +19,7 @@ class ThreadContextManager:
     def __init__(self, ttl: float = _DEFAULT_TTL, cleanup_interval: float = _CLEANUP_INTERVAL, on_evict: Optional[Callable[[ThreadContext], None]] = None):
         self._contexts: dict[str, ThreadContext] = {}
         self._aliases: dict[str, str] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._ttl = ttl
         self._on_evict = on_evict
         self._cleanup_stop = threading.Event()
@@ -200,7 +200,7 @@ class ThreadContextManager:
 
 
 _manager: Optional[ThreadContextManager] = None
-_manager_lock = threading.Lock()
+_manager_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
 _current_thread_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("current_thread_id", default=None)
 _current_sender_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("current_sender_id", default=None)

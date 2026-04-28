@@ -42,7 +42,7 @@ class CircuitBreaker:
         self._state = CircuitState.CLOSED
         self._failure_timestamps: collections.deque[float] = collections.deque()
         self._last_failure_time = 0.0
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
 
     def _purge_old_failures(self) -> None:
         cutoff = time.time() - self.window_duration
@@ -108,6 +108,19 @@ class CircuitBreaker:
             self._failure_timestamps.clear()
             self._last_failure_time = 0.0
             self._set_state(CircuitState.CLOSED)
+
+    def on_failure(self, is_timeout: bool = False) -> None:
+        """Public API to record an external failure.
+
+        Mirrors :meth:`reset` (success) for symmetry.  Callers that manage
+        their own try/except can feed failure signals without going through
+        :meth:`call`/:meth:`async_call`.
+
+        Args:
+            is_timeout: hint flag (currently unused, reserved for future
+                timeout-specific policies).
+        """
+        self._record_failure()
 
     def _record_failure(self) -> None:
         with self._lock:

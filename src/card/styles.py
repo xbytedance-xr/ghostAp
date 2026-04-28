@@ -650,8 +650,8 @@ UI_TEXT = {
     "ws_topic_hint_msg": "💡 当前话题已在编程模式中，直接发送你的需求即可\n\n如需切换工具，请在主对话中发送对应命令创建新话题",
     "ws_exit_deferred_msg": "✅ 已收到 /exit，将在当前任务完成后退出（不中断执行）",
     "ws_active_topic_msg": "💡 你有一个活跃的 {name} 编程话题正在进行中\n\n请在话题中回复继续对话\n如需新建编程环境，请先发送对应的编程模式命令（如 /coco）",
-    "ws_backpressure_spec": "⚠️ 系统繁忙 (Spec 模式)，请稍后再试。",
-    "ws_backpressure_generic": "⚠️ 当前服务繁忙，请稍后再试。",
+    "ws_backpressure_spec": "⚠️ 系统繁忙，请稍后再试",
+    "ws_backpressure_generic": "⚠️ 系统繁忙，请稍后再试",
     "ws_message_timeout": "⏳ 处理消息超时，请稍后重试",
     "ws_message_internal_error": "❌ 处理消息时发生内部错误，请稍后重试",
     "ws_unsupported_msg_type": "⚠️ 目前仅支持文本、图片和富文本消息",
@@ -659,18 +659,35 @@ UI_TEXT = {
     "ws_thread_create_failed": "⚠️ 创建编程话题失败，请重试",
     "ws_system_cmd_gate_blocked": "⏳ 系统指令处理中，按钮暂不可用，请稍后重试",
     "ws_card_action_ack": "已收到操作，正在处理…",
-    "ws_project_eviction_notify": "该项目「{name}」因关联群数达上限已自动解绑，如需重新绑定请使用 /project 指令",
+    "ws_project_eviction_notify": "该项目「{name}」暂时与当前群断开连接——因为同时使用的群聊数量已满。你可以随时发送 /project 重新连接",
     "ws_fallback_admin_name": "Bot 管理员",
-    # ── Timeout / Circuit Breaker / Review Parse ──
-    "timeout_busy_spec": "当前系统较繁忙，操作已超时。建议：稍后自动重试，或通过 /spec resume 手动恢复",
-    "timeout_busy_worktree": "当前系统较繁忙，操作已超时。建议：稍后重新发送 worktree 命令重试",
-    "review_parse_fail_system": "审查输出解析异常（系统侧），不影响执行，将在下轮自动重试",
-    "review_budget_timeout": "审查预算超时：本视角未在周期内完成，已跳过。可通过 /spec resume 手动恢复",
-    "circuit_breaker_skip_with_count": "审查熔断：连续{n}次异常，跳过本轮审查",
+    # Engine error prefixes
+    "engine_error_timeout": "超时",
+    "engine_error_exception": "异常",
+    # ── Retry / Signature ──
+    "retry_command_sig_mismatch": "⚠️ 此按钮已失效，请重新发送命令",
+    "retry_command_sig_upgrade_expired": "此按钮已过期，请重新发送命令",
+    "retry_project_unavailable": "⚠️ 原项目不可用，请重新操作。",
+    # ── LRU Eviction Notification ──
+    "eviction_notify_title": "📤 项目已自动解绑",
+    "eviction_notify_body": "该项目「{name}」暂时与当前群断开连接——因为同时使用的群聊数量已达 {max} 个上限。\n你可以随时发送 /project 重新连接。",
+    "eviction_notify_btn_rebind": "🔗 重新绑定",
 }
+
+# Merge spec-engine UI text from the single source of truth
+from ..spec_engine.constants import SPEC_UI_TEXT  # noqa: E402
+
+_spec_overlap = UI_TEXT.keys() & SPEC_UI_TEXT.keys()
+if _spec_overlap:
+    raise RuntimeError(f"UI_TEXT key conflict with SPEC_UI_TEXT: {_spec_overlap}")
+UI_TEXT.update(SPEC_UI_TEXT)
 
 # Merge lock-related UI text from dedicated module
 from .styles_lock import LOCK_UI_TEXT  # noqa: E402
+
+_lock_overlap = UI_TEXT.keys() & LOCK_UI_TEXT.keys()
+if _lock_overlap:
+    raise RuntimeError(f"UI_TEXT key conflict with LOCK_UI_TEXT: {_lock_overlap}")
 UI_TEXT.update(LOCK_UI_TEXT)
 
 # ──────────────────────────────────────────────────────────────

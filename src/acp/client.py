@@ -272,7 +272,7 @@ class GhostAPClient(Client):
         self._root_dir = os.path.abspath(os.path.expanduser(root_dir or "."))
         self._sandbox = sandbox or SandboxExecutor()
         self._terminals: dict[str, _TerminalRecord] = {}
-        self._terminals_lock = threading.Lock()
+        self._terminals_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._history = history_store or ACPHistoryStore()
 
     def _record(self, session_id: str, kind: str, data: dict) -> None:

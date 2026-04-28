@@ -278,7 +278,8 @@ class DeepEngine(BaseEngine):
             return self._project
 
         finally:
-            self._run_state = EngineRunState.IDLE
+            with self._lock:
+                self._run_state = EngineRunState.IDLE
             get_gc_monitor(memory_threshold_percent=self.settings.deep_memory_threshold).check_and_collect(label="Deep", mem_snapshot=self._mem_snapshot)
 
     def _drain_pending_context(self, on_event, timeout, last_result):
@@ -353,11 +354,16 @@ class DeepEngine(BaseEngine):
     inject_context = inject_guidance
 
     def pause(self):
-        if self._project:
-            self._project.pause()
-        self._run_state = EngineRunState.STOPPING
-        if self._session:
-            self._session.cancel()
+        with self._lock:
+            if self._project:
+                self._project.pause()
+            self._run_state = EngineRunState.STOPPING
+            session = self._session
+        if session:
+            try:
+                session.cancel()
+            except Exception:
+                pass
 
     def resume(self, callbacks: Optional[DeepEngineCallbacks] = None) -> Optional[DeepProject]:
         """Resume a paused deep execution by loading the ACP session and sending a continuation prompt."""
@@ -421,7 +427,8 @@ class DeepEngine(BaseEngine):
             self._project.fail(error_msg)
 
         finally:
-            self._run_state = EngineRunState.IDLE
+            with self._lock:
+                self._run_state = EngineRunState.IDLE
             get_gc_monitor(memory_threshold_percent=self.settings.deep_memory_threshold).check_and_collect(label="Deep", mem_snapshot=self._mem_snapshot)
 
         return self._project

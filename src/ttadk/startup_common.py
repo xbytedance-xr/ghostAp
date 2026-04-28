@@ -52,7 +52,7 @@ def install_stub_cooldown_providers(
         _STUB_LEGACY_STORE_PROVIDER = legacy_store_provider
 
 
-_compat_providers_lock = threading.Lock()
+_compat_providers_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 _compat_providers_installed: bool = False
 
 
@@ -117,7 +117,7 @@ class _StubCooldownStore:
         max_keys_default: int = 1024,
         gc_interval_default_s: float = 60.0,
     ) -> None:
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         # key: (module, qualname, tool)
         self._store: dict[tuple[str, str, str], float] = {}
         self._last_gc_ts: float = 0.0

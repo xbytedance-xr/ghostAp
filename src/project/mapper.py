@@ -9,7 +9,7 @@ class MessageProjectMapper:
         self._map: OrderedDict[str, tuple[str, float]] = OrderedDict()
         self._ttl = ttl
         self._max_size = max_size
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     def register(self, message_id: str, project_id: str):
         with self._lock:
@@ -65,7 +65,7 @@ class MessageLinker:
     def __init__(self, ttl: int = 86400, max_size: int = 20000):
         self._ttl = ttl
         self._max_size = max_size
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
         # origin_message_id -> (record, ts)
         self._origins: OrderedDict[str, tuple[dict, float]] = OrderedDict()

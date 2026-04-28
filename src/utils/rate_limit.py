@@ -24,7 +24,7 @@ class RateLimiter:
         self._tokens = float(capacity)
         self.fill_rate = float(fill_rate)
         self._last_update_time = time.time()
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     def acquire(self, tokens: int = 1, blocking: bool = False, timeout: float = -1) -> bool:
         """

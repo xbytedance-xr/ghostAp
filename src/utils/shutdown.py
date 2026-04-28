@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["is_shutting_down", "graceful_shutdown", "install_signal_handlers"]
 
-_shutdown_lock = threading.Lock()
+_shutdown_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 _shutdown_in_progress: bool = False
 
 

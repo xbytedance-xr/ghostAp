@@ -313,16 +313,57 @@ class SpecHandler(BaseEngineHandler):
         s = self.settings
         content = (
             "🧩 **Spec 长程配置**\n\n"
-            f"- max_cycles: `{getattr(s, 'spec_max_cycles', None)}` (limit=`{getattr(s, 'spec_max_cycles_limit', None)}`)\n"
-            f"- infinite_mode: `{getattr(s, 'spec_infinite_mode', None)}`\n"
-            f"- disable_convergence: `{getattr(s, 'spec_disable_convergence', None)}`\n"
-            f"- disable_early_stop: `{getattr(s, 'spec_disable_early_stop', None)}`\n"
-            f"- discovery_enabled: `{getattr(s, 'spec_discovery_enabled', None)}`\n"
-            f"- generated_specs_per_cycle: `{getattr(s, 'spec_generated_specs_per_cycle', None)}`\n"
-            f"- generated_specs_retention: `{getattr(s, 'spec_generated_specs_retention', None)}`\n"
-            f"- state_file: `{getattr(s, 'spec_state_filename', None)}` (cycles_tail=`{getattr(s, 'spec_state_cycles_tail', None)}`)\n"
-            f"- artifacts_dir: `{getattr(s, 'spec_artifacts_dirname', None)}` (cycle_retention=`{getattr(s, 'spec_cycle_artifact_retention', None)}`)\n"
-            f"- history_log: `{getattr(s, 'spec_history_log_filename', None)}`\n"
+            f"- max_cycles: `{getattr(s, 'spec_max_cycles', None)}` (limit=`{getattr(s, 'spec_max_cycles_limit', None)}`) — 最大执行轮次\n"
+            f"- min_cycles: `{getattr(s, 'spec_min_cycles', None)}` — 最少执行轮次\n"
+            f"- execution_timeout: `{getattr(s, 'spec_execution_timeout', None)}` (秒) — 单次执行总超时\n"
+            f"- convergence_window: `{getattr(s, 'spec_convergence_window', None)}` — 收敛检测窗口轮数\n"
+            f"- infinite_mode: `{getattr(s, 'spec_infinite_mode', None)}` — 无限模式\n"
+            f"- disable_convergence: `{getattr(s, 'spec_disable_convergence', None)}` — 禁用收敛检测\n"
+            f"- disable_early_stop: `{getattr(s, 'spec_disable_early_stop', None)}` — 禁用提前停止\n"
+            f"- rebuild_session_between_cycles: `{getattr(s, 'spec_rebuild_session_between_cycles', None)}` — 轮间重建会话\n"
+            "\n🔍 **发现与收敛**\n\n"
+            f"- discovery_enabled: `{getattr(s, 'spec_discovery_enabled', None)}` — 启用发现阶段\n"
+            f"- discovery_max_questions: `{getattr(s, 'spec_discovery_max_questions', None)}` — 发现阶段最大问题数\n"
+            f"- discovery_force_nonempty: `{getattr(s, 'spec_discovery_force_nonempty', None)}` — 强制非空发现\n"
+            f"- discovery_gate_on_satisfied: `{getattr(s, 'spec_discovery_gate_on_satisfied', None)}` — 满足条件时门控\n"
+            f"- discovery_max_pending: `{getattr(s, 'spec_discovery_max_pending', None)}` — 最大待处理发现数\n"
+            f"- discovery_cooldown_cycles: `{getattr(s, 'spec_discovery_cooldown_cycles', None)}` — 发现冷却轮次\n"
+            f"- generated_specs_per_cycle: `{getattr(s, 'spec_generated_specs_per_cycle', None)}` — 每轮生成规格数\n"
+            f"- generated_specs_retention: `{getattr(s, 'spec_generated_specs_retention', None)}` — 生成规格保留数\n"
+            "\n💾 **持久化与压缩**\n\n"
+            f"- state_file: `{getattr(s, 'spec_state_filename', None)}` — 状态文件名\n"
+            f"- state_cycles_tail: `{getattr(s, 'spec_state_cycles_tail', None)}` — 状态文件仅保留最近 N 轮\n"
+            f"- state_work_items_tail: `{getattr(s, 'spec_state_work_items_tail', None)}` — 工作项保留最近 N 条\n"
+            f"- state_metrics_tail: `{getattr(s, 'spec_state_metrics_tail', None)}` — 指标保留最近 N 条\n"
+            f"- artifacts_dir: `{getattr(s, 'spec_artifacts_dirname', None)}` — 产物目录名\n"
+            f"- cycle_artifact_retention: `{getattr(s, 'spec_cycle_artifact_retention', None)}` — 产物保留轮数\n"
+            f"- cycle_output_max_chars: `{getattr(s, 'spec_cycle_output_max_chars', None)}` — 单轮输出截断字符数\n"
+            f"- cycle_tasks_max: `{getattr(s, 'spec_cycle_tasks_max', None)}` — 单轮最大任务数\n"
+            f"- phase_output_persist_max_chars: `{getattr(s, 'spec_phase_output_persist_max_chars', None)}` — 阶段产物持久化截断\n"
+            f"- persist_phase_artifacts: `{getattr(s, 'spec_persist_phase_artifacts', None)}` — 启用阶段产物持久化\n"
+            f"- persist_every_phase: `{getattr(s, 'spec_persist_every_phase', None)}` — 每阶段均持久化\n"
+            f"- allow_resume_from_disk: `{getattr(s, 'spec_allow_resume_from_disk', None)}` — 允许从磁盘恢复\n"
+            f"- history_log: `{getattr(s, 'spec_history_log_filename', None)}` — 历史日志文件名\n"
+            "\n⛔ **终止与失败**\n\n"
+            f"- backlog_stuck_window: `{getattr(s, 'spec_backlog_stuck_window', None)}` — 积压卡住窗口 (0=禁用)\n"
+            f"- success_ignore_backlog: `{getattr(s, 'spec_success_ignore_backlog', None)}` — 成功时忽略积压\n"
+            f"- max_retries: `{getattr(s, 'spec_max_retries', None)}` — 最大重试次数\n"
+            f"- max_consecutive_failures: `{getattr(s, 'spec_max_consecutive_failures', None)}` — 最大连续失败\n"
+            f"- model_switch_enabled: `{getattr(s, 'spec_model_switch_enabled', None)}` — 启用模型切换\n"
+            f"- failed_task_id_override: `{getattr(s, 'spec_failed_task_id_override', None) or '(空)'}` — 失败任务覆盖\n"
+            "\n🔄 **审查与重试**\n\n"
+            f"- review_enabled: `{getattr(s, 'spec_review_enabled', None)}` — 启用审查\n"
+            f"- review_timeout: `{getattr(s, 'spec_review_timeout', None)}` (秒) — 审查超时\n"
+            f"- review_min_timeout: `{getattr(s, 'spec_review_min_timeout', None)}` (秒) — 审查最小超时\n"
+            f"- review_hard_floor: `{getattr(s, 'spec_review_hard_floor', None)}` (秒) — 超时硬下限\n"
+            f"- review_max_parallel: `{getattr(s, 'spec_review_max_parallel', None)}` — 最大并行审查数\n"
+            f"- retry_max_attempts: `{getattr(s, 'spec_review_retry_max_attempts', None)}` (0=禁用重试) — 重试次数\n"
+            f"- retry_max_delay: `{getattr(s, 'spec_review_retry_max_delay', None)}` (秒) — 重试最大延迟\n"
+            "\n🛡️ **熔断器**\n\n"
+            f"- circuit_enabled: `{getattr(s, 'spec_review_failure_circuit_enabled', None)}` — 启用熔断\n"
+            f"- max_consecutive: `{getattr(s, 'spec_review_failure_max_consecutive', None)}` — 连续失败触发阈值\n"
+            f"- cooldown_cycles: `{getattr(s, 'spec_review_failure_cooldown_cycles', None)}` — 冷却轮次\n"
+            f"- max_cooldown_cycles: `{getattr(s, 'spec_review_failure_max_cooldown_cycles', None)}` — 最大冷却轮次\n"
         )
         engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
         msg_type, card_content = CardBuilder.build_engine_card(
@@ -808,6 +849,16 @@ class SpecHandler(BaseEngineHandler):
             return
 
         # Custom actions (non-standard)
+        if action_type == "spec_skip_retry":
+            # Skip retry wait without cancelling the entire engine
+            engine = self.ctx.spec_engine_manager.get_active_engine(open_chat_id)
+            if engine and hasattr(engine, 'skip_retry_event'):
+                engine.skip_retry_event.set()
+                self.reply_message(open_message_id, UI_TEXT["skip_retry_ack"])
+            else:
+                self.reply_message(open_message_id, UI_TEXT["no_active_retry"])
+            return
+
         if action_type == "spec_retry":
             task_id = (value.get("task_id") or "").strip()
             if not task_id:

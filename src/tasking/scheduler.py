@@ -267,7 +267,7 @@ class TaskScheduler:
             thread_name_prefix=f"{thread_name_prefix}_system",
         )
 
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._cv = threading.Condition(self._lock)
         self._queues: dict[str, Deque[_QueuedTask]] = defaultdict(deque)  # queue_key -> queue
         self._running_by_key: dict[str, int] = defaultdict(int)

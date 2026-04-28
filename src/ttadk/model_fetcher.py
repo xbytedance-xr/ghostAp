@@ -149,7 +149,7 @@ class TTADKModelFetcher:
         # ttadk CLI 能力探测缓存（避免频繁执行 `ttadk --help`）
         # 结构：(ts, commands_set, version_str)
         self._ttadk_cli_cap_cache: tuple[float, set[str], str] | None = None
-        self._ttadk_cli_cap_lock = threading.Lock()
+        self._ttadk_cli_cap_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._ttadk_cli_cap_inflight: threading.Event | None = None
 
     def _get_ttadk_cli_capabilities(

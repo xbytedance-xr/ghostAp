@@ -708,7 +708,8 @@ class TestUnifiedContextStore:
         store.get_or_create("gamma")
 
         ids = store.list_project_ids()
-        assert set(ids) == {"alpha", "beta", "gamma"}
+        # Composite keys with default empty chat_id: ":alpha", ":beta", ":gamma"
+        assert set(ids) == {":alpha", ":beta", ":gamma"}
 
     def test_remove(self, store):
         store.get_or_create("project_a")
@@ -2197,3 +2198,194 @@ class TestEdgeCases:
         assert store.has("a")
         assert not store.has("b")
         assert ctx_a.entry_count == 2
+
+
+# ---------------------------------------------------------------------------
+# UnifiedContextStore — 复合键隔离 (chat_id:project_id)
+# ---------------------------------------------------------------------------
+
+
+class TestCompositeKeyIsolation:
+    """同一 project_id 在不同 chat_id 下应拥有独立的上下文实例。"""
+
+    def test_same_project_different_chats_are_isolated(self):
+        store = UnifiedContextStore()
+        ctx_chat1 = store.get_or_create("proj_a", chat_id="chat_1")
+        ctx_chat2 = store.get_or_create("proj_a", chat_id="chat_2")
+
+        assert ctx_chat1 is not ctx_chat2
+
+        ctx_chat1.add_conversation("user", "msg from chat1", ContextSourceMode.COCO)
+        assert ctx_chat1.entry_count == 1
+        assert ctx_chat2.entry_count == 0
+
+    def test_same_chat_different_projects_are_isolated(self):
+        store = UnifiedContextStore()
+        ctx_a = store.get_or_create("proj_a", chat_id="chat_1")
+        ctx_b = store.get_or_create("proj_b", chat_id="chat_1")
+
+        assert ctx_a is not ctx_b
+
+        ctx_a.add_conversation("user", "proj_a msg", ContextSourceMode.COCO)
+        ctx_b.add_conversation("user", "proj_b msg", ContextSourceMode.CLAUDE)
+        assert ctx_a.entry_count == 1
+        assert ctx_b.entry_count == 1
+        assert ctx_a.entries[0].content == "proj_a msg"
+        assert ctx_b.entries[0].content == "proj_b msg"
+
+    def test_get_respects_chat_id(self):
+        store = UnifiedContextStore()
+        store.get_or_create("proj", chat_id="c1")
+
+        assert store.get("proj", chat_id="c1") is not None
+        assert store.get("proj", chat_id="c2") is None
+        # Default empty chat_id also yields None
+        assert store.get("proj") is None
+
+    def test_has_respects_chat_id(self):
+        store = UnifiedContextStore()
+        store.get_or_create("proj", chat_id="c1")
+
+        assert store.has("proj", chat_id="c1") is True
+        assert store.has("proj", chat_id="c2") is False
+        assert store.has("proj") is False
+
+    def test_remove_respects_chat_id(self):
+        store = UnifiedContextStore()
+        store.get_or_create("proj", chat_id="c1")
+        store.get_or_create("proj", chat_id="c2")
+
+        assert store.remove("proj", chat_id="c1") is True
+        assert store.has("proj", chat_id="c1") is False
+        # c2 still exists
+        assert store.has("proj", chat_id="c2") is True
+
+    def test_list_project_ids_returns_composite_keys(self):
+        store = UnifiedContextStore()
+        store.get_or_create("proj_a", chat_id="c1")
+        store.get_or_create("proj_a", chat_id="c2")
+        store.get_or_create("proj_b", chat_id="c1")
+
+        keys = set(store.list_project_ids())
+        assert keys == {"c1:proj_a", "c2:proj_a", "c1:proj_b"}
+
+    def test_backward_compat_empty_chat_id(self):
+        """Default empty chat_id is backward compatible — same as no chat_id."""
+        store = UnifiedContextStore()
+        ctx1 = store.get_or_create("proj_x")
+        ctx2 = store.get_or_create("proj_x", chat_id="")
+
+        assert ctx1 is ctx2
+
+    def test_stats_counts_all_composite_entries(self):
+        store = UnifiedContextStore()
+        ctx1 = store.get_or_create("proj", chat_id="c1")
+        ctx2 = store.get_or_create("proj", chat_id="c2")
+        ctx1.add_conversation("user", "m1", ContextSourceMode.SMART)
+        ctx2.add_conversation("user", "m2", ContextSourceMode.SMART)
+        ctx2.add_conversation("user", "m3", ContextSourceMode.SMART)
+
+        stats = store.stats()
+        assert stats["project_count"] == 2
+        assert stats["total_entries"] == 3
+
+
+class TestProjectContextManagerCompositeKey:
+    """ProjectContextManager CRUD methods respect chat_id."""
+
+    def test_create_and_get_with_chat_id(self):
+        mgr = ProjectContextManager()
+        r = mgr.create_context("proj", chat_id="c1")
+        assert r.success is True
+
+        r2 = mgr.get_context("proj", chat_id="c1")
+        assert r2.success is True
+        assert r2.data["entry_count"] == 0
+
+        # Different chat_id should NOT find it
+        r3 = mgr.get_context("proj", chat_id="c2")
+        assert r3.success is False
+
+    def test_update_with_chat_id(self):
+        mgr = ProjectContextManager()
+        mgr.create_context("proj", chat_id="c1")
+
+        r = mgr.update_context(
+            "proj",
+            conversation={"role": "user", "content": "hello", "source_mode": "coco"},
+            chat_id="c1",
+        )
+        assert r.success is True
+        assert r.data["added_count"] == 1
+
+    def test_delete_with_chat_id(self):
+        mgr = ProjectContextManager()
+        mgr.create_context("proj", chat_id="c1")
+        mgr.create_context("proj", chat_id="c2")
+
+        r = mgr.delete_context("proj", chat_id="c1")
+        assert r.success is True
+
+        assert mgr.context_exists("proj", chat_id="c1").data["exists"] is False
+        assert mgr.context_exists("proj", chat_id="c2").data["exists"] is True
+
+    def test_context_exists_with_chat_id(self):
+        mgr = ProjectContextManager()
+        mgr.create_context("proj", chat_id="c1")
+
+        assert mgr.context_exists("proj", chat_id="c1").data["exists"] is True
+        assert mgr.context_exists("proj", chat_id="c2").data["exists"] is False
+
+
+class TestCompositeKeyConcurrency:
+    """Concurrent operations on composite-keyed store."""
+
+    def test_concurrent_get_or_create_same_composite_key(self):
+        import threading
+
+        store = UnifiedContextStore()
+        results: list[UnifiedContext] = []
+        errors: list[Exception] = []
+
+        def worker():
+            try:
+                ctx = store.get_or_create("proj", chat_id="chat_x")
+                results.append(ctx)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0
+        assert all(r is results[0] for r in results)
+
+    def test_concurrent_different_composite_keys(self):
+        import threading
+
+        store = UnifiedContextStore()
+        errors: list[Exception] = []
+
+        def worker(chat_id: str):
+            try:
+                ctx = store.get_or_create("proj", chat_id=chat_id)
+                for j in range(10):
+                    ctx.add_conversation("user", f"{chat_id}_msg_{j}", ContextSourceMode.SMART)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(f"chat_{i}",)) for i in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0
+        assert len(store) == 5
+        for i in range(5):
+            ctx = store.get("proj", chat_id=f"chat_{i}")
+            assert ctx is not None
+            assert ctx.entry_count == 10

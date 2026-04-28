@@ -15,7 +15,7 @@ class WSHealthMonitor:
     def __init__(self, client_instance, settings):
         self._client_instance = client_instance
         self.settings = settings
-        self._health_lock = threading.Lock()
+        self._health_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._last_connect_at = 0.0
         self._last_frame_at = 0.0
         self._last_pong_at = 0.0

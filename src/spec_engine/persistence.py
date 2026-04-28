@@ -246,7 +246,7 @@ def save_failed_task(
         if len(failure_reason) > 2000:
             failure_reason = failure_reason[:2000] + "…(truncated)"
     except Exception:
-        pass
+        logger.debug("failure_reason truncation error", exc_info=True)
 
     state = SpecTaskState(
         task_id=task_id,

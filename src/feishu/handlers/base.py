@@ -588,7 +588,7 @@ class BaseHandler:
         }
         return mapping.get(mode, ContextSourceMode.SMART)
 
-    def record_mode_transition(self, project_id: str, from_mode, to_mode, reason: str = ""):
+    def record_mode_transition(self, project_id: str, from_mode, to_mode, reason: str = "", *, chat_id: str = ""):
         """Record a mode switch into the unified context and build a bridge summary."""
         from_source = self.mode_to_context_source(from_mode)
         to_source = self.mode_to_context_source(to_mode)
@@ -602,8 +602,9 @@ class BaseHandler:
                 "to_mode": to_source.value,
                 "reason": reason,
             },
+            chat_id=chat_id,
         )
-        ctx = self.ctx.context_manager.store.get(project_id)
+        ctx = self.ctx.context_manager.store.get(project_id, chat_id=chat_id)
         if ctx:
             ctx.build_bridge_summary(from_source, to_source)
             ctx.create_version(
@@ -611,11 +612,11 @@ class BaseHandler:
                 source_mode=from_source,
             )
 
-    def inject_bridge_context(self, text: str, project: Optional["ProjectContext"]) -> str:
+    def inject_bridge_context(self, text: str, project: Optional["ProjectContext"], *, chat_id: str = "") -> str:
         """Consume and prepend bridge summary to the user prompt (one-shot)."""
         if not project:
             return text
-        ctx = self.ctx.context_manager.store.get(project.project_id)
+        ctx = self.ctx.context_manager.store.get(project.project_id, chat_id=chat_id)
         if not ctx:
             return text
         bridge = ctx.consume_bridge_summary()

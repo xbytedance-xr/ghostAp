@@ -14,7 +14,7 @@ from typing import Literal, TypedDict
 from src.utils.time_ago import IdleHealth, TimeAgoBucket, compute_time_ago_bucket
 
 
-_TASK_ID_LOCK = threading.Lock()
+_TASK_ID_LOCK = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 _TASK_ID_SEQ = 0
 
 
@@ -75,6 +75,32 @@ def format_duration(seconds: float) -> str:
     if minutes > 0:
         return f"{minutes}分{secs}秒"
     return f"{secs}秒"
+
+
+def format_friendly_duration(seconds: float) -> str:
+    """Format a duration into a friendly Chinese string without '前' suffix.
+
+    - < 60s  → "X 秒"
+    - < 3600s → "约 X 分钟"
+    - < 86400s → "约 X 小时 Y 分钟"
+    - >= 86400s → "约 X 天 Y 小时"
+    """
+    elapsed = max(0, seconds)
+    if elapsed < 60:
+        return f"{int(elapsed)} 秒"
+    if elapsed < 3600:
+        return f"约 {int(elapsed // 60)} 分钟"
+    if elapsed < 86400:
+        hours = int(elapsed // 3600)
+        minutes = int((elapsed % 3600) // 60)
+        if minutes:
+            return f"约 {hours} 小时 {minutes} 分钟"
+        return f"约 {hours} 小时"
+    days = int(elapsed // 86400)
+    hours = int((elapsed % 86400) // 3600)
+    if hours:
+        return f"约 {days} 天 {hours} 小时"
+    return f"约 {days} 天"
 
 
 def append_duration_to_title(title: str, duration_secs: float | None) -> str:
