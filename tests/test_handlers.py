@@ -1625,7 +1625,7 @@ class TestSendLockConflictCardAnnotation:
 
 
 # ======================================================================
-# AC-22: _build_lock_help_body non-admin hides /lock /unlock
+# AC-22: build_lock_help_body non-admin hides /lock /unlock
 # ======================================================================
 
 
@@ -1633,15 +1633,15 @@ class TestLockHelpBodyVisibility:
     """AC-22: Non-admin help card shows '联系 Bot 管理员' instead of /lock /unlock."""
 
     def test_non_admin_sees_contact_hint(self):
-        from src.card.builders.lock import _build_lock_help_body
-        body = _build_lock_help_body(is_admin=False)
+        from src.card.builders.lock import build_lock_help_body
+        body = build_lock_help_body(is_admin=False)
         assert "联系 Bot 管理员" in body
         assert "`/lock`" not in body
         assert "`/unlock`" not in body
 
     def test_admin_sees_lock_commands(self):
-        from src.card.builders.lock import _build_lock_help_body
-        body = _build_lock_help_body(is_admin=True)
+        from src.card.builders.lock import build_lock_help_body
+        body = build_lock_help_body(is_admin=True)
         assert "`/lock`" in body
         assert "`/unlock`" in body
 
@@ -2097,7 +2097,7 @@ class TestProgrammingHandlerLockConflict:
         h.add_reaction = MagicMock()
         h.register_message_project = MagicMock()
         h.record_mode_transition = MagicMock()
-        h.inject_bridge_context = MagicMock(side_effect=lambda t, p: t)
+        h.inject_bridge_context = MagicMock(side_effect=lambda t, p, **kw: t)
         h.get_working_dir = MagicMock(return_value="/tmp/test")
         h.ensure_request_id = MagicMock(return_value="req-1")
 
@@ -2436,3 +2436,29 @@ class TestSameSenderAutoDetection:
             ctx = helper._collect_lock_conflict_context(err)
 
         assert ctx.is_same_sender is False
+
+    def test_context_has_no_chat_hint_field(self):
+        """chat_hint dead field has been removed from _LockConflictContext."""
+        from src.feishu.handlers.lock_helper import LockHelper
+        from src.repo_lock import LockConflictError
+
+        mock_handler = MagicMock()
+        mock_handler.ctx = MagicMock()
+        mock_handler.ctx.repo_lock_manager = MagicMock()
+        mock_handler.ctx.repo_lock_manager.get_lock_info.return_value = None
+        mock_handler.ctx.repo_lock_manager.path_to_token.return_value = ""
+        mock_handler.ctx.chat_lock_manager = MagicMock()
+        mock_handler.ctx.chat_lock_manager.is_admin.return_value = False
+
+        helper = LockHelper(mock_handler)
+        err = LockConflictError(
+            "conflict", holder_chat_id="chat_other", locked_since=100.0,
+            root_path="/tmp/repo", last_active_time=200.0,
+        )
+
+        with patch("src.thread.get_current_sender_id", return_value="user_123"), \
+             patch("src.config.get_settings") as mock_settings:
+            mock_settings.return_value.app_id = "app_test"
+            ctx = helper._collect_lock_conflict_context(err)
+
+        assert not hasattr(ctx, "chat_hint")

@@ -83,16 +83,16 @@ class TestBuildChatLockCard:
 
     def test_with_locked_by_short(self):
         card, _ = build_chat_lock_card(locked_by="admin01")
-        assert "锁定者" in card
-        assert "Bot 管理员" in card  # raw id masked as generic "Bot 管理员"
+        assert "锁定者" not in card  # no name available → locker line suppressed
+        assert "Bot 管理员" in card  # contact line still mentions admin
         assert "admin01" not in card  # raw id must NOT appear
 
     def test_with_locked_by_long_truncated(self):
         long_id = "ou_abcdefghijk123456"
         card, _ = build_chat_lock_card(locked_by=long_id)
-        assert "锁定者" in card
+        assert "锁定者" not in card  # no name available → locker line suppressed
         assert long_id not in card  # full open_id must NOT appear
-        assert "Bot 管理员" in card  # masked as generic "Bot 管理员"
+        assert "Bot 管理员" in card  # contact line still mentions admin
 
     def test_with_locked_by_name(self):
         card, _ = build_chat_lock_card(locked_by="ou_abc", locked_by_name="张三")
@@ -109,35 +109,35 @@ class TestBuildChatLockCard:
     def test_admin_name_in_contact(self):
         card, _ = build_chat_lock_card(admin_name="李四")
         assert "李四" in card
-        assert "请联系 李四 帮你解锁" in card
-        assert "Bot 管理员帮你解锁" not in card
+        assert "请联系 李四 执行 `/unlock` 解锁" in card
 
     def test_default_contact_without_admin_name(self):
         card, _ = build_chat_lock_card()
-        assert "Bot 管理员帮你解锁" in card
+        assert "Bot 管理员执行 `/unlock` 解锁" in card
 
     def test_admin_name_empty_no_redundancy(self):
         """AC-22: admin_name='' uses admin-contact fallback, no redundant text."""
         card, _ = build_chat_lock_card(admin_name="")
-        assert "Bot 管理员帮你解锁" in card
+        assert "Bot 管理员执行 `/unlock` 解锁" in card
 
-    def test_no_unlock_command_in_card(self):
-        """F-08: card should not tell non-admins to run /unlock."""
+    def test_unlock_command_in_card(self):
+        """AC-17: card should tell non-admins to ask admin to run /unlock."""
         card, _ = build_chat_lock_card()
-        assert "/unlock" not in card
+        assert "/unlock" in card
 
     def test_friendly_unlock_wording(self):
-        """F-08: card should use friendly unlock wording."""
+        """F-08: card should use friendly unlock wording with /unlock command."""
         card, _ = build_chat_lock_card(admin_name="王五")
-        assert "帮你解锁" in card
+        assert "执行 `/unlock` 解锁" in card
 
     def test_auto_unlock_hint_with_wall_time(self):
-        """Chat lock card shows auto-unlock countdown when locked_at_wall is provided."""
+        """AC-22: Chat lock card shows auto-unlock countdown using format_friendly_duration."""
         import time
         # Locked 1 hour ago; default max_duration=86400s → ~23h remaining
         card, _ = build_chat_lock_card(locked_at_wall=time.time() - 3600)
         assert "自动解除" in card
         assert "小时" in card
+        assert "约" in card  # format_friendly_duration output always has "约" prefix for > 60s
 
     def test_app_id_generates_deeplink_button(self):
         _, buttons = build_chat_lock_card(app_id="cli_test_123")
@@ -394,6 +394,35 @@ class TestBuildRepoLockCardDeepLink:
 
 
 # ---------------------------------------------------------------------------
+# AC-19: P2P fallback note in repo lock card
+# ---------------------------------------------------------------------------
+
+
+class TestP2PFallbackNoteInRepoCard:
+    """AC-19: repo lock card includes P2P fallback note when app_id is present."""
+
+    def test_fallback_note_present_with_app_id(self):
+        import time
+        from src.card.styles_lock import LOCK_UI_TEXT
+
+        markdown, _ = build_repo_lock_card(
+            "/tmp/repo", time.monotonic() - 10,
+            app_id="cli_test_123",
+        )
+        assert LOCK_UI_TEXT["repo_lock_p2p_fallback_note"] in markdown
+
+    def test_fallback_note_absent_without_app_id(self):
+        import time
+        from src.card.styles_lock import LOCK_UI_TEXT
+
+        markdown, _ = build_repo_lock_card(
+            "/tmp/repo", time.monotonic() - 10,
+            app_id="",
+        )
+        assert LOCK_UI_TEXT["repo_lock_p2p_fallback_note"] not in markdown
+
+
+# ---------------------------------------------------------------------------
 # BaseHandler.send_lock_conflict_card
 # ---------------------------------------------------------------------------
 
@@ -585,27 +614,17 @@ class TestRepoLockCardCommandTruncation:
 # ---------------------------------------------------------------------------
 
 
-class TestLockConfirmCardWording:
-    """F-09/F-10: confirm card has admin-only hint and impact description."""
+class TestLockConfirmCardDeprecated:
+    """build_lock_confirm_card is deprecated and returns a stub."""
 
-    def test_confirm_button_has_admin_hint(self):
-        _, buttons = build_lock_confirm_card("chat_test")
-        confirm_btns = [b for b in buttons if b.get("value", {}).get("action") == "confirm_lock"]
-        assert len(confirm_btns) == 1
-        assert "仅 Bot 管理员" in confirm_btns[0]["text"]["content"]
+    def test_returns_deprecation_message(self):
+        markdown, buttons = build_lock_confirm_card("chat_test")
+        assert "请重新发送 /lock" in markdown
+        assert buttons == []
 
-    def test_markdown_has_impact_description(self):
-        markdown, _ = build_lock_confirm_card("chat_test")
-        assert "影响群内所有非 Bot 管理员" in markdown
-
-    def test_markdown_has_admin_only_note(self):
-        markdown, _ = build_lock_confirm_card("chat_test")
-        assert "仅 Bot 管理员可操作" in markdown
-
-    def test_confirm_card_has_expiry_hint(self):
-        """AC-20: confirm card mentions the expiry duration."""
-        markdown, _ = build_lock_confirm_card("chat_test")
-        assert "分钟内有效" in markdown
+    def test_returns_empty_buttons(self):
+        _, buttons = build_lock_confirm_card("chat_test", confirm_timeout=60)
+        assert buttons == []
 
 
 # ---------------------------------------------------------------------------
@@ -1171,17 +1190,19 @@ class TestRetryButtonNoCount:
     @patch("src.utils.signing._get_signing_key", return_value="test_secret_key")
     def test_first_retry_no_count(self, _mock_key):
         import time
-        _, buttons = build_repo_lock_card(
+        md, buttons = build_repo_lock_card(
             "/tmp/repo", time.monotonic() - 10, command_text="/loop run"
         )
         retry_btns = [b for b in buttons if b.get("value", {}).get("action") == "retry_command"]
         assert len(retry_btns) == 1
         assert retry_btns[0]["text"]["content"] == "🔄 重试"
+        # First conflict: no "仓库仍被占用" hint
+        assert "仓库仍被占用" not in md
 
     @patch("src.utils.signing._get_signing_key", return_value="test_secret_key")
-    def test_subsequent_retry_no_count(self, _mock_key):
+    def test_subsequent_retry_shows_still_occupied(self, _mock_key):
         import time
-        _, buttons = build_repo_lock_card(
+        md, buttons = build_repo_lock_card(
             "/tmp/repo", time.monotonic() - 10, command_text="/loop run", retry_count=3
         )
         retry_btns = [b for b in buttons if b.get("value", {}).get("action") == "retry_command"]
@@ -1189,15 +1210,20 @@ class TestRetryButtonNoCount:
         assert retry_btns[0]["text"]["content"] == "🔄 重试"
         # Backend: retry_count still incremented in value payload
         assert retry_btns[0]["value"]["_rc"] == 4
+        # AC-20: retry card shows "仓库仍被占用" but no retry count (UX cleanup)
+        assert "仓库仍被占用" in md
+        assert "第 3 次重试" not in md
 
     @patch("src.utils.signing._get_signing_key", return_value="test_secret_key")
-    def test_high_retry_count_no_count(self, _mock_key):
+    def test_high_retry_count_shows_still_occupied(self, _mock_key):
         import time
-        _, buttons = build_repo_lock_card(
+        md, buttons = build_repo_lock_card(
             "/tmp/repo", time.monotonic() - 10, command_text="/loop run", retry_count=99
         )
         retry_btns = [b for b in buttons if b.get("value", {}).get("action") == "retry_command"]
         assert retry_btns[0]["text"]["content"] == "🔄 重试"
+        assert "仓库仍被占用" in md
+        assert "第 99 次重试" not in md
 
 
 # ---------------------------------------------------------------------------
@@ -1249,7 +1275,7 @@ class TestChatLockCardAdminEntry:
         md, buttons = build_chat_lock_card(
             locked_by="ou_abc123", admin_name="", app_id="cli_test"
         )
-        assert "Bot 管理员帮你解锁" in md
+        assert "Bot 管理员执行 `/unlock` 解锁" in md
         assert "请在群内询问" not in md
         # P2P button still shows (independent of admin_name)
         p2p_btns = [b for b in buttons if "multi_url" in b]
@@ -1340,9 +1366,9 @@ class TestConfigSanitization:
 
     def test_no_admin_user_ids_in_lock_ui_text(self):
         from src.card.styles_lock import LOCK_UI_TEXT
-        _admin_keys = {"chat_lock_no_admin_config"}
+        _exempt_keys = {"chat_lock_no_admin_config", "chat_lock_no_admin_config_user"}
         for key, value in LOCK_UI_TEXT.items():
-            if key in _admin_keys:
+            if key in _exempt_keys:
                 continue
             assert "ADMIN_USER_IDS" not in value, (
                 f"UI text key '{key}' contains 'ADMIN_USER_IDS'"
@@ -1350,7 +1376,150 @@ class TestConfigSanitization:
 
     def test_no_dotenv_in_lock_ui_text(self):
         from src.card.styles_lock import LOCK_UI_TEXT
+        _exempt_keys = {"chat_lock_no_admin_config_user"}
         for key, value in LOCK_UI_TEXT.items():
+            if key in _exempt_keys:
+                continue
             assert ".env" not in value, (
                 f"UI text key '{key}' contains '.env'"
             )
+
+
+class TestRepoLockCardConceptNote:
+    """AC-15: Concept note is now included in conflict card to help users distinguish repo lock from chat lock."""
+
+    def test_concept_note_in_card_markdown(self):
+        import time
+        from src.card.styles_lock import LOCK_UI_TEXT
+
+        markdown, _ = build_repo_lock_card("/home/user/my-repo", time.monotonic() - 10)
+        note = LOCK_UI_TEXT["repo_lock_concept_note"]
+        assert note in markdown
+
+
+# ---------------------------------------------------------------------------
+# AC-16: /status no-lock educational explanation
+# ---------------------------------------------------------------------------
+
+
+class TestStatusNoLockExplain:
+    """AC-16: _build_lock_status_lines shows educational text when no locks active."""
+
+    def test_no_lock_shows_explain(self):
+        from unittest.mock import MagicMock
+        from src.card.styles_lock import LOCK_UI_TEXT
+
+        handler = MagicMock()
+        ctx = MagicMock()
+        ctx.chat_lock_manager.get_lock_info.return_value = None
+        ctx.repo_lock_manager = MagicMock()
+        handler.ctx = ctx
+
+        from src.feishu.handlers.diagnostics import DiagnosticsHandler
+        result = DiagnosticsHandler._build_lock_status_lines(handler, "chat_001", project=None, is_admin=False)
+
+        assert LOCK_UI_TEXT["lock_status_no_lock_explain"] in result
+        assert LOCK_UI_TEXT["lock_status_no_active_lock"] in result
+
+
+# ---------------------------------------------------------------------------
+# AC-21: no-admin config user has .env guidance
+# ---------------------------------------------------------------------------
+
+
+class TestNoAdminConfigUserEnvGuidance:
+    """AC-21: chat_lock_no_admin_config_user directs users to contact Bot deployer."""
+
+    def test_has_deployer_guidance(self):
+        from src.card.styles_lock import LOCK_UI_TEXT
+        text = LOCK_UI_TEXT["chat_lock_no_admin_config_user"]
+        assert "部署者" in text or "Bot" in text
+
+
+# ---------------------------------------------------------------------------
+# Task 40: build_chat_lock_card includes p2p guide
+# ---------------------------------------------------------------------------
+
+
+class TestChatLockCardP2PGuide:
+    """Chat lock card includes the p2p guide text."""
+
+    def test_p2p_guide_present(self):
+        from src.card.styles_lock import LOCK_UI_TEXT
+        markdown, _ = build_chat_lock_card()
+        assert LOCK_UI_TEXT["chat_lock_p2p_guide"] in markdown
+
+
+# ---------------------------------------------------------------------------
+# Task 41: build_chat_lock_card includes concept note
+# ---------------------------------------------------------------------------
+
+
+class TestChatLockCardConceptNote:
+    """Chat lock card includes the concept note explaining chat lock scope."""
+
+    def test_concept_note_present(self):
+        from src.card.styles_lock import LOCK_UI_TEXT
+        markdown, _ = build_chat_lock_card()
+        assert LOCK_UI_TEXT["chat_lock_concept_note"] in markdown
+
+
+# ---------------------------------------------------------------------------
+# Task 43: styles_lock contains only lock-related keys
+# ---------------------------------------------------------------------------
+
+
+class TestStylesLockOnlyLockKeys:
+    """styles_lock.LOCK_UI_TEXT should only contain lock-related keys."""
+
+    # Keys that were migrated OUT of styles_lock to styles
+    MIGRATED_NON_LOCK_KEYS = {
+        "retry_command_sig_mismatch",
+        "retry_command_sig_upgrade_expired",
+        "retry_project_unavailable",
+        "eviction_notify_title",
+        "eviction_notify_body",
+        "eviction_notify_btn_rebind",
+    }
+
+    def test_no_migrated_keys_remain(self):
+        from src.card.styles_lock import LOCK_UI_TEXT
+        leaked = self.MIGRATED_NON_LOCK_KEYS & set(LOCK_UI_TEXT.keys())
+        assert not leaked, f"Non-lock keys still in LOCK_UI_TEXT: {leaked}"
+
+
+# ---------------------------------------------------------------------------
+# chat_hint dead field removal: static text + parameter cleanup
+# ---------------------------------------------------------------------------
+
+
+class TestChatHintFieldRemoved:
+    """Verify chat_hint parameter is removed and static text is used."""
+
+    def test_same_sender_shows_static_hint(self):
+        """is_same_sender=True produces card with static '另一个群' text, no placeholder."""
+        import time
+        markdown, _ = build_repo_lock_card(
+            "/tmp/repo", time.monotonic() - 10,
+            is_same_sender=True,
+        )
+        assert "另一个群" in markdown
+        assert "{chat_hint}" not in markdown
+
+    def test_chat_hint_kwarg_raises_type_error(self):
+        """Passing chat_hint= to build_repo_lock_card must raise TypeError."""
+        import time
+        with pytest.raises(TypeError):
+            build_repo_lock_card(
+                "/tmp/repo", time.monotonic() - 10,
+                chat_hint="某群",
+            )
+
+    def test_same_sender_false_no_hint(self):
+        """is_same_sender=False produces card without the same-sender hint line."""
+        import time
+        markdown, _ = build_repo_lock_card(
+            "/tmp/repo", time.monotonic() - 10,
+            is_same_sender=False,
+        )
+        assert "另一个群中持有该仓库锁" not in markdown

@@ -50,7 +50,6 @@ class _LockConflictContext:
     app_id: str = ""
     repo_token: str = ""
     sender_id: str = ""
-    chat_hint: str = "其它群聊"
 
 
 class LockHelper:
@@ -177,14 +176,14 @@ class LockHelper:
     # ------------------------------------------------------------------
 
     def send_lock_conflict_card(
-        self, e: "LockConflictError", message_id: str, command_text: str, *, retry_count: int = 0,
+        self, e: "LockConflictError", message_id: str, command_text: str, *, retry_count: int = 0, chat_id: str = "",
     ) -> None:
         """Build and send a repo-lock conflict card."""
         try:
             from ...card.builders.lock import build_repo_lock_card
             from ...card.builders.project import ProjectBuilder
 
-            lctx = self._collect_lock_conflict_context(e)
+            lctx = self._collect_lock_conflict_context(e, chat_id=chat_id)
 
             lock_content, lock_buttons = build_repo_lock_card(
                 e.root_path, e.locked_since, is_admin=lctx.is_admin,
@@ -193,12 +192,12 @@ class LockHelper:
                 last_active_time_monotonic=e.last_active_time,
                 app_id=lctx.app_id,
                 is_same_sender=lctx.is_same_sender,
-                chat_hint=lctx.chat_hint,
                 retry_count=retry_count,
+                idle_timeout_seconds=getattr(self._h.settings, "repo_lock_idle_timeout", None),
             )
             msg_type, card_json = ProjectBuilder.build_project_response_card(
                 project=None,
-                title="\U0001f512 仓库锁定",
+                title=UI_TEXT["repo_lock_card_header"],
                 content=lock_content,
                 show_buttons=False,
                 extra_buttons=lock_buttons,
@@ -211,7 +210,7 @@ class LockHelper:
             except Exception as fallback_err:
                 logger.warning("Fallback text reply also failed: %s", fallback_err)
 
-    def _collect_lock_conflict_context(self, e: "LockConflictError"):
+    def _collect_lock_conflict_context(self, e: "LockConflictError", *, chat_id: str = ""):
         """Collect contextual info needed to build a lock conflict card."""
         from ...config import get_settings
         from ...thread import get_current_sender_id
@@ -233,7 +232,7 @@ class LockHelper:
         try:
             ctx.app_id = get_settings().app_id or ""
         except Exception:
-            pass
+            logger.debug("Failed to get app_id for lock conflict context", exc_info=True)
 
         return ctx
 
@@ -256,13 +255,14 @@ class LockHelper:
             try:
                 _app_id = self._h.settings.app_id or ""
             except Exception:
-                pass
+                logger.debug("Failed to get app_id for lock card", exc_info=True)
 
             _card_md, _card_buttons = build_chat_lock_card(
                 locked_by=_locked_by, locked_by_name=_locked_name,
                 admin_name=_locked_name or "",
                 app_id=_app_id,
                 locked_at_wall=_lock_entry.locked_at_wall if _lock_entry else None,
+                max_duration_seconds=getattr(self._h.settings, "chat_lock_max_duration", None),
             )
             msg_type, card_json = ProjectBuilder.build_project_response_card(
                 project=None,
@@ -275,7 +275,7 @@ class LockHelper:
             try:
                 self._h.add_reaction(message_id, EmojiReaction.on_chat_locked())
             except Exception:
-                pass
+                logger.debug("Failed to add chat-lock emoji reaction", exc_info=True)
         except Exception as card_err:
             logger.error("Failed to send chat lock intercept card: %s", card_err)
             try:
@@ -294,7 +294,7 @@ class LockHelper:
         try:
             self._h.add_reaction(message_id, EmojiReaction.on_chat_locked())
         except Exception:
-            pass
+            logger.debug("Failed to add throttled chat-lock emoji reaction", exc_info=True)
         try:
             from ...card.builders.lock import _build_p2p_multi_url, _compute_command_sig
             from ...card.builders.project import ProjectBuilder
@@ -309,7 +309,7 @@ class LockHelper:
             try:
                 _app_id = self._h.settings.app_id or ""
             except Exception:
-                pass
+                logger.debug("Failed to get app_id for throttled reply", exc_info=True)
             if _app_id:
                 _buttons.append({
                     "tag": "button",
@@ -330,4 +330,4 @@ class LockHelper:
                     "text",
                 )
             except Exception:
-                pass
+                logger.debug("Throttled reply fallback also failed", exc_info=True)
