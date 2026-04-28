@@ -1,4 +1,5 @@
 import contextvars
+import logging
 import threading
 import time
 import uuid
@@ -12,6 +13,8 @@ from typing import Any, Callable, Deque, Optional
 from ..utils.circuit_breaker import CircuitBreaker, CircuitBreakerOpenException, CircuitState
 from ..utils.errors import get_error_detail
 from ..utils.rate_limit import RateLimiter, RateLimitExceededException
+
+logger = logging.getLogger(__name__)
 
 
 class TaskStatus(str, Enum):
@@ -607,11 +610,11 @@ class TaskScheduler:
                 # Running futures cannot be forcibly stopped by ThreadPoolExecutor.
                 self._executor.shutdown(wait=False, cancel_futures=True)
             except Exception:
-                pass
+                logger.debug("failed to shutdown executor", exc_info=True)
             try:
                 self._system_executor.shutdown(wait=False, cancel_futures=True)
             except Exception:
-                pass
+                logger.debug("failed to shutdown system executor", exc_info=True)
 
     # ------------------------ internal ------------------------
 
@@ -642,7 +645,7 @@ class TaskScheduler:
                     try:
                         dq.remove(run_id)
                     except ValueError:
-                        pass
+                        logger.debug("run_id %s not found in chat deque", run_id, exc_info=True)
                     if not dq:
                         self._by_chat.pop(chat_id, None)
                 pid = st.spec.project_id
@@ -652,7 +655,7 @@ class TaskScheduler:
                         try:
                             pdq.remove(run_id)
                         except ValueError:
-                            pass
+                            logger.debug("run_id %s not found in project deque", run_id, exc_info=True)
                         if not pdq:
                             self._by_project.pop(pid, None)
                 tid = st.spec.task_id
@@ -876,7 +879,7 @@ class TaskScheduler:
                 listener(ev)
             except Exception:
                 # listeners must never break scheduler
-                pass
+                logger.debug("event listener raised an exception", exc_info=True)
 
     def _pop_queued_item_unlocked(self, run_id: str, key: str) -> Optional[_QueuedTask]:
         q = self._queues.get(key)

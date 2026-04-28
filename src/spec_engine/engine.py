@@ -775,7 +775,6 @@ class SpecEngine(BaseEngine):
         - max_cycles: hit max_cycles without success
         - stopped: engine stopped without a cycle (edge)
         """
-        requirement = self._project.requirement
         termination: str = "max_cycles"
 
         policy = ContinuationPolicy(
@@ -803,359 +802,460 @@ class SpecEngine(BaseEngine):
                 callbacks.on_cycle_start(cycle_num, max_cycles)
 
             try:
-                # Pick next work item (spec file) if any; otherwise refine from requirement.
                 work_item = _pick_next_work_item(self._project, cycle_num)
-
-                # First cycle of a fresh execute uses raw requirement
-                if first_raw_input is not None and cycle_num == start_cycle:
-                    spec_input = first_raw_input
-                elif work_item and work_item.spec_path:
-                    spec_input = _build_input_from_spec_file(requirement, work_item)
-                else:
-                    spec_input = build_refinement_input(requirement, self._last_review, self._project)
-
-                # --- SPEC PHASE ---
-                cycle.phase = SpecPhase.SPEC
-                self._last_phase = cycle.phase
-                if work_item and work_item.spec_path and _should_load_spec_directly(work_item):
-                    # spec 文件本身就是 spec-kit 规格产物：直接加载进入下一阶段
-                    spec_output = _read_text_file_best_effort(work_item.spec_path)
-                else:
-                    spec_output = self._run_phase(
-                        cycle_num,
-                        SpecPhase.SPEC,
-                        build_spec_prompt(spec_input, self.root_path, self._consume_guidance(), format_criteria_status(self._project)),
-                        callbacks,
-                        timeout,
-                    )
-                cycle.spec_content = _truncate_output(spec_output, self.settings)
-                self._accumulate_phase_stats(cycle, SpecPhase.SPEC.value)
-                if self.settings.spec_persist_phase_artifacts:
-                    cycle.spec_path = _persist_cycle_artifact(self.root_path, self.settings, self._project, cycle_num, "spec", spec_output, "json")
-                cycle.spec_artifact, cycle.spec_artifact_errors = parse_spec_artifact(spec_output)
-
-                if self.settings.spec_persist_every_phase:
-                    self._persist_state_best_effort()
-
-                if work_item:
-                    work_item.status = SpecWorkItemStatus.DONE
-                    work_item.used_in_cycle = cycle_num
-                    _append_history_event(
-                        self.root_path, self.settings, self._project,
-                        "work_item_consumed",
-                        {
-                            "cycle": cycle_num,
-                            "item_id": work_item.item_id,
-                            "question": work_item.question,
-                            "spec_path": work_item.spec_path,
-                        },
-                    )
-
-                # If the spec provides better acceptance criteria, merge into project.
-                if cycle_num == 1 and cycle.spec_artifact and cycle.spec_artifact.acceptance_criteria:
-                    merge_acceptance_criteria(self._project, cycle.spec_artifact.acceptance_criteria)
-
-                if self._run_state != EngineRunState.RUNNING:
-                    cycle.fail()
-                    self._project.cycles.append(cycle)
-                    self._project.cycle_count_total = max(self._project.cycle_count_total, cycle_num)
-                    self._persist_state_best_effort()
-                    termination = "paused"
-                    break
-
-                # --- PLAN PHASE ---
-                cycle.phase = SpecPhase.PLAN
-                self._last_phase = cycle.phase
-                plan_output = self._run_phase(
-                    cycle_num,
-                    SpecPhase.PLAN,
-                    build_plan_prompt(spec_output, self.root_path, spec_artifact=cycle.spec_artifact),
-                    callbacks,
-                    timeout,
+                spec_input = self._prepare_cycle_input(
+                    cycle_num, start_cycle, first_raw_input, work_item,
                 )
-                cycle.plan_content = _truncate_output(plan_output, self.settings)
-                self._accumulate_phase_stats(cycle, SpecPhase.PLAN.value)
-                if self.settings.spec_persist_phase_artifacts:
-                    cycle.plan_path = _persist_cycle_artifact(self.root_path, self.settings, self._project, cycle_num, "plan", plan_output, "json")
-                cycle.plan_artifact, cycle.plan_artifact_errors = parse_plan_artifact(plan_output)
 
-                if self.settings.spec_persist_every_phase:
-                    self._persist_state_best_effort()
-                if self._run_state != EngineRunState.RUNNING:
-                    cycle.fail()
-                    self._project.cycles.append(cycle)
-                    self._project.cycle_count_total = max(self._project.cycle_count_total, cycle_num)
-                    self._persist_state_best_effort()
-                    termination = "paused"
-                    break
-
-                # --- TASK PHASE ---
-                cycle.phase = SpecPhase.TASK
-                self._last_phase = cycle.phase
-                task_output = self._run_phase(
-                    cycle_num,
-                    SpecPhase.TASK,
-                    build_task_prompt(plan_output, plan_artifact=cycle.plan_artifact),
-                    callbacks,
-                    timeout,
+                # --- SPEC → PLAN → TASK → BUILD → REVIEW ---
+                spec_output = self._run_spec_phase(
+                    cycle_num, cycle, spec_input, work_item, callbacks, timeout,
                 )
-                self._accumulate_phase_stats(cycle, SpecPhase.TASK.value)
-                parsed_tasks = parse_tasks(task_output)
-                cycle.tasks_total = len(parsed_tasks)
-                cycle.tasks = parsed_tasks[: self.settings.spec_cycle_tasks_max]
-                if self.settings.spec_persist_phase_artifacts:
-                    cycle.tasks_path = _persist_cycle_artifact(
-                        self.root_path, self.settings, self._project, cycle_num,
-                        "tasks",
-                        json.dumps([t.to_dict() for t in parsed_tasks], ensure_ascii=False, indent=2),
-                        "json",
-                    )
-
-                if self.settings.spec_persist_every_phase:
-                    self._persist_state_best_effort()
-                if self._run_state != EngineRunState.RUNNING:
-                    cycle.fail()
-                    self._project.cycles.append(cycle)
-                    self._project.cycle_count_total = max(self._project.cycle_count_total, cycle_num)
-                    self._persist_state_best_effort()
+                if self._check_cycle_pause(cycle, cycle_num):
                     termination = "paused"
                     break
 
-                # --- BUILD PHASE ---
-                cycle.phase = SpecPhase.BUILD
-                self._last_phase = cycle.phase
-                build_output = self._run_phase(
-                    cycle_num,
-                    SpecPhase.BUILD,
-                    build_build_prompt(cycle.tasks, plan_output, self.root_path, self._consume_guidance(), plan_artifact=cycle.plan_artifact),
-                    callbacks,
-                    timeout,
+                plan_output = self._run_plan_phase(
+                    cycle_num, cycle, spec_output, callbacks, timeout,
                 )
-                cycle.build_output = _truncate_output(build_output, self.settings)
-                self._accumulate_phase_stats(cycle, SpecPhase.BUILD.value)
-                if self.settings.spec_persist_phase_artifacts:
-                    cycle.build_path = _persist_cycle_artifact(self.root_path, self.settings, self._project, cycle_num, "build", build_output, "txt")
-
-                if self.settings.spec_persist_every_phase:
-                    self._persist_state_best_effort()
-                if self._run_state != EngineRunState.RUNNING:
-                    cycle.fail()
-                    self._project.cycles.append(cycle)
-                    self._project.cycle_count_total = max(self._project.cycle_count_total, cycle_num)
-                    self._persist_state_best_effort()
+                if self._check_cycle_pause(cycle, cycle_num):
                     termination = "paused"
                     break
 
-                # --- REVIEW PHASE (conditional, like loop engine) ---
-                review_passed = True
-                if self.settings.spec_review_enabled:
-                    cycle.phase = SpecPhase.REVIEW
-                    self._last_phase = cycle.phase
-                    review_result = self._conduct_review(cycle_num, callbacks, cycle_obj=cycle)
-                    cycle.review_result = review_result
-                    # best-effort: persist review failure decision/diagnostics for traceability
-                    diag = self._last_review_failure_diag
-                    if isinstance(diag, dict) and diag:
-                        cycle.review_decision = str(diag.get("decision") or "review_failed_continue")
-                        cycle.review_diagnostics = dict(diag)
-                    if self.settings.spec_persist_phase_artifacts:
-                        cycle.review_path = _persist_cycle_artifact(
-                            self.root_path, self.settings, self._project, cycle_num, "review", review_result_to_text(review_result), "txt"
-                        )
-                    self._last_review = review_result
-                    review_passed = review_result.all_passed
+                self._run_task_phase(cycle_num, cycle, plan_output, callbacks, timeout)
+                if self._check_cycle_pause(cycle, cycle_num):
+                    termination = "paused"
+                    break
 
-                    if self.settings.spec_persist_every_phase:
-                        self._persist_state_best_effort()
+                self._run_build_phase(cycle_num, cycle, plan_output, callbacks, timeout)
+                if self._check_cycle_pause(cycle, cycle_num):
+                    termination = "paused"
+                    break
 
+                review_passed = self._run_review_phase(cycle_num, cycle, callbacks)
                 cycle.complete()
 
             except Exception as cycle_exc:
-                # If engine is STOPPING (user pause/stop), preserve original pause behavior
-                if self._run_state != EngineRunState.RUNNING:
-                    cycle.fail()
-                    self._project.cycles.append(cycle)
-                    self._project.cycle_count_total = max(self._project.cycle_count_total, cycle_num)
-                    self._persist_state_best_effort()
-                    termination = "paused"
-                    break
-
-                # Digest exception: mark cycle failed, continue to next cycle
-                err_detail = get_error_detail(cycle_exc)
-                cycle.error_message = err_detail
-                cycle.fail()
-
-                self._project.cycles.append(cycle)
-                self._project.cycle_count_total = max(self._project.cycle_count_total, cycle_num)
-
-                logger.error(
-                    "[Spec:%s] 循环 %d 异常失败 (%s): %s",
-                    self._project.name,
-                    cycle_num,
-                    type(cycle_exc).__name__,
-                    (err_detail or "")[:500],
-                )
-
-                _append_history_event(
-                    self.root_path, self.settings, self._project,
-                    "cycle_exception",
-                    {
-                        "cycle": cycle_num,
-                        "exception_type": type(cycle_exc).__name__,
-                        "error": (err_detail or "")[:500],
-                    },
-                )
-
-                self._persist_state_best_effort()
-
-                # Consecutive failure protection
-                consecutive_failures += 1
-                if consecutive_failures >= max_consecutive:
-                    logger.error(
-                        "[Spec:%s] 连续 %d 个循环异常失败，终止引擎",
-                        self._project.name,
-                        consecutive_failures,
+                should_break, new_termination, consecutive_failures = (
+                    self._handle_cycle_exception(
+                        cycle, cycle_num, cycle_exc,
+                        consecutive_failures, max_consecutive,
                     )
-                    termination = "consecutive_failures"
+                )
+                if should_break:
+                    termination = new_termination
                     break
-
-                # Rebuild session for next cycle
-                self._recreate_session_best_effort()
-                if not self._session:
-                    logger.error(
-                        "[Spec:%s] 循环 %d 异常后 Session 重建失败，下一循环将无法执行",
-                        self._project.name,
-                        cycle_num,
-                    )
                 continue
 
             # ---- Cycle completed successfully ----
             consecutive_failures = 0
+            should_stop, stop_reason = self._finalize_successful_cycle(
+                cycle_num, cycle, max_cycles, review_passed, callbacks, policy,
+            )
+            if should_stop:
+                termination = stop_reason
+                break
 
-            self._project.cycles.append(cycle)
-            self._project.cycle_count_total = max(self._project.cycle_count_total, cycle_num)
+        return termination
 
-            if callbacks.on_cycle_done:
-                callbacks.on_cycle_done(cycle_num, cycle)
+    # ------------------------------------------------------------------
+    # Cycle-loop helper methods (extracted from _run_cycle_loop)
+    # ------------------------------------------------------------------
 
-            logger.info(
-                "[Spec:%s] 循环 %d/%d 完成, 审查=%s",
-                self._project.name,
+    def _prepare_cycle_input(
+        self,
+        cycle_num: int,
+        start_cycle: int,
+        first_raw_input: Optional[str],
+        work_item: Optional[SpecWorkItem],
+    ) -> str:
+        """Determine the input text for the SPEC phase of a given cycle."""
+        requirement = self._project.requirement
+        if first_raw_input is not None and cycle_num == start_cycle:
+            return first_raw_input
+        if work_item and work_item.spec_path:
+            return _build_input_from_spec_file(requirement, work_item)
+        return build_refinement_input(requirement, self._last_review, self._project)
+
+    def _run_spec_phase(
+        self,
+        cycle_num: int,
+        cycle: SpecCycle,
+        spec_input: str,
+        work_item: Optional[SpecWorkItem],
+        callbacks: SpecEngineCallbacks,
+        timeout: int,
+    ) -> str:
+        """Execute the SPEC phase and return spec output text."""
+        cycle.phase = SpecPhase.SPEC
+        self._last_phase = cycle.phase
+        if work_item and work_item.spec_path and _should_load_spec_directly(work_item):
+            # spec 文件本身就是 spec-kit 规格产物：直接加载进入下一阶段
+            spec_output = _read_text_file_best_effort(work_item.spec_path)
+        else:
+            spec_output = self._run_phase(
                 cycle_num,
-                max_cycles,
-                f"{cycle.review_result.total_suggestions}条建议" if cycle.review_result else "跳过",
+                SpecPhase.SPEC,
+                build_spec_prompt(spec_input, self.root_path, self._consume_guidance(), format_criteria_status(self._project)),
+                callbacks,
+                timeout,
             )
+        cycle.spec_content = _truncate_output(spec_output, self.settings)
+        self._accumulate_phase_stats(cycle, SpecPhase.SPEC.value)
+        if self.settings.spec_persist_phase_artifacts:
+            cycle.spec_path = _persist_cycle_artifact(self.root_path, self.settings, self._project, cycle_num, "spec", spec_output, "json")
+        cycle.spec_artifact, cycle.spec_artifact_errors = parse_spec_artifact(spec_output)
 
-            # --- CRITERIA EVALUATION ---
-            criteria_result = self._evaluate_criteria(self._project.acceptance_criteria, cycle_num)
-            all_satisfied = criteria_result.get("all_satisfied", False)
+        if self.settings.spec_persist_every_phase:
+            self._persist_state_best_effort()
 
-            # --- POST-CYCLE PROBLEM DISCOVERY + SPEC GENERATION ---
-            _backlog_pending = sum(
-                1 for w in self._project.work_items
-                if w.status == SpecWorkItemStatus.PENDING
-            )
-            if self.settings.spec_discovery_enabled and self._run_state == EngineRunState.RUNNING:
-                discovery = self._discover_optimization_questions(
-                    cycle_num,
-                    all_satisfied=all_satisfied,
-                    backlog_pending=_backlog_pending,
-                )
-                cycle.discovery_path = _persist_cycle_artifact(
-                    self.root_path, self.settings, self._project, cycle_num, "discovery", json.dumps(discovery, ensure_ascii=False, indent=2), "json"
-                )
-                new_items = self._generate_specs_from_discovery(cycle_num, discovery)
-                # 防止 backlog 无限制膨胀：只保留最近 N 条（长期任务可配合外部清理）
-                if new_items:
-                    self._project.work_items.extend(new_items)
-                    self._project.work_items_total = max(self._project.work_items_total, len(self._project.work_items))
-                    for wi in new_items:
-                        _append_history_event(
-                            self.root_path, self.settings, self._project,
-                            "work_item_generated",
-                            {
-                                "cycle": cycle_num,
-                                "item_id": wi.item_id,
-                                "question": wi.question,
-                                "spec_path": wi.spec_path,
-                            },
-                        )
-
-            # --- METRICS SNAPSHOT (monitoring) ---
-            metrics = compute_cycle_metrics(cycle, self._project)
-            self._project.metrics_history.append(metrics)
-            cycle.metrics_path = _persist_cycle_artifact(
-                self.root_path, self.settings, self._project, cycle_num, "metrics", json.dumps(metrics.to_dict(), ensure_ascii=False, indent=2), "json"
-            )
-
+        if work_item:
+            work_item.status = SpecWorkItemStatus.DONE
+            work_item.used_in_cycle = cycle_num
             _append_history_event(
                 self.root_path, self.settings, self._project,
-                "cycle_done",
+                "work_item_consumed",
                 {
                     "cycle": cycle_num,
-                    "status": cycle.status,
-                    "satisfied": metrics.satisfied_count,
-                    "total": metrics.total_criteria,
-                    "new_satisfied": metrics.new_satisfied,
-                    "review_suggestions": metrics.review_suggestions,
-                    "goal_attainment": metrics.goal_attainment,
-                    "improvement_space": metrics.improvement_space,
-                    "backlog_pending": metrics.backlog_pending,
+                    "item_id": work_item.item_id,
+                    "question": work_item.question,
+                    "spec_path": work_item.spec_path,
                 },
             )
 
+        # If the spec provides better acceptance criteria, merge into project.
+        if cycle_num == 1 and cycle.spec_artifact and cycle.spec_artifact.acceptance_criteria:
+            merge_acceptance_criteria(self._project, cycle.spec_artifact.acceptance_criteria)
+
+        return spec_output
+
+    def _run_plan_phase(
+        self,
+        cycle_num: int,
+        cycle: SpecCycle,
+        spec_output: str,
+        callbacks: SpecEngineCallbacks,
+        timeout: int,
+    ) -> str:
+        """Execute the PLAN phase and return plan output text."""
+        cycle.phase = SpecPhase.PLAN
+        self._last_phase = cycle.phase
+        plan_output = self._run_phase(
+            cycle_num,
+            SpecPhase.PLAN,
+            build_plan_prompt(spec_output, self.root_path, spec_artifact=cycle.spec_artifact),
+            callbacks,
+            timeout,
+        )
+        cycle.plan_content = _truncate_output(plan_output, self.settings)
+        self._accumulate_phase_stats(cycle, SpecPhase.PLAN.value)
+        if self.settings.spec_persist_phase_artifacts:
+            cycle.plan_path = _persist_cycle_artifact(self.root_path, self.settings, self._project, cycle_num, "plan", plan_output, "json")
+        cycle.plan_artifact, cycle.plan_artifact_errors = parse_plan_artifact(plan_output)
+
+        if self.settings.spec_persist_every_phase:
             self._persist_state_best_effort()
-            _cleanup_old_cycle_artifacts(self.root_path, self.settings, self._project, cycle_num)
-            _cleanup_generated_specs(self._project, self.settings)
+        return plan_output
 
-            # --- TERMINATION CHECK (ContinuationPolicy) ---
-            converged = False if policy.disable_convergence else self._detect_convergence()
-            if converged:
-                logger.info("[Spec:%s] 收敛检测触发, 循环 %d 轮", self._project.name, cycle_num)
-
-            _backlog_stuck = detect_backlog_stuck(
-                self._project,
-                window=getattr(self.settings, "spec_backlog_stuck_window", 3),
+    def _run_task_phase(
+        self,
+        cycle_num: int,
+        cycle: SpecCycle,
+        plan_output: str,
+        callbacks: SpecEngineCallbacks,
+        timeout: int,
+    ) -> None:
+        """Execute the TASK phase. Populates ``cycle.tasks``."""
+        cycle.phase = SpecPhase.TASK
+        self._last_phase = cycle.phase
+        task_output = self._run_phase(
+            cycle_num,
+            SpecPhase.TASK,
+            build_task_prompt(plan_output, plan_artifact=cycle.plan_artifact),
+            callbacks,
+            timeout,
+        )
+        self._accumulate_phase_stats(cycle, SpecPhase.TASK.value)
+        parsed_tasks = parse_tasks(task_output)
+        cycle.tasks_total = len(parsed_tasks)
+        cycle.tasks = parsed_tasks[: self.settings.spec_cycle_tasks_max]
+        if self.settings.spec_persist_phase_artifacts:
+            cycle.tasks_path = _persist_cycle_artifact(
+                self.root_path, self.settings, self._project, cycle_num,
+                "tasks",
+                json.dumps([t.to_dict() for t in parsed_tasks], ensure_ascii=False, indent=2),
+                "json",
             )
-            if _backlog_stuck:
-                logger.info("[Spec:%s] backlog stuck 检测触发, 循环 %d 轮", self._project.name, cycle_num)
 
-            decision = policy.should_stop(
-                cycle_num=cycle_num,
+        if self.settings.spec_persist_every_phase:
+            self._persist_state_best_effort()
+
+    def _run_build_phase(
+        self,
+        cycle_num: int,
+        cycle: SpecCycle,
+        plan_output: str,
+        callbacks: SpecEngineCallbacks,
+        timeout: int,
+    ) -> None:
+        """Execute the BUILD phase."""
+        cycle.phase = SpecPhase.BUILD
+        self._last_phase = cycle.phase
+        build_output = self._run_phase(
+            cycle_num,
+            SpecPhase.BUILD,
+            build_build_prompt(cycle.tasks, plan_output, self.root_path, self._consume_guidance(), plan_artifact=cycle.plan_artifact),
+            callbacks,
+            timeout,
+        )
+        cycle.build_output = _truncate_output(build_output, self.settings)
+        self._accumulate_phase_stats(cycle, SpecPhase.BUILD.value)
+        if self.settings.spec_persist_phase_artifacts:
+            cycle.build_path = _persist_cycle_artifact(self.root_path, self.settings, self._project, cycle_num, "build", build_output, "txt")
+
+        if self.settings.spec_persist_every_phase:
+            self._persist_state_best_effort()
+
+    def _run_review_phase(
+        self,
+        cycle_num: int,
+        cycle: SpecCycle,
+        callbacks: SpecEngineCallbacks,
+    ) -> bool:
+        """Execute the REVIEW phase (conditional). Returns whether review passed."""
+        review_passed = True
+        if self.settings.spec_review_enabled:
+            cycle.phase = SpecPhase.REVIEW
+            self._last_phase = cycle.phase
+            review_result = self._conduct_review(cycle_num, callbacks, cycle_obj=cycle)
+            cycle.review_result = review_result
+            # best-effort: persist review failure decision/diagnostics for traceability
+            diag = self._last_review_failure_diag
+            if isinstance(diag, dict) and diag:
+                cycle.review_decision = str(diag.get("decision") or "review_failed_continue")
+                cycle.review_diagnostics = dict(diag)
+            if self.settings.spec_persist_phase_artifacts:
+                cycle.review_path = _persist_cycle_artifact(
+                    self.root_path, self.settings, self._project, cycle_num, "review", review_result_to_text(review_result), "txt"
+                )
+            self._last_review = review_result
+            review_passed = review_result.all_passed
+
+            if self.settings.spec_persist_every_phase:
+                self._persist_state_best_effort()
+        return review_passed
+
+    def _check_cycle_pause(self, cycle: SpecCycle, cycle_num: int) -> bool:
+        """Check if engine should pause. Marks cycle failed and persists if so."""
+        if self._run_state != EngineRunState.RUNNING:
+            cycle.fail()
+            self._project.cycles.append(cycle)
+            self._project.cycle_count_total = max(self._project.cycle_count_total, cycle_num)
+            self._persist_state_best_effort()
+            return True
+        return False
+
+    def _handle_cycle_exception(
+        self,
+        cycle: SpecCycle,
+        cycle_num: int,
+        exc: Exception,
+        consecutive_failures: int,
+        max_consecutive: int,
+    ) -> tuple[bool, str, int]:
+        """Handle a cycle exception.
+
+        Returns ``(should_break, termination_reason, consecutive_failures)``.
+        """
+        # If engine is STOPPING (user pause/stop), preserve original pause behavior
+        if self._run_state != EngineRunState.RUNNING:
+            cycle.fail()
+            self._project.cycles.append(cycle)
+            self._project.cycle_count_total = max(self._project.cycle_count_total, cycle_num)
+            self._persist_state_best_effort()
+            return True, "paused", consecutive_failures
+
+        # Digest exception: mark cycle failed, continue to next cycle
+        err_detail = get_error_detail(exc)
+        cycle.error_message = err_detail
+        cycle.fail()
+
+        self._project.cycles.append(cycle)
+        self._project.cycle_count_total = max(self._project.cycle_count_total, cycle_num)
+
+        logger.error(
+            "[Spec:%s] 循环 %d 异常失败 (%s): %s",
+            self._project.name,
+            cycle_num,
+            type(exc).__name__,
+            (err_detail or "")[:500],
+        )
+
+        _append_history_event(
+            self.root_path, self.settings, self._project,
+            "cycle_exception",
+            {
+                "cycle": cycle_num,
+                "exception_type": type(exc).__name__,
+                "error": (err_detail or "")[:500],
+            },
+        )
+
+        self._persist_state_best_effort()
+
+        # Consecutive failure protection
+        consecutive_failures += 1
+        if consecutive_failures >= max_consecutive:
+            logger.error(
+                "[Spec:%s] 连续 %d 个循环异常失败，终止引擎",
+                self._project.name,
+                consecutive_failures,
+            )
+            return True, "consecutive_failures", consecutive_failures
+
+        # Rebuild session for next cycle
+        self._recreate_session_best_effort()
+        if not self._session:
+            logger.error(
+                "[Spec:%s] 循环 %d 异常后 Session 重建失败，下一循环将无法执行",
+                self._project.name,
+                cycle_num,
+            )
+        return False, "", consecutive_failures
+
+    def _finalize_successful_cycle(
+        self,
+        cycle_num: int,
+        cycle: SpecCycle,
+        max_cycles: int,
+        review_passed: bool,
+        callbacks: SpecEngineCallbacks,
+        policy: ContinuationPolicy,
+    ) -> tuple[bool, str]:
+        """Post-cycle processing after a successful cycle.
+
+        Returns ``(should_stop, termination_reason)``.
+        """
+        self._project.cycles.append(cycle)
+        self._project.cycle_count_total = max(self._project.cycle_count_total, cycle_num)
+
+        if callbacks.on_cycle_done:
+            callbacks.on_cycle_done(cycle_num, cycle)
+
+        logger.info(
+            "[Spec:%s] 循环 %d/%d 完成, 审查=%s",
+            self._project.name,
+            cycle_num,
+            max_cycles,
+            f"{cycle.review_result.total_suggestions}条建议" if cycle.review_result else "跳过",
+        )
+
+        # --- CRITERIA EVALUATION ---
+        criteria_result = self._evaluate_criteria(self._project.acceptance_criteria, cycle_num)
+        all_satisfied = criteria_result.get("all_satisfied", False)
+
+        # --- POST-CYCLE PROBLEM DISCOVERY + SPEC GENERATION ---
+        _backlog_pending = sum(
+            1 for w in self._project.work_items
+            if w.status == SpecWorkItemStatus.PENDING
+        )
+        if self.settings.spec_discovery_enabled and self._run_state == EngineRunState.RUNNING:
+            discovery = self._discover_optimization_questions(
+                cycle_num,
                 all_satisfied=all_satisfied,
-                review_passed=review_passed,
-                converged=converged,
-                metrics=metrics,
-                backlog_stuck=_backlog_stuck,
-                ignore_backlog=getattr(self.settings, "spec_success_ignore_backlog", True),
+                backlog_pending=_backlog_pending,
             )
-            if decision == "success":
-                logger.info("[Spec:%s] 所有标准+审查通过, 循环 %d 轮", self._project.name, cycle_num)
-                termination = "success"
-                break
-            if decision == "converged":
-                termination = "converged"
-                break
-            if decision == "backlog_stuck":
-                logger.info("[Spec:%s] backlog stuck 终止, 循环 %d 轮", self._project.name, cycle_num)
-                termination = "backlog_stuck"
-                break
+            cycle.discovery_path = _persist_cycle_artifact(
+                self.root_path, self.settings, self._project, cycle_num, "discovery", json.dumps(discovery, ensure_ascii=False, indent=2), "json"
+            )
+            new_items = self._generate_specs_from_discovery(cycle_num, discovery)
+            # 防止 backlog 无限制膨胀：只保留最近 N 条（长期任务可配合外部清理）
+            if new_items:
+                self._project.work_items.extend(new_items)
+                self._project.work_items_total = max(self._project.work_items_total, len(self._project.work_items))
+                for wi in new_items:
+                    _append_history_event(
+                        self.root_path, self.settings, self._project,
+                        "work_item_generated",
+                        {
+                            "cycle": cycle_num,
+                            "item_id": wi.item_id,
+                            "question": wi.question,
+                            "spec_path": wi.spec_path,
+                        },
+                    )
 
-            if self.settings.spec_rebuild_session_between_cycles:
-                logger.info(
-                    "[Spec:%s] 循环 %d 结束, 重建 Session 以压缩对话上下文",
+        # --- METRICS SNAPSHOT (monitoring) ---
+        metrics = compute_cycle_metrics(cycle, self._project)
+        self._project.metrics_history.append(metrics)
+        cycle.metrics_path = _persist_cycle_artifact(
+            self.root_path, self.settings, self._project, cycle_num, "metrics", json.dumps(metrics.to_dict(), ensure_ascii=False, indent=2), "json"
+        )
+
+        _append_history_event(
+            self.root_path, self.settings, self._project,
+            "cycle_done",
+            {
+                "cycle": cycle_num,
+                "status": cycle.status,
+                "satisfied": metrics.satisfied_count,
+                "total": metrics.total_criteria,
+                "new_satisfied": metrics.new_satisfied,
+                "review_suggestions": metrics.review_suggestions,
+                "goal_attainment": metrics.goal_attainment,
+                "improvement_space": metrics.improvement_space,
+                "backlog_pending": metrics.backlog_pending,
+            },
+        )
+
+        self._persist_state_best_effort()
+        _cleanup_old_cycle_artifacts(self.root_path, self.settings, self._project, cycle_num)
+        _cleanup_generated_specs(self._project, self.settings)
+
+        # --- TERMINATION CHECK (ContinuationPolicy) ---
+        converged = False if policy.disable_convergence else self._detect_convergence()
+        if converged:
+            logger.info("[Spec:%s] 收敛检测触发, 循环 %d 轮", self._project.name, cycle_num)
+
+        _backlog_stuck = detect_backlog_stuck(
+            self._project,
+            window=getattr(self.settings, "spec_backlog_stuck_window", 3),
+        )
+        if _backlog_stuck:
+            logger.info("[Spec:%s] backlog stuck 检测触发, 循环 %d 轮", self._project.name, cycle_num)
+
+        decision = policy.should_stop(
+            cycle_num=cycle_num,
+            all_satisfied=all_satisfied,
+            review_passed=review_passed,
+            converged=converged,
+            metrics=metrics,
+            backlog_stuck=_backlog_stuck,
+            ignore_backlog=getattr(self.settings, "spec_success_ignore_backlog", True),
+        )
+        if decision == "success":
+            logger.info("[Spec:%s] 所有标准+审查通过, 循环 %d 轮", self._project.name, cycle_num)
+            return True, "success"
+        if decision == "converged":
+            return True, "converged"
+        if decision == "backlog_stuck":
+            logger.info("[Spec:%s] backlog stuck 终止, 循环 %d 轮", self._project.name, cycle_num)
+            return True, "backlog_stuck"
+
+        if self.settings.spec_rebuild_session_between_cycles:
+            logger.info(
+                "[Spec:%s] 循环 %d 结束, 重建 Session 以压缩对话上下文",
+                self._project.name,
+                cycle_num,
+            )
+            self._recreate_session_best_effort()
+            if not self._session:
+                logger.error(
+                    "[Spec:%s] 循环 %d Session 重建失败，session=None，下一循环将无法执行",
                     self._project.name,
                     cycle_num,
                 )
-                self._recreate_session_best_effort()
-                if not self._session:
-                    logger.error(
-                        "[Spec:%s] 循环 %d Session 重建失败，session=None，下一循环将无法执行",
-                        self._project.name,
-                        cycle_num,
-                    )
-
-        return termination
+        return False, ""
 
     # ------------------------------------------------------------------
     # Long-range: work items, discovery, spec generation

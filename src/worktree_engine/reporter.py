@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 from .models import WorktreeInfo, WorktreeRuntimeState, WorktreeUnit, WorktreeUnitStatus
 
 from ..card.styles import STATUS_DISPLAY_MAP
+
+logger = logging.getLogger(__name__)
 
 
 class WorktreeReporter:
@@ -32,7 +36,7 @@ class WorktreeReporter:
                         letter = chr(ord("A") + idx - 1)
                         return f"工作空间 {letter}"
                 except ValueError:
-                    pass
+                    logger.debug("failed to convert index to letter", exc_info=True)
 
             # 兼容其他带后缀的格式
             suffix = unit.unit_id.split("-")[-1] if "-" in unit.unit_id else unit.unit_id

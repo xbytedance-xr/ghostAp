@@ -1,3 +1,4 @@
+import logging
 import time
 from typing import Optional
 
@@ -9,6 +10,8 @@ from ..shared import (
     build_mode_buttons,
 )
 from ..styles import THRESHOLDS, UI_TEXT
+
+logger = logging.getLogger(__name__)
 
 
 class CoreBuilder:
@@ -186,7 +189,7 @@ class CoreBuilder:
             from ...thread import get_current_thread_id
             thread_root_id = get_current_thread_id()
         except Exception:
-            pass
+            logger.debug("failed to get thread_id", exc_info=True)
             
         effective_mode = mode
         if effective_mode is None and project:

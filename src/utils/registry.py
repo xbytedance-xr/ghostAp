@@ -252,7 +252,7 @@ class CleanupRegistry:
                 try:
                     cleanup_fn()
                 except Exception:
-                    pass
+                    _logger.debug("cleanup_fn failed during immediate execution", exc_info=True)
                 return lambda: None
             task = CleanupTask(priority=priority, fn=cleanup_fn, name=name, timeout=timeout)
             self._items.append(task)

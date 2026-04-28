@@ -301,7 +301,7 @@ class LoopHandler(BaseEngineHandler):
                 else:
                     target_project = self.project_manager.get_project_for_chat(loop_project_id, open_chat_id)
             except Exception:
-                pass
+                logger.debug("failed to get target_project", exc_info=True)
 
         loop_actions = {
             "loop_pause": self.pause_loop_engine,

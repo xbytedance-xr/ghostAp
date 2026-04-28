@@ -363,7 +363,7 @@ class DeepEngine(BaseEngine):
             try:
                 session.cancel()
             except Exception:
-                pass
+                logger.debug("session.cancel() failed during pause", exc_info=True)
 
     def resume(self, callbacks: Optional[DeepEngineCallbacks] = None) -> Optional[DeepProject]:
         """Resume a paused deep execution by loading the ACP session and sending a continuation prompt."""

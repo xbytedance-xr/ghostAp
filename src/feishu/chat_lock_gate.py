@@ -124,7 +124,7 @@ class ChatLockGate:
         try:
             self._dedup.stop_cleanup_thread()
         except Exception:
-            pass
+            logger.debug("failed to stop dedup cleanup thread", exc_info=True)
 
     # ------------------------------------------------------------------
     # Internal
@@ -172,7 +172,7 @@ class ChatLockGate:
                             try:
                                 self._host._reply_message(message_id, UI_TEXT["chat_locked_fallback"], "text")
                             except Exception:
-                                pass
+                                logger.debug("failed to reply lock message", exc_info=True)
                 return True
 
         return False
@@ -209,7 +209,7 @@ class ChatLockGate:
                 try:
                     self._host._reply_message(message_id, UI_TEXT["chat_locked_fallback"], "text")
                 except Exception:
-                    pass
+                    logger.debug("failed to reply lock fallback message", exc_info=True)
         else:
             if _handler:
                 _handler.send_chat_lock_throttled_reply(message_id, chat_id, clm)
@@ -218,5 +218,5 @@ class ChatLockGate:
                     from .emoji import EmojiReaction
                     self._host._add_reaction(message_id, EmojiReaction.on_chat_locked())
                 except Exception:
-                    pass
+                    logger.debug("failed to add lock reaction", exc_info=True)
         return True

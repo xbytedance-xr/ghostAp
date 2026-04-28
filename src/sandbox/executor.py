@@ -225,7 +225,7 @@ class SandboxExecutor:
                     try:
                         _strict = _get_settings().sandbox_strict_lock_mode
                     except Exception:
-                        pass  # fail-close: _strict stays True on settings error
+                        logger.debug("failed to get strict_lock_mode setting", exc_info=True)
                     if _strict:
                         raise LockConflictError(
                             holder_chat_id=_info.chat_id,
@@ -241,7 +241,7 @@ class SandboxExecutor:
             except LockConflictError:
                 raise  # re-raise strict-mode conflict
             except Exception:
-                pass  # best-effort sentinel
+                logger.debug("best-effort sentinel check failed", exc_info=True)
 
         return self._execute_command(command, cwd, interactive)
 

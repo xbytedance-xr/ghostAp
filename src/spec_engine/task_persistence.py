@@ -167,7 +167,7 @@ def save_task_state(state: SpecTaskState) -> str:
                 try:
                     os.unlink(tmp_path)
                 except OSError:
-                    pass
+                    logger.debug("failed to delete temp file", exc_info=True)
     if last_err:
         logger.warning("保存任务状态失败: %s", get_error_detail(last_err))
     return ""

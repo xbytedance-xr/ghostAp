@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -52,7 +53,8 @@ class SystemHandler(BaseHandler):
         super().__init__(ctx)
         self._init_command_registry()
         self._ttadk_flow_start_times: dict[str, float] = {}
-        self._ttadk_flow_last_duration_ms: dict[str, int] = {}
+        self._ttadk_flow_last_duration_ms: OrderedDict[str, int] = OrderedDict()
+        self._TTADK_FLOW_DURATION_MAX_SIZE = 200
 
     def _init_command_registry(self):
         """Initialize the command dispatch registry."""
@@ -556,7 +558,7 @@ class SystemHandler(BaseHandler):
                         "持有者已锁定 {duration}",
                     ).format(duration=duration)
         except Exception:
-            pass
+            logger.debug("failed to get repo lock holder info", exc_info=True)
 
         # F-22: Show confirmation card instead of releasing immediately
         from ...card.builders.lock import build_force_release_confirm_card
@@ -685,7 +687,7 @@ class SystemHandler(BaseHandler):
             from ...config import get_settings as _gs
             no_admin_configured = not _gs().admin_user_ids
         except Exception:
-            pass
+            logger.debug("failed to check admin config", exc_info=True)
 
         msg_type, card_content = CardBuilder.build_help_card(
             project, category, current_dir, current_mode,
@@ -1072,8 +1074,13 @@ class SystemHandler(BaseHandler):
         start = self._ttadk_flow_start_times.pop(chat_id, None)
         if start is None:
             return
-        duration_ms = int(round((time.perf_counter() - start) * 1000))
+        elapsed = time.perf_counter() - start
+        if elapsed > 600:  # 超过 10 分钟视为过期，丢弃不记录
+            return
+        duration_ms = int(round(elapsed * 1000))
         self._ttadk_flow_last_duration_ms[chat_id] = duration_ms
+        if len(self._ttadk_flow_last_duration_ms) > self._TTADK_FLOW_DURATION_MAX_SIZE:
+            self._ttadk_flow_last_duration_ms.popitem(last=False)  # 淘汰最旧条目
         logger.info(
             "ttadk_flow_duration_ms=%s chat_id=%s project_id=%s where=%s",
             duration_ms,
@@ -1103,6 +1110,7 @@ class SystemHandler(BaseHandler):
 
         result = manager.get_tools()
         if result.error:
+            self._ttadk_flow_start_times.pop(chat_id, None)
             self._reply_ttadk_load_hint(
                 message_id, UI_TEXT["system_ttadk_list_load_error"].format(error=result.error), project_id=project_id
             )
@@ -1397,7 +1405,7 @@ class SystemHandler(BaseHandler):
                 try:
                     current_mode = InteractionMode(thread_ctx.mode)
                 except ValueError:
-                    pass
+                    logger.debug("invalid InteractionMode value: %s", thread_ctx.mode, exc_info=True)
 
         if current_mode == InteractionMode.COCO:
             self.get_handler("coco").exit_mode(message_id, chat_id, project)
@@ -1477,7 +1485,7 @@ class SystemHandler(BaseHandler):
         try:
             self.ctx.message_linker.link_task(origin_message_id, handle.run_id)
         except Exception:
-            pass
+            logger.debug("failed to link task message", exc_info=True)
         return handle
 
     # ------------------------------------------------------------------

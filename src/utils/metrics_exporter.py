@@ -54,7 +54,7 @@ class LoggerExporter:
                 json.dumps(metrics, ensure_ascii=False),
             )
         except Exception:
-            pass
+            logger.debug("failed to export metrics via logger", exc_info=True)
 
 
 class JsonLinesExporter:

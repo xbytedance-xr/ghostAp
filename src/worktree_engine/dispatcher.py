@@ -94,7 +94,7 @@ class WorktreeDispatcher:
             try:
                 on_unit_update(unit)
             except Exception:
-                pass
+                logger.debug("on_unit_update callback failed", exc_info=True)
 
     def execute_units(
         self,
@@ -149,7 +149,7 @@ class WorktreeDispatcher:
             try:
                 on_unit_update(unit)
             except Exception:
-                pass
+                logger.debug("on_unit_update callback failed", exc_info=True)
         
         # 如果尚未分配具体工具（理论上 plan 阶段已完成分配，这里做安全检查）
         if not all([unit.provider, unit.tool_name]):
@@ -173,7 +173,7 @@ class WorktreeDispatcher:
                 try:
                     on_unit_update(unit)
                 except Exception:
-                    pass
+                    logger.debug("on_unit_update callback failed", exc_info=True)
         except TimeoutError as te:
             self._fail_unit(unit, f"执行超时: {get_error_detail(te)}", log_level=logging.WARNING, on_unit_update=on_unit_update)
         except Exception as exc:
@@ -182,7 +182,7 @@ class WorktreeDispatcher:
             try:
                 session.close()
             except Exception:
-                pass
+                logger.debug("failed to close session", exc_info=True)
 
     def _assign_roles_smart(
         self,

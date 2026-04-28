@@ -277,7 +277,7 @@ def _build_diagnostics(
     try:
         circuit.last_review_elapsed_ms = int(review_elapsed_ms or 0)
     except Exception:
-        pass
+        logger.debug("failed to set last_review_elapsed_ms", exc_info=True)
 
     return diag, error_detail
 
@@ -324,7 +324,7 @@ def _update_circuit_breaker(
             if len(circuit.recent_outcomes) > 20:
                 circuit.recent_outcomes[:] = circuit.recent_outcomes[-20:]
     except Exception:
-        pass
+        logger.debug("failed to update recent_outcomes", exc_info=True)
 
     review_decision: Optional[str] = "review_failed_continue"
 
@@ -339,7 +339,7 @@ def _update_circuit_breaker(
             _tracker = SlidingWindowTracker.from_list(circuit.recent_outcomes, window_size=_window_size)
             _sliding_trigger = _tracker.should_open_circuit(threshold=_success_threshold)
     except Exception:
-        pass
+        logger.debug("sliding window calculation failed", exc_info=True)
 
     _consecutive_trigger = circuit.review_failure_consecutive >= ecfg.max_consecutive
 
@@ -360,7 +360,7 @@ def _update_circuit_breaker(
             circuit.last_review_failure_diag["consecutive_failures"] = int(circuit.review_failure_consecutive or 0)
             circuit.last_review_failure_diag["decision"] = "review_failed_open_circuit"
         except Exception:
-            pass
+            logger.debug("failed to set diagnostics fields", exc_info=True)
         logger.warning(
             "%s Review 熔断器打开: consecutive=%d, %s=%d",
             ecfg.log_prefix,
@@ -430,7 +430,7 @@ def _emit_log_and_metrics(
         try:
             logger.info("%s review_metrics: %s", ecfg.log_prefix, json.dumps(metrics, ensure_ascii=False))
         except Exception:
-            pass
+            logger.debug("failed to log review_metrics", exc_info=True)
 
     return metrics
 

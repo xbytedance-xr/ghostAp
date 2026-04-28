@@ -86,7 +86,7 @@ class WorktreeToolDiscovery:
                 )
                 seen.add(name)
         except Exception:
-            pass
+            logger.debug("TTADK tool discovery failed", exc_info=True)
 
         return tools
 

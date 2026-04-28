@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 from src.mode.manager import InteractionMode
+from src.utils.markdown import safe_truncate_markdown
 
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
@@ -102,11 +103,9 @@ def _normalize_streaming_markdown(content: str, *, is_final: bool, max_chars: in
     if content is None:
         content = ""
 
-    from ..feishu.message_formatter import FeishuMessageFormatter
-
     if max_chars > 0 and len(content) > max_chars:
         # 默认流式保留尾部（最新内容）
-        return FeishuMessageFormatter.safe_truncate_markdown(content, max_length=max_chars, keep_head=False)
+        return safe_truncate_markdown(content, max_length=max_chars, keep_head=False)
     else:
         # 虽然没有超长，但流式过程中可能代码块未闭合，依然使用相同逻辑进行安全闭合
         fence_count = content.count("```")
@@ -429,7 +428,7 @@ class StreamingCardManager:
                 from ..thread import get_current_thread_id
                 effective_thread_root_id = get_current_thread_id()
             except Exception:
-                pass
+                logger.debug("failed to get thread_id", exc_info=True)
         return build_mode_buttons(mode, project_id, thread_root_id=effective_thread_root_id)
 
     def _build_button_elements(self, buttons: list[dict], layout: str = "responsive") -> list[dict]:
@@ -672,7 +671,7 @@ class StreamingCardManager:
                     if new_len < prev_len:
                         content = card.full_content
                 except Exception:
-                    pass
+                    logger.debug("content length fallback failed", exc_info=True)
             card.full_content = content
             card.is_typing = is_typing
 

@@ -21,6 +21,16 @@ def test_ws_client_start_reconnects_if_underlying_start_returns(monkeypatch):
         acp_session_idle_healthcheck_s=0,
         task_scheduler_max_concurrent=1,
         task_scheduler_per_key_concurrency=1,
+        message_cache_ttl=300,
+        message_cache_max_size=1000,
+        card_action_dedup_ttl=1,
+        card_action_dedup_max_size=5000,
+        system_command_concurrency=10,
+        spec_rate_limit_capacity=100,
+        spec_rate_limit_fill_rate=50.0,
+        spec_circuit_breaker_threshold=10,
+        spec_circuit_breaker_recovery=5.0,
+        message_expire_seconds=30,
         streaming_enabled=False,
         thread_programming_enabled=False,
         feishu_ws_reconnect_delay_s=0.02,
@@ -43,8 +53,9 @@ def test_ws_client_start_reconnects_if_underlying_start_returns(monkeypatch):
 
     # Avoid background watchdog behavior in this unit test.
     monkeypatch.setattr(ws, "_ObservedLarkWSClient", DummyClient)
-    monkeypatch.setattr(ws.FeishuWSClient, "_start_ws_watchdog", lambda self: None)
-    monkeypatch.setattr(ws.FeishuWSClient, "_stop_ws_watchdog", lambda self: None)
+    from src.feishu.ws_health import WSHealthMonitor
+    monkeypatch.setattr(WSHealthMonitor, "start_watchdog", lambda self: None)
+    monkeypatch.setattr(WSHealthMonitor, "stop_watchdog", lambda self: None)
 
     # Avoid starting extra cache threads here; close() logic is covered elsewhere.
     monkeypatch.setattr(ws.MessageCache, "start_cleanup_thread", lambda self: None)

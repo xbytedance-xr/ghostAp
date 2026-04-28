@@ -93,12 +93,12 @@ class ToolRegistry:
                 try:
                     self._availability_cache.pop(key, None)
                 except Exception:
-                    pass
+                    logger.debug("failed to pop expired cache entry", exc_info=True)
                 return None
             try:
                 self._availability_cache.move_to_end(key)
             except Exception:
-                pass
+                logger.debug("LRU move_to_end failed", exc_info=True)
             return bool(ok)
 
     def get_availability(
@@ -154,13 +154,13 @@ class ToolRegistry:
                     try:
                         self._availability_cache.move_to_end(name)
                     except Exception:
-                        pass
+                        logger.debug("LRU move_to_end failed", exc_info=True)
                     return bool(ok)
                 # expired
                 try:
                     self._availability_cache.pop(name, None)
                 except Exception:
-                    pass
+                    logger.debug("failed to pop expired cache entry", exc_info=True)
 
         # cache miss/expired: do a real check (may be expensive; avoid for hot tools in get_serve_command)
         available = bool(provider.check_availability())
@@ -177,7 +177,7 @@ class ToolRegistry:
             try:
                 self._availability_cache.move_to_end(key)
             except Exception:
-                pass
+                logger.debug("LRU move_to_end failed", exc_info=True)
             # evict
             while len(self._availability_cache) > int(self._availability_cache_maxsize or 64):
                 try:
@@ -238,7 +238,7 @@ class ToolRegistry:
                             try:
                                 self._availability_cache.move_to_end(tool_name)
                             except Exception:
-                                pass
+                                logger.debug("LRU move_to_end failed", exc_info=True)
                             if bool(ok):
                                 return provider.get_serve_command(model_name)
                             cached_negative = True

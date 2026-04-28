@@ -131,7 +131,7 @@ class DiagnosticsHandler(BaseHandler):
                     else:
                         _chat_lock_line += f"\n  {UI_TEXT['lock_status_release_imminent'].strip()}"
                 except Exception:
-                    pass
+                    logger.debug("failed to get lock expiry state", exc_info=True)
                 if is_admin:
                     _chat_lock_line += UI_TEXT["lock_status_admin_unlock_hint"]
                 parts.append(_chat_lock_line)
@@ -423,14 +423,14 @@ class DiagnosticsHandler(BaseHandler):
             try:
                 self.register_message_project(card_message_id, project)
             except Exception:
-                pass
+                logger.debug("failed to register message project mapping", exc_info=True)
             try:
                 self.ctx.message_linker.register_origin(
                     message_id, request_id=request_id, chat_id=chat_id, project_id=project.project_id
                 )
                 self.ctx.message_linker.link_reply(message_id, card_message_id)
             except Exception:
-                pass
+                logger.debug("failed to link reply message", exc_info=True)
 
         spec = TaskSpec(
             chat_id=chat_id,
@@ -451,7 +451,7 @@ class DiagnosticsHandler(BaseHandler):
                     if card and card_message_id and full_ref:
                         streaming_manager.update_content(card, f"{banner_tpl}\n\n{full_ref}")
                 except Exception:
-                    pass
+                    logger.debug("failed to update streaming card content", exc_info=True)
 
                 task_ctx.progress(UI_TEXT["diag_step_parsing"], 5)
                 if card and card_message_id:
@@ -462,7 +462,7 @@ class DiagnosticsHandler(BaseHandler):
                             f"{progress_tpl.format(step=UI_TEXT['diag_step_parsing'], pct=5)}\n\n{self.format_ref_note(message_id, request_id, run_id=task_ctx.run_id)}",
                         )
                     except Exception:
-                        pass
+                        logger.debug("failed to update streaming card content", exc_info=True)
 
                 ok, content, err = self._build_context_diff_report(chat_id, text, project)
                 if not ok:
@@ -484,7 +484,7 @@ class DiagnosticsHandler(BaseHandler):
                             f"{progress_tpl.format(step=UI_TEXT['diag_step_generating'], pct=80)}\n\n{self.format_ref_note(message_id, request_id, run_id=task_ctx.run_id)}",
                         )
                     except Exception:
-                        pass
+                        logger.debug("failed to update streaming card content", exc_info=True)
 
                 final_ref = self.format_ref_note(message_id, request_id, run_id=task_ctx.run_id)
                 final = f"{content}\n\n{final_ref}" if final_ref and final_ref not in content else content
@@ -512,14 +512,14 @@ class DiagnosticsHandler(BaseHandler):
                     if card and card_message_id:
                         streaming_manager.close_streaming(card, final_content=final)
                 except Exception:
-                    pass
+                    logger.debug("failed to close streaming card", exc_info=True)
                 self.reply_message(message_id, msg, origin_message_id=message_id, request_id=request_id)
 
         handle = self.scheduler.submit(spec, _run)
         try:
             self.ctx.message_linker.link_task(message_id, handle.run_id)
         except Exception:
-            pass
+            logger.debug("failed to link task", exc_info=True)
 
         if card and card_message_id:
             try:
@@ -527,7 +527,7 @@ class DiagnosticsHandler(BaseHandler):
                 msg = UI_TEXT["diag_diff_started_banner"]
                 streaming_manager.update_content(card, f"{msg}\n\n{full_ref}")
             except Exception:
-                pass
+                logger.debug("failed to update streaming card content", exc_info=True)
         return handle
 
     # ------------------------------------------------------------------

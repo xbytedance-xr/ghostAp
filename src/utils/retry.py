@@ -134,7 +134,7 @@ def prompt_with_retry(
                 try:
                     before_retry(attempt + 1, e)
                 except Exception:
-                    pass
+                    logger.debug("before_retry callback failed", exc_info=True)
             delay = max(0.0, float(get_retry_delay(attempt, policy)))
             # Clamp delay if total_timeout budget would be exceeded
             if _total_timeout is not None:

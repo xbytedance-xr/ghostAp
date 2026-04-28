@@ -57,7 +57,7 @@ class SimpleEvent:
                 try:
                     self._handlers.remove(handler)
                 except ValueError:
-                    pass
+                    logger.debug("handler not found in list", exc_info=True)
 
         return _unsub
 

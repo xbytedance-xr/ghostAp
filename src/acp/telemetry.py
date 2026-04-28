@@ -549,7 +549,7 @@ def _classify_idle_health_with_fallback(
             telemetry.record_idle_health_fallback_metric(error_type=type(exc).__name__)
         except Exception:
             # Telemetry 作为附加可观测性，不得影响主流程。
-            pass
+            logger.debug("telemetry recording failed", exc_info=True)
 
         return IdleHealth.UNKNOWN
 

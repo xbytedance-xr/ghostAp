@@ -401,6 +401,30 @@ class Settings(BaseSettings):
     # Feishu WebSocket watchdog interval (seconds)
     feishu_ws_watchdog_interval: float = 60.0
 
+    # ------------------------------------------------------------------
+    # Feishu WebSocket client runtime parameters
+    # ------------------------------------------------------------------
+    # 消息过期时间（秒），超时的历史消息不再处理
+    message_expire_seconds: int = 30
+    # 消息去重缓存 TTL（秒）
+    message_cache_ttl: int = 300
+    # 消息去重缓存最大容量
+    message_cache_max_size: int = 1000
+    # 卡片动作去重 TTL（秒）
+    card_action_dedup_ttl: int = 1
+    # 卡片动作去重最大容量
+    card_action_dedup_max_size: int = 5000
+    # 系统命令并发数
+    system_command_concurrency: int = 10
+    # Spec 引擎任务限流容量
+    spec_rate_limit_capacity: int = 100
+    # Spec 引擎任务限流填充速率（tokens/sec）
+    spec_rate_limit_fill_rate: float = 50.0
+    # Spec 引擎任务熔断阈值（连续失败次数）
+    spec_circuit_breaker_threshold: int = 10
+    # Spec 引擎任务熔断恢复超时（秒）
+    spec_circuit_breaker_recovery: float = 5.0
+
     # Streaming flow control (Adaptive interval)
     streaming_adaptive_interval_base: float = 0.3  # Base interval (seconds) for low rate
     streaming_adaptive_interval_max: float = 2.0  # Max interval (seconds) for high rate

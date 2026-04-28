@@ -132,7 +132,7 @@ def _on_release(level: int) -> None:
     try:
         held.remove(level)
     except ValueError:
-        pass  # defensive
+        logger.debug("lock level %d not found in held list", level, exc_info=True)
 
 
 # ---------------------------------------------------------------------------

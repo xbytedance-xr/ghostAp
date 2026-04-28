@@ -390,7 +390,7 @@ class SpecHandler(BaseEngineHandler):
                     chat_id, root_path, engine_name=engine_name
                 )
             except Exception:
-                pass
+                logger.debug("failed to load engine from disk", exc_info=True)
 
         if not engine or not engine.project or not engine.project.cycles:
             self.reply_message(message_id, "❌ 当前没有可导出的 Spec 记录")
@@ -474,7 +474,7 @@ class SpecHandler(BaseEngineHandler):
                 try:
                     engine.save_state()
                 except Exception:
-                    pass
+                    logger.debug("failed to save engine state on pause", exc_info=True)
 
         self._safe_lifecycle_action(_pause, "pause", chat_id, message_id, project)
 
@@ -496,7 +496,7 @@ class SpecHandler(BaseEngineHandler):
                         chat_id, root_path, engine_name=engine_name
                     )
                 except Exception:
-                    pass
+                    logger.debug("failed to load engine from disk on resume", exc_info=True)
 
             if not engine:
                 paused = [
@@ -584,7 +584,7 @@ class SpecHandler(BaseEngineHandler):
                 try:
                     engine.save_state()
                 except Exception:
-                    pass
+                    logger.debug("failed to save engine state on stop", exc_info=True)
 
         self._safe_lifecycle_action(_stop, "stop", chat_id, message_id, project)
 
@@ -825,7 +825,7 @@ class SpecHandler(BaseEngineHandler):
                 else:
                     target_project = self.project_manager.get_project_for_chat(spec_project_id, open_chat_id)
             except Exception:
-                pass
+                logger.debug("failed to get target_project", exc_info=True)
 
         spec_actions = {
             "spec_pause": self.pause_spec_engine,

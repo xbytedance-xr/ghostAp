@@ -36,6 +36,16 @@ class TestWorktreeCommandRouting(unittest.TestCase):
             mock_settings.streaming_enabled = False
             mock_settings.task_scheduler_max_concurrent = 2
             mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_settings.message_cache_ttl = 300
+            mock_settings.message_cache_max_size = 1000
+            mock_settings.card_action_dedup_ttl = 1
+            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.system_command_concurrency = 10
+            mock_settings.spec_rate_limit_capacity = 100
+            mock_settings.spec_rate_limit_fill_rate = 50.0
+            mock_settings.spec_circuit_breaker_threshold = 10
+            mock_settings.spec_circuit_breaker_recovery = 5.0
+            mock_settings.message_expire_seconds = 30
             mock_get_settings.return_value = mock_settings
 
             client = FeishuWSClient(MagicMock())
@@ -83,6 +93,16 @@ class TestWorktreeCommandRouting(unittest.TestCase):
             mock_settings.streaming_enabled = False
             mock_settings.task_scheduler_max_concurrent = 2
             mock_settings.task_scheduler_per_key_concurrency = 1
+            mock_settings.message_cache_ttl = 300
+            mock_settings.message_cache_max_size = 1000
+            mock_settings.card_action_dedup_ttl = 1
+            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.system_command_concurrency = 10
+            mock_settings.spec_rate_limit_capacity = 100
+            mock_settings.spec_rate_limit_fill_rate = 50.0
+            mock_settings.spec_circuit_breaker_threshold = 10
+            mock_settings.spec_circuit_breaker_recovery = 5.0
+            mock_settings.message_expire_seconds = 30
             mock_get_settings.return_value = mock_settings
 
             client = FeishuWSClient(MagicMock())
@@ -115,6 +135,16 @@ class TestWorktreeCommandRouting(unittest.TestCase):
         mock_settings.streaming_enabled = False
         mock_settings.task_scheduler_max_concurrent = 2
         mock_settings.task_scheduler_per_key_concurrency = 1
+        mock_settings.message_cache_ttl = 300
+        mock_settings.message_cache_max_size = 1000
+        mock_settings.card_action_dedup_ttl = 1
+        mock_settings.card_action_dedup_max_size = 5000
+        mock_settings.system_command_concurrency = 10
+        mock_settings.spec_rate_limit_capacity = 100
+        mock_settings.spec_rate_limit_fill_rate = 50.0
+        mock_settings.spec_circuit_breaker_threshold = 10
+        mock_settings.spec_circuit_breaker_recovery = 5.0
+        mock_settings.message_expire_seconds = 30
         mock_get_settings.return_value = mock_settings
         return FeishuWSClient(MagicMock())
 

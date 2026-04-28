@@ -52,7 +52,7 @@ class DiagnosticsBuilder:
                         if p:
                             proj_name = p.project_name
                     except Exception:
-                        pass
+                        logger.debug("failed to get project name", exc_info=True)
                 
                 id_info = UI_TEXT["diag_project_id_fmt"].format(id=pid) if pid else ""
                 lines.append(UI_TEXT["diag_project_header"].format(

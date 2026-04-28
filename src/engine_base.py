@@ -215,7 +215,7 @@ class BaseEngine:
             try:
                 session.cancel()
             except Exception:
-                pass
+                logger.debug("session.cancel() failed during stop", exc_info=True)
         self._on_stop()
 
     def cleanup(self):
@@ -235,7 +235,7 @@ class BaseEngine:
                 try:
                     session.cancel()
                 except Exception:
-                    pass
+                    logger.debug("session.cancel() failed during cleanup", exc_info=True)
             self._on_stop()
             return
 

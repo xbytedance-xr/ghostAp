@@ -403,7 +403,7 @@ class BaseRenderer:
                     if extracted:
                         summary_text = extracted[:2000] + "\n\n...(内容过长已截断)"
                 except Exception:
-                    pass
+                    logger.debug("failed to extract summary text", exc_info=True)
 
                 fallback_card = {
                     "config": card.get("config", {"wide_screen_mode": True}),

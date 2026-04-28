@@ -74,7 +74,7 @@ class Application:
                 self.feishu_client.add_reaction(message_id, EmojiReaction.on_error())
                 self.feishu_client.reply(message_id, fmt.format_error(get_error_detail(e)), chat_id=chat_id)
             except Exception:
-                pass
+                logger.debug("failed to reply error message", exc_info=True)
 
     @staticmethod
     def _shutdown_lock_managers() -> None:
@@ -149,7 +149,7 @@ class Application:
                 if self.feishu_client:
                     self.feishu_client.close()
             except Exception:
-                pass
+                logger.debug("failed to close feishu client", exc_info=True)
 
 
 def main(argv: Optional[list[str]] = None) -> None:

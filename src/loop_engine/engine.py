@@ -879,7 +879,7 @@ FAIL
                         _lint_result = run_lightweight_lint(_py_files, timeout=_lint_timeout)
                         _lint_msg = _lint_result.summary()
             except Exception:
-                pass
+                logger.debug("lint execution failed", exc_info=True)
 
             _suggestions = [_base_msg]
             if _lint_msg:
@@ -959,7 +959,7 @@ FAIL
                 if len(circuit.recent_outcomes) > 20:
                     circuit.recent_outcomes[:] = circuit.recent_outcomes[-20:]
             except Exception:
-                pass
+                logger.debug("failed to record circuit breaker outcome", exc_info=True)
 
         except Exception as e:
             from ..utils.review_helpers import handle_review_exception
@@ -1079,7 +1079,7 @@ FAIL
             try:
                 session.cancel()
             except Exception:
-                pass
+                logger.debug("session.cancel() failed during pause", exc_info=True)
 
     def resume(self, callbacks: Optional[LoopEngineCallbacks] = None) -> Optional[LoopProject]:
         """Resume a paused loop execution — continue iterating from where we left off."""

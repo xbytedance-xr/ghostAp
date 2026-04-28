@@ -1,6 +1,9 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
+## 2026-04-28
+- **全项目优化迭代（P0+P1 共 7 项修复）** — [P0] 32 个源文件 96 处静默异常吞没 pass→logger.debug；[P0] 3 个内存泄漏修复（_working_dirs/LRU 500、_ttadk_flow_start_times/过期清理、_ttadk_flow_last_duration_ms/LRU 200）；[P1] ws_client.py 内联健康检查委托 WSHealthMonitor 净减 120 行；[P1] 10 个硬编码值提取到 Settings 配置；[P1] _run_cycle_loop 397 行拆解为 9 个阶段方法；[P1] safe_truncate_markdown 下沉到 utils 消除 card→feishu 反向依赖；3857 tests passed 零回归 → [详细记录](2026-04-28.md)
+
 ## 2026-04-27
 - **审查超时韧性优化（纵深三层改进）** — 源头层：`spec/loop_review_timeout` 120→180、`min_timeout` 30→45、`hard_floor` 15→20、熔断 `max_consecutive` 3→4 + `cooldown_cycles` 3→2；韧性层：`compute_adaptive_timeout` 衰减因子 2**n→1.5**n（更平缓曲线）、PerspectiveWorker RetryPolicy max_retries 1→2 + retry_delay 1.5；用户体验层：超时文案增加恢复指引（自动重试 + `/spec resume`）；覆盖 config/perspective_worker/review/dispatcher + 12 个测试文件；3498 tests passed 零回归 → [详细记录](2026-04-27.md)
 - **审查超时韧性优化（第二轮：并发度+闭环+可观测性）** — 并发度：`spec_review_max_parallel` 2→3（排队3批→2批）+ budget 冗余系数 `multiplier+1`→`multiplier+2`；闭环：pipeline 全量超时时递增 `circuit.consecutive_timeouts`/`review_failure_consecutive` 使自适应超时衰减自动生效；可观测性：Worker 超时日志增加 `elapsed_ms`/`configured_timeout` 结构化字段 + `run_workers_parallel` 汇总日志；修改 config/review/perspective_worker + 3 个测试文件新增 6 个用例；3564 tests passed 零回归 → [详细记录](2026-04-27.md)

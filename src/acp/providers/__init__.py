@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import logging
 import os
 import re
 import subprocess
@@ -9,6 +10,8 @@ from dataclasses import dataclass
 from typing import Callable, Optional, Sequence
 
 from ..provider import ACPProvider, ToolRegistry, tool_registry
+
+logger = logging.getLogger(__name__)
 
 
 def _detect_model_arg_style(help_blob: str) -> str:
@@ -301,7 +304,7 @@ def _reset_providers_for_testing() -> None:
                 try:
                     clear_fn()
                 except Exception:
-                    pass
+                    logger.debug("failed to clear lru_cache", exc_info=True)
         # Unregister providers from the module-level tool_registry (lock-safe).
         if _providers is not None:
             tool_registry._reset_for_testing(list(_providers.keys()))

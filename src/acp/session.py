@@ -277,7 +277,7 @@ class ACPSession:
                 elif ev.event_type == ACPEventType.PLAN_UPDATE:
                     result.set_plan(ev.plan)
             except Exception:
-                pass
+                logger.debug("plan_update event processing failed", exc_info=True)
             if on_event:
                 try:
                     on_event(ev)
@@ -305,7 +305,7 @@ class ACPSession:
                 while time.time() < deadline and not (result.text or ""):
                     await asyncio.sleep(0.005)
         except Exception:
-            pass
+            logger.debug("grace window wait failed", exc_info=True)
 
         with self._handler_lock:
             self._event_handler = None
@@ -331,7 +331,7 @@ class ACPSession:
             ]
             result.ingest_history(windowed)
         except Exception:
-            pass
+            logger.debug("failed to ingest history", exc_info=True)
 
         return result
 

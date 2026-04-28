@@ -11,7 +11,7 @@
 """
 
 import asyncio
-from collections import deque
+from collections import OrderedDict, deque
 import json
 import logging
 import os
@@ -82,6 +82,7 @@ from .handlers.worktree import WorktreeHandler
 from .image_handler import FeishuImageHandler
 from .message_cache import MessageCache
 from .message_formatter import FeishuMessageFormatter as fmt
+from .ws_health import WSHealthMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -154,8 +155,6 @@ class FeishuWSClient:
     - `close()` 提供 best-effort 资源回收（线程/缓存/调度器等）。
     """
 
-    MESSAGE_EXPIRE_SECONDS = 30
-
     def __init__(self, message_callback: Callable[[str, str, str, Optional[str]], None]):
         self.settings = get_settings()
         self.message_callback = message_callback
@@ -210,25 +209,26 @@ class FeishuWSClient:
             idle_health_config=idle_health_cfg,
         )
         self._intent_recognizer = IntentRecognizer()
-        self._message_cache = MessageCache(ttl=300, max_size=1000, cleanup_interval=60)
-        self._card_event_cache = MessageCache(ttl=300, max_size=1000, cleanup_interval=60)
+        self._message_cache = MessageCache(ttl=self.settings.message_cache_ttl, max_size=self.settings.message_cache_max_size, cleanup_interval=60)
+        self._card_event_cache = MessageCache(ttl=self.settings.message_cache_ttl, max_size=self.settings.message_cache_max_size, cleanup_interval=60)
         # Card action dedupe (user rapid clicks): short TTL, per-action key.
-        self._card_action_dedup_cache = MessageCache(ttl=1, max_size=5000, cleanup_interval=30)
+        self._card_action_dedup_cache = MessageCache(ttl=self.settings.card_action_dedup_ttl, max_size=self.settings.card_action_dedup_max_size, cleanup_interval=30)
         # Chat lock gate: initialized after handler_ctx is available (see below).
         self._chat_lock_gate = None  # type: ignore[assignment]
         self._scheduler = TaskScheduler(
             max_concurrent=self.settings.task_scheduler_max_concurrent,
             per_key_concurrency=self.settings.task_scheduler_per_key_concurrency,
-            system_concurrency=10,
+            system_concurrency=self.settings.system_command_concurrency,
             thread_name_prefix="ghost_worker",
         )
         # Spec Engine limits: e.g. 50 calls per second, max 100 capacity
         self._scheduler.register_policy(
             "spec_command",
-            rate_limiter=RateLimiter(capacity=100, fill_rate=50.0),
-            circuit_breaker=CircuitBreaker(failure_threshold=10, recovery_timeout=5.0),
+            rate_limiter=RateLimiter(capacity=self.settings.spec_rate_limit_capacity, fill_rate=self.settings.spec_rate_limit_fill_rate),
+            circuit_breaker=CircuitBreaker(failure_threshold=self.settings.spec_circuit_breaker_threshold, recovery_timeout=self.settings.spec_circuit_breaker_recovery),
         )
-        self._working_dirs: dict[str, str] = {}
+        self._WORKING_DIRS_MAX_SIZE = 500
+        self._working_dirs: OrderedDict[str, str] = OrderedDict()
         self._working_dir_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
         # ------------------------------------------------------------------
@@ -275,13 +275,7 @@ class FeishuWSClient:
         self._pending_image_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._enable_streaming = self.settings.streaming_enabled
 
-        self._ws_health_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
-        self._ws_last_connect_at = 0.0
-        self._ws_last_frame_at = 0.0
-        self._ws_last_pong_at = 0.0
-        self._ws_reconnect_requested_at = 0.0
-        self._ws_watchdog_stop = threading.Event()
-        self._ws_watchdog_thread: Optional[threading.Thread] = None
+        self._ws_health_monitor = WSHealthMonitor(self, self.settings)
 
         self._deep_engine_manager = DeepEngineManager()
         self._progress_reporter = ProgressReporter()
@@ -486,118 +480,6 @@ class FeishuWSClient:
         """Register a card action handler."""
         self._action_dispatcher.register(handler, exact, prefix)
 
-    def _record_ws_activity(self, kind: str) -> None:
-        now = time.time()
-        with self._ws_health_lock:
-            if kind == "connected":
-                self._ws_last_connect_at = now
-                self._ws_last_frame_at = now
-                self._ws_last_pong_at = now
-                self._ws_reconnect_requested_at = 0.0
-                return
-            if kind in {"pong", "ping", "control", "data"}:
-                self._ws_last_frame_at = now
-                if kind == "pong":
-                    self._ws_last_pong_at = now
-                return
-            if kind == "disconnected" and self._ws_reconnect_requested_at <= 0.0:
-                self._ws_reconnect_requested_at = now
-                logger.warning("WS断连，已触发重连请求: ts=%.3f", now)
-                logger.warning("[METRIC] ws_disconnect")
-
-    def _get_ws_watchdog_interval(self) -> float:
-        value = getattr(self.settings, "feishu_ws_watchdog_interval", 15.0)
-        try:
-            return max(1.0, float(value))
-        except (ValueError, TypeError):
-            return 15.0
-
-    def _get_ws_stale_timeout(self) -> float:
-        configured = getattr(self.settings, "feishu_ws_stale_timeout", 300.0)
-        try:
-            configured_timeout = max(60.0, float(configured))
-        except (ValueError, TypeError):
-            configured_timeout = 300.0
-
-        ping_interval = 120.0
-        client = self._client
-        if client is not None:
-            try:
-                ping_interval = max(1.0, float(getattr(client, "_ping_interval", 120.0) or 120.0))
-            except (ValueError, TypeError):
-                ping_interval = 120.0
-
-        grace = getattr(self.settings, "feishu_ws_stale_grace_seconds", 30.0)
-        try:
-            grace_seconds = max(5.0, float(grace))
-        except (ValueError, TypeError):
-            grace_seconds = 30.0
-
-        return max(configured_timeout, ping_interval * 2 + grace_seconds)
-
-    def _trigger_ws_disconnect(self, *, reason: str) -> bool:
-        client = self._client
-        if client is None or getattr(client, "_conn", None) is None:
-            return False
-
-        try:
-            fut = asyncio.run_coroutine_threadsafe(client._disconnect(), lark_ws_client_impl.loop)
-            fut.result(timeout=5)
-            logger.warning("飞书长连接 watchdog 已触发重连: %s", reason)
-            return True
-        except Exception as e:
-            logger.warning("飞书长连接 watchdog 触发重连失败: reason=%s err=%s", reason, get_error_detail(e))
-            return False
-
-    def _check_ws_health_once(self, now: Optional[float] = None) -> bool:
-        client = self._client
-        if client is None or getattr(client, "_conn", None) is None:
-            return False
-
-        current_time = now if now is not None else time.time()
-        stale_timeout = self._get_ws_stale_timeout()
-
-        with self._ws_health_lock:
-            last_seen = max(self._ws_last_pong_at, self._ws_last_frame_at, self._ws_last_connect_at)
-            if last_seen <= 0.0:
-                return False
-            idle_for = current_time - last_seen
-            if idle_for <= stale_timeout:
-                return False
-
-            requested_at = self._ws_reconnect_requested_at
-            if requested_at > 0.0 and (current_time - requested_at) < 30.0:
-                return False
-
-            self._ws_reconnect_requested_at = current_time
-
-        return self._trigger_ws_disconnect(reason=f"idle_for={idle_for:.1f}s > timeout={stale_timeout:.1f}s")
-
-    def _ws_watchdog_loop(self) -> None:
-        interval = self._get_ws_watchdog_interval()
-        while not self._ws_watchdog_stop.wait(interval):
-            try:
-                self._check_ws_health_once()
-            except Exception as e:
-                logger.debug("飞书长连接 watchdog 检查失败: %s", get_error_detail(e))
-
-    def _start_ws_watchdog(self) -> None:
-        if self._ws_watchdog_thread and self._ws_watchdog_thread.is_alive():
-            return
-        self._ws_watchdog_stop.clear()
-        self._ws_watchdog_thread = threading.Thread(
-            target=self._ws_watchdog_loop,
-            name="feishu_ws_watchdog",
-            daemon=True,
-        )
-        self._ws_watchdog_thread.start()
-
-    def _stop_ws_watchdog(self) -> None:
-        self._ws_watchdog_stop.set()
-        if self._ws_watchdog_thread and self._ws_watchdog_thread.is_alive():
-            self._ws_watchdog_thread.join(timeout=2)
-        self._ws_watchdog_thread = None
-
     # ==================================================================
     # Control plane: deferred /exit (never block scheduler listener)
     # ==================================================================
@@ -732,13 +614,13 @@ class FeishuWSClient:
         """Best-effort cleanup for background resources."""
         self._closed = True
 
-        self._stop_ws_watchdog()
+        self._ws_health_monitor.stop_watchdog()
 
         # Stop chat lock gate dedup cache cleanup
         try:
             self._chat_lock_gate.close()
         except Exception:
-            pass
+            logger.debug("failed to close chat_lock_gate", exc_info=True)
 
         try:
             self._control_plane_stop.set()
@@ -746,7 +628,7 @@ class FeishuWSClient:
             if self._control_plane_thread and self._control_plane_thread.is_alive():
                 self._control_plane_thread.join(timeout=2)
         except Exception:
-            pass
+            logger.debug("failed to stop control_plane", exc_info=True)
 
         def _wait_engines_stopped(engines: list[Any], timeout_s: float = 5.0, interval_s: float = 0.05) -> None:
             deadline = time.time() + max(0.1, timeout_s)
@@ -775,9 +657,9 @@ class FeishuWSClient:
                     if engine and getattr(engine, "is_running", False):
                         engine.stop()
                 except Exception:
-                    pass
+                    logger.debug("failed to stop deep engine instance", exc_info=True)
         except Exception:
-            pass
+            logger.debug("failed to stop deep engines", exc_info=True)
 
         try:
             loop_engines = list(self._loop_engine_manager.list_engines())
@@ -786,9 +668,9 @@ class FeishuWSClient:
                     if engine and getattr(engine, "is_running", False):
                         engine.stop()
                 except Exception:
-                    pass
+                    logger.debug("failed to stop loop engine instance", exc_info=True)
         except Exception:
-            pass
+            logger.debug("failed to stop loop engines", exc_info=True)
 
         try:
             spec_engines = list(self._spec_engine_manager.list_engines())
@@ -797,9 +679,9 @@ class FeishuWSClient:
                     if engine and getattr(engine, "is_running", False):
                         engine.stop()
                 except Exception:
-                    pass
+                    logger.debug("failed to stop spec engine instance", exc_info=True)
         except Exception:
-            pass
+            logger.debug("failed to stop spec engines", exc_info=True)
 
         # Give running engines a short grace period to exit run loops before hard cleanup.
         _wait_engines_stopped(deep_engines)
@@ -902,7 +784,7 @@ class FeishuWSClient:
             try:
                 mgr.end_session(ctx.chat_id, project_id=ctx.project_id, thread_id=ctx.thread_root_id)
             except Exception:
-                pass
+                logger.debug("failed to end ACP session during cleanup", exc_info=True)
 
     def _on_project_evicted(self, evicted_chat_id: str, project_name: str, project_id: str) -> None:
         """Notify a chat that its project binding was evicted due to LRU capacity.
@@ -925,7 +807,7 @@ class FeishuWSClient:
                 try:
                     mgr.end_session(evicted_chat_id, project_id=project_id)
                 except Exception:
-                    pass
+                    logger.debug("failed to end session for evicted project", exc_info=True)
 
             # Phase 2: Send rebind notification card.
             try:
@@ -953,7 +835,7 @@ class FeishuWSClient:
                     msg = UI_TEXT["ws_project_eviction_notify"].format(name=project_name)
                     self.reply(evicted_chat_id, msg, msg_type="text", chat_id=evicted_chat_id)
                 except Exception:
-                    pass
+                    logger.debug("failed to send eviction fallback notification", exc_info=True)
                 logger.warning("Failed to send LRU eviction notification to %s: %s", evicted_chat_id[:12], send_err)
 
         threading.Thread(target=_send_notification, daemon=True).start()
@@ -968,7 +850,7 @@ class FeishuWSClient:
             return False
         current_time = int(time.time() * 1000)
         message_age_ms = current_time - create_time
-        return message_age_ms > self.MESSAGE_EXPIRE_SECONDS * 1000
+        return message_age_ms > self.settings.message_expire_seconds * 1000
 
     def _is_duplicate_message(self, message_id: str) -> bool:
         """消息去重：基于 `MessageCache` 判断是否重复处理。"""
@@ -1483,13 +1365,13 @@ class FeishuWSClient:
             try:
                 self._reply_message(message_id, UI_TEXT["ws_message_timeout"])
             except Exception:
-                pass
+                logger.debug("failed to reply timeout message", exc_info=True)
         except Exception as e:
             logger.error("处理消息异常: %s", e, exc_info=True)
             try:
                 self._reply_message(message_id, UI_TEXT["ws_message_internal_error"])
             except Exception:
-                pass
+                logger.debug("failed to reply internal error message", exc_info=True)
         finally:
             set_current_thread_id(None)
             set_current_sender_id(None)
@@ -1916,7 +1798,7 @@ class FeishuWSClient:
                     self._reply_message(open_message_id, UI_TEXT["ws_system_cmd_gate_blocked"])
                 return None
         except Exception:
-            pass
+            logger.debug("failed to check system command gate", exc_info=True)
 
         operator_id = ""
         try:
@@ -1943,10 +1825,10 @@ class FeishuWSClient:
                     if card:
                         manager.set_sticky_message(open_message_id, UI_TEXT["ws_card_action_ack"], duration=2.5)
                 except Exception:
-                    pass
+                    logger.debug("failed to set sticky message", exc_info=True)
             except Exception:
                 # best-effort only
-                pass
+                logger.debug("failed to ack card action", exc_info=True)
 
         project_id = None
         try:
@@ -2138,7 +2020,7 @@ class FeishuWSClient:
                 if getattr(action, "input_value", None) is not None:
                     value["_input_value"] = action.input_value
             except Exception:
-                pass
+                logger.debug("failed to extract action input_value", exc_info=True)
 
             action_type = value.get("action", "")
             project_id = value.get("project_id", "")
@@ -2205,7 +2087,7 @@ class FeishuWSClient:
                     else:
                         self._reply_message(_mid, f"⏳ 操作超时 ({_action}): {get_error_detail(e)}")
             except Exception:
-                pass
+                logger.debug("failed to reply timeout action error", exc_info=True)
         except Exception as e:
             logger.error("处理卡片动作异常: %s", e, exc_info=True)
             # 发送错误提示给用户
@@ -2235,7 +2117,7 @@ class FeishuWSClient:
                     else:
                         self._reply_message(_mid, f"❌ 操作失败 ({_action}): {get_error_detail(e)}")
             except Exception:
-                pass
+                logger.debug("failed to reply action failure error", exc_info=True)
         finally:
             set_current_thread_id(None)
             set_current_sender_id(None)
@@ -2330,7 +2212,7 @@ class FeishuWSClient:
 
         self._message_cache.start_cleanup_thread()
         self._card_event_cache.start_cleanup_thread()
-        self._start_ws_watchdog()
+        self._ws_health_monitor.start_watchdog()
 
         logger.info("正在建立飞书长连接...")
         logger.info("多项目管理已启用")
@@ -2343,7 +2225,7 @@ class FeishuWSClient:
                 self.settings.app_secret,
                 event_handler=event_handler,
                 log_level=lark.LogLevel.DEBUG,
-                on_activity=self._record_ws_activity,
+                on_activity=self._ws_health_monitor.record_activity,
             )
             try:
                 self._client.start()

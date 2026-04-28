@@ -315,7 +315,7 @@ class ProgrammingModeHandler(BaseHandler):
                         ),
                     )
         except Exception:
-            pass
+            logger.debug("best-effort TTADK degrade notification failed", exc_info=True)
 
         if not thread_id:
             self._enter_mode_on_manager(chat_id, project_id=project_id)

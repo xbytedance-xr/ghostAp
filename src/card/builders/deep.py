@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import Optional
 
 from src.project.context import ProjectContext
@@ -11,6 +12,8 @@ from ..shared import (
 )
 from ..styles import BUTTON_CONFIG, ENGINE_STYLES, THRESHOLDS, UI_TEXT
 from .core import CoreBuilder
+
+logger = logging.getLogger(__name__)
 
 
 class DeepBuilder:
@@ -352,7 +355,7 @@ class DeepBuilder:
                     use_content_markdown = None
                 # else: 保留 markdown 内容作为 fallback
             except Exception:
-                pass  # 降级为纯 markdown
+                logger.debug("failed to render structured content, falling back to markdown", exc_info=True)
 
         spec = CardLayoutSpec(
             project_path=working_path,

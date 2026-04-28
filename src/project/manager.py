@@ -72,7 +72,7 @@ class ProjectManager:
                 try:
                     tmp_path.unlink()
                 except OSError:
-                    pass
+                    logger.debug("failed to delete temp file", exc_info=True)
 
     def _get_next_theme(self) -> tuple[str, str]:
         # 使用 get_available_themes() 获取非深色主题列表进行自动分配

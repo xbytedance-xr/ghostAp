@@ -86,7 +86,7 @@ class DeepRenderer(BaseRenderer):
                 if len(running) == 1:
                     return running[0]
             except Exception:
-                pass
+                logger.debug("failed to get running engine", exc_info=True)
             return None
 
         def _maybe_stream_update(force: bool = False) -> None:

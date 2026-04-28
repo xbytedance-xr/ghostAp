@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from functools import lru_cache
 from typing import TYPE_CHECKING, Optional
 
@@ -12,6 +13,8 @@ from ..shared import build_responsive_layout
 from ..styles import THRESHOLDS, UI_TEXT
 from .core import CoreBuilder
 from .lock import build_lock_help_body
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from src.sandbox.executor import ExecutionResult
@@ -89,7 +92,7 @@ class SystemBuilder:
                         )
                     )
             except Exception:
-                pass
+                logger.debug("failed to build TTADK refresh card diagnostics", exc_info=True)
 
         footer = UI_TEXT["system_ttadk_refresh_footer"]
         if footer:

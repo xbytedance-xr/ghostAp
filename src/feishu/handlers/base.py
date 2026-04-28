@@ -516,6 +516,8 @@ class BaseHandler:
         if os.path.isdir(expanded_path):
             with self.ctx.working_dir_lock:
                 self.ctx.working_dirs[chat_id] = expanded_path
+                if len(self.ctx.working_dirs) > 500:
+                    self.ctx.working_dirs.popitem(last=False)  # 淘汰最旧条目
             return True, expanded_path
         else:
             return False, f"目录不存在: {expanded_path}"
