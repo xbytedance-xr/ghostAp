@@ -174,6 +174,20 @@ def test_retry_returns_error_when_running_units_exist(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def _find_all_buttons(elements):
+    """递归从 elements 树中提取所有 button。"""
+    buttons = []
+    for el in elements:
+        if el.get("tag") == "button":
+            buttons.append(el)
+        elif el.get("tag") == "column_set":
+            for col in el.get("columns", []):
+                buttons.extend(_find_all_buttons(col.get("elements", [])))
+        elif el.get("tag") == "column":
+            buttons.extend(_find_all_buttons(el.get("elements", [])))
+    return buttons
+
+
 def test_progress_card_shows_retry_button_when_failed():
     """Card should contain retry button when there are failed units and no running units."""
     units = [
@@ -185,17 +199,11 @@ def test_progress_card_shows_retry_button_when_failed():
     card = json.loads(card_json)
 
     # Find the retry button in the card elements
-    found_retry = False
-    for element in card.get("body", {}).get("elements", []):
-        if element.get("tag") == "action":
-            for action in element.get("actions", []):
-                val = action.get("value", {})
-                if val.get("action") == "worktree_retry_failed":
-                    found_retry = True
-                    assert val.get("project_id") == "p1"
-                    assert "重试" in action.get("text", {}).get("content", "")
-                    break
-    assert found_retry, "Retry button should be present when failed units exist"
+    buttons = _find_all_buttons(card.get("body", {}).get("elements", []))
+    retry_buttons = [b for b in buttons if b.get("value", {}).get("action") == "worktree_retry_failed"]
+    assert len(retry_buttons) == 1, "Retry button should be present when failed units exist"
+    assert retry_buttons[0].get("value", {}).get("project_id") == "p1"
+    assert "重试" in retry_buttons[0].get("text", {}).get("content", "")
 
 
 def test_progress_card_no_retry_button_when_all_success():
@@ -208,12 +216,9 @@ def test_progress_card_no_retry_button_when_all_success():
     _, card_json = WorktreeBuilder.build_worktree_progress_card(units, project_id="p1")
     card = json.loads(card_json)
 
-    for element in card.get("body", {}).get("elements", []):
-        if element.get("tag") == "action":
-            for action in element.get("actions", []):
-                val = action.get("value", {})
-                assert val.get("action") != "worktree_retry_failed", \
-                    "Retry button should NOT be present when all units succeeded"
+    buttons = _find_all_buttons(card.get("body", {}).get("elements", []))
+    retry_buttons = [b for b in buttons if b.get("value", {}).get("action") == "worktree_retry_failed"]
+    assert len(retry_buttons) == 0, "Retry button should NOT be present when all units succeeded"
 
 
 def test_progress_card_no_retry_button_when_running():
@@ -226,12 +231,9 @@ def test_progress_card_no_retry_button_when_running():
     _, card_json = WorktreeBuilder.build_worktree_progress_card(units, project_id="p1")
     card = json.loads(card_json)
 
-    for element in card.get("body", {}).get("elements", []):
-        if element.get("tag") == "action":
-            for action in element.get("actions", []):
-                val = action.get("value", {})
-                assert val.get("action") != "worktree_retry_failed", \
-                    "Retry button should NOT be present while units are running"
+    buttons = _find_all_buttons(card.get("body", {}).get("elements", []))
+    retry_buttons = [b for b in buttons if b.get("value", {}).get("action") == "worktree_retry_failed"]
+    assert len(retry_buttons) == 0, "Retry button should NOT be present while units are running"
 
 
 # ---------------------------------------------------------------------------
@@ -240,14 +242,9 @@ def test_progress_card_no_retry_button_when_running():
 
 
 def _extract_actions(card_json: str) -> list[dict]:
-    """Helper: extract all button value dicts from a card JSON string."""
+    """Helper: extract all button dicts from a card JSON string."""
     card = json.loads(card_json)
-    results = []
-    for element in card.get("body", {}).get("elements", []):
-        if element.get("tag") == "action":
-            for action in element.get("actions", []):
-                results.append(action)
-    return results
+    return _find_all_buttons(card.get("body", {}).get("elements", []))
 
 
 def test_cleanup_card_shows_retry_when_partial_failed():

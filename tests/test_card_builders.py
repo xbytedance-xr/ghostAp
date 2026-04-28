@@ -277,8 +277,8 @@ def test_worktree_confirm_card_grouping():
     assert column_elements[0]["tag"] == "input"
     assert column_elements[0]["name"] == "worktree_goal"
 
-    assert column_elements[1]["tag"] == "action"
-    assert column_elements[1]["actions"][0]["text"]["content"] == "确认并开始执行"
+    assert column_elements[1]["tag"] == "button"
+    assert column_elements[1]["text"]["content"] == "确认并开始执行"
 
 
 def test_worktree_progress_card_ready_grouping():
@@ -313,7 +313,7 @@ def test_worktree_progress_card_ready_grouping():
     assert hot_area["tag"] == "column_set"
     assert hot_area["background_style"] == "wathet"
     assert hot_area["columns"][0]["elements"][0]["tag"] == "input"
-    assert hot_area["columns"][0]["elements"][1]["tag"] == "action"
+    assert hot_area["columns"][0]["elements"][1]["tag"] == "button"
 
 
 def test_worktree_progress_card_with_failure():

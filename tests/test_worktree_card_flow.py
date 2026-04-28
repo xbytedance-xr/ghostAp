@@ -161,6 +161,19 @@ def test_worktree_tool_select_card_renders_buttons():
 
     from src.card.builders.worktree import WorktreeBuilder
 
+    def _find_all_buttons(elements):
+        """递归从 elements 树中提取所有 button。"""
+        buttons = []
+        for el in elements:
+            if el.get("tag") == "button":
+                buttons.append(el)
+            elif el.get("tag") == "column_set":
+                for col in el.get("columns", []):
+                    buttons.extend(_find_all_buttons(col.get("elements", [])))
+            elif el.get("tag") == "column":
+                buttons.extend(_find_all_buttons(el.get("elements", [])))
+        return buttons
+
     tools = [
         {
             "tool_name": "coco",
@@ -188,19 +201,17 @@ def test_worktree_tool_select_card_renders_buttons():
     assert card["header"]["title"]["content"] == "🌳 Worktree — 选择工具"
     assert card["header"]["template"] == "turquoise"
 
-    # Find action element with buttons (schema 2.0: body.elements)
+    # Find buttons in card elements (schema 2.0: buttons inside column_set grid)
     elements = card["body"]["elements"]
-    action_elements = [e for e in elements if e.get("tag") == "action"]
-    assert len(action_elements) == 1
+    buttons = _find_all_buttons(elements)
+    tool_buttons = [b for b in buttons if b.get("value", {}).get("action") == "worktree_select_tool"]
+    assert len(tool_buttons) == len(tools)
 
-    buttons = action_elements[0]["actions"]
-    assert len(buttons) == len(tools)
-
-    for btn in buttons:
+    for btn in tool_buttons:
         assert btn["tag"] == "button"
         assert btn["value"]["action"] == "worktree_select_tool"
         assert btn["value"]["project_id"] == "proj-test"
 
     # Button labels match tool display names
-    btn_labels = [btn["text"]["content"] for btn in buttons]
+    btn_labels = [btn["text"]["content"] for btn in tool_buttons]
     assert btn_labels == ["Coco", "Claude"]

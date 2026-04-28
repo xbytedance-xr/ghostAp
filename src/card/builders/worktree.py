@@ -5,6 +5,7 @@ import re
 from typing import Optional
 
 from ..styles import UI_TEXT
+from ..shared import build_responsive_layout
 from .core import CoreBuilder
 from ..models import BannerKind, WorktreeBannerContext
 
@@ -201,27 +202,21 @@ class WorktreeBuilder:
                 }
             )
         if buttons:
-            elements.append({"tag": "action", "actions": buttons})
+            elements.extend(build_responsive_layout(buttons))
 
         # Finish button (resident)
         if selected_items:
-            elements.append(
-                {
-                    "tag": "action",
-                    "actions": [
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": UI_TEXT["worktree_btn_finish"]},
-                            "type": "primary",
-                            "value": {
-                                "action": "worktree_finish_selection",
-                                "project_id": project_id or "",
-                                "goal": goal,
-                            },
-                        }
-                    ],
-                }
-            )
+            finish_btn = {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": UI_TEXT["worktree_btn_finish"]},
+                "type": "primary",
+                "value": {
+                    "action": "worktree_finish_selection",
+                    "project_id": project_id or "",
+                    "goal": goal,
+                },
+            }
+            elements.extend(build_responsive_layout([finish_btn]))
 
         card = CoreBuilder._wrap_card(UI_TEXT["worktree_select_tool_title"], "turquoise", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
@@ -318,7 +313,7 @@ class WorktreeBuilder:
             )
 
         if buttons:
-            elements.append({"tag": "action", "actions": buttons})
+            elements.extend(build_responsive_layout(buttons))
 
         card = CoreBuilder._wrap_card(UI_TEXT["worktree_select_model_title"], "turquoise", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
@@ -371,27 +366,22 @@ class WorktreeBuilder:
                                 "max_length": 500,
                             },
                             {
-                                "tag": "action",
-                                "actions": [
-                                    {
-                                        "tag": "button",
-                                        "text": {"tag": "plain_text", "content": UI_TEXT["worktree_btn_confirm"]},
-                                        "type": "primary",
-                                        "value": {
-                                            "action": "worktree_confirm_start",
-                                            "project_id": project_id or "",
-                                        },
-                                    },
-                                    {
-                                        "tag": "button",
-                                        "text": {"tag": "plain_text", "content": UI_TEXT["worktree_btn_reselect"]},
-                                        "type": "default",
-                                        "value": {
-                                            "action": "show_worktree_menu",
-                                            "project_id": project_id or "",
-                                        },
-                                    },
-                                ],
+                                "tag": "button",
+                                "text": {"tag": "plain_text", "content": UI_TEXT["worktree_btn_confirm"]},
+                                "type": "primary",
+                                "value": {
+                                    "action": "worktree_confirm_start",
+                                    "project_id": project_id or "",
+                                },
+                            },
+                            {
+                                "tag": "button",
+                                "text": {"tag": "plain_text", "content": UI_TEXT["worktree_btn_reselect"]},
+                                "type": "default",
+                                "value": {
+                                    "action": "show_worktree_menu",
+                                    "project_id": project_id or "",
+                                },
                             },
                         ],
                     }
@@ -494,18 +484,13 @@ class WorktreeBuilder:
                                     "max_length": 500,
                                 },
                                 {
-                                    "tag": "action",
-                                    "actions": [
-                                        {
-                                            "tag": "button",
-                                            "text": {"tag": "plain_text", "content": UI_TEXT["worktree_btn_execute"]},
-                                            "type": "primary",
-                                            "value": {
-                                                "action": "worktree_execute_action",
-                                                "project_id": project_id or "",
-                                            },
-                                        }
-                                    ],
+                                    "tag": "button",
+                                    "text": {"tag": "plain_text", "content": UI_TEXT["worktree_btn_execute"]},
+                                    "type": "primary",
+                                    "value": {
+                                        "action": "worktree_execute_action",
+                                        "project_id": project_id or "",
+                                    },
                                 },
                             ],
                         }
@@ -517,22 +502,16 @@ class WorktreeBuilder:
         has_failed = any(u.get("status") == "failed" for u in units)
         has_running = any(u.get("status") == "running" for u in units)
         if has_failed and not has_running:
-            elements.append(
-                {
-                    "tag": "action",
-                    "actions": [
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": UI_TEXT["worktree_btn_retry"]},
-                            "type": "primary",
-                            "value": {
-                                "action": "worktree_retry_failed",
-                                "project_id": project_id or "",
-                            },
-                        }
-                    ],
-                }
-            )
+            retry_btn = {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": UI_TEXT["worktree_btn_retry"]},
+                "type": "primary",
+                "value": {
+                    "action": "worktree_retry_failed",
+                    "project_id": project_id or "",
+                },
+            }
+            elements.extend(build_responsive_layout([retry_btn]))
 
         title_suffix, header_color = WorktreeBuilder._resolve_progress_title(units)
         card = CoreBuilder._wrap_card(UI_TEXT["worktree_progress_title"].format(status=title_suffix), header_color, elements)
@@ -553,22 +532,16 @@ class WorktreeBuilder:
             ),
         ]
         if merge_entry_ready:
-            elements.append(
-                {
-                    "tag": "action",
-                    "actions": [
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": UI_TEXT["worktree_btn_view_merge"]},
-                            "type": "primary",
-                            "value": {
-                                "action": "show_worktree_merge_entry",
-                                "project_id": project_id or "",
-                            },
-                        }
-                    ],
-                }
-            )
+            merge_btn = {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": UI_TEXT["worktree_btn_view_merge"]},
+                "type": "primary",
+                "value": {
+                    "action": "show_worktree_merge_entry",
+                    "project_id": project_id or "",
+                },
+            }
+            elements.extend(build_responsive_layout([merge_btn]))
         
         card = CoreBuilder._wrap_card(UI_TEXT["worktree_result_title"], "turquoise", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
@@ -676,7 +649,7 @@ class WorktreeBuilder:
                 },
             },
         )
-        elements.append({"tag": "action", "actions": actions})
+        elements.extend(build_responsive_layout(actions))
 
         card = CoreBuilder._wrap_card(UI_TEXT["worktree_cleanup_card_title"], "purple", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)

@@ -4,7 +4,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from src.feishu.handlers.system import SystemHandler, UI_TEXT
+from src.feishu.handlers.system import SystemHandler
+from src.feishu.handlers.worktree import WorktreeHandler
+from src.card.styles import UI_TEXT
 from src.card.builder import CardBuilder
 from src.worktree_engine.manager import WorktreeManager
 from src.worktree_engine.models import WorktreeRuntimeState, WorktreeSelectionItem
@@ -394,7 +396,7 @@ class TestWorktreeCommandRouting(unittest.TestCase):
 
     def test_handle_worktree_confirm_start_with_input_goal(self):
         """handle_worktree_confirm_start should trigger execution if goal input is present."""
-        handler = self._build_system_handler()
+        handler = self._build_worktree_handler()
         project = MagicMock()
         project.project_id = "p1"
         handler.project_manager.get_project.return_value = project
@@ -430,9 +432,38 @@ class TestWorktreeCommandRouting(unittest.TestCase):
         handler.send_error_card = MagicMock()
         return handler
 
+    def _build_worktree_handler(self):
+        """Build a minimally-mocked WorktreeHandler for direct method tests."""
+        ctx = MagicMock()
+        ctx.settings = MagicMock()
+        ctx.api_client_factory = MagicMock()
+        ctx.message_callback = MagicMock()
+        ctx.project_manager = MagicMock()
+        handler = WorktreeHandler(ctx)
+        # Prevent actual Feishu API calls
+        handler.reply_message = MagicMock()
+        handler.reply_error = MagicMock()
+        handler.patch_message = MagicMock()
+        handler.send_error_card = MagicMock()
+        return handler
+
+    @staticmethod
+    def _find_all_buttons(elements):
+        """递归从 elements 树中提取所有 button。"""
+        buttons = []
+        for el in elements:
+            if el.get("tag") == "button":
+                buttons.append(el)
+            elif el.get("tag") == "column_set":
+                for col in el.get("columns", []):
+                    buttons.extend(TestWorktreeCommandRouting._find_all_buttons(col.get("elements", [])))
+            elif el.get("tag") == "column":
+                buttons.extend(TestWorktreeCommandRouting._find_all_buttons(col.get("elements", [])))
+        return buttons
+
     def test_handle_worktree_command_sends_card(self):
         """handle_worktree_command sends an interactive card with tool buttons."""
-        handler = self._build_system_handler()
+        handler = self._build_worktree_handler()
 
         project = MagicMock()
         project.project_id = "proj-42"
@@ -460,19 +491,17 @@ class TestWorktreeCommandRouting(unittest.TestCase):
         # Verify card structure
         self.assertEqual(card["header"]["title"]["content"], "🌳 Worktree — 选择工具")
         elements = card["body"]["elements"]
-        action_elements = [e for e in elements if e.get("tag") == "action"]
-        self.assertEqual(len(action_elements), 1)
-
-        buttons = action_elements[0]["actions"]
-        self.assertEqual(len(buttons), 2)
-        for btn in buttons:
+        buttons = self._find_all_buttons(elements)
+        tool_buttons = [b for b in buttons if b.get("value", {}).get("action") == "worktree_select_tool"]
+        self.assertEqual(len(tool_buttons), 2)
+        for btn in tool_buttons:
             self.assertEqual(btn["tag"], "button")
             self.assertEqual(btn["value"]["action"], "worktree_select_tool")
             self.assertEqual(btn["value"]["project_id"], "proj-42")
 
     def test_handle_worktree_command_no_project_error(self):
         """handle_worktree_command replies error when no active project."""
-        handler = self._build_system_handler()
+        handler = self._build_worktree_handler()
         handler.project_manager.get_active_project.return_value = None
 
         handler.handle_worktree_command("msg-1", "chat-1")
@@ -483,7 +512,7 @@ class TestWorktreeCommandRouting(unittest.TestCase):
 
     def test_handle_worktree_command_no_tools_error(self):
         """handle_worktree_command replies error when no tools available."""
-        handler = self._build_system_handler()
+        handler = self._build_worktree_handler()
 
         project = MagicMock()
         project.project_id = "proj-42"
