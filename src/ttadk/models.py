@@ -2,6 +2,10 @@ import json
 import re
 from dataclasses import dataclass, field
 from typing import Callable, Optional
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 _INVALID_MODEL_RE = re.compile(r"\binvalid\s+model\b", re.IGNORECASE)
 _AVAILABLE_MODELS_RE = re.compile(r"Available models\s*:?\s*(.*)", re.IGNORECASE | re.DOTALL)
@@ -93,7 +97,7 @@ def redact_and_truncate(
 
             s = redact_text(s, patterns, repl)
         except Exception:
-            pass
+            logger.debug("redact_and_truncate: import module", exc_info=True)
     return strict_truncate(s, int(lim))
 
 
@@ -123,6 +127,7 @@ def is_model_token(name: str) -> bool:
         if not _MODEL_TOKEN_RE.match(s):
             return False
     except Exception:
+        logger.debug("is_model_token: evaluate condition", exc_info=True)
         return False
 
     # 排除 ISO8601 时间戳（常见噪声）
@@ -130,7 +135,7 @@ def is_model_token(name: str) -> bool:
         if _ISO8601_TS_RE.match(s):
             return False
     except Exception:
-        pass
+        logger.debug("is_model_token: evaluate condition", exc_info=True)
     # 经验规则：真实模型通常包含分隔符（-._:），纯字母数字更像短标签/标题
     if not any(ch in s for ch in ("-", ".", "_", ":")):
         return False
@@ -139,6 +144,7 @@ def is_model_token(name: str) -> bool:
         if not re.search(r"[A-Za-z]", s):
             return False
     except Exception:
+        logger.debug("is_model_token: evaluate condition", exc_info=True)
         return False
     # 经验规则：真实模型通常包含版本号/代际号（至少一个数字）。
     # 该规则用于过滤诸如 "not_a_model" 这类噪声 token。
@@ -146,6 +152,7 @@ def is_model_token(name: str) -> bool:
         if not re.search(r"\d", s):
             return False
     except Exception:
+        logger.debug("is_model_token: evaluate condition", exc_info=True)
         return False
     return True
 
@@ -192,6 +199,7 @@ def is_stdin_not_tty_error(text: str) -> bool:
     try:
         return bool(_STDIN_NOT_TTY_RE.search(clean))
     except Exception:
+        logger.debug("is_stdin_not_tty_error: return bool(_STDIN_NOT_TTY_RE.sea...", exc_info=True)
         return False
 
 
@@ -581,6 +589,7 @@ def build_invalid_model_context(
         try:
             return str(x or "")
         except Exception:
+            logger.debug("_safe_str: return str(x or '')", exc_info=True)
             return ""
 
     # 1) 聚合原始文本（尽量包含可解析信息；never raises）
@@ -1265,6 +1274,7 @@ def build_model_list_diagnostics(
         try:
             return dict(atts[-1])
         except Exception:
+            logger.debug("_pick_attempt: return dict(atts[-1])", exc_info=True)
             return {}
 
     a = _pick_attempt()

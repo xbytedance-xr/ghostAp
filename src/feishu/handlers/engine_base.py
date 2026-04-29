@@ -235,6 +235,129 @@ class BaseEngineHandler(BaseHandler):
             _body, root_path, chat_id, message_id, command_text,
         )
 
+    # ------------------------------------------------------------------
+    # UI toggle helpers (DRY for Deep/Loop/Spec toggle methods)
+    # ------------------------------------------------------------------
+
+    def _refresh_card_view(
+        self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None,
+    ):
+        """Refresh engine card after UI state change.  Subclasses may override."""
+        self._show_status(message_id, chat_id, project)
+
+    def _toggle_log(
+        self,
+        message_id: str,
+        chat_id: str,
+        project: Optional["ProjectContext"] = None,
+        engine_project_id: Optional[str] = None,
+        expanded: bool = False,
+    ):
+        """Toggle log expansion for an engine project."""
+        if engine_project_id:
+            self.renderer.update_ui_state(engine_project_id, expanded=expanded)
+            self._refresh_card_view(message_id, chat_id, project)
+
+    def _toggle_ac(
+        self,
+        message_id: str,
+        chat_id: str,
+        project: Optional["ProjectContext"] = None,
+        engine_project_id: Optional[str] = None,
+        expand_ac: bool = False,
+    ):
+        """Toggle acceptance-criteria expansion."""
+        if engine_project_id:
+            self.renderer.update_ui_state(engine_project_id, expand_ac=expand_ac)
+            self._refresh_card_view(message_id, chat_id, project)
+
+    def _switch_card_mode(
+        self,
+        message_id: str,
+        chat_id: str,
+        project: Optional["ProjectContext"] = None,
+        engine_project_id: Optional[str] = None,
+        compact: bool = False,
+    ):
+        """Switch card display mode (full / compact)."""
+        if engine_project_id:
+            self.renderer.update_ui_state(engine_project_id, compact=compact)
+            self._refresh_card_view(message_id, chat_id, project)
+
+    # ------------------------------------------------------------------
+    # Project auto-creation helper
+    # ------------------------------------------------------------------
+
+    def _ensure_project(
+        self, message_id: str, chat_id: str, project: Optional["ProjectContext"],
+    ) -> Optional["ProjectContext"]:
+        """Ensure a project exists, auto-creating one if *project* is None.
+
+        Returns the project on success, or ``None`` if creation failed (error
+        reply has already been sent to the user).
+        """
+        if project:
+            return project
+        working_dir = self.get_working_dir(chat_id)
+        try:
+            project, is_new = self.project_manager.get_or_create_project_for_path(working_dir, chat_id)
+            if is_new:
+                logger.info(
+                    "%s 自动创建项目: %s @ %s",
+                    self._get_engine_name_prefix(), project.project_name, project.root_path,
+                )
+            return project
+        except Exception as e:
+            from ...utils.errors import get_error_detail
+
+            self.reply_error(message_id, get_error_detail(e), title="创建项目失败")
+            return None
+
+    # ------------------------------------------------------------------
+    # Task submission helper
+    # ------------------------------------------------------------------
+
+    def _submit_engine_task(
+        self,
+        run_fn: callable,
+        chat_id: str,
+        message_id: str,
+        project: Optional["ProjectContext"],
+        request_id: Optional[str],
+        task_id: Optional[str] = None,
+        *,
+        name_suffix: str = "run",
+        priority: TaskPriority = TaskPriority.NORMAL,
+    ):
+        """Build a TaskSpec, submit to the scheduler, and link the task.
+
+        Covers the common start/recover pattern shared by Deep/Loop/Spec handlers.
+        """
+        task_type = self._get_task_type()
+        prefix = task_type.split("_")[0]  # deep, loop, spec
+        root_path = project.root_path if project else self.get_working_dir(chat_id)
+
+        spec = TaskSpec(
+            chat_id=chat_id,
+            queue_key=f"{chat_id}:{prefix}:{project.project_id if project else root_path}",
+            name=f"{task_type}_{name_suffix}",
+            task_type=task_type,
+            project_id=project.project_id if project else None,
+            message_id=message_id,
+            origin_message_id=message_id,
+            request_id=request_id,
+            task_id=task_id or None,
+            priority=priority,
+        )
+        handle = self.scheduler.submit(spec, lambda ctx: run_fn())
+        try:
+            self.ctx.message_linker.link_task(message_id, handle.run_id)
+        except Exception as e:
+            logger.debug(
+                "link_task失败(%s_%s): message_id=%s, run_id=%s, err=%s",
+                task_type, name_suffix, message_id, handle.run_id, e,
+            )
+
     def _safe_lifecycle_action(
         self,
         action_func: callable,

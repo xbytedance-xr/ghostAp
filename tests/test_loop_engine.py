@@ -229,9 +229,9 @@ class TestLoopEngine:
             rate_limit_retry_enabled = False
 
         with (
-            patch("src.agent_session.get_settings", return_value=_SessSettings()),
+            patch("src.agent_session.factory.get_settings", return_value=_SessSettings()),
             patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck,
-            patch("src.agent_session.SyncTTADKCLISession", return_value=_S()),
+            patch("src.agent_session.factory.SyncTTADKCLISession", return_value=_S()),
         ):
             # SSOT：create_engine_session 统一走 start_agent_session；单测不应触发真实 ttadk/codex 探测。
             mk_precheck.return_value = {
@@ -315,9 +315,9 @@ class TestLoopEngine:
             rate_limit_retry_enabled = False
 
         with (
-            patch("src.agent_session.get_settings", return_value=_SessSettings()),
+            patch("src.agent_session.factory.get_settings", return_value=_SessSettings()),
             patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck,
-            patch("src.agent_session.SyncTTADKCLISession", return_value=_S()),
+            patch("src.agent_session.factory.SyncTTADKCLISession", return_value=_S()),
         ):
             mk_precheck.return_value = {
                 "tool": "codex",

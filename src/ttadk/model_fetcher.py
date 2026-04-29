@@ -89,7 +89,7 @@ class FetchResult:
             if not getattr(self.diagnostics, "tool_name", None):
                 self.diagnostics.tool_name = self.tool_name
         except Exception:
-            pass
+            logger.debug("__post_init__: evaluate condition", exc_info=True)
 
 
 class TTADKModelFetcher:
@@ -199,7 +199,7 @@ class TTADKModelFetcher:
                             }
                         )
                 except Exception:
-                    pass
+                    logger.debug("_get_ttadk_cli_capabilities: evaluate condition", exc_info=True)
                 return set(cached[1] or set()), str(cached[2] or "")
 
             inflight = self._ttadk_cli_cap_inflight
@@ -232,7 +232,7 @@ class TTADKModelFetcher:
                                 }
                             )
                     except Exception:
-                        pass
+                        logger.debug("unexpected error", exc_info=True)
                     return set(cached2[1] or set()), str(cached2[2] or "")
             # If still no cache, fall through to run ourselves (best-effort).
 
@@ -311,7 +311,7 @@ class TTADKModelFetcher:
                         }
                     )
             except Exception:
-                pass
+                logger.debug("unexpected error", exc_info=True)
 
         return set(commands), str(version)
 
@@ -334,7 +334,7 @@ class TTADKModelFetcher:
             if not bool(getattr(get_settings(), "ttadk_official_cli_enabled", True)):
                 return False
         except Exception:
-            pass
+            logger.debug("_is_official_cli_enabled: evaluate condition", exc_info=True)
         # 先用 official_cli 自身的 help 探测：避免在 force_refresh 路径引入额外的 `ttadk --help` 调用。
         # 注意：OfficialCLIModelsStrategy._probe 已包含“usage 前缀校验”，不会把顶层 help 误判为 capability。
         try:
@@ -376,11 +376,11 @@ class TTADKModelFetcher:
                             }
                         )
                 except Exception:
-                    pass
+                    logger.debug("unexpected error", exc_info=True)
                 if ok:
                     return True
         except Exception:
-            pass
+            logger.debug("unexpected error", exc_info=True)
 
         # 回退到 `ttadk --help` Commands 列表（更稳定的“显式命令能力”判断）。
         commands, _ = self._get_ttadk_cli_capabilities(diag=diag, force_refresh=bool(force_refresh))
@@ -461,7 +461,7 @@ class TTADKModelFetcher:
                             if "official_cli_disabled" not in diag.warnings:
                                 diag.warnings.append("official_cli_disabled")
                         except Exception:
-                            pass
+                            logger.debug("_parse_order: evaluate condition", exc_info=True)
                     continue
                 if name == "structured_sync" and not cwd:
                     continue
@@ -495,7 +495,7 @@ class TTADKModelFetcher:
                             if "official_cli_disabled" not in diag.warnings:
                                 diag.warnings.append("official_cli_disabled")
                         except Exception:
-                            pass
+                            logger.debug("evaluate condition", exc_info=True)
                     continue
                 if name == "structured_sync" and not cwd:
                     continue
@@ -521,7 +521,7 @@ class TTADKModelFetcher:
                 if "official_cli_disabled" not in diag.warnings:
                     diag.warnings.append("official_cli_disabled")
             except Exception:
-                pass
+                logger.debug("_maybe_add_official_cli: evaluate condition", exc_info=True)
 
             # force_refresh 路径：额外记录版本/缺失命令，便于排障与验收。
             if not force_refresh:
@@ -533,6 +533,7 @@ class TTADKModelFetcher:
                 if cmds and ("models" not in cmds) and ("model" not in cmds):
                     diag.warnings.append("missing_commands:models,model")
             except Exception:
+                logger.debug("_maybe_add_official_cli: self._get_ttadk_cli_capabilities...", exc_info=True)
                 return
 
         # 默认链路（SSOT）：优先高可信来源，避免低置信来源阻断。
@@ -660,7 +661,7 @@ class TTADKModelFetcher:
                                     if w not in diag.warnings:
                                         diag.warnings.append(w)
                 except Exception:
-                    pass
+                    logger.debug("evaluate condition", exc_info=True)
                 try:
                     if hasattr(strategy, "get_attempt_detail"):
                         detail = dict(strategy.get_attempt_detail() or {})
@@ -675,9 +676,9 @@ class TTADKModelFetcher:
                                 if attempt.get("exit_code") is None and detail.get("rc") is not None:
                                     attempt["exit_code"] = detail.get("rc")
                             except Exception:
-                                pass
+                                logger.debug("evaluate condition", exc_info=True)
                 except Exception:
-                    pass
+                    logger.debug("evaluate condition", exc_info=True)
 
                 diag.attempts.append(attempt)
                 if models:
@@ -691,7 +692,7 @@ class TTADKModelFetcher:
                         if callable(self._cache_sink):
                             self._cache_sink(tool_name, list(models), strategy.name, diag)
                     except Exception:
-                        pass
+                        logger.debug("evaluate condition", exc_info=True)
 
                     return FetchResult(
                         tool_name=tool_name,
@@ -761,7 +762,7 @@ class TTADKModelFetcher:
                             if diag.attempts[-1].get("exit_code") is None and detail.get("rc") is not None:
                                 diag.attempts[-1]["exit_code"] = detail.get("rc")
                 except Exception:
-                    pass
+                    logger.debug("evaluate condition", exc_info=True)
 
                 # official_cli 的额外可观测信息（best-effort：phase/cmd）
                 if getattr(strategy, "name", "") == "official_cli":
@@ -777,7 +778,7 @@ class TTADKModelFetcher:
                         if detail:
                             diag.attempts[-1]["detail"] = detail
                     except Exception:
-                        pass
+                        logger.debug("{}", exc_info=True)
 
                 # local_config 的额外可观测信息（best-effort）
                 if getattr(strategy, "name", "") == "local_config":
@@ -791,7 +792,7 @@ class TTADKModelFetcher:
                             if detail:
                                 diag.attempts[-1]["detail"] = detail
                     except Exception:
-                        pass
+                        logger.debug("evaluate condition", exc_info=True)
 
                 # structured_sync 在未 init/无配置时属于可预期失败：标记并继续降级 probe
                 # 但考虑到策略链可能在 structured_sync 之前就已成功（例如 probe），因此这里对所有策略统一标记。
@@ -807,7 +808,7 @@ class TTADKModelFetcher:
                         if "invalid_model" not in diag.warnings:
                             diag.warnings.append("invalid_model")
                 except Exception:
-                    pass
+                    logger.debug("(stderr_snip or '') + '/n' + (stdout_snip or '')", exc_info=True)
 
         diag.warnings.append("all_strategies_failed")
         return FetchResult(tool_name=tool_name, models=[], source="", diagnostics=diag)
@@ -937,6 +938,7 @@ class FileCacheStrategy(ModelFetchStrategy):
             out: list[TTADKModel] = [TTADKModel(name=n, description=n, friendly_name=n) for n in names]
             return out
         except Exception:
+            logger.debug("fetch: evaluate condition", exc_info=True)
             return []
 
     # best-effort diagnostics hooks (read by fetcher)

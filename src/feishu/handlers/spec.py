@@ -18,6 +18,7 @@ from ...utils.text import generate_task_id
 from ..emoji import EmojiReaction
 from ..renderers.spec_renderer import SpecRenderer
 from .engine_base import BaseEngineHandler
+from .base import CardActionContext
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
@@ -49,6 +50,9 @@ class SpecHandler(BaseEngineHandler):
         self, message_id: str, chat_id: str, project: Optional["ProjectContext"], engine_name: str, root_path: str
     ):
         return self.renderer.create_spec_callbacks(message_id, chat_id, project, engine_name=engine_name)
+
+    def _refresh_card_view(self, message_id: str, chat_id: str, project=None):
+        self.show_spec_status(message_id, chat_id, project, origin_message_id=message_id)
 
     def _get_ui_state(self, spec_project_id: str) -> dict:
         """Deprecated: Delegate to renderer"""
@@ -108,15 +112,9 @@ class SpecHandler(BaseEngineHandler):
     def start_spec_engine(
         self, message_id: str, chat_id: str, requirement: str, project: Optional["ProjectContext"] = None
     ):
+        project = self._ensure_project(message_id, chat_id, project)
         if not project:
-            working_dir = self.get_working_dir(chat_id)
-            try:
-                project, is_new = self.project_manager.get_or_create_project_for_path(working_dir, chat_id)
-                if is_new:
-                    logger.info("Spec Engine 自动创建项目: %s @ %s", project.project_name, project.root_path)
-            except Exception as e:
-                self.reply_message(message_id, fmt_error("创建项目", e))
-                return
+            return
 
         root_path = project.root_path if project else self.get_working_dir(chat_id)
 
@@ -192,25 +190,7 @@ class SpecHandler(BaseEngineHandler):
                 root_path, chat_id, _locked_run, message_id, f"/spec {requirement}",
             )
 
-        spec = TaskSpec(
-            chat_id=chat_id,
-            queue_key=f"{chat_id}:spec:{project.project_id if project else root_path}",
-            name="spec_engine_run",
-            task_type="spec_engine",
-            project_id=project.project_id if project else None,
-            message_id=message_id,
-            origin_message_id=message_id,
-            request_id=request_id,
-            task_id=task_id or None,
-            priority=TaskPriority.NORMAL,
-        )
-        handle = self.scheduler.submit(spec, lambda ctx: _scheduled_run())
-        try:
-            self.ctx.message_linker.link_task(message_id, handle.run_id)
-        except Exception as e:
-            logger.debug(
-                "link_task失败(spec_engine_run): message_id=%s, run_id=%s, err=%s", message_id, handle.run_id, e
-            )
+        self._submit_engine_task(_scheduled_run, chat_id, message_id, project, request_id, task_id)
 
     # ------------------------------------------------------------------
     # status
@@ -786,25 +766,10 @@ class SpecHandler(BaseEngineHandler):
                 project_path, chat_id, _locked_recover, message_id, f"/spec_recover {task_id}",
             )
 
-        spec = TaskSpec(
-            chat_id=chat_id,
-            queue_key=f"{chat_id}:spec:{project.project_id if project else project_path}",
-            name="spec_engine_recover",
-            task_type="spec_engine",
-            project_id=project.project_id if project else None,
-            message_id=message_id,
-            origin_message_id=message_id,
-            request_id=request_id,
-            task_id=task_id or None,
-            priority=TaskPriority.NORMAL,
+        self._submit_engine_task(
+            _scheduled_recover, chat_id, message_id, project, request_id, task_id,
+            name_suffix="recover",
         )
-        handle = self.scheduler.submit(spec, lambda ctx: _scheduled_recover())
-        try:
-            self.ctx.message_linker.link_task(message_id, handle.run_id)
-        except Exception as e:
-            logger.debug(
-                "link_task失败(spec_engine_recover): message_id=%s, run_id=%s, err=%s", message_id, handle.run_id, e
-            )
 
     # ------------------------------------------------------------------
     # UI Interaction Handlers
@@ -834,18 +799,18 @@ class SpecHandler(BaseEngineHandler):
         }
 
         # Try dispatching standard actions first
-        if self._dispatch_standard_card_action(
-            open_message_id,
-            open_chat_id,
-            action_type,
-            value,
+        if self._dispatch_standard_card_action(CardActionContext(
+            open_message_id=open_message_id,
+            open_chat_id=open_chat_id,
+            action_type=action_type,
+            value=value,
             prefix="spec",
             action_map=spec_actions,
-            toggle_log_method=self.toggle_spec_log,
-            switch_mode_method=self.switch_spec_card_mode,
-            toggle_ac_method=self.toggle_spec_ac,
+            toggle_log_method=self._toggle_log,
+            switch_mode_method=self._switch_card_mode,
+            toggle_ac_method=self._toggle_ac,
             project=target_project,
-        ):
+        )):
             return
 
         # Custom actions (non-standard)
@@ -867,42 +832,3 @@ class SpecHandler(BaseEngineHandler):
             # Reuse /spec_recover flow to resume from persisted failed-task snapshot.
             self.recover_spec_task(open_message_id, open_chat_id, task_id, project=target_project)
             return
-
-    def toggle_spec_log(
-        self,
-        message_id: str,
-        chat_id: str,
-        project: Optional["ProjectContext"] = None,
-        spec_project_id: Optional[str] = None,
-        expanded: bool = False,
-    ):
-        if spec_project_id:
-            self.renderer.update_ui_state(spec_project_id, expanded=expanded)
-            # Refresh card with new state
-            self.show_spec_status(message_id, chat_id, project, origin_message_id=message_id)
-
-    def toggle_spec_ac(
-        self,
-        message_id: str,
-        chat_id: str,
-        project: Optional["ProjectContext"] = None,
-        spec_project_id: Optional[str] = None,
-        expand_ac: bool = False,
-    ):
-        if spec_project_id:
-            self.renderer.update_ui_state(spec_project_id, expand_ac=expand_ac)
-            # Refresh card with new state
-            self.show_spec_status(message_id, chat_id, project, origin_message_id=message_id)
-
-    def switch_spec_card_mode(
-        self,
-        message_id: str,
-        chat_id: str,
-        project: Optional["ProjectContext"] = None,
-        spec_project_id: Optional[str] = None,
-        compact: bool = False,
-    ):
-        if spec_project_id:
-            self.renderer.update_ui_state(spec_project_id, compact=compact)
-            # Refresh card with new state
-            self.show_spec_status(message_id, chat_id, project, origin_message_id=message_id)

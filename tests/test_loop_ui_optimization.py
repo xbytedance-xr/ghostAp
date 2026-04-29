@@ -78,7 +78,7 @@ class TestLoopUIOptimization(unittest.TestCase):
         handler.renderer.update_ui_state(loop_project_id, expand_ac=False)
 
         # Call toggle
-        handler.toggle_loop_ac("msg_id", "chat_id", None, loop_project_id, expand_ac=True)
+        handler._toggle_ac("msg_id", "chat_id", None, loop_project_id, expand_ac=True)
 
         # Verify state updated
         state = handler.renderer.get_ui_state(loop_project_id)

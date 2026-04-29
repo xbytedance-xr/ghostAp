@@ -23,6 +23,10 @@ from .models import (
     resolve_model_id,
 )
 from .models import build_invalid_model_context as _build_invalid_model_context_ssot
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 
 def build_invalid_model_context(
@@ -87,7 +91,7 @@ def _cooldown_gate(
         if not bool(getattr(get_settings_fn(), "ttadk_runtime_retry_enabled", True)):
             return False
     except Exception:
-        pass
+        logger.debug("_cooldown_gate: evaluate condition", exc_info=True)
 
     cooldown_s = 120.0
     try:
@@ -121,6 +125,7 @@ def _cooldown_gate(
                 )
             return bool(allowed)
         except Exception:
+            logger.debug("unexpected error", exc_info=True)
             return True
 
     # 再走 stub gate（由调用方注入，避免循环依赖）
@@ -144,7 +149,7 @@ def _cooldown_gate(
         try:
             stub_set_last_ts_fn(manager, tool, now)
         except Exception:
-            pass
+            logger.debug("stub_set_last_ts_fn(manager, tool, now)", exc_info=True)
         return True
 
     # 无 gate 能力时：不阻塞修复
@@ -210,9 +215,9 @@ def _seed_models(
                 if hasattr(manager, "_save_cache_to_file"):
                     manager._save_cache_to_file()
             except Exception:
-                pass
+                logger.debug("evaluate condition", exc_info=True)
     except Exception:
-        pass
+        logger.debug("evaluate condition", exc_info=True)
 
     return names
 
@@ -246,7 +251,7 @@ def _force_refresh_with_cooldown(
         cooldown_s = float(getattr(s, "ttadk_startup_refresh_cooldown_s", 60.0) or 60.0)
         fail_cooldown_s = float(getattr(s, "ttadk_startup_refresh_fail_cooldown_s", 120.0) or 120.0)
     except Exception:
-        pass
+        logger.debug("_force_refresh_with_cooldown: get_settings_fn()", exc_info=True)
     cooldown_s = max(0.0, cooldown_s)
     fail_cooldown_s = max(0.0, fail_cooldown_s)
 
@@ -278,7 +283,7 @@ def _force_refresh_with_cooldown(
     try:
         getattr(manager, "_startup_refresh_last_attempt", {})[tool] = now
     except Exception:
-        pass
+        logger.debug("now", exc_info=True)
 
     if hasattr(manager, "refresh_models"):
         try:
@@ -291,7 +296,7 @@ def _force_refresh_with_cooldown(
         try:
             getattr(manager, "_startup_refresh_last_failure", {})[tool] = float(time_fn())
         except Exception:
-            pass
+            logger.debug("convert to float", exc_info=True)
 
     if ok:
         attempts.append({"phase": "repair", "step": "force_refresh", "ok": True})
@@ -313,6 +318,7 @@ def _resolve_after_repair(*, precheck_fn: PrecheckFn, intent: str) -> dict:
     try:
         return dict(precheck_fn(intent) or {})
     except Exception:
+        logger.debug("_resolve_after_repair: return dict(precheck_fn(intent) or...", exc_info=True)
         return {}
 
 
@@ -363,7 +369,7 @@ def _pick_retry_model(
                     if cand and str(getattr(r, "source", "") or "") != "unknown":
                         retry_model = cand
                 except Exception:
-                    pass
+                    logger.debug("_pick_retry_model: [", exc_info=True)
 
     attempts.append(
         {

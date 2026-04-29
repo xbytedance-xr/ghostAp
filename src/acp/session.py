@@ -75,6 +75,7 @@ async def _read_stream_snippet(stream: object, *, max_bytes: int = 8192, timeout
     try:
         max_bytes = int(max_bytes or 0)
     except Exception:
+        logger.debug("_read_stream_snippet: max_bytes conversion failed", exc_info=True)
         max_bytes = 8192
     max_bytes = max(0, min(max_bytes, 64 * 1024))
     if max_bytes <= 0:
@@ -82,6 +83,7 @@ async def _read_stream_snippet(stream: object, *, max_bytes: int = 8192, timeout
     try:
         timeout = float(timeout or 0)
     except Exception:
+        logger.debug("_read_stream_snippet: timeout conversion failed", exc_info=True)
         timeout = 0.2
     timeout = max(0.05, min(timeout, 2.0))
 
@@ -99,6 +101,7 @@ async def _read_stream_snippet(stream: object, *, max_bytes: int = 8192, timeout
             return bytes(data).decode("utf-8", errors="ignore")
         return str(data)
     except Exception:
+        logger.debug("_read_stream_snippet: stream read failed", exc_info=True)
         return ""
 
 
@@ -189,18 +192,21 @@ class ACPSession:
             try:
                 rc = getattr(self._proc, "returncode", None)
             except Exception:
+                logger.debug("[ACP:%s] returncode extraction failed during start error", self._agent_cmd, exc_info=True)
                 rc = None
             stderr_snip = ""
             stdout_snip = ""
             try:
                 stderr_snip = await _read_stream_snippet(getattr(self._proc, "stderr", None))
             except Exception:
+                logger.debug("[ACP:%s] stderr snippet read failed during start error", self._agent_cmd, exc_info=True)
                 stderr_snip = ""
             # Only read stdout if stderr is empty; stdout may contain useful banner/error.
             if not stderr_snip:
                 try:
                     stdout_snip = await _read_stream_snippet(getattr(self._proc, "stdout", None))
                 except Exception:
+                    logger.debug("[ACP:%s] stdout snippet read failed during start error", self._agent_cmd, exc_info=True)
                     stdout_snip = ""
 
             raise ACPStartupError(
@@ -246,6 +252,7 @@ class ACPSession:
             )
             return True
         except Exception:
+            logger.debug("[ACP:%s] health_check failed", self._agent_cmd, exc_info=True)
             return False
 
     async def prompt(self, text: str, on_event: Optional[Callable[[ACPEvent], None]] = None) -> PromptResult:
@@ -315,7 +322,7 @@ class ACPSession:
             # If we have a dict keyed by id, the values are the latest states.
             result.tool_calls = list(collected_tool_calls.values())
         except Exception:
-            pass
+            logger.debug("[ACP:%s] tool_calls finalization failed", self._agent_cmd, exc_info=True)
 
         result.stop_reason = response.stop_reason or "end_turn"
 

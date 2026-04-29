@@ -10,11 +10,11 @@ from ...card import CardBuilder
 from ...card.models import EngineCardState
 from ...card.styles import UI_TEXT
 from ...loop_engine.models import LoopProjectStatus
-from ...tasking import TaskPriority, TaskSpec
 from ...utils.text import generate_task_id
 from ..emoji import EmojiReaction
 from ..renderers.loop_renderer import LoopRenderer
 from .engine_base import BaseEngineHandler
+from .base import CardActionContext
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
@@ -46,6 +46,9 @@ class LoopHandler(BaseEngineHandler):
         self, message_id: str, chat_id: str, project: Optional["ProjectContext"], engine_name: str, root_path: str
     ):
         return self.renderer.create_loop_callbacks(message_id, chat_id, project, engine_name)
+
+    def _refresh_card_view(self, message_id: str, chat_id: str, project=None):
+        self.renderer.render_current_view(message_id, chat_id, project, origin_message_id=message_id)
 
     def _create_loop_callbacks(self, *args, **kwargs):
         return self.renderer.create_loop_callbacks(*args, **kwargs)
@@ -95,16 +98,9 @@ class LoopHandler(BaseEngineHandler):
     def start_loop_engine(
         self, message_id: str, chat_id: str, requirement: str, project: Optional["ProjectContext"] = None
     ):
+        project = self._ensure_project(message_id, chat_id, project)
         if not project:
-            working_dir = self.get_working_dir(chat_id)
-            try:
-                project, is_new = self.project_manager.get_or_create_project_for_path(working_dir, chat_id)
-                if is_new:
-                    logger.info("Loop Engine 自动创建项目: %s @ %s", project.project_name, project.root_path)
-            except Exception as e:
-                from ...utils.errors import get_error_detail
-                self.reply_error(message_id, get_error_detail(e), title="创建项目失败")
-                return
+            return
 
         root_path = project.root_path if project else self.get_working_dir(chat_id)
 
@@ -169,25 +165,7 @@ class LoopHandler(BaseEngineHandler):
                 command_text=f"/loop {requirement}",
             )
 
-        spec = TaskSpec(
-            chat_id=chat_id,
-            queue_key=f"{chat_id}:loop:{project.project_id if project else root_path}",
-            name="loop_engine_run",
-            task_type="loop_engine",
-            project_id=project.project_id if project else None,
-            message_id=message_id,
-            origin_message_id=message_id,
-            request_id=request_id,
-            task_id=task_id,
-            priority=TaskPriority.NORMAL,
-        )
-        handle = self.scheduler.submit(spec, lambda ctx: run_loop_engine())
-        try:
-            self.ctx.message_linker.link_task(message_id, handle.run_id)
-        except Exception as e:
-            logger.debug(
-                "link_task失败(loop_engine_run): message_id=%s, run_id=%s, err=%s", message_id, handle.run_id, e
-            )
+        self._submit_engine_task(run_loop_engine, chat_id, message_id, project, request_id, task_id)
 
     # ------------------------------------------------------------------
     # status
@@ -310,18 +288,18 @@ class LoopHandler(BaseEngineHandler):
         }
 
         # Try dispatching standard actions first
-        if self._dispatch_standard_card_action(
-            open_message_id,
-            open_chat_id,
-            action_type,
-            value,
+        if self._dispatch_standard_card_action(CardActionContext(
+            open_message_id=open_message_id,
+            open_chat_id=open_chat_id,
+            action_type=action_type,
+            value=value,
             prefix="loop",
             action_map=loop_actions,
-            toggle_log_method=self.toggle_loop_log,
-            switch_mode_method=self.switch_loop_card_mode,
-            toggle_ac_method=self.toggle_loop_ac,
+            toggle_log_method=self._toggle_log,
+            switch_mode_method=self._switch_card_mode,
+            toggle_ac_method=self._toggle_ac,
             project=target_project,
-        ):
+        )):
             return
 
         # Handle Loop specific actions
@@ -383,43 +361,4 @@ class LoopHandler(BaseEngineHandler):
             self.renderer.update_ui_state(
                 loop_project_id, view_mode="iteration_done", view_context={"iteration_id": iteration_id}
             )
-            self.renderer.render_current_view(message_id, chat_id, project, origin_message_id=message_id)
-
-    def toggle_loop_log(
-        self,
-        message_id: str,
-        chat_id: str,
-        project: Optional["ProjectContext"] = None,
-        loop_project_id: Optional[str] = None,
-        expanded: bool = False,
-    ):
-        if loop_project_id:
-            self.renderer.update_ui_state(loop_project_id, expanded=expanded)
-            # Refresh card with new state
-            self.renderer.render_current_view(message_id, chat_id, project, origin_message_id=message_id)
-
-    def toggle_loop_ac(
-        self,
-        message_id: str,
-        chat_id: str,
-        project: Optional["ProjectContext"] = None,
-        loop_project_id: Optional[str] = None,
-        expand_ac: bool = False,
-    ):
-        if loop_project_id:
-            self.renderer.update_ui_state(loop_project_id, expand_ac=expand_ac)
-            # Refresh card with new state
-            self.renderer.render_current_view(message_id, chat_id, project, origin_message_id=message_id)
-
-    def switch_loop_card_mode(
-        self,
-        message_id: str,
-        chat_id: str,
-        project: Optional["ProjectContext"] = None,
-        loop_project_id: Optional[str] = None,
-        compact: bool = False,
-    ):
-        if loop_project_id:
-            self.renderer.update_ui_state(loop_project_id, compact=compact)
-            # Refresh card with new state
             self.renderer.render_current_view(message_id, chat_id, project, origin_message_id=message_id)

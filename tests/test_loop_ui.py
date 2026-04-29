@@ -109,13 +109,13 @@ class TestLoopUI:
         content_json = handler.reply_message.call_args[0][1]
         assert "Iteration 1 Content" in content_json
 
-        # 2. Simulate User clicking "Expand Log" (toggle_loop_log)
+        # 2. Simulate User clicking "Expand Log" (_toggle_log)
         # This calls _render_current_view which should respect "iteration_done" view mode
         handler.patch_message.reset_mock()
 
-        # toggle_loop_log will call _render_current_view -> _render_iteration_view
+        # _toggle_log will call _render_current_view -> _render_iteration_view
         # _render_iteration_view calls _patch_or_send -> patch_message
-        handler.toggle_loop_log("msg_card", "chat1", project=mock_proj_ctx, loop_project_id="p1", expanded=True)
+        handler._toggle_log("msg_card", "chat1", project=mock_proj_ctx, engine_project_id="p1", expanded=True)
 
         # Verify state updated
         state = handler._get_ui_state("p1")

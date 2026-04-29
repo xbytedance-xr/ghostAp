@@ -78,8 +78,8 @@ class MessageDispatcher:
         if is_in_programming:
             if self.client._is_exit_command(text):
                 self.client._add_reaction(message_id, EmojiReaction.on_coco_mode())
-                if self.client._should_defer_exit(chat_id=chat_id, project_id=_pid):
-                    self.client._request_deferred_exit(message_id=message_id, chat_id=chat_id, project_id=_pid)
+                if self.client._control_plane.should_defer_exit(chat_id=chat_id, project_id=_pid):
+                    self.client._control_plane.request_deferred_exit(message_id=message_id, chat_id=chat_id, project_id=_pid)
                     self.client._reply_message(message_id, UI_TEXT["ws_exit_deferred_msg"])
                     return
                 self.client._exit_current_mode(message_id, chat_id, project=project)
@@ -96,18 +96,9 @@ class MessageDispatcher:
 
             self.client._add_reaction(message_id, EmojiReaction.on_coco_mode())
             self.client._add_reaction(message_id, EmojiReaction.on_processing())
-            if current_mode == InteractionMode.COCO:
-                self.client._handle_coco_message(message_id, chat_id, text, project)
-            elif current_mode == InteractionMode.CLAUDE:
-                self.client._handle_claude_message(message_id, chat_id, text, project)
-            elif current_mode == InteractionMode.AIDEN:
-                self.client._handle_aiden_message(message_id, chat_id, text, project)
-            elif current_mode == InteractionMode.CODEX:
-                self.client._handle_codex_message(message_id, chat_id, text, project)
-            elif current_mode == InteractionMode.GEMINI:
-                self.client._handle_gemini_message(message_id, chat_id, text, project)
-            elif current_mode == InteractionMode.TTADK:
-                self.client._ttadk_handler.handle_message(message_id, chat_id, text, project)
+            handler = self.client._get_mode_handler(current_mode)
+            if handler:
+                handler.handle_message(message_id, chat_id, text, project)
             else:
                 self.client._show_help(message_id, chat_id)
             return
@@ -182,13 +173,68 @@ class MessageDispatcher:
 
             if not success:
                 all_success = False
-                self.client._reply_message(message_id, f"⚠️ 步骤 {i} 执行失败，后续步骤已取消")
+                self.client._reply_message(message_id, UI_TEXT["multi_task_step_failed"].format(step=i))
                 break
 
         if all_success:
             self.client._add_reaction(message_id, EmojiReaction.on_multi_task_done())
         else:
             self.client._add_reaction(message_id, EmojiReaction.on_error())
+
+    # ------------------------------------------------------------------
+    # Dict-driven dispatch tables for execute_single_task
+    # ------------------------------------------------------------------
+    _MODE_ENTER_MAP: dict = {
+        IntentType.ENTER_CLAUDE: "claude",
+        IntentType.ENTER_AIDEN: "aiden",
+        IntentType.ENTER_CODEX: "codex",
+        IntentType.ENTER_GEMINI: "gemini",
+    }
+
+    _MODE_EXIT_MAP: dict = {
+        IntentType.EXIT_COCO: "coco",
+        IntentType.EXIT_CLAUDE: "claude",
+        IntentType.EXIT_AIDEN: "aiden",
+        IntentType.EXIT_CODEX: "codex",
+        IntentType.EXIT_GEMINI: "gemini",
+    }
+
+    _MODE_MESSAGE_MAP: dict = {
+        IntentType.COCO_MESSAGE: "coco",
+        IntentType.CLAUDE_MESSAGE: "claude",
+        IntentType.AIDEN_MESSAGE: "aiden",
+        IntentType.CODEX_MESSAGE: "codex",
+        IntentType.GEMINI_MESSAGE: "gemini",
+    }
+
+    _ENGINE_ENTER_MAP: dict = {
+        IntentType.ENTER_DEEP: "_start_deep_engine",
+        IntentType.ENTER_LOOP: "_start_loop_engine",
+        IntentType.ENTER_SPEC: "_start_spec_engine",
+    }
+
+    _SIMPLE_ENGINE_DISPATCH: dict = {
+        IntentType.LOOP_STATUS: "_show_loop_status",
+        IntentType.STOP_LOOP: "_stop_loop_engine",
+        IntentType.LOOP_PAUSE: "_pause_loop_engine",
+        IntentType.LOOP_RESUME: "_resume_loop_engine",
+        IntentType.SPEC_STATUS: "_show_spec_status",
+        IntentType.STOP_SPEC: "_stop_spec_engine",
+        IntentType.SPEC_PAUSE: "_pause_spec_engine",
+        IntentType.SPEC_RESUME: "_resume_spec_engine",
+    }
+
+    _ENGINE_GUIDE_MAP: dict = {
+        IntentType.DEEP_UPDATE: ("_update_deep_context", "📝 请提供上下文信息\n\n用法: `/deep_update <上下文描述>`"),
+        IntentType.LOOP_GUIDE: ("_update_loop_guidance", "📝 请提供引导信息\n\n用法: `/loop_guide <引导描述>`"),
+        IntentType.SPEC_GUIDE: ("_update_spec_guidance", "📝 请提供引导信息\n\n用法: `/spec_guide <引导描述>`"),
+    }
+
+    _PROJECT_INTENTS: set = {
+        IntentType.CREATE_PROJECT, IntentType.SWITCH_PROJECT,
+        IntentType.LIST_PROJECTS, IntentType.CLOSE_PROJECT,
+        IntentType.PROJECT_STATUS,
+    }
 
     def execute_single_task(
         self,
@@ -201,245 +247,173 @@ class MessageDispatcher:
         shell_fast_tracked: bool = False,
     ):
         """执行单一任务步骤（模式切换/系统命令/引擎命令/执行 shell 等）。"""
-        from ..thread import get_current_thread_id
         if not task:
-            if self.client.settings.thread_programming_enabled and not get_current_thread_id():
-                active_thread = self.client._find_active_thread(chat_id)
-                if active_thread:
-                    mode_display = active_thread.mode.upper() if active_thread.mode else "编程"
-                    self.client._reply_message(
-                        message_id,
-                        UI_TEXT["ws_active_topic_msg"].format(name=mode_display),
-                    )
-                    return
-            self.client._reply_message(message_id, "🤔 无法理解你的意图")
+            self._handle_no_task(message_id, chat_id)
             return
 
         intent = task.intent
         data = task.data
 
+        # Mode enter
         if intent == IntentType.ENTER_COCO:
-            try:
-                project_id = project.project_id if project else None
-                self.client._system_handler.handle_select_acp_tool(
-                    message_id, chat_id, "coco", project_id=project_id
-                )
-            except Exception as e:
-                logger.warning("展示 Coco 模型选择卡失败，回退直接进入: %s", get_error_detail(e))
-                self.client._enter_coco_mode(message_id, chat_id, project=project)
-
-        elif intent == IntentType.EXIT_COCO:
-            self.client._exit_coco_mode(message_id, chat_id, project=project)
-
+            self._handle_enter_coco(message_id, chat_id, project)
+        elif intent in self._MODE_ENTER_MAP:
+            mode = self._MODE_ENTER_MAP[intent]
+            getattr(self.client, f"_enter_{mode}_mode")(message_id, chat_id, project=project)
+        # Mode exit
         elif intent == IntentType.EXIT_MODE:
             self.client._exit_current_mode(message_id, chat_id, project=project)
-
-        elif intent == IntentType.CHANGE_DIR:
-            path = data.get("path", "")
-            self.client._change_directory(message_id, chat_id, path, project)
-
-        elif intent == IntentType.COCO_MESSAGE:
-            if data.get("command") == "info":
-                self.client._show_coco_info(message_id, chat_id, project)
-            else:
-                self.client._handle_coco_message(message_id, chat_id, original_text, project)
-
-        elif intent == IntentType.ENTER_CLAUDE:
-            self.client._enter_claude_mode(message_id, chat_id, project=project)
-
-        elif intent == IntentType.EXIT_CLAUDE:
-            self.client._exit_claude_mode(message_id, chat_id, project=project)
-
-        elif intent == IntentType.CLAUDE_MESSAGE:
-            if data.get("command") == "info":
-                self.client._show_claude_info(message_id, chat_id, project)
-            else:
-                self.client._handle_claude_message(message_id, chat_id, original_text, project)
-
-        elif intent == IntentType.ENTER_AIDEN:
-            self.client._enter_aiden_mode(message_id, chat_id, project=project)
-
-        elif intent == IntentType.EXIT_AIDEN:
-            self.client._exit_aiden_mode(message_id, chat_id, project=project)
-
-        elif intent == IntentType.AIDEN_MESSAGE:
-            if data.get("command") == "info":
-                self.client._show_aiden_info(message_id, chat_id, project)
-            else:
-                self.client._handle_aiden_message(message_id, chat_id, original_text, project)
-
-        elif intent == IntentType.ENTER_CODEX:
-            self.client._enter_codex_mode(message_id, chat_id, project=project)
-
-        elif intent == IntentType.ENTER_GEMINI:
-            self.client._enter_gemini_mode(message_id, chat_id, project=project)
-
-        elif intent == IntentType.EXIT_CODEX:
-            self.client._exit_codex_mode(message_id, chat_id, project=project)
-
-        elif intent == IntentType.EXIT_GEMINI:
-            self.client._exit_gemini_mode(message_id, chat_id, project=project)
-
-        elif intent == IntentType.CODEX_MESSAGE:
-            if data.get("command") == "info":
-                self.client._show_codex_info(message_id, chat_id, project)
-            else:
-                self.client._handle_codex_message(message_id, chat_id, original_text, project)
-
-        elif intent == IntentType.GEMINI_MESSAGE:
-            if data.get("command") == "info":
-                self.client._show_gemini_info(message_id, chat_id, project)
-            else:
-                self.client._handle_gemini_message(message_id, chat_id, original_text, project)
-
+        elif intent in self._MODE_EXIT_MAP:
+            mode = self._MODE_EXIT_MAP[intent]
+            getattr(self.client, f"_exit_{mode}_mode")(message_id, chat_id, project=project)
+        # Mode message
+        elif intent in self._MODE_MESSAGE_MAP:
+            self._handle_mode_message(self._MODE_MESSAGE_MAP[intent], data, message_id, chat_id, original_text, project)
         elif intent == IntentType.TTADK_MESSAGE:
-            from ..mode import InteractionMode
-
-            if data.get("command") == "info":
-                self.client._show_ttadk_info(message_id, chat_id, project)
-            elif str(original_text or "").strip().lower() in {"/ttadk", "/enter_ttadk"}:
-                self.client._handle_ttadk_command(message_id, chat_id, project)
-            else:
-                _pid = project.project_id if project else None
-                mode = self.client._mode_manager.get_mode(chat_id, project_id=_pid)
-                if mode != InteractionMode.TTADK:
-                    self.client._enter_ttadk_mode(message_id, chat_id, project=project)
-                self.client._ttadk_handler.handle_message(message_id, chat_id, original_text, project)
-
+            self._handle_ttadk_message(data, message_id, chat_id, original_text, project)
+        # System commands
+        elif intent == IntentType.CHANGE_DIR:
+            self.client._change_directory(message_id, chat_id, data.get("path", ""), project)
         elif intent == IntentType.SHOW_HELP:
             self.client._show_full_help(message_id, chat_id, project)
-
         elif intent == IntentType.SHOW_TOOLS:
             self.client._system_handler.show_tools_list(message_id, chat_id, project)
-
         elif intent == IntentType.TOOLS_STATUS:
             self.client._system_handler.show_tools_status(message_id, chat_id, project)
+        # Project commands
+        elif intent in self._PROJECT_INTENTS:
+            self._dispatch_project(intent, data, message_id, chat_id, project)
+        # Engine enter
+        elif intent in self._ENGINE_ENTER_MAP:
+            requirement = data.get("requirement") or original_text
+            getattr(self.client, self._ENGINE_ENTER_MAP[intent])(message_id, chat_id, requirement, project)
+        # Engine status/control (simple)
+        elif intent in self._SIMPLE_ENGINE_DISPATCH:
+            getattr(self.client, self._SIMPLE_ENGINE_DISPATCH[intent])(message_id, chat_id, project)
+        # Deep status/stop (arg parsing)
+        elif intent in (IntentType.DEEP_STATUS, IntentType.STOP_DEEP):
+            self._handle_deep_status_or_stop(intent, data, message_id, chat_id, project)
+        # Engine guide/update
+        elif intent in self._ENGINE_GUIDE_MAP:
+            self._handle_engine_guide(intent, data, message_id, chat_id, project)
+        # Shell
+        elif intent == IntentType.SHELL_COMMAND:
+            self._dispatch_shell(data, message_id, chat_id, original_text, project, shell_fast_tracked)
+        # Unknown
+        elif intent == IntentType.UNKNOWN:
+            self.client._reply_message(message_id, fmt.format_unknown_intent())
 
-        elif intent == IntentType.CREATE_PROJECT:
+    # ------------------------------------------------------------------
+    # Extracted helpers for execute_single_task
+    # ------------------------------------------------------------------
+
+    def _handle_no_task(self, message_id: str, chat_id: str):
+        from ..thread import get_current_thread_id
+        if self.client.settings.thread_programming_enabled and not get_current_thread_id():
+            active_thread = self.client._find_active_thread(chat_id)
+            if active_thread:
+                mode_display = active_thread.mode.upper() if active_thread.mode else "编程"
+                self.client._reply_message(
+                    message_id,
+                    UI_TEXT["ws_active_topic_msg"].format(name=mode_display),
+                )
+                return
+        self.client._reply_message(message_id, "🤔 无法理解你的意图")
+
+    def _handle_enter_coco(self, message_id: str, chat_id: str, project):
+        try:
+            project_id = project.project_id if project else None
+            self.client._system_handler.handle_select_acp_tool(
+                message_id, chat_id, "coco", project_id=project_id,
+            )
+        except Exception as e:
+            logger.warning("展示 Coco 模型选择卡失败，回退直接进入: %s", get_error_detail(e))
+            self.client._enter_coco_mode(message_id, chat_id, project=project)
+
+    def _handle_mode_message(self, mode: str, data: dict, message_id: str, chat_id: str, original_text: str, project):
+        if data.get("command") == "info":
+            getattr(self.client, f"_show_{mode}_info")(message_id, chat_id, project)
+        else:
+            getattr(self.client, f"_handle_{mode}_message")(message_id, chat_id, original_text, project)
+
+    def _handle_ttadk_message(self, data: dict, message_id: str, chat_id: str, original_text: str, project):
+        from ..mode import InteractionMode
+        if data.get("command") == "info":
+            self.client._show_ttadk_info(message_id, chat_id, project)
+        elif str(original_text or "").strip().lower() in {"/ttadk", "/enter_ttadk"}:
+            self.client._handle_ttadk_command(message_id, chat_id, project)
+        else:
+            _pid = project.project_id if project else None
+            mode = self.client._mode_manager.get_mode(chat_id, project_id=_pid)
+            if mode != InteractionMode.TTADK:
+                self.client._enter_ttadk_mode(message_id, chat_id, project=project)
+            self.client._ttadk_handler.handle_message(message_id, chat_id, original_text, project)
+
+    def _dispatch_project(self, intent, data: dict, message_id: str, chat_id: str, project):
+        if intent == IntentType.CREATE_PROJECT:
             name = data.get("name", "")
             path = data.get("path", "")
             working_dir = self.client._get_working_dir(chat_id)
-
             if not path:
                 path = working_dir
-
             if not name:
                 name = os.path.basename(os.path.normpath(path))
                 if not name or name in (".", "/", "~"):
                     name = f"project_{int(time.time())}"
-
             self.client._create_project(message_id, chat_id, name, path)
-
         elif intent == IntentType.SWITCH_PROJECT:
             name = data.get("name", "")
             if name:
                 self.client._switch_project(message_id, chat_id, name)
             else:
                 self.client._show_project_board(message_id, chat_id)
-
         elif intent == IntentType.LIST_PROJECTS:
             self.client._show_project_board(message_id, chat_id)
-
         elif intent == IntentType.CLOSE_PROJECT:
             name = data.get("name", "")
             if name:
                 self.client._close_project(message_id, chat_id, name)
             else:
                 self.client._reply_message(message_id, "❌ 请指定要关闭的项目名称")
-
         elif intent == IntentType.PROJECT_STATUS:
             self.client._show_project_status(message_id, chat_id, project)
 
-        elif intent == IntentType.ENTER_DEEP:
-            requirement = data.get("requirement") or original_text
-            self.client._start_deep_engine(message_id, chat_id, requirement, project)
-
-        elif intent == IntentType.DEEP_STATUS:
-            arg = (data.get("arg") or "").strip().lower()
-            if arg in ("all", "-a", "--all"):
+    def _handle_deep_status_or_stop(self, intent, data: dict, message_id: str, chat_id: str, project):
+        arg = (data.get("arg") or "").strip().lower()
+        is_all = arg in ("all", "-a", "--all")
+        if intent == IntentType.DEEP_STATUS:
+            if is_all:
                 self.client._show_deep_board(message_id, chat_id)
             else:
                 self.client._show_deep_status(message_id, chat_id, project)
-
-        elif intent == IntentType.STOP_DEEP:
-            arg = (data.get("arg") or "").strip().lower()
-            if arg in ("all", "-a", "--all"):
+        else:  # STOP_DEEP
+            if is_all:
                 self.client._stop_all_deep_engines(message_id, chat_id)
             else:
                 self.client._stop_deep_engine(message_id, chat_id, project)
 
-        elif intent == IntentType.DEEP_UPDATE:
-            update_message = data.get("message")
-            if update_message:
-                self.client._update_deep_context(message_id, chat_id, update_message, project)
-            else:
-                self.client._reply_message(message_id, "📝 请提供上下文信息\n\n用法: `/deep_update <上下文描述>`")
+    def _handle_engine_guide(self, intent, data: dict, message_id: str, chat_id: str, project):
+        method_name, hint = self._ENGINE_GUIDE_MAP[intent]
+        guide_message = data.get("message")
+        if guide_message:
+            getattr(self.client, method_name)(message_id, chat_id, guide_message, project)
+        else:
+            self.client._reply_message(message_id, hint)
 
-        elif intent == IntentType.ENTER_LOOP:
-            requirement = data.get("requirement") or original_text
-            self.client._start_loop_engine(message_id, chat_id, requirement, project)
-
-        elif intent == IntentType.LOOP_STATUS:
-            self.client._show_loop_status(message_id, chat_id, project)
-
-        elif intent == IntentType.STOP_LOOP:
-            self.client._stop_loop_engine(message_id, chat_id, project)
-
-        elif intent == IntentType.LOOP_PAUSE:
-            self.client._pause_loop_engine(message_id, chat_id, project)
-
-        elif intent == IntentType.LOOP_RESUME:
-            self.client._resume_loop_engine(message_id, chat_id, project)
-
-        elif intent == IntentType.LOOP_GUIDE:
-            guide_message = data.get("message")
-            if guide_message:
-                self.client._update_loop_guidance(message_id, chat_id, guide_message, project)
-            else:
-                self.client._reply_message(message_id, "📝 请提供引导信息\n\n用法: `/loop_guide <引导描述>`")
-
-        elif intent == IntentType.ENTER_SPEC:
-            requirement = data.get("requirement") or original_text
-            self.client._start_spec_engine(message_id, chat_id, requirement, project)
-
-        elif intent == IntentType.SPEC_STATUS:
-            self.client._show_spec_status(message_id, chat_id, project)
-
-        elif intent == IntentType.STOP_SPEC:
-            self.client._stop_spec_engine(message_id, chat_id, project)
-
-        elif intent == IntentType.SPEC_PAUSE:
-            self.client._pause_spec_engine(message_id, chat_id, project)
-
-        elif intent == IntentType.SPEC_RESUME:
-            self.client._resume_spec_engine(message_id, chat_id, project)
-
-        elif intent == IntentType.SPEC_GUIDE:
-            guide_message = data.get("message")
-            if guide_message:
-                self.client._update_spec_guidance(message_id, chat_id, guide_message, project)
-            else:
-                self.client._reply_message(message_id, "📝 请提供引导信息\n\n用法: `/spec_guide <引导描述>`")
-
-        elif intent == IntentType.SHELL_COMMAND:
-            working_dir = self.client._get_working_dir(chat_id)
-            cmd = data.get("command") or original_text
-            if shell_fast_tracked:
-                # Already on shell queue — execute directly to avoid nested-task deadlock
-                self.client._system_handler.execute_shell_and_reply(message_id, chat_id, cmd, working_dir, project)
-            else:
-                self.client._submit_shell_command(message_id, chat_id, cmd, working_dir, project)
-
-            if project:
-                project.add_conversation("user", cmd, message_id)
-                self.client._context_manager.update_context(
-                    project.project_id,
-                    conversation={"role": "user", "content": cmd, "source_mode": "shell", "message_id": message_id},
-                    chat_id=chat_id,
-                )
-
-        elif intent == IntentType.UNKNOWN:
-            self.client._reply_message(message_id, fmt.format_unknown_intent())
+    def _dispatch_shell(self, data: dict, message_id: str, chat_id: str, original_text: str, project, shell_fast_tracked: bool):
+        working_dir = self.client._get_working_dir(chat_id)
+        cmd = data.get("command") or original_text
+        if shell_fast_tracked:
+            self.client._system_handler.execute_shell_and_reply(message_id, chat_id, cmd, working_dir, project)
+        else:
+            self.client._submit_shell_command(message_id, chat_id, cmd, working_dir, project)
+        if project:
+            project.add_conversation("user", cmd, message_id)
+            self.client._context_manager.update_context(
+                project.project_id,
+                conversation={"role": "user", "content": cmd, "source_mode": "shell", "message_id": message_id},
+                chat_id=chat_id,
+            )
 
     def execute_task_step(
         self,
@@ -460,13 +434,13 @@ class MessageDispatcher:
         try:
             if intent == IntentType.ENTER_COCO:
                 self.client._enter_coco_mode(message_id, chat_id, silent=True, project=project)
-                self.client._reply_message(message_id, f"✅ 步骤 {step_num}: 已进入 Coco 模式")
+                self.client._reply_message(message_id, UI_TEXT["multi_task_step_success"].format(step=step_num, desc="已进入 Coco 模式"))
                 return True
 
             elif intent == IntentType.EXIT_COCO:
                 success = self.client._coco_manager.end_session(chat_id)
                 if success:
-                    self.client._reply_message(message_id, f"✅ 步骤 {step_num}: 已退出 Coco 模式")
+                    self.client._reply_message(message_id, UI_TEXT["multi_task_step_success"].format(step=step_num, desc="已退出 Coco 模式"))
                 return success
 
             elif intent == IntentType.CHANGE_DIR:
@@ -478,9 +452,9 @@ class MessageDispatcher:
 
                 success, result = self.client._set_working_dir(chat_id, path)
                 if success:
-                    self.client._reply_message(message_id, f"✅ 步骤 {step_num}: 已切换到 {result}")
+                    self.client._reply_message(message_id, UI_TEXT["multi_task_step_success"].format(step=step_num, desc=f"已切换到 {result}"))
                 else:
-                    self.client._reply_message(message_id, f"❌ 步骤 {step_num}: {result}")
+                    self.client._reply_message(message_id, UI_TEXT["multi_task_step_error"].format(step=step_num, error=result))
                 return success
 
             elif intent == IntentType.CREATE_PROJECT:
@@ -520,7 +494,7 @@ class MessageDispatcher:
                 return True
             elif intent == IntentType.TTADK_MESSAGE:
                 self.client._enter_ttadk_mode(message_id, chat_id, silent=True, project=project)
-                self.client._reply_message(message_id, f"✅ 步骤 {step_num}: 已进入 TTADK 模式")
+                self.client._reply_message(message_id, UI_TEXT["multi_task_step_success"].format(step=step_num, desc="已进入 TTADK 模式"))
                 return True
 
             else:
@@ -530,51 +504,41 @@ class MessageDispatcher:
             logger.error("执行步骤 %d 异常: %s", step_num, get_error_detail(e))
             return False
 
+    _TASK_DESCRIPTIONS: dict = {
+        IntentType.ENTER_COCO: "进入 Coco 编程模式",
+        IntentType.ENTER_CLAUDE: "进入 Claude 编程模式",
+        IntentType.ENTER_AIDEN: "进入 Aiden 编程模式",
+        IntentType.ENTER_CODEX: "进入 Codex 编程模式",
+        IntentType.ENTER_GEMINI: "进入 Gemini 编程模式",
+        IntentType.TTADK_MESSAGE: "进入 TTADK 编程模式",
+        IntentType.EXIT_COCO: "退出 Coco 模式",
+        IntentType.EXIT_CLAUDE: "退出 Claude 模式",
+        IntentType.EXIT_AIDEN: "退出 Aiden 模式",
+        IntentType.EXIT_CODEX: "退出 Codex 模式",
+        IntentType.EXIT_GEMINI: "退出 Gemini 模式",
+        IntentType.LIST_PROJECTS: "查看项目列表",
+        IntentType.PROJECT_STATUS: "查看项目状态",
+        IntentType.SHELL_COMMAND: "执行命令",
+    }
+
+    # Intents whose description uses ``data["name"]`` or ``data["path"]``
+    _TASK_DESC_WITH_DATA: dict = {
+        IntentType.CHANGE_DIR: ("path", "切换到目录: {v}", "查看当前目录"),
+        IntentType.CREATE_PROJECT: ("name", "创建项目: {v}", "创建新项目"),
+        IntentType.SWITCH_PROJECT: ("name", "切换到项目: {v}", "切换项目"),
+        IntentType.CLOSE_PROJECT: ("name", "关闭项目: {v}", "关闭项目"),
+    }
+
     def get_task_description(self, task: 'TaskStep') -> str:
         """为 TaskStep 生成可读描述（用于多任务计划展示）。"""
         intent = task.intent
-        data = task.data
-
-        if intent == IntentType.ENTER_COCO:
-            return "进入 Coco 编程模式"
-        elif intent == IntentType.ENTER_CLAUDE:
-            return "进入 Claude 编程模式"
-        elif intent == IntentType.ENTER_AIDEN:
-            return "进入 Aiden 编程模式"
-        elif intent == IntentType.ENTER_CODEX:
-            return "进入 Codex 编程模式"
-        elif intent == IntentType.ENTER_GEMINI:
-            return "进入 Gemini 编程模式"
-        elif intent == IntentType.TTADK_MESSAGE:
-            return "进入 TTADK 编程模式"
-        elif intent == IntentType.EXIT_COCO:
-            return "退出 Coco 模式"
-        elif intent == IntentType.EXIT_CLAUDE:
-            return "退出 Claude 模式"
-        elif intent == IntentType.EXIT_AIDEN:
-            return "退出 Aiden 模式"
-        elif intent == IntentType.EXIT_CODEX:
-            return "退出 Codex 模式"
-        elif intent == IntentType.EXIT_GEMINI:
-            return "退出 Gemini 模式"
-        elif intent == IntentType.CHANGE_DIR:
-            path = data.get("path", "")
-            return f"切换到目录: {path}" if path else "查看当前目录"
-        elif intent == IntentType.CREATE_PROJECT:
-            name = data.get("name", "")
-            return f"创建项目: {name}" if name else "创建新项目"
-        elif intent == IntentType.SWITCH_PROJECT:
-            name = data.get("name", "")
-            return f"切换到项目: {name}" if name else "切换项目"
-        elif intent == IntentType.LIST_PROJECTS:
-            return "查看项目列表"
-        elif intent == IntentType.CLOSE_PROJECT:
-            name = data.get("name", "")
-            return f"关闭项目: {name}" if name else "关闭项目"
-        elif intent == IntentType.PROJECT_STATUS:
-            return "查看项目状态"
-        elif intent == IntentType.SHELL_COMMAND:
-            return "执行命令"
-        else:
-            return "未知操作"
+        desc = self._TASK_DESCRIPTIONS.get(intent)
+        if desc:
+            return desc
+        tpl = self._TASK_DESC_WITH_DATA.get(intent)
+        if tpl:
+            key, fmt, fallback = tpl
+            v = task.data.get(key, "")
+            return fmt.format(v=v) if v else fallback
+        return UI_TEXT["task_desc_unknown"]
 

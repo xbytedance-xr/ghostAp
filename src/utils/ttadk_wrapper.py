@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import select
@@ -10,6 +11,8 @@ from dataclasses import dataclass, field
 from typing import BinaryIO, Optional
 
 from .errors import get_error_detail
+
+logger = logging.getLogger(__name__)
 
 # PTY support (best-effort): allow downstream tools that require a real TTY
 try:
@@ -47,7 +50,7 @@ class WrapperState:
             if self.banner_tail_max > 0 and len(self.banner_tail) > int(self.banner_tail_max):
                 self.banner_tail.pop(0)
         except Exception:
-            pass
+            logger.debug("Failed to append banner line", exc_info=True)
 
 
 def _parse_args(argv: list[str]) -> tuple[bool, list[str]]:
@@ -69,13 +72,14 @@ def _close_fd_quietly(fd: int) -> None:
         if fd is not None and fd >= 0:
             os.close(fd)
     except Exception:
-        pass
+        logger.debug("Failed to close fd=%s", fd, exc_info=True)
 
 
 def _strip_ansi_for_probe(data: bytes) -> bytes:
     try:
         return _ANSI_ESCAPE_RE.sub(b"", data or b"")
     except Exception:
+        logger.debug("Failed to strip ANSI sequences", exc_info=True)
         return data or b""
 
 
@@ -88,6 +92,7 @@ def _extract_json_objects_from_line(data: bytes) -> list[bytes]:
     try:
         text = probe.decode("utf-8", errors="ignore")
     except Exception:
+        logger.debug("Failed to decode probe data in _extract_json_objects_from_line", exc_info=True)
         return []
 
     decoder = json.JSONDecoder()
@@ -114,7 +119,7 @@ def _extract_json_objects_from_line(data: bytes) -> list[bytes]:
                 try:
                     out.append(chunk.encode("utf-8"))
                 except Exception:
-                    pass
+                    logger.debug("Failed to encode JSON chunk", exc_info=True)
 
         idx = max(end, idx + 1)
 
@@ -287,11 +292,11 @@ def pump_filtered_stream(reader: object, writer: BinaryIO, state: WrapperState, 
                     writer.write(chunk)
                     writer.write(b"\n")
                 except Exception:
-                    pass
+                    logger.debug("Failed to write JSON chunk to stdout", exc_info=True)
             try:
                 writer.flush()
             except Exception:
-                pass
+                logger.debug("Failed to flush writer", exc_info=True)
             continue
 
         if not state.json_started:
@@ -307,12 +312,14 @@ def emit_failure_diagnostics(
         if int(returncode or 0) == 0:
             return
     except Exception:
+        logger.debug("Failed to check returncode in emit_failure_diagnostics", exc_info=True)
         return
 
     try:
         if state.json_started:
             return
     except Exception:
+        logger.debug("Failed to check json_started in emit_failure_diagnostics", exc_info=True)
         return
 
     try:
@@ -322,11 +329,11 @@ def emit_failure_diagnostics(
             if s:
                 err.write(f"[ttadk_wrapper] banner_tail:\n{s}\n")
     except Exception:
-        pass
+        logger.debug("Failed to emit banner_tail diagnostics", exc_info=True)
     try:
         err.write(f"[ttadk_wrapper] child exited rc={returncode} cmd={cmd}\n")
     except Exception:
-        pass
+        logger.debug("Failed to write child exit diagnostics", exc_info=True)
 
 
 def forward_stdin(proc):
@@ -345,7 +352,7 @@ def forward_stdin(proc):
         try:
             proc.stdin.close()
         except Exception:
-            pass
+            logger.debug("Failed to close proc.stdin in forward_stdin", exc_info=True)
 
 
 def forward_stdout(proc, state: WrapperState):
@@ -353,6 +360,7 @@ def forward_stdout(proc, state: WrapperState):
     try:
         pump_filtered_stream(getattr(proc, "stdout", None), sys.stdout.buffer, state)
     except Exception:
+        logger.debug("Failed in forward_stdout pump", exc_info=True)
         return
 
 
@@ -373,6 +381,7 @@ def _pump_stdin_to_fd(
     try:
         fd = int(fd)
     except Exception:
+        logger.debug("Failed to convert fd to int in _pump_stdin_to_fd", exc_info=True)
         return
     try:
         chunk_size = int(chunk_size or 4096)
@@ -482,7 +491,7 @@ def main():
                             f"[ttadk_wrapper] pump_error:{type(e).__name__}:{get_error_detail(e)}\n".encode("utf-8", errors="ignore")
                         )
                     except Exception:
-                        pass
+                        logger.debug("Failed to append pump_error to banner_tail", exc_info=True)
             finally:
                 # 关闭职责：master_fd 由主线程统一关闭，避免双重 close 导致 EBADF/EIO 影响稳定性。
                 return
@@ -502,6 +511,7 @@ def main():
         try:
             t_in.start()
         except Exception:
+            logger.debug("Failed to start stdin forwarding thread", exc_info=True)
             t_in = None
     t_out.start()
 
@@ -520,21 +530,21 @@ def main():
             try:
                 stop_event.set()
             except Exception:
-                pass
+                logger.debug("Failed to set stop_event for PTY cleanup", exc_info=True)
             _close_fd_quietly(int(master_fd))
         except Exception:
-            pass
+            logger.debug("Failed during PTY master_fd cleanup", exc_info=True)
     try:
         t_out.join(timeout=2.0)
     except Exception:
-        pass
+        logger.debug("Failed to join stdout pump thread", exc_info=True)
 
     # If process exits non-zero before any JSON, emit a minimal diagnostic.
     # This helps upstream identify failures where stderr may be empty.
     try:
         emit_failure_diagnostics(int(proc.returncode or 0), cmd, state)
     except Exception:
-        pass
+        logger.debug("Failed to emit failure diagnostics", exc_info=True)
 
     sys.exit(proc.returncode)
 

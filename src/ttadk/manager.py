@@ -52,352 +52,18 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 
-class TTADKStartupError(RuntimeError):
-    """TTADK 启动失败的可降级异常（携带上下文供上层做 fallback）。
+# Re-exported from startup_errors (backward compat)
+from .startup_errors import TTADKStartupError as TTADKStartupError
 
-    说明：该异常类型定义在 TTADK 层，避免在启动编排 SSOT 中依赖 `src.agent_session`。
-    调用方可通过 `type(err).__name__ == "TTADKStartupError"` 进行稳定分类。
-    """
+# Re-exported from engine_session (backward compat)
+from .engine_session import start_ttadk_engine_session as start_ttadk_engine_session
+from .engine_session import precheck_ttadk_startup_model as precheck_ttadk_startup_model
 
-    is_ghostap_error = True
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        tool_name: str = "",
-        input_model: str = "",
-        real_model: str = "",
-        cause: Exception | None = None,
-        # Startup failure diagnostics (best-effort; keep field names aligned with ACP diagnostics)
-        agent_cmd: str = "",
-        agent_args: Optional[list[str]] = None,
-        returncode: Optional[int] = None,
-        stdout_snippet: str = "",
-        stderr_snippet: str = "",
-        fail_reason: str = "",
-    ) -> None:
-        super().__init__(message)
-        self.tool_name = tool_name
-        self.input_model = input_model
-        self.real_model = real_model
-        self.__cause__ = cause
-
-        # Keep names compatible with `src.acp.sync_adapter.build_startup_diagnostics`
-        # so upper layers can extract cmd/args/rc/snippets without special-casing.
-        try:
-            self.agent_cmd = str(agent_cmd or "")
-        except Exception:
-            self.agent_cmd = ""
-        try:
-            self.agent_args = [str(x) for x in (agent_args or [])]
-        except Exception:
-            self.agent_args = []
-        try:
-            self.returncode = int(returncode) if returncode is not None else None
-        except Exception:
-            self.returncode = None
-        try:
-            self.stdout_snippet = str(stdout_snippet or "")
-        except Exception:
-            self.stdout_snippet = ""
-        try:
-            self.stderr_snippet = str(stderr_snippet or "")
-        except Exception:
-            self.stderr_snippet = ""
-        try:
-            self.fail_reason = str(fail_reason or "")
-        except Exception:
-            self.fail_reason = ""
-
-
-def start_ttadk_engine_session(
-    *,
-    agent_type: str,
-    cwd: str,
-    model_intent: Optional[str],
-    startup_timeout: float,
-    manager: Optional["TTADKManager"] = None,
-    # Injectable deps for testing / decoupling
-    start_ttadk_session_fn: Optional[Callable[..., Any]] = None,
-    resolve_agent_spec_fn: Optional[Callable[..., tuple[str, list[str]]]] = None,
-    precheck_fn: Optional[Callable[[str], dict]] = None,
-    fallback_fn: Optional[Callable[[Exception], Any]] = None,
-    get_settings_fn: Callable[[], object] = get_settings,
-    time_fn: Callable[[], float] = time.time,
-) -> dict:
-    """Deep/Loop/Spec 引擎 TTADK 启动编排 SSOT（start/precheck/repair/degrade）。
-
-    返回值契约：与 `coordinate_ttadk_startup()` 一致（result/tool/input_model/resolved_model/.../diagnostics）。
-
-    说明：
-    - 该函数只编排“启动期”逻辑，不处理 send_prompt 阶段的模型错误（compaction/loop/failover）。
-    - 所有外部依赖默认使用局部 import，以避免在模块 import 时触发重依赖/循环依赖。
-
-    启动期模型决策 SSOT（重要约束）：
-    - “是否允许透传 -m 以及透传的真实模型名”的决策必须收敛到
-      `TTADKManager.resolve_startup_model_with_diagnostics()` →
-      `src.ttadk.startup_common.precheck_ttadk_startup_model()` →
-      `src.ttadk.startup.coordinate_ttadk_startup()`。
-    - 上层（agent_session/acp/engine/handler）不得旁路调用
-      `resolve_real_model_name()` / `resolve_and_ensure_valid_model()` 来决定启动透传，
-      否则会出现“各处探测/各处兜底”导致的语义漂移与回归风险。
-    """
-    agent_type = (agent_type or "").strip().lower()
-    if not agent_type.startswith("ttadk_"):
-        raise ValueError(f"not_ttadk_agent_type: {agent_type}")
-
-    tool_name = agent_type.replace("ttadk_", "", 1)
-    intent = (model_intent or "").strip()
-
-    mgr = manager
-    if mgr is None:
-        mgr = get_ttadk_manager()
-
-    # Defaults: local import to avoid import-time cycles
-    if resolve_agent_spec_fn is None:
-        from ..acp.sync_adapter import resolve_agent_spec as _resolve
-
-        resolve_agent_spec_fn = _resolve
-
-    if start_ttadk_session_fn is None:
-        from ..acp.sync_adapter import start_ttadk_session_with_pty_retry as _start
-
-        start_ttadk_session_fn = _start
-
-    if fallback_fn is None:
-        # Default deterministic degrade: fall back to coco ACP
-        from ..acp.sync_adapter import start_session_with_retry as _start_coco
-        from ..coco_model import get_coco_model_manager as _get_coco_model_manager
-
-        def fallback_fn(err: Exception):
-            fallback_model = _get_coco_model_manager().get_current_model()
-            logger.warning(
-                "[TTADK:Startup] degrade_to_coco: tool=%s input_model=%s err_type=%s err=%s",
-                tool_name,
-                intent,
-                type(err).__name__,
-                get_error_detail(err)[:200],
-            )
-            s = _start_coco(
-                agent_type="coco",
-                cwd=cwd,
-                startup_timeout=float(startup_timeout or 60),
-                model_name=fallback_model,
-            )
-            try:
-                s._degraded_to = "coco"
-                s._degraded_reason = get_error_detail(err)[:200]
-            except Exception:
-                pass
-            return s
-
-    def _start_fn(passthrough_model: Optional[str]):
-        # 协议适配快速失败：若无法解析 cmd/args，直接触发可控降级（避免长时间等待）。
-        try:
-            resolve_agent_spec_fn(agent_type, model_name=passthrough_model)
-        except Exception as e:
-            # Best-effort diagnostics extraction from spec resolve error.
-            agent_cmd = ""
-            agent_args: list[str] = []
-            rc = None
-            out_snip = ""
-            err_snip = ""
-            try:
-                agent_cmd = str(getattr(e, "agent_cmd", "") or getattr(e, "cmd", "") or "")
-            except Exception:
-                agent_cmd = ""
-            try:
-                agent_args = [str(x) for x in (getattr(e, "agent_args", None) or getattr(e, "args", None) or [])]
-            except Exception:
-                agent_args = []
-            try:
-                _rc = getattr(e, "returncode", None)
-                rc = int(_rc) if _rc is not None else None
-            except Exception:
-                rc = None
-            try:
-                out_snip = str(getattr(e, "stdout_snippet", "") or "")
-            except Exception:
-                out_snip = ""
-            try:
-                err_snip = str(getattr(e, "stderr_snippet", "") or "")
-            except Exception:
-                err_snip = ""
-            raise TTADKStartupError(
-                "ttadk_protocol_adapter_failed",
-                tool_name=tool_name,
-                input_model=intent,
-                real_model=str(passthrough_model or ""),
-                cause=e,
-                agent_cmd=agent_cmd,
-                agent_args=agent_args,
-                returncode=rc,
-                stdout_snippet=out_snip,
-                stderr_snippet=err_snip,
-                fail_reason="protocol_adapter",
-            )
-
-        # claude：短探测发现 wrapper 不产出 JSON-RPC，则直接降级，避免 ACP handshake 超时。
-        if tool_name == "claude":
-            enabled = True
-            quick_timeout_s = 2.0
-            try:
-                s = get_settings_fn()
-                enabled = bool(getattr(s, "ttadk_claude_acp_ready_check_enabled", True))
-                quick_timeout_s = float(getattr(s, "ttadk_claude_acp_ready_check_timeout_s", 2.0) or 2.0)
-            except Exception:
-                enabled = True
-                quick_timeout_s = 2.0
-            quick_timeout_s = max(0.1, quick_timeout_s)
-
-            if not enabled:
-                raise TTADKStartupError(
-                    "ttadk_claude_acp_ready_check_disabled", tool_name=tool_name, input_model=intent
-                )
-            try:
-                from .startup_probe import ttadk_acp_ready_quickcheck
-
-                if not ttadk_acp_ready_quickcheck(
-                    agent_type=agent_type,
-                    cwd=cwd,
-                    model_name=passthrough_model,
-                    resolve_agent_spec_fn=resolve_agent_spec_fn,
-                    time_fn=time_fn,
-                    timeout_s=quick_timeout_s,
-                ):
-                    raise TTADKStartupError(
-                        "ttadk_claude_acp_not_ready",
-                        tool_name=tool_name,
-                        input_model=intent,
-                        real_model=str(passthrough_model or ""),
-                        fail_reason="protocol_not_ready",
-                    )
-            except TTADKStartupError:
-                raise
-            except Exception as e:
-                raise TTADKStartupError(
-                    "ttadk_claude_acp_ready_check_failed",
-                    tool_name=tool_name,
-                    input_model=intent,
-                    real_model=str(passthrough_model or ""),
-                    cause=e,
-                    fail_reason="protocol_ready_check_failed",
-                )
-
-        # 启动（可能内部执行 PTY 重试）
-        try:
-            return start_ttadk_session_fn(
-                agent_type=agent_type,
-                cwd=cwd,
-                startup_timeout=float(startup_timeout or 60),
-                model_name=passthrough_model,
-            )
-        except TypeError:
-            # 兼容旧签名/测试桩
-            return start_ttadk_session_fn(
-                agent_type=agent_type,
-                cwd=cwd,
-                startup_timeout=float(startup_timeout or 60),
-                model_name=passthrough_model,
-            )  # type: ignore[misc]
-
-    if precheck_fn is None:
-
-        def precheck_fn(x):
-            return precheck_ttadk_startup_model(
-                agent_type=agent_type,
-                cwd=cwd,
-                model_intent=x,
-                manager=mgr,
-            )
-
-    # 统一：fail_phase/decision/diagnostics 的 SSOT 由 startup.coordinator 输出。
-    # 这里确保 protocol_adapter/timeout/invalid_model/start_failed 的分类输入信息充分。
-    from .startup import coordinate_ttadk_startup as _coordinate
-
-    return _coordinate(
-        manager=mgr,
-        tool_name=tool_name,
-        input_model=intent,
-        cwd=cwd,
-        start_fn=_start_fn,
-        fallback_fn=fallback_fn,
-        precheck_fn=precheck_fn,
-        startup_probe_timeout_s=None,
-    )
-
-
-# ---------------------------------------------------------------------------
-# TTADK startup precheck contract
-# ---------------------------------------------------------------------------
-#
-# 目标：收敛“启动阶段预校验/透传 model”的单一入口，避免 agent_session/acp/engine 多处实现漂移。
-#
-# 启动链路（SSOT）：
-# - `precheck_ttadk_startup_model()`：决定“是否透传 -m”以及记录解析来源/告警
-# - `coordinate_ttadk_startup()`：负责 start→invalid_model 闭环修复→retry→degrade，并产出 attempts
-# - `src/acp/manager.py`：仅消费 coordinator 的稳定字段记录日志/诊断
-#
-# source 语义（稳定约定）：
-# - 模型列表来源（ModelListResult.source）：cache / structured_sync / official_cli / probe / file_cache / local_config / defaults
-# - 名称匹配来源（ResolvedModelResult.source）：exact / friendly / prefix / partial / unknown / fallback
-#
-# warnings 语义（稳定约定）：
-# - models_untrusted：模型列表不可信，不允许用于 validated 透传 -m（例如 defaults 兜底、跨项目缓存、拉取失败等）
-# - models_empty / models_error：模型列表为空/拉取失败，必须走 (auto)
-# - low_confidence / source_cross_project：跨项目来源（例如 ~/.ttadk/models_cache.json），必须经更可信来源验证后才可透传
-# - no_m_passthrough：显式标记“不应透传 -m”（用于上层日志/验收与 UI 提示）
-#
-# 输出字段（稳定契约）：
-# - tool: str                 # ttadk tool 名（例如 codex）
-# - input_model: str          # 用户输入/当前选择的 model 意图（可能是友好名/短名）
-# - model: Optional[str]      # validated=True 时透传给 ttadk 的真实 model id；否则 None（表示 (auto)）
-# - validated: bool           # 是否能确定 model 为真实可用 id
-# - source: str               # 解析来源（cache/probe/structured/.../unknown/error）
-# - decision: str             # precheck_validated / precheck_auto / precheck_error / non_ttadk
-# - fail_phase: str           # precheck_error 或空字符串
-# - warnings: list[str]       # 诊断提示
-
-TTADK_PRECHECK_DECISIONS = {
-    "precheck_validated",
-    "precheck_auto",
-    "precheck_error",
-    "non_ttadk",
-}
-
-TTADK_PRECHECK_FAIL_PHASES = {
-    "",
-    "precheck_error",
-}
-
-
-# 统一日志模板：Engine/ACP 复用（保留关键前缀 `ttadk startup model` 以兼容 grep/监控）
-TTADK_STARTUP_LOG_FMT = (
-    "ttadk startup model: tool=%s input_model=%s model=%s validated=%s source=%s fail_phase=%s decision=%s warnings=%s"
-)
-TTADK_STARTUP_LOG_RESUME_FMT = "ttadk startup model(resume): tool=%s input_model=%s model=%s validated=%s source=%s fail_phase=%s decision=%s warnings=%s"
-
-
-def precheck_ttadk_startup_model(
-    *,
-    agent_type: str,
-    cwd: str,
-    model_intent: Optional[str],
-    manager=None,
-    startup_probe_timeout_s: Optional[float] = None,
-) -> dict:
-    """兼容入口（DEPRECATED）：请改用 `src.ttadk.startup_common.precheck_ttadk_startup_model`。"""
-    from .startup_common import precheck_ttadk_startup_model as _pre
-
-    return _pre(
-        agent_type=agent_type,
-        cwd=cwd,
-        model_intent=model_intent,
-        manager=manager,
-        startup_probe_timeout_s=startup_probe_timeout_s,
-    )
-
+# Re-exported from startup_errors (backward compat)
+from .startup_errors import TTADK_PRECHECK_DECISIONS as TTADK_PRECHECK_DECISIONS
+from .startup_errors import TTADK_PRECHECK_FAIL_PHASES as TTADK_PRECHECK_FAIL_PHASES
+from .startup_errors import TTADK_STARTUP_LOG_FMT as TTADK_STARTUP_LOG_FMT
+from .startup_errors import TTADK_STARTUP_LOG_RESUME_FMT as TTADK_STARTUP_LOG_RESUME_FMT
 
 DEFAULT_TOOLS = [
     TTADKTool(name="claude", description="Claude AI Assistant"),
@@ -463,7 +129,7 @@ class TTADKManager:
         try:
             self._cache.set_persist_hook(lambda cwd=None: self._save_cache_to_file(cwd=cwd))
         except Exception:
-            pass
+            logger.debug("__init__: None: self._save_cache_to_file(cwd=cwd))", exc_info=True)
 
         # 兼容字段：历史测试/外部脚本可能直接访问这些内部字段
         self._tool_models_cache = self._cache._tool_models_cache
@@ -497,6 +163,7 @@ class TTADKManager:
         try:
             self._command_runner = runner
         except Exception:
+            logger.debug("set_command_runner: runner", exc_info=True)
             return
 
     def _get_runtime_invalid_model_last_ts(self, tool_name: str) -> float:
@@ -507,6 +174,7 @@ class TTADKManager:
             try:
                 return float(self._runtime_invalid_model_last_ts.get(tool, 0.0) or 0.0)
             except Exception:
+                logger.debug("_get_runtime_invalid_model_last_ts: return float(self._ru...", exc_info=True)
                 return 0.0
 
     def _set_runtime_invalid_model_last_ts(self, tool_name: str, ts: float) -> None:
@@ -517,6 +185,7 @@ class TTADKManager:
             try:
                 self._runtime_invalid_model_last_ts[tool] = float(ts)
             except Exception:
+                logger.debug("_set_runtime_invalid_model_last_ts: convert to float", exc_info=True)
                 return
 
     def check_and_mark_runtime_invalid_model_repair(
@@ -552,7 +221,7 @@ class TTADKManager:
             try:
                 self._runtime_invalid_model_last_ts[tool] = now
             except Exception:
-                pass
+                logger.debug("check_and_mark_runtime_invalid_model_repair: now", exc_info=True)
             return True, last
 
     def __setattr__(self, name, value):
@@ -562,13 +231,14 @@ class TTADKManager:
             try:
                 object.__setattr__(self, name, value)
             except Exception:
+                logger.debug("__setattr__: object.__setattr__(self, name, value)", exc_info=True)
                 return
             try:
                 cache = object.__getattribute__(self, "_cache")
                 if cache is not None and hasattr(cache, "set_model_fetcher"):
                     cache.set_model_fetcher(value)
             except Exception:
-                pass
+                logger.debug("__setattr__: object.__getattribute__(self, '_cache')", exc_info=True)
             return
         return object.__setattr__(self, name, value)
 
@@ -664,7 +334,7 @@ class TTADKManager:
         try:
             self._cache.load_from_file_for_project(cwd=cwd)
         except Exception:
-            pass
+            logger.debug("resolve_startup_model: cwd)", exc_info=True)
 
         # 允许用 settings.ttadk_preheat_timeout 作为默认快速探测超时
         if timeout_s is None:
@@ -759,17 +429,17 @@ class TTADKManager:
             try:
                 r.validated = False
             except Exception:
-                pass
+                logger.debug("_mark_untrusted: False", exc_info=True)
             try:
                 r.warnings = list(getattr(r, "warnings", []) or []) + list(extra_warn or [])
             except Exception:
-                pass
+                logger.debug("_mark_untrusted: convert to list", exc_info=True)
             # 兜底：提示上层不要透传 -m
             try:
                 if "no_m_passthrough" not in (getattr(r, "warnings", []) or []):
                     r.warnings = list(getattr(r, "warnings", []) or []) + ["no_m_passthrough"]
             except Exception:
-                pass
+                logger.debug("_mark_untrusted: evaluate condition", exc_info=True)
             return r
 
         # 先做一次“快路径解析”（内部可能 probe 一次，但不会走完整策略链）
@@ -793,7 +463,7 @@ class TTADKManager:
                 # quick 可能来自不可信 cache；此时必须保持 validated=False（见 resolve_startup_model 的 cache_untrusted 逻辑）
                 return quick, {"attempts": attempts}
         except Exception:
-            pass
+            logger.debug("_mark_untrusted: evaluate condition", exc_info=True)
 
         # 慢路径：获取“真实模型列表”（默认顺序 official_cli→probe→file_cache→structured）
         models_result = None
@@ -820,7 +490,7 @@ class TTADKManager:
                         try:
                             self._save_cache_to_file(cwd=cwd)
                         except Exception:
-                            pass
+                            logger.debug("cwd)", exc_info=True)
                     models_result = ModelListResult(
                         models=list(fetch_result.models),
                         cached=False,
@@ -919,7 +589,7 @@ class TTADKManager:
                 try:
                     extra.extend([f"refresh_warn:{w}" for w in (getattr(refreshed, "warnings", []) or [])])
                 except Exception:
-                    pass
+                    logger.debug("update collection", exc_info=True)
             resolved = _mark_untrusted(resolved, extra)
 
         return resolved, {"attempts": attempts}
@@ -930,6 +600,7 @@ class TTADKManager:
         try:
             return bool(self._cache._preheat_probe_and_cache(tool, cwd=cwd, timeout=timeout, reason=reason))
         except Exception:
+            logger.debug("_preheat_probe_and_cache: cwd, timeout=timeout, reason=re...", exc_info=True)
             return False
 
     def _ensure_initialized(self) -> None:
@@ -999,12 +670,12 @@ class TTADKManager:
             if p is not None and hasattr(self._cache, "_cache_file_path"):
                 self._cache._cache_file_path = p
         except Exception:
-            pass
+            logger.debug("_load_cache_from_file: access attribute", exc_info=True)
         try:
             if hasattr(self._cache, "load_from_file_for_project"):
                 return self._cache.load_from_file_for_project(cwd=cwd)
         except Exception:
-            pass
+            logger.debug("_load_cache_from_file: evaluate condition", exc_info=True)
         return self._cache.load_from_file()
 
     def _save_cache_to_file(self, *, cwd: Optional[str] = None) -> None:
@@ -1015,7 +686,7 @@ class TTADKManager:
             if p is not None and hasattr(self._cache, "_cache_file_path"):
                 self._cache._cache_file_path = p
         except Exception:
-            pass
+            logger.debug("_save_cache_to_file: access attribute", exc_info=True)
         try:
             return self._cache.save_to_file(cwd=cwd)
         except TypeError:
@@ -1068,6 +739,7 @@ class TTADKManager:
             result = shutil.which(executable)
             return result is not None
         except Exception:
+            logger.debug("_check_tool_available: shutil.which(executable)", exc_info=True)
             return False
 
     def _load_tools(self, filter_available: bool = True) -> list[TTADKTool]:
@@ -1146,7 +818,7 @@ class TTADKManager:
                     (diag or {}).get("freshness"),
                 )
         except Exception:
-            pass
+            logger.debug("get_models: evaluate condition", exc_info=True)
         return result
 
     def resolve_model_intent_ssot(
@@ -1196,7 +868,7 @@ class TTADKManager:
                     ),
                 )
             except Exception:
-                pass
+                logger.debug("resolve_model_intent_ssot: unexpected error", exc_info=True)
             return (
                 ResolvedModelResult(
                     tool_name=tool,
@@ -1227,7 +899,7 @@ class TTADKManager:
                 attempts=atts,
             )
         except Exception:
-            pass
+            logger.debug("access attribute", exc_info=True)
 
         # 3) 解析真实名（复用现有匹配逻辑）
         resolved = self.resolve_real_model_name(
@@ -1248,7 +920,7 @@ class TTADKManager:
             try:
                 resolved.validated = False
             except Exception:
-                pass
+                logger.debug("False", exc_info=True)
             if "models_untrusted" not in warnings:
                 warnings.append("models_untrusted")
             if "no_m_passthrough" not in warnings:
@@ -1274,12 +946,12 @@ class TTADKManager:
                             resolved.source = "fallback"
                             resolved.validated = True
                     except Exception:
-                        pass
+                        logger.debug("None", exc_info=True)
 
         try:
             resolved.warnings = warnings
         except Exception:
-            pass
+            logger.debug("warnings", exc_info=True)
 
         return resolved, mr
 
@@ -1455,7 +1127,7 @@ class TTADKManager:
                 if "models_untrusted" not in (first.warnings or []):
                     first.warnings = list(first.warnings or []) + ["models_untrusted"]
         except Exception:
-            pass
+            logger.debug("resolve_and_ensure_valid_model: self.get_models(cwd=cwd, ...", exc_info=True)
 
         # 触发条件：未校验通过 或 明显不可信（models_empty/models_error/models_untrusted）
         need_refresh = (not first.validated) or any(
@@ -1502,7 +1174,7 @@ class TTADKManager:
             try:
                 self._model_fetcher.invalidate_cache()
             except Exception:
-                pass
+                logger.debug("invalidate_model_cache: call invalidate_cache", exc_info=True)
         # 重要：服务侧不得触碰真实 HOME，因此这里不做磁盘删除。
         # 磁盘缓存路径由 (cwd + Settings) 决定，调用方若需清理某项目缓存应显式传入目标路径并删除。
         return
@@ -1527,17 +1199,8 @@ class TTADKManager:
         tool_name: Optional[str],
         current_model: Optional[str],
     ) -> list[TTADKModel]:
-        # Tool-specific lookup
-        if isinstance(data, dict) and tool_name:
-            for key in TOOL_KEYS:
-                container = data.get(key)
-                models = self._extract_models_from_tool_container(container, tool_name, current_model)
-                if models:
-                    return models
-
-        # Fallback: search anywhere
-        models = self._extract_models_from_container(data, current_model, under_model_key=False)
-        return models
+        from .model_parsing import extract_models_from_sync
+        return extract_models_from_sync(data, tool_name, current_model)
 
     def _extract_models_from_tool_container(
         self,
@@ -1545,24 +1208,8 @@ class TTADKManager:
         tool_name: str,
         current_model: Optional[str],
     ) -> list[TTADKModel]:
-        if isinstance(container, dict):
-            if tool_name in container:
-                return self._extract_models_from_container(
-                    container.get(tool_name),
-                    current_model,
-                    under_model_key=False,
-                )
-        elif isinstance(container, list):
-            for item in container:
-                if isinstance(item, dict):
-                    name = item.get("name") or item.get("tool") or item.get("id")
-                    if name == tool_name:
-                        return self._extract_models_from_container(
-                            item,
-                            current_model,
-                            under_model_key=False,
-                        )
-        return []
+        from .model_parsing import extract_models_from_tool_container
+        return extract_models_from_tool_container(container, tool_name, current_model)
 
     def _extract_models_from_container(
         self,
@@ -1570,63 +1217,12 @@ class TTADKManager:
         current_model: Optional[str],
         under_model_key: bool,
     ) -> list[TTADKModel]:
-        if isinstance(container, dict):
-            for key in MODEL_KEYS:
-                if key in container:
-                    models = self._normalize_models(container.get(key), current_model)
-                    if models:
-                        return models
-            for value in container.values():
-                models = self._extract_models_from_container(value, current_model, under_model_key=False)
-                if models:
-                    return models
-        elif isinstance(container, list):
-            if under_model_key:
-                models = self._normalize_models(container, current_model)
-                if models:
-                    return models
-            for item in container:
-                models = self._extract_models_from_container(item, current_model, under_model_key=False)
-                if models:
-                    return models
-        return []
+        from .model_parsing import extract_models_from_container
+        return extract_models_from_container(container, current_model, under_model_key)
 
     def _normalize_models(self, raw: object, current_model: Optional[str]) -> list[TTADKModel]:
-        if isinstance(raw, list):
-            if raw and all(isinstance(x, str) for x in raw):
-                return [TTADKModel(name=name, description=name, is_default=(name == current_model)) for name in raw]
-            models: list[TTADKModel] = []
-            for item in raw:
-                if isinstance(item, dict):
-                    name = item.get("name") or item.get("id") or item.get("model") or item.get("model_name")
-                    if not name:
-                        continue
-                    desc = item.get("description") or item.get("label") or str(name)
-                    models.append(
-                        TTADKModel(
-                            name=str(name),
-                            description=str(desc),
-                            is_default=(str(name) == current_model),
-                        )
-                    )
-            return models
-        if isinstance(raw, dict):
-            # Map of name -> details
-            models: list[TTADKModel] = []
-            for name, item in raw.items():
-                if isinstance(item, dict):
-                    desc = item.get("description") or item.get("label") or str(name)
-                else:
-                    desc = str(item)
-                models.append(
-                    TTADKModel(
-                        name=str(name),
-                        description=str(desc),
-                        is_default=(str(name) == current_model),
-                    )
-                )
-            return models
-        return []
+        from .model_parsing import normalize_models
+        return normalize_models(raw, current_model)
 
     def get_current_model(self) -> Optional[str]:
         self._ensure_initialized()
@@ -1670,7 +1266,7 @@ class TTADKManager:
             try:
                 self._current_model_display = str((diag or {}).get("model_display") or model_name)
             except Exception:
-                pass
+                logger.debug("set_model: convert to str", exc_info=True)
 
             try:
                 logger.info(
@@ -1774,8 +1370,9 @@ def _maybe_migrate_legacy_store() -> None:
                 if not isinstance(globals().get("_LEGACY_STUB_COOLDOWN_STORE", None), dict):
                     globals()["_LEGACY_STUB_COOLDOWN_STORE"] = migrated
             except Exception:
-                pass
+                logger.debug("_maybe_migrate_legacy_store: evaluate condition", exc_info=True)
     except Exception:
+        logger.debug("_maybe_migrate_legacy_store: evaluate condition", exc_info=True)
         return
 
 
@@ -1793,6 +1390,7 @@ def _build_stub_providers():
         try:
             return float(time.time())
         except Exception:
+            logger.debug("_provider_time: return float(time.time())", exc_info=True)
             return 0.0
 
     def _provider_get_settings() -> object:
@@ -1826,6 +1424,7 @@ def _install_compat_providers() -> None:
             legacy_store_provider=legacy_store_provider,
         )
     except Exception:
+        logger.debug("_install_compat_providers: import module", exc_info=True)
         return
 
 

@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+import logging
+
 from ..config import get_settings
 from ..utils.errors import get_error_detail
 from .models import (
@@ -25,6 +27,8 @@ from .models import (
     redact_and_truncate,
     strict_truncate,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -198,7 +202,7 @@ def execute_ttadk_code_with_repair(
         if diag and isinstance(diag, dict) and diag.get("attempts"):
             attempts.append({"phase": "precheck_attempts", "ok": True, "detail": list(diag.get("attempts") or [])[:6]})
     except Exception:
-        pass
+        logger.debug("execute_ttadk_code_with_repair: evaluate condition", exc_info=True)
 
     cmd_runner = runner or getattr(manager, "_command_runner", None) or TTADKCommandRunner(get_settings_fn=get_settings)
 
@@ -242,7 +246,7 @@ def execute_ttadk_code_with_repair(
             if avail and callable(seed_runtime):
                 seed_runtime(tool_name=tool, input_model=intent, available_models=avail)
         except Exception:
-            pass
+            logger.debug("_run_once: evaluate condition", exc_info=True)
 
         try:
             _ = get_models(tool_name=tool, cwd=cwd, force_refresh=True)
@@ -350,6 +354,6 @@ def format_ttadk_code_user_message(result: dict) -> str:
                 lines.append("stderr_snippet=" + s)
                 break
     except Exception:
-        pass
+        logger.debug("format_ttadk_code_user_message: convert to list", exc_info=True)
 
     return "\n".join([x for x in lines if x])

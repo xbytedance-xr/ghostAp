@@ -6,8 +6,11 @@ same structured diagnostics without importing spec_engine internals.
 
 from __future__ import annotations
 
+import logging
 import traceback
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Stable / compat key tuples (re-exported for consumers)
@@ -146,7 +149,7 @@ def build_review_exception_diagnostics(
             try:
                 s = redact_text(s, redact_patterns, redact_repl)  # type: ignore[misc]
             except Exception:
-                pass
+                logger.debug("Failed to apply redact_text in review diagnostics", exc_info=True)
         return _truncate_strict(s, lim)
 
     # -- error extraction helpers --
@@ -369,7 +372,7 @@ def format_review_exception_log_line(diag: dict, *, diag_json: str, prefix: str 
         if len(dj) > 2400:
             dj = dj[:2400] + "…(truncated)"
     except Exception:
-        pass
+        logger.debug("Failed to truncate diag_json in format_review_exception_log_line", exc_info=True)
 
     return (
         f"{prefix} review_exception: phase={phase} role={role} cycle={cycle_val} decision={decision} fail_reason={fail_reason} "

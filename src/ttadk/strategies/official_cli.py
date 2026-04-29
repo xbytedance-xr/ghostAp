@@ -1,3 +1,4 @@
+import logging
 import subprocess
 import time
 from typing import Optional
@@ -10,6 +11,8 @@ from ..models import (
     strip_ansi,
     truncate_snippet,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TTADKOfficialCLIError(RuntimeError):
@@ -89,7 +92,7 @@ class TTADKModelsListStrategy(ModelFetchStrategy):
             self._detail["raw_cmd"] = list(args)
             self._detail["cwd"] = str(cwd or "")
         except Exception:
-            pass
+            logger.debug("_run: convert to list", exc_info=True)
         if self._runner:
             return self._runner(args, cwd, timeout)
         env, _ = build_ttadk_subprocess_env(cwd=cwd or ".", agent_type="ttadk", tool_name="")

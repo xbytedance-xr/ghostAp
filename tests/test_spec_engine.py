@@ -204,7 +204,10 @@ def test_spec_engine_review_exception_diagnostics_log_has_nonempty_error(monkeyp
 
 def test_spec_engine_build_internal_error_saves_fixed_recovery_task_id(monkeypatch, tmp_path, caplog):
     """验收：BUILD phase + Internal error 失败时应保存任务且 recovery task_id 可固定为 f5f3dcb4。"""
-    monkeypatch.setenv("GHOSTAP_SPEC_FAILED_TASK_ID_OVERRIDE", "f5f3dcb4")
+    # Mock get_settings() so persistence.py reads the override via Settings singleton
+    _mock_settings = MagicMock()
+    _mock_settings.spec_failed_task_id_override = "f5f3dcb4"
+    monkeypatch.setattr("src.config.get_settings", lambda: _mock_settings)
     monkeypatch.setattr("src.spec_engine.task_persistence.SPEC_TASKS_DIR", str(tmp_path / "spec_tasks"))
     monkeypatch.setattr("src.spec_engine.task_persistence.SPEC_TASKS_DIR_FALLBACK", str(tmp_path / "spec_tasks_fb"))
 
@@ -697,10 +700,10 @@ def test_ttadk_startup_model_log_uses_real_or_auto(caplog):
             rate_limit_retry_enabled = False
 
         with (
-            patch("src.agent_session.get_settings", return_value=_SessSettings()),
+            patch("src.agent_session.factory.get_settings", return_value=_SessSettings()),
             patch("src.ttadk.get_ttadk_manager", return_value=MagicMock()),
             patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck,
-            patch("src.agent_session.SyncTTADKCLISession", return_value=_S()),
+            patch("src.agent_session.factory.SyncTTADKCLISession", return_value=_S()),
         ):
             mk_precheck.return_value = {
                 "tool": "codex",
@@ -793,10 +796,10 @@ def test_ttadk_resume_model_log_uses_real_or_auto(caplog):
             rate_limit_retry_enabled = False
 
         with (
-            patch("src.agent_session.get_settings", return_value=_SessSettings()),
+            patch("src.agent_session.factory.get_settings", return_value=_SessSettings()),
             patch("src.ttadk.get_ttadk_manager", return_value=MagicMock()),
             patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck,
-            patch("src.agent_session.SyncTTADKCLISession", return_value=_S()),
+            patch("src.agent_session.factory.SyncTTADKCLISession", return_value=_S()),
         ):
             mk_precheck.return_value = {
                 "tool": "codex",

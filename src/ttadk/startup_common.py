@@ -14,6 +14,10 @@ import time
 from typing import Callable, Optional
 
 from ..config import get_settings
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # Provider injection (explicit deps; no sys.modules coupling)
@@ -246,7 +250,7 @@ class _StubCooldownStore:
                     self._store = {}
                     self._last_gc_ts = 0.0
             except Exception:
-                pass
+                logger.debug("_store_unlocked: evaluate condition", exc_info=True)
             return self._store
 
         legacy = directive if isinstance(directive, dict) else _LEGACY_STUB_COOLDOWN_STORE
@@ -260,7 +264,7 @@ class _StubCooldownStore:
                     legacy.update(self._store)
                     self._store = legacy
             except Exception:
-                pass
+                logger.debug("_store_unlocked: evaluate condition", exc_info=True)
             return legacy  # type: ignore[return-value]
         return self._store
 
@@ -337,6 +341,7 @@ class _StubCooldownStore:
             try:
                 return float(store.get(k, 0.0) or 0.0)
             except Exception:
+                logger.debug("get_last_ts: return float(store.get(k, 0.0) or 0.0)", exc_info=True)
                 return 0.0
 
     def set_last_ts(self, mgr, tool_name: str, ts: float) -> None:
@@ -350,10 +355,12 @@ class _StubCooldownStore:
             try:
                 store[k] = float(ts)
             except Exception:
+                logger.debug("set_last_ts: convert to float", exc_info=True)
                 return
             try:
                 self._maybe_gc_unlocked(now_ts=now)
             except Exception:
+                logger.debug("set_last_ts: now)", exc_info=True)
                 return
 
 
@@ -509,7 +516,7 @@ def precheck_ttadk_startup_model(
                 validated = False
                 passthrough = None
         except Exception:
-            pass
+            logger.debug("evaluate condition", exc_info=True)
         # 兜底：确保 diagnostics 一定是 dict（避免上层 consumer 做复杂判空）
         try:
             diag_out = dict(diag or {})

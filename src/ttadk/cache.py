@@ -83,7 +83,7 @@ class TTADKModelCache:
         try:
             self._model_fetcher.set_cache_sink(self._on_fetcher_cache_update)
         except Exception:
-            pass
+            logger.debug("call set_cache_sink", exc_info=True)
 
     def set_model_fetcher(self, fetcher: TTADKModelFetcher) -> None:
         """替换内部 model_fetcher，并重新绑定 cache_sink（best-effort）。"""
@@ -93,7 +93,7 @@ class TTADKModelCache:
         try:
             self._model_fetcher.set_cache_sink(self._on_fetcher_cache_update)
         except Exception:
-            pass
+            logger.debug("set_model_fetcher: call set_cache_sink", exc_info=True)
 
     def _get_settings(self):
         """获取 Settings（兼容测试 monkeypatch，best-effort）。"""
@@ -106,7 +106,7 @@ class TTADKModelCache:
             try:
                 return fn()
             except Exception:
-                pass
+                logger.debug("_get_settings: return fn()", exc_info=True)
         from ..config import get_settings
 
         return get_settings()
@@ -158,6 +158,7 @@ class TTADKModelCache:
             if not Path(base).is_absolute():
                 return None
         except Exception:
+            logger.debug("_resolve_project_cache_path: evaluate condition", exc_info=True)
             return None
 
         # Guardrail: avoid reading/writing project cache directly under temp roots.
@@ -168,7 +169,7 @@ class TTADKModelCache:
             if base_path == Path("/tmp") or base_path == Path("/var/tmp"):
                 return None
         except Exception:
-            pass
+            logger.debug("_resolve_project_cache_path: resolve path", exc_info=True)
         s = self._get_settings()
         raw = ""
         try:
@@ -194,6 +195,7 @@ class TTADKModelCache:
                 if not any(p.exists() for p in markers):
                     return None
             except Exception:
+                logger.debug("resolve path", exc_info=True)
                 return None
             raw = "{cwd}/.ghostap/ttadk/models_cache.json"
         try:
@@ -203,12 +205,14 @@ class TTADKModelCache:
         try:
             p = Path(raw)
         except Exception:
+            logger.debug("resolve path", exc_info=True)
             return None
         if not p.is_absolute():
             # 相对路径按 cwd 解析
             try:
                 p = Path(base) / p
             except Exception:
+                logger.debug("resolve path", exc_info=True)
                 return None
         return p
 
@@ -227,6 +231,7 @@ class TTADKModelCache:
         try:
             return self._cache_file_path
         except Exception:
+            logger.debug("_resolve_cache_file_path: return self._cache_file_path", exc_info=True)
             return None
 
     # ------------------------------
@@ -272,6 +277,7 @@ class TTADKModelCache:
         try:
             models = self._model_fetcher.probe_tool_models(tool_name=tool, cwd=cwd, timeout=timeout)
         except Exception:
+            logger.debug("_preheat_probe_and_cache: self._model_fetcher.probe_tool_...", exc_info=True)
             return False
         finally:
             with self._lock:
@@ -356,7 +362,7 @@ class TTADKModelCache:
             if self._preheat_once.is_set():
                 return
         except Exception:
-            pass
+            logger.debug("kickoff_preheat_common_models: evaluate condition", exc_info=True)
         try:
             t = threading.Thread(
                 target=self.maybe_preheat_common_models,
@@ -366,6 +372,7 @@ class TTADKModelCache:
             )
             t.start()
         except Exception:
+            logger.debug("kickoff_preheat_common_models: threading.Thread(", exc_info=True)
             return
 
     def kickoff_preheat_tool_models(self, tool_name: str, cwd: Optional[str] = None) -> None:
@@ -397,7 +404,7 @@ class TTADKModelCache:
                 if tool in self._preheat_inflight_tools:
                     return
         except Exception:
-            pass
+            logger.debug("kickoff_preheat_tool_models: unexpected error", exc_info=True)
         try:
             t = threading.Thread(
                 target=self.maybe_preheat_tool_models,
@@ -408,6 +415,7 @@ class TTADKModelCache:
             )
             t.start()
         except Exception:
+            logger.debug("kickoff_preheat_tool_models: threading.Thread(", exc_info=True)
             return
 
     # ------------------------------
@@ -523,7 +531,7 @@ class TTADKModelCache:
                                     if isinstance(als, list):
                                         mm.aliases = [str(x) for x in als if str(x).strip()]
                                 except Exception:
-                                    pass
+                                    logger.debug("get value", exc_info=True)
                                 models.append(mm)
                             except Exception:
                                 continue
@@ -578,7 +586,7 @@ class TTADKModelCache:
                     if path.exists():
                         path.unlink()
                 except Exception:
-                    pass
+                    logger.debug("evaluate condition", exc_info=True)
 
         # 2) legacy home cache (read-only unless migrating)
         # 约束：legacy HOME 仅在“明确项目 cwd”场景下才允许读取，避免无 cwd 时意外依赖/污染真实 HOME。
@@ -613,7 +621,7 @@ class TTADKModelCache:
             try:
                 self.save_to_file(cwd=cwd)
             except Exception:
-                pass
+                logger.debug("cwd)", exc_info=True)
 
     def save_to_file(self, *, cwd: Optional[str] = None) -> None:
         try:
@@ -750,13 +758,13 @@ class TTADKModelCache:
         try:
             self.load_from_file_for_project(cwd=cwd)
         except Exception:
-            pass
+            logger.debug("get_models: cwd)", exc_info=True)
 
         # best-effort：首次使用触发后台预热
         try:
             self.kickoff_preheat_tool_models(tool, cwd=cwd)
         except Exception:
-            pass
+            logger.debug("get_models: cwd)", exc_info=True)
 
         if not force_refresh:
             cache_models: list[TTADKModel] | None = None

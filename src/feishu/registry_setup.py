@@ -126,23 +126,23 @@ def setup_feishu_services(
     intent_recognizer_cls = registry.get("IntentRecognizer", default=IntentRecognizer)
     registry.register_factory_if_absent("intent_recognizer", lambda: intent_recognizer_cls(settings=registry.get("settings")))
     
-    registry.register_factory_if_absent("message_cache", lambda: MessageCache(ttl=300, max_size=1000, cleanup_interval=60))
-    registry.register_factory_if_absent("card_event_cache", lambda: MessageCache(ttl=300, max_size=1000, cleanup_interval=60))
-    registry.register_factory_if_absent("card_action_dedup_cache", lambda: MessageCache(ttl=1, max_size=5000, cleanup_interval=30))
-    
+    s = registry.get("settings")
+    registry.register_factory_if_absent("message_cache", lambda: MessageCache(ttl=s.message_cache_ttl, max_size=s.message_cache_max_size, cleanup_interval=s.message_cache_cleanup_interval))
+    registry.register_factory_if_absent("card_event_cache", lambda: MessageCache(ttl=s.message_cache_ttl, max_size=s.message_cache_max_size, cleanup_interval=s.message_cache_cleanup_interval))
+    registry.register_factory_if_absent("card_action_dedup_cache", lambda: MessageCache(ttl=s.card_action_dedup_ttl, max_size=s.card_action_dedup_max_size, cleanup_interval=s.card_action_dedup_cleanup_interval))
+
     scheduler_cls = registry.get("TaskScheduler", default=TaskScheduler)
     def create_scheduler():
-        s = registry.get("settings")
         sched = scheduler_cls(
             max_concurrent=s.task_scheduler_max_concurrent,
             per_key_concurrency=s.task_scheduler_per_key_concurrency,
-            system_concurrency=10,
+            system_concurrency=s.system_command_concurrency,
             thread_name_prefix="ghost_worker",
         )
         sched.register_policy(
             "spec_command",
-            rate_limiter=RateLimiter(capacity=100, fill_rate=50.0),
-            circuit_breaker=CircuitBreaker(failure_threshold=10, recovery_timeout=5.0),
+            rate_limiter=RateLimiter(capacity=s.spec_rate_limit_capacity, fill_rate=s.spec_rate_limit_fill_rate),
+            circuit_breaker=CircuitBreaker(failure_threshold=s.spec_circuit_breaker_threshold, recovery_timeout=s.spec_circuit_breaker_recovery),
         )
         return sched
     registry.register_factory_if_absent("scheduler", create_scheduler)

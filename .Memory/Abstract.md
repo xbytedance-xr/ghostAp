@@ -1,8 +1,16 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
+## 2026-04-29
+- **Phase 5+6 完成：代码质量优化 + P2清理** — Phase 5.1: registry_setup.py 6 处魔法数字→Settings 字段；Phase 5.2: dispatcher.py execute_single_task 250行→65行路由+8辅助方法+6字典分发表；Phase 5.3: styles.py 新增37个UI_TEXT key + dispatcher/programming 共43处硬编码中文迁移；Phase 6: test_handlers.py 4处sleep→polling；3857 passed 零回归 → [详细记录](2026-04-29.md)
+- **Phase 3 完成：SystemHandler God Class Mixin 提取** — system.py 1681→814行（-51%），提取 LockCommandsMixin（9方法）和 TTADKCommandsMixin（17方法）到独立文件；更新14处测试monkeypatch路径；3857 passed 零回归 → [详细记录](2026-04-29.md)
+
 ## 2026-04-28
+- **重构：集成 ControlPlane 类到 FeishuWSClient** — 将 ws_client.py 中 ~130 行内联控制平面代码（deferred exit + system cmd gate）替换为 ControlPlane 实例委托；删除 6 个方法 + _PendingExit 定义 + 5 个未使用导入；使用 lambda 包装 exit_handler_fn 确保测试兼容；更新 ws_client/dispatcher 2 处调用点 + 3 个测试文件；3856 passed 零回归 → [详细记录](2026-04-28.md)
+- **修复 agent_session 包重构残留问题（循环导入 + 测试 patch 目标）** — `acp/__init__.py` 的 manager 导入改为 PEP 562 `__getattr__` 延迟加载打破循环依赖；`test_ttadk.py` 2 处 patch 目标更新到正确子模块路径；3856 passed 零回归 → [详细记录](2026-04-28.md)
 - **全项目优化迭代（P0+P1 共 7 项修复）** — [P0] 32 个源文件 96 处静默异常吞没 pass→logger.debug；[P0] 3 个内存泄漏修复（_working_dirs/LRU 500、_ttadk_flow_start_times/过期清理、_ttadk_flow_last_duration_ms/LRU 200）；[P1] ws_client.py 内联健康检查委托 WSHealthMonitor 净减 120 行；[P1] 10 个硬编码值提取到 Settings 配置；[P1] _run_cycle_loop 397 行拆解为 9 个阶段方法；[P1] safe_truncate_markdown 下沉到 utils 消除 card→feishu 反向依赖；3857 tests passed 零回归 → [详细记录](2026-04-28.md)
+- **src/ttadk/ 模块静默异常处理修复（144 处）** — 14 个文件 144 处 `except Exception: pass/return` 无日志语句修复为 `logger.debug(..., exc_info=True)`；7 个文件新增 logger 导入；修复后零残留静默异常；3857 全量 + 141 ttadk 专项测试零回归 → [详细记录](2026-04-28.md)
+- **重构：从 src/ttadk/manager.py God Module 提取 3 个独立模块** — 新建 startup_errors.py(116行)/engine_session.py(254行)/model_parsing.py(121行)；manager.py 1917→1507行(-410行)；re-export 保持向后兼容；119 TTADK 专项测试通过；3827 passed + 30 预存失败 → [详细记录](2026-04-28.md)
 
 ## 2026-04-27
 - **审查超时韧性优化（纵深三层改进）** — 源头层：`spec/loop_review_timeout` 120→180、`min_timeout` 30→45、`hard_floor` 15→20、熔断 `max_consecutive` 3→4 + `cooldown_cycles` 3→2；韧性层：`compute_adaptive_timeout` 衰减因子 2**n→1.5**n（更平缓曲线）、PerspectiveWorker RetryPolicy max_retries 1→2 + retry_delay 1.5；用户体验层：超时文案增加恢复指引（自动重试 + `/spec resume`）；覆盖 config/perspective_worker/review/dispatcher + 12 个测试文件；3498 tests passed 零回归 → [详细记录](2026-04-27.md)

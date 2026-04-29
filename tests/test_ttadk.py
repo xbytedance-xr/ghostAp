@@ -403,13 +403,13 @@ def test_ttadk_startup_ssot_call_chain_create_engine_session(monkeypatch):
 
     # 关闭 rate limit wrapper，避免影响“返回 session 是否为 SSOT result”的断言
     monkeypatch.setattr(
-        agent_session,
+        agent_session.factory,
         "get_settings",
         lambda: type("S", (), {"acp_startup_timeout": 3, "rate_limit_retry_enabled": False})(),
     )
 
     # 让 ModelFailureAwareSession 变成 identity，避免包装影响断言
-    monkeypatch.setattr(agent_session, "ModelFailureAwareSession", lambda **kw: kw["inner"], raising=False)
+    monkeypatch.setattr(agent_session.factory, "ModelFailureAwareSession", lambda **kw: kw["inner"], raising=False)
 
     precheck_called: list[dict] = []
 
@@ -448,11 +448,11 @@ def test_ttadk_startup_summary_log_fields_success(monkeypatch, caplog):
     import src.agent_session as agent_session
 
     monkeypatch.setattr(
-        agent_session,
+        agent_session.factory,
         "get_settings",
         lambda: type("S", (), {"acp_startup_timeout": 3, "rate_limit_retry_enabled": False})(),
     )
-    monkeypatch.setattr(agent_session, "ModelFailureAwareSession", lambda **kw: kw["inner"], raising=False)
+    monkeypatch.setattr(agent_session.factory, "ModelFailureAwareSession", lambda **kw: kw["inner"], raising=False)
 
     monkeypatch.setattr(
         "src.ttadk.startup_common.precheck_ttadk_startup_model",
@@ -477,7 +477,7 @@ def test_ttadk_startup_summary_log_fields_success(monkeypatch, caplog):
             self.session_id = "sid"
             return self.session_id
 
-    monkeypatch.setattr(agent_session, "SyncTTADKCLISession", _FakeCLISession, raising=False)
+    monkeypatch.setattr(agent_session.factory, "SyncTTADKCLISession", _FakeCLISession, raising=False)
 
     with caplog.at_level(logging.INFO):
         s = agent_session.create_engine_session(agent_type="ttadk_codex", cwd="/tmp", model_name="gpt-5.2")
@@ -495,11 +495,11 @@ def test_ttadk_startup_summary_log_fields_degraded(monkeypatch, caplog):
     import src.agent_session as agent_session
 
     monkeypatch.setattr(
-        agent_session,
+        agent_session.factory,
         "get_settings",
         lambda: type("S", (), {"acp_startup_timeout": 3, "rate_limit_retry_enabled": False})(),
     )
-    monkeypatch.setattr(agent_session, "ModelFailureAwareSession", lambda **kw: kw["inner"], raising=False)
+    monkeypatch.setattr(agent_session.factory, "ModelFailureAwareSession", lambda **kw: kw["inner"], raising=False)
 
     monkeypatch.setattr(
         "src.ttadk.startup_common.precheck_ttadk_startup_model",
@@ -520,7 +520,7 @@ def test_ttadk_startup_summary_log_fields_degraded(monkeypatch, caplog):
         def start(self, startup_timeout: float = 60):
             raise RuntimeError("cli_start_failed")
 
-    monkeypatch.setattr(agent_session, "SyncTTADKCLISession", _FakeFailCLISession, raising=False)
+    monkeypatch.setattr(agent_session.factory, "SyncTTADKCLISession", _FakeFailCLISession, raising=False)
 
     with caplog.at_level(logging.INFO):
         with pytest.raises(RuntimeError, match="cli_start_failed"):
@@ -1053,7 +1053,7 @@ def test_agent_session_ttadk_precheck_uses_real_model_when_valid(monkeypatch):
     calls: list[dict] = []
 
     monkeypatch.setattr(
-        agent_session,
+        agent_session.factory,
         "get_settings",
         lambda: type("S", (), {"acp_startup_timeout": 1, "rate_limit_retry_enabled": False})(),
     )
@@ -1083,7 +1083,7 @@ def test_agent_session_ttadk_precheck_uses_real_model_when_valid(monkeypatch):
             self.session_id = "dummy"
             return self.session_id
 
-    monkeypatch.setattr(agent_session, "SyncTTADKCLISession", _DummyCLISession, raising=False)
+    monkeypatch.setattr(agent_session.factory, "SyncTTADKCLISession", _DummyCLISession, raising=False)
 
     s = agent_session.create_engine_session(agent_type="ttadk_coco", cwd="/tmp", model_name="gpt-5.2")
     assert getattr(s, "session_id", "") == "dummy"
@@ -2131,7 +2131,7 @@ class TestSyncTTADKCLISessionCmdArgs:
     @pytest.fixture()
     def _patch_env(self, monkeypatch):
         monkeypatch.setattr(
-            "src.agent_session.build_ttadk_subprocess_env",
+            "src.agent_session.ttadk_cli.build_ttadk_subprocess_env",
             lambda **kw: ({"PATH": "/usr/bin", "NO_COLOR": "1"}, {}),
         )
 

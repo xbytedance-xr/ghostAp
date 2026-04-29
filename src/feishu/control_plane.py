@@ -70,6 +70,7 @@ class ControlPlane:
                 self._event_q.append(key)
             self._wakeup.set()
         except Exception:
+            logger.debug("Unexpected error in on_scheduler_event", exc_info=True)
             return
 
     @staticmethod

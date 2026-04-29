@@ -60,6 +60,7 @@ def append_history_event(
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception:
+        logger.debug("[Spec] Failed to append history event (type=%s)", event_type, exc_info=True)
         return
 
 
@@ -126,6 +127,7 @@ def cleanup_old_cycle_artifacts(
                     c.metrics_path = None
                     break
     except Exception:
+        logger.debug("[Spec] Failed to cleanup old cycle artifacts (cycle=%s)", current_cycle, exc_info=True)
         return
 
 
@@ -160,6 +162,7 @@ def cleanup_generated_specs(project: Optional[SpecProject], settings) -> None:
             except Exception:
                 continue
     except Exception:
+        logger.debug("[Spec] Failed to cleanup generated specs", exc_info=True)
         return
 
 
@@ -228,10 +231,12 @@ def save_failed_task(
     error = str(error or "")
     task_id_override = None
     try:
-        env_override = (os.getenv("GHOSTAP_SPEC_FAILED_TASK_ID_OVERRIDE") or "").strip()
+        from ..config import get_settings
+        env_override = get_settings().spec_failed_task_id_override.strip()
         if env_override and hasattr(phase, "value") and phase.value == "build" and "internal error" in (error or "").lower():
             task_id_override = env_override
     except Exception:
+        logger.debug("Failed to read spec_failed_task_id_override from Settings", exc_info=True)
         task_id_override = None
 
     task_id = task_id_override or (project.task_id if project and project.task_id else generate_task_id())

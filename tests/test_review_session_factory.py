@@ -24,7 +24,7 @@ class _FakeSession:
 
 
 def test_create_review_session_claude(tmp_path):
-    with patch("src.agent_session.SyncClaudeCLISession") as Cls:
+    with patch("src.agent_session.factory.SyncClaudeCLISession") as Cls:
         fake = _FakeSession()
         Cls.return_value = fake
         s = create_review_session("claude", str(tmp_path))
@@ -34,7 +34,7 @@ def test_create_review_session_claude(tmp_path):
 
 def test_create_review_session_ttadk(tmp_path):
     with patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as pre, \
-         patch("src.agent_session.SyncTTADKCLISession") as Cls:
+         patch("src.agent_session.factory.SyncTTADKCLISession") as Cls:
         pre.return_value = {"model": "gpt-5.2"}
         fake = _FakeSession()
         Cls.return_value = fake
@@ -63,8 +63,8 @@ def test_create_review_session_skips_wrappers(tmp_path):
     """Review session must NOT be wrapped with rate_limit / model_failure."""
     with patch("src.acp.sync_adapter.start_session_with_retry") as start, \
          patch("src.coco_model.get_coco_model_manager") as mgr, \
-         patch("src.agent_session.RateLimitAwareSession") as RLAS, \
-         patch("src.agent_session.ModelFailureAwareSession") as MFAS:
+         patch("src.agent_session.factory.RateLimitAwareSession") as RLAS, \
+         patch("src.agent_session.factory.ModelFailureAwareSession") as MFAS:
         fake = _FakeSession()
         start.return_value = fake
         mgr.return_value.get_current_model.return_value = "m"
@@ -76,7 +76,7 @@ def test_create_review_session_skips_wrappers(tmp_path):
 
 def test_ephemeral_closes_on_exit(tmp_path):
     fake = _FakeSession()
-    with patch("src.agent_session.create_review_session", return_value=fake):
+    with patch("src.agent_session.factory.create_review_session", return_value=fake):
         with EphemeralReviewSession("coco", str(tmp_path)) as s:
             assert s is fake
         assert fake.closed is True
@@ -84,7 +84,7 @@ def test_ephemeral_closes_on_exit(tmp_path):
 
 def test_ephemeral_closes_on_exception(tmp_path):
     fake = _FakeSession()
-    with patch("src.agent_session.create_review_session", return_value=fake):
+    with patch("src.agent_session.factory.create_review_session", return_value=fake):
         with pytest.raises(RuntimeError, match="boom"):
             with EphemeralReviewSession("coco", str(tmp_path)) as s:
                 assert s is fake
@@ -97,7 +97,7 @@ def test_ephemeral_swallows_close_failure(tmp_path):
         def close(self):
             raise RuntimeError("close-failed")
     fake = BadCloseSession()
-    with patch("src.agent_session.create_review_session", return_value=fake):
+    with patch("src.agent_session.factory.create_review_session", return_value=fake):
         with EphemeralReviewSession("coco", str(tmp_path)):
             pass
     # exit must not raise despite close() failure

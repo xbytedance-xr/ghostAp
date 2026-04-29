@@ -1,0 +1,367 @@
+"""Session factory functions and helpers."""
+
+from __future__ import annotations
+
+import logging
+import threading
+from typing import Callable, Optional
+
+from ..acp.models import PromptResult
+from ..acp.sync_adapter import SyncACPSession
+from ..config import get_settings
+from ..utils.errors import get_error_detail
+from .claude_cli import SyncClaudeCLISession
+from .protocol import SyncSession
+from .ttadk_cli import SyncTTADKCLISession
+from .wrappers import ModelFailureAwareSession, RateLimitAwareSession
+
+logger = logging.getLogger(__name__)
+
+
+def close_session_safely(session: Optional[SyncSession]) -> None:
+    """Close an ACP/CLI session, ignoring errors."""
+    if session:
+        try:
+            session.close()
+        except Exception as e:
+            logger.debug("关闭旧ACP session失败: %s", get_error_detail(e))
+
+
+def resolve_ttadk_engine_startup_model(
+    *,
+    agent_type: str,
+    cwd: str,
+    model_intent: Optional[str],
+) -> dict:
+    """为 Deep/Loop/Spec 引擎统一解析 TTADK 启动模型。
+
+    注意：该函数仅做"启动阶段预校验"，不做执行阶段强校验/纠错。
+    统一收敛到 `src.ttadk.startup_common.precheck_ttadk_startup_model()`，避免多处实现漂移。
+    """
+    from ..ttadk.startup_common import precheck_ttadk_startup_model
+    from ..utils.path import normalize_ttadk_cwd
+
+    raw_cwd = cwd
+    norm_cwd = normalize_ttadk_cwd(raw_cwd)
+    cwd = norm_cwd or raw_cwd
+    try:
+        if bool(getattr(get_settings(), "ttadk_cwd_debug_enabled", False)):
+            logger.debug(
+                "[TTADK:CWD] where=%s raw_cwd=%r normalized_cwd=%r",
+                "agent_session.resolve_ttadk_engine_startup_model",
+                raw_cwd,
+                norm_cwd,
+            )
+    except Exception:
+        logger.debug("resolve_ttadk_engine_startup_model: cwd debug logging failed", exc_info=True)
+
+    info = precheck_ttadk_startup_model(agent_type=agent_type, cwd=cwd, model_intent=model_intent)
+    # 兼容旧调用方字段名：resolved_model
+    # 说明：startup_common 已输出 resolved_model；这里仅做 best-effort 兜底，不覆盖其语义。
+    if "resolved_model" not in info:
+        info["resolved_model"] = info.get("model")
+    # 透出诊断（用于引擎日志/排障，不参与逻辑判断）
+    if "diagnostics" not in info:
+        info["diagnostics"] = {}
+    return info
+
+
+def create_sync_session(agent_type: str, cwd: str, model_name: Optional[str] = None) -> SyncSession:
+    """Factory for creating a sync session by backend.
+
+    - coco/default: ACP backend
+    - claude: CLI backend
+    - ttadk_*: CLI backend（强隔离：TTADK 前缀不允许拉起 ACP Server）
+    """
+    from ..coco_model import get_coco_model_manager
+    from ..utils.path import normalize_ttadk_cwd
+
+    agent_type = (agent_type or "").lower()
+    raw_cwd = cwd
+    norm_cwd = normalize_ttadk_cwd(raw_cwd)
+    cwd = norm_cwd or raw_cwd
+    try:
+        if bool(getattr(get_settings(), "ttadk_cwd_debug_enabled", False)):
+            logger.debug(
+                "[TTADK:CWD] where=%s raw_cwd=%r normalized_cwd=%r",
+                "agent_session.create_sync_session",
+                raw_cwd,
+                norm_cwd,
+            )
+    except Exception:
+        logger.debug("create_sync_session: cwd debug logging failed", exc_info=True)
+    if agent_type == "claude":
+        return SyncClaudeCLISession(cwd=cwd)
+
+    effective_model = model_name
+    if not effective_model and agent_type in ("coco", ""):
+        effective_model = get_coco_model_manager().get_current_model()
+
+    if agent_type.startswith("ttadk_"):
+        # 该工厂只负责构造 session：启动阶段预校验下沉到统一 helper，validated 才透传 -m。
+        try:
+            from ..ttadk.startup_common import precheck_ttadk_startup_model
+
+            info = precheck_ttadk_startup_model(agent_type=agent_type, cwd=cwd, model_intent=model_name)
+            model_name = info.get("model")
+            logger.info(
+                "[SessionFactory] ttadk precheck(startup): tool=%s input_model=%s model=%s validated=%s source=%s decision=%s fail_phase=%s warnings=%s",
+                info.get("tool") or "",
+                info.get("input_model") or "",
+                (model_name or "(auto)"),
+                bool(info.get("validated")),
+                info.get("source") or "unknown",
+                info.get("decision") or "",
+                info.get("fail_phase") or "",
+                list(info.get("warnings") or []),
+            )
+        except Exception:
+            logger.debug("create_sync_session: model resolution failed", exc_info=True)
+            model_name = None
+        # Switch to CLI backend
+        return SyncTTADKCLISession(agent_type=agent_type, cwd=cwd, model_name=model_name)
+
+    return SyncACPSession(agent_type=agent_type or "coco", cwd=cwd, model_name=effective_model)
+
+
+def create_engine_session(
+    agent_type: str,
+    cwd: str,
+    on_rate_limit: Optional[Callable[[int], None]] = None,
+    cancel_event: Optional[threading.Event] = None,
+    model_name: Optional[str] = None,
+) -> SyncSession:
+    """Create and start a session for Deep/Loop/Spec engines.
+
+    - Claude: CLI backend (no ACP retry needed)
+    - ttadk_*: CLI backend (no ACP retry needed)
+    - Others: ACP backend with retry and progressive timeout
+
+    If rate_limit_retry_enabled is True in settings, the returned session
+    is wrapped with RateLimitAwareSession for automatic retry on throttling.
+    """
+    from ..acp.sync_adapter import start_session_with_retry
+    from ..coco_model import get_coco_model_manager
+    from ..utils.path import normalize_ttadk_cwd
+
+    settings = get_settings()
+    agent_type = (agent_type or "").lower()
+
+    # TTADK/引擎侧 cwd 归一化：避免传入 "." 导致 TTADK 项目级缓存不落盘。
+    raw_cwd = cwd
+    norm_cwd = normalize_ttadk_cwd(raw_cwd)
+    cwd = norm_cwd or raw_cwd
+    try:
+        if bool(getattr(get_settings(), "ttadk_cwd_debug_enabled", False)):
+            logger.debug(
+                "[TTADK:CWD] where=%s raw_cwd=%r normalized_cwd=%r",
+                "agent_session.create_engine_session",
+                raw_cwd,
+                norm_cwd,
+            )
+    except Exception:
+        logger.debug("create_engine_session: cwd debug logging failed", exc_info=True)
+
+    # 日志语义：
+    # - TTADK: 传入的可能是"友好名/意图"，并不等于最终透传 -m 的真实模型名；避免用 `model=` 误导。
+    # - 非 TTADK: 依旧输出 `model=` 便于排障。
+    if agent_type.startswith("ttadk_"):
+        logger.info(
+            "[SessionFactory] create_engine_session: agent=%s cwd=%s input_model=%s (CLI mode)",
+            agent_type or "coco",
+            cwd,
+            model_name,
+        )
+    else:
+        logger.info(
+            "[SessionFactory] create_engine_session: agent=%s cwd=%s model=%s",
+            agent_type or "coco",
+            cwd,
+            model_name,
+        )
+
+    if agent_type == "claude":
+        session: SyncSession = SyncClaudeCLISession(cwd=cwd)
+        session.start()
+    elif agent_type.startswith("ttadk_"):
+        # TTADK CLI mode: precheck model then use CLI session
+        # Switch to CLI backend as requested, replacing the previous ACP startup coordinator.
+        try:
+            from ..ttadk.startup_common import precheck_ttadk_startup_model
+
+            # 1. Precheck to resolve model name
+            info = precheck_ttadk_startup_model(agent_type=agent_type, cwd=cwd, model_intent=model_name)
+
+            resolved_model = info.get("model")  # Validated model ID or None (auto)
+
+            logger.info(
+                "[SessionFactory] ttadk cli startup: tool=%s input_model=%s model=%s validated=%s source=%s warnings=%s",
+                info.get("tool") or "",
+                info.get("input_model") or "",
+                (resolved_model or "(auto)"),
+                bool(info.get("validated")),
+                info.get("source") or "unknown",
+                list(info.get("warnings") or []),
+            )
+
+            # 2. Create CLI session
+            session = SyncTTADKCLISession(agent_type=agent_type, cwd=cwd, model_name=resolved_model)
+            session.start()
+
+        except Exception:
+            raise
+    else:
+        effective_model = model_name
+        if not effective_model:
+            effective_model = get_coco_model_manager().get_current_model()
+
+        session = start_session_with_retry(
+            agent_type=agent_type or "coco",
+            cwd=cwd,
+            startup_timeout=settings.acp_startup_timeout,
+            model_name=effective_model,
+        )
+
+    if settings.rate_limit_retry_enabled:
+        session = RateLimitAwareSession(
+            inner=session,
+            on_rate_limit=on_rate_limit,
+            cancel_event=cancel_event,
+        )
+
+    # Model failure (compaction/loop/failover) auto-repair wrapper.
+    # 说明：该 wrapper 只在 send_prompt 阶段生效，不影响启动时 TTADK/ACP 的既有重试逻辑。
+    try:
+        session = ModelFailureAwareSession(
+            inner=session,
+            on_rate_limit=on_rate_limit,
+            cancel_event=cancel_event,
+        )
+    except Exception:
+        # best-effort: wrapper 失败不应影响正常会话创建
+        logger.debug("create_engine_session: ModelFailureAwareSession wrapper failed", exc_info=True)
+
+    return session
+
+
+def create_review_session(
+    agent_type: str,
+    cwd: str,
+    model_name: Optional[str] = None,
+) -> SyncSession:
+    """Create a short-lived session dedicated to review prompts.
+
+    Differs from `create_engine_session` in two ways:
+    - Skips `RateLimitAwareSession` / `ModelFailureAwareSession` wrappers.
+      Review is best-effort — on failure the pipeline falls back to other
+      strategies (lint, skip) instead of burning retries.
+    - Caller is expected to close the session after use; see
+      `EphemeralReviewSession` for a context-managed convenience.
+
+    Allows `agent_type` to differ from the build agent (heterogeneous review).
+    """
+    from ..acp.sync_adapter import start_session_with_retry
+    from ..coco_model import get_coco_model_manager
+    from ..utils.path import normalize_ttadk_cwd
+
+    settings = get_settings()
+    agent_type = (agent_type or "coco").lower()
+    cwd = normalize_ttadk_cwd(cwd) or cwd
+
+    logger.info(
+        "[SessionFactory] create_review_session: agent=%s cwd=%s model=%s",
+        agent_type, cwd, model_name,
+    )
+
+    if agent_type == "claude":
+        session: SyncSession = SyncClaudeCLISession(cwd=cwd)
+        session.start()
+        return session
+
+    if agent_type.startswith("ttadk_"):
+        from ..ttadk.startup_common import precheck_ttadk_startup_model
+        info = precheck_ttadk_startup_model(
+            agent_type=agent_type, cwd=cwd, model_intent=model_name
+        )
+        session = SyncTTADKCLISession(
+            agent_type=agent_type, cwd=cwd, model_name=info.get("model")
+        )
+        session.start()
+        return session
+
+    effective_model = model_name or get_coco_model_manager().get_current_model()
+    return start_session_with_retry(
+        agent_type=agent_type,
+        cwd=cwd,
+        startup_timeout=settings.acp_startup_timeout,
+        model_name=effective_model,
+    )
+
+
+class EphemeralReviewSession:
+    """Context manager: fresh review session per `with` block; auto-close on exit.
+
+    Use to isolate review from the build session so review prompts run on a
+    clean, small ACP context. Create anew per cycle — do not reuse across cycles.
+    """
+
+    def __init__(
+        self,
+        agent_type: str,
+        cwd: str,
+        model_name: Optional[str] = None,
+    ):
+        self._agent_type = agent_type
+        self._cwd = cwd
+        self._model_name = model_name
+        self._session: Optional[SyncSession] = None
+
+    def __enter__(self) -> SyncSession:
+        self._session = create_review_session(
+            self._agent_type, self._cwd, self._model_name
+        )
+        return self._session
+
+    def __exit__(self, *exc) -> None:
+        if self._session is None:
+            return
+        try:
+            close = getattr(self._session, "close", None)
+            if callable(close):
+                close()
+        except Exception as e:
+            logger.debug("[EphemeralReviewSession] close failed: %s", repr(e))
+        finally:
+            self._session = None
+
+
+def create_sync_session_for_worktree(
+    *,
+    provider: str = "",
+    tool_name: str = "",
+    working_dir: str,
+    model_name: Optional[str] = None,
+) -> SyncSession:
+    """Create a sync session for a worktree unit.
+
+    Maps *provider*/*tool_name* to an ``agent_type`` understood by
+    :func:`create_sync_session` and uses *working_dir* as the session cwd
+    so the agent operates inside its dedicated worktree directory.
+
+    Provider mapping:
+    - ``"ttadk"`` → ``"ttadk_{tool_name}"``  (TTADK CLI bridge)
+    - ``"cli"``   → ``tool_name`` as-is, typically ``"claude"``
+    - ``"acp"``   → ``tool_name`` as-is, e.g. ``"coco"``/``"codex"``
+    - fallback    → ``tool_name or "coco"``
+    """
+    provider = (provider or "").strip().lower()
+    tool_name = (tool_name or "").strip().lower()
+
+    if provider == "ttadk":
+        agent_type = f"ttadk_{tool_name}" if tool_name else "ttadk_coco"
+    elif provider == "cli":
+        agent_type = tool_name or "claude"
+    else:
+        agent_type = tool_name or "coco"
+
+    return create_sync_session(agent_type=agent_type, cwd=working_dir, model_name=model_name)

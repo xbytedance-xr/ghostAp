@@ -64,11 +64,13 @@ class Settings(BaseSettings):
     coco_execution_timeout: int = 7200
     coco_session_timeout: int = 86400
     coco_max_output_length: int = 30000
-    coco_default_model: str = ""
 
     claude_execution_timeout: int = 7200
     claude_session_timeout: int = 86400
     claude_max_output_length: int = 30000
+
+    # ACP session history directory (empty = default ~/.ghostap/acp_history)
+    acp_history_dir: str = ""
 
     # ACP agent process startup timeout (seconds)
     acp_startup_timeout: int = 20
@@ -410,10 +412,14 @@ class Settings(BaseSettings):
     message_cache_ttl: int = 300
     # 消息去重缓存最大容量
     message_cache_max_size: int = 1000
+    # 消息去重缓存清理间隔（秒）
+    message_cache_cleanup_interval: int = 60
     # 卡片动作去重 TTL（秒）
     card_action_dedup_ttl: int = 1
     # 卡片动作去重最大容量
     card_action_dedup_max_size: int = 5000
+    # 卡片动作去重清理间隔（秒）
+    card_action_dedup_cleanup_interval: int = 30
     # 系统命令并发数
     system_command_concurrency: int = 10
     # Spec 引擎任务限流容量
@@ -494,12 +500,6 @@ class Settings(BaseSettings):
 
     # 卡片流式更新最大字符数（避免 PATCH 载荷过大）
     card_max_chars: int = 28000
-
-    # UI Optimization Settings
-    # Pagination size for project board and other lists
-    ui_page_size: int = 5
-    # Max output length for logs/shell/details before truncation
-    ui_max_output_len: int = 2000
 
     # 消息回复模式配置
     # - direct: 直接回复（消息显示在被回复消息下方）

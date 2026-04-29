@@ -70,7 +70,11 @@ _STRICT: Optional[bool] = None
 
 
 def _is_enabled() -> bool:
-    """Return True when lock-order checking is active (cached)."""
+    """Return True when lock-order checking is active (cached).
+
+    NOTE: Intentionally uses os.environ.get instead of Settings — this module
+    is imported at lock-definition time, potentially before Settings is initialized.
+    """
     global _ENABLED
     if _ENABLED is None:
         val = os.environ.get("GHOSTAP_LOCK_ORDER_CHECK", "").strip().lower()

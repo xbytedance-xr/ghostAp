@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Optional
@@ -10,6 +11,8 @@ from ..models import (
     is_model_token,
     truncate_snippet,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TTADKLocalConfigError(RuntimeError):
@@ -148,7 +151,7 @@ class LocalConfigModelsStrategy(ModelFetchStrategy):
         try:
             self._detail["cwd"] = str(cwd or "")
         except Exception:
-            pass
+            logger.debug("fetch: convert to str", exc_info=True)
 
         candidates: list[tuple[Path, str]] = []
         if cwd:

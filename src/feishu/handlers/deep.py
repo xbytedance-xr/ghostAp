@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
 from ...deep_engine.models import DeepProjectStatus
-from ...tasking import TaskPriority, TaskSpec
 from ...utils.command_parser import CommandParser
 from ...utils.errors import get_error_detail
 from ...utils.text import generate_task_id
 from ..emoji import EmojiReaction
 from ..renderers.deep_renderer import DeepRenderer
 from .engine_base import BaseEngineHandler
+from .base import CardActionContext
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
@@ -46,6 +46,9 @@ class DeepHandler(BaseEngineHandler):
         self, message_id: str, chat_id: str, project: Optional["ProjectContext"], engine_name: str, root_path: str
     ):
         return self.renderer.create_deep_callbacks(message_id, chat_id, project, engine_name, root_path)
+
+    def _refresh_card_view(self, message_id: str, chat_id: str, project=None):
+        self.show_deep_status(message_id, chat_id, project, origin_message_id=message_id)
 
     def _create_deep_callbacks(self, *args, **kwargs):
         return self.renderer.create_deep_callbacks(*args, **kwargs)
@@ -118,16 +121,9 @@ class DeepHandler(BaseEngineHandler):
     def start_deep_engine(
         self, message_id: str, chat_id: str, requirement: str, project: Optional["ProjectContext"] = None
     ):
+        project = self._ensure_project(message_id, chat_id, project)
         if not project:
-            working_dir = self.get_working_dir(chat_id)
-            try:
-                project, is_new = self.project_manager.get_or_create_project_for_path(working_dir, chat_id)
-                if is_new:
-                    logger.info("Deep Engine 自动创建项目: %s @ %s", project.project_name, project.root_path)
-            except Exception as e:
-                from ...utils.errors import get_error_detail
-                self.reply_error(message_id, get_error_detail(e), title="创建项目失败")
-                return
+            return
 
         root_path = project.root_path if project else self.get_working_dir(chat_id)
 
@@ -195,25 +191,7 @@ class DeepHandler(BaseEngineHandler):
                 command_text=f"/deep {requirement}",
             )
 
-        spec = TaskSpec(
-            chat_id=chat_id,
-            queue_key=f"{chat_id}:deep:{project.project_id if project else root_path}",
-            name="deep_engine_run",
-            task_type="deep_engine",
-            project_id=project.project_id if project else None,
-            message_id=message_id,
-            origin_message_id=message_id,
-            request_id=request_id,
-            task_id=task_id,
-            priority=TaskPriority.NORMAL,
-        )
-        handle = self.scheduler.submit(spec, lambda ctx: run_deep_engine())
-        try:
-            self.ctx.message_linker.link_task(message_id, handle.run_id)
-        except Exception as e:
-            logger.debug(
-                "link_task失败(deep_engine_run): message_id=%s, run_id=%s, err=%s", message_id, handle.run_id, e
-            )
+        self._submit_engine_task(run_deep_engine, chat_id, message_id, project, request_id, task_id)
 
     # ------------------------------------------------------------------
     # status / board
@@ -408,54 +386,15 @@ class DeepHandler(BaseEngineHandler):
             "deep_stop": self.stop_deep_engine,
         }
 
-        self._dispatch_standard_card_action(
-            open_message_id,
-            open_chat_id,
-            action_type,
-            value,
+        self._dispatch_standard_card_action(CardActionContext(
+            open_message_id=open_message_id,
+            open_chat_id=open_chat_id,
+            action_type=action_type,
+            value=value,
             prefix="deep",
             action_map=deep_actions,
-            toggle_log_method=self.toggle_deep_log,
-            switch_mode_method=self.switch_deep_card_mode,
-            toggle_ac_method=self.toggle_deep_ac,
+            toggle_log_method=self._toggle_log,
+            switch_mode_method=self._switch_card_mode,
+            toggle_ac_method=self._toggle_ac,
             project=target_project,
-        )
-
-    def toggle_deep_log(
-        self,
-        message_id: str,
-        chat_id: str,
-        project: Optional["ProjectContext"] = None,
-        deep_project_id: Optional[str] = None,
-        expanded: bool = False,
-    ):
-        if deep_project_id:
-            self.renderer.update_ui_state(deep_project_id, expanded=expanded)
-            # Refresh card with new state
-            self.show_deep_status(message_id, chat_id, project, origin_message_id=message_id)
-
-    def toggle_deep_ac(
-        self,
-        message_id: str,
-        chat_id: str,
-        project: Optional["ProjectContext"] = None,
-        deep_project_id: Optional[str] = None,
-        expand_ac: bool = False,
-    ):
-        if deep_project_id:
-            self.renderer.update_ui_state(deep_project_id, expand_ac=expand_ac)
-            # Refresh card with new state
-            self.show_deep_status(message_id, chat_id, project, origin_message_id=message_id)
-
-    def switch_deep_card_mode(
-        self,
-        message_id: str,
-        chat_id: str,
-        project: Optional["ProjectContext"] = None,
-        deep_project_id: Optional[str] = None,
-        compact: bool = False,
-    ):
-        if deep_project_id:
-            self.renderer.update_ui_state(deep_project_id, compact=compact)
-            # Refresh card with new state
-            self.show_deep_status(message_id, chat_id, project, origin_message_id=message_id)
+        ))

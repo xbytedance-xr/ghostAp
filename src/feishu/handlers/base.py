@@ -16,6 +16,21 @@ import uuid
 from dataclasses import dataclass as _dataclass
 from typing import TYPE_CHECKING, Callable, Optional, Any
 
+
+@_dataclass
+class CardActionContext:
+    """Encapsulates the context needed for dispatching card actions."""
+    open_message_id: str
+    open_chat_id: str
+    action_type: str
+    value: dict
+    prefix: str
+    action_map: "dict[str, Callable]"
+    toggle_log_method: "Optional[Callable]" = None
+    toggle_ac_method: "Optional[Callable]" = None
+    switch_mode_method: "Optional[Callable]" = None
+    project: "Optional[Any]" = None
+
 from ...card.styles import UI_TEXT
 from ..im_client import FeishuIMClient
 from ..message_formatter import FeishuMessageFormatter as fmt
@@ -442,55 +457,39 @@ class BaseHandler:
     # ------------------------------------------------------------------
     # Card Action Dispatcher (Template Method)
     # ------------------------------------------------------------------
-    def _dispatch_standard_card_action(
-        self,
-        open_message_id: str,
-        open_chat_id: str,
-        action_type: str,
-        value: dict,
-        prefix: str,
-        action_map: dict[str, Callable],
-        toggle_log_method: Optional[Callable] = None,
-        toggle_ac_method: Optional[Callable] = None,
-        switch_mode_method: Optional[Callable] = None,
-        project: Optional["ProjectContext"] = None,
-    ) -> bool:
+    def _dispatch_standard_card_action(self, ctx: CardActionContext) -> bool:
         """
         Dispatch standard card actions (pause, resume, stop, expand, collapse, mode_full, mode_compact).
         Returns True if action was handled, False otherwise.
         """
         # 1. Lifecycle actions (pause, resume, stop)
-        if action_type in action_map:
-            action_map[action_type](open_message_id, open_chat_id, project=project)
+        if ctx.action_type in ctx.action_map:
+            ctx.action_map[ctx.action_type](ctx.open_message_id, ctx.open_chat_id, project=ctx.project)
             return True
 
         # Common extraction for UI state actions
         # Note: 'deep_project_id' is the convention used in card buttons for both Deep and Loop engines
-        engine_project_id = value.get("deep_project_id", "")
+        engine_project_id = ctx.value.get("deep_project_id", "")
 
         # 2. Log expansion
-        if action_type in (f"{prefix}_expand", f"{prefix}_collapse"):
-            if toggle_log_method:
-                expanded = action_type == f"{prefix}_expand"
-                # Call with positional args to support varying param names (deep_project_id vs loop_project_id)
-                # Signature expected: (message_id, chat_id, project, engine_project_id, expanded)
-                toggle_log_method(open_message_id, open_chat_id, project, engine_project_id, expanded)
+        if ctx.action_type in (f"{ctx.prefix}_expand", f"{ctx.prefix}_collapse"):
+            if ctx.toggle_log_method:
+                expanded = ctx.action_type == f"{ctx.prefix}_expand"
+                ctx.toggle_log_method(ctx.open_message_id, ctx.open_chat_id, ctx.project, engine_project_id, expanded)
                 return True
 
         # 3. View mode
-        if action_type in (f"{prefix}_mode_full", f"{prefix}_mode_compact"):
-            if switch_mode_method:
-                compact = action_type == f"{prefix}_mode_compact"
-                # Signature expected: (message_id, chat_id, project, engine_project_id, compact)
-                switch_mode_method(open_message_id, open_chat_id, project, engine_project_id, compact)
+        if ctx.action_type in (f"{ctx.prefix}_mode_full", f"{ctx.prefix}_mode_compact"):
+            if ctx.switch_mode_method:
+                compact = ctx.action_type == f"{ctx.prefix}_mode_compact"
+                ctx.switch_mode_method(ctx.open_message_id, ctx.open_chat_id, ctx.project, engine_project_id, compact)
                 return True
 
         # 4. Acceptance-criteria expansion (AC)
-        if action_type in (f"{prefix}_expand_ac", f"{prefix}_collapse_ac"):
-            if toggle_ac_method:
-                expand_ac = action_type == f"{prefix}_expand_ac"
-                # Signature expected: (message_id, chat_id, project, engine_project_id, expand_ac)
-                toggle_ac_method(open_message_id, open_chat_id, project, engine_project_id, expand_ac)
+        if ctx.action_type in (f"{ctx.prefix}_expand_ac", f"{ctx.prefix}_collapse_ac"):
+            if ctx.toggle_ac_method:
+                expand_ac = ctx.action_type == f"{ctx.prefix}_expand_ac"
+                ctx.toggle_ac_method(ctx.open_message_id, ctx.open_chat_id, ctx.project, engine_project_id, expand_ac)
                 return True
 
         return False

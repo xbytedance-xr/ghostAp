@@ -566,7 +566,7 @@ class TestSystemHandlerRefreshModelsIntegration:
         mock_mgr.get_current_tool.return_value = "coco"
         mock_mgr.refresh_models.side_effect = TimeoutError()
 
-        with patch("src.feishu.handlers.system.get_ttadk_manager", return_value=mock_mgr):
+        with patch("src.feishu.handlers.ttadk_commands.get_ttadk_manager", return_value=mock_mgr):
             handler.handle_refresh_ttadk_models("msg1", "chat1", "coco")
 
         assert len(sent) == 1
@@ -586,7 +586,7 @@ class TestSystemHandlerRefreshModelsIntegration:
         mock_mgr.get_current_tool.return_value = "coco"
         mock_mgr.refresh_models.side_effect = Exception()
 
-        with patch("src.feishu.handlers.system.get_ttadk_manager", return_value=mock_mgr):
+        with patch("src.feishu.handlers.ttadk_commands.get_ttadk_manager", return_value=mock_mgr):
             handler.handle_refresh_ttadk_models("msg1", "chat1", "coco")
 
         assert len(sent) == 1
@@ -605,7 +605,7 @@ class TestSystemHandlerRefreshModelsIntegration:
         mock_mgr.get_current_tool.return_value = "coco"
         mock_mgr.refresh_models.side_effect = TimeoutError("模型服务不可用")
 
-        with patch("src.feishu.handlers.system.get_ttadk_manager", return_value=mock_mgr):
+        with patch("src.feishu.handlers.ttadk_commands.get_ttadk_manager", return_value=mock_mgr):
             handler.handle_refresh_ttadk_models("msg1", "chat1", "coco")
 
         assert len(sent) == 1

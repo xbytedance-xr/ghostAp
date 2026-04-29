@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 def test_acp_provider_maps_to_tool_name():
     """provider='acp', tool_name='coco' → agent_type='coco'."""
-    with patch("src.agent_session.create_sync_session") as mock_create:
+    with patch("src.agent_session.factory.create_sync_session") as mock_create:
         mock_create.return_value = MagicMock()
         from src.agent_session import create_sync_session_for_worktree
 
@@ -18,7 +18,7 @@ def test_acp_provider_maps_to_tool_name():
 
 def test_cli_provider_maps_to_claude():
     """provider='cli', tool_name='claude' → agent_type='claude'."""
-    with patch("src.agent_session.create_sync_session") as mock_create:
+    with patch("src.agent_session.factory.create_sync_session") as mock_create:
         mock_create.return_value = MagicMock()
         from src.agent_session import create_sync_session_for_worktree
 
@@ -30,7 +30,7 @@ def test_cli_provider_maps_to_claude():
 
 def test_ttadk_provider_maps_to_prefixed_agent_type():
     """provider='ttadk', tool_name='codex' → agent_type='ttadk_codex'."""
-    with patch("src.agent_session.create_sync_session") as mock_create:
+    with patch("src.agent_session.factory.create_sync_session") as mock_create:
         mock_create.return_value = MagicMock()
         from src.agent_session import create_sync_session_for_worktree
 
@@ -42,7 +42,7 @@ def test_ttadk_provider_maps_to_prefixed_agent_type():
 
 def test_working_dir_passed_as_cwd():
     """working_dir should be forwarded as cwd parameter."""
-    with patch("src.agent_session.create_sync_session") as mock_create:
+    with patch("src.agent_session.factory.create_sync_session") as mock_create:
         mock_create.return_value = MagicMock()
         from src.agent_session import create_sync_session_for_worktree
 
@@ -55,7 +55,7 @@ def test_working_dir_passed_as_cwd():
 
 def test_model_name_forwarded():
     """model_name should pass through."""
-    with patch("src.agent_session.create_sync_session") as mock_create:
+    with patch("src.agent_session.factory.create_sync_session") as mock_create:
         mock_create.return_value = MagicMock()
         from src.agent_session import create_sync_session_for_worktree
 
@@ -68,7 +68,7 @@ def test_model_name_forwarded():
 
 def test_empty_provider_defaults_to_tool_name():
     """Empty provider → fallback to tool_name as agent_type."""
-    with patch("src.agent_session.create_sync_session") as mock_create:
+    with patch("src.agent_session.factory.create_sync_session") as mock_create:
         mock_create.return_value = MagicMock()
         from src.agent_session import create_sync_session_for_worktree
 

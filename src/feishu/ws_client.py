@@ -11,14 +11,13 @@
 """
 
 import asyncio
-from collections import OrderedDict, deque
+from collections import OrderedDict
 import json
 import logging
 import os
 import threading
 import time
-from dataclasses import dataclass
-from typing import Any, Callable, Deque, Optional
+from typing import Any, Callable, Optional
 
 import lark_oapi as lark
 from lark_oapi.event.callback.model.p2_card_action_trigger import (
@@ -55,7 +54,7 @@ from ..project import (
 )
 from ..spec_engine import SpecEngineManager, SpecReporter
 from ..thread import ThreadContextManager, get_current_thread_id, get_thread_manager
-from ..tasking import TaskEvent, TaskPriority, TaskScheduler, TaskSpec, TaskStatus
+from ..tasking import TaskPriority, TaskScheduler, TaskSpec
 from ..utils.circuit_breaker import CircuitBreaker, CircuitBreakerOpenException
 from ..utils.errors import get_error_detail, log_exception
 from ..utils.rate_limit import RateLimiter, RateLimitExceededException
@@ -85,14 +84,6 @@ from .message_formatter import FeishuMessageFormatter as fmt
 from .ws_health import WSHealthMonitor
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class _PendingExit:
-    chat_id: str
-    project_id: Optional[str]
-    message_id: str
-    requested_at: float
 
 
 def _frame_header_value(frame: Any, key: str) -> Optional[str]:
@@ -230,29 +221,6 @@ class FeishuWSClient:
         self._WORKING_DIRS_MAX_SIZE = 500
         self._working_dirs: OrderedDict[str, str] = OrderedDict()
         self._working_dir_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
-
-        # ------------------------------------------------------------------
-        # Control-plane bookkeeping (deferred /exit)
-        # ------------------------------------------------------------------
-        self._pending_exit_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
-        self._pending_exits: dict[str, _PendingExit] = {}  # key -> pending exit
-        self._control_plane_event_q: Deque[str] = deque()
-        self._control_plane_event_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
-        self._control_plane_wakeup = threading.Event()
-        self._control_plane_stop = threading.Event()
-        # IMPORTANT: scheduler listeners are invoked under scheduler locks;
-        # the listener MUST be non-blocking and must not call scheduler APIs.
-        self._scheduler.add_listener(self._on_scheduler_event)
-        self._control_plane_thread = threading.Thread(
-            target=self._control_plane_loop,
-            name="control_plane",
-            daemon=True,
-        )
-        self._control_plane_thread.start()
-
-        # System command gate: while /help or /exit is being handled, card actions are blocked.
-        self._system_cmd_gate_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
-        self._system_cmd_inflight_by_chat: dict[str, int] = {}
 
         self._project_manager = ProjectManager()
         self._project_manager.on_eviction = self._on_project_evicted
@@ -464,6 +432,20 @@ class FeishuWSClient:
         from .router import bind_forwarding_methods
         bind_forwarding_methods(self, self._handler_ctx)
 
+        # ------------------------------------------------------------------
+        # Control-plane (deferred /exit, system command gate)
+        # ------------------------------------------------------------------
+        from .control_plane import ControlPlane
+        self._control_plane = ControlPlane(
+            scheduler=self._scheduler,
+            project_manager=self._project_manager,
+            exit_handler_fn=lambda *a, **kw: self._exit_current_mode(*a, **kw),
+        )
+        self._scheduler.add_listener(self._control_plane.on_scheduler_event)
+        # Backward-compat aliases for tests
+        self._system_cmd_gate_lock = self._control_plane._system_cmd_gate_lock
+        self._system_cmd_inflight_by_chat = self._control_plane._system_cmd_inflight_by_chat
+
         # --- Message Dispatcher ---
         from .dispatcher import MessageDispatcher
         self._message_dispatcher = MessageDispatcher(self)
@@ -480,136 +462,6 @@ class FeishuWSClient:
         """Register a card action handler."""
         self._action_dispatcher.register(handler, exact, prefix)
 
-    # ==================================================================
-    # Control plane: deferred /exit (never block scheduler listener)
-    # ==================================================================
-
-    @staticmethod
-    def _pending_exit_key(chat_id: str, project_id: Optional[str]) -> str:
-        return f"{chat_id}:{project_id or 'DEFAULT'}"
-
-    def _on_scheduler_event(self, ev: TaskEvent) -> None:
-        """TaskScheduler listener (MUST be non-blocking).
-
-        NOTE: scheduler invokes listeners under its internal locks.
-        This callback must not call back into scheduler APIs.
-        """
-
-        try:
-            # 1) System command gate state
-            if ev.task_type in {"system_help", "system_exit"}:
-                with self._system_cmd_gate_lock:
-                    cur = int(self._system_cmd_inflight_by_chat.get(ev.chat_id, 0) or 0)
-                    if ev.status == TaskStatus.RUNNING:
-                        self._system_cmd_inflight_by_chat[ev.chat_id] = cur + 1
-                    elif ev.status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED}:
-                        nxt = max(0, cur - 1)
-                        if nxt <= 0:
-                            self._system_cmd_inflight_by_chat.pop(ev.chat_id, None)
-                        else:
-                            self._system_cmd_inflight_by_chat[ev.chat_id] = nxt
-
-            # 2) Deferred exit processing wakeup
-            if ev.status not in {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELED}:
-                return
-            key = self._pending_exit_key(ev.chat_id, ev.project_id)
-            with self._control_plane_event_lock:
-                self._control_plane_event_q.append(key)
-            self._control_plane_wakeup.set()
-        except Exception:
-            # best-effort only
-            return
-
-    def _control_plane_loop(self) -> None:
-        """后台线程：处理 deferred /exit 的收敛与触发。"""
-
-        while not self._control_plane_stop.is_set():
-            self._control_plane_wakeup.wait(timeout=0.2)
-            if self._control_plane_stop.is_set():
-                return
-
-            keys: set[str] = set()
-            with self._control_plane_event_lock:
-                while self._control_plane_event_q:
-                    keys.add(self._control_plane_event_q.popleft())
-                self._control_plane_wakeup.clear()
-
-            for key in keys:
-                try:
-                    self._maybe_finalize_deferred_exit(key)
-                except Exception:
-                    continue
-
-    def _maybe_finalize_deferred_exit(self, key: str) -> None:
-        """若对应 chat/project 下已无运行中的非系统任务，则触发 deferred /exit。"""
-
-        with self._pending_exit_lock:
-            pending = self._pending_exits.get(key)
-        if not pending:
-            return
-
-        # Check if any non-system task is still running under the same scope.
-        project_id = pending.project_id
-        tasks = self._scheduler.list_tasks(chat_id=pending.chat_id, project_id=project_id, include_done=False, limit=200)
-        has_running_non_system = any(
-            (st.status == TaskStatus.RUNNING) and (not bool(getattr(st.spec, "is_system_command", False)))
-            for st in tasks
-        )
-        if has_running_non_system:
-            return
-
-        with self._pending_exit_lock:
-            pending = self._pending_exits.pop(key, None)
-        if not pending:
-            return
-
-        def _do_exit(_ctx):
-            proj = None
-            try:
-                if pending.project_id:
-                    proj = self._project_manager.get_project_for_chat(pending.project_id, pending.chat_id)
-                if proj is None:
-                    proj = self._project_manager.get_active_project(pending.chat_id)
-            except Exception:
-                proj = None
-            self._exit_current_mode(pending.message_id, pending.chat_id, project=proj)
-            return True
-
-        spec = TaskSpec(
-            chat_id=pending.chat_id,
-            name="deferred_exit",
-            task_type="system_exit",
-            message_id=pending.message_id,
-            project_id=pending.project_id,
-            origin_message_id=pending.message_id,
-            priority=TaskPriority.HIGH,
-            is_system_command=True,
-        )
-        self._scheduler.submit(spec, _do_exit)
-
-    def _request_deferred_exit(
-        self,
-        *,
-        message_id: str,
-        chat_id: str,
-        project_id: Optional[str],
-    ) -> None:
-        key = self._pending_exit_key(chat_id, project_id)
-        with self._pending_exit_lock:
-            self._pending_exits[key] = _PendingExit(
-                chat_id=chat_id,
-                project_id=project_id,
-                message_id=message_id,
-                requested_at=time.time(),
-            )
-
-    def _should_defer_exit(self, *, chat_id: str, project_id: Optional[str]) -> bool:
-        tasks = self._scheduler.list_tasks(chat_id=chat_id, project_id=project_id, include_done=False, limit=200)
-        return any(
-            (st.status == TaskStatus.RUNNING) and (not bool(getattr(st.spec, "is_system_command", False)))
-            for st in tasks
-        )
-
     def close(self):
         """Best-effort cleanup for background resources."""
         self._closed = True
@@ -623,10 +475,7 @@ class FeishuWSClient:
             logger.debug("failed to close chat_lock_gate", exc_info=True)
 
         try:
-            self._control_plane_stop.set()
-            self._control_plane_wakeup.set()
-            if self._control_plane_thread and self._control_plane_thread.is_alive():
-                self._control_plane_thread.join(timeout=2)
+            self._control_plane.stop()
         except Exception:
             logger.debug("failed to stop control_plane", exc_info=True)
 
@@ -704,50 +553,21 @@ class FeishuWSClient:
             logger.debug("停止card_action_dedup_cache清理线程失败: %s", get_error_detail(e))
 
         # 2) Close per-chat programming sessions (kills ACP agent subprocesses)
-        try:
-            self._coco_manager.cleanup_all()
-        except Exception as e:
-            logger.debug("清理coco_session_manager失败: %s", get_error_detail(e))
+        for name, mgr in self._handler_ctx.managers.items():
+            try:
+                mgr.cleanup_all()
+            except Exception as e:
+                logger.debug("清理%s_session_manager失败: %s", name, get_error_detail(e))
 
-        try:
-            self._claude_manager.cleanup_all()
-        except Exception as e:
-            logger.debug("清理claude_session_manager失败: %s", get_error_detail(e))
-
-        try:
-            self._ttadk_manager.cleanup_all()
-        except Exception as e:
-            logger.debug("清理ttadk_session_manager失败: %s", get_error_detail(e))
-
-        try:
-            self._aiden_manager.cleanup_all()
-        except Exception as e:
-            logger.debug("清理aiden_session_manager失败: %s", get_error_detail(e))
-
-        try:
-            self._codex_manager.cleanup_all()
-        except Exception as e:
-            logger.debug("清理codex_session_manager失败: %s", get_error_detail(e))
-
-        try:
-            self._gemini_manager.cleanup_all()
-        except Exception as e:
-            logger.debug("清理gemini_session_manager失败: %s", get_error_detail(e))
-
-        try:
-            self._deep_engine_manager.cleanup_all()
-        except Exception as e:
-            logger.debug("清理deep_engine_manager失败: %s", get_error_detail(e))
-
-        try:
-            self._loop_engine_manager.cleanup_all()
-        except Exception as e:
-            logger.debug("清理loop_engine_manager失败: %s", get_error_detail(e))
-
-        try:
-            self._spec_engine_manager.cleanup_all()
-        except Exception as e:
-            logger.debug("清理spec_engine_manager失败: %s", get_error_detail(e))
+        for name, mgr in (
+            ("deep_engine", self._deep_engine_manager),
+            ("loop_engine", self._loop_engine_manager),
+            ("spec_engine", self._spec_engine_manager),
+        ):
+            try:
+                mgr.cleanup_all()
+            except Exception as e:
+                logger.debug("清理%s_manager失败: %s", name, get_error_detail(e))
 
         try:
             self._thread_manager.close()
@@ -773,14 +593,7 @@ class FeishuWSClient:
             logger.debug("RepoLockManager shutdown in close() skipped", exc_info=True)
 
     def _on_thread_evicted(self, ctx) -> None:
-        for mgr in (
-            self._coco_manager,
-            self._claude_manager,
-            self._aiden_manager,
-            self._codex_manager,
-            self._gemini_manager,
-            self._ttadk_manager,
-        ):
+        for mgr in self._handler_ctx.managers.values():
             try:
                 mgr.end_session(ctx.chat_id, project_id=ctx.project_id, thread_id=ctx.thread_root_id)
             except Exception:
@@ -796,14 +609,7 @@ class FeishuWSClient:
         """
         def _send_notification():
             # Phase 1: Clean up ACP sessions for the evicted project.
-            for mgr in (
-                self._coco_manager,
-                self._claude_manager,
-                self._aiden_manager,
-                self._codex_manager,
-                self._gemini_manager,
-                self._ttadk_manager,
-            ):
+            for mgr in self._handler_ctx.managers.values():
                 try:
                     mgr.end_session(evicted_chat_id, project_id=project_id)
                 except Exception:
@@ -1670,18 +1476,9 @@ class FeishuWSClient:
             if project is None:
                 project = self._project_manager.get_active_project(chat_id)
 
-            if current_mode == InteractionMode.COCO:
-                self._handle_coco_message(message_id, chat_id, "", project)
-            elif current_mode == InteractionMode.CLAUDE:
-                self._handle_claude_message(message_id, chat_id, "", project)
-            elif current_mode == InteractionMode.AIDEN:
-                self._handle_aiden_message(message_id, chat_id, "", project)
-            elif current_mode == InteractionMode.CODEX:
-                self._handle_codex_message(message_id, chat_id, "", project)
-            elif current_mode == InteractionMode.GEMINI:
-                self._handle_gemini_message(message_id, chat_id, "", project)
-            else:
-                self._ttadk_handler.handle_message(message_id, chat_id, "", project)
+            handler = self._get_mode_handler(current_mode)
+            if handler:
+                handler.handle_message(message_id, chat_id, "", project)
         else:
             self._show_help(message_id, chat_id)
 
@@ -1693,8 +1490,8 @@ class FeishuWSClient:
             if self._is_exit_command(text):
                 self._add_reaction(message_id, EmojiReaction.on_coco_mode())
                 _pid = project.project_id if project else None
-                if self._should_defer_exit(chat_id=chat_id, project_id=_pid):
-                    self._request_deferred_exit(message_id=message_id, chat_id=chat_id, project_id=_pid)
+                if self._control_plane.should_defer_exit(chat_id=chat_id, project_id=_pid):
+                    self._control_plane.request_deferred_exit(message_id=message_id, chat_id=chat_id, project_id=_pid)
                     self._reply_message(message_id, UI_TEXT["ws_exit_deferred_msg"])
                     return
                 self._exit_current_mode(message_id, chat_id, project=project)

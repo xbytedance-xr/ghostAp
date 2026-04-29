@@ -672,10 +672,47 @@ UI_TEXT = {
     "eviction_notify_title": "📤 项目已自动解绑",
     "eviction_notify_body": "该项目「{name}」暂时与当前群断开连接——因为同时使用的群聊数量已达 {max} 个上限。\n你可以随时发送 /project 重新连接。",
     "eviction_notify_btn_rebind": "🔗 重新绑定",
+    # ── Dispatcher: Intent / Multi-task ──
+    "intent_unknown_msg": "🤔 无法理解你的意图",
+    "project_close_name_required": "❌ 请指定要关闭的项目名称",
+    "multi_task_step_failed": "⚠️ 步骤 {step} 执行失败，后续步骤已取消",
+    "multi_task_step_success": "✅ 步骤 {step}: {desc}",
+    "multi_task_step_error": "❌ 步骤 {step}: {error}",
+    "task_desc_unknown": "未知操作",
+    # ── Programming Mode Card / Banner ──
+    "mode_card_enter_title": "{emoji} {name}编程模式已开启",
+    "mode_card_programming_title": "{emoji} {name}编程模式",
+    "mode_enter_banner": "{name} 编程模式已开启",
+    "mode_exit_banner": "已退出 {name} 编程模式",
+    "mode_exit_card_title": "模式已退出",
+    "mode_resume_banner": "{name} 会话已恢复",
+    "mode_resume_card_title": "{name} 会话已恢复",
+    "mode_resume_card_content": "🔄 已恢复 {name} 会话\n\n会话 ID: `{session_id}`\n\n现在可以继续之前的对话了",
+    "mode_resume_no_project_msg": "🔄 已恢复 {name} 会话: `{session_id}`",
+    "mode_resume_fail_title": "恢复 {name} 会话失败",
+    "mode_session_info_title": "{name} 会话信息",
+    "mode_model_switched_banner": "已切换 {name} 模型为: {model}",
+    "mode_model_switched_title": "{name} 模型已切换",
+    "mode_model_switch_context_kept": "对话上下文已保留，可以继续当前任务。",
+    "mode_model_switch_restarted": "已重启会话，可以开始新任务。",
+    "mode_model_switch_error": "切换 {name} 模型失败: {error}",
+    "mode_startup_timeout_title": "启动 {name} 会话超时",
+    "mode_startup_fail_title": "启动 {name} 会话失败",
+    "mode_ttadk_startup_timeout": "TTADK 会话启动超时",
+    "mode_ttadk_unavailable": "TTADK 会话暂不可用",
+    "mode_ttadk_degraded_msg": "⚠️ TTADK 后端暂不可用，已自动降级到 `{tool}` 继续使用。\n\n原因摘要：{reason}",
+    "mode_invalid_project_path": "⚠️ {msg}\n\n请切换到有效目录后重试",
+    "mode_project_dir_label": "📂 项目目录: {path}",
+    "mode_exec_complete": "✅ 执行完成",
+    "mode_exec_timeout_title": "执行超时",
+    "mode_exec_exception_title": "执行异常",
+    "mode_exec_timeout_msg": "⏳ 执行超时: {error}",
+    "mode_exec_exception_msg": "❌ 执行异常: {error}",
+    "mode_working_dir_label": "📁 工作目录: `{path}`",
 }
 
-# Merge spec-engine UI text from the single source of truth
-from ..spec_engine.constants import SPEC_UI_TEXT  # noqa: E402
+# Merge spec-engine UI text from the shared utils layer (avoids card→engine reverse dep)
+from ..utils.ui_text import SPEC_UI_TEXT  # noqa: E402
 
 _spec_overlap = UI_TEXT.keys() & SPEC_UI_TEXT.keys()
 if _spec_overlap:

@@ -709,7 +709,8 @@ class TestCardActionHandler(unittest.TestCase):
             client._is_interceptable_command = MagicMock(return_value=False)
             client._is_exit_command = MagicMock(return_value=False)
 
-            client._handle_gemini_message = MagicMock()
+            mock_handler = MagicMock()
+            client._get_mode_handler = MagicMock(return_value=mock_handler)
             client._add_reaction = MagicMock()
 
             mock_project = MagicMock()
@@ -721,7 +722,8 @@ class TestCardActionHandler(unittest.TestCase):
                 project=mock_project,
             )
 
-            client._handle_gemini_message.assert_called_once_with(
+            client._get_mode_handler.assert_called_with(InteractionMode.GEMINI)
+            mock_handler.handle_message.assert_called_once_with(
                 "msg_1", "chat_1", "hello gemini", mock_project
             )
 
@@ -757,12 +759,14 @@ class TestCardActionHandler(unittest.TestCase):
             client = FeishuWSClient(MagicMock())
             client._mode_manager.get_mode.return_value = InteractionMode.GEMINI
             client._project_manager.get_active_project.return_value = MagicMock()
-            client._handle_gemini_message = MagicMock()
+            mock_handler = MagicMock()
+            client._get_mode_handler = MagicMock(return_value=mock_handler)
 
             client._dispatch_empty_text("msg_1", "chat_1", project=None, task_ctx=None)
 
-            client._handle_gemini_message.assert_called_once()
-            args = client._handle_gemini_message.call_args.args
+            client._get_mode_handler.assert_called_with(InteractionMode.GEMINI)
+            mock_handler.handle_message.assert_called_once()
+            args = mock_handler.handle_message.call_args.args
             self.assertEqual(args[:3], ("msg_1", "chat_1", ""))
 
     def test_resolve_project_from_message_auto_enters_gemini(self):
@@ -2076,8 +2080,8 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
         client = self._make_client()
         client._add_reaction = MagicMock()
         client._reply_message = MagicMock()
-        client._should_defer_exit = MagicMock(return_value=True)
-        client._request_deferred_exit = MagicMock()
+        client._control_plane.should_defer_exit = MagicMock(return_value=True)
+        client._control_plane.request_deferred_exit = MagicMock()
         client._exit_current_mode = MagicMock()
         client._get_mode_handler = MagicMock()
 
@@ -2085,8 +2089,8 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
         project.project_id = "p1"
         client._dispatch_message_logic("m1", "c1", "/exit", project, auto_enter_mode="coco")
 
-        client._should_defer_exit.assert_called_once()
-        client._request_deferred_exit.assert_called_once()
+        client._control_plane.should_defer_exit.assert_called_once()
+        client._control_plane.request_deferred_exit.assert_called_once()
         client._reply_message.assert_called_once()
         assert "当前任务完成后退出" in str(client._reply_message.call_args)
         client._exit_current_mode.assert_not_called()

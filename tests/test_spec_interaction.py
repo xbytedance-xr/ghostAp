@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from src.feishu.handlers.spec import SpecHandler
+from src.feishu.handlers.base import CardActionContext
 from src.feishu.renderers.spec_renderer import SpecRenderer
 from src.feishu.ws_client import FeishuWSClient
 from src.spec_engine.engine import SpecEngineCallbacks
@@ -25,16 +26,17 @@ class TestSpecInteraction(unittest.TestCase):
         # Test spec_pause action
         handler.handle_card_action("mid", "cid", "spec_pause", {"action": "spec_pause", "project_id": "p1"})
 
-        # Verify dispatch called with correct args
+        # Verify dispatch called with correct args (now via CardActionContext)
         handler._dispatch_standard_card_action.assert_called_once()
         call_args = handler._dispatch_standard_card_action.call_args
-        self.assertEqual(call_args[1]["prefix"], "spec")
-        self.assertIn("spec_pause", call_args[1]["action_map"])
-        self.assertIn("spec_resume", call_args[1]["action_map"])
-        self.assertIn("spec_stop", call_args[1]["action_map"])
-        self.assertEqual(call_args[1]["toggle_log_method"], handler.toggle_spec_log)
-        self.assertEqual(call_args[1]["toggle_ac_method"], handler.toggle_spec_ac)
-        self.assertEqual(call_args[1]["switch_mode_method"], handler.switch_spec_card_mode)
+        ctx = call_args[0][0]  # first positional arg is the CardActionContext
+        self.assertEqual(ctx.prefix, "spec")
+        self.assertIn("spec_pause", ctx.action_map)
+        self.assertIn("spec_resume", ctx.action_map)
+        self.assertIn("spec_stop", ctx.action_map)
+        self.assertEqual(ctx.toggle_log_method, handler._toggle_log)
+        self.assertEqual(ctx.toggle_ac_method, handler._toggle_ac)
+        self.assertEqual(ctx.switch_mode_method, handler._switch_card_mode)
 
     def test_standard_dispatch_handles_expand_ac(self):
         """验证 BaseHandler 标准分发支持 *_expand_ac / *_collapse_ac"""
@@ -45,16 +47,16 @@ class TestSpecInteraction(unittest.TestCase):
         toggle_ac = MagicMock()
         project = MagicMock()
 
-        handled = handler._dispatch_standard_card_action(
-            "mid",
-            "cid",
-            "spec_expand_ac",
-            {"deep_project_id": "root"},
+        handled = handler._dispatch_standard_card_action(CardActionContext(
+            open_message_id="mid",
+            open_chat_id="cid",
+            action_type="spec_expand_ac",
+            value={"deep_project_id": "root"},
             prefix="spec",
             action_map={},
             toggle_ac_method=toggle_ac,
             project=project,
-        )
+        ))
 
         self.assertTrue(handled)
         toggle_ac.assert_called_once_with("mid", "cid", project, "root", True)

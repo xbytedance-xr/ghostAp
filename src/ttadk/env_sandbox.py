@@ -56,6 +56,7 @@ def _safe_str(x: object) -> str:
     try:
         return str(x)
     except Exception:
+        logger.debug("_safe_str: return str(x)", exc_info=True)
         return ""
 
 
@@ -74,7 +75,7 @@ def _resolve_sandbox_root(*, cwd: str, configured_root: str) -> Path:
     try:
         raw = raw.format(cwd=str(base))
     except Exception:
-        pass
+        logger.debug("_resolve_sandbox_root: raw.format(cwd=str(base))", exc_info=True)
     p = Path(raw)
     if not p.is_absolute():
         p = base / p
@@ -107,7 +108,7 @@ def build_ttadk_subprocess_env(
     try:
         env.pop("CLAUDECODE", None)
     except Exception:
-        pass
+        logger.debug("build_ttadk_subprocess_env: env.pop('CLAUDECODE', None)", exc_info=True)
 
     sandbox_root = ""
     if get_settings_fn is None:
@@ -164,14 +165,14 @@ def build_ttadk_subprocess_env(
             try:
                 _symlink_auth_dirs(real_home, root)
             except Exception:
-                pass
+                logger.debug("_symlink_auth_dirs(real_home, root)", exc_info=True)
 
         if cover_cache:
             xdg_cache = root / "xdg_cache"
             try:
                 xdg_cache.mkdir(parents=True, exist_ok=True)
             except Exception:
-                pass
+                logger.debug("True, exist_ok=True)", exc_info=True)
             env["XDG_CACHE_HOME"] = str(xdg_cache)
 
         # Provide lightweight context hints (non-standard, best-effort; safe to ignore).
@@ -182,7 +183,7 @@ def build_ttadk_subprocess_env(
             if tool_name:
                 env.setdefault("TTADK_TOOL_NAME", _safe_str(tool_name))
         except Exception:
-            pass
+            logger.debug("evaluate condition", exc_info=True)
 
         # One-time observability log (do not print sensitive values)
         global _SANDBOX_LOGGED
@@ -197,7 +198,7 @@ def build_ttadk_subprocess_env(
                     keys,
                 )
             except Exception:
-                pass
+                logger.debug("['HOME', 'XDG_CONFIG_HOME'] + (['XDG_CACHE_HOME'] ", exc_info=True)
 
         return env, sandbox_root
     except Exception:

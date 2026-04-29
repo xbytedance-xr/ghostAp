@@ -41,6 +41,7 @@ class Application:
             try:
                 sig_name = signal.Signals(signum).name
             except Exception:
+                logger.debug("_handle_sigterm: signal name lookup failed for %s", signum, exc_info=True)
                 sig_name = str(signum)
             logger.warning("收到终止信号 %s，开始优雅停机", sig_name)
             raise KeyboardInterrupt
@@ -49,7 +50,7 @@ class Application:
             signal.signal(signal.SIGTERM, _handle_sigterm)
         except Exception:
             # Some environments (non-main thread / restricted) may fail; best-effort.
-            pass
+            logger.debug("_install_signal_handlers: SIGTERM handler install failed", exc_info=True)
 
         # 忽略 SIGHUP：避免 SSH 会话/终端关闭意外终止长时间运行的引擎任务。
         # restart.sh 使用 SIGTERM 停机，不依赖 SIGHUP。
@@ -57,7 +58,7 @@ class Application:
             if hasattr(signal, "SIGHUP"):
                 signal.signal(signal.SIGHUP, signal.SIG_IGN)
         except Exception:
-            pass
+            logger.debug("_install_signal_handlers: SIGHUP ignore failed", exc_info=True)
 
     def handle_message(self, message_id: str, chat_id: str, command: str, working_dir: Optional[str] = None):
         """Legacy callback — executes shell command directly via SandboxExecutor."""
@@ -118,7 +119,7 @@ class Application:
 
                 get_ttadk_manager().kickoff_preheat_common_models(cwd=os.getcwd())
         except Exception:
-            pass
+            logger.debug("Application.run: TTADK preheat failed", exc_info=True)
 
         self._install_signal_handlers()
 

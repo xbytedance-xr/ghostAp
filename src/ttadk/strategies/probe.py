@@ -88,7 +88,7 @@ class ProbeStrategy(ModelFetchStrategy):
             try:
                 env.setdefault("TERM", env.get("TERM") or "xterm-256color")
             except Exception:
-                pass
+                logger.debug("_run_with_pty: set default value", exc_info=True)
             p = subprocess.Popen(
                 args,
                 stdin=slave_fd,
@@ -102,7 +102,7 @@ class ProbeStrategy(ModelFetchStrategy):
             try:
                 os.close(slave_fd)
             except OSError:
-                pass
+                logger.debug("_run_with_pty: close fd", exc_info=True)
 
         buf = bytearray()
         start = time.time()
@@ -112,7 +112,7 @@ class ProbeStrategy(ModelFetchStrategy):
                     try:
                         p.terminate()
                     except Exception:
-                        pass
+                        logger.debug("_run_with_pty: p.terminate()", exc_info=True)
                     raise subprocess.TimeoutExpired(args=args, timeout=timeout)
 
                 r, _, _ = select.select([master_fd], [], [], 0.2)
@@ -137,13 +137,13 @@ class ProbeStrategy(ModelFetchStrategy):
                                 break
                             buf.extend(chunk)
                     except Exception:
-                        pass
+                        logger.debug("while True:", exc_info=True)
                     break
         finally:
             try:
                 os.close(master_fd)
             except OSError:
-                pass
+                logger.debug("close fd", exc_info=True)
 
         text = buf.decode(errors="ignore")
         # PTY 下 stdout/stderr 无法区分，统一放入 stderr 以便错误侧解析
@@ -161,7 +161,7 @@ class ProbeStrategy(ModelFetchStrategy):
             try:
                 self._detail["pty"] = True
             except Exception:
-                pass
+                logger.debug("_run_auto: True", exc_info=True)
             return self._run_with_pty(args, cwd=cwd, timeout=timeout)
         return rc, out, err
 
@@ -210,7 +210,7 @@ class ProbeStrategy(ModelFetchStrategy):
                 try:
                     self._detail["pty"] = True
                 except Exception:
-                    pass
+                    logger.debug("fetch: True", exc_info=True)
                 rc, out, err = self._run_with_pty(cmd, cwd=cwd, timeout=self.timeout_s)
                 output = (out or "") + "\n" + (err or "")
 

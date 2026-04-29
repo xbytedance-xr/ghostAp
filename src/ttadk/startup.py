@@ -163,11 +163,11 @@ def start_agent_session(
         try:
             s._degraded_to = "coco"
         except Exception:
-            pass
+            logger.debug("_fallback_to_coco: 'coco'", exc_info=True)
         try:
             s._agent_type = at
         except Exception:
-            pass
+            logger.debug("_fallback_to_coco: at", exc_info=True)
         # Best-effort: keep a non-empty, user-facing reason summary.
         try:
             from src.acp.sync_adapter import build_startup_diagnostics
@@ -192,9 +192,9 @@ def start_agent_session(
             try:
                 s._degraded_reason = f"{fr}: {et}"
             except Exception:
-                pass
+                logger.debug("f'{fr}: {et}'", exc_info=True)
         except Exception:
-            pass
+            logger.debug("f'{fr}: {et}'", exc_info=True)
         return (s, sid)
 
     info = coordinate_ttadk_startup(
@@ -234,7 +234,7 @@ def start_agent_session(
             bool(info.get("repaired")),
         )
     except Exception:
-        pass
+        logger.debug("unexpected error", exc_info=True)
 
     session, sid = info.get("result") if isinstance(info, dict) else (None, "")
     session_id = str(sid or "").strip()
@@ -302,6 +302,7 @@ def coordinate_ttadk_startup(
         try:
             return str(x)
         except Exception:
+            logger.debug("_safe_str: return str(x)", exc_info=True)
             return ""
 
     def _truncate_text(text: str, limit: int) -> str:
@@ -345,7 +346,7 @@ def coordinate_ttadk_startup(
             try:
                 return dict(precheck_fn(model_intent) or {})
             except Exception:
-                pass
+                logger.debug("_precheck: return dict(precheck_fn(model_intent) or {})", exc_info=True)
         try:
             return precheck_ttadk_startup_model(
                 agent_type=f"ttadk_{tool}",
@@ -408,7 +409,7 @@ def coordinate_ttadk_startup(
                 ws.append("no_m_passthrough")
             pre["warnings"] = ws
     except Exception:
-        pass
+        logger.debug("_fail_phase_from_error: convert to list", exc_info=True)
 
     attempts.append(
         {
@@ -457,7 +458,7 @@ def coordinate_ttadk_startup(
             else:
                 attempts[-1]["resolved_model"] = "(auto)"
     except Exception:
-        pass
+        logger.debug("evaluate condition", exc_info=True)
 
     try:
         r = start_fn(passthrough_model)
@@ -569,7 +570,7 @@ def coordinate_ttadk_startup(
         try:
             cmd = _truncate_text(_redact_evidence(cmd), 240)
         except Exception:
-            pass
+            logger.debug("_truncate_text(_redact_evidence(cmd), 240)", exc_info=True)
         try:
             args = [_truncate_text(_redact_evidence(str(x)), 200) for x in (args or [])][:80]
         except Exception:
@@ -577,11 +578,11 @@ def coordinate_ttadk_startup(
         try:
             stderr_snip = _truncate_text(_redact_evidence(stderr_snip), 240)
         except Exception:
-            pass
+            logger.debug("_truncate_text(_redact_evidence(stderr_snip), 240)", exc_info=True)
         try:
             stdout_snip = _truncate_text(_redact_evidence(stdout_snip), 240)
         except Exception:
-            pass
+            logger.debug("_truncate_text(_redact_evidence(stdout_snip), 240)", exc_info=True)
 
         attempts.append(
             {

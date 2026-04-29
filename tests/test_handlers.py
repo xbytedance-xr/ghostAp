@@ -302,8 +302,8 @@ class TestSystemHandlerRouting:
 
         tools = [TTADKTool(name="codex", description="Codex")]
         with (
-            patch("src.feishu.handlers.system.CardBuilder.build_ttadk_combined_select_card", return_value=("interactive", "{}")) as mock_build,
-            patch("src.feishu.handlers.system.get_ttadk_manager") as mock_manager,
+            patch("src.feishu.handlers.ttadk_commands.CardBuilder.build_ttadk_combined_select_card", return_value=("interactive", "{}")) as mock_build,
+            patch("src.feishu.handlers.ttadk_commands.get_ttadk_manager") as mock_manager,
         ):
             manager = MagicMock()
             manager.get_tools.return_value = SimpleNamespace(tools=tools, error=None, warnings=[])
@@ -338,7 +338,7 @@ class TestSystemHandlerRouting:
         manager.get_current_model.return_value = ""
         manager.get_tools.return_value = SimpleNamespace(tools=tools, error=None)
 
-        with patch("src.feishu.handlers.system.get_ttadk_manager", return_value=manager):
+        with patch("src.feishu.handlers.ttadk_commands.get_ttadk_manager", return_value=manager):
             h.handle_ttadk_command("m1", "c1", project)
 
         h.reply_message.assert_called_once()
@@ -369,8 +369,8 @@ class TestSystemHandlerRouting:
         manager.get_tools.return_value = SimpleNamespace(tools=tools, error=None)
 
         with (
-            patch("src.feishu.handlers.system.get_ttadk_manager", return_value=manager),
-            patch("src.feishu.handlers.system.CardBuilder") as mock_builder,
+            patch("src.feishu.handlers.ttadk_commands.get_ttadk_manager", return_value=manager),
+            patch("src.feishu.handlers.ttadk_commands.CardBuilder") as mock_builder,
         ):
             mock_builder.build_ttadk_combined_select_card.return_value = ("interactive", "{}")
             h.handle_ttadk_command("m1", "c1", project)
@@ -405,8 +405,8 @@ class TestSystemHandlerRouting:
         )
 
         with (
-            patch("src.feishu.handlers.system.get_ttadk_manager", return_value=manager),
-            patch("src.feishu.handlers.system.CardBuilder") as mock_builder,
+            patch("src.feishu.handlers.ttadk_commands.get_ttadk_manager", return_value=manager),
+            patch("src.feishu.handlers.ttadk_commands.CardBuilder") as mock_builder,
         ):
             mock_builder.build_ttadk_model_select_card.return_value = ("interactive", "{}")
             h.handle_select_ttadk_tool("m1", "c1", "codex", "p1")
@@ -423,7 +423,7 @@ class TestSystemHandlerRouting:
         manager = MagicMock()
         manager.get_tools.return_value = SimpleNamespace(tools=[], error="offline")
 
-        with patch("src.feishu.handlers.system.get_ttadk_manager", return_value=manager):
+        with patch("src.feishu.handlers.ttadk_commands.get_ttadk_manager", return_value=manager):
             h.handle_ttadk_command("m1", "c1", None)
 
         h.reply_message.assert_called_once()
@@ -444,7 +444,7 @@ class TestSystemHandlerRouting:
         manager.set_tool.return_value = True
         manager.get_models.return_value = SimpleNamespace(models=[], error="timeout", warnings=[])
 
-        with patch("src.feishu.handlers.system.get_ttadk_manager", return_value=manager):
+        with patch("src.feishu.handlers.ttadk_commands.get_ttadk_manager", return_value=manager):
             h.handle_select_ttadk_tool("m1", "c1", "codex", "p1")
 
         h.reply_message.assert_called_once()
@@ -460,7 +460,7 @@ class TestSystemHandlerRouting:
         manager = MagicMock()
         manager.set_model.return_value = False
 
-        with patch("src.feishu.handlers.system.get_ttadk_manager", return_value=manager):
+        with patch("src.feishu.handlers.ttadk_commands.get_ttadk_manager", return_value=manager):
             h.handle_select_ttadk_model("m1", "c1", "codex", "gpt-5.2", project=None)
 
         assert h.reply_message.call_count == 2
@@ -472,7 +472,7 @@ class TestSystemHandlerRouting:
         ctx = _make_handler_context()
         h = SystemHandler(ctx)
 
-        with patch("src.feishu.handlers.system.time.perf_counter", side_effect=[10.0, 10.45]):
+        with patch("src.feishu.handlers.ttadk_commands.time.perf_counter", side_effect=[10.0, 10.45]):
             h._mark_ttadk_flow_start("c1")
             h._report_ttadk_flow_duration("c1", "p1", "enter_mode")
 
@@ -527,7 +527,7 @@ class TestCocoModeHandler:
 
     def test_is_in_this_mode(self):
         h, ctx = self._make()
-        ctx.mode_manager.is_coco_mode.return_value = True
+        ctx.mode_manager.get_mode.return_value = InteractionMode.COCO
         assert h._is_in_this_mode("c1") is True
 
     def test_is_in_opposite_mode(self):
@@ -545,12 +545,12 @@ class TestCocoModeHandler:
     def test_enter_mode_on_manager(self):
         h, ctx = self._make()
         h._enter_mode_on_manager("c1")
-        ctx.mode_manager.enter_coco_mode.assert_called_once_with("c1", project_id=None)
+        ctx.mode_manager.enter_programming_mode.assert_called_once_with("c1", InteractionMode.COCO, project_id=None)
 
     def test_enter_mode_on_manager_with_project(self):
         h, ctx = self._make()
         h._enter_mode_on_manager("c1", project_id="p1")
-        ctx.mode_manager.enter_coco_mode.assert_called_once_with("c1", project_id="p1")
+        ctx.mode_manager.enter_programming_mode.assert_called_once_with("c1", InteractionMode.COCO, project_id="p1")
 
     def test_get_interaction_mode(self):
         h, _ = self._make()
@@ -565,19 +565,19 @@ class TestCocoModeHandler:
         h, _ = self._make()
         project = MagicMock()
         h._set_mode_on_project(project, True, "sid", 5)
-        project.set_coco_mode.assert_called_once_with(True, "sid", 5)
+        project.set_programming_mode.assert_called_once_with("coco", True, "sid", 5)
 
     def test_set_mode_on_project_deactivate(self):
         h, _ = self._make()
         project = MagicMock()
         h._set_mode_on_project(project, False)
-        project.set_coco_mode.assert_called_once_with(False)
+        project.set_programming_mode.assert_called_once_with("coco", False)
 
     def test_update_snapshot_on_project(self):
         h, _ = self._make()
         project = MagicMock()
         h._update_snapshot_on_project(project, "hello", 3)
-        project.update_coco_snapshot.assert_called_once_with(query="hello", query_count=3)
+        project.update_programming_snapshot.assert_called_once_with("coco", "hello", 3, "")
 
     def test_clear_snapshot(self):
         h, _ = self._make()
@@ -692,7 +692,7 @@ class TestTTADKModeHandler:
         h, _ = self._make()
         project = MagicMock()
         h._set_mode_on_project(project, True, "sid", 4)
-        project.set_ttadk_mode.assert_called_once_with(True, "sid", 4)
+        project.set_programming_mode.assert_called_once_with("ttadk", True, "sid", 4)
         project.set_coco_mode.assert_not_called()
         project.set_claude_mode.assert_not_called()
 
@@ -817,7 +817,7 @@ class TestProgrammingModeEnterExit:
 
     def test_enter_mode_already_in_mode(self):
         h, ctx = self._make_coco()
-        ctx.mode_manager.is_coco_mode.return_value = True
+        ctx.mode_manager.get_mode.return_value = InteractionMode.COCO
         ctx.coco_manager.get_session_info.return_value = "session info"
         h.enter_mode("m1", "c1")
         h.reply_message.assert_called_once()
@@ -831,8 +831,8 @@ class TestProgrammingModeEnterExit:
         project.project_name = "test"
         project.project_id = "test_id"
         h.enter_mode("m1", "c1", project=project)
-        ctx.mode_manager.enter_coco_mode.assert_called_once_with("c1", project_id="test_id")
-        project.set_coco_mode.assert_called_once()
+        ctx.mode_manager.enter_programming_mode.assert_called_once_with("c1", InteractionMode.COCO, project_id="test_id")
+        project.set_programming_mode.assert_called_once()
         h.record_mode_transition.assert_called_once()
 
     def test_exit_mode_with_session(self):
@@ -883,7 +883,7 @@ class TestProgrammingModeEnterExit:
         ctx.project_manager.get_project_for_chat.return_value = project
         h.exit_mode = MagicMock()
         h.handle_card_exit("m1", "c1", "p1")
-        project.set_coco_mode.assert_called_once_with(False)
+        project.set_programming_mode.assert_called_once_with("coco", False)
         h.exit_mode.assert_called_once()
 
 
@@ -937,7 +937,7 @@ class TestOneShotPendingSlot:
 
         h.enter_mode("m1", "c1", project=project)
 
-        ctx.mode_manager.enter_coco_mode.assert_called_once_with("c1", project_id="test_id")
+        ctx.mode_manager.enter_programming_mode.assert_called_once_with("c1", InteractionMode.COCO, project_id="test_id")
         ctx.coco_manager.ensure_session.assert_not_called()
         h.add_reaction.assert_called_once()
         h.reply_message.assert_called_once()
@@ -949,7 +949,7 @@ class TestOneShotPendingSlot:
     @patch("src.thread.get_current_thread_id", return_value=None)
     def test_enter_mode_thread_enabled_already_in_mode(self, mock_tid):
         h, ctx = self._make_coco_pending()
-        ctx.mode_manager.is_coco_mode.return_value = True
+        ctx.mode_manager.get_mode.return_value = InteractionMode.COCO
 
         h.enter_mode("m1", "c1")
 
@@ -960,7 +960,7 @@ class TestOneShotPendingSlot:
     @patch("src.thread.get_current_thread_id", return_value=None)
     def test_exit_mode_pending_slot_no_session(self, mock_tid):
         h, ctx = self._make_coco_pending()
-        ctx.mode_manager.is_coco_mode.return_value = True
+        ctx.mode_manager.get_mode.return_value = InteractionMode.COCO
         project = MagicMock()
         project.project_id = "p1"
         project.project_name = "test"
@@ -2207,10 +2207,10 @@ class TestNonStreamingHeartbeat:
             return _orig_event_wait(self_event, timeout=timeout)
 
         with patch.object(_threading.Event, "wait", _fast_wait):
-            # Release after 0.8 second so touch fires at least once at 0.2s
+            # Release after 0.4 second so touch fires at least once at 0.2s
             def release_later():
                 import time
-                time.sleep(0.8)
+                time.sleep(0.4)
                 _done.set()
             t = _threading.Thread(target=release_later, daemon=True)
             t.start()
@@ -2255,11 +2255,17 @@ class TestNonStreamingHeartbeat:
         )
 
         # After handle_response, all heartbeat threads should have been joined
-        import time
-        time.sleep(0.1)  # give daemon threads time to exit
-        _threads_after = set(_threading.enumerate())
-        _new_threads = _threads_after - _threads_before
-        hb_threads = [t for t in _new_threads if t.is_alive() and "heartbeat" in t.name.lower()]
+        import time as _time
+        _deadline = _time.monotonic() + 2.0
+        while _time.monotonic() < _deadline:
+            _threads_after = set(_threading.enumerate())
+            _new_threads = _threads_after - _threads_before
+            hb_threads = [t for t in _new_threads if t.is_alive() and "heartbeat" in t.name.lower()]
+            if not hb_threads:
+                break
+            _time.sleep(0.01)
+        else:
+            hb_threads = [t for t in (set(_threading.enumerate()) - _threads_before) if t.is_alive() and "heartbeat" in t.name.lower()]
         assert len(hb_threads) == 0, f"Heartbeat thread still alive: {hb_threads}"
 
     def test_heartbeat_thread_joined_on_exception(self):
@@ -2289,11 +2295,17 @@ class TestNonStreamingHeartbeat:
             _repo_lock_mgr=repo_lock_mgr, _root_path=root_path,
         )
 
-        import time
-        time.sleep(0.1)
-        _threads_after = set(_threading.enumerate())
-        _new_threads = _threads_after - _threads_before
-        hb_threads = [t for t in _new_threads if t.is_alive() and "heartbeat" in t.name.lower()]
+        import time as _time
+        _deadline = _time.monotonic() + 2.0
+        while _time.monotonic() < _deadline:
+            _threads_after = set(_threading.enumerate())
+            _new_threads = _threads_after - _threads_before
+            hb_threads = [t for t in _new_threads if t.is_alive() and "heartbeat" in t.name.lower()]
+            if not hb_threads:
+                break
+            _time.sleep(0.01)
+        else:
+            hb_threads = [t for t in (set(_threading.enumerate()) - _threads_before) if t.is_alive() and "heartbeat" in t.name.lower()]
         assert len(hb_threads) == 0, f"Heartbeat thread still alive after exception: {hb_threads}"
 
     def test_no_heartbeat_thread_when_no_lock_mgr(self):
@@ -2320,11 +2332,17 @@ class TestNonStreamingHeartbeat:
             _repo_lock_mgr=None, _root_path=None,
         )
 
-        import time
-        time.sleep(0.1)
-        _threads_after = set(_threading.enumerate())
-        _new_threads = _threads_after - _threads_before
-        hb_threads = [t for t in _new_threads if t.is_alive() and "heartbeat" in t.name.lower()]
+        import time as _time
+        _deadline = _time.monotonic() + 2.0
+        while _time.monotonic() < _deadline:
+            _threads_after = set(_threading.enumerate())
+            _new_threads = _threads_after - _threads_before
+            hb_threads = [t for t in _new_threads if t.is_alive() and "heartbeat" in t.name.lower()]
+            if not hb_threads:
+                break
+            _time.sleep(0.01)
+        else:
+            hb_threads = [t for t in (set(_threading.enumerate()) - _threads_before) if t.is_alive() and "heartbeat" in t.name.lower()]
         assert len(hb_threads) == 0, "No heartbeat thread should be created when lock mgr is None"
 
 

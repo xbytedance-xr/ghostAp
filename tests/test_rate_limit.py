@@ -303,7 +303,7 @@ def test_model_failure_aware_session_compaction_loop_suppresses_compaction(monke
         model_failure_compaction_loop_window_s = 999.0
         model_failure_compaction_loop_max = 1  # 1 次即判 loop
 
-    monkeypatch.setattr("src.agent_session.get_settings", lambda: _Settings())
+    monkeypatch.setattr("src.agent_session.wrappers.get_settings", lambda: _Settings())
 
     called = {"n": 0}
 
@@ -424,7 +424,7 @@ def test_model_failure_aware_session_loop_detected_triggers_failover(monkeypatch
             return type("R", (), {"stop_reason": "end_turn", "text": "ok"})()
 
     # patch SyncACPSession so _do_failover can rebuild
-    monkeypatch.setattr("src.agent_session.SyncACPSession", lambda **kw: _New(**kw))
+    monkeypatch.setattr("src.agent_session.wrappers.SyncACPSession", lambda **kw: _New(**kw))
 
     s = ModelFailureAwareSession(inner=_Inner())
     r = s.send_prompt("hi")
@@ -490,7 +490,7 @@ class TestRateLimitAwareSession:
         result = wrapped.send_prompt("test")
         assert result == expected
 
-    @patch("src.agent_session.get_settings")
+    @patch("src.agent_session.wrappers.get_settings")
     def test_send_prompt_bypasses_retry_when_disabled(self, mock_settings):
         settings = MagicMock()
         settings.rate_limit_retry_enabled = False
@@ -503,7 +503,7 @@ class TestRateLimitAwareSession:
         with pytest.raises(Exception, match="rate_limit exceeded"):
             wrapped.send_prompt("test")
 
-    @patch("src.agent_session.get_settings")
+    @patch("src.agent_session.wrappers.get_settings")
     def test_retries_on_rate_limit_then_succeeds(self, mock_settings):
         settings = MagicMock()
         settings.rate_limit_retry_enabled = True
@@ -527,7 +527,7 @@ class TestRateLimitAwareSession:
         assert inner.send_prompt.call_count == 2
         callback.assert_called_once()
 
-    @patch("src.agent_session.get_settings")
+    @patch("src.agent_session.wrappers.get_settings")
     def test_raises_after_max_retries_exhausted(self, mock_settings):
         settings = MagicMock()
         settings.rate_limit_retry_enabled = True
@@ -546,7 +546,7 @@ class TestRateLimitAwareSession:
         # 1 initial + 2 retries = 3 total
         assert inner.send_prompt.call_count == 3
 
-    @patch("src.agent_session.get_settings")
+    @patch("src.agent_session.wrappers.get_settings")
     def test_non_rate_limit_error_not_retried(self, mock_settings):
         settings = MagicMock()
         settings.rate_limit_retry_enabled = True
@@ -564,7 +564,7 @@ class TestRateLimitAwareSession:
 
         assert inner.send_prompt.call_count == 1
 
-    @patch("src.agent_session.get_settings")
+    @patch("src.agent_session.wrappers.get_settings")
     def test_cancel_interrupts_rate_limit_wait(self, mock_settings):
         settings = MagicMock()
         settings.rate_limit_retry_enabled = True
@@ -595,7 +595,7 @@ class TestRateLimitAwareSession:
         # Should have been interrupted well before the 60s wait
         assert elapsed < 5
 
-    @patch("src.agent_session.get_settings")
+    @patch("src.agent_session.wrappers.get_settings")
     def test_callback_exception_does_not_break_retry(self, mock_settings):
         settings = MagicMock()
         settings.rate_limit_retry_enabled = True
@@ -620,7 +620,7 @@ class TestRateLimitAwareSession:
         # Should still succeed despite callback error
         assert result == expected
 
-    @patch("src.agent_session.get_settings")
+    @patch("src.agent_session.wrappers.get_settings")
     def test_rate_limit_until_set_during_wait(self, mock_settings):
         settings = MagicMock()
         settings.rate_limit_retry_enabled = True
@@ -694,8 +694,8 @@ class TestCreateEngineSession:
     因此这里需要检查“内层是否包含 RateLimitAwareSession”。
     """
 
-    @patch("src.agent_session.get_settings")
-    @patch("src.agent_session.SyncClaudeCLISession")
+    @patch("src.agent_session.factory.get_settings")
+    @patch("src.agent_session.factory.SyncClaudeCLISession")
     def test_claude_wrapped_when_enabled(self, MockCLI, mock_settings):
         settings = MagicMock()
         settings.rate_limit_retry_enabled = True
@@ -715,8 +715,8 @@ class TestCreateEngineSession:
         assert isinstance(getattr(result, "_inner", None), RateLimitAwareSession)
         mock_session.start.assert_called_once()
 
-    @patch("src.agent_session.get_settings")
-    @patch("src.agent_session.SyncClaudeCLISession")
+    @patch("src.agent_session.factory.get_settings")
+    @patch("src.agent_session.factory.SyncClaudeCLISession")
     def test_claude_not_wrapped_when_disabled(self, MockCLI, mock_settings):
         settings = MagicMock()
         settings.rate_limit_retry_enabled = False
@@ -795,7 +795,7 @@ def test_model_failure_aware_session_send_prompt_with_retry_success_after_retry(
     class _S:
         model_failure_compaction_enabled = False
 
-    monkeypatch.setattr("src.agent_session.get_settings", lambda: _S())
+    monkeypatch.setattr("src.agent_session.wrappers.get_settings", lambda: _S())
     s = ModelFailureAwareSession(inner=_Inner())
     out = s.send_prompt_with_retry("hello")
     assert out.text == "ok"

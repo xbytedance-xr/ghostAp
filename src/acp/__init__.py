@@ -17,7 +17,23 @@ from .models import (
 from .renderer import ACPEventRenderer
 from .session import ACPSession
 from .sync_adapter import SyncACPSession, start_session_with_retry
-from .manager import ACPSessionManager, AgentSessionManager
+
+# NOTE: .manager import is deferred via __getattr__ (PEP 562) to break a
+# circular dependency with the agent_session package.  agent_session submodules
+# import from acp.models / acp.sync_adapter at module level, and acp.manager
+# imports from agent_session — eagerly loading .manager here would trigger the
+# cycle when agent_session is initialised first.
+
+
+def __getattr__(name: str):
+    if name in ("ACPSessionManager", "AgentSessionManager"):
+        from .manager import ACPSessionManager, AgentSessionManager
+
+        globals()["ACPSessionManager"] = ACPSessionManager
+        globals()["AgentSessionManager"] = AgentSessionManager
+        return globals()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "ACPEvent",

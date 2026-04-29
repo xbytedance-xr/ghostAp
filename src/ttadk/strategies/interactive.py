@@ -48,6 +48,7 @@ class InteractiveStrategy(ModelFetchStrategy):
             if not bool(getattr(get_settings(), "ttadk_interactive_enabled", False)):
                 return []
         except Exception:
+            logger.debug("fetch: import module", exc_info=True)
             return []
 
         # 环境预检：非交互式环境直接跳过，避免无效等待。
@@ -89,7 +90,7 @@ class InteractiveStrategy(ModelFetchStrategy):
             try:
                 env.setdefault("TERM", env.get("TERM") or "xterm-256color")
             except Exception:
-                pass
+                logger.debug("fetch: set default value", exc_info=True)
             cmd = ["ttadk", "code", "-t", tool_name]
             try:
                 proc = subprocess.Popen(
@@ -108,7 +109,7 @@ class InteractiveStrategy(ModelFetchStrategy):
                     try:
                         os.close(slave)
                     except OSError:
-                        pass
+                        logger.debug("close fd", exc_info=True)
                     slave = None
                 raise
             os.close(slave)
@@ -177,7 +178,7 @@ class InteractiveStrategy(ModelFetchStrategy):
                         os.write(master, b"\x1b[B")  # Down arrow
                         time.sleep(0.05)
                     except Exception:
-                        pass
+                        logger.debug("write to fd", exc_info=True)
 
             logger.info(f"InteractiveStrategy successfully fetched {len(models)} models for {tool_name}")
             return models
@@ -191,12 +192,12 @@ class InteractiveStrategy(ModelFetchStrategy):
                 try:
                     os.close(master)
                 except Exception:
-                    pass
+                    logger.debug("close fd", exc_info=True)
             if slave is not None:
                 try:
                     os.close(slave)
                 except Exception:
-                    pass
+                    logger.debug("close fd", exc_info=True)
 
             # 确保子进程被正确清理
             if proc is not None:
@@ -207,13 +208,13 @@ class InteractiveStrategy(ModelFetchStrategy):
                     try:
                         proc.terminate()
                     except Exception:
-                        pass
+                        logger.debug("terminate process", exc_info=True)
 
                     # 再杀整个进程组，避免遗留子进程
                     try:
                         os.killpg(proc.pid, signal.SIGTERM)
                     except Exception:
-                        pass
+                        logger.debug("kill process", exc_info=True)
 
                     try:
                         proc.wait(timeout=1.2)
@@ -221,15 +222,15 @@ class InteractiveStrategy(ModelFetchStrategy):
                         try:
                             proc.kill()
                         except Exception:
-                            pass
+                            logger.debug("kill process", exc_info=True)
                         try:
                             os.killpg(proc.pid, signal.SIGKILL)
                         except Exception:
-                            pass
+                            logger.debug("kill process", exc_info=True)
                         try:
                             proc.wait(timeout=1.2)
                         except Exception:
-                            pass
+                            logger.debug("1.2)", exc_info=True)
                 except Exception as e:
                     logger.warning(f"Failed to cleanup ttadk interactive process {getattr(proc, 'pid', None)}: {get_error_detail(e)}")
 
@@ -248,6 +249,7 @@ class InteractiveStrategy(ModelFetchStrategy):
             time.sleep(0.1)
             return real_name
         except Exception:
+            logger.debug("_select_and_extract_current_model: write to fd", exc_info=True)
             return None
 
     def _read_until_prompt(self, fd: int, prompt: str, timeout: float = 10) -> str:

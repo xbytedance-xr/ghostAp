@@ -34,9 +34,13 @@ class TestMessageDispatcher:
         # In COCO mode
         self.client._get_effective_mode.return_value = (InteractionMode.COCO, True)
         
+        mock_handler = MagicMock()
+        self.client._get_mode_handler.return_value = mock_handler
+
         self.dispatcher.process_with_intent("m1", "c1", "hello coco", None)
-        
-        self.client._handle_coco_message.assert_called_once_with("m1", "c1", "hello coco", None)
+
+        self.client._get_mode_handler.assert_called_once_with(InteractionMode.COCO)
+        mock_handler.handle_message.assert_called_once_with("m1", "c1", "hello coco", None)
 
     def test_process_with_intent_exit_command(self):
         self.client._is_deep_command.return_value = False
@@ -44,7 +48,7 @@ class TestMessageDispatcher:
         self.client._is_spec_command.return_value = False
         self.client._is_interceptable_command.return_value = False
         self.client._is_exit_command.return_value = True
-        self.client._should_defer_exit.return_value = False
+        self.client._control_plane.should_defer_exit.return_value = False
         
         self.client._get_effective_mode.return_value = (InteractionMode.COCO, True)
         

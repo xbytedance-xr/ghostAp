@@ -63,7 +63,7 @@ def test_exit_is_deferred_until_running_task_finishes():
         )
         assert started.wait(timeout=1)
 
-        client._request_deferred_exit(message_id="m_exit", chat_id="chat", project_id="p1")
+        client._control_plane.request_deferred_exit(message_id="m_exit", chat_id="chat", project_id="p1")
 
         # Should not exit while task is still running
         time.sleep(0.1)
@@ -126,12 +126,12 @@ def test_exit_is_immediate_when_no_running_task():
         )
         assert h.wait(timeout=2).status.name == "SUCCEEDED"
 
-        assert client._should_defer_exit(chat_id="chat", project_id="p1") is False
+        assert client._control_plane.should_defer_exit(chat_id="chat", project_id="p1") is False
 
         client._exit_current_mode = MagicMock()
         # mimic the core decision branch: no running task -> exit immediately
-        if client._should_defer_exit(chat_id="chat", project_id="p1"):
-            client._request_deferred_exit(message_id="m_exit", chat_id="chat", project_id="p1")
+        if client._control_plane.should_defer_exit(chat_id="chat", project_id="p1"):
+            client._control_plane.request_deferred_exit(message_id="m_exit", chat_id="chat", project_id="p1")
         else:
             client._exit_current_mode("m_exit", "chat", project=None)
         client._exit_current_mode.assert_called_once()

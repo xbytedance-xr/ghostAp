@@ -16,6 +16,10 @@ import time
 from typing import Callable, Optional
 
 from .env_sandbox import build_ttadk_subprocess_env
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 __all__ = [
     "ttadk_acp_ready_quickcheck",
@@ -46,6 +50,7 @@ def ttadk_acp_ready_quickcheck(
     try:
         cmd, args = resolve_agent_spec_fn(agent_type, model_name=model_name)
     except Exception:
+        logger.debug("ttadk_acp_ready_quickcheck: resolve_agent_spec_fn(agent_t...", exc_info=True)
         return False
 
     full_cmd = [cmd] + list(args)
@@ -66,6 +71,7 @@ def ttadk_acp_ready_quickcheck(
             env=env,
         )
     except Exception:
+        logger.debug("ttadk_acp_ready_quickcheck: unexpected error", exc_info=True)
         return False
 
     try:
@@ -121,17 +127,17 @@ def ttadk_acp_ready_quickcheck(
             if pending.lstrip().startswith(b"{"):
                 return True
         except Exception:
-            pass
+            logger.debug("evaluate condition", exc_info=True)
         return False
     finally:
         try:
             p.terminate()
         except Exception:
-            pass
+            logger.debug("p.terminate()", exc_info=True)
         try:
             p.wait(timeout=1)
         except Exception:
             try:
                 p.kill()
             except Exception:
-                pass
+                logger.debug("p.kill()", exc_info=True)

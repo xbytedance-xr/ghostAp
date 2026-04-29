@@ -218,9 +218,9 @@ class TestDeepEngine:
             rate_limit_retry_enabled = False
 
         with (
-            patch("src.agent_session.get_settings", return_value=_SessSettings()),
+            patch("src.agent_session.factory.get_settings", return_value=_SessSettings()),
             patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck,
-            patch("src.agent_session.SyncTTADKCLISession", return_value=_S()),
+            patch("src.agent_session.factory.SyncTTADKCLISession", return_value=_S()),
         ):
             # SSOT：create_engine_session 统一走 start_agent_session；单测不应触发真实 ttadk/codex 探测。
             mk_precheck.return_value = {
@@ -299,9 +299,9 @@ class TestDeepEngine:
             rate_limit_retry_enabled = False
 
         with (
-            patch("src.agent_session.get_settings", return_value=_SessSettings()),
+            patch("src.agent_session.factory.get_settings", return_value=_SessSettings()),
             patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck,
-            patch("src.agent_session.SyncTTADKCLISession", return_value=_S()),
+            patch("src.agent_session.factory.SyncTTADKCLISession", return_value=_S()),
         ):
             mk_precheck.return_value = {
                 "tool": "codex",
@@ -392,7 +392,7 @@ def test_ttadk_startup_log_semantics_consistent_between_create_sync_and_engine(m
         "diagnostics": {"attempts": [{"phase": "precheck"}]},
     }
 
-    monkeypatch.setattr(agent_session, "get_settings", lambda: _SessSettings())
+    monkeypatch.setattr(agent_session.factory, "get_settings", lambda: _SessSettings())
     monkeypatch.setattr("src.ttadk.get_ttadk_manager", lambda *a, **k: MagicMock())
     monkeypatch.setattr("src.ttadk.manager.start_ttadk_engine_session", lambda **kw: dict(info_ok))
     monkeypatch.setattr(
@@ -412,7 +412,7 @@ def test_ttadk_startup_log_semantics_consistent_between_create_sync_and_engine(m
     )
 
     # 避免触发真实 resolve_agent_spec 探测（codex 在本仓默认会抛 AgentSpecResolveError）。
-    monkeypatch.setattr(agent_session, "SyncACPSession", lambda *a, **k: _DummySession())
+    monkeypatch.setattr(agent_session.factory, "SyncACPSession", lambda *a, **k: _DummySession())
 
     caplog.clear()
     _ = agent_session.create_sync_session(agent_type="ttadk_codex", cwd="/tmp", model_name="gpt-5.2")

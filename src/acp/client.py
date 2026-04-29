@@ -80,8 +80,9 @@ class ACPHistoryStore:
     """
 
     def __init__(self, base_dir: Optional[str] = None):
-        env_dir = os.getenv("GHOSTAP_ACP_HISTORY_DIR", "").strip()
-        root = base_dir or env_dir
+        from ..config import get_settings
+        settings_dir = get_settings().acp_history_dir.strip()
+        root = base_dir or settings_dir
         if not root:
             root = str(Path.home() / ".ghostap" / "acp_history")
         self._base = Path(root).expanduser()

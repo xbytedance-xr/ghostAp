@@ -24,7 +24,8 @@ def test_e2e_model_failure_need_compaction_then_loop_then_failover(monkeypatch, 
         model_failure_compaction_loop_max = 2  # second compaction event triggers loop
         model_failure_failover_map = "gpt-5.2:gpt-5.1"
 
-    monkeypatch.setattr(agent_session, "get_settings", lambda: _S())
+    monkeypatch.setattr(agent_session.factory, "get_settings", lambda: _S())
+    monkeypatch.setattr(agent_session.wrappers, "get_settings", lambda: _S())
 
     # Base session that simulates model errors across calls
     class _Base:
@@ -99,7 +100,7 @@ def test_e2e_model_failure_need_compaction_then_loop_then_failover(monkeypatch, 
         model = agent_session._extract_model_from_agent_args(list(kw.get("agent_args") or []))
         return _Base(model)
 
-    monkeypatch.setattr(agent_session, "SyncACPSession", _fake_sync_acp_session)
+    monkeypatch.setattr(agent_session.wrappers, "SyncACPSession", _fake_sync_acp_session)
 
     # Create session through factory (ensures wrapper chain is applied)
     sess = agent_session.create_engine_session(agent_type="coco", cwd="/tmp", model_name="gpt-5.2")
