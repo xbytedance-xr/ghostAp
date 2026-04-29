@@ -81,11 +81,10 @@ class WorktreeHandler(BaseHandler):
     def _resolve_worktree_goal(value: dict, state=None) -> str:
         """Unify goal resolution from card value + state fallback.
 
-        Priority: value["goal"] > value["worktree_goal"] > value["_input_value"] > state.selection.pending_goal
+        Priority: value["worktree_goal"] > value["_input_value"] > state.selection.pending_goal
         """
         return str(
-            value.get("goal")
-            or value.get("worktree_goal")
+            value.get("worktree_goal")
             or value.get("_input_value")
             or (state.selection.pending_goal if state else "")
             or ""
@@ -199,7 +198,7 @@ class WorktreeHandler(BaseHandler):
         state = mgr.get_state(project)
         selected_dicts = [item.to_dict() for item in state.selection.selected_items]
         msg_type, card = CardBuilder.build_worktree_tool_select_card(
-            tools, selected_dicts, project_id, goal=goal,
+            tools, selected_dicts, project_id,
         )
         if from_card:
             self.patch_message(message_id, card, msg_type=msg_type)
@@ -231,10 +230,6 @@ class WorktreeHandler(BaseHandler):
 
         mgr = self._worktree_manager()
         state = mgr.get_state(project)
-        goal = self._resolve_worktree_goal(value, state)
-        if goal:
-            mgr.set_pending_goal(project, goal)
-
         if provider == "ttadk" and tool_name == "ttadk":
             pid = project.project_id
             selected_dicts = [item.to_dict() for item in state.selection.selected_items]
@@ -242,7 +237,6 @@ class WorktreeHandler(BaseHandler):
                 self._get_ttadk_worktree_tools(),
                 selected_dicts,
                 pid,
-                goal=goal,
             )
             self.patch_message(message_id, card, msg_type=msg_type)
             return
@@ -285,7 +279,6 @@ class WorktreeHandler(BaseHandler):
                 selected_dicts,
                 pid,
                 message=UI_TEXT["system_worktree_selection_finished_banner"].format(tool=option.display_name),
-                goal=goal,
             )
             self.patch_message(message_id, card, msg_type=msg_type)
         else:
@@ -301,10 +294,6 @@ class WorktreeHandler(BaseHandler):
             )
             mgr.back_to_tool_selection(project)
 
-            if goal:
-                self.handle_finish_worktree_selection(message_id, chat_id, project_id=pid, value=value)
-                return
-
             state = mgr.get_state(project)
             tools = self._get_available_worktree_tools()
             selected_dicts = [item.to_dict() for item in state.selection.selected_items]
@@ -313,7 +302,6 @@ class WorktreeHandler(BaseHandler):
                 selected_dicts,
                 pid,
                 message=msg,
-                goal=goal,
             )
             self.patch_message(message_id, card, msg_type=msg_type)
 
@@ -337,25 +325,17 @@ class WorktreeHandler(BaseHandler):
         mgr = self._worktree_manager()
 
         state = mgr.get_state(project)
-        goal = self._resolve_worktree_goal(value, state)
-        if goal:
-            mgr.set_pending_goal(project, goal)
-
         pending_tool = state.selection.pending_item
 
         state, added, msg = mgr.add_pending_item(project, model_name=model_name, model_display_name=model_display)
         mgr.back_to_tool_selection(project)
-
-        if goal:
-            self.handle_finish_worktree_selection(message_id, chat_id, project_id=project_id, value=value)
-            return
 
         state = mgr.get_state(project)
         selected_dicts = [item.to_dict() for item in state.selection.selected_items]
         tools = self._get_available_worktree_tools()
         pid = project.project_id
         msg_type, card = CardBuilder.build_worktree_tool_select_card(
-            tools, selected_dicts, pid, message=msg, goal=goal,
+            tools, selected_dicts, pid, message=msg,
         )
         self.patch_message(message_id, card, msg_type=msg_type)
 

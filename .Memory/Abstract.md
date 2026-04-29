@@ -2,7 +2,9 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-04-29
-- **Spec/Loop ACP 子会话审查恢复补齐五视角契约** — 在删除 ARK 后继续沿用“当前工具模型 + 独立 ACP 子会话”恢复标准分解与审查兜底；修复 fallback 路径遗漏 `DESIGNER` 导致四视角误判通过的问题，并补充回归测试；全量 3858 passed → [详细记录](2026-04-29.md)
+- **/wt 工具发现改为静态注册表** — 将 `tool_discovery.py` 从 `list_acp_tools()` 动态发现改为 `_KNOWN_TOOLS` 静态注册表，所有工具（Coco/Aiden/Codex/Claude/Gemini）统一只需 `shutil.which()` 即可出现在 `/wt` 列表；完全重写测试文件；3859 passed → [详细记录](2026-04-29.md)
+- **/wt 选择流程重构：移除 goal 卡片传参与快速路径** — 从工具/模型选择卡片中移除 Goal 输入区域和按钮 value 中的 goal 字段；移除 handler 中的 goal 解析块和快速路径（选完工具/模型后不再自动执行）；goal 仅通过 `start_selection(goal=)` 设置并在 `pending_goal` 中持久化，选完所有工具后由确认卡输入；修改 handler 7 处、card 10 处、删除 5 个过时测试、更新 5 个测试；3854 passed → [详细记录](2026-04-29.md)
+- **Spec/Loop ACP 子会话审查恢复补齐五视角契约** — 在删除 ARK 后继续沿用"当前工具模型 + 独立 ACP 子会话"恢复标准分解与审查兜底；修复 fallback 路径遗漏 `DESIGNER` 导致四视角误判通过的问题，并补充回归测试；全量 3858 passed → [详细记录](2026-04-29.md)
 - **审查验证：Spec/Loop 兜底审查解析的 DESIGNER 视角未全链路保留** — 静态核查确认 `DESIGNER` 仅在 ACP 兜底审查解析分支被四视角 prompt 排除，属于真实风险而非误报；主审查 prompt、枚举和正则解析仍保留五视角 → [详细记录](2026-04-29.md)
 - **/wt 主列表改为产品入口驱动** — 将顶层工具列表从实现分类心智切换为产品入口心智，固定并列展示 Coco/Aiden/Codex/Claude/TTADK，并让原生主工具排序靠前；51 个相关测试通过 → [详细记录](2026-04-29.md)
 - **/wt TTADK 模型列表改为强制实时刷新** — 追踪到 Worktree 之前读取的是 TTADK 旧缓存，导致即便 CLI 已能打印真实模型列表，`/wt` 仍显示过期模型名；改为 TTADK 模型选择时强制 `force_refresh=True`，并保持测试只用 mock、不引入需交互鉴权的 case；48 个相关测试通过 → [详细记录](2026-04-29.md)

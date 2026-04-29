@@ -22,37 +22,34 @@ class TestWorktreeGoalPersistence(unittest.TestCase):
         # 初始目标为空
         self.assertEqual(self.project.worktree_state.selection.pending_goal, "")
         
-        # 模拟选择工具，并在输入框中填入了目标 (goal)
+        # 选择工具时 value 中不再包含 goal（已从卡片移除）
         value = {
             "tool_name": "coco",
-            "goal": "Refactor login"
         }
         
         with patch.object(self.handler, "_get_available_worktree_tools", return_value=[]), \
              patch.object(self.handler, "_get_models_for_tool", return_value=[]), \
-             patch.object(self.handler, "patch_message"), \
-             patch.object(self.handler, "handle_finish_worktree_selection"):  # 阻止 auto-execute
+             patch.object(self.handler, "patch_message"):
             self.handler.handle_worktree_select_tool("m1", "c1", "p1", value)
             
-        # 验证目标已持久化
-        self.assertEqual(self.project.worktree_state.selection.pending_goal, "Refactor login")
+        # goal 不再从卡片 value 读取，pending_goal 保持为空
+        self.assertEqual(self.project.worktree_state.selection.pending_goal, "")
 
     def test_handle_worktree_select_model_persists_goal(self):
         # 预设一个目标
         self.project.worktree_state.selection.pending_goal = "Old goal"
         
-        # 模拟选择模型，并更改了目标 (goal)
+        # 选择模型时 value 中不再包含 goal
         value = {
             "model_name": "gpt-4",
-            "goal": "New goal"
         }
         
-        with patch.object(self.handler, "patch_message"), \
-             patch.object(self.handler, "handle_finish_worktree_selection"):
+        with patch.object(self.handler, "_get_available_worktree_tools", return_value=[]), \
+             patch.object(self.handler, "patch_message"):
             self.handler.handle_worktree_select_model("m1", "c1", "p1", value)
             
-        # 验证目标已更新
-        self.assertEqual(self.project.worktree_state.selection.pending_goal, "New goal")
+        # goal 不再从卡片 value 覆盖，pending_goal 保持原值
+        self.assertEqual(self.project.worktree_state.selection.pending_goal, "Old goal")
 
     def test_handle_worktree_confirm_start_uses_persisted_goal(self):
         # 预设目标

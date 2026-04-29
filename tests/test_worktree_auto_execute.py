@@ -8,7 +8,6 @@ Covers:
   (e) Zero tools selection error
   (f) Silent mode throttle and timeout notification
   (g) Goal persistence across tool/model selection
-    (h) Auto-trigger finish_selection after tool/model choice if goal exists
 """
 from __future__ import annotations
 
@@ -170,9 +169,6 @@ def test_wt_command_with_goal_parsed():
     assert state.journey.status == WorktreeJourneyStatus.PENDING
 
     reply_mock.assert_called_once()
-    card_json = reply_mock.call_args[0][1]
-    assert "任务目标" in card_json
-    assert "实现登录功能" in card_json
     
 
 def test_apply_journey_event_updates_runtime_state_journey():
@@ -550,7 +546,7 @@ def test_silent_mode_throttle_interval():
 # ---------------------------------------------------------------------------
 
 def test_goal_persistence_across_selection():
-    """Goal set via /wt persists through tool select → model select → finish."""
+    """Goal set via /wt persists through tool select → model select → back to tool select."""
     handler = _make_system_handler()
     project = _make_project("p-pers")
     handler.ctx.project_manager.get_active_project.return_value = project
@@ -567,38 +563,38 @@ def test_goal_persistence_across_selection():
     state = mgr.get_state(project)
     assert state.selection.pending_goal == "实现搜索功能"
 
-    # Step 2: select tool — goal should persist in state
+    # Step 2: select tool — goal should persist (goal no longer in card value)
     with patch.object(handler, "_get_models_for_tool", return_value=[{"name": "sonnet", "display_name": "Sonnet", "is_default": True}, 
                                                                       {"name": "opus", "display_name": "Opus", "is_default": False}]), \
          patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
          patch.object(handler, "patch_message"):
         handler.handle_worktree_select_tool(
             "m2", "c1", project_id="p-pers",
-            value={"tool_name": "claude", "provider": "cli", "supports_model": True,
-                   "goal": "实现搜索功能"},
+            value={"tool_name": "claude", "provider": "cli", "supports_model": True},
         )
 
     state = mgr.get_state(project)
     assert state.selection.pending_goal == "实现搜索功能"
     assert state.selection.pending_item is not None
 
-    # Step 3: select model — should auto-execute with preserved goal
-    auto_exec_mock = MagicMock()
+    # Step 3: select model — should return to tool select (no auto-execute)
+    patch_mock = MagicMock()
     with patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
-         patch.object(handler, "patch_message"), \
-         patch.object(handler, "_auto_execute_worktree", auto_exec_mock):
+         patch.object(handler, "patch_message", patch_mock):
         handler.handle_worktree_select_model(
             "m3", "c1", project_id="p-pers",
-            value={"model_name": "sonnet", "model_display_name": "Sonnet",
-                   "goal": "实现搜索功能"},
+            value={"model_name": "sonnet", "model_display_name": "Sonnet"},
         )
 
-    auto_exec_mock.assert_called_once()
-    assert auto_exec_mock.call_args[0][2] == "实现搜索功能"
+    # Should return to tool select card, not auto-execute
+    patch_mock.assert_called_once()
+    state = mgr.get_state(project)
+    assert state.selection.pending_goal == "实现搜索功能"
+    assert len(state.selection.selected_items) == 1
 
 
-def test_goal_from_model_select_card_persists():
-    """Goal passed in model select card value persists to state."""
+def test_goal_from_start_selection_persists_through_model_select():
+    """Goal set via start_selection persists through model selection."""
     handler = _make_system_handler()
     project = _make_project("p-model")
     handler.ctx.project_manager.get_active_project.return_value = project
@@ -606,61 +602,22 @@ def test_goal_from_model_select_card_persists():
     handler.ctx.project_manager.get_project_for_chat.return_value = project
 
     mgr = handler._worktree_manager()
-    mgr.start_selection(project, goal="")  # 初始不设置 goal
+    mgr.start_selection(project, goal="重构数据库")
     mgr.select_tool(project, WorktreeToolOption(
         provider="cli", tool_name="claude", display_name="Claude", supports_model=True,
     ))
 
-    # 测试直接从卡片 value 传入 goal 的场景
+    # select model — goal should not be overwritten (no goal in card value)
     with patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
-         patch.object(handler, "patch_message"), \
-         patch.object(handler, "handle_finish_worktree_selection") as mock_finish:  # 阻止 auto-execute
+         patch.object(handler, "patch_message"):
         handler.handle_worktree_select_model(
             "m-model", "c-model", project_id="p-model",
-            value={"model_name": "sonnet", "model_display_name": "Sonnet", "goal": "重构数据库"},
+            value={"model_name": "sonnet", "model_display_name": "Sonnet"},
         )
 
     state = mgr.get_state(project)
-    # 验证 pending_goal 被正确设置
     assert state.selection.pending_goal == "重构数据库"
 
-
-# ---------------------------------------------------------------------------
-# Card content tests
-# ---------------------------------------------------------------------------
-
-def test_tool_select_card_with_goal_shows_readonly_display():
-    """build_worktree_tool_select_card with goal shows read-only goal, no input box."""
-    _, card_json = CardBuilder.build_worktree_tool_select_card(
-        _FAKE_TOOLS, [], "proj1", goal="实现功能X",
-    )
-    card = json.loads(card_json)
-    body = json.dumps(card, ensure_ascii=False)
-    assert "任务目标" in body
-    assert "实现功能X" in body
-    # Should NOT have input tag for goal (read-only mode)
-    # The input name "worktree_goal" should not appear since goal is provided
-    assert body.count('"name": "worktree_goal"') == 0
-
-
-def test_tool_select_card_without_goal_shows_input_box():
-    """build_worktree_tool_select_card without goal shows input box."""
-    _, card_json = CardBuilder.build_worktree_tool_select_card(
-        _FAKE_TOOLS, [], "proj1",
-    )
-    body = json.dumps(json.loads(card_json), ensure_ascii=False)
-    assert "worktree_goal" in body
-    assert "输入任务目标" in body
-
-
-def test_model_select_card_passes_goal_in_buttons():
-    """build_worktree_model_select_card passes goal in button values."""
-    models = [{"name": "gpt-4.1", "display_name": "GPT-4.1", "is_default": True}]
-    _, card_json = CardBuilder.build_worktree_model_select_card(
-        models, "Claude", [], "proj1", goal="测试目标",
-    )
-    body = json.dumps(json.loads(card_json), ensure_ascii=False)
-    assert '"goal": "测试目标"' in body or '"goal":"测试目标"' in body
 
 
 def test_plan_goal_emits_goal_created_and_updates_journey():
@@ -713,67 +670,6 @@ def test_execute_goal_emits_execution_events_on_success_and_failure():
     # last_error 由 get_error_detail 生成，这里只要求非空
     assert fail_state.journey.last_error
 
-
-# ---------------------------------------------------------------------------
-# (h) Auto-trigger finish_selection after tool/model choice if goal exists
-# ---------------------------------------------------------------------------
-
-def test_auto_execute_after_model_selection():
-    """If goal exists, handle_worktree_select_model triggers handle_finish_worktree_selection."""
-    handler = _make_system_handler()
-    project = _make_project("p-auto-model")
-    handler.ctx.project_manager.get_active_project.return_value = project
-    handler.ctx.project_manager.get_project.return_value = project
-    handler.ctx.project_manager.get_project_for_chat.return_value = project
-
-    mgr = handler._worktree_manager()
-    mgr.start_selection(project, goal="自动执行任务")
-    mgr.select_tool(project, WorktreeToolOption(
-        provider="cli", tool_name="claude", display_name="Claude", supports_model=True,
-    ))
-
-    finish_mock = MagicMock()
-    with patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
-         patch.object(handler, "handle_finish_worktree_selection", finish_mock), \
-         patch.object(handler, "patch_message"):
-        handler.handle_worktree_select_model(
-            "m-auto", "c-auto", project_id="p-auto-model",
-            value={"model_name": "sonnet", "goal": "自动执行任务"},
-        )
-
-    # Should have called handle_finish_worktree_selection
-    finish_mock.assert_called_once()
-    assert finish_mock.call_args[0][1] == "c-auto" # chat_id
-    assert finish_mock.call_args[1]["project_id"] == "p-auto-model"
-
-
-def test_auto_execute_after_tool_selection_skipping_model():
-    """If goal exists, handle_worktree_select_tool (skipping model) triggers handle_finish_worktree_selection."""
-    handler = _make_system_handler()
-    project = _make_project("p-auto-tool")
-    handler.ctx.project_manager.get_active_project.return_value = project
-    handler.ctx.project_manager.get_project.return_value = project
-    handler.ctx.project_manager.get_project_for_chat.return_value = project
-
-    mgr = handler._worktree_manager()
-    mgr.start_selection(project, goal="直接开始任务")
-
-    finish_mock = MagicMock()
-    with patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
-         patch.object(handler, "_get_models_for_tool", return_value=[]), \
-         patch.object(handler, "handle_finish_worktree_selection", finish_mock), \
-         patch.object(handler, "patch_message"):
-        # Select "coco" which skips model selection in _FAKE_TOOLS
-        handler.handle_worktree_select_tool(
-            "m-auto", "c-auto", project_id="p-auto-tool",
-            value={"tool_name": "coco", "provider": "acp", "supports_model": False,
-                   "skip_model_selection": True, "goal": "直接开始任务"},
-        )
-
-    # Should have called handle_finish_worktree_selection
-    finish_mock.assert_called_once()
-    assert finish_mock.call_args[0][1] == "c-auto" # chat_id
-    assert finish_mock.call_args[1]["project_id"] == "p-auto-tool"
 
 
 # ---------------------------------------------------------------------------

@@ -135,7 +135,6 @@ class WorktreeBuilder:
         selected_items: list[dict],
         project_id: Optional[str] = None,
         message: str = "",
-        goal: str = "",
         banner_ctx: WorktreeBannerContext | None = None,
     ) -> tuple[str, str]:
         """Render top-level tool selection card."""
@@ -144,7 +143,6 @@ class WorktreeBuilder:
             selected_items,
             project_id=project_id,
             message=message,
-            goal=goal,
             banner_ctx=banner_ctx,
             title_key="worktree_select_tool_title",
             prompt_key="worktree_select_tool_prompt",
@@ -156,7 +154,6 @@ class WorktreeBuilder:
         selected_items: list[dict],
         project_id: Optional[str] = None,
         message: str = "",
-        goal: str = "",
         banner_ctx: WorktreeBannerContext | None = None,
     ) -> tuple[str, str]:
         """Render TTADK subtool selection card."""
@@ -165,7 +162,6 @@ class WorktreeBuilder:
             selected_items,
             project_id=project_id,
             message=message,
-            goal=goal,
             banner_ctx=banner_ctx,
             title_key="worktree_select_ttadk_tool_title",
             prompt_key="worktree_select_ttadk_tool_prompt",
@@ -177,7 +173,6 @@ class WorktreeBuilder:
         selected_items: list[dict],
         project_id: Optional[str] = None,
         message: str = "",
-        goal: str = "",
         banner_ctx: WorktreeBannerContext | None = None,
         *,
         title_key: str,
@@ -193,24 +188,9 @@ class WorktreeBuilder:
         elements: list[dict] = []
         if message:
             banner_text = WorktreeBuilder._resolve_banner_text(
-                message, goal=goal, selected_items=selected_items, banner_ctx=banner_ctx,
+                message, selected_items=selected_items, banner_ctx=banner_ctx,
             )
             elements.append(CoreBuilder._build_banner_element(banner_text, type="success"))
-
-        # Goal area: show read-only display if goal is set, otherwise input box
-        if goal:
-            elements.append(
-                CoreBuilder._build_content_element(UI_TEXT["worktree_goal_label"].format(goal=goal))
-            )
-        else:
-            elements.append(
-                {
-                    "tag": "input",
-                    "name": "worktree_goal",
-                    "placeholder": {"tag": "plain_text", "content": UI_TEXT["worktree_goal_placeholder"]},
-                    "max_length": 500,
-                }
-            )
 
         elements.append(CoreBuilder._build_content_element("\n".join(lines)))
 
@@ -237,7 +217,6 @@ class WorktreeBuilder:
                         "supports_model": t.get("supports_model", False),
                         "skip_model_selection": t.get("skip_model_selection", False),
                         "project_id": project_id or "",
-                        "goal": goal,
                     },
                 }
             )
@@ -253,7 +232,6 @@ class WorktreeBuilder:
                 "value": {
                     "action": "worktree_finish_selection",
                     "project_id": project_id or "",
-                    "goal": goal,
                 },
             }
             elements.extend(build_responsive_layout([finish_btn]))
@@ -268,7 +246,6 @@ class WorktreeBuilder:
         selected_items: list[dict],
         project_id: Optional[str] = None,
         message: str = "",
-        goal: str = "",
         banner_ctx: WorktreeBannerContext | None = None,
     ) -> tuple[str, str]:
         """Render model selection card for a TTADK tool.
@@ -278,15 +255,9 @@ class WorktreeBuilder:
         elements: list[dict] = []
         if message:
             banner_text = WorktreeBuilder._resolve_banner_text(
-                message, goal=goal, selected_items=selected_items, banner_ctx=banner_ctx,
+                message, selected_items=selected_items, banner_ctx=banner_ctx,
             )
             elements.append(CoreBuilder._build_banner_element(banner_text, type="success"))
-
-        # Show goal if present
-        if goal:
-            elements.append(
-                CoreBuilder._build_content_element(UI_TEXT["worktree_goal_label"].format(goal=goal))
-            )
 
         elements.append(
             CoreBuilder._build_content_element(
@@ -318,7 +289,6 @@ class WorktreeBuilder:
                         "model_name": m["name"],
                         "model_display_name": m.get("display_name") or m["name"],
                         "project_id": project_id or "",
-                        "goal": goal,
                     },
                 }
             )
@@ -333,7 +303,6 @@ class WorktreeBuilder:
                     "model_name": "",
                     "model_display_name": "",
                     "project_id": project_id or "",
-                    "goal": goal,
                 },
             }
         )
