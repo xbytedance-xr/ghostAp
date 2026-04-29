@@ -196,7 +196,8 @@ class BaseHandler:
         )
 
     def patch_message(
-        self, message_id: str, content: str, max_retries: Optional[int] = None, throttle: bool = False
+        self, message_id: str, content: str, msg_type: str = "interactive",
+        max_retries: Optional[int] = None, throttle: bool = False,
     ) -> bool:
         """Update an existing message's content (e.g. updating a card).
 
