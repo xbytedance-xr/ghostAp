@@ -51,6 +51,55 @@ def test_skips_duplicate_tool_names():
     assert len(mytool_entries) == 1, "Duplicate tool names should be deduplicated"
 
 
+def test_returns_ttadk_as_single_aggregate_entry():
+    """TTADK tools should be hidden behind a single aggregate entry in the top-level list."""
+    discovery = WorktreeToolDiscovery()
+    acp_tools = [_make_acp_tool("coco", "ACP Coco")]
+
+    ttadk_mgr = MagicMock()
+    ttadk_mgr.get_tools.return_value = SimpleNamespace(
+        tools=[
+            _make_ttadk_tool("coco", "TTADK coco"),
+            _make_ttadk_tool("claude", "TTADK claude"),
+        ]
+    )
+
+    with patch("src.worktree_engine.tool_discovery.list_acp_tools", return_value=acp_tools), \
+         patch("src.worktree_engine.tool_discovery.shutil.which", return_value="/usr/bin/tool"), \
+         patch("src.worktree_engine.tool_discovery.tool_registry") as mock_reg, \
+         patch("src.worktree_engine.tool_discovery.get_ttadk_manager", return_value=ttadk_mgr):
+        mock_reg.get_provider.return_value = None
+        result = discovery.get_available_tools()
+
+    assert any(
+        t["provider"] == "ttadk" and t["tool_name"] == "ttadk"
+        for t in result
+    )
+    assert not any(
+        t["provider"] == "ttadk" and t["tool_name"] in {"coco", "claude"}
+        for t in result
+    )
+
+
+def test_get_ttadk_tools_returns_concrete_ttadk_tools():
+    """TTADK concrete tools should still be available from the TTADK-only discovery path."""
+    discovery = WorktreeToolDiscovery()
+    ttadk_mgr = MagicMock()
+    ttadk_mgr.get_tools.return_value = SimpleNamespace(
+        tools=[
+            _make_ttadk_tool("coco", "TTADK coco"),
+            _make_ttadk_tool("claude", "TTADK claude", skip_model_selection=True),
+        ]
+    )
+
+    with patch("src.worktree_engine.tool_discovery.get_ttadk_manager", return_value=ttadk_mgr):
+        result = discovery.get_ttadk_tools()
+
+    assert [tool["tool_name"] for tool in result] == ["coco", "claude"]
+    assert all(tool["provider"] == "ttadk" for tool in result)
+    assert result[1]["skip_model_selection"] is True
+
+
 def test_get_models_returns_empty_on_error():
     """get_models_for_tool should return [] when the provider raises."""
     discovery = WorktreeToolDiscovery()

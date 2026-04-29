@@ -253,6 +253,28 @@ def test_wt_command_enters_selection_mode_and_shows_tool_prompt():
     assert "Claude" in card_str
 
 
+def test_wt_command_shows_single_ttadk_entry_in_top_level_tool_list():
+    """Top-level /wt tool card should expose TTADK as one aggregate entry instead of flattening TTADK tools."""
+    handler = _make_system_handler()
+    project = ProjectContext(project_id="p-ttadk", project_name="INT", root_path="/tmp/int")
+    handler.ctx.project_manager.get_active_project.return_value = project
+
+    fake_tools = [
+        {"provider": "acp", "tool_name": "coco", "display_name": "Coco", "description": "AI 编程", "supports_model": True},
+        {"provider": "ttadk", "tool_name": "ttadk", "display_name": "TTADK", "description": "TTADK 多工具入口", "supports_model": False},
+    ]
+    reply_mock = MagicMock()
+
+    with patch.object(handler, "_get_available_worktree_tools", return_value=fake_tools), \
+         patch.object(handler, "reply_message", reply_mock):
+        handler.handle_worktree_command("msg-ttadk", "chat1", project)
+
+    card_str = reply_mock.call_args[0][1]
+    assert "TTADK" in card_str
+    assert "TTADK · coco" not in card_str
+    assert "TTADK · claude" not in card_str
+
+
 def test_wt_command_without_project_returns_error():
     """Edge: /wt without an active project should reply with an error."""
     handler = _make_system_handler()
@@ -320,6 +342,44 @@ def test_worktree_select_tool_skips_model_selection_if_only_one_model():
     patch_message_mock.assert_called_once()
     sent_card_json = patch_message_mock.call_args[0][1]
     assert "选择工具" in sent_card_json
+
+
+def test_worktree_select_tool_shows_ttadk_subtool_card_for_aggregate_entry():
+    """Selecting the TTADK aggregate entry should open a TTADK-only subtool card instead of model selection."""
+    handler = _make_system_handler()
+    project = ProjectContext(project_id="p-agg", project_name="AGG", root_path="/tmp/agg")
+    handler.ctx.project_manager.get_active_project.return_value = project
+    handler.ctx.project_manager.get_project.return_value = project
+    handler.ctx.project_manager.get_project_for_chat.return_value = project
+
+    fake_tool_value = {
+        "tool_name": "ttadk",
+        "provider": "ttadk",
+        "supports_model": False,
+        "display_name": "TTADK",
+    }
+    fake_ttadk_tools = [
+        {"provider": "ttadk", "tool_name": "coco", "display_name": "TTADK · coco", "description": "TTADK · coco", "supports_model": True},
+        {"provider": "ttadk", "tool_name": "claude", "display_name": "TTADK · claude", "description": "TTADK · claude", "supports_model": True},
+    ]
+    patch_message_mock = MagicMock(return_value=True)
+    handler._worktree_manager().start_selection(project)
+
+    with patch.object(handler, "_get_ttadk_worktree_tools", return_value=fake_ttadk_tools), \
+         patch.object(handler, "patch_message", patch_message_mock):
+        handler.handle_worktree_select_tool("msg-agg", "chat1", project_id="p-agg", value=fake_tool_value)
+
+    state = WorktreeManager.get_state(project)
+    assert state.selection.active is True
+    assert state.selection.stage == "tool_select"
+    assert state.selection.pending_item is None
+
+    patch_message_mock.assert_called_once()
+    sent_card_json = patch_message_mock.call_args[0][1]
+    assert "选择 TTADK 工具" in sent_card_json
+    assert "TTADK · coco" in sent_card_json
+    assert "TTADK · claude" in sent_card_json
+    assert "worktree_select_tool" in sent_card_json
 
 
 def test_worktree_select_tool_skips_model_selection_for_coco_even_with_multiple_models():

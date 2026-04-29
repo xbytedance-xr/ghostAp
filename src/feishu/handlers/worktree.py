@@ -55,6 +55,10 @@ class WorktreeHandler(BaseHandler):
         mgr = self._worktree_manager()
         return mgr.get_available_tools()
 
+    def _get_ttadk_worktree_tools(self) -> list[dict]:
+        mgr = self._worktree_manager()
+        return mgr.get_ttadk_tools()
+
     def _get_models_for_tool(
         self,
         tool_name: str,
@@ -230,6 +234,18 @@ class WorktreeHandler(BaseHandler):
         goal = self._resolve_worktree_goal(value, state)
         if goal:
             mgr.set_pending_goal(project, goal)
+
+        if provider == "ttadk" and tool_name == "ttadk":
+            pid = project.project_id
+            selected_dicts = [item.to_dict() for item in state.selection.selected_items]
+            msg_type, card = CardBuilder.build_worktree_ttadk_tool_select_card(
+                self._get_ttadk_worktree_tools(),
+                selected_dicts,
+                pid,
+                goal=goal,
+            )
+            self.patch_message(message_id, card, msg_type=msg_type)
+            return
 
         from ...worktree_engine.selection import WorktreeToolOption
 

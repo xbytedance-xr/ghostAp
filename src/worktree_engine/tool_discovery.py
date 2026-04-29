@@ -65,29 +65,42 @@ class WorktreeToolDiscovery:
             )
             seen.add("claude")
 
-        # --- TTADK tools ---
+        ttadk_tools = self.get_ttadk_tools()
+        if ttadk_tools:
+            tools.append(
+                WorktreeToolOption(
+                    provider="ttadk",
+                    tool_name="ttadk",
+                    display_name="TTADK",
+                    description="TTADK 多工具入口",
+                    supports_model=False,
+                ).__dict__
+            )
+
+        return tools
+
+    def get_ttadk_tools(self) -> list[dict]:
+        tools: list[dict] = []
         try:
             manager = get_ttadk_manager()
             result = manager.get_tools()
             for t in result.tools:
-                name = t.name
-                if name in seen:
+                name = str(t.name or "").strip()
+                if not name:
                     continue
                 tools.append(
                     WorktreeToolOption(
                         provider="ttadk",
                         tool_name=name,
-                        display_name=t.description or name,
+                        display_name=f"TTADK · {name}",
                         description=f"TTADK · {name}",
                         supports_model=True,
                         model_optional=True,
                         skip_model_selection=getattr(t, "skip_model_selection", False),
                     ).__dict__
                 )
-                seen.add(name)
         except Exception:
             logger.debug("TTADK tool discovery failed", exc_info=True)
-
         return tools
 
     def get_models_for_tool(

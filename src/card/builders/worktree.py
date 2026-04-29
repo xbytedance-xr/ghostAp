@@ -138,14 +138,54 @@ class WorktreeBuilder:
         goal: str = "",
         banner_ctx: WorktreeBannerContext | None = None,
     ) -> tuple[str, str]:
-        """Render tool selection card with buttons for each available tool.
+        """Render top-level tool selection card."""
+        return WorktreeBuilder._build_worktree_tool_select_card(
+            tools,
+            selected_items,
+            project_id=project_id,
+            message=message,
+            goal=goal,
+            banner_ctx=banner_ctx,
+            title_key="worktree_select_tool_title",
+            prompt_key="worktree_select_tool_prompt",
+        )
 
-        *tools*: ``[{"tool_name": ..., "display_name": ..., "provider": ..., "supports_model": bool, "description": ...}]``
-        *selected_items*: already-selected ``[{"display_label": ...}]`` for display.
-        *goal*: pre-filled task goal; when empty, renders an input box.
-        """
+    @staticmethod
+    def build_worktree_ttadk_tool_select_card(
+        tools: list[dict],
+        selected_items: list[dict],
+        project_id: Optional[str] = None,
+        message: str = "",
+        goal: str = "",
+        banner_ctx: WorktreeBannerContext | None = None,
+    ) -> tuple[str, str]:
+        """Render TTADK subtool selection card."""
+        return WorktreeBuilder._build_worktree_tool_select_card(
+            tools,
+            selected_items,
+            project_id=project_id,
+            message=message,
+            goal=goal,
+            banner_ctx=banner_ctx,
+            title_key="worktree_select_ttadk_tool_title",
+            prompt_key="worktree_select_ttadk_tool_prompt",
+        )
+
+    @staticmethod
+    def _build_worktree_tool_select_card(
+        tools: list[dict],
+        selected_items: list[dict],
+        project_id: Optional[str] = None,
+        message: str = "",
+        goal: str = "",
+        banner_ctx: WorktreeBannerContext | None = None,
+        *,
+        title_key: str,
+        prompt_key: str,
+    ) -> tuple[str, str]:
+        """Render a tool selection card shared by top-level and TTADK subtool flows."""
         lines = []
-        lines.append(UI_TEXT["worktree_select_tool_prompt"])
+        lines.append(UI_TEXT[prompt_key])
         for t in tools:
             desc = t.get("description") or ""
             lines.append(f"- **{t['display_name']}** {f'— {desc}' if desc else ''}")
@@ -218,7 +258,7 @@ class WorktreeBuilder:
             }
             elements.extend(build_responsive_layout([finish_btn]))
 
-        card = CoreBuilder._wrap_card(UI_TEXT["worktree_select_tool_title"], "turquoise", elements)
+        card = CoreBuilder._wrap_card(UI_TEXT[title_key], "turquoise", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
 
     @staticmethod

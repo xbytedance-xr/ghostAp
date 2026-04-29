@@ -430,6 +430,8 @@ UI_TEXT = {
     "worktree_btn_finish": "完成选择",
     "worktree_select_tool_title": "🌳 Worktree — 选择工具",
     "worktree_select_tool_prompt": "**请选择一个工具加入 Worktree 组合：**\n",
+    "worktree_select_ttadk_tool_title": "🌳 Worktree — 选择 TTADK 工具",
+    "worktree_select_ttadk_tool_prompt": "**请选择一个 TTADK 工具加入 Worktree 组合：**\n",
     "worktree_skip_model_btn": "跳过（使用默认模型）",
     "worktree_select_model_title": "🌳 Worktree — 选择模型",
     "worktree_confirm_header": "**即将启动以下工具-模型组合：**\n",

@@ -41,6 +41,9 @@ class WorktreeManager:
     def get_available_tools(self) -> list[dict]:
         return self._discovery.get_available_tools()
 
+    def get_ttadk_tools(self) -> list[dict]:
+        return self._discovery.get_ttadk_tools()
+
     def get_models_for_tool(
         self,
         tool_name: str,

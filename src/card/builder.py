@@ -499,6 +499,7 @@ class CardBuilder:
     # --- Worktree Selection / Execution Delegates ---
 
     build_worktree_tool_select_card = staticmethod(WorktreeBuilder.build_worktree_tool_select_card)
+    build_worktree_ttadk_tool_select_card = staticmethod(WorktreeBuilder.build_worktree_ttadk_tool_select_card)
     build_worktree_model_select_card = staticmethod(WorktreeBuilder.build_worktree_model_select_card)
     build_worktree_confirm_card = staticmethod(WorktreeBuilder.build_worktree_confirm_card)
     build_worktree_progress_card = staticmethod(WorktreeBuilder.build_worktree_progress_card)
