@@ -6,56 +6,56 @@ from src.ttadk.models import ModelListResult, TTADKModel
 from src.worktree_engine.tool_discovery import WorktreeToolDiscovery
 
 
-def _make_acp_tool(name, description="test"):
-    return SimpleNamespace(name=name, description=description)
-
-
 def _make_ttadk_tool(name, description=None, skip_model_selection=False):
     return SimpleNamespace(name=name, description=description, skip_model_selection=skip_model_selection)
 
 
-def test_returns_acp_tools_when_available():
-    """ACP tools with shutil.which available should appear in results."""
+def test_returns_tools_when_binary_available():
+    """Known tools with shutil.which available should appear in results."""
     discovery = WorktreeToolDiscovery()
-    tools = [_make_acp_tool("coco", "ACP Coco")]
 
-    with patch("src.worktree_engine.tool_discovery.list_acp_tools", return_value=tools), \
-         patch("src.worktree_engine.tool_discovery.shutil.which", return_value="/usr/bin/coco"), \
+    def _which(name):
+        return f"/usr/bin/{name}" if name == "coco" else None
+
+    with patch("src.worktree_engine.tool_discovery.shutil.which", side_effect=_which), \
          patch("src.worktree_engine.tool_discovery.tool_registry") as mock_reg, \
          patch("src.worktree_engine.tool_discovery.get_ttadk_manager", side_effect=Exception("skip")):
         mock_reg.get_provider.return_value = None
         result = discovery.get_available_tools()
 
-    assert len(result) >= 1
-    coco = next(t for t in result if t["tool_name"] == "coco")
-    assert coco["provider"] == "acp"
+    assert len(result) == 1
+    coco = result[0]
+    assert coco["tool_name"] == "coco"
+    assert coco["provider"] == "cli"  # no ACP provider registered
     assert coco["display_name"] == "Coco"
 
 
-def test_skips_duplicate_tool_names():
-    """Tools with the same name from different providers should be deduplicated."""
+def test_uses_acp_provider_when_registered():
+    """Tools with registered ACP provider should use provider='acp' and support models."""
     discovery = WorktreeToolDiscovery()
-    acp_tools = [_make_acp_tool("mytool")]
 
-    ttadk_mgr = MagicMock()
-    ttadk_result = SimpleNamespace(tools=[_make_ttadk_tool("mytool", "TTADK mytool")])
-    ttadk_mgr.get_tools.return_value = ttadk_result
+    def _which(name):
+        return f"/usr/bin/{name}" if name == "coco" else None
 
-    with patch("src.worktree_engine.tool_discovery.list_acp_tools", return_value=acp_tools), \
-         patch("src.worktree_engine.tool_discovery.shutil.which", return_value="/usr/bin/mytool"), \
+    mock_provider = MagicMock()
+    mock_provider.skip_model_selection = False
+
+    with patch("src.worktree_engine.tool_discovery.shutil.which", side_effect=_which), \
          patch("src.worktree_engine.tool_discovery.tool_registry") as mock_reg, \
-         patch("src.worktree_engine.tool_discovery.get_ttadk_manager", return_value=ttadk_mgr):
-        mock_reg.get_provider.return_value = None
+         patch("src.worktree_engine.tool_discovery.get_ttadk_manager", side_effect=Exception("skip")):
+        mock_reg.get_provider.return_value = mock_provider
         result = discovery.get_available_tools()
 
-    mytool_entries = [t for t in result if t["tool_name"] == "mytool"]
-    assert len(mytool_entries) == 1, "Duplicate tool names should be deduplicated"
+    assert len(result) == 1
+    coco = result[0]
+    assert coco["provider"] == "acp"
+    assert coco["supports_model"] is True
+    assert coco["model_optional"] is True
 
 
 def test_returns_ttadk_as_single_aggregate_entry():
     """TTADK tools should be hidden behind a single aggregate entry in the top-level list."""
     discovery = WorktreeToolDiscovery()
-    acp_tools = [_make_acp_tool("coco", "ACP Coco")]
 
     ttadk_mgr = MagicMock()
     ttadk_mgr.get_tools.return_value = SimpleNamespace(
@@ -65,8 +65,7 @@ def test_returns_ttadk_as_single_aggregate_entry():
         ]
     )
 
-    with patch("src.worktree_engine.tool_discovery.list_acp_tools", return_value=acp_tools), \
-         patch("src.worktree_engine.tool_discovery.shutil.which", return_value="/usr/bin/tool"), \
+    with patch("src.worktree_engine.tool_discovery.shutil.which", return_value="/usr/bin/tool"), \
          patch("src.worktree_engine.tool_discovery.tool_registry") as mock_reg, \
          patch("src.worktree_engine.tool_discovery.get_ttadk_manager", return_value=ttadk_mgr):
         mock_reg.get_provider.return_value = None
@@ -85,11 +84,6 @@ def test_returns_ttadk_as_single_aggregate_entry():
 def test_top_level_tools_keep_native_entries_and_ttadk_at_same_level():
     """Top-level list should keep native tool entries while exposing TTADK as a sibling entry."""
     discovery = WorktreeToolDiscovery()
-    acp_tools = [
-        _make_acp_tool("coco", "ACP Coco"),
-        _make_acp_tool("aiden", "ACP Aiden"),
-        _make_acp_tool("codex", "ACP Codex"),
-    ]
     ttadk_mgr = MagicMock()
     ttadk_mgr.get_tools.return_value = SimpleNamespace(
         tools=[
@@ -98,38 +92,25 @@ def test_top_level_tools_keep_native_entries_and_ttadk_at_same_level():
         ]
     )
 
-    with patch("src.worktree_engine.tool_discovery.list_acp_tools", return_value=acp_tools), \
-         patch("src.worktree_engine.tool_discovery.shutil.which", return_value="/usr/bin/tool"), \
+    with patch("src.worktree_engine.tool_discovery.shutil.which", return_value="/usr/bin/tool"), \
          patch("src.worktree_engine.tool_discovery.tool_registry") as mock_reg, \
          patch("src.worktree_engine.tool_discovery.get_ttadk_manager", return_value=ttadk_mgr):
         mock_reg.get_provider.return_value = None
         result = discovery.get_available_tools()
 
-    assert [tool["tool_name"] for tool in result] == [
-        "coco",
-        "aiden",
-        "codex",
-        "claude",
-        "ttadk",
-    ]
+    names = [tool["tool_name"] for tool in result]
+    assert names == ["coco", "aiden", "codex", "claude", "gemini", "ttadk"]
 
 
-def test_top_level_tools_prioritize_coco_aiden_codex_claude_before_ttadk():
+def test_top_level_tools_prioritize_coco_aiden_codex_claude_gemini_before_ttadk():
     """Top-level tool ordering should follow product entry priority instead of discovery order."""
     discovery = WorktreeToolDiscovery()
-    acp_tools = [
-        _make_acp_tool("gemini", "ACP Gemini"),
-        _make_acp_tool("codex", "ACP Codex"),
-        _make_acp_tool("aiden", "ACP Aiden"),
-        _make_acp_tool("coco", "ACP Coco"),
-    ]
     ttadk_mgr = MagicMock()
     ttadk_mgr.get_tools.return_value = SimpleNamespace(
         tools=[_make_ttadk_tool("claude", "TTADK claude")]
     )
 
-    with patch("src.worktree_engine.tool_discovery.list_acp_tools", return_value=acp_tools), \
-         patch("src.worktree_engine.tool_discovery.shutil.which", return_value="/usr/bin/tool"), \
+    with patch("src.worktree_engine.tool_discovery.shutil.which", return_value="/usr/bin/tool"), \
          patch("src.worktree_engine.tool_discovery.tool_registry") as mock_reg, \
          patch("src.worktree_engine.tool_discovery.get_ttadk_manager", return_value=ttadk_mgr):
         mock_reg.get_provider.return_value = None
@@ -143,6 +124,24 @@ def test_top_level_tools_prioritize_coco_aiden_codex_claude_before_ttadk():
         "gemini",
         "ttadk",
     ]
+
+
+def test_only_shows_tools_with_binary_in_path():
+    """Tools whose binary is not found via shutil.which should be excluded."""
+    discovery = WorktreeToolDiscovery()
+
+    def _which(name):
+        # Only claude and codex binaries available
+        return f"/usr/bin/{name}" if name in ("claude", "codex") else None
+
+    with patch("src.worktree_engine.tool_discovery.shutil.which", side_effect=_which), \
+         patch("src.worktree_engine.tool_discovery.tool_registry") as mock_reg, \
+         patch("src.worktree_engine.tool_discovery.get_ttadk_manager", side_effect=Exception("skip")):
+        mock_reg.get_provider.return_value = None
+        result = discovery.get_available_tools()
+
+    names = [t["tool_name"] for t in result]
+    assert names == ["codex", "claude"]
 
 
 def test_get_ttadk_tools_returns_concrete_ttadk_tools():

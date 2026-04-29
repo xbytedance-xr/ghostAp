@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import logging
 import shutil
+from dataclasses import dataclass
 from typing import Optional
 
-from ..acp.helper import fetch_acp_models, list_acp_tools
+from ..acp.helper import fetch_acp_models
 from ..acp.providers import tool_registry
 from ..ttadk import get_ttadk_manager
 from .selection import WorktreeToolOption
@@ -12,67 +13,90 @@ from .selection import WorktreeToolOption
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class _KnownTool:
+    """Static definition of a top-level tool candidate."""
+
+    name: str
+    display_name: str
+    description: str
+    priority: int
+
+
+# All known top-level tools, ordered by priority.
+# Each tool appears if its binary is found via shutil.which().
+_KNOWN_TOOLS: tuple[_KnownTool, ...] = (
+    _KnownTool("coco", "Coco", "字节跳动 AI", 0),
+    _KnownTool("aiden", "Aiden", "Aiden CLI", 1),
+    _KnownTool("codex", "Codex", "OpenAI Codex", 2),
+    _KnownTool("claude", "Claude", "Anthropic Claude CLI", 3),
+    _KnownTool("gemini", "Gemini", "Google Gemini CLI", 4),
+)
+
+
 class WorktreeToolDiscovery:
     """Discovers available tools and their models from ACP, CLI, and TTADK providers."""
 
     _TOP_LEVEL_PRIORITY = {
         ("acp", "coco"): 0,
+        ("cli", "coco"): 0,
         ("acp", "aiden"): 1,
+        ("cli", "aiden"): 1,
         ("acp", "codex"): 2,
+        ("cli", "codex"): 2,
+        ("acp", "claude"): 3,
         ("cli", "claude"): 3,
+        ("acp", "gemini"): 4,
+        ("cli", "gemini"): 4,
         ("ttadk", "ttadk"): 90,
     }
 
     def get_available_tools(self) -> list[dict]:
         """Return available tools as dicts suitable for card builders.
 
-        Probes three provider categories:
-        1. ACP direct tools (coco, aiden, codex, gemini)
-        2. CLI tools (claude)
-        3. TTADK-managed tools (filtered by shutil.which)
+        Discovery logic:
+        1. Known tools (coco, aiden, codex, claude, gemini) — appear if binary
+           is found via shutil.which(). Uses ACP provider when available for
+           model selection, otherwise falls back to CLI provider.
+        2. TTADK-managed tools — unified entry when TTADK returns tools.
         """
         tools: list[dict] = []
         seen: set[str] = set()
 
-        # --- ACP tools ---
-        acp_tools = list_acp_tools()
-        for t in acp_tools:
-            name = t.name
-            if name in seen:
+        # --- Known top-level tools (same level for all) ---
+        for known in _KNOWN_TOOLS:
+            if not shutil.which(known.name):
                 continue
-            if shutil.which(name):
-                provider = tool_registry.get_provider(name)
-                skip = (
-                    getattr(provider, "skip_model_selection", False)
-                    if provider
-                    else False
-                )
-                tools.append(
-                    WorktreeToolOption(
-                        provider="acp",
-                        tool_name=name,
-                        display_name=name.capitalize(),
-                        description=t.description,
-                        supports_model=True,
-                        model_optional=True,
-                        skip_model_selection=skip,
-                    ).__dict__
-                )
-                seen.add(name)
+            if known.name in seen:
+                continue
 
-        # --- CLI tools ---
-        if "claude" not in seen and shutil.which("claude"):
+            # Determine provider: prefer ACP if provider is registered
+            provider_obj = tool_registry.get_provider(known.name)
+            if provider_obj:
+                provider_type = "acp"
+                supports_model = True
+                model_optional = True
+                skip = getattr(provider_obj, "skip_model_selection", False)
+            else:
+                provider_type = "cli"
+                supports_model = False
+                model_optional = False
+                skip = False
+
             tools.append(
                 WorktreeToolOption(
-                    provider="cli",
-                    tool_name="claude",
-                    display_name="Claude",
-                    description="Anthropic Claude CLI",
-                    supports_model=False,
+                    provider=provider_type,
+                    tool_name=known.name,
+                    display_name=known.display_name,
+                    description=known.description,
+                    supports_model=supports_model,
+                    model_optional=model_optional,
+                    skip_model_selection=skip,
                 ).__dict__
             )
-            seen.add("claude")
+            seen.add(known.name)
 
+        # --- TTADK entry ---
         ttadk_tools = self.get_ttadk_tools()
         if ttadk_tools:
             tools.append(
