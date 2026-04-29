@@ -297,10 +297,6 @@ def test_spec_engine_review_failure_diagnostics_written_to_cycle_and_metrics(mon
         spec_max_cycles_limit = 10
         spec_cycle_output_max_chars = 2000
         spec_max_retries = 1
-        # review llm fallback disabled
-        ark_api_key = ""
-        ark_model = ""
-        ark_base_url = ""
         spec_convergence_window = 3
         # Add missing attributes for ContinuationPolicy
         spec_infinite_mode = False
@@ -444,11 +440,6 @@ def test_spec_engine_review_failure_circuit_breaker_skips_review(monkeypatch, ca
         spec_review_retry_max_attempts = 1
         spec_review_retry_max_delay = 30
 
-        # review llm fallback disabled
-        ark_api_key = ""
-        ark_model = ""
-        ark_base_url = ""
-        
         # Add missing attributes for ContinuationPolicy
         spec_infinite_mode = False
         spec_disable_convergence = False
@@ -556,11 +547,6 @@ def test_spec_engine_review_circuit_skip_does_not_block_main_loop(monkeypatch, t
         spec_review_retry_max_attempts = 1
         spec_review_retry_max_delay = 30
 
-        # review llm fallback disabled
-        ark_api_key = ""
-        ark_model = ""
-        ark_base_url = ""
-        
         # Add missing attributes for ContinuationPolicy
         spec_infinite_mode = False
         spec_disable_convergence = False
@@ -643,9 +629,6 @@ def test_ttadk_startup_model_log_uses_real_or_auto(caplog):
         s.spec_review_enabled = False
         s.spec_discovery_enabled = False
         s.spec_generated_specs_per_cycle = 0
-        s.ark_api_key = "test-key"
-        s.ark_model = "test-model"
-        s.ark_base_url = "https://test.url"
         s.spec_max_cycles_limit = 5000
         mock_engine_settings.return_value = s
 
@@ -737,9 +720,6 @@ def test_ttadk_resume_model_log_uses_real_or_auto(caplog):
         s.spec_review_enabled = False
         s.spec_discovery_enabled = False
         s.spec_generated_specs_per_cycle = 0
-        s.ark_api_key = "test-key"
-        s.ark_model = "test-model"
-        s.ark_base_url = "https://test.url"
         s.spec_max_cycles_limit = 5000
         mock_engine_settings.return_value = s
 
@@ -1265,8 +1245,6 @@ class TestSpecEngine:
         s.spec_backlog_stuck_window = 3
         s.spec_success_ignore_backlog = True
         s.spec_allow_resume_from_disk = True
-        s.ark_api_key = ""
-        s.ark_model = ""
         s.spec_infinite_mode = False
         s.spec_disable_convergence = False
         s.spec_disable_early_stop = False
@@ -1468,19 +1446,6 @@ class TestSpecEngine:
         criteria = parse_acceptance_criteria(text)
         assert len(criteria) == 1
         assert "完成需求:" in criteria[0]
-
-    @patch("src.spec_engine.criteria.ChatOpenAI")
-    def test_parse_acceptance_criteria_llm_decompose(self, mock_chat):
-        mock_llm = MagicMock()
-        mock_llm.invoke.return_value = MagicMock(content="- 实现登录接口\n- 支持错误提示\n- 添加单元测试")
-        mock_chat.return_value = mock_llm
-
-        engine = self._make_engine()
-        engine.settings.ark_api_key = "test-key"
-        engine.settings.ark_model = "test-model"
-
-        criteria = parse_acceptance_criteria("实现登录功能", engine._decompose_criteria_with_llm)
-        assert len(criteria) == 3
 
     def test_parse_tasks(self):
         text = """1. 创建数据模型 (依赖: 无)
@@ -1724,8 +1689,6 @@ class TestSpecEngine:
             s.spec_infinite_mode = False
             s.spec_disable_convergence = False
             s.spec_disable_early_stop = False
-            s.ark_api_key = ""
-            s.ark_model = ""
             mock_settings.return_value = s
 
             engine = SpecEngine(chat_id="c1", root_path=str(tmp_path))
@@ -1794,13 +1757,33 @@ PASS
         assert result.reviews[1].passed is False  # PRODUCT
         assert len(result.reviews[1].suggestions) == 2
 
-    def test_parse_review_output_fallback_all_fail(self):
+    @patch("src.spec_engine.engine.prompt_via_acp", return_value="")
+    def test_parse_review_output_fallback_all_fail(self, _mock_prompt):
         engine = self._make_engine()
         engine._project = SpecProject.create(root_path="/tmp")
         # Completely unparseable text
         result = engine._parse_review_output("random garbage", 1)
         assert len(result.reviews) == 5
         assert all(not r.passed for r in result.reviews)
+
+    @patch(
+        "src.spec_engine.engine.prompt_via_acp",
+        return_value="""[
+  {"perspective": "ARCHITECT", "verdict": "PASS", "suggestions": []},
+  {"perspective": "PRODUCT", "verdict": "PASS", "suggestions": []},
+  {"perspective": "USER", "verdict": "PASS", "suggestions": []},
+  {"perspective": "TESTER", "verdict": "PASS", "suggestions": []}
+]""",
+    )
+    def test_parse_review_output_fallback_requires_all_perspectives(self, _mock_prompt):
+        engine = self._make_engine()
+        engine._project = SpecProject.create(root_path="/tmp")
+
+        result = engine._parse_review_output("random garbage", 1)
+
+        assert not result.all_passed
+        assert len(result.reviews) == 5
+        assert any(r.perspective == ReviewPerspective.DESIGNER and not r.passed for r in result.reviews)
 
 
 # ======================================================================
@@ -1832,8 +1815,6 @@ class TestResetCancelEvent:
         s.spec_backlog_stuck_window = 3
         s.spec_success_ignore_backlog = True
         s.spec_allow_resume_from_disk = True
-        s.ark_api_key = ""
-        s.ark_model = ""
         s.spec_infinite_mode = False
         s.spec_disable_convergence = False
         s.spec_disable_early_stop = False
@@ -2009,8 +1990,6 @@ class TestSpecEngineManager:
         s.spec_disable_convergence = False
         s.spec_disable_early_stop = False
         s.spec_min_cycles = 1
-        s.ark_api_key = ""
-        s.ark_model = ""
         mock_settings.return_value = s
 
         # Create a state file
@@ -2468,8 +2447,6 @@ class TestSpecEngineExecution:
         s.spec_backlog_stuck_window = 3
         s.spec_success_ignore_backlog = True
         s.spec_allow_resume_from_disk = True
-        s.ark_api_key = ""
-        s.ark_model = ""
         s.spec_infinite_mode = False
         s.spec_disable_convergence = False
         s.spec_disable_early_stop = False
@@ -2491,7 +2468,6 @@ class TestSpecEngineExecution:
         s.spec_state_cycles_tail = 50
         s.spec_state_work_items_tail = 200
         s.spec_state_metrics_tail = 200
-        s.ark_base_url = "https://ark-cn-beijing.bytedance.net/api/v3"
         s.spec_rebuild_session_between_cycles = False
         # Disable parallel pipeline to use legacy serial review path in integration tests
         s.spec_review_parallel_enabled = False
@@ -3154,8 +3130,6 @@ class TestSpecEngineExecution:
         s.spec_backlog_stuck_window = 999
         s.spec_success_ignore_backlog = False
         s.spec_allow_resume_from_disk = True
-        s.ark_api_key = ""
-        s.ark_model = ""
         s.spec_infinite_mode = False
         s.spec_disable_convergence = False
         s.spec_disable_early_stop = True
@@ -3271,8 +3245,6 @@ class TestSpecEngineProjectTypes:
         s.spec_backlog_stuck_window = 3
         s.spec_success_ignore_backlog = True
         s.spec_allow_resume_from_disk = True
-        s.ark_api_key = ""
-        s.ark_model = ""
         s.spec_infinite_mode = False
         s.spec_disable_convergence = False
         s.spec_disable_early_stop = False
@@ -3294,7 +3266,6 @@ class TestSpecEngineProjectTypes:
         s.spec_state_cycles_tail = 50
         s.spec_state_work_items_tail = 200
         s.spec_state_metrics_tail = 200
-        s.ark_base_url = "https://ark-cn-beijing.bytedance.net/api/v3"
         s.spec_rebuild_session_between_cycles = False
         # Disable parallel pipeline to use legacy serial review path in integration tests
         s.spec_review_parallel_enabled = False
@@ -3763,8 +3734,6 @@ def test_spec_review_timeout_config_exists_and_defaults():
     s = Settings(
         feishu_app_id="x",
         feishu_app_secret="x",
-        ark_api_key="x",
-        ark_model="x",
     )
     assert hasattr(s, "spec_review_timeout")
     assert s.spec_review_timeout == 240
@@ -3790,9 +3759,6 @@ def test_spec_review_timeout_passed_to_send_prompt(monkeypatch):
         spec_review_timeout = 42
         spec_review_min_timeout = 15
         spec_review_hard_floor = 10
-        ark_api_key = ""
-        ark_model = ""
-        ark_base_url = ""
 
     project = SpecProject.create(root_path="/tmp")
     project.requirement = "test"
@@ -3825,9 +3791,6 @@ def test_timeout_fallback_review_result_has_friendly_suggestion():
         spec_review_timeout = 10
         spec_review_min_timeout = 5
         spec_review_hard_floor = 3
-        ark_api_key = ""
-        ark_model = ""
-        ark_base_url = ""
 
     project = SpecProject.create(root_path="/tmp")
     project.requirement = "test"
@@ -3863,9 +3826,6 @@ def test_non_timeout_fallback_review_result_keeps_generic_format():
         spec_review_timeout = 10
         spec_review_min_timeout = 5
         spec_review_hard_floor = 3
-        ark_api_key = ""
-        ark_model = ""
-        ark_base_url = ""
 
     project = SpecProject.create(root_path="/tmp")
     project.requirement = "test"
@@ -4048,9 +4008,6 @@ def test_resume_restores_circuit_state_from_disk(mock_settings, mock_create, tmp
     s.spec_cycle_tasks_max = 50
     s.spec_review_min_timeout = 30
     s.spec_review_timeout = 120
-    s.ark_api_key = ""
-    s.ark_model = ""
-    s.ark_base_url = ""
     mock_settings.return_value = s
 
     # Make session creation fail fast so resume() exits quickly
@@ -4139,8 +4096,6 @@ class TestSpecEngineCycleResilience:
         s.spec_backlog_stuck_window = 0
         s.spec_success_ignore_backlog = True
         s.spec_allow_resume_from_disk = False
-        s.ark_api_key = ""
-        s.ark_model = ""
         s.spec_history_log_filename = "history.jsonl"
         s.spec_phase_output_persist_max_chars = 20000
         s.spec_cycle_artifact_retention = 50
@@ -4151,7 +4106,6 @@ class TestSpecEngineCycleResilience:
         s.spec_state_cycles_tail = 50
         s.spec_state_work_items_tail = 200
         s.spec_state_metrics_tail = 200
-        s.ark_base_url = "https://example.com"
         s.spec_rebuild_session_between_cycles = False
         s.spec_review_parallel_enabled = False
         s.spec_model_switch_enabled = False

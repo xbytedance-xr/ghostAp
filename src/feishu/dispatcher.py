@@ -256,10 +256,16 @@ class MessageDispatcher:
 
         # Mode enter
         if intent == IntentType.ENTER_COCO:
-            self._handle_enter_coco(message_id, chat_id, project)
+            if data.get("auto_forward") is True:
+                self._auto_enter_and_forward("coco", message_id, chat_id, original_text, project)
+            else:
+                self._handle_enter_coco(message_id, chat_id, project)
         elif intent in self._MODE_ENTER_MAP:
             mode = self._MODE_ENTER_MAP[intent]
-            getattr(self.client, f"_enter_{mode}_mode")(message_id, chat_id, project=project)
+            if data.get("auto_forward") is True:
+                self._auto_enter_and_forward(mode, message_id, chat_id, original_text, project)
+            else:
+                getattr(self.client, f"_enter_{mode}_mode")(message_id, chat_id, project=project)
         # Mode exit
         elif intent == IntentType.EXIT_MODE:
             self.client._exit_current_mode(message_id, chat_id, project=project)
@@ -329,6 +335,17 @@ class MessageDispatcher:
         except Exception as e:
             logger.warning("展示 Coco 模型选择卡失败，回退直接进入: %s", get_error_detail(e))
             self.client._enter_coco_mode(message_id, chat_id, project=project)
+
+    def _auto_enter_and_forward(self, mode: str, message_id: str, chat_id: str, text: str, project):
+        """Auto-enter programming mode and forward message (default ACP tool)."""
+        enter_fn = getattr(self.client, f"_enter_{mode}_mode", None)
+        if enter_fn:
+            enter_fn(message_id, chat_id, silent=True, project=project)
+        handle_fn = getattr(self.client, f"_handle_{mode}_message", None)
+        if handle_fn:
+            handle_fn(message_id, chat_id, text, project)
+        else:
+            logger.warning("默认工具模式 %s 无消息处理器", mode)
 
     def _handle_mode_message(self, mode: str, data: dict, message_id: str, chat_id: str, original_text: str, project):
         if data.get("command") == "info":

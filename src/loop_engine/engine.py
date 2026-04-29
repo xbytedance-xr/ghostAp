@@ -13,17 +13,14 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
-
 from ..acp import ACPEvent, ACPEventType
 from ..agent_session import create_engine_session
 from ..engine_base import BaseEngine, BaseEngineManager, EngineRunState
 from ..card.styles import UI_TEXT as _UI_TEXT
 from ..utils.errors import get_error_detail
 from ..utils.gc_monitor import get_gc_monitor
-from ..utils.llm import ChatOpenAICacheKey, get_cached_chat_openai
 from ..utils.retry import RetryPolicy
+from ..utils.acp_prompt import prompt_via_acp
 from ..utils.spec_utils import (
     CRITERIA_PATTERNS as _CRITERIA_PATTERNS,
 )
@@ -118,7 +115,6 @@ class LoopEngine(BaseEngine):
         model_name: Optional[str] = None,
         *,
         retry_policy: Optional[RetryPolicy] = None,
-        get_llm_fn: Optional[Callable] = None,
         create_session_fn: Optional[Callable] = None,
     ):
         super().__init__(chat_id, root_path, agent_type, engine_name, model_name)
@@ -127,10 +123,8 @@ class LoopEngine(BaseEngine):
         self._review_extra_used: int = 0
         self._last_heartbeat: float = 0.0
         self._context_manager: Optional[LoopContextManager] = None
-        self._llm_cache: dict[ChatOpenAICacheKey, ChatOpenAI] = {}
         self._review_circuit = LoopReviewCircuitState()
         self._retry_policy = retry_policy or RetryPolicy(max_retries=3, retry_delay=2.0)
-        self._get_llm_fn = get_llm_fn or get_cached_chat_openai
         self._create_session_fn = create_session_fn or create_engine_session
 
     def save_state(self, filepath: Optional[str] = None) -> str:
@@ -435,14 +429,21 @@ class LoopEngine(BaseEngine):
             raw_text=text,
         )
 
-    def _get_llm(self, temperature: float) -> ChatOpenAI:
-        return self._get_llm_fn(self.settings, temperature, cache=self._llm_cache, llm_cls=ChatOpenAI)
+    def _make_aux_send_fn(self) -> callable:
+        """Create a send_fn that uses a disposable ACP sub-session."""
+        def _send(text: str) -> str:
+            return prompt_via_acp(
+                text,
+                create_session_fn=self._create_session_fn,
+                agent_type=self._agent_type,
+                cwd=self.root_path,
+                model_name=self._model_name,
+            )
+        return _send
 
     def _decompose_criteria_with_llm(self, text: str) -> list[str]:
-        """Use LLM to summarize and decompose colloquial user input into acceptance criteria."""
-        settings = self.settings
-        if not settings.ark_api_key or not settings.ark_model:
-            return []
+        """Use the current ACP tool to decompose colloquial input into criteria."""
+        send_fn = self._make_aux_send_fn()
 
         prompt = f"""请分析以下用户需求，提取并拆解为明确的验收标准。
 
@@ -463,15 +464,11 @@ class LoopEngine(BaseEngine):
 ..."""
 
         try:
-            response = self._get_llm(0.1).invoke(
-                [
-                    SystemMessage(content="你是一个需求分析助手，擅长将口语化的产品需求拆解为结构化的验收标准。"),
-                    HumanMessage(content=prompt),
-                ]
-            )
-            return self._extract_criteria_from_llm_response(response.content)
+            response = send_fn(prompt)
+            return self._extract_criteria_from_llm_response(response)
         except Exception as e:
-            logger.warning("[Loop] LLM 需求拆解失败: %s, 将使用原始文本", get_error_detail(e))
+            from ..utils.errors import get_error_detail
+            logger.warning("[Loop] ACP 需求拆解失败: %s, 将使用原始文本", get_error_detail(e))
             return []
 
     @staticmethod
@@ -726,14 +723,13 @@ FAIL
         return ReviewResult(reviews=reviews, iteration=iteration)
 
     def _parse_review_with_llm(self, raw_text: str) -> list[PerspectiveReview]:
-        """LLM fallback: extract review verdicts from free-form text using AI."""
-        settings = self.settings
-        if not settings.ark_api_key or not settings.ark_model:
-            return []
+        """Use the current ACP tool to extract review verdicts from free-form text."""
         if not raw_text or len(raw_text.strip()) < 10:
             return []
 
-        prompt = f"""请从以下文本中提取四个视角的审查结果。
+        send_fn = self._make_aux_send_fn()
+
+        prompt = f"""请从以下文本中提取五个视角的审查结果。
 
 文本内容：
 {raw_text[:3000]}
@@ -743,25 +739,26 @@ FAIL
   {{"perspective": "ARCHITECT", "verdict": "PASS或FAIL", "suggestions": ["建议1", "建议2"]}},
   {{"perspective": "PRODUCT", "verdict": "PASS或FAIL", "suggestions": []}},
   {{"perspective": "USER", "verdict": "PASS或FAIL", "suggestions": []}},
-  {{"perspective": "TESTER", "verdict": "PASS或FAIL", "suggestions": []}}
+  {{"perspective": "TESTER", "verdict": "PASS或FAIL", "suggestions": []}},
+  {{"perspective": "DESIGNER", "verdict": "PASS或FAIL", "suggestions": []}}
 ]
 
 规则：
-- perspective 只能是 ARCHITECT/PRODUCT/USER/TESTER
+- perspective 只能是 ARCHITECT/PRODUCT/USER/TESTER/DESIGNER
 - verdict 只能是 PASS 或 FAIL
 - 如果文本中找不到某个视角的审查，verdict 设为 FAIL，suggestions 填 ["未找到该视角的审查结果"]
 - suggestions 数组中只放 FAIL 视角的改进建议，PASS 视角为空数组"""
 
         try:
-            response = self._get_llm(0.0).invoke(
-                [
-                    SystemMessage(content="你是一个文本解析助手。从审查文本中提取结构化的审查结果，只输出JSON。"),
-                    HumanMessage(content=prompt),
-                ]
-            )
-            return self._extract_reviews_from_llm_response(response.content)
+            response = send_fn(prompt)
+            reviews = self._extract_reviews_from_llm_response(response)
+            if {r.perspective for r in reviews} != set(ReviewPerspective):
+                logger.warning("[Loop] ACP 兜底审查解析视角不完整, 将视为解析失败")
+                return []
+            return reviews
         except Exception as e:
-            logger.warning("[Loop] LLM 兜底审查解析失败: %s", get_error_detail(e))
+            from ..utils.errors import get_error_detail
+            logger.warning("[Loop] ACP 兜底审查解析失败: %s", get_error_detail(e))
             return []
 
     @staticmethod
@@ -1242,7 +1239,6 @@ class LoopEngineManager(BaseEngineManager["LoopEngine"]):
         model_name: Optional[str],
         *,
         retry_policy: Optional[RetryPolicy] = None,
-        get_llm_fn: Optional[Callable] = None,
         create_session_fn: Optional[Callable] = None,
     ) -> "LoopEngine":
         return LoopEngine(
@@ -1252,6 +1248,5 @@ class LoopEngineManager(BaseEngineManager["LoopEngine"]):
             engine_name=engine_name,
             model_name=model_name,
             retry_policy=retry_policy,
-            get_llm_fn=get_llm_fn,
             create_session_fn=create_session_fn,
         )

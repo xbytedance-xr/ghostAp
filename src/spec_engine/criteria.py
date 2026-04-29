@@ -4,27 +4,33 @@ import logging
 import re
 from typing import Callable, Optional
 
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
-
 from ..acp import ACPEvent, ACPEventType
 from ..utils.errors import get_error_detail
-from ..utils.llm import ChatOpenAICacheKey, get_cached_chat_openai
 from ..utils.retry import RetryPolicy
 from ..utils.spec_utils import CRITERIA_PATTERNS as _CRITERIA_PATTERNS
 from .artifacts import extract_criteria_from_llm_response
 
 logger = logging.getLogger(__name__)
 
-_LLM_CACHE: dict[ChatOpenAICacheKey, ChatOpenAI] = {}
 
+def decompose_criteria_with_llm(
+    text: str,
+    settings,
+    send_fn: Optional[Callable[[str], str]] = None,
+) -> list[str]:
+    """Use the current ACP tool to decompose colloquial input into criteria.
 
-def _get_llm(settings, temperature: float) -> ChatOpenAI:
-    return get_cached_chat_openai(settings, temperature, cache=_LLM_CACHE, llm_cls=ChatOpenAI)
-
-
-def decompose_criteria_with_llm(text: str, settings) -> list[str]:
-    if not settings.ark_api_key or not settings.ark_model:
+    Parameters
+    ----------
+    text:
+        Raw user requirement text.
+    settings:
+        Application settings (kept for interface compat).
+    send_fn:
+        ``(prompt) -> response_text`` callable backed by an ACP sub-session.
+        When *None*, returns ``[]`` (fallback to single-criterion path).
+    """
+    if not send_fn:
         return []
 
     prompt = f"""请分析以下用户需求，提取并拆解为明确的验收标准。
@@ -46,15 +52,10 @@ def decompose_criteria_with_llm(text: str, settings) -> list[str]:
 ..."""
 
     try:
-        response = _get_llm(settings, 0.1).invoke(
-            [
-                SystemMessage(content="你是一个需求分析助手，擅长将口语化的产品需求拆解为结构化的验收标准。"),
-                HumanMessage(content=prompt),
-            ]
-        )
-        return extract_criteria_from_llm_response(response.content)
+        response = send_fn(prompt)
+        return extract_criteria_from_llm_response(response)
     except Exception as e:
-        logger.warning("[Spec] LLM 需求拆解失败: %s, 将使用原始文本", get_error_detail(e))
+        logger.warning("[Spec] ACP 需求拆解失败: %s, 将使用原始文本", get_error_detail(e))
         return []
 
 

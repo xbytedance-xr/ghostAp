@@ -19,9 +19,6 @@ class TestTraceIntegration:
         mock_settings.spec_persist_every_phase = False
         mock_settings.spec_discovery_enabled = False
         mock_settings.spec_max_cycles_limit = 5000  # Fix: Ensure this is an int
-        mock_settings.ark_api_key = "test"
-        mock_settings.ark_model = "test"
-        mock_settings.ark_base_url = "test"
         mock_get_settings.return_value = mock_settings
         
         mock_session = MagicMock()

@@ -49,9 +49,10 @@ class Settings(BaseSettings):
     app_id: str = ""
     app_secret: str = ""
 
-    ark_api_key: str = ""
-    ark_model: str = ""
-    ark_base_url: str = "https://ark-cn-beijing.bytedance.net/api/v3"
+    # Default ACP tool for SMART mode (e.g., "coco", "claude", "aiden", "codex", "gemini")
+    # When set, unmatched messages in SMART mode are forwarded to this tool.
+    # When empty, all unmatched messages are treated as shell commands.
+    default_acp_tool: str = ""
 
     sandbox_timeout: int = 30
     sandbox_max_output_length: int = 4000
@@ -681,9 +682,6 @@ class Settings(BaseSettings):
 
     def validate_feishu_config(self) -> bool:
         return bool(self.app_id and self.app_secret)
-
-    def validate_ark_config(self) -> bool:
-        return bool(self.ark_api_key and self.ark_model)
 
     def get_acp_command(self, agent_type: str) -> tuple[str, list[str]]:
         """Return (cmd, args) override for an ACP agent, if configured."""

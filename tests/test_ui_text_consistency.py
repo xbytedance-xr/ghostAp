@@ -222,7 +222,7 @@ class TestEnvExampleOnlyUserFacingVars:
         env_path = Path(__file__).parent.parent / ".env.example"
         content = env_path.read_text(encoding="utf-8")
 
-        required = ["APP_ID", "APP_SECRET", "ARK_API_KEY", "ARK_MODEL", "REPO_LOCK_IDLE_TIMEOUT", "REPO_LOCK_HARD_TIMEOUT", "MAX_EVICTED_CACHE", "REPO_LOCK_CLEANUP_INTERVAL", "CHAT_LOCK_CLEANUP_INTERVAL"]
+        required = ["APP_ID", "APP_SECRET", "REPO_LOCK_IDLE_TIMEOUT", "REPO_LOCK_HARD_TIMEOUT", "MAX_EVICTED_CACHE", "REPO_LOCK_CLEANUP_INTERVAL", "CHAT_LOCK_CLEANUP_INTERVAL"]
         missing = [var for var in required if var not in content]
         assert not missing, (
             f"Required user-facing variables missing from .env.example: {missing}"

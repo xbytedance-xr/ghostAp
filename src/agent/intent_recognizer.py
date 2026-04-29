@@ -1,16 +1,9 @@
-import json
 import logging
 import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
-
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
-
-from ..utils.errors import get_error_detail
-from ..utils.llm import ChatOpenAICacheKey, get_cached_chat_openai
 
 from ..config import get_settings
 
@@ -109,129 +102,6 @@ class IntentResult:
 
 
 class IntentRecognizer:
-    REACT_SYSTEM_PROMPT = """你是一个智能意图识别助手，使用 ReAct 模式分析用户输入。
-
-## 当前上下文
-{context_hint}
-
-## ASR 容错指南
-用户输入可能来自语音识别（ASR），包含以下噪音或错误，请进行语义修正：
-1. **末尾标点**：忽略句号、问号等（如"帮我建个项目。" -> "帮我建个项目"）
-2. **语气词**：忽略"一下"、"个"、"那个"等无实义词（如"建个项目" -> "建项目"）
-3. **同音错别字**：
-   - "即它" / "基特" -> git
-   - "抠抠" / "口口" -> coco
-   - "克劳德" -> claude
-   - "列表" / "列出" -> list
-
-## 可识别的意图类型
-
-### 编程相关
-1. **enter_coco** - 用户想要进入编程/开发/AI对话模式（仅在非编程模式下使用）
-   - 关键词：写代码、编程、开发、帮我实现、coco、AI助手、帮我改、帮我优化代码、开始编程
-   - 示例："帮我写一个函数"、"进入开发模式"、"帮我改下这个bug"、"开始编程"
-   - ASR纠错："进入抠抠" -> enter_coco
-   - data: {{}}
-
-2. **exit_coco** - 用户想要退出编程模式
-   - 关键词：退出、结束、不用了、算了、停止、exit、quit、退出编程、结束编程
-   - 示例："退出"、"不用了谢谢"、"结束对话"、"退出编程模式"
-   - data: {{}}
-
-3. **coco_message** - 用户在编程模式下发送的编程相关消息（仅在编程模式下使用）
-   - 特征：描述编程需求、代码问题、功能实现等
-   - 示例："帮我写一个排序函数"、"这段代码有bug"、"优化一下性能"
-   - data: {{}}
-
-### 目录操作
-4. **change_dir** - 用户想要切换或查询工作目录
-   - 关键词：切换目录、去...目录、进入...文件夹、cd、当前目录、上级目录
-   - 示例："切换到workspace目录"、"当前在什么目录"、"去上级目录"
-   - data: {{"path": "目标路径"}}
-   - 路径规则：
-     - 上级目录: ".."
-     - 用户目录: "~" 或 "~/子目录"
-     - 桌面: "~/Desktop"
-     - 下载: "~/Downloads"
-     - 文档: "~/Documents"
-     - 当前目录查询: path 为空字符串 ""
-
-### 项目管理
-5. **create_project** - 用户想要创建新项目
-   - 关键词：创建项目、新建项目、开始项目、在当前目录创建项目、建个项目
-   - 示例："创建项目 myapp"、"在当前目录创建项目"、"新建一个叫test的项目"
-   - ASR纠错："建个项目叫测试。" -> create_project(name="测试")
-   - data: {{"name": "项目名称", "path": "项目路径(可选，默认当前目录)"}}
-   - 如果用户说"在当前目录创建项目"，path 设为空字符串 ""
-
-6. **switch_project** - 用户想要切换到其他项目
-   - 关键词：切换项目、换到...项目、去...项目、打开项目
-   - 示例："切换到myapp项目"、"换到test项目"
-   - data: {{"name": "项目名称"}}
-
-7. **list_projects** - 用户想要查看项目列表
-   - 关键词：项目列表、看看项目、所有项目、有哪些项目
-   - 示例："看看有哪些项目"、"项目列表"
-   - data: {{}}
-
-8. **close_project** - 用户想要关闭项目
-   - 关键词：关闭项目、结束项目、删除项目
-   - 示例："关闭myapp项目"
-   - data: {{"name": "项目名称"}}
-
-9. **project_status** - 用户想要查看项目状态
-   - 关键词：项目状态、当前项目、项目信息
-   - 示例："当前项目状态"、"看看项目信息"
-   - data: {{}}
-
-### Shell 命令
-10. **shell** - 用户想执行shell命令或用自然语言描述文件操作
-   - 特征：命令格式（ls、git、npm等）或描述想要执行的文件/系统操作
-   - 示例："ls -la"、"git status"、"帮我看下有什么文件"
-   - ASR纠错："即它状态" -> shell(git status)
-   - data: {{"command": "实际要执行的shell命令"}}
-   - 重要：必须将用户意图转换为实际的shell命令
-   - 示例："帮我看下上级目录有什么文件" → data: {{"command": "ls .."}}
-
-11. **unknown** - 无法确定意图，data: {{}}
-
-## 任务拆解规则
-
-如果用户请求包含多个步骤，拆解为多个任务：
-- "切换到项目目录然后帮我写代码" → change_dir + coco_message（如果已在编程模式）或 change_dir + enter_coco
-- "去workspace目录看看有什么文件" → change_dir + shell(ls)
-- "在当前目录创建项目然后开始编程" → create_project + enter_coco
-
-## 输出格式
-
-请按以下格式输出：
-
-### Thought
-分析用户输入的语义特征和可能的意图（包括ASR纠错过程）。
-
-### Action
-判断意图类型，决定是否需要拆解为多个任务。
-
-### Result
-```json
-{{
-  "tasks": [
-    {{"intent": "意图类型", "description": "任务描述", "data": {{"相关数据"}}}}
-  ],
-  "confidence": 0.0-1.0
-}}
-```
-
-## 重要规则
-
-1. shell命令格式（如 `ls -la`、`git status`）直接判断为 shell
-2. 在编程模式下，编程相关需求判断为 coco_message；不在编程模式下判断为 enter_coco
-3. 目录相关问题判断为 change_dir
-4. 项目管理相关判断为 create_project/switch_project/list_projects/close_project/project_status
-5. 大多数情况是单任务，只有明确的复合请求才拆解
-6. "在当前目录创建项目"时，path 设为空字符串，由系统使用当前工作目录
-7. 退出相关的短语（如"退出"、"结束"）在编程模式下优先判断为 exit_coco"""
-
     INTENT_MAP = {
         "enter_coco": IntentType.ENTER_COCO,
         "exit_coco": IntentType.EXIT_COCO,
@@ -484,10 +354,6 @@ class IntentRecognizer:
 
     def __init__(self):
         self.settings = get_settings()
-        self._llm_cache: dict[ChatOpenAICacheKey, ChatOpenAI] = {}
-
-    def _get_llm(self) -> ChatOpenAI:
-        return get_cached_chat_openai(self.settings, 0.1, cache=self._llm_cache, llm_cls=ChatOpenAI)
 
     EXIT_KEYWORDS = {"退出", "结束", "exit", "quit", "不用了", "算了", "停止"}
     PROJECT_SWITCH_KEYWORDS = {"切换项目", "换项目", "换到项目", "去项目", "打开项目"}
@@ -845,43 +711,6 @@ class IntentRecognizer:
 
         return None
 
-    def _parse_response(self, content: str) -> tuple[dict, str]:
-        thought_match = re.search(r"###?\s*Thought[^#]*?(?=###|\Z)", content, re.DOTALL | re.IGNORECASE)
-        reasoning = thought_match.group().strip() if thought_match else ""
-
-        json_match = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
-        if json_match:
-            try:
-                return json.loads(json_match.group(1)), reasoning
-            except json.JSONDecodeError:
-                pass
-
-        json_match = re.search(r'\{[^{}]*"tasks"[^{}]*\[.*?\][^{}]*\}', content, re.DOTALL)
-        if json_match:
-            try:
-                return json.loads(json_match.group()), reasoning
-            except json.JSONDecodeError:
-                pass
-
-        json_match = re.search(r'\{[^{}]*"intent"[^{}]*\}', content, re.DOTALL)
-        if json_match:
-            try:
-                old_format = json.loads(json_match.group())
-                return {
-                    "tasks": [
-                        {
-                            "intent": old_format.get("intent", "unknown"),
-                            "description": "",
-                            "data": old_format.get("data", {}),
-                        }
-                    ],
-                    "confidence": old_format.get("confidence", 0.5),
-                }, reasoning
-            except json.JSONDecodeError:
-                pass
-
-        return {}, reasoning
-
     def _normalize_path(self, path: str) -> str:
         if not path:
             return ""
@@ -889,22 +718,6 @@ class IntentRecognizer:
         if path.startswith("~"):
             path = os.path.expanduser(path)
         return path
-
-    def _get_context_hint(self, current_mode: str) -> str:
-        if current_mode == "coco":
-            return "用户当前处于 **Coco 编程模式** 中。编程相关的消息应该判断为 coco_message，而不是 enter_coco。"
-        elif current_mode == "claude":
-            return "用户当前处于 **Claude 编程模式** 中。编程相关的消息应该判断为 claude_message，而不是 enter_claude。"
-        elif current_mode == "aiden":
-            return "用户当前处于 **Aiden 编程模式** 中。编程相关的消息应该判断为 aiden_message，而不是 enter_aiden。"
-        elif current_mode == "codex":
-            return "用户当前处于 **Codex 编程模式** 中。编程相关的消息应该判断为 codex_message，而不是 enter_codex。"
-        elif current_mode == "gemini":
-            return "用户当前处于 **Gemini 编程模式** 中。编程相关的消息应该判断为 gemini_message，而不是 enter_gemini。"
-        elif current_mode == "ttadk":
-            return "用户当前处于 **TTADK 编程模式** 中。编程相关消息应判断为 ttadk_message，继续在 TTADK 会话内执行。"
-        else:
-            return "用户当前处于 **智能模式**（默认模式）。如果用户想要编程，应该判断为 enter_coco、enter_claude、enter_aiden、enter_codex、enter_gemini 或 ttadk_message。"
 
     def _get_fallback_intent(self, current_mode: str) -> IntentType:
         if current_mode == "coco":
@@ -927,84 +740,35 @@ class IntentRecognizer:
         if quick_result:
             return quick_result
 
-        is_in_coco = current_mode == "coco"
-        is_in_claude = current_mode == "claude"
-        is_in_aiden = current_mode == "aiden"
-        is_in_codex = current_mode == "codex"
-        is_in_gemini = current_mode == "gemini"
-        is_in_ttadk = current_mode == "ttadk"
-
-        try:
-            llm = self._get_llm()
-            context_hint = self._get_context_hint(current_mode)
-            prompt = self.REACT_SYSTEM_PROMPT.format(context_hint=context_hint)
-
-            messages = [
-                SystemMessage(content=prompt),
-                HumanMessage(content=f'请分析以下用户输入的意图：\n\n"{text}"'),
-            ]
-
-            response = llm.invoke(messages)
-            content = response.content.strip()
-            logger.debug("ReAct:\n%s...", content[:300])
-
-            result, reasoning = self._parse_response(content)
-
-            if not result or "tasks" not in result:
-                fallback = self._get_fallback_intent(current_mode)
+        # Default ACP tool: forward unmatched SMART mode messages to configured tool
+        default_tool = self.settings.default_acp_tool
+        if default_tool and current_mode == "smart":
+            _TOOL_INTENT_MAP = {
+                "coco": IntentType.ENTER_COCO,
+                "claude": IntentType.ENTER_CLAUDE,
+                "aiden": IntentType.ENTER_AIDEN,
+                "codex": IntentType.ENTER_CODEX,
+                "gemini": IntentType.ENTER_GEMINI,
+            }
+            intent = _TOOL_INTENT_MAP.get(default_tool.lower())
+            if intent:
                 return IntentResult.single(
-                    intent=fallback,
-                    confidence=0.5,
+                    intent=intent,
+                    confidence=0.6,
+                    data={"auto_forward": True},
                     original_text=text,
-                    reasoning=f"LLM解析失败，默认{fallback.value}: {reasoning}",
-                    description=f"执行: {text}",
+                    reasoning=f"默认工具转发: {default_tool}",
+                    description=f"转发到 {default_tool}",
                 )
+            else:
+                logger.warning("无效的 DEFAULT_ACP_TOOL: %s，回退 shell", default_tool)
 
-            tasks = []
-            for task_data in result.get("tasks", []):
-                intent_str = task_data.get("intent", "unknown")
-                intent = self.INTENT_MAP.get(intent_str, IntentType.UNKNOWN)
-
-                if intent == IntentType.ENTER_COCO and is_in_coco:
-                    intent = IntentType.COCO_MESSAGE
-                if intent == IntentType.ENTER_CLAUDE and is_in_claude:
-                    intent = IntentType.CLAUDE_MESSAGE
-                if intent == IntentType.ENTER_AIDEN and is_in_aiden:
-                    intent = IntentType.AIDEN_MESSAGE
-                if intent == IntentType.ENTER_CODEX and is_in_codex:
-                    intent = IntentType.CODEX_MESSAGE
-                if intent == IntentType.ENTER_GEMINI and is_in_gemini:
-                    intent = IntentType.GEMINI_MESSAGE
-                if intent == IntentType.TTADK_MESSAGE and is_in_ttadk:
-                    intent = IntentType.TTADK_MESSAGE
-
-                data = task_data.get("data", {})
-                if intent == IntentType.CHANGE_DIR and "path" in data:
-                    data["path"] = self._normalize_path(data["path"])
-
-                tasks.append(TaskStep(intent=intent, description=task_data.get("description", ""), data=data))
-
-            if not tasks:
-                fallback = self._get_fallback_intent(current_mode)
-                return IntentResult.single(
-                    intent=fallback,
-                    confidence=0.5,
-                    original_text=text,
-                    reasoning="无任务，使用默认意图",
-                    description=f"执行: {text}",
-                )
-
-            return IntentResult(
-                tasks=tasks, confidence=result.get("confidence", 0.5), original_text=text, reasoning=reasoning
-            )
-
-        except Exception as e:
-            logger.error("意图识别异常: %s", get_error_detail(e))
-            fallback = self._get_fallback_intent(current_mode)
-            return IntentResult.single(
-                intent=fallback,
-                confidence=0.3,
-                original_text=text,
-                reasoning=f"异常回退: {get_error_detail(e)}",
-                description=f"执行: {text}",
-            )
+        # Fallback: in programming mode → forward to current mode; otherwise → shell
+        fallback = self._get_fallback_intent(current_mode)
+        return IntentResult.single(
+            intent=fallback,
+            confidence=0.5,
+            original_text=text,
+            reasoning="规则未匹配，使用默认意图",
+            description=f"执行: {text}",
+        )

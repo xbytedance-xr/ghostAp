@@ -72,49 +72,6 @@ class TestLoopEngine:
         req = engine._parse_requirement(text)
         assert len(req.acceptance_criteria) == 2
 
-    @patch("src.loop_engine.engine.ChatOpenAI")
-    def test_parse_requirement_no_criteria_uses_llm(self, mock_chat):
-        """When no list markers, LLM decomposes the requirement."""
-        mock_llm = MagicMock()
-        mock_llm.invoke.return_value = MagicMock(content="- 实现登录接口\n- 支持错误提示\n- 添加单元测试")
-        mock_chat.return_value = mock_llm
-
-        engine = self._make_engine()
-        engine.settings.ark_api_key = "test-key"
-        engine.settings.ark_model = "test-model"
-        text = "实现登录功能，要有错误提示，还要有测试"
-        req = engine._parse_requirement(text)
-        assert len(req.acceptance_criteria) == 3
-        assert "实现登录接口" in req.acceptance_criteria
-        mock_llm.invoke.assert_called_once()
-
-    @patch("src.loop_engine.engine.ChatOpenAI")
-    def test_parse_requirement_llm_failure_fallback(self, mock_chat):
-        """When LLM fails, fall back to raw text as criterion."""
-        mock_llm = MagicMock()
-        mock_llm.invoke.side_effect = Exception("API error")
-        mock_chat.return_value = mock_llm
-
-        engine = self._make_engine()
-        engine.settings.ark_api_key = "test-key"
-        engine.settings.ark_model = "test-model"
-        text = "实现登录功能"
-        req = engine._parse_requirement(text)
-        assert len(req.acceptance_criteria) == 1
-        assert "完成需求" in req.acceptance_criteria[0]
-        # Full text should be preserved, not truncated
-        assert "实现登录功能" in req.acceptance_criteria[0]
-
-    def test_parse_requirement_no_api_key_fallback(self):
-        """When no API key configured, skip LLM and fall back."""
-        engine = self._make_engine()
-        engine.settings.ark_api_key = ""
-        engine.settings.ark_model = ""
-        text = "实现登录功能"
-        req = engine._parse_requirement(text)
-        assert len(req.acceptance_criteria) == 1
-        assert "完成需求" in req.acceptance_criteria[0]
-
     def test_extract_criteria_from_llm_response(self):
         """Test various LLM response formats for criteria extraction."""
         # Dash format
@@ -808,11 +765,28 @@ FAIL
         for r in result.reviews:
             assert not r.passed
 
-    def test_parse_garbage_output_fallback(self):
+    @patch("src.loop_engine.engine.prompt_via_acp", return_value="")
+    def test_parse_garbage_output_fallback(self, _mock_prompt):
         engine = self._make_engine()
         result = engine._parse_review_output("random garbage text\nno structure at all", 1)
         assert not result.all_passed
         assert len(result.reviews) == 5
+
+    @patch(
+        "src.loop_engine.engine.prompt_via_acp",
+        return_value="""[
+  {"perspective": "ARCHITECT", "verdict": "PASS", "suggestions": []},
+  {"perspective": "PRODUCT", "verdict": "PASS", "suggestions": []},
+  {"perspective": "USER", "verdict": "PASS", "suggestions": []},
+  {"perspective": "TESTER", "verdict": "PASS", "suggestions": []}
+]""",
+    )
+    def test_parse_garbage_output_fallback_requires_all_perspectives(self, _mock_prompt):
+        engine = self._make_engine()
+        result = engine._parse_review_output("random garbage text\nno structure at all", 1)
+        assert not result.all_passed
+        assert len(result.reviews) == 5
+        assert any(r.perspective == ReviewPerspective.DESIGNER and not r.passed for r in result.reviews)
 
     def test_parse_partial_perspectives(self):
         engine = self._make_engine()
@@ -1068,9 +1042,6 @@ PASS
         s.loop_execution_timeout = 300
         s.loop_review_enabled = True
         s.loop_review_extra_iterations = 3
-        s.ark_api_key = "test-key"
-        s.ark_model = "test-model"
-        s.ark_base_url = "https://test.example.com"
         mock_settings.return_value = s
         engine = LoopEngine(chat_id="c1", root_path="/tmp/test")
 

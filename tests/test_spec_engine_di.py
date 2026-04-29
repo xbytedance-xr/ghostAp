@@ -12,9 +12,6 @@ def test_spec_engine_di_injected_dependencies_used():
     """Verify that injected dependencies are stored and used by SpecEngine."""
     mock_retry_policy = RetryPolicy(max_retries=99, retry_delay=0.1)
     
-    mock_llm = MagicMock()
-    mock_get_llm_fn = MagicMock(return_value=mock_llm)
-    
     mock_session = MagicMock()
     mock_create_session_fn = MagicMock(return_value=mock_session)
     
@@ -22,22 +19,14 @@ def test_spec_engine_di_injected_dependencies_used():
         chat_id="test_chat",
         root_path="/tmp/test_root",
         retry_policy=mock_retry_policy,
-        get_llm_fn=mock_get_llm_fn,
         create_session_fn=mock_create_session_fn,
     )
     
     # Verify the injected instances are stored
     assert engine._retry_policy is mock_retry_policy
-    assert engine._get_llm_fn is mock_get_llm_fn
     assert engine._create_session_fn is mock_create_session_fn
     
-    # 1. Verify get_llm_fn is used
-    llm = engine._get_llm(0.5)
-    assert llm is mock_llm
-    mock_get_llm_fn.assert_called_once()
-    assert mock_get_llm_fn.call_args[0][1] == 0.5
-    
-    # 2. Verify create_session_fn is used
+    # 1. Verify create_session_fn is used
     # Initialize fake project state to avoid execute setup logic
     engine._project = SpecProject.create(name="test", root_path="/tmp/test_root")
     engine._project.requirement = "do something"

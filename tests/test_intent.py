@@ -167,31 +167,6 @@ class TestIntentRecognizerContextHint:
     def recognizer(self):
         return IntentRecognizer()
 
-    def test_context_hint_coco_mode(self, recognizer):
-        hint = recognizer._get_context_hint(current_mode="coco")
-        assert "Coco 编程模式" in hint
-        assert "coco_message" in hint
-
-    def test_context_hint_claude_mode(self, recognizer):
-        hint = recognizer._get_context_hint(current_mode="claude")
-        assert "Claude 编程模式" in hint
-        assert "claude_message" in hint
-
-    def test_context_hint_gemini_mode(self, recognizer):
-        hint = recognizer._get_context_hint(current_mode="gemini")
-        assert "Gemini 编程模式" in hint
-        assert "gemini_message" in hint
-
-    def test_context_hint_ttadk_mode(self, recognizer):
-        hint = recognizer._get_context_hint(current_mode="ttadk")
-        assert "TTADK 编程模式" in hint
-        assert "ttadk_message" in hint
-
-    def test_context_hint_smart_mode(self, recognizer):
-        hint = recognizer._get_context_hint(current_mode="smart")
-        assert "智能模式" in hint
-        assert "enter_coco" in hint
-
     def test_fallback_intent_coco_mode(self, recognizer):
         fallback = recognizer._get_fallback_intent(current_mode="coco")
         assert fallback == IntentType.COCO_MESSAGE
@@ -423,12 +398,6 @@ class TestQuickMatchBoundaryEdgeCases:
             assert result is not None, f"Expected match for {cmd}"
             assert result.primary_intent == expected_intent, f"Wrong intent for {cmd}"
             assert result.primary_data.get("command") == "info"
-
-    def test_parse_response_malformed_json(self, recognizer):
-        """Malformed JSON in code block should return empty dict."""
-        content = '```json\n{"tasks": [broken\n```'
-        parsed, _ = recognizer._parse_response(content)
-        assert parsed == {}
 
     def test_cd_with_tilde_path(self, recognizer):
         """cd ~/workspace should capture tilde path correctly."""

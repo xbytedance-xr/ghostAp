@@ -108,7 +108,10 @@ class Application:
 
         logger.info("APP_ID: %s...", self.settings.app_id[:8])
         logger.info("命令超时: %d秒", self.settings.sandbox_timeout)
-        logger.info("意图识别: ARK (%s)", self.settings.ark_model)
+        if self.settings.default_acp_tool:
+            logger.info("默认 ACP 工具: %s", self.settings.default_acp_tool)
+        else:
+            logger.info("默认模式: 纯 Shell")
 
         # TTADK 常用工具模型预热（后台 best-effort）
         try:

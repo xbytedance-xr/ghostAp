@@ -4,13 +4,8 @@ import json
 import logging
 from typing import Callable, List, Optional
 
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
-
 from ..engine_base import PerspectiveReview, ReviewPerspective, ReviewResult
 from .constants import SPEC_UI_TEXT
-from ..utils.errors import get_error_detail
-from ..utils.llm import ChatOpenAICacheKey, get_cached_chat_openai
 from ..utils.spec_utils import (
     PERSPECTIVE_TAG_MAP as _PERSPECTIVE_TAG_MAP,
     parse_review_output_loose,
@@ -18,12 +13,6 @@ from ..utils.spec_utils import (
 )
 
 logger = logging.getLogger(__name__)
-
-_LLM_CACHE: dict[ChatOpenAICacheKey, ChatOpenAI] = {}
-
-
-def _get_llm(settings, temperature: float) -> ChatOpenAI:
-    return get_cached_chat_openai(settings, temperature, cache=_LLM_CACHE, llm_cls=ChatOpenAI)
 
 
 def extract_reviews_from_llm_response(text: str) -> list[PerspectiveReview]:
@@ -113,13 +102,29 @@ def parse_review_output(
     return ReviewResult(reviews=reviews, iteration=cycle)
 
 
-def parse_review_with_llm(raw_text: str, settings) -> list[PerspectiveReview]:
-    if not settings.ark_api_key or not settings.ark_model:
+def parse_review_with_llm(
+    raw_text: str,
+    settings,
+    send_fn: Optional[Callable[[str], str]] = None,
+) -> list[PerspectiveReview]:
+    """Use the current ACP tool to extract structured review results from text.
+
+    Parameters
+    ----------
+    raw_text:
+        Free-form review output that failed regex parsing.
+    settings:
+        Application settings (kept for interface compat).
+    send_fn:
+        ``(prompt) -> response_text`` callable backed by an ACP sub-session.
+        When *None*, returns ``[]``.
+    """
+    if not send_fn:
         return []
     if not raw_text or len(raw_text.strip()) < 10:
         return []
 
-    prompt = f"""请从以下文本中提取四个视角的审查结果。
+    prompt = f"""请从以下文本中提取五个视角的审查结果。
 
 文本内容：
 {raw_text[:3000]}
@@ -129,17 +134,24 @@ def parse_review_with_llm(raw_text: str, settings) -> list[PerspectiveReview]:
   {{"perspective": "ARCHITECT", "verdict": "PASS或FAIL", "suggestions": ["建议1", "建议2"]}},
   {{"perspective": "PRODUCT", "verdict": "PASS或FAIL", "suggestions": []}},
   {{"perspective": "USER", "verdict": "PASS或FAIL", "suggestions": []}},
-  {{"perspective": "TESTER", "verdict": "PASS或FAIL", "suggestions": []}}
-]"""
+  {{"perspective": "TESTER", "verdict": "PASS或FAIL", "suggestions": []}},
+  {{"perspective": "DESIGNER", "verdict": "PASS或FAIL", "suggestions": []}}
+]
+
+规则：
+- perspective 只能是 ARCHITECT/PRODUCT/USER/TESTER/DESIGNER
+- verdict 只能是 PASS 或 FAIL
+- 如果文本中找不到某个视角的审查，verdict 设为 FAIL，suggestions 填 ["未找到该视角的审查结果"]
+- suggestions 数组中只放 FAIL 视角的改进建议，PASS 视角为空数组"""
 
     try:
-        response = _get_llm(settings, 0.0).invoke(
-            [
-                SystemMessage(content="你是一个文本解析助手。从审查文本中提取结构化的审查结果，只输出JSON。"),
-                HumanMessage(content=prompt),
-            ]
-        )
-        return extract_reviews_from_llm_response(response.content)
+        response = send_fn(prompt)
+        reviews = extract_reviews_from_llm_response(response)
+        if {r.perspective for r in reviews} != set(ReviewPerspective):
+            logger.warning("[Spec] ACP 兜底审查解析视角不完整, 将视为解析失败")
+            return []
+        return reviews
     except Exception as e:
-        logger.warning("[Spec] LLM 兜底审查解析失败: %s", get_error_detail(e))
+        from ..utils.errors import get_error_detail
+        logger.warning("[Spec] ACP 兜底审查解析失败: %s", get_error_detail(e))
         return []

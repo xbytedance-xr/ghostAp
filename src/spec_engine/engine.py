@@ -16,9 +16,6 @@ from collections import namedtuple
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
-
 from ..acp import ACPEvent, ACPEventType
 from ..agent_session import create_engine_session
 from ..engine_base import (
@@ -28,8 +25,8 @@ from ..engine_base import (
     ReviewPerspective,
     ReviewResult,
 )
+from ..utils.acp_prompt import prompt_via_acp
 from ..utils.errors import get_error_detail
-from ..utils.llm import ChatOpenAICacheKey, get_cached_chat_openai
 from ..utils.trace import TraceContext
 from .validation import SpecInput
 from pydantic import ValidationError
@@ -46,7 +43,6 @@ from .models import (
 )
 from .prompts import (
     build_build_prompt,
-    build_goal_rewrite_prompt,
     build_plan_prompt,
     build_refinement_input,
     build_spec_prompt,
@@ -154,7 +150,6 @@ class SpecEngine(BaseEngine):
         model_name: Optional[str] = None,
         *,
         retry_policy: Optional[RetryPolicy] = None,
-        get_llm_fn: Optional[Callable] = None,
         create_session_fn: Optional[Callable] = None,
     ):
         super().__init__(chat_id, root_path, agent_type, engine_name, model_name)
@@ -165,7 +160,6 @@ class SpecEngine(BaseEngine):
         self._termination_reason: Optional[str] = None
         self._resume_meta: Optional[dict] = None
         self._retry_policy = retry_policy or RetryPolicy()
-        self._get_llm_fn = get_llm_fn or get_cached_chat_openai
         self._create_session_fn = create_session_fn or create_engine_session
         self._models_tried: list[str] = []
         self._current_model: Optional[str] = None
@@ -177,7 +171,6 @@ class SpecEngine(BaseEngine):
         self._review_orchestrator = ReviewOrchestrator()
         self._last_cycle_num: int = 0
         self._last_phase: SpecPhase = SpecPhase.SPEC
-        self._llm_cache: dict[ChatOpenAICacheKey, ChatOpenAI] = {}
 
     # ------------------------------------------------------------------
     # Compatibility properties: delegate to _review_orchestrator
@@ -222,9 +215,6 @@ class SpecEngine(BaseEngine):
     @_review_circuit_open_until_cycle.setter
     def _review_circuit_open_until_cycle(self, value: int):
         self._review_orchestrator.circuit.review_circuit_open_until_cycle = value
-
-    def _get_llm(self, temperature: float) -> ChatOpenAI:
-        return self._get_llm_fn(self.settings, temperature, cache=self._llm_cache, llm_cls=ChatOpenAI)
 
     def _wrap_callbacks(self, callbacks: SpecEngineCallbacks) -> SpecEngineCallbacks:
         def _wrap(fn: Optional[Callable[..., None]], name: str) -> Optional[Callable[..., None]]:
@@ -1314,8 +1304,20 @@ class SpecEngine(BaseEngine):
     # Monitoring metrics
     # ------------------------------------------------------------------
 
+    def _make_aux_send_fn(self) -> Callable[[str], str]:
+        """Create a send_fn that uses a disposable ACP sub-session."""
+        def _send(text: str) -> str:
+            return prompt_via_acp(
+                text,
+                create_session_fn=self._create_session_fn,
+                agent_type=self._agent_type,
+                cwd=self.root_path,
+                model_name=self._model_name,
+            )
+        return _send
+
     def _decompose_criteria_with_llm(self, text: str) -> list[str]:
-        return _decompose_criteria_with_llm_impl(text, self.settings)
+        return _decompose_criteria_with_llm_impl(text, self.settings, send_fn=self._make_aux_send_fn())
 
     # ------------------------------------------------------------------
     # Criteria evaluation (reuses loop pattern)
@@ -1387,11 +1389,11 @@ class SpecEngine(BaseEngine):
         return _parse_review_output_impl(
             text,
             cycle,
-            parse_with_llm_fn=lambda raw: _parse_review_with_llm_impl(raw, self.settings),
+            parse_with_llm_fn=lambda raw: _parse_review_with_llm_impl(raw, self.settings, send_fn=self._make_aux_send_fn()),
         )
 
     def _parse_review_with_llm(self, raw_text: str) -> list[PerspectiveReview]:
-        return _parse_review_with_llm_impl(raw_text, self.settings)
+        return _parse_review_with_llm_impl(raw_text, self.settings, send_fn=self._make_aux_send_fn())
 
     @staticmethod
     def _extract_reviews_from_llm_response(text: str) -> list[PerspectiveReview]:
@@ -1415,7 +1417,7 @@ class SpecEngine(BaseEngine):
 
 
     def refine_goal_with_guidance(self, guidance: str) -> tuple[bool, str]:
-        """用 LLM 将原始需求与用户引导合并为新的综合目标，更新 project.requirement。
+        """将用户引导直接追加到需求中，更新 project.requirement。
 
         Returns:
             (success, new_requirement_or_error_msg)
@@ -1427,30 +1429,11 @@ class SpecEngine(BaseEngine):
         if not original.strip():
             return False, "原始需求为空，无法合并"
 
-        if not self.settings.ark_api_key or not self.settings.ark_model:
-            # 无 LLM 配置时，退化为直接追加
-            self._project.requirement = f"{original}\n\n## 补充约束/偏好\n{guidance}"
-            _persist_state_best_effort(self._project, self.root_path, logger)
-            logger.info("[Spec] 无 LLM 配置，直接追加引导到需求")
-            return True, self._project.requirement
-
-        prompt = build_goal_rewrite_prompt(original, guidance)
-        try:
-            response = self._get_llm(0.3).invoke([HumanMessage(content=prompt)])
-            new_req = response.content.strip()
-            if not new_req:
-                return False, "LLM 返回空内容"
-
-            self._project.requirement = new_req
-            # 清除待消费的引导队列（已融入目标，无需重复注入）
-            self._user_guidance.clear()
-            _persist_state_best_effort(self._project, self.root_path, logger)
-            logger.info("[Spec] 目标已重写(原%d字→新%d字)", len(original), len(new_req))
-            return True, new_req
-        except Exception as e:
-            logger.warning("[Spec] 目标重写 LLM 调用失败: %s", get_error_detail(e))
-            from ..utils.errors import get_error_detail as _ged
-            return False, _ged(e)
+        # 直接追加引导到需求
+        self._project.requirement = f"{original}\n\n## 补充约束/偏好\n{guidance}"
+        self._persist_state_best_effort()
+        logger.info("[Spec] 直接追加引导到需求")
+        return True, self._project.requirement
 
     def inject_guidance(self, message: str):
         """Inject user guidance — will be included in the next phase prompt."""
