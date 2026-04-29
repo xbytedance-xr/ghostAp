@@ -2,6 +2,9 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-04-29
+- **/wt 主列表改为产品入口驱动** — 将顶层工具列表从实现分类心智切换为产品入口心智，固定并列展示 Coco/Aiden/Codex/Claude/TTADK，并让原生主工具排序靠前；51 个相关测试通过 → [详细记录](2026-04-29.md)
+- **/wt TTADK 模型列表改为强制实时刷新** — 追踪到 Worktree 之前读取的是 TTADK 旧缓存，导致即便 CLI 已能打印真实模型列表，`/wt` 仍显示过期模型名；改为 TTADK 模型选择时强制 `force_refresh=True`，并保持测试只用 mock、不引入需交互鉴权的 case；48 个相关测试通过 → [详细记录](2026-04-29.md)
+- **/wt TTADK 假模型名显示修复** — 追踪到 Worktree 将 TTADK `source=defaults` / `models_untrusted` 的兜底模型误展示为可选项；改为仅展示真实来源模型，避免 `gpt-5.2` / `claude-3-opus` 之类假模型名出现在 `/wt`；47 个相关测试通过 → [详细记录](2026-04-29.md)
 - **/wt TTADK 独立入口与模型来源解耦** — Worktree 主列表改为单个 TTADK 聚合入口；TTADK 子工具/模型选择与原生 ACP 工具分层，避免与 Coco 原生模型列表冲突；46 个相关测试通过 → [详细记录](2026-04-29.md)
 - **Phase 5+6 完成：代码质量优化 + P2清理** — Phase 5.1: registry_setup.py 6 处魔法数字→Settings 字段；Phase 5.2: dispatcher.py execute_single_task 250行→65行路由+8辅助方法+6字典分发表；Phase 5.3: styles.py 新增37个UI_TEXT key + dispatcher/programming 共43处硬编码中文迁移；Phase 6: test_handlers.py 4处sleep→polling；3857 passed 零回归 → [详细记录](2026-04-29.md)
 - **Phase 3 完成：SystemHandler God Class Mixin 提取** — system.py 1681→814行（-51%），提取 LockCommandsMixin（9方法）和 TTADKCommandsMixin（17方法）到独立文件；更新14处测试monkeypatch路径；3857 passed 零回归 → [详细记录](2026-04-29.md)

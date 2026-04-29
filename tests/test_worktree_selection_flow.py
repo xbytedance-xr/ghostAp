@@ -275,6 +275,31 @@ def test_wt_command_shows_single_ttadk_entry_in_top_level_tool_list():
     assert "TTADK · claude" not in card_str
 
 
+def test_wt_command_top_level_tool_card_uses_product_entry_order():
+    """Top-level /wt card should prioritize native product entries before TTADK."""
+    handler = _make_system_handler()
+    project = ProjectContext(project_id="p-order", project_name="INT", root_path="/tmp/int")
+    handler.ctx.project_manager.get_active_project.return_value = project
+
+    fake_tools = [
+        {"provider": "acp", "tool_name": "coco", "display_name": "Coco", "description": "AI 编程", "supports_model": True},
+        {"provider": "acp", "tool_name": "aiden", "display_name": "Aiden", "description": "AI 编程", "supports_model": True},
+        {"provider": "acp", "tool_name": "codex", "display_name": "Codex", "description": "AI 编程", "supports_model": True},
+        {"provider": "cli", "tool_name": "claude", "display_name": "Claude", "description": "Claude CLI", "supports_model": True},
+        {"provider": "ttadk", "tool_name": "ttadk", "display_name": "TTADK", "description": "TTADK 多工具入口", "supports_model": False},
+    ]
+    reply_mock = MagicMock()
+
+    with patch.object(handler, "_get_available_worktree_tools", return_value=fake_tools), \
+         patch.object(handler, "reply_message", reply_mock):
+        handler.handle_worktree_command("msg-order", "chat1", project)
+
+    card_str = reply_mock.call_args[0][1]
+    ordered_names = ["Coco", "Aiden", "Codex", "Claude", "TTADK"]
+    positions = [card_str.index(name) for name in ordered_names]
+    assert positions == sorted(positions)
+
+
 def test_wt_command_without_project_returns_error():
     """Edge: /wt without an active project should reply with an error."""
     handler = _make_system_handler()

@@ -15,6 +15,14 @@ logger = logging.getLogger(__name__)
 class WorktreeToolDiscovery:
     """Discovers available tools and their models from ACP, CLI, and TTADK providers."""
 
+    _TOP_LEVEL_PRIORITY = {
+        ("acp", "coco"): 0,
+        ("acp", "aiden"): 1,
+        ("acp", "codex"): 2,
+        ("cli", "claude"): 3,
+        ("ttadk", "ttadk"): 90,
+    }
+
     def get_available_tools(self) -> list[dict]:
         """Return available tools as dicts suitable for card builders.
 
@@ -77,7 +85,17 @@ class WorktreeToolDiscovery:
                 ).__dict__
             )
 
-        return tools
+        return self._sort_top_level_tools(tools)
+
+    def _sort_top_level_tools(self, tools: list[dict]) -> list[dict]:
+        def key(item: dict) -> tuple[int, str]:
+            priority = self._TOP_LEVEL_PRIORITY.get(
+                (item.get("provider"), item.get("tool_name")),
+                50,
+            )
+            return priority, str(item.get("display_name") or item.get("tool_name") or "")
+
+        return sorted(tools, key=key)
 
     def get_ttadk_tools(self) -> list[dict]:
         tools: list[dict] = []
@@ -129,7 +147,15 @@ class WorktreeToolDiscovery:
 
         try:
             manager = get_ttadk_manager()
-            models_result = manager.get_models(tool_name=tool_name, cwd=cwd)
+            models_result = manager.get_models(
+                tool_name=tool_name,
+                cwd=cwd,
+                force_refresh=True,
+            )
+            warnings = list(getattr(models_result, "warnings", []) or [])
+            source = str(getattr(models_result, "source", "") or "").strip().lower()
+            if source == "defaults" or "models_untrusted" in warnings:
+                return []
             models = []
             for m in (models_result.models if models_result else []):
                 models.append(

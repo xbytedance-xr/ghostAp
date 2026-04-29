@@ -2,6 +2,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from src.ttadk.models import ModelListResult, TTADKModel
 from src.worktree_engine.tool_discovery import WorktreeToolDiscovery
 
 
@@ -81,6 +82,69 @@ def test_returns_ttadk_as_single_aggregate_entry():
     )
 
 
+def test_top_level_tools_keep_native_entries_and_ttadk_at_same_level():
+    """Top-level list should keep native tool entries while exposing TTADK as a sibling entry."""
+    discovery = WorktreeToolDiscovery()
+    acp_tools = [
+        _make_acp_tool("coco", "ACP Coco"),
+        _make_acp_tool("aiden", "ACP Aiden"),
+        _make_acp_tool("codex", "ACP Codex"),
+    ]
+    ttadk_mgr = MagicMock()
+    ttadk_mgr.get_tools.return_value = SimpleNamespace(
+        tools=[
+            _make_ttadk_tool("coco", "TTADK coco"),
+            _make_ttadk_tool("claude", "TTADK claude"),
+        ]
+    )
+
+    with patch("src.worktree_engine.tool_discovery.list_acp_tools", return_value=acp_tools), \
+         patch("src.worktree_engine.tool_discovery.shutil.which", return_value="/usr/bin/tool"), \
+         patch("src.worktree_engine.tool_discovery.tool_registry") as mock_reg, \
+         patch("src.worktree_engine.tool_discovery.get_ttadk_manager", return_value=ttadk_mgr):
+        mock_reg.get_provider.return_value = None
+        result = discovery.get_available_tools()
+
+    assert [tool["tool_name"] for tool in result] == [
+        "coco",
+        "aiden",
+        "codex",
+        "claude",
+        "ttadk",
+    ]
+
+
+def test_top_level_tools_prioritize_coco_aiden_codex_claude_before_ttadk():
+    """Top-level tool ordering should follow product entry priority instead of discovery order."""
+    discovery = WorktreeToolDiscovery()
+    acp_tools = [
+        _make_acp_tool("gemini", "ACP Gemini"),
+        _make_acp_tool("codex", "ACP Codex"),
+        _make_acp_tool("aiden", "ACP Aiden"),
+        _make_acp_tool("coco", "ACP Coco"),
+    ]
+    ttadk_mgr = MagicMock()
+    ttadk_mgr.get_tools.return_value = SimpleNamespace(
+        tools=[_make_ttadk_tool("claude", "TTADK claude")]
+    )
+
+    with patch("src.worktree_engine.tool_discovery.list_acp_tools", return_value=acp_tools), \
+         patch("src.worktree_engine.tool_discovery.shutil.which", return_value="/usr/bin/tool"), \
+         patch("src.worktree_engine.tool_discovery.tool_registry") as mock_reg, \
+         patch("src.worktree_engine.tool_discovery.get_ttadk_manager", return_value=ttadk_mgr):
+        mock_reg.get_provider.return_value = None
+        result = discovery.get_available_tools()
+
+    assert [tool["tool_name"] for tool in result] == [
+        "coco",
+        "aiden",
+        "codex",
+        "claude",
+        "gemini",
+        "ttadk",
+    ]
+
+
 def test_get_ttadk_tools_returns_concrete_ttadk_tools():
     """TTADK concrete tools should still be available from the TTADK-only discovery path."""
     discovery = WorktreeToolDiscovery()
@@ -108,6 +172,48 @@ def test_get_models_returns_empty_on_error():
         result = discovery.get_models_for_tool("coco", provider="ttadk")
 
     assert result == []
+
+
+def test_get_models_ttadk_filters_untrusted_default_models():
+    """Untrusted TTADK default fallback models should not be shown in /wt model selection."""
+    discovery = WorktreeToolDiscovery()
+    ttadk_mgr = MagicMock()
+    ttadk_mgr.get_models.return_value = ModelListResult(
+        models=[
+            TTADKModel(name="gpt-5.2", description="GPT-5.2"),
+            TTADKModel(name="claude-3-opus", description="Claude 3 Opus"),
+        ],
+        source="defaults",
+        warnings=["models_untrusted"],
+    )
+
+    with patch("src.worktree_engine.tool_discovery.get_ttadk_manager", return_value=ttadk_mgr):
+        result = discovery.get_models_for_tool("gemini", provider="ttadk")
+
+    assert result == []
+
+
+def test_get_models_ttadk_forces_fresh_fetch_to_avoid_stale_cache():
+    """Worktree TTADK model picker should force refresh instead of trusting stale cache names."""
+    discovery = WorktreeToolDiscovery()
+    ttadk_mgr = MagicMock()
+    ttadk_mgr.get_models.return_value = ModelListResult(
+        models=[TTADKModel(name="glm-5", description="glm-5")],
+        source="probe",
+        warnings=[],
+    )
+
+    with patch("src.worktree_engine.tool_discovery.get_ttadk_manager", return_value=ttadk_mgr):
+        result = discovery.get_models_for_tool("claude", provider="ttadk", cwd="/tmp/demo")
+
+    ttadk_mgr.get_models.assert_called_once_with(
+        tool_name="claude",
+        cwd="/tmp/demo",
+        force_refresh=True,
+    )
+    assert result == [
+        {"name": "glm-5", "display_name": "glm-5", "is_default": False}
+    ]
 
 
 def test_get_models_acp_returns_model_dicts():
