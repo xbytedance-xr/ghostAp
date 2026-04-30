@@ -102,7 +102,7 @@ class TestNewProject:
         assert msg_type == "interactive"
         card = json.loads(card_json)
         assert "existing-dev" in json.dumps(card, ensure_ascii=False)
-        assert "chatId=oc_bound" in json.dumps(card, ensure_ascii=False)
+        assert "openChatId=oc_bound" in json.dumps(card, ensure_ascii=False)
 
 
 class TestRollback:

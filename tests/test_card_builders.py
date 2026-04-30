@@ -175,7 +175,7 @@ def test_project_status_card_includes_switch_and_group_jump_without_duplicate_pa
     buttons = _collect_buttons(card)
     assert any(
         b["text"]["content"] == UI_TEXT["project_btn_open_group"]
-        and b["multi_url"]["url"].endswith("chatId=oc_group_123")
+        and b["multi_url"]["url"].endswith("openChatId=oc_group_123")
         for b in buttons
     )
     assert any(
@@ -204,7 +204,7 @@ def test_project_board_includes_group_jump_for_bound_project():
     buttons = _collect_buttons(card)
     assert any(
         b["text"]["content"] == UI_TEXT["project_btn_open_group"]
-        and "chatId=oc_group_123" in b["multi_url"]["url"]
+        and "openChatId=oc_group_123" in b["multi_url"]["url"]
         for b in buttons
     )
 

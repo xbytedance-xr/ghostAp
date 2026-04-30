@@ -20,8 +20,8 @@ class ProjectBuilder:
     @staticmethod
     def _build_project_chat_multi_url(chat_id: str) -> dict:
         safe_chat_id = quote(str(chat_id or "").strip(), safe="")
-        https = f"https://applink.feishu.cn/client/chat/open?chatId={safe_chat_id}"
-        native = f"lark://applink/client/chat/open?chatId={safe_chat_id}"
+        https = f"https://applink.feishu.cn/client/chat/open?openChatId={safe_chat_id}"
+        native = f"lark://applink/client/chat/open?openChatId={safe_chat_id}"
         return {
             "url": https,
             "pc_url": https,
