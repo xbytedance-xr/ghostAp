@@ -210,28 +210,12 @@ class CardDelivery:
     def _stream_element(
         self, session_id: str, page: PageBinding, card: RenderedCard
     ) -> MutationOutcome:
-        """Push text via element_content API (streaming)."""
+        """Push text update via full card PATCH (element_content API deferred)."""
         if card.active_element is None:
             return MutationOutcome(kind="skipped")
-
-        try:
-            seq = self._sequences.next_sequence(page.card_id)
-            self._client.update_element(
-                page.card_id,
-                card.active_element.element_id,
-                card.active_element.text,
-                sequence=seq,
-            )
-            self._bindings.update_text(session_id, page.page_index, card.active_element.text)
-            return MutationOutcome(kind="applied", message="element_content")
-        except SequenceConflictError as e:
-            self._sequences.raise_floor(page.card_id, e.next_floor)
-            return MutationOutcome(kind="reconcile", message="sequence_conflict")
-        except TransportError:
-            return MutationOutcome(kind="reconcile", message="transport_error")
-        except Exception as e:
-            logger.warning("Element update failed: %s", e)
-            return MutationOutcome(kind="reconcile", message=str(e))
+        # Delegate to full update — element_content API can be added later
+        # _update_page already handles update_signature + update_text internally
+        return self._update_page(session_id, page, card)
 
     def _finalize_page(self, session_id: str, page: PageBinding) -> None:
         """Finalize a stale page (optional: send final update disabling streaming)."""

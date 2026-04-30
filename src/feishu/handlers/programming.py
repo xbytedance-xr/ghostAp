@@ -677,12 +677,15 @@ class ProgrammingModeHandler(BaseHandler):
         *, _repo_lock_mgr=None, _root_path: str | None = None,
     ):
         from ...acp.models import ACPEvent
-
-        streaming_manager = self.get_streaming_manager()
+        from ...card.delivery.engine import CardDelivery
+        from ...card.delivery.feishu_client import FeishuCardAPIClient
+        from ...card.programming_adapter import ProgrammingCardSession, build_programming_metadata
+        from ...card.session import CardSession
 
         project_name = project.project_name if project else None
         project_path = project.root_path if project else global_working_dir
         project_id = project.project_id if project else None
+
         with self.ctx.pending_image_lock:
             image_keys = self.ctx.pending_image_keys.get(message_id)
 
@@ -691,25 +694,46 @@ class ProgrammingModeHandler(BaseHandler):
         from ...thread import get_current_thread_id as _get_tid
         _thread_id = _get_tid()
 
-        streaming_card = streaming_manager.create_streaming_card(
-            chat_id=chat_id,
+        # Build metadata for new card system
+        tool_name = None
+        model_name = self._get_model_name_override(project)
+        if self.mode_name == "TTADK":
+            tool_name = self._get_ttadk_tool_display(project)
+            if not model_name:
+                model_name = self._get_ttadk_model_display(project)
+
+        metadata = build_programming_metadata(
+            self.mode_name,
+            tool_name=tool_name,
+            model_name=model_name,
             project_name=project_name,
-            project_path=project_path,
-            project_id=project_id,
-            initial_content=self.thinking_text,
-            mode=self._get_interaction_mode(),
-            reply_to_message_id=message_id,
-            image_keys=image_keys,
-            reply_in_thread=True if _thread_id else None,
-            thread_root_id=_thread_id,
-            ttadk_tool_name=self._get_ttadk_tool_display(project) if self.mode_name == "TTADK" else None,
-            ttadk_model_name=self._get_ttadk_model_display(project) if self.mode_name == "TTADK" else None,
         )
 
-        card_message_id = None
-        if streaming_card:
-            card_message_id = streaming_manager.send_streaming_card(streaming_card)
+        # Create card delivery + session
+        api_client = FeishuCardAPIClient(self.ctx.client)
+        delivery = CardDelivery(api_client)
+        card_session = CardSession(
+            chat_id=chat_id,
+            metadata=metadata,
+            delivery=delivery,
+            reply_to=message_id,
+        )
+        prog_session = ProgrammingCardSession(card_session)
 
+        # Start card (creates in Feishu)
+        try:
+            prog_session.start()
+        except Exception as e:
+            logger.warning("创建流式卡片失败: %s", e)
+            # Fallback to non-streaming text mode
+            self._handle_response_non_streaming(
+                message_id, chat_id, text, session, project, global_working_dir,
+                _repo_lock_mgr=_repo_lock_mgr, _root_path=_root_path,
+            )
+            return
+
+        # Message linking
+        card_message_id = prog_session.get_message_id()
         if card_message_id:
             try:
                 rid = self.ensure_request_id(message_id, chat_id=chat_id, project_id=project_id)
@@ -718,146 +742,77 @@ class ProgrammingModeHandler(BaseHandler):
                 )
                 self.ctx.message_linker.link_reply(message_id, card_message_id)
             except Exception as e:
-                logger.debug(
-                    "link消息失败(programming): message_id=%s, card_message_id=%s, err=%s",
-                    message_id,
-                    card_message_id,
-                    e,
-                )
+                logger.debug("link消息失败(programming): %s", e)
 
-        # Event-driven rendering (ACP backend emits rich events; CLI backend emits TEXT_CHUNK only)
-        renderer = ACPEventRenderer()
+        # Streaming execution
         timeout = self.settings.coco_execution_timeout if self.is_coco else self.settings.claude_execution_timeout
+        update_count = [0]
+        _last_touch = [time.monotonic()]
+        _TOUCH_INTERVAL = 30
 
-        # Register continuation callback: when a new card is created,
-        # reset renderer state so it only produces new content + brief summary.
-        if streaming_card:
-            def _on_continuation():
-                summary = renderer.render_continuation_summary()
-                renderer.reset_for_continuation(summary)
+        # Heartbeat for repo lock
+        _streaming_hb_stop = threading.Event()
+        try:
+            _streaming_max_beats = max(1, int(self.settings.repo_lock_hard_timeout // _TOUCH_INTERVAL))
+        except Exception:
+            _streaming_max_beats = 120
 
-            streaming_card.on_continuation = _on_continuation
-
-        if not streaming_card or not card_message_id:
-            logger.warning("创建流式卡片失败，回退到纯文本模式")
-            # Heartbeat: keep repo lock alive during blocking send_prompt
-            _TOUCH_INTERVAL = 30  # seconds
-            _hb_stop = threading.Event()
-            _hb_thread = None
-            try:
-                _max_beats = max(1, int(self.settings.repo_lock_hard_timeout // _TOUCH_INTERVAL))
-            except Exception:
-                _max_beats = 120  # fallback: 3600 / 30
-
-            if _repo_lock_mgr and _root_path:
-                from ...utils.heartbeat import RepoLockHeartbeat
-
-                _hb = RepoLockHeartbeat(
-                    _hb_stop,
-                    lambda: _repo_lock_mgr.touch(_root_path, chat_id),
-                    interval=_TOUCH_INTERVAL,
-                    max_beats=_max_beats,
-                    name=f"prog-nonstream-{_root_path}",
-                )
-                _hb.start()
-            else:
-                _hb = None
-
-            try:
-                result = session.send_prompt(text, on_event=None, timeout=timeout)
-                final_response = renderer.get_final_content() or UI_TEXT["mode_exec_complete"]
-                response_with_dir = f"{final_response}\n\n---\n{UI_TEXT['mode_working_dir_label'].format(path=global_working_dir)}"
-                self.reply_message(message_id, response_with_dir)
-            except TimeoutError as e:
-                log_exception(logger, f"{self.mode_name} ACP执行超时", e, level=logging.WARNING)
-                msg_type, content = CardBuilder.build_error_card(e, title=UI_TEXT["mode_exec_timeout_title"], project=project)
-                self.reply_message(message_id, content, msg_type)
-            except Exception as e:
-                msg_type, content = CardBuilder.build_error_card(e, title=UI_TEXT["mode_exec_exception_title"], project=project)
-                self.reply_message(message_id, content, msg_type)
-            finally:
-                _hb_stop.set()
-                if _hb is not None:
-                    _hb.join(timeout=2)
+        if _repo_lock_mgr and _root_path:
+            from ...utils.heartbeat import RepoLockHeartbeat
+            _streaming_hb = RepoLockHeartbeat(
+                _streaming_hb_stop,
+                lambda: _repo_lock_mgr.touch(_root_path, chat_id),
+                interval=_TOUCH_INTERVAL,
+                max_beats=_streaming_max_beats,
+                name=f"prog-stream-{_root_path}",
+            )
+            _streaming_hb.start()
         else:
-            update_count = [0]
-            _last_touch = [time.monotonic()]
-            _TOUCH_INTERVAL = 30  # seconds
+            _streaming_hb = None
 
-            # Fallback heartbeat: keep repo lock alive even when ACP
-            # backend produces no events for extended periods (e.g. long model
-            # thinking time, network stalls).  The on_event passive touch
-            # remains for normal operation; this thread is the safety net.
-            _streaming_hb_stop = threading.Event()
-            try:
-                _streaming_max_beats = max(1, int(self.settings.repo_lock_hard_timeout // _TOUCH_INTERVAL))
-            except Exception:
-                _streaming_max_beats = 120  # fallback: 3600 / 30
-
+        def on_event(event: ACPEvent):
+            update_count[0] += 1
+            # Heartbeat touch
             if _repo_lock_mgr and _root_path:
-                from ...utils.heartbeat import RepoLockHeartbeat
-
-                _streaming_hb = RepoLockHeartbeat(
-                    _streaming_hb_stop,
-                    lambda: _repo_lock_mgr.touch(_root_path, chat_id),
-                    interval=_TOUCH_INTERVAL,
-                    max_beats=_streaming_max_beats,
-                    name=f"prog-stream-{_root_path}",
-                )
-                _streaming_hb.start()
-            else:
-                _streaming_hb = None
-
-            def on_event(event: ACPEvent):
-                update_count[0] += 1
-                # Heartbeat touch: keep repo lock active during streaming
-                if _repo_lock_mgr and _root_path:
-                    now = time.monotonic()
-                    if now - _last_touch[0] >= _TOUCH_INTERVAL:
-                        _repo_lock_mgr.touch(_root_path, chat_id)
-                        _last_touch[0] = now
-                if self.settings.card_collapsible_enabled:
-                    structured = renderer.process_event_structured(event)
-                    if structured.sections and streaming_card:
-                        streaming_manager.update_structured(streaming_card, structured)
-                else:
-                    rendered = renderer.process_event(event)
-                    if rendered and streaming_card:
-                        streaming_manager.update_content(streaming_card, rendered)
-
+                now = time.monotonic()
+                if now - _last_touch[0] >= _TOUCH_INTERVAL:
+                    _repo_lock_mgr.touch(_root_path, chat_id)
+                    _last_touch[0] = now
+            # Dispatch to new card session
             try:
-                result = session.send_prompt(text, on_event=on_event, timeout=timeout)
-                final_response = renderer.get_final_content()
-                # Fallback: renderer may return "" (e.g. only THOUGHT_CHUNKs, empty tool titles, backend crash)
-                if not final_response and result and result.text:
-                    final_response = result.text
-                if not final_response:
-                    final_response = UI_TEXT["mode_exec_complete"]
-            except TimeoutError as e:
-                final_response = UI_TEXT["mode_exec_timeout_msg"].format(error=get_error_detail(e))
-                log_exception(logger, f"{self.mode_name} ACP执行超时", e, level=logging.WARNING)
+                prog_session.on_event(event)
             except Exception as e:
-                final_response = UI_TEXT["mode_exec_exception_msg"].format(error=get_error_detail(e))
-                log_exception(logger, f"{self.mode_name} ACP执行异常", e)
-                # If exception has quick actions, send a separate error card
-                from ...utils.errors import GhostAPError
+                logger.debug("card session event处理失败: %s", e)
 
-                if isinstance(e, GhostAPError) and e.quick_actions:
-                    self.send_error_card(chat_id, e, title=UI_TEXT["mode_exec_exception_title"], origin_message_id=message_id)
-            finally:
-                _streaming_hb_stop.set()
-                if _streaming_hb is not None:
-                    _streaming_hb.join(timeout=2)
+        final_response = ""
+        try:
+            result = session.send_prompt(text, on_event=on_event, timeout=timeout)
+            prog_session.finish()
+            final_response = prog_session.get_final_text()
+            # Fallback if no text captured
+            if not final_response and result and result.text:
+                final_response = result.text
+            if not final_response:
+                final_response = UI_TEXT["mode_exec_complete"]
+        except TimeoutError as e:
+            final_response = UI_TEXT["mode_exec_timeout_msg"].format(error=get_error_detail(e))
+            log_exception(logger, f"{self.mode_name} ACP执行超时", e, level=logging.WARNING)
+            prog_session.fail(final_response)
+        except Exception as e:
+            final_response = UI_TEXT["mode_exec_exception_msg"].format(error=get_error_detail(e))
+            log_exception(logger, f"{self.mode_name} ACP执行异常", e)
+            prog_session.fail(final_response)
+            from ...utils.errors import GhostAPError
+            if isinstance(e, GhostAPError) and e.quick_actions:
+                self.send_error_card(chat_id, e, title=UI_TEXT["mode_exec_exception_title"], origin_message_id=message_id)
+        finally:
+            _streaming_hb_stop.set()
+            if _streaming_hb is not None:
+                _streaming_hb.join(timeout=2)
 
-            # Append completion summary (tool calls / modified files)
-            summary = renderer.render_summary()
-            if summary:
-                final_response += f"\n\n---\n{summary}"
+        logger.info("%s ACP输出完成: 事件数=%d, 最终长度=%d", self.mode_name, update_count[0], len(final_response))
 
-            logger.info("%s ACP输出完成: 事件数=%d, 最终长度=%d", self.mode_name, update_count[0], len(final_response))
-            streaming_manager.close_streaming(streaming_card, final_content=final_response)
-
-        # Post-processing: record context, add reaction
+        # Post-processing
         if project:
             self._update_snapshot_on_project(project, text, session.message_count, session.session_id)
             project.add_conversation("user", text, message_id)
@@ -878,6 +833,52 @@ class ProgrammingModeHandler(BaseHandler):
 
         if card_message_id and project:
             self.register_message_project(card_message_id, project)
+
+    def _handle_response_non_streaming(
+        self, message_id: str, chat_id: str, text: str, session: SyncSession, project, global_working_dir: str,
+        *, _repo_lock_mgr=None, _root_path: str | None = None,
+    ):
+        """Fallback: handle response in non-streaming text mode."""
+        timeout = self.settings.coco_execution_timeout if self.is_coco else self.settings.claude_execution_timeout
+
+        # Heartbeat
+        _TOUCH_INTERVAL = 30
+        _hb_stop = threading.Event()
+        try:
+            _max_beats = max(1, int(self.settings.repo_lock_hard_timeout // _TOUCH_INTERVAL))
+        except Exception:
+            _max_beats = 120
+
+        if _repo_lock_mgr and _root_path:
+            from ...utils.heartbeat import RepoLockHeartbeat
+            _hb = RepoLockHeartbeat(
+                _hb_stop,
+                lambda: _repo_lock_mgr.touch(_root_path, chat_id),
+                interval=_TOUCH_INTERVAL,
+                max_beats=_max_beats,
+                name=f"prog-nonstream-{_root_path}",
+            )
+            _hb.start()
+        else:
+            _hb = None
+
+        try:
+            renderer = ACPEventRenderer()
+            result = session.send_prompt(text, on_event=None, timeout=timeout)
+            final_response = renderer.get_final_content() or UI_TEXT["mode_exec_complete"]
+            response_with_dir = f"{final_response}\n\n---\n{UI_TEXT['mode_working_dir_label'].format(path=global_working_dir)}"
+            self.reply_message(message_id, response_with_dir)
+        except TimeoutError as e:
+            log_exception(logger, f"{self.mode_name} ACP执行超时", e, level=logging.WARNING)
+            msg_type, content = CardBuilder.build_error_card(e, title=UI_TEXT["mode_exec_timeout_title"], project=project)
+            self.reply_message(message_id, content, msg_type)
+        except Exception as e:
+            msg_type, content = CardBuilder.build_error_card(e, title=UI_TEXT["mode_exec_exception_title"], project=project)
+            self.reply_message(message_id, content, msg_type)
+        finally:
+            _hb_stop.set()
+            if _hb is not None:
+                _hb.join(timeout=2)
 
     # ------------------------------------------------------------------
     # show_info

@@ -195,6 +195,12 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         exact="select_ttadk_combined",
     )
     client._register_action(
+        lambda mid, cid, pid, val: client._handle_select_ttadk_combined_tool(
+            mid, cid, val.get("_option", ""), _resolve_project(client, pid, cid),
+        ),
+        exact="select_ttadk_combined_tool",
+    )
+    client._register_action(
         lambda mid, cid, pid, val: client._handle_ttadk_command(
             mid, cid, _resolve_project(client, pid, cid), True
         ),
@@ -227,6 +233,10 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
     client._register_action(
         lambda mid, cid, pid, val: client._handle_worktree_merge(mid, cid, pid, val),
         exact="worktree_merge",
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_show_worktree_merge_entry(mid, cid, pid, val),
+        exact="show_worktree_merge_entry",
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_worktree_cleanup(mid, cid, pid, val),

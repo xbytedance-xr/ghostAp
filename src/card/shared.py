@@ -249,7 +249,7 @@ def build_quick_actions(actions: list[str], context: dict = None) -> list[dict]:
                     "tag": "button",
                     "text": {"tag": "plain_text", "content": "🔄 重试"},
                     "type": "primary",
-                    "value": {"action": "retry", **context},
+                    "value": {"action": "retry_command", **context},
                 }
             )
         elif action == "cancel":
@@ -286,6 +286,24 @@ def build_quick_actions(actions: list[str], context: dict = None) -> list[dict]:
                     "text": {"tag": "plain_text", "content": "🛑 停止"},
                     "type": "danger",
                     "value": {"action": "stop", **context},
+                }
+            )
+        elif action == "new_project_prompt":
+            buttons.append(
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "➕ 创建项目"},
+                    "type": "primary",
+                    "value": {"action": "new_project_prompt", **context},
+                }
+            )
+        elif action == "list_projects":
+            buttons.append(
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "📋 项目列表"},
+                    "type": "default",
+                    "value": {"action": "show_board", **context},
                 }
             )
 

@@ -81,7 +81,7 @@ class SessionExpiredError(GhostAPError):
     """AI session (Coco/Claude) has expired or is unreachable."""
 
     def __init__(self, message: str = "会话已过期", **kwargs):
-        super().__init__(message, quick_actions=["retry", "stop"], **kwargs)
+        super().__init__(message, quick_actions=["retry"], **kwargs)
 
 
 class ProjectNotFoundError(GhostAPError):
@@ -95,7 +95,7 @@ class SafetyCheckError(GhostAPError):
     """Command blocked by safety checks."""
 
     def __init__(self, message: str = "操作被安全策略拦截", **kwargs):
-        super().__init__(message, quick_actions=["stop"], **kwargs)
+        super().__init__(message, quick_actions=[], **kwargs)
 
 
 # ---------------------------------------------------------------------------

@@ -569,6 +569,32 @@ class WorktreeHandler(BaseHandler):
         )
         self.patch_message(message_id, card, msg_type=msg_type)
 
+    def handle_show_worktree_merge_entry(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: Optional[str] = None,
+        value: dict | None = None,
+    ):
+        """Card action: show the merge entry card with pending integration items."""
+        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else self.project_manager.get_active_project(chat_id)
+        if not project:
+            self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
+            return
+
+        mgr = self._worktree_manager()
+        state = mgr.get_state(project)
+
+        if not state.merge_notes:
+            self.reply_error(message_id, "当前无待合并内容")
+            return
+
+        pid = project.project_id
+        msg_type, card = CardBuilder.build_worktree_merge_entry_card(
+            state.merge_notes, pid, state.base_branch or "main",
+        )
+        self.patch_message(message_id, card, msg_type=msg_type)
+
     def handle_worktree_cleanup(
         self,
         message_id: str,

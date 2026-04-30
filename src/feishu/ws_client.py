@@ -1711,6 +1711,7 @@ class FeishuWSClient:
                 "select_acp_tool",
                 "select_acp_model",
                 "refresh_acp_models",
+                "select_ttadk_combined_tool",
                 "load_more",
                 "load_prev",
                 "show_ttadk_menu",

@@ -91,6 +91,7 @@ class TestProgrammingCardSession:
         pcs.start()
         pcs.on_text("Hello ")
         pcs.on_text("World")
+        pcs._flush_now()  # Flush batched text before checking state
 
         state = pcs.session.state
         text_blocks = [b for b in state.blocks if b.kind == "text"]
@@ -103,6 +104,7 @@ class TestProgrammingCardSession:
         from src.acp.models import ACPEvent, ACPEventType
         event = ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="streaming text")
         pcs.on_event(event)
+        pcs._flush_now()  # Flush batched text before checking state
 
         state = pcs.session.state
         text_blocks = [b for b in state.blocks if b.kind == "text"]

@@ -436,6 +436,49 @@ class TTADKCommandsMixin:
             message_id, chat_id, tool, model, project=project, silent=False
         )
 
+    def handle_select_ttadk_combined_tool(
+        self,
+        message_id: str,
+        chat_id: str,
+        tool_name: str,
+        project: Optional["ProjectContext"] = None,
+    ):
+        """Handle tool selection from the combined TTADK card (tool select_static component)."""
+        manager = get_ttadk_manager()
+        project = project or self.project_manager.get_active_project(chat_id)
+        project_id = project.project_id if project else None
+
+        tool = (tool_name or "").strip().lower()
+        if not tool:
+            return
+
+        success = manager.set_tool(tool)
+        if not success:
+            self._reply_ttadk_load_hint(
+                message_id, UI_TEXT["system_ttadk_switch_tool_error"].format(tool=tool), project_id=project_id
+            )
+            return
+
+        if project:
+            project.ttadk_tool_name = tool
+
+        # Refresh combined card with new tool's models
+        try:
+            raw_cwd = self._resolve_ttadk_cwd(chat_id, project_id=project_id)
+            cwd = normalize_ttadk_cwd(raw_cwd)
+        except Exception:
+            cwd = None
+
+        result = manager.get_models(cwd=cwd)
+        yolo_enabled = self._resolve_ttadk_yolo_enabled(chat_id, project=project, project_id=project_id)
+        current_model = project.ttadk_model_name if project else None
+        msg_type, card_content = CardBuilder.build_ttadk_model_select_card(
+            result.models or [], tool, project_id, yolo_enabled=yolo_enabled, current_model=current_model
+        )
+        patched = self.patch_message(message_id, card_content)
+        if not patched:
+            self.reply_message(message_id, card_content, msg_type=msg_type)
+
     def handle_refresh_ttadk_models(self, message_id: str, chat_id: str, tool_name: str, project_id: Optional[str] = None):
         manager = get_ttadk_manager()
         try:
