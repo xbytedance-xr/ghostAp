@@ -128,6 +128,21 @@ def _block_real_ttadk_subprocess(request):
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
+def _bridge_engine_sender_to_smart_sender():
+    """Bridge _create_engine_sender to SmartSender so existing tests that mock
+    handler.reply_message / handler.patch_message continue to work."""
+    from src.feishu.renderers.base import SmartSender
+
+    def _make_smart_sender(handler, message_id, chat_id, *, initial_message_id=None, payload_guard=None):
+        return SmartSender(handler, message_id, chat_id, initial_message_id=initial_message_id, payload_guard=payload_guard)
+
+    with patch("src.feishu.renderers.deep_renderer._create_engine_sender", side_effect=_make_smart_sender), \
+         patch("src.feishu.renderers.loop_renderer._create_engine_sender", side_effect=_make_smart_sender), \
+         patch("src.feishu.renderers.spec_renderer._create_engine_sender", side_effect=_make_smart_sender):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _clear_all_lru_caches():
     """Clear all known module-level lru_caches after each test."""
     yield

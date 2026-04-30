@@ -11,7 +11,7 @@ from ...deep_engine.models import DeepProject, DeepProjectStatus
 from ...project import ContextSourceMode
 from ...utils.text import append_duration_to_title
 from ..emoji import EmojiReaction
-from .base import BaseRenderer, SmartSender
+from .base import BaseRenderer, _create_engine_sender
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
@@ -43,8 +43,8 @@ class DeepRenderer(BaseRenderer):
         )
         reporter = self.ctx.progress_reporter
 
-        sender = SmartSender(
-            handler=self.handler, message_id=message_id, chat_id=chat_id,
+        sender = _create_engine_sender(
+            self.handler, message_id, chat_id,
             initial_message_id=initial_message_id,
             payload_guard=self._check_and_truncate_payload,
         )

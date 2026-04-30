@@ -136,8 +136,10 @@ class TestCardDeliveryUpdate:
         outcomes = delivery.deliver("sess_1", "chat_abc", r2)
 
         assert outcomes[0].kind == "applied"
-        # _stream_element delegates to _update_page (full PATCH) since element_content API is deferred
-        assert len(client.updates) == 1
+        # _stream_element uses update_element (CardKit v2 element_content API)
+        assert len(client.elements) == 1
+        assert client.elements[0]["element_id"] == "el_1"
+        assert client.elements[0]["content"] == "hello world"
 
     def test_no_change_skips(self):
         client = MockCardClient()

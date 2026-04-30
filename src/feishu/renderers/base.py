@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+import warnings
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from src.card.thresholds import THRESHOLDS
@@ -11,6 +12,30 @@ if TYPE_CHECKING:
     from ..handlers.base import BaseHandler
 
 logger = logging.getLogger(__name__)
+
+
+def _create_engine_sender(
+    handler: "BaseHandler",
+    message_id: str,
+    chat_id: str,
+    *,
+    initial_message_id: str | None = None,
+    payload_guard: Callable[[str], str] | None = None,
+):
+    """Factory: create an EngineCardSender from handler context."""
+    from src.card.delivery.engine_sender import EngineCardSender
+    from src.card.delivery.feishu_client import FeishuCardAPIClient
+
+    lark_client = handler.ctx.api_client_factory()
+    api_client = FeishuCardAPIClient(lark_client)
+    return EngineCardSender(
+        client=api_client,
+        chat_id=chat_id,
+        reply_to_message_id=message_id,
+        settings=handler.settings,
+        initial_message_id=initial_message_id,
+        payload_guard=payload_guard,
+    )
 
 
 def _count_tagged_nodes(obj: Any) -> int:
@@ -29,11 +54,12 @@ def _count_tagged_nodes(obj: Any) -> int:
 
 class SmartSender:
     """
-    Helper for sending messages with smart state management:
-    - Tracks current message ID for updates (Patch)
-    - Auto-re-anchors (sends new message) if Patch fails
-    - Manages threading context
-    - Handles throttling state
+    Helper for sending messages with smart state management.
+
+    .. deprecated::
+        Use `EngineCardSender` from `src.card.delivery.engine_sender` instead.
+        SmartSender delegates to handler methods; EngineCardSender uses
+        FeishuCardAPIClient directly with sequence management and reconciliation.
     """
 
     def __init__(

@@ -8,6 +8,7 @@
 - **/new-chat 与项目群跳转卡片优化** — `/help` 补充 `/new-chat` 项目群说明；项目状态卡改为紧凑布局并加入切换项目+进入项目群按钮；项目看板和 `/new-chat` 成功卡支持项目群 deeplink；相关卡片与项目群测试通过 → [详细记录](2026-04-30.md)
 - **卡片系统全面重构（三层解耦架构）** — State(Reducer)+Render(纯函数)+Delivery(统一投递) 三层解耦；36 文件新增/修改，8 Phase 完整落地；styles.py God Object 拆分为 5 模块；Atom 分页保证消息不丢；Header subtitle 展示工具+模型；185+ 测试覆盖；4081 passed → [详细记录](2026-04-30.md)
 - **卡片系统集成 + 僵尸按钮清理** — 新三层卡片系统集成到编程模式 handler（替代 StreamingCardManager）；修复 4 个僵尸按钮（show_worktree_merge_entry/select_ttadk_combined_tool/retry→retry_command/ProjectNotFoundError）；创建 FeishuCardAPIClient 桥接层；文本 0.3s 节流批处理；4081 passed → [详细记录](2026-04-30.md)
+- **Engine Renderers 迁移 + CardKit v2 + Deprecated 标记** — Deep/Loop/Spec renderer 从 SmartSender 迁移到 EngineCardSender（使用 FeishuCardAPIClient 直连飞书 API）；update_element 升级到 CardKit v2 element_content API（50 QPS）；StreamingCardManager 和 SmartSender 标记 deprecated；conftest bridge pattern 修复 13 个测试；4081 passed → [详细记录](2026-04-30.md)
 
 ## 2026-04-29
 - **/wt 工具发现改为静态注册表** — 将 `tool_discovery.py` 从 `list_acp_tools()` 动态发现改为 `_KNOWN_TOOLS` 静态注册表，所有工具（Coco/Aiden/Codex/Claude/Gemini）统一只需 `shutil.which()` 即可出现在 `/wt` 列表；完全重写测试文件；3859 passed → [详细记录](2026-04-29.md)

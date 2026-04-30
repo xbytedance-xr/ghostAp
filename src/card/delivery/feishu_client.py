@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid as _uuid
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import lark_oapi as lark
 
+from src.card.delivery.engine import SequenceConflictError, TransportError
 from src.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -80,8 +82,6 @@ class FeishuCardAPIClient:
             response = self._client.im.v1.message.create(request)
 
         if not response.success():
-            from src.card.delivery.engine import TransportError
-
             raise TransportError(
                 f"Card create failed: code={response.code}, msg={response.msg}"
             )
@@ -115,12 +115,8 @@ class FeishuCardAPIClient:
 
         if not response.success():
             if response.code == 300317:
-                from src.card.delivery.engine import SequenceConflictError
-
                 raise SequenceConflictError(next_floor=sequence + 1)
             if response.code >= 500:
-                from src.card.delivery.engine import TransportError
-
                 raise TransportError(f"Patch failed: code={response.code}")
             logger.warning(
                 "Card update failed: code=%s, msg=%s, card_id=%s",
@@ -130,19 +126,119 @@ class FeishuCardAPIClient:
     def update_element(
         self, card_id: str, element_id: str, content: str, *, sequence: int = 0
     ) -> None:
-        """Update a single element's content.
-
-        Current implementation: falls back to full card PATCH with element content
-        injected. Can be upgraded to CardKit v2 element_content API when available.
-
-        For now, this is a no-op optimization hint — the delivery engine should
-        prefer update_card for reliability until element-level API is validated.
-        """
-        # For initial implementation, we skip element-level updates
-        # and let the delivery engine fall through to update_card on next structural change.
-        # This is safe because the delivery engine treats element_content as an optimization:
-        # if it fails, the next structural render will do a full PATCH anyway.
-        logger.debug(
-            "update_element called (no-op fallback): card_id=%s, element_id=%s, len=%d",
-            card_id, element_id, len(content),
+        """Update a single element's content via CardKit v2 element_content API."""
+        from lark_oapi.api.cardkit.v1 import (
+            ContentCardElementRequest,
+            ContentCardElementRequestBody,
         )
+
+        request = (
+            ContentCardElementRequest.builder()
+            .card_id(card_id)
+            .element_id(element_id)
+            .request_body(
+                ContentCardElementRequestBody.builder()
+                .content(content)
+                .sequence(sequence)
+                .uuid(str(_uuid.uuid4()))
+                .build()
+            )
+            .build()
+        )
+
+        response = self._client.cardkit.v1.card_element.content(request)
+
+        if not response.success():
+            if response.code == 300317:  # Sequence conflict
+                raise SequenceConflictError(next_floor=sequence + 1)
+            logger.warning(
+                "Element update failed: code=%s, msg=%s", response.code, response.msg
+            )
+
+    def create_streaming_card(self, card_json: dict) -> str:
+        """Create a card entity via CardKit API with streaming mode enabled.
+
+        The card_json must have "config": {"streaming_mode": true} set.
+        Returns the card_id from the created card entity.
+        """
+        from lark_oapi.api.cardkit.v1 import (
+            CreateCardRequest,
+            CreateCardRequestBody,
+        )
+
+        # Ensure streaming_mode is set in config
+        config = card_json.setdefault("config", {})
+        config["streaming_mode"] = True
+
+        request = (
+            CreateCardRequest.builder()
+            .request_body(
+                CreateCardRequestBody.builder()
+                .type("card_json")
+                .data(json.dumps(card_json, ensure_ascii=False))
+                .build()
+            )
+            .build()
+        )
+
+        response = self._client.cardkit.v1.card.create(request)
+
+        if not response.success():
+            raise TransportError(
+                f"Streaming card create failed: code={response.code}, msg={response.msg}"
+            )
+
+        return response.data.card_id
+
+    def send_card_reference(
+        self, chat_id: str, card_id: str, *, reply_to: str | None = None
+    ) -> str:
+        """Send an IM message referencing a CardKit card entity.
+
+        Returns the message_id of the sent message.
+        """
+        from lark_oapi.api.im.v1 import (
+            CreateMessageRequest,
+            CreateMessageRequestBody,
+            ReplyMessageRequest,
+            ReplyMessageRequestBody,
+        )
+
+        content = json.dumps({"type": "card", "data": {"card_id": card_id}})
+
+        if reply_to:
+            reply_in_thread = self._settings.default_reply_mode == "thread"
+            request = (
+                ReplyMessageRequest.builder()
+                .message_id(reply_to)
+                .request_body(
+                    ReplyMessageRequestBody.builder()
+                    .msg_type("interactive")
+                    .content(content)
+                    .reply_in_thread(reply_in_thread)
+                    .build()
+                )
+                .build()
+            )
+            response = self._client.im.v1.message.reply(request)
+        else:
+            request = (
+                CreateMessageRequest.builder()
+                .receive_id_type("chat_id")
+                .request_body(
+                    CreateMessageRequestBody.builder()
+                    .receive_id(chat_id)
+                    .msg_type("interactive")
+                    .content(content)
+                    .build()
+                )
+                .build()
+            )
+            response = self._client.im.v1.message.create(request)
+
+        if not response.success():
+            raise TransportError(
+                f"Card reference send failed: code={response.code}, msg={response.msg}"
+            )
+
+        return response.data.message_id

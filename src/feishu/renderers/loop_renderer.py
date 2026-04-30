@@ -12,7 +12,7 @@ from ...loop_engine.models import (
 )
 from ...utils.text import append_duration_to_title
 from ..emoji import EmojiReaction
-from .base import BaseRenderer, SmartSender
+from .base import BaseRenderer, _create_engine_sender
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
@@ -43,8 +43,9 @@ class LoopRenderer(BaseRenderer):
         )
         reporter = self.ctx.loop_reporter
 
-        sender = SmartSender(
-            handler=self.handler, message_id=message_id, chat_id=chat_id, initial_message_id=None,
+        sender = _create_engine_sender(
+            self.handler, message_id, chat_id,
+            initial_message_id=None,
             payload_guard=self._check_and_truncate_payload,
         )
 

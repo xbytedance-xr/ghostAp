@@ -123,6 +123,18 @@ _STREAMING_CONFIG: dict = {
 
 
 class StreamingCardManager:
+    """Manages streaming card lifecycle for Feishu message interactions.
+
+    .. deprecated::
+        This class is superseded by the new card system:
+        - For programming sessions: use `ProgrammingCardSession` (src.card.programming_adapter)
+        - For engine renderers (Deep/Loop/Spec): use `EngineCardSender` (src.card.delivery.engine_sender)
+        Both provide unified delivery via `FeishuCardAPIClient` with sequence management,
+        CardKit v2 element streaming, and automatic reconciliation.
+
+        StreamingCardManager will be removed in a future version.
+    """
+
     def __init__(self, client: lark.Client):
         self._client = client
         self._settings = get_settings()
