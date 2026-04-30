@@ -6,6 +6,7 @@
 - **/new-chat 群管理员权限 + Branch B 项目名修复** — 建群后将创建者设为群管理员（best-effort `add_managers` API）使其拥有解散群权限；修复 Branch B 补绑路径未更新 `ctx.project_name` 导致看板显示旧名的 Bug → [详细记录](2026-04-30.md)
 - **/new-chat Branch B 可见性 Bug 修复** — 已有项目绑群后 `allowed_chat_ids` 漏加主对话导致项目从看板消失；修复后与 Branch C 对齐，追加 `ctx.add_chat_id(chat_id)`；新增回归测试 → [详细记录](2026-04-30.md)
 - **/new-chat 与项目群跳转卡片优化** — `/help` 补充 `/new-chat` 项目群说明；项目状态卡改为紧凑布局并加入切换项目+进入项目群按钮；项目看板和 `/new-chat` 成功卡支持项目群 deeplink；相关卡片与项目群测试通过 → [详细记录](2026-04-30.md)
+- **卡片系统全面重构（三层解耦架构）** — State(Reducer)+Render(纯函数)+Delivery(统一投递) 三层解耦；36 文件新增/修改，8 Phase 完整落地；styles.py God Object 拆分为 5 模块；Atom 分页保证消息不丢；Header subtitle 展示工具+模型；185+ 测试覆盖；4081 passed → [详细记录](2026-04-30.md)
 
 ## 2026-04-29
 - **/wt 工具发现改为静态注册表** — 将 `tool_discovery.py` 从 `list_acp_tools()` 动态发现改为 `_KNOWN_TOOLS` 静态注册表，所有工具（Coco/Aiden/Codex/Claude/Gemini）统一只需 `shutil.which()` 即可出现在 `/wt` 列表；完全重写测试文件；3859 passed → [详细记录](2026-04-29.md)
