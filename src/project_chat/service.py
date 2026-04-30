@@ -141,6 +141,9 @@ class ProjectChatService:
                 ctx_new.bound_chat_id = new_chat_id
                 ctx_new.bound_chat_name = new_chat_name
                 ctx_new.bound_chat_created_at = time.time()
+                # Ensure the originating chat can also see this project
+                if chat_id != new_chat_id:
+                    ctx_new.add_chat_id(chat_id)
                 self._pm._save_projects()
                 ctx = ctx_new
         except Exception as e:
