@@ -104,6 +104,11 @@ class TestNewProject:
         assert "existing-dev" in json.dumps(card, ensure_ascii=False)
         assert "openChatId=oc_bound" in json.dumps(card, ensure_ascii=False)
 
+        # Key: originating chat must be able to see the project in the board
+        projects = project_manager.get_all_projects(chat_id="oc_main_chat")
+        assert any(p.project_id == ctx.project_id for p in projects), \
+            "Branch A must add originating chat to allowed_chat_ids for board visibility"
+
 
 class TestLegacyProjectBind:
     """Branch B: existing project without bound chat → bind it."""

@@ -94,7 +94,10 @@ class ProjectChatService:
         ctx = self._pm.find_project_by_path(path, chat_id=None)
 
         if ctx and ctx.bound_chat_id:
-            # Branch A: already bound → return jump card
+            # Branch A: already bound → ensure originating chat can see it, then return jump card
+            if chat_id and chat_id not in ctx.allowed_chat_ids:
+                ctx.add_chat_id(chat_id)
+                self._pm._save_projects()
             self._reply_jump_card(message_id, ctx)
             return
 
