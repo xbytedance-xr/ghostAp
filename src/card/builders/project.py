@@ -1,5 +1,6 @@
 import json
 from typing import Optional
+from urllib.parse import quote
 
 from src.project.context import ProjectContext, ProjectStatus
 from src.mode.manager import InteractionMode
@@ -15,6 +16,32 @@ from .core import CoreBuilder
 
 class ProjectBuilder:
     """Project-related card building utilities."""
+
+    @staticmethod
+    def _build_project_chat_multi_url(chat_id: str) -> dict:
+        safe_chat_id = quote(str(chat_id or "").strip(), safe="")
+        https = f"https://applink.feishu.cn/client/chat/open?chatId={safe_chat_id}"
+        native = f"lark://applink/client/chat/open?chatId={safe_chat_id}"
+        return {
+            "url": https,
+            "pc_url": https,
+            "android_url": native,
+            "ios_url": native,
+        }
+
+    @staticmethod
+    def _build_project_group_jump_button(project: Optional[ProjectContext]) -> Optional[dict]:
+        chat_id = str(getattr(project, "bound_chat_id", "") or "").strip() if project else ""
+        if not chat_id:
+            return None
+        return apply_compact_style(
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": UI_TEXT["project_btn_open_group"]},
+                "type": "default",
+                "multi_url": ProjectBuilder._build_project_chat_multi_url(chat_id),
+            }
+        )
 
     @staticmethod
     def build_project_info_content(project: ProjectContext, global_working_dir: str) -> str:
@@ -85,10 +112,70 @@ class ProjectBuilder:
     @staticmethod
     def build_project_status_report_card(project: ProjectContext, global_working_dir: str) -> tuple[str, str]:
         """Build the full card for project status report."""
-        content = ProjectBuilder.build_project_status_content(project, global_working_dir)
-        return ProjectBuilder.build_project_response_card(
-            project, UI_TEXT["project_status_card_title"], content, show_buttons=True
+        del global_working_dir  # status card keeps one directory row for compactness
+
+        theme = get_theme(project.theme_color)
+        status = UI_TEXT["project_status_label"].format(
+            emoji=project.get_status_emoji(), status=project.status.value
         )
+        last_active = UI_TEXT["project_last_active_label"].format(
+            time_ago=CoreBuilder._format_time_ago(project.last_active)
+        )
+        group_chat_id = str(getattr(project, "bound_chat_id", "") or "").strip()
+        group_name = str(getattr(project, "bound_chat_name", "") or "").strip()
+        group_line = (
+            UI_TEXT["project_status_group_label"].format(name=group_name or group_chat_id)
+            if group_chat_id
+            else UI_TEXT["project_status_no_group"]
+        )
+
+        lines = [
+            f"**{UI_TEXT['project_status_card_title']}**",
+            status,
+            last_active,
+            group_line,
+        ]
+
+        if project.coco_mode and project.coco_session_snapshot:
+            snap = project.coco_session_snapshot
+            lines.append(
+                f"• Coco: `{snap.session_id}` · {UI_TEXT['project_session_count_label'].format(count=snap.query_count).lstrip('• ')}"
+            )
+        if project.claude_mode and project.claude_session_snapshot:
+            snap = project.claude_session_snapshot
+            lines.append(
+                f"• Claude: `{snap.session_id}` · {UI_TEXT['project_session_count_label'].format(count=snap.query_count).lstrip('• ')}"
+            )
+
+        buttons = [
+            apply_compact_style(
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": UI_TEXT["project_board_btn_switch"]},
+                    "type": "default",
+                    "behaviors": [
+                        {
+                            "type": "callback",
+                            "value": {"action": "switch_project", "project_id": project.project_id},
+                        }
+                    ],
+                }
+            )
+        ]
+        group_button = ProjectBuilder._build_project_group_jump_button(project)
+        if group_button:
+            buttons.append(group_button)
+
+        elements = [
+            CoreBuilder._build_directory_element(project),
+            {"tag": "hr"},
+            {"tag": "markdown", "content": "\n".join(lines)},
+        ]
+        elements.extend(build_responsive_layout(buttons))
+
+        header_title = CoreBuilder._build_header_title(project)
+        card = CoreBuilder._wrap_card(header_title, theme.header_template, elements)
+        return "interactive", json.dumps(card, ensure_ascii=False)
 
     @staticmethod
     def build_project_not_found_content(name: str, suggestions: Optional[list[ProjectContext]] = None) -> str:
@@ -382,6 +469,9 @@ class ProjectBuilder:
                     "value": {"action": "show_detail", "project_id": project.project_id},
                 }
             )
+            group_button = ProjectBuilder._build_project_group_jump_button(project)
+            if group_button:
+                buttons.append(group_button)
 
             elements.extend(build_responsive_layout(buttons))
             elements.append({"tag": "hr"})
@@ -446,6 +536,36 @@ class ProjectBuilder:
         )
 
         card = CoreBuilder._wrap_card(board_title, "blue", elements)
+        return "interactive", json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
+    def build_project_chat_jump_card(project: ProjectContext) -> tuple[str, str]:
+        """Build the /new-chat ready card with a direct jump button."""
+        theme = get_theme(project.theme_color)
+        chat_name = str(getattr(project, "bound_chat_name", "") or "").strip() or "项目群"
+        content = (
+            f"✅ 项目 **{project.project_name}** 已就绪\n"
+            f"📂 `{project.root_path}`\n"
+            f"💬 **{chat_name}**"
+        )
+        buttons = []
+        group_button = ProjectBuilder._build_project_group_jump_button(project)
+        if group_button:
+            buttons.append(group_button)
+        buttons.append(
+            apply_compact_style(
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": UI_TEXT["project_board_title"]},
+                    "type": "default",
+                    "value": {"action": "show_board"},
+                }
+            )
+        )
+
+        elements = [CoreBuilder._build_content_element(content)]
+        elements.extend(build_responsive_layout(buttons))
+        card = CoreBuilder._wrap_card("项目群已就绪", theme.header_template, elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
 
     @staticmethod

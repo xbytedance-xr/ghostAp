@@ -1,4 +1,5 @@
 """Tests for ProjectChatService — the /new-chat orchestrator."""
+import json
 import os
 import pytest
 from unittest.mock import MagicMock, patch
@@ -94,6 +95,14 @@ class TestNewProject:
 
         # Should NOT create a new chat
         mock_lark_client.create_chat.assert_not_called()
+
+        mock_reply_fn = service._reply
+        message_id, card_json, msg_type = mock_reply_fn.call_args[0]
+        assert message_id == "msg_2"
+        assert msg_type == "interactive"
+        card = json.loads(card_json)
+        assert "existing-dev" in json.dumps(card, ensure_ascii=False)
+        assert "chatId=oc_bound" in json.dumps(card, ensure_ascii=False)
 
 
 class TestRollback:

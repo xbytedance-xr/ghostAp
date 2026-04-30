@@ -394,6 +394,7 @@ UI_TEXT = {
     "system_help_section_project_body": (
         "`/projects` · 查看所有项目\n"
         "`/new <名称> [路径]` · 创建新项目\n"
+        "`/new-chat <名称> [后缀] [路径]` · 创建/绑定项目群\n"
         "`/switch <名称>` · 切换项目  ·  `/close <名称>` · 关闭项目\n"
         "`/status` · 查看所有引擎任务状态\n"
         "`/diff` · 查看最近两次版本变更"
@@ -505,6 +506,9 @@ UI_TEXT = {
     "project_info_card_title": "当前项目",
     "project_status_card_title": "项目状态",
     "project_switch_title": "🔄 项目已切换",
+    "project_btn_open_group": "进入项目群",
+    "project_status_group_label": "• 项目群: {name}",
+    "project_status_no_group": "• 项目群: 未绑定",
     "diag_current_mode": "**当前模式**: {mode}",
     "diag_no_active_tasks": "暂无正在进行的任务",
     "diag_no_tasks": "暂无任务",

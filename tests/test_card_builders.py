@@ -19,6 +19,23 @@ from src.card.models import (
 from src.project.context import ProjectContext
 
 
+def _collect_buttons(card: dict) -> list[dict]:
+    buttons: list[dict] = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("tag") == "button":
+                buttons.append(node)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(card)
+    return buttons
+
+
 def test_shorten_goal_for_banner_cleans_newlines():
     """Verify that _shorten_goal_for_banner correctly cleans up newlines and excessive spaces."""
     
@@ -133,6 +150,63 @@ def test_project_builder_with_banner():
     assert elements[2]["tag"] == "column_set"
     assert elements[2]["background_style"] == "green"  # success 使用绿色
     assert message in elements[2]["columns"][0]["elements"][0]["content"]
+
+
+def test_help_card_mentions_new_chat_project_group():
+    SystemBuilder._build_help_card_cached.cache_clear()
+
+    msg_type, card_json = SystemBuilder.build_help_card()
+
+    assert msg_type == "interactive"
+    card_text = json.dumps(json.loads(card_json), ensure_ascii=False)
+    assert "/new-chat" in card_text
+    assert "项目群" in card_text
+
+
+def test_project_status_card_includes_switch_and_group_jump_without_duplicate_path():
+    project = ProjectContext(project_id="p1", project_name="P1", root_path="/tmp/p1")
+    project.bound_chat_id = "oc_group_123"
+    project.bound_chat_name = "P1-dev"
+
+    msg_type, card_json = ProjectBuilder.build_project_status_report_card(project, "/tmp/p1")
+
+    assert msg_type == "interactive"
+    card = json.loads(card_json)
+    buttons = _collect_buttons(card)
+    assert any(
+        b["text"]["content"] == UI_TEXT["project_btn_open_group"]
+        and b["multi_url"]["url"].endswith("chatId=oc_group_123")
+        for b in buttons
+    )
+    assert any(
+        b["text"]["content"] == UI_TEXT["project_board_btn_switch"]
+        and b.get("behaviors", [{}])[0].get("value", {}).get("action") == "switch_project"
+        for b in buttons
+    )
+
+    markdown_contents = [
+        e.get("content", "")
+        for e in card["body"]["elements"]
+        if isinstance(e, dict) and e.get("tag") == "markdown"
+    ]
+    assert sum("/tmp/p1" in content for content in markdown_contents) == 1
+
+
+def test_project_board_includes_group_jump_for_bound_project():
+    project = ProjectContext(project_id="p1", project_name="P1", root_path="/tmp/p1")
+    project.bound_chat_id = "oc_group_123"
+    project.bound_chat_name = "P1-dev"
+
+    msg_type, card_json = ProjectBuilder.build_status_board_card([project], current_project_id=None)
+
+    assert msg_type == "interactive"
+    card = json.loads(card_json)
+    buttons = _collect_buttons(card)
+    assert any(
+        b["text"]["content"] == UI_TEXT["project_btn_open_group"]
+        and "chatId=oc_group_123" in b["multi_url"]["url"]
+        for b in buttons
+    )
 
 
 def test_worktree_builder_with_message_banner():

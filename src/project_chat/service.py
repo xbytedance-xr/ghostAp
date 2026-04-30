@@ -179,13 +179,10 @@ class ProjectChatService:
 
     def _reply_jump_card(self, message_id: str, ctx: ProjectContext) -> None:
         """Reply with a jump card pointing to the bound chat."""
-        text = (
-            f"✅ 项目 **{ctx.project_name}** 已就绪\n"
-            f"📂 目录: `{ctx.root_path}`\n"
-            f"💬 群: **{ctx.bound_chat_name}**\n\n"
-            f"在飞书侧边栏搜索「{ctx.bound_chat_name}」进入专属群开始编程"
-        )
-        self._reply(message_id, text, None)
+        from ..card.builders.project import ProjectBuilder
+
+        msg_type, card_json = ProjectBuilder.build_project_chat_jump_card(ctx)
+        self._reply(message_id, card_json, msg_type)
 
     def _send_welcome(self, chat_id: str, ctx: ProjectContext) -> None:
         """Send welcome message in the newly created group."""

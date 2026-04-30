@@ -1,6 +1,9 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
+## 2026-04-30
+- **/new-chat 与项目群跳转卡片优化** — `/help` 补充 `/new-chat` 项目群说明；项目状态卡改为紧凑布局并加入切换项目+进入项目群按钮；项目看板和 `/new-chat` 成功卡支持项目群 deeplink；相关卡片与项目群测试通过 → [详细记录](2026-04-30.md)
+
 ## 2026-04-29
 - **/wt 工具发现改为静态注册表** — 将 `tool_discovery.py` 从 `list_acp_tools()` 动态发现改为 `_KNOWN_TOOLS` 静态注册表，所有工具（Coco/Aiden/Codex/Claude/Gemini）统一只需 `shutil.which()` 即可出现在 `/wt` 列表；完全重写测试文件；3859 passed → [详细记录](2026-04-29.md)
 - **/wt 选择流程重构：移除 goal 卡片传参与快速路径** — 从工具/模型选择卡片中移除 Goal 输入区域和按钮 value 中的 goal 字段；移除 handler 中的 goal 解析块和快速路径（选完工具/模型后不再自动执行）；goal 仅通过 `start_selection(goal=)` 设置并在 `pending_goal` 中持久化，选完所有工具后由确认卡输入；修改 handler 7 处、card 10 处、删除 5 个过时测试、更新 5 个测试；3854 passed → [详细记录](2026-04-29.md)

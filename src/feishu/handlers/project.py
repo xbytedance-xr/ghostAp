@@ -257,7 +257,7 @@ class ProjectHandler(BaseHandler):
             self._project_chat_service = ProjectChatService(
                 project_manager=self.project_manager,
                 lark_chat_client=lark_client,
-                reply_fn=lambda mid, text, _: self.reply_message(mid, text),
+                reply_fn=lambda mid, text, msg_type: self.reply_message(mid, text, msg_type=msg_type or "text"),
                 send_to_chat_fn=lambda cid, msg_type, text, _: self.im_client.send_message(cid, msg_type, text),
             )
 
