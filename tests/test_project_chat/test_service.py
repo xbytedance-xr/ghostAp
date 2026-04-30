@@ -154,6 +154,78 @@ class TestLegacyProjectBind:
         assert any(p.project_id == ctx.project_id for p in projects)
 
 
+class TestLegacyProjectPathMismatch:
+    """Legacy project exists by name but path doesn't match current cwd."""
+
+    def test_find_by_name_fallback_creates_chat_and_binds(
+        self, service, project_manager, mock_lark_client, tmp_path
+    ):
+        """If find_project_by_path misses but find_project_by_name hits,
+        should update root_path and bind (Branch B)."""
+        old_path = str(tmp_path / "old_location")
+        new_path = str(tmp_path / "cocoforclaw")
+        os.makedirs(old_path)
+        os.makedirs(new_path)
+
+        # Pre-create project with OLD path (simulates legacy project)
+        success, _, ctx = project_manager.create_project(
+            project_id=None, project_name="cocoforclaw", root_path=old_path, chat_id=None
+        )
+        assert success
+        assert not ctx.bound_chat_id
+
+        # User runs /new-chat from NEW path (name matches existing project)
+        service.handle(
+            message_id="msg_legacy",
+            chat_id="oc_main_chat",
+            sender_open_id="ou_user_1",
+            data={"name": "cocoforclaw", "path": new_path},
+        )
+
+        # Should create chat (Branch B) — not fail with "already exists"
+        mock_lark_client.create_chat.assert_called_once()
+
+        # Project should be updated with new path and bound
+        ctx = project_manager.get_project_for_diagnostics("cocoforclaw")
+        assert ctx is not None
+        assert ctx.root_path == new_path
+        assert ctx.working_dir == new_path
+        assert ctx.bound_chat_id == "oc_new_group_123"
+
+    def test_find_by_name_fallback_already_bound_returns_jump_card(
+        self, service, project_manager, mock_lark_client, tmp_path
+    ):
+        """If legacy project found by name already has bound chat → Branch A."""
+        old_path = str(tmp_path / "old_location")
+        new_path = str(tmp_path / "myproj")
+        os.makedirs(old_path)
+        os.makedirs(new_path)
+
+        # Pre-create project with OLD path and bound chat
+        success, _, ctx = project_manager.create_project(
+            project_id=None, project_name="myproj", root_path=old_path, chat_id="oc_old"
+        )
+        assert success
+        ctx.bound_chat_id = "oc_existing_group"
+        ctx.bound_chat_name = "myproj-dev"
+        project_manager._save_projects()
+
+        # User runs /new-chat from NEW path
+        service.handle(
+            message_id="msg_bound",
+            chat_id="oc_main_chat",
+            sender_open_id="ou_user_1",
+            data={"name": "myproj", "path": new_path},
+        )
+
+        # Should NOT create a new chat (Branch A)
+        mock_lark_client.create_chat.assert_not_called()
+
+        # Root path should be updated
+        ctx = project_manager.get_project_for_diagnostics("myproj")
+        assert ctx.root_path == new_path
+
+
 class TestRollback:
     """Verify rollback on failure after chat creation."""
 

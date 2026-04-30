@@ -93,6 +93,19 @@ class ProjectChatService:
         # 3. Idempotency check — chat_id=None to skip visibility filter
         ctx = self._pm.find_project_by_path(path, chat_id=None)
 
+        # 3.1 Fallback: find by name (legacy project may have mismatched root_path)
+        if ctx is None:
+            ctx = self._pm.find_project_by_name(name, chat_id=None)
+            if ctx:
+                # Update root_path/working_dir to current path for legacy project
+                ctx.root_path = path
+                ctx.working_dir = path
+                self._pm._save_projects()
+                logger.info(
+                    "Legacy project %s found by name, updated root_path to %s",
+                    ctx.project_id, path,
+                )
+
         if ctx and ctx.bound_chat_id:
             # Branch A: already bound → ensure originating chat can see it, then return jump card
             if chat_id and chat_id not in ctx.allowed_chat_ids:
