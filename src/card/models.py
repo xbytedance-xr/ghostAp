@@ -98,7 +98,7 @@ DeepCardState = EngineCardState
 class CardLayoutSpec:
     """统一卡片布局规格 — 所有编程模式和引擎模式共享的布局参数。
 
-    该 dataclass 是两套卡片系统（StreamingCardManager / DeepBuilder）的通用 layout 输入，
+    该 dataclass 是卡片系统的通用 layout 输入，
     UnifiedCardLayout.build() 根据字段是否存在自动选择输出对应 element。
     """
 

@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 def create_deep_card_callbacks(session: CardSession) -> "DeepEngineCallbacks":
     """Create DeepEngineCallbacks that dispatch to a CardSession.
 
-    Replaces the old pattern of SmartSender + CardBuilder + ACPEventRenderer.
+    Replaces the old pattern of CardBuilder + ACPEventRenderer.
     """
     from src.deep_engine.engine import DeepEngineCallbacks
 

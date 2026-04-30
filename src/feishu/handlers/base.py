@@ -38,7 +38,6 @@ from ...utils.engine_identity import resolve_engine_identity
 from ...utils.errors import get_error_detail
 
 if TYPE_CHECKING:
-    from ...card.streaming import StreamingCardManager
     from ...repo_lock import LockConflictError
     from ...project import ContextSourceMode, ProjectContext
     from ..handler_context import HandlerContext
@@ -521,12 +520,6 @@ class BaseHandler:
             return True, expanded_path
         else:
             return False, f"目录不存在: {expanded_path}"
-
-    # ------------------------------------------------------------------
-    # Streaming manager (lazy)
-    # ------------------------------------------------------------------
-    def get_streaming_manager(self) -> "StreamingCardManager":
-        return self.ctx.streaming_manager_factory()
 
     # ------------------------------------------------------------------
     # Request-id / ref-note helpers

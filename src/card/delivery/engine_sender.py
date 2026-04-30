@@ -1,4 +1,4 @@
-"""EngineCardSender: drop-in replacement for SmartSender using FeishuCardAPIClient directly."""
+"""EngineCardSender: engine card sender using FeishuCardAPIClient directly."""
 
 from __future__ import annotations
 
@@ -16,11 +16,11 @@ logger = logging.getLogger(__name__)
 
 
 class EngineCardSender:
-    """Drop-in replacement for SmartSender that uses FeishuCardAPIClient directly.
+    """Engine card sender that uses FeishuCardAPIClient directly.
 
-    Provides the same interface as SmartSender (check_throttle, update_stream_state,
-    check_plan_throttle, update_plan_state, send) but bypasses the handler layer
-    and talks to Feishu API via FeishuCardAPIClient.
+    Provides throttle control (check_throttle, update_stream_state,
+    check_plan_throttle, update_plan_state, send) and talks to Feishu API
+    via FeishuCardAPIClient bypassing the handler layer.
 
     Key behaviors:
     - is_update=True + has current_message_id → PATCH via update_card()

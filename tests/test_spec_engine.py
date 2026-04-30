@@ -2177,7 +2177,6 @@ class TestSpecHandler:
             spec_engine_manager=MagicMock(),
             spec_reporter=MagicMock(),
             thread_manager=MagicMock(),
-            streaming_manager_factory=MagicMock(),
             image_handler_factory=MagicMock(),
             working_dirs={},
             working_dir_lock=threading.Lock(),

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import logging
-import time
-import warnings
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from src.card.thresholds import THRESHOLDS
@@ -51,128 +49,6 @@ def _count_tagged_nodes(obj: Any) -> int:
             count += _count_tagged_nodes(item)
     return count
 
-
-class SmartSender:
-    """
-    Helper for sending messages with smart state management.
-
-    .. deprecated::
-        Use `EngineCardSender` from `src.card.delivery.engine_sender` instead.
-        SmartSender delegates to handler methods; EngineCardSender uses
-        FeishuCardAPIClient directly with sequence management and reconciliation.
-    """
-
-    def __init__(
-        self, handler: "BaseHandler", message_id: str, chat_id: str,
-        initial_message_id: Optional[str] = None,
-        payload_guard: Optional[Callable[[str], str]] = None,
-    ) -> None:
-        self.handler = handler
-        self.settings = handler.settings
-        self.message_id = message_id
-        self.chat_id = chat_id
-
-        self.current_message_id: Optional[str] = initial_message_id
-        self.thread_root_message_id: Optional[str] = initial_message_id
-
-        # Payload safety: truncate oversized interactive cards before send/patch
-        self._payload_guard = payload_guard
-
-        # Throttling state
-        self.last_stream_ts: float = 0.0
-        self.last_stream_text_len: int = 0
-        self.last_plan_ts: float = 0.0
-        self.last_plan_content: str = ""
-
-    def check_throttle(
-        self,
-        text_len: int,
-        force: bool = False,
-        min_interval: Optional[float] = None,
-        min_new_chars: Optional[int] = None,
-    ) -> bool:
-        """Return True if update should proceed, False if throttled."""
-        if force:
-            return True
-
-        now = time.monotonic()
-        if min_interval is None:
-            min_interval = self.settings.deep_stream_interval
-        if min_new_chars is None:
-            min_new_chars = self.settings.deep_stream_min_chars
-
-        if (now - self.last_stream_ts) < min_interval and (text_len - self.last_stream_text_len) < min_new_chars:
-            return False
-        return True
-
-    def update_stream_state(self, text_len: int):
-        self.last_stream_ts = time.monotonic()
-        self.last_stream_text_len = text_len
-
-    def check_plan_throttle(self, plan_content: str, force: bool = False, min_interval: float = 1.5) -> bool:
-        """Return True if plan update should proceed."""
-        if force:
-            return True
-        now = time.monotonic()
-        if plan_content and (plan_content != self.last_plan_content or (now - self.last_plan_ts) > min_interval):
-            return True
-        return False
-
-    def update_plan_state(self, plan_content: str):
-        self.last_plan_ts = time.monotonic()
-        self.last_plan_content = plan_content
-
-    def send(
-        self,
-        card_content: str,
-        msg_type: str = "interactive",
-        is_update: bool = False,
-        throttle: bool = False,
-        request_id: Optional[str] = None,
-    ) -> Optional[str]:
-        """
-        Smart send/patch logic with auto-re-anchoring.
-        Returns the message_id of the sent/updated message.
-        """
-        # Payload safety: truncate oversized interactive cards
-        if msg_type == "interactive" and self._payload_guard:
-            card_content = self._payload_guard(card_content)
-
-        # 1. Try update existing card
-        if is_update and self.current_message_id:
-            if self.handler.patch_message(self.current_message_id, card_content, max_retries=1, throttle=throttle):
-                return self.current_message_id
-
-            # Patch failed (e.g. message deleted), log and fall through to create new message (Re-anchor)
-            logger.warning("SmartSender: Patch failed for %s, re-anchoring...", self.current_message_id)
-
-        # 2. Create new message (Only if not updating or no existing message or patch failed)
-        # When creating new message, we cannot throttle (must succeed).
-        use_thread = self.settings.default_reply_mode == "thread"
-        result_id = None
-
-        if use_thread:
-            reply_to = self.thread_root_message_id or self.message_id
-            result_id = self.handler.reply_message(
-                reply_to,
-                card_content,
-                msg_type=msg_type,
-                origin_message_id=self.message_id,
-                request_id=request_id,
-                reply_in_thread=True,
-            )
-            # If this is the first reply in a thread-based interaction, mark it as root
-            if not self.thread_root_message_id and result_id:
-                self.thread_root_message_id = result_id
-        else:
-            result_id = self.handler.send_message(
-                self.chat_id, card_content, msg_type, origin_message_id=self.message_id, request_id=request_id
-            )
-
-        if result_id:
-            self.current_message_id = result_id
-
-        return result_id
 
 
 class BaseRenderer:

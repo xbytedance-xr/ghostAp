@@ -1,4 +1,4 @@
-"""Shared card element builders used by both CardBuilder and StreamingCardManager."""
+"""Shared card element builders used by CardBuilder and renderers."""
 
 from typing import Optional
 

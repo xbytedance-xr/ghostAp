@@ -72,7 +72,7 @@ class TransportError(Exception):
 class CardDelivery:
     """Unified delivery engine.
 
-    Merges the responsibilities of StreamingCardManager + SmartSender:
+    Merges the responsibilities of card creation + element update:
     - Decides operation type (create / update / element_content)
     - Manages sequence numbers for optimistic concurrency
     - Handles reconciliation on conflict

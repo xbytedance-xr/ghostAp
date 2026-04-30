@@ -1,8 +1,7 @@
 """统一卡片布局构建器 — 所有编程模式和引擎模式共享。
 
 该模块提供 UnifiedCardLayout.build()，接受 CardLayoutSpec 并输出飞书 Schema 2.0
-卡片的 body elements 列表。StreamingCardManager 和 DeepBuilder 都委托此构建器来
-确保所有模式的卡片布局在视觉上一致。
+卡片的 body elements 列表。所有渲染器都委托此构建器来确保卡片布局在视觉上一致。
 
 布局超集结构：
 1. 📁 项目路径 + 状态栏（流式） / 元数据行（引擎）

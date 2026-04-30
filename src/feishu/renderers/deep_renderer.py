@@ -58,7 +58,7 @@ class DeepRenderer(BaseRenderer):
         def _send_deep_message(
             card_content: str, msg_type: str = "interactive", is_update: bool = False, throttle: bool = False
         ):
-            """发送 deep 任务消息，委托给 SmartSender 处理（含重锚逻辑）。"""
+            """发送 deep 任务消息，委托给 EngineCardSender 处理（含重锚逻辑）。"""
             sender.send(card_content, msg_type, is_update, throttle, request_id)
 
         def on_analyzing_done(deep_project: DeepProject):

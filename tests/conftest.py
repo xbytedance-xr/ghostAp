@@ -128,17 +128,46 @@ def _block_real_ttadk_subprocess(request):
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
-def _bridge_engine_sender_to_smart_sender():
-    """Bridge _create_engine_sender to SmartSender so existing tests that mock
-    handler.reply_message / handler.patch_message continue to work."""
-    from src.feishu.renderers.base import SmartSender
+def _mock_engine_sender():
+    """Mock _create_engine_sender to return a sender that delegates to handler methods.
 
-    def _make_smart_sender(handler, message_id, chat_id, *, initial_message_id=None, payload_guard=None):
-        return SmartSender(handler, message_id, chat_id, initial_message_id=initial_message_id, payload_guard=payload_guard)
+    This allows existing tests that assert handler.reply_message / handler.patch_message
+    to continue working without SmartSender.
+    """
 
-    with patch("src.feishu.renderers.deep_renderer._create_engine_sender", side_effect=_make_smart_sender), \
-         patch("src.feishu.renderers.loop_renderer._create_engine_sender", side_effect=_make_smart_sender), \
-         patch("src.feishu.renderers.spec_renderer._create_engine_sender", side_effect=_make_smart_sender):
+    def _make_mock_sender(handler, message_id, chat_id, *, initial_message_id=None, payload_guard=None):
+        sender = MagicMock()
+        sender._handler = handler
+        sender._message_id = initial_message_id
+
+        def _send(card_content, msg_type="interactive", is_update=False, throttle=False, request_id=None):
+            if is_update and sender._message_id:
+                if handler.patch_message(sender._message_id, card_content, max_retries=1, throttle=throttle):
+                    return sender._message_id
+                # Patch failed → re-anchor by creating new message (same as old SmartSender)
+
+            # Replicate SmartSender's reply mode logic
+            use_thread = getattr(handler.settings, "default_reply_mode", "thread") == "thread"
+            if use_thread:
+                result = handler.reply_message(message_id, card_content, msg_type=msg_type,
+                                               origin_message_id=message_id, request_id=request_id,
+                                               reply_in_thread=True)
+            else:
+                result = handler.send_message(chat_id, card_content, msg_type,
+                                              origin_message_id=message_id, request_id=request_id)
+            sender._message_id = result or "mock_reply_id"
+            return sender._message_id
+
+        sender.send.side_effect = _send
+        sender.check_throttle.return_value = True
+        sender.update_stream_state.return_value = None
+        sender.check_plan_throttle.return_value = True
+        sender.update_plan_state.return_value = None
+        return sender
+
+    with patch("src.feishu.renderers.deep_renderer._create_engine_sender", side_effect=_make_mock_sender), \
+         patch("src.feishu.renderers.loop_renderer._create_engine_sender", side_effect=_make_mock_sender), \
+         patch("src.feishu.renderers.spec_renderer._create_engine_sender", side_effect=_make_mock_sender):
         yield
 
 

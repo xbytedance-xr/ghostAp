@@ -420,12 +420,6 @@ class TestIsP2PThreadLocalPropagation:
             mock_session.last_query = "test"
             mock_ctx.coco_manager.get_session.return_value = mock_session
 
-            # Mock streaming
-            mock_streaming = MagicMock()
-            mock_streaming.create_streaming_card.return_value = None
-            mock_ctx.streaming_manager_factory.return_value = mock_streaming
-            handler.get_streaming_manager = MagicMock(return_value=mock_streaming)
-
             # Call handle_message WITHOUT is_p2p — should read True from thread-local
             handler.handle_message("msg-1", "chat-1", "hello", project=mock_project)
 
@@ -474,10 +468,6 @@ class TestIsP2PThreadLocalPropagation:
             mock_session.message_count = 1
             mock_session.last_query = "test"
             mock_ctx.coco_manager.get_session.return_value = mock_session
-
-            mock_streaming = MagicMock()
-            mock_streaming.create_streaming_card.return_value = None
-            handler.get_streaming_manager = MagicMock(return_value=mock_streaming)
 
             handler.handle_message("msg-1", "chat-1", "hello", project=mock_project)
 

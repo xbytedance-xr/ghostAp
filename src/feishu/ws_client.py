@@ -39,7 +39,7 @@ from ..acp.manager import ACPSessionManager
 from ..acp.telemetry import build_idle_health_config_for_manager
 from ..agent.intent_recognizer import IntentRecognizer, IntentResult, IntentType, TaskStep
 from ..card import CardBuilder
-from ..card.streaming import StreamingCardManager
+
 from ..card.styles import UI_TEXT
 from ..config import get_settings
 from ..deep_engine import DeepEngineManager, ProgressReporter
@@ -236,7 +236,6 @@ class FeishuWSClient:
         self._thread_manager = get_thread_manager()
         self._thread_manager._on_evict = self._on_thread_evicted
 
-        self._streaming_manager: Optional[StreamingCardManager] = None
         self._image_handler: Optional[FeishuImageHandler] = None
         self._pending_image_keys: dict[str, list[str]] = {}
         self._pending_image_only: set[str] = set()  # message_ids that are image-only (no user text)
@@ -296,7 +295,7 @@ class FeishuWSClient:
             spec_engine_manager=self._spec_engine_manager,
             spec_reporter=self._spec_reporter,
             thread_manager=self._thread_manager,
-            streaming_manager_factory=self._get_streaming_manager,
+
             image_handler_factory=self._get_image_handler,
             working_dirs=self._working_dirs,
             working_dir_lock=self._working_dir_lock,
@@ -674,11 +673,7 @@ class FeishuWSClient:
             )
         return self._api_client
 
-    def _get_streaming_manager(self) -> StreamingCardManager:
-        """获取/创建流式卡片管理器（用于增量 patch 卡片）。"""
-        if self._streaming_manager is None:
-            self._streaming_manager = StreamingCardManager(self._get_api_client())
-        return self._streaming_manager
+
 
     def _get_image_handler(self) -> FeishuImageHandler:
         """获取/创建图片处理器（解析 + 下载 + 生成引用文本）。"""
@@ -1615,14 +1610,7 @@ class FeishuWSClient:
                 if self._card_action_dedup_cache.is_duplicate(dedupe_key):
                     return None
 
-                # Immediate feedback: prefer patching streaming card (non-spam), fallback to reply.
-                try:
-                    manager = self._get_streaming_manager()
-                    card = manager.get_card(open_message_id)
-                    if card:
-                        manager.set_sticky_message(open_message_id, UI_TEXT["ws_card_action_ack"], duration=2.5)
-                except Exception:
-                    logger.debug("failed to set sticky message", exc_info=True)
+
             except Exception:
                 # best-effort only
                 logger.debug("failed to ack card action", exc_info=True)

@@ -1,6 +1,6 @@
 """Programming mode adapter: bridges streaming card pattern to CardSession.
 
-Provides a drop-in replacement for the StreamingCardManager usage in
+Bridges streaming card pattern to CardSession for
 ProgrammingHandler.handle_response(). Supports all programming modes:
 Coco/Claude/Aiden/Codex/Gemini/TTADK.
 """

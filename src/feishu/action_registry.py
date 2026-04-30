@@ -319,21 +319,6 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         exact="help_category",
     )
 
-    # Streaming
-    def _handle_load_more(mid, cid, pid, val):
-        msg_id = (val.get("message_id") or "").strip() or mid
-        manager = client._get_streaming_manager()
-        manager.increase_pagination(msg_id)
-
-    client._register_action(_handle_load_more, exact="load_more")
-
-    def _handle_load_prev(mid, cid, pid, val):
-        msg_id = (val.get("message_id") or "").strip() or mid
-        manager = client._get_streaming_manager()
-        manager.decrease_pagination(msg_id)
-
-    client._register_action(_handle_load_prev, exact="load_prev")
-
     # Deep Engine
     client._register_action(
         lambda mid, cid, pid, val: client._show_deep_status(

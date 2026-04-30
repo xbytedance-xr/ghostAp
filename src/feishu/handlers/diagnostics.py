@@ -402,23 +402,18 @@ class DiagnosticsHandler(BaseHandler):
             return
 
         request_id = self.ensure_request_id(message_id, chat_id=chat_id, project_id=project.project_id)
-        streaming_manager = self.get_streaming_manager()
         ref_note = self.format_ref_note(message_id, request_id)
-        
+
         banner_tpl = UI_TEXT["diag_diff_generating_banner"]
         initial = f"{banner_tpl}\n\n{ref_note}" if ref_note else banner_tpl
+        title = UI_TEXT["diag_diff_report_title"]
 
-        card = streaming_manager.create_streaming_card(
-            chat_id=chat_id,
-            project_name=project.project_name,
-            project_path=project.root_path,
-            project_id=project.project_id,
-            initial_content=initial,
-            is_coco_mode=False,
-            is_claude_mode=False,
-            reply_to_message_id=message_id,
+        msg_type, card_content = CardBuilder.build_project_response_card(
+            project, title, initial, show_buttons=False,
         )
-        card_message_id = streaming_manager.send_streaming_card(card) if card else None
+        card_message_id = self.reply_message_with_id(
+            message_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id
+        )
         if card_message_id:
             try:
                 self.register_message_project(card_message_id, project)
@@ -448,19 +443,23 @@ class DiagnosticsHandler(BaseHandler):
             try:
                 try:
                     full_ref = self.format_ref_note(message_id, request_id, run_id=task_ctx.run_id)
-                    if card and card_message_id and full_ref:
-                        streaming_manager.update_content(card, f"{banner_tpl}\n\n{full_ref}")
+                    if card_message_id and full_ref:
+                        _msg_type, _card = CardBuilder.build_project_response_card(
+                            project, title, f"{banner_tpl}\n\n{full_ref}", show_buttons=False,
+                        )
+                        self.patch_message(card_message_id, _card, _msg_type)
                 except Exception:
                     logger.debug("failed to update streaming card content", exc_info=True)
 
                 task_ctx.progress(UI_TEXT["diag_step_parsing"], 5)
-                if card and card_message_id:
+                if card_message_id:
                     try:
                         progress_tpl = UI_TEXT["diag_diff_generating_progress"]
-                        streaming_manager.update_content(
-                            card,
-                            f"{progress_tpl.format(step=UI_TEXT['diag_step_parsing'], pct=5)}\n\n{self.format_ref_note(message_id, request_id, run_id=task_ctx.run_id)}",
+                        progress_content = f"{progress_tpl.format(step=UI_TEXT['diag_step_parsing'], pct=5)}\n\n{self.format_ref_note(message_id, request_id, run_id=task_ctx.run_id)}"
+                        _msg_type, _card = CardBuilder.build_project_response_card(
+                            project, title, progress_content, show_buttons=False,
                         )
+                        self.patch_message(card_message_id, _card, _msg_type)
                     except Exception:
                         logger.debug("failed to update streaming card content", exc_info=True)
 
@@ -469,37 +468,42 @@ class DiagnosticsHandler(BaseHandler):
                     msg = err or UI_TEXT["diag_diff_failed"]
                     final_ref = self.format_ref_note(message_id, request_id, run_id=task_ctx.run_id)
                     final = f"❌ {msg}\n\n{final_ref}" if final_ref else f"❌ {msg}"
-                    if card and card_message_id:
-                        streaming_manager.close_streaming(card, final_content=final)
+                    if card_message_id:
+                        _msg_type, _card = CardBuilder.build_project_response_card(
+                            project, title, final, show_buttons=False,
+                        )
+                        self.patch_message(card_message_id, _card, _msg_type)
                     else:
                         self.reply_message(message_id, msg, origin_message_id=message_id, request_id=request_id)
                     return
 
                 task_ctx.progress(UI_TEXT["diag_step_generating"], 80)
-                if card and card_message_id:
+                if card_message_id:
                     try:
                         progress_tpl = UI_TEXT["diag_diff_generating_progress"]
-                        streaming_manager.update_content(
-                            card,
-                            f"{progress_tpl.format(step=UI_TEXT['diag_step_generating'], pct=80)}\n\n{self.format_ref_note(message_id, request_id, run_id=task_ctx.run_id)}",
+                        progress_content = f"{progress_tpl.format(step=UI_TEXT['diag_step_generating'], pct=80)}\n\n{self.format_ref_note(message_id, request_id, run_id=task_ctx.run_id)}"
+                        _msg_type, _card = CardBuilder.build_project_response_card(
+                            project, title, progress_content, show_buttons=False,
                         )
+                        self.patch_message(card_message_id, _card, _msg_type)
                     except Exception:
                         logger.debug("failed to update streaming card content", exc_info=True)
 
                 final_ref = self.format_ref_note(message_id, request_id, run_id=task_ctx.run_id)
                 final = f"{content}\n\n{final_ref}" if final_ref and final_ref not in content else content
-                if card and card_message_id:
-                    streaming_manager.close_streaming(card, final_content=final)
+                if card_message_id:
+                    _msg_type, _card = CardBuilder.build_project_response_card(
+                        project, title, final, show_buttons=False,
+                        footer=UI_TEXT["diag_diff_usage_footer"],
+                    )
+                    self.patch_message(card_message_id, _card, _msg_type)
                 else:
-                    msg_type, card_content = CardBuilder.build_project_response_card(
-                        project,
-                        UI_TEXT["diag_diff_report_title"],
-                        final,
-                        show_buttons=False,
+                    _msg_type, _card = CardBuilder.build_project_response_card(
+                        project, title, final, show_buttons=False,
                         footer=UI_TEXT["diag_diff_usage_footer"],
                     )
                     rid = self.reply_message_with_id(
-                        message_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id
+                        message_id, _card, _msg_type, origin_message_id=message_id, request_id=request_id
                     )
                     if rid:
                         self.register_message_project(rid, project)
@@ -509,8 +513,11 @@ class DiagnosticsHandler(BaseHandler):
                 final_ref = self.format_ref_note(message_id, request_id, run_id=getattr(task_ctx, "run_id", None))
                 final = f"❌ {msg}\n\n{final_ref}" if final_ref else f"❌ {msg}"
                 try:
-                    if card and card_message_id:
-                        streaming_manager.close_streaming(card, final_content=final)
+                    if card_message_id:
+                        _msg_type, _card = CardBuilder.build_project_response_card(
+                            project, title, final, show_buttons=False,
+                        )
+                        self.patch_message(card_message_id, _card, _msg_type)
                 except Exception:
                     logger.debug("failed to close streaming card", exc_info=True)
                 self.reply_message(message_id, msg, origin_message_id=message_id, request_id=request_id)
@@ -521,11 +528,14 @@ class DiagnosticsHandler(BaseHandler):
         except Exception:
             logger.debug("failed to link task", exc_info=True)
 
-        if card and card_message_id:
+        if card_message_id:
             try:
                 full_ref = self.format_ref_note(message_id, request_id, run_id=handle.run_id)
                 msg = UI_TEXT["diag_diff_started_banner"]
-                streaming_manager.update_content(card, f"{msg}\n\n{full_ref}")
+                _msg_type, _card = CardBuilder.build_project_response_card(
+                    project, title, f"{msg}\n\n{full_ref}", show_buttons=False,
+                )
+                self.patch_message(card_message_id, _card, _msg_type)
             except Exception:
                 logger.debug("failed to update streaming card content", exc_info=True)
         return handle

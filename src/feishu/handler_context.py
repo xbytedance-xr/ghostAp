@@ -17,7 +17,6 @@ if TYPE_CHECKING:
 
     from ..acp.manager import ACPSessionManager
     from ..agent.intent_recognizer import IntentRecognizer
-    from ..card.streaming import StreamingCardManager
     from ..chat_lock import ChatLockManager
     from ..deep_engine import DeepEngineManager, ProgressReporter
     from ..loop_engine import LoopEngineManager, LoopReporter
@@ -64,7 +63,6 @@ class HandlerContext:
     thread_manager: "ThreadContextManager"
 
     # Lazy-initialized singletons
-    streaming_manager_factory: Callable[[], "StreamingCardManager"]
     image_handler_factory: Callable[[], "FeishuImageHandler"]
 
     # Shared mutable state
