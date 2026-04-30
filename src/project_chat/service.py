@@ -119,10 +119,14 @@ class ProjectChatService:
         new_chat_id = result.chat_id
         new_chat_name = result.name
 
+        # 4.5 Promote sender to group manager (best-effort, enables dissolve permission)
+        self._lark.add_managers(new_chat_id, [sender_open_id])
+
         # 5. Bind
         try:
             if ctx:
                 # Branch B: legacy project without bound chat
+                ctx.project_name = name  # respect user-specified name
                 ctx.bound_chat_id = new_chat_id
                 ctx.bound_chat_name = new_chat_name
                 ctx.bound_chat_created_at = time.time()

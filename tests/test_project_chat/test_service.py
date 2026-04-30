@@ -65,6 +65,11 @@ class TestNewProject:
         assert "mycode" in call_kwargs["name"]
         assert "ou_user_1" in call_kwargs["user_id_list"]
 
+        # Verify sender was promoted to group manager
+        mock_lark_client.add_managers.assert_called_once_with(
+            "oc_new_group_123", ["ou_user_1"]
+        )
+
         # Verify project was created with bound_chat_id
         ctx = project_manager.find_project_by_path(path)
         assert ctx is not None
@@ -129,12 +134,15 @@ class TestLegacyProjectBind:
             message_id="msg_bind",
             chat_id="oc_main_chat",
             sender_open_id="ou_user_1",
-            data={"name": "legacy", "path": path},
+            data={"name": "ghostAp", "path": path},
         )
 
         # Verify bound
         ctx = project_manager.find_project_by_path(path)
         assert ctx.bound_chat_id == "oc_new_group_123"
+
+        # Key assertion: user-specified name must override the old name
+        assert ctx.project_name == "ghostAp"
 
         # Key assertion: project must still be visible from the originating chat
         projects = project_manager.get_all_projects(chat_id="oc_main_chat")

@@ -72,6 +72,36 @@ class LarkChatClient:
 
         raise CreateChatError(f"建群失败: {last_error}")
 
+    def add_managers(self, chat_id: str, manager_ids: list[str]) -> None:
+        """Add managers to a group chat (best-effort).
+
+        Does NOT raise on failure — only logs warning.
+        """
+        from lark_oapi.api.im.v1 import (
+            AddManagersChatManagersRequest,
+            AddManagersChatManagersRequestBody,
+        )
+
+        client = self._api_client_factory()
+        body = AddManagersChatManagersRequestBody.builder() \
+            .manager_ids(manager_ids) \
+            .build()
+        request = AddManagersChatManagersRequest.builder() \
+            .chat_id(chat_id) \
+            .member_id_type("open_id") \
+            .request_body(body) \
+            .build()
+
+        try:
+            response = client.im.v1.chat_managers.add_managers(request)
+            if not response.success():
+                logger.warning(
+                    "add_managers(%s) failed: [%s] %s",
+                    chat_id[:12], response.code, response.msg,
+                )
+        except Exception as e:
+            logger.warning("add_managers(%s) exception: %s", chat_id[:12], e)
+
     def delete_chat(self, chat_id: str) -> None:
         """Delete a Feishu group chat (best-effort, for rollback).
 
