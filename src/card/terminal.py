@@ -7,7 +7,7 @@ TERMINAL_MARKERS: dict[str, str] = {
     "completed": "✅ **已完成**",
     "failed": "❌ **执行失败**",
     "blocked": "⏸ **任务已阻塞**",
-    "cancelled": "⏹ **已停止**",
+    "cancelled": "⏹ **已取消**",
     "awaiting_approval": "🔐 **等待授权**",
     "denied": "❌ **授权已拒绝**",
     "continued": "✅ **已获得授权**",
@@ -28,6 +28,7 @@ FOOTER_STATUS: dict[str, str] = {
 STATUS_DISPLAY_MAP: dict[str, str] = {
     "completed": "已完成",
     "failed": "失败",
+    "cancelled": "已取消",
     "running": "执行中",
     "planned": "已规划",
     "ready": "就绪",

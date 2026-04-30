@@ -172,7 +172,7 @@ class TestUiTextKeyConflictAssertion:
         """Verify the conflict check code uses RuntimeError (not assert)."""
         from pathlib import Path
 
-        source = (Path(__file__).parent.parent / "src" / "card" / "styles.py").read_text(encoding="utf-8")
+        source = (Path(__file__).parent.parent / "src" / "card" / "ui_text.py").read_text(encoding="utf-8")
         # The conflict check should use RuntimeError, not bare assert
         assert "raise RuntimeError" in source
         # Specifically, it should mention UI_TEXT key conflict

@@ -19,8 +19,11 @@ class MockCardClient:
         self.creates: list[dict] = []
         self.updates: list[dict] = []
         self.elements: list[dict] = []
+        self.streaming_creates: list[dict] = []
+        self.card_references: list[dict] = []
         self._create_counter = 0
         self._raise_on_update: Exception | None = None
+        self._raise_on_streaming_create: Exception | None = None
 
     def create_card(self, chat_id, card_json, *, reply_to=None):
         self._create_counter += 1
@@ -51,6 +54,20 @@ class MockCardClient:
             "content": content,
             "sequence": sequence,
         })
+
+    def create_streaming_card(self, card_json):
+        if self._raise_on_streaming_create:
+            raise self._raise_on_streaming_create
+        self._create_counter += 1
+        card_id = f"stream_card_{self._create_counter}"
+        self.streaming_creates.append({"card_json": card_json})
+        return card_id
+
+    def send_card_reference(self, chat_id, card_id, *, reply_to=None):
+        self._create_counter += 1
+        msg_id = f"msg_{self._create_counter}"
+        self.card_references.append({"chat_id": chat_id, "card_id": card_id, "reply_to": reply_to})
+        return msg_id
 
 
 class TestCardDeliveryCreate:
@@ -277,6 +294,70 @@ class TestPageShrink:
         assert delivery._sequences.current(stale_card_id) == 0
 
 
+class TestStreamingFallback:
+    """Streaming card creation with fallback to IM API."""
+
+    def test_streaming_success_uses_cardkit_path(self):
+        """When streaming_mode=True, uses create_streaming_card + send_card_reference."""
+        client = MockCardClient()
+        delivery = CardDelivery(client)
+
+        active = ActiveElement(element_id="el_1", text="streaming text")
+        rendered = [RenderedCard(
+            card_json={"config": {"streaming_mode": True}, "body": {}},
+            structure_signature="sig_1",
+            active_element=active,
+            page_index=0,
+            total_pages=1,
+        )]
+
+        outcomes = delivery.deliver("sess_1", "chat_abc", rendered)
+        assert outcomes[0].kind == "applied"
+        assert len(client.streaming_creates) == 1
+        assert len(client.card_references) == 1
+        assert len(client.creates) == 0  # IM API NOT used
+
+    def test_streaming_fallback_to_im_api(self):
+        """When create_streaming_card fails, falls back to create_card."""
+        client = MockCardClient()
+        client._raise_on_streaming_create = RuntimeError("CardKit unavailable")
+        delivery = CardDelivery(client)
+
+        active = ActiveElement(element_id="el_1", text="fallback text")
+        rendered = [RenderedCard(
+            card_json={"config": {"streaming_mode": True}, "body": {}},
+            structure_signature="sig_1",
+            active_element=active,
+            page_index=0,
+            total_pages=1,
+        )]
+
+        outcomes = delivery.deliver("sess_1", "chat_abc", rendered)
+        assert outcomes[0].kind == "applied"
+        assert len(client.streaming_creates) == 0  # failed, no record
+        assert len(client.creates) == 1  # fell back to IM API
+
+    def test_streaming_fallback_retains_text_in_binding(self):
+        """After fallback, last_text is still recorded correctly."""
+        client = MockCardClient()
+        client._raise_on_streaming_create = RuntimeError("CardKit unavailable")
+        delivery = CardDelivery(client)
+
+        active = ActiveElement(element_id="el_1", text="important text")
+        rendered = [RenderedCard(
+            card_json={"config": {"streaming_mode": True}, "body": {}},
+            structure_signature="sig_1",
+            active_element=active,
+            page_index=0,
+            total_pages=1,
+        )]
+
+        delivery.deliver("sess_1", "chat_abc", rendered)
+        binding = delivery.get_binding("sess_1")
+        assert binding is not None
+        assert binding.pages[0].last_text == "important text"
+
+
 class TestClose:
     """Close session."""
 
@@ -290,3 +371,145 @@ class TestClose:
 
         delivery.close("sess_1")
         assert delivery.get_binding("sess_1") is None
+
+
+class TestTransportError:
+    """TransportError handling in update path."""
+
+    def test_transport_error_returns_reconcile(self):
+        """update_card raising TransportError should return reconcile outcome."""
+        client = MockCardClient()
+        delivery = CardDelivery(client)
+
+        # First delivery creates the card
+        r1 = [RenderedCard(card_json={}, structure_signature="sig_1", page_index=0, total_pages=1)]
+        delivery.deliver("sess_1", "chat_abc", r1)
+
+        # Second delivery triggers update — TransportError
+        client._raise_on_update = TransportError("connection timeout")
+        r2 = [RenderedCard(card_json={}, structure_signature="sig_2", page_index=0, total_pages=1)]
+        outcomes = delivery.deliver("sess_1", "chat_abc", r2)
+
+        assert outcomes[0].kind == "reconcile"
+        assert "connection timeout" in outcomes[0].message
+
+    def test_transport_error_on_element_falls_back_to_update(self):
+        """update_element raising TransportError falls back to _update_page."""
+        client = MockCardClient()
+        delivery = CardDelivery(client)
+
+        active = ActiveElement(element_id="el_1", text="hello")
+        r1 = [RenderedCard(
+            card_json={}, structure_signature="sig_1",
+            active_element=active, page_index=0, total_pages=1,
+        )]
+        delivery.deliver("sess_1", "chat_abc", r1)
+
+        # Element update will fail, but fallback to full update should succeed
+        call_count = {"n": 0}
+        original_update = client.update_element
+
+        def failing_element(*args, **kwargs):
+            raise TransportError("element push failed")
+
+        client.update_element = failing_element
+        active2 = ActiveElement(element_id="el_1", text="world")
+        r2 = [RenderedCard(
+            card_json={}, structure_signature="sig_1",
+            active_element=active2, page_index=0, total_pages=1,
+        )]
+        outcomes = delivery.deliver("sess_1", "chat_abc", r2)
+
+        # Should fall back to full update (which succeeds)
+        assert outcomes[0].kind == "applied"
+        assert len(client.updates) == 1
+
+
+class TestCreateCardFailure:
+    """create_card failure in non-streaming path."""
+
+    def test_create_card_failure_non_streaming(self):
+        """create_card raising exception should return reconcile, not crash."""
+        client = MockCardClient()
+        delivery = CardDelivery(client)
+
+        # Make create_card fail
+        original_create = client.create_card
+        def failing_create(*args, **kwargs):
+            raise RuntimeError("API unavailable")
+        client.create_card = failing_create
+
+        rendered = [RenderedCard(card_json={}, structure_signature="sig_1", page_index=0, total_pages=1)]
+        outcomes = delivery.deliver("sess_1", "chat_abc", rendered)
+
+        assert len(outcomes) == 1
+        assert outcomes[0].kind == "reconcile"
+        assert "API unavailable" in outcomes[0].message
+
+    def test_create_card_failure_does_not_create_binding(self):
+        """Failed create_card should not leave a binding with empty page."""
+        client = MockCardClient()
+        delivery = CardDelivery(client)
+
+        def failing_create(*args, **kwargs):
+            raise RuntimeError("network error")
+        client.create_card = failing_create
+
+        rendered = [RenderedCard(card_json={}, structure_signature="sig_1", page_index=0, total_pages=1)]
+        delivery.deliver("sess_1", "chat_abc", rendered)
+
+        # Binding is created but page should not be registered (since create failed)
+        binding = delivery.get_binding("sess_1")
+        # The binding exists (created before the API call) but page should be empty
+        if binding is not None:
+            assert 0 not in binding.pages
+
+
+class TestConcurrentDeliverClose:
+    """Multi-threaded deliver/close race condition safety test."""
+
+    def test_concurrent_deliver_and_close_no_exception(self):
+        """10 threads simultaneously deliver + close same session → no crash."""
+        import threading
+
+        client = MockCardClient()
+        delivery = CardDelivery(client)
+        session_id = "concurrent_sess"
+        errors: list[Exception] = []
+
+        def deliver_task():
+            try:
+                cards = [RenderedCard(
+                    page_index=0,
+                    card_json={"header": {"title": {"content": "test"}}},
+                    structure_signature="sig-concurrent",
+                )]
+                delivery.deliver(session_id, "chat_1", cards)
+            except Exception as e:
+                errors.append(e)
+
+        def close_task():
+            try:
+                delivery.close(session_id)
+            except Exception as e:
+                errors.append(e)
+
+        threads = []
+        for i in range(10):
+            if i % 2 == 0:
+                t = threading.Thread(target=deliver_task)
+            else:
+                t = threading.Thread(target=close_task)
+            threads.append(t)
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        # No exceptions should have been raised
+        assert errors == [], f"Concurrent errors: {errors}"
+        # After all threads complete, binding should be cleaned up
+        # (close was called multiple times)
+        binding = delivery.get_binding(session_id)
+        assert binding is None

@@ -78,7 +78,8 @@ class ProgrammingCardSession:
         self._flush_interval = flush_interval or self._DEFAULT_FLUSH_INTERVAL
         # Text batching state
         self._pending_text = ""
-        self._flush_lock = threading.Lock()
+        self._flush_lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
+        self._flush_lock_holder = threading.local()  # per-thread flag for lock ownership assertion
         self._flush_timer: threading.Timer | None = None
 
     @property
@@ -107,11 +108,15 @@ class ProgrammingCardSession:
             text = card_event.payload.get("text", "")
             if text:
                 with self._flush_lock:
-                    if not self._text_active:
-                        self._session.dispatch(CardEvent.text_started("_active_text"))
-                        self._text_active = True
-                    self._pending_text += text
-                    self._schedule_flush()
+                    self._flush_lock_holder.held = True
+                    try:
+                        if not self._text_active:
+                            self._session.dispatch(CardEvent.text_started("_active_text"))
+                            self._text_active = True
+                        self._pending_text += text
+                        self._schedule_flush()
+                    finally:
+                        self._flush_lock_holder.held = False
             return
 
         # Structural event: flush pending text first
@@ -133,11 +138,15 @@ class ProgrammingCardSession:
         """Append text directly (for simple text-only streams)."""
         if text:
             with self._flush_lock:
-                if not self._text_active:
-                    self._session.dispatch(CardEvent.text_started("_active_text"))
-                    self._text_active = True
-                self._pending_text += text
-                self._schedule_flush()
+                self._flush_lock_holder.held = True
+                try:
+                    if not self._text_active:
+                        self._session.dispatch(CardEvent.text_started("_active_text"))
+                        self._text_active = True
+                    self._pending_text += text
+                    self._schedule_flush()
+                finally:
+                    self._flush_lock_holder.held = False
 
     def finish(self) -> None:
         """Complete the session normally."""
@@ -191,7 +200,16 @@ class ProgrammingCardSession:
     # ---- Internal flush mechanism ----
 
     def _schedule_flush(self) -> None:
-        """Schedule a flush timer if not already pending."""
+        """Schedule a flush timer if not already pending.
+
+        IMPORTANT: Must only be called while holding ``_flush_lock``.
+        """
+        if not getattr(self._flush_lock_holder, "held", False):
+            logger.error(
+                "_schedule_flush called without holding _flush_lock — "
+                "this is an internal state error, please report to maintainers"
+            )
+            raise RuntimeError("_schedule_flush must be called under _flush_lock")
         if self._flush_timer is None:
             self._flush_timer = threading.Timer(self._flush_interval, self._flush_now)
             self._flush_timer.daemon = True

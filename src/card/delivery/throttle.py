@@ -40,7 +40,7 @@ class DeliveryThrottle:
         self._pending: dict[str, _PendingFlush] = {}
         self._flow_states: dict[str, FlowControlState] = {}
         self._flow_strategy = FlowControlStrategy(flow_config or FlowControlConfig())
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     def schedule(
         self,

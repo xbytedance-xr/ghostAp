@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, Optional
@@ -253,7 +254,10 @@ class WorktreeUnit:
     summary: str = ""
     error: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
-    _cancelled: bool = field(default=False, repr=False)
+    # Per-unit cancellation signal: set by pool-timeout to notify the worker thread.
+    # Provides a memory-barrier-backed check (threading.Event is thread-safe) instead
+    # of relying on bare status field reads which depend on GIL atomicity.
+    _cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -272,7 +276,7 @@ class WorktreeUnit:
             "summary": self.summary,
             "error": self.error,
             "metadata": dict(self.metadata),
-            "cancelled": self._cancelled,
+            "cancelled": (self.status == WorktreeUnitStatus.CANCELLED),
         }
 
     @classmethod
@@ -299,7 +303,6 @@ class WorktreeUnit:
             error=_clean_str(data.get("error")),
             metadata=dict(data.get("metadata") or {}),
         )
-        unit._cancelled = bool(data.get("cancelled", False))
         return unit
 
 

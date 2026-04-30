@@ -701,7 +701,7 @@ def _auto_update_agent(command: str) -> bool:
             )
             return False
     except (OSError, subprocess.SubprocessError) as e:
-        logger.warning("[ACP] %s auto-update error: %s", command, get_error_detail(e))
+        logger.warning("[ACP] %s auto-update error: %s", command, get_error_detail(e), exc_info=True)
         return False
 
 
@@ -795,6 +795,7 @@ def resolve_agent_spec(
                         resolution_source = "drop_m"
                         resolution_reason = "no_cache"
             except (ImportError, AttributeError, TypeError, ValueError):
+                logger.debug("resolve_agent_spec: TTADK model resolution failed, using input_model as fallback", exc_info=True)
                 resolved_model = input_model
 
         passthrough = _resolve_ttadk_passthrough_args(tool_name)
@@ -876,9 +877,11 @@ def start_session_with_retry(
                     )
                 except TypeError:
                     # 兼容旧签名 / 测试桩：不支持 ttadk_use_pty 时仍应保留 model_name 透传
+                    logger.debug("session_cls does not accept ttadk_use_pty, retrying without", exc_info=True)
                     try:
                         session = session_cls(agent_type=agent_type, cwd=cwd, model_name=model_name)
                     except TypeError:
+                        logger.debug("session_cls does not accept model_name, using minimal signature", exc_info=True)
                         session = session_cls(agent_type=agent_type, cwd=cwd)
             else:
                 session = session_cls(agent_type=agent_type, cwd=cwd, ttadk_use_pty=bool(ttadk_use_pty))
@@ -1184,6 +1187,7 @@ def start_ttadk_session_with_pty_retry(
             start_ttadk_session_with_pty_retry._last_retry_ts = _last
     except Exception:
         _last = {}
+        logger.debug("Failed to read PTY retry state", exc_info=True)
     if not pty_enabled:
         return _call_start_session_with_retry_compat(
             agent_type=agent_type,
@@ -1237,6 +1241,7 @@ def start_ttadk_session_with_pty_retry(
             last_ts = float(_last.get(tool, 0.0) or 0.0) if isinstance(_last, dict) else 0.0
         except Exception:
             last_ts = 0.0
+            logger.debug("Failed to parse cooldown timestamp", exc_info=True)
         if cooldown_s and last_ts and (now - last_ts) < cooldown_s:
             logger.warning(
                 "[ACP:%s] PTY retry suppressed by cooldown: tool=%s cooldown_s=%.1f elapsed=%.1f",
@@ -1261,6 +1266,7 @@ def start_ttadk_session_with_pty_retry(
                 blob = _build_error_text(e2)
             except Exception:
                 blob = ""
+                logger.debug("Failed to build error text for PTY retry failure", exc_info=True)
             raise ACPStartupError(
                 "TTADK PTY 重试后仍启动失败",
                 agent_cmd=safe_str(getattr(e2, "agent_cmd", "") or "python3"),
@@ -1508,7 +1514,7 @@ class SyncACPSession:
             raise RuntimeError("ACP agent 进程在执行过程中意外终止")
         except TimeoutError as e:
             agent_type_str = getattr(self, "_agent_type", "unknown")
-            logger.error("[ACP:%s] prompt 执行超时 (timeout=%ss): %s", agent_type_str, effective_timeout, get_error_detail(e))
+            logger.error("[ACP:%s] prompt 执行超时 (timeout=%ss): %s", agent_type_str, effective_timeout, get_error_detail(e), exc_info=True)
             # Cancel the agent process on timeout to free resources.
             # Wait briefly for cancel to be acknowledged — otherwise a follow-up
             # send_prompt can race with the in-flight cancel and the agent
@@ -1533,7 +1539,7 @@ class SyncACPSession:
             )
             return bool(future.result(timeout=float(timeout or 10.0)))
         except (TimeoutError, OSError, RuntimeError) as e:
-            logger.warning("[ACP] set_model failed: %s", get_error_detail(e))
+            logger.warning("[ACP] set_model failed: %s", get_error_detail(e), exc_info=True)
             return False
 
     def cancel(self, wait: bool = False, timeout: float = 2.0) -> None:
@@ -1626,5 +1632,5 @@ class SyncACPSession:
             msg = sanitize_futures_msg(str(e))
             if not msg or msg == "操作超时，请稍后重试":
                 msg = f"ACP 异步操作超时 ({timeout}s): agent={self._agent_type}"
-            logger.error("[ACP:%s] _run_async 超时 (timeout=%ss): %s", self._agent_type, timeout, get_error_detail(e))
+            logger.error("[ACP:%s] _run_async 超时 (timeout=%ss): %s", self._agent_type, timeout, get_error_detail(e), exc_info=True)
             raise TimeoutError(msg) from e

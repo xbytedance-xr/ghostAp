@@ -370,8 +370,8 @@ class TestHeaderTemplateMapping:
     def test_terminal_failed_red(self):
         assert self._pick(terminal_state="failed") == "red"
 
-    def test_terminal_cancelled_red(self):
-        assert self._pick(terminal_state="cancelled") == "red"
+    def test_terminal_cancelled_orange(self):
+        assert self._pick(terminal_state="cancelled") == "orange"
 
     def test_terminal_blocked_grey(self):
         assert self._pick(terminal_state="blocked") == "grey"

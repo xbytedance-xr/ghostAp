@@ -255,6 +255,8 @@ class ACPSessionManager:
         self._sessions: dict[str, SyncSession] = {}  # key = _session_key(...)
         self._session_timeout = session_timeout
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+        self._key_locks: dict[str, list] = {}  # per-session-key: [Lock, refcount]
+        self._key_locks_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._session_starter = session_starter
         self._keepalive_interval = keepalive_interval
         self._idle_healthcheck_s = idle_healthcheck_s
@@ -312,11 +314,44 @@ class ACPSessionManager:
         finally:
             self._lock.release()
 
+    def _get_key_lock(self, key: str) -> threading.Lock:
+        """Get or create a per-session-key lock, incrementing reference count."""
+        with self._key_locks_lock:
+            entry = self._key_locks.get(key)
+            if entry is None:
+                entry = [threading.Lock(), 0]  # leaf lock: never held while acquiring a LockLevel lock
+                self._key_locks[key] = entry
+            entry[1] += 1  # increment refcount
+            return entry[0]
+
+    def _release_key_lock(self, key: str) -> None:
+        """Decrement reference count for a per-session-key lock; remove when no references."""
+        with self._key_locks_lock:
+            entry = self._key_locks.get(key)
+            if entry is None:
+                return
+            entry[1] -= 1
+            if entry[1] <= 0:
+                self._key_locks.pop(key, None)
+
+    def _remove_key_lock(self, key: str) -> None:
+        """Remove per-session-key lock when session is ended.
+
+        Delegates to _release_key_lock which uses reference counting to safely
+        determine when no thread references the lock anymore.
+        """
+        lock = getattr(self, "_key_locks_lock", None)
+        if lock is None:
+            return
+        self._release_key_lock(key)
+
     def _keepalive_loop(self) -> None:
         while not self._keepalive_stop.wait(timeout=self._keepalive_interval):
             try:
+                # Take snapshot under lock, then release — iteration is lock-free
                 with self._acquire_lock():
                     snapshot = list(self._sessions.items())
+                # Lock released here; safe to iterate without blocking session ops
                 now = time.time()
                 for key, session in snapshot:
                     try:
@@ -325,6 +360,7 @@ class ACPSessionManager:
                             continue
                         alive = session.is_server_running()
                         if not alive:
+                            # Re-acquire lock independently for mutation
                             with self._acquire_lock():
                                 if self._sessions.get(key) is session:
                                     logger.info(
@@ -439,6 +475,34 @@ class ACPSessionManager:
     ) -> SyncSession:
         """Start a new session for a chat/project."""
         key = self._session_key(chat_id, project_id, thread_id=thread_id)
+        # Per-key lock serializes concurrent start_session calls for the same key,
+        # preventing TOCTOU race where two threads both create sessions and one leaks.
+        key_lock = self._get_key_lock(key)
+        if not key_lock.acquire(timeout=startup_timeout):
+            raise TimeoutError(
+                "会话启动超时，当前有其他操作正在进行，请稍后重试"
+            )
+        try:
+            return self._start_session_inner(
+                key, chat_id, cwd, session_id, startup_timeout,
+                project_id, agent_type_override, model_name, thread_id,
+            )
+        finally:
+            key_lock.release()
+
+    def _start_session_inner(
+        self,
+        key: str,
+        chat_id: str,
+        cwd: str,
+        session_id: Optional[str],
+        startup_timeout: float,
+        project_id: Optional[str],
+        agent_type_override: Optional[str],
+        model_name: Optional[str],
+        thread_id: Optional[str],
+    ) -> SyncSession:
+        """Inner implementation of start_session (called under per-key lock)."""
         # Close existing session if any (under lock to prevent concurrent create)
         with self._acquire_lock():
             if key in self._sessions:
@@ -970,6 +1034,11 @@ class ACPSessionManager:
             except Exception as e:
                 logger.debug("[ACP:%s] session telemetry on_session_end error", self._agent_type.upper(), exc_info=True)
             del self._sessions[key]
+            # Clean up per-key lock to prevent unbounded memory growth.
+            # Lock order here: self._lock (held by caller) → _key_locks_lock (leaf).
+            # _remove_key_lock uses non-blocking acquire to avoid removing a lock
+            # that another thread's start_session is currently holding/waiting on.
+            self._remove_key_lock(key)
 
             # Offload closing to a background thread to prevent blocking _lock
             # for up to 5 seconds during event loop shutdown.

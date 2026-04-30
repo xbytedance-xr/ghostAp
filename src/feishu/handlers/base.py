@@ -44,6 +44,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Module-level set tracking which deprecation warnings have been emitted (once per method name).
+_DEPRECATION_WARNED: set[str] = set()
+
 
 class BaseHandler:
     """Shared utilities available to every handler."""
@@ -173,7 +176,20 @@ class BaseHandler:
         reply_in_thread: Optional[bool] = None,
         max_retries: Optional[int] = None,
     ):
-        """Reply to *message_id*.  Thin wrapper that auto-resolves origin & request."""
+        """Reply to *message_id*.  Thin wrapper that auto-resolves origin & request.
+
+        .. deprecated::
+            Legacy card delivery path. New card flows should use
+            ``CardSession → CardDelivery`` pipeline.
+            Planned removal: v2.0 (2026-Q3).
+        """
+        if "reply_message" not in _DEPRECATION_WARNED:
+            _DEPRECATION_WARNED.add("reply_message")
+            logger.warning(
+                "reply_message 已废弃，请迁移至 CardSession → CardDelivery 管线。"
+                "迁移方式：使用 CardSession.dispatch() 发送卡片事件，"
+                "参考 src/card/programming_adapter.py 中的实现模式。"
+            )
         if origin_message_id is None:
             try:
                 origin_message_id = self.ctx.message_linker.resolve_origin(reply_message_id=message_id)
@@ -200,12 +216,24 @@ class BaseHandler:
     ) -> bool:
         """Update an existing message's content (e.g. updating a card).
 
+        .. deprecated::
+            Legacy card update path. New card flows should use
+            ``CardSession → CardDelivery`` pipeline.
+            Planned removal: v2.0 (2026-Q3).
+
         Args:
             message_id: ID of the message to patch
             content: New content (usually JSON string)
             max_retries: Retry count for API failures
             throttle: If True, delay sending to merge rapid updates (default 500ms window)
         """
+        if "patch_message" not in _DEPRECATION_WARNED:
+            _DEPRECATION_WARNED.add("patch_message")
+            logger.warning(
+                "patch_message 已废弃，请迁移至 CardSession → CardDelivery 管线。"
+                "迁移方式：使用 CardDelivery.deliver() 替代直接 patch，"
+                "参考 src/card/delivery/engine.py 中的实现模式。"
+            )
         if throttle:
             # 1. Update pending content
             self._pending_patches[message_id] = content

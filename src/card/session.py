@@ -68,7 +68,7 @@ class CardSession:
         self._reply_to = reply_to
         self._state: CardState | None = None
         self._closed = False
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     @property
     def session_id(self) -> str:

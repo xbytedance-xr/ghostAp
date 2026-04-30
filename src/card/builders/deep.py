@@ -53,7 +53,7 @@ class DeepBuilder:
                 "running": "blue",
                 "completed": "green",
                 "failed": "red",
-                "cancelled": "red",
+                "cancelled": "orange",
                 "blocked": "grey",
                 "awaiting_approval": "blue",
                 "denied": "red",

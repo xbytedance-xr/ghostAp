@@ -209,7 +209,7 @@ class SpecReporter:
             lines.append("\n---\n**📋 审查建议（将驱动下一轮优化）：**\n")
             for pr in cycle.review_result.reviews:
                 if not pr.passed and pr.suggestions:
-                    lines.append(f"{pr.perspective.emoji} **{pr.perspective.display_name}**:")
+                    lines.append(f"\n{pr.perspective.emoji} **{pr.perspective.display_name}**:\n")
                     for s in pr.suggestions:
                         lines.append(f"- {s}")
             lines.append(f"\n💡 共 {cycle.review_result.total_suggestions} 条建议 → 驱动下一轮 Spec 循环")

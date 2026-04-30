@@ -64,7 +64,7 @@ Feishu WebSocket message
               ...
         → Renderer layer (BaseRenderer → DeepRenderer / LoopRenderer / SpecRenderer)
         → ACPEventRenderer (structured tool/plan/text rendering)
-        → CardBuilder / StreamingCardManager (build response card)
+        → CardBuilder / CardDelivery (build and deliver response card)
         → Feishu API reply + EmojiReaction feedback
 ```
 
@@ -154,6 +154,7 @@ Feishu WebSocket message
 3. **先研究后实现** - 修改已有模块前，先用 Grep/Read 查看该模块现有模式和约定，确保新代码与既有风格一致。
 4. **任务完成必须更新 Memory** - 每次任务完成后，必须更新 `.Memory/{YYYY-MM-DD}.md` 记录执行内容，并同步更新 `.Memory/Abstract.md` 索引。这是任务闭环的一部分，未更新 Memory 等于任务未完成。
 5. **审计缺口分级处理** - Review/Audit 产出的改进建议按 severity 分级：**High**（影响正确性/安全性）立即修复；**Medium**（可观测性/可运维性缺口）和 **Low**（代码风格/文档一致性）录入 `.Memory/Backlog.md`，集中在维护窗口批量处理，不打断主线开发节奏。
+6. **Backlog 清理** - 当 Backlog.md 中的条目已被修复时，**必须立即从 Backlog.md 中删除该条目**。保持 Backlog 只包含未解决的问题，避免已修复项堆积造成混淆。
 
 ## Project Memory System (重要)
 

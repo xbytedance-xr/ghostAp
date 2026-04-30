@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Callable, Iterable, Optional
 
 from .models import WorktreeSelectionItem, WorktreeUnit, WorktreeUnitStatus
+from .reporter import REASON_DISPLAY_MAP
 from ..card.styles import UI_TEXT as _UI_TEXT
 from ..config import get_settings
 from ..utils.callbacks import safe_invoke
@@ -91,11 +92,29 @@ class WorktreeDispatcher:
         unit.error = error_msg
         unit.summary = error_msg
         logger.log(log_level, "[Worktree] 单元失败: unit=%s, error=%s", unit.unit_id, error_msg)
-        if on_unit_update:
-            try:
-                on_unit_update(unit)
-            except Exception:
-                logger.debug("on_unit_update callback failed", exc_info=True)
+        safe_invoke(on_unit_update, unit, label="on_unit_update")
+
+    def _cancel_unit(
+        self,
+        unit: WorktreeUnit,
+        reason: str,
+        *,
+        on_unit_update: Optional[Callable[[WorktreeUnit], None]] = None,
+    ) -> None:
+        """Mark a unit as cancelled (e.g. pool-level timeout).
+
+        Skips units that already reached COMPLETED to avoid overwriting a valid
+        result.  Sets _cancel_event *before* mutating status so that the worker
+        thread can observe the signal via a memory-barrier-backed Event check.
+        """
+        if unit.status == WorktreeUnitStatus.COMPLETED:
+            return  # unit finished before cancel could take effect — keep result
+        unit._cancel_event.set()
+        unit.status = WorktreeUnitStatus.CANCELLED  # relies on GIL for atomic ref-write
+        unit.error = reason  # keeps raw reason code for programmatic use
+        unit.summary = REASON_DISPLAY_MAP.get(reason, reason)  # human-friendly display text
+        logger.warning("[Worktree] 单元取消: unit=%s, reason=%s", unit.unit_id, reason)
+        safe_invoke(on_unit_update, unit, label="on_unit_update")
 
     def execute_units(
         self,
@@ -132,25 +151,20 @@ class WorktreeDispatcher:
             except TimeoutError:
                 # 处理 pool-level timeout
                 unprocessed_futures = set(future_map.keys()) - processed_futures
-                # 使用域语义文案
-                err = _UI_TEXT["timeout_busy_worktree"]
+                # 使用结构化 reason code，显示层 reporter 负责映射为人类友好文案
+                err = "pool_timeout"
                 for fut in unprocessed_futures:
                     unit = future_map[fut]
                     fut.cancel()
-                    logger.warning("[Worktree] unit %s timeout: %s", unit.unit_id, err)
-                    self._fail_unit(unit, err, log_level=logging.WARNING, on_unit_update=on_unit_update)
+                    self._cancel_unit(unit, err, on_unit_update=on_unit_update)
         return planned_units
 
     def _run_single_unit(self, unit: WorktreeUnit, *, timeout: Optional[int] = None, on_unit_update: Optional[Callable[[WorktreeUnit], None]] = None) -> None:
-        # 防止 pool-level timeout 设置的 failed 状态被覆盖
-        if unit.status == WorktreeUnitStatus.FAILED:
+        # 防止 pool-level timeout 设置的 failed/cancelled 状态被覆盖
+        if unit.status in (WorktreeUnitStatus.FAILED, WorktreeUnitStatus.CANCELLED):
             return
         unit.status = WorktreeUnitStatus.RUNNING
-        if on_unit_update:
-            try:
-                on_unit_update(unit)
-            except Exception:
-                logger.debug("on_unit_update callback failed", exc_info=True)
+        safe_invoke(on_unit_update, unit, label="on_unit_update")
         
         # 如果尚未分配具体工具（理论上 plan 阶段已完成分配，这里做安全检查）
         if not all([unit.provider, unit.tool_name]):
@@ -166,9 +180,14 @@ class WorktreeDispatcher:
         try:
             session.start()
             result = session.send_prompt(unit.task_prompt or unit.task_title, timeout=timeout)
-            unit.summary = (getattr(result, "text", "") or "").strip()
-            unit.status = WorktreeUnitStatus.COMPLETED if getattr(result, "stop_reason", "") not in {"failed", "error", "cancelled"} else WorktreeUnitStatus.FAILED
-            unit.error = "" if unit.status == WorktreeUnitStatus.COMPLETED else unit.summary
+            # Respect cancellation set by pool-timeout while this unit was running.
+            # Uses _cancel_event (threading.Event) for memory-barrier guarantee instead
+            # of bare status read which relies on GIL atomicity.
+            if unit._cancel_event.is_set():
+                return
+            unit.summary = (getattr(result, "text", "") or "").strip()  # relies on GIL
+            unit.status = WorktreeUnitStatus.COMPLETED if getattr(result, "stop_reason", "") not in {"failed", "error", "cancelled"} else WorktreeUnitStatus.FAILED  # relies on GIL
+            unit.error = "" if unit.status == WorktreeUnitStatus.COMPLETED else unit.summary  # relies on GIL
             unit.has_changes = _detect_worktree_changes(unit.worktree_path)
             safe_invoke(on_unit_update, unit, label="on_unit_update")
         except TimeoutError as te:

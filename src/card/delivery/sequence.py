@@ -16,7 +16,7 @@ class SequenceManager:
     def __init__(self) -> None:
         self._sequences: dict[str, int] = {}
         self._floors: dict[str, int] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     def next_sequence(self, card_id: str) -> int:
         """Get the next sequence number for a card (atomic increment)."""

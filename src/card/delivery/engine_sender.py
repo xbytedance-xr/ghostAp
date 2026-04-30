@@ -14,9 +14,17 @@ from src.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+# Module-level set to emit deprecation warning only once.
+_DEPRECATION_WARNED: set[str] = set()
+
 
 class EngineCardSender:
     """Engine card sender that uses FeishuCardAPIClient directly.
+
+    .. deprecated::
+        Legacy delivery path. New code should use ``CardSession → CardDelivery``
+        pipeline which provides unified binding management, sequence tracking,
+        and element-level streaming.  Planned removal: v2.0 (2026-Q3).
 
     Provides throttle control (check_throttle, update_stream_state,
     check_plan_throttle, update_plan_state, send) and talks to Feishu API
@@ -40,6 +48,13 @@ class EngineCardSender:
         initial_message_id: str | None = None,
         payload_guard: Callable[[str], str] | None = None,
     ) -> None:
+        if "EngineCardSender" not in _DEPRECATION_WARNED:
+            _DEPRECATION_WARNED.add("EngineCardSender")
+            logger.warning(
+                "EngineCardSender 已废弃，请迁移至 CardSession → CardDelivery 管线。"
+                "迁移方式：使用 CardSession + CardDelivery.deliver() 替代，"
+                "参考 src/card/programming_adapter.py 中的实现模式。"
+            )
         self._client = client
         self.chat_id = chat_id
         self.reply_to_message_id = reply_to_message_id
@@ -174,5 +189,5 @@ class EngineCardSender:
             )
             return message_id
         except Exception as e:
-            logger.error("EngineCardSender: Failed to create card: %s", e)
+            logger.error("EngineCardSender: Failed to create card: %s", e, exc_info=True)
             return None

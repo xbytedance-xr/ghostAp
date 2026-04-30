@@ -291,3 +291,40 @@ class TestNonStreamingFallback:
             or "执行完成"
         )
         assert final_response == "response with spaces"
+
+
+class TestScheduleFlushLockAssertion:
+    """_schedule_flush must raise RuntimeError if called without holding _flush_lock."""
+
+    def test_schedule_flush_without_lock_raises(self):
+        """Calling _schedule_flush without holding the lock raises RuntimeError."""
+        pcs, _ = _make_programming_session()
+        with pytest.raises(RuntimeError, match="_schedule_flush must be called under _flush_lock"):
+            pcs._schedule_flush()
+
+    def test_schedule_flush_with_lock_starts_timer(self):
+        """Calling _schedule_flush while holding the lock starts a timer."""
+        pcs, _ = _make_programming_session()
+        with pcs._flush_lock:
+            pcs._flush_lock_holder.held = True
+            try:
+                pcs._schedule_flush()
+                assert pcs._flush_timer is not None
+                assert pcs._flush_timer.is_alive()
+            finally:
+                pcs._flush_lock_holder.held = False
+                pcs._flush_timer.cancel()
+
+    def test_schedule_flush_does_not_create_duplicate_timer(self):
+        """Second _schedule_flush call with existing timer does nothing."""
+        pcs, _ = _make_programming_session()
+        with pcs._flush_lock:
+            pcs._flush_lock_holder.held = True
+            try:
+                pcs._schedule_flush()
+                first_timer = pcs._flush_timer
+                pcs._schedule_flush()
+                assert pcs._flush_timer is first_timer  # same timer, not replaced
+            finally:
+                pcs._flush_lock_holder.held = False
+                pcs._flush_timer.cancel()

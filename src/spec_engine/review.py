@@ -114,8 +114,12 @@ def conduct_review(
         skip_retry_event = pipeline_cfg.skip_retry_event
 
     # Guard: settings and circuit are mandatory.
-    assert settings is not None, "conduct_review requires settings"
-    assert circuit is not None, "conduct_review requires circuit"
+    if settings is None:
+        raise RuntimeError("conduct_review requires 'settings' to be non-None")
+    if circuit is None:
+        raise RuntimeError("conduct_review requires 'circuit' to be non-None")
+    if send_prompt_with_retry_fn is None:
+        raise RuntimeError("conduct_review requires 'send_prompt_with_retry_fn' to be non-None")
     from .prompts import build_review_prompt
 
     enabled = settings.spec_review_failure_circuit_enabled

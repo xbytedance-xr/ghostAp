@@ -32,7 +32,7 @@ class BindingStore:
 
     def __init__(self) -> None:
         self._bindings: dict[str, DeliveryBinding] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     def get(self, session_id: str) -> DeliveryBinding | None:
         """Get binding for a session."""

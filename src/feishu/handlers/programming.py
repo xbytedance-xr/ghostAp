@@ -724,7 +724,7 @@ class ProgrammingModeHandler(BaseHandler):
         try:
             prog_session.start()
         except Exception as e:
-            logger.warning("创建流式卡片失败: %s", e)
+            logger.warning("创建流式卡片失败: %s", str(e))
             # Fallback to non-streaming text mode
             self._handle_response_non_streaming(
                 message_id, chat_id, text, session, project, global_working_dir,
@@ -782,7 +782,7 @@ class ProgrammingModeHandler(BaseHandler):
             try:
                 prog_session.on_event(event)
             except Exception as e:
-                logger.debug("card session event处理失败: %s", e)
+                logger.debug("card session event处理失败: %s", str(e))
 
         final_response = ""
         try:

@@ -242,7 +242,21 @@ class SyncTTADKCLISession:
         except (subprocess.SubprocessError, OSError, TimeoutError) as e:
             return PromptResult(stop_reason="error", text=f"❌ TTADK 执行异常: {get_error_detail(e)}")
         finally:
+            proc = self._proc
             self._proc = None
+            # Ensure subprocess is terminated even on unexpected exceptions
+            # (e.g. KeyboardInterrupt, SystemExit) to prevent zombie processes
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except Exception:
+                    logger.debug("Failed to terminate TTADK subprocess", exc_info=True)
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=3)
+                    except Exception:
+                        logger.debug("Failed to kill TTADK subprocess", exc_info=True)
 
     def send_prompt_with_retry(
         self,

@@ -309,10 +309,10 @@ class WorktreeManager:
             state.last_error = "没有可重试的目标（上次执行目标为空）"
             return self._reporter.refresh_state(state)
 
-        # Guard: must have failed units to retry
-        failed_units = [u for u in state.units if u.status == WorktreeUnitStatus.FAILED]
+        # Guard: must have failed/cancelled units to retry
+        failed_units = [u for u in state.units if u.status in (WorktreeUnitStatus.FAILED, WorktreeUnitStatus.CANCELLED)]
         if not failed_units:
-            state.last_error = "当前没有失败的工作单元需要重试"
+            state.last_error = "当前没有需要重试的工作单元"
             return self._reporter.refresh_state(state)
 
         # Guard: no units should be running (concurrent safety)
@@ -322,6 +322,7 @@ class WorktreeManager:
 
         # Reset failed units' state fields
         for unit in failed_units:
+            unit._cancel_event.clear()  # Must clear before retry — otherwise _run_single_unit skips immediately
             unit.status = WorktreeUnitStatus.PENDING
             unit.error = ""
             unit.summary = ""

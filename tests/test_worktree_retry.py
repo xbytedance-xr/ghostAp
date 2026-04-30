@@ -157,7 +157,7 @@ def test_retry_returns_error_when_no_failed_units(tmp_path):
 
     state = manager.retry_failed_units(project)
 
-    assert "没有失败" in state.last_error
+    assert "没有需要重试" in state.last_error
 
 
 def test_retry_returns_error_when_running_units_exist(tmp_path):
@@ -349,3 +349,29 @@ def test_cleanup_card_failed_summary_without_task_title():
     assert "**Claude** — 超时" in card_json, "Empty task_title should degrade to name — error"
     assert "**Coco** — 崩溃" in card_json, "Missing task_title should degrade to name — error"
     assert " · " not in card_json, "No ' · ' separator should appear when all task_titles are empty"
+
+
+# ---------------------------------------------------------------------------
+# Cancel event cleared on retry
+# ---------------------------------------------------------------------------
+
+
+def test_retry_clears_cancel_event(tmp_path):
+    """Retry must clear _cancel_event so that retried units can execute normally."""
+    project, manager = _make_project_with_units(tmp_path, ["cancelled", "completed"])
+
+    # Simulate the cancel event being set (as _cancel_unit would do)
+    cancelled_unit = project.worktree_state.units[0]
+    cancelled_unit._cancel_event.set()
+    cancelled_unit.error = "pool_timeout"
+    cancelled_unit.summary = "操作已超时"
+
+    assert cancelled_unit._cancel_event.is_set()
+
+    state = manager.retry_failed_units(project)
+
+    # After retry, cancel_event should be cleared and unit should complete
+    assert not cancelled_unit._cancel_event.is_set()
+    assert state.units[0].status == "completed"
+    # Completed unit should remain unchanged
+    assert state.units[1].status == "completed"

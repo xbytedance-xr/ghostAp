@@ -5,8 +5,16 @@ import logging
 from .models import WorktreeInfo, WorktreeRuntimeState, WorktreeUnit, WorktreeUnitStatus
 
 from ..card.styles import STATUS_DISPLAY_MAP
+from ..utils.ui_text import SPEC_UI_TEXT
 
 logger = logging.getLogger(__name__)
+
+# Structured reason code → user-facing display text mapping.
+# _cancel_unit stores reason codes (e.g. "pool_timeout") in unit.error;
+# the display layer maps them to human-friendly text here.
+REASON_DISPLAY_MAP: dict[str, str] = {
+    "pool_timeout": SPEC_UI_TEXT["timeout_busy_worktree"],
+}
 
 
 class WorktreeReporter:
@@ -48,7 +56,7 @@ class WorktreeReporter:
     @staticmethod
     def build_unit_summary_lines(units: list[WorktreeUnit]) -> list[str]:
         lines: list[str] = []
-        status_icon = {"completed": "✅", "failed": "❌", "running": "🔄", "planned": "📋", "ready": "⏳"}
+        status_icon = {"completed": "✅", "failed": "❌", "cancelled": "⏹", "running": "🔄", "planned": "📋", "ready": "⏳"}
         for unit in units:
             status = unit.status or WorktreeUnitStatus.PENDING
             icon = status_icon.get(status, "⏳")
@@ -57,8 +65,12 @@ class WorktreeReporter:
 
             display_name = WorktreeReporter._get_unit_display_name(unit)
 
-            if status == WorktreeUnitStatus.FAILED:
-                summary = f"🔍 失败原因：{unit.error or '未知执行异常'}"
+            if status == WorktreeUnitStatus.CANCELLED:
+                reason_text = REASON_DISPLAY_MAP.get(unit.error, unit.error) if unit.error else ""
+                summary = f"⏹ 取消原因：{reason_text or '执行已取消，可通过 /wt retry 重试'}"
+            elif status == WorktreeUnitStatus.FAILED:
+                reason_text = REASON_DISPLAY_MAP.get(unit.error, unit.error) if unit.error else ""
+                summary = f"🔍 失败原因：{reason_text or '执行失败，可通过 /wt retry 重试'}"
             else:
                 summary = unit.summary or "暂无摘要"
             lines.append(f"- {icon} `{display_name}` · `{STATUS_DISPLAY_MAP.get(status, status)}` · {task_text} · {change_text} · {summary}")

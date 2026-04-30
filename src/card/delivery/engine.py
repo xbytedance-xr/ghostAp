@@ -92,7 +92,17 @@ class CardDelivery:
         self._client = client
         self._bindings = BindingStore()
         self._sequences = SequenceManager()
-        self._lock = threading.Lock()
+        # Global lock only for _session_locks dict registration (O(1) operations).
+        # Per-session RLock protects individual session I/O sequences.
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+        self._session_locks: dict[str, threading.RLock] = {}
+
+    def _get_session_lock(self, session_id: str) -> threading.RLock:
+        """Get or create a per-session lock (short global lock hold)."""
+        with self._lock:
+            if session_id not in self._session_locks:
+                self._session_locks[session_id] = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
+            return self._session_locks[session_id]
 
     def deliver(
         self,
@@ -110,6 +120,19 @@ class CardDelivery:
         - Only text changed → element_content
         - No change → skip
         """
+        session_lock = self._get_session_lock(session_id)
+        with session_lock:
+            return self._deliver_unlocked(session_id, chat_id, rendered, reply_to=reply_to)
+
+    def _deliver_unlocked(
+        self,
+        session_id: str,
+        chat_id: str,
+        rendered: list[RenderedCard],
+        *,
+        reply_to: str | None = None,
+    ) -> list[MutationOutcome]:
+        """Internal deliver implementation (caller holds per-session lock)."""
         binding = self._bindings.get(session_id)
         outcomes: list[MutationOutcome] = []
 
@@ -153,12 +176,25 @@ class CardDelivery:
         return outcomes
 
     def close(self, session_id: str) -> None:
-        """Finalize a session: remove bindings and sequences."""
-        binding = self._bindings.remove(session_id)
-        if binding is not None:
-            for page in binding.pages.values():
-                if page.card_id:
-                    self._sequences.reset(page.card_id)
+        """Finalize a session: remove bindings, sequences, and session lock.
+
+        Lock order: session_lock held only for data cleanup, then released
+        before acquiring self._lock to remove the lock entry.  This ensures
+        the global lock ordering is always self._lock → session_lock (same
+        direction as _get_session_lock + deliver path).
+        """
+        session_lock = self._get_session_lock(session_id)
+        with session_lock:
+            binding = self._bindings.remove(session_id)
+            if binding is not None:
+                for page in binding.pages.values():
+                    if page.card_id:
+                        self._sequences.reset(page.card_id)
+        # After releasing session_lock, acquire global lock to pop the entry.
+        # No thread can re-create the session_lock entry for this session_id
+        # because bindings are already removed above (deliver would be a no-op).
+        with self._lock:
+            self._session_locks.pop(session_id, None)
 
     def get_binding(self, session_id: str):
         """Get the current binding for inspection/testing."""
@@ -213,7 +249,7 @@ class CardDelivery:
             )
             return MutationOutcome(kind="applied", message=f"created:{message_id}")
         except Exception as e:
-            logger.warning("Card create failed: %s", e)
+            logger.warning("Card create failed: %s", str(e))
             return MutationOutcome(kind="reconcile", message=str(e))
 
     def _update_page(
@@ -233,10 +269,10 @@ class CardDelivery:
             logger.debug("Sequence conflict on %s, raised floor to %d", page.card_id, e.next_floor)
             return MutationOutcome(kind="reconcile", message="sequence_conflict")
         except TransportError as e:
-            logger.warning("Transport error updating %s: %s", page.card_id, e)
+            logger.warning("Transport error updating %s: %s", page.card_id, str(e))
             return MutationOutcome(kind="reconcile", message=str(e))
         except Exception as e:
-            logger.warning("Card update failed: %s", e)
+            logger.warning("Card update failed: %s", str(e))
             return MutationOutcome(kind="reconcile", message=str(e))
 
     def _stream_element(
@@ -265,7 +301,7 @@ class CardDelivery:
             logger.debug("Element sequence conflict on %s, falling back to full update", page.card_id)
             return self._update_page(session_id, page, card)
         except Exception as e:
-            logger.debug("Element update failed (%s), falling back to full update", e)
+            logger.debug("Element update failed (%s), falling back to full update", str(e))
             return self._update_page(session_id, page, card)
 
     def _finalize_page(self, session_id: str, page: PageBinding) -> None:
