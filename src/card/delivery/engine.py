@@ -269,7 +269,7 @@ class CardDelivery:
             return self._update_page(session_id, page, card)
 
     def _finalize_page(self, session_id: str, page: PageBinding) -> None:
-        """Finalize a stale page (optional: send final update disabling streaming)."""
-        # Currently just clean up sequence
+        """Finalize a stale page: reset sequence and remove from binding."""
         if page.card_id:
             self._sequences.reset(page.card_id)
+        self._bindings.remove_page(session_id, page.page_index)

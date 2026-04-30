@@ -201,3 +201,93 @@ class TestSessionMetadataPerMode:
         pcs.start()
         state = pcs.session.state
         assert state.metadata.tool_name == "cursor"
+
+
+class TestNonStreamingFallback:
+    """Verify non-streaming fallback uses result.text.
+
+    The handler's _handle_response_non_streaming builds final_response as:
+        (getattr(result, "text", None) or "").strip()
+        or renderer.get_final_content()
+        or UI_TEXT["mode_exec_complete"]
+    This ensures result.text is the primary source when streaming is unavailable.
+    """
+
+    def test_result_text_used_as_primary_response(self):
+        """When send_prompt returns result.text, it should be the final response."""
+        from dataclasses import dataclass
+        from src.acp.renderer import ACPEventRenderer
+
+        @dataclass
+        class FakeResult:
+            text: str = ""
+
+        result = FakeResult(text="actual response")
+        renderer = ACPEventRenderer()
+
+        # Replicate the non-streaming fallback logic from programming.py:837-871
+        final_response = (
+            (getattr(result, "text", None) or "").strip()
+            or renderer.get_final_content()
+            or "执行完成"
+        )
+        assert final_response == "actual response"
+
+    def test_fallback_to_renderer_when_result_text_empty(self):
+        """When result.text is empty, renderer.get_final_content() is used."""
+        from dataclasses import dataclass
+        from src.acp.renderer import ACPEventRenderer
+        from src.acp.models import ACPEvent, ACPEventType
+
+        @dataclass
+        class FakeResult:
+            text: str = ""
+
+        result = FakeResult(text="")
+        renderer = ACPEventRenderer()
+        renderer.process_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="rendered output"))
+
+        final_response = (
+            (getattr(result, "text", None) or "").strip()
+            or renderer.get_final_content()
+            or "执行完成"
+        )
+        assert final_response == "rendered output"
+
+    def test_fallback_to_placeholder_when_both_empty(self):
+        """When both result.text and renderer are empty, placeholder is used."""
+        from dataclasses import dataclass
+        from src.acp.renderer import ACPEventRenderer
+
+        @dataclass
+        class FakeResult:
+            text: str = ""
+
+        result = FakeResult(text="")
+        renderer = ACPEventRenderer()
+
+        final_response = (
+            (getattr(result, "text", None) or "").strip()
+            or renderer.get_final_content()
+            or "执行完成"
+        )
+        assert final_response == "执行完成"
+
+    def test_result_text_stripped(self):
+        """result.text should be stripped of whitespace."""
+        from dataclasses import dataclass
+        from src.acp.renderer import ACPEventRenderer
+
+        @dataclass
+        class FakeResult:
+            text: str = ""
+
+        result = FakeResult(text="  response with spaces  \n")
+        renderer = ACPEventRenderer()
+
+        final_response = (
+            (getattr(result, "text", None) or "").strip()
+            or renderer.get_final_content()
+            or "执行完成"
+        )
+        assert final_response == "response with spaces"

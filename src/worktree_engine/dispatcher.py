@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Callable, Iterable, Optional
 from .models import WorktreeSelectionItem, WorktreeUnit, WorktreeUnitStatus
 from ..card.styles import UI_TEXT as _UI_TEXT
 from ..config import get_settings
+from ..utils.callbacks import safe_invoke
 from ..utils.errors import classify_timeout, get_error_detail, sanitize_futures_msg
 
 logger = logging.getLogger(__name__)
@@ -169,11 +170,7 @@ class WorktreeDispatcher:
             unit.status = WorktreeUnitStatus.COMPLETED if getattr(result, "stop_reason", "") not in {"failed", "error", "cancelled"} else WorktreeUnitStatus.FAILED
             unit.error = "" if unit.status == WorktreeUnitStatus.COMPLETED else unit.summary
             unit.has_changes = _detect_worktree_changes(unit.worktree_path)
-            if on_unit_update:
-                try:
-                    on_unit_update(unit)
-                except Exception:
-                    logger.debug("on_unit_update callback failed", exc_info=True)
+            safe_invoke(on_unit_update, unit, label="on_unit_update")
         except TimeoutError as te:
             self._fail_unit(unit, f"执行超时: {get_error_detail(te)}", log_level=logging.WARNING, on_unit_update=on_unit_update)
         except Exception as exc:

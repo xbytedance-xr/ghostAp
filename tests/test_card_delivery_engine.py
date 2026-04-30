@@ -218,6 +218,65 @@ class TestMultiPage:
         assert len(client.creates) == 2  # 1 initial + 1 new page
 
 
+class TestPageShrink:
+    """Page shrink: stale pages cleaned up when page count decreases."""
+
+    def test_shrink_removes_stale_page_from_binding(self):
+        client = MockCardClient()
+        delivery = CardDelivery(client)
+
+        # Deliver 2 pages
+        r2 = [
+            RenderedCard(card_json={"page": 0}, structure_signature="sig_1", page_index=0, total_pages=2),
+            RenderedCard(card_json={"page": 1}, structure_signature="sig_1", page_index=1, total_pages=2),
+        ]
+        delivery.deliver("sess_1", "chat_abc", r2)
+
+        binding = delivery.get_binding("sess_1")
+        assert binding is not None
+        assert 0 in binding.pages
+        assert 1 in binding.pages
+        assert len(binding.pages) == 2
+
+        # Shrink to 1 page (different signature to trigger update)
+        r1 = [
+            RenderedCard(card_json={"page": 0}, structure_signature="sig_2", page_index=0, total_pages=1),
+        ]
+        delivery.deliver("sess_1", "chat_abc", r1)
+
+        binding = delivery.get_binding("sess_1")
+        assert binding is not None
+        assert 0 in binding.pages
+        assert 1 not in binding.pages, "Stale page 1 should be removed after shrink"
+        assert len(binding.pages) == 1
+
+    def test_shrink_resets_sequence_for_stale_page(self):
+        client = MockCardClient()
+        delivery = CardDelivery(client)
+
+        # Deliver 2 pages
+        r2 = [
+            RenderedCard(card_json={"page": 0}, structure_signature="sig_1", page_index=0, total_pages=2),
+            RenderedCard(card_json={"page": 1}, structure_signature="sig_1", page_index=1, total_pages=2),
+        ]
+        delivery.deliver("sess_1", "chat_abc", r2)
+
+        # The stale page card_id is "card_2" (second create)
+        stale_card_id = "card_2"
+        # Bump sequence so we can verify reset
+        delivery._sequences.next_sequence(stale_card_id)
+        assert delivery._sequences.current(stale_card_id) > 0
+
+        # Shrink to 1 page
+        r1 = [
+            RenderedCard(card_json={"page": 0}, structure_signature="sig_2", page_index=0, total_pages=1),
+        ]
+        delivery.deliver("sess_1", "chat_abc", r1)
+
+        # Sequence for stale card should be reset
+        assert delivery._sequences.current(stale_card_id) == 0
+
+
 class TestClose:
     """Close session."""
 

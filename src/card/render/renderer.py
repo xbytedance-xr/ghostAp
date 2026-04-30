@@ -109,6 +109,10 @@ def compute_structure_signature(state: CardState) -> str:
         parts.append(f"{block.kind}:{block.block_id}:{block.status}")
         if block.kind == "tool_call":
             parts.append(f"tn:{block.tool_name}")
+        if block.kind == "plan":
+            parts.append(f"pc:{block.content}")
+        elif block.kind == "reasoning":
+            parts.append(f"rc:{block.content}")
     parts.append(f"terminal:{state.terminal}")
     parts.append(f"header:{state.header.title}:{state.header.template}")
     if state.header.subtitle is not None:

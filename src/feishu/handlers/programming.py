@@ -710,7 +710,7 @@ class ProgrammingModeHandler(BaseHandler):
         )
 
         # Create card delivery + session
-        api_client = FeishuCardAPIClient(self.ctx.client)
+        api_client = FeishuCardAPIClient(self.ctx.api_client_factory())
         delivery = CardDelivery(api_client)
         card_session = CardSession(
             chat_id=chat_id,
@@ -865,7 +865,11 @@ class ProgrammingModeHandler(BaseHandler):
         try:
             renderer = ACPEventRenderer()
             result = session.send_prompt(text, on_event=None, timeout=timeout)
-            final_response = renderer.get_final_content() or UI_TEXT["mode_exec_complete"]
+            final_response = (
+                (getattr(result, "text", None) or "").strip()
+                or renderer.get_final_content()
+                or UI_TEXT["mode_exec_complete"]
+            )
             response_with_dir = f"{final_response}\n\n---\n{UI_TEXT['mode_working_dir_label'].format(path=global_working_dir)}"
             self.reply_message(message_id, response_with_dir)
         except TimeoutError as e:

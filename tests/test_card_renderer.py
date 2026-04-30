@@ -323,3 +323,72 @@ class TestPagination:
         cards = render_card(state, budget)
         for card in cards:
             assert card.card_json["header"]["title"]["content"] == "Multi-page"
+
+
+class TestApprovalRendering:
+    """Approval state rendering: header color, buttons, footer text."""
+
+    def _make_approval_state(self, tool_name: str = "bash") -> CardState:
+        """Build a state with APPROVAL_REQUESTED applied via the reducer."""
+        from src.card.events import CardEvent, CardEventType
+        from src.card.state.reducer import reduce_card_state
+
+        meta = CardMetadata(
+            project_name="Ghost", mode_name="Deep Agent", mode_emoji="🧠",
+            tool_name="coco", model_name="gpt-4o", engine_type="deep",
+        )
+        s = reduce_card_state(None, CardEvent.started(), metadata=meta)
+        s = reduce_card_state(s, CardEvent(
+            type=CardEventType.APPROVAL_REQUESTED,
+            payload={"tool_name": tool_name, "description": "rm -rf /tmp/test"},
+        ))
+        return s
+
+    def test_header_template_is_indigo(self):
+        state = self._make_approval_state()
+        cards = render_card(state)
+        assert len(cards) >= 1
+        assert cards[0].card_json["header"]["template"] == "indigo"
+
+    def test_buttons_approve_reject_present(self):
+        state = self._make_approval_state()
+        cards = render_card(state)
+        body = cards[0].card_json["body"]["elements"]
+        # Buttons render as column_set (2 buttons)
+        column_sets = [el for el in body if el.get("tag") == "column_set"]
+        assert len(column_sets) >= 1, "Should have a column_set for approve/reject buttons"
+        # Extract button texts from columns
+        buttons = []
+        for cs in column_sets:
+            for col in cs.get("columns", []):
+                for el in col.get("elements", []):
+                    if el.get("tag") == "button":
+                        buttons.append(el)
+        assert len(buttons) == 2
+        button_texts = [b["text"]["content"] for b in buttons]
+        assert "✅ 批准" in button_texts
+        assert "❌ 拒绝" in button_texts
+        # Check button types
+        button_types = {b["text"]["content"]: b["type"] for b in buttons}
+        assert button_types["✅ 批准"] == "primary"
+        assert button_types["❌ 拒绝"] == "danger"
+
+    def test_footer_status_text_contains_tool_name(self):
+        state = self._make_approval_state(tool_name="bash")
+        cards = render_card(state)
+        body = cards[0].card_json["body"]["elements"]
+        # Footer is: hr + markdown(status_text) [+ optional progress]
+        hr_elements = [el for el in body if el.get("tag") == "hr"]
+        assert len(hr_elements) >= 1, "Footer should have hr separator"
+        # Find footer text (markdown element after hr)
+        footer_texts = [
+            el["content"] for el in body
+            if el.get("tag") == "markdown" and el.get("text_size") == "notation"
+        ]
+        assert any("等待审批" in t and "bash" in t for t in footer_texts), \
+            f"Footer should mention '等待审批' and 'bash', got: {footer_texts}"
+
+    def test_no_streaming_mode_during_approval(self):
+        state = self._make_approval_state()
+        cards = render_card(state)
+        assert "streaming_mode" not in cards[0].card_json["config"]

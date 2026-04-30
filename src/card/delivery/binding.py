@@ -88,6 +88,14 @@ class BindingStore:
             if page is not None:
                 page.signature = signature
 
+    def remove_page(self, session_id: str, page_index: int) -> PageBinding | None:
+        """Remove a page from the binding."""
+        with self._lock:
+            binding = self._bindings.get(session_id)
+            if binding is None:
+                return None
+            return binding.pages.pop(page_index, None)
+
     def remove(self, session_id: str) -> DeliveryBinding | None:
         """Remove and return the binding for a session."""
         with self._lock:

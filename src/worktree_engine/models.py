@@ -102,6 +102,7 @@ class WorktreeUnitStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class WorktreeJourneyStatus(str, Enum):
@@ -252,9 +253,27 @@ class WorktreeUnit:
     summary: str = ""
     error: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    _cancelled: bool = field(default=False, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            "unit_id": self.unit_id,
+            "selection_key": self.selection_key,
+            "provider": self.provider,
+            "tool_name": self.tool_name,
+            "display_name": self.display_name,
+            "model_name": self.model_name,
+            "branch_name": self.branch_name,
+            "worktree_path": self.worktree_path,
+            "task_title": self.task_title,
+            "task_prompt": self.task_prompt,
+            "status": self.status.value if isinstance(self.status, WorktreeUnitStatus) else str(self.status),
+            "has_changes": self.has_changes,
+            "summary": self.summary,
+            "error": self.error,
+            "metadata": dict(self.metadata),
+            "cancelled": self._cancelled,
+        }
 
     @classmethod
     def from_dict(cls, data: Optional[dict[str, Any]]) -> Optional["WorktreeUnit"]:
@@ -263,7 +282,7 @@ class WorktreeUnit:
         unit_id = _clean_str(data.get("unit_id"))
         if not unit_id:
             return None
-        return cls(
+        unit = cls(
             unit_id=unit_id,
             selection_key=_clean_str(data.get("selection_key")),
             provider=_clean_str(data.get("provider")),
@@ -280,6 +299,8 @@ class WorktreeUnit:
             error=_clean_str(data.get("error")),
             metadata=dict(data.get("metadata") or {}),
         )
+        unit._cancelled = bool(data.get("cancelled", False))
+        return unit
 
 
 @dataclass

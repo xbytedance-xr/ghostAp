@@ -31,3 +31,6 @@
 | B-013 | 2026-04-23 | `worktree_engine/models.py` — 新增 unit 级 `_cancelled` 字段与 `to_dict()` 重写，支持 worktree 执行中断场景的细粒度状态区分（cancelled vs failed vs stopped） | Low | Scope Creep | Todo | — |
 | B-014 | 2026-04-23 | 超时/取消回调函数集封装 — 将 dispatcher.py 中分散的 timeout/cancelled/safe_callback 代码封装为通用工具集，简化未来类似逻辑编写 | Low | Scope Creep | Todo | — |
 | B-015 | 2026-04-23 | 新增独立测试文件 `tests/test_worktree_dispatcher_timeout.py` — 5 个测试覆盖 pool timeout / inner timeout / callback / fast path | Low | Scope Creep | Done | — |
+| B-016 | 2026-04-30 | 卡片系统投递链路未收口：`CardSession -> CardDelivery`、`EngineCardSender`、`BaseHandler.patch_message/reply_message` 三套路径并存，语义和回归面分裂 | Medium | Card Audit | Todo | — |
+| B-017 | 2026-04-30 | 新卡片 reducer 尚未接入 `APPROVAL_REQUESTED` / `APPROVAL_RESOLVED` 的真实状态语义，审批事件当前被当作无变化处理 | Medium | Card Audit | Todo | — |
+| B-018 | 2026-04-30 | 卡片测试缺口：未覆盖分页 shrink、编程模式 non-streaming fallback 最终文本保留、approval 事件渲染语义 | Low | Card Audit | Todo | — |

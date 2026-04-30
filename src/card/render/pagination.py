@@ -47,6 +47,13 @@ def paginate_atoms(
                 # First part goes to current page
                 first_part = split_result[0]
                 pages[-1].append(first_part)
+                first_size = (
+                    first_part.byte_size
+                    if first_part.byte_size > 0
+                    else estimate_atom_size(first_part)
+                )
+                current_bytes += first_size
+                current_nodes += first_part.node_count
 
                 # Remaining parts go to new pages
                 for part in split_result[1:]:

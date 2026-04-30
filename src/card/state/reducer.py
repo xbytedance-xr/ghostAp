@@ -11,6 +11,7 @@ from .reducers.tool import reduce_tool
 from .reducers.reasoning import reduce_reasoning
 from .reducers.plan import reduce_plan
 from .reducers.lifecycle import reduce_lifecycle, _build_header
+from .reducers.approval import reduce_approval
 
 
 # Event type → sub-reducer routing
@@ -19,6 +20,7 @@ _TOOL_EVENTS = {CardEventType.TOOL_STARTED, CardEventType.TOOL_DELTA, CardEventT
 _REASONING_EVENTS = {CardEventType.REASONING_STARTED, CardEventType.REASONING_DELTA, CardEventType.REASONING_DONE}
 _LIFECYCLE_EVENTS = {CardEventType.STARTED, CardEventType.COMPLETED, CardEventType.FAILED,
                      CardEventType.CANCELLED, CardEventType.PAUSED, CardEventType.RESUMED}
+_APPROVAL_EVENTS = {CardEventType.APPROVAL_REQUESTED, CardEventType.APPROVAL_RESOLVED}
 
 
 def reduce_card_state(state: CardState | None, event: CardEvent, metadata: CardMetadata | None = None) -> CardState:
@@ -44,6 +46,8 @@ def reduce_card_state(state: CardState | None, event: CardEvent, metadata: CardM
         new_state = reduce_plan(state, event)
     elif event.type in _LIFECYCLE_EVENTS:
         new_state = reduce_lifecycle(state, event)
+    elif event.type in _APPROVAL_EVENTS:
+        new_state = reduce_approval(state, event)
     elif event.type == CardEventType.TOOL_MODEL_CHANGED:
         new_meta = replace(state.metadata,
                            tool_name=event.payload.get("tool_name") or state.metadata.tool_name,

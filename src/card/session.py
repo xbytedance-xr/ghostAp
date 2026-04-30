@@ -95,6 +95,9 @@ class CardSession:
             return
 
         with self._lock:
+            # Double-check after acquiring lock (another thread may have closed)
+            if self._closed:
+                return
             # 1. Reduce: old state + event → new state
             self._state = reduce_card_state(self._state, event, self._metadata)
 

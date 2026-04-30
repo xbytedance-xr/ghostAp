@@ -101,7 +101,7 @@ class TestCardSessionDispatch:
         # This should be ignored
         session.dispatch(CardEvent(
             type=CardEventType.TEXT_DELTA,
-            payload={"content": "ghost text"}
+            payload={"text": "ghost text", "block_id": "_active_text"}
         ))
         # State shouldn't change after close
         assert session.state.terminal == "completed"
@@ -128,7 +128,7 @@ class TestCardSessionLifecycle:
 
         session.dispatch(CardEvent(type=CardEventType.STARTED))
         session.dispatch(CardEvent(type=CardEventType.TEXT_STARTED))
-        session.dispatch(CardEvent(type=CardEventType.TEXT_DELTA, payload={"content": "Analyzing..."}))
+        session.dispatch(CardEvent(type=CardEventType.TEXT_DELTA, payload={"text": "Analyzing...", "block_id": "_active_text"}))
         session.dispatch(CardEvent(type=CardEventType.TEXT_DONE))
         session.dispatch(CardEvent(
             type=CardEventType.TOOL_STARTED,
@@ -139,7 +139,7 @@ class TestCardSessionLifecycle:
             payload={"block_id": "tc1", "tool_output": "result"}
         ))
         session.dispatch(CardEvent(type=CardEventType.TEXT_STARTED))
-        session.dispatch(CardEvent(type=CardEventType.TEXT_DELTA, payload={"content": "Done!"}))
+        session.dispatch(CardEvent(type=CardEventType.TEXT_DELTA, payload={"text": "Done!", "block_id": "_active_text"}))
         session.dispatch(CardEvent(type=CardEventType.TEXT_DONE))
         session.dispatch(CardEvent(type=CardEventType.COMPLETED))
 
@@ -147,6 +147,10 @@ class TestCardSessionLifecycle:
         state = session.state
         assert state.terminal == "completed"
         assert len(state.blocks) >= 3  # At least: text + tool + text
+        # Verify text was actually written into state
+        text_blocks = [b for b in state.blocks if b.kind == "text"]
+        assert any("Analyzing" in b.content for b in text_blocks)
+        assert any("Done" in b.content for b in text_blocks)
 
     def test_close_idempotent(self):
         session, _ = self._make_session()
@@ -167,7 +171,7 @@ class TestCardSessionLifecycle:
                 for i in range(50):
                     session.dispatch(CardEvent(
                         type=CardEventType.TEXT_DELTA,
-                        payload={"content": f"chunk_{i} "}
+                        payload={"text": f"chunk_{i} ", "block_id": "_active_text"}
                     ))
             except Exception as e:
                 errors.append(e)
