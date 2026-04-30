@@ -233,7 +233,7 @@ class MessageDispatcher:
     _PROJECT_INTENTS: set = {
         IntentType.CREATE_PROJECT, IntentType.SWITCH_PROJECT,
         IntentType.LIST_PROJECTS, IntentType.CLOSE_PROJECT,
-        IntentType.PROJECT_STATUS,
+        IntentType.PROJECT_STATUS, IntentType.NEW_CHAT_PROJECT,
     }
 
     def execute_single_task(
@@ -394,6 +394,8 @@ class MessageDispatcher:
                 self.client._reply_message(message_id, "❌ 请指定要关闭的项目名称")
         elif intent == IntentType.PROJECT_STATUS:
             self.client._show_project_status(message_id, chat_id, project)
+        elif intent == IntentType.NEW_CHAT_PROJECT:
+            self.client._handle_new_chat_project(message_id, chat_id, data)
 
     def _handle_deep_status_or_stop(self, intent, data: dict, message_id: str, chat_id: str, project):
         arg = (data.get("arg") or "").strip().lower()

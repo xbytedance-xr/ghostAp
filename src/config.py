@@ -565,6 +565,7 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     max_allowed_chat_ids: int = 50  # 每个 project 最多关联的 chat_id 数量
     max_evicted_cache: int = 200  # evicted_chat_ids 有界 LRU 上限
+    project_chat_suffix: str = "dev"  # 项目专属群名称后缀
 
     @field_validator("max_allowed_chat_ids", mode="before")
     @classmethod

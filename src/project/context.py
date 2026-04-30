@@ -120,6 +120,11 @@ class ProjectContext:
     # Bounded OrderedDict — oldest entries are pruned when capacity exceeds max_evicted_cache.
     evicted_chat_ids: OrderedDict[str, float] = field(default_factory=OrderedDict, repr=False)
 
+    # /new-chat 功能：项目专属群绑定
+    bound_chat_id: str = ""
+    bound_chat_name: str = ""
+    bound_chat_created_at: float = 0.0
+
     worktree_state: Any = None
 
     def __post_init__(self):
@@ -332,6 +337,9 @@ class ProjectContext:
             "env_vars": self.env_vars,
             "owner_chat_id": self.owner_chat_id,
             "allowed_chat_ids": [[cid, ts] for cid, ts in self.allowed_chat_ids.items()],
+            "bound_chat_id": self.bound_chat_id,
+            "bound_chat_name": self.bound_chat_name,
+            "bound_chat_created_at": self.bound_chat_created_at,
             "conversation_history": [
                 {
                     "role": item.role,
@@ -398,6 +406,9 @@ class ProjectContext:
             env_vars=data.get("env_vars", {}),
             owner_chat_id=data.get("owner_chat_id", ""),
             allowed_chat_ids=cls._parse_allowed_chat_ids(data.get("allowed_chat_ids", [])),
+            bound_chat_id=data.get("bound_chat_id", ""),
+            bound_chat_name=data.get("bound_chat_name", ""),
+            bound_chat_created_at=data.get("bound_chat_created_at", 0.0),
         )
         if data.get("coco_session_snapshot"):
             snap = data["coco_session_snapshot"]

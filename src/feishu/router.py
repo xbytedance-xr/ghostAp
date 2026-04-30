@@ -142,6 +142,7 @@ FORWARDING_MAP: dict[str, tuple[str, str]] = {
     "_preserve_project_context": ("project", "preserve_project_context"),
     "_restore_project_context": ("project", "restore_project_context"),
     "_close_project": ("project", "close_project"),
+    "_handle_new_chat_project": ("project", "handle_new_chat_project"),
     # --- System ---
     "_show_help": ("system", "show_help"),
     "_show_full_help": ("system", "show_full_help"),

@@ -35,6 +35,7 @@ class IntentType(Enum):
     LIST_PROJECTS = "list_projects"
     CLOSE_PROJECT = "close_project"
     PROJECT_STATUS = "project_status"
+    NEW_CHAT_PROJECT = "new_chat_project"
     ENTER_DEEP = "enter_deep"
     DEEP_STATUS = "deep_status"
     STOP_DEEP = "stop_deep"
@@ -127,6 +128,7 @@ class IntentRecognizer:
         "list_projects": IntentType.LIST_PROJECTS,
         "close_project": IntentType.CLOSE_PROJECT,
         "project_status": IntentType.PROJECT_STATUS,
+        "new_chat_project": IntentType.NEW_CHAT_PROJECT,
         "enter_deep": IntentType.ENTER_DEEP,
         "deep_status": IntentType.DEEP_STATUS,
         "stop_deep": IntentType.STOP_DEEP,
@@ -422,6 +424,24 @@ class IntentRecognizer:
                 original_text=text,
                 reasoning="精确匹配: /coco_info",
                 description="查看 Coco 会话信息",
+            )
+
+        if text_lower == "/new-chat" or text_lower.startswith("/new-chat "):
+            parts = text.split()
+            data = {}
+            if len(parts) >= 2:
+                data["name"] = parts[1]
+            if len(parts) >= 3:
+                data["suffix"] = parts[2]
+            if len(parts) >= 4:
+                data["path"] = parts[3]
+            return IntentResult.single(
+                intent=IntentType.NEW_CHAT_PROJECT,
+                confidence=1.0,
+                data=data,
+                original_text=text,
+                reasoning="精确匹配: /new-chat 命令",
+                description="创建项目专属群",
             )
 
         if text_lower.startswith("/new "):

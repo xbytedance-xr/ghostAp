@@ -51,7 +51,10 @@ project_chat_suffix: str = "dev"   # /new-chat 默认后缀
 intent_recognizer  →  IntentType.NEW_CHAT_PROJECT, data={name?, suffix?, path?}
    │
    ▼
-dispatcher  →  ProjectChatService.handle(message_id, chat_id, sender_open_id, data)
+dispatcher  →  handler.handle_new_chat_project(message_id, chat_id, data)
+   │              (sender_open_id 通过 thread-local 获取)
+   ▼
+ProjectChatService.handle(...)
    │
    ▼
 1. 解析默认值
@@ -59,7 +62,8 @@ dispatcher  →  ProjectChatService.handle(message_id, chat_id, sender_open_id, 
    path   ← data.path   or working_dir(chat_id)
    suffix ← data.suffix or settings.project_chat_suffix
 2. 进入 (chat_id, normalized_path) 维度的进程内 lock
-3. ProjectManager.find_project_by_path(path)  →  ctx
+3. ProjectManager.find_project_by_path(path, chat_id=None)  →  ctx
+       ⚠ 注意：必须传 chat_id=None 跳过可见性过滤，否则主对话（非 owner）看不到已存在的项目，导致幂等失效（重复建群）。
        ├─ ctx 存在 + bound_chat_id 非空    →  分支 A:已绑定，回跳转卡，结束
        ├─ ctx 存在 + bound_chat_id 为空    →  分支 B:补群（legacy 项目）
        └─ ctx 不存在                        →  分支 C:全新建（先建群拿 chat_id，再建项目）
@@ -68,7 +72,7 @@ dispatcher  →  ProjectChatService.handle(message_id, chat_id, sender_open_id, 
        name=f"{name}-{suffix}",
        description=<§5 模板>,
        user_id_list=[sender_open_id],
-       bot_id_list=[<bot self>],
+       # bot_id_list 不需要传：飞书 API 调用方（bot）自动加入所建群
    )  →  new_chat_id, new_chat_name
 5. 写绑定
    分支 B：ctx.bound_chat_id = new_chat_id
@@ -151,7 +155,9 @@ src/project_chat/
   errors.py              # ProjectChatError、CreateChatError、BindError
 ```
 
-模块对外只暴露 `ProjectChatService.handle`，调用方只有 `dispatcher`。
+模块对外只暴露 `ProjectChatService.handle`，调用方只有 handler 层。
+
+> **服务实例化说明**：`ProjectChatService` 实例在 `src/feishu/handlers/project.py`（或新建 handler）的 `__init__` 中创建，通过 `HandlerContext` 获取 `api_client_factory` 和 `project_manager` 等依赖。实例挂在 handler 的 `self._project_chat_service` 上，与现有 handler（如 `ProgrammingHandler`、`DeepHandler`）风格一致。不在 `FeishuWSClient` 中直接持有 service 引用。
 
 ### 7.2 `lark_chat_client.py` 三个原子方法
 
@@ -165,12 +171,13 @@ class LarkChatClient:
 
 底层用已存在的 `lark_oapi.api.im.v1`（`CreateChatRequest` / `DeleteChatRequest` / `UpdateChatRequest`）。复用 `FeishuIMClient._execute_with_retry` 的重试与错误码降噪习惯（同模式实现，不直接共享类，保持解耦）。
 
-### 7.3 接入点（对其它模块的三处增量改动）
+### 7.3 接入点（对其它模块的四处增量改动）
 
 1. **`src/agent/intent_recognizer.py`** — 新增 `IntentType.NEW_CHAT_PROJECT` 和 `/new-chat` 解析分支（≤ 15 行），紧邻已有 `/new` 分支：
 
    ```python
-   if text_lower.startswith("/new-chat"):
+   # 注意：必须精确匹配 "/new-chat" 或 "/new-chat " 开头，避免误匹配 "/new-chattest" 等
+   if text_lower == "/new-chat" or text_lower.startswith("/new-chat "):
        parts = text.split()
        data = {}
        if len(parts) >= 2: data["name"] = parts[1]
@@ -179,16 +186,38 @@ class LarkChatClient:
        return IntentResult.single(intent=IntentType.NEW_CHAT_PROJECT, ...)
    ```
 
-2. **`src/feishu/dispatcher.py`** — `_dispatch_project` 加 case：
+2. **`src/feishu/dispatcher.py`** — 两处改动：
+
+   a) 将 `NEW_CHAT_PROJECT` 加入 `_PROJECT_INTENTS` 集合：
+
+   ```python
+   _PROJECT_INTENTS = {
+       IntentType.CREATE_PROJECT, IntentType.SWITCH_PROJECT, IntentType.LIST_PROJECTS,
+       IntentType.CLOSE_PROJECT, IntentType.PROJECT_STATUS, IntentType.NEW_CHAT_PROJECT,  # 新增
+   }
+   ```
+
+   b) `_dispatch_project` 加 case（注意：sender_open_id 通过 thread-local 获取，不在签名中传递）：
 
    ```python
    elif intent == IntentType.NEW_CHAT_PROJECT:
-       self.client._project_chat_service.handle(message_id, chat_id, sender_open_id, data)
+       # sender_open_id 通过 get_current_sender_id() 在 handler 内部获取
+       self.client.handle_new_chat_project(message_id, chat_id, data)
    ```
 
-3. **`src/project/context.py`** — §6.1 字段增量。
+3. **`src/feishu/handlers/project.py`**（或在 `src/feishu/handlers/` 下新建 handler）— 新增处理方法：
 
-`FeishuWSClient.__init__` 处实例化一次 `ProjectChatService`，挂在 `self._project_chat_service`，与现有 handler 列表风格一致。
+   ```python
+   def handle_new_chat_project(self, message_id: str, chat_id: str, data: dict) -> None:
+       sender_open_id = get_current_sender_id()  # 从 thread-local 获取
+       self._project_chat_service.handle(message_id, chat_id, sender_open_id, data)
+   ```
+
+   通过 `FORWARDING_MAP` 注册到 `FeishuWSClient`（与现有 handler 绑定方式一致）。
+
+4. **`src/project/context.py`** — §6.1 字段增量。
+
+> **sender_open_id 传递说明**：现有架构中，`sender_open_id` 在 `ws_client._process_message_async` 中通过 `set_current_sender_id()` 写入 thread-local；所有 handler 通过 `get_current_sender_id()` 读取，不通过函数参数传递。这是刻意设计，避免参数签名逐层膨胀。
 
 ## 8. 生命周期与边界场景
 
@@ -279,7 +308,7 @@ bot 需要的飞书 scope（实施前一次性确认）：
 
 1. bot 应用的 scope 是否含 `im:chat`、`im:chat:create`、`im:chat:readonly`。
 2. 现有 `Settings` 类的扩展点：在哪里加 `project_chat_suffix` 默认值（看 `src/config.py` 已有约定）。
-3. `sender_open_id` 在 dispatcher 现有签名里如何拿到（`P2ImMessageReceiveV1.event.sender.sender_id.open_id`），如未透传到 `_dispatch_project` 则需要顺延 1 个参数。
+3. `sender_open_id` 通过 thread-local 传递（`ws_client._process_message_async` 中调用 `set_current_sender_id()`），handler 内通过 `get_current_sender_id()` 获取，无需修改 dispatcher 签名。
 
 ## 14. 非目标
 

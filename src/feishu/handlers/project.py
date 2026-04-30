@@ -239,3 +239,26 @@ class ProjectHandler(BaseHandler):
             self.reply_message(message_id, UI_TEXT["project_close_success"].format(name=name))
         else:
             self.reply_error(message_id, UI_TEXT["project_close_error"].format(error=msg))
+
+    def handle_new_chat_project(self, message_id: str, chat_id: str, data: dict) -> None:
+        """Handle /new-chat command: create project + dedicated Feishu group."""
+        from ...thread.manager import get_current_sender_id
+        from ...project_chat import ProjectChatService
+        from ...project_chat.lark_chat_client import LarkChatClient
+
+        sender_open_id = get_current_sender_id() or ""
+        if not sender_open_id:
+            self.reply_error(message_id, "无法获取发送者信息")
+            return
+
+        # Lazy-init service
+        if not hasattr(self, "_project_chat_service"):
+            lark_client = LarkChatClient(api_client_factory=self.ctx.api_client_factory)
+            self._project_chat_service = ProjectChatService(
+                project_manager=self.project_manager,
+                lark_chat_client=lark_client,
+                reply_fn=lambda mid, text, _: self.reply_message(mid, text),
+                send_to_chat_fn=lambda cid, msg_type, text, _: self.im_client.send_message(cid, msg_type, text),
+            )
+
+        self._project_chat_service.handle(message_id, chat_id, sender_open_id, data)

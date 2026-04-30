@@ -1,0 +1,131 @@
+"""Tests for ProjectChatService — the /new-chat orchestrator."""
+import os
+import pytest
+from unittest.mock import MagicMock, patch
+
+from src.project_chat.service import ProjectChatService
+from src.project_chat.lark_chat_client import CreateChatResult
+from src.project_chat.errors import CreateChatError
+from src.project.manager import ProjectManager
+
+
+@pytest.fixture
+def tmp_storage(tmp_path):
+    return str(tmp_path / "projects.json")
+
+
+@pytest.fixture
+def project_manager(tmp_storage):
+    return ProjectManager(storage_path=tmp_storage)
+
+
+@pytest.fixture
+def mock_lark_client():
+    client = MagicMock()
+    client.create_chat.return_value = CreateChatResult(
+        chat_id="oc_new_group_123",
+        name="testproj-dev",
+    )
+    return client
+
+
+@pytest.fixture
+def mock_reply_fn():
+    return MagicMock()
+
+
+@pytest.fixture
+def service(project_manager, mock_lark_client, mock_reply_fn):
+    return ProjectChatService(
+        project_manager=project_manager,
+        lark_chat_client=mock_lark_client,
+        reply_fn=mock_reply_fn,
+        send_to_chat_fn=mock_reply_fn,
+    )
+
+
+class TestNewProject:
+    """Branch C: no existing project → create chat + create project."""
+
+    def test_creates_project_and_chat(self, service, project_manager, mock_lark_client, tmp_path):
+        path = str(tmp_path / "mycode")
+        os.makedirs(path)
+
+        service.handle(
+            message_id="msg_1",
+            chat_id="oc_main_chat",
+            sender_open_id="ou_user_1",
+            data={"name": "mycode", "path": path},
+        )
+
+        # Verify chat was created
+        mock_lark_client.create_chat.assert_called_once()
+        call_kwargs = mock_lark_client.create_chat.call_args[1]
+        assert "mycode" in call_kwargs["name"]
+        assert "ou_user_1" in call_kwargs["user_id_list"]
+
+        # Verify project was created with bound_chat_id
+        ctx = project_manager.find_project_by_path(path)
+        assert ctx is not None
+        assert ctx.bound_chat_id == "oc_new_group_123"
+        assert ctx.bound_chat_name == "testproj-dev"
+        assert ctx.owner_chat_id == "oc_new_group_123"
+
+    def test_idempotent_returns_existing(self, service, project_manager, mock_lark_client, tmp_path):
+        """Branch A: project exists with bound_chat → no API call, return jump card."""
+        path = str(tmp_path / "existing")
+        os.makedirs(path)
+
+        # Pre-create project with bound chat
+        success, _, ctx = project_manager.create_project(
+            project_id=None, project_name="existing", root_path=path, chat_id="oc_bound"
+        )
+        assert success
+        ctx.bound_chat_id = "oc_bound"
+        ctx.bound_chat_name = "existing-dev"
+        project_manager._save_projects()
+
+        service.handle(
+            message_id="msg_2",
+            chat_id="oc_main_chat",
+            sender_open_id="ou_user_1",
+            data={"name": "existing", "path": path},
+        )
+
+        # Should NOT create a new chat
+        mock_lark_client.create_chat.assert_not_called()
+
+
+class TestRollback:
+    """Verify rollback on failure after chat creation."""
+
+    def test_rollback_on_project_create_failure(self, service, project_manager, mock_lark_client, tmp_path):
+        """If create_project fails, delete_chat should be called."""
+        path = "/nonexistent/impossible/path/that/will/fail_create"
+
+        # ProjectManager.create_project will fail for this path (can't mkdir)
+        # Actually, let's mock it to fail
+        with patch.object(project_manager, "create_project", return_value=(False, "disk error", None)):
+            service.handle(
+                message_id="msg_3",
+                chat_id="oc_main",
+                sender_open_id="ou_user_1",
+                data={"name": "broken", "path": path},
+            )
+
+        mock_lark_client.delete_chat.assert_called_once_with("oc_new_group_123")
+
+    def test_no_rollback_on_chat_create_failure(self, service, mock_lark_client, tmp_path):
+        """If create_chat fails, no rollback needed."""
+        path = str(tmp_path / "newdir")
+        os.makedirs(path)
+        mock_lark_client.create_chat.side_effect = CreateChatError("API error")
+
+        service.handle(
+            message_id="msg_4",
+            chat_id="oc_main",
+            sender_open_id="ou_user_1",
+            data={"name": "proj", "path": path},
+        )
+
+        mock_lark_client.delete_chat.assert_not_called()
