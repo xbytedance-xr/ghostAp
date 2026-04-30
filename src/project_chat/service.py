@@ -55,8 +55,7 @@ class ProjectChatService:
         settings = get_settings()
 
         # 1. Parse defaults
-        working_dir = self._pm._get_working_dir_for_chat(chat_id) if hasattr(self._pm, "_get_working_dir_for_chat") else os.getcwd()
-        path = data.get("path") or working_dir
+        path = data.get("path") or os.getcwd()
         path = os.path.expanduser(os.path.abspath(path))
         name = data.get("name") or os.path.basename(os.path.normpath(path)) or f"project_{int(time.time())}"
         suffix = data.get("suffix") or settings.project_chat_suffix

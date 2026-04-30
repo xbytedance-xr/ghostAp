@@ -261,4 +261,8 @@ class ProjectHandler(BaseHandler):
                 send_to_chat_fn=lambda cid, msg_type, text, _: self.im_client.send_message("chat_id", cid, text, msg_type),
             )
 
+        # Inject shell working directory so service uses the same default as /new
+        if "path" not in data or not data["path"]:
+            data["path"] = self.get_working_dir(chat_id)
+
         self._project_chat_service.handle(message_id, chat_id, sender_open_id, data)
