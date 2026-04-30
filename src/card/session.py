@@ -113,12 +113,15 @@ class CardSession:
             # 4. Auto-close on terminal events
             if is_terminal:
                 self._closed = True
+                self._delivery.close(self._session_id)
 
     def close(self) -> None:
         """Explicitly close the session. Idempotent."""
         if self._closed:
             return
         with self._lock:
+            if self._closed:
+                return
             self._closed = True
             self._delivery.close(self._session_id)
 

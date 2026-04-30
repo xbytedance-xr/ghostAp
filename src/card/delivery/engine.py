@@ -37,6 +37,16 @@ class CardAPIClient(Protocol):
         """Update a single element's content (element_content API)."""
         ...
 
+    def create_streaming_card(self, card_json: dict) -> str:
+        """Create a CardKit card entity with streaming mode. Returns card_id."""
+        ...
+
+    def send_card_reference(
+        self, chat_id: str, card_id: str, *, reply_to: str | None = None
+    ) -> str:
+        """Send an IM message referencing a CardKit card. Returns message_id."""
+        ...
+
 
 # ---------------------------------------------------------------------------
 # Outcome types
@@ -164,11 +174,33 @@ class CardDelivery:
         *,
         reply_to: str | None = None,
     ) -> MutationOutcome:
-        """Create a new card page via API."""
+        """Create a new card page via API.
+
+        If the card has streaming mode enabled (active_element present),
+        use CardKit streaming card creation to get a proper card_id that
+        supports element_content updates. Falls back to IM API on failure.
+        """
         try:
-            message_id, card_id = self._client.create_card(
-                chat_id, card.card_json, reply_to=reply_to
-            )
+            is_streaming = card.card_json.get("config", {}).get("streaming_mode", False)
+
+            if is_streaming:
+                # Try CardKit streaming path for proper card_id
+                try:
+                    card_id = self._client.create_streaming_card(card.card_json)
+                    message_id = self._client.send_card_reference(
+                        chat_id, card_id, reply_to=reply_to
+                    )
+                except Exception:
+                    # Fall back to IM API (element_content won't work but PATCH will)
+                    logger.debug("Streaming card creation failed, falling back to IM API")
+                    message_id, card_id = self._client.create_card(
+                        chat_id, card.card_json, reply_to=reply_to
+                    )
+            else:
+                message_id, card_id = self._client.create_card(
+                    chat_id, card.card_json, reply_to=reply_to
+                )
+
             # Record binding
             last_text = card.active_element.text if card.active_element else ""
             self._bindings.set_page(

@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-04-30
+- **卡片 Delivery 层 P1 缺陷修复** — 修复 feishu_client.py 4xx 错误被吞（现统一抛 TransportError）、session.py 终态后 close() 短路导致 binding 内存泄漏、element_content ID 体系不匹配（streaming 卡片改用 CardKit 创建获取真实 card_id）；4019 tests passed → [详细记录](2026-04-30.md)
 - **彻底删除 StreamingCardManager 和 SmartSender** — 将已废弃的旧卡片系统从项目中彻底删除（streaming.py + SmartSender 类 + 5 个测试文件）；迁移 diagnostics/sticky/分页等活跃路径到新架构；清理 6 个测试文件中的 streaming_manager_factory 引用和 5 个文件中的注释引用；4019 tests passed → [详细记录](2026-04-30.md)
 - **/new-chat 老项目路径不匹配降级查找修复** — 老项目注册路径与当前 cwd 不一致导致 `find_project_by_path` 返回 None 走到 Branch C 报"项目已存在"；修复：增加 `find_project_by_name` 降级查找 + 更新 `root_path/working_dir`，老项目正常进入 Branch A/B → [详细记录](2026-04-30.md)
 - **/new-chat 群管理员权限 + Branch B 项目名修复** — 建群后将创建者设为群管理员（best-effort `add_managers` API）使其拥有解散群权限；修复 Branch B 补绑路径未更新 `ctx.project_name` 导致看板显示旧名的 Bug → [详细记录](2026-04-30.md)
