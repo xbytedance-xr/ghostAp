@@ -6,7 +6,7 @@ All default thresholds are read from styles.TRUNCATION_LIMITS.
 
 from __future__ import annotations
 
-from src.card.styles import TRUNCATION_LIMITS
+from src.card.thresholds import TRUNCATION_LIMITS
 
 _NOTICE = "\n...[truncated]"
 

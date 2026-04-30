@@ -1,0 +1,196 @@
+"""End-to-end integration tests: simulates Handler → CardSession → API flow."""
+
+import pytest
+
+from src.card.delivery.engine import CardDelivery
+from src.card.events import CardEvent, CardEventType
+from src.card.render.budget import RenderBudget
+from src.card.session import CardSession
+from src.card.state.models import CardMetadata
+
+
+class RecordingClient:
+    """Records all API calls for verification."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+        self._counter = 0
+
+    def create_card(self, chat_id, card_json, *, reply_to=None):
+        self._counter += 1
+        self.calls.append({"op": "create", "chat_id": chat_id, "json": card_json})
+        return (f"msg_{self._counter}", f"card_{self._counter}")
+
+    def update_card(self, card_id, card_json, *, sequence=0):
+        self.calls.append({"op": "update", "card_id": card_id, "seq": sequence})
+
+    def update_element(self, card_id, element_id, content, *, sequence=0):
+        self.calls.append({"op": "element", "card_id": card_id, "element_id": element_id, "content": content})
+
+
+def _make_session(client: RecordingClient, **meta_kw) -> CardSession:
+    delivery = CardDelivery(client)
+    metadata = CardMetadata(
+        mode_name=meta_kw.get("mode_name", "Coco"),
+        tool_name=meta_kw.get("tool_name", "coco"),
+        model_name=meta_kw.get("model_name", "gpt-4o"),
+    )
+    return CardSession(
+        chat_id="chat_test",
+        metadata=metadata,
+        delivery=delivery,
+        session_id="e2e_sess",
+    )
+
+
+class TestDeepEngineFlow:
+    """Simulates a typical Deep Engine flow."""
+
+    def test_started_text_tool_text_completed(self):
+        client = RecordingClient()
+        session = _make_session(client)
+
+        # Started
+        session.dispatch(CardEvent(type=CardEventType.STARTED))
+        assert any(c["op"] == "create" for c in client.calls)
+
+        # Text streaming
+        session.dispatch(CardEvent(type=CardEventType.TEXT_STARTED, payload={"block_id": "t1"}))
+        session.dispatch(CardEvent(type=CardEventType.TEXT_DELTA, payload={"block_id": "t1", "text": "Analyzing requirements..."}))
+        session.dispatch(CardEvent(type=CardEventType.TEXT_DONE, payload={"block_id": "t1"}))
+
+        # Tool call
+        session.dispatch(CardEvent(type=CardEventType.TOOL_STARTED, payload={"tool_name": "bash", "block_id": "tc1"}))
+        session.dispatch(CardEvent(type=CardEventType.TOOL_DONE, payload={"block_id": "tc1", "tool_output": "OK"}))
+
+        # Final text
+        session.dispatch(CardEvent(type=CardEventType.TEXT_STARTED, payload={"block_id": "t2"}))
+        session.dispatch(CardEvent(type=CardEventType.TEXT_DELTA, payload={"block_id": "t2", "text": "Done!"}))
+        session.dispatch(CardEvent(type=CardEventType.TEXT_DONE, payload={"block_id": "t2"}))
+
+        # Completed
+        session.dispatch(CardEvent(type=CardEventType.COMPLETED))
+
+        assert session.closed
+        state = session.state
+        assert state.terminal == "completed"
+        assert len(state.blocks) >= 3
+
+        # Verify card was created then updated multiple times
+        creates = [c for c in client.calls if c["op"] == "create"]
+        updates = [c for c in client.calls if c["op"] == "update"]
+        assert len(creates) >= 1
+        assert len(updates) >= 1  # At least one structural update (tool change)
+
+
+class TestLoopEngineFlow:
+    """Simulates a Loop Engine multi-iteration flow."""
+
+    def test_multiple_iterations(self):
+        client = RecordingClient()
+        session = _make_session(client)
+
+        session.dispatch(CardEvent(type=CardEventType.STARTED))
+
+        # Iteration 1
+        session.dispatch(CardEvent(type=CardEventType.TEXT_STARTED, payload={"block_id": "i1_t"}))
+        session.dispatch(CardEvent(type=CardEventType.TEXT_DELTA, payload={"block_id": "i1_t", "text": "Iteration 1..."}))
+        session.dispatch(CardEvent(type=CardEventType.TEXT_DONE, payload={"block_id": "i1_t"}))
+        session.dispatch(CardEvent(type=CardEventType.TOOL_STARTED, payload={"tool_name": "read", "block_id": "tc1"}))
+        session.dispatch(CardEvent(type=CardEventType.TOOL_DONE, payload={"block_id": "tc1", "tool_output": "file content"}))
+
+        # Iteration 2
+        session.dispatch(CardEvent(type=CardEventType.TEXT_STARTED, payload={"block_id": "i2_t"}))
+        session.dispatch(CardEvent(type=CardEventType.TEXT_DELTA, payload={"block_id": "i2_t", "text": "Iteration 2..."}))
+        session.dispatch(CardEvent(type=CardEventType.TEXT_DONE, payload={"block_id": "i2_t"}))
+
+        session.dispatch(CardEvent(type=CardEventType.COMPLETED))
+
+        state = session.state
+        assert state.terminal == "completed"
+        # Multiple text blocks and a tool
+        text_blocks = [b for b in state.blocks if b.kind == "text"]
+        tool_blocks = [b for b in state.blocks if b.kind == "tool_call"]
+        assert len(text_blocks) >= 2
+        assert len(tool_blocks) >= 1
+
+
+class TestMultiPageFlow:
+    """Large content triggers pagination."""
+
+    def test_multi_page_on_large_content(self):
+        client = RecordingClient()
+        delivery = CardDelivery(client)
+        metadata = CardMetadata(mode_name="Coco")
+        # Very small budget to force pagination
+        budget = RenderBudget(byte_budget=2000)
+        session = CardSession(
+            chat_id="chat_test",
+            metadata=metadata,
+            delivery=delivery,
+            budget=budget,
+            session_id="page_test",
+        )
+
+        session.dispatch(CardEvent(type=CardEventType.STARTED))
+        session.dispatch(CardEvent(type=CardEventType.TEXT_STARTED, payload={"block_id": "big"}))
+        # Send a large text delta
+        big_text = "x" * 10000
+        session.dispatch(CardEvent(type=CardEventType.TEXT_DELTA, payload={"block_id": "big", "text": big_text}))
+        session.dispatch(CardEvent(type=CardEventType.TEXT_DONE, payload={"block_id": "big"}))
+        session.dispatch(CardEvent(type=CardEventType.COMPLETED))
+
+        # Should have created multiple cards (one per page)
+        creates = [c for c in client.calls if c["op"] == "create"]
+        assert len(creates) >= 2
+
+
+class TestToolHistoryFolding:
+    """Multiple completed tools fold into history panel."""
+
+    def test_tool_history_fold_in_render(self):
+        client = RecordingClient()
+        session = _make_session(client)
+
+        session.dispatch(CardEvent(type=CardEventType.STARTED))
+
+        # 4 completed tools (above fold threshold of 3)
+        for i in range(4):
+            session.dispatch(CardEvent(
+                type=CardEventType.TOOL_STARTED,
+                payload={"tool_name": f"tool_{i}", "block_id": f"tc{i}"}
+            ))
+            session.dispatch(CardEvent(
+                type=CardEventType.TOOL_DONE,
+                payload={"block_id": f"tc{i}", "tool_output": f"result_{i}"}
+            ))
+
+        session.dispatch(CardEvent(type=CardEventType.COMPLETED))
+
+        state = session.state
+        tool_blocks = [b for b in state.blocks if b.kind == "tool_call"]
+        assert len(tool_blocks) == 4
+        assert all(b.status == "completed" for b in tool_blocks)
+
+
+class TestHeaderSubtitle:
+    """Model/tool changes update header subtitle."""
+
+    def test_tool_model_changed_updates_subtitle(self):
+        client = RecordingClient()
+        session = _make_session(client, tool_name="coco", model_name="gpt-4o")
+
+        session.dispatch(CardEvent(type=CardEventType.STARTED))
+
+        # Change model
+        session.dispatch(CardEvent(
+            type=CardEventType.TOOL_MODEL_CHANGED,
+            payload={"tool_name": "claude", "model_name": "claude-4-sonnet"}
+        ))
+
+        state = session.state
+        assert state.metadata.tool_name == "claude"
+        assert state.metadata.model_name == "claude-4-sonnet"
+        # Header subtitle should reflect new tool/model
+        assert state.header.subtitle is not None
+        assert "claude" in state.header.subtitle

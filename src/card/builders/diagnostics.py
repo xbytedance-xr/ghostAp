@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Optional
 
-from src.card.styles import UI_TEXT
+from src.card.ui_text import UI_TEXT
 from src.card.builders.core import CoreBuilder
 from src.card.models import EngineStatusEntry
 

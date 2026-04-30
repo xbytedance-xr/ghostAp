@@ -4,7 +4,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
-from src.card.styles import THRESHOLDS
+from src.card.thresholds import THRESHOLDS
 from ...utils.errors import get_error_detail
 
 if TYPE_CHECKING:
@@ -290,7 +290,7 @@ class BaseRenderer:
         Also checks tagged-node count against CARD_NODE_BUDGET.
         """
         import json
-        from src.card.styles import THRESHOLDS
+        from src.card.thresholds import THRESHOLDS
 
         if max_size is None:
             max_size = THRESHOLDS["CARD_BYTE_BUDGET"]

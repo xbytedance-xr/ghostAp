@@ -151,7 +151,7 @@ class RenderedContent:
     @staticmethod
     def _wrap_grouped_tools(sec: ContentSection) -> dict:
         """Wrap merged tool sections into a single grouped collapsible panel."""
-        from src.card.styles import PANEL_STYLES
+        from src.card.themes import PANEL_STYLES
 
         header_text = f"☕ **{sec.tool_count}个工具调用**（已结束）"
         border_color = PANEL_STYLES["border_failed"] if sec.has_failure else PANEL_STYLES["border_history"]
@@ -171,7 +171,7 @@ class RenderedContent:
     @staticmethod
     def _wrap_collapsible(sec: ContentSection) -> dict:
         """Wrap a section in a ``collapsible_panel`` element."""
-        from src.card.styles import PANEL_STYLES
+        from src.card.themes import PANEL_STYLES
 
         if sec.section_type == "tool_group":
             icon = _KIND_ICONS.get(sec.tool_kind, "🔧")

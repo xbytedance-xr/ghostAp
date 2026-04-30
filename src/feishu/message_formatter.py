@@ -1,7 +1,7 @@
 import json
 from typing import Optional
 
-from src.card.styles import THRESHOLDS
+from src.card.thresholds import THRESHOLDS
 
 
 class FeishuMessageFormatter:
