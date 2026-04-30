@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-04-30
+- **/new-chat Branch B 可见性 Bug 修复** — 已有项目绑群后 `allowed_chat_ids` 漏加主对话导致项目从看板消失；修复后与 Branch C 对齐，追加 `ctx.add_chat_id(chat_id)`；新增回归测试 → [详细记录](2026-04-30.md)
 - **/new-chat 与项目群跳转卡片优化** — `/help` 补充 `/new-chat` 项目群说明；项目状态卡改为紧凑布局并加入切换项目+进入项目群按钮；项目看板和 `/new-chat` 成功卡支持项目群 deeplink；相关卡片与项目群测试通过 → [详细记录](2026-04-30.md)
 
 ## 2026-04-29

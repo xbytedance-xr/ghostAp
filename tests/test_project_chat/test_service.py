@@ -105,6 +105,42 @@ class TestNewProject:
         assert "openChatId=oc_bound" in json.dumps(card, ensure_ascii=False)
 
 
+class TestLegacyProjectBind:
+    """Branch B: existing project without bound chat → bind it."""
+
+    def test_bind_legacy_project_preserves_visibility(self, service, project_manager, mock_lark_client, tmp_path):
+        """After binding, the project must remain visible from the originating chat."""
+        path = str(tmp_path / "legacy")
+        os.makedirs(path)
+
+        # Pre-create a legacy project (empty allowed_chat_ids → visible to all)
+        success, _, ctx = project_manager.create_project(
+            project_id=None, project_name="legacy", root_path=path, chat_id=None
+        )
+        assert success
+        assert not ctx.bound_chat_id
+
+        service.handle(
+            message_id="msg_bind",
+            chat_id="oc_main_chat",
+            sender_open_id="ou_user_1",
+            data={"name": "legacy", "path": path},
+        )
+
+        # Verify bound
+        ctx = project_manager.find_project_by_path(path)
+        assert ctx.bound_chat_id == "oc_new_group_123"
+
+        # Key assertion: project must still be visible from the originating chat
+        projects = project_manager.get_all_projects(chat_id="oc_main_chat")
+        assert any(p.project_id == ctx.project_id for p in projects), \
+            "Project should remain visible from the originating chat after binding"
+
+        # Also visible from the new group chat
+        projects = project_manager.get_all_projects(chat_id="oc_new_group_123")
+        assert any(p.project_id == ctx.project_id for p in projects)
+
+
 class TestRollback:
     """Verify rollback on failure after chat creation."""
 
