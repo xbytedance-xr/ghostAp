@@ -10,7 +10,7 @@ Tests cover:
 - Dedup: _should_send_intercept returns True first time, False on repeat
 - close() stops dedup cache cleanup thread
 - Throttled path: handler.send_chat_lock_throttled_reply called on dedup hit
-- Fallback: _reply_message used when handler is None
+- Fallback: _reply_text used when handler is None
 """
 
 from __future__ import annotations
@@ -76,7 +76,7 @@ class TestCheckMessage(unittest.TestCase):
         gate, host = _make_gate(clm=clm, handler=None)
 
         assert gate.check("chat", "user", "msg") is True
-        host._reply_message.assert_called_once()
+        host._reply_text.assert_called_once()
 
 
 class TestCheckCardAction(unittest.TestCase):

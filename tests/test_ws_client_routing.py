@@ -141,13 +141,13 @@ def test_process_with_intent_multitask(mock_ws_client: FeishuWSClient):
     mock_ws_client._intent_recognizer.recognize.return_value = mock_intent_result
     
     # Mock message reply and task steps
-    mock_ws_client._reply_message = MagicMock()
+    mock_ws_client._reply_text = MagicMock()
     mock_ws_client._message_dispatcher.execute_task_step = MagicMock(return_value=True)
     
     mock_ws_client._process_with_intent("msg_123", "chat_456", "create a project and enter coco", project)
     
     # It should reply with a multi-task plan
-    assert mock_ws_client._reply_message.call_count >= 1
+    assert mock_ws_client._reply_text.call_count >= 1
     # It should have called _execute_task_step for each task
     assert mock_ws_client._message_dispatcher.execute_task_step.call_count == 2
     
@@ -243,11 +243,11 @@ class TestChatLockInterceptFallback:
         lock_helper = LockHelper(handler)
         lock_helper.send_chat_lock_intercept_card("msg_1", "chat_1", clm)
 
-        # Fallback should have been called via reply_message
-        handler.reply_message.assert_called_once()
-        args = handler.reply_message.call_args[0]
+        # Fallback should have been called via reply_text
+        handler.reply_text.assert_called_once()
+        args = handler.reply_text.call_args[0]
         assert args[0] == "msg_1"
-        assert "text" == handler.reply_message.call_args[1].get("msg_type", args[2] if len(args) > 2 else "")
+        assert "🔒" in args[1] or "locked" in args[1].lower() or "锁定" in args[1]
 
     def test_no_exception_when_both_fail(self, mock_ws_client):
         """Even if fallback also fails, no exception escapes."""
@@ -255,7 +255,7 @@ class TestChatLockInterceptFallback:
         from src.feishu.handlers.lock_helper import LockHelper
 
         handler = MagicMock()
-        handler.reply_message.side_effect = RuntimeError("all fail")
+        handler.reply_text.side_effect = RuntimeError("all fail")
 
         clm = MagicMock()
         clm.get_lock_info.side_effect = RuntimeError("db error")

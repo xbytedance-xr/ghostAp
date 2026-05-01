@@ -275,7 +275,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
 
     def handle_menu_command(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         msg_type, card_content = CardBuilder.build_command_menu_card(project)
-        self.reply_message(message_id, card_content, msg_type=msg_type)
+        self.reply_card(message_id, card_content)
 
     def handle_help_category(
         self,
@@ -313,13 +313,13 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         )
 
         if origin_message_id:
-            if self.patch_message(origin_message_id, card_content):
+            if self.update_card(origin_message_id, card_content):
                 return
 
-        self.reply_message(message_id, card_content, msg_type=msg_type)
+        self.reply_card(message_id, card_content)
 
     def handle_deep_prompt(self, message_id: str, chat_id: str):
-        self.reply_message(
+        self.reply_text(
             message_id,
             UI_TEXT["system_help_deep_prompt"],
         )
@@ -374,7 +374,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             self.reply_error(message_id, UI_TEXT["system_acp_no_available_tools"])
             return
         msg_type, card_content = CardBuilder.build_acp_tool_select_card(tools, project_id, current_tool=current_tool)
-        self.reply_message(message_id, card_content, msg_type=msg_type)
+        self.reply_card(message_id, card_content)
 
     def _fetch_acp_models(
         self,
@@ -409,7 +409,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             return
 
         msg_type, card_content = CardBuilder.build_acp_model_select_card(models, tool, project_id, current_model=current_model)
-        self.reply_message(message_id, card_content, msg_type=msg_type)
+        self.reply_card(message_id, card_content)
 
     def handle_refresh_acp_models(self, message_id: str, chat_id: str, tool_name: str, project_id: Optional[str] = None):
         self.handle_select_acp_tool(message_id, chat_id, tool_name, project_id)
@@ -429,7 +429,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             return
 
         msg_type, card_content = CardBuilder.build_switching_status_card(tool, model)
-        self.reply_message(message_id, card_content, msg_type=msg_type)
+        self.reply_card(message_id, card_content)
         self._enter_mode_with_acp_model(message_id, chat_id, tool, model, project)
 
     # ------------------------------------------------------------------
@@ -493,13 +493,13 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
 
         if subcommand in ("", "list", "ls"):
             # Show interactive model selection card
-            self.reply_message(message_id, UI_TEXT["system_acp_querying_models"].format(tool_name=tool_name))
+            self.reply_text(message_id, UI_TEXT["system_acp_querying_models"].format(tool_name=tool_name))
             models = self._fetch_acp_models(tool_name, cwd=cwd, current_model=current_model)
             if not models:
                 self.reply_error(message_id, UI_TEXT["system_acp_get_models_failed"].format(tool_name=tool_name))
                 return
             msg_type, card_content = CardBuilder.build_acp_model_select_card(models, tool_name, project_id, current_model=current_model)
-            self.reply_message(message_id, card_content, msg_type=msg_type)
+            self.reply_card(message_id, card_content)
             return
 
         # Direct switch: /model <name> or /model switch <name>
@@ -518,7 +518,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             return
 
         msg_type, card_content = CardBuilder.build_switching_status_card(tool_name, model_name)
-        self.reply_message(message_id, card_content, msg_type=msg_type)
+        self.reply_card(message_id, card_content)
         self._enter_mode_with_acp_model(message_id, chat_id, tool_name, model_name, project)
 
     # ------------------------------------------------------------------
@@ -553,7 +553,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         elif current_mode == InteractionMode.TTADK:
             self.get_handler("ttadk").exit_mode(message_id, chat_id, project)
         else:
-            self.reply_message(message_id, UI_TEXT["system_already_in_mode"])
+            self.reply_text(message_id, UI_TEXT["system_already_in_mode"])
 
     # ------------------------------------------------------------------
     # Shell command submission
@@ -578,7 +578,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             working_dir,
             project,
         )
-        self.reply_message(message_id, card_content, msg_type=msg_type)
+        self.reply_card(message_id, card_content)
         if result.success:
             self.add_reaction(message_id, EmojiReaction.on_shell_executed())
         else:
@@ -637,11 +637,11 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
                     content,
                     show_buttons=True,
                 )
-                response_id = self.reply_message_with_id(message_id, card_content, msg_type)
+                response_id = self.reply_card(message_id, card_content)
                 if response_id:
                     self.register_message_project(response_id, project)
             else:
-                self.reply_message(message_id, fmt.format_current_dir(current_dir))
+                self.reply_text(message_id, fmt.format_current_dir(current_dir))
             return
 
         success, result = self.set_working_dir(chat_id, path)
@@ -650,19 +650,19 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             card_res = CardBuilder.build_directory_change_card(project, result, success=True)
             if card_res:
                 msg_type, card_content = card_res
-                response_id = self.reply_message_with_id(message_id, card_content, msg_type)
+                response_id = self.reply_card(message_id, card_content)
                 if response_id and project:
                     self.register_message_project(response_id, project)
             else:
-                self.reply_message(message_id, fmt.format_dir_change(result, True))
+                self.reply_text(message_id, fmt.format_dir_change(result, True))
         else:
             self.add_reaction(message_id, EmojiReaction.on_error())
             card_res = CardBuilder.build_directory_change_card(project, result, success=False)
             if card_res:
                 msg_type, card_content = card_res
-                self.reply_message(message_id, card_content, msg_type=msg_type)
+                self.reply_card(message_id, card_content)
             else:
-                self.reply_message(message_id, fmt.format_error(result))
+                self.reply_text(message_id, fmt.format_error(result))
 
     # ------------------------------------------------------------------
     # Help
@@ -680,7 +680,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         models = manager.get_models().models
 
         content = CardBuilder.build_coco_status_content(current_model, models)
-        self.reply_message(message_id, content)
+        self.reply_text(message_id, content)
 
     def show_tools_list(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         """Show a list of all available ACP tools with quick access buttons."""

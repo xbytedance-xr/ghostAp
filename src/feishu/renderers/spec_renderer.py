@@ -17,7 +17,7 @@ from ...spec_engine.models import (
 from ...spec_engine.retry_status import RetryEvent, RetryStatus
 from ...utils.text import append_duration_to_title
 from ..emoji import EmojiReaction
-from .base import BaseRenderer, _create_engine_sender
+from .base import BaseRenderer, _StreamThrottle, _create_direct_session
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
@@ -45,11 +45,9 @@ class SpecRenderer(BaseRenderer):
         )
         reporter = self.ctx.spec_reporter
 
-        sender = _create_engine_sender(
-            self.handler, message_id, chat_id,
-            initial_message_id=None,
-            payload_guard=self._check_and_truncate_payload,
-        )
+        # Mutable container: session can be replaced on cycle boundaries
+        _session = [_create_direct_session(self.handler, chat_id, message_id)]
+        _throttle = _StreamThrottle(self.settings)
 
         spec_project_id = project.project_id if project else self.handler.get_working_dir(chat_id)
 
@@ -60,10 +58,13 @@ class SpecRenderer(BaseRenderer):
         _footer_status: list[Optional[str]] = [None]
         _last_phase_content: list[str] = [""]
 
-        def _send_spec_message(
-            card_content: str, msg_type: str = "interactive", is_update: bool = False, throttle: bool = False
-        ):
-            sender.send(card_content, msg_type, is_update, throttle, request_id)
+        def _send_spec_message(card_content: str, msg_type: str = "interactive", new_card: bool = False):
+            """Send spec message. If new_card=True, close current session and create a new one."""
+            if new_card:
+                _session[0].close()
+                _session[0] = _create_direct_session(self.handler, chat_id, message_id)
+            card_content = self._check_and_truncate_payload(card_content)
+            _session[0].send(card_content)
 
         def on_analyzing_done(spec_project: SpecProject):
             self.update_ui_state(spec_project_id, view_mode="status", view_context={})
@@ -80,7 +81,7 @@ class SpecRenderer(BaseRenderer):
                 ),
             )
             # Immediate flush
-            _send_spec_message(card_content, msg_type, is_update=False, throttle=False)
+            _send_spec_message(card_content, msg_type)
 
         def on_cycle_start(current: int, max_cycles: int):
             nonlocal _max_cycles
@@ -141,7 +142,7 @@ class SpecRenderer(BaseRenderer):
                 ),
             )
             # Cycle start is significant, immediate flush
-            _send_spec_message(card_content, msg_type, is_update=True, throttle=False)
+            _send_spec_message(card_content, msg_type)
 
         def on_cycle_done(cycle_num: int, cycle: SpecCycle):
             self.update_ui_state(spec_project_id, view_mode="cycle_done", view_context={"cycle_num": cycle_num})
@@ -185,8 +186,7 @@ class SpecRenderer(BaseRenderer):
                         show_buttons=False,
                     ),
                 )
-                _send_spec_message(card_content, msg_type, is_update=False, throttle=False)
-                sender.current_message_id = None
+                _send_spec_message(card_content, msg_type, new_card=True)
 
         def on_review_done(cycle_num: int, review: ReviewResult):
             self.update_ui_state(spec_project_id, view_mode="review_done", view_context={"cycle_num": cycle_num})
@@ -235,7 +235,7 @@ class SpecRenderer(BaseRenderer):
                 ),
             )
             # Review done is significant, immediate flush
-            _send_spec_message(card_content, msg_type, is_update=True, throttle=False)
+            _send_spec_message(card_content, msg_type)
 
         def on_project_done(spec_project: SpecProject):
             self.update_ui_state(spec_project_id, view_mode="status", view_context={})
@@ -266,7 +266,7 @@ class SpecRenderer(BaseRenderer):
                 ),
             )
             # Project done: independent message
-            _send_spec_message(card_content, msg_type, is_update=False, throttle=False)
+            _send_spec_message(card_content, msg_type, new_card=True)
             self.handler.add_reaction(message_id, EmojiReaction.on_multi_task_done())
 
         def on_error(error: str):
@@ -286,7 +286,7 @@ class SpecRenderer(BaseRenderer):
                 engine_project_id=spec_project_id,
                 terminal_state="failed",
             )
-            _send_spec_message(card_content, msg_type, is_update=True)
+            _send_spec_message(card_content, msg_type)
             self.handler.add_reaction(message_id, EmojiReaction.on_error())
 
         def _get_engine_and_state():
@@ -297,7 +297,7 @@ class SpecRenderer(BaseRenderer):
             return engine, spec_project, state, max_c
 
         def _build_phase_card(
-            title: str, content: str, spec_project, state: dict, *, show_buttons: bool = False, throttle: bool = True,
+            title: str, content: str, spec_project, state: dict, *, show_buttons: bool = False,
             footer_status: Optional[str] = None, extra_buttons: Optional[list] = None,
         ):
             progress_bar = None
@@ -329,7 +329,7 @@ class SpecRenderer(BaseRenderer):
                     extra_buttons=extra_buttons,
                 ),
             )
-            _send_spec_message(card_content, msg_type, is_update=True, throttle=throttle)
+            _send_spec_message(card_content, msg_type)
 
         def on_phase_start(cycle_num: int, phase: SpecPhase):
             # Reset renderer for new phase
@@ -341,7 +341,7 @@ class SpecRenderer(BaseRenderer):
             _last_phase_content[0] = content
             title = reporter.get_cycle_start_title(cycle_num, max_c)
             title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
-            _build_phase_card(title, content, spec_project, state, show_buttons=False, throttle=True, footer_status="tool_running")
+            _build_phase_card(title, content, spec_project, state, show_buttons=False, footer_status="tool_running")
 
         def on_phase_event(cycle_num: int, phase: SpecPhase, event):
             """Real-time ACP event processing — renders tool call details into phase card."""
@@ -363,7 +363,7 @@ class SpecRenderer(BaseRenderer):
                 return
 
             tool_summary = acp_renderer.render_summary()
-            if not sender.check_throttle(len(tool_summary), force=False, min_interval=2.0, min_new_chars=10):
+            if not _throttle.check_throttle(len(tool_summary), force=False, min_interval=2.0, min_new_chars=10):
                 return
 
             _, spec_project, state, max_c = _get_engine_and_state()
@@ -378,9 +378,9 @@ class SpecRenderer(BaseRenderer):
             title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
             _build_phase_card(
                 title, base_content, spec_project, state,
-                show_buttons=False, throttle=True, footer_status=_footer_status[0],
+                show_buttons=False, footer_status=_footer_status[0],
             )
-            sender.update_stream_state(len(tool_summary))
+            _throttle.update_stream_state(len(tool_summary))
 
         def on_phase_done(cycle_num: int, phase: SpecPhase, output: str):
             _, spec_project, state, max_c = _get_engine_and_state()
@@ -395,7 +395,7 @@ class SpecRenderer(BaseRenderer):
 
             title = reporter.get_cycle_start_title(cycle_num, max_c)
             title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
-            _build_phase_card(title, content, spec_project, state, show_buttons=False, throttle=True)
+            _build_phase_card(title, content, spec_project, state, show_buttons=False)
 
         # RetryStatus → UI_TEXT key mapping for review retry
         _RETRY_STATUS_TEXT: dict[RetryStatus, str] = {
@@ -418,7 +418,7 @@ class SpecRenderer(BaseRenderer):
             title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
             _build_phase_card(
                 title, _last_phase_content[0], spec_project, state,
-                show_buttons=False, throttle=False, footer_status=retry_text,
+                show_buttons=False, footer_status=retry_text,
             )
 
         def _make_retry_button(text: str, action: str) -> dict:
@@ -469,7 +469,7 @@ class SpecRenderer(BaseRenderer):
             title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
             _build_phase_card(
                 title, _last_phase_content[0], spec_project, state,
-                show_buttons=False, throttle=False, footer_status=detail_msg,
+                show_buttons=False, footer_status=detail_msg,
                 extra_buttons=buttons,
             )
 
@@ -523,7 +523,7 @@ class SpecRenderer(BaseRenderer):
                         show_buttons=False,
                     ),
                 )
-                self.handler.reply_message(message_id, card_content, msg_type=msg_type)
+                self.handler.reply_card(message_id, card_content)
                 return
 
         if view_mode == "status":

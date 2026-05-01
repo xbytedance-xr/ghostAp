@@ -103,7 +103,8 @@ class TestHandleLockCommand:
         self.mock_ctx.chat_lock_manager = self.chat_lock_mgr
 
         self.handler = SystemHandler(self.mock_ctx)
-        self.handler.reply_message = MagicMock()
+        self.handler.reply_card = MagicMock()
+        self.handler.reply_text = MagicMock()
         self.handler.reply_error = MagicMock()
 
     def _set_sender(self, sender_id: str):
@@ -112,16 +113,17 @@ class TestHandleLockCommand:
 
     def test_lock_executes_directly(self):
         """Admin /lock locks immediately (no two-step confirmation)."""
-        self.handler.send_message = MagicMock()
+        self.handler.send_card_to_chat = MagicMock()
         with _mock_settings([ADMIN_ID]):
             self._set_sender(ADMIN_ID)
             self.handler._handle_lock_command("msg_1", "chat_1", "lock")
             self._set_sender("")
-        self.handler.reply_message.assert_called_once()
+        # Either reply_card or reply_text should be called once
+        assert self.handler.reply_card.call_count + self.handler.reply_text.call_count == 1
         # Chat must be locked immediately
         assert self.chat_lock_mgr.is_locked("chat_1") is True
         # Broadcast card sent to group
-        self.handler.send_message.assert_called_once()
+        assert self.handler.send_card_to_chat.call_count == 1
 
     def test_lock_idempotent_shows_status(self):
         """Already-locked chat shows idempotent success card."""
@@ -130,8 +132,8 @@ class TestHandleLockCommand:
             self._set_sender(ADMIN_ID)
             self.handler._handle_lock_command("msg_1", "chat_1", "lock")
             self._set_sender("")
-        self.handler.reply_message.assert_called_once()
-        card_content = str(self.handler.reply_message.call_args)
+        self.handler.reply_card.assert_called_once()
+        card_content = str(self.handler.reply_card.call_args)
         assert "已处于锁定状态" in card_content
 
     def test_unlock_by_admin(self):
@@ -140,7 +142,7 @@ class TestHandleLockCommand:
             self._set_sender(ADMIN_ID)
             self.handler._handle_lock_command("msg_1", "chat_1", "unlock")
             self._set_sender("")
-        self.handler.reply_message.assert_called_once()
+        assert self.handler.reply_card.call_count + self.handler.reply_text.call_count == 1
         assert self.chat_lock_mgr.is_locked("chat_1") is False
 
     def test_lock_by_non_admin_rejected(self):
@@ -148,8 +150,8 @@ class TestHandleLockCommand:
             self._set_sender(NON_ADMIN_ID)
             self.handler._handle_lock_command("msg_1", "chat_1", "lock")
             self._set_sender("")
-        # Non-admin gets a card reply (via reply_message) instead of reply_error
-        self.handler.reply_message.assert_called_once()
+        # Non-admin gets a card reply (via reply_card) instead of reply_error
+        self.handler.reply_card.assert_called_once()
         assert self.chat_lock_mgr.is_locked("chat_1") is False
 
     def test_lock_by_non_admin_empty_admin_list(self):
@@ -159,7 +161,7 @@ class TestHandleLockCommand:
             self.handler._handle_lock_command("msg_1", "chat_1", "lock")
             self._set_sender("")
         # Non-admin with no admin config gets card reply
-        self.handler.reply_message.assert_called_once()
+        self.handler.reply_card.assert_called_once()
 
     def test_unlock_by_non_admin_empty_admin_list(self):
         """When admin_user_ids is empty, /unlock also shows user-friendly guidance (card)."""
@@ -168,7 +170,7 @@ class TestHandleLockCommand:
             self.handler._handle_lock_command("msg_1", "chat_1", "unlock")
             self._set_sender("")
         # Non-admin with no admin config gets card reply
-        self.handler.reply_message.assert_called_once()
+        self.handler.reply_card.assert_called_once()
 
     def test_lock_no_sender_id(self):
         with _mock_settings([ADMIN_ID]):
@@ -375,9 +377,10 @@ class TestLockConfirmationFlow:
         self.mock_ctx.chat_lock_manager = self.chat_lock_mgr
 
         self.handler = SystemHandler(self.mock_ctx)
-        self.handler.reply_message = MagicMock()
+        self.handler.reply_card = MagicMock()
+        self.handler.reply_text = MagicMock()
         self.handler.reply_error = MagicMock()
-        self.handler.send_message = MagicMock()
+        self.handler.send_card_to_chat = MagicMock()
 
     def _set_sender(self, sender_id: str, sender_name: str = ""):
         from src.thread import set_current_sender_id, set_current_sender_name
@@ -395,15 +398,15 @@ class TestLockConfirmationFlow:
             self._set_sender("")
         # Must NOT lock the chat
         assert self.chat_lock_mgr.is_locked("chat_1") is False
-        self.handler.reply_message.assert_called_once()
-        reply_text = self.handler.reply_message.call_args[0][1]
+        self.handler.reply_text.assert_called_once()
+        reply_text = self.handler.reply_text.call_args[0][1]
         assert "过期" in reply_text or "重新发送" in reply_text
 
     def test_cancel_lock_returns_deprecated_hint(self):
         """handle_cancel_lock replies with deprecation message."""
         self.handler.handle_cancel_lock("msg_1", "chat_1")
-        self.handler.reply_message.assert_called_once()
-        reply_text = self.handler.reply_message.call_args[0][1]
+        self.handler.reply_text.assert_called_once()
+        reply_text = self.handler.reply_text.call_args[0][1]
         assert "过期" in reply_text or "重新发送" in reply_text
 
 
@@ -715,7 +718,8 @@ class TestHandleForceReleaseRepoLock:
         self.mock_ctx.chat_lock_manager = self.chat_lock_mgr
 
         self.handler = SystemHandler(self.mock_ctx)
-        self.handler.reply_message = MagicMock()
+        self.handler.reply_card = MagicMock()
+        self.handler.reply_text = MagicMock()
         self.handler.reply_error = MagicMock()
 
     def _set_sender(self, sender_id: str):
@@ -782,9 +786,10 @@ class TestLockGroupNotification:
         self.mock_ctx.chat_lock_manager = self.chat_lock_mgr
 
         self.handler = SystemHandler(self.mock_ctx)
-        self.handler.reply_message = MagicMock()
+        self.handler.reply_card = MagicMock()
+        self.handler.reply_text = MagicMock()
         self.handler.reply_error = MagicMock()
-        self.handler.send_message = MagicMock()
+        self.handler.send_card_to_chat = MagicMock()
 
     def test_lock_broadcasts_group_notification(self):
         """First lock triggers send_message broadcast."""
@@ -793,9 +798,9 @@ class TestLockGroupNotification:
         set_current_sender_name("Alice")
         with _mock_settings([ADMIN_ID]):
             self.handler._handle_lock_command("msg_1", "chat_1", "lock")
-        # reply_message is the personal reply; send_message is the broadcast
-        self.handler.reply_message.assert_called_once()
-        self.handler.send_message.assert_called_once()
+        # reply_card or reply_text is the personal reply; _send_card_to_chat is the broadcast
+        assert self.handler.reply_card.call_count + self.handler.reply_text.call_count == 1
+        assert self.handler.send_card_to_chat.call_count == 1
 
     def test_idempotent_lock_no_broadcast(self):
         """Already-locked → idempotent reply, no broadcast."""
@@ -805,8 +810,8 @@ class TestLockGroupNotification:
         with _mock_settings([ADMIN_ID]):
             self.chat_lock_mgr.lock_chat("chat_1", ADMIN_ID, sender_name="Alice")
             self.handler._handle_lock_command("msg_2", "chat_1", "lock")
-        self.handler.reply_message.assert_called_once()
-        self.handler.send_message.assert_not_called()
+        self.handler.reply_card.assert_called_once()
+        self.handler.send_card_to_chat.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -897,9 +902,10 @@ class TestForceReleaseHolderRaceGuard:
         self.mock_ctx.repo_lock_manager = self.repo_lock_mgr
 
         self.handler = SystemHandler(self.mock_ctx)
-        self.handler.reply_message = MagicMock()
+        self.handler.reply_card = MagicMock()
+        self.handler.reply_text = MagicMock()
         self.handler.reply_error = MagicMock()
-        self.handler.send_message = MagicMock()
+        self.handler.send_card_to_chat = MagicMock()
 
     def _set_sender(self, sender_id: str):
         from src.thread import set_current_sender_id

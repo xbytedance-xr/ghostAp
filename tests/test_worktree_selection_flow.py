@@ -231,7 +231,7 @@ def test_wt_command_enters_selection_mode_and_shows_tool_prompt():
     ]
     reply_mock = MagicMock()
     with patch.object(handler, "_get_available_worktree_tools", return_value=fake_tools), \
-         patch.object(handler, "reply_message", reply_mock):
+         patch.object(handler, "reply_card", reply_mock):
         handler.handle_worktree_command("msg1", "chat1", project)
 
     # 1) State: selection active + stage == tool_select
@@ -239,12 +239,11 @@ def test_wt_command_enters_selection_mode_and_shows_tool_prompt():
     assert state.selection.active is True
     assert state.selection.stage == "tool_select"
 
-    # 2) reply_message was called (not reply_error)
+    # 2) reply_card was called (not reply_error)
     reply_mock.assert_called_once()
     call_args = reply_mock.call_args
     assert call_args[0][0] == "msg1"  # message_id
     sent_card_json = call_args[0][1]  # card content
-    assert call_args[1]["msg_type"] == "interactive"
 
     # 3) Card contains tool selection action and tool names
     card_str = sent_card_json if isinstance(sent_card_json, str) else json.dumps(sent_card_json, ensure_ascii=False)
@@ -266,7 +265,7 @@ def test_wt_command_shows_single_ttadk_entry_in_top_level_tool_list():
     reply_mock = MagicMock()
 
     with patch.object(handler, "_get_available_worktree_tools", return_value=fake_tools), \
-         patch.object(handler, "reply_message", reply_mock):
+         patch.object(handler, "reply_card", reply_mock):
         handler.handle_worktree_command("msg-ttadk", "chat1", project)
 
     card_str = reply_mock.call_args[0][1]
@@ -291,7 +290,7 @@ def test_wt_command_top_level_tool_card_uses_product_entry_order():
     reply_mock = MagicMock()
 
     with patch.object(handler, "_get_available_worktree_tools", return_value=fake_tools), \
-         patch.object(handler, "reply_message", reply_mock):
+         patch.object(handler, "reply_card", reply_mock):
         handler.handle_worktree_command("msg-order", "chat1", project)
 
     card_str = reply_mock.call_args[0][1]
@@ -352,7 +351,7 @@ def test_worktree_select_tool_skips_model_selection_if_only_one_model():
     patch_message_mock = MagicMock(return_value=True)
     
     with patch.object(handler, "_get_models_for_tool", return_value=fake_models), \
-         patch.object(handler, "patch_message", patch_message_mock):
+         patch.object(handler, "update_card", patch_message_mock):
         
         handler.handle_worktree_select_tool("msg1", "chat1", project_id="p-skip", value=fake_tool_value)
         
@@ -391,7 +390,7 @@ def test_worktree_select_tool_shows_ttadk_subtool_card_for_aggregate_entry():
     handler._worktree_manager().start_selection(project)
 
     with patch.object(handler, "_get_ttadk_worktree_tools", return_value=fake_ttadk_tools), \
-         patch.object(handler, "patch_message", patch_message_mock):
+         patch.object(handler, "update_card", patch_message_mock):
         handler.handle_worktree_select_tool("msg-agg", "chat1", project_id="p-agg", value=fake_tool_value)
 
     state = WorktreeManager.get_state(project)
@@ -432,7 +431,7 @@ def test_worktree_select_tool_skips_model_selection_for_coco_even_with_multiple_
     patch_message_mock = MagicMock(return_value=True)
     
     with patch.object(handler, "_get_models_for_tool", return_value=fake_models), \
-         patch.object(handler, "patch_message", patch_message_mock):
+         patch.object(handler, "update_card", patch_message_mock):
         
         handler.handle_worktree_select_tool("msg2", "chat1", project_id="p-coco", value=fake_tool_value)
         

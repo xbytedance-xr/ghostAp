@@ -8,11 +8,11 @@ duplicating the underlying Feishu API calls.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
 import uuid
+import warnings
 from dataclasses import dataclass as _dataclass
 from typing import TYPE_CHECKING, Callable, Optional, Any
 
@@ -33,7 +33,6 @@ class CardActionContext:
 
 from ...card.styles import UI_TEXT
 from ..im_client import FeishuIMClient
-from ..message_formatter import FeishuMessageFormatter as fmt
 from ...utils.engine_identity import resolve_engine_identity
 from ...utils.errors import get_error_detail
 
@@ -44,9 +43,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Module-level set tracking which deprecation warnings have been emitted (once per method name).
-_DEPRECATION_WARNED: set[str] = set()
-
 
 class BaseHandler:
     """Shared utilities available to every handler."""
@@ -54,9 +50,6 @@ class BaseHandler:
     def __init__(self, ctx: "HandlerContext") -> None:
         self.ctx = ctx
         self.im_client = FeishuIMClient(ctx.api_client_factory, ctx.settings)
-        # Throttling state: message_id -> (content, task)
-        self._pending_patches: dict[str, str] = {}
-        self._patch_tasks: dict[str, asyncio.Task] = {}
         # Lock helper (composition — keeps BaseHandler focused on messaging)
         from .lock_helper import LockHelper
         self.lock_helper = LockHelper(self)
@@ -110,20 +103,20 @@ class BaseHandler:
             _, card_json_str = CardBuilder.build_error_card(exc, title=title)
 
             if origin_message_id:
-                self.reply_message(
-                    origin_message_id, card_json_str, msg_type="interactive", reply_in_thread=reply_in_thread
+                self.reply_card(
+                    origin_message_id, card_json_str, reply_in_thread=reply_in_thread
                 )
             else:
-                self.send_message(chat_id, card_json_str, msg_type="interactive")
+                self.send_card_to_chat(chat_id, card_json_str)
         except Exception as e:
             logger.error("发送错误卡片失败: %s", e, exc_info=True)
             # Fallback to simple text reply
             from ...utils.errors import get_error_detail
             fallback_detail = get_error_detail(exc)
             if origin_message_id:
-                self.reply_message(origin_message_id, f"❌ {title}: {fallback_detail}")
+                self.reply_text(origin_message_id, f"❌ {title}: {fallback_detail}")
             else:
-                self.send_message(chat_id, f"❌ {title}: {fallback_detail}")
+                self.send_text_to_chat(chat_id, f"❌ {title}: {fallback_detail}")
 
     def reply_error(
         self,
@@ -136,259 +129,232 @@ class BaseHandler:
         self.send_error_card(chat_id=chat_id or "unknown", exc=exc, title=title, origin_message_id=message_id)
 
     # ------------------------------------------------------------------
-    # Message sending
+    # New unified messaging API (replaces old reply_message / patch_message / send_message)
     # ------------------------------------------------------------------
-    async def _execute_throttled_patch(self, message_id: str, delay: float = 0.5):
-        """Async worker to execute delayed patch."""
+
+    # --- Deprecation stubs for removed methods ---
+
+    def reply_message(self, *args, **kwargs):
+        """已移除。"""
+        msg = "reply_message 已移除，请使用 reply_text（纯文本）或 reply_card（卡片）"
+        warnings.warn(msg, DeprecationWarning, stacklevel=2)
+        raise NotImplementedError(msg)
+
+    def patch_message(self, *args, **kwargs):
+        """已移除。"""
+        msg = "patch_message 已移除，请使用 update_card"
+        warnings.warn(msg, DeprecationWarning, stacklevel=2)
+        raise NotImplementedError(msg)
+
+    def send_message(self, *args, **kwargs):
+        """已移除。"""
+        msg = "send_message 已移除，请使用 send_card_to_chat 或 send_text_to_chat"
+        warnings.warn(msg, DeprecationWarning, stacklevel=2)
+        raise NotImplementedError(msg)
+
+    def reply_message_with_id(self, *args, **kwargs):
+        """已移除。"""
+        msg = "reply_message_with_id 已移除，请使用 reply_text 或 reply_card"
+        warnings.warn(msg, DeprecationWarning, stacklevel=2)
+        raise NotImplementedError(msg)
+
+    # --- Active API methods ---
+
+    def _resolve_origin(self, message_id: str) -> str:
+        """Best-effort resolve origin message for linking."""
         try:
-            if delay > 0:
-                await asyncio.sleep(delay)
+            origin = self.ctx.message_linker.resolve_origin(reply_message_id=message_id)
+            return origin or message_id
+        except Exception:
+            return message_id
 
-            # Remove task ref first to allow new tasks to be scheduled if this one is slow
-            # AND to avoid self-cancellation when calling patch_message below
-            if self._patch_tasks.get(message_id) == asyncio.current_task():
-                self._patch_tasks.pop(message_id, None)
+    def _link_reply_response(self, origin_message_id: str, reply_id: Optional[str]) -> None:
+        """Best-effort link a reply response to its origin."""
+        if reply_id and origin_message_id:
+            try:
+                self.ctx.message_linker.link_reply(origin_message_id, reply_id)
+            except Exception as e:
+                logger.warning("Failed to link reply %s → origin %s: %s", reply_id, origin_message_id, str(e))
 
-            # Pop content to send
-            content = self._pending_patches.pop(message_id, None)
-            if content:
-                self.patch_message(message_id, content, throttle=False)
-        except asyncio.CancelledError:
-            # Task cancelled, means likely superseded or immediate flush
-            pass
-        except Exception as e:
-            logger.error("异步更新消息异常: %s", e, exc_info=True)
-        finally:
-            # Cleanup task reference if it's still us
-            if self._patch_tasks.get(message_id) == asyncio.current_task():
-                self._patch_tasks.pop(message_id, None)
-
-    def reply_message(
+    def reply_text(
         self,
         message_id: str,
-        content,
-        msg_type: str = "text",
+        text: str,
         *,
-        origin_message_id: Optional[str] = None,
-        request_id: Optional[str] = None,
-        run_id: Optional[str] = None,
-        is_smart_mode: bool = False,
         reply_in_thread: Optional[bool] = None,
-        max_retries: Optional[int] = None,
-    ):
-        """Reply to *message_id*.  Thin wrapper that auto-resolves origin & request.
-
-        .. deprecated::
-            Legacy card delivery path. New card flows should use
-            ``CardSession → CardDelivery`` pipeline.
-            Planned removal: v2.0 (2026-Q3).
-        """
-        if "reply_message" not in _DEPRECATION_WARNED:
-            _DEPRECATION_WARNED.add("reply_message")
-            logger.warning(
-                "reply_message 已废弃，请迁移至 CardSession → CardDelivery 管线。"
-                "迁移方式：使用 CardSession.dispatch() 发送卡片事件，"
-                "参考 src/card/programming_adapter.py 中的实现模式。"
-            )
-        if origin_message_id is None:
-            try:
-                origin_message_id = self.ctx.message_linker.resolve_origin(reply_message_id=message_id)
-            except Exception as e:
-                logger.debug("Failed to resolve origin for message %s: %s", message_id, get_error_detail(e))
-                origin_message_id = None
-        origin_message_id = origin_message_id or message_id
-        request_id = request_id or self.ensure_request_id(origin_message_id)
-        return self.reply_message_with_id(
-            message_id,
-            content,
-            msg_type=msg_type,
-            origin_message_id=origin_message_id,
-            request_id=request_id,
-            run_id=run_id,
-            is_smart_mode=is_smart_mode,
-            reply_in_thread=reply_in_thread,
-            max_retries=max_retries,
-        )
-
-    def patch_message(
-        self, message_id: str, content: str, msg_type: str = "interactive",
-        max_retries: Optional[int] = None, throttle: bool = False,
-    ) -> bool:
-        """Update an existing message's content (e.g. updating a card).
-
-        .. deprecated::
-            Legacy card update path. New card flows should use
-            ``CardSession → CardDelivery`` pipeline.
-            Planned removal: v2.0 (2026-Q3).
+    ) -> Optional[str]:
+        """Reply with plain text to *message_id*.
 
         Args:
-            message_id: ID of the message to patch
-            content: New content (usually JSON string)
-            max_retries: Retry count for API failures
-            throttle: If True, delay sending to merge rapid updates (default 500ms window)
+            message_id: The Feishu message ID to reply to.
+            text: Plain text content to send. Must not be None or empty.
+            reply_in_thread: Whether to reply in thread. If None, uses
+                ``settings.default_reply_mode`` to determine.
+
+        Returns:
+            The sent message's message_id on success, or None on failure.
+
+        Raises:
+            No exceptions raised; errors are logged and None is returned.
         """
-        if "patch_message" not in _DEPRECATION_WARNED:
-            _DEPRECATION_WARNED.add("patch_message")
-            logger.warning(
-                "patch_message 已废弃，请迁移至 CardSession → CardDelivery 管线。"
-                "迁移方式：使用 CardDelivery.deliver() 替代直接 patch，"
-                "参考 src/card/delivery/engine.py 中的实现模式。"
-            )
-        if throttle:
-            # 1. Update pending content
-            self._pending_patches[message_id] = content
+        if text is None or text == "":
+            logger.warning("reply_text 收到空内容 (text=%r)，跳过发送", text)
+            return None
+        origin = self._resolve_origin(message_id)
+        request_id = self.ensure_request_id(origin)
+        ref_note = self.format_ref_note(origin, request_id, None)
+        text_val = str(text)
+        if ref_note:
+            text_val = f"{text_val}\n\n{ref_note}"
+        content_str = json.dumps({"text": text_val})
 
-            # 2. If task exists, do nothing (it will pick up latest content)
-            if message_id in self._patch_tasks:
-                return True
-
-            # 3. Schedule new task
-            try:
-                # We need an event loop. If called from sync context, this might fail unless we have one.
-                # Assuming BaseHandler is running in a process with an event loop (e.g. main loop).
-                loop = asyncio.get_running_loop()
-                task = loop.create_task(self._execute_throttled_patch(message_id))
-                self._patch_tasks[message_id] = task
-                return True
-            except RuntimeError:
-                logger.debug("No running loop for throttling, falling back to immediate patch")
-                pass
-
-        # If immediate (throttle=False), cancel any pending task to avoid race
-        if message_id in self._patch_tasks:
-            t = self._patch_tasks.pop(message_id)
-            t.cancel()
-        # Also clean pending patches since we are sending now
-        self._pending_patches.pop(message_id, None)
+        if reply_in_thread is None:
+            reply_in_thread = self.settings.default_reply_mode == "thread"
 
         try:
-            response = self.im_client.patch_message(message_id, content, max_retries=max_retries)
-
-            if response and response.success():
-                return True
-            return False
-        except Exception as e:
-            logger.error("更新消息不可恢复异常: %s", e, exc_info=True)
-            return False
-
-    def reply_message_with_id(
-        self,
-        message_id: str,
-        content,
-        msg_type: str = "text",
-        *,
-        origin_message_id: Optional[str] = None,
-        request_id: Optional[str] = None,
-        run_id: Optional[str] = None,
-        is_smart_mode: bool = False,
-        reply_in_thread: Optional[bool] = None,
-        max_retries: Optional[int] = None,
-    ) -> Optional[str]:
-        """Reply and return the response message_id (or None on failure)."""
-        try:
-            if origin_message_id is None:
-                try:
-                    origin_message_id = self.ctx.message_linker.resolve_origin(reply_message_id=message_id)
-                except Exception as e:
-                    logger.debug("Failed to resolve origin inside reply_message_with_id for %s: %s", message_id, get_error_detail(e))
-                    origin_message_id = None
-            origin_message_id = origin_message_id or message_id
-            request_id = request_id or self.ensure_request_id(origin_message_id)
-            ref_note = self.format_ref_note(origin_message_id, request_id, run_id)
-
-            # Normalize content to (msg_type, content_str)
-            if isinstance(content, tuple) and len(content) == 2:
-                msg_type = content[0]
-                content_str = content[1]
-            elif fmt.is_post_format(content):
-                msg_type = content[0]
-                content_str = content[1]
-            elif msg_type == "text":
-                text_val = str(content)
-                if ref_note:
-                    text_val = f"{text_val}\n\n{ref_note}"
-                content_str = json.dumps({"text": text_val})
-            else:
-                content_str = content
-
-            # Best-effort inject ref into interactive/post card JSON
-            content_str = self._inject_ref_note(content_str, msg_type, ref_note)
-
-            # 根据配置和模式决定是否使用话题回复
-            # 优先使用显式传入的 reply_in_thread 参数
-            if reply_in_thread is None:
-                if is_smart_mode:
-                    reply_in_thread = self.settings.smart_reply_mode == "thread"
-                else:
-                    reply_in_thread = self.settings.default_reply_mode == "thread"
-
             response = self.im_client.reply_message(
-                message_id, content_str, msg_type=msg_type, reply_in_thread=reply_in_thread, max_retries=max_retries
+                message_id, content_str, msg_type="text",
+                reply_in_thread=reply_in_thread,
             )
-
             if response and response.success() and response.data and response.data.message_id:
                 reply_id = response.data.message_id
-                try:
-                    self.ctx.message_linker.link_reply(origin_message_id, reply_id)
-                except Exception as e:
-                    logger.warning(
-                        "Failed to link reply %s to origin %s: %s", reply_id, origin_message_id, e, exc_info=True
-                    )
+                self._link_reply_response(origin, reply_id)
                 return reply_id
             return None
         except Exception as e:
-            logger.error("回复消息异常: %s", e, exc_info=True)
+            logger.error("reply_text 异常: %s", e, exc_info=True)
             return None
 
-    def send_message(
+    def reply_card(
+        self,
+        message_id: str,
+        card_content: str,
+        *,
+        reply_in_thread: Optional[bool] = None,
+    ) -> Optional[str]:
+        """Reply with an interactive card to *message_id*.
+
+        Args:
+            message_id: The Feishu message ID to reply to.
+            card_content: Card JSON string (CardKit v2 format with ``body.elements``
+                array). Will be normalized and have ref-note injected automatically.
+            reply_in_thread: Whether to reply in thread. If None, uses
+                ``settings.default_reply_mode`` to determine.
+
+        Returns:
+            The sent message's message_id on success, or None on failure.
+
+        Raises:
+            No exceptions raised; errors are logged and None is returned.
+        """
+        origin = self._resolve_origin(message_id)
+        request_id = self.ensure_request_id(origin)
+        ref_note = self.format_ref_note(origin, request_id, None)
+        content_str = self._inject_ref_note(card_content, "interactive", ref_note)
+
+        if reply_in_thread is None:
+            reply_in_thread = self.settings.default_reply_mode == "thread"
+
+        try:
+            response = self.im_client.reply_message(
+                message_id, content_str, msg_type="interactive",
+                reply_in_thread=reply_in_thread,
+            )
+            if response and response.success() and response.data and response.data.message_id:
+                reply_id = response.data.message_id
+                self._link_reply_response(origin, reply_id)
+                return reply_id
+            return None
+        except Exception as e:
+            logger.error("reply_card 异常: %s", e, exc_info=True)
+            return None
+
+    def update_card(self, message_id: str, card_content: str) -> bool:
+        """Update an existing card message in-place.
+
+        Args:
+            message_id: The message_id of the card to update.
+            card_content: New card JSON string (CardKit v2 format).
+
+        Returns:
+            True on success, False on failure.
+
+        Raises:
+            No exceptions raised; errors are logged and False is returned.
+        """
+        try:
+            response = self.im_client.patch_message(message_id, card_content)
+            return bool(response and response.success())
+        except Exception as e:
+            logger.error("update_card 异常: %s", e, exc_info=True)
+            return False
+
+    def send_card_to_chat(
         self,
         chat_id: str,
-        content: str,
-        msg_type: str = "text",
+        card_content: str,
         *,
         origin_message_id: Optional[str] = None,
         request_id: Optional[str] = None,
-        run_id: Optional[str] = None,
-        max_retries: Optional[int] = None,
     ) -> Optional[str]:
-        """Send a new message to *chat_id* (not a reply)."""
+        """Send a card to *chat_id* (not a reply).
+
+        Args:
+            chat_id: The Feishu chat_id to send the card to.
+            card_content: Card JSON string (CardKit v2 format with ``body.elements``
+                array). Will have ref-note injected automatically.
+            origin_message_id: Optional original message_id for response linking.
+            request_id: Optional request_id for ref-note generation.
+
+        Returns:
+            The sent message's message_id on success, or None on failure.
+
+        Raises:
+            No exceptions raised; errors are logged and None is returned.
+        """
         try:
-            ref_note = self.format_ref_note(origin_message_id, request_id, run_id)
-            content_str = content
-            if msg_type == "text" and ref_note:
-                try:
-                    obj = json.loads(content)
-                    if isinstance(obj, dict) and "text" in obj:
-                        obj["text"] = f"{obj['text']}\n\n{ref_note}"
-                        content_str = json.dumps(obj, ensure_ascii=False)
-                    else:
-                        content_str = json.dumps({"text": f"{content}\n\n{ref_note}"}, ensure_ascii=False)
-                except Exception:
-                    content_str = json.dumps({"text": f"{content}\n\n{ref_note}"}, ensure_ascii=False)
-            else:
-                content_str = self._inject_ref_note(content_str, msg_type, ref_note)
-
+            ref_note = self.format_ref_note(origin_message_id, request_id, None)
+            content_str = self._inject_ref_note(card_content, "interactive", ref_note)
             response = self.im_client.send_message(
-                "chat_id", chat_id, content_str, msg_type=msg_type, max_retries=max_retries
+                "chat_id", chat_id, content_str, msg_type="interactive",
             )
-
             if response and response.success() and response.data and response.data.message_id:
                 mid = response.data.message_id
                 if origin_message_id:
-                    try:
-                        self.ctx.message_linker.link_reply(origin_message_id, mid)
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to link new message %s to origin %s: %s", mid, origin_message_id, e, exc_info=True
-                        )
+                    self._link_reply_response(origin_message_id, mid)
                 return mid
             return None
         except Exception as e:
-            logger.error("发送消息异常: %s", e, exc_info=True)
+            logger.error("send_card_to_chat 异常: %s", e, exc_info=True)
+            return None
+
+    def send_text_to_chat(self, chat_id: str, text: str) -> Optional[str]:
+        """Send plain text to *chat_id* (not a reply).
+
+        Args:
+            chat_id: The Feishu chat_id to send text to.
+            text: Plain text content to send.
+
+        Returns:
+            The sent message's message_id on success, or None on failure.
+
+        Raises:
+            No exceptions raised; errors are logged and None is returned.
+        """
+        try:
+            content_str = json.dumps({"text": str(text)})
+            response = self.im_client.send_message(
+                "chat_id", chat_id, content_str, msg_type="text",
+            )
+            if response and response.success() and response.data and response.data.message_id:
+                return response.data.message_id
+            return None
+        except Exception as e:
+            logger.error("send_text_to_chat 异常: %s", e, exc_info=True)
             return None
 
     # ------------------------------------------------------------------
-    # Ref-note injection (shared by reply_message_with_id and send_message)
+    # Ref-note injection (shared by reply_text / reply_card / send_card_to_chat)
     # ------------------------------------------------------------------
     @staticmethod
     def _normalize_interactive_card_content(content_str: str) -> str:
@@ -465,9 +431,9 @@ class BaseHandler:
                                     break
                             if injected:
                                 break
-                            if not injected:
-                                blocks.append([{"tag": "md", "text": f"---\n{ref_note}"}])
-                            return json.dumps(post, ensure_ascii=False)
+                        if not injected:
+                            blocks.append([{"tag": "md", "text": f"---\n{ref_note}"}])
+                        return json.dumps(post, ensure_ascii=False)
             except Exception as e:
                 logger.warning("Failed to inject ref note into post content: %s", e, exc_info=True)
 
@@ -680,7 +646,7 @@ class BaseHandler:
                     engine_name=engine_name,
                     show_buttons=False,
                 )
-                self.send_message(chat_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id)
+                self.send_card_to_chat(chat_id, card_content, origin_message_id=message_id, request_id=request_id)
             except Exception as e:
                 logger.error("Failed to send rate limit notification: %s", e, exc_info=True)
 

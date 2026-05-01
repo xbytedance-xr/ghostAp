@@ -109,24 +109,15 @@ class TestOptimizationTraceUI(unittest.TestCase):
         ctx = MagicMock()
         handler = BaseHandler(ctx)
 
-        # Mock send_error_card (it calls CardBuilder internally)
-        # We want to verify it calls reply_message with correct structure
+        # reply_error now delegates to send_error_card, which calls reply_card internally.
+        # We mock send_error_card to verify reply_error passes the right args.
+        handler.send_error_card = MagicMock()
 
-        with patch("src.card.CardBuilder.build_error_card") as mock_build:
-            mock_build.return_value = ("interactive", '{"card": "error"}')
-            handler.reply_message = MagicMock()
+        handler.reply_error("msg_1", "Something went wrong", title="Error Title")
 
-            handler.reply_error("msg_1", "Something went wrong", title="Error Title")
-
-            mock_build.assert_called_once()
-            args = mock_build.call_args
-            # args[0] is exc, args[1] is title
-            self.assertEqual(args[0][0], "Something went wrong")
-            self.assertEqual(args[1]["title"], "Error Title")
-
-            handler.reply_message.assert_called_once_with(
-                "msg_1", '{"card": "error"}', msg_type="interactive", reply_in_thread=None
-            )
+        handler.send_error_card.assert_called_once_with(
+            chat_id="unknown", exc="Something went wrong", title="Error Title", origin_message_id="msg_1"
+        )
 
     def test_handler_error_refactoring(self):
         """Verify that ProjectHandler uses reply_error."""

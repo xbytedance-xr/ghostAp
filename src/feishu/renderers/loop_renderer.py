@@ -12,7 +12,7 @@ from ...loop_engine.models import (
 )
 from ...utils.text import append_duration_to_title
 from ..emoji import EmojiReaction
-from .base import BaseRenderer, _create_engine_sender
+from .base import BaseRenderer, _create_direct_session
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
@@ -43,19 +43,19 @@ class LoopRenderer(BaseRenderer):
         )
         reporter = self.ctx.loop_reporter
 
-        sender = _create_engine_sender(
-            self.handler, message_id, chat_id,
-            initial_message_id=None,
-            payload_guard=self._check_and_truncate_payload,
-        )
+        # Mutable container: session can be replaced on iteration/cycle boundaries
+        _session = [_create_direct_session(self.handler, chat_id, message_id)]
 
         # Calculate loop_project_id once for UI state lookups in this closure
         loop_project_id = project.project_id if project else self.handler.get_working_dir(chat_id)
 
-        def _send_loop_message(
-            card_content: str, msg_type: str = "interactive", is_update: bool = False, throttle: bool = False
-        ):
-            sender.send(card_content, msg_type, is_update, throttle, request_id)
+        def _send_loop_message(card_content: str, msg_type: str = "interactive", new_card: bool = False):
+            """Send loop message. If new_card=True, close current session and create a new one."""
+            if new_card:
+                _session[0].close()
+                _session[0] = _create_direct_session(self.handler, chat_id, message_id)
+            card_content = self._check_and_truncate_payload(card_content)
+            _session[0].send(card_content)
 
         def on_analyzing_done(loop_project: LoopProject):
             # View State Update: Status
@@ -73,7 +73,7 @@ class LoopRenderer(BaseRenderer):
                 ),
             )
             # This is effectively the first "status" card we track. Immediate flush.
-            _send_loop_message(card_content, msg_type, is_update=False, throttle=False)
+            _send_loop_message(card_content, msg_type)
 
         def on_iteration_start(current: int, max_iterations: int):
             # View State Update: Status
@@ -135,7 +135,7 @@ class LoopRenderer(BaseRenderer):
             )
             # Iteration start: updates existing card, can be throttled or immediate.
             # Usually start is significant, so let's flush immediately to show user "it started"
-            _send_loop_message(card_content, msg_type, is_update=True, throttle=False)
+            _send_loop_message(card_content, msg_type)
 
         def on_iteration_done(iteration: int, record: IterationRecord):
             # View State Update: Iteration Done
@@ -187,8 +187,7 @@ class LoopRenderer(BaseRenderer):
                         show_buttons=False,
                     ),
                 )
-                _send_loop_message(card_content, msg_type, is_update=False, throttle=False)
-                sender.current_message_id = None
+                _send_loop_message(card_content, msg_type, new_card=True)
 
         def on_review_done(iteration: int, review: ReviewResult):
             # View State Update: Review Done
@@ -245,7 +244,7 @@ class LoopRenderer(BaseRenderer):
                 ),
             )
             # Review done: immediate flush
-            _send_loop_message(card_content, msg_type, is_update=True, throttle=False)
+            _send_loop_message(card_content, msg_type)
 
         def on_project_done(loop_project: LoopProject):
             # View State Update: Status (completed)
@@ -276,7 +275,7 @@ class LoopRenderer(BaseRenderer):
                 ),
             )
             # Project done: independent message
-            _send_loop_message(card_content, msg_type, is_update=False, throttle=False)
+            _send_loop_message(card_content, msg_type, new_card=True)
             self.handler.add_reaction(message_id, EmojiReaction.on_multi_task_done())
 
         def on_error(error: str):
@@ -312,7 +311,7 @@ class LoopRenderer(BaseRenderer):
                     terminal_state="failed",
                 ),
             )
-            _send_loop_message(card_content, msg_type, is_update=True)
+            _send_loop_message(card_content, msg_type)
             self.handler.add_reaction(message_id, EmojiReaction.on_error())
 
         return LoopEngineCallbacks(
@@ -360,7 +359,7 @@ class LoopRenderer(BaseRenderer):
                         show_buttons=False,
                     ),
                 )
-                self.handler.reply_message(message_id, card_content, msg_type=msg_type)
+                self.handler.reply_card(message_id, card_content)
                 return
 
         # Dispatch rendering based on view_mode

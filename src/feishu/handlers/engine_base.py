@@ -73,7 +73,7 @@ class BaseEngineHandler(BaseHandler):
             self._show_status(message_id, chat_id, project=project)
             return
 
-        self.reply_message(message_id, f"当前没有正在执行的 {self._get_engine_name_prefix()} 任务")
+        self.reply_text(message_id, f"当前没有正在执行的 {self._get_engine_name_prefix()} 任务")
 
     def _resume_engine_generic(
         self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, status_paused_enum: Any = None
@@ -91,7 +91,7 @@ class BaseEngineHandler(BaseHandler):
             if len(paused) == 1:
                 engine = paused[0]
             elif len(paused) > 1:
-                self.reply_message(
+                self.reply_text(
                     message_id,
                     f"⚠️ 有多个项目存在可恢复的 {self._get_engine_name_prefix()} 任务，请查看状态后切换项目再恢复",
                 )
@@ -138,7 +138,7 @@ class BaseEngineHandler(BaseHandler):
                 )
             self._show_status(message_id, chat_id, project=project)
         else:
-            self.reply_message(message_id, f"当前没有可恢复的 {self._get_engine_name_prefix()} 任务")
+            self.reply_text(message_id, f"当前没有可恢复的 {self._get_engine_name_prefix()} 任务")
 
     def _stop_engine_generic(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         """Generic stop logic."""
@@ -154,13 +154,13 @@ class BaseEngineHandler(BaseHandler):
             if len(running) == 1:
                 engine = running[0]
             elif len(running) > 1:
-                self.reply_message(
+                self.reply_text(
                     message_id, f"⚠️ 有多个项目正在执行 {self._get_engine_name_prefix()} 任务，请先切换项目再停止"
                 )
                 return
 
         if not engine or not engine.is_running:
-            self.reply_message(message_id, f"📊 当前没有正在执行的 {self._get_engine_name_prefix()} 任务")
+            self.reply_text(message_id, f"📊 当前没有正在执行的 {self._get_engine_name_prefix()} 任务")
             return
 
         engine.stop()
@@ -225,7 +225,7 @@ class BaseEngineHandler(BaseHandler):
                     ),
                 )
                 try:
-                    self.reply_message(message_id, err_card, msg_type=err_msg_type)
+                    self.reply_card(message_id, err_card)
                 except Exception as send_err:
                     logger.error(
                         "%s Engine 发送错误卡片失败: %s", self._get_engine_name_prefix(), send_err
@@ -391,4 +391,4 @@ class BaseEngineHandler(BaseHandler):
 
             # Send simple error reply for lifecycle actions
             err_detail = get_error_detail(e)
-            self.reply_message(message_id, f"❌ {action_name}失败: {err_detail}")
+            self.reply_text(message_id, f"❌ {action_name}失败: {err_detail}")

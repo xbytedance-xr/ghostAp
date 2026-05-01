@@ -1,7 +1,11 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
+## 2026-05-01
+- **Renderer 迁移 + BaseHandler API 统一（B-016-6 / B-016-12）** — 三 Renderer（Deep/Loop/Spec）从 EngineCardSender 迁移到 DirectCardSession（新增 _StreamThrottle + _create_direct_session）；BaseHandler 新增 5 个统一 API 方法（reply_text/reply_card/update_card/send_card_to_chat/send_text_to_chat）并迁移 4 个 handler 文件调用点；旧方法保留供基础设施使用；Backlog B-016-6/B-016-12 清零；4070 passed 零回归 → [详细记录](2026-05-01.md)
+
 ## 2026-04-30
+- **卡片系统旧路径全量迁移：测试修复 + Backlog 清理** — 13 个测试文件约 60+ 个测试用例修复（mock 从旧 API 迁移到新 API）；B-016-6 可行性评估（Deferred：重大架构变更）；Backlog 清理（10 个已完成条目删除，保留 2 个阻塞/延后条目）；4073 passed 零回归 → [详细记录](2026-04-30.md)
 - **维护周期 Round 2：架构审查加固 + UI/UX 一致性 + Bug 修复** — Lock ordering 修复 + TOCTOU 引用计数 + CPython _is_owned()→threading.local() + cancelled icon/color/文案 + retry _cancel_event.clear() + deprecation logger.warning 模式 + leaf lock 注解标准化 + 2 个测试修复；4073 passed 零失败 → [详细记录](2026-04-30.md)
 - **卡片重构审查：单栈未收口与内容刷新缺口** — 结合新三层卡片实现、旧 streaming 实现和全项目接线复核，确认存在高风险正确性问题（plan/reasoning 更新可能被跳过、编程模式 fallback 可能丢最终结果、分页 shrink 残页）及中低优先级架构债务（新旧三套路径并存、approval 事件未接线、测试缺口） → [详细记录](2026-04-30.md)
 - **维护周期：Backlog 清理 + 代码审计加固** — Backlog B-013/B-014/B-017/B-018 清零 + 代码审计 7 项加固：dispatcher `_cancel_unit`+`safe_invoke` 统一（B-014）、ACP manager per-key lock TOCTOU 防护 + keepalive 注释、CardDelivery `_lock` 保护 deliver/close、programming_adapter `_schedule_flush` 断言、ttadk_cli subprocess terminate+wait 防僵尸、sync_adapter 关键路径 logger.debug+exc_info 增强、DeprecationWarning 运行时警告（reply_message/patch_message/EngineCardSender）；新增 tests/test_dispatcher_cancel_unit.py(6 tests) + tests/test_session_key_lock.py(3 tests)；Backlog B-016 标记 In Progress + deprecated roadmap；4059 passed（5 pre-existing deselected）零回归 → [详细记录](2026-04-30.md)

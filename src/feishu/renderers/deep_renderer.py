@@ -11,7 +11,7 @@ from ...deep_engine.models import DeepProject, DeepProjectStatus
 from ...project import ContextSourceMode
 from ...utils.text import append_duration_to_title
 from ..emoji import EmojiReaction
-from .base import BaseRenderer, _create_engine_sender
+from .base import BaseRenderer, _StreamThrottle, _create_direct_session
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
@@ -43,11 +43,8 @@ class DeepRenderer(BaseRenderer):
         )
         reporter = self.ctx.progress_reporter
 
-        sender = _create_engine_sender(
-            self.handler, message_id, chat_id,
-            initial_message_id=initial_message_id,
-            payload_guard=self._check_and_truncate_payload,
-        )
+        session = _create_direct_session(self.handler, chat_id, message_id)
+        throttle = _StreamThrottle(self.settings)
 
         renderer = ACPEventRenderer()
 
@@ -55,11 +52,11 @@ class DeepRenderer(BaseRenderer):
         _last_structured = [None]  # mutable container for closure
         _footer_status = [None]  # mutable container for footer_status tracking
 
-        def _send_deep_message(
-            card_content: str, msg_type: str = "interactive", is_update: bool = False, throttle: bool = False
-        ):
-            """发送 deep 任务消息，委托给 EngineCardSender 处理（含重锚逻辑）。"""
-            sender.send(card_content, msg_type, is_update, throttle, request_id)
+        def _send_deep_message(card_content: str, msg_type: str = "interactive"):
+            """发送 deep 任务消息，委托给 DirectCardSession 处理。"""
+            # Apply payload guard before sending
+            card_content = self._check_and_truncate_payload(card_content)
+            session.send(card_content)
 
         def on_analyzing_done(deep_project: DeepProject):
             content = f"🚀 ACP Deep 执行开始\n\n📂 **{deep_project.name}**\n🔗 路径: `{deep_project.root_path}`"
@@ -74,7 +71,7 @@ class DeepRenderer(BaseRenderer):
                 ),
             )
             # Critical state update: flush immediately
-            _send_deep_message(card_content, msg_type, is_update=True, throttle=False)
+            _send_deep_message(card_content, msg_type)
 
         def _get_engine():
             rp = root_path or (project.root_path if project else "")
@@ -92,7 +89,7 @@ class DeepRenderer(BaseRenderer):
         def _maybe_stream_update(force: bool = False) -> None:
             text_len = len(renderer.text_content or "")
 
-            if not sender.check_throttle(text_len, force):
+            if not throttle.check_throttle(text_len, force):
                 return
 
             plan_view = renderer.render_plan_view()
@@ -167,8 +164,8 @@ class DeepRenderer(BaseRenderer):
                 ),
             )
             # Streaming updates: use throttling
-            _send_deep_message(card_content, msg_type, is_update=True, throttle=True)
-            sender.update_stream_state(text_len)
+            _send_deep_message(card_content, msg_type)
+            throttle.update_stream_state(text_len)
 
         def on_event(event: ACPEvent):
             """Process ACP events and update streaming display."""
@@ -189,7 +186,7 @@ class DeepRenderer(BaseRenderer):
             # 1) Plan updates: send plan-only view (throttled)
             if event.event_type == ACPEventType.PLAN_UPDATE and event.plan:
                 plan_content = renderer.render_plan_view()
-                if sender.check_plan_throttle(plan_content):
+                if throttle.check_plan_throttle(plan_content):
                     engine = _get_engine()
                     if not engine or not engine.project:
                         return
@@ -229,8 +226,8 @@ class DeepRenderer(BaseRenderer):
                         ),
                     )
                     # Plan updates: use throttling
-                    _send_deep_message(card_content, msg_type, is_update=True, throttle=True)
-                    sender.update_plan_state(plan_content)
+                    _send_deep_message(card_content, msg_type)
+                    throttle.update_plan_state(plan_content)
 
             # 2) Stream text/tool progress so users can see "分析→计划→执行" 过程
             if event.event_type in (
@@ -283,7 +280,7 @@ class DeepRenderer(BaseRenderer):
                 ),
             )
             # Final completion: immediate flush
-            _send_deep_message(card_content, msg_type, is_update=True, throttle=False)
+            _send_deep_message(card_content, msg_type)
             self.handler.add_reaction(message_id, EmojiReaction.on_multi_task_done())
 
             if project:
@@ -338,7 +335,7 @@ class DeepRenderer(BaseRenderer):
                 ),
             )
             # Error state: immediate flush
-            _send_deep_message(card_content, msg_type, is_update=True, throttle=False)
+            _send_deep_message(card_content, msg_type)
             self.handler.add_reaction(message_id, EmojiReaction.on_error())
 
         return DeepEngineCallbacks(
@@ -382,9 +379,7 @@ class DeepRenderer(BaseRenderer):
                         show_buttons=False,
                     ),
                 )
-                self.handler.reply_message(
-                    message_id, card_content, msg_type=msg_type, origin_message_id=origin_message_id
-                )
+                self.handler.reply_card(message_id, card_content)
                 return
 
         engine_name = engine.engine_name

@@ -27,7 +27,7 @@ class TestLogNoise(unittest.TestCase):
         handler.get_working_dir = MagicMock(return_value="/tmp")
         handler.ensure_request_id = MagicMock(return_value="req_id")
         handler.get_engine_name = MagicMock(return_value="Deep(Coco)")
-        handler.reply_message = MagicMock()
+        handler.reply_text = MagicMock()
         handler.add_reaction = MagicMock()
         handler.create_rate_limit_callback = MagicMock()
 
@@ -83,10 +83,10 @@ class TestLogNoise(unittest.TestCase):
         handler.get_working_dir = MagicMock(return_value="/tmp")
         handler.ensure_request_id = MagicMock(return_value="req_id")
         handler.get_engine_name = MagicMock(return_value="Coco")
-        handler.reply_message = MagicMock()
+        handler.reply_text = MagicMock()
         handler.add_reaction = MagicMock()
         handler.create_rate_limit_callback = MagicMock()
-        handler.send_message = MagicMock()  # used in error handling
+        handler.send_card_to_chat = MagicMock()  # used in error handling
 
         # Mock CardBuilder
         with patch("src.feishu.handlers.loop.CardBuilder") as mock_card_builder:
@@ -125,7 +125,7 @@ class TestLogNoise(unittest.TestCase):
         handler = DeepHandler(mock_ctx)
 
         # Mock dependencies
-        handler.reply_message = MagicMock()
+        handler.reply_text = MagicMock()
         mock_ctx.deep_engine_manager.get.return_value = MagicMock()  # engine exists
         mock_engine = mock_ctx.deep_engine_manager.get.return_value
         mock_engine.is_running = True
@@ -146,7 +146,7 @@ class TestLogNoise(unittest.TestCase):
             mock_logger.error.assert_not_called()
 
             # Verify error message sent to user (get_error_detail formats TimeoutError)
-            handler.reply_message.assert_called_with("mid", "❌ stop失败: 操作超时 (Stop timeout)")
+            handler.reply_text.assert_called_with("mid", "❌ stop失败: 操作超时 (Stop timeout)")
 
     def test_spec_handler_timeout_warning(self):
         """验证 SpecHandler 将 TimeoutError 记录为 warning"""
@@ -170,10 +170,10 @@ class TestLogNoise(unittest.TestCase):
         handler.get_working_dir = MagicMock(return_value="/tmp")
         handler.ensure_request_id = MagicMock(return_value="req_id")
         handler.get_engine_name = MagicMock(return_value="Coco")
-        handler.reply_message = MagicMock()
+        handler.reply_text = MagicMock()
         handler.add_reaction = MagicMock()
         handler.create_rate_limit_callback = MagicMock()
-        handler.send_message = MagicMock()
+        handler.send_card_to_chat = MagicMock()
 
         # Mock CardBuilder
         with patch("src.feishu.handlers.spec.CardBuilder") as mock_card_builder:
@@ -262,7 +262,7 @@ class TestLogNoise(unittest.TestCase):
             client._is_duplicate_message = MagicMock(return_value=False)
             client._chat_lock_gate = MagicMock()
             client._chat_lock_gate.check = MagicMock(return_value=False)
-            client._reply_message = MagicMock()
+            client._reply_text = MagicMock()
 
             # Mock _get_image_handler to return a mock that raises TimeoutError on parse_message
             mock_image_handler = MagicMock()
@@ -281,8 +281,8 @@ class TestLogNoise(unittest.TestCase):
                 mock_logger.error.assert_not_called()
 
                 # Verify user was notified about timeout
-                client._reply_message.assert_called_once()
-                reply_text = str(client._reply_message.call_args)
+                client._reply_text.assert_called_once()
+                reply_text = str(client._reply_text.call_args)
                 self.assertIn("超时", reply_text)
 
     def test_ws_client_card_action_timeout_warning(self):
@@ -329,7 +329,7 @@ class TestLogNoise(unittest.TestCase):
             client._chat_lock_gate = MagicMock()
             client._chat_lock_gate.check_card_action = MagicMock(return_value=False)
             client._action_dispatcher.dispatch.side_effect = asyncio.TimeoutError("Timeout in dispatch")
-            client._reply_message = MagicMock()
+            client._reply_text = MagicMock()
 
             with patch("src.feishu.ws_client.logger") as mock_logger:
                 client._process_card_action_async(mock_data)
@@ -343,8 +343,8 @@ class TestLogNoise(unittest.TestCase):
                 mock_logger.error.assert_not_called()
 
                 # Verify user was notified about timeout
-                client._reply_message.assert_called()
-                reply_text = str(client._reply_message.call_args)
+                client._reply_text.assert_called()
+                reply_text = str(client._reply_text.call_args)
                 self.assertIn("超时", reply_text)
 
 

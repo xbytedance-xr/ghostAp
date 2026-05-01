@@ -143,14 +143,12 @@ def test_spec_error_card_contains_keywords_and_retry_button():
 
     sent = {}
 
-    def _send_message(chat_id, card_content, msg_type, origin_message_id=None, request_id=None):
+    def _reply_card(message_id, card_content, **kwargs):
         sent["card"] = card_content
-        sent["msg_type"] = msg_type
         return "m2"
 
-    mock_handler.send_message = MagicMock(side_effect=_send_message)
-    mock_handler.reply_message = MagicMock(return_value="m2")
-    mock_handler.patch_message = MagicMock(return_value=False)
+    mock_handler.reply_card = MagicMock(side_effect=_reply_card)
+    mock_handler.update_card = MagicMock(return_value=True)
     mock_handler.add_reaction = MagicMock()
 
     renderer = SpecRenderer(mock_handler)
@@ -194,9 +192,9 @@ def test_spec_status_card_shows_resume_when_paused():
     mock_handler.settings = MagicMock()
     mock_handler.settings.card_deep_compact_default = False
     mock_handler.settings.engine_timeout_warning_seconds = 999999
-    mock_handler.patch_message = MagicMock(return_value=False)
-    mock_handler.reply_message = MagicMock()
-    mock_handler.send_message = MagicMock()
+    mock_handler.update_card = MagicMock(return_value=False)
+    mock_handler.reply_text = MagicMock()
+    mock_handler.send_card_to_chat = MagicMock()
 
     sent = {}
 
@@ -384,9 +382,8 @@ def test_cycle_done_card_no_buttons():
     callbacks = renderer.create_spec_callbacks("mid", "cid", project, engine_name="Coco")
 
     sent_cards: list[str] = []
-    renderer_handler.patch_message = MagicMock(return_value=True)
-    renderer_handler.send_message = MagicMock(side_effect=lambda *a, **kw: (sent_cards.append(a[1]) or "new_msg_id"))
-    renderer_handler.reply_message = MagicMock(side_effect=lambda *a, **kw: (sent_cards.append(a[1]) or "new_msg_id"))
+    renderer_handler.reply_card = MagicMock(side_effect=lambda *a, **kw: (sent_cards.append(a[1]) or "new_msg_id"))
+    renderer_handler.update_card = MagicMock(return_value=True)
 
     cycle = SpecCycle(cycle_number=1)
     cycle.status = "completed"

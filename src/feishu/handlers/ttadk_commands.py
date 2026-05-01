@@ -32,8 +32,8 @@ class TTADKCommandsMixin:
     """Mixin providing TTADK tool/model selection, yolo toggle, and diagnostics.
 
     Intended for use with ``SystemHandler(... TTADKCommandsMixin, ..., BaseHandler)``.
-    All ``self.*`` helper methods (``reply_error``, ``reply_message``, ``send_message``,
-    ``patch_message``, ``settings``, ``ctx``, ``project_manager``, ``get_working_dir``,
+    All ``self.*`` helper methods (``reply_text``, ``reply_card``, ``update_card``,
+    ``send_card_to_chat``, ``send_text_to_chat``, ``settings``, ``ctx``, ``project_manager``, ``get_working_dir``,
     ``get_handler``, ``mode_manager``) are resolved via MRO from ``BaseHandler``.
 
     TTADK state fields (``_ttadk_flow_start_times``, ``_ttadk_flow_last_duration_ms``,
@@ -61,7 +61,7 @@ class TTADKCommandsMixin:
             return
 
         msg_type, card_content = CardBuilder.build_ttadk_refresh_result_card(tool, result)
-        self.reply_message(message_id, card_content, msg_type=msg_type)
+        self.reply_card(message_id, card_content)
 
     def _maybe_log_ttadk_cwd(self, *, where: str, raw_cwd: Optional[str], normalized_cwd: Optional[str]) -> None:
         """TTADK cwd 归一化的可观测日志（debug + 配置开关）。"""
@@ -225,7 +225,7 @@ class TTADKCommandsMixin:
 
     def _reply_ttadk_load_hint(self, message_id: str, text: str, project_id: Optional[str] = None) -> None:
         msg_type, card_content = CardBuilder.build_ttadk_soft_failure_card_for(text, project_id=project_id)
-        self.reply_message(message_id, card_content, msg_type=msg_type)
+        self.reply_card(message_id, card_content)
 
     def handle_ttadk_command(
         self,
@@ -277,7 +277,7 @@ class TTADKCommandsMixin:
         msg_type, card_content = CardBuilder.build_ttadk_combined_select_card(
             result.tools, models_by_tool, project_id, yolo_enabled=yolo_enabled, current_tool=current_tool, current_model=current_model
         )
-        self.reply_message(message_id, card_content, msg_type=msg_type)
+        self.reply_card(message_id, card_content)
 
     def show_ttadk_info(self, message_id: str, chat_id: str):
         manager = get_ttadk_manager()
@@ -294,7 +294,7 @@ class TTADKCommandsMixin:
         content = SystemBuilder.build_ttadk_info_content(
             current_tool, current_model, tool_desc, model_desc
         )
-        self.reply_message(message_id, content)
+        self.reply_text(message_id, content)
 
     def handle_select_ttadk_tool(self, message_id: str, chat_id: str, tool_name: str, project_id: Optional[str] = None):
         manager = get_ttadk_manager()
@@ -345,16 +345,16 @@ class TTADKCommandsMixin:
             msg = UI_TEXT["system_ttadk_model_warning"].format(
                 warnings=w_str
             )
-            self.reply_message(message_id, msg)
+            self.reply_text(message_id, msg)
 
         yolo_enabled = self._resolve_ttadk_yolo_enabled(chat_id, project=project, project_id=project_id)
         current_model = project.ttadk_model_name if project else None
         msg_type, card_content = CardBuilder.build_ttadk_model_select_card(
             result.models, tool_name, project_id, yolo_enabled=yolo_enabled, current_model=current_model
         )
-        patched = self.patch_message(message_id, card_content)
+        patched = self.update_card(message_id, card_content)
         if not patched:
-            self.reply_message(message_id, card_content, msg_type=msg_type)
+            self.reply_card(message_id, card_content)
 
     def handle_select_ttadk_model(
         self,
@@ -369,7 +369,7 @@ class TTADKCommandsMixin:
         if not silent:
             # 立即给予用户反馈，避免"没反应"
             msg_type, card_content = CardBuilder.build_switching_status_card(tool_name, model_name)
-            self.reply_message(message_id, card_content, msg_type=msg_type)
+            self.reply_card(message_id, card_content)
 
         manager = get_ttadk_manager()
         logger.info(
@@ -475,9 +475,9 @@ class TTADKCommandsMixin:
         msg_type, card_content = CardBuilder.build_ttadk_model_select_card(
             result.models or [], tool, project_id, yolo_enabled=yolo_enabled, current_model=current_model
         )
-        patched = self.patch_message(message_id, card_content)
+        patched = self.update_card(message_id, card_content)
         if not patched:
-            self.reply_message(message_id, card_content, msg_type=msg_type)
+            self.reply_card(message_id, card_content)
 
     def handle_refresh_ttadk_models(self, message_id: str, chat_id: str, tool_name: str, project_id: Optional[str] = None):
         manager = get_ttadk_manager()
@@ -492,7 +492,7 @@ class TTADKCommandsMixin:
 
         tool = (tool_name or manager.get_current_tool() or "").strip().lower()
         if not tool:
-            self.reply_message(message_id, UI_TEXT["system_ttadk_no_tool"])
+            self.reply_text(message_id, UI_TEXT["system_ttadk_no_tool"])
             return
 
         try:
@@ -507,9 +507,9 @@ class TTADKCommandsMixin:
         msg_type, card_content = CardBuilder.build_ttadk_model_select_card(
             result.models or [], tool, project_id, yolo_enabled=yolo_enabled, current_model=current_model
         )
-        patched = self.patch_message(message_id, card_content)
+        patched = self.update_card(message_id, card_content)
         if not patched:
-            self.reply_message(message_id, card_content, msg_type=msg_type)
+            self.reply_card(message_id, card_content)
 
     def handle_toggle_ttadk_yolo(
         self,
@@ -527,7 +527,7 @@ class TTADKCommandsMixin:
         if view == "model_select":
             tool = (tool_name or manager.get_current_tool() or "").strip().lower()
             if not tool:
-                self.reply_message(message_id, UI_TEXT["system_ttadk_no_tool"])
+                self.reply_text(message_id, UI_TEXT["system_ttadk_no_tool"])
                 return
             try:
                 raw_cwd = self._resolve_ttadk_cwd(chat_id, project_id=project_id)
@@ -548,9 +548,9 @@ class TTADKCommandsMixin:
             msg_type, card_content = CardBuilder.build_ttadk_model_select_card(
                 result.models or [], tool, project_id, yolo_enabled=yolo_enabled, current_model=current_model
             )
-            patched = self.patch_message(message_id, card_content)
+            patched = self.update_card(message_id, card_content)
             if not patched:
-                self.reply_message(message_id, card_content, msg_type=msg_type)
+                self.reply_card(message_id, card_content)
             return
 
         tools_result = manager.get_tools()
@@ -561,6 +561,6 @@ class TTADKCommandsMixin:
         msg_type, card_content = CardBuilder.build_ttadk_tool_select_card(
             tools_result.tools, project_id, yolo_enabled=yolo_enabled, current_tool=current_tool
         )
-        patched = self.patch_message(message_id, card_content)
+        patched = self.update_card(message_id, card_content)
         if not patched:
-            self.reply_message(message_id, card_content, msg_type=msg_type)
+            self.reply_card(message_id, card_content)

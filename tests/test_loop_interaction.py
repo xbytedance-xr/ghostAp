@@ -124,7 +124,7 @@ class TestLoopInteraction(unittest.TestCase):
 
             # Call show_loop_status which calls build_engine_card
             # Note: We mock reply_message to avoid network calls
-            handler.reply_message = MagicMock()
+            handler.reply_text = MagicMock()
             handler.show_loop_status("msg_id", "chat_id", project)
 
             # Verify action_prefix="loop" was passed

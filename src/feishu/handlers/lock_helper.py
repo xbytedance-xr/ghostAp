@@ -37,7 +37,13 @@ class LockHandlerProtocol(Protocol):
     @property
     def settings(self) -> Any: ...
 
-    def reply_message(self, message_id: str, content: Any, msg_type: str = "text", **kw) -> Optional[str]: ...
+    def reply_text(self, message_id: str, text: str, *, reply_in_thread: Optional[bool] = None) -> Optional[str]:
+        """Reply plain text; returns the sent message_id or None on failure."""
+        ...
+
+    def reply_card(self, message_id: str, card_content: str, *, reply_in_thread: Optional[bool] = None) -> Optional[str]:
+        """Reply interactive card (JSON string, CardKit v2 format); returns message_id or None on failure."""
+        ...
 
     def add_reaction(self, message_id: str, emoji_type: str) -> None: ...
 
@@ -202,11 +208,11 @@ class LockHelper:
                 show_buttons=False,
                 extra_buttons=lock_buttons,
             )
-            self._h.reply_message(message_id, card_json, msg_type=msg_type)
+            self._h.reply_card(message_id, card_json)
         except Exception as card_err:
             logger.error("Failed to send lock conflict card: %s", card_err)
             try:
-                self._h.reply_message(message_id, UI_TEXT["repo_lock_conflict_fallback"])
+                self._h.reply_text(message_id, UI_TEXT["repo_lock_conflict_fallback"])
             except Exception as fallback_err:
                 logger.warning("Fallback text reply also failed: %s", fallback_err)
 
@@ -271,7 +277,7 @@ class LockHelper:
                 show_buttons=False,
                 extra_buttons=_card_buttons,
             )
-            self._h.reply_message(message_id, card_json, msg_type=msg_type)
+            self._h.reply_card(message_id, card_json)
             try:
                 self._h.add_reaction(message_id, EmojiReaction.on_chat_locked())
             except Exception:
@@ -279,7 +285,7 @@ class LockHelper:
         except Exception as card_err:
             logger.error("Failed to send chat lock intercept card: %s", card_err)
             try:
-                self._h.reply_message(message_id, UI_TEXT["chat_locked_fallback"], "text")
+                self._h.reply_text(message_id, UI_TEXT["chat_locked_fallback"])
             except Exception as fallback_err:
                 logger.warning("Fallback text reply for chat lock also failed: %s", fallback_err)
 
@@ -321,13 +327,12 @@ class LockHelper:
                 project=None, title=UI_TEXT["chat_locked_title"],
                 content=_md, show_buttons=False, extra_buttons=_buttons,
             )
-            self._h.reply_message(message_id, card, msg_type=msg_type)
+            self._h.reply_card(message_id, card)
         except Exception:
             try:
-                self._h.reply_message(
+                self._h.reply_text(
                     message_id,
                     UI_TEXT["chat_locked_throttled_reply"].format(name=_name),
-                    "text",
                 )
             except Exception:
                 logger.debug("Throttled reply fallback also failed", exc_info=True)

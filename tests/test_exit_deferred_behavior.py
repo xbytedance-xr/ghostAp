@@ -36,7 +36,7 @@ def test_exit_is_deferred_until_running_task_finishes():
         mock_get_settings.return_value = mock_settings
 
         client = FeishuWSClient(MagicMock())
-        client._reply_message = MagicMock()
+        client._reply_text = MagicMock()
 
         started = threading.Event()
         unblock = threading.Event()

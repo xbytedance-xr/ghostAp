@@ -29,7 +29,7 @@ class TestWorktreeGoalPersistence(unittest.TestCase):
         
         with patch.object(self.handler, "_get_available_worktree_tools", return_value=[]), \
              patch.object(self.handler, "_get_models_for_tool", return_value=[]), \
-             patch.object(self.handler, "patch_message"):
+             patch.object(self.handler, "update_card"):
             self.handler.handle_worktree_select_tool("m1", "c1", "p1", value)
             
         # goal 不再从卡片 value 读取，pending_goal 保持为空
@@ -45,7 +45,7 @@ class TestWorktreeGoalPersistence(unittest.TestCase):
         }
         
         with patch.object(self.handler, "_get_available_worktree_tools", return_value=[]), \
-             patch.object(self.handler, "patch_message"):
+             patch.object(self.handler, "update_card"):
             self.handler.handle_worktree_select_model("m1", "c1", "p1", value)
             
         # goal 不再从卡片 value 覆盖，pending_goal 保持原值
@@ -65,7 +65,7 @@ class TestWorktreeGoalPersistence(unittest.TestCase):
         
         with patch.object(self.handler, "_worktree_manager") as mock_mgr_factory, \
              patch.object(self.handler, "handle_worktree_execute") as mock_exec, \
-             patch.object(self.handler, "patch_message"):
+             patch.object(self.handler, "update_card"):
             mock_mgr = mock_mgr_factory.return_value
             mock_mgr.ensure_worktrees.return_value = mock_state
             mock_mgr.get_state.return_value = mock_state

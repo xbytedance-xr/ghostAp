@@ -24,8 +24,9 @@ class TestSystemInteraction(unittest.TestCase):
         self.handler = SystemHandler(self.mock_ctx)
 
         # Mock BaseHandler methods
-        self.handler.reply_message = MagicMock()
-        self.handler.patch_message = MagicMock()
+        self.handler.reply_card = MagicMock()
+        self.handler.reply_text = MagicMock()
+        self.handler.update_card = MagicMock()
         self.handler.get_working_dir = MagicMock(return_value="/tmp")
 
     def test_show_full_help(self):
@@ -33,14 +34,13 @@ class TestSystemInteraction(unittest.TestCase):
         # Execute
         self.handler.show_full_help("msg_1", "chat_1")
 
-        # Verify
-        self.handler.reply_message.assert_called_once()
-        args = self.handler.reply_message.call_args
-        msg_id, content = args[0]
-        msg_type = args[1].get("msg_type")
+        # Verify reply_card called (production uses self.reply_card)
+        self.handler.reply_card.assert_called_once()
+        args = self.handler.reply_card.call_args
+        msg_id = args[0][0]
+        content = args[0][1]
 
         self.assertEqual(msg_id, "msg_1")
-        self.assertEqual(msg_type, "interactive")
 
         # Verify content structure
         card = json.loads(content)
@@ -57,9 +57,9 @@ class TestSystemInteraction(unittest.TestCase):
         # Execute
         self.handler.handle_menu_command("msg_2", "chat_1")
 
-        # Verify
-        self.handler.reply_message.assert_called_once()
-        args = self.handler.reply_message.call_args
+        # Verify reply_card called
+        self.handler.reply_card.assert_called_once()
+        args = self.handler.reply_card.call_args
         content = args[0][1]
 
         # Verify content structure
@@ -84,50 +84,49 @@ class TestSystemInteraction(unittest.TestCase):
 
         self.assertIn("new_project_prompt", found_actions)
         self.assertIn("switch_project", found_actions)
-        # self.assertIn("enter_deep_prompt", found_actions) # This one might not be present if removed or conditional
 
     def test_handle_help_category_patch(self):
         """测试帮助分类切换使用 Patch 更新卡片"""
-        # Mock patch_message to succeed
-        self.handler.patch_message.return_value = True
+        # Mock update_card to succeed
+        self.handler.update_card.return_value = True
 
         # Execute
         self.handler.handle_help_category("msg_3", "chat_1", "deep", origin_message_id="origin_msg_id")
 
-        # Verify patch used
-        self.handler.patch_message.assert_called_once()
-        self.handler.reply_message.assert_not_called()
+        # Verify update_card used
+        self.handler.update_card.assert_called_once()
+        self.handler.reply_card.assert_not_called()
 
         # Verify content contains Deep specific help
-        args = self.handler.patch_message.call_args
+        args = self.handler.update_card.call_args
         content = args[0][1]
         self.assertIn("Deep Engine", content)
 
     def test_handle_help_category_reply_fallback(self):
         """测试 Patch 失败时回退到 Reply"""
-        # Mock patch_message to fail (return False or not called if origin_message_id is None)
-        self.handler.patch_message.return_value = False
+        # Mock update_card to fail
+        self.handler.update_card.return_value = False
 
         # Execute
         self.handler.handle_help_category("msg_4", "chat_1", "project", origin_message_id="origin_msg_id")
 
-        # Verify patch called but failed
-        self.handler.patch_message.assert_called_once()
+        # Verify update_card called but failed
+        self.handler.update_card.assert_called_once()
 
-        # Verify reply called as fallback
-        self.handler.reply_message.assert_called_once()
+        # Verify reply_card called as fallback
+        self.handler.reply_card.assert_called_once()
 
         # Verify content contains Project specific help
-        args = self.handler.reply_message.call_args
+        args = self.handler.reply_card.call_args
         content = args[0][1]
         self.assertIn("项目管理", content)
 
     def test_help_more_category_lists_full_spec_commands(self):
-        self.handler.patch_message.return_value = True
+        self.handler.update_card.return_value = True
 
         self.handler.handle_help_category("msg_5", "chat_1", "more", origin_message_id="origin_msg_id")
 
-        args = self.handler.patch_message.call_args
+        args = self.handler.update_card.call_args
         content = args[0][1]
         self.assertIn("/spec_pause", content)
         self.assertIn("/spec_resume", content)

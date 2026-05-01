@@ -45,7 +45,7 @@ def test_button_is_blocked_while_system_command_inflight():
 
         client = FeishuWSClient(MagicMock())
         client._scheduler = MagicMock()
-        client._reply_message = MagicMock()
+        client._reply_text = MagicMock()
 
         with client._system_cmd_gate_lock:
             client._system_cmd_inflight_by_chat["oc_1"] = 1
@@ -53,8 +53,8 @@ def test_button_is_blocked_while_system_command_inflight():
         data = _make_card_action_data(open_message_id="om_1", open_chat_id="oc_1", action="enter_coco")
         client._handle_card_action(data)
 
-        client._reply_message.assert_called_once()
-        args, _ = client._reply_message.call_args
+        client._reply_text.assert_called_once()
+        args, _ = client._reply_text.call_args
         assert args[0] == "om_1"
         assert "系统指令处理中" in args[1]
 
@@ -94,7 +94,7 @@ def test_button_rapid_clicks_are_deduped_and_only_one_task_is_submitted():
 
         client = FeishuWSClient(MagicMock())
         client._scheduler = MagicMock()
-        client._reply_message = MagicMock()
+        client._reply_text = MagicMock()
         client._get_streaming_manager = MagicMock(
             return_value=SimpleNamespace(get_card=lambda _mid: None, set_sticky_message=lambda *_a, **_k: None)
         )
@@ -105,7 +105,7 @@ def test_button_rapid_clicks_are_deduped_and_only_one_task_is_submitted():
 
         # first click -> submit once; second click within TTL -> ignored
         assert client._scheduler.submit.call_count == 1
-        assert client._reply_message.call_count == 0
+        assert client._reply_text.call_count == 0
 
         client.close()
 

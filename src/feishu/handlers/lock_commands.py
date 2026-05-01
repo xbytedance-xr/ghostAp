@@ -20,8 +20,8 @@ class LockCommandsMixin:
     """Mixin providing /lock, /unlock, force-release and related card-action handlers.
 
     Intended for use with ``SystemHandler(LockCommandsMixin, ..., BaseHandler)``.
-    All ``self.*`` helper methods (``reply_error``, ``reply_message``, ``send_message``,
-    ``patch_message``, ``settings``, ``ctx``) are resolved via MRO from ``BaseHandler``.
+    All ``self.*`` helper methods (``reply_text``, ``reply_card``, ``update_card``,
+    ``send_card_to_chat``, ``send_text_to_chat``, ``settings``, ``ctx``) are resolved via MRO from ``BaseHandler``.
     """
 
     @staticmethod
@@ -75,7 +75,7 @@ class LockCommandsMixin:
                     _md = build_lock_success_card("lock", message=idempotent_msg)
                     _mt, _card = _PB.build_project_response_card(
                         project=None, title=UI_TEXT["lock_card_title_hint"], content=_md, show_buttons=False)
-                    self.reply_message(message_id, _card, msg_type=_mt)
+                    self.reply_card(message_id, _card)
                 else:
                     _reply = build_lock_success_card("lock", message=idempotent_msg)
                     if isinstance(_reply, tuple):
@@ -85,9 +85,9 @@ class LockCommandsMixin:
                             project=None, title=UI_TEXT["chat_locked_title"],
                             content=_md, show_buttons=False, extra_buttons=_btns,
                         )
-                        self.reply_message(message_id, _card, msg_type=_msg_type)
+                        self.reply_card(message_id, _card)
                     else:
-                        self.reply_message(message_id, _reply)
+                        self.reply_text(message_id, _reply)
                 if not result.idempotent:
                     from ...config import get_settings as _get_settings
                     _app_id = getattr(_get_settings(), "feishu_app_id", "") or ""
@@ -99,9 +99,9 @@ class LockCommandsMixin:
                             project=None, title=UI_TEXT["chat_locked_title"],
                             content=_md, show_buttons=False, extra_buttons=_btns,
                         )
-                        self.send_message(chat_id, _card, msg_type=_msg_type)
+                        self.send_card_to_chat(chat_id, _card)
                     else:
-                        self.send_message(chat_id, _broadcast)
+                        self.send_text_to_chat(chat_id, _broadcast)
             else:
                 self._reply_lock_permission_error(message_id, result)
             return
@@ -115,9 +115,9 @@ class LockCommandsMixin:
                 _md = build_lock_success_card(action, message=idempotent_msg)
                 _mt, _card = _PB2.build_project_response_card(
                     project=None, title=UI_TEXT["lock_card_title_hint"], content=_md, show_buttons=False)
-                self.reply_message(message_id, _card, msg_type=_mt)
+                self.reply_card(message_id, _card)
             else:
-                self.reply_message(message_id, build_lock_success_card(action, message=idempotent_msg))
+                self.reply_text(message_id, build_lock_success_card(action, message=idempotent_msg))
             if not result.idempotent:
                 _unlock_broadcast = build_lock_success_card("unlock", variant="broadcast", locker_name=sender_name)
                 if isinstance(_unlock_broadcast, tuple):
@@ -127,9 +127,9 @@ class LockCommandsMixin:
                         project=None, title=UI_TEXT["chat_unlocked_title"],
                         content=_md, show_buttons=False, extra_buttons=_btns,
                     )
-                    self.send_message(chat_id, _card, msg_type=_msg_type)
+                    self.send_card_to_chat(chat_id, _card)
                 else:
-                    self.send_message(chat_id, _unlock_broadcast)
+                    self.send_text_to_chat(chat_id, _unlock_broadcast)
         else:
             self._reply_lock_permission_error(message_id, result)
 
@@ -179,7 +179,7 @@ class LockCommandsMixin:
                     project=None, title=UI_TEXT["lock_card_title_no_permission"], content=_err_msg,
                     show_buttons=False, extra_buttons=_buttons,
                 )
-                self.reply_message(message_id, _card, msg_type=_mt)
+                self.reply_card(message_id, _card)
                 return
             except Exception:
                 logger.debug("Failed to build lock permission error card", exc_info=True)
@@ -225,7 +225,7 @@ class LockCommandsMixin:
             show_buttons=False,
             extra_buttons=_timeout_buttons,
         )
-        self.reply_message(message_id, card_json, msg_type=msg_type)
+        self.reply_card(message_id, card_json)
         return True
 
     def handle_confirm_lock(
@@ -236,13 +236,13 @@ class LockCommandsMixin:
         Old confirmation cards may still be floating in chats; clicking
         "confirm" on them should gracefully reply with a hint to use /lock.
         """
-        self.reply_message(message_id, UI_TEXT["lock_confirm_deprecated"])
+        self.reply_text(message_id, UI_TEXT["lock_confirm_deprecated"])
 
     def handle_cancel_lock(
         self, message_id: str, chat_id: str, project_id: Optional[str] = None, value: dict | None = None
     ) -> None:
         """Card action callback: deprecated — /lock no longer uses confirmation cards."""
-        self.reply_message(message_id, UI_TEXT["lock_confirm_deprecated"])
+        self.reply_text(message_id, UI_TEXT["lock_confirm_deprecated"])
 
     def handle_force_release_repo_lock(
         self, message_id: str, chat_id: str, project_id: Optional[str] = None, value: dict | None = None
@@ -316,7 +316,7 @@ class LockCommandsMixin:
             show_buttons=False,
             extra_buttons=confirm_buttons,
         )
-        self.reply_message(message_id, card_json, msg_type=msg_type)
+        self.reply_card(message_id, card_json)
 
     def handle_confirm_force_release(
         self, message_id: str, chat_id: str, project_id: Optional[str] = None, value: dict | None = None
@@ -378,13 +378,13 @@ class LockCommandsMixin:
 
         repo_lock_mgr.force_release(root_path)
         repo_name = Path(root_path).name or root_path
-        self.reply_message(message_id, UI_TEXT["lock_force_release_success"].format(repo_name=repo_name))
+        self.reply_text(message_id, UI_TEXT["lock_force_release_success"].format(repo_name=repo_name))
 
         # Fire-and-forget: notify the original holder chat
         if _holder_chat_id and _holder_chat_id != chat_id:
             try:
                 from ...card.builders.lock import build_lock_reclaim_notify_card
-                self.send_message(
+                self.send_text_to_chat(
                     _holder_chat_id,
                     build_lock_reclaim_notify_card(repo_name, reason="force_release"),
                 )
@@ -395,4 +395,4 @@ class LockCommandsMixin:
         self, message_id: str, chat_id: str, project_id: Optional[str] = None, value: dict | None = None
     ) -> None:
         """Card action callback: cancel the force-release confirmation."""
-        self.reply_message(message_id, UI_TEXT["lock_cmd_cancel_force_release"])
+        self.reply_text(message_id, UI_TEXT["lock_cmd_cancel_force_release"])

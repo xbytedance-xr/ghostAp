@@ -31,10 +31,10 @@ class TestSkipRetryWithActiveEngine:
         engine = handler.ctx.spec_engine_manager.get_active_engine("chat1")
         if engine and hasattr(engine, 'skip_retry_event'):
             engine.skip_retry_event.set()
-            handler.reply_message("msg1", UI_TEXT["skip_retry_ack"])
+            handler.reply_text("msg1", UI_TEXT["skip_retry_ack"])
 
         assert mock_engine.skip_retry_event.is_set()
-        handler.reply_message.assert_called_once_with("msg1", UI_TEXT["skip_retry_ack"])
+        handler.reply_text.assert_called_once_with("msg1", UI_TEXT["skip_retry_ack"])
 
 
 class TestSkipRetryWithoutActiveEngine:
@@ -54,11 +54,11 @@ class TestSkipRetryWithoutActiveEngine:
         engine = handler.ctx.spec_engine_manager.get_active_engine("chat1")
         if engine and hasattr(engine, 'skip_retry_event'):
             engine.skip_retry_event.set()
-            handler.reply_message("msg1", UI_TEXT["skip_retry_ack"])
+            handler.reply_text("msg1", UI_TEXT["skip_retry_ack"])
         else:
-            handler.reply_message("msg1", UI_TEXT["no_active_retry"])
+            handler.reply_text("msg1", UI_TEXT["no_active_retry"])
 
-        handler.reply_message.assert_called_once_with("msg1", UI_TEXT["no_active_retry"])
+        handler.reply_text.assert_called_once_with("msg1", UI_TEXT["no_active_retry"])
 
     def test_replies_no_active_retry_when_engine_has_no_event(self):
         mock_engine = MagicMock(spec=[])  # no skip_retry_event attribute
@@ -75,11 +75,11 @@ class TestSkipRetryWithoutActiveEngine:
         engine = handler.ctx.spec_engine_manager.get_active_engine("chat1")
         if engine and hasattr(engine, 'skip_retry_event'):
             engine.skip_retry_event.set()
-            handler.reply_message("msg1", UI_TEXT["skip_retry_ack"])
+            handler.reply_text("msg1", UI_TEXT["skip_retry_ack"])
         else:
-            handler.reply_message("msg1", UI_TEXT["no_active_retry"])
+            handler.reply_text("msg1", UI_TEXT["no_active_retry"])
 
-        handler.reply_message.assert_called_once_with("msg1", UI_TEXT["no_active_retry"])
+        handler.reply_text.assert_called_once_with("msg1", UI_TEXT["no_active_retry"])
 
 
 class TestSkipRetryUITextKeys:

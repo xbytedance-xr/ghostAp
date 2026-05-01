@@ -367,14 +367,14 @@ class FeishuWSClient:
         # (fire-and-forget notification to the displaced lock holder chat).
         repo_lock_mgr = self._handler_ctx.repo_lock_manager
         if repo_lock_mgr is not None:
-            _send_msg = system_handler.send_message  # narrow reference
+            _send_card = system_handler.send_card_to_chat  # narrow reference
 
             def _notify_hard_timeout_reclaim(root_path: str, holder_chat_id: str) -> None:
                 try:
                     from pathlib import Path as _Path
                     from ..card.builders.lock import build_lock_reclaim_notify_card
                     repo_name = _Path(root_path).name or root_path
-                    _send_msg(
+                    _send_card(
                         holder_chat_id,
                         build_lock_reclaim_notify_card(
                             repo_name, reason="hard_timeout",
@@ -413,7 +413,7 @@ class FeishuWSClient:
                     }, ensure_ascii=False)
                     for _cid in blocked_chat_ids:
                         try:
-                            _send_msg(_cid, _card, msg_type="interactive")
+                            _send_card(_cid, _card)
                         except Exception as _inner:
                             logger.debug("Failed to notify release to chat=%s: %s", _cid[:12], _inner)
                 except Exception as _exc:
@@ -691,8 +691,13 @@ class FeishuWSClient:
     # ------------------------------------------------------------------
 
     def reply(self, message_id: str, content, msg_type: str = "text", chat_id: Optional[str] = None):
-        """轻量回复封装：兼容旧调用路径，实际委托到 handler 的 `_reply_message`。"""
-        self._reply_message(message_id, content, msg_type)
+        """轻量回复封装：兼容旧调用路径，按 msg_type 委托到对应的新 API。"""
+        if chat_id is not None:
+            logger.warning("chat_id 参数已废弃且不再生效，请移除该参数")
+        if msg_type == "text":
+            self._reply_text(message_id, content)
+        else:
+            self._reply_card(message_id, content)
 
     def add_reaction(self, message_id: str, emoji_type: str):
         """轻量表情反馈封装：委托到 handler 的 `add_reaction`。"""
@@ -712,9 +717,9 @@ class FeishuWSClient:
             handler.send_lock_conflict_card(e, message_id, command_text, retry_count=retry_count)
         else:
             from .handlers.lock_helper import logger as _lock_logger
-            from ..card.styles import UI_TEXT
-            _lock_logger.warning("send_lock_conflict_card: _system_handler unavailable, sending fallback text")
-            self.reply_message(message_id, UI_TEXT["repo_lock_conflict_fallback"])
+            _lock_logger.warning("send_lock_conflict_card: _system_handler unavailable, cannot notify user")
+            # Fallback: send plain text notification
+            self._reply_text(message_id, f"🔒 {str(e) or 'lock conflict'}")
 
     def _get_handler(self, key: str) -> Any:
         return self._handler_ctx.handlers.get(key)
@@ -942,9 +947,9 @@ class FeishuWSClient:
             except (RateLimitExceededException, CircuitBreakerOpenException) as e:
                 logger.warning(f"Backpressure applied: {get_error_detail(e)}")
                 if is_spec:
-                    self._reply_message(message_id, UI_TEXT["ws_backpressure_spec"])
+                    self._reply_text(message_id, UI_TEXT["ws_backpressure_spec"])
                 else:
-                    self._reply_message(message_id, UI_TEXT["ws_backpressure_generic"])
+                    self._reply_text(message_id, UI_TEXT["ws_backpressure_generic"])
                 return
             try:
                 if message_id:
@@ -1164,13 +1169,13 @@ class FeishuWSClient:
         except asyncio.TimeoutError as e:
             logger.warning("处理消息超时: %s", get_error_detail(e))
             try:
-                self._reply_message(message_id, UI_TEXT["ws_message_timeout"])
+                self._reply_text(message_id, UI_TEXT["ws_message_timeout"])
             except Exception:
                 logger.debug("failed to reply timeout message", exc_info=True)
         except Exception as e:
             logger.error("处理消息异常: %s", e, exc_info=True)
             try:
-                self._reply_message(message_id, UI_TEXT["ws_message_internal_error"])
+                self._reply_text(message_id, UI_TEXT["ws_message_internal_error"])
             except Exception:
                 logger.debug("failed to reply internal error message", exc_info=True)
         finally:
@@ -1194,7 +1199,7 @@ class FeishuWSClient:
 
         supported_types = {"text", "image", "post"}
         if message.message_type not in supported_types:
-            self._reply_message(message.message_id, UI_TEXT["ws_unsupported_msg_type"], request_id=request_id)
+            self._reply_text(message.message_id, UI_TEXT["ws_unsupported_msg_type"])
             return False
         return True
 
@@ -1382,18 +1387,18 @@ class FeishuWSClient:
                 show_buttons=False,
                 footer=f"📂 项目目录: {project.root_path}",
             )
-            reply_id = handler.reply_message_with_id(
-                message_id, card_content, msg_type, reply_in_thread=True,
+            reply_id = handler.reply_card(
+                message_id, card_content, reply_in_thread=True,
             )
             if reply_id:
                 handler.register_message_project(reply_id, project)
         else:
-            reply_id = handler.reply_message_with_id(
-                message_id, content, "text", reply_in_thread=True,
+            reply_id = handler.reply_text(
+                message_id, content, reply_in_thread=True,
             )
 
         if not reply_id:
-            self._reply_message(message_id, UI_TEXT["ws_thread_create_failed"])
+            self._reply_text(message_id, UI_TEXT["ws_thread_create_failed"])
             return
 
         thread_root_id = reply_id
@@ -1423,7 +1428,7 @@ class FeishuWSClient:
                 self._mode_manager.exit_to_smart(chat_id, project_id=project_id)
                 if project:
                     handler._set_mode_on_project(project, False)
-                self._reply_message(
+                self._reply_text(
                     message_id,
                     UI_TEXT["ws_session_fail_msg"].format(name=mode_name, cmd=mode_name.lower()),
                 )
@@ -1462,7 +1467,7 @@ class FeishuWSClient:
             if not get_current_thread_id() and self.settings.thread_programming_enabled:
                 pending, handler = self._is_one_shot_pending(chat_id, _pid, current_mode)
                 if pending:
-                    self._reply_message(
+                    self._reply_text(
                         message_id,
                         UI_TEXT["ws_thread_pending_msg"].format(name=handler.mode_name),
                     )
@@ -1487,12 +1492,12 @@ class FeishuWSClient:
                 _pid = project.project_id if project else None
                 if self._control_plane.should_defer_exit(chat_id=chat_id, project_id=_pid):
                     self._control_plane.request_deferred_exit(message_id=message_id, chat_id=chat_id, project_id=_pid)
-                    self._reply_message(message_id, UI_TEXT["ws_exit_deferred_msg"])
+                    self._reply_text(message_id, UI_TEXT["ws_exit_deferred_msg"])
                     return
                 self._exit_current_mode(message_id, chat_id, project=project)
                 return
             if self._is_programming_entry_command(text):
-                self._reply_message(
+                self._reply_text(
                     message_id,
                     UI_TEXT["ws_topic_hint_msg"],
                 )
@@ -1587,7 +1592,7 @@ class FeishuWSClient:
                 inflight = int(self._system_cmd_inflight_by_chat.get(open_chat_id, 0) or 0)
             if inflight > 0 and action_type_preview not in _READONLY_CARD_ACTIONS:
                 if open_message_id:
-                    self._reply_message(open_message_id, UI_TEXT["ws_system_cmd_gate_blocked"])
+                    self._reply_text(open_message_id, UI_TEXT["ws_system_cmd_gate_blocked"])
                 return None
         except Exception:
             logger.debug("failed to check system command gate", exc_info=True)
@@ -1867,11 +1872,11 @@ class FeishuWSClient:
                                 "操作超时",
                                 project_id=_pid or None,
                             )
-                            self._reply_message(_mid, card_content, msg_type=msg_type)
+                            self._reply_card(_mid, card_content)
                         except Exception:
-                            self._reply_message(_mid, "⏳ 操作超时，请稍后重试或发送 /ttadk 重新进入")
+                            self._reply_text(_mid, "⏳ 操作超时，请稍后重试或发送 /ttadk 重新进入")
                     else:
-                        self._reply_message(_mid, f"⏳ 操作超时 ({_action}): {get_error_detail(e)}")
+                        self._reply_text(_mid, f"⏳ 操作超时 ({_action}): {get_error_detail(e)}")
             except Exception:
                 logger.debug("failed to reply timeout action error", exc_info=True)
         except Exception as e:
@@ -1897,11 +1902,11 @@ class FeishuWSClient:
                                 "操作未完成",
                                 project_id=project_id or None,
                             )
-                            self._reply_message(_mid, card_content, msg_type=msg_type)
+                            self._reply_card(_mid, card_content)
                         except Exception:
-                            self._reply_message(_mid, "⚠️ 操作未完成，请稍后重试或发送 /ttadk 重新进入")
+                            self._reply_text(_mid, "⚠️ 操作未完成，请稍后重试或发送 /ttadk 重新进入")
                     else:
-                        self._reply_message(_mid, f"❌ 操作失败 ({_action}): {get_error_detail(e)}")
+                        self._reply_text(_mid, f"❌ 操作失败 ({_action}): {get_error_detail(e)}")
             except Exception:
                 logger.debug("failed to reply action failure error", exc_info=True)
         finally:

@@ -31,7 +31,7 @@ class GateHost(Protocol):
     Satisfied by ``FeishuWSClient`` without creating a circular import.
     """
 
-    def _reply_message(self, message_id: str, content: Any, msg_type: str = "text", **kw) -> Optional[str]: ...
+    def _reply_text(self, message_id: str, text: str) -> Optional[str]: ...
 
     def _add_reaction(self, message_id: str, emoji_type: str) -> None: ...
 
@@ -170,7 +170,7 @@ class ChatLockGate:
                             _handler.send_chat_lock_intercept_card(message_id, chat_id, clm)
                         else:
                             try:
-                                self._host._reply_message(message_id, UI_TEXT["chat_locked_fallback"], "text")
+                                self._host._reply_text(message_id, UI_TEXT["chat_locked_fallback"])
                             except Exception:
                                 logger.debug("failed to reply lock message", exc_info=True)
                 return True
@@ -207,7 +207,7 @@ class ChatLockGate:
                 _handler.send_chat_lock_intercept_card(message_id, chat_id, clm)
             else:
                 try:
-                    self._host._reply_message(message_id, UI_TEXT["chat_locked_fallback"], "text")
+                    self._host._reply_text(message_id, UI_TEXT["chat_locked_fallback"])
                 except Exception:
                     logger.debug("failed to reply lock fallback message", exc_info=True)
         else:

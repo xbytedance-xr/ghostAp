@@ -22,8 +22,8 @@ class _RetryDispatchAdapter:
     def __init__(self, client: "FeishuWSClient") -> None:
         self._client = client
 
-    def reply_message(self, message_id: str, content: Any, msg_type: str = "text") -> None:
-        self._client.reply_message(message_id, content, msg_type)
+    def reply_text(self, message_id: str, text: str) -> None:
+        self._client._reply_text(message_id, text)
 
     def try_block_with_chat_lock(
         self, chat_id: str, sender_id: str, message_id: str, *, raw_text: str = "",
@@ -98,7 +98,7 @@ def init_action_registry(client: 'FeishuWSClient') -> None:
         if project:
             client._switch_project(mid, cid, project.project_name)
         else:
-            client._reply_message(mid, UI_TEXT["lock_project_not_found_hint"])
+            client._reply_text(mid, UI_TEXT["lock_project_not_found_hint"])
 
     client._register_action(_handle_switch_to, exact="switch_to")
 
@@ -110,11 +110,11 @@ def init_action_registry(client: 'FeishuWSClient') -> None:
             msg_type, card_content = CardBuilder.build_project_response_card(
                 project, "继续开发", content, show_buttons=True
             )
-            response_id = client._reply_message_with_id(mid, card_content, msg_type)
+            response_id = client._reply_card(mid, card_content)
             if response_id:
                 client._register_message_project(response_id, project)
         else:
-            client._reply_message(mid, UI_TEXT["lock_project_not_found_hint"])
+            client._reply_text(mid, UI_TEXT["lock_project_not_found_hint"])
 
     client._register_action(_handle_continue_dev, exact="continue_dev")
 
@@ -124,12 +124,12 @@ def init_action_registry(client: 'FeishuWSClient') -> None:
             client._project_manager.set_active_project(cid, pid)
             client._submit_shell_command(mid, cid, "ls -la", project.root_path, project)
         else:
-            client._reply_message(mid, UI_TEXT["lock_project_not_found_hint"])
+            client._reply_text(mid, UI_TEXT["lock_project_not_found_hint"])
 
     client._register_action(_handle_list_files, exact="list_files")
 
     client._register_action(
-        lambda mid, cid, pid, val: client._reply_message(
+        lambda mid, cid, pid, val: client._reply_text(
             mid, "📝 创建新项目\n\n请发送: `/new 项目名 路径`\n\n例如: `/new myApp ~/workspace/myApp`"
         ),
         exact="new_project_prompt",

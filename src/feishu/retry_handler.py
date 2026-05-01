@@ -41,7 +41,7 @@ class RetryDispatchProtocol(Protocol):
     makes unit-test mocking straightforward.
     """
 
-    def reply_message(self, message_id: str, content: Any, msg_type: str = "text") -> None: ...
+    def reply_text(self, message_id: str, text: str) -> None: ...
 
     def try_block_with_chat_lock(self, chat_id: str, sender_id: str, message_id: str, *, raw_text: str = "") -> bool: ...
 
@@ -91,7 +91,7 @@ class RetryCommandHandler:
         cmd = self._compat_get(val, "_t", "command_text").strip()
         if not cmd:
             from ..card.styles import UI_TEXT
-            self._dispatch.reply_message(mid, UI_TEXT["retry_empty_command"])
+            self._dispatch.reply_text(mid, UI_TEXT["retry_empty_command"])
             return
 
         sig = self._compat_get(val, "_s", "command_sig")
@@ -106,7 +106,7 @@ class RetryCommandHandler:
             undo_expires = self._compat_get(val, "_ue", "undo_expires", default=0)
             if undo_expires and _t.time() > undo_expires:
                 from ..card.styles import UI_TEXT
-                self._dispatch.reply_message(mid, UI_TEXT["lock_undo_expired"])
+                self._dispatch.reply_text(mid, UI_TEXT["lock_undo_expired"])
                 return
 
         # 2. Chat lock check
@@ -138,7 +138,7 @@ class RetryCommandHandler:
             return True
         if not sig:
             from ..card.styles import UI_TEXT
-            self._dispatch.reply_message(mid, UI_TEXT["retry_command_sig_mismatch"])
+            self._dispatch.reply_text(mid, UI_TEXT["retry_command_sig_mismatch"])
             return False
         from ..card.builders.lock import verify_command_sig
         result = verify_command_sig(cmd, sig)
@@ -147,9 +147,9 @@ class RetryCommandHandler:
         from ..card.styles import UI_TEXT
         from ..utils.signing import VerifyResult
         if result is VerifyResult.COMPAT_EXPIRED:
-            self._dispatch.reply_message(mid, UI_TEXT["retry_command_sig_upgrade_expired"])
+            self._dispatch.reply_text(mid, UI_TEXT["retry_command_sig_upgrade_expired"])
         else:
-            self._dispatch.reply_message(mid, UI_TEXT["retry_command_sig_mismatch"])
+            self._dispatch.reply_text(mid, UI_TEXT["retry_command_sig_mismatch"])
         return False
 
     def _check_chat_lock(self, cid: str, mid: str, cmd: str) -> bool:
@@ -171,7 +171,7 @@ class RetryCommandHandler:
         # F-09: Reject when fallback project differs from requested project
         if pid and project and project.project_id != pid:
             from ..card.styles import UI_TEXT
-            self._dispatch.reply_message(mid, UI_TEXT["retry_project_unavailable"])
+            self._dispatch.reply_text(mid, UI_TEXT["retry_project_unavailable"])
             return _REJECTED
         return project
 

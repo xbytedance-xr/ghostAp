@@ -395,8 +395,8 @@ class TestIsP2PThreadLocalPropagation:
             handler = CocoModeHandler(mock_ctx)
 
             # Stub out methods that are not under test
-            handler.reply_message = MagicMock()
-            handler.reply_message_with_id = MagicMock(return_value="reply_1")
+            handler.reply_text = MagicMock()
+            handler.reply_card = MagicMock(return_value="reply_1")
             handler.add_reaction = MagicMock()
             handler.register_message_project = MagicMock()
             handler.record_mode_transition = MagicMock()
@@ -444,8 +444,8 @@ class TestIsP2PThreadLocalPropagation:
             from src.feishu.handlers.programming import CocoModeHandler
             handler = CocoModeHandler(mock_ctx)
 
-            handler.reply_message = MagicMock()
-            handler.reply_message_with_id = MagicMock(return_value="reply_1")
+            handler.reply_text = MagicMock()
+            handler.reply_card = MagicMock(return_value="reply_1")
             handler.add_reaction = MagicMock()
             handler.register_message_project = MagicMock()
             handler.record_mode_transition = MagicMock()
@@ -498,7 +498,7 @@ class TestIsP2PThreadLocalPropagation:
             mock_lock_mgr.hold.return_value.__exit__ = MagicMock(return_value=False)
             mock_ctx.repo_lock_manager = mock_lock_mgr
 
-            handler.reply_message = MagicMock()
+            handler.reply_text = MagicMock()
 
             executor = MagicMock()
 
@@ -545,9 +545,9 @@ class TestIsP2PThreadLocalPropagation:
             mock_lock_mgr.hold.return_value.__exit__ = MagicMock(return_value=False)
             mock_ctx.repo_lock_manager = mock_lock_mgr
 
-            handler.reply_message = MagicMock()
-            handler.send_message = MagicMock(return_value="progress-mid")
-            handler.patch_message = MagicMock()
+            handler.reply_text = MagicMock()
+            handler.send_card_to_chat = MagicMock(return_value="progress-mid")
+            handler.update_card = MagicMock()
 
             # Mock worktree manager
             mock_wt_mgr = MagicMock()
@@ -593,7 +593,7 @@ class TestIsP2PThreadLocalPropagation:
             mock_lock_mgr.hold.return_value.__exit__ = MagicMock(return_value=False)
             mock_ctx.repo_lock_manager = mock_lock_mgr
 
-            handler.reply_message = MagicMock()
+            handler.reply_text = MagicMock()
 
             handler._safe_execute_engine(
                 executor_func=MagicMock(),

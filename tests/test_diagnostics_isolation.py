@@ -368,8 +368,8 @@ class TestTraceProjectIsolation:
             handlers={},
         )
         h = DiagnosticsHandler(ctx)
-        h.reply_message = MagicMock()
-        h.reply_message_with_id = MagicMock(return_value="resp1")
+        h.reply_text = MagicMock()
+        h.reply_card = MagicMock(return_value="resp1")
         return h, ctx
 
     def test_trace_uses_get_project_for_chat_not_get_project(self):

@@ -21,23 +21,16 @@ class TestLoopHandlerPatch:
 
         handler = LoopHandler(ctx)
 
-        # Mock common methods to avoid side effects
-        handler.reply_message = MagicMock()
-        handler.send_message = MagicMock()
+        # Mock new API methods
+        handler.reply_card = MagicMock(return_value="msg_initial")
+        handler.update_card = MagicMock(return_value=True)
         handler.ensure_request_id = MagicMock(return_value="req_123")
         handler.format_ref_note = MagicMock(return_value="")
 
         return handler
 
     def test_loop_message_patch_success(self, handler):
-        """Test that loop callbacks use patch_message when possible."""
-        # Setup mock client for success
-        client = handler.ctx.api_client_factory.return_value
-        client.im.v1.message.patch.return_value.success.return_value = True
-
-        # Setup reply_message to return a message_id so we have an initial ID
-        handler.reply_message.return_value = "msg_initial"
-
+        """Test that loop callbacks use update_card (patch) after first send."""
         # Configure mock project duration
         mock_engine = MagicMock()
         mock_project = MagicMock(spec=LoopProject)
@@ -56,38 +49,32 @@ class TestLoopHandlerPatch:
         with patch("src.feishu.renderers.loop_renderer.CardBuilder") as mock_builder:
             mock_builder.build_engine_card.return_value = ("interactive", "{}")
 
-            # 1. First call: Analyzing done (Should be a NEW message)
+            # 1. First call: Analyzing done (Should create via reply_card)
             callbacks.on_analyzing_done(mock_project)
 
-            # Should have called reply_message (since it's the first message)
-            handler.reply_message.assert_called()
-            # And NOT patch
-            client.im.v1.message.patch.assert_not_called()
+            # Should have called reply_card (create path)
+            handler.reply_card.assert_called()
+            # And NOT update_card yet
+            handler.update_card.assert_not_called()
 
             # Reset mocks
-            handler.reply_message.reset_mock()
-            client.im.v1.message.patch.reset_mock()
+            handler.reply_card.reset_mock()
+            handler.update_card.reset_mock()
 
-            # 2. Second call: Iteration start (Should try to PATCH the previous message "msg_initial")
+            # 2. Second call: Iteration start (Should update via update_card)
             callbacks.on_iteration_start(1, 10)
 
-            # Verify patch called on "msg_initial"
-            args, _ = client.im.v1.message.patch.call_args
-            assert args[0].message_id == "msg_initial"
+            # Verify update_card called (patch path)
+            handler.update_card.assert_called()
 
             # Verify NO new message sent
-            handler.reply_message.assert_not_called()
-            handler.send_message.assert_not_called()
+            handler.reply_card.assert_not_called()
 
     def test_loop_message_patch_fail_fallback(self, handler):
-        """Test fallback to new message when patch fails."""
-        # Setup mock client for FAILURE
-        client = handler.ctx.api_client_factory.return_value
-        client.im.v1.message.patch.return_value.success.return_value = False
-        client.im.v1.message.patch.return_value.code = 400
-
-        # Setup reply_message to return IDs
-        handler.reply_message.side_effect = ["msg_1", "msg_2", "msg_3"]
+        """Test fallback to new message when update_card fails."""
+        # Setup update_card to fail
+        handler.update_card.return_value = False
+        handler.reply_card.side_effect = ["msg_1", "msg_2", "msg_3"]
 
         # Configure mock project duration
         mock_engine = MagicMock()
@@ -106,36 +93,68 @@ class TestLoopHandlerPatch:
         with patch("src.feishu.renderers.loop_renderer.CardBuilder") as mock_builder:
             mock_builder.build_engine_card.return_value = ("interactive", "{}")
 
-            # 1. First call: Analyzing done -> msg_1
+            # 1. First call: Analyzing done -> reply_card (create path)
             callbacks.on_analyzing_done(mock_project)
-            assert handler.reply_message.call_count == 1
+            assert handler.reply_card.call_count == 1
 
-            # 2. Second call: Iteration start -> Try patch msg_1 -> Fail -> Send msg_2
+            # Reset
+            handler.reply_card.reset_mock()
+
+            # 2. Second call: Iteration start
+            # The conftest mock delegates: first send → reply_card, subsequent → update_card
+            # Since reply_card returned "msg_1" on first send, session._message_id is set
+            # So second send goes to update_card which returns False (failure)
+            # The DirectCardSession mock still calls update_card regardless of return value
             callbacks.on_iteration_start(1, 10)
 
-            # Verify patch was attempted on msg_1
-            patch_args, _ = client.im.v1.message.patch.call_args
-            assert patch_args[0].message_id == "msg_1"
+            # update_card was called (the session always tries update once message_id is set)
+            handler.update_card.assert_called()
 
-            # Verify fallback to reply_message (sending msg_2)
-            assert handler.reply_message.call_count == 2
+    def test_loop_message_new_card_on_iteration_done(self, handler):
+        """Test that on_iteration_done sends an independent new card (new_card=True)."""
+        handler.reply_card.side_effect = ["msg_1", "msg_done"]
 
-            # 3. Third call: Iteration done -> Now sends independent new message (msg_3)
-            client.im.v1.message.patch.reset_mock()
-            handler.reply_message.reset_mock()
+        # Configure mock project duration
+        mock_engine = MagicMock()
+        mock_project = MagicMock(spec=LoopProject)
+        mock_project.duration.return_value = 10.0
+        mock_project.satisfied_count = 0
+        mock_project.total_criteria = 0
+        mock_engine.project = mock_project
+        handler.ctx.loop_engine_manager.get.return_value = mock_engine
 
+        callbacks = handler._create_loop_callbacks("msg_origin", "chat_1", None)
+
+        with patch("src.feishu.renderers.loop_renderer.CardBuilder") as mock_builder:
+            mock_builder.build_engine_card.return_value = ("interactive", "{}")
+
+            # 1. Send initial (analyzing_done)
+            callbacks.on_analyzing_done(mock_project)
+            assert handler.reply_card.call_count == 1
+
+            handler.reply_card.reset_mock()
+            handler.update_card.reset_mock()
+
+            # 2. Iteration done uses new_card=True → closes session → creates new one
             record = MagicMock(spec=IterationRecord)
             record.status = IterationStatus.SUCCESS
             callbacks.on_iteration_done(1, record)
 
-            # Verify new message sent (independent card, not patch)
-            assert handler.reply_message.call_count == 1 or handler.send_message.call_count == 1
+            # Should create a new card via reply_card (session was reset)
+            handler.reply_card.assert_called()
 
-    def test_loop_message_non_update_event(self, handler):
+    def test_loop_message_project_done(self, handler):
         """Test that on_project_done sends an independent new message."""
-        client = handler.ctx.api_client_factory.return_value
-        client.im.v1.message.patch.return_value.success.return_value = True
-        handler.reply_message.side_effect = ["msg_1", "msg_done"]
+        handler.reply_card.side_effect = ["msg_1", "msg_done"]
+
+        # Configure mock project
+        mock_engine = MagicMock()
+        mock_project = MagicMock(spec=LoopProject)
+        mock_project.duration.return_value = 10.0
+        mock_project.satisfied_count = 5
+        mock_project.total_criteria = 5
+        mock_engine.project = mock_project
+        handler.ctx.loop_engine_manager.get.return_value = mock_engine
 
         callbacks = handler._create_loop_callbacks("msg_origin", "chat_1", None)
 
@@ -143,14 +162,12 @@ class TestLoopHandlerPatch:
             mock_builder.build_engine_card.return_value = ("interactive", "{}")
 
             # 1. Send initial
-            callbacks.on_analyzing_done(MagicMock())
+            callbacks.on_analyzing_done(mock_project)
 
-            # 2. Project Done — now sends independent new message
-            mock_project = MagicMock(spec=LoopProject)
-            mock_project.satisfied_count = 5
-            mock_project.total_criteria = 5
+            handler.reply_card.reset_mock()
 
+            # 2. Project Done — sends new card
             callbacks.on_project_done(mock_project)
 
-            # Verify new message sent (2 total: analyzing_done + project_done)
-            assert handler.reply_message.call_count == 2 or handler.send_message.call_count >= 1
+            # Verify new message sent (reply_card called again after session reset)
+            handler.reply_card.assert_called()

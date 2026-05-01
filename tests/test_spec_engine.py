@@ -2230,8 +2230,8 @@ class TestSpecHandler:
     def test_update_spec_guidance_allows_when_clarifying(self):
         """/spec_guide rewrites the goal via LLM even when engine is CLARIFYING."""
         handler = self._make_handler()
-        handler.send_message = MagicMock()
-        handler.reply_message = MagicMock()
+        handler.send_card_to_chat = MagicMock()
+        handler.reply_text = MagicMock()
 
         project = MagicMock()
         project.root_path = "/tmp/p"
@@ -2259,14 +2259,14 @@ class TestSpecHandler:
 
         engine.refine_goal_with_guidance.assert_called_once_with("Q1: answer")
         engine.inject_guidance.assert_not_called()
-        handler.reply_message.assert_not_called()
-        handler.send_message.assert_called_once()
+        handler.reply_text.assert_not_called()
+        handler.send_card_to_chat.assert_called_once()
 
     def test_update_spec_guidance_fallback_on_llm_failure(self):
         """/spec_guide falls back to inject_guidance when LLM rewrite fails."""
         handler = self._make_handler()
-        handler.send_message = MagicMock()
-        handler.reply_message = MagicMock()
+        handler.send_card_to_chat = MagicMock()
+        handler.reply_text = MagicMock()
 
         project = MagicMock()
         project.root_path = "/tmp/p"
@@ -2294,7 +2294,7 @@ class TestSpecHandler:
 
         engine.refine_goal_with_guidance.assert_called_once_with("fallback test")
         engine.inject_guidance.assert_called_once_with("fallback test")
-        handler.send_message.assert_called_once()
+        handler.send_card_to_chat.assert_called_once()
 
 
 # ======================================================================

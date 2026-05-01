@@ -95,7 +95,7 @@ Feishu WebSocket message
   - `ws_health.py` — `WSHealthMonitor` watchdog for WebSocket connection health.
   - `control_plane.py` — `ControlPlane` for pending exit handling, event queue, system command gate.
   - `router.py` — `FORWARDING_MAP` dispatch table routing methods to handler registries.
-  - `handlers/` — 12 handler modules: `base`, `engine_base`, `programming`, `deep`, `loop`, `spec`, `worktree`, `project`, `system`, `diagnostics`, `lock_helper`, `diagnostics_helper`.
+  - `handlers/` — 12 handler modules: `base`, `engine_base`, `programming`, `deep`, `loop`, `spec`, `worktree`, `project`, `system`, `diagnostics`, `lock_helper`, `diagnostics_helper`. BaseHandler 统一消息 API：`reply_text` / `reply_card` / `update_card` / `send_card_to_chat` / `send_text_to_chat`（旧 `reply_message`/`patch_message`/`send_message` 已移除，调用会 warn DeprecationWarning 并 raise NotImplementedError 提示迁移路径）。
   - `renderers/` — Renderer layer: `BaseRenderer`, `DeepRenderer`, `LoopRenderer`, `SpecRenderer` (with retry callback support).
   - `user_cache.py` — LRU cache (500 capacity, 1h TTL) for Feishu user display name resolution.
   - `chat_lock_gate.py` — Lock interception gate.

@@ -132,7 +132,7 @@ class WorktreeHandler(BaseHandler):
                             cur_dicts, pid, message=msg,
                         )
                         if progress_mid:
-                            self.patch_message(progress_mid, cd, msg_type=mt)
+                            self.update_card(progress_mid, cd)
                     except Exception:
                         logger.debug("worktree progress update failed", exc_info=True)
                     return
@@ -148,7 +148,7 @@ class WorktreeHandler(BaseHandler):
                     cur_dicts, pid, message=msg,
                 )
                 if progress_mid:
-                    self.patch_message(progress_mid, cd, msg_type=mt)
+                    self.update_card(progress_mid, cd)
             except Exception:
                 logger.debug("worktree progress update failed", exc_info=True)
 
@@ -201,9 +201,9 @@ class WorktreeHandler(BaseHandler):
             tools, selected_dicts, project_id,
         )
         if from_card:
-            self.patch_message(message_id, card, msg_type=msg_type)
+            self.update_card(message_id, card)
         else:
-            self.reply_message(message_id, card, msg_type=msg_type)
+            self.reply_card(message_id, card)
 
     def handle_worktree_select_tool(
         self,
@@ -238,7 +238,7 @@ class WorktreeHandler(BaseHandler):
                 selected_dicts,
                 pid,
             )
-            self.patch_message(message_id, card, msg_type=msg_type)
+            self.update_card(message_id, card)
             return
 
         from ...worktree_engine.selection import WorktreeToolOption
@@ -280,7 +280,7 @@ class WorktreeHandler(BaseHandler):
                 pid,
                 message=UI_TEXT["system_worktree_selection_finished_banner"].format(tool=option.display_name),
             )
-            self.patch_message(message_id, card, msg_type=msg_type)
+            self.update_card(message_id, card)
         else:
             model_name = None
             model_display = None
@@ -303,7 +303,7 @@ class WorktreeHandler(BaseHandler):
                 pid,
                 message=msg,
             )
-            self.patch_message(message_id, card, msg_type=msg_type)
+            self.update_card(message_id, card)
 
     def handle_worktree_select_model(
         self,
@@ -337,7 +337,7 @@ class WorktreeHandler(BaseHandler):
         msg_type, card = CardBuilder.build_worktree_tool_select_card(
             tools, selected_dicts, pid, message=msg,
         )
-        self.patch_message(message_id, card, msg_type=msg_type)
+        self.update_card(message_id, card)
 
     def handle_finish_worktree_selection(
         self,
@@ -366,7 +366,7 @@ class WorktreeHandler(BaseHandler):
             return
 
         if goal:
-            self.patch_message(
+            self.update_card(
                 message_id,
                 CardBuilder.build_worktree_confirm_card(
                     [item.to_dict() for item in state.selection.selected_items],
@@ -380,7 +380,7 @@ class WorktreeHandler(BaseHandler):
 
         selected_dicts = [item.to_dict() for item in state.selection.selected_items]
         msg_type, card = CardBuilder.build_worktree_confirm_card(selected_dicts, pid)
-        self.patch_message(message_id, card, msg_type=msg_type)
+        self.update_card(message_id, card)
 
     def _auto_execute_worktree(
         self,
@@ -407,7 +407,7 @@ class WorktreeHandler(BaseHandler):
                 _, error_card = CardBuilder.build_worktree_progress_card(
                     units_dicts, pid, message=error_msg,
                 )
-                self.patch_message(message_id, error_card)
+                self.update_card(message_id, error_card)
             self.reply_error(message_id, error_msg)
             return
 
@@ -445,7 +445,7 @@ class WorktreeHandler(BaseHandler):
 
         if goal:
             mgr.apply_journey_event(state, event="auto_execute_started", goal=goal, silent_mode=False)
-            self.patch_message(
+            self.update_card(
                 message_id,
                 CardBuilder.build_worktree_confirm_card(
                     [item.to_dict() for item in mgr.get_state(project).selection.selected_items],
@@ -463,7 +463,7 @@ class WorktreeHandler(BaseHandler):
         msg_type, card = CardBuilder.build_worktree_progress_card(
             units_dicts, pid, message=ready_msg,
         )
-        self.patch_message(message_id, card, msg_type=msg_type)
+        self.update_card(message_id, card)
 
     def handle_worktree_execute(
         self,
@@ -482,7 +482,7 @@ class WorktreeHandler(BaseHandler):
 
         goal = str(text or "").strip()
         if not goal:
-            self.reply_message(message_id, UI_TEXT["system_worktree_goal_required"])
+            self.reply_text(message_id, UI_TEXT["system_worktree_goal_required"])
             return
 
         mgr = self._worktree_manager()
@@ -499,7 +499,7 @@ class WorktreeHandler(BaseHandler):
         msg_type, card = CardBuilder.build_worktree_progress_card(
             units_dicts, pid, message=init_msg,
         )
-        progress_mid = self.send_message(chat_id, card, msg_type=msg_type)
+        progress_mid = self.send_card_to_chat(chat_id, card)
 
         _on_unit_update = self._make_throttled_progress_callback(
             mgr, project, progress_mid, goal, silent_mode=silent_mode,
@@ -531,9 +531,9 @@ class WorktreeHandler(BaseHandler):
                 final_dicts, pid, message=UI_TEXT["worktree_completed_no_change"],
             )
         if progress_mid:
-            self.patch_message(progress_mid, card, msg_type=msg_type)
+            self.update_card(progress_mid, card)
         else:
-            self.reply_message(message_id, card, msg_type=msg_type)
+            self.reply_card(message_id, card)
 
     def handle_worktree_merge(
         self,
@@ -567,7 +567,7 @@ class WorktreeHandler(BaseHandler):
         msg_type, card = CardBuilder.build_worktree_cleanup_card(
             state.merge_notes, pid, state.base_branch or "main", merge_results=merge_results,
         )
-        self.patch_message(message_id, card, msg_type=msg_type)
+        self.update_card(message_id, card)
 
     def handle_show_worktree_merge_entry(
         self,
@@ -593,7 +593,7 @@ class WorktreeHandler(BaseHandler):
         msg_type, card = CardBuilder.build_worktree_merge_entry_card(
             state.merge_notes, pid, state.base_branch or "main",
         )
-        self.patch_message(message_id, card, msg_type=msg_type)
+        self.update_card(message_id, card)
 
     def handle_worktree_cleanup(
         self,
@@ -626,12 +626,12 @@ class WorktreeHandler(BaseHandler):
                 f"{'未合并分支 ' + w.unmerged_branch if w.has_unmerged else ''}"
                 for w in warnings
             )
-            self.reply_message(
+            self.reply_text(
                 message_id,
                 UI_TEXT["system_worktree_cleanup_warnings"].format(details=details),
             )
         else:
-            self.reply_message(message_id, UI_TEXT["system_worktree_cleanup_success"])
+            self.reply_text(message_id, UI_TEXT["system_worktree_cleanup_success"])
 
     def handle_worktree_execute_action(
         self,
@@ -649,7 +649,7 @@ class WorktreeHandler(BaseHandler):
 
         goal = self._resolve_worktree_goal(value)
         if not goal:
-            self.reply_message(message_id, UI_TEXT["system_worktree_goal_required"])
+            self.reply_text(message_id, UI_TEXT["system_worktree_goal_required"])
             return
 
         self.handle_worktree_execute(message_id, chat_id, goal, project=project)
@@ -672,14 +672,14 @@ class WorktreeHandler(BaseHandler):
         state = mgr.get_state(project)
 
         if any(u.status == WorktreeUnitStatus.RUNNING for u in state.units):
-            self.reply_message(message_id, UI_TEXT["system_worktree_unit_running_error"])
+            self.reply_text(message_id, UI_TEXT["system_worktree_unit_running_error"])
             return
 
         units_dicts = [u.to_dict() for u in state.units]
         msg_type, card = CardBuilder.build_worktree_progress_card(
             units_dicts, pid, message=UI_TEXT["system_worktree_retry_starting"],
         )
-        progress_mid = self.send_message(chat_id, card, msg_type=msg_type)
+        progress_mid = self.send_card_to_chat(chat_id, card)
 
         retry_goal = state.journey.goal or UI_TEXT["system_worktree_retry_goal"]
         _on_unit_update = self._make_throttled_progress_callback(
@@ -703,6 +703,6 @@ class WorktreeHandler(BaseHandler):
                 final_dicts, pid, message=UI_TEXT["system_worktree_retry_completed"],
             )
         if progress_mid:
-            self.patch_message(progress_mid, card, msg_type=msg_type)
+            self.update_card(progress_mid, card)
         else:
-            self.reply_message(message_id, card, msg_type=msg_type)
+            self.reply_card(message_id, card)

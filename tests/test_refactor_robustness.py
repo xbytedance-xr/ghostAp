@@ -170,9 +170,9 @@ class TestRefactorRobustness(unittest.TestCase):
 
             # Test invalid type
             mock_msg.message_type = "audio"
-            client._reply_message = MagicMock()
+            client._reply_text = MagicMock()
             self.assertFalse(client._validate_message(mock_msg, "req_id"))
-            client._reply_message.assert_called()
+            client._reply_text.assert_called()
 
 
 if __name__ == "__main__":

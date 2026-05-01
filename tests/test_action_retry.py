@@ -73,8 +73,8 @@ class TestRetryCommandEmptySig:
         assert handler is not None
 
         handler("mid_1", "chat_1", None, {"command_text": "/deep run"})
-        client.reply_message.assert_called_once()
-        msg = client.reply_message.call_args[0][1]
+        client._reply_text.assert_called_once()
+        msg = client._reply_text.call_args[0][1]
         assert "失效" in msg
 
     @patch("src.utils.signing._get_signing_key", return_value=_SIGNING_KEY)
@@ -85,7 +85,7 @@ class TestRetryCommandEmptySig:
 
         handler("mid_2", "chat_2", None, {"command_text": "/status", "command_sig": ""})
         # /status is exempt — should NOT get an expiry reply
-        for call in client.reply_message.call_args_list:
+        for call in client._reply_text.call_args_list:
             msg = call[0][1] if call[0] else ""
             assert "失效" not in msg
 
@@ -102,8 +102,8 @@ class TestRetryCommandWrongSig:
             "command_text": "/deep run",
             "command_sig": "deadbeef" * 8,
         })
-        client.reply_message.assert_called_once()
-        msg = client.reply_message.call_args[0][1]
+        client._reply_text.assert_called_once()
+        msg = client._reply_text.call_args[0][1]
         assert "失效" in msg
 
 
@@ -130,7 +130,7 @@ class TestRetryCommandValidSig:
             "command_sig": sig,
         })
 
-        client.reply_message.assert_not_called()
+        client._reply_text.assert_not_called()
         client._process_with_intent.assert_called_once()
         # Verify the dispatched command matches
         args = client._process_with_intent.call_args[0]

@@ -41,7 +41,8 @@ def _make_handler():
     }
 
     handler = SystemHandler(ctx)
-    handler.reply_message = MagicMock()
+    handler.reply_card = MagicMock()
+    handler.reply_text = MagicMock()
     handler.reply_error = MagicMock()
     handler.get_working_dir = MagicMock(return_value="/tmp")
     return handler
@@ -131,10 +132,8 @@ class TestHandleModelCommandList(unittest.TestCase):
         fake_models[0].name = "gpt-5.2"
         with self._patch_fetch(fake_models):
             self.handler.handle_model_command("msg1", "chat1", "/model")
-        # Should send an interactive card
-        calls = self.handler.reply_message.call_args_list
-        interactive_call = next((c for c in calls if c[1].get("msg_type") == "interactive"), None)
-        self.assertIsNotNone(interactive_call, "Expected an interactive card reply")
+        # Should send an interactive card via reply_card
+        self.handler.reply_card.assert_called_once()
 
     def test_model_list_shows_card(self):
         fake_models = [
@@ -143,9 +142,7 @@ class TestHandleModelCommandList(unittest.TestCase):
         fake_models[0].name = "gpt-5.2"
         with self._patch_fetch(fake_models):
             self.handler.handle_model_command("msg1", "chat1", "/model list")
-        calls = self.handler.reply_message.call_args_list
-        interactive_call = next((c for c in calls if c[1].get("msg_type") == "interactive"), None)
-        self.assertIsNotNone(interactive_call, "Expected an interactive card reply for /model list")
+        self.handler.reply_card.assert_called_once()
 
     def test_model_ls_shows_card(self):
         fake_models = [MagicMock()]
@@ -154,9 +151,7 @@ class TestHandleModelCommandList(unittest.TestCase):
         fake_models[0].is_default = True
         with self._patch_fetch(fake_models):
             self.handler.handle_model_command("msg1", "chat1", "/model ls")
-        calls = self.handler.reply_message.call_args_list
-        interactive_call = next((c for c in calls if c[1].get("msg_type") == "interactive"), None)
-        self.assertIsNotNone(interactive_call)
+        self.handler.reply_card.assert_called_once()
 
     def test_model_list_card_contains_tool_name(self):
         fake_models = [MagicMock()]
@@ -165,9 +160,7 @@ class TestHandleModelCommandList(unittest.TestCase):
         fake_models[0].is_default = True
         with self._patch_fetch(fake_models):
             self.handler.handle_model_command("msg1", "chat1", "/model list")
-        calls = self.handler.reply_message.call_args_list
-        interactive_call = next((c for c in calls if c[1].get("msg_type") == "interactive"), None)
-        card_str = interactive_call[0][1]
+        card_str = self.handler.reply_card.call_args[0][1]
         card = json.loads(card_str)
         # card title should mention "coco" (the default tool)
         title = card["header"]["title"]["content"].lower()
@@ -219,7 +212,7 @@ class TestHandleModelCommandSwitch(unittest.TestCase):
     def test_model_switch_sends_progress_message(self):
         with patch.object(self.handler, "_enter_mode_with_acp_model"):
             self.handler.handle_model_command("msg1", "chat1", "/model gpt-5.2")
-        # First reply should be a progress text message (non-interactive)
-        first_call = self.handler.reply_message.call_args_list[0]
-        msg = first_call[0][1]
-        self.assertIn("gpt-5.2", msg)
+        # First reply should be a card with the model name (switching status card)
+        first_call = self.handler.reply_card.call_args_list[0]
+        card_str = first_call[0][1]
+        self.assertIn("gpt-5.2", card_str)

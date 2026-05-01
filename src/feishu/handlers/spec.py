@@ -91,7 +91,7 @@ class SpecHandler(BaseEngineHandler):
             guide_message = text[len("/spec_guide ") :].strip()
             self.update_spec_guidance(message_id, chat_id, guide_message, project)
         elif text_lower == "/spec_guide":
-            self.reply_message(
+            self.reply_text(
                 message_id,
                 UI_TEXT["spec_cmd_guide_usage"],
             )
@@ -99,12 +99,12 @@ class SpecHandler(BaseEngineHandler):
             requirement = text[6:].strip()
             self.start_spec_engine(message_id, chat_id, requirement, project)
         elif text_lower == "/spec":
-            self.reply_message(
+            self.reply_text(
                 message_id,
                 UI_TEXT["spec_cmd_help_usage"],
             )
         else:
-            self.reply_message(message_id, "❓ 未知的 Spec 命令")
+            self.reply_text(message_id, "❓ 未知的 Spec 命令")
 
     # ------------------------------------------------------------------
     # start
@@ -120,7 +120,7 @@ class SpecHandler(BaseEngineHandler):
 
         existing = self.ctx.spec_engine_manager.get(chat_id, root_path)
         if existing and existing.is_running:
-            self.reply_message(
+            self.reply_text(
                 message_id,
                 "⚠️ 当前项目已有 Spec 任务在执行中\n\n发送 `/spec_status` 查看进度\n发送 `/stop_spec` 停止任务",
             )
@@ -144,8 +144,8 @@ class SpecHandler(BaseEngineHandler):
             engine_name=f"Spec({engine_name})",
             show_buttons=False,
         )
-        self.reply_message(
-            message_id, card_content, msg_type=msg_type, origin_message_id=message_id, request_id=request_id
+        self.reply_card(
+            message_id, card_content
         )
 
         engine = self.ctx.spec_engine_manager.get_or_create(chat_id, root_path, engine_name=engine_name)
@@ -180,7 +180,7 @@ class SpecHandler(BaseEngineHandler):
                     engine_project_id=project.project_id if project else root_path,
                     footer_note=self.format_ref_note(message_id, request_id) if request_id else None,
                 )
-                self.send_message(chat_id, err_card, err_msg_type, origin_message_id=message_id, request_id=request_id)
+                self.send_card_to_chat(chat_id, err_card, origin_message_id=message_id, request_id=request_id)
 
         def _locked_run():
             run_spec_engine()
@@ -230,7 +230,7 @@ class SpecHandler(BaseEngineHandler):
                 engine_name=f"Spec({engine_name})",
                 show_buttons=False,
             )
-            self.reply_message(message_id, card_content, msg_type=msg_type)
+            self.reply_card(message_id, card_content)
             return
 
         tail = 20
@@ -248,7 +248,7 @@ class SpecHandler(BaseEngineHandler):
             engine_name=f"Spec({engine.engine_name})",
             show_buttons=False,
         )
-        self.reply_message(message_id, card_content, msg_type=msg_type)
+        self.reply_card(message_id, card_content)
 
     def show_spec_metrics(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"] = None):
         if project is None:
@@ -267,7 +267,7 @@ class SpecHandler(BaseEngineHandler):
                 engine_name=f"Spec({engine_name})",
                 show_buttons=False,
             )
-            self.reply_message(message_id, card_content, msg_type=msg_type)
+            self.reply_card(message_id, card_content)
             return
 
         tail = 20
@@ -285,7 +285,7 @@ class SpecHandler(BaseEngineHandler):
             engine_name=f"Spec({engine.engine_name})",
             show_buttons=False,
         )
-        self.reply_message(message_id, card_content, msg_type=msg_type)
+        self.reply_card(message_id, card_content)
 
     def show_spec_config(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         if project is None:
@@ -353,7 +353,7 @@ class SpecHandler(BaseEngineHandler):
             engine_name=f"Spec({engine_name})",
             show_buttons=False,
         )
-        self.reply_message(message_id, card_content, msg_type=msg_type)
+        self.reply_card(message_id, card_content)
 
     def export_spec_report(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         if project is None:
@@ -373,7 +373,7 @@ class SpecHandler(BaseEngineHandler):
                 logger.debug("failed to load engine from disk", exc_info=True)
 
         if not engine or not engine.project or not engine.project.cycles:
-            self.reply_message(message_id, "❌ 当前没有可导出的 Spec 记录")
+            self.reply_text(message_id, "❌ 当前没有可导出的 Spec 记录")
             return
 
         spec_project = engine.project
@@ -417,9 +417,9 @@ class SpecHandler(BaseEngineHandler):
         try:
             with open(export_path, "w", encoding="utf-8") as f:
                 f.write("\n".join(lines))
-            self.reply_message(message_id, f"✅ 导出成功: `{export_path}`")
+            self.reply_text(message_id, f"✅ 导出成功: `{export_path}`")
         except Exception as e:
-            self.reply_message(message_id, f"❌ 导出失败: {get_error_detail(e)}")
+            self.reply_text(message_id, f"❌ 导出失败: {get_error_detail(e)}")
 
     def save_spec_state(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         if project is None:
@@ -430,13 +430,13 @@ class SpecHandler(BaseEngineHandler):
             engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
             engine = self.ctx.spec_engine_manager.get_or_create(chat_id, root_path, engine_name=engine_name)
         if not engine or not engine.project:
-            self.reply_message(message_id, "当前没有可保存的 Spec 状态（请先运行 /spec）")
+            self.reply_text(message_id, "当前没有可保存的 Spec 状态（请先运行 /spec）")
             return
         try:
             path = engine.save_state()
-            self.reply_message(message_id, f"✅ 已保存 Spec 状态到: `{path}`")
+            self.reply_text(message_id, f"✅ 已保存 Spec 状态到: `{path}`")
         except Exception as e:
-            self.reply_message(message_id, fmt_error("保存 Spec 状态", e))
+            self.reply_text(message_id, fmt_error("保存 Spec 状态", e))
 
     # ------------------------------------------------------------------
     # pause / resume / stop
@@ -536,7 +536,7 @@ class SpecHandler(BaseEngineHandler):
                     )
                 self._show_status(message_id, chat_id, project=proj)
             else:
-                self.reply_message(message_id, f"当前没有可恢复的 {self._get_engine_name_prefix()} 任务")
+                self.reply_text(message_id, f"当前没有可恢复的 {self._get_engine_name_prefix()} 任务")
 
         self._safe_lifecycle_action(_resume, "resume", chat_id, message_id, project)
 
@@ -598,7 +598,7 @@ class SpecHandler(BaseEngineHandler):
                 engine = candidates[0]
 
         if not engine or not engine.project:
-            self.reply_message(
+            self.reply_text(
                 message_id,
                 "⚠️ 当前没有可注入引导的 Spec 任务（运行中/已暂停/待澄清）\n\n"
                 "请先使用 `/spec <需求>` 启动，或发送 `/spec_status` 查看当前任务",
@@ -610,7 +610,7 @@ class SpecHandler(BaseEngineHandler):
             SpecProjectStatus.PAUSED,
             SpecProjectStatus.CLARIFYING,
         ):
-            self.reply_message(
+            self.reply_text(
                 message_id,
                 "⚠️ 当前 Spec 任务状态不支持注入引导（仅支持：运行中/已暂停/待澄清）\n\n发送 `/spec_status` 查看状态",
             )
@@ -638,7 +638,7 @@ class SpecHandler(BaseEngineHandler):
             engine_name=f"Spec({engine_name})",
             show_buttons=False,
         )
-        self.send_message(chat_id, card_content, msg_type)
+        self.send_card_to_chat(chat_id, card_content)
 
     # ------------------------------------------------------------------
     # recover
@@ -646,7 +646,7 @@ class SpecHandler(BaseEngineHandler):
     def show_recoverable_tasks(self, message_id: str, chat_id: str):
         tasks = list_pending_tasks()
         if not tasks:
-            self.reply_message(message_id, "📋 没有可恢复的任务")
+            self.reply_text(message_id, "📋 没有可恢复的任务")
             return
 
         lines = ["📋 **可恢复的 Spec 任务**\n"]
@@ -664,31 +664,31 @@ class SpecHandler(BaseEngineHandler):
             lines.append("")
 
         lines.append("使用 `/spec_recover <任务ID>` 恢复指定任务")
-        self.reply_message(message_id, "\n".join(lines))
+        self.reply_text(message_id, "\n".join(lines))
 
     def recover_spec_task(
         self, message_id: str, chat_id: str, task_id: str, project: Optional["ProjectContext"] = None
     ):
         state = load_task_state(task_id)
         if not state:
-            self.reply_message(message_id, f"❌ 未找到任务: {task_id}")
+            self.reply_text(message_id, f"❌ 未找到任务: {task_id}")
             return
 
         project_path = state.project_path
         if not os.path.isdir(project_path):
-            self.reply_message(message_id, f"❌ 项目路径不存在: {project_path}")
+            self.reply_text(message_id, f"❌ 项目路径不存在: {project_path}")
             return
 
         if not project:
             try:
                 project, _ = self.project_manager.get_or_create_project_for_path(project_path, chat_id)
             except Exception as e:
-                self.reply_message(message_id, fmt_error("恢复项目上下文", e))
+                self.reply_text(message_id, fmt_error("恢复项目上下文", e))
                 return
 
         existing = self.ctx.spec_engine_manager.get(chat_id, project_path)
         if existing and existing.is_running:
-            self.reply_message(
+            self.reply_text(
                 message_id,
                 "⚠️ 当前项目已有 Spec 任务在执行中\n\n发送 `/spec_status` 查看进度\n发送 `/stop_spec` 停止任务",
             )
@@ -712,8 +712,8 @@ class SpecHandler(BaseEngineHandler):
             engine_name=f"Spec({engine_name})",
             show_buttons=False,
         )
-        self.reply_message(
-            message_id, card_content, msg_type=msg_type, origin_message_id=message_id, request_id=request_id
+        self.reply_card(
+            message_id, card_content
         )
 
         engine = self.ctx.spec_engine_manager.get_or_create(
@@ -731,7 +731,7 @@ class SpecHandler(BaseEngineHandler):
             engine.restore_from_task_state(state, on_rate_limit=on_rate_limit)
         except Exception as e:
             logger.warning("恢复任务上下文失败(task_id=%s): %s", task_id, get_error_detail(e), exc_info=True)
-            self.reply_message(message_id, fmt_error("恢复任务上下文", e))
+            self.reply_text(message_id, fmt_error("恢复任务上下文", e))
             return
 
         def run_spec_engine():
@@ -756,7 +756,7 @@ class SpecHandler(BaseEngineHandler):
                     engine_project_id=project.project_id if project else project_path,
                     footer_note=self.format_ref_note(message_id, request_id) if request_id else None,
                 )
-                self.send_message(chat_id, err_card, err_msg_type, origin_message_id=message_id, request_id=request_id)
+                self.send_card_to_chat(chat_id, err_card, origin_message_id=message_id, request_id=request_id)
 
         def _locked_recover():
             run_spec_engine()
@@ -819,15 +819,15 @@ class SpecHandler(BaseEngineHandler):
             engine = self.ctx.spec_engine_manager.get_active_engine(open_chat_id)
             if engine and hasattr(engine, 'skip_retry_event'):
                 engine.skip_retry_event.set()
-                self.reply_message(open_message_id, UI_TEXT["skip_retry_ack"])
+                self.reply_text(open_message_id, UI_TEXT["skip_retry_ack"])
             else:
-                self.reply_message(open_message_id, UI_TEXT["no_active_retry"])
+                self.reply_text(open_message_id, UI_TEXT["no_active_retry"])
             return
 
         if action_type == "spec_retry":
             task_id = (value.get("task_id") or "").strip()
             if not task_id:
-                self.reply_message(open_message_id, "❌ 重试失败：缺少 task_id")
+                self.reply_text(open_message_id, "❌ 重试失败：缺少 task_id")
                 return
             # Reuse /spec_recover flow to resume from persisted failed-task snapshot.
             self.recover_spec_task(open_message_id, open_chat_id, task_id, project=target_project)

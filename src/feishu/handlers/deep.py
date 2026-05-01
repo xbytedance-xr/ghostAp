@@ -155,9 +155,7 @@ class DeepHandler(BaseEngineHandler):
             engine_name=engine_name,
             show_buttons=False,
         )
-        initial_msg_id = self.reply_message(
-            message_id, card_content, msg_type=msg_type, origin_message_id=message_id, request_id=request_id
-        )
+        initial_msg_id = self.reply_card(message_id, card_content)
 
         engine = self.ctx.deep_engine_manager.get_or_create(chat_id, root_path, engine_name=engine_name)
 
@@ -223,7 +221,7 @@ class DeepHandler(BaseEngineHandler):
                 engine_name=engine_name,
                 show_buttons=False,
             )
-            self.reply_message(message_id, card_content, msg_type=msg_type)
+            self.reply_card(message_id, card_content)
             return
 
         def _sort_key(e):
@@ -257,7 +255,7 @@ class DeepHandler(BaseEngineHandler):
             working_dir=self.get_working_dir(chat_id),
             show_buttons=True,
         )
-        self.reply_message(message_id, card_content, msg_type=msg_type)
+        self.reply_card(message_id, card_content)
 
     # ------------------------------------------------------------------
     # pause / resume / stop
@@ -308,7 +306,7 @@ class DeepHandler(BaseEngineHandler):
                 logger.debug("停止deep engine失败: %s", get_error_detail(ex))
 
         msg = UI_TEXT["deep_stop_all_success"].format(count=len(engines))
-        self.reply_message(message_id, msg)
+        self.reply_text(message_id, msg)
 
     # ------------------------------------------------------------------
     # update context
@@ -359,7 +357,7 @@ class DeepHandler(BaseEngineHandler):
             engine_name=engine_name,
             show_buttons=False,
         )
-        self.send_message(chat_id, card_content, msg_type)
+        self.send_card_to_chat(chat_id, card_content)
 
     # ------------------------------------------------------------------
     # UI Interaction Handlers

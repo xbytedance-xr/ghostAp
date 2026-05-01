@@ -183,7 +183,8 @@ def _make_coco_handler():
     ctx.working_dirs = {}
 
     handler = CocoModeHandler(ctx)
-    handler.reply_message = MagicMock()
+    handler.reply_card = MagicMock()
+    handler.reply_text = MagicMock()
     handler.reply_error = MagicMock()
     handler.get_working_dir = MagicMock(return_value="/tmp")
     return handler
@@ -215,10 +216,10 @@ class TestSwitchModelACPPath(unittest.TestCase):
     
         fake_session.set_model.assert_called_once_with("claude-3.7-sonnet")
         mgr_mock.end_session.assert_not_called()
-        handler.reply_message.assert_called_once()
-        msg = handler.reply_message.call_args[0][1]
-        assert "claude-3.7-sonnet" in msg
-        assert "对话上下文已保留" in msg
+        handler.reply_card.assert_called_once()
+        card_str = handler.reply_card.call_args[0][1]
+        assert "claude-3.7-sonnet" in card_str
+        assert "对话上下文已保留" in card_str
 
 
 class TestSwitchModelFallbackPath(unittest.TestCase):
@@ -253,9 +254,9 @@ class TestSwitchModelFallbackPath(unittest.TestCase):
         mgr_mock.ensure_session.assert_called_once()
         call_kwargs = mgr_mock.ensure_session.call_args
         assert call_kwargs[1].get("model_name") == "gpt-5.2" or "gpt-5.2" in str(call_kwargs)
-        handler.reply_message.assert_called_once()
-        msg = handler.reply_message.call_args[0][1]
-        assert "已重启会话" in msg
+        handler.reply_card.assert_called_once()
+        card_str = handler.reply_card.call_args[0][1]
+        assert "已重启会话" in card_str
 
     def test_fallback_on_set_model_exception(self):
         handler = _make_coco_handler()
@@ -317,7 +318,7 @@ def _make_system_handler(is_coco_mode=False):
     ctx.handlers = mock_handlers
 
     handler = SystemHandler(ctx)
-    handler.reply_message = MagicMock()
+    handler.reply_text = MagicMock()
     handler.reply_error = MagicMock()
     return handler
 

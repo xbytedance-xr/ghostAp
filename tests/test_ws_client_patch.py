@@ -313,7 +313,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_get_settings.return_value = mock_settings
 
             client = FeishuWSClient(MagicMock())
-            client._reply_message = MagicMock()
+            client._reply_text = MagicMock()
+            client._reply_card = MagicMock()
             client._action_dispatcher.dispatch = MagicMock(side_effect=Exception("boom"))
 
             data = SimpleNamespace(
@@ -330,10 +331,10 @@ class TestCardActionHandler(unittest.TestCase):
 
             client._process_card_action_async(data)
 
-            client._reply_message.assert_called_once()
-            _, content = client._reply_message.call_args.args[:2]
-            self.assertIn("已为你保留选择", content)
-            self.assertIn("继续进入TTADK", content)
+            client._reply_card.assert_called_once()
+            _, card_content = client._reply_card.call_args.args[:2]
+            self.assertIn("已为你保留选择", card_content)
+            self.assertIn("继续进入TTADK", card_content)
 
     def test_handle_card_enter_claude_passes_project(self):
         """验证卡片入口 Claude 时把 project 透传给 enter_mode（避免选错项目导致显示 Coco 卡片）"""
@@ -1110,7 +1111,7 @@ class TestSystemCmdGateReadonlyBypass(unittest.TestCase):
 
             client = FeishuWSClient(MagicMock())
             client._scheduler = MagicMock()
-            client._reply_message = MagicMock()
+            client._reply_text = MagicMock()
 
             with client._system_cmd_gate_lock:
                 client._system_cmd_inflight_by_chat[chat_id] = 1
@@ -1144,7 +1145,7 @@ class TestSystemCmdGateReadonlyBypass(unittest.TestCase):
             data = self._make_card_data(action)
             result = client._handle_card_action(data)
             self.assertIsNone(result)
-            client._reply_message.assert_not_called()
+            client._reply_text.assert_not_called()
 
     def test_non_readonly_action_blocked_by_gate(self):
         client = self._make_client_with_gate_active()
@@ -1155,8 +1156,8 @@ class TestSystemCmdGateReadonlyBypass(unittest.TestCase):
         data = self._make_card_data("enter_coco")
         result = client._handle_card_action(data)
         self.assertIsNone(result)
-        client._reply_message.assert_called_once()
-        args = client._reply_message.call_args.args
+        client._reply_text.assert_called_once()
+        args = client._reply_text.call_args.args
         self.assertIn("系统指令处理中", args[1])
         client._scheduler.submit.assert_not_called()
 
@@ -1191,7 +1192,7 @@ class TestSystemCmdGateReadonlyBypass(unittest.TestCase):
 
             client = FeishuWSClient(MagicMock())
             client._scheduler = MagicMock()
-            client._reply_message = MagicMock()
+            client._reply_text = MagicMock()
             client._card_event_cache = MagicMock()
             client._card_event_cache.is_duplicate.return_value = False
             client._card_action_dedup_cache = MagicMock()
@@ -1200,7 +1201,7 @@ class TestSystemCmdGateReadonlyBypass(unittest.TestCase):
             data = self._make_card_data("enter_coco")
             result = client._handle_card_action(data)
             self.assertIsNone(result)
-            client._reply_message.assert_not_called()
+            client._reply_text.assert_not_called()
 
 
 class TestIsSystemCardActionEngineControls(unittest.TestCase):
@@ -1313,7 +1314,7 @@ class TestOneShotDispatchToThread(unittest.TestCase):
         handler = MagicMock()
         handler.mode_name = "Coco"
         handler.mode_emoji = "🤖"
-        handler.reply_message_with_id.return_value = "thread_root_1"
+        handler.reply_card.return_value = "thread_root_1"
         handler.register_message_project = MagicMock()
         mock_session = MagicMock()
         handler._get_session_manager.return_value.get_session.return_value = mock_session
@@ -1338,7 +1339,7 @@ class TestOneShotDispatchToThread(unittest.TestCase):
         handler = MagicMock()
         handler.mode_name = "Coco"
         handler.mode_emoji = "🤖"
-        handler.reply_message_with_id.return_value = "reply_msg_id_999"
+        handler.reply_card.return_value = "reply_msg_id_999"
         mock_session = MagicMock()
         handler._get_session_manager.return_value.get_session.return_value = mock_session
 
@@ -1368,16 +1369,16 @@ class TestOneShotDispatchToThread(unittest.TestCase):
     @patch("src.feishu.ws_client.get_current_thread_id", return_value=None)
     def test_dispatch_to_thread_reply_fail_no_crash(self, _):
         client = self._make_client()
-        client._reply_message = MagicMock()
+        client._reply_text = MagicMock()
         handler = MagicMock()
         handler.mode_name = "Coco"
         handler.mode_emoji = "🤖"
-        handler.reply_message_with_id.return_value = None
+        handler.reply_card.return_value = None
 
         client._dispatch_to_thread("m1", "c1", "写个函数", MagicMock(), InteractionMode.COCO, handler)
 
-        client._reply_message.assert_called_once()
-        assert "失败" in str(client._reply_message.call_args)
+        client._reply_text.assert_called_once()
+        assert "失败" in str(client._reply_text.call_args)
         handler.enter_mode.assert_not_called()
 
     @patch("src.feishu.ws_client.get_current_thread_id", return_value=None)
@@ -1386,7 +1387,7 @@ class TestOneShotDispatchToThread(unittest.TestCase):
         handler = MagicMock()
         handler.mode_name = "Coco"
         handler.mode_emoji = "🤖"
-        handler.reply_message_with_id.return_value = "thread_root_1"
+        handler.reply_card.return_value = "thread_root_1"
         handler._get_session_manager.return_value.get_session.return_value = None
 
         project = MagicMock()
@@ -1406,7 +1407,7 @@ class TestOneShotDispatchToThread(unittest.TestCase):
         handler = MagicMock()
         handler.mode_name = "Coco"
         handler.mode_emoji = "🤖"
-        handler.reply_message_with_id.return_value = "thread_root_1"
+        handler.reply_card.return_value = "thread_root_1"
         handler.enter_mode.side_effect = RuntimeError("ACP crashed")
 
         project = MagicMock()
@@ -1508,7 +1509,7 @@ class TestOneShotDispatchToThread(unittest.TestCase):
         handler = MagicMock()
         handler.mode_name = "Claude"
         handler.mode_emoji = "🟣"
-        handler.reply_message_with_id.return_value = "new_thread_root"
+        handler.reply_card.return_value = "new_thread_root"
         mock_session = MagicMock()
         handler._get_session_manager.return_value.get_session.return_value = mock_session
 
@@ -1529,7 +1530,7 @@ class TestOneShotDispatchToThread(unittest.TestCase):
     def test_dispatch_to_thread_without_project_reloads_active_project_for_session_lookup(self, _):
         client = self._make_client()
         client._add_reaction = MagicMock()
-        client._reply_message = MagicMock()
+        client._reply_text = MagicMock()
         client._find_active_thread = MagicMock(return_value=None)
         client._mode_manager = MagicMock()
 
@@ -1540,7 +1541,7 @@ class TestOneShotDispatchToThread(unittest.TestCase):
         handler = MagicMock()
         handler.mode_name = "Coco"
         handler.mode_emoji = "🤖"
-        handler.reply_message_with_id.return_value = "thread_root_1"
+        handler.reply_text.return_value = "thread_root_1"
         session = MagicMock()
         handler._get_session_manager.return_value.get_session.return_value = session
 
@@ -1590,7 +1591,7 @@ class TestActiveThreadGuidance(unittest.TestCase):
     def test_guidance_shown_when_intent_unrecognized_with_active_thread(self, _):
         client = self._make_client()
         client._thread_manager = MagicMock()
-        client._reply_message = MagicMock()
+        client._reply_text = MagicMock()
         client._add_reaction = MagicMock()
         mock_ctx = MagicMock()
         mock_ctx.mode = "coco"
@@ -1598,8 +1599,8 @@ class TestActiveThreadGuidance(unittest.TestCase):
 
         client._execute_single_task("m1", "c1", None, "帮我写个函数", MagicMock())
 
-        client._reply_message.assert_called_once()
-        call_args = str(client._reply_message.call_args)
+        client._reply_text.assert_called_once()
+        call_args = str(client._reply_text.call_args)
         assert "活跃" in call_args
         assert "话题" in call_args
 
@@ -1607,26 +1608,26 @@ class TestActiveThreadGuidance(unittest.TestCase):
     def test_no_guidance_when_no_active_thread(self, _):
         client = self._make_client()
         client._thread_manager = MagicMock()
-        client._reply_message = MagicMock()
+        client._reply_text = MagicMock()
         client._thread_manager.get_by_chat.return_value = []
 
         client._execute_single_task("m1", "c1", None, "帮我写个函数", MagicMock())
 
-        client._reply_message.assert_called_once()
-        call_args = str(client._reply_message.call_args)
+        client._reply_text.assert_called_once()
+        call_args = str(client._reply_text.call_args)
         assert "无法理解" in call_args
 
     @patch("src.feishu.ws_client.get_current_thread_id", return_value=None)
     def test_no_guidance_when_thread_disabled(self, _):
         client = self._make_client()
         client._thread_manager = MagicMock()
-        client._reply_message = MagicMock()
+        client._reply_text = MagicMock()
         client.settings.thread_programming_enabled = False
 
         client._execute_single_task("m1", "c1", None, "帮我写个函数", MagicMock())
 
-        client._reply_message.assert_called_once()
-        call_args = str(client._reply_message.call_args)
+        client._reply_text.assert_called_once()
+        call_args = str(client._reply_text.call_args)
         assert "无法理解" in call_args
 
 
@@ -1911,7 +1912,7 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
         client.settings = MagicMock()
         client.settings.thread_programming_enabled = True
         client._add_reaction = MagicMock()
-        client._reply_message = MagicMock()
+        client._reply_text = MagicMock()
         client._find_active_thread = MagicMock(return_value=None)
         client._mode_manager = MagicMock()
 
@@ -1922,7 +1923,7 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
         handler = MagicMock()
         handler.mode_name = "Coco"
         handler.mode_emoji = "🤖"
-        handler.reply_message_with_id.return_value = "reply_id_1"
+        handler.reply_text.return_value = "reply_id_1"
 
         session = MagicMock()
         session.session_id = "sess1"
@@ -2052,21 +2053,21 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
     def test_dispatch_message_logic_programming_entry_intercepted(self):
         client = self._make_client()
         client._add_reaction = MagicMock()
-        client._reply_message = MagicMock()
+        client._reply_text = MagicMock()
         client._get_mode_handler = MagicMock()
 
         project = MagicMock()
         client._dispatch_message_logic("m1", "c1", "/coco", project, auto_enter_mode="coco")
 
-        client._reply_message.assert_called_once()
-        call_str = str(client._reply_message.call_args)
+        client._reply_text.assert_called_once()
+        call_str = str(client._reply_text.call_args)
         assert "已在编程模式" in call_str
         client._get_mode_handler.assert_not_called()
 
     def test_dispatch_message_logic_deep_command_forwarded_to_process_with_intent(self):
         client = self._make_client()
         client._add_reaction = MagicMock()
-        client._reply_message = MagicMock()
+        client._reply_text = MagicMock()
         client._get_mode_handler = MagicMock()
         client._process_with_intent = MagicMock()
 
@@ -2079,7 +2080,7 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
     def test_dispatch_message_logic_exit_with_defer(self):
         client = self._make_client()
         client._add_reaction = MagicMock()
-        client._reply_message = MagicMock()
+        client._reply_text = MagicMock()
         client._control_plane.should_defer_exit = MagicMock(return_value=True)
         client._control_plane.request_deferred_exit = MagicMock()
         client._exit_current_mode = MagicMock()
@@ -2091,8 +2092,8 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
 
         client._control_plane.should_defer_exit.assert_called_once()
         client._control_plane.request_deferred_exit.assert_called_once()
-        client._reply_message.assert_called_once()
-        assert "当前任务完成后退出" in str(client._reply_message.call_args)
+        client._reply_text.assert_called_once()
+        assert "当前任务完成后退出" in str(client._reply_text.call_args)
         client._exit_current_mode.assert_not_called()
         client._get_mode_handler.assert_not_called()
 
@@ -2538,13 +2539,13 @@ class TestSendLockConflictCardFacade(unittest.TestCase):
         """When handlers['system'] is None, fallback text should be sent."""
         client = self._make_client()
         client._handler_ctx.handlers["system"] = None
-        client.reply_message = MagicMock()
+        client._reply_text = MagicMock()
 
         err = RuntimeError("lock conflict")
         client.send_lock_conflict_card(err, "msg_2", "/loop test")
 
-        client.reply_message.assert_called_once()
-        call_args = client.reply_message.call_args
+        client._reply_text.assert_called_once()
+        call_args = client._reply_text.call_args
         self.assertEqual(call_args[0][0], "msg_2")
         self.assertIn("🔒", call_args[0][1])
 
@@ -2552,13 +2553,13 @@ class TestSendLockConflictCardFacade(unittest.TestCase):
         """When 'system' key is absent from handlers dict, fallback text should be sent."""
         client = self._make_client()
         client._handler_ctx.handlers.pop("system", None)
-        client.reply_message = MagicMock()
+        client._reply_text = MagicMock()
 
         err = RuntimeError("lock conflict")
         client.send_lock_conflict_card(err, "msg_3", "/spec run")
 
-        client.reply_message.assert_called_once()
-        call_args = client.reply_message.call_args
+        client._reply_text.assert_called_once()
+        call_args = client._reply_text.call_args
         self.assertEqual(call_args[0][0], "msg_3")
         self.assertIn("🔒", call_args[0][1])
 
@@ -2622,7 +2623,7 @@ class TestChatLockHandlerDelegation(unittest.TestCase):
         )
 
     def test_try_block_fallback_when_handler_none(self):
-        """ChatLockGate._try_block should fall back to host._reply_message when handler is None."""
+        """ChatLockGate._try_block should fall back to host._reply_text when handler is None."""
         mock_clm = MagicMock()
         mock_clm.should_block.return_value = True
 
@@ -2631,7 +2632,7 @@ class TestChatLockHandlerDelegation(unittest.TestCase):
         result = gate._try_block("chat_1", "user_1", "msg_1")
 
         self.assertTrue(result)
-        host._reply_message.assert_called_once()
+        host._reply_text.assert_called_once()
 
     def test_try_block_throttled_uses_get_handler(self):
         """When dedup suppresses the full card, throttled reply should use host._get_handler."""

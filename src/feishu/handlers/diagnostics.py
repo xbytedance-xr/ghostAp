@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import TYPE_CHECKING, Optional
@@ -59,7 +60,7 @@ class DiagnosticsHandler(BaseHandler):
                 working_dir=self.get_working_dir(chat_id),
                 show_buttons=True,
             )
-            self.reply_message(message_id, card_content, msg_type=msg_type)
+            self.reply_card(message_id, card_content)
             return
 
         # Default: current project
@@ -67,7 +68,7 @@ class DiagnosticsHandler(BaseHandler):
             project = self.project_manager.get_active_project(chat_id)
 
         if not project:
-            self.reply_message(
+            self.reply_text(
                 message_id,
                 UI_TEXT["diag_no_active_project_tasks"]
             )
@@ -82,7 +83,7 @@ class DiagnosticsHandler(BaseHandler):
             content,
             show_buttons=True,
         )
-        self.reply_message(message_id, card_content, msg_type=msg_type)
+        self.reply_card(message_id, card_content)
 
     # ------------------------------------------------------------------
     # Unified status — /status [task_id|all]
@@ -254,7 +255,7 @@ class DiagnosticsHandler(BaseHandler):
             working_dir=self.get_working_dir(chat_id),
             show_buttons=True,
         )
-        self.reply_message(message_id, card_content, msg_type=msg_type)
+        self.reply_card(message_id, card_content)
 
     def _show_task_detail(
         self, message_id: str, chat_id: str, task_id: str, project: Optional["ProjectContext"] = None
@@ -277,7 +278,7 @@ class DiagnosticsHandler(BaseHandler):
                     engine_name=engine_name,
                     show_buttons=False,
                 )
-                self.reply_message(message_id, card_content, msg_type=msg_type)
+                self.reply_card(message_id, card_content)
                 return
 
         for engine in self.ctx.loop_engine_manager.list_engines(chat_id):
@@ -296,7 +297,7 @@ class DiagnosticsHandler(BaseHandler):
                     engine_name=f"Loop({engine_name})",
                     show_buttons=False,
                 )
-                self.reply_message(message_id, card_content, msg_type=msg_type)
+                self.reply_card(message_id, card_content)
                 return
 
         for engine in self.ctx.spec_engine_manager.list_engines(chat_id):
@@ -315,7 +316,7 @@ class DiagnosticsHandler(BaseHandler):
                     engine_name=f"Spec({engine_name})",
                     show_buttons=False,
                 )
-                self.reply_message(message_id, card_content, msg_type=msg_type)
+                self.reply_card(message_id, card_content)
                 return
 
         # Also check scheduler by task_id
@@ -329,10 +330,10 @@ class DiagnosticsHandler(BaseHandler):
                 working_dir=self.get_working_dir(chat_id),
                 show_buttons=False,
             )
-            self.reply_message(message_id, card_content, msg_type=msg_type)
+            self.reply_card(message_id, card_content)
             return
 
-        self.reply_message(
+        self.reply_text(
             message_id,
             UI_TEXT["diag_task_not_found"].format(
                 id=task_id
@@ -395,7 +396,7 @@ class DiagnosticsHandler(BaseHandler):
         if project is None:
             project = self.project_manager.get_active_project(chat_id)
         if not project:
-            self.reply_message(
+            self.reply_text(
                 message_id,
                 UI_TEXT["diag_diff_no_active_project"]
             )
@@ -408,12 +409,13 @@ class DiagnosticsHandler(BaseHandler):
         initial = f"{banner_tpl}\n\n{ref_note}" if ref_note else banner_tpl
         title = UI_TEXT["diag_diff_report_title"]
 
-        msg_type, card_content = CardBuilder.build_project_response_card(
+        _msg_type, card_content = CardBuilder.build_project_response_card(
             project, title, initial, show_buttons=False,
         )
-        card_message_id = self.reply_message_with_id(
-            message_id, card_content, msg_type, origin_message_id=message_id, request_id=request_id
-        )
+        card_session = self.create_direct_card_session(chat_id, reply_to=message_id)
+        card_json = json.loads(card_content) if isinstance(card_content, str) else card_content
+        card_session.send(card_json)
+        card_message_id = card_session.message_id
         if card_message_id:
             try:
                 self.register_message_project(card_message_id, project)
@@ -447,7 +449,8 @@ class DiagnosticsHandler(BaseHandler):
                         _msg_type, _card = CardBuilder.build_project_response_card(
                             project, title, f"{banner_tpl}\n\n{full_ref}", show_buttons=False,
                         )
-                        self.patch_message(card_message_id, _card, _msg_type)
+                        _card_json = json.loads(_card) if isinstance(_card, str) else _card
+                        card_session.send(_card_json)
                 except Exception:
                     logger.debug("failed to update streaming card content", exc_info=True)
 
@@ -459,7 +462,8 @@ class DiagnosticsHandler(BaseHandler):
                         _msg_type, _card = CardBuilder.build_project_response_card(
                             project, title, progress_content, show_buttons=False,
                         )
-                        self.patch_message(card_message_id, _card, _msg_type)
+                        _card_json = json.loads(_card) if isinstance(_card, str) else _card
+                        card_session.send(_card_json)
                     except Exception:
                         logger.debug("failed to update streaming card content", exc_info=True)
 
@@ -472,9 +476,10 @@ class DiagnosticsHandler(BaseHandler):
                         _msg_type, _card = CardBuilder.build_project_response_card(
                             project, title, final, show_buttons=False,
                         )
-                        self.patch_message(card_message_id, _card, _msg_type)
+                        _card_json = json.loads(_card) if isinstance(_card, str) else _card
+                        card_session.send(_card_json)
                     else:
-                        self.reply_message(message_id, msg, origin_message_id=message_id, request_id=request_id)
+                        self.reply_text(message_id, msg)
                     return
 
                 task_ctx.progress(UI_TEXT["diag_step_generating"], 80)
@@ -485,7 +490,8 @@ class DiagnosticsHandler(BaseHandler):
                         _msg_type, _card = CardBuilder.build_project_response_card(
                             project, title, progress_content, show_buttons=False,
                         )
-                        self.patch_message(card_message_id, _card, _msg_type)
+                        _card_json = json.loads(_card) if isinstance(_card, str) else _card
+                        card_session.send(_card_json)
                     except Exception:
                         logger.debug("failed to update streaming card content", exc_info=True)
 
@@ -496,17 +502,17 @@ class DiagnosticsHandler(BaseHandler):
                         project, title, final, show_buttons=False,
                         footer=UI_TEXT["diag_diff_usage_footer"],
                     )
-                    self.patch_message(card_message_id, _card, _msg_type)
+                    _card_json = json.loads(_card) if isinstance(_card, str) else _card
+                    card_session.send(_card_json)
                 else:
                     _msg_type, _card = CardBuilder.build_project_response_card(
                         project, title, final, show_buttons=False,
                         footer=UI_TEXT["diag_diff_usage_footer"],
                     )
-                    rid = self.reply_message_with_id(
-                        message_id, _card, _msg_type, origin_message_id=message_id, request_id=request_id
-                    )
-                    if rid:
-                        self.register_message_project(rid, project)
+                    _card_json = json.loads(_card) if isinstance(_card, str) else _card
+                    card_session.send(_card_json)
+                    if card_session.message_id:
+                        self.register_message_project(card_session.message_id, project)
                 task_ctx.progress(UI_TEXT["diag_step_completed"], 100)
             except Exception as e:
                 msg = UI_TEXT["diag_diff_exception"].format(error=get_error_detail(e))
@@ -517,10 +523,13 @@ class DiagnosticsHandler(BaseHandler):
                         _msg_type, _card = CardBuilder.build_project_response_card(
                             project, title, final, show_buttons=False,
                         )
-                        self.patch_message(card_message_id, _card, _msg_type)
+                        _card_json = json.loads(_card) if isinstance(_card, str) else _card
+                        card_session.send(_card_json)
                 except Exception:
                     logger.debug("failed to close streaming card", exc_info=True)
-                self.reply_message(message_id, msg, origin_message_id=message_id, request_id=request_id)
+                self.reply_text(message_id, msg)
+            finally:
+                card_session.close()
 
         handle = self.scheduler.submit(spec, _run)
         try:
@@ -535,7 +544,8 @@ class DiagnosticsHandler(BaseHandler):
                 _msg_type, _card = CardBuilder.build_project_response_card(
                     project, title, f"{msg}\n\n{full_ref}", show_buttons=False,
                 )
-                self.patch_message(card_message_id, _card, _msg_type)
+                _card_json = json.loads(_card) if isinstance(_card, str) else _card
+                card_session.send(_card_json)
             except Exception:
                 logger.debug("failed to update streaming card content", exc_info=True)
         return handle
@@ -560,7 +570,7 @@ class DiagnosticsHandler(BaseHandler):
             data = None
 
         if not data:
-            self.reply_message(
+            self.reply_text(
                 message_id,
                 UI_TEXT["diag_trace_not_found"].format(key=key)
             )
@@ -569,7 +579,7 @@ class DiagnosticsHandler(BaseHandler):
         # Chat-level isolation: reject trace data belonging to a different chat
         trace_chat_id = data.get("chat_id")
         if trace_chat_id and trace_chat_id != chat_id:
-            self.reply_message(
+            self.reply_text(
                 message_id,
                 UI_TEXT["diag_trace_not_found"].format(key=key)
             )
@@ -602,4 +612,4 @@ class DiagnosticsHandler(BaseHandler):
                 working_dir=self.get_working_dir(chat_id),
                 show_buttons=False,
             )
-        self.reply_message(message_id, card_content, msg_type=msg_type)
+        self.reply_card(message_id, card_content)

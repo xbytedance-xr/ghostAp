@@ -1,38 +1,98 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Callable, Optional
+import time
+from typing import TYPE_CHECKING, Any, Optional
 
 from src.card.thresholds import THRESHOLDS
 from ...utils.errors import get_error_detail
 
 if TYPE_CHECKING:
+    from ...card.direct_session import DirectCardSession
     from ..handlers.base import BaseHandler
 
 logger = logging.getLogger(__name__)
 
 
-def _create_engine_sender(
-    handler: "BaseHandler",
-    message_id: str,
-    chat_id: str,
-    *,
-    initial_message_id: str | None = None,
-    payload_guard: Callable[[str], str] | None = None,
-):
-    """Factory: create an EngineCardSender from handler context."""
-    from src.card.delivery.engine_sender import EngineCardSender
-    from src.card.delivery.feishu_client import FeishuCardAPIClient
+# ---------------------------------------------------------------------------
+# Stream throttle — lightweight throttler extracted from EngineCardSender
+# ---------------------------------------------------------------------------
 
-    lark_client = handler.ctx.api_client_factory()
-    api_client = FeishuCardAPIClient(lark_client)
-    return EngineCardSender(
-        client=api_client,
-        chat_id=chat_id,
-        reply_to_message_id=message_id,
-        settings=handler.settings,
-        initial_message_id=initial_message_id,
-        payload_guard=payload_guard,
+class _StreamThrottle:
+    """Lightweight stream/plan throttle for engine renderers.
+
+    Replicates the throttle semantics of the deprecated EngineCardSender:
+    - check_throttle(text_len, force) → bool
+    - update_stream_state(text_len)
+    - check_plan_throttle(plan_content, force) → bool
+    - update_plan_state(plan_content)
+    """
+
+    def __init__(self, settings: Any) -> None:
+        self._settings = settings
+        self.last_stream_ts: float = 0.0
+        self.last_stream_text_len: int = 0
+        self.last_plan_ts: float = 0.0
+        self.last_plan_content: str = ""
+
+    def check_throttle(
+        self,
+        text_len: int,
+        force: bool = False,
+        min_interval: Optional[float] = None,
+        min_new_chars: Optional[int] = None,
+    ) -> bool:
+        """Return True if update should proceed, False if throttled."""
+        if force:
+            return True
+        now = time.monotonic()
+        if min_interval is None:
+            min_interval = self._settings.deep_stream_interval
+        if min_new_chars is None:
+            min_new_chars = self._settings.deep_stream_min_chars
+        if (now - self.last_stream_ts) < min_interval and (text_len - self.last_stream_text_len) < min_new_chars:
+            return False
+        return True
+
+    def update_stream_state(self, text_len: int) -> None:
+        """Update throttle state after a stream update."""
+        self.last_stream_ts = time.monotonic()
+        self.last_stream_text_len = text_len
+
+    def check_plan_throttle(self, plan_content: str, force: bool = False, min_interval: float = 1.5) -> bool:
+        """Return True if plan update should proceed."""
+        if force:
+            return True
+        now = time.monotonic()
+        if plan_content and (plan_content != self.last_plan_content or (now - self.last_plan_ts) > min_interval):
+            return True
+        return False
+
+    def update_plan_state(self, plan_content: str) -> None:
+        """Update plan throttle state."""
+        self.last_plan_ts = time.monotonic()
+        self.last_plan_content = plan_content
+
+
+# ---------------------------------------------------------------------------
+# DirectCardSession factory — replacement for _create_engine_sender
+# ---------------------------------------------------------------------------
+
+def _create_direct_session(
+    handler: "BaseHandler",
+    chat_id: str,
+    message_id: str,
+    *,
+    session_id: str | None = None,
+) -> "DirectCardSession":
+    """Factory: create a DirectCardSession for engine renderers.
+
+    This replaces the deprecated _create_engine_sender factory. Engine renderers
+    use DirectCardSession.send(card_json) for create/update semantics, with
+    CardDelivery handling binding management and re-anchoring internally.
+    """
+    return handler.create_direct_card_session(
+        chat_id, reply_to=message_id, session_id=session_id
     )
 
 
@@ -344,7 +404,7 @@ class BaseRenderer:
 
         patched = False
         if origin_message_id:
-            patched = self.handler.patch_message(origin_message_id, card_content, max_retries=1)
+            patched = self.handler.update_card(origin_message_id, card_content)
 
         if not patched:
-            self.handler.reply_message(message_id, card_content, msg_type=msg_type, origin_message_id=origin_message_id)
+            self.handler.reply_card(message_id, card_content)

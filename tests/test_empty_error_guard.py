@@ -82,7 +82,7 @@ class TestBaseHandlerFallbackEmptyGuard:
         def capture_reply(msg_id, content, **kw):
             sent_content.append(content)
 
-        handler.reply_message = capture_reply
+        handler.reply_text = capture_reply
 
         with patch("src.card.CardBuilder") as mock_cb:
             mock_cb.build_error_card.side_effect = Exception("card build failed")
@@ -384,7 +384,7 @@ class TestSpecHandlerEmptyGuard:
     def test_project_create_bare_exception(self):
         handler = self._make_handler()
         sent = []
-        handler.reply_message = lambda mid, content, **kw: sent.append(content)
+        handler.reply_card = lambda mid, content, **kw: sent.append(content)
         handler.get_working_dir = lambda cid: "/tmp"
         handler.ctx.project_manager.get_or_create_project_for_path.side_effect = Exception()
 
@@ -398,7 +398,7 @@ class TestSpecHandlerEmptyGuard:
     def test_project_create_bare_timeout(self):
         handler = self._make_handler()
         sent = []
-        handler.reply_message = lambda mid, content, **kw: sent.append(content)
+        handler.reply_card = lambda mid, content, **kw: sent.append(content)
         handler.get_working_dir = lambda cid: "/tmp"
         handler.ctx.project_manager.get_or_create_project_for_path.side_effect = TimeoutError()
 

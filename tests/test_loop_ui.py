@@ -84,9 +84,9 @@ class TestLoopUI:
             "is_paused": False,
         }
 
-        handler.reply_message = MagicMock(return_value="msg_thread_root")
-        handler.send_message = MagicMock(return_value="msg_thread_root")
-        handler.patch_message = MagicMock(return_value=True)  # patch succeeds
+        handler.reply_card = MagicMock(return_value="msg_thread_root")
+        handler.send_card_to_chat = MagicMock(return_value="msg_thread_root")
+        handler.update_card = MagicMock(return_value=True)  # patch succeeds
 
         mock_proj_ctx = MagicMock(spec=ProjectContext)  # Using MagicMock to act as ProjectContext duck type
         mock_proj_ctx.project_id = "p1"
@@ -102,18 +102,20 @@ class TestLoopUI:
         assert state["view_mode"] == "iteration_done"
         assert state["view_context"]["iteration_id"] == 1
 
-        # Verify card content was iteration content
-        # _create_loop_callbacks sends a NEW message (reply_message) first time
-        assert handler.reply_message.called
-        content_json = handler.reply_message.call_args[0][1]
+        # Verify card content was sent via DirectCardSession (through handler.reply_card)
+        # on_iteration_done uses new_card=True which closes session and creates new one
+        # The mock session delegates first send to handler.reply_card
+        assert handler.reply_card.called
+        reply_args, _ = handler.reply_card.call_args
+        content_json = reply_args[1]
         assert "Iteration 1 Content" in content_json
 
         # 2. Simulate User clicking "Expand Log" (_toggle_log)
         # This calls _render_current_view which should respect "iteration_done" view mode
-        handler.patch_message.reset_mock()
+        handler.update_card.reset_mock()
 
         # _toggle_log will call _render_current_view -> _render_iteration_view
-        # _render_iteration_view calls _patch_or_send -> patch_message
+        # _render_iteration_view calls _patch_or_send -> update_card
         handler._toggle_log("msg_card", "chat1", project=mock_proj_ctx, engine_project_id="p1", expanded=True)
 
         # Verify state updated
@@ -122,13 +124,13 @@ class TestLoopUI:
         assert state["view_mode"] == "iteration_done"  # Should remain unchanged
 
         # Verify patched content is still Iteration Content
-        assert handler.patch_message.called
-        patch_content = handler.patch_message.call_args[0][1]
+        assert handler.update_card.called
+        patch_content = handler.update_card.call_args[0][1]
         assert "Iteration 1 Content" in patch_content
 
         # 3. Simulate User clicking "Show Status" (via /loop_status or show_loop_status)
         # This should reset view mode to "status"
-        handler.patch_message.reset_mock()
+        handler.update_card.reset_mock()
         handler.show_loop_status("msg_cmd", "chat1", project=mock_proj_ctx, origin_message_id="msg_card")
 
         # Verify state
@@ -136,5 +138,5 @@ class TestLoopUI:
         assert state["view_mode"] == "status"
 
         # Verify patched content is Status Content
-        patch_content = handler.patch_message.call_args[0][1]
+        patch_content = handler.update_card.call_args[0][1]
         assert "Status Content" in patch_content

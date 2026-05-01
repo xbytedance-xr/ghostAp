@@ -182,7 +182,7 @@ class ProgrammingModeHandler(BaseHandler):
         if not thread_id and self._is_in_this_mode(chat_id, project_id=project_id):
             if not silent:
                 if _thread_enabled:
-                    self.reply_message(
+                    self.reply_text(
                         message_id,
                         fmt.format_warning(
                             UI_TEXT["mode_already_in_thread_msg"].format(name=self.mode_name)
@@ -190,7 +190,7 @@ class ProgrammingModeHandler(BaseHandler):
                     )
                 else:
                     info = self._get_session_manager().get_session_info(chat_id, project_id=project_id)
-                    self.reply_message(
+                    self.reply_text(
                         message_id,
                         fmt.format_warning(
                             UI_TEXT["mode_already_in_msg"].format(name=self.mode_name, info=info)
@@ -220,7 +220,7 @@ class ProgrammingModeHandler(BaseHandler):
             valid, path_msg = self.project_manager.validate_project_path(project.project_id)
             if not valid:
                 if not silent:
-                    self.reply_message(message_id, UI_TEXT["mode_invalid_project_path"].format(msg=path_msg))
+                    self.reply_text(message_id, UI_TEXT["mode_invalid_project_path"].format(msg=path_msg))
                 return
 
         if _thread_enabled:
@@ -241,9 +241,9 @@ class ProgrammingModeHandler(BaseHandler):
                         show_buttons=True,
                         footer=UI_TEXT["mode_project_dir_label"].format(path=project.root_path),
                     )
-                    self.reply_message(message_id, card_content, msg_type=msg_type)
+                    self.reply_card(message_id, card_content)
                 else:
-                    self.reply_message(message_id, content)
+                    self.reply_text(message_id, content)
             if project:
                 self.record_mode_transition(
                     project.project_id,
@@ -281,7 +281,7 @@ class ProgrammingModeHandler(BaseHandler):
                         UI_TEXT["mode_ttadk_startup_timeout"],
                         project_id=project_id,
                     )
-                    self.reply_message(message_id, card_content, msg_type=msg_type)
+                    self.reply_card(message_id, card_content)
                 else:
                     self.send_error_card(
                         chat_id,
@@ -298,7 +298,7 @@ class ProgrammingModeHandler(BaseHandler):
                         UI_TEXT["mode_ttadk_unavailable"],
                         project_id=project_id,
                     )
-                    self.reply_message(message_id, card_content, msg_type=msg_type)
+                    self.reply_card(message_id, card_content)
                 else:
                     self.send_error_card(
                         chat_id,
@@ -317,7 +317,7 @@ class ProgrammingModeHandler(BaseHandler):
                 degraded_to = getattr(session, "_degraded_to", "")
                 reason = getattr(session, "_degraded_reason", "")
                 if not silent:
-                    self.reply_message(
+                    self.reply_text(
                         message_id,
                         fmt.format_warning(
                             UI_TEXT["mode_ttadk_degraded_msg"].format(tool=degraded_to, reason=reason or "(empty)")
@@ -349,7 +349,7 @@ class ProgrammingModeHandler(BaseHandler):
                     footer=UI_TEXT["mode_project_dir_label"].format(path=project.root_path),
                     banner=banner,
                 )
-                response_id = self.reply_message_with_id(message_id, card_content, msg_type)
+                response_id = self.reply_card(message_id, card_content)
                 if response_id:
                     self.register_message_project(response_id, project)
         elif project:
@@ -370,15 +370,15 @@ class ProgrammingModeHandler(BaseHandler):
                     footer=UI_TEXT["mode_project_dir_label"].format(path=project.root_path),
                     banner=banner,
                 )
-                response_id = self.reply_message_with_id(message_id, card_content, msg_type)
+                response_id = self.reply_card(message_id, card_content)
                 if response_id:
                     self.register_message_project(response_id, project)
         else:
             if not silent:
                 if self.is_coco:
-                    self.reply_message(message_id, fmt.format_coco_enter())
+                    self.reply_text(message_id, fmt.format_coco_enter())
                 else:
-                    self.reply_message(
+                    self.reply_text(
                         message_id,
                         UI_TEXT["mode_enter_no_project_msg"].format(emoji=self.mode_emoji, name=self.mode_name),
                     )
@@ -430,7 +430,7 @@ class ProgrammingModeHandler(BaseHandler):
                             UI_TEXT["mode_model_switch_context_kept"],
                             banner=banner,
                         )
-                        self.reply_message(message_id, card_content, msg_type=msg_type)
+                        self.reply_card(message_id, card_content)
                         return
                 except Exception as e:
                     logger.warning("[%s] ACP set_model failed, will restart session: %s", self.mode_name, get_error_detail(e))
@@ -458,7 +458,7 @@ class ProgrammingModeHandler(BaseHandler):
                 UI_TEXT["mode_model_switch_restarted"],
                 banner=banner,
             )
-            self.reply_message(message_id, card_content, msg_type=msg_type)
+            self.reply_card(message_id, card_content)
         except Exception as e:
             from ...utils.errors import log_exception
             log_exception(logger, f"切换 {self.mode_name} 模型失败", e)
@@ -577,20 +577,20 @@ class ProgrammingModeHandler(BaseHandler):
                         show_buttons=True,
                         banner=banner,
                     )
-                    response_id = self.reply_message_with_id(
-                        message_id, card_content, msg_type,
+                    response_id = self.reply_card(
+                        message_id, card_content,
                         reply_in_thread=True if thread_id else None,
                     )
                     if response_id:
                         self.register_message_project(response_id, project)
                 else:
-                    self.reply_message(
+                    self.reply_text(
                         message_id,
                         UI_TEXT["mode_exit_pending_msg"].format(name=self.mode_name),
                         reply_in_thread=True if thread_id else None,
                     )
             else:
-                self.reply_message(
+                self.reply_text(
                     message_id,
                     fmt.format_warning(UI_TEXT["mode_not_in_msg"].format(name=self.mode_name)),
                     reply_in_thread=True if thread_id else None,
@@ -633,7 +633,7 @@ class ProgrammingModeHandler(BaseHandler):
                         thread_id=thread_id,
                     )
             if not session:
-                self.reply_message(
+                self.reply_text(
                     message_id,
                     fmt.format_warning(
                         UI_TEXT["mode_session_fail_msg"].format(name=self.mode_name, cmd=self.mode_name.lower())
@@ -871,14 +871,14 @@ class ProgrammingModeHandler(BaseHandler):
                 or UI_TEXT["mode_exec_complete"]
             )
             response_with_dir = f"{final_response}\n\n---\n{UI_TEXT['mode_working_dir_label'].format(path=global_working_dir)}"
-            self.reply_message(message_id, response_with_dir)
+            self.reply_text(message_id, response_with_dir)
         except TimeoutError as e:
             log_exception(logger, f"{self.mode_name} ACP执行超时", e, level=logging.WARNING)
             msg_type, content = CardBuilder.build_error_card(e, title=UI_TEXT["mode_exec_timeout_title"], project=project)
-            self.reply_message(message_id, content, msg_type)
+            self.reply_card(message_id, content)
         except Exception as e:
             msg_type, content = CardBuilder.build_error_card(e, title=UI_TEXT["mode_exec_exception_title"], project=project)
-            self.reply_message(message_id, content, msg_type)
+            self.reply_card(message_id, content)
         finally:
             _hb_stop.set()
             if _hb is not None:
@@ -901,13 +901,13 @@ class ProgrammingModeHandler(BaseHandler):
                     info,
                     show_buttons=True,
                 )
-                response_id = self.reply_message_with_id(message_id, card_content, msg_type)
+                response_id = self.reply_card(message_id, card_content)
                 if response_id:
                     self.register_message_project(response_id, project)
             else:
-                self.reply_message(message_id, info)
+                self.reply_text(message_id, info)
         else:
-            self.reply_message(message_id, fmt.format_warning(UI_TEXT["mode_not_in_msg"].format(name=self.mode_name)))
+            self.reply_text(message_id, fmt.format_warning(UI_TEXT["mode_not_in_msg"].format(name=self.mode_name)))
 
     # ------------------------------------------------------------------
     # Card actions
@@ -926,7 +926,7 @@ class ProgrammingModeHandler(BaseHandler):
                         msg_type, card_content = CardBuilder.build_claude_resume_card(project)
                     else:
                         msg_type, card_content = CardBuilder.build_ttadk_resume_card(project)
-                    response_id = self.reply_message_with_id(message_id, card_content, msg_type)
+                    response_id = self.reply_card(message_id, card_content)
                     if response_id:
                         self.register_message_project(response_id, project)
                     return
@@ -1032,11 +1032,11 @@ class ProgrammingModeHandler(BaseHandler):
                 content,
                 show_buttons=True,
             )
-            response_id = self.reply_message_with_id(message_id, card_content, msg_type)
+            response_id = self.reply_card(message_id, card_content)
             if response_id:
                 self.register_message_project(response_id, project)
         else:
-            self.reply_message(message_id, UI_TEXT["mode_resume_no_project_msg"].format(name=self.mode_name, session_id=session_id))
+            self.reply_text(message_id, UI_TEXT["mode_resume_no_project_msg"].format(name=self.mode_name, session_id=session_id))
 
     def handle_card_new(self, message_id: str, chat_id: str, project_id: str, value: Optional[dict] = None):
         project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else None

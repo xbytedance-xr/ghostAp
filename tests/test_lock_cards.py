@@ -441,7 +441,8 @@ class TestSendLockConflictCard:
         from src.feishu.handlers.base import BaseHandler
         handler = BaseHandler(ctx)
         handler.im_client = MagicMock()
-        handler.reply_message = MagicMock()
+        handler.reply_card = MagicMock()
+        handler.reply_text = MagicMock()
         return handler, ctx
 
     def test_sends_card_on_normal_path(self):
@@ -461,10 +462,9 @@ class TestSendLockConflictCard:
         )
         handler.send_lock_conflict_card(err, "msg_123", "/deep fix bug")
 
-        handler.reply_message.assert_called_once()
-        call_args = handler.reply_message.call_args
+        handler.reply_card.assert_called_once()
+        call_args = handler.reply_card.call_args
         assert call_args[0][0] == "msg_123"  # message_id
-        assert call_args[1]["msg_type"] == "interactive"
 
     def test_admin_gets_card_with_lock_info(self):
         import json
@@ -485,10 +485,9 @@ class TestSendLockConflictCard:
         with patch("src.thread.get_current_sender_id", return_value="ou_admin"):
             handler.send_lock_conflict_card(err, "msg_456", "/loop test")
 
-        handler.reply_message.assert_called_once()
-        call_args = handler.reply_message.call_args
+        handler.reply_card.assert_called_once()
+        call_args = handler.reply_card.call_args
         assert call_args[0][0] == "msg_456"
-        assert call_args[1]["msg_type"] == "interactive"
         # Card body should contain lock info
         card_str = call_args[0][1]
         card = json.loads(card_str)
@@ -509,7 +508,7 @@ class TestSendLockConflictCard:
         )
         handler.send_lock_conflict_card(err, "msg_789", "test cmd")
 
-        handler.reply_message.assert_called_once()
+        handler.reply_card.assert_called_once()
 
     def test_does_not_raise_on_internal_error(self):
         """If card building fails internally, fallback text is sent (AC-17)."""
@@ -519,7 +518,7 @@ class TestSendLockConflictCard:
 
         handler, ctx = self._make_handler()
         # Make reply_message a fresh mock to track calls
-        handler.reply_message = MagicMock()
+        handler.reply_text = MagicMock()
 
         err = LockConflictError(
             "conflict", holder_chat_id="c", locked_since=time.monotonic(), root_path="/r",
@@ -534,8 +533,8 @@ class TestSendLockConflictCard:
             handler.send_lock_conflict_card(err, "msg_err", "cmd")
 
         # Fallback text should have been sent
-        handler.reply_message.assert_called_once()
-        fallback_text = handler.reply_message.call_args[0][1]
+        handler.reply_text.assert_called_once()
+        fallback_text = handler.reply_text.call_args[0][1]
         assert "🔒" in fallback_text
         assert "仓库被占用" in fallback_text
 
@@ -547,7 +546,7 @@ class TestSendLockConflictCard:
 
         handler, ctx = self._make_handler()
         # Make reply_message always fail
-        handler.reply_message = MagicMock(side_effect=RuntimeError("all sends fail"))
+        handler.reply_text = MagicMock(side_effect=RuntimeError("all sends fail"))
 
         err = LockConflictError(
             "conflict", holder_chat_id="c", locked_since=time.monotonic(), root_path="/r",

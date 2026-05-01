@@ -290,7 +290,7 @@ class TestSystemHandlerRouting:
         h = SystemHandler(ctx)
         h.ttadk_handler = MagicMock()
         h.reply_error = MagicMock()
-        h.reply_message = MagicMock()
+        h.reply_text = MagicMock()
 
         project = MagicMock()
         project.project_id = "p1"
@@ -318,7 +318,7 @@ class TestSystemHandlerRouting:
     def test_handle_ttadk_command_always_shows_tool_card(self):
         ctx = _make_handler_context()
         h = SystemHandler(ctx)
-        h.reply_message = MagicMock()
+        h.reply_card = MagicMock()
 
         project = MagicMock()
         project.project_id = "p1"
@@ -340,15 +340,15 @@ class TestSystemHandlerRouting:
         with patch("src.feishu.handlers.ttadk_commands.get_ttadk_manager", return_value=manager):
             h.handle_ttadk_command("m1", "c1", project)
 
-        h.reply_message.assert_called_once()
-        call_args = h.reply_message.call_args
+        h.reply_card.assert_called_once()
+        call_args = h.reply_card.call_args
         card_json = call_args[0][1]
         assert "TTADK" in card_json
 
     def test_handle_ttadk_command_no_defaults_shows_tool_card(self):
         ctx = _make_handler_context()
         h = SystemHandler(ctx)
-        h.reply_message = MagicMock()
+        h.reply_text = MagicMock()
         h.reply_error = MagicMock()
 
         project = MagicMock()
@@ -379,9 +379,9 @@ class TestSystemHandlerRouting:
     def test_handle_select_ttadk_tool_no_default_model_shows_card(self):
         ctx = _make_handler_context()
         h = SystemHandler(ctx)
-        h.reply_message = MagicMock()
+        h.reply_text = MagicMock()
         h.reply_error = MagicMock()
-        h.patch_message = MagicMock(return_value=True)
+        h.update_card = MagicMock(return_value=True)
         h.handle_select_ttadk_model = MagicMock()
 
         project = MagicMock()
@@ -416,7 +416,7 @@ class TestSystemHandlerRouting:
     def test_handle_ttadk_command_tool_list_error_returns_hint(self):
         ctx = _make_handler_context()
         h = SystemHandler(ctx)
-        h.reply_message = MagicMock()
+        h.reply_card = MagicMock()
         ctx.project_manager.get_active_project.return_value = None
 
         manager = MagicMock()
@@ -425,14 +425,14 @@ class TestSystemHandlerRouting:
         with patch("src.feishu.handlers.ttadk_commands.get_ttadk_manager", return_value=manager):
             h.handle_ttadk_command("m1", "c1", None)
 
-        h.reply_message.assert_called_once()
-        assert "已为你保留选择" in str(h.reply_message.call_args)
-        assert "继续进入TTADK" in str(h.reply_message.call_args)
+        h.reply_card.assert_called_once()
+        assert "已为你保留选择" in str(h.reply_card.call_args)
+        assert "继续进入TTADK" in str(h.reply_card.call_args)
 
     def test_handle_select_ttadk_tool_model_list_error_returns_hint(self):
         ctx = _make_handler_context()
         h = SystemHandler(ctx)
-        h.reply_message = MagicMock()
+        h.reply_card = MagicMock()
 
         project = MagicMock()
         project.project_id = "p1"
@@ -446,14 +446,14 @@ class TestSystemHandlerRouting:
         with patch("src.feishu.handlers.ttadk_commands.get_ttadk_manager", return_value=manager):
             h.handle_select_ttadk_tool("m1", "c1", "codex", "p1")
 
-        h.reply_message.assert_called_once()
-        assert "已为你保留选择" in str(h.reply_message.call_args)
-        assert "继续进入TTADK" in str(h.reply_message.call_args)
+        h.reply_card.assert_called_once()
+        assert "已为你保留选择" in str(h.reply_card.call_args)
+        assert "继续进入TTADK" in str(h.reply_card.call_args)
 
     def test_handle_select_ttadk_model_set_failure_returns_hint(self):
         ctx = _make_handler_context()
         h = SystemHandler(ctx)
-        h.reply_message = MagicMock()
+        h.reply_card = MagicMock()
         h.reply_error = MagicMock()
 
         manager = MagicMock()
@@ -462,10 +462,10 @@ class TestSystemHandlerRouting:
         with patch("src.feishu.handlers.ttadk_commands.get_ttadk_manager", return_value=manager):
             h.handle_select_ttadk_model("m1", "c1", "codex", "gpt-5.2", project=None)
 
-        assert h.reply_message.call_count == 2
+        assert h.reply_card.call_count == 2
         h.reply_error.assert_not_called()
-        assert "已为你保留选择" in str(h.reply_message.call_args_list[-1])
-        assert "继续进入TTADK" in str(h.reply_message.call_args_list[-1])
+        assert "已为你保留选择" in str(h.reply_card.call_args_list[-1])
+        assert "继续进入TTADK" in str(h.reply_card.call_args_list[-1])
 
     def test_ttadk_flow_duration_is_recorded(self):
         ctx = _make_handler_context()
@@ -724,8 +724,9 @@ class TestTTADKModeHandler:
         h = TTADKModeHandler(ctx)
         h._get_agent_type_override = MagicMock(return_value="ttadk_coco")
         h._get_model_name_override = MagicMock(return_value="gpt-5.2")
-        h.reply_message = MagicMock()
-        h.reply_message_with_id = MagicMock(return_value="reply_1")
+        h.reply_text = MagicMock()
+        h.reply_card = MagicMock(return_value="reply_1")
+        h.reply_card = MagicMock(return_value="reply_1")
         h.add_reaction = MagicMock()
         h.record_mode_transition = MagicMock()
         h.register_message_project = MagicMock()
@@ -738,7 +739,7 @@ class TestTTADKModeHandler:
             _, title, content = mock_build.call_args.args[:3]
             assert "TTADK编程模式" in title
             assert "已进入TTADK编程模式" in content
-            h.reply_message_with_id.assert_called_once()
+            h.reply_card.assert_called_once()
 
     def test_enter_mode_ttadk_timeout_uses_warning(self):
         ctx = _make_handler_context()
@@ -759,14 +760,14 @@ class TestTTADKModeHandler:
         ctx.ttadk_manager.ensure_session.side_effect = TimeoutError("boom")
 
         h = TTADKModeHandler(ctx)
-        h.reply_message = MagicMock()
+        h.reply_card = MagicMock()
         h.send_error_card = MagicMock()
 
         h.enter_mode("m1", "c1", project=project)
 
-        h.reply_message.assert_called_once()
+        h.reply_card.assert_called_once()
         h.send_error_card.assert_not_called()
-        assert "已为你保留选择" in str(h.reply_message.call_args)
+        assert "已为你保留选择" in str(h.reply_card.call_args)
 
 
 class TestProgrammingModeEnterExit:
@@ -807,8 +808,11 @@ class TestProgrammingModeEnterExit:
         h._gemini_handler = ctx.handlers["gemini"]
         h._ttadk_handler = ctx.handlers["ttadk"]
         # Mock reply to avoid real API calls
-        h.reply_message = MagicMock()
-        h.reply_message_with_id = MagicMock(return_value="reply_1")
+        h.reply_text = MagicMock()
+        h.reply_text = MagicMock()
+        h.reply_card = MagicMock()
+        h.reply_error = MagicMock()
+        h.reply_card = MagicMock(return_value="reply_1")
         h.add_reaction = MagicMock()
         h.record_mode_transition = MagicMock()
         h.register_message_project = MagicMock()
@@ -819,8 +823,8 @@ class TestProgrammingModeEnterExit:
         ctx.mode_manager.get_mode.return_value = InteractionMode.COCO
         ctx.coco_manager.get_session_info.return_value = "session info"
         h.enter_mode("m1", "c1")
-        h.reply_message.assert_called_once()
-        assert "已经在" in str(h.reply_message.call_args)
+        h.reply_text.assert_called_once()
+        assert "已经在" in str(h.reply_text.call_args)
 
     def test_enter_mode_with_project_no_snapshot(self):
         h, ctx = self._make_coco()
@@ -855,13 +859,13 @@ class TestProgrammingModeEnterExit:
         project.project_id = "p1"
         project.root_path = "/tmp"
         h.show_info("m1", "c1", project=project)
-        h.reply_message_with_id.assert_called_once()
+        h.reply_card.assert_called_once()
 
     def test_show_info_no_session(self):
         h, ctx = self._make_coco()
         ctx.coco_manager.get_session_info.return_value = None
         h.show_info("m1", "c1")
-        h.reply_message.assert_called_once()
+        h.reply_text.assert_called_once()
 
     def test_card_enter_with_project_no_snapshot(self):
         h, ctx = self._make_coco()
@@ -918,8 +922,11 @@ class TestOneShotPendingSlot:
         h._codex_handler = ctx.handlers["codex"]
         h._gemini_handler = ctx.handlers["gemini"]
         h._ttadk_handler = ctx.handlers["ttadk"]
-        h.reply_message = MagicMock()
-        h.reply_message_with_id = MagicMock(return_value="reply_1")
+        h.reply_text = MagicMock()
+        h.reply_text = MagicMock()
+        h.reply_card = MagicMock()
+        h.reply_error = MagicMock()
+        h.reply_card = MagicMock(return_value="reply_1")
         h.add_reaction = MagicMock()
         h.record_mode_transition = MagicMock()
         h.register_message_project = MagicMock()
@@ -939,8 +946,8 @@ class TestOneShotPendingSlot:
         ctx.mode_manager.enter_programming_mode.assert_called_once_with("c1", InteractionMode.COCO, project_id="test_id")
         ctx.coco_manager.ensure_session.assert_not_called()
         h.add_reaction.assert_called_once()
-        h.reply_message.assert_called_once()
-        call_args = str(h.reply_message.call_args)
+        h.reply_card.assert_called_once()
+        call_args = str(h.reply_card.call_args)
         assert "编程模式已开启" in call_args or "已开启" in call_args
         h.record_mode_transition.assert_called_once()
         assert "thread_pending" in str(h.record_mode_transition.call_args)
@@ -952,9 +959,9 @@ class TestOneShotPendingSlot:
 
         h.enter_mode("m1", "c1")
 
-        h.reply_message.assert_called_once()
-        assert "已开启" in str(h.reply_message.call_args)
-        assert "自动创建编程话题" in str(h.reply_message.call_args)
+        h.reply_text.assert_called_once()
+        assert "已开启" in str(h.reply_text.call_args)
+        assert "自动创建编程话题" in str(h.reply_text.call_args)
 
     @patch("src.thread.get_current_thread_id", return_value=None)
     def test_exit_mode_pending_slot_no_session(self, mock_tid):
@@ -969,8 +976,8 @@ class TestOneShotPendingSlot:
 
         ctx.mode_manager.exit_to_smart.assert_called_once_with("c1", project_id="p1")
         h.add_reaction.assert_called_once()
-        h.reply_message_with_id.assert_called_once()
-        call_args = str(h.reply_message_with_id.call_args)
+        h.reply_card.assert_called_once()
+        call_args = str(h.reply_card.call_args)
         assert "已退出" in call_args
 
     @patch("src.thread.get_current_thread_id", return_value="thread_123")
@@ -1009,14 +1016,15 @@ class TestOneShotPendingSlot:
         ctx.project_manager.validate_project_path.return_value = (True, "ok")
         ctx.project_manager.get_or_create_project_for_path.return_value = (project, False)
 
-        h.reply_message = MagicMock()
+        h.reply_text = MagicMock()
+        h.reply_text = MagicMock()
         h.add_reaction = MagicMock()
 
         h.handle_message("m1", "c1", "继续写", project)
 
         ctx.coco_manager.ensure_session.assert_called()
-        h.reply_message.assert_called()
-        call_str = str(h.reply_message.call_args)
+        h.reply_text.assert_called()
+        call_str = str(h.reply_text.call_args)
         assert "启动失败" in call_str or "重新发送" in call_str
 
 
@@ -1051,15 +1059,17 @@ class TestTTADKModeDegradeWarning:
         h._get_agent_type_override = MagicMock(return_value="ttadk_coco")
         h._get_model_name_override = MagicMock(return_value="gpt-5.2")
 
-        h.reply_message = MagicMock()
-        h.reply_message_with_id = MagicMock(return_value="reply_1")
+        h.reply_text = MagicMock()
+        h.reply_text = MagicMock()
+        h.reply_card = MagicMock()
+        h.reply_card = MagicMock(return_value="reply_1")
         h.add_reaction = MagicMock()
         h.record_mode_transition = MagicMock()
         h.register_message_project = MagicMock()
 
         h.enter_mode("m1", "c1", project=project)
 
-        assert any("TTADK 后端暂不可用" in str(call) for call in h.reply_message.call_args_list)
+        assert any("TTADK 后端暂不可用" in str(call) for call in h.reply_text.call_args_list)
 
 
 # ======================================================================
@@ -1071,8 +1081,11 @@ class TestProjectHandler:
     def _make(self):
         ctx = _make_handler_context()
         h = ProjectHandler(ctx)
-        h.reply_message = MagicMock()
-        h.reply_message_with_id = MagicMock(return_value="reply_1")
+        h.reply_text = MagicMock()
+        h.reply_text = MagicMock()
+        h.reply_card = MagicMock()
+        h.reply_error = MagicMock()
+        h.reply_card = MagicMock(return_value="reply_1")
         h.add_reaction = MagicMock()
         h.register_message_project = MagicMock()
         return h, ctx
@@ -1087,20 +1100,20 @@ class TestProjectHandler:
         with patch("src.feishu.handlers.project.CardBuilder") as mock_cb:
             mock_cb.build_project_created_card.return_value = ("interactive", "{}")
             h.create_project("m1", "c1", "test", "/tmp")
-            h.reply_message_with_id.assert_called_once()
+            h.reply_card.assert_called_once()
 
     def test_create_project_failure(self):
         h, ctx = self._make()
         ctx.project_manager.create_project.return_value = (False, "already exists", None)
         h.create_project("m1", "c1", "test", "/tmp")
-        h.reply_message.assert_called_once()
+        h.reply_error.assert_called_once()
 
     def test_show_project_board(self):
         h, ctx = self._make()
         ctx.project_manager.get_all_projects.return_value = []
         ctx.project_manager.get_active_project.return_value = None
         h.show_project_board("m1", "c1")
-        h.reply_message_with_id.assert_called_once()
+        h.reply_card.assert_called_once()
 
     def test_show_project_status_no_project(self):
         h, ctx = self._make()
@@ -1114,22 +1127,26 @@ class TestProjectHandler:
         ctx.project_manager.find_project_by_name_with_hint.return_value = (project, "")
         ctx.project_manager.close_project.return_value = (True, "closed")
         h.close_project("m1", "c1", "test")
-        h.reply_message.assert_called_once()
-        assert "✅" in str(h.reply_message.call_args)
+        h.reply_text.assert_called_once()
+        assert "✅" in str(h.reply_text.call_args)
 
     def test_close_project_not_found(self):
         h, ctx = self._make()
         ctx.project_manager.find_project_by_name_with_hint.return_value = (None, "")
         h.close_project("m1", "c1", "test")
-        h.reply_message.assert_called_once()
-        assert "❌" in str(h.reply_message.call_args)
+        h.reply_error.assert_called_once()
+        assert "❌" in str(h.reply_error.call_args) or "未找到" in str(h.reply_error.call_args)
 
 class TestDeepHandler:
     def _make(self):
         ctx = _make_handler_context()
         h = DeepHandler(ctx)
-        h.reply_message = MagicMock()
-        h.reply_message_with_id = MagicMock(return_value="reply_1")
+        h.reply_text = MagicMock()
+        h.reply_text = MagicMock()
+        h.reply_card = MagicMock()
+        h.reply_error = MagicMock()
+        h.update_card = MagicMock()
+        h.reply_card = MagicMock(return_value="reply_1")
         h.add_reaction = MagicMock()
         h.register_message_project = MagicMock()
         return h, ctx
@@ -1161,8 +1178,8 @@ class TestDeepHandler:
     def test_handle_deep_command_empty(self):
         h, ctx = self._make()
         h.handle_deep_command("m1", "c1", "/deep", None)
-        h.reply_message.assert_called_once()
-        assert "请提供需求" in str(h.reply_message.call_args)
+        h.reply_error.assert_called_once()
+        assert "请提供需求" in str(h.reply_error.call_args)
 
     def test_handle_deep_command_start(self):
         h, ctx = self._make()
@@ -1184,14 +1201,14 @@ class TestDeepHandler:
         h.stop_all_deep_engines("m1", "c1")
         engine1.stop.assert_called_once()
         engine2.stop.assert_called_once()
-        h.reply_message.assert_called_once()
+        h.reply_text.assert_called_once()
 
     def test_stop_all_deep_engines_none_running(self):
         h, ctx = self._make()
         ctx.deep_engine_manager.get_active_engines.return_value = []
         h.stop_all_deep_engines("m1", "c1")
-        h.reply_message.assert_called_once()
-        assert "没有" in str(h.reply_message.call_args)
+        h.reply_error.assert_called_once()
+        assert "没有" in str(h.reply_error.call_args)
 
     def test_show_deep_status_patch_success(self):
         h, ctx = self._make()
@@ -1218,7 +1235,7 @@ class TestDeepHandler:
         }
 
         # Setup Patch client
-        h.patch_message = MagicMock(return_value=True)
+        h.update_card = MagicMock(return_value=True)
 
         # Mock CardBuilder
         with patch("src.feishu.handlers.deep.CardBuilder") as mock_cb:
@@ -1227,10 +1244,10 @@ class TestDeepHandler:
             # Execute
             h.show_deep_status("msg1", "chat1", project=project, origin_message_id="origin1")
 
-            # Verify Patch called
-            h.patch_message.assert_called_once()
-            # Verify Reply NOT called
-            h.reply_message.assert_not_called()
+            # Verify update_card called
+            h.update_card.assert_called_once()
+            # Verify reply_card NOT called
+            h.reply_card.assert_not_called()
 
     def test_show_deep_status_patch_failure_fallback(self):
         h, ctx = self._make()
@@ -1255,7 +1272,7 @@ class TestDeepHandler:
         }
 
         # Setup Patch client to fail
-        h.patch_message = MagicMock(return_value=False)
+        h.update_card = MagicMock(return_value=False)
 
         # Mock the CardBuilder used by DeepRenderer (which is where it's actually called)
         # OR just rely on the fact that we fixed the engine mock return values.
@@ -1268,10 +1285,10 @@ class TestDeepHandler:
             # Execute
             h.show_deep_status("msg1", "chat1", project=project, origin_message_id="origin1")
 
-            # Verify Patch called
-            h.patch_message.assert_called_once()
-            # Verify Reply called (Fallback)
-            h.reply_message.assert_called_once()
+            # Verify update_card called
+            h.update_card.assert_called_once()
+            # Verify reply_card called (Fallback)
+            h.reply_card.assert_called_once()
 
 
 # ======================================================================
@@ -1283,8 +1300,10 @@ class TestDiagnosticsHandler:
     def _make(self):
         ctx = _make_handler_context()
         h = DiagnosticsHandler(ctx)
-        h.reply_message = MagicMock()
-        h.reply_message_with_id = MagicMock(return_value="reply_1")
+        h.reply_text = MagicMock()
+        h.reply_text = MagicMock()
+        h.reply_card = MagicMock()
+        h.reply_card = MagicMock(return_value="reply_1")
         h.add_reaction = MagicMock()
         h.register_message_project = MagicMock()
         return h, ctx
@@ -1294,8 +1313,8 @@ class TestDiagnosticsHandler:
         h, ctx = self._make()
         ctx.project_manager.get_active_project.return_value = None
         h.show_task_board("m1", "c1", "/tasks", None)
-        h.reply_message.assert_called()
-        assert "没有" in str(h.reply_message.call_args)
+        h.reply_text.assert_called()
+        assert "没有" in str(h.reply_text.call_args)
 
     def test_show_task_board_all(self):
         """When /tasks all is used, shows all-project task board."""
@@ -1304,20 +1323,20 @@ class TestDiagnosticsHandler:
         with patch("src.feishu.handlers.diagnostics.CardBuilder") as mock_cb:
             mock_cb.build_smart_response_card.return_value = ("interactive", "{}")
             h.show_task_board("m1", "c1", "/tasks all", None)
-        h.reply_message.assert_called()
+        h.reply_card.assert_called()
 
     def test_show_context_diff_no_project(self):
         """show_context_diff with no active project should report that."""
         h, ctx = self._make()
         ctx.project_manager.get_active_project.return_value = None
         h.show_context_diff("m1", "c1", "/diff", None)
-        h.reply_message.assert_called_once()
-        assert "没有" in str(h.reply_message.call_args)
+        h.reply_text.assert_called_once()
+        assert "没有" in str(h.reply_text.call_args)
 
     def test_show_message_trace_no_args(self):
         h, ctx = self._make()
         h.show_message_trace("m1", "c1", "/trace", None)
-        h.reply_message.assert_called_once()
+        h.reply_text.assert_called_once()
 
 
 # ======================================================================
@@ -1506,7 +1525,9 @@ class TestHelpCategoryPatch:
             ctx_overrides = {}
         ctx = _make_handler_context(**ctx_overrides)
         h = SystemHandler(ctx)
-        h.reply_message = MagicMock()
+        h.reply_text = MagicMock()
+        h.reply_card = MagicMock()
+        h.update_card = MagicMock()
         # Mock get_working_dir to return a valid path string for CardBuilder
         h.get_working_dir = MagicMock(return_value="/tmp")
         return h, ctx
@@ -1516,53 +1537,53 @@ class TestHelpCategoryPatch:
 
         ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
 
-        # Mock patch_message
-        h.patch_message = MagicMock(return_value=True)
+        # Mock update_card
+        h.update_card = MagicMock(return_value=True)
 
         with patch("src.card.builder.CardBuilder.build_help_card") as mock_build:
             mock_build.return_value = ("interactive", "{}")
 
             h.handle_help_category("msg1", "chat1", "main", origin_message_id="origin1")
 
-            # Verify patch called
-            h.patch_message.assert_called_once_with("origin1", "{}")
-            # Verify reply NOT called
-            h.reply_message.assert_not_called()
+            # Verify update_card called
+            h.update_card.assert_called_once_with("origin1", "{}")
+            # Verify reply_card NOT called
+            h.reply_card.assert_not_called()
 
     def test_handle_help_category_patch_failure_fallback(self):
         h, ctx = self._make()
 
         ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
 
-        # Mock patch_message failure
-        h.patch_message = MagicMock(return_value=False)
+        # Mock update_card failure
+        h.update_card = MagicMock(return_value=False)
 
         with patch("src.card.builder.CardBuilder.build_help_card") as mock_build:
             mock_build.return_value = ("interactive", "{}")
 
             h.handle_help_category("msg1", "chat1", "main", origin_message_id="origin1")
 
-            # Verify patch called
-            h.patch_message.assert_called_once_with("origin1", "{}")
-            # Verify fallback to reply
-            h.reply_message.assert_called_once()
+            # Verify update_card called
+            h.update_card.assert_called_once_with("origin1", "{}")
+            # Verify fallback to reply_card
+            h.reply_card.assert_called_once()
 
     def test_handle_help_category_patch_exception_fallback(self):
-        # With the new impl, patch_message handles exceptions internally and returns False
+        # With the new impl, update_card handles exceptions internally and returns False
         # So this test is effectively same as failure fallback
         h, ctx = self._make()
 
         ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
 
-        h.patch_message = MagicMock(return_value=False)
+        h.update_card = MagicMock(return_value=False)
 
         with patch("src.card.builder.CardBuilder.build_help_card") as mock_build:
             mock_build.return_value = ("interactive", "{}")
 
             h.handle_help_category("msg1", "chat1", "main", origin_message_id="origin1")
 
-            h.patch_message.assert_called_once()
-            h.reply_message.assert_called_once()
+            h.update_card.assert_called_once()
+            h.reply_card.assert_called_once()
 
     def test_handle_help_category_no_origin_id(self):
         h, ctx = self._make()
@@ -1577,9 +1598,8 @@ class TestHelpCategoryPatch:
 
             h.handle_help_category("msg1", "chat1", "main", origin_message_id=None)
 
-            h.patch_message = MagicMock()
-            h.patch_message.assert_not_called()
-            h.reply_message.assert_called_once()
+            h.update_card.assert_not_called()
+            h.reply_card.assert_called_once()
 
 
 # ======================================================================
@@ -1714,13 +1734,13 @@ class TestSpecHandlerLockIntegration:
 
         ctx = _make_handler_context()
         h = SpecHandler(ctx)
-        h.reply_message = MagicMock()
-        h.reply_message_with_id = MagicMock(return_value="reply_1")
+        h.reply_text = MagicMock()
+        h.reply_card = MagicMock(return_value="reply_1")
         h.add_reaction = MagicMock()
         h.register_message_project = MagicMock()
         h.get_working_dir = MagicMock(return_value="/tmp/spec_repo")
         h.ensure_request_id = MagicMock(return_value="req-1")
-        h.send_message = MagicMock()
+        h.send_card_to_chat = MagicMock()
 
         mock_project = MagicMock()
         mock_project.project_id = "proj-1"
@@ -1820,9 +1840,12 @@ class TestForceReleaseRepoLockHandler:
         else:
             ctx.chat_lock_manager.is_admin.return_value = True
         h = SystemHandler(ctx)
-        h.reply_message = MagicMock()
+        h.reply_text = MagicMock()
+        h.reply_text = MagicMock()
+        h.reply_card = MagicMock()
         h.reply_error = MagicMock()
-        h.send_message = MagicMock()
+        h.send_card_to_chat = MagicMock()
+        h.send_text_to_chat = MagicMock()
         return h, ctx
 
     @patch("src.thread.get_current_sender_id", return_value="admin_1")
@@ -1840,8 +1863,8 @@ class TestForceReleaseRepoLockHandler:
         # Should NOT have force-released yet
         ctx.repo_lock_manager.force_release.assert_not_called()
         # Should have sent a confirmation card
-        h.reply_message.assert_called_once()
-        card_json = h.reply_message.call_args[0][1]
+        h.reply_card.assert_called_once()
+        card_json = h.reply_card.call_args[0][1]
         assert "确认" in card_json or "confirm" in card_json.lower()
 
     @patch("src.thread.get_current_sender_id", return_value="admin_1")
@@ -1860,8 +1883,8 @@ class TestForceReleaseRepoLockHandler:
         )
 
         ctx.repo_lock_manager.force_release.assert_called_once_with("/tmp/repo")
-        h.reply_message.assert_called_once()
-        assert "强制释放" in h.reply_message.call_args[0][1]
+        h.reply_text.assert_called_once()
+        assert "强制释放" in h.reply_text.call_args[0][1]
 
     @patch("src.thread.get_current_sender_id", return_value="admin_1")
     def test_confirm_force_release_expired(self, _mock_sender):
@@ -1875,15 +1898,15 @@ class TestForceReleaseRepoLockHandler:
         )
 
         ctx.repo_lock_manager.force_release.assert_not_called()
-        h.reply_message.assert_called_once()
-        assert "过期" in h.reply_message.call_args[0][1]
+        h.reply_card.assert_called_once()
+        assert "过期" in h.reply_card.call_args[0][1]
 
     @patch("src.thread.get_current_sender_id", return_value="admin_1")
     def test_cancel_force_release(self, _mock_sender):
         h, ctx = self._make(admin_ids={"admin_1"})
         h.handle_cancel_force_release("msg-1", "chat-1", "proj-1", {})
-        h.reply_message.assert_called_once()
-        assert "取消" in h.reply_message.call_args[0][1]
+        h.reply_text.assert_called_once()
+        assert "取消" in h.reply_text.call_args[0][1]
 
     @patch("src.thread.get_current_sender_id", return_value="user_2")
     def test_non_admin_rejected(self, _mock_sender):
@@ -1946,8 +1969,8 @@ class TestRetryCommandHandler:
         dispatch = MagicMock()
         handler = RetryCommandHandler(dispatch)
         handler("mid_1", "chat_1", None, {"command_text": ""})
-        dispatch.reply_message.assert_called_once()
-        msg = dispatch.reply_message.call_args[0][1]
+        dispatch.reply_text.assert_called_once()
+        msg = dispatch.reply_text.call_args[0][1]
         assert "无法获取重试命令" in msg
         dispatch.process_with_intent.assert_not_called()
 
@@ -1994,7 +2017,7 @@ class TestEngineBaseLockConflict:
             )
         )
         h.lock_helper.send_lock_conflict_card = MagicMock()
-        h.reply_message = MagicMock()
+        h.reply_text = MagicMock()
 
         h._safe_execute_engine(
             executor_func=MagicMock(),
@@ -2019,7 +2042,7 @@ class TestEngineBaseLockConflict:
         h = BaseEngineHandler(ctx)
 
         executor = MagicMock()
-        h.reply_message = MagicMock()
+        h.reply_text = MagicMock()
         h.lock_helper.send_lock_conflict_card = MagicMock()
 
         h._safe_execute_engine(
@@ -2056,7 +2079,7 @@ class TestEngineBaseLockConflict:
         # _with_repo_lock should just call the body (no lock conflict at the guard level)
         h.lock_helper._with_repo_lock = MagicMock(side_effect=lambda rp, cid, body: body())
         h.lock_helper.send_lock_conflict_card = MagicMock()
-        h.reply_message = MagicMock()
+        h.reply_text = MagicMock()
 
         h._safe_execute_engine(
             executor_func=executor,
@@ -2091,8 +2114,8 @@ class TestProgrammingHandlerLockConflict:
         ctx.settings.card_collapsible_enabled = False
 
         h = CocoModeHandler(ctx)
-        h.reply_message = MagicMock()
-        h.reply_message_with_id = MagicMock(return_value="reply_1")
+        h.reply_text = MagicMock()
+        h.reply_card = MagicMock(return_value="reply_1")
         h.add_reaction = MagicMock()
         h.register_message_project = MagicMock()
         h.record_mode_transition = MagicMock()
@@ -2156,7 +2179,7 @@ class TestNonStreamingHeartbeat:
             handler.im_client = MagicMock()
             handler._settings = ctx.settings
 
-        handler.reply_message = MagicMock()
+        handler.reply_text = MagicMock()
         handler.send_error_card = MagicMock()
 
         mock_session = MagicMock()

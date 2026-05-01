@@ -159,7 +159,7 @@ def test_wt_command_with_goal_parsed():
 
     reply_mock = MagicMock()
     with patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
-         patch.object(handler, "reply_message", reply_mock):
+         patch.object(handler, "reply_card", reply_mock):
         handler.handle_worktree_command("msg1", "chat1", project, goal="实现登录功能")
 
     state = WorktreeManager.get_state(project)
@@ -303,7 +303,7 @@ def test_wt_prefix_command_parses_goal():
 
     reply_mock = MagicMock()
     with patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
-         patch.object(handler, "reply_message", reply_mock):
+         patch.object(handler, "reply_text", reply_mock):
         handler.handle_worktree_prefix_command("msg1", "chat1", "/wt 实现登录", project)
 
     state = WorktreeManager.get_state(project)
@@ -320,7 +320,7 @@ def test_worktree_prefix_command_parses_goal():
 
     reply_mock = MagicMock()
     with patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
-         patch.object(handler, "reply_message", reply_mock):
+         patch.object(handler, "reply_text", reply_mock):
         handler.handle_worktree_prefix_command("msg2", "chat2", "/worktree 重构认证", project)
 
     state = WorktreeManager.get_state(project)
@@ -350,7 +350,7 @@ def test_no_goal_fallback_confirm_card():
     mgr.back_to_tool_selection(project)
 
     patch_mock = MagicMock()
-    with patch.object(handler, "patch_message", patch_mock):
+    with patch.object(handler, "update_card", patch_mock):
         handler.handle_finish_worktree_selection("msg-fb", "chat-fb", project_id="p-fb", value={})
 
     patch_mock.assert_called_once()
@@ -521,8 +521,8 @@ def test_silent_mode_throttle_interval():
         return state
 
     with patch.object(mgr, "execute_goal", side_effect=fake_execute), \
-         patch.object(handler, "send_message", send_mock), \
-         patch.object(handler, "patch_message", patch_mock):
+         patch.object(handler, "send_card_to_chat", send_mock), \
+         patch.object(handler, "update_card", patch_mock):
         handler.handle_worktree_execute("msg-sil", "chat-sil", "测试", project=project, silent_mode=True)
 
     # Check initial message contains silent mode indicator
@@ -557,7 +557,7 @@ def test_goal_persistence_across_selection():
 
     # Step 1: /wt with goal
     with patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
-         patch.object(handler, "reply_message"):
+         patch.object(handler, "reply_card"):
         handler.handle_worktree_command("m1", "c1", project, goal="实现搜索功能")
 
     state = mgr.get_state(project)
@@ -567,7 +567,7 @@ def test_goal_persistence_across_selection():
     with patch.object(handler, "_get_models_for_tool", return_value=[{"name": "sonnet", "display_name": "Sonnet", "is_default": True}, 
                                                                       {"name": "opus", "display_name": "Opus", "is_default": False}]), \
          patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
-         patch.object(handler, "patch_message"):
+         patch.object(handler, "update_card"):
         handler.handle_worktree_select_tool(
             "m2", "c1", project_id="p-pers",
             value={"tool_name": "claude", "provider": "cli", "supports_model": True},
@@ -580,7 +580,7 @@ def test_goal_persistence_across_selection():
     # Step 3: select model — should return to tool select (no auto-execute)
     patch_mock = MagicMock()
     with patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
-         patch.object(handler, "patch_message", patch_mock):
+         patch.object(handler, "update_card", patch_mock):
         handler.handle_worktree_select_model(
             "m3", "c1", project_id="p-pers",
             value={"model_name": "sonnet", "model_display_name": "Sonnet"},
@@ -609,7 +609,7 @@ def test_goal_from_start_selection_persists_through_model_select():
 
     # select model — goal should not be overwritten (no goal in card value)
     with patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
-         patch.object(handler, "patch_message"):
+         patch.object(handler, "update_card"):
         handler.handle_worktree_select_model(
             "m-model", "c-model", project_id="p-model",
             value={"model_name": "sonnet", "model_display_name": "Sonnet"},
@@ -707,7 +707,7 @@ def test_whitespace_only_goal_falls_back_to_confirm_card():
 
     patch_mock = MagicMock()
     auto_exec_mock = MagicMock()
-    with patch.object(handler, "patch_message", patch_mock), \
+    with patch.object(handler, "update_card", patch_mock), \
          patch.object(handler, "_auto_execute_worktree", auto_exec_mock):
         handler.handle_finish_worktree_selection(
             "msg-ws", "chat-ws", project_id="p-ws",
@@ -740,7 +740,7 @@ def test_goal_with_newlines_preserved():
     multiline_goal = "第一步：实现登录\n第二步：添加测试"
     auto_exec_mock = MagicMock()
     with patch.object(handler, "_auto_execute_worktree", auto_exec_mock), \
-         patch.object(handler, "patch_message"):
+         patch.object(handler, "update_card"):
         handler.handle_finish_worktree_selection(
             "msg-nl", "chat-nl", project_id="p-nl",
             value={"worktree_goal": multiline_goal},
@@ -755,7 +755,7 @@ def test_goal_with_newlines_preserved():
 def test_silent_mode_timeout_notification_fires():
     """Silent mode 10-min safety valve: callback at >=600s patches card with timeout msg.
 
-    The closure captures time from module globals and self.patch_message from the handler.
+    The closure captures time from module globals and self.update_card from the handler.
     We must mock both during handle_worktree_execute (to capture the callback) and again
     when invoking the callback (so the closure sees mocked time + mocked patch_message).
     """
@@ -787,21 +787,21 @@ def test_silent_mode_timeout_notification_fires():
         state.last_error = ""
         return state
 
-    import src.feishu.handlers.system as _sys_mod
-    original_time = _sys_mod.time
+    import src.feishu.handlers.worktree as _wt_mod
+    original_time = _wt_mod.time
 
     fake_time = MagicMock()
     fake_time.time = lambda: _fake_now[0]
 
-    # Keep patch_message mock active for the entire test so the closure sees it
-    with patch.object(handler, "send_message", send_mock), \
-         patch.object(handler, "patch_message", patch_msg_mock):
+    # Keep update_card mock active for the entire test so the closure sees it
+    with patch.object(handler, "send_card_to_chat", send_mock), \
+         patch.object(handler, "update_card", patch_msg_mock):
         try:
-            _sys_mod.time = fake_time
+            _wt_mod.time = fake_time
             with patch.object(mgr, "execute_goal", side_effect=fake_execute):
                 handler.handle_worktree_execute("msg-to", "chat-to", "测试超时", project=project, silent_mode=True)
         finally:
-            _sys_mod.time = original_time
+            _wt_mod.time = original_time
 
         assert captured_callback[0] is not None
         cb = captured_callback[0]
@@ -810,12 +810,12 @@ def test_silent_mode_timeout_notification_fires():
         patch_msg_mock.reset_mock()
         _fake_now[0] = 1000.0 + 601
         try:
-            _sys_mod.time = fake_time
+            _wt_mod.time = fake_time
             cb(state.units[0])
         finally:
-            _sys_mod.time = original_time
+            _wt_mod.time = original_time
 
-    # The 10-min safety valve should have triggered a patch_message call
+    # The 10-min safety valve should have triggered an update_card call
     assert patch_msg_mock.call_count >= 1
 
 

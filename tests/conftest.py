@@ -128,47 +128,89 @@ def _block_real_ttadk_subprocess(request):
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
-def _mock_engine_sender():
-    """Mock _create_engine_sender to return a sender that delegates to handler methods.
+def _mock_direct_session():
+    """Mock _create_direct_session to return a mock DirectCardSession.
 
-    This allows existing tests that assert handler.reply_message / handler.patch_message
-    to continue working without SmartSender.
+    The mock session tracks send/close calls and delegates to handler methods
+    for test assertions compatibility.
     """
 
-    def _make_mock_sender(handler, message_id, chat_id, *, initial_message_id=None, payload_guard=None):
-        sender = MagicMock()
-        sender._handler = handler
-        sender._message_id = initial_message_id
+    def _make_mock_session(handler, chat_id, message_id, *, session_id=None):
+        session = MagicMock()
+        session._handler = handler
+        session._message_id = None
+        session._closed = False
+        session.closed = False
 
-        def _send(card_content, msg_type="interactive", is_update=False, throttle=False, request_id=None):
-            if is_update and sender._message_id:
-                if handler.patch_message(sender._message_id, card_content, max_retries=1, throttle=throttle):
-                    return sender._message_id
-                # Patch failed → re-anchor by creating new message (same as old SmartSender)
+        def _send(card_content):
+            if isinstance(card_content, str):
+                import json
+                try:
+                    card_content = json.loads(card_content)
+                except (json.JSONDecodeError, TypeError):
+                    pass
 
-            # Replicate SmartSender's reply mode logic
-            use_thread = getattr(handler.settings, "default_reply_mode", "thread") == "thread"
-            if use_thread:
-                result = handler.reply_message(message_id, card_content, msg_type=msg_type,
-                                               origin_message_id=message_id, request_id=request_id,
-                                               reply_in_thread=True)
+            # Delegate to handler for test assertion compatibility
+            if session._message_id:
+                # Update path
+                content_str = card_content if isinstance(card_content, str) else \
+                    __import__("json").dumps(card_content, ensure_ascii=False)
+                handler.update_card(session._message_id, content_str)
             else:
-                result = handler.send_message(chat_id, card_content, msg_type,
-                                              origin_message_id=message_id, request_id=request_id)
-            sender._message_id = result or "mock_reply_id"
-            return sender._message_id
+                # Create path
+                content_str = card_content if isinstance(card_content, str) else \
+                    __import__("json").dumps(card_content, ensure_ascii=False)
+                result = handler.reply_card(message_id, content_str)
+                session._message_id = result or "mock_reply_id"
+            return session._message_id
 
-        sender.send.side_effect = _send
-        sender.check_throttle.return_value = True
-        sender.update_stream_state.return_value = None
-        sender.check_plan_throttle.return_value = True
-        sender.update_plan_state.return_value = None
-        return sender
+        def _close():
+            session._closed = True
+            session.closed = True
+            session._message_id = None
 
-    with patch("src.feishu.renderers.deep_renderer._create_engine_sender", side_effect=_make_mock_sender), \
-         patch("src.feishu.renderers.loop_renderer._create_engine_sender", side_effect=_make_mock_sender), \
-         patch("src.feishu.renderers.spec_renderer._create_engine_sender", side_effect=_make_mock_sender):
+        session.send.side_effect = _send
+        session.close.side_effect = _close
+        type(session).message_id = property(lambda s: s._message_id)
+        return session
+
+    with patch("src.feishu.renderers.deep_renderer._create_direct_session", side_effect=_make_mock_session), \
+         patch("src.feishu.renderers.loop_renderer._create_direct_session", side_effect=_make_mock_session), \
+         patch("src.feishu.renderers.spec_renderer._create_direct_session", side_effect=_make_mock_session):
         yield
+
+
+@pytest.fixture
+def failing_handler_session():
+    """Configurable fixture for simulating handler method failures.
+
+    Returns a factory that patches handler methods to return failure values.
+
+    Usage::
+
+        def test_card_failure(failing_handler_session):
+            handler = make_handler()
+            with failing_handler_session(handler, reply_card=None, update_card=False):
+                # handler.reply_card(...) returns None
+                # handler.update_card(...) returns False
+                ...
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _configure(handler, *, reply_card=None, update_card=False):
+        original_reply_card = handler.reply_card
+        original_update_card = handler.update_card
+
+        handler.reply_card = MagicMock(return_value=reply_card)
+        handler.update_card = MagicMock(return_value=update_card)
+        try:
+            yield handler
+        finally:
+            handler.reply_card = original_reply_card
+            handler.update_card = original_update_card
+
+    return _configure
 
 
 @pytest.fixture(autouse=True)

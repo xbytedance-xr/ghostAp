@@ -65,14 +65,14 @@ class TestLoopRenderer:
 
         mock_handler.ctx.loop_engine_manager.get.return_value = engine
 
-        # Setup patch_message to fail so it calls reply_message
-        mock_handler.patch_message.return_value = False
+        # Setup update_card to fail so it calls reply_card
+        mock_handler.update_card.return_value = False
 
         renderer.render_current_view("msg1", "chat1", project=proj)
 
-        # Verify it called reply_message with correct content
-        assert mock_handler.reply_message.called
-        args, kwargs = mock_handler.reply_message.call_args
+        # Verify it called reply_card with correct content
+        assert mock_handler.reply_card.called
+        args, kwargs = mock_handler.reply_card.call_args
         card_content = args[1]
         assert "Status Content" in card_content
         assert "Status Title" in card_content
@@ -99,48 +99,31 @@ class TestLoopRenderer:
 
         # Test callback execution
         # Verify on_iteration_start updates state and sends message
-        mock_handler.reply_message.return_value = "msg_thread"
-        mock_handler.patch_message.return_value = True
+        mock_handler.reply_card.return_value = "msg_thread"
+        mock_handler.update_card.return_value = True
 
         callbacks.on_iteration_start(1, 5)
 
         state = renderer.get_ui_state("p1")
         assert state["view_mode"] == "status"
 
-        # Verify patch was attempted (since it's an update in callback flow)
-        # Note: first message in callback flow is usually "analyzing_start" which is sent by handler before creating callbacks
-        # But inside create_loop_callbacks, _send_loop_message logic handles "is_update"
-
-        # The callbacks call _send_loop_message with is_update=True usually?
-        # Let's check logic:
-        # on_iteration_start calls _send_loop_message(..., is_update=True)
-        # so it should try patch first.
-
-        # Wait, current_status_message_id is [None] initially.
-        # So first call won't patch.
-        # on_iteration_start -> is_update=True.
-        # But if current_status_message_id[0] is None, it falls through to send new message.
-
-        # So handler.reply_message should be called.
-        assert mock_handler.reply_message.called
+        # With DirectCardSession mock: first send goes to reply_card (create path)
+        assert mock_handler.reply_card.called
         
         # Test error callback and its retry button logic
         import json
-        mock_handler.reply_message.reset_mock()
-        mock_handler.patch_message.reset_mock()
-        mock_handler.patch_message.return_value = False
+        mock_handler.reply_card.reset_mock()
+        mock_handler.update_card.reset_mock()
         
         # Setup mock reporter to return string for format_error
         mock_handler.ctx.loop_reporter.format_error.return_value = "Test Loop Error Content"
         mock_handler.ctx.loop_reporter.get_error_title.return_value = "Test Error Title"
         
-        # In loop renderer, project is checked. Here proj is provided.
-        # But we need to make sure loop_project_id is properly evaluated in the closure
-        
         callbacks.on_error("Test Loop Error")
         
-        assert mock_handler.reply_message.called
-        args, kwargs = mock_handler.reply_message.call_args
+        # Error sends via session (update path since session already has message_id)
+        assert mock_handler.update_card.called
+        args, kwargs = mock_handler.update_card.call_args
         card_content = args[1]
         
         # Parse JSON and verify the extra_buttons (retry button) were added

@@ -29,7 +29,7 @@ class ProjectHandler(BaseHandler):
 
         if success and project:
             msg_type, card_content = CardBuilder.build_project_created_card(project)
-            response_id = self.reply_message_with_id(message_id, card_content, msg_type)
+            response_id = self.reply_card(message_id, card_content)
             if response_id:
                 self.register_message_project(response_id, project)
         else:
@@ -43,19 +43,19 @@ class ProjectHandler(BaseHandler):
         msg_type, content = CardBuilder.build_status_board_card(projects, current_id, page=page)
 
         if origin_message_id:
-            if self.patch_message(origin_message_id, content, max_retries=1):
+            if self.update_card(origin_message_id, content):
                 if active_project:
                     self.register_message_project(origin_message_id, active_project)
                 return
 
-        response_id = self.reply_message_with_id(message_id, content, msg_type, origin_message_id=origin_message_id)
+        response_id = self.reply_card(message_id, content)
 
         if response_id and active_project:
             self.register_message_project(response_id, active_project)
 
     def show_current_project(self, message_id: str, chat_id: str, project: Optional["ProjectContext"]):
         if not project:
-            self.reply_message(
+            self.reply_text(
                 message_id,
                 UI_TEXT["project_board_empty"],
             )
@@ -63,7 +63,7 @@ class ProjectHandler(BaseHandler):
 
         global_working_dir = self.get_working_dir(chat_id)
         msg_type, card_content = CardBuilder.build_current_project_card(project, global_working_dir)
-        response_id = self.reply_message_with_id(message_id, card_content, msg_type)
+        response_id = self.reply_card(message_id, card_content)
         if response_id:
             self.register_message_project(response_id, project)
 
@@ -82,13 +82,11 @@ class ProjectHandler(BaseHandler):
         msg_type, card_content = CardBuilder.build_project_status_report_card(project, global_working_dir)
 
         if origin_message_id:
-            if self.patch_message(origin_message_id, card_content, max_retries=1):
+            if self.update_card(origin_message_id, card_content):
                 self.register_message_project(origin_message_id, project)
                 return
 
-        response_id = self.reply_message_with_id(
-            message_id, card_content, msg_type, origin_message_id=origin_message_id
-        )
+        response_id = self.reply_card(message_id, card_content)
         if response_id:
             self.register_message_project(response_id, project)
 
@@ -224,7 +222,7 @@ class ProjectHandler(BaseHandler):
         else:
             msg_type, card_content = CardBuilder.build_project_switch_notification_card(project, restore_info)
 
-            response_id = self.reply_message_with_id(message_id, card_content, msg_type)
+            response_id = self.reply_card(message_id, card_content)
             if response_id:
                 self.register_message_project(response_id, project)
 
@@ -236,7 +234,7 @@ class ProjectHandler(BaseHandler):
 
         success, msg = self.project_manager.close_project(project.project_id)
         if success:
-            self.reply_message(message_id, UI_TEXT["project_close_success"].format(name=name))
+            self.reply_text(message_id, UI_TEXT["project_close_success"].format(name=name))
         else:
             self.reply_error(message_id, UI_TEXT["project_close_error"].format(error=msg))
 
@@ -257,8 +255,14 @@ class ProjectHandler(BaseHandler):
             self._project_chat_service = ProjectChatService(
                 project_manager=self.project_manager,
                 lark_chat_client=lark_client,
-                reply_fn=lambda mid, text, msg_type: self.reply_message(mid, text, msg_type=msg_type or "text"),
-                send_to_chat_fn=lambda cid, msg_type, text, _: self.im_client.send_message("chat_id", cid, text, msg_type),
+                reply_fn=lambda mid, text, msg_type: (
+                    self.reply_card(mid, text) if msg_type == "interactive"
+                    else self.reply_text(mid, text)
+                ),
+                send_to_chat_fn=lambda cid, msg_type, text, _: (
+                    self.send_card_to_chat(cid, text) if msg_type == "interactive"
+                    else self.send_text_to_chat(cid, text)
+                ),
             )
 
         # Inject shell working directory so service uses the same default as /new

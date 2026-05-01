@@ -80,7 +80,7 @@ class MessageDispatcher:
                 self.client._add_reaction(message_id, EmojiReaction.on_coco_mode())
                 if self.client._control_plane.should_defer_exit(chat_id=chat_id, project_id=_pid):
                     self.client._control_plane.request_deferred_exit(message_id=message_id, chat_id=chat_id, project_id=_pid)
-                    self.client._reply_message(message_id, UI_TEXT["ws_exit_deferred_msg"])
+                    self.client._reply_text(message_id, UI_TEXT["ws_exit_deferred_msg"])
                     return
                 self.client._exit_current_mode(message_id, chat_id, project=project)
                 return
@@ -151,7 +151,7 @@ class MessageDispatcher:
 
         task_list = [{"description": task.description or self.get_task_description(task)} for task in tasks]
         plan_msg = fmt.format_multi_task_plan(task_list)
-        self.client._reply_message(message_id, plan_msg)
+        self.client._reply_text(message_id, plan_msg)
 
         self.client._add_reaction(message_id, EmojiReaction.on_multi_task_start())
 
@@ -173,7 +173,7 @@ class MessageDispatcher:
 
             if not success:
                 all_success = False
-                self.client._reply_message(message_id, UI_TEXT["multi_task_step_failed"].format(step=i))
+                self.client._reply_text(message_id, UI_TEXT["multi_task_step_failed"].format(step=i))
                 break
 
         if all_success:
@@ -307,7 +307,7 @@ class MessageDispatcher:
             self._dispatch_shell(data, message_id, chat_id, original_text, project, shell_fast_tracked)
         # Unknown
         elif intent == IntentType.UNKNOWN:
-            self.client._reply_message(message_id, fmt.format_unknown_intent())
+            self.client._reply_text(message_id, fmt.format_unknown_intent())
 
     # ------------------------------------------------------------------
     # Extracted helpers for execute_single_task
@@ -319,12 +319,12 @@ class MessageDispatcher:
             active_thread = self.client._find_active_thread(chat_id)
             if active_thread:
                 mode_display = active_thread.mode.upper() if active_thread.mode else "编程"
-                self.client._reply_message(
+                self.client._reply_text(
                     message_id,
                     UI_TEXT["ws_active_topic_msg"].format(name=mode_display),
                 )
                 return
-        self.client._reply_message(message_id, "🤔 无法理解你的意图")
+        self.client._reply_text(message_id, "🤔 无法理解你的意图")
 
     def _handle_enter_coco(self, message_id: str, chat_id: str, project):
         try:
@@ -391,7 +391,7 @@ class MessageDispatcher:
             if name:
                 self.client._close_project(message_id, chat_id, name)
             else:
-                self.client._reply_message(message_id, "❌ 请指定要关闭的项目名称")
+                self.client._reply_text(message_id, "❌ 请指定要关闭的项目名称")
         elif intent == IntentType.PROJECT_STATUS:
             self.client._show_project_status(message_id, chat_id, project)
         elif intent == IntentType.NEW_CHAT_PROJECT:
@@ -417,7 +417,7 @@ class MessageDispatcher:
         if guide_message:
             getattr(self.client, method_name)(message_id, chat_id, guide_message, project)
         else:
-            self.client._reply_message(message_id, hint)
+            self.client._reply_text(message_id, hint)
 
     def _dispatch_shell(self, data: dict, message_id: str, chat_id: str, original_text: str, project, shell_fast_tracked: bool):
         working_dir = self.client._get_working_dir(chat_id)
@@ -453,27 +453,27 @@ class MessageDispatcher:
         try:
             if intent == IntentType.ENTER_COCO:
                 self.client._enter_coco_mode(message_id, chat_id, silent=True, project=project)
-                self.client._reply_message(message_id, UI_TEXT["multi_task_step_success"].format(step=step_num, desc="已进入 Coco 模式"))
+                self.client._reply_text(message_id, UI_TEXT["multi_task_step_success"].format(step=step_num, desc="已进入 Coco 模式"))
                 return True
 
             elif intent == IntentType.EXIT_COCO:
                 success = self.client._coco_manager.end_session(chat_id)
                 if success:
-                    self.client._reply_message(message_id, UI_TEXT["multi_task_step_success"].format(step=step_num, desc="已退出 Coco 模式"))
+                    self.client._reply_text(message_id, UI_TEXT["multi_task_step_success"].format(step=step_num, desc="已退出 Coco 模式"))
                 return success
 
             elif intent == IntentType.CHANGE_DIR:
                 path = data.get("path", "")
                 if not path:
                     current_dir = self.client._get_working_dir(chat_id)
-                    self.client._reply_message(message_id, f"✅ 步骤 {step_num}: 当前目录 {current_dir}")
+                    self.client._reply_text(message_id, f"✅ 步骤 {step_num}: 当前目录 {current_dir}")
                     return True
 
                 success, result = self.client._set_working_dir(chat_id, path)
                 if success:
-                    self.client._reply_message(message_id, UI_TEXT["multi_task_step_success"].format(step=step_num, desc=f"已切换到 {result}"))
+                    self.client._reply_text(message_id, UI_TEXT["multi_task_step_success"].format(step=step_num, desc=f"已切换到 {result}"))
                 else:
-                    self.client._reply_message(message_id, UI_TEXT["multi_task_step_error"].format(step=step_num, error=result))
+                    self.client._reply_text(message_id, UI_TEXT["multi_task_step_error"].format(step=step_num, error=result))
                 return success
 
             elif intent == IntentType.CREATE_PROJECT:
@@ -488,10 +488,10 @@ class MessageDispatcher:
                     project_id=project_id, project_name=name, root_path=path, chat_id=chat_id
                 )
                 if success:
-                    self.client._reply_message(message_id, f"✅ 步骤 {step_num}: 已创建项目 {name}")
+                    self.client._reply_text(message_id, f"✅ 步骤 {step_num}: 已创建项目 {name}")
                     project = new_project
                 else:
-                    self.client._reply_message(message_id, f"❌ 步骤 {step_num}: {msg}")
+                    self.client._reply_text(message_id, f"❌ 步骤 {step_num}: {msg}")
                 return success
 
             elif intent == IntentType.SWITCH_PROJECT:
@@ -501,7 +501,7 @@ class MessageDispatcher:
                     if found_project:
                         success, msg = self.client._project_manager.set_active_project(chat_id, found_project.project_id)
                         if success:
-                            self.client._reply_message(message_id, f"✅ 步骤 {step_num}: 已切换到项目 {name}")
+                            self.client._reply_text(message_id, f"✅ 步骤 {step_num}: 已切换到项目 {name}")
                         return success
                 return False
 
@@ -513,7 +513,7 @@ class MessageDispatcher:
                 return True
             elif intent == IntentType.TTADK_MESSAGE:
                 self.client._enter_ttadk_mode(message_id, chat_id, silent=True, project=project)
-                self.client._reply_message(message_id, UI_TEXT["multi_task_step_success"].format(step=step_num, desc="已进入 TTADK 模式"))
+                self.client._reply_text(message_id, UI_TEXT["multi_task_step_success"].format(step=step_num, desc="已进入 TTADK 模式"))
                 return True
 
             else:

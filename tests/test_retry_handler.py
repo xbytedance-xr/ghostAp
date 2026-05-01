@@ -43,8 +43,8 @@ class TestVerifySignature:
         handler, dispatch = _make_handler()
         result = handler._verify_signature("mid_1", "/deep run", "")
         assert result is False
-        dispatch.reply_message.assert_called_once()
-        msg = dispatch.reply_message.call_args[0][1]
+        dispatch.reply_text.assert_called_once()
+        msg = dispatch.reply_text.call_args[0][1]
         assert "失效" in msg
 
     @patch("src.utils.signing._get_signing_key", return_value=_SIGNING_KEY)
@@ -52,8 +52,8 @@ class TestVerifySignature:
         handler, dispatch = _make_handler()
         result = handler._verify_signature("mid_2", "/deep run", "deadbeef" * 8)
         assert result is False
-        dispatch.reply_message.assert_called_once()
-        msg = dispatch.reply_message.call_args[0][1]
+        dispatch.reply_text.assert_called_once()
+        msg = dispatch.reply_text.call_args[0][1]
         assert "失效" in msg
 
     @patch("src.utils.signing._get_signing_key", return_value=_SIGNING_KEY)
@@ -63,14 +63,14 @@ class TestVerifySignature:
         sig = _compute_hmac_sig(cmd)
         result = handler._verify_signature("mid_3", cmd, sig)
         assert result is True
-        dispatch.reply_message.assert_not_called()
+        dispatch.reply_text.assert_not_called()
 
     def test_exempt_command_skips_sig_check(self):
         """SIGNATURE_EXEMPT_COMMANDS (e.g. /status) bypass verification."""
         handler, dispatch = _make_handler()
         result = handler._verify_signature("mid_4", "/status", "")
         assert result is True
-        dispatch.reply_message.assert_not_called()
+        dispatch.reply_text.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -138,8 +138,8 @@ class TestResolveProject:
 
         result = handler._resolve_project("mid_3", "chat_3", "proj_1")
         assert result is _REJECTED
-        dispatch.reply_message.assert_called_once()
-        msg = dispatch.reply_message.call_args[0][1]
+        dispatch.reply_text.assert_called_once()
+        msg = dispatch.reply_text.call_args[0][1]
         assert "原项目不可用" in msg
 
 
@@ -241,13 +241,13 @@ class TestRetryDispatchProtocol:
         adapter = _RetryDispatchAdapter(mock_client)
         assert isinstance(adapter, RetryDispatchProtocol)
 
-    def test_adapter_delegates_reply_message(self):
+    def test_adapter_delegates_reply_text(self):
         from src.feishu.action_registry import _RetryDispatchAdapter
 
         mock_client = MagicMock()
         adapter = _RetryDispatchAdapter(mock_client)
-        adapter.reply_message("mid", "hello")
-        mock_client.reply_message.assert_called_once_with("mid", "hello", "text")
+        adapter.reply_text("mid", "hello")
+        mock_client._reply_text.assert_called_once_with("mid", "hello")
 
     def test_adapter_delegates_process_with_intent(self):
         from src.feishu.action_registry import _RetryDispatchAdapter
@@ -297,8 +297,8 @@ class TestUndoLockExpiry:
             "undo_expires": int(time.time()) - 10,  # expired 10s ago
         }
         handler("mid_undo_1", "chat_1", None, val)
-        dispatch.reply_message.assert_called_once()
-        msg = dispatch.reply_message.call_args[0][1]
+        dispatch.reply_text.assert_called_once()
+        msg = dispatch.reply_text.call_args[0][1]
         assert "撤销窗口已过期" in msg
         # Should NOT dispatch the /unlock command
         dispatch.process_with_intent.assert_not_called()

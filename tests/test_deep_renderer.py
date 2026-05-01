@@ -68,14 +68,14 @@ class TestDeepRenderer:
 
         mock_handler.ctx.deep_engine_manager.get.return_value = engine
 
-        # Setup patch_message to fail so it calls reply_message
-        mock_handler.patch_message.return_value = False
+        # Setup update_card to fail so it calls reply_card
+        mock_handler.update_card.return_value = False
 
         renderer.render_deep_status("msg1", "chat1", project=proj)
 
-        # Verify it called reply_message with correct content
-        assert mock_handler.reply_message.called
-        args, kwargs = mock_handler.reply_message.call_args
+        # Verify it called reply_card with correct content
+        assert mock_handler.reply_card.called
+        args, kwargs = mock_handler.reply_card.call_args
         card_content = args[1]
         assert "Status Content" in card_content
         assert "Status Title" in card_content
@@ -107,8 +107,8 @@ class TestDeepRenderer:
         assert callbacks.on_error
 
         # Test project done callback
-        mock_handler.reply_message.return_value = "msg_thread"
-        mock_handler.patch_message.return_value = True
+        mock_handler.reply_card.return_value = "msg_thread"
+        mock_handler.update_card.return_value = True
 
         callbacks.on_project_done(engine.project)
 
@@ -116,9 +116,8 @@ class TestDeepRenderer:
         
         # Test error callback and its retry button logic
         import json
-        mock_handler.reply_message.reset_mock()
-        mock_handler.patch_message.reset_mock()
-        mock_handler.patch_message.return_value = False
+        mock_handler.reply_card.reset_mock()
+        mock_handler.update_card.reset_mock()
         
         # Setup mock reporter to return string for format_error
         mock_handler.ctx.progress_reporter.format_error.return_value = "Test Error Content"
@@ -126,9 +125,9 @@ class TestDeepRenderer:
         
         callbacks.on_error("Test Error")
         
-        # When error occurs, we should format the error card with retry button
-        assert mock_handler.reply_message.called
-        args, kwargs = mock_handler.reply_message.call_args
+        # When error occurs, the session sends the card (update path since session already has message_id)
+        assert mock_handler.update_card.called
+        args, kwargs = mock_handler.update_card.call_args
         card_content = args[1]
         
         # Parse JSON and verify the extra_buttons (retry button) were added

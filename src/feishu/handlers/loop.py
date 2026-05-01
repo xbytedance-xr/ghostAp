@@ -134,9 +134,7 @@ class LoopHandler(BaseEngineHandler):
                 action_prefix="loop",
             ),
         )
-        self.reply_message(
-            message_id, card_content, msg_type=msg_type, origin_message_id=message_id, request_id=request_id
-        )
+        self.reply_card(message_id, card_content)
 
         engine = self.ctx.loop_engine_manager.get_or_create(chat_id, root_path, engine_name=engine_name)
 
@@ -258,7 +256,7 @@ class LoopHandler(BaseEngineHandler):
                 action_prefix="loop",
             ),
         )
-        self.send_message(chat_id, card_content, msg_type)
+        self.send_card_to_chat(chat_id, card_content)
 
     # ------------------------------------------------------------------
     # UI Interaction Handlers

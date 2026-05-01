@@ -456,9 +456,9 @@ class TestWorktreeCommandRouting(unittest.TestCase):
         ctx.project_manager = MagicMock()
         handler = SystemHandler(ctx)
         # Prevent actual Feishu API calls
-        handler.reply_message = MagicMock()
+        handler.reply_text = MagicMock()
         handler.reply_error = MagicMock()
-        handler.patch_message = MagicMock()
+        handler.update_card = MagicMock()
         handler.send_error_card = MagicMock()
         return handler
 
@@ -471,9 +471,12 @@ class TestWorktreeCommandRouting(unittest.TestCase):
         ctx.project_manager = MagicMock()
         handler = WorktreeHandler(ctx)
         # Prevent actual Feishu API calls
-        handler.reply_message = MagicMock()
+        handler.reply_text = MagicMock()
+        handler.reply_card = MagicMock()
         handler.reply_error = MagicMock()
-        handler.patch_message = MagicMock()
+        handler.update_card = MagicMock()
+        handler.update_card = MagicMock()
+        handler.send_card_to_chat = MagicMock()
         handler.send_error_card = MagicMock()
         return handler
 
@@ -513,9 +516,9 @@ class TestWorktreeCommandRouting(unittest.TestCase):
 
         handler.handle_worktree_command("msg-1", "chat-1")
 
-        handler.reply_message.assert_called_once()
-        _args, _kwargs = handler.reply_message.call_args
-        card_json = _args[1]  # (message_id, content, ...)
+        handler.reply_card.assert_called_once()
+        _args, _kwargs = handler.reply_card.call_args
+        card_json = _args[1]  # (message_id, content)
         card = json.loads(card_json)
 
         # Verify card structure
