@@ -15,13 +15,13 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Stream throttle — lightweight throttler extracted from EngineCardSender
+# Stream throttle
 # ---------------------------------------------------------------------------
 
 class _StreamThrottle:
     """Lightweight stream/plan throttle for engine renderers.
 
-    Replicates the throttle semantics of the deprecated EngineCardSender:
+    Throttle semantics:
     - check_throttle(text_len, force) → bool
     - update_stream_state(text_len)
     - check_plan_throttle(plan_content, force) → bool

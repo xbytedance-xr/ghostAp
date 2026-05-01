@@ -12,7 +12,6 @@ import json
 import logging
 import os
 import uuid
-import warnings
 from dataclasses import dataclass as _dataclass
 from typing import TYPE_CHECKING, Callable, Optional, Any
 
@@ -129,36 +128,8 @@ class BaseHandler:
         self.send_error_card(chat_id=chat_id or "unknown", exc=exc, title=title, origin_message_id=message_id)
 
     # ------------------------------------------------------------------
-    # New unified messaging API (replaces old reply_message / patch_message / send_message)
+    # Unified messaging API
     # ------------------------------------------------------------------
-
-    # --- Deprecation stubs for removed methods ---
-
-    def reply_message(self, *args, **kwargs):
-        """已移除。"""
-        msg = "reply_message 已移除，请使用 reply_text（纯文本）或 reply_card（卡片）"
-        warnings.warn(msg, DeprecationWarning, stacklevel=2)
-        raise NotImplementedError(msg)
-
-    def patch_message(self, *args, **kwargs):
-        """已移除。"""
-        msg = "patch_message 已移除，请使用 update_card"
-        warnings.warn(msg, DeprecationWarning, stacklevel=2)
-        raise NotImplementedError(msg)
-
-    def send_message(self, *args, **kwargs):
-        """已移除。"""
-        msg = "send_message 已移除，请使用 send_card_to_chat 或 send_text_to_chat"
-        warnings.warn(msg, DeprecationWarning, stacklevel=2)
-        raise NotImplementedError(msg)
-
-    def reply_message_with_id(self, *args, **kwargs):
-        """已移除。"""
-        msg = "reply_message_with_id 已移除，请使用 reply_text 或 reply_card"
-        warnings.warn(msg, DeprecationWarning, stacklevel=2)
-        raise NotImplementedError(msg)
-
-    # --- Active API methods ---
 
     def create_direct_card_session(
         self,

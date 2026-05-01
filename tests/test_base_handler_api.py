@@ -249,42 +249,6 @@ class TestReplyInThreadDefault:
         assert call_kwargs[1]["reply_in_thread"] is False
 
 
-# ===========================================================================
-# Deprecated methods raise AttributeError
-# ===========================================================================
-
-
-class TestDeprecatedMethods:
-    def test_reply_message_raises(self):
-        h = _make_handler()
-        with pytest.warns(DeprecationWarning, match="reply_text"):
-            with pytest.raises(NotImplementedError, match="reply_text"):
-                h.reply_message("msg", "content")
-
-    def test_patch_message_raises(self):
-        h = _make_handler()
-        with pytest.warns(DeprecationWarning, match="update_card"):
-            with pytest.raises(NotImplementedError, match="update_card"):
-                h.patch_message("msg", "content")
-
-    def test_send_message_raises(self):
-        h = _make_handler()
-        with pytest.warns(DeprecationWarning, match="send_card_to_chat"):
-            with pytest.raises(NotImplementedError, match="send_card_to_chat"):
-                h.send_message("chat_id", "chat_123", "content")
-
-    def test_reply_message_with_id_raises(self):
-        h = _make_handler()
-        with pytest.warns(DeprecationWarning, match="reply_text"):
-            with pytest.raises(NotImplementedError, match="reply_text"):
-                h.reply_message_with_id("msg", "content")
-
-    def test_hasattr_returns_true(self):
-        """hasattr must return True — duck-typing contract preserved."""
-        h = _make_handler()
-        for name in ("reply_message", "patch_message", "send_message", "reply_message_with_id"):
-            assert hasattr(h, name), f"hasattr(handler, {name!r}) should be True"
-
 
 # ===========================================================================
 # _inject_ref_note post format
