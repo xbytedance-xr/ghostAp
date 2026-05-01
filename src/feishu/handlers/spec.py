@@ -49,7 +49,22 @@ class SpecHandler(BaseEngineHandler):
     def _create_callbacks(
         self, message_id: str, chat_id: str, project: Optional["ProjectContext"], engine_name: str, root_path: str
     ):
-        return self.renderer.create_spec_callbacks(message_id, chat_id, project, engine_name=engine_name)
+        model_name = self._get_model_name(chat_id, project)
+        return self.renderer.create_spec_callbacks(message_id, chat_id, project, engine_name=engine_name, model_name=model_name)
+
+    def _get_model_name(self, chat_id: str, project: Optional["ProjectContext"]) -> str:
+        """Resolve model name for subtitle display."""
+        from ...utils.engine_identity import resolve_engine_identity
+        project_id = project.project_id if project else None
+        current_mode = self.ctx.mode_manager.get_mode(chat_id, project_id=project_id)
+        identity = resolve_engine_identity(
+            mode=current_mode,
+            ttadk_tool_name=getattr(project, "ttadk_tool_name", None) if project else None,
+            ttadk_model_name=getattr(project, "ttadk_model_name", None) if project else None,
+            acp_tool_name=getattr(project, "acp_tool_name", None) if project else None,
+            acp_model_name=getattr(project, "acp_model_name", None) if project else None,
+        )
+        return identity.model_name or ""
 
     def _refresh_card_view(self, message_id: str, chat_id: str, project=None):
         self.show_spec_status(message_id, chat_id, project, origin_message_id=message_id)
@@ -159,7 +174,7 @@ class SpecHandler(BaseEngineHandler):
 
         def run_spec_engine():
             try:
-                callbacks = self.renderer.create_spec_callbacks(message_id, chat_id, project, engine_name)
+                callbacks = self.renderer.create_spec_callbacks(message_id, chat_id, project, engine_name, model_name=self._get_model_name(chat_id, project))
                 engine.execute(requirement, callbacks, task_id=task_id, on_rate_limit=_on_rate_limit)
             except Exception as e:
                 if isinstance(e, (TimeoutError, asyncio.TimeoutError)):
@@ -736,7 +751,7 @@ class SpecHandler(BaseEngineHandler):
 
         def run_spec_engine():
             try:
-                callbacks = self.renderer.create_spec_callbacks(message_id, chat_id, project, engine_name)
+                callbacks = self.renderer.create_spec_callbacks(message_id, chat_id, project, engine_name, model_name=self._get_model_name(chat_id, project))
                 # Use resume() instead of execute() to preserve state
                 # The execute() method re-initializes the project, wiping previous progress.
                 engine.resume(callbacks)

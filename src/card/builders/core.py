@@ -216,14 +216,17 @@ class CoreBuilder:
         return None
 
     @staticmethod
-    def _wrap_card(header_title: str, header_template: str, elements: list[dict]) -> dict:
+    def _wrap_card(header_title: str, header_template: str, elements: list[dict], *, subtitle: str = "") -> dict:
+        header: dict = {
+            "title": {"tag": "plain_text", "content": header_title},
+            "template": header_template,
+        }
+        if subtitle:
+            header["subtitle"] = {"tag": "plain_text", "content": subtitle}
         return {
             "schema": "2.0",
             "config": {"wide_screen_mode": True},
-            "header": {
-                "title": {"tag": "plain_text", "content": header_title},
-                "template": header_template,
-            },
+            "header": header,
             "body": {
                 "elements": elements,
             },

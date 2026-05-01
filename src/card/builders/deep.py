@@ -374,7 +374,7 @@ class DeepBuilder:
         )
         elements = UnifiedCardLayout.build(spec)
 
-        card = CoreBuilder._wrap_card(header_title, theme.header_template, elements)
+        card = CoreBuilder._wrap_card(header_title, theme.header_template, elements, subtitle=state.subtitle)
         return "interactive", json.dumps(card, ensure_ascii=False)
 
     build_deep_card = build_engine_card

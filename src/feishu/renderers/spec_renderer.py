@@ -38,7 +38,8 @@ class SpecRenderer(BaseRenderer):
         return super().get_default_ui_state()
 
     def create_spec_callbacks(
-        self, message_id: str, chat_id: str, project: Optional["ProjectContext"], engine_name: str = "Coco"
+        self, message_id: str, chat_id: str, project: Optional["ProjectContext"],
+        engine_name: str = "Coco", model_name: str = "",
     ) -> SpecEngineCallbacks:
         request_id = self.handler.ensure_request_id(
             message_id, chat_id=chat_id, project_id=(project.project_id if project else None)
@@ -50,6 +51,9 @@ class SpecRenderer(BaseRenderer):
         _throttle = _StreamThrottle(self.settings)
 
         spec_project_id = project.project_id if project else self.handler.get_working_dir(chat_id)
+
+        # Build subtitle: "🔧 Coco · gpt-4" or "🔧 Coco"
+        _subtitle = f"🔧 {engine_name} · {model_name}" if model_name else f"🔧 {engine_name}"
 
         _max_cycles = 0
 
@@ -75,6 +79,7 @@ class SpecRenderer(BaseRenderer):
                 project=project,
                 state=EngineCardState(
                     title=title,
+                    subtitle=_subtitle,
                     content=content,
                     engine_name=f"Spec({engine_name})",
                     show_buttons=False,
@@ -124,6 +129,7 @@ class SpecRenderer(BaseRenderer):
                 project=project,
                 state=EngineCardState(
                     title=title,
+                    subtitle=_subtitle,
                     content=content,
                     progress_bar=progress_bar,
                     is_executing=True,
@@ -171,6 +177,7 @@ class SpecRenderer(BaseRenderer):
                     project=project,
                     state=EngineCardState(
                         title=title,
+                        subtitle=_subtitle,
                         content=content,
                         progress_bar=progress_bar,
                         engine_name=f"Spec({engine_name})",
@@ -219,6 +226,7 @@ class SpecRenderer(BaseRenderer):
                 project=project,
                 state=EngineCardState(
                     title=title,
+                    subtitle=_subtitle,
                     content=content,
                     progress_bar=progress_bar,
                     is_executing=True,
@@ -252,6 +260,7 @@ class SpecRenderer(BaseRenderer):
                 project=project,
                 state=EngineCardState(
                     title=title,
+                    subtitle=_subtitle,
                     content=content,
                     progress_bar=progress_bar,
                     project_id=spec_project.project_id,
@@ -297,7 +306,7 @@ class SpecRenderer(BaseRenderer):
             return engine, spec_project, state, max_c
 
         def _build_phase_card(
-            title: str, content: str, spec_project, state: dict, *, show_buttons: bool = False,
+            title: str, content: str, spec_project, state: dict, *, show_buttons: bool = True,
             footer_status: Optional[str] = None, extra_buttons: Optional[list] = None,
         ):
             progress_bar = None
@@ -312,6 +321,7 @@ class SpecRenderer(BaseRenderer):
                 project=project,
                 state=EngineCardState(
                     title=title,
+                    subtitle=_subtitle,
                     content=content,
                     progress_bar=progress_bar,
                     is_executing=True,
@@ -341,7 +351,7 @@ class SpecRenderer(BaseRenderer):
             _last_phase_content[0] = content
             title = reporter.get_cycle_start_title(cycle_num, max_c)
             title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
-            _build_phase_card(title, content, spec_project, state, show_buttons=False, footer_status="tool_running")
+            _build_phase_card(title, content, spec_project, state, footer_status="tool_running")
 
         def on_phase_event(cycle_num: int, phase: SpecPhase, event):
             """Real-time ACP event processing — renders tool call details into phase card."""
@@ -378,7 +388,7 @@ class SpecRenderer(BaseRenderer):
             title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
             _build_phase_card(
                 title, base_content, spec_project, state,
-                show_buttons=False, footer_status=_footer_status[0],
+                footer_status=_footer_status[0],
             )
             _throttle.update_stream_state(len(tool_summary))
 
@@ -395,7 +405,7 @@ class SpecRenderer(BaseRenderer):
 
             title = reporter.get_cycle_start_title(cycle_num, max_c)
             title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
-            _build_phase_card(title, content, spec_project, state, show_buttons=False)
+            _build_phase_card(title, content, spec_project, state)
 
         # RetryStatus → UI_TEXT key mapping for review retry
         _RETRY_STATUS_TEXT: dict[RetryStatus, str] = {
@@ -418,7 +428,7 @@ class SpecRenderer(BaseRenderer):
             title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
             _build_phase_card(
                 title, _last_phase_content[0], spec_project, state,
-                show_buttons=False, footer_status=retry_text,
+                footer_status=retry_text,
             )
 
         def _make_retry_button(text: str, action: str) -> dict:
@@ -469,7 +479,7 @@ class SpecRenderer(BaseRenderer):
             title = append_duration_to_title(title, spec_project.duration() if spec_project else None)
             _build_phase_card(
                 title, _last_phase_content[0], spec_project, state,
-                show_buttons=False, footer_status=detail_msg,
+                footer_status=detail_msg,
                 extra_buttons=buttons,
             )
 

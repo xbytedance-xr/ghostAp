@@ -1071,8 +1071,8 @@ class TestSpecReporter:
     def test_format_cycle_start(self):
         r = SpecReporter()
         result = r.format_cycle_start(1, 10)
-        assert "[1/10]" in result
-        assert "Spec" in result
+        assert "▶️" in result
+        assert "规格定义" in result
 
     def test_format_phase_start(self):
         r = SpecReporter()
@@ -3586,14 +3586,12 @@ class TestSpecReporterNewMethods:
     def test_format_phase_start_content(self):
         r = SpecReporter()
         result = r.format_phase_start_content(2, SpecPhase.PLAN, 5)
-        assert "[2/5]" in result
         assert "执行中" in result
         assert "▶️" in result
 
     def test_format_phase_done_content(self):
         r = SpecReporter()
         result = r.format_phase_done_content(1, SpecPhase.BUILD, 5, "some output\nmore lines\n")
-        assert "[1/" in result
         assert "完成" in result
         assert "✅" in result
 
@@ -3641,7 +3639,6 @@ class TestSpecReporterNewMethods:
         r = SpecReporter()
         result = r.format_cycle_start(1, 5)
         assert "▶️" in result
-        assert "[1/5]" in result
         assert "→" in result
 
 def test_save_failed_task_idempotency(monkeypatch):

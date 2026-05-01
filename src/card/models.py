@@ -47,6 +47,7 @@ class ReasoningState:
 @dataclass
 class EngineCardState:
     title: str = ""
+    subtitle: str = ""
     content: str = ""
     progress_bar: Optional[str] = None
     project_id: Optional[str] = None

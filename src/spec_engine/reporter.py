@@ -65,12 +65,12 @@ class SpecReporter:
 
     def format_phase_start_content(self, cycle: int, phase: SpecPhase, max_cycles: int) -> str:
         progress = self.format_phase_progress(phase, completed=False)
-        return f"🔄 **Spec 循环 [{cycle}/{max_cycles}]**\n\n{progress}\n\n{phase.emoji} **{phase.display_name}** 执行中..."
+        return f"{progress}\n\n{phase.emoji} **{phase.display_name}** 执行中..."
 
     def format_phase_done_content(self, cycle: int, phase: SpecPhase, max_cycles: int, output: str) -> str:
         progress = self.format_phase_progress(phase, completed=True)
         summary = self._extract_phase_summary(phase, output)
-        lines = [f"🔄 **Spec 循环 [{cycle}/{max_cycles}]**\n", progress, ""]
+        lines = [progress, ""]
         if summary:
             lines.append(f"{phase.emoji} **{phase.display_name}完成**  {summary}")
         else:
@@ -161,7 +161,7 @@ class SpecReporter:
 
     def format_cycle_start(self, cycle_number: int, max_cycles: int, criteria_status: str = "") -> str:
         progress = self.format_phase_progress(SpecPhase.SPEC, completed=False)
-        base = f"🔄 **Spec 循环 [{cycle_number}/{max_cycles}]** 开始\n\n{progress}"
+        base = progress
         if criteria_status:
             return f"{base}\n\n{criteria_status}"
         return base
