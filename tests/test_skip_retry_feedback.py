@@ -122,7 +122,7 @@ class TestSkipRetryEventShortensWait:
         settings = MagicMock()
         settings.spec_review_retry_max_attempts = 1
         settings.spec_review_retry_max_delay = 60  # 60s delay (would be too long without skip)
-        settings.spec_review_retry_base_delay = 5.0
+        settings.spec_review_retry_base_delay = 0.05
         settings.spec_review_retry_decay_factor = 1.5
         settings.spec_review_min_timeout = 30
         settings.spec_review_hard_floor = 15
@@ -192,8 +192,8 @@ class TestRetrySuccessCallbackSequence:
 
         settings = MagicMock()
         settings.spec_review_retry_max_attempts = 1
-        settings.spec_review_retry_max_delay = 2  # Short for test speed
-        settings.spec_review_retry_base_delay = 5.0
+        settings.spec_review_retry_max_delay = 3  # >= 2 to trigger WAITING event
+        settings.spec_review_retry_base_delay = 3.0
         settings.spec_review_retry_decay_factor = 1.5
         settings.spec_review_min_timeout = 30
         settings.spec_review_hard_floor = 15
@@ -222,7 +222,9 @@ class TestRetrySuccessCallbackSequence:
             skip_retry_event=None,
         )
 
-        result = attempt_pipeline_retry(circuit=circuit, settings=settings, cycle=1, ctx=ctx)
+        from unittest.mock import patch as _patch
+        with _patch("src.spec_engine.review_retry.time.sleep", return_value=None):
+            result = attempt_pipeline_retry(circuit=circuit, settings=settings, cycle=1, ctx=ctx)
 
         assert result is not None
         # Verify sequence: WAITING (because delay >= 2), EXECUTING, SUCCEEDED

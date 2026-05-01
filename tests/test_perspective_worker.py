@@ -181,7 +181,7 @@ def test_run_workers_parallel_race_condition():
         return "[PRODUCT]\nPASS\n"
 
     def _runner_very_slow(prompt: str, on_event, timeout: float) -> str:
-        _blocked.wait(timeout=5)  # Blocks until cancelled by per_worker_timeout
+        _blocked.wait(timeout=0.5)  # Blocks until cancelled by per_worker_timeout
         return "[USER]\nPASS\n"
 
     bindings = [
@@ -217,7 +217,7 @@ def test_run_workers_parallel_timeout():
     _blocked = threading.Event()
 
     def slow_runner(prompt, on_event, timeout):
-        _blocked.wait(timeout=5)  # Blocks until per_worker_timeout cancels it
+        _blocked.wait(timeout=0.5)  # Blocks until per_worker_timeout cancels it
         return "slow"
 
     b1 = WorkerBinding(

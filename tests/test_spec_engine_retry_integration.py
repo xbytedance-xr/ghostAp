@@ -123,17 +123,18 @@ class TestRetryFullCallbackSequence:
 
     def test_retry_full_callback_sequence(self):
         """max_attempts=2 all timeout → sequence: WAITING(1)→EXECUTING(1)→WAITING(2)→EXECUTING(2)→EXHAUSTED."""
+        from unittest.mock import patch as _patch
         from src.spec_engine.review_retry import (
             PipelineRetryContext,
             handle_pipeline_errors_with_retry,
         )
         from src.spec_engine.review_types import ReviewCircuitState
 
-        # Build a mock settings with max_attempts=2, short delay for speed
+        # Build a mock settings with max_attempts=2, base_delay >= 2 to trigger WAITING events
         settings = MagicMock()
         settings.spec_review_retry_max_attempts = 2
         settings.spec_review_retry_max_delay = 3  # >= 2 to trigger WAITING events
-        settings.spec_review_retry_base_delay = 5.0
+        settings.spec_review_retry_base_delay = 3.0
         settings.spec_review_retry_decay_factor = 1.5
         settings.spec_review_timeout = 120
         settings.spec_review_min_timeout = 30
@@ -176,15 +177,16 @@ class TestRetryFullCallbackSequence:
 
         review_result = ReviewResult(reviews=[mock_outcome.review], iteration=1)
 
-        result, diag = handle_pipeline_errors_with_retry(
-            outcomes=[mock_outcome],
-            review_result=review_result,
-            circuit=circuit,
-            settings=settings,
-            cycle=1,
-            ctx=ctx,
-            retry_texts={"retry_no_retry": "no retry", "retry_exhausted": "exhausted {n}"},
-        )
+        with _patch("src.spec_engine.review_retry.time.sleep", return_value=None):
+            result, diag = handle_pipeline_errors_with_retry(
+                outcomes=[mock_outcome],
+                review_result=review_result,
+                circuit=circuit,
+                settings=settings,
+                cycle=1,
+                ctx=ctx,
+                retry_texts={"retry_no_retry": "no retry", "retry_exhausted": "exhausted {n}"},
+            )
 
         # Verify the complete ordered sequence
         statuses = [e.status for e in events]
@@ -209,6 +211,7 @@ class TestRetrySuccessCallbackSequence:
 
     def test_retry_success_callback_sequence(self):
         """pipeline_fn succeeds on first attempt → WAITING→EXECUTING→SUCCEEDED."""
+        from unittest.mock import patch as _patch
         from src.spec_engine.review_retry import (
             PipelineRetryContext,
             attempt_pipeline_retry,
@@ -218,7 +221,7 @@ class TestRetrySuccessCallbackSequence:
         settings = MagicMock()
         settings.spec_review_retry_max_attempts = 1
         settings.spec_review_retry_max_delay = 3  # >= 2 to trigger WAITING event
-        settings.spec_review_retry_base_delay = 5.0
+        settings.spec_review_retry_base_delay = 3.0
         settings.spec_review_retry_decay_factor = 1.5
         settings.spec_review_timeout = 120
         settings.spec_review_min_timeout = 30
@@ -251,9 +254,10 @@ class TestRetrySuccessCallbackSequence:
             skip_retry_event=None,
         )
 
-        result = attempt_pipeline_retry(
-            circuit=circuit, settings=settings, cycle=1, ctx=ctx,
-        )
+        with _patch("src.spec_engine.review_retry.time.sleep", return_value=None):
+            result = attempt_pipeline_retry(
+                circuit=circuit, settings=settings, cycle=1, ctx=ctx,
+            )
 
         assert result is not None, "Expected successful retry outcomes"
         statuses = [e.status for e in events]

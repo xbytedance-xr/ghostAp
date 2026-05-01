@@ -21,6 +21,11 @@ class TestTaskRegistry:
             reg.track(task)
             assert len(reg.list_active_tasks()) == 1
             task.cancel()
+            # Suppress "coroutine never awaited" by letting cancellation propagate
+            try:
+                loop.run_until_complete(task)
+            except asyncio.CancelledError:
+                pass
         finally:
             loop.close()
 

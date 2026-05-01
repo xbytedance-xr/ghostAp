@@ -1157,7 +1157,7 @@ def _make_retry_settings(**overrides):
         "spec_review_retry_max_attempts": 1,
         "spec_review_min_timeout": 60,
         "spec_review_hard_floor": 20,
-        "spec_review_retry_base_delay": 8.0,
+        "spec_review_retry_base_delay": 0.05,
         "spec_review_retry_decay_factor": 1.5,
     }
     defaults.update(overrides)
@@ -1447,13 +1447,15 @@ class TestRetryWaitDelayFormula:
         circuit = ReviewCircuitState()
         circuit.consecutive_timeouts = 2
 
+        settings = _make_retry_settings(spec_review_retry_base_delay=8.0)
+
         with (
             patch("src.spec_engine.review_pipeline.run_review_pipeline", return_value=_make_timeout_outcomes()),
             patch("src.spec_engine.review_retry.time.sleep", return_value=None) as mock_sleep,
         ):
             conduct_review(
                 session=MagicMock(),
-                settings=_make_retry_settings(),
+                settings=settings,
                 project=_make_project(),
                 send_prompt_with_retry_fn=MagicMock(),
                 build_review_exception_diagnostics_fn=MagicMock(return_value={}),
@@ -1678,7 +1680,7 @@ class TestRetryStatusCallback:
             patch("src.spec_engine.review_retry.time.sleep", return_value=None),
         ):
             _conduct_review_pipeline(
-                settings=_make_retry_settings(),
+                settings=_make_retry_settings(spec_review_retry_base_delay=8.0),
                 build_review_exception_diagnostics_fn=MagicMock(return_value={}),
                 circuit=circuit,
                 cycle=1,
@@ -2471,7 +2473,7 @@ class TestCancelEventMidMultiRetry:
                 cancel_event.set()
             return _make_timeout_outcomes()
 
-        settings = _make_retry_settings(spec_review_retry_max_attempts=3)
+        settings = _make_retry_settings(spec_review_retry_max_attempts=3, spec_review_retry_base_delay=0.1, spec_review_retry_max_delay=0.1)
 
         ctx = PipelineRetryContext(
             cancel_event=cancel_event, on_retry_status=None,
@@ -2508,7 +2510,7 @@ class TestCancelEventIntegration:
 
         cancel_event = threading.Event()
         circuit = ReviewCircuitState(consecutive_timeouts=1)
-        settings = _make_retry_settings(spec_review_retry_max_delay=60)
+        settings = _make_retry_settings(spec_review_retry_max_delay=60, spec_review_retry_base_delay=60.0)
 
         # Pipeline will never be reached if wait is interrupted
         mock_pipeline = MagicMock(return_value=_make_success_outcomes())

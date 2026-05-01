@@ -91,7 +91,7 @@ def test_worktree_dispatcher_inner_timeout():
         else:
             # 慢速单元：超时
             def slow_send(*args, **kwargs):
-                time.sleep(10)
+                time.sleep(1)
                 raise TimeoutError("")
             session.send_prompt = slow_send
         
@@ -200,7 +200,7 @@ def test_worktree_dispatcher_pool_timeout_status_not_overwritten():
         session.start = MagicMock()
         
         def slow_send(*args, **kwargs):
-            time.sleep(5)  # 比 pool timeout 长很多
+            time.sleep(0.5)  # 比 pool timeout 长很多
             # 如果状态已经是 failed，这里不应该执行到
             raise RuntimeError("Should not be called after pool timeout!")
         

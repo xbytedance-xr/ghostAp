@@ -206,7 +206,7 @@ class TestKeyLockExceptionRecovery:
         FakeSession._instance_count = 0
 
         def slow_inner(self_mgr, key, *args, **kw):
-            time.sleep(5)  # Hold the key lock for a long time
+            time.sleep(1)  # Hold the key lock for long enough to exceed startup_timeout
             sess = FakeSession()
             with self_mgr._acquire_lock():
                 self_mgr._sessions[key] = sess
@@ -225,7 +225,7 @@ class TestKeyLockExceptionRecovery:
         def start_with_timeout():
             time.sleep(0.1)  # Ensure slow thread acquires lock first
             try:
-                mgr.start_session("chat1", project_id="proj1", startup_timeout=1)
+                mgr.start_session("chat1", project_id="proj1", startup_timeout=0.3)
             except TimeoutError as e:
                 errors.append(e)
 
@@ -234,8 +234,8 @@ class TestKeyLockExceptionRecovery:
             t2 = threading.Thread(target=start_with_timeout)
             t1.start()
             t2.start()
-            t2.join(timeout=5)
-            t1.join(timeout=10)
+            t2.join(timeout=3)
+            t1.join(timeout=3)
 
             assert len(errors) == 1
             assert "超时" in str(errors[0])

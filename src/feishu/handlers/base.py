@@ -160,6 +160,27 @@ class BaseHandler:
 
     # --- Active API methods ---
 
+    def create_direct_card_session(
+        self,
+        chat_id: str,
+        *,
+        reply_to: str | None = None,
+        session_id: str | None = None,
+    ):
+        """Create a DirectCardSession for pre-built card JSON delivery.
+
+        Used by engine renderers (Deep/Loop/Spec) via _create_direct_session factory.
+        """
+        from ...card.delivery.engine import CardDelivery
+        from ...card.delivery.feishu_client import FeishuCardAPIClient
+        from ...card.direct_session import DirectCardSession
+
+        api_client = FeishuCardAPIClient(self.ctx.api_client_factory())
+        delivery = CardDelivery(api_client)
+        return DirectCardSession(
+            delivery, chat_id, reply_to=reply_to, session_id=session_id
+        )
+
     def _resolve_origin(self, message_id: str) -> str:
         """Best-effort resolve origin message for linking."""
         try:

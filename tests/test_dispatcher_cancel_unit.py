@@ -30,7 +30,7 @@ class SlowSession:
         return "session"
 
     def send_prompt(self, text, on_event=None, timeout=None):
-        time.sleep(10)  # Long enough to exceed pool timeout
+        time.sleep(0.5)  # Long enough to exceed pool timeout
         return FakePromptResult()
 
     def close(self):
@@ -72,7 +72,7 @@ class TestPoolTimeoutSetsCancelled:
         unit = _make_unit(tmp_path, 0)
         dispatcher = WorktreeDispatcher(session_factory=SlowSession)
 
-        results = dispatcher.execute_units([unit], pool_timeout=1)
+        results = dispatcher.execute_units([unit], pool_timeout=0.1)
 
         assert len(results) == 1
         assert results[0].status == WorktreeUnitStatus.CANCELLED
@@ -93,7 +93,7 @@ class TestPoolTimeoutSetsCancelled:
             return SlowSession(provider=provider, tool_name=tool_name, working_dir=working_dir)
 
         dispatcher = WorktreeDispatcher(session_factory=session_factory)
-        results = dispatcher.execute_units([fast_unit, slow_unit], pool_timeout=2)
+        results = dispatcher.execute_units([fast_unit, slow_unit], pool_timeout=0.2)
 
         statuses = {u.unit_id: u.status for u in results}
         # Fast unit should complete; slow unit should be cancelled
