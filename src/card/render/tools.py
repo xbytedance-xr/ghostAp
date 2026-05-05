@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import json
 from src.card.state.models import ContentBlock
+from src.card.themes import PANEL_STYLES
+from src.card.ui_text import UI_TEXT
 
 _MAX_OUTPUT_CHARS = 2000
 _MAX_SUMMARY_CHARS = 80
 
 _STATUS_ICONS = {
     "active": "⏳",
-    "completed": "✓",
-    "failed": "✗",
+    "completed": "✅",
+    "failed": "❌",
 }
 
 _BASH_TOOLS = {"bash", "shell", "run_command", "execute_command"}
@@ -28,7 +30,7 @@ def render_tool_panel(block: ContentBlock) -> dict:
     title_text = f"{icon} **{block.tool_name or 'tool'}** — {summary}"
 
     expanded = block.status == "active"
-    border_color = "red" if block.status == "failed" else "grey"
+    border_color = PANEL_STYLES["border_failed"] if block.status == "failed" else PANEL_STYLES["border_normal"]
 
     detail_content = _render_detail(block)
 
@@ -46,9 +48,9 @@ def render_tool_panel(block: ContentBlock) -> dict:
             "icon_position": "follow_text",
             "icon_expanded_angle": -180,
         },
-        "border": {"color": border_color, "corner_radius": "5px"},
-        "vertical_spacing": "8px",
-        "padding": "8px 8px 8px 8px",
+        "border": {"color": border_color, "corner_radius": PANEL_STYLES["corner_radius"]},
+        "vertical_spacing": PANEL_STYLES["vertical_spacing"],
+        "padding": PANEL_STYLES["padding_standard"],
         "elements": [{"tag": "markdown", "content": detail_content}],
     }
 
@@ -62,7 +64,7 @@ def render_tool_history_panel(blocks: list[ContentBlock]) -> dict:
         "tag": "collapsible_panel",
         "expanded": False,
         "header": {
-            "title": {"tag": "markdown", "content": f"📋 **{n} 个工具调用已完成**"},
+            "title": {"tag": "markdown", "content": f"🔧 **{n} 个工具调用已完成**"},
             "vertical_align": "center",
             "icon": {
                 "tag": "standard_icon",
@@ -72,9 +74,9 @@ def render_tool_history_panel(blocks: list[ContentBlock]) -> dict:
             "icon_position": "follow_text",
             "icon_expanded_angle": -180,
         },
-        "border": {"color": "blue", "corner_radius": "5px"},
-        "vertical_spacing": "8px",
-        "padding": "8px 8px 8px 8px",
+        "border": {"color": PANEL_STYLES["border_history"], "corner_radius": PANEL_STYLES["corner_radius"]},
+        "vertical_spacing": PANEL_STYLES["vertical_spacing"],
+        "padding": PANEL_STYLES["padding_standard"],
         "elements": nested,
     }
 
@@ -88,7 +90,7 @@ def generate_tool_summary(block: ContentBlock) -> str:
     if tool_name in _BASH_TOOLS:
         line = tool_input.split("\n")[0].strip()
         if len(line) > _MAX_SUMMARY_CHARS:
-            return line[:_MAX_SUMMARY_CHARS] + "..."
+            return line[:_MAX_SUMMARY_CHARS] + "…"
         return line if line else (block.tool_summary or block.tool_name or "")
 
     # read/write/edit → file path
@@ -130,7 +132,7 @@ def _extract_json_field(text: str, fields: tuple[str, ...]) -> str:
                 if f in data and data[f]:
                     val = str(data[f])
                     if len(val) > _MAX_SUMMARY_CHARS:
-                        return val[:_MAX_SUMMARY_CHARS] + "..."
+                        return val[:_MAX_SUMMARY_CHARS] + "…"
                     return val
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
@@ -141,7 +143,7 @@ def _truncate_output(output: str) -> str:
     """Truncate output to last _MAX_OUTPUT_CHARS with '...' prefix."""
     if len(output) <= _MAX_OUTPUT_CHARS:
         return output
-    return "..." + output[-_MAX_OUTPUT_CHARS:]
+    return "…" + output[-_MAX_OUTPUT_CHARS:]
 
 
 def _render_detail(block: ContentBlock) -> str:
@@ -157,15 +159,15 @@ def _render_detail(block: ContentBlock) -> str:
 
 def _render_bash_detail(tool_input: str, tool_output: str) -> str:
     """Render bash-specific detail."""
-    parts = [f"**Command**\n```bash\n{tool_input}\n```"]
+    parts = [f"{UI_TEXT['tool_label_command']}\n```bash\n{tool_input}\n```"]
     output = _truncate_output(tool_output)
-    parts.append(f"**Result**\n```\n{output}\n```")
+    parts.append(f"{UI_TEXT['tool_label_result']}\n```\n{output}\n```")
     return "\n".join(parts)
 
 
 def _render_generic_detail(tool_input: str, tool_output: str) -> str:
     """Render generic tool detail."""
-    parts = [f"**Input**\n```json\n{tool_input}\n```"]
+    parts = [f"{UI_TEXT['tool_label_input']}\n```json\n{tool_input}\n```"]
     output = _truncate_output(tool_output)
-    parts.append(f"**Output**\n```\n{output}\n```")
+    parts.append(f"{UI_TEXT['tool_label_output']}\n```\n{output}\n```")
     return "\n".join(parts)

@@ -4,8 +4,8 @@ import json
 import re
 from typing import Optional
 
-from ..styles import UI_TEXT
 from ..shared import build_responsive_layout
+from ..ui_text import UI_TEXT
 from .core import CoreBuilder
 from ..models import BannerKind, WorktreeBannerContext
 
@@ -35,13 +35,13 @@ class WorktreeBuilder:
         if len(text) <= max_len:
             return text
             
-        # 保留前 max_len-3 个字符，末尾补 "..." 以提示截断，并再次清洗可能的右侧空格
-        truncated = text[: max_len - 3]
+        # 保留前 max_len-1 个字符，末尾补 "…" 以提示截断，并再次清洗可能的右侧空格
+        truncated = text[: max_len - 1]
         if truncated.endswith(' '):
             truncated = truncated.rstrip()
         
-        # 如果因为移除右侧空格导致长度不够了，省略号依然只补3个字符以保证总长 <= max_len
-        return truncated + "..."
+        # 如果因为移除右侧空格导致长度不够了，省略号依然只补1个字符以保证总长 <= max_len
+        return truncated + "…"
 
     @staticmethod
     def _build_selection_summary(selected_items: list[dict], max_items: int = 3, max_chars: int = 80) -> str:
@@ -67,7 +67,7 @@ class WorktreeBuilder:
 
         summary = ", ".join(labels)
         if len(summary) > max_chars:
-            summary = summary[: max_chars - 3] + "..."
+            summary = summary[: max_chars - 1] + "…"
         return summary
 
     @staticmethod
@@ -613,7 +613,7 @@ class WorktreeBuilder:
                 task_title = (u.get("task_title") or "").strip()
                 error = (u.get("error") or UI_TEXT["system_unknown_execution_error"]).strip() or UI_TEXT["system_unknown_execution_error"]
                 if len(error) > 80:
-                    error = error[:77] + "..."
+                    error = error[:78] + " …"
                 if task_title:
                     summary_lines.append(UI_TEXT["worktree_failed_unit_item"].format(name=name, title=task_title, error=error))
                 else:
@@ -632,6 +632,10 @@ class WorktreeBuilder:
                 "value": {
                     "action": "worktree_merge",
                     "project_id": project_id or "",
+                },
+                "confirm": {
+                    "title": {"tag": "plain_text", "content": UI_TEXT["wt_btn_confirm_merge_title"]},
+                    "text": {"tag": "plain_text", "content": UI_TEXT["wt_btn_confirm_merge"].format(base_branch=base_branch)},
                 },
             },
         ]
@@ -655,6 +659,10 @@ class WorktreeBuilder:
                 "value": {
                     "action": "worktree_cleanup",
                     "project_id": project_id or "",
+                },
+                "confirm": {
+                    "title": {"tag": "plain_text", "content": UI_TEXT["wt_btn_confirm_cleanup_title"]},
+                    "text": {"tag": "plain_text", "content": UI_TEXT["wt_btn_confirm_cleanup"]},
                 },
             },
         )

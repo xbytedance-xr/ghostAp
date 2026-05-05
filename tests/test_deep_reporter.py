@@ -59,7 +59,7 @@ class TestFormatProjectDone(unittest.TestCase):
         )
         result = self.reporter.format_project_done(project)
         self.assertIn("全部任务完成", result)
-        self.assertIn("2分5秒", result)
+        self.assertIn("2 分钟 5 秒", result)
 
     def test_completed_without_duration(self):
         project = _make_project(
@@ -79,7 +79,7 @@ class TestFormatProjectDone(unittest.TestCase):
         )
         result = self.reporter.format_project_done(project)
         self.assertIn("执行完成（有失败）", result)
-        self.assertIn("1分0秒", result)
+        self.assertIn("1 分钟 0 秒", result)
 
     def test_failed_without_duration(self):
         project = _make_project(
@@ -184,7 +184,7 @@ class TestFormatStatus(unittest.TestCase):
         )
         result = self.reporter.format_status(project)
         self.assertIn("执行中", result)
-        self.assertIn("1分5秒", result)
+        self.assertIn("1 分钟 5 秒", result)
 
     def test_paused(self):
         project = _make_project(status=DeepProjectStatus.PAUSED)

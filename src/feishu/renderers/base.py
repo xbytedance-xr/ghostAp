@@ -1,113 +1,34 @@
 from __future__ import annotations
 
 import logging
-import time
 from typing import TYPE_CHECKING, Any, Optional
 
+from src.card.render.throttle import StreamThrottle
 from src.card.thresholds import THRESHOLDS
 from ...utils.errors import get_error_detail
 
 if TYPE_CHECKING:
-    from ...card.direct_session import DirectCardSession
+    from ...card.protocols import Dispatchable
+    from ...card.session import CardSession
     from ..handlers.base import BaseHandler
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Stream throttle
+# Stream throttle (re-exported for backward compat; canonical at src.card.render.throttle)
 # ---------------------------------------------------------------------------
 
-class _StreamThrottle:
-    """Lightweight stream/plan throttle for engine renderers.
-
-    Throttle semantics:
-    - check_throttle(text_len, force) → bool
-    - update_stream_state(text_len)
-    - check_plan_throttle(plan_content, force) → bool
-    - update_plan_state(plan_content)
-    """
-
-    def __init__(self, settings: Any) -> None:
-        self._settings = settings
-        self.last_stream_ts: float = 0.0
-        self.last_stream_text_len: int = 0
-        self.last_plan_ts: float = 0.0
-        self.last_plan_content: str = ""
-
-    def check_throttle(
-        self,
-        text_len: int,
-        force: bool = False,
-        min_interval: Optional[float] = None,
-        min_new_chars: Optional[int] = None,
-    ) -> bool:
-        """Return True if update should proceed, False if throttled."""
-        if force:
-            return True
-        now = time.monotonic()
-        if min_interval is None:
-            min_interval = self._settings.deep_stream_interval
-        if min_new_chars is None:
-            min_new_chars = self._settings.deep_stream_min_chars
-        if (now - self.last_stream_ts) < min_interval and (text_len - self.last_stream_text_len) < min_new_chars:
-            return False
-        return True
-
-    def update_stream_state(self, text_len: int) -> None:
-        """Update throttle state after a stream update."""
-        self.last_stream_ts = time.monotonic()
-        self.last_stream_text_len = text_len
-
-    def check_plan_throttle(self, plan_content: str, force: bool = False, min_interval: float = 1.5) -> bool:
-        """Return True if plan update should proceed."""
-        if force:
-            return True
-        now = time.monotonic()
-        if plan_content and (plan_content != self.last_plan_content or (now - self.last_plan_ts) > min_interval):
-            return True
-        return False
-
-    def update_plan_state(self, plan_content: str) -> None:
-        """Update plan throttle state."""
-        self.last_plan_ts = time.monotonic()
-        self.last_plan_content = plan_content
+_StreamThrottle = StreamThrottle
 
 
 # ---------------------------------------------------------------------------
-# DirectCardSession factory — replacement for _create_engine_sender
+# CardSession factory — event-driven pipeline
 # ---------------------------------------------------------------------------
 
-def _create_direct_session(
-    handler: "BaseHandler",
-    chat_id: str,
-    message_id: str,
-    *,
-    session_id: str | None = None,
-) -> "DirectCardSession":
-    """Factory: create a DirectCardSession for engine renderers.
 
-    This replaces the deprecated _create_engine_sender factory. Engine renderers
-    use DirectCardSession.send(card_json) for create/update semantics, with
-    CardDelivery handling binding management and re-anchoring internally.
-    """
-    return handler.create_direct_card_session(
-        chat_id, reply_to=message_id, session_id=session_id
-    )
-
-
-def _count_tagged_nodes(obj: Any) -> int:
-    """Recursively count dicts containing a ``"tag"`` key (Feishu element nodes)."""
-    count = 0
-    if isinstance(obj, dict):
-        if "tag" in obj:
-            count += 1
-        for v in obj.values():
-            count += _count_tagged_nodes(v)
-    elif isinstance(obj, list):
-        for item in obj:
-            count += _count_tagged_nodes(item)
-    return count
+from src.card.render.payload_truncator import check_and_truncate_payload as _check_and_truncate
+from src.card.render.payload_truncator import count_tagged_nodes as _count_tagged_nodes
 
 
 
@@ -122,6 +43,121 @@ class BaseRenderer:
         self.settings = handler.settings
         # project_id -> state dict
         self.ui_states: dict[str, dict[str, Any]] = {}
+        self._session_factory = None
+
+    def get_active_session(self) -> "Dispatchable | None":
+        """Return the currently active session for this renderer, or None.
+
+        Subclasses should override to expose their tracked session reference.
+        Used by BaseEngineHandler._on_engine_error() to route error events
+        through the session pipeline for full hook lifecycle support.
+        """
+        return None
+
+    def _build_hooks(
+        self,
+        message_id: str,
+        *,
+        include_context_hook: bool = False,
+        context_update_fn=None,
+        chat_id: str | None = None,
+        engine_type: str | None = None,
+    ) -> tuple:
+        """Build standard lifecycle hooks for engine sessions.
+
+        Args:
+            message_id: Message to react to with emoji.
+            include_context_hook: When True, context_update_fn/chat_id/engine_type
+                are required and a ContextPersistenceHook will be added.
+            context_update_fn: Optional callable(state) for context persistence on completion.
+            chat_id: Chat ID for failure notifications (used by ContextPersistenceHook).
+            engine_type: Engine type for dynamic command hints in failure messages.
+
+        Returns:
+            Tuple of SessionHook instances.
+        """
+        from ...card.hooks import ContextPersistenceHook, EmojiHook
+
+        hooks = [EmojiHook(add_reaction=self.handler.add_reaction, message_id=message_id, chat_id=chat_id)]
+        if include_context_hook or context_update_fn:
+            hooks.append(ContextPersistenceHook(
+                update_fn=context_update_fn,
+                notify_callback=self.handler.send_text_to_chat,
+                chat_id=chat_id,
+                engine_type=engine_type,
+            ))
+        return tuple(hooks)
+
+    def create_session(
+        self,
+        chat_id: str,
+        message_id: str,
+        metadata=None,
+        *,
+        session_id: str | None = None,
+        hooks: tuple = (),
+        budget: "RenderBudget | None" = None,
+        action_registry: "dict | None" = None,
+        notify_callback=None,
+        cancel_callback=None,
+    ) -> "CardSession":
+        """Create a CardSession via the unified factory path.
+
+        This is the single session creation entry point for all engine renderers.
+
+        Args:
+            action_registry: Optional dict mapping action_id → handler callable.
+                If provided, passed to factory.create() for button click routing.
+            notify_callback: Optional (chat_id, text) callable for OOB notifications.
+            cancel_callback: Optional () callable for terminal cancellation cleanup.
+        """
+        from ...card.session.config import SessionCallbacks
+        from ...card.state.models import CardMetadata
+        from ...card.actions.dispatch import build_common_action_registry
+
+        meta = metadata if isinstance(metadata, CardMetadata) else CardMetadata()
+        # Merge common actions (mode toggle, engine stop) with any engine-specific registry
+        merged_registry = build_common_action_registry()
+        if action_registry:
+            merged_registry.update(action_registry)
+        cbs = SessionCallbacks(
+            notify_callback=notify_callback,
+            cancel_callback=cancel_callback,
+            action_registry=merged_registry,
+            hooks=hooks,
+        )
+        kwargs: dict[str, Any] = dict(
+            chat_id=chat_id,
+            metadata=meta,
+            session_id=session_id,
+            reply_to=message_id,
+            callbacks=cbs,
+            budget=budget,
+        )
+
+        # Delegate to factory (retry logic is handled inside factory.create())
+        try:
+            return self._get_session_factory().create(**kwargs)
+        except Exception:
+            logger.exception("Failed to create CardSession, falling back to text reply")
+            self.handler.reply_text("当前使用人数较多，请稍后重试，或重新发送命令")
+            raise
+
+    def _get_session_factory(self):
+        """Return a CardSessionFactory bound to this handler's delivery.
+
+        Uses lazy caching: creates factory on first call, reuses thereafter.
+        Call _invalidate_session_factory() if the delivery instance changes.
+        """
+        if self._session_factory is None:
+            from ...card.session.factory import CardSessionFactory
+            delivery = self.handler.get_card_delivery()
+            self._session_factory = CardSessionFactory(delivery)
+        return self._session_factory
+
+    def _invalidate_session_factory(self) -> None:
+        """Invalidate cached factory (e.g. after delivery reconnect)."""
+        self._session_factory = None
 
     def get_default_ui_state(self) -> dict[str, Any]:
         """
@@ -154,7 +190,7 @@ class BaseRenderer:
         state = self.get_ui_state(project_id)
         state.update(kwargs)
 
-    def _check_warning_banner(self, duration: float, is_executing: bool = True) -> str | None:
+    def check_warning_banner(self, duration: float, is_executing: bool = True) -> str | None:
         if not is_executing:
             return None
         timeout_raw = getattr(self.settings, "engine_timeout_warning_seconds", 0)
@@ -163,24 +199,6 @@ class BaseRenderer:
         if timeout_s > 0 and duration_s > timeout_s:
             return "执行耗时较长，若无响应可尝试停止后重试"
         return None
-
-    def _generate_progress_bar(self, current: int, total: int) -> str:
-        """Generate emoji progress bar like ✅✅⬜️."""
-        if total <= 0:
-            return ""
-
-        # Limit max length to avoid UI overflow on mobile
-        MAX_BAR_LEN = 10
-
-        # If total is small, show exact counts
-        if total <= MAX_BAR_LEN:
-            return "✅" * current + "⬜️" * (total - current)
-
-        # If total is large, scale it down
-        ratio = current / total
-        filled = int(ratio * MAX_BAR_LEN)
-        empty = MAX_BAR_LEN - filled
-        return "✅" * filled + "⬜️" * empty + f" ({current}/{total})"
 
     def _render_collapsible_section(
         self, content: str, total_items: int, expanded: bool, completed_count: int = 0
@@ -245,166 +263,39 @@ class BaseRenderer:
 
         return "\n".join(final_lines)
 
-    def _check_and_truncate_payload(self, card_content: str, max_size: int | None = None) -> str:
+    def _check_and_truncate_payload(
+        self, card_content: str, max_size: int | None = None, *, engine_type: str | None = None
+    ) -> str:
+        """Check if card content exceeds size limit and truncate if necessary.
+
+        Delegates to src.card.render.payload_truncator.
         """
-        Check if card content exceeds size limit and truncate if necessary.
-        Attempts to preserve JSON structure while truncating text fields.
-        Also checks tagged-node count against CARD_NODE_BUDGET.
-        """
-        import json
-        from src.card.thresholds import THRESHOLDS
+        return _check_and_truncate(card_content, max_size, engine_type=engine_type)
 
-        if max_size is None:
-            max_size = THRESHOLDS["CARD_BYTE_BUDGET"]
-
-        if len(card_content.encode("utf-8")) <= max_size:
-            # Still check node count even if byte size is OK
-            try:
-                card_check = json.loads(card_content)
-                node_budget = THRESHOLDS["CARD_NODE_BUDGET"]
-                if _count_tagged_nodes(card_check) > node_budget:
-                    logger.warning(
-                        "Card node count %d exceeds budget %d, will truncate",
-                        _count_tagged_nodes(card_check), node_budget,
-                    )
-                    # Fall through to truncation logic
-                else:
-                    return card_content
-            except (json.JSONDecodeError, Exception):
-                return card_content
-        else:
-            pass  # Fall through to truncation logic
-
-        logger.warning(
-            "Card payload size %d exceeds limit %d, attempting truncation", len(card_content.encode("utf-8")), max_size
-        )
-
-        try:
-            card = json.loads(card_content)
-
-            # Helper to recursively truncate strings in the dict
-            # Enhanced to be smarter: prioritize preserving structure
-            def truncate_recursive(obj, depth=0):
-                if depth > 20:  # Anti-recursion depth limit
-                    return obj
-
-                if isinstance(obj, dict):
-                    for k, v in obj.items():
-                        # Don't truncate structural keys
-                        if k in ("tag", "type", "actions", "elements", "modules", "columns", "fields"):
-                            obj[k] = truncate_recursive(v, depth + 1)
-                        # Content fields - aggressive truncation if needed
-                        elif k in ("content", "text", "value", "placeholder", "alt"):
-                            # Only truncate when truly large — small strings are
-                            # labels/buttons and should never be mangled.
-                            if isinstance(v, str) and len(v) > 8000:
-                                obj[k] = v[:8000] + "...(已截断)"
-                            else:
-                                obj[k] = truncate_recursive(v, depth + 1)
-                        else:
-                            obj[k] = truncate_recursive(v, depth + 1)
-                elif isinstance(obj, list):
-                    # If list is too long, truncate items
-                    if len(obj) > 60:
-                        obj = obj[:60]
-                        # We might need to add a "more" item if possible, but structure varies.
-                        # For now just slice.
-
-                    for i in range(len(obj)):
-                        obj[i] = truncate_recursive(obj[i], depth + 1)
-                elif isinstance(obj, str):
-                    # Fallback for strings in other locations
-                    if len(obj) > 10000:
-                        return obj[:10000] + "...(已截断)"
-                return obj
-
-            # First pass: try smart truncation on deep content
-            card_copy = json.loads(json.dumps(card))  # Deep copy
-            truncated_card = truncate_recursive(card_copy)
-
-            # Add a warning note to the card body if possible
-            warning_element = {
-                "tag": "note",
-                "elements": [{"tag": "plain_text", "content": "⚠️ 内容过长已自动截断，请在电脑端查看完整详情"}],
-            }
-
-            if "body" in truncated_card and isinstance(truncated_card.get("body", {}).get("elements"), list):
-                truncated_card["body"]["elements"].append(warning_element)
-            elif isinstance(truncated_card.get("elements"), list):
-                truncated_card["elements"].append(warning_element)
-
-            truncated_content = json.dumps(truncated_card, ensure_ascii=False)
-
-            # Double check size after smart truncation
-            if len(truncated_content.encode("utf-8")) > max_size:
-                # If still too big, try more aggressive truncation
-                # Keep header and extract a brief text summary from the original card
-                summary_text = "内容过长无法完整展示。"
-                try:
-                    # Try to extract some meaningful text from the original content fields
-                    def _extract_text(obj, limit=2000):
-                        if isinstance(obj, str) and len(obj) > 50:
-                            return obj[:limit]
-                        if isinstance(obj, dict):
-                            for k in ("content", "text"):
-                                v = obj.get(k)
-                                if isinstance(v, str) and len(v) > 50:
-                                    return v[:limit]
-                            for v in obj.values():
-                                r = _extract_text(v, limit)
-                                if r:
-                                    return r
-                        if isinstance(obj, list):
-                            for item in obj[:5]:
-                                r = _extract_text(item, limit)
-                                if r:
-                                    return r
-                        return ""
-
-                    extracted = _extract_text(card)
-                    if extracted:
-                        summary_text = extracted[:2000] + "\n\n...(内容过长已截断)"
-                except Exception:
-                    logger.debug("failed to extract summary text", exc_info=True)
-
-                fallback_card = {
-                    "config": card.get("config", {"wide_screen_mode": True}),
-                    "header": card.get("header", {"title": {"tag": "plain_text", "content": "⚠️ 卡片过大"}}),
-                    "body": {
-                        "elements": [
-                            {
-                                "tag": "markdown",
-                                "content": summary_text,
-                            }
-                        ]
-                    },
-                }
-                return json.dumps(fallback_card, ensure_ascii=False)
-
-            return truncated_content
-        except Exception as e:
-            logger.error("Failed to truncate payload: %s", get_error_detail(e))
-            return card_content
-
-    def _patch_or_send(
+    def _create_rotator(
         self,
-        message_id: str,
         chat_id: str,
-        card_content: str,
-        msg_type: str = "interactive",
-        origin_message_id: Optional[str] = None,
+        message_id: str,
+        metadata,
+        *,
+        hooks: tuple = (),
+        budget=None,
     ):
-        """
-        Try to patch an existing message (origin_message_id), fallback to sending a reply.
-        Automatically checks and truncates payload size.
-        """
-        # Safety check
-        if msg_type == "interactive":
-            card_content = self._check_and_truncate_payload(card_content)
+        """Create a SessionRotator wrapping a new CardSession.
 
-        patched = False
-        if origin_message_id:
-            patched = self.handler.update_card(origin_message_id, card_content)
+        Template method used by LoopRenderer/SpecRenderer to eliminate
+        duplicated SessionRotator instantiation boilerplate.
+        """
+        from ...card.session.rotator import SessionRotator
 
-        if not patched:
-            self.handler.reply_card(message_id, card_content)
+        session = self.create_session(
+            chat_id, message_id, metadata, hooks=hooks, budget=budget,
+        )
+        return SessionRotator(session)
+
+    def _render_empty_status(self, engine_cmd: str) -> str:
+        """Render a default empty-status placeholder when no engine snapshot is available.
+
+        Template method — subclasses may override for engine-specific wording.
+        """
+        return f"等待 {engine_cmd} 引擎启动…"

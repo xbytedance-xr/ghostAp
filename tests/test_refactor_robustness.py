@@ -29,7 +29,7 @@ class TestRefactorRobustness(unittest.TestCase):
                     # Check that it's actually shorter than the original
                     self.assertLess(len(text), 20000)
                     # Check for truncation marker
-                    self.assertIn("...(\u5df2\u622a\u65ad)...", text)  # ...(已截断)...
+                    self.assertIn("已截断", text)
 
         self.assertTrue(found_output, "Did not find truncated output in card")
 
@@ -41,7 +41,7 @@ class TestRefactorRobustness(unittest.TestCase):
         mock_handler = MagicMock()
         mock_handler.ctx = MagicMock()
         mock_handler.settings = MagicMock()
-        mock_handler.settings.card_deep_compact_default = False
+        mock_handler.settings.card.deep_compact_default = False
 
         renderer = BaseRenderer(mock_handler)
 
@@ -63,7 +63,7 @@ class TestRefactorRobustness(unittest.TestCase):
         # Verify string truncated
         content = truncated_obj["elements"][0]["text"]["content"]
         self.assertLess(len(content), 20000)
-        self.assertIn("...(已截断)", content)
+        self.assertIn("…(已截断)", content)
 
         # Verify warning added
         self.assertTrue(any("内容过长" in str(e) for e in truncated_obj["elements"]))
@@ -73,7 +73,7 @@ class TestRefactorRobustness(unittest.TestCase):
         truncated = renderer._check_and_truncate_payload(nested_payload, max_size=12000)
         truncated_obj = json.loads(truncated)
         content = truncated_obj["level1"]["level2"]["level3"]["content"]
-        self.assertIn("...(已截断)", content)
+        self.assertIn("…(已截断)", content)
 
         # Case 4: Fallback for massive structure
         # Create a structure that is still too big even after string truncation (e.g. huge list)

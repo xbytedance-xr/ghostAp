@@ -36,7 +36,7 @@ class TestCardPayloadSafety(unittest.TestCase):
 
         # Verify text was truncated (capped at 8000 + suffix)
         self.assertTrue(len(truncated_text) < 20000)
-        self.assertTrue(truncated_text.endswith("...(已截断)"))
+        self.assertTrue(truncated_text.endswith("…(已截断)"))
 
     def test_recursive_truncation(self):
         """Test nested objects are processed — uses the >10K fallback string cap."""
@@ -66,6 +66,50 @@ class TestCardPayloadSafety(unittest.TestCase):
         # Should return fallback card
         fallback = json.loads(result)
         self.assertEqual(fallback["header"]["title"]["content"], "⚠️ 卡片过大")
+
+
+class TestDefaultBudgetTruncation(unittest.TestCase):
+    """Integration test: verify truncation works with real 27KB (27*1024) budget."""
+
+    def setUp(self):
+        from src.card.render.payload_truncator import check_and_truncate_payload
+        self.truncate = check_and_truncate_payload
+
+    def test_oversized_payload_truncated_within_feishu_limit(self):
+        """A 40KB payload should be truncated to <=28KB (Feishu card limit)."""
+        # Construct a realistic card with large markdown content
+        long_markdown = "x" * 35000  # 35KB of text
+        card = {
+            "schema": "2.0",
+            "header": {"title": {"tag": "plain_text", "content": "Test Card"}},
+            "body": {"elements": [
+                {"tag": "markdown", "content": long_markdown, "element_id": "content_md"},
+            ]},
+        }
+        content = json.dumps(card, ensure_ascii=False)
+        assert len(content.encode("utf-8")) > 27 * 1024, "Test setup: content must exceed budget"
+
+        # Use default max_size (27*1024 from THRESHOLDS)
+        result = self.truncate(content)
+
+        # Result must be valid JSON
+        parsed = json.loads(result)
+        assert "header" in parsed or "elements" in parsed or "body" in parsed
+
+        # Result must fit within Feishu's 28KB limit
+        result_size = len(result.encode("utf-8"))
+        assert result_size <= 28000, f"Truncated payload {result_size} exceeds 28KB Feishu limit"
+
+    def test_within_budget_passes_through(self):
+        """A small payload under 27KB should pass through unchanged."""
+        card = {
+            "schema": "2.0",
+            "header": {"title": {"tag": "plain_text", "content": "Small"}},
+            "body": {"elements": [{"tag": "markdown", "content": "hello"}]},
+        }
+        content = json.dumps(card, ensure_ascii=False)
+        result = self.truncate(content)
+        assert result == content
 
 
 if __name__ == "__main__":

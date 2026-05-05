@@ -38,8 +38,8 @@ class TestWorktreeCommandRouting(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -95,8 +95,8 @@ class TestWorktreeCommandRouting(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -137,8 +137,8 @@ class TestWorktreeCommandRouting(unittest.TestCase):
         mock_settings.task_scheduler_per_key_concurrency = 1
         mock_settings.message_cache_ttl = 300
         mock_settings.message_cache_max_size = 1000
-        mock_settings.card_action_dedup_ttl = 1
-        mock_settings.card_action_dedup_max_size = 5000
+        mock_settings.card.action_dedup_ttl = 1
+        mock_settings.card.action_dedup_max_size = 5000
         mock_settings.system_command_concurrency = 10
         mock_settings.spec_rate_limit_capacity = 100
         mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -492,10 +492,12 @@ class TestWorktreeCommandRouting(unittest.TestCase):
                     buttons.extend(TestWorktreeCommandRouting._find_all_buttons(col.get("elements", [])))
             elif el.get("tag") == "column":
                 buttons.extend(TestWorktreeCommandRouting._find_all_buttons(col.get("elements", [])))
+            elif el.get("tag") == "action":
+                buttons.extend(TestWorktreeCommandRouting._find_all_buttons(el.get("actions", [])))
         return buttons
 
     def test_handle_worktree_command_sends_card(self):
-        """handle_worktree_command sends an interactive card with tool buttons."""
+        """handle_worktree_command dispatches WORKTREE_TOOL_SELECT event via session."""
         handler = self._build_worktree_handler()
 
         project = MagicMock()
@@ -514,23 +516,17 @@ class TestWorktreeCommandRouting(unittest.TestCase):
         ]
         handler._get_available_worktree_tools = MagicMock(return_value=fake_tools)
 
-        handler.handle_worktree_command("msg-1", "chat-1")
+        mock_session = MagicMock()
+        mock_session.closed = False
+        with patch.object(handler, "_get_or_create_session", return_value=mock_session):
+            handler.handle_worktree_command("msg-1", "chat-1")
 
-        handler.reply_card.assert_called_once()
-        _args, _kwargs = handler.reply_card.call_args
-        card_json = _args[1]  # (message_id, content)
-        card = json.loads(card_json)
-
-        # Verify card structure
-        self.assertEqual(card["header"]["title"]["content"], "🌳 Worktree — 选择工具")
-        elements = card["body"]["elements"]
-        buttons = self._find_all_buttons(elements)
-        tool_buttons = [b for b in buttons if b.get("value", {}).get("action") == "worktree_select_tool"]
-        self.assertEqual(len(tool_buttons), 2)
-        for btn in tool_buttons:
-            self.assertEqual(btn["tag"], "button")
-            self.assertEqual(btn["value"]["action"], "worktree_select_tool")
-            self.assertEqual(btn["value"]["project_id"], "proj-42")
+        mock_session.dispatch.assert_called_once()
+        event = mock_session.dispatch.call_args[0][0]
+        from src.card.events import CardEventType
+        self.assertEqual(event.type, CardEventType.WORKTREE_TOOL_SELECT)
+        self.assertEqual(event.payload["project_id"], "proj-42")
+        self.assertEqual(len(event.payload["tools"]), 2)
 
     def test_handle_worktree_command_no_project_error(self):
         """handle_worktree_command replies error when no active project."""
@@ -633,8 +629,8 @@ class TestWorktreeCommandRouting(unittest.TestCase):
 
         banner_md = next(c for c in contents if UI_TEXT["worktree_auto_executing_banner"] in c)
 
-        # 根据 _shorten_goal_for_banner 的策略，期望形如 "AAA..." 的截断结果
-        expected_goal_snippet = "A" * 77 + "..."
+        # 根据 _shorten_goal_for_banner 的策略，期望形如 "AAA…" 的截断结果
+        expected_goal_snippet = "A" * 79 + "…"
         assert expected_goal_snippet in banner_md
         # 不应包含连续 100 个 'A'，以避免未截断的长文案
         assert "A" * 100 not in banner_md

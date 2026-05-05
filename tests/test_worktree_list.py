@@ -97,7 +97,7 @@ def test_format_worktree_table_alignment(tmp_path):
         WorktreeInfo(path="/medium/path", branch="dev", is_active=False, last_updated="2026-01-03 08:30:00"),
     ]
 
-    table = WorktreeReporter.format_worktree_table(entries)
+    table = WorktreeReporter().format_worktree_table(entries)
     lines = table.split("\n")
 
     # Header + separator + 3 data rows
@@ -113,7 +113,7 @@ def test_format_worktree_table_alignment(tmp_path):
 
 def test_format_worktree_table_empty():
     """Empty entries should return a placeholder."""
-    table = WorktreeReporter.format_worktree_table([])
+    table = WorktreeReporter().format_worktree_table([])
     assert "(无 worktree)" in table
 
 
@@ -124,7 +124,7 @@ def test_format_worktree_table_active_marker():
         WorktreeInfo(path="/inactive", branch="dev", is_active=False, last_updated="now"),
     ]
 
-    table = WorktreeReporter.format_worktree_table(entries)
+    table = WorktreeReporter().format_worktree_table(entries)
 
     assert "活跃 *" in table
     assert "非活跃" in table

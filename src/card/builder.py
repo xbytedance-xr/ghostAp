@@ -397,8 +397,19 @@ class CardBuilder:
         lock_enabled: bool = False,
         chat_id: str = "",
         no_admin_configured: bool = False,
+        *,
+        session_idle_timeout: Optional[int] = None,
+        session_idle_warn_at_remaining: Optional[int] = None,
+        lock_undo_window_seconds: Optional[int] = None,
     ) -> tuple[str, str]:
-        return SystemBuilder.build_help_card(project, category, working_dir, current_mode, is_admin=is_admin, lock_enabled=lock_enabled, chat_id=chat_id, no_admin_configured=no_admin_configured)
+        return SystemBuilder.build_help_card(
+            project, category, working_dir, current_mode,
+            is_admin=is_admin, lock_enabled=lock_enabled, chat_id=chat_id,
+            no_admin_configured=no_admin_configured,
+            session_idle_timeout=session_idle_timeout,
+            session_idle_warn_at_remaining=session_idle_warn_at_remaining,
+            lock_undo_window_seconds=lock_undo_window_seconds,
+        )
 
     @staticmethod
     def _build_help_card_cached(
@@ -429,7 +440,7 @@ class CardBuilder:
         return DeepBuilder._build_deep_buttons(state)
 
     @staticmethod
-    def build_engine_card(
+    def build_info_card(
         project: Optional[ProjectContext],
         state: Optional[EngineCardState] = None,
         *,
@@ -477,9 +488,19 @@ class CardBuilder:
                 extra_buttons=extra_buttons,
                 warning_banner=warning_banner,
             )
-        return DeepBuilder.build_engine_card(project, state)
+        return DeepBuilder.build_info_card(project, state)
 
-    build_deep_card = build_engine_card
+    @staticmethod
+    def build_deep_card(*args, **kwargs):
+        """Deprecated alias for build_info_card. Will be removed after 2026-06-01."""
+        import warnings
+
+        warnings.warn(
+            "CardBuilder.build_deep_card is deprecated, use build_info_card instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return CardBuilder.build_info_card(*args, **kwargs)
 
     @staticmethod
     def build_history_list_card(
@@ -506,3 +527,4 @@ class CardBuilder:
     build_worktree_cleanup_card = staticmethod(WorktreeBuilder.build_worktree_cleanup_card)
     build_worktree_result_card = staticmethod(WorktreeBuilder.build_worktree_result_card)
     build_worktree_merge_entry_card = staticmethod(WorktreeBuilder.build_worktree_merge_entry_card)
+

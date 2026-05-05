@@ -2,31 +2,197 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from dataclasses import replace
 
-from .models import CardState, CardMetadata, HeaderState, FooterState
+from .models import CardState, CardMetadata, HeaderState, FooterState, EngineExtState
 from ..events import CardEvent, CardEventType
 from .reducers.text import reduce_text
 from .reducers.tool import reduce_tool
 from .reducers.reasoning import reduce_reasoning
 from .reducers.plan import reduce_plan
-from .reducers.lifecycle import reduce_lifecycle, _build_header
+from .reducers.lifecycle import reduce_lifecycle
+from .reducers._shared import build_header
 from .reducers.approval import reduce_approval
+from .reducers.cycle import reduce_cycle
+from .reducers.phase import reduce_phase
+from .reducers.criteria import reduce_criteria
+from .reducers.worktree import reduce_worktree
+
+logger = logging.getLogger(__name__)
+
+# Maximum number of completed tool blocks to retain (sliding window)
+MAX_COMPLETED_TOOL_BLOCKS = 50
 
 
-# Event type → sub-reducer routing
-_TEXT_EVENTS = {CardEventType.TEXT_STARTED, CardEventType.TEXT_DELTA, CardEventType.TEXT_DONE}
-_TOOL_EVENTS = {CardEventType.TOOL_STARTED, CardEventType.TOOL_DELTA, CardEventType.TOOL_DONE, CardEventType.TOOL_FAILED}
-_REASONING_EVENTS = {CardEventType.REASONING_STARTED, CardEventType.REASONING_DELTA, CardEventType.REASONING_DONE}
-_LIFECYCLE_EVENTS = {CardEventType.STARTED, CardEventType.COMPLETED, CardEventType.FAILED,
-                     CardEventType.CANCELLED, CardEventType.PAUSED, CardEventType.RESUMED}
-_APPROVAL_EVENTS = {CardEventType.APPROVAL_REQUESTED, CardEventType.APPROVAL_RESOLVED}
+# --- Inline handlers for events that don't warrant their own module ---
+
+def _reduce_tool_model_changed(state: CardState, event: CardEvent) -> CardState:
+    new_meta = replace(state.metadata,
+                       tool_name=event.payload.get("tool_name") or state.metadata.tool_name,
+                       model_name=event.payload.get("model_name") or state.metadata.model_name)
+    header = build_header(new_meta, state.terminal)
+    return replace(state, metadata=new_meta, header=header)
+
+
+def _reduce_progress_updated(state: CardState, event: CardEvent) -> CardState:
+    current = event.payload.get("current", 0)
+    total = event.payload.get("total", 0)
+    label = event.payload.get("label", "")
+    timestamp: float | None = event.payload.get("timestamp")
+    footer = state.footer
+
+    # Track when progress started (first non-zero update)
+    started_at = footer.progress_started_at
+    if started_at is None and current > 0 and timestamp is not None:
+        started_at = timestamp
+
+    # Spec/Loop engines use text-only progress (criteria satisfaction semantics)
+    # Deep/Worktree engines use visual ▰▱ progress bar (tool execution semantics)
+    engine_type = state.metadata.engine_type
+    use_visual_bar = engine_type not in ("spec", "loop")
+
+    if total > 0:
+        pct = int(current / total * 100) if use_visual_bar else None
+        if use_visual_bar:
+            progress_text = f"步骤 {current}/{total}"
+        else:
+            progress_text = f"{current}/{total} 通过"
+        if label:
+            progress_text += f" · {label}"
+        # ETA calculation: only show if we have enough data and using visual bar
+        if use_visual_bar and started_at is not None and current > 1 and pct < 100 and timestamp is not None:
+            elapsed = timestamp - started_at
+            rate = elapsed / current  # seconds per step
+            remaining_steps = total - current
+            eta_secs = int(rate * remaining_steps)
+            if eta_secs >= 60:
+                progress_text += f" · 预计还需 {eta_secs // 60}min"
+            elif eta_secs > 10:
+                progress_text += f" · 预计还需 {eta_secs}s"
+    else:
+        pct = None
+        progress_text = None
+    return replace(state, footer=replace(footer, progress=progress_text, progress_pct=pct,
+                                         progress_started_at=started_at))
+
+
+# --- Dispatch table: CardEventType → handler(state, event) → new_state ---
+
+# Events that require engine_ext to be initialized
+_ENGINE_EXT_EVENTS = frozenset({
+    CardEventType.CYCLE_STARTED,
+    CardEventType.CYCLE_DONE,
+    CardEventType.PHASE_STARTED,
+    CardEventType.PHASE_DONE,
+    CardEventType.CRITERIA_UPDATED,
+    CardEventType.WARNING_UPDATED,
+    CardEventType.REVIEW_RETRY,
+})
+
+_REDUCER_DISPATCH: dict[CardEventType, Callable[[CardState, CardEvent], CardState]] = {
+    # Text events
+    CardEventType.TEXT_STARTED: reduce_text,
+    CardEventType.TEXT_DELTA: reduce_text,
+    CardEventType.TEXT_DONE: reduce_text,
+    # Tool events
+    CardEventType.TOOL_STARTED: reduce_tool,
+    CardEventType.TOOL_DELTA: reduce_tool,
+    CardEventType.TOOL_DONE: reduce_tool,
+    CardEventType.TOOL_FAILED: reduce_tool,
+    # Reasoning events
+    CardEventType.REASONING_STARTED: reduce_reasoning,
+    CardEventType.REASONING_DELTA: reduce_reasoning,
+    CardEventType.REASONING_DONE: reduce_reasoning,
+    # Plan
+    CardEventType.PLAN_UPDATED: reduce_plan,
+    # Lifecycle events
+    CardEventType.STARTED: reduce_lifecycle,
+    CardEventType.STOPPING: reduce_lifecycle,
+    CardEventType.COMPLETED: reduce_lifecycle,
+    CardEventType.FAILED: reduce_lifecycle,
+    CardEventType.CANCELLED: reduce_lifecycle,
+    CardEventType.PAUSED: reduce_lifecycle,
+    CardEventType.RESUMED: reduce_lifecycle,
+    CardEventType.ARCHIVED: reduce_lifecycle,
+    CardEventType.BLOCKED: reduce_lifecycle,
+    # Approval events
+    CardEventType.APPROVAL_REQUESTED: reduce_approval,
+    CardEventType.APPROVAL_RESOLVED: reduce_approval,
+    # Cycle events
+    CardEventType.CYCLE_STARTED: reduce_cycle,
+    CardEventType.CYCLE_DONE: reduce_cycle,
+    # Phase events
+    CardEventType.PHASE_STARTED: reduce_phase,
+    CardEventType.PHASE_DONE: reduce_phase,
+    # Criteria events
+    CardEventType.CRITERIA_UPDATED: reduce_criteria,
+    CardEventType.WARNING_UPDATED: reduce_criteria,
+    CardEventType.REVIEW_RETRY: reduce_criteria,
+    # Worktree events
+    CardEventType.WORKTREE_PROGRESS: reduce_worktree,
+    CardEventType.WORKTREE_TOOL_SELECT: reduce_worktree,
+    CardEventType.WORKTREE_CONFIRM: reduce_worktree,
+    CardEventType.WORKTREE_CLEANUP: reduce_worktree,
+    CardEventType.WORKTREE_MERGE: reduce_worktree,
+    CardEventType.WORKTREE_COMPLETED_NO_CHANGE: reduce_worktree,
+    # Meta events (inline handlers)
+    CardEventType.TOOL_MODEL_CHANGED: _reduce_tool_model_changed,
+    CardEventType.PROGRESS_UPDATED: _reduce_progress_updated,
+    # UI control events
+    CardEventType.MODE_TOGGLED: reduce_lifecycle,
+    CardEventType.STOP_ESCALATED: reduce_lifecycle,
+}
+
+# Events that cause structural changes (block add/remove, terminal, header/buttons change)
+# Used to decide when to increment structural_version
+_STRUCTURAL_EVENTS = frozenset({
+    # Block lifecycle (new block created or status changed)
+    CardEventType.TEXT_STARTED,
+    CardEventType.TEXT_DONE,
+    CardEventType.TOOL_STARTED,
+    CardEventType.TOOL_DONE,
+    CardEventType.TOOL_FAILED,
+    CardEventType.REASONING_STARTED,
+    CardEventType.REASONING_DONE,
+    CardEventType.PLAN_UPDATED,
+    # Lifecycle (terminal, header changes)
+    CardEventType.STARTED,
+    CardEventType.COMPLETED,
+    CardEventType.FAILED,
+    CardEventType.CANCELLED,
+    CardEventType.PAUSED,
+    CardEventType.RESUMED,
+    CardEventType.BLOCKED,
+    CardEventType.ARCHIVED,
+    # Approval (adds buttons)
+    CardEventType.APPROVAL_REQUESTED,
+    CardEventType.APPROVAL_RESOLVED,
+    # Meta (header change)
+    CardEventType.TOOL_MODEL_CHANGED,
+    # Worktree (all structural — different phases/buttons)
+    CardEventType.WORKTREE_PROGRESS,
+    CardEventType.WORKTREE_TOOL_SELECT,
+    CardEventType.WORKTREE_CONFIRM,
+    CardEventType.WORKTREE_CLEANUP,
+    CardEventType.WORKTREE_MERGE,
+    CardEventType.WORKTREE_COMPLETED_NO_CHANGE,
+    # Cycle/phase (header/subtitle change)
+    CardEventType.CYCLE_STARTED,
+    CardEventType.CYCLE_DONE,
+    CardEventType.PHASE_STARTED,
+    CardEventType.PHASE_DONE,
+    # UI control (buttons change)
+    CardEventType.MODE_TOGGLED,
+    CardEventType.STOP_ESCALATED,
+})
 
 
 def reduce_card_state(state: CardState | None, event: CardEvent, metadata: CardMetadata | None = None) -> CardState:
     """
     Pure function: old state + event → new state. No side effects.
-    
+
     If state is None, creates initial state (expects STARTED event or provides defaults).
     metadata is only used for initial state creation.
     """
@@ -35,45 +201,37 @@ def reduce_card_state(state: CardState | None, event: CardEvent, metadata: CardM
         meta = metadata or CardMetadata()
         state = CardState(metadata=meta)
 
-    # Route to sub-reducer
-    if event.type in _TEXT_EVENTS:
-        new_state = reduce_text(state, event)
-    elif event.type in _TOOL_EVENTS:
-        new_state = reduce_tool(state, event)
-    elif event.type in _REASONING_EVENTS:
-        new_state = reduce_reasoning(state, event)
-    elif event.type == CardEventType.PLAN_UPDATED:
-        new_state = reduce_plan(state, event)
-    elif event.type in _LIFECYCLE_EVENTS:
-        new_state = reduce_lifecycle(state, event)
-    elif event.type in _APPROVAL_EVENTS:
-        new_state = reduce_approval(state, event)
-    elif event.type == CardEventType.TOOL_MODEL_CHANGED:
-        new_meta = replace(state.metadata,
-                           tool_name=event.payload.get("tool_name") or state.metadata.tool_name,
-                           model_name=event.payload.get("model_name") or state.metadata.model_name)
-        header = _build_header(new_meta, state.terminal)
-        new_state = replace(state, metadata=new_meta, header=header)
-    elif event.type == CardEventType.PROGRESS_UPDATED:
-        current = event.payload.get("current", 0)
-        total = event.payload.get("total", 0)
-        label = event.payload.get("label", "")
-        if total > 0:
-            pct = int(current / total * 100)
-            filled = pct // 10
-            bar = "▰" * filled + "▱" * (10 - filled)
-            progress_text = f"{bar} {pct}% · 步骤 {current}/{total}"
-            if label:
-                progress_text += f" · {label}"
-        else:
-            progress_text = None
-        new_state = replace(state, footer=replace(state.footer, progress=progress_text))
+    # Auto-initialize engine_ext for engine-specific events if not yet set
+    if state.engine_ext is None and event.type in _ENGINE_EXT_EVENTS:
+        state = replace(state, engine_ext=EngineExtState())
+
+    # Route to sub-reducer via dispatch table (O(1) lookup)
+    handler = _REDUCER_DISPATCH.get(event.type)
+    if handler is not None:
+        new_state = handler(state, event)
     else:
-        # Unknown event — return state unchanged
+        logger.warning("reduce_card_state: unregistered event type '%s', returning state unchanged", event.type)
         new_state = state
 
     # Bump version if state changed
     if new_state is not state:
-        new_state = replace(new_state, version=state.version + 1)
+        new_version = state.version + 1
+        # Bump structural_version only for structural events
+        if event.type in _STRUCTURAL_EVENTS:
+            new_structural = state.structural_version + 1
+        else:
+            new_structural = state.structural_version
+        new_state = replace(new_state, version=new_version, structural_version=new_structural)
+
+        # Sliding window: trim completed tool blocks to MAX_COMPLETED_TOOL_BLOCKS
+        # Only run on events that can produce new completed tool blocks (perf optimization)
+        if event.type in (CardEventType.TOOL_DONE, CardEventType.TOOL_FAILED):
+            completed_tool_blocks = [b for b in new_state.blocks if b.kind == "tool_call" and b.status == "completed"]
+            if len(completed_tool_blocks) > MAX_COMPLETED_TOOL_BLOCKS:
+                excess = len(completed_tool_blocks) - MAX_COMPLETED_TOOL_BLOCKS
+                # Identify block_ids to remove (oldest completed tools)
+                to_remove = {b.block_id for b in completed_tool_blocks[:excess]}
+                trimmed = tuple(b for b in new_state.blocks if b.block_id not in to_remove)
+                new_state = replace(new_state, blocks=trimmed)
 
     return new_state

@@ -40,7 +40,7 @@ from ..acp.telemetry import build_idle_health_config_for_manager
 from ..agent.intent_recognizer import IntentRecognizer, IntentResult, IntentType, TaskStep
 from ..card import CardBuilder
 
-from ..card.styles import UI_TEXT
+from ..card.ui_text import UI_TEXT
 from ..config import get_settings
 from ..deep_engine import DeepEngineManager, ProgressReporter
 from ..loop_engine import LoopEngineManager, LoopReporter
@@ -78,6 +78,10 @@ from .handlers import (
     TTADKModeHandler,
 )
 from .handlers.worktree import WorktreeHandler
+from .renderers.deep_renderer import DeepRenderer
+from .renderers.loop_renderer import LoopRenderer
+from .renderers.spec_renderer import SpecRenderer
+from .renderers.worktree_renderer import WorktreeRenderer
 from .image_handler import FeishuImageHandler
 from .message_cache import MessageCache
 from .message_formatter import FeishuMessageFormatter as fmt
@@ -203,7 +207,7 @@ class FeishuWSClient:
         self._message_cache = MessageCache(ttl=self.settings.message_cache_ttl, max_size=self.settings.message_cache_max_size, cleanup_interval=60)
         self._card_event_cache = MessageCache(ttl=self.settings.message_cache_ttl, max_size=self.settings.message_cache_max_size, cleanup_interval=60)
         # Card action dedupe (user rapid clicks): short TTL, per-action key.
-        self._card_action_dedup_cache = MessageCache(ttl=self.settings.card_action_dedup_ttl, max_size=self.settings.card_action_dedup_max_size, cleanup_interval=30)
+        self._card_action_dedup_cache = MessageCache(ttl=self.settings.card.action_dedup_ttl, max_size=self.settings.card.action_dedup_max_size, cleanup_interval=30)
         # Chat lock gate: initialized after handler_ctx is available (see below).
         self._chat_lock_gate = None  # type: ignore[assignment]
         self._scheduler = TaskScheduler(
@@ -314,11 +318,15 @@ class FeishuWSClient:
         gemini_handler = GeminiModeHandler(self._handler_ctx)
         ttadk_handler = TTADKModeHandler(self._handler_ctx)
         deep_handler = DeepHandler(self._handler_ctx)
+        deep_handler.renderer = DeepRenderer(deep_handler)
         loop_handler = LoopHandler(self._handler_ctx)
+        loop_handler.renderer = LoopRenderer(loop_handler)
         spec_handler = SpecHandler(self._handler_ctx)
+        spec_handler.renderer = SpecRenderer(spec_handler)
         project_handler = ProjectHandler(self._handler_ctx)
         system_handler = SystemHandler(self._handler_ctx)
         worktree_handler = WorktreeHandler(self._handler_ctx)
+        worktree_handler._renderer = WorktreeRenderer(worktree_handler)
         diagnostics_handler = DiagnosticsHandler(self._handler_ctx)
 
         # ------------------------------------------------------------------
@@ -394,7 +402,7 @@ class FeishuWSClient:
                 try:
                     import json as _json
                     from pathlib import Path as _Path
-                    from ..card.styles import UI_TEXT
+                    from ..card.ui_text import UI_TEXT
                     from ..card.builders.lock_common import _compute_command_sig
                     repo_name = _Path(root_path).name or root_path
                     _text = UI_TEXT["repo_lock_released_notify"].format(repo_name=repo_name)
@@ -669,6 +677,7 @@ class FeishuWSClient:
                 .app_id(self.settings.app_id)
                 .app_secret(self.settings.app_secret)
                 .log_level(lark.LogLevel.INFO)
+                .timeout(30)  # 30s timeout for all API calls (card delivery protection)
                 .build()
             )
         return self._api_client
@@ -1613,12 +1622,25 @@ class FeishuWSClient:
             dedupe_key = f"{open_chat_id}:{open_message_id}:{operator_id}:{action_type_preview}"
             try:
                 if self._card_action_dedup_cache.is_duplicate(dedupe_key):
-                    return None
+                    return {"toast": {"type": "info", "content": UI_TEXT["card_session_toast_dedup"]}}
 
 
             except Exception:
                 # best-effort only
                 logger.debug("failed to ack card action", exc_info=True)
+
+        # Synchronous undo-lock expiry check: return toast if window has passed
+        try:
+            value_raw = data.event.action.value
+            _val = value_raw if isinstance(value_raw, dict) else (
+                json.loads(value_raw) if isinstance(value_raw, str) else None
+            )
+            if isinstance(_val, dict) and _val.get("_ul"):
+                undo_expires = _val.get("_ue", 0)
+                if undo_expires and time.time() > undo_expires:
+                    return {"toast": {"type": "warning", "content": "撤销窗口已过期，请使用 /unlock 解锁"}}
+        except Exception:
+            pass
 
         project_id = None
         try:
@@ -1719,6 +1741,7 @@ class FeishuWSClient:
                 "worktree_merge",
                 "worktree_cleanup",
                 "worktree_retry_failed",
+                "worktree_retry_all",
                 "force_release_repo_lock",
                 "confirm_lock",
                 "cancel_lock",
@@ -1726,6 +1749,7 @@ class FeishuWSClient:
                 "cancel_force_release",
                 "enter_deep_prompt",
                 "help_category",
+                "engine_stop",
                 "deep_pause",
                 "deep_stop",
                 "deep_resume",
@@ -1846,7 +1870,8 @@ class FeishuWSClient:
             matched = self._action_dispatcher.dispatch(action_type, open_message_id, open_chat_id, project_id, value)
 
             if not matched:
-                logger.debug("未注册的卡片动作: %s", action_type)
+                logger.warning("未注册的卡片动作: action=%s, message_id=%s", action_type, open_message_id)
+                self._reply_text(open_message_id, f"⚠️ 未识别的操作: {action_type}")
 
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
             logger.debug("卡片回调处理耗时: %dms", elapsed_ms)

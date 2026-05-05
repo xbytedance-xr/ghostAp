@@ -10,7 +10,8 @@ from ..shared import (
     build_responsive_layout,
     get_theme,
 )
-from ..styles import BUTTON_CONFIG, ENGINE_STYLES, THRESHOLDS, UI_TEXT
+from ..styles import BUTTON_CONFIG, ENGINE_STYLES, THRESHOLDS
+from ..ui_text import UI_TEXT
 from .core import CoreBuilder
 
 logger = logging.getLogger(__name__)
@@ -92,7 +93,7 @@ class DeepBuilder:
         if action_key == "history" and state.action_prefix == "loop":
             action_name = "loop_history"
 
-        return {
+        btn = {
             "tag": "button",
             "text": {"tag": "plain_text", "content": config["text"]},
             "type": config["type"],
@@ -102,6 +103,16 @@ class DeepBuilder:
                 "deep_project_id": state.engine_project_id,
             },
         }
+
+        # Add confirm dialog for danger buttons (only stop_danger requires confirmation)
+        if action_key == "stop_danger":
+            engine_cmd = f"/{state.action_prefix}" if state.action_prefix else "/deep"
+            btn["confirm"] = {
+                "title": {"tag": "plain_text", "content": UI_TEXT["card_btn_confirm_stop_title_danger"]},
+                "text": {"tag": "plain_text", "content": UI_TEXT["card_btn_confirm_stop_danger_body"].format(engine_cmd=engine_cmd)},
+            }
+
+        return btn
 
     @staticmethod
     def _build_deep_buttons(state: EngineCardState) -> list[dict]:
@@ -212,7 +223,7 @@ class DeepBuilder:
         return elements
 
     @staticmethod
-    def build_engine_card(
+    def build_info_card(
         project: Optional[ProjectContext],
         state: EngineCardState,
     ) -> tuple[str, str]:
@@ -269,7 +280,10 @@ class DeepBuilder:
             is_error = status_key == "error"
             if is_error:
                 if not display_content:
-                    display_content = UI_TEXT["deep_error_no_detail"]
+                    if state.action_prefix and state.action_prefix.strip():
+                        display_content = UI_TEXT["deep_error_no_detail"].format(engine_cmd=f"/{state.action_prefix}")
+                    else:
+                        display_content = UI_TEXT["deep_error_fallback_no_prefix"]
                 else:
                     lines = display_content.split("\n")
                     if len(lines) > THRESHOLDS["COMPACT_LINE_THRESHOLD"]:
@@ -280,9 +294,9 @@ class DeepBuilder:
                 else:
                     lines = display_content.split("\n")
                     if len(lines) > THRESHOLDS["COMPACT_LINE_THRESHOLD"]:
-                        display_content = "...\n" + "\n".join(lines[-THRESHOLDS["COMPACT_LINE_THRESHOLD"]:]) + UI_TEXT["deep_content_expand_hint"]
+                        display_content = "…\n" + "\n".join(lines[-THRESHOLDS["COMPACT_LINE_THRESHOLD"]:]) + UI_TEXT["deep_content_expand_hint"]
                     elif len(display_content) > THRESHOLDS["COMPACT_CHAR_FALLBACK"]:
-                        display_content = "..." + display_content[-THRESHOLDS["COMPACT_CHAR_FALLBACK"]:]
+                        display_content = "…" + display_content[-THRESHOLDS["COMPACT_CHAR_FALLBACK"]:]
         else:
             if display_content:
                 lines = display_content.split("\n")
@@ -377,7 +391,17 @@ class DeepBuilder:
         card = CoreBuilder._wrap_card(header_title, theme.header_template, elements, subtitle=state.subtitle)
         return "interactive", json.dumps(card, ensure_ascii=False)
 
-    build_deep_card = build_engine_card
+    @staticmethod
+    def build_deep_card(*args, **kwargs):
+        """Deprecated alias for build_info_card. Will be removed after 2026-06-01."""
+        import warnings
+
+        warnings.warn(
+            "build_deep_card is deprecated, use build_info_card instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return DeepBuilder.build_info_card(*args, **kwargs)
 
     @staticmethod
     def build_history_list_card(

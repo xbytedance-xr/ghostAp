@@ -10,12 +10,11 @@ class TestDeepRendererRefactor(unittest.TestCase):
         self.mock_handler = MagicMock(spec=DeepHandler)
         self.mock_handler.ctx = MagicMock()
         self.mock_handler.settings = MagicMock()
-        self.mock_handler.settings.card_deep_compact_default = False
+        self.mock_handler.settings.card.deep_compact_default = False
         self.renderer = DeepRenderer(self.mock_handler)
 
     def test_inheritance(self):
         """Verify DeepRenderer inherits from BaseRenderer"""
-        self.assertTrue(hasattr(self.renderer, "_generate_progress_bar"))
         self.assertTrue(hasattr(self.renderer, "_render_collapsible_section"))
 
     def test_ui_state_defaults(self):

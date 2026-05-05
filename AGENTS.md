@@ -131,8 +131,41 @@ Feishu WebSocket message
 - **Review pipeline**: Spec review decomposed into strategy selection → pipeline assembly → parallel workers → retry → output parsing (6 independent modules). Circuit breaker state tracking per review cycle.
 - **Circuit breaker**: Sliding window failure counting, CLOSED → OPEN → HALF_OPEN three-state transition for fault isolation.
 - **Hook system**: 7 event types (pre/post shell, session start/end, engine start/stop, iteration done) with `register_hook()`/`fire_hooks()`.
+- **CardSession lifecycle hooks**: `SessionHook` protocol (`on_dispatched`, `on_terminal`) injected at session construction via `hooks: tuple[SessionHook, ...]`. Concrete hooks: `EmojiHook` (adds Feishu emoji reactions on terminal events; gracefully skips when message_id is empty), `ContextPersistenceHook` (persists engine results to project context on completion). Hooks are called by CardSession after reduce (dispatched) and after successful terminal delivery (terminal), wrapped in try/except to never block the pipeline. `BaseRenderer._build_hooks(message_id)` provides the standard hook set for all engine renderers. This replaces the old pattern of hardcoding emoji/context calls directly in renderer callback closures.
+  - **ContextPersistenceHook 注入策略**: Deep 引擎注入 ContextPersistenceHook（通过 `context_update_fn` 参数），Loop/Spec 引擎**不注入**（它们各自有独立的上下文持久化路径：Loop 通过 `LoopEngine.on_complete` 回调处理，Spec 通过 `SpecManager.persist_result` 处理）。Worktree 引擎不注入（worktree 结果通过 reporter 独立持久化）。
+- **Unified adapter architecture**: `src/card/protocols.py` defines `Dispatchable` and `WorktreeCallbacks` two Protocol classes, providing type constraints for CardSession/SessionRotator. Feishu-specific side effects (emoji, context persistence) are injected via `SessionHook` instances at session construction — not embedded in adapter closures. Renderers create sessions with hooks via `BaseRenderer._create_session()` → return engine callbacks.
+- **Session lock lazy eviction**: `CardDelivery` uses lazy eviction to manage session lock lifecycle — when lock count reaches 80% of `card_session_lock_max`, eviction is triggered, removing at most 50 entries per batch (TTL exceeded via `card_session_lock_ttl` AND no active binding = zombie). Parameters are configurable via `.env`. A WARNING is logged at >=90% capacity.
+- **Deprecations**: `CardBuilder.build_engine_card()` has been completely removed (attribute no longer exists; calling code should use `build_info_card()` for static info cards, or the `CardSession` pipeline for engine cards).
 - **Thread safety**: Critical sections use `threading.Lock`; message dedup uses `MessageCache` with background cleanup thread. Every lock annotated with ordering level.
 - **Sync-async bridge**: `SyncACPSession` runs an asyncio event loop in a daemon thread, uses `asyncio.run_coroutine_threadsafe()` to allow synchronous callers to interact with async ACP sessions.
+
+### 模块依赖方向规则
+
+Card pipeline 各层遵循严格的单向依赖约束，禁止反向 import：
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  render 层 (src/card/render/, src/card/state/)          │  ← 纯函数，无外部 I/O
+│  delivery 层 (src/card/delivery/)                       │  ← 投递，不知道 session
+└───────────────────────────┬─────────────────────────────┘
+                            │ 被引用
+┌───────────────────────────▼─────────────────────────────┐
+│  session 层 (src/card/session/, dispatch_coordinator)   │  ← orchestrator
+└───────────────────────────┬─────────────────────────────┘
+                            │ 被引用
+┌───────────────────────────▼─────────────────────────────┐
+│  handler 层 (src/feishu/handlers/, src/feishu/renderers/)│  ← 业务入口
+└─────────────────────────────────────────────────────────┘
+```
+
+箭头方向表示"谁引用谁"：handler 引用 session，session 引用 render + delivery。
+
+**规则**：
+- `delivery` 层不可 import `session` 层（delivery 通过 session_id 字符串交互，无需知道 CardSession 类）
+- `render` 层不可 import `delivery` 层（render 只负责生成 RenderedCard，由 session 层调度 delivery）
+- `handler` 层通过 `RendererProtocol`（`src/card/protocols.py`）解耦 renderer，不直接 import 具体 renderer 实现
+- 跨层通信使用 Protocol / NamedTuple / dataclass 等接口类型，定义在 `src/card/protocols.py` 或 `src/card/events/`
+- 循环依赖通过 `TYPE_CHECKING` 守卫或方法内 lazy import 打破，但新增 import 前必须验证不违反上述方向约束
 
 ## Project Conventions
 

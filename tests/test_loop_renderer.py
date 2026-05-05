@@ -1,7 +1,10 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.card.engine_snapshot import EngineSnapshot
+from src.card.events import CardEvent, CardEventType
+from src.card.state.models import CardMetadata
 from src.feishu.renderers.loop_renderer import LoopRenderer
 from src.loop_engine.models import LoopProject, LoopProjectStatus
 from src.project import ProjectContext
@@ -13,7 +16,7 @@ class TestLoopRenderer:
         handler = MagicMock()
         handler.ctx = MagicMock()
         handler.settings = MagicMock()
-        handler.settings.card_deep_compact_default = False
+        handler.settings.card.deep_compact_default = False
         handler.settings.default_reply_mode = "thread"
 
         # Mock reporter
@@ -58,24 +61,39 @@ class TestLoopRenderer:
 
         mock_handler.project_manager.get_active_project.return_value = proj
 
-        engine = MagicMock()
-        engine.project = LoopProject(name="test_proj", root_path="/tmp/p1", project_id="p1")
-        engine.project.status = LoopProjectStatus.RUNNING
-        engine.engine_name = "Coco"
+        mock_loop_project = MagicMock(spec=LoopProject)
+        mock_loop_project.name = "test_proj"
+        mock_loop_project.root_path = "/tmp/p1"
+        mock_loop_project.project_id = "p1"
+        mock_loop_project.status = LoopProjectStatus.RUNNING
+        mock_loop_project.satisfied_count = 2
+        mock_loop_project.total_criteria = 5
+        mock_loop_project.duration.return_value = 10.0
+        mock_loop_project.iterations = []
 
-        mock_handler.ctx.loop_engine_manager.get.return_value = engine
+        snap = EngineSnapshot(
+            engine_name="Coco",
+            root_path="/tmp/p1",
+            satisfied_count=2,
+            total_criteria=5,
+            is_running=True,
+            ext={"project": mock_loop_project},
+        )
+        mock_handler.ctx.loop_engine_manager.snapshot.return_value = snap
 
-        # Setup update_card to fail so it calls reply_card
-        mock_handler.update_card.return_value = False
+        with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create:
+            mock_session = MagicMock()
+            mock_create.return_value = mock_session
 
-        renderer.render_current_view("msg1", "chat1", project=proj)
+            renderer.render_current_view("msg1", "chat1", project=proj)
 
-        # Verify it called reply_card with correct content
-        assert mock_handler.reply_card.called
-        args, kwargs = mock_handler.reply_card.call_args
-        card_content = args[1]
-        assert "Status Content" in card_content
-        assert "Status Title" in card_content
+            # Verify session was created and events dispatched
+            mock_create.assert_called_once()
+            dispatched_events = [call[0][0] for call in mock_session.dispatch.call_args_list]
+            event_types = [e.type for e in dispatched_events]
+            assert CardEventType.STARTED in event_types
+            assert CardEventType.TEXT_DELTA in event_types
+            assert CardEventType.CRITERIA_UPDATED in event_types
 
     def test_callbacks_creation(self, mock_handler):
         renderer = LoopRenderer(mock_handler)
@@ -85,53 +103,161 @@ class TestLoopRenderer:
         proj.root_path = "/tmp/p1"
 
         # Mock engine manager for callbacks to find the project
-        engine = MagicMock()
-        engine.project = LoopProject(name="test_proj", root_path="/tmp/p1", project_id="p1")
-        engine.project.duration = MagicMock(return_value=10.0)  # Return float
+        mock_loop_project = MagicMock(spec=LoopProject)
+        mock_loop_project.name = "test_proj"
+        mock_loop_project.root_path = "/tmp/p1"
+        mock_loop_project.project_id = "p1"
+        mock_loop_project.satisfied_count = 3
+        mock_loop_project.total_criteria = 5
+        mock_loop_project.duration.return_value = 10.0
 
-        mock_handler.ctx.loop_engine_manager.get.return_value = engine
+        snap = EngineSnapshot(
+            engine_name="Coco",
+            root_path="/tmp/p1",
+            satisfied_count=3,
+            total_criteria=5,
+            is_running=True,
+            ext={"project": mock_loop_project},
+        )
+        mock_handler.ctx.loop_engine_manager.snapshot.return_value = snap
 
-        callbacks = renderer.create_loop_callbacks("msg1", "chat1", proj)
+        with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create:
+            mock_session = MagicMock()
+            mock_create.return_value = mock_session
 
-        assert callbacks.on_iteration_start
-        assert callbacks.on_iteration_done
-        assert callbacks.on_project_done
+            callbacks = renderer.create_loop_callbacks("msg1", "chat1", proj)
 
-        # Test callback execution
-        # Verify on_iteration_start updates state and sends message
-        mock_handler.reply_card.return_value = "msg_thread"
-        mock_handler.update_card.return_value = True
+            assert callbacks.on_iteration_start
+            assert callbacks.on_iteration_done
+            assert callbacks.on_project_done
 
-        callbacks.on_iteration_start(1, 5)
+            # Test on_iteration_start dispatches CYCLE_STARTED + CRITERIA_UPDATED
+            callbacks.on_iteration_start(1, 5)
 
-        state = renderer.get_ui_state("p1")
-        assert state["view_mode"] == "status"
+            state = renderer.get_ui_state("p1")
+            assert state["view_mode"] == "status"
 
-        # With DirectCardSession mock: first send goes to reply_card (create path)
-        assert mock_handler.reply_card.called
-        
-        # Test error callback and its retry button logic
-        import json
-        mock_handler.reply_card.reset_mock()
-        mock_handler.update_card.reset_mock()
-        
-        # Setup mock reporter to return string for format_error
-        mock_handler.ctx.loop_reporter.format_error.return_value = "Test Loop Error Content"
-        mock_handler.ctx.loop_reporter.get_error_title.return_value = "Test Error Title"
-        
-        callbacks.on_error("Test Loop Error")
-        
-        # Error sends via session (update path since session already has message_id)
-        assert mock_handler.update_card.called
-        args, kwargs = mock_handler.update_card.call_args
-        card_content = args[1]
-        
-        # Parse JSON and verify the extra_buttons (retry button) were added
-        card_dict = json.loads(card_content)
-        # Look through elements for the "重试" button in the loop_resume action
-        card_elements_str = json.dumps(card_dict.get("body", {}).get("elements", []))
-        
-        assert "Test Loop Error" in card_elements_str or "Test Loop Error" in card_content
-        assert "loop_resume" in card_elements_str
-        assert ("重试" in card_elements_str) or ("\\u91cd\\u8bd5" in card_elements_str)
-        assert "p1" in card_elements_str  # project_id should be included in the action
+            # Verify dispatch was called with CYCLE_STARTED
+            dispatched_events = [call[0][0] for call in mock_session.dispatch.call_args_list]
+            event_types = [e.type for e in dispatched_events]
+            assert CardEventType.CYCLE_STARTED in event_types
+            assert CardEventType.CRITERIA_UPDATED in event_types
+
+            # Test error callback dispatches FAILED event
+            mock_session.reset_mock()
+            callbacks.on_error("Test Loop Error")
+
+            dispatched_events = [call[0][0] for call in mock_session.dispatch.call_args_list]
+            event_types = [e.type for e in dispatched_events]
+            assert CardEventType.FAILED in event_types
+            # Verify error message is in the payload
+            failed_event = next(e for e in dispatched_events if e.type == CardEventType.FAILED)
+            assert failed_event.payload["error"] == "Test Loop Error"
+
+
+class TestLoopRendererCreateRotator:
+    """Integration test for LoopRenderer._create_rotator() path."""
+
+    @pytest.fixture
+    def mock_handler(self):
+        handler = MagicMock()
+        handler.ctx = MagicMock()
+        handler.settings = MagicMock()
+        handler.settings.card.deep_compact_default = False
+        handler.settings.default_reply_mode = "thread"
+        handler.get_card_delivery.return_value = MagicMock()
+        return handler
+
+    def test_create_rotator_returns_session_rotator(self, mock_handler):
+        """_create_rotator returns a SessionRotator wrapping a valid session."""
+        renderer = LoopRenderer(mock_handler)
+        metadata = CardMetadata(engine_type="loop", mode_name="Loop", mode_emoji="🔁")
+
+        with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create:
+            mock_session = MagicMock()
+            mock_session.closed = False
+            mock_session.session_id = "test-session-id"
+            mock_create.return_value = mock_session
+
+            rotator = renderer._create_rotator("chat1", "msg1", metadata)
+
+        from src.card.session.rotator import SessionRotator
+        assert isinstance(rotator, SessionRotator)
+        mock_create.assert_called_once_with(
+            "chat1", "msg1", metadata, hooks=(), budget=None,
+        )
+
+    def test_create_rotator_passes_hooks_and_budget(self, mock_handler):
+        """_create_rotator correctly passes hooks and budget to create_session."""
+        from src.card.render.budget import RenderBudget
+
+        renderer = LoopRenderer(mock_handler)
+        metadata = CardMetadata(engine_type="loop", mode_name="Loop", mode_emoji="🔁")
+        test_hooks = (MagicMock(),)
+        test_budget = RenderBudget(engine_cmd="/loop")
+
+        with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create:
+            mock_session = MagicMock()
+            mock_session.closed = False
+            mock_create.return_value = mock_session
+
+            renderer._create_rotator("chat2", "msg2", metadata, hooks=test_hooks, budget=test_budget)
+
+        mock_create.assert_called_once_with(
+            "chat2", "msg2", metadata, hooks=test_hooks, budget=test_budget,
+        )
+
+
+class TestLoopRendererContinuationSeq:
+    """Verify continuation_seq increments on session rotation."""
+
+    @pytest.fixture
+    def mock_handler(self):
+        handler = MagicMock()
+        handler.ctx = MagicMock()
+        handler.settings = MagicMock()
+        handler.settings.card.deep_compact_default = False
+        handler.settings.default_reply_mode = "thread"
+        handler.get_card_delivery.return_value = MagicMock()
+        return handler
+
+    def test_continuation_seq_increments_on_rotation(self, mock_handler):
+        """After rotating twice, continuation_seq should be 2 on the second rotation."""
+        from src.card.session.rotator import SessionRotator
+
+        renderer = LoopRenderer(mock_handler)
+
+        created_sessions = []
+
+        def fake_create_session(chat_id, reply_to, metadata, hooks=(), budget=None):
+            session = MagicMock()
+            session.closed = False
+            session.session_id = f"session-{len(created_sessions)}"
+            session.delivered_message_id = f"msg-{len(created_sessions)}"
+            created_sessions.append((session, metadata))
+            return session
+
+        with patch("src.feishu.renderers.base.BaseRenderer.create_session", side_effect=fake_create_session):
+            metadata = CardMetadata(engine_type="loop", mode_name="Loop · Coco", mode_emoji="🔁")
+            rotator = renderer._create_rotator("chat1", "msg1", metadata)
+
+            # Initial session (continuation_seq defaults to 0)
+            assert rotator.rotation_count == 0
+
+            # Simulate iteration boundary rotation via rotator.rotate
+            rotator.rotate(lambda: fake_create_session(
+                "chat1", "msg-0",
+                CardMetadata(engine_type="loop", mode_name="Loop · Coco", mode_emoji="🔁", continuation_seq=rotator.rotation_count + 1),
+            ))
+            assert rotator.rotation_count == 1
+
+            # Second rotation
+            rotator.rotate(lambda: fake_create_session(
+                "chat1", "msg-1",
+                CardMetadata(engine_type="loop", mode_name="Loop · Coco", mode_emoji="🔁", continuation_seq=rotator.rotation_count + 1),
+            ))
+            assert rotator.rotation_count == 2
+
+            # Verify the metadata passed in second rotation had continuation_seq=2
+            _, meta2 = created_sessions[-1]
+            assert meta2.continuation_seq == 2

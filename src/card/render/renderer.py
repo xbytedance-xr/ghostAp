@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
-from dataclasses import dataclass, field
+import logging
+from collections.abc import Callable
 
-from src.card.render.atoms import RenderAtom, flatten_to_atoms
+from src.card.engine_meta import engine_type_to_cmd
+from src.card.types import ActiveElement, RenderedCard
+from src.card.render.atoms import AtomKind, RenderAtom, flatten_to_atoms
 from src.card.render.budget import RenderBudget
 from src.card.render.buttons import render_buttons
 from src.card.render.footer import render_footer
@@ -14,38 +18,48 @@ from src.card.render.pagination import paginate_atoms
 from src.card.render.plan import render_plan_panel
 from src.card.render.reasoning import render_reasoning_panel
 from src.card.render.tools import render_tool_history_panel, render_tool_panel
+from src.card.render.worktree import render_worktree_panel
 from src.card.state.models import CardState, ContentBlock
+from src.card.themes import PANEL_STYLES
+from src.card.ui_text import UI_TEXT
+
+logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class ActiveElement:
-    """Points to the streaming element that can be updated via element_content API."""
+# Banner background color and icon by warning_type
+_BANNER_STYLES: dict[str, tuple[str, str]] = {
+    "error": ("red", "❌"),
+    "warning": ("yellow", "⚠️"),
+    "info": ("wathet", "ℹ️"),
+    "success": ("green", "✅"),
+}
 
-    element_id: str
-    text: str
 
-
-@dataclass(frozen=True)
-class RenderedCard:
-    """Output of render_card(): one per page."""
-
-    card_json: dict = field(default_factory=dict)
-    structure_signature: str = ""
-    active_element: ActiveElement | None = None
-    page_index: int = 0
-    total_pages: int = 1
+def _engine_type_to_cmd(engine_type: str | None) -> str:
+    """Map engine_type to user-facing command string."""
+    return engine_type_to_cmd(engine_type, fallback="命令")
 
 
 def render_card(
-    state: CardState, budget: RenderBudget | None = None
+    state: CardState, budget: RenderBudget
 ) -> list[RenderedCard]:
     """Main entry: CardState → list[RenderedCard].
 
     Pipeline: flatten_to_atoms → paginate → assemble pages.
     Each page is a complete Feishu Schema 2.0 card JSON.
     """
-    if budget is None:
-        budget = RenderBudget()
+    if budget.engine_cmd == "命令" or budget.engine_cmd == "对应命令":
+        # Inject engine_cmd from state if caller didn't set it explicitly
+        engine_cmd = _engine_type_to_cmd(state.metadata.engine_type if state.metadata else None)
+        if engine_cmd != "命令" and engine_cmd != "对应命令":
+            from dataclasses import replace
+            budget = replace(budget, engine_cmd=engine_cmd)
+
+    # Use pre-built block_index from CardState (dict[str, int] → O(1) lookup)
+    # to construct block references on demand, avoiding O(n) dict rebuild per render call.
+    block_index: dict[str, ContentBlock] = {
+        bid: state.blocks[idx] for bid, idx in state.block_index.items()
+    }
 
     # 1. Flatten blocks to atoms
     atoms = flatten_to_atoms(state.blocks, budget)
@@ -54,22 +68,54 @@ def render_card(
     pages = paginate_atoms(atoms, budget)
     total_pages = len(pages)
 
-    # 3. Compute structure signature (stable across text deltas)
-    signature = compute_structure_signature(state)
+    # 3. Compute global structure signature (for cache key / fast structural-change detection)
+    global_sig = compute_structure_signature(state)
+    content_hash = compute_content_hash(state)
 
     # 4. Assemble each page
     results: list[RenderedCard] = []
     for page_idx, page_atoms in enumerate(pages):
         # Render body elements from atoms
-        body_elements = _render_atoms_to_elements(page_atoms, state, budget)
+        body_elements = _render_atoms_to_elements(page_atoms, state, budget, block_index)
+
+        # Promote warning banner to top of FIRST PAGE ONLY
+        # (reduces JSON size on multi-page cards; users rarely view non-first pages)
+        if page_idx == 0 and state.footer.warning_banner and state.footer.warning_type:
+            bg_style, icon = _BANNER_STYLES.get(state.footer.warning_type, ("grey", "ℹ️"))
+            banner_text = f"{icon} **{state.footer.warning_banner}**"
+            top_banner = {
+                "tag": "div",
+                "background_style": bg_style,
+                "corner_radius": "5px",
+                "padding": "4px 12px",
+                "margin": "0 8px",
+                "elements": [{"tag": "markdown", "content": banner_text, "text_align": "left", "text_color": "dark"}],
+            }
+            body_elements.insert(0, top_banner)
+            # Spacer after banner for visual separation (compact for mobile)
+            body_elements.insert(1, {"tag": "div", "padding": "4px 0"})
+
+        # Non-first pages: styled warning banner (consistent sizing) so users on any page can see it
+        if page_idx > 0 and state.footer.warning_banner:
+            bg_style, icon = _BANNER_STYLES.get(state.footer.warning_type or "warning", ("grey", "ℹ️"))
+            warning_note = {
+                "tag": "div",
+                "background_style": bg_style,
+                "corner_radius": "5px",
+                "padding": "4px 12px",
+                "margin": "0 8px",
+                "elements": [{"tag": "markdown", "content": f"{icon} **{state.footer.warning_banner}**", "text_align": "left", "text_color": "dark"}],
+            }
+            body_elements.insert(0, warning_note)
+            body_elements.insert(1, {"tag": "div", "padding": "4px 0"})
 
         # Append footer and buttons only on the last page
         if page_idx == total_pages - 1:
-            body_elements.extend(render_footer(state))
-            body_elements.extend(render_buttons(state))
+            body_elements.extend(render_footer(state, budget=budget))
+            body_elements.extend(render_buttons(state, budget=budget))
 
         # Detect active element for streaming
-        active_element = _find_active_element(page_atoms, state)
+        active_element = _find_active_element(page_atoms, block_index)
 
         # Determine streaming mode
         has_active_text = active_element is not None
@@ -84,10 +130,30 @@ def render_card(
             active_element=active_element,
         )
 
+        # Compute per-page structure signature from body content
+        # This ensures only pages with actual changes trigger API updates
+        page_sig_parts = [global_sig, f"page:{page_idx}"]
+        for elem in body_elements:
+            tag = elem.get("tag", "")
+            page_sig_parts.append(tag)
+            if tag == "markdown":
+                page_sig_parts.append(str(elem.get("content", ""))[:64])
+            elif tag == "collapsible_panel":
+                header = elem.get("header")
+                if isinstance(header, dict):
+                    title_obj = header.get("title", {})
+                    page_sig_parts.append(str(title_obj.get("content", ""))[:32])
+                elif isinstance(header, str):
+                    page_sig_parts.append(header[:32])
+        page_signature = hashlib.md5(
+            "|".join(page_sig_parts).encode("utf-8")
+        ).hexdigest()
+
         results.append(
             RenderedCard(
-                card_json=card_json,
-                structure_signature=signature,
+                _card_json=card_json,
+                structure_signature=page_signature,
+                content_hash=content_hash,
                 active_element=active_element,
                 page_index=page_idx,
                 total_pages=total_pages,
@@ -97,22 +163,31 @@ def render_card(
     return results
 
 
+# Thread-safe structure signature cache using lru_cache (immutable args → safe under GIL)
+# Avoids recomputing MD5 for pure text_delta events
+
+
+@functools.lru_cache(maxsize=64)
+def _compute_sig_cached(sv: int, parts_key: str) -> str:
+    """Cached MD5 computation keyed on (structural_version, parts_key)."""
+    return hashlib.md5(parts_key.encode("utf-8")).hexdigest()
+
+
 def compute_structure_signature(state: CardState) -> str:
     """Compute MD5 of structural parts of the card.
 
-    Structural = block kinds + statuses + tool names + terminal state.
-    Excludes active text content (which changes via element_content streaming).
+    Structural = block kinds + statuses + tool names + terminal state + header + buttons.
+    Excludes: active text content (streamed via element_content), progress_pct,
+    criteria counts, and warning_banner (tracked separately in content_hash).
     This allows the delivery layer to skip full card updates when only text changed.
+
+    Uses structural_version as cache key — returns cached value when version unchanged.
     """
     parts: list[str] = []
     for block in state.blocks:
         parts.append(f"{block.kind}:{block.block_id}:{block.status}")
         if block.kind == "tool_call":
             parts.append(f"tn:{block.tool_name}")
-        if block.kind == "plan":
-            parts.append(f"pc:{block.content}")
-        elif block.kind == "reasoning":
-            parts.append(f"rc:{block.content}")
     parts.append(f"terminal:{state.terminal}")
     parts.append(f"header:{state.header.title}:{state.header.template}")
     if state.header.subtitle is not None:
@@ -120,6 +195,32 @@ def compute_structure_signature(state: CardState) -> str:
     if state.footer.status is not None:
         parts.append(f"footer:{state.footer.status}")
     parts.append(f"buttons:{len(state.buttons)}")
+    if state.engine_ext and state.engine_ext.phase_info:
+        parts.append(f"phase:{state.engine_ext.phase_info}")
+    raw = "|".join(parts)
+
+    sv = state.structural_version
+    if sv > 0:
+        return _compute_sig_cached(sv, raw)
+    # For initial version (sv=0), compute without caching
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+
+def compute_content_hash(state: CardState) -> str:
+    """Compute MD5 of frequently-changing content fields.
+
+    These fields (progress_pct, criteria counts, warning_banner) change often
+    but don't alter card structure. Used to decide if a content-only patch is needed.
+    """
+    parts: list[str] = []
+    if state.footer.progress_pct is not None:
+        parts.append(f"pct:{state.footer.progress_pct}")
+    if state.engine_ext and state.engine_ext.criteria_section:
+        parts.append(f"criteria:{state.engine_ext.criteria_satisfied}/{state.engine_ext.criteria_total}")
+    if state.footer.warning_banner:
+        parts.append(f"warn:{state.footer.warning_banner}")
+    if not parts:
+        return ""
     raw = "|".join(parts)
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
@@ -129,48 +230,122 @@ def compute_structure_signature(state: CardState) -> str:
 # ---------------------------------------------------------------------------
 
 
+# --- Individual atom renderer functions (signature: atom, state, budget, block_index → dict|None) ---
+
+def _render_atom_text(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict:
+    return _render_text_element(atom, block_index)
+
+
+def _render_atom_tool_panel(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict:
+    block = block_index.get(atom.block_id)
+    if block is not None:
+        return render_tool_panel(block)
+    return {"tag": "markdown", "content": atom.content}
+
+
+def _render_atom_tool_history(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict:
+    blocks = _find_tool_history_blocks(state, atom.block_id)
+    if blocks:
+        return render_tool_history_panel(blocks)
+    return {"tag": "markdown", "content": atom.content}
+
+
+def _render_atom_reasoning(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict:
+    block = block_index.get(atom.block_id)
+    if block is not None:
+        return render_reasoning_panel(block, budget)
+    return {"tag": "markdown", "content": atom.content}
+
+
+def _render_atom_plan(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict:
+    block = block_index.get(atom.block_id)
+    if block is not None:
+        phase = state.footer.status if state.footer.status else "running"
+        return render_plan_panel(block, budget=budget, phase=phase)
+    return {"tag": "markdown", "content": atom.content}
+
+
+def _render_atom_criteria(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict:
+    return _render_criteria_panel(atom, state)
+
+
+def _render_atom_phase(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict:
+    return _render_phase_panel(atom)
+
+
+def _render_atom_warning_banner(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict:
+    return {"tag": "markdown", "content": atom.content}
+
+
+def _render_atom_progress_bar(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict:
+    return {"tag": "markdown", "content": atom.content}
+
+
+def _render_atom_worktree_panel(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict | None:
+    """Look up the ContentBlock for this atom and delegate to render_worktree_panel."""
+    block = block_index.get(atom.block_id)
+    if block is None:
+        return {"tag": "markdown", "content": atom.content}
+    return render_worktree_panel(block)
+
+
+# Atom renderer registry: maps atom.kind → renderer function.
+# To add a new atom kind, define a function with the standard signature and register it here.
+_ATOM_RENDERERS: dict[str, Callable[[RenderAtom, CardState, RenderBudget, dict], dict | None]] = {
+    "text": _render_atom_text,
+    "tool_panel": _render_atom_tool_panel,
+    "tool_history": _render_atom_tool_history,
+    "reasoning": _render_atom_reasoning,
+    "plan": _render_atom_plan,
+    "criteria_panel": _render_atom_criteria,
+    "phase_panel": _render_atom_phase,
+    "warning_banner": _render_atom_warning_banner,
+    "progress_bar": _render_atom_progress_bar,
+    "worktree_panel": _render_atom_worktree_panel,
+}
+
+# Validate AtomKind ↔ _ATOM_RENDERERS single source of truth at import time.
+# Uses typing.get_args to extract literals from the AtomKind type alias.
+from typing import get_args as _get_args
+_atom_kind_literals = set(_get_args(AtomKind))
+_atom_renderer_keys = set(_ATOM_RENDERERS.keys())
+if _atom_kind_literals != _atom_renderer_keys:
+    raise RuntimeError(
+        f"AtomKind and _ATOM_RENDERERS mismatch: "
+        f"AtomKind={_atom_kind_literals}, registry={_atom_renderer_keys}"
+    )
+del _atom_kind_literals, _atom_renderer_keys
+
+
 def _render_atoms_to_elements(
-    atoms: list[RenderAtom], state: CardState, budget: RenderBudget
+    atoms: list[RenderAtom], state: CardState, budget: RenderBudget,
+    block_index: dict[str, ContentBlock],
 ) -> list[dict]:
-    """Convert RenderAtoms to Feishu Schema 2.0 elements."""
+    """Convert RenderAtoms to Feishu Schema 2.0 elements using the atom renderer registry."""
     elements: list[dict] = []
 
     for atom in atoms:
-        if atom.kind == "text":
-            el = _render_text_element(atom, state)
-            elements.append(el)
-        elif atom.kind == "tool_panel":
-            block = _find_block_by_id(state, atom.block_id)
-            if block is not None:
-                elements.append(render_tool_panel(block))
+        renderer = _ATOM_RENDERERS.get(atom.kind)
+        if renderer is not None:
+            el = renderer(atom, state, budget, block_index)
+            if el is not None:
+                elements.append(el)
+        else:
+            logger.warning("Unknown atom kind '%s', rendering as placeholder", atom.kind)
+            # Use state-aware placeholder: running vs terminal
+            if state.terminal == "running":
+                fallback_text = UI_TEXT["card_content_load_error_running"]
             else:
-                # Fallback: render as markdown from atom content
-                elements.append({"tag": "markdown", "content": atom.content})
-        elif atom.kind == "tool_history":
-            blocks = _find_tool_history_blocks(state, atom.block_id)
-            if blocks:
-                elements.append(render_tool_history_panel(blocks))
-            else:
-                elements.append({"tag": "markdown", "content": atom.content})
-        elif atom.kind == "reasoning":
-            block = _find_block_by_id(state, atom.block_id)
-            if block is not None:
-                elements.append(render_reasoning_panel(block, budget))
-            else:
-                elements.append({"tag": "markdown", "content": atom.content})
-        elif atom.kind == "plan":
-            block = _find_block_by_id(state, atom.block_id)
-            if block is not None:
-                elements.append(render_plan_panel(block))
-            else:
-                elements.append({"tag": "markdown", "content": atom.content})
+                engine_cmd = _engine_type_to_cmd(state.metadata.engine_type if state.metadata else None)
+                fallback_text = UI_TEXT["card_content_load_error"].format(engine_cmd=engine_cmd)
+            elements.append({"tag": "markdown", "content": fallback_text})
 
     return elements
 
 
-def _render_text_element(atom: RenderAtom, state: CardState) -> dict:
+def _render_text_element(atom: RenderAtom, block_index: dict[str, ContentBlock]) -> dict:
     """Render a text atom. If it's the active block, assign element_id for streaming."""
-    block = _find_block_by_id(state, atom.block_id)
+    block = block_index.get(atom.block_id)
     element_id = None
     if block is not None and block.element_id and block.status == "active":
         element_id = block.element_id
@@ -182,23 +357,15 @@ def _render_text_element(atom: RenderAtom, state: CardState) -> dict:
 
 
 def _find_active_element(
-    atoms: list[RenderAtom], state: CardState
+    atoms: list[RenderAtom], block_index: dict[str, ContentBlock],
 ) -> ActiveElement | None:
     """Find the active streaming text element on this page."""
     for atom in atoms:
         if atom.kind != "text":
             continue
-        block = _find_block_by_id(state, atom.block_id)
+        block = block_index.get(atom.block_id)
         if block is not None and block.status == "active" and block.element_id:
             return ActiveElement(element_id=block.element_id, text=atom.content)
-    return None
-
-
-def _find_block_by_id(state: CardState, block_id: str) -> ContentBlock | None:
-    """Find a ContentBlock by block_id."""
-    for block in state.blocks:
-        if block.block_id == block_id:
-            return block
     return None
 
 
@@ -241,3 +408,48 @@ def _assemble_card_json(
         card["config"]["streaming_mode"] = True
 
     return card
+
+
+def _render_criteria_panel(atom: RenderAtom, state: CardState) -> dict:
+    """Render criteria section as a collapsible markdown panel with inline count."""
+    # Inline count from engine_ext if available
+    if state.engine_ext and state.engine_ext.criteria_total > 0:
+        header_text = UI_TEXT["criteria_panel_header_with_count"].format(
+            satisfied=state.engine_ext.criteria_satisfied,
+            total=state.engine_ext.criteria_total,
+        )
+        # Expand when criteria exist but not all satisfied; collapse when all pass
+        expanded = state.engine_ext.criteria_satisfied < state.engine_ext.criteria_total
+    else:
+        header_text = UI_TEXT["criteria_panel_header"]
+        expanded = state.metadata.expand_ac
+    return {
+        "tag": "collapsible_panel",
+        "expanded": expanded,
+        "header": {
+            "title": {"tag": "markdown", "content": header_text},
+            "icon": {
+                "tag": "standard_icon",
+                "token": "down-small-ccm_outlined",
+                "size": "16px 16px",
+            },
+            "icon_position": "follow_text",
+            "icon_expanded_angle": -180,
+        },
+        "border": {"color": "wathet", "corner_radius": PANEL_STYLES["corner_radius"]},
+        "vertical_spacing": "8px",
+        "padding": PANEL_STYLES["padding_standard"],
+        "elements": [{"tag": "markdown", "content": atom.content}],
+    }
+
+
+def _render_phase_panel(atom: RenderAtom) -> dict:
+    """Render phase info as a visually distinct block with wathet background."""
+    return {
+        "tag": "div",
+        "background_style": "wathet",
+        "padding": "4px 12px",
+        "corner_radius": "5px",
+        "elements": [{"tag": "markdown", "content": f"⚙️ {atom.content}"}],
+    }
+

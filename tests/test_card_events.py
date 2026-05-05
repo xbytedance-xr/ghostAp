@@ -1,12 +1,19 @@
 """Tests for card event types and conversion."""
 import pytest
-from src.card.events import CardEvent, CardEventType
+from src.card.events import CardEvent, CardEventType, VALIDATE_PAYLOAD
 from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo, PlanInfo, PlanEntryInfo
+
+
+class TestValidatePayloadFlag:
+    """Ensure VALIDATE_PAYLOAD is active in test environment."""
+
+    def test__validate_payload_is_true_in_test(self):
+        assert VALIDATE_PAYLOAD is True
 
 
 class TestCardEventCreation:
     def test_all_event_types_exist(self):
-        assert len(CardEventType) == 21
+        assert len(CardEventType) == 39
 
     def test_started_factory(self):
         e = CardEvent.started()
@@ -21,6 +28,24 @@ class TestCardEventCreation:
         e = CardEvent.failed("oops")
         assert e.type == CardEventType.FAILED
         assert e.payload["error"] == "oops"
+
+    def test_failed_empty_string_fallback(self):
+        e = CardEvent.failed("")
+        assert e.payload["error"] == ""
+
+    def test_failed_no_arg_fallback(self):
+        e = CardEvent.failed()
+        assert e.payload["error"] == ""
+
+    def test_blocked_factory(self):
+        e = CardEvent.blocked("quota exceeded")
+        assert e.type == CardEventType.BLOCKED
+        assert e.payload["reason"] == "quota exceeded"
+
+    def test_blocked_factory_empty_reason(self):
+        e = CardEvent.blocked()
+        assert e.type == CardEventType.BLOCKED
+        assert e.payload.get("reason", "") == ""
 
     def test_text_delta_factory(self):
         e = CardEvent.text_delta("b1", "hello")
@@ -84,3 +109,120 @@ class TestFromACP:
         assert "✅ Step 1" in ce.payload["content"]
         assert "⏳ Step 2" in ce.payload["content"]
         assert "○ Step 3" in ce.payload["content"]
+
+    def test_tool_call_update(self):
+        tc = ToolCallInfo(id="tc1", title="bash", kind="execute", status="in_progress", content="partial output")
+        acp = ACPEvent(event_type=ACPEventType.TOOL_CALL_UPDATE, tool_call=tc)
+        ce = CardEvent.from_acp(acp)
+        assert ce.type == CardEventType.TOOL_DELTA
+        assert ce.payload["block_id"] == "tc1"
+        assert ce.payload["content"] == "partial output"
+
+    def test_unknown_event_type_fallback(self):
+        """Unknown/unhandled event types should fall back to TEXT_DELTA."""
+        acp = ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="fallback")
+        # Patch the type to something the adapter doesn't explicitly handle
+        acp.event_type = "totally_unknown_type"
+        ce = CardEvent.from_acp(acp)
+        assert ce.type == CardEventType.TEXT_DELTA
+
+
+class TestWorktreePayloadValidation:
+    """Assert validations on worktree factory methods."""
+
+    def test_worktree_progress_valid(self):
+        e = CardEvent.worktree_progress(
+            units=[{"name": "u1", "status": "running"}],
+            project_id="p1",
+        )
+        assert e.type == CardEventType.WORKTREE_PROGRESS
+        assert e.payload["units"][0]["status"] == "running"
+
+    def test_worktree_progress_rejects_non_list(self):
+        with pytest.raises(TypeError, match="units must be a list"):
+            CardEvent.worktree_progress(units="bad", project_id="p1")
+
+    def test_worktree_progress_rejects_unit_without_status(self):
+        with pytest.raises(ValueError, match="must be a dict with 'status'"):
+            CardEvent.worktree_progress(units=[{"name": "u1"}], project_id="p1")
+
+    def test_worktree_tool_select_valid(self):
+        e = CardEvent.worktree_tool_select(
+            tools=[{"provider": "acp", "tool_name": "coco", "display_name": "Coco"}],
+            selected=["coco"],
+        )
+        assert e.type == CardEventType.WORKTREE_TOOL_SELECT
+        assert e.payload["selected"] == ["coco"]
+
+    def test_worktree_tool_select_rejects_non_dict_tool(self):
+        with pytest.raises(TypeError, match="each tool must be a dict"):
+            CardEvent.worktree_tool_select(tools=["not_a_dict"])
+
+    def test_worktree_confirm_valid(self):
+        e = CardEvent.worktree_confirm(
+            selected_items=[{"tool": "coco", "model": "gpt4"}],
+            goal="implement feature",
+        )
+        assert e.type == CardEventType.WORKTREE_CONFIRM
+        assert e.payload["goal"] == "implement feature"
+
+    def test_worktree_confirm_rejects_non_list(self):
+        with pytest.raises(TypeError, match="selected_items must be a list"):
+            CardEvent.worktree_confirm(selected_items="bad")
+
+    def test_worktree_cleanup_valid(self):
+        e = CardEvent.worktree_cleanup(
+            merge_notes=[{"branch": "feat-1", "status": "success", "summary": "done"}],
+            base_branch="main",
+        )
+        assert e.type == CardEventType.WORKTREE_CLEANUP
+        assert e.payload["base_branch"] == "main"
+
+    def test_worktree_cleanup_rejects_missing_branch(self):
+        with pytest.raises(ValueError, match="must have 'branch' and 'status'"):
+            CardEvent.worktree_cleanup(merge_notes=[{"status": "ok"}])
+
+    def test_worktree_cleanup_rejects_invalid_phase(self):
+        with pytest.raises(ValueError, match="cleanup_phase must be 'summary' or 'actions'"):
+            CardEvent.worktree_cleanup(
+                merge_notes=[{"branch": "b", "status": "ok"}],
+                cleanup_phase="invalid",
+            )
+
+    def test_worktree_merge_valid(self):
+        e = CardEvent.worktree_merge(
+            merge_notes=[{"branch": "feat-1", "status": "ready"}],
+            base_branch="develop",
+        )
+        assert e.type == CardEventType.WORKTREE_MERGE
+        assert e.payload["base_branch"] == "develop"
+
+    def test_worktree_merge_rejects_missing_status(self):
+        with pytest.raises(ValueError, match="must have 'branch' and 'status'"):
+            CardEvent.worktree_merge(merge_notes=[{"branch": "feat-1"}])
+
+
+class TestCardEventCancelled:
+    """Edge-case tests for CardEvent.cancelled()."""
+
+    def test_cancelled_with_reason(self):
+        e = CardEvent.cancelled(reason="ttl_expired")
+        assert e.type == CardEventType.CANCELLED
+        assert e.payload == {"reason": "ttl_expired"}
+
+    def test_cancelled_without_reason(self):
+        e = CardEvent.cancelled()
+        assert e.type == CardEventType.CANCELLED
+        assert e.payload == {}
+
+    def test_cancelled_with_empty_string_reason(self):
+        """Empty string reason should be treated as no reason (falsy)."""
+        e = CardEvent.cancelled(reason="")
+        assert e.type == CardEventType.CANCELLED
+        # Empty string is falsy, so payload should be empty
+        assert e.payload == {}
+
+    def test_cancelled_with_none_reason(self):
+        e = CardEvent.cancelled(reason=None)
+        assert e.type == CardEventType.CANCELLED
+        assert e.payload == {}

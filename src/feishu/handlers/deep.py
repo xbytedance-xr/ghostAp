@@ -12,11 +12,11 @@ from ...utils.command_parser import CommandParser
 from ...utils.errors import get_error_detail
 from ...utils.text import generate_task_id
 from ..emoji import EmojiReaction
-from ..renderers.deep_renderer import DeepRenderer
 from .engine_base import BaseEngineHandler
 from .base import CardActionContext
 
 if TYPE_CHECKING:
+    from ...card.protocols import RendererProtocol
     from ...project import ProjectContext
     from ..handler_context import HandlerContext
 
@@ -26,9 +26,12 @@ logger = logging.getLogger(__name__)
 class DeepHandler(BaseEngineHandler):
     """Manages the full lifecycle of Deep Engine tasks."""
 
-    def __init__(self, ctx: "HandlerContext") -> None:
+    def __init__(self, ctx: "HandlerContext", renderer: "RendererProtocol | None" = None) -> None:
         super().__init__(ctx)
-        self.renderer = DeepRenderer(self)
+        if renderer is None:
+            from ..renderers import get_renderer
+            renderer = get_renderer("deep", self)
+        self.renderer = renderer
 
     def _get_engine_manager(self):
         return self.ctx.deep_engine_manager
@@ -146,7 +149,7 @@ class DeepHandler(BaseEngineHandler):
 
         planning_content = reporter.format_planning_start(requirement)
         planning_title = reporter.get_planning_start_title()
-        msg_type, card_content = CardBuilder.build_engine_card(
+        msg_type, card_content = CardBuilder.build_info_card(
             project=project,
             title=planning_title,
             content=f"{planning_content}\n\n{self.format_ref_note(message_id, request_id)}"
@@ -214,7 +217,7 @@ class DeepHandler(BaseEngineHandler):
 
         if not candidates:
             engine_name = self.get_engine_name(chat_id, project_id=None)
-            msg_type, card_content = CardBuilder.build_engine_card(
+            msg_type, card_content = CardBuilder.build_info_card(
                 project=None,
                 title="📊 Deep Agent 看板",
                 content="当前没有 Deep Agent 任务\n\n发送 `/deep <需求>` 开始一个复杂任务",
@@ -288,7 +291,7 @@ class DeepHandler(BaseEngineHandler):
         )
 
     def stop_all_deep_engines(self, message_id: str, chat_id: str):
-        from ...card.styles import UI_TEXT
+        from ...card.ui_text import UI_TEXT
 
         engines = self.ctx.deep_engine_manager.get_active_engines(chat_id)
         if not engines:
@@ -350,7 +353,7 @@ class DeepHandler(BaseEngineHandler):
             except Exception:
                 project = None
 
-        msg_type, card_content = CardBuilder.build_engine_card(
+        msg_type, card_content = CardBuilder.build_info_card(
             project=project,
             title=title,
             content=content,

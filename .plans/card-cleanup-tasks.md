@@ -1,0 +1,27 @@
+# Card Pipeline 清理与设计改进 - 任务分解
+
+## 任务列表
+
+1. [删除 src/card/direct_session.py 文件，确认 git 暂存区已标记删除] (依赖: 无)
+2. [移除 src/card/builder.py 中 build_engine_card 的 raise AttributeError stub 方法（约 L524-528）] (依赖: 无)
+3. [删除 tests/test_card_builders.py 中验证 build_engine_card raises 的测试用例（TestBuildEngineCardRemoval 相关）] (依赖: 2)
+4. [移除 src/card/models.py 中 is_stopping 字段（L79）] (依赖: 无)
+5. [移除 src/card/builders/deep.py 中 getattr(state, 'is_stopping', False) 分支，将 body_key 固定为 'card_btn_confirm_stop_danger_body_direct'] (依赖: 4)
+6. [在 src/card/ui_text.py 中删除 'card_btn_confirm_stop_danger_body' escalation 变体 key（L715），将 'card_btn_confirm_stop_danger_body_direct' 重命名为 'card_btn_confirm_stop_danger_body'] (依赖: 5)
+7. [grep 确认 'card_btn_confirm_stop_danger_body_direct' 旧 key 在全项目无残留引用，修复遗漏] (依赖: 6)
+8. [删除 tests/test_card_builders.py 中 test_is_stopping_true_uses_escalation_body / test_is_stopping_false_uses_direct_body 等关联测试] (依赖: 5, 6)
+9. [在 src/card/ui_text.py 中新增 'mode_name_claude'/'mode_name_coco'/'mode_name_gemini'/'mode_name_ttadk' 4 个 key] (依赖: 无)
+10. [修改 src/card/shared.py L177-186 模式名称硬编码改为引用 UI_TEXT 对应 mode_name_* key] (依赖: 9)
+11. [在 src/card/ui_text.py 中新增 8 个 quick_action 按钮文案 key（qa_btn_confirm/qa_btn_retry/qa_btn_cancel/qa_btn_continue/qa_btn_next/qa_btn_stop/qa_btn_new_project/qa_btn_list_projects）] (依赖: 无)
+12. [修改 src/card/shared.py build_quick_actions() 中 8 个硬编码按钮文案改为引用 UI_TEXT qa_btn_* 常量] (依赖: 11)
+13. [修改 src/card/buttons_config.py L14 将 'stop' 的 type 从 'danger' 改为 'default'] (依赖: 无)
+14. [将 src/card/ui_text.py 中 system_help_timeout_note 内容合并为 system_help_tips 的第 3 点，删除 system_help_timeout_note key] (依赖: 无)
+15. [更新 src/card/builders/system.py 中引用 system_help_timeout_note 的逻辑（约 L943），改为使用已合并的 system_help_tips] (依赖: 14)
+16. [修改 src/card/styles_lock.py L63 lock_success_lock_reply 模板——移除'约'字，将斜体 '*...*' 改为加粗 '**...**'] (依赖: 无)
+17. [修改 src/card/builders/system.py build_help_card 签名，三个 keyword-only 参数默认值改为 None，函数体添加 lazy get_settings() 取值逻辑] (依赖: 无)
+18. [更新 src/feishu/handlers/system.py 中 build_help_card 调用——移除显式传入的三个参数（依赖默认值）] (依赖: 17)
+19. [更新 src/card/builder.py 中 build_help_card 委托签名，同步参数默认值变更] (依赖: 17)
+20. [修改 .env.example 中 CARD_SESSION_IDLE_TIMEOUT 行取消注释（值为 1800），添加 Quick Start 注释说明] (依赖: 无)
+21. [grep 验证新管线 renderers（src/feishu/renderers/spec_renderer.py/loop_renderer.py/deep_renderer.py）不调用 build_responsive_layout/_build_button_grid，如有残留则移除] (依赖: 无)
+22. [运行全量 grep 验证 15 条 acceptance_criteria 的 PASS 条件] (依赖: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21)
+23. [运行 `uv run pytest tests/ -v` 全量测试，修复因上述变更导致的断言失败] (依赖: 22)

@@ -157,9 +157,7 @@ def test_wt_command_with_goal_parsed():
     project = _make_project()
     handler.ctx.project_manager.get_active_project.return_value = project
 
-    reply_mock = MagicMock()
-    with patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
-         patch.object(handler, "reply_card", reply_mock):
+    with patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS):
         handler.handle_worktree_command("msg1", "chat1", project, goal="实现登录功能")
 
     state = WorktreeManager.get_state(project)
@@ -168,7 +166,8 @@ def test_wt_command_with_goal_parsed():
     assert state.journey.goal == "实现登录功能"
     assert state.journey.status == WorktreeJourneyStatus.PENDING
 
-    reply_mock.assert_called_once()
+    # Verify a session was created (CardSession dispatched tool_select event)
+    assert "p-auto" in handler._renderer._sessions
     
 
 def test_apply_journey_event_updates_runtime_state_journey():
@@ -334,7 +333,7 @@ def test_worktree_prefix_command_parses_goal():
 # ---------------------------------------------------------------------------
 
 def test_no_goal_fallback_confirm_card():
-    """/wt without goal → finish_selection → confirm card shown."""
+    """/wt without goal → finish_selection → confirm card dispatched via session."""
     handler = _make_system_handler()
     project = _make_project("p-fb")
     handler.ctx.project_manager.get_active_project.return_value = project
@@ -349,14 +348,17 @@ def test_no_goal_fallback_confirm_card():
     mgr.add_pending_item(project)
     mgr.back_to_tool_selection(project)
 
-    patch_mock = MagicMock()
-    with patch.object(handler, "update_card", patch_mock):
+    mock_session = MagicMock()
+    mock_session.closed = False
+    with patch.object(handler, "_get_or_create_session", return_value=mock_session):
         handler.handle_finish_worktree_selection("msg-fb", "chat-fb", project_id="p-fb", value={})
 
-    patch_mock.assert_called_once()
-    card_json = patch_mock.call_args[0][1]
-    assert "确认组合" in card_json
-    assert "确认并开始执行" in card_json
+    # Should dispatch WORKTREE_CONFIRM event (no goal → confirm card, not auto-execute)
+    mock_session.dispatch.assert_called_once()
+    event = mock_session.dispatch.call_args[0][0]
+    from src.card.events import CardEventType
+    assert event.type == CardEventType.WORKTREE_CONFIRM
+    assert event.payload.get("goal", "") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -506,12 +508,11 @@ def test_silent_mode_throttle_interval():
     state = mgr.get_state(project)
     state.units = [WorktreeUnit(unit_id="u1", status="ready")]
 
-    send_mock = MagicMock(return_value="progress-mid")
-    patch_mock = MagicMock()
+    mock_session = MagicMock()
+    mock_session.closed = False
 
     # Mock execute_goal to capture the on_unit_update callback
     captured_callback = [None]
-    original_execute = mgr.execute_goal
 
     def fake_execute(proj, goal, on_unit_update=None, **kw):
         captured_callback[0] = on_unit_update
@@ -521,24 +522,25 @@ def test_silent_mode_throttle_interval():
         return state
 
     with patch.object(mgr, "execute_goal", side_effect=fake_execute), \
-         patch.object(handler, "send_card_to_chat", send_mock), \
-         patch.object(handler, "update_card", patch_mock):
+         patch.object(handler, "_get_or_create_session", return_value=mock_session):
         handler.handle_worktree_execute("msg-sil", "chat-sil", "测试", project=project, silent_mode=True)
 
-    # Check initial message contains silent mode indicator
-    init_card = send_mock.call_args[0][1]
-    assert "已开始执行" in init_card or "自动通知" in init_card
+    # Check initial dispatch includes STARTED and WORKTREE_PROGRESS
+    dispatch_calls = [c.args[0] for c in mock_session.dispatch.call_args_list]
+    types = [e.type.value for e in dispatch_calls]
+    assert "started" in types
+    assert "worktree_progress" in types
 
     # Callback should have been captured
     assert captured_callback[0] is not None
 
     # Simulate rapid callbacks — they should be throttled at 30s
-    patch_mock.reset_mock()
+    mock_session.dispatch.reset_mock()
     cb = captured_callback[0]
     cb(state.units[0])  # first call — should NOT update (just set time)
     cb(state.units[0])  # second call within <30s — should be throttled
     # Only final result card patched (from main flow), not from rapid callbacks
-    # The rapid callbacks should not cause additional patch calls
+    # The rapid callbacks should not cause additional dispatch calls beyond throttle
 
 
 # ---------------------------------------------------------------------------
@@ -554,10 +556,12 @@ def test_goal_persistence_across_selection():
     handler.ctx.project_manager.get_project_for_chat.return_value = project
 
     mgr = handler._worktree_manager()
+    mock_session = MagicMock()
+    mock_session.closed = False
 
     # Step 1: /wt with goal
     with patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
-         patch.object(handler, "reply_card"):
+         patch.object(handler, "_get_or_create_session", return_value=mock_session):
         handler.handle_worktree_command("m1", "c1", project, goal="实现搜索功能")
 
     state = mgr.get_state(project)
@@ -567,7 +571,7 @@ def test_goal_persistence_across_selection():
     with patch.object(handler, "_get_models_for_tool", return_value=[{"name": "sonnet", "display_name": "Sonnet", "is_default": True}, 
                                                                       {"name": "opus", "display_name": "Opus", "is_default": False}]), \
          patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
-         patch.object(handler, "update_card"):
+         patch.object(handler, "_get_or_create_session", return_value=mock_session):
         handler.handle_worktree_select_tool(
             "m2", "c1", project_id="p-pers",
             value={"tool_name": "claude", "provider": "cli", "supports_model": True},
@@ -578,16 +582,16 @@ def test_goal_persistence_across_selection():
     assert state.selection.pending_item is not None
 
     # Step 3: select model — should return to tool select (no auto-execute)
-    patch_mock = MagicMock()
+    mock_session.dispatch.reset_mock()
     with patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
-         patch.object(handler, "update_card", patch_mock):
+         patch.object(handler, "_get_or_create_session", return_value=mock_session):
         handler.handle_worktree_select_model(
             "m3", "c1", project_id="p-pers",
             value={"model_name": "sonnet", "model_display_name": "Sonnet"},
         )
 
-    # Should return to tool select card, not auto-execute
-    patch_mock.assert_called_once()
+    # Should dispatch tool_select back (not auto-execute)
+    mock_session.dispatch.assert_called_once()
     state = mgr.get_state(project)
     assert state.selection.pending_goal == "实现搜索功能"
     assert len(state.selection.selected_items) == 1
@@ -607,9 +611,11 @@ def test_goal_from_start_selection_persists_through_model_select():
         provider="cli", tool_name="claude", display_name="Claude", supports_model=True,
     ))
 
+    mock_session = MagicMock()
+    mock_session.closed = False
     # select model — goal should not be overwritten (no goal in card value)
     with patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
-         patch.object(handler, "update_card"):
+         patch.object(handler, "_get_or_create_session", return_value=mock_session):
         handler.handle_worktree_select_model(
             "m-model", "c-model", project_id="p-model",
             value={"model_name": "sonnet", "model_display_name": "Sonnet"},
@@ -705,9 +711,10 @@ def test_whitespace_only_goal_falls_back_to_confirm_card():
     mgr.add_pending_item(project)
     mgr.back_to_tool_selection(project)
 
-    patch_mock = MagicMock()
+    mock_session = MagicMock()
+    mock_session.closed = False
     auto_exec_mock = MagicMock()
-    with patch.object(handler, "update_card", patch_mock), \
+    with patch.object(handler, "_get_or_create_session", return_value=mock_session), \
          patch.object(handler, "_auto_execute_worktree", auto_exec_mock):
         handler.handle_finish_worktree_selection(
             "msg-ws", "chat-ws", project_id="p-ws",
@@ -716,10 +723,11 @@ def test_whitespace_only_goal_falls_back_to_confirm_card():
 
     # Should NOT trigger auto-execute
     auto_exec_mock.assert_not_called()
-    # Should show confirm card
-    patch_mock.assert_called_once()
-    card_json = patch_mock.call_args[0][1]
-    assert "确认组合" in card_json
+    # Should dispatch WORKTREE_CONFIRM event
+    mock_session.dispatch.assert_called_once()
+    event = mock_session.dispatch.call_args[0][0]
+    from src.card.events import CardEventType
+    assert event.type == CardEventType.WORKTREE_CONFIRM
 
 
 def test_goal_with_newlines_preserved():
@@ -739,8 +747,10 @@ def test_goal_with_newlines_preserved():
 
     multiline_goal = "第一步：实现登录\n第二步：添加测试"
     auto_exec_mock = MagicMock()
+    mock_session = MagicMock()
+    mock_session.closed = False
     with patch.object(handler, "_auto_execute_worktree", auto_exec_mock), \
-         patch.object(handler, "update_card"):
+         patch.object(handler, "_get_or_create_session", return_value=mock_session):
         handler.handle_finish_worktree_selection(
             "msg-nl", "chat-nl", project_id="p-nl",
             value={"worktree_goal": multiline_goal},
@@ -753,11 +763,11 @@ def test_goal_with_newlines_preserved():
 
 
 def test_silent_mode_timeout_notification_fires():
-    """Silent mode 10-min safety valve: callback at >=600s patches card with timeout msg.
+    """Silent mode 10-min safety valve: callback at >=600s dispatches progress event with timeout msg.
 
-    The closure captures time from module globals and self.update_card from the handler.
+    The closure captures time from module globals and the session from the handler.
     We must mock both during handle_worktree_execute (to capture the callback) and again
-    when invoking the callback (so the closure sees mocked time + mocked patch_message).
+    when invoking the callback (so the closure sees mocked time).
     """
     handler = _make_system_handler()
     project = _make_project("p-timeout")
@@ -774,8 +784,8 @@ def test_silent_mode_timeout_notification_fires():
     state = mgr.get_state(project)
     state.units = [WorktreeUnit(unit_id="u1", status="ready")]
 
-    send_mock = MagicMock(return_value="progress-mid")
-    patch_msg_mock = MagicMock()
+    mock_session = MagicMock()
+    mock_session.closed = False
     captured_callback = [None]
 
     _fake_now = [1000.0]  # starting fake clock
@@ -793,9 +803,7 @@ def test_silent_mode_timeout_notification_fires():
     fake_time = MagicMock()
     fake_time.time = lambda: _fake_now[0]
 
-    # Keep update_card mock active for the entire test so the closure sees it
-    with patch.object(handler, "send_card_to_chat", send_mock), \
-         patch.object(handler, "update_card", patch_msg_mock):
+    with patch.object(handler, "_get_or_create_session", return_value=mock_session):
         try:
             _wt_mod.time = fake_time
             with patch.object(mgr, "execute_goal", side_effect=fake_execute):
@@ -807,7 +815,7 @@ def test_silent_mode_timeout_notification_fires():
         cb = captured_callback[0]
 
         # Advance clock past 600s timeout
-        patch_msg_mock.reset_mock()
+        mock_session.dispatch.reset_mock()
         _fake_now[0] = 1000.0 + 601
         try:
             _wt_mod.time = fake_time
@@ -815,8 +823,12 @@ def test_silent_mode_timeout_notification_fires():
         finally:
             _wt_mod.time = original_time
 
-    # The 10-min safety valve should have triggered an update_card call
-    assert patch_msg_mock.call_count >= 1
+    # The 10-min safety valve should have triggered a dispatch call
+    assert mock_session.dispatch.call_count >= 1
+    # Verify it dispatched a worktree_progress event
+    dispatched = [c.args[0] for c in mock_session.dispatch.call_args_list]
+    types = [e.type.value for e in dispatched]
+    assert "worktree_progress" in types
 
 
 def test_auto_executing_with_running_units_not_awaiting_goal():

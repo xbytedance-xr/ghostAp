@@ -8,7 +8,7 @@ import time
 from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
-from ...card.styles import UI_TEXT
+from ...card.ui_text import UI_TEXT
 from ...project import ContextEntryType, context_helper
 from ...tasking import TaskPriority, TaskSpec
 from ...utils.text import format_duration
@@ -97,7 +97,7 @@ class DiagnosticsHandler(BaseHandler):
         """
         from datetime import datetime
         from ...card.builders.lock import format_elapsed_ago, format_friendly_duration, format_lock_duration
-        from ...card.styles import UI_TEXT
+        from ...card.ui_text import UI_TEXT
 
         parts: list[str] = []
 
@@ -271,7 +271,7 @@ class DiagnosticsHandler(BaseHandler):
                 content = self.ctx.progress_reporter.format_status(engine.project)
                 title = UI_TEXT["diag_task_detail_deep_title"]
                 engine_name = engine.engine_name
-                msg_type, card_content = CardBuilder.build_engine_card(
+                msg_type, card_content = CardBuilder.build_info_card(
                     project=project,
                     title=title,
                     content=content,
@@ -290,7 +290,7 @@ class DiagnosticsHandler(BaseHandler):
                 content = self.ctx.loop_reporter.format_status(engine.project)
                 title = UI_TEXT["diag_task_detail_loop_title"]
                 engine_name = engine.engine_name
-                msg_type, card_content = CardBuilder.build_engine_card(
+                msg_type, card_content = CardBuilder.build_info_card(
                     project=project,
                     title=title,
                     content=content,
@@ -309,7 +309,7 @@ class DiagnosticsHandler(BaseHandler):
                 content = self.ctx.spec_reporter.format_status(engine.project)
                 title = UI_TEXT["diag_task_detail_spec_title"]
                 engine_name = engine.engine_name
-                msg_type, card_content = CardBuilder.build_engine_card(
+                msg_type, card_content = CardBuilder.build_info_card(
                     project=project,
                     title=title,
                     content=content,
@@ -412,7 +412,7 @@ class DiagnosticsHandler(BaseHandler):
         _msg_type, card_content = CardBuilder.build_project_response_card(
             project, title, initial, show_buttons=False,
         )
-        card_session = self.create_direct_card_session(chat_id, reply_to=message_id)
+        card_session = self.create_static_card_session(chat_id, reply_to=message_id)
         card_json = json.loads(card_content) if isinstance(card_content, str) else card_content
         card_session.send(card_json)
         card_message_id = card_session.message_id

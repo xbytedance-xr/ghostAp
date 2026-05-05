@@ -3,21 +3,31 @@ from __future__ import annotations
 from dataclasses import replace
 from ..models import CardState, FooterState, ButtonSpec
 from ...events import CardEvent, CardEventType
-from .lifecycle import _build_header
+from ..button_intent import ButtonIntent
+from ...ui_text import UI_TEXT
+from ._shared import build_header
+
+# Reuse retry actions for restart button on rejection
+_RETRY_ACTIONS: dict[str, str] = {
+    "deep": ButtonIntent.DEEP_RESUME,
+    "loop": ButtonIntent.LOOP_RESUME,
+    "spec": ButtonIntent.SPEC_RESUME,
+    "worktree": ButtonIntent.WORKTREE_RETRY_FAILED,
+}
 
 
 def reduce_approval(state: CardState, event: CardEvent) -> CardState:
     """Handle APPROVAL_REQUESTED / APPROVAL_RESOLVED events."""
     if event.type == CardEventType.APPROVAL_REQUESTED:
-        header = _build_header(state.metadata, "awaiting_approval")
+        header = build_header(state.metadata, "awaiting_approval")
         tool_name = event.payload.get("tool_name", "")
         description = event.payload.get("description", "")
         status_text = "⏳ 等待审批"
         if tool_name:
             status_text += f": {tool_name}"
         buttons = (
-            ButtonSpec(text="✅ 批准", action_id="approve_action", type="primary"),
-            ButtonSpec(text="❌ 拒绝", action_id="reject_action", type="danger"),
+            ButtonSpec(text="✅ 批准", action_id=ButtonIntent.APPROVE, type="primary"),
+            ButtonSpec(text="❌ 拒绝", action_id=ButtonIntent.REJECT, type="danger"),
         )
         return replace(
             state,
@@ -31,7 +41,7 @@ def reduce_approval(state: CardState, event: CardEvent) -> CardState:
         approved = event.payload.get("approved", False)
         if approved:
             # Resume running state
-            header = _build_header(state.metadata, "running")
+            header = build_header(state.metadata, "running")
             return replace(
                 state,
                 terminal="running",
@@ -40,14 +50,23 @@ def reduce_approval(state: CardState, event: CardEvent) -> CardState:
                 buttons=(),
             )
         else:
-            # Approval rejected → cancelled
-            header = _build_header(state.metadata, "cancelled")
+            # Approval rejected → cancelled with restart button
+            header = build_header(state.metadata, "cancelled")
+            reject_buttons: tuple[ButtonSpec, ...] = ()
+            engine_type = state.metadata.engine_type
+            if engine_type and engine_type in _RETRY_ACTIONS:
+                reject_buttons = (ButtonSpec(
+                    text=UI_TEXT["card_lifecycle_restart"],
+                    action_id=_RETRY_ACTIONS[engine_type],
+                    type="primary",
+                ),)
             return replace(
                 state,
                 terminal="cancelled",
+                terminal_reason="rejected",
                 header=header,
-                footer=FooterState(),
-                buttons=(),
+                footer=FooterState(status_text=UI_TEXT["card_lifecycle_cancelled_status"]),
+                buttons=reject_buttons,
             )
 
     return state

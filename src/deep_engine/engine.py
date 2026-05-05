@@ -555,3 +555,21 @@ class DeepEngineManager(BaseEngineManager["DeepEngine"]):
             except Exception:
                 continue
         return None
+
+    def _build_snapshot(self, engine: "DeepEngine"):
+        """Build EngineSnapshot with Deep-specific fields."""
+        from src.card.engine_snapshot import EngineSnapshot
+        project = engine.project
+        progress = engine.progress
+        return EngineSnapshot(
+            engine_name=engine.engine_name,
+            root_path=engine.root_path,
+            project_id=project.project_id if project else "",
+            tool_calls_count=len(progress.tool_calls) if progress else 0,
+            completed_steps=progress.completed_steps if progress else 0,
+            total_steps=progress.total_steps if progress else 0,
+            duration_seconds=project.duration() if project else None,
+            status=project.status.value if project else "",
+            is_running=engine.is_running,
+            ext={"project": project, "progress": progress},
+        )

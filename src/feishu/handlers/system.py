@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Optional
 from ...acp.helper import fetch_acp_models, list_acp_tools
 from ...acp.providers import tool_registry
 from ...card import CardBuilder
-from ...card.styles import UI_TEXT
+from ...card.ui_text import UI_TEXT
 from ...coco_model import get_coco_model_manager
 from ...tasking import TaskPriority, TaskSpec
 from ..emoji import EmojiReaction
@@ -302,9 +302,11 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         no_admin_configured = False
         try:
             from ...config import get_settings as _gs
-            no_admin_configured = not _gs().admin_user_ids
+            _settings = _gs()
+            no_admin_configured = not _settings.admin_user_ids
         except Exception:
             logger.debug("failed to check admin config", exc_info=True)
+            _settings = None
 
         msg_type, card_content = CardBuilder.build_help_card(
             project, category, current_dir, current_mode,

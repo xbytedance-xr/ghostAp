@@ -60,7 +60,9 @@ LOCK_UI_TEXT: dict[str, str] = {
     "chat_lock_btn_status": "📊 查看状态",
     "chat_lock_btn_go_p2p": "💬 去私聊操作",
     # ── Lock Success Card ──
-    "lock_success_lock_reply": "**🔒 群已锁定**\n\n非 Bot 管理员的指令将不被 Bot 执行。\nBot 管理员可使用 `/unlock` 解锁。\n\n*5 分钟内可点击下方按钮撤销*",
+    "lock_success_lock_reply": "**🔒 群已锁定**\n\n非 Bot 管理员的指令将不被 Bot 执行。\nBot 管理员可使用 `/unlock` 解锁。\n\n💡 锁定后 {lock_undo_window_display} 内可随时撤销",
+    "lock_success_lock_reply_no_undo": "**🔒 已锁定**（由 {locker_name} 锁定）\n\n非 Bot 管理员的指令将不被 Bot 执行。\nBot 管理员可发送 `/unlock` 解锁。",
+    "lock_success_lock_reply_no_undo_anonymous": "**🔒 已锁定**\n\n非 Bot 管理员的指令将不被 Bot 执行。\nBot 管理员可发送 `/unlock` 解锁。",
     "lock_success_lock_broadcast": "{by_line}当前群已进入锁定状态，非 Bot 管理员的指令将不被 Bot 执行。",
     "lock_success_lock_idempotent": "**🔒 {message}**\n\n该群当前已锁定，无需重复操作。\nBot 管理员可使用 `/unlock` 解锁。",
     "lock_success_lock_broadcast_by": "（操作者: {name}）",
@@ -69,8 +71,8 @@ LOCK_UI_TEXT: dict[str, str] = {
     "lock_success_unlock_broadcast": "{by_line}所有成员现在可正常操作。",
     "lock_success_unlock_idempotent": "**🔓 {message}**\n\n该群当前未锁定，无需解锁操作。",
     # ── Lock Undo ──
-    "lock_success_lock_undo_btn": "↩️ 5 分钟内可撤销",
-    "lock_undo_expired": "⏰ 撤销窗口已过期（5 分钟），如需解锁请发送 /unlock",
+    "lock_success_lock_undo_btn": "↩️ 撤销",
+    "lock_undo_expired": "⏰ 撤销窗口已关闭，如需解锁请发送 /unlock",
     # ── Force Release Confirm Card ──
     "lock_force_release_confirm_title": "**⚠️ 确认强制释放仓库锁？**\n",
     "lock_force_release_confirm_occupied": "仓库 `{repo_name}` 当前正被另一个群会话占用。",
@@ -136,7 +138,8 @@ LOCK_UI_TEXT: dict[str, str] = {
     "lock_status_nonadmin_repo_hint": "\n  💡 如遇仓库被占用，可联系 Bot 管理员或稍后重试",
     # ── Lock Help Body ──
     "lock_help_admin_group_mgmt": "**管理命令**",
-    "lock_help_admin_lock_cmd": "`/lock` · 锁定当前群（直接执行，5 分钟内可撤销）",
+    "lock_help_admin_lock_cmd": "`/lock` · 锁定当前群（直接执行，{lock_undo_window_display}内可撤销）",
+    "lock_help_admin_lock_cmd_no_undo": "`/lock` · 锁定当前群（直接执行）",
     "lock_help_admin_unlock_cmd": "`/unlock` · 解锁当前群",
     "lock_help_admin_group_info": "**锁定期间仍可使用的命令**",
     "lock_help_admin_exempt_cmds": "锁定后非 Bot 管理员的指令将不被 Bot 执行，但仍可使用：\n{cmd_list}",

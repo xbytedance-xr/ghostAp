@@ -21,7 +21,7 @@ class TestSpecMobile(unittest.TestCase):
             action_prefix="spec",
             compact=True,
         )
-        _, card_json_str = CardBuilder.build_engine_card(None, state)
+        _, card_json_str = CardBuilder.build_info_card(None, state)
         card_json = json.loads(card_json_str)
 
         # Check header template color
@@ -38,7 +38,7 @@ class TestSpecMobile(unittest.TestCase):
             compact=True,
             is_executing=True,
         )
-        _, card_json_str = CardBuilder.build_engine_card(None, state)
+        _, card_json_str = CardBuilder.build_info_card(None, state)
         card_json = json.loads(card_json_str)
 
         # Check for pause/stop buttons
@@ -68,7 +68,7 @@ class TestSpecMobile(unittest.TestCase):
             compact=True,
             is_executing=True,
         )
-        _, card_json_str = CardBuilder.build_engine_card(None, state)
+        _, card_json_str = CardBuilder.build_info_card(None, state)
         card_json = json.loads(card_json_str)
 
         # Find content

@@ -389,7 +389,7 @@ class TestIsP2PThreadLocalPropagation:
             mock_ctx = MagicMock()
             mock_ctx.settings.thread_programming_enabled = False
             mock_ctx.settings.coco_execution_timeout = 30
-            mock_ctx.settings.card_collapsible_enabled = False
+            mock_ctx.settings.card.collapsible_enabled = False
 
             from src.feishu.handlers.programming import CocoModeHandler
             handler = CocoModeHandler(mock_ctx)
@@ -439,7 +439,7 @@ class TestIsP2PThreadLocalPropagation:
             mock_ctx = MagicMock()
             mock_ctx.settings.thread_programming_enabled = False
             mock_ctx.settings.coco_execution_timeout = 30
-            mock_ctx.settings.card_collapsible_enabled = False
+            mock_ctx.settings.card.collapsible_enabled = False
 
             from src.feishu.handlers.programming import CocoModeHandler
             handler = CocoModeHandler(mock_ctx)

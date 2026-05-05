@@ -16,7 +16,7 @@ from typing import Callable, Optional
 from ..acp import ACPEvent, ACPEventType
 from ..agent_session import create_engine_session
 from ..engine_base import BaseEngine, BaseEngineManager, EngineRunState
-from ..card.styles import UI_TEXT as _UI_TEXT
+from ..card.ui_text import UI_TEXT as _UI_TEXT
 from ..utils.errors import get_error_detail
 from ..utils.gc_monitor import get_gc_monitor
 from ..utils.retry import RetryPolicy
@@ -1249,4 +1249,20 @@ class LoopEngineManager(BaseEngineManager["LoopEngine"]):
             model_name=model_name,
             retry_policy=retry_policy,
             create_session_fn=create_session_fn,
+        )
+
+    def _build_snapshot(self, engine: "LoopEngine"):
+        """Build EngineSnapshot with Loop-specific fields."""
+        from src.card.engine_snapshot import EngineSnapshot
+        project = engine.project
+        return EngineSnapshot(
+            engine_name=engine.engine_name,
+            root_path=engine.root_path,
+            satisfied_count=project.satisfied_count if project else 0,
+            total_criteria=project.total_criteria if project else 0,
+            duration_seconds=project.duration() if project else None,
+            status=project.status.value if project else "",
+            is_running=engine.is_running,
+            iteration_count=len(project.iterations) if project else 0,
+            ext={"project": project},
         )

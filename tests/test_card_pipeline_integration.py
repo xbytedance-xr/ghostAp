@@ -1,0 +1,773 @@
+"""Integration tests: event → reduce → render pipeline end-to-end.
+
+Verifies that dispatching events through the reducer produces state that
+renders correctly to card JSON.
+"""
+import json
+
+from src.card.events import CardEvent, CardEventType
+from src.card.render.budget import RenderBudget
+from src.card.render.renderer import render_card
+from src.card.session.config import SessionConfig
+from src.card.state.button_intent import ButtonIntent
+from src.card.state.models import CardMetadata, CardState
+from src.card.state.reducer import reduce_card_state
+
+
+def _dispatch_sequence(events: list[CardEvent], metadata: CardMetadata | None = None) -> CardState:
+    """Dispatch a sequence of events and return final state."""
+    meta = metadata or CardMetadata()
+    state = None
+    for event in events:
+        state = reduce_card_state(state, event, meta)
+    return state
+
+
+class TestFailedPipeline:
+    """FAILED event produces visible error + retry button in rendered card."""
+
+    def test_failed_with_error_renders_error_text(self):
+        meta = CardMetadata(engine_type="deep", mode_name="Deep Agent")
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            CardEvent.text_started("b1"),
+            CardEvent.text_delta("b1", "Working..."),
+            CardEvent.failed("Connection timeout after 30s"),
+        ], meta)
+
+        assert state.terminal == "failed"
+        # Error block exists
+        error_blocks = [b for b in state.blocks if b.block_id == "_error"]
+        assert len(error_blocks) == 1
+        assert "Connection timeout" in error_blocks[0].content
+        # Retry button exists
+        assert any(b.action_id == ButtonIntent.DEEP_RESUME for b in state.buttons)
+
+        # Renders without error
+        rendered = render_card(state, RenderBudget())
+        assert len(rendered) >= 1
+        card_json = rendered[0]._card_json
+        # Card JSON should be a valid dict
+        assert isinstance(card_json, dict)
+        # Serialize to verify JSON compliance
+        json_str = json.dumps(card_json, ensure_ascii=False)
+        assert "Connection timeout" in json_str
+
+    def test_failed_loop_engine_retry_button(self):
+        meta = CardMetadata(engine_type="loop", mode_name="Loop Engine")
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            CardEvent.failed("Out of memory"),
+        ], meta)
+
+        assert any(b.action_id == ButtonIntent.LOOP_RESUME for b in state.buttons)
+        rendered = render_card(state, RenderBudget())
+        assert len(rendered) >= 1
+
+
+class TestCompletedPipeline:
+    """COMPLETED event produces summary block in rendered card."""
+
+    def test_completed_with_summary_renders_summary(self):
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            CardEvent.text_started("b1"),
+            CardEvent.text_delta("b1", "Done"),
+            CardEvent.text_done("b1"),
+            CardEvent.completed(summary="执行完成：调用了 5 个工具"),
+        ])
+
+        assert state.terminal == "completed"
+        summary_blocks = [b for b in state.blocks if b.block_id == "_summary"]
+        assert len(summary_blocks) == 1
+        assert "5 个工具" in summary_blocks[0].content
+
+        rendered = render_card(state, RenderBudget())
+        assert len(rendered) >= 1
+        json_str = json.dumps(rendered[0]._card_json, ensure_ascii=False)
+        assert "5 个工具" in json_str
+
+    def test_completed_without_summary_no_extra_block(self):
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            CardEvent.completed(),
+        ])
+
+        assert state.terminal == "completed"
+        summary_blocks = [b for b in state.blocks if b.block_id == "_summary"]
+        assert len(summary_blocks) == 0
+
+
+class TestProgressPipeline:
+    """PROGRESS_UPDATED event produces progress bar in footer."""
+
+    def test_progress_updated_renders_progress_bar(self):
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            CardEvent.progress_updated(current=3, total=10, label="步骤 3"),
+        ])
+
+        assert state.footer.progress is not None
+        assert state.footer.progress_pct == 30
+        assert "3/10" in state.footer.progress
+
+        rendered = render_card(state, RenderBudget())
+        assert len(rendered) >= 1
+        json_str = json.dumps(rendered[0]._card_json, ensure_ascii=False)
+        assert "▰" in json_str  # progress bar chars
+
+    def test_progress_zero_total_no_bar(self):
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            CardEvent.progress_updated(current=0, total=0),
+        ])
+        assert state.footer.progress is None
+
+
+class TestWorktreeProgressPipeline:
+    """Worktree progress events produce correct rendered output."""
+
+    def test_worktree_progress_renders_units(self):
+        meta = CardMetadata(engine_type="worktree", mode_name="Worktree")
+        units = [
+            {"name": "Unit A", "status": "completed", "summary": "done"},
+            {"name": "Unit B", "status": "running"},
+            {"name": "Unit C", "status": "pending"},
+        ]
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            CardEvent.worktree_progress(units, project_id="p1", message="执行中"),
+        ], meta)
+
+        assert len(state.blocks) == 1
+        assert state.blocks[0].kind == "worktree_units"
+        block = state.blocks[0]
+        data = block.data if block.data is not None else __import__("json").loads(block.content)
+        assert data["units"][0]["name"] == "Unit A"
+        assert data["completed"] == 1
+        assert state.footer.progress is not None
+        assert state.footer.progress_pct == 33
+
+        rendered = render_card(state, RenderBudget())
+        assert len(rendered) >= 1
+
+
+class TestCriteriaUpdatedPipeline:
+    """CRITERIA_UPDATED event inserts ContentBlock and renders criteria section."""
+
+    def test_criteria_updated_creates_block_and_renders(self):
+        meta = CardMetadata(engine_type="spec", mode_name="Spec")
+        content = "✅ 条件1：通过\n❌ 条件2：未通过\n✅ 条件3：通过"
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            CardEvent.criteria_updated(content, satisfied_count=2, total_count=3),
+        ], meta)
+
+        # Verify block was created
+        criteria_blocks = [b for b in state.blocks if b.block_id == "criteria_section"]
+        assert len(criteria_blocks) == 1
+        assert criteria_blocks[0].kind == "criteria"
+        assert "条件1" in criteria_blocks[0].content
+        # Verify engine_ext updated
+        assert state.engine_ext.criteria_satisfied == 2
+        assert state.engine_ext.criteria_total == 3
+
+        # Verify renders without error
+        rendered = render_card(state, RenderBudget())
+        assert len(rendered) >= 1
+        json_str = json.dumps(rendered[0]._card_json, ensure_ascii=False)
+        assert "条件1" in json_str
+
+    def test_criteria_updated_replaces_existing_block(self):
+        meta = CardMetadata(engine_type="spec", mode_name="Spec")
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            CardEvent.criteria_updated("v1", satisfied_count=0, total_count=2),
+            CardEvent.criteria_updated("v2-updated", satisfied_count=1, total_count=2),
+        ], meta)
+
+        criteria_blocks = [b for b in state.blocks if b.block_id == "criteria_section"]
+        assert len(criteria_blocks) == 1
+        assert criteria_blocks[0].content == "v2-updated"
+        assert state.engine_ext.criteria_satisfied == 1
+
+
+class TestWorktreeProgressBoundary:
+    """WORKTREE_PROGRESS boundary paths: empty units, all 100% complete."""
+
+    def test_worktree_progress_empty_units(self):
+        meta = CardMetadata(engine_type="worktree", mode_name="Worktree")
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            CardEvent.worktree_progress([], project_id="p1"),
+        ], meta)
+
+        assert len(state.blocks) == 1
+        block = state.blocks[0]
+        data = block.data if block.data is not None else json.loads(block.content)
+        assert data["units"] == []
+        # No progress when empty (None or 0)
+        assert state.footer.progress_pct is None or state.footer.progress_pct == 0
+
+    def test_worktree_progress_all_complete(self):
+        meta = CardMetadata(engine_type="worktree", mode_name="Worktree")
+        units = [
+            {"name": "A", "status": "completed"},
+            {"name": "B", "status": "completed"},
+            {"name": "C", "status": "completed"},
+        ]
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            CardEvent.worktree_progress(units, project_id="p1", message="全部完成"),
+        ], meta)
+
+        assert state.footer.progress_pct == 100
+        # Footer should indicate finishing up
+        assert "正在收尾" in (state.footer.status_text or "")
+
+
+class TestCyclePhasePipeline:
+    """Cycle/Phase events produce correct state and render."""
+
+    def test_cycle_phase_sequence(self):
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            CardEvent.cycle_started(cycle_num=1, max_cycles=3),
+            CardEvent.phase_started(cycle_num=1, phase="planning"),
+            CardEvent.phase_done(cycle_num=1, phase="planning", output="Plan complete"),
+            CardEvent.phase_started(cycle_num=1, phase="coding"),
+        ])
+
+        assert state.engine_ext.cycle_num == 1
+        assert state.engine_ext.phase_info == "coding"
+        # Should have 2 phase blocks
+        phase_blocks = [b for b in state.blocks if b.kind == "phase"]
+        assert len(phase_blocks) == 2
+        assert phase_blocks[0].status == "completed"
+        assert phase_blocks[1].status == "active"
+
+        rendered = render_card(state, RenderBudget())
+        assert len(rendered) >= 1
+
+
+class TestWorktreeEndToEndPipeline:
+    """Full pipeline: Reporter → CardEvent → Reducer → Render for worktree merge flow."""
+
+    def test_reporter_to_render_full_chain(self):
+        """Construct real WorktreeUnits, generate merge_notes, dispatch, render."""
+        from src.worktree_engine.models import WorktreeUnit, WorktreeUnitStatus
+        from src.worktree_engine.reporter import WorktreeReporter
+
+        # 1. Create realistic WorktreeUnit list
+        units = [
+            WorktreeUnit(
+                unit_id="u1",
+                display_name="Frontend",
+                branch_name="feat/frontend",
+                worktree_path="/tmp/wt/frontend",
+                status=WorktreeUnitStatus.COMPLETED,
+                task_title="Build UI",
+            ),
+            WorktreeUnit(
+                unit_id="u2",
+                display_name="Backend",
+                branch_name="feat/backend",
+                worktree_path="/tmp/wt/backend",
+                status=WorktreeUnitStatus.COMPLETED,
+                task_title="Build API",
+            ),
+        ]
+
+        # 2. Reporter generates merge_notes (list[dict])
+        merge_notes = WorktreeReporter().build_merge_notes(units, "main")
+        assert isinstance(merge_notes, list)
+        assert len(merge_notes) == 2
+        assert all(isinstance(mn, dict) for mn in merge_notes)
+        assert all("branch" in mn and "status" in mn for mn in merge_notes)
+        assert merge_notes[0]["branch"] == "feat/frontend"
+        assert merge_notes[1]["branch"] == "feat/backend"
+
+        # 3. Create CardEvent via factory (validates payload)
+        event = CardEvent.worktree_cleanup(
+            merge_notes=merge_notes,
+            base_branch="main",
+            cleanup_phase="summary",
+        )
+        assert event.type == CardEventType.WORKTREE_CLEANUP
+
+        # 4. Reduce: dispatch through the reducer
+        meta = CardMetadata(engine_type="worktree", mode_name="Worktree")
+        state = _dispatch_sequence([CardEvent.started(), event], meta)
+
+        # 5. Verify state contains merge data
+        wt_blocks = [b for b in state.blocks if b.kind == "worktree_cleanup"]
+        assert len(wt_blocks) == 1
+        block_data = wt_blocks[0].data
+        assert block_data is not None
+        assert block_data["merge_notes"] == merge_notes
+        assert block_data["base_branch"] == "main"
+
+        # 6. Render: should produce valid card JSON without errors
+        rendered = render_card(state, RenderBudget())
+        assert len(rendered) >= 1
+        card_json = rendered[0]._card_json
+        # Verify branch info appears in rendered output
+        card_str = json.dumps(card_json, ensure_ascii=False)
+        assert "feat/frontend" in card_str
+        assert "feat/backend" in card_str
+
+    def test_reporter_merge_notes_structure_matches_event_validation(self):
+        """Ensure reporter output directly passes event factory validation."""
+        from src.worktree_engine.models import WorktreeUnit, WorktreeUnitStatus
+        from src.worktree_engine.reporter import WorktreeReporter
+
+        units = [
+            WorktreeUnit(
+                unit_id="u1",
+                display_name="Service",
+                branch_name="feat/service",
+                status=WorktreeUnitStatus.COMPLETED,
+            ),
+        ]
+
+        merge_notes = WorktreeReporter().build_merge_notes(units, "develop")
+
+        # This should NOT raise — reporter output matches expected schema
+        event = CardEvent.worktree_merge(
+            merge_notes=merge_notes,
+            base_branch="develop",
+        )
+        assert event.type == CardEventType.WORKTREE_MERGE
+        assert event.payload["merge_notes"][0]["branch"] == "feat/service"
+
+
+class TestCancelledPipeline:
+    """Task 24: CANCELLED event produces correct terminal state."""
+
+    def test_cancelled_clears_buttons_and_sets_terminal(self):
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            CardEvent.text_started("b1"),
+            CardEvent.text_delta("b1", "Working on it..."),
+            CardEvent.cancelled(),
+        ])
+
+        assert state.terminal == "cancelled"
+        assert state.buttons == ()
+
+    def test_cancelled_renders_without_error(self):
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            CardEvent.cancelled(),
+        ])
+
+        rendered = render_card(state, RenderBudget())
+        assert len(rendered) >= 1
+        card_json = rendered[0]._card_json
+        assert isinstance(card_json, dict)
+        json_str = json.dumps(card_json, ensure_ascii=False)
+        assert len(json_str) > 0
+
+    def test_cancelled_after_progress_clears_progress(self):
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            CardEvent.progress_updated(current=5, total=10),
+            CardEvent.cancelled(),
+        ])
+
+        assert state.terminal == "cancelled"
+        # Footer should reflect terminal state
+        assert state.footer.status is None or state.footer.status == "idle"
+
+
+class TestCancelledWorktreePipeline:
+    """CANCELLED in worktree context preserves warning_banner and injects restart button."""
+
+    def test_cancelled_after_worktree_progress_preserves_banner(self):
+        meta = CardMetadata(engine_type="worktree", mode_name="Worktree")
+        units = [
+            {"name": "Unit A", "status": "running"},
+            {"name": "Unit B", "status": "completed"},
+        ]
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            CardEvent.worktree_progress(units, project_id="p1", message="执行中"),
+            CardEvent(type=CardEventType.WARNING_UPDATED, payload={"warning": "⚠️ 资源紧张"}),
+            CardEvent.cancelled(),
+        ], meta)
+
+        assert state.terminal == "cancelled"
+        # Warning banner preserved across cancel
+        assert state.footer.warning_banner == "⚠️ 资源紧张"
+        # Restart button injected for worktree engine
+        assert len(state.buttons) == 1
+        assert state.buttons[0].action_id == ButtonIntent.WORKTREE_RETRY_FAILED
+
+    def test_cancelled_worktree_renders_without_error(self):
+        meta = CardMetadata(engine_type="worktree", mode_name="Worktree")
+        units = [{"name": "A", "status": "completed"}]
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            CardEvent.worktree_progress(units, project_id="p1"),
+            CardEvent.cancelled(reason="ttl_expired"),
+        ], meta)
+
+        assert state.terminal == "cancelled"
+        assert state.terminal_reason == "ttl_expired"
+        rendered = render_card(state, RenderBudget())
+        assert len(rendered) >= 1
+        card_json = rendered[0]._card_json
+        json_str = json.dumps(card_json, ensure_ascii=False)
+        assert "已取消" in json_str
+
+
+class TestLoopMultiIterationPipeline:
+    """Loop engine multi-iteration progress + iteration events (replaces deleted test_multi_iteration_flow)."""
+
+    def test_multi_iteration_progress_accumulates(self):
+        """Dispatch 3 iterations with progress updates, verify state accumulates correctly."""
+        meta = CardMetadata(engine_type="loop", mode_name="Loop")
+        events = [
+            CardEvent(type=CardEventType.STARTED, payload={}),
+            # Iteration 1
+            CardEvent(type=CardEventType.CYCLE_STARTED, payload={"cycle_num": 1, "max_cycles": 3}),
+            CardEvent(type=CardEventType.TEXT_STARTED, payload={"block_id": "t1"}),
+            CardEvent(type=CardEventType.TEXT_DELTA, payload={"block_id": "t1", "text": "iter1"}),
+            CardEvent(type=CardEventType.TEXT_DONE, payload={"block_id": "t1"}),
+            CardEvent(type=CardEventType.PROGRESS_UPDATED, payload={"current": 1, "total": 5, "label": "验收"}),
+            CardEvent(type=CardEventType.CYCLE_DONE, payload={}),
+            # Iteration 2
+            CardEvent(type=CardEventType.CYCLE_STARTED, payload={"cycle_num": 2, "max_cycles": 3}),
+            CardEvent(type=CardEventType.TEXT_STARTED, payload={"block_id": "t2"}),
+            CardEvent(type=CardEventType.TEXT_DELTA, payload={"block_id": "t2", "text": "iter2"}),
+            CardEvent(type=CardEventType.TEXT_DONE, payload={"block_id": "t2"}),
+            CardEvent(type=CardEventType.PROGRESS_UPDATED, payload={"current": 3, "total": 5, "label": "验收"}),
+            CardEvent(type=CardEventType.CYCLE_DONE, payload={}),
+            # Iteration 3
+            CardEvent(type=CardEventType.CYCLE_STARTED, payload={"cycle_num": 3, "max_cycles": 3}),
+            CardEvent(type=CardEventType.PROGRESS_UPDATED, payload={"current": 5, "total": 5, "label": "全部通过"}),
+            CardEvent(type=CardEventType.CYCLE_DONE, payload={}),
+        ]
+        state = _dispatch_sequence(events, meta)
+
+        # Loop engine uses text-only progress (no visual bar)
+        assert state.footer.progress_pct is None
+        assert state.footer.progress is not None
+        assert "5/5" in state.footer.progress
+        assert "通过" in state.footer.progress
+
+        # Verify cycle tracking in engine_ext
+        assert state.engine_ext is not None
+        assert state.engine_ext.cycle_num == 3
+
+        # Verify text blocks accumulated
+        text_blocks = [b for b in state.blocks if b.kind == "text"]
+        assert len(text_blocks) >= 2
+
+    def test_loop_progress_no_visual_bar(self):
+        """Loop engine progress_updated should NOT produce progress_pct."""
+        meta = CardMetadata(engine_type="loop", mode_name="Loop")
+        events = [
+            CardEvent(type=CardEventType.STARTED, payload={}),
+            CardEvent(type=CardEventType.PROGRESS_UPDATED, payload={"current": 2, "total": 4}),
+        ]
+        state = _dispatch_sequence(events, meta)
+        assert state.footer.progress_pct is None
+        assert "2/4 通过" in state.footer.progress
+
+    def test_deep_progress_uses_visual_bar(self):
+        """Deep engine progress_updated SHOULD produce progress_pct for ▰▱ bar."""
+        meta = CardMetadata(engine_type="deep", mode_name="Deep")
+        events = [
+            CardEvent(type=CardEventType.STARTED, payload={}),
+            CardEvent(type=CardEventType.PROGRESS_UPDATED, payload={"current": 2, "total": 4}),
+        ]
+        state = _dispatch_sequence(events, meta)
+        assert state.footer.progress_pct == 50
+        assert "步骤 2/4" in state.footer.progress
+
+
+class TestEndToEndDeepSmoke:
+    """End-to-end smoke test: CardSession → Reducer → Render → CardDelivery → API mock.
+
+    Verifies the full pipeline from event dispatch to Feishu API call.
+    """
+
+    def test_deep_session_dispatches_to_api(self):
+        """A complete Deep session lifecycle triggers create_card and update_card on the API client."""
+        from unittest.mock import MagicMock
+
+        from src.card.delivery.engine import CardDelivery
+        from src.card.session import CardSession
+
+        # Mock API client
+        client = MagicMock()
+        client.create_card.return_value = ("msg_001", "card_001")
+        client.update_card.return_value = None
+
+        delivery = CardDelivery(client)
+        meta = CardMetadata(engine_type="deep", mode_name="Deep Agent", mode_emoji="🤖")
+        config = SessionConfig(metadata=meta)
+        session = CardSession(
+            chat_id="chat_test",
+            config=config,
+            delivery=delivery,
+            session_id="sess_e2e",
+        )
+
+        # Simulate deep engine lifecycle
+        session.dispatch(CardEvent.started())
+        session.dispatch(CardEvent(type=CardEventType.TEXT_STARTED, payload={"block_id": "b1"}))
+        session.dispatch(CardEvent(type=CardEventType.TEXT_DELTA, payload={"block_id": "b1", "text": "Hello world"}))
+        session.dispatch(CardEvent(type=CardEventType.TEXT_DONE, payload={"block_id": "b1"}))
+        session.dispatch(CardEvent.completed(summary="Done"))
+
+        # Verify API was called: at least one create and one update
+        assert client.create_card.call_count >= 1, "Expected at least one create_card call"
+        assert client.update_card.call_count >= 1, "Expected at least one update_card call"
+
+        # Verify session is closed after COMPLETED
+        assert session.closed
+
+
+class TestLoopEngineE2ESmokeTest:
+    """Loop engine full lifecycle: started → cycle → progress → completed."""
+
+    def test_loop_full_lifecycle_renders(self):
+        meta = CardMetadata(engine_type="loop", mode_name="Loop Engine")
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            CardEvent.cycle_started(cycle_num=1, max_cycles=5),
+            CardEvent.phase_started(cycle_num=1, phase="coding"),
+            CardEvent.text_started("b1"),
+            CardEvent.text_delta("b1", "Implementing feature..."),
+            CardEvent.text_done("b1"),
+            CardEvent.phase_done(cycle_num=1, phase="coding", output="Feature implemented"),
+            CardEvent.phase_started(cycle_num=1, phase="review"),
+            CardEvent.phase_done(cycle_num=1, phase="review", output="LGTM"),
+            CardEvent.criteria_updated("✅ Feature works\n✅ Tests pass", satisfied_count=2, total_count=2),
+            CardEvent.completed(summary="Converged after 1 cycle"),
+        ], meta)
+
+        assert state.terminal == "completed"
+        assert state.engine_ext.cycle_num == 1
+        assert state.engine_ext.criteria_satisfied == 2
+        # Renders without error
+        rendered = render_card(state, RenderBudget())
+        assert len(rendered) >= 1
+        card_str = json.dumps(rendered[0]._card_json, ensure_ascii=False)
+        assert "Feature" in card_str or "Converged" in card_str
+
+    def test_loop_failed_after_cycles(self):
+        meta = CardMetadata(engine_type="loop", mode_name="Loop Engine")
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            CardEvent.cycle_started(cycle_num=1, max_cycles=3),
+            CardEvent.phase_started(cycle_num=1, phase="coding"),
+            CardEvent.phase_done(cycle_num=1, phase="coding", output="partial"),
+            CardEvent.failed("Max cycles exceeded without convergence"),
+        ], meta)
+
+        assert state.terminal == "failed"
+        assert any(b.action_id == ButtonIntent.LOOP_RESUME for b in state.buttons)
+        rendered = render_card(state, RenderBudget())
+        assert len(rendered) >= 1
+
+
+class TestSpecEngineE2ESmokeTest:
+    """Spec engine full lifecycle: started → phases → criteria → completed."""
+
+    def test_spec_full_lifecycle_renders(self):
+        meta = CardMetadata(engine_type="spec", mode_name="Spec Engine")
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            CardEvent.cycle_started(cycle_num=1, max_cycles=10),
+            CardEvent.phase_started(cycle_num=1, phase="spec"),
+            CardEvent.phase_done(cycle_num=1, phase="spec", output="Spec written"),
+            CardEvent.phase_started(cycle_num=1, phase="planning"),
+            CardEvent.phase_done(cycle_num=1, phase="planning", output="Plan ready"),
+            CardEvent.phase_started(cycle_num=1, phase="coding"),
+            CardEvent.text_started("b1"),
+            CardEvent.text_delta("b1", "Building module..."),
+            CardEvent.text_done("b1"),
+            CardEvent.phase_done(cycle_num=1, phase="coding", output="Module built"),
+            CardEvent.phase_started(cycle_num=1, phase="review"),
+            CardEvent.criteria_updated(
+                "✅ Correctness\n❌ Performance", satisfied_count=1, total_count=2
+            ),
+            CardEvent.phase_done(cycle_num=1, phase="review", output="Needs perf fix"),
+            CardEvent.cycle_started(cycle_num=2, max_cycles=10),
+            CardEvent.phase_started(cycle_num=2, phase="coding"),
+            CardEvent.phase_done(cycle_num=2, phase="coding", output="Perf optimized"),
+            CardEvent.phase_started(cycle_num=2, phase="review"),
+            CardEvent.criteria_updated(
+                "✅ Correctness\n✅ Performance", satisfied_count=2, total_count=2
+            ),
+            CardEvent.phase_done(cycle_num=2, phase="review", output="All pass"),
+            CardEvent.completed(summary="Spec complete in 2 cycles"),
+        ], meta)
+
+        assert state.terminal == "completed"
+        assert state.engine_ext.cycle_num == 2
+        assert state.engine_ext.criteria_satisfied == 2
+        rendered = render_card(state, RenderBudget())
+        assert len(rendered) >= 1
+
+    def test_spec_cancelled_with_retry_button(self):
+        meta = CardMetadata(engine_type="spec", mode_name="Spec Engine")
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            CardEvent.cycle_started(cycle_num=1, max_cycles=10),
+            CardEvent.cancelled(reason="ttl_expired"),
+        ], meta)
+
+        assert state.terminal == "cancelled"
+        assert state.terminal_reason == "ttl_expired"
+        # ttl_expired now also injects restart button + show_status button
+        assert len(state.buttons) == 2
+        assert "重新开始" in state.buttons[0].text
+        assert "查看状态" in state.buttons[1].text
+        rendered = render_card(state, RenderBudget())
+        assert len(rendered) >= 1
+
+
+class TestWorktreeEngineE2ESmokeTest:
+    """Worktree engine full lifecycle: selection → execution → merge → cleanup → completed."""
+
+    def test_worktree_full_lifecycle_renders(self):
+        meta = CardMetadata(engine_type="worktree", mode_name="Worktree")
+        tools = [
+            {"id": "coco", "name": "Coco", "description": "AI coding assistant"},
+            {"id": "claude", "name": "Claude", "description": "Claude CLI"},
+        ]
+        units = [
+            {"name": "Coco", "status": "completed", "summary": "done"},
+            {"name": "Claude", "status": "completed", "summary": "done"},
+        ]
+        merge_notes = [
+            {"branch": "wt/coco-main", "status": "ready"},
+            {"branch": "wt/claude-main", "status": "ready"},
+        ]
+
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            # Selection phase
+            CardEvent.worktree_tool_select(tools, selected=["coco", "claude"]),
+            # Execution phase
+            CardEvent.worktree_progress(units, project_id="p1", message="All done"),
+            # Merge phase
+            CardEvent.worktree_merge(merge_notes=merge_notes, base_branch="main"),
+            # Cleanup phase
+            CardEvent.worktree_cleanup(
+                merge_notes=merge_notes, base_branch="main", cleanup_phase="summary",
+                merge_results=[
+                    {"branch": "wt/coco-main", "success": True},
+                    {"branch": "wt/claude-main", "success": True},
+                ],
+            ),
+            # Final completion
+            CardEvent.completed(summary="Worktree execution complete"),
+        ], meta)
+
+        assert state.terminal == "completed"
+        rendered = render_card(state, RenderBudget())
+        assert len(rendered) >= 1
+        card_str = json.dumps(rendered[0]._card_json, ensure_ascii=False)
+        assert "Worktree" in card_str or "complete" in card_str
+
+    def test_worktree_failed_unit_shows_retry(self):
+        meta = CardMetadata(engine_type="worktree", mode_name="Worktree")
+        units = [
+            {"name": "Coco", "status": "completed"},
+            {"name": "Claude", "status": "failed", "error": "timeout"},
+        ]
+        state = _dispatch_sequence([
+            CardEvent.started(),
+            CardEvent.worktree_progress(units, project_id="p1"),
+            CardEvent.failed("1 unit failed"),
+        ], meta)
+
+        assert state.terminal == "failed"
+        assert any(b.action_id == ButtonIntent.WORKTREE_RETRY_FAILED for b in state.buttons)
+        rendered = render_card(state, RenderBudget())
+        assert len(rendered) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Retry pending banner integration (flag_retry_pending → dispatch enrichment)
+# ---------------------------------------------------------------------------
+
+
+class TestRetryPendingBannerIntegration:
+    """Verify flag_retry_pending triggers SHOW_RETRY_PENDING banner in pipeline."""
+
+    def test_flag_retry_pending_injects_banner_on_next_dispatch(self):
+        """flag_retry_pending() → next dispatch() → warning_updated with retry text."""
+        from src.card.delivery.engine import CardDelivery
+        from src.card.session import CardSession
+
+        class _Client:
+            def create_card(self, *a, **kw):
+                return ("msg_1", "card_1")
+            def update_card(self, *a, **kw):
+                pass
+            def update_element(self, *a, **kw):
+                pass
+
+        client = _Client()
+        delivery = CardDelivery(client)
+        config = SessionConfig(metadata=CardMetadata(mode_name="Test", engine_type="deep"))
+        session = CardSession(
+            chat_id="chat_retry",
+            config=config,
+            delivery=delivery,
+            session_id="retry_sess",
+        )
+
+        # Bootstrap session
+        session.dispatch(CardEvent.started())
+        assert (session.state.footer.warning_banner or "") == ""
+
+        # Flag retry pending via tracker
+        session._coordinator._tracker.flag_retry_pending()
+
+        # Next dispatch should inject the retry pending banner
+        session.dispatch(CardEvent.text_started("b1"))
+        assert "更新中" in (session.state.footer.warning_banner or "")
+
+    def test_retry_banner_consumed_only_once(self):
+        """After consuming SHOW_RETRY_PENDING, subsequent dispatches have no banner."""
+        from src.card.delivery.engine import CardDelivery
+        from src.card.session import CardSession
+
+        class _Client:
+            def create_card(self, *a, **kw):
+                return ("msg_1", "card_1")
+            def update_card(self, *a, **kw):
+                pass
+            def update_element(self, *a, **kw):
+                pass
+
+        client = _Client()
+        delivery = CardDelivery(client)
+        config = SessionConfig(metadata=CardMetadata(mode_name="Test", engine_type="loop"))
+        session = CardSession(
+            chat_id="chat_retry2",
+            config=config,
+            delivery=delivery,
+            session_id="retry_sess2",
+        )
+
+        session.dispatch(CardEvent.started())
+        session._coordinator._tracker.flag_retry_pending()
+        session.dispatch(CardEvent.text_started("b1"))
+        # Banner should be set
+        assert (session.state.footer.warning_banner or "") != ""
+
+        # Next dispatch should NOT re-inject the banner (consumed once)
+        session.dispatch(CardEvent.text_delta("b1", "hello"))
+        # warning_text remains from the previous reduce (warning_updated is sticky),
+        # but no NEW pending action should have been consumed
+        # Verify by checking tracker has no pending actions
+        actions = session._coordinator._tracker.consume_pending_actions()
+        assert len(actions) == 0

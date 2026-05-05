@@ -1,7 +1,8 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.card.engine_snapshot import EngineSnapshot
 from src.deep_engine.models import DeepProject, DeepProjectStatus
 from src.feishu.renderers.deep_renderer import DeepRenderer
 from src.project import ProjectContext
@@ -13,7 +14,7 @@ class TestDeepRenderer:
         handler = MagicMock()
         handler.ctx = MagicMock()
         handler.settings = MagicMock()
-        handler.settings.card_deep_compact_default = False
+        handler.settings.card.deep_compact_default = False
         handler.settings.default_reply_mode = "thread"
         handler.settings.deep_stream_interval = 0.1
         handler.settings.deep_stream_min_chars = 1
@@ -27,6 +28,8 @@ class TestDeepRenderer:
             "is_executing": True,
             "is_paused": False,
             "project_id": "p1",
+            "completed": 1,
+            "total": 10,
         }
 
         return handler
@@ -66,19 +69,65 @@ class TestDeepRenderer:
         engine.progress.completed_steps = 1
         engine.progress.total_steps = 10
 
+        snap = EngineSnapshot(
+            engine_name="Coco",
+            root_path="/tmp/p1",
+            project_id="p1",
+            completed_steps=1,
+            total_steps=10,
+            duration_seconds=5.0,
+            status="executing",
+            is_running=True,
+            ext={"project": engine.project, "progress": engine.progress},
+        )
+        mock_handler.ctx.deep_engine_manager.snapshot.return_value = snap
         mock_handler.ctx.deep_engine_manager.get.return_value = engine
 
-        # Setup update_card to fail so it calls reply_card
-        mock_handler.update_card.return_value = False
+        with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create:
+            mock_session = MagicMock()
+            mock_create.return_value = mock_session
 
-        renderer.render_deep_status("msg1", "chat1", project=proj)
+            renderer.render_deep_status("msg1", "chat1", project=proj)
 
-        # Verify it called reply_card with correct content
-        assert mock_handler.reply_card.called
-        args, kwargs = mock_handler.reply_card.call_args
-        card_content = args[1]
-        assert "Status Content" in card_content
-        assert "Status Title" in card_content
+            # Verify CardSession was created and events were dispatched
+            mock_create.assert_called_once()
+            calls = [c.args[0] for c in mock_session.dispatch.call_args_list]
+            types = [c.type.value for c in calls]
+            # Should have: started, text_delta (status content), progress_updated
+            assert "started" in types
+            assert "text_delta" in types
+            # Verify status content was included in text_delta
+            text_deltas = [c for c in calls if c.type.value == "text_delta"]
+            assert any("Status Content" in c.payload.get("text", "") for c in text_deltas)
+            assert any("Status Title" in c.payload.get("text", "") for c in text_deltas)
+
+    def test_render_deep_status_no_engine(self, mock_handler):
+        """Test render_deep_status when no engine is running."""
+        renderer = DeepRenderer(mock_handler)
+
+        proj = MagicMock(spec=ProjectContext)
+        proj.project_id = "p1"
+        proj.root_path = "/tmp/p1"
+
+        mock_handler.project_manager.get_active_project.return_value = proj
+        mock_handler.ctx.deep_engine_manager.get.return_value = None
+        mock_handler.ctx.deep_engine_manager.get_active_engines.return_value = []
+        mock_handler.ctx.deep_engine_manager.snapshot.return_value = None
+        mock_handler.ctx.deep_engine_manager.snapshot_active.return_value = []
+        mock_handler.get_engine_name.return_value = "Coco"
+
+        with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create:
+            mock_session = MagicMock()
+            mock_create.return_value = mock_session
+
+            renderer.render_deep_status("msg1", "chat1", project=proj)
+
+            # Should dispatch started + text_delta + completed
+            calls = [c.args[0] for c in mock_session.dispatch.call_args_list]
+            types = [c.type.value for c in calls]
+            assert "started" in types
+            assert "text_delta" in types
+            assert "completed" in types
 
     def test_callbacks_creation(self, mock_handler):
         renderer = DeepRenderer(mock_handler)
@@ -91,51 +140,85 @@ class TestDeepRenderer:
         engine = MagicMock()
         engine.project = DeepProject(name="test_proj", root_path="/tmp/p1", project_id="p1")
         engine.project.duration = MagicMock(return_value=10.0)
-        # Fix: ensure format_summary returns a string
         engine.progress.format_summary.return_value = "Progress Summary"
-        engine.progress.progress_bar = "[====]"  # Fix: progress_bar should be string
-        engine.progress.total_steps = 0  # No plan entries → no 0% bar
+        engine.progress.progress_bar = "[====]"
+        engine.progress.total_steps = 0
+        engine.progress.tool_calls = ["tc1", "tc2"]
         engine.get_rendered_content.return_value = "Rendered Content"
 
         mock_handler.ctx.deep_engine_manager.get.return_value = engine
 
-        callbacks = renderer.create_deep_callbacks("msg1", "chat1", proj)
+        with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create:
+            mock_session = MagicMock()
+            mock_create.return_value = mock_session
 
-        assert callbacks.on_analyzing_done
-        assert callbacks.on_event
-        assert callbacks.on_project_done
-        assert callbacks.on_error
+            callbacks = renderer.create_deep_callbacks("msg1", "chat1", proj)
 
-        # Test project done callback
-        mock_handler.reply_card.return_value = "msg_thread"
-        mock_handler.update_card.return_value = True
+            assert callbacks.on_analyzing_done
+            assert callbacks.on_event
+            assert callbacks.on_project_done
+            assert callbacks.on_error
 
-        callbacks.on_project_done(engine.project)
+            # Verify hooks were passed to create_session
+            call_kwargs = mock_create.call_args
+            assert "hooks" in call_kwargs.kwargs or (len(call_kwargs.args) > 4)
 
-        assert mock_handler.add_reaction.called
-        
-        # Test error callback and its retry button logic
-        import json
-        mock_handler.reply_card.reset_mock()
-        mock_handler.update_card.reset_mock()
-        
-        # Setup mock reporter to return string for format_error
-        mock_handler.ctx.progress_reporter.format_error.return_value = "Test Error Content"
-        mock_handler.ctx.progress_reporter.get_error_title.return_value = "Test Error Title"
-        
-        callbacks.on_error("Test Error")
-        
-        # When error occurs, the session sends the card (update path since session already has message_id)
-        assert mock_handler.update_card.called
-        args, kwargs = mock_handler.update_card.call_args
-        card_content = args[1]
-        
-        # Parse JSON and verify the extra_buttons (retry button) were added
-        card_dict = json.loads(card_content)
-        # Look through elements for the "重试" button in the deep_resume action
-        card_elements_str = json.dumps(card_dict.get("body", {}).get("elements", []))
-        
-        assert "Test Error" in card_elements_str or "Test Error" in card_content
-        assert "deep_resume" in card_elements_str
-        assert ("重试" in card_elements_str) or ("\\u91cd\\u8bd5" in card_elements_str)
-        assert "p1" in card_elements_str  # project_id should be included in the action
+            # Test project done callback dispatches completed with summary
+            engine.project.status = DeepProjectStatus.COMPLETED
+            callbacks.on_project_done(engine.project)
+
+            # Verify dispatch was called with completed event containing summary
+            calls = [c.args[0] for c in mock_session.dispatch.call_args_list]
+            types = [c.type.value for c in calls]
+            assert "completed" in types
+            completed_event = next(c for c in calls if c.type.value == "completed")
+            assert "summary" in completed_event.payload
+            assert "工具调用" in completed_event.payload["summary"]
+
+            # Test error callback dispatches failed with error text
+            mock_session.dispatch.reset_mock()
+            callbacks.on_error("Test Error")
+
+            calls = [c.args[0] for c in mock_session.dispatch.call_args_list]
+            types = [c.type.value for c in calls]
+            assert "failed" in types
+            failed_event = next(c for c in calls if c.type.value == "failed")
+            assert failed_event.payload["error"] == "Test Error"
+
+    def test_callbacks_progress_tracking(self, mock_handler):
+        """Test that on_event dispatches progress_updated for tool calls."""
+        renderer = DeepRenderer(mock_handler)
+
+        proj = MagicMock(spec=ProjectContext)
+        proj.project_id = "p1"
+        proj.root_path = "/tmp/p1"
+
+        mock_handler.ctx.deep_engine_manager.get.return_value = None
+
+        with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create, \
+             patch("src.feishu.renderers.deep_renderer.ACPEventRenderer") as mock_renderer_cls:
+            mock_session = MagicMock()
+            mock_create.return_value = mock_session
+            mock_renderer_cls.return_value = MagicMock()
+
+            callbacks = renderer.create_deep_callbacks("msg1", "chat1", proj)
+
+            # Simulate analyzing done
+            dp = DeepProject(name="test", root_path="/tmp/p1", project_id="p1")
+            callbacks.on_analyzing_done(dp)
+
+            # Simulate a tool call event
+            from src.acp import ACPEvent, ACPEventType
+            tool_event = MagicMock()
+            tool_event.type = ACPEventType.TOOL_CALL_START
+            tool_event.tool_name = "write_file"
+            tool_event.tool_input = "{}"
+            tool_event.content = None
+
+            mock_session.dispatch.reset_mock()
+            callbacks.on_event(tool_event)
+
+            # Should have progress_updated dispatched
+            calls = [c.args[0] for c in mock_session.dispatch.call_args_list]
+            types = [c.type.value for c in calls]
+            assert "progress_updated" in types

@@ -59,7 +59,7 @@ def render_time_ago_cn(bucket: TimeAgoBucket) -> str:
 def format_duration(seconds: float) -> str:
     """Format seconds into human-readable duration string.
 
-    Examples: "5秒", "3分12秒", "1小时30分5秒"
+    Examples: "5 秒", "3 分钟 12 秒", "1 小时 30 分钟 5 秒"
 
     NOTE: 该函数只负责数值到中文描述的转换，不绑定具体 UI 主题，
     调用方自行决定前缀/图标（例如 "🔄 执行中 · "）。
@@ -71,10 +71,10 @@ def format_duration(seconds: float) -> str:
     minutes = (total_secs % 3600) // 60
     secs = total_secs % 60
     if hours > 0:
-        return f"{hours}小时{minutes}分{secs}秒"
+        return f"{hours} 小时 {minutes} 分钟 {secs} 秒"
     if minutes > 0:
-        return f"{minutes}分{secs}秒"
-    return f"{secs}秒"
+        return f"{minutes} 分钟 {secs} 秒"
+    return f"{secs} 秒"
 
 
 def format_friendly_duration(seconds: float) -> str:
@@ -104,7 +104,7 @@ def format_friendly_duration(seconds: float) -> str:
 
 
 def append_duration_to_title(title: str, duration_secs: float | None) -> str:
-    """Append formatted duration to title if available. E.g. '🔄 执行中 · 3分45秒'."""
+    """Append formatted duration to title if available. E.g. '🔄 执行中 · 3分钟45秒'."""
     if duration_secs:
         return f"{title} · {format_duration(duration_secs)}"
     return title
@@ -132,7 +132,7 @@ def format_idle_health(health: IdleHealth) -> str:
 def format_seconds_ago(seconds: float) -> str:
     """[DEPRECATED] 兼容包装：请改用 :func:`format_time_ago`。
 
-    历史上本函数直接实现了一套独立的相对时间文案（`X秒前 / X分Y秒前 / X时Y分前`）。
+    历史上本函数直接实现了一套独立的相对时间文案（`X秒前 / X分钟Y秒前 / X小时Y分钟前`）。
     现在统一收敛到共享入口 :func:`format_time_ago`（基于 "秒数→语义段→文案" 的分层架构），
     以避免一种概念多套说法，并为多语言/多风格预留扩展点。
 
@@ -184,15 +184,15 @@ def generate_task_id(project_name: str) -> str:
 
 
 def make_progress_bar(completed: int, total: int) -> str:
-    """Render a text progress bar: [█████░░░░░] 50% (5/10)."""
+    """Render a text progress bar: ▰▰▰▰▰▱▱▱▱▱ 50% (5/10)."""
     if total == 0:
-        return "[░░░░░░░░░░] 0%"
+        return "▱▱▱▱▱▱▱▱▱▱ 0%"
 
     percent = (completed / total) * 100
     filled = int(percent / 10)
     empty = 10 - filled
 
-    return f"[{'█' * filled}{'░' * empty}] {percent:.0f}% ({completed}/{total})"
+    return f"{'▰' * filled}{'▱' * empty} {percent:.0f}% ({completed}/{total})"
 
 
 def clean_terminal_output(output: str) -> str:
@@ -207,6 +207,29 @@ def truncate_output(output: str, max_len: int, label: str = "输出被截断") -
     if len(output) > max_len:
         return output[:max_len] + f"\n\n... ({label}，共 {len(output)} 字符)"
     return output
+
+
+_PATH_PATTERN = re.compile(r"(/[\w./\-]+){3,}")
+_TB_PATTERN = re.compile(r"^\s*(File \"|Traceback )", re.MULTILINE)
+
+
+def sanitize_error_for_display(error: str, max_length: int = 200) -> str:
+    """Sanitize error text for user display: strip paths, tracebacks, truncate.
+
+    Full error is preserved in logging; this function only cleans user-facing text.
+    """
+    if not error:
+        return error
+    # Strip traceback lines — keep only the last line (actual error message)
+    if _TB_PATTERN.search(error):
+        lines = error.strip().splitlines()
+        error = lines[-1] if lines else error
+    # Replace internal file paths with [internal]
+    error = _PATH_PATTERN.sub("[internal]", error)
+    # Truncate
+    if len(error) > max_length:
+        error = error[:max_length] + "…"
+    return error.strip()
 
 
 def get_acp_result_header_text() -> dict[str, str]:

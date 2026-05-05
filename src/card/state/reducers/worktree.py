@@ -1,0 +1,221 @@
+"""Worktree sub-reducer: handles worktree engine interactive card events.
+
+Stores structured data in ContentBlock.data (dict).
+Formatting (emoji, markdown) is deferred to the render layer.
+Buttons use ButtonIntent values — mapped to action_ids by the render layer.
+"""
+from __future__ import annotations
+from dataclasses import replace
+from ..models import (
+    CardState, FooterState, ButtonSpec, HeaderState,
+    WorktreeSelectBlock, WorktreeConfirmBlock, WorktreeUnitsBlock,
+    WorktreeMergeBlock, WorktreeCleanupBlock,
+)
+from ...events import CardEvent, CardEventType
+from ..button_intent import ButtonIntent
+from ...ui_text import UI_TEXT
+
+
+def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
+    """Handle WORKTREE_* events — generate interactive card state."""
+    match event.type:
+        case CardEventType.WORKTREE_TOOL_SELECT:
+            tools = event.payload.get("tools", [])
+            selected = event.payload.get("selected", [])
+            message = event.payload.get("message", "")
+
+            data = {"tools": tools, "selected": selected, "message": message}
+            block = WorktreeSelectBlock(
+                block_id="worktree_tool_list",
+                data=data,
+            )
+
+            # Buttons: finish selection
+            buttons: tuple[ButtonSpec, ...] = ()
+            if selected:
+                buttons = (
+                    ButtonSpec(text=UI_TEXT["wt_btn_confirm_selection"], action_id=ButtonIntent.WORKTREE_FINISH_SELECTION, type="primary"),
+                )
+
+            header = HeaderState(title=UI_TEXT["worktree_header_tool_select"], subtitle=UI_TEXT["worktree_step_tool_select"], template="wathet", header_source="engine")
+            footer_text = UI_TEXT["wt_hint_select_at_least_one"] if not selected else UI_TEXT["worktree_footer_confirm_hint"]
+            footer = FooterState(status="idle", status_text=footer_text)
+            return replace(state, blocks=(block,), buttons=buttons, footer=footer, header=header)
+
+        case CardEventType.WORKTREE_CONFIRM:
+            selected_items = event.payload.get("selected_items", [])
+            goal = event.payload.get("goal", "")
+            message = event.payload.get("message", "")
+
+            data = {"selected_items": selected_items, "goal": goal, "message": message}
+            block = WorktreeConfirmBlock(
+                block_id="worktree_confirm",
+                data=data,
+            )
+
+            buttons = (
+                ButtonSpec(text=UI_TEXT["wt_btn_start"], action_id=ButtonIntent.WORKTREE_CONFIRM_START, type="primary"),
+                ButtonSpec(text=UI_TEXT["wt_btn_reselect"], action_id=ButtonIntent.WORKTREE_SHOW_MENU),
+                ButtonSpec(text=UI_TEXT["wt_btn_cancel"], action_id=ButtonIntent.WORKTREE_CANCEL, type="danger"),
+            )
+            header = HeaderState(title=UI_TEXT["worktree_header_confirm"], subtitle=UI_TEXT["worktree_step_confirm"], template="wathet", header_source="engine")
+            footer = FooterState(status="idle", status_text=UI_TEXT["worktree_footer_awaiting_confirm"])
+            return replace(state, blocks=(block,), buttons=buttons, footer=footer, header=header)
+
+        case CardEventType.WORKTREE_PROGRESS:
+            units = event.payload.get("units", [])
+            message = event.payload.get("message", "")
+
+            # Compute progress stats (pure data)
+            completed = sum(1 for u in units if u.get("status") == "completed")
+            failed_count = sum(1 for u in units if u.get("status") == "failed")
+            total = len(units)
+
+            data = {"units": units, "message": message, "completed": completed, "total": total}
+            block = WorktreeUnitsBlock(
+                block_id="worktree_progress",
+                data=data,
+            )
+
+            # Progress in footer
+            if total > 0:
+                pct = int(completed / total * 100)
+                progress_text = f"{completed}/{total} 完成"
+            else:
+                pct = None
+                progress_text = None
+
+            # Buttons: stop always available, retry when failures exist
+            # Special case: all completed with no failures → show retry-all option
+            if total > 0 and completed == total and failed_count == 0:
+                buttons: tuple[ButtonSpec, ...] = (
+                    ButtonSpec(text=UI_TEXT["wt_btn_retry_all"], action_id=ButtonIntent.WORKTREE_RETRY_ALL, type="primary", confirm=UI_TEXT["wt_btn_confirm_retry_all"]),
+                    ButtonSpec(text=UI_TEXT["wt_btn_cancel"], action_id=ButtonIntent.WORKTREE_CANCEL, type="danger"),
+                )
+            else:
+                buttons = (
+                    ButtonSpec(text=UI_TEXT["wt_btn_stop"], action_id=ButtonIntent.WORKTREE_CANCEL),
+                )
+                if failed_count > 0:
+                    buttons = (
+                        ButtonSpec(text=UI_TEXT["wt_btn_retry_failed"], action_id=ButtonIntent.WORKTREE_RETRY_FAILED, type="primary", confirm=UI_TEXT["wt_btn_confirm_retry"]),
+                    ) + buttons
+
+            header = HeaderState(title=UI_TEXT["worktree_header_execute"], subtitle=UI_TEXT["worktree_step_units"], template="wathet", header_source="engine")
+            is_silent = event.payload.get("silent", False)
+            if total > 0 and completed == total:
+                footer = FooterState(status="tool_running", progress=progress_text,
+                                     progress_pct=pct, status_text=UI_TEXT["worktree_footer_finishing"])
+            elif is_silent:
+                footer = FooterState(status="tool_running", progress=progress_text, progress_pct=pct,
+                                     status_text=UI_TEXT["worktree_footer_silent"])
+            else:
+                footer = FooterState(status="tool_running", progress=progress_text, progress_pct=pct)
+            return replace(state, blocks=(block,), buttons=buttons, footer=footer, header=header)
+
+        case CardEventType.WORKTREE_MERGE:
+            merge_notes = event.payload.get("merge_notes", [])
+            base_branch = event.payload.get("base_branch", "main")
+
+            data = {"merge_notes": merge_notes, "base_branch": base_branch}
+            block = WorktreeMergeBlock(
+                block_id="worktree_merge",
+                data=data,
+            )
+
+            buttons = (
+                ButtonSpec(
+                    text=UI_TEXT["wt_btn_merge_all"],
+                    action_id=ButtonIntent.WORKTREE_MERGE,
+                    type="primary",
+                    confirm=UI_TEXT["wt_btn_confirm_merge"].format(base_branch=base_branch),
+                ),
+            )
+            header = HeaderState(title=UI_TEXT["worktree_header_integrate"], subtitle=UI_TEXT["worktree_step_merge"], template="wathet", header_source="engine")
+            footer = FooterState(status="idle", status_text=UI_TEXT["worktree_footer_pending_merge"])
+            return replace(state, blocks=(block,), buttons=buttons, footer=footer, header=header)
+
+        case CardEventType.WORKTREE_CLEANUP:
+            merge_notes = event.payload.get("merge_notes", [])
+            base_branch = event.payload.get("base_branch", "main")
+            merge_results = event.payload.get("merge_results")
+            cleanup_phase = event.payload.get("cleanup_phase", "summary")
+
+            data = {
+                "merge_notes": merge_notes, "base_branch": base_branch,
+                "merge_results": merge_results, "cleanup_phase": cleanup_phase,
+            }
+            block = WorktreeCleanupBlock(
+                block_id="worktree_cleanup",
+                data=data,
+            )
+
+            has_failed = any(
+                r.get("success") is False for r in (merge_results or [])
+            )
+
+            if cleanup_phase == "summary":
+                buttons_list = [
+                    ButtonSpec(
+                        text=UI_TEXT["wt_btn_merge"],
+                        action_id=ButtonIntent.WORKTREE_MERGE,
+                        type="primary",
+                        confirm=UI_TEXT["wt_btn_confirm_merge"].format(base_branch=base_branch),
+                    ),
+                ]
+                if has_failed:
+                    buttons_list.append(
+                        ButtonSpec(text=UI_TEXT["wt_btn_retry_failed"], action_id=ButtonIntent.WORKTREE_RETRY_FAILED, confirm=UI_TEXT["wt_btn_confirm_retry"]),
+                    )
+                buttons_list.append(
+                    ButtonSpec(text=UI_TEXT["wt_btn_abandon"], action_id=ButtonIntent.WORKTREE_CANCEL, type="default", confirm=UI_TEXT["wt_btn_confirm_abandon"]),
+                )
+            else:
+                buttons_list = [
+                    ButtonSpec(
+                        text=UI_TEXT["wt_btn_merge"],
+                        action_id=ButtonIntent.WORKTREE_MERGE,
+                        type="primary",
+                        confirm=UI_TEXT["wt_btn_confirm_merge"].format(base_branch=base_branch),
+                    ),
+                ]
+                if has_failed:
+                    buttons_list.append(
+                        ButtonSpec(text=UI_TEXT["wt_btn_retry_failed"], action_id=ButtonIntent.WORKTREE_RETRY_FAILED, confirm=UI_TEXT["wt_btn_confirm_retry"]),
+                    )
+                buttons_list.append(
+                    ButtonSpec(
+                        text=UI_TEXT["wt_btn_cleanup"],
+                        action_id=ButtonIntent.WORKTREE_CLEANUP,
+                        type="danger",
+                        confirm=UI_TEXT["wt_btn_confirm_cleanup"],
+                    ),
+                )
+                buttons_list.append(
+                    ButtonSpec(text=UI_TEXT["wt_btn_abandon"], action_id=ButtonIntent.WORKTREE_CANCEL, type="default", confirm=UI_TEXT["wt_btn_confirm_abandon"]),
+                )
+            buttons = tuple(buttons_list)
+
+            header = HeaderState(title=UI_TEXT["worktree_header_integrate"], subtitle=UI_TEXT["worktree_step_cleanup"], template="wathet", header_source="engine")
+            footer = FooterState(status="idle", status_text=UI_TEXT["worktree_footer_merge_cleanup"])
+            return replace(state, blocks=(block,), buttons=buttons, footer=footer, header=header)
+
+        case CardEventType.WORKTREE_COMPLETED_NO_CHANGE:
+            units = event.payload.get("units", [])
+            message = event.payload.get("message", "") or UI_TEXT["worktree_completed_no_change"]
+
+            data = {"units": units, "message": message}
+            block = WorktreeUnitsBlock(
+                block_id="worktree_no_change",
+                data=data,
+            )
+
+            buttons = (
+                ButtonSpec(text=UI_TEXT["wt_btn_retry_all"], action_id=ButtonIntent.WORKTREE_RETRY_ALL, type="primary", confirm=UI_TEXT["wt_btn_confirm_retry_all"]),
+                ButtonSpec(text=UI_TEXT["wt_btn_cancel"], action_id=ButtonIntent.WORKTREE_CANCEL, type="danger"),
+            )
+            header = HeaderState(title=UI_TEXT["worktree_header_completed"], subtitle=UI_TEXT["worktree_no_change_subtitle"], template="wathet", header_source="engine")
+            footer = FooterState(status="idle", status_text=message)
+            return replace(state, blocks=(block,), buttons=buttons, footer=footer, header=header, terminal="completed_empty")
+
+    return state

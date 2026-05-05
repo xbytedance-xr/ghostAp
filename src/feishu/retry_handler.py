@@ -90,7 +90,7 @@ class RetryCommandHandler:
     def __call__(self, mid: str, cid: str, pid: Optional[str], val: dict[str, Any]) -> None:
         cmd = self._compat_get(val, "_t", "command_text").strip()
         if not cmd:
-            from ..card.styles import UI_TEXT
+            from ..card.ui_text import UI_TEXT
             self._dispatch.reply_text(mid, UI_TEXT["retry_empty_command"])
             return
 
@@ -105,7 +105,7 @@ class RetryCommandHandler:
             import time as _t
             undo_expires = self._compat_get(val, "_ue", "undo_expires", default=0)
             if undo_expires and _t.time() > undo_expires:
-                from ..card.styles import UI_TEXT
+                from ..card.ui_text import UI_TEXT
                 self._dispatch.reply_text(mid, UI_TEXT["lock_undo_expired"])
                 return
 
@@ -137,14 +137,14 @@ class RetryCommandHandler:
         if cmd.strip() in SIGNATURE_EXEMPT_COMMANDS:
             return True
         if not sig:
-            from ..card.styles import UI_TEXT
+            from ..card.ui_text import UI_TEXT
             self._dispatch.reply_text(mid, UI_TEXT["retry_command_sig_mismatch"])
             return False
         from ..card.builders.lock import verify_command_sig
         result = verify_command_sig(cmd, sig)
         if result:
             return True
-        from ..card.styles import UI_TEXT
+        from ..card.ui_text import UI_TEXT
         from ..utils.signing import VerifyResult
         if result is VerifyResult.COMPAT_EXPIRED:
             self._dispatch.reply_text(mid, UI_TEXT["retry_command_sig_upgrade_expired"])
@@ -170,7 +170,7 @@ class RetryCommandHandler:
             project = self._dispatch.get_active_project(cid)
         # F-09: Reject when fallback project differs from requested project
         if pid and project and project.project_id != pid:
-            from ..card.styles import UI_TEXT
+            from ..card.ui_text import UI_TEXT
             self._dispatch.reply_text(mid, UI_TEXT["retry_project_unavailable"])
             return _REJECTED
         return project

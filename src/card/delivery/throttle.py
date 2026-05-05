@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from src.card.flow_control import FlowControlConfig, FlowControlState, FlowControlStrategy
-from src.card.render.renderer import RenderedCard
+from src.card.types import RenderedCard
 
 DELIVERY_INTERVAL_MS = 200  # Minimum flush interval for structural changes
 

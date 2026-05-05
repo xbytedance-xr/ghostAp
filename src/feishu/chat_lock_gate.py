@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
 
-from ..card.styles import UI_TEXT
+from ..card.ui_text import UI_TEXT
 
 if TYPE_CHECKING:
     from ..chat_lock import ChatLockManager

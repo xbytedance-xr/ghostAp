@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Optional
 
 from ...acp import ACPEvent, ACPEventRenderer, ACPEventType
-from ...card import CardBuilder
-from ...card.models import EngineCardState
+from ...card.events import CardEvent
+from ...card.render.budget import RenderBudget
+from ...card.state.models import CardMetadata
+from ...card.ui_text import UI_TEXT
 from ...deep_engine import DeepEngineCallbacks
 from ...deep_engine.models import DeepProject, DeepProjectStatus
 from ...project import ContextSourceMode
-from ...utils.text import append_duration_to_title
 from ..emoji import EmojiReaction
-from .base import BaseRenderer, _StreamThrottle, _create_direct_session
+from .base import BaseRenderer, _StreamThrottle
 
 if TYPE_CHECKING:
+    from ...card.protocols import Dispatchable
+    from ...card.session import CardSession
     from ...project import ProjectContext
     from ..handlers.deep import DeepHandler
 
@@ -28,6 +32,11 @@ class DeepRenderer(BaseRenderer):
 
     def __init__(self, handler: "DeepHandler") -> None:
         super().__init__(handler)
+        self._current_session: "Dispatchable | None" = None
+
+    def get_active_session(self) -> "Dispatchable | None":
+        """Return the currently active deep engine session."""
+        return self._current_session
 
     def create_deep_callbacks(
         self,
@@ -43,300 +52,108 @@ class DeepRenderer(BaseRenderer):
         )
         reporter = self.ctx.progress_reporter
 
-        session = _create_direct_session(self.handler, chat_id, message_id)
-        throttle = _StreamThrottle(self.settings)
-
-        renderer = ACPEventRenderer()
-
-        # 保存最近的结构化渲染结果，用于引擎卡片折叠面板
-        _last_structured = [None]  # mutable container for closure
-        _footer_status = [None]  # mutable container for footer_status tracking
-
-        def _send_deep_message(card_content: str, msg_type: str = "interactive"):
-            """发送 deep 任务消息，委托给 DirectCardSession 处理。"""
-            # Apply payload guard before sending
-            card_content = self._check_and_truncate_payload(card_content)
-            session.send(card_content)
-
-        def on_analyzing_done(deep_project: DeepProject):
-            content = f"🚀 ACP Deep 执行开始\n\n📂 **{deep_project.name}**\n🔗 路径: `{deep_project.root_path}`"
-            msg_type, card_content = CardBuilder.build_engine_card(
-                project=project,
-                state=EngineCardState(
-                    title="🚀 开始执行",
-                    content=content,
-                    engine_project_id=deep_project.project_id,
-                    engine_name=engine_name,
-                    show_buttons=False,
-                ),
-            )
-            # Critical state update: flush immediately
-            _send_deep_message(card_content, msg_type)
-
-        def _get_engine():
-            rp = root_path or (project.root_path if project else "")
-            if rp:
-                return self.ctx.deep_engine_manager.get(chat_id, rp)
-            # Best-effort fallback: if only one running engine, use it
-            try:
-                running = self.ctx.deep_engine_manager.get_active_engines(chat_id)
-                if len(running) == 1:
-                    return running[0]
-            except Exception:
-                logger.debug("failed to get running engine", exc_info=True)
-            return None
-
-        def _maybe_stream_update(force: bool = False) -> None:
-            text_len = len(renderer.text_content or "")
-
-            if not throttle.check_throttle(text_len, force):
-                return
-
-            plan_view = renderer.render_plan_view()
-            recent = renderer.text_content or ""
-
-            if not plan_view and not recent:
-                return
-
-            # Update stream state regardless of whether we actually send (to avoid spam if rendering fails or is skipped)
-            # But here we only update if we proceed.
-
-            engine = _get_engine()
-            if not engine or not engine.project:
-                return
-            deep_project_id = engine.project.project_id
-            progress = engine.progress if engine else None
-            progress_bar = progress.progress_bar if progress else None
-
-            status = None
-            try:
-                status = engine.project.status if engine and engine.project else None
-            except Exception:
-                status = None
-
-            if status == DeepProjectStatus.PLANNING:
-                title = "🧠 分析/规划中"
-            else:
-                title = "🔄 执行中"
-
-            title = append_duration_to_title(title, engine.project.duration() if engine and engine.project else None)
-
-            parts = []
-            if plan_view:
-                parts.append(plan_view)
-            if recent:
-                parts.append(f"\n**📝 最近输出**\n{recent}")
-
-            content = "\n\n".join(parts)
-
-            # Read UI state
-            state = self.get_ui_state(deep_project_id) if deep_project_id else self.get_default_ui_state()
-
-            # Apply collapsing to content (Thought/Plan chain)
-            # Deep mode content is usually Markdown text, not a list of criteria.
-            # We can use _render_collapsible_section which handles both.
-            # Count items by newlines for text.
-            content = self._render_collapsible_section(
-                content, total_items=len(content.split("\n")), expanded=state.get("expand_ac", False)
-            )
-
-            warning_banner = self._check_warning_banner(
-                engine.project.duration() if engine and engine.project else 0,
-                is_executing=(status != DeepProjectStatus.PLANNING),
-            )
-
-            msg_type, card_content = CardBuilder.build_engine_card(
-                project=project,
-                state=EngineCardState(
-                    title=title,
-                    content=content,
-                    progress_bar=progress_bar,
-                    engine_project_id=deep_project_id,
-                    is_executing=True,
-                    engine_name=engine_name,
-                    compact=state["compact"],
-                    expanded=state["expanded"],
-                    expand_ac=state.get("expand_ac", False),
-                    action_prefix="deep",
-                    warning_banner=warning_banner,
-                    rendered_content=_last_structured[0],
-                    footer_status=_footer_status[0],
-                ),
-            )
-            # Streaming updates: use throttling
-            _send_deep_message(card_content, msg_type)
-            throttle.update_stream_state(text_len)
-
-        def on_event(event: ACPEvent):
-            """Process ACP events and update streaming display."""
-            if self.settings.engine_collapsible_enabled:
-                structured = renderer.process_event_structured(event)
-                _last_structured[0] = structured
-            else:
-                renderer.process_event(event)
-
-            # Determine footer_status based on event type
-            if event.event_type == ACPEventType.THOUGHT_CHUNK:
-                _footer_status[0] = "thinking"
-            elif event.event_type in (ACPEventType.TOOL_CALL_START, ACPEventType.TOOL_CALL_UPDATE):
-                _footer_status[0] = "tool_running"
-            elif event.event_type == ACPEventType.TEXT_CHUNK:
-                _footer_status[0] = None  # clear footer during text streaming
-
-            # 1) Plan updates: send plan-only view (throttled)
-            if event.event_type == ACPEventType.PLAN_UPDATE and event.plan:
-                plan_content = renderer.render_plan_view()
-                if throttle.check_plan_throttle(plan_content):
-                    engine = _get_engine()
-                    if not engine or not engine.project:
-                        return
-                    deep_project_id = engine.project.project_id
-                    progress = engine.progress if engine else None
-                    progress_bar = progress.progress_bar if progress else None
-                    plan_title = append_duration_to_title(
-                        "📋 执行计划", engine.project.duration() if engine and engine.project else None
-                    )
-
-                    state = self.get_ui_state(deep_project_id) if deep_project_id else self.get_default_ui_state()
-
-                    # Apply collapsing to plan content
-                    plan_content = self._render_collapsible_section(
-                        plan_content, total_items=len(plan_content.split("\n")), expanded=state.get("expand_ac", False)
-                    )
-
-                    warning_banner = self._check_warning_banner(
-                        engine.project.duration() if engine and engine.project else 0,
-                        is_executing=True,
-                    )
-
-                    msg_type, card_content = CardBuilder.build_engine_card(
-                        project=project,
-                        state=EngineCardState(
-                            title=plan_title,
-                            content=plan_content,
-                            progress_bar=progress_bar,
-                            engine_project_id=deep_project_id,
-                            is_executing=True,
-                            engine_name=engine_name,
-                            compact=state["compact"],
-                            expanded=state["expanded"],
-                            expand_ac=state.get("expand_ac", False),
-                            action_prefix="deep",
-                            warning_banner=warning_banner,
-                        ),
-                    )
-                    # Plan updates: use throttling
-                    _send_deep_message(card_content, msg_type)
-                    throttle.update_plan_state(plan_content)
-
-            # 2) Stream text/tool progress so users can see "分析→计划→执行" 过程
-            if event.event_type in (
-                ACPEventType.TEXT_CHUNK,
-                ACPEventType.TOOL_CALL_START,
-                ACPEventType.TOOL_CALL_UPDATE,
-                ACPEventType.TOOL_CALL_DONE,
-            ):
-                _maybe_stream_update(force=(event.event_type == ACPEventType.TOOL_CALL_DONE))
-
-        def on_project_done(deep_project: DeepProject):
-            engine = _get_engine()
-            progress = engine.progress if engine else None
-            # Use the local renderer (same one used for streaming) for consistency.
-            # Fall back to engine renderer if somehow the local one is empty.
-            rendered_content = renderer.get_final_content() or (
-                engine.get_rendered_content() if engine else ""
-            )
-
-            summary_parts = []
-            if progress:
-                summary_parts.append(progress.format_summary())
-            if rendered_content:
-                summary_parts.append(f"\n**📝 执行输出**\n{rendered_content}")
-            elif progress and not rendered_content:
-                # No text output captured — at least show a note so the section isn't empty
-                summary_parts.append("\n**📝 执行输出**\n（Agent 未产生文本输出，仅执行工具调用）")
-
-            content = "\n\n".join(summary_parts) or "执行完成"
-            status_emoji = "✅" if deep_project.status == DeepProjectStatus.COMPLETED else "⚠️"
-            title = f"{status_emoji} Deep Agent 执行{'完成' if deep_project.status == DeepProjectStatus.COMPLETED else '结束'}"
-
-            # Don't show 0% progress bar on completion when no plan entries were tracked
-            try:
-                has_steps = progress is not None and int(progress.total_steps) > 0
-            except (TypeError, ValueError, AttributeError):
-                has_steps = False
-            progress_bar = progress.progress_bar if has_steps else None
-            terminal_state = "completed" if deep_project.status == DeepProjectStatus.COMPLETED else "failed"
-            msg_type, card_content = CardBuilder.build_engine_card(
-                project=project,
-                state=EngineCardState(
-                    title=title,
-                    content=content,
-                    progress_bar=progress_bar,
-                    engine_project_id=deep_project.project_id,
-                    engine_name=engine_name,
-                    rendered_content=_last_structured[0],
-                    terminal_state=terminal_state,
-                ),
-            )
-            # Final completion: immediate flush
-            _send_deep_message(card_content, msg_type)
-            self.handler.add_reaction(message_id, EmojiReaction.on_multi_task_done())
-
-            if project:
+        # Build lifecycle hooks for side effects (emoji, context persistence)
+        context_update_fn = None
+        if project:
+            def context_update_fn(state):
+                """Persist deep engine results to project context."""
                 self.handler.context_manager.update_context(
                     project.project_id,
-                    deep_result={"data": deep_project.to_dict()},
+                    deep_result={"data": {"completed": True}},
                     chat_id=chat_id,
                 )
                 ctx = self.handler.context_manager.store.get(project.project_id, chat_id=chat_id)
                 if ctx:
                     ctx.create_version(
-                        reason=f"deep_engine_done: {deep_project.name}",
+                        reason="deep_engine_done",
                         source_mode=ContextSourceMode.DEEP_ENGINE,
-                        summary=f"Deep Engine completed: tool_calls={len(progress.tool_calls) if progress else 0}",
+                        summary="Deep Engine completed",
                     )
 
+        hooks = self._build_hooks(
+            message_id,
+            include_context_hook=True,
+            context_update_fn=context_update_fn,
+            chat_id=chat_id,
+            engine_type="deep",
+        )
+
+        # New pipeline: CardSession (event-driven)
+        metadata = CardMetadata(
+            project_name=project.project_id if project else None,
+            mode_name=f"Deep · {engine_name}",
+            mode_emoji="🧠",
+            engine_type="deep",
+        )
+        session: Dispatchable = self.create_session(chat_id, message_id, metadata, hooks=hooks, budget=RenderBudget(engine_cmd="/deep"))
+        self._current_session = session
+
+        # ACP event renderer for structured content
+        renderer = ACPEventRenderer()
+        # Progress tracking state
+        _start_time = [time.time()]
+        _tool_count = [0]
+        _plan_steps = [0]
+        _phase = ["analyzing"]  # "analyzing" | "executing"
+
+        def on_analyzing_done(deep_project: DeepProject):
+            # Start the card session
+            session.dispatch(CardEvent.started())
+            content = f"🚀 ACP Deep 执行开始\n\n📂 **{deep_project.name}**\n🔗 路径: `{deep_project.root_path}`"
+            session.dispatch(CardEvent.text_started("_main_text"))
+            session.dispatch(CardEvent.text_delta("_main_text", content))
+            _phase[0] = "executing"
+
+        def on_event(event: ACPEvent):
+            """Process ACP events and dispatch to CardSession."""
+            renderer.process_event(event)
+
+            # Track progress for progress_updated dispatch
+            if event.type == ACPEventType.TOOL_CALL_START:
+                # Close the active main text block before the first tool starts
+                if _tool_count[0] == 0:
+                    session.dispatch(CardEvent.text_done("_main_text"))
+                _tool_count[0] += 1
+                label = "🔄 执行中" if _phase[0] == "executing" else "🧠 分析/规划中"
+                session.dispatch(CardEvent.progress_updated(
+                    current=_tool_count[0],
+                    total=max(_plan_steps[0], _tool_count[0]),
+                    label=label,
+                ))
+            elif event.type == ACPEventType.PLAN_UPDATE:
+                plan_content = getattr(event, "content", "") or ""
+                steps = plan_content.count("\n- ") + plan_content.count("\n* ")
+                if steps > 0:
+                    _plan_steps[0] = steps
+                    _phase[0] = "executing"
+
+            # Convert ACP event to CardEvent and dispatch
+            card_event = CardEvent.from_acp(event)
+            session.dispatch(card_event)
+
+            # Check for warning banner based on elapsed time
+            elapsed = time.time() - _start_time[0]
+            warning = self.check_warning_banner(elapsed, is_executing=(_phase[0] == "executing"))
+            if warning:
+                session.dispatch(CardEvent.warning_updated(warning))
+
+        def on_project_done(deep_project: DeepProject):
+            # Build execution summary
+            snap = self._get_engine(chat_id, root_path, project)
+            tool_calls_count = snap.tool_calls_count if snap else _tool_count[0]
+            summary = f"✅ 执行完成 · 工具调用: {tool_calls_count}"
+
+            # Dispatch completion with summary (hooks fire automatically via CardSession)
+            if deep_project.status == DeepProjectStatus.COMPLETED:
+                session.dispatch(CardEvent.completed(summary=summary))
+            else:
+                session.dispatch(CardEvent.failed("执行未完成"))
+            self._current_session = None
+
         def on_error(error: str):
-            content = reporter.format_error(error)
-            title = reporter.get_error_title()
-            
-            engine = _get_engine()
-            deep_project_id = None
-            if engine and engine.project:
-                deep_project_id = engine.project.project_id
-            if not deep_project_id and project:
-                deep_project_id = project.project_id
-            
-            extra_buttons = [
-                {
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": "🔁 重试"},
-                    "type": "primary",
-                    "value": {
-                        "action": "deep_resume",
-                        "project_id": project.project_id if project else deep_project_id,
-                        "deep_project_id": deep_project_id,
-                    },
-                }
-            ]
-            
-            msg_type, card_content = CardBuilder.build_engine_card(
-                project=project,
-                state=EngineCardState(
-                    title=title,
-                    content=content,
-                    engine_name=engine_name,
-                    show_buttons=True,
-                    extra_buttons=extra_buttons,
-                    action_prefix="deep",
-                    engine_project_id=deep_project_id,
-                    terminal_state="failed",
-                ),
-            )
-            # Error state: immediate flush
-            _send_deep_message(card_content, msg_type)
-            self.handler.add_reaction(message_id, EmojiReaction.on_error())
+            # Dispatch failure (hooks fire automatically via CardSession)
+            session.dispatch(CardEvent.failed(error))
+            self._current_session = None
 
         return DeepEngineCallbacks(
             on_analyzing_done=on_analyzing_done,
@@ -344,6 +161,21 @@ class DeepRenderer(BaseRenderer):
             on_project_done=on_project_done,
             on_error=on_error,
         )
+
+    def _get_engine(self, chat_id: str, root_path: Optional[str], project: Optional["ProjectContext"]):
+        """Helper to get the deep engine instance via snapshot interface."""
+        rp = root_path or (project.root_path if project else "")
+        if rp:
+            snap = self.ctx.deep_engine_manager.snapshot(chat_id, rp)
+            if snap:
+                return snap
+        try:
+            snaps = self.ctx.deep_engine_manager.snapshot_active(chat_id)
+            if len(snaps) == 1:
+                return snaps[0]
+        except Exception:
+            logger.debug("failed to get running engine snapshot", exc_info=True)
+        return None
 
     def render_deep_status(
         self,
@@ -356,76 +188,92 @@ class DeepRenderer(BaseRenderer):
             project = self.handler.project_manager.get_active_project(chat_id)
 
         root_path = project.root_path if project else self.handler.get_working_dir(chat_id)
-        engine = self.ctx.deep_engine_manager.get(chat_id, root_path)
+        snap = self.ctx.deep_engine_manager.snapshot(chat_id, root_path)
         reporter = self.ctx.progress_reporter
 
-        if not engine or not engine.project:
-            running = self.ctx.deep_engine_manager.get_active_engines(chat_id)
-            if len(running) == 1 and running[0].project:
-                engine = running[0]
-            elif len(running) > 1:
+        if not snap or not snap.ext.get("project"):
+            snaps = self.ctx.deep_engine_manager.snapshot_active(chat_id)
+            if len(snaps) == 1 and snaps[0].ext.get("project"):
+                snap = snaps[0]
+            elif len(snaps) > 1:
                 self.handler.show_deep_board(message_id, chat_id)
                 return
             else:
+                # No active engine — build a simple status card via CardSession snapshot
                 engine_name = self.handler.get_engine_name(
                     chat_id, project_id=(project.project_id if project else None)
                 )
-                msg_type, card_content = CardBuilder.build_engine_card(
-                    project=project,
-                    state=EngineCardState(
-                        title="📊 当前状态",
-                        content="当前没有 Deep Agent 任务\n\n发送 `/deep 你的需求` 开始一个复杂任务\n发送 `/deep_status all` 查看所有项目任务",
-                        engine_name=engine_name,
-                        show_buttons=False,
-                    ),
+                metadata = CardMetadata(
+                    project_name=project.project_id if project else None,
+                    mode_name=f"Deep · {engine_name}",
+                    mode_emoji="🧠",
+                    engine_type="deep",
                 )
-                self.handler.reply_card(message_id, card_content)
+                session = self.create_session(chat_id, message_id, metadata, budget=RenderBudget(engine_cmd="/deep"))
+                session.dispatch(CardEvent.started())
+                session.dispatch(CardEvent.text_started("_status"))
+                session.dispatch(CardEvent.text_delta("_status", UI_TEXT["deep_status_empty"]))
+                session.dispatch(CardEvent.text_done("_status"))
+                session.dispatch(CardEvent.completed())
+                # Card was auto-delivered by the session
                 return
 
-        engine_name = engine.engine_name
+        engine_name = snap.engine_name
+        deep_project = snap.ext.get("project")
+        deep_progress = snap.ext.get("progress")
 
         if project is None:
             try:
-                project = self.handler.project_manager.find_project_by_path(engine.root_path, chat_id=chat_id)
+                project = self.handler.project_manager.find_project_by_path(snap.root_path, chat_id=chat_id)
             except Exception:
                 project = None
 
-        status_content = reporter.format_status(engine.project)
+        status_content = reporter.format_status(deep_project)
         status_title = reporter.get_status_title()
         progress_info = reporter.get_progress_info(
-            engine.project,
-            completed=engine.progress.completed_steps,
-            total=engine.progress.total_steps,
+            deep_project,
+            completed=snap.completed_steps,
+            total=snap.total_steps,
         )
 
         deep_project_id = progress_info["project_id"]
         state = self.get_ui_state(deep_project_id) if deep_project_id else self.get_default_ui_state()
+
+        # Build status card via CardSession
+        metadata = CardMetadata(
+            project_name=project.project_id if project else None,
+            mode_name=f"Deep · {engine_name}",
+            mode_emoji="🧠",
+            engine_type="deep",
+        )
+        session = self.create_session(chat_id, message_id, metadata, budget=RenderBudget(engine_cmd="/deep"))
+        session.dispatch(CardEvent.started())
 
         # Apply collapsing to status content
         status_content = self._render_collapsible_section(
             status_content, total_items=len(status_content.split("\n")), expanded=state.get("expand_ac", False)
         )
 
-        warning_banner = self._check_warning_banner(
-            engine.project.duration(),
+        # Dispatch content
+        session.dispatch(CardEvent.text_delta("_status", f"**{status_title}**\n\n{status_content}"))
+
+        # Progress
+        if progress_info.get("progress_bar"):
+            session.dispatch(CardEvent.progress_updated(
+                current=progress_info.get("completed", 0),
+                total=progress_info.get("total", 0),
+                label="执行中" if progress_info["is_executing"] else "已完成",
+            ))
+
+        # Warning banner
+        warning_banner = self.check_warning_banner(
+            snap.duration_seconds,
             is_executing=progress_info["is_executing"],
         )
+        if warning_banner:
+            session.dispatch(CardEvent.warning_updated(warning_banner))
 
-        msg_type, card_content = CardBuilder.build_engine_card(
-            project=project,
-            state=EngineCardState(
-                title=status_title,
-                content=status_content,
-                progress_bar=progress_info["progress_bar"],
-                engine_project_id=deep_project_id,
-                is_executing=progress_info["is_executing"],
-                is_paused=progress_info["is_paused"],
-                engine_name=engine_name,
-                compact=state["compact"],
-                expanded=state["expanded"],
-                expand_ac=state.get("expand_ac", False),
-                action_prefix="deep",
-                warning_banner=warning_banner,
-            ),
-        )
-        self._patch_or_send(message_id, chat_id, card_content, msg_type, origin_message_id)
+        # Terminal state
+        if not progress_info["is_executing"]:
+            session.dispatch(CardEvent.completed())
+        # If still executing, leave session open (card delivered via dispatch)

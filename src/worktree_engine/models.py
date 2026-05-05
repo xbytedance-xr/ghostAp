@@ -22,6 +22,32 @@ def _clean_str(value: object, default: str = "") -> str:
     return text or default
 
 
+def _migrate_merge_notes(raw: object) -> list[dict]:
+    """Deserialize merge_notes with backward-compatible format migration.
+
+    Handles:
+    - Current format: list[dict] with 'summary' key
+    - Legacy format: list[dict] with 'description' key (migrated to 'summary')
+    - Old format: list[str] (converted to dict with 'summary' key)
+    """
+    if not isinstance(raw, list):
+        return []
+    result: list[dict] = []
+    for item in raw:
+        if isinstance(item, dict):
+            # Migrate legacy 'description' key → 'summary'
+            if "description" in item and "summary" not in item:
+                migrated = {k: v for k, v in item.items() if k != "description"}
+                migrated["summary"] = item["description"]
+                result.append(migrated)
+            else:
+                result.append(item)
+        elif isinstance(item, str) and item.strip():
+            # Old format: bare string → minimal dict
+            result.append({"summary": item.strip(), "branch": "", "status": "unknown"})
+    return result
+
+
 def _parse_unit_status(value: object) -> "WorktreeUnitStatus":
     """Parse a raw status value into a WorktreeUnitStatus enum, defaulting to PENDING."""
     raw = _clean_str(value, default=WorktreeUnitStatus.PENDING.value)
@@ -359,7 +385,7 @@ class WorktreeRuntimeState:
     selection: WorktreeSelectionState = field(default_factory=WorktreeSelectionState)
     units: list[WorktreeUnit] = field(default_factory=list)
     summary_lines: list[str] = field(default_factory=list)
-    merge_notes: list[str] = field(default_factory=list)
+    merge_notes: list[dict] = field(default_factory=list)
     last_error: str = ""
     # 高层旅程状态，用于统一 /wt 自动执行路径的状态流转
     journey: WorktreeJourneyState = field(default_factory=WorktreeJourneyState)
@@ -402,7 +428,7 @@ class WorktreeRuntimeState:
             selection=WorktreeSelectionState.from_dict(data.get("selection")),
             units=units,
             summary_lines=[_clean_str(x) for x in list(data.get("summary_lines") or []) if _clean_str(x)],
-            merge_notes=[_clean_str(x) for x in list(data.get("merge_notes") or []) if _clean_str(x)],
+            merge_notes=_migrate_merge_notes(data.get("merge_notes")),
             last_error=_clean_str(data.get("last_error")),
             journey=journey,
         )

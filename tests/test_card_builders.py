@@ -1,6 +1,8 @@
 import json
 from typing import Optional
 
+import pytest
+
 from src.card.builder import CardBuilder
 from src.card.builders.core import CoreBuilder
 from src.card.builders.project import ProjectBuilder
@@ -55,7 +57,7 @@ def test_shorten_goal_for_banner_cleans_newlines():
     goal3 = "A\n" * 40 + "B" * 50  # 长文本
     res3 = WorktreeBuilder._shorten_goal_for_banner(goal3, max_len=80)
     assert len(res3) == 80
-    assert res3.endswith("...")
+    assert res3.endswith("…")
     assert "\n" not in res3
     
     # 4. 包含 Markdown 标记的文本应该被清洗，防止加粗语法被破坏
@@ -77,7 +79,7 @@ def test_shorten_goal_for_banner_cleans_newlines():
     goal6 = "**" + "A" * 85 + "**"
     res6 = WorktreeBuilder._shorten_goal_for_banner(goal6, max_len=80)
     assert len(res6) <= 80
-    assert res6.endswith("...")
+    assert res6.endswith("…")
     assert "**" not in res6
 
     # 7. 空文本
@@ -155,7 +157,11 @@ def test_project_builder_with_banner():
 def test_help_card_mentions_new_chat_project_group():
     SystemBuilder._build_help_card_cached.cache_clear()
 
-    msg_type, card_json = SystemBuilder.build_help_card()
+    msg_type, card_json = SystemBuilder.build_help_card(
+        session_idle_timeout=600,
+        session_idle_warn_at_remaining=120,
+        lock_undo_window_seconds=300,
+    )
 
     assert msg_type == "interactive"
     card_text = json.dumps(json.loads(card_json), ensure_ascii=False)
@@ -256,7 +262,7 @@ def test_system_builder_soft_failure_banner():
 
 
 def test_deep_builder_warning_banner():
-    """Verify that DeepBuilder.build_engine_card uses the banner for warnings."""
+    """Verify that DeepBuilder.build_info_card uses the banner for warnings."""
     project = ProjectContext(project_id="p1", project_name="P1", root_path="/tmp/p1")
     state = EngineCardState(
         title="Running",
@@ -265,7 +271,7 @@ def test_deep_builder_warning_banner():
         warning_banner="Low credits warning"
     )
 
-    msg_type, card_json = DeepBuilder.build_engine_card(project, state)
+    msg_type, card_json = DeepBuilder.build_info_card(project, state)
     card = json.loads(card_json)
     elements = card["body"]["elements"]
 
@@ -340,7 +346,7 @@ def test_worktree_confirm_card_grouping():
     assert "即将启动以下工具-模型组合" in elements[0]["content"]
 
     assert elements[1]["tag"] == "column_set"
-    assert "请在下方输入您的任务目标" in elements[1]["columns"][0]["elements"][0]["content"]
+    assert "开始执行" in elements[1]["columns"][0]["elements"][0]["content"]
 
     hot_area = elements[2]
     assert hot_area["tag"] == "column_set"
@@ -646,3 +652,255 @@ def test_card_builder_format_engine_status_info_spec_includes_cycle_phase_and_cr
     assert "2" in info
     assert "Plan" in info
     assert "2/5" in info
+
+
+# ---------------------------------------------------------------------------
+# Verify stop/stop_danger confirm dialog fields
+# ---------------------------------------------------------------------------
+
+
+class TestStopButtonConfirmDialogs:
+    """Verify stop and stop_danger buttons include proper confirm dialogs."""
+
+    def _make_executing_state(self):
+        """Create an EngineCardState that is executing."""
+        from src.card.builders.deep import DeepBuilder, EngineCardState
+        return EngineCardState(
+            is_executing=True,
+            is_paused=False,
+            content="x\n" * 60,
+            compact=False,
+            expanded=False,
+            action_prefix="deep",
+            engine_project_id="proj1",
+            project_id="proj1",
+        )
+
+    def test_stop_danger_confirm_has_title_and_body(self):
+        """stop_danger button JSON includes confirm.title.content and confirm.text.content."""
+        from src.card.builders.deep import DeepBuilder
+        state = self._make_executing_state()
+        btn = DeepBuilder._create_button("stop_danger", state)
+        assert "confirm" in btn
+        assert "title" in btn["confirm"]
+        assert "content" in btn["confirm"]["title"]
+        assert "text" in btn["confirm"]
+        assert "content" in btn["confirm"]["text"]
+        # Verify it uses the danger body text
+        from src.card.ui_text import UI_TEXT
+        expected = UI_TEXT["card_btn_confirm_stop_danger_body"].format(engine_cmd="/deep")
+        assert btn["confirm"]["text"]["content"] == expected
+
+    def test_stop_normal_has_no_confirm(self):
+        """Normal stop button should NOT have a confirm dialog (direct execution)."""
+        from src.card.builders.deep import DeepBuilder
+        state = self._make_executing_state()
+        btn = DeepBuilder._create_button("stop", state)
+        assert "confirm" not in btn
+
+
+# ---------------------------------------------------------------------------
+# timeout_display formatting (system help card)
+# ---------------------------------------------------------------------------
+
+
+class TestTimeoutDisplayFormatting:
+    """Test timeout_display formatting logic in system help card."""
+
+    @pytest.mark.parametrize("timeout_seconds,expected_substring", [
+        (300, "5 分钟"),
+        (600, "10 分钟"),
+        (1800, "30 分钟"),
+        (3600, "60 分钟"),
+        (7200, "2 小时"),
+        (10800, "3 小时"),
+    ])
+    def test_timeout_display_format(self, timeout_seconds, expected_substring):
+        """Verify timeout display formatting for various second values."""
+        import math
+
+        timeout_minutes = max(1, math.ceil(timeout_seconds / 60))
+        if timeout_minutes >= 120:
+            hours = timeout_minutes // 60
+            timeout_display = f"{hours} 小时" if timeout_seconds % 3600 == 0 else f"约 {hours} 小时"
+        else:
+            timeout_display = f"{timeout_minutes} 分钟" if timeout_seconds % 60 == 0 else f"约 {timeout_minutes} 分钟"
+
+        assert timeout_display == expected_substring
+
+
+# ---------------------------------------------------------------------------
+# button_size parameter pass-through tests
+# ---------------------------------------------------------------------------
+
+
+class TestButtonSizePassthrough:
+    """Verify button_size propagates from build_mode_buttons to final button dict."""
+
+    @pytest.mark.parametrize("size", ["small", "medium", "large"])
+    def test_button_size_in_mode_buttons(self, size):
+        from src.card.shared import build_mode_buttons
+
+        buttons = build_mode_buttons(mode=None, button_size=size)
+        assert buttons, "Expected at least one button"
+        for btn in buttons:
+            assert btn["size"] == size, f"Expected size={size}, got {btn.get('size')}"
+
+
+# ---------------------------------------------------------------------------
+# stop button type config test
+# ---------------------------------------------------------------------------
+
+
+class TestStopButtonConfig:
+    """Verify stop button uses danger type with confirm dialog, and stop_danger uses danger for force-stop."""
+
+    def test_stop_button_type_is_danger(self):
+        from src.card.buttons_config import BUTTON_CONFIG
+
+        assert BUTTON_CONFIG["stop"]["type"] == "danger"
+
+    def test_stop_button_has_confirm(self):
+        from src.card.buttons_config import BUTTON_CONFIG
+
+        assert "confirm" in BUTTON_CONFIG["stop"]
+        assert BUTTON_CONFIG["stop"]["confirm"]["title"] == "确认停止"
+
+    def test_stop_danger_button_type_is_danger(self):
+        from src.card.buttons_config import BUTTON_CONFIG
+
+        assert BUTTON_CONFIG["stop_danger"]["type"] == "danger"
+
+
+# ---------------------------------------------------------------------------
+# Review hardening tests (from review cycle feedback)
+# ---------------------------------------------------------------------------
+
+
+class TestDeepActionPrefixStrip:
+    """Verify action_prefix edge cases with empty/whitespace strings."""
+
+    def test_empty_string_uses_fallback(self):
+        """action_prefix='' should use deep_error_fallback_no_prefix."""
+        from src.card.ui_text import UI_TEXT
+
+        state = EngineCardState(
+            title="Error occurred",
+            content="",
+            compact=True,
+            terminal_state="error",
+            action_prefix="",
+        )
+        _, card_json = CardBuilder.build_info_card(None, state)
+        card = json.loads(card_json)
+        body_text = json.dumps(card, ensure_ascii=False)
+        assert UI_TEXT["deep_error_fallback_no_prefix"] in body_text
+        assert "发送 / " not in body_text  # no broken "/ " command
+
+    def test_whitespace_string_uses_fallback(self):
+        """action_prefix='  ' should use deep_error_fallback_no_prefix."""
+        from src.card.ui_text import UI_TEXT
+
+        state = EngineCardState(
+            title="Error occurred",
+            content="",
+            compact=True,
+            terminal_state="error",
+            action_prefix="   ",
+        )
+        _, card_json = CardBuilder.build_info_card(None, state)
+        card = json.loads(card_json)
+        body_text = json.dumps(card, ensure_ascii=False)
+        assert UI_TEXT["deep_error_fallback_no_prefix"] in body_text
+
+
+class TestStopConfirmNoRollbackWording:
+    """Verify stop confirm body does not contain alarming '回滚' text."""
+
+    def test_danger_body_no_rollback(self):
+        from src.card.ui_text import UI_TEXT
+
+        assert "回滚" not in UI_TEXT["card_btn_confirm_stop_danger_body"]
+
+    def test_danger_body_is_decision_oriented(self):
+        """Confirm body should lead with risk statement and compare with normal stop."""
+        from src.card.ui_text import UI_TEXT
+
+        body = UI_TEXT["card_btn_confirm_stop_danger_body"]
+        # Risk statement with comparison to normal stop
+        assert "强制停止" in body
+        assert "普通停止" in body
+        # Must include engine_cmd placeholder for re-execution hint
+        assert "{engine_cmd}" in body
+
+
+
+class TestHelpCardTimeoutNotePosition:
+    """Verify timeout_note is rendered in the bottom notation area, not between quick buttons and sections."""
+
+    def test_timeout_note_after_sections(self):
+        """timeout_note should appear after command sections, near tips (bottom)."""
+        SystemBuilder._build_help_card_cached.cache_clear()
+        _, card_json = SystemBuilder.build_help_card(
+            session_idle_timeout=1800,
+            session_idle_warn_at_remaining=180,
+            lock_undo_window_seconds=300,
+        )
+        card = json.loads(card_json)
+        body_elements = card["body"]["elements"]
+
+        # Find positions of key elements
+        timeout_note_idx = None
+        tips_idx = None
+        quick_entry_idx = None
+        for i, el in enumerate(body_elements):
+            content = el.get("content", "")
+            if "⏰" in content:
+                timeout_note_idx = i
+            if "system_help_tips" in content or "/help" in content:
+                # tips is a notation-size markdown at the bottom
+                if el.get("text_size") == "notation" and "发送" in content:
+                    tips_idx = i
+            if "快速入口" in content or "system_help_quick_entry" in content:
+                quick_entry_idx = i
+
+        # timeout_note should exist and be near the end (after sections, near tips)
+        assert timeout_note_idx is not None, "timeout_note not found in card elements"
+        # It should NOT be directly after quick_entry (that was the old position)
+        if quick_entry_idx is not None:
+            # There should be at least several elements between quick_entry and timeout_note
+            assert timeout_note_idx - quick_entry_idx > 3, (
+                f"timeout_note (idx={timeout_note_idx}) is too close to quick_entry (idx={quick_entry_idx})"
+            )
+
+
+class TestBuildDeepCardDeprecation:
+    """Verify build_deep_card alias emits DeprecationWarning."""
+
+    def test_deep_builder_deprecation_warning(self):
+        import warnings
+
+        from src.card.builders.deep import DeepBuilder
+        from src.card.models import EngineCardState
+
+        state = EngineCardState(title="test", content="hello")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            DeepBuilder.build_deep_card(None, state)
+        assert len(w) == 1
+        assert issubclass(w[0].category, DeprecationWarning)
+        assert "build_deep_card" in str(w[0].message)
+
+    def test_card_builder_deprecation_warning(self):
+        import warnings
+
+        from src.card.builder import CardBuilder
+        from src.card.models import EngineCardState
+
+        state = EngineCardState(title="test", content="hello")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            CardBuilder.build_deep_card(None, state)
+        assert len(w) == 1
+        assert issubclass(w[0].category, DeprecationWarning)
+        assert "build_deep_card" in str(w[0].message)

@@ -75,25 +75,18 @@ class TestCardBuilder:
                 assert btn.get("size") == "medium"
 
     def test_build_project_response_card_mobile_layout_forces_grid(self, sample_project):
-        # 强制 mobile 布局：<=2 个按钮也应使用 column_set（避免小屏自动换行堆叠）
-        with patch("src.card.shared.get_settings") as mock_get_settings:
-            mock_settings = MagicMock()
-            mock_settings.card_button_layout = "mobile"
-            mock_settings.card_button_size = "medium"
-            mock_settings.card_mobile_force_vertical = True
-            mock_get_settings.return_value = mock_settings
+        # 验证 mobile 布局：<=2 个按钮也应使用 column_set（避免小屏自动换行堆叠）
+        from src.card.shared import build_responsive_layout
 
-            msg_type, content = CardBuilder.build_project_response_card(
-                project=sample_project,
-                title="Test",
-                content="Content",
-                show_buttons=True,
-            )
-
-        assert msg_type == "interactive"
-        card = json.loads(content)
-        elements = card["body"]["elements"]
-        assert any(e.get("tag") == "column_set" for e in elements)
+        buttons = [
+            {"tag": "button", "text": {"tag": "plain_text", "content": "Btn1"}, "type": "primary"},
+            {"tag": "button", "text": {"tag": "plain_text", "content": "Btn2"}, "type": "default"},
+        ]
+        result = build_responsive_layout(buttons, layout="mobile")
+        assert len(result) > 0
+        assert all(e.get("tag") == "column_set" for e in result)
+        # Mobile layout forces flex_mode=none (vertical stack)
+        assert all(e.get("flex_mode") == "none" for e in result)
 
     def test_build_ttadk_model_select_card_includes_refresh_button(self):
         """TTADK 模型选择卡：包含『刷新模型列表』按钮，便于 Invalid model 自助修复。"""
@@ -130,11 +123,11 @@ class TestCardBuilder:
         assert yolo_toggle is not None
         assert (yolo_toggle.get("value") or {}).get("enabled") is True
 
-    def test_build_engine_card_progress_bar_not_duplicated_when_content_contains_bar(self):
-        # 兜底：即使调用方把 progress_bar 文本拼到 content，build_engine_card 也不应重复渲染
+    def test_build_info_card_progress_bar_not_duplicated_when_content_contains_bar(self):
+        # 兜底：即使调用方把 progress_bar 文本拼到 content，build_info_card 也不应重复渲染
         progress_bar = "[████░░░░░░] 40% (2/5)"
         content = f"任务中...\n\n{progress_bar}\n"
-        _, card_content = CardBuilder.build_engine_card(
+        _, card_content = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(
                 title="X",
@@ -412,8 +405,8 @@ class TestDeepCard:
             emoji_prefix="🟢",
         )
 
-    def test_build_engine_card_basic(self, sample_project):
-        msg_type, content = CardBuilder.build_engine_card(
+    def test_build_info_card_basic(self, sample_project):
+        msg_type, content = CardBuilder.build_info_card(
             project=sample_project,
             state=EngineCardState(
                 title="Test Title",
@@ -431,8 +424,8 @@ class TestDeepCard:
         elements = card["body"]["elements"]
         assert len(elements) >= 3  # Directory + HR + Content
 
-    def test_build_engine_card_with_progress_bar(self, sample_project):
-        msg_type, content = CardBuilder.build_engine_card(
+    def test_build_info_card_with_progress_bar(self, sample_project):
+        msg_type, content = CardBuilder.build_info_card(
             project=sample_project,
             state=EngineCardState(
                 title="Executing",
@@ -449,8 +442,8 @@ class TestDeepCard:
         assert "deep_pause" in content_str
         assert "deep_stop" in content_str
 
-    def test_build_engine_card_paused(self, sample_project):
-        msg_type, content = CardBuilder.build_engine_card(
+    def test_build_info_card_paused(self, sample_project):
+        msg_type, content = CardBuilder.build_info_card(
             project=sample_project,
             state=EngineCardState(
                 title="Paused",
@@ -465,8 +458,8 @@ class TestDeepCard:
         assert "deep_resume" in content_str
         assert "deep_stop" in content_str
 
-    def test_build_engine_card_no_project(self):
-        msg_type, content = CardBuilder.build_engine_card(
+    def test_build_info_card_no_project(self):
+        msg_type, content = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(
                 title="Test",
@@ -481,8 +474,8 @@ class TestDeepCard:
         # Deep 卡片按引擎区分颜色：Coco=turquoise (running default) / Claude=purple
         assert card["header"]["template"] == "turquoise"
 
-    def test_build_engine_card_claude(self):
-        msg_type, content = CardBuilder.build_engine_card(
+    def test_build_info_card_claude(self):
+        msg_type, content = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(
                 title="Test",
@@ -493,8 +486,8 @@ class TestDeepCard:
         card = json.loads(content)
         assert card["header"]["template"] == "violet"
 
-    def test_build_engine_card_with_progress(self):
-        msg_type, content = CardBuilder.build_engine_card(
+    def test_build_info_card_with_progress(self):
+        msg_type, content = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(
                 title="Test",
@@ -524,7 +517,7 @@ class TestDeepCard:
         assert len(buttons) == 4
         texts = [b["text"]["content"] for b in buttons]
         assert "⏸️ 暂停" in texts
-        assert "🛑 停止" in texts
+        assert "⏹️ 停止" in texts
 
     def test_build_deep_buttons_paused(self):
         # Need content > FULL_LINE_THRESHOLD (50) lines to show Expand button (compact=False default)
@@ -536,7 +529,7 @@ class TestDeepCard:
         assert len(buttons) == 4
         texts = [b["text"]["content"] for b in buttons]
         assert "▶️ 继续" in texts
-        assert "🛑 停止" in texts
+        assert "⏹️ 停止" in texts
 
     def test_build_deep_buttons_neither(self):
         # Need content > FULL_LINE_THRESHOLD (50) lines to show Expand button (compact=False default)
@@ -626,7 +619,7 @@ class TestCardSchema20Structure:
 
     def test_deep_card_schema(self, project):
         card = self._parse_card(
-            CardBuilder.build_engine_card(project, EngineCardState(title="Title", content="Content", engine_name="Coco"))
+            CardBuilder.build_info_card(project, EngineCardState(title="Title", content="Content", engine_name="Coco"))
         )
         self._assert_v2_structure(card, "deep")
         self._assert_no_lark_md(card, "deep")
@@ -835,7 +828,7 @@ class TestMarkdownContentRendering:
         """Deep 卡片也使用 markdown 标签"""
         content = "## 任务进度\n- [x] 步骤一\n- [ ] 步骤二\n\n```python\nresult = run()\n```"
         card = json.loads(
-            CardBuilder.build_engine_card(
+            CardBuilder.build_info_card(
                 project,
                 state=EngineCardState(title="Deep任务", content=content, engine_name="Claude", show_buttons=False),
             )[1]
@@ -1133,7 +1126,7 @@ class TestMarkdownEdgeCases:
 
     def test_deep_card_progress_bar_uses_markdown(self):
         """Deep 卡片的进度条使用 markdown 标签"""
-        _, content = CardBuilder.build_engine_card(
+        _, content = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(
                 title="Test",
@@ -1180,11 +1173,11 @@ class TestReplyModeConfig:
 
 
 class TestBuildDeepCardStructuredParams:
-    """Tests for build_engine_card new structured parameters."""
+    """Tests for build_info_card new structured parameters."""
 
     def test_duration_line_renders(self):
         """duration_line should be combined with status_line."""
-        _, card_content = CardBuilder.build_engine_card(
+        _, card_content = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(
                 title="Test",
@@ -1192,7 +1185,7 @@ class TestBuildDeepCardStructuredParams:
                 engine_name="Coco",
                 show_buttons=False,
                 status_line="🔄 执行中",
-                duration_line="⏱️ 3分12秒",
+                duration_line="⏱️ 3分钟12秒",
             ),
         )
         card = json.loads(card_content)
@@ -1200,11 +1193,11 @@ class TestBuildDeepCardStructuredParams:
         notation_elems = [e for e in elements if e.get("text_size") == "notation"]
         assert len(notation_elems) >= 1
         assert "执行中" in notation_elems[0]["content"]
-        assert "3分12秒" in notation_elems[0]["content"]
+        assert "3分钟12秒" in notation_elems[0]["content"]
 
     def test_footer_note_renders(self):
         """footer_note should appear as notation-sized element."""
-        _, card_content = CardBuilder.build_engine_card(
+        _, card_content = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(
                 title="Test",
@@ -1221,8 +1214,8 @@ class TestBuildDeepCardStructuredParams:
         assert footer_elems[0].get("text_size") == "notation"
 
     def test_no_optional_params_still_works(self):
-        """build_engine_card with no optional params should still work."""
-        _, card_content = CardBuilder.build_engine_card(
+        """build_info_card with no optional params should still work."""
+        _, card_content = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(
                 title="Test",
@@ -1236,7 +1229,7 @@ class TestBuildDeepCardStructuredParams:
 
     def test_all_optional_params_together(self):
         """All new optional params at once."""
-        _, card_content = CardBuilder.build_engine_card(
+        _, card_content = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(
                 title="Full Card",
@@ -1265,7 +1258,7 @@ class TestTerminalMarkers:
     """Task 9: terminal_state marker lines appear at card bottom."""
 
     def test_completed_marker(self):
-        _, card_content = CardBuilder.build_engine_card(
+        _, card_content = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(
                 title="Done", content="ok", engine_name="Coco",
@@ -1278,7 +1271,7 @@ class TestTerminalMarkers:
         assert "已完成" in last_md["content"]
 
     def test_failed_marker(self):
-        _, card_content = CardBuilder.build_engine_card(
+        _, card_content = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(
                 title="Err", content="err", engine_name="Coco",
@@ -1290,7 +1283,7 @@ class TestTerminalMarkers:
         assert "❌" in last_md["content"]
 
     def test_no_marker_when_none(self):
-        _, card_content = CardBuilder.build_engine_card(
+        _, card_content = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(
                 title="Running", content="running", engine_name="Coco",
@@ -1308,7 +1301,7 @@ class TestFooterStatus:
     """Task 10: footer_status line appears before buttons."""
 
     def test_thinking_footer(self):
-        _, card_content = CardBuilder.build_engine_card(
+        _, card_content = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(
                 title="Test", content="body", engine_name="Coco",
@@ -1322,7 +1315,7 @@ class TestFooterStatus:
         assert "正在思考" in notation_elems[0]["content"]
 
     def test_tool_running_footer(self):
-        _, card_content = CardBuilder.build_engine_card(
+        _, card_content = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(
                 title="Test", content="body", engine_name="Coco",
@@ -1335,7 +1328,7 @@ class TestFooterStatus:
         assert "正在调用工具" in all_text
 
     def test_no_footer_when_none(self):
-        _, card_content = CardBuilder.build_engine_card(
+        _, card_content = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(
                 title="Test", content="body", engine_name="Coco",
@@ -1353,7 +1346,7 @@ class TestStopDangerButton:
     """Task 11: stop_danger button appears during execution."""
 
     def test_stop_danger_appears_when_executing(self):
-        _, card_content = CardBuilder.build_engine_card(
+        _, card_content = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(
                 title="Running", content="work",
@@ -1362,10 +1355,10 @@ class TestStopDangerButton:
         )
         card = json.loads(card_content)
         all_text = json.dumps(card, ensure_ascii=False)
-        assert "⏹ 停止" in all_text
+        assert "⛔ 强制停止" in all_text
 
     def test_stop_danger_appears_when_paused(self):
-        _, card_content = CardBuilder.build_engine_card(
+        _, card_content = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(
                 title="Paused", content="paused",
@@ -1374,14 +1367,14 @@ class TestStopDangerButton:
         )
         card = json.loads(card_content)
         all_text = json.dumps(card, ensure_ascii=False)
-        assert "⏹ 停止" in all_text
+        assert "⛔ 强制停止" in all_text
 
 
 class TestReadUnreadMarker:
     """Task 12: is_read=False adds 🔴 prefix to title."""
 
     def test_unread_marker_prefix(self):
-        _, card_content = CardBuilder.build_engine_card(
+        _, card_content = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(
                 title="New Task", content="body",
@@ -1393,7 +1386,7 @@ class TestReadUnreadMarker:
         assert header_title.startswith("🔴 ")
 
     def test_read_no_marker(self):
-        _, card_content = CardBuilder.build_engine_card(
+        _, card_content = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(
                 title="Task", content="body",

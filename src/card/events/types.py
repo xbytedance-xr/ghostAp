@@ -1,0 +1,52 @@
+"""Card event type enumeration."""
+
+from enum import Enum
+
+
+class CardEventType(str, Enum):
+    """All card event types."""
+    # Lifecycle
+    STARTED = "started"
+    STOPPING = "stopping"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    ARCHIVED = "archived"
+    PAUSED = "paused"
+    RESUMED = "resumed"
+    BLOCKED = "blocked"
+    # Content
+    TEXT_STARTED = "text_started"
+    TEXT_DELTA = "text_delta"
+    TEXT_DONE = "text_done"
+    REASONING_STARTED = "reasoning_started"
+    REASONING_DELTA = "reasoning_delta"
+    REASONING_DONE = "reasoning_done"
+    TOOL_STARTED = "tool_started"
+    TOOL_DELTA = "tool_delta"
+    TOOL_DONE = "tool_done"
+    TOOL_FAILED = "tool_failed"
+    PLAN_UPDATED = "plan_updated"
+    # Meta
+    TOOL_MODEL_CHANGED = "tool_model_changed"
+    PROGRESS_UPDATED = "progress_updated"
+    APPROVAL_REQUESTED = "approval_requested"
+    APPROVAL_RESOLVED = "approval_resolved"
+    # Engine lifecycle (Spec/Loop)
+    CYCLE_STARTED = "cycle_started"
+    CYCLE_DONE = "cycle_done"
+    PHASE_STARTED = "phase_started"
+    PHASE_DONE = "phase_done"
+    REVIEW_RETRY = "review_retry"
+    CRITERIA_UPDATED = "criteria_updated"
+    WARNING_UPDATED = "warning_updated"
+    # Worktree engine
+    WORKTREE_PROGRESS = "worktree_progress"
+    WORKTREE_TOOL_SELECT = "worktree_tool_select"
+    WORKTREE_CONFIRM = "worktree_confirm"
+    WORKTREE_CLEANUP = "worktree_cleanup"
+    WORKTREE_MERGE = "worktree_merge"
+    WORKTREE_COMPLETED_NO_CHANGE = "worktree_completed_no_change"
+    # UI control
+    MODE_TOGGLED = "mode_toggled"
+    STOP_ESCALATED = "stop_escalated"

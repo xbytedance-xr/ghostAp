@@ -1,7 +1,7 @@
 """Plan sub-reducer."""
 from __future__ import annotations
 from dataclasses import replace
-from ..models import CardState, ContentBlock
+from ..models import CardState, PlanBlock
 from ...events import CardEvent, CardEventType
 
 PLAN_BLOCK_ID = "_plan"
@@ -22,6 +22,6 @@ def reduce_plan(state: CardState, event: CardEvent) -> CardState:
             return replace(state, blocks=tuple(blocks))
 
     # Create new plan block
-    new_block = ContentBlock(kind="plan", block_id=PLAN_BLOCK_ID, status="active", content=content)
+    new_block = PlanBlock(block_id=PLAN_BLOCK_ID, status="active", content=content)
     blocks.append(new_block)
     return replace(state, blocks=tuple(blocks))

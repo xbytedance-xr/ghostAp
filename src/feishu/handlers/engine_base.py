@@ -9,6 +9,7 @@ from ...tasking import TaskPriority, TaskSpec
 from .base import BaseHandler
 
 if TYPE_CHECKING:
+    from ...card.protocols import RendererProtocol
     from ...project import ProjectContext
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,8 @@ class BaseEngineHandler(BaseHandler):
     Abstract base class for engine handlers (DeepHandler, LoopHandler).
     Provides common lifecycle management logic.
     """
+
+    renderer: RendererProtocol  # Subclasses MUST assign in __init__
 
     # ------------------------------------------------------------------
     # Repo-lock + conflict-card helper (DRY for scheduled closures)
@@ -183,12 +186,11 @@ class BaseEngineHandler(BaseHandler):
         Execute engine logic with standardized error handling and reporting.
 
         Acquires the repo lock, runs *executor_func*, and on conflict renders
-        a conflict card.  The ``_run_engine_body`` indirection has been inlined
-        as a closure for clarity.
+        a conflict card.  Subclasses can override ``_on_engine_error()`` to
+        customize error card building and delivery.
         """
         import asyncio
 
-        from ...card import CardBuilder, EngineCardState
         from ...repo_lock import LockConflictError
         from ...utils.errors import get_error_detail
 
@@ -197,6 +199,10 @@ class BaseEngineHandler(BaseHandler):
         def _body():
             try:
                 executor_func()
+            except NotImplementedError:
+                logger.error("%s Engine: NotImplementedError in executor_func (task_id=%s)", self._get_engine_name_prefix(), task_id)
+                self.reply_text(message_id, "系统升级中，请重试")
+                return
             except LockConflictError:
                 raise
             except Exception as e:
@@ -205,35 +211,69 @@ class BaseEngineHandler(BaseHandler):
                 else:
                     logger.error(f"{self._get_engine_name_prefix()} Engine 执行异常: {get_error_detail(e)}", exc_info=True)
 
-                err_msg = get_error_detail(e)
-                error_content = reporter.format_error(err_msg)
-                error_title = reporter.get_error_title()
-
-                ref_note = self.format_ref_note(message_id, request_id) if request_id else ""
-                final_content = f"{error_content}\n\n{ref_note}" if ref_note else error_content
-
-                err_msg_type, err_card = CardBuilder.build_engine_card(
+                self._on_engine_error(
+                    error=e,
+                    task_id=task_id,
+                    chat_id=chat_id,
+                    message_id=message_id,
                     project=project,
-                    state=EngineCardState(
-                        title=error_title,
-                        content=final_content,
-                        engine_name=f"{self._get_engine_name_prefix()}({engine_name})"
-                        if not engine_name.startswith(self._get_engine_name_prefix())
-                        else engine_name,
-                        show_buttons=False,
-                        action_prefix=action_prefix,
-                    ),
+                    engine_name=engine_name,
+                    reporter=reporter,
+                    request_id=request_id,
+                    action_prefix=action_prefix,
                 )
-                try:
-                    self.reply_card(message_id, err_card)
-                except Exception as send_err:
-                    logger.error(
-                        "%s Engine 发送错误卡片失败: %s", self._get_engine_name_prefix(), send_err
-                    )
 
         self.lock_helper.handle_lock_conflict(
             _body, root_path, chat_id, message_id, command_text,
         )
+
+    def _on_engine_error(
+        self,
+        error: Exception,
+        task_id: str,
+        chat_id: str,
+        message_id: str,
+        project: Optional["ProjectContext"],
+        engine_name: str,
+        reporter: Any,
+        request_id: Optional[str],
+        action_prefix: str = "deep",
+    ) -> None:
+        """Handle engine execution error — dispatch through CardSession pipeline.
+
+        Attempts to dispatch a FAILED event through the renderer's active session
+        so that error cards benefit from session lifecycle hooks (emoji, context
+        persistence). Falls back to plain reply_text if no session is available.
+        """
+        from ...card.events import CardEvent
+        from ...utils.errors import get_error_detail
+
+        err_msg = get_error_detail(error)
+        error_content = reporter.format_error(err_msg)
+
+        ref_note = self.format_ref_note(message_id, request_id) if request_id else ""
+        final_content = f"{error_content}\n\n{ref_note}" if ref_note else error_content
+
+        # Try dispatching through the session pipeline for full hook support
+        session = self.renderer.get_active_session() if hasattr(self, "renderer") else None
+        if session is not None and not getattr(session, "closed", True):
+            try:
+                session.dispatch(CardEvent.failed(final_content))
+                return
+            except Exception as dispatch_err:
+                logger.debug(
+                    "%s Engine: session.dispatch(failed) raised, falling back to reply_text: %s",
+                    self._get_engine_name_prefix(), dispatch_err,
+                )
+
+        # Fallback: plain text reply (ensures errors are never lost)
+        try:
+            error_title = reporter.get_error_title()
+            self.reply_text(f"{error_title}\n\n{final_content}", message_id=message_id)
+        except Exception as send_err:
+            logger.error(
+                "%s Engine 发送错误消息失败: %s", self._get_engine_name_prefix(), send_err
+            )
 
     # ------------------------------------------------------------------
     # UI toggle helpers (DRY for Deep/Loop/Spec toggle methods)

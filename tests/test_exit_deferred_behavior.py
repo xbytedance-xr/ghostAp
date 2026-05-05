@@ -25,8 +25,8 @@ def test_exit_is_deferred_until_running_task_finishes():
         mock_settings.task_scheduler_per_key_concurrency = 1
         mock_settings.message_cache_ttl = 300
         mock_settings.message_cache_max_size = 1000
-        mock_settings.card_action_dedup_ttl = 1
-        mock_settings.card_action_dedup_max_size = 5000
+        mock_settings.card.action_dedup_ttl = 1
+        mock_settings.card.action_dedup_max_size = 5000
         mock_settings.system_command_concurrency = 10
         mock_settings.spec_rate_limit_capacity = 100
         mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -105,8 +105,8 @@ def test_exit_is_immediate_when_no_running_task():
         mock_settings.task_scheduler_per_key_concurrency = 1
         mock_settings.message_cache_ttl = 300
         mock_settings.message_cache_max_size = 1000
-        mock_settings.card_action_dedup_ttl = 1
-        mock_settings.card_action_dedup_max_size = 5000
+        mock_settings.card.action_dedup_ttl = 1
+        mock_settings.card.action_dedup_max_size = 5000
         mock_settings.system_command_concurrency = 10
         mock_settings.spec_rate_limit_capacity = 100
         mock_settings.spec_rate_limit_fill_rate = 50.0

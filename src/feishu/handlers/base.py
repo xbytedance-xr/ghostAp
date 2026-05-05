@@ -30,7 +30,7 @@ class CardActionContext:
     switch_mode_method: "Optional[Callable]" = None
     project: "Optional[Any]" = None
 
-from ...card.styles import UI_TEXT
+from ...card.ui_text import UI_TEXT
 from ..im_client import FeishuIMClient
 from ...utils.engine_identity import resolve_engine_identity
 from ...utils.errors import get_error_detail
@@ -48,6 +48,7 @@ class BaseHandler:
 
     def __init__(self, ctx: "HandlerContext") -> None:
         self.ctx = ctx
+        self._card_delivery = None  # Lazy-init singleton CardDelivery
         self.im_client = FeishuIMClient(ctx.api_client_factory, ctx.settings)
         # Lock helper (composition — keeps BaseHandler focused on messaging)
         from .lock_helper import LockHelper
@@ -131,26 +132,34 @@ class BaseHandler:
     # Unified messaging API
     # ------------------------------------------------------------------
 
-    def create_direct_card_session(
+    def create_static_card_session(
         self,
         chat_id: str,
         *,
         reply_to: str | None = None,
         session_id: str | None = None,
     ):
-        """Create a DirectCardSession for pre-built card JSON delivery.
+        """Create a lightweight static card session for pre-built card JSON delivery.
 
-        Used by engine renderers (Deep/Loop/Spec) via _create_direct_session factory.
+        Wraps CardDelivery directly without reduce/render pipeline.
+        Used by diagnostics handler for pre-built static cards.
         """
-        from ...card.delivery.engine import CardDelivery
-        from ...card.delivery.feishu_client import FeishuCardAPIClient
-        from ...card.direct_session import DirectCardSession
+        from ...card.static_session import StaticCardSession
 
-        api_client = FeishuCardAPIClient(self.ctx.api_client_factory())
-        delivery = CardDelivery(api_client)
-        return DirectCardSession(
+        delivery = self.get_card_delivery()
+        return StaticCardSession(
             delivery, chat_id, reply_to=reply_to, session_id=session_id
         )
+
+    def get_card_delivery(self):
+        """Get a shared CardDelivery instance (lazy-init singleton per handler)."""
+        if self._card_delivery is None:
+            from ...card.delivery.factory import create_card_delivery
+            from ...card.delivery.feishu_client import FeishuCardAPIClient
+
+            api_client = FeishuCardAPIClient(self.ctx.api_client_factory())
+            self._card_delivery = create_card_delivery(api_client)
+        return self._card_delivery
 
     def _resolve_origin(self, message_id: str) -> str:
         """Best-effort resolve origin message for linking."""
@@ -167,6 +176,53 @@ class BaseHandler:
                 self.ctx.message_linker.link_reply(origin_message_id, reply_id)
             except Exception as e:
                 logger.warning("Failed to link reply %s → origin %s: %s", reply_id, origin_message_id, str(e))
+
+    # ------------------------------------------------------------------
+    # Removed method tombstones (kept for one release cycle for migration guidance)
+    # ------------------------------------------------------------------
+
+    def reply_message(self, *args, **kwargs):
+        """Removed. Use reply_text() or reply_card() instead."""
+        import warnings
+        warnings.warn(
+            "BaseHandler.reply_message() is deprecated and removed. "
+            "Use reply_text() for plain text or reply_card() for cards.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        raise AttributeError(
+            "reply_message has been removed. Use reply_text() or reply_card() instead."
+        )
+
+    def patch_message(self, *args, **kwargs):
+        """Removed. Use update_card() instead."""
+        import warnings
+        warnings.warn(
+            "BaseHandler.patch_message() is deprecated and removed. "
+            "Use update_card() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        raise AttributeError(
+            "patch_message has been removed. Use update_card() instead."
+        )
+
+    def send_message(self, *args, **kwargs):
+        """Removed. Use send_card_to_chat() or send_text_to_chat() instead."""
+        import warnings
+        warnings.warn(
+            "BaseHandler.send_message() is deprecated and removed. "
+            "Use send_card_to_chat() or send_text_to_chat() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        raise AttributeError(
+            "send_message has been removed. Use send_card_to_chat() or send_text_to_chat() instead."
+        )
+
+    # ------------------------------------------------------------------
+    # Messaging API
+    # ------------------------------------------------------------------
 
     def reply_text(
         self,
@@ -631,7 +687,7 @@ class BaseHandler:
 
         def _on_rate_limit(wait_seconds: int):
             try:
-                msg_type, card_content = CardBuilder.build_engine_card(
+                msg_type, card_content = CardBuilder.build_info_card(
                     project=project,
                     title=UI_TEXT["system_rate_limit_title"],
                     content=UI_TEXT["system_rate_limit_content"].format(wait_seconds=wait_seconds),

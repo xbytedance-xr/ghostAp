@@ -91,6 +91,7 @@ FORWARDING_MAP: dict[str, tuple[str, str]] = {
     "_handle_show_worktree_merge_entry": ("worktree", "handle_show_worktree_merge_entry"),
     "_handle_worktree_cleanup": ("worktree", "handle_worktree_cleanup"),
     "_handle_worktree_retry_failed": ("worktree", "handle_worktree_retry_failed"),
+    "_handle_worktree_retry_all": ("worktree", "handle_worktree_retry_all"),
     "_handle_select_ttadk_tool": ("system", "handle_select_ttadk_tool"),
     "_handle_select_ttadk_model": ("system", "handle_select_ttadk_model"),
     "_handle_refresh_ttadk_models": ("system", "handle_refresh_ttadk_models"),

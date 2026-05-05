@@ -21,7 +21,7 @@ class TestToolPanel:
         assert result["border"]["color"] == "grey"
 
     def test_tool_panel_completed(self):
-        """Completed tool → ✓ icon, grey border, expanded=False"""
+        """Completed tool → ✅ icon, grey border, expanded=False"""
         block = ContentBlock(
             kind="tool_call", block_id="t1", status="completed",
             tool_name="bash", tool_input="ls -la", tool_output="file1\nfile2",
@@ -29,16 +29,16 @@ class TestToolPanel:
         )
         result = render_tool_panel(block)
         assert result["expanded"] is False
-        assert "✓" in result["header"]["title"]["content"]
+        assert "✅" in result["header"]["title"]["content"]
 
     def test_tool_panel_failed(self):
-        """Failed tool → ✗ icon, red border"""
+        """Failed tool → ❌ icon, red border"""
         block = ContentBlock(
             kind="tool_call", block_id="t1", status="failed",
             tool_name="bash", tool_input="rm -rf /", tool_output="Permission denied"
         )
         result = render_tool_panel(block)
-        assert "✗" in result["header"]["title"]["content"]
+        assert "❌" in result["header"]["title"]["content"]
         assert result["border"]["color"] == "red"
 
     def test_tool_panel_bash_detail(self):
@@ -49,7 +49,7 @@ class TestToolPanel:
         )
         result = render_tool_panel(block)
         detail_content = result["elements"][0]["content"]
-        assert "**Command**" in detail_content
+        assert "**命令**" in detail_content
         assert "```bash" in detail_content
         assert "npm run build" in detail_content
 
@@ -61,8 +61,8 @@ class TestToolPanel:
         )
         result = render_tool_panel(block)
         detail_content = result["elements"][0]["content"]
-        assert "**Input**" in detail_content
-        assert "**Output**" in detail_content
+        assert "**输入**" in detail_content
+        assert "**输出**" in detail_content
 
     def test_tool_output_truncation(self):
         """Long output truncated to 2000 chars"""
@@ -73,8 +73,8 @@ class TestToolPanel:
         )
         result = render_tool_panel(block)
         detail_content = result["elements"][0]["content"]
-        # Should contain truncation indicator
-        assert "..." in detail_content
+        # Should contain truncation indicator (unicode ellipsis)
+        assert "…" in detail_content
 
 
 class TestToolHistoryPanel:
@@ -139,18 +139,18 @@ class TestReasoningPanel:
         budget = RenderBudget(reasoning_tail_chars=500)
         result = render_reasoning_panel(block, budget=budget)
         element_content = result["elements"][0]["content"]
-        assert element_content.startswith("...")
-        assert len(element_content) <= 510  # 500 + "..."
+        assert element_content.startswith("…")
+        assert len(element_content) <= 502  # 500 + "…"
 
 
 class TestPlanPanel:
     def test_plan_panel(self):
-        """Plan renders as blue collapsible with step icons"""
+        """Plan renders as indigo collapsible with step icons"""
         content = "1. ✅ 分析需求\n2. ⏳ 编写代码\n3. ○ 运行测试"
         block = ContentBlock(kind="plan", block_id="p1", content=content)
         result = render_plan_panel(block)
         assert result["tag"] == "collapsible_panel"
         assert result["expanded"] is True
-        assert result["border"]["color"] == "blue"
+        assert result["border"]["color"] == "indigo"
         assert "执行计划" in result["header"]["title"]["content"]
         assert result["elements"][0]["content"] == content

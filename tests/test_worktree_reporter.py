@@ -49,8 +49,9 @@ def test_reporter_builds_unit_summary_and_merge_notes():
     assert "Coco" in refreshed.summary_lines[0]
     assert "有代码变更" in refreshed.summary_lines[0]
     assert len(refreshed.merge_notes) == 2
-    assert "ghostap/wt/01-acp-coco-model-a" in refreshed.merge_notes[0]
-    assert "main" in refreshed.merge_notes[0]
+    assert refreshed.merge_notes[0]["branch"] == "ghostap/wt/01-acp-coco-model-a"
+    assert refreshed.merge_notes[0]["status"] == "ready"
+    assert "main" in refreshed.merge_notes[0]["summary"]
 
 
 def test_worktree_result_and_merge_entry_cards_expose_integration_entry():
@@ -180,3 +181,46 @@ def test_get_unit_display_name_mapping():
     # 6. Suffix but not wt- prefix fallback
     u6 = WorktreeUnit(unit_id="custom-02")
     assert reporter._get_unit_display_name(u6) == "单元 02"
+
+
+class TestWorktreeRendererGC:
+    """Verify WorktreeRenderer proactive GC via on_terminal hook."""
+
+    def test_session_removed_on_terminal(self):
+        """When a session fires on_terminal, it's removed from _sessions dict."""
+        from unittest.mock import MagicMock, patch
+        from src.feishu.renderers.worktree_renderer import _WorktreeGCHook, WorktreeRenderer
+
+        handler = MagicMock()
+        handler._handler = handler
+        handler.delivery = MagicMock()
+
+        renderer = WorktreeRenderer.__new__(WorktreeRenderer)
+        renderer._sessions = {}
+        renderer._lock = __import__("threading").Lock()
+
+        # Simulate adding a session
+        mock_session = MagicMock()
+        mock_session.closed = False
+        renderer._sessions["proj1"] = mock_session
+
+        # Create and fire the GC hook
+        hook = _WorktreeGCHook(renderer, "proj1")
+        hook.on_terminal(state=None, reason="completed")
+
+        assert "proj1" not in renderer._sessions
+
+    def test_gc_hook_idempotent(self):
+        """Firing on_terminal twice doesn't crash."""
+        from unittest.mock import MagicMock
+        from src.feishu.renderers.worktree_renderer import _WorktreeGCHook, WorktreeRenderer
+
+        renderer = WorktreeRenderer.__new__(WorktreeRenderer)
+        renderer._sessions = {"proj1": MagicMock()}
+        renderer._lock = __import__("threading").Lock()
+
+        hook = _WorktreeGCHook(renderer, "proj1")
+        hook.on_terminal(state=None, reason="ttl_expired")
+        hook.on_terminal(state=None, reason="ttl_expired")  # second call is no-op
+
+        assert "proj1" not in renderer._sessions

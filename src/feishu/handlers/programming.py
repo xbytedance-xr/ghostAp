@@ -16,7 +16,7 @@ from ...acp import ACPEventRenderer
 from ...acp.manager import ACPSessionManager
 from ...agent_session import SyncSession
 from ...card import CardBuilder
-from ...card.styles import UI_TEXT
+from ...card.ui_text import UI_TEXT
 from ...project import ContextSourceMode
 from ...utils.errors import get_error_detail, log_exception
 from ..emoji import EmojiReaction
@@ -677,7 +677,7 @@ class ProgrammingModeHandler(BaseHandler):
         *, _repo_lock_mgr=None, _root_path: str | None = None,
     ):
         from ...acp.models import ACPEvent
-        from ...card.delivery.engine import CardDelivery
+        from ...card.delivery.factory import create_card_delivery
         from ...card.delivery.feishu_client import FeishuCardAPIClient
         from ...card.programming_adapter import ProgrammingCardSession, build_programming_metadata
         from ...card.session import CardSession
@@ -711,12 +711,13 @@ class ProgrammingModeHandler(BaseHandler):
 
         # Create card delivery + session
         api_client = FeishuCardAPIClient(self.ctx.api_client_factory())
-        delivery = CardDelivery(api_client)
+        delivery = create_card_delivery(api_client)
+        from src.card.session.config import SessionConfig
+        config = SessionConfig(metadata=metadata, reply_to=message_id)
         card_session = CardSession(
             chat_id=chat_id,
-            metadata=metadata,
+            config=config,
             delivery=delivery,
-            reply_to=message_id,
         )
         prog_session = ProgrammingCardSession(card_session)
 

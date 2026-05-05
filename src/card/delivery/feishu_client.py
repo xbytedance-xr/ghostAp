@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import lark_oapi as lark
 
-from src.card.delivery.engine import SequenceConflictError, TransportError
+from src.card.delivery.types import SequenceConflictError, TransportError
 from src.config import get_settings
 
 logger = logging.getLogger(__name__)

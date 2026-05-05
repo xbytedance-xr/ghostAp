@@ -1,5 +1,7 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
+from src.card.engine_snapshot import EngineSnapshot
+from src.card.events import CardEventType
 from src.feishu.handler_context import HandlerContext
 from src.feishu.handlers.loop import LoopHandler
 from src.loop_engine.models import IterationRecord, IterationStatus, LoopProject, LoopProjectStatus
@@ -41,7 +43,7 @@ def _make_handler_context(**overrides) -> HandlerContext:
         enable_streaming=False,
     )
     # Mock settings
-    ctx.settings.card_deep_compact_default = False
+    ctx.settings.card.deep_compact_default = False
     ctx.settings.default_reply_mode = "thread"
 
     for k, v in overrides.items():
@@ -69,6 +71,17 @@ class TestLoopUI:
 
         ctx.loop_engine_manager.get.return_value = mock_engine
 
+        # Setup EngineSnapshot for the new snapshot-based renderer API
+        snap = EngineSnapshot(
+            engine_name="Coco",
+            root_path="/tmp/test",
+            satisfied_count=0,
+            total_criteria=0,
+            is_running=True,
+            ext={"project": proj},
+        )
+        ctx.loop_engine_manager.snapshot.return_value = snap
+
         # Mock Reporter
         ctx.loop_reporter.format_iteration_done.return_value = "Iteration 1 Content"
         ctx.loop_reporter.get_iteration_done_title.return_value = "Iter 1 Title"
@@ -94,49 +107,55 @@ class TestLoopUI:
         mock_proj_ctx.project_name = "test_proj"
 
         # 1. Simulate on_iteration_done callback triggering a view update to "iteration_done"
-        callbacks = handler.renderer.create_loop_callbacks("msg1", "chat1", mock_proj_ctx)
-        callbacks.on_iteration_done(1, record)
+        with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create:
+            mock_session = MagicMock()
+            mock_create.return_value = mock_session
+
+            callbacks = handler.renderer.create_loop_callbacks("msg1", "chat1", mock_proj_ctx)
+            callbacks.on_iteration_done(1, record)
 
         # Verify state is set to iteration_done
         state = handler._get_ui_state("p1")
         assert state["view_mode"] == "iteration_done"
         assert state["view_context"]["iteration_id"] == 1
 
-        # Verify card content was sent via DirectCardSession (through handler.reply_card)
-        # on_iteration_done uses new_card=True which closes session and creates new one
-        # The mock session delegates first send to handler.reply_card
-        assert handler.reply_card.called
-        reply_args, _ = handler.reply_card.call_args
-        content_json = reply_args[1]
-        assert "Iteration 1 Content" in content_json
+        # Verify CardSession dispatched CYCLE_DONE on the first session, then STARTED + TEXT_DELTA on new
+        # (session boundary semantics verified in test_loop_patch.py)
+        assert mock_session.dispatch.called
 
         # 2. Simulate User clicking "Expand Log" (_toggle_log)
-        # This calls _render_current_view which should respect "iteration_done" view mode
-        handler.update_card.reset_mock()
+        # This calls render_current_view which should respect "iteration_done" view mode
+        with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create2:
+            mock_session2 = MagicMock()
+            mock_create2.return_value = mock_session2
 
-        # _toggle_log will call _render_current_view -> _render_iteration_view
-        # _render_iteration_view calls _patch_or_send -> update_card
-        handler._toggle_log("msg_card", "chat1", project=mock_proj_ctx, engine_project_id="p1", expanded=True)
+            handler._toggle_log("msg_card", "chat1", project=mock_proj_ctx, engine_project_id="p1", expanded=True)
 
-        # Verify state updated
-        state = handler._get_ui_state("p1")
-        assert state["expanded"] is True
-        assert state["view_mode"] == "iteration_done"  # Should remain unchanged
+            # Verify state updated
+            state = handler._get_ui_state("p1")
+            assert state["expanded"] is True
+            assert state["view_mode"] == "iteration_done"  # Should remain unchanged
 
-        # Verify patched content is still Iteration Content
-        assert handler.update_card.called
-        patch_content = handler.update_card.call_args[0][1]
-        assert "Iteration 1 Content" in patch_content
+            # Verify session dispatched events including iteration content
+            dispatched_events = [call[0][0] for call in mock_session2.dispatch.call_args_list]
+            event_types = [e.type for e in dispatched_events]
+            assert CardEventType.STARTED in event_types
+            assert CardEventType.TEXT_DELTA in event_types
 
         # 3. Simulate User clicking "Show Status" (via /loop_status or show_loop_status)
         # This should reset view mode to "status"
-        handler.update_card.reset_mock()
-        handler.show_loop_status("msg_cmd", "chat1", project=mock_proj_ctx, origin_message_id="msg_card")
+        with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create3:
+            mock_session3 = MagicMock()
+            mock_create3.return_value = mock_session3
 
-        # Verify state
-        state = handler._get_ui_state("p1")
-        assert state["view_mode"] == "status"
+            handler.show_loop_status("msg_cmd", "chat1", project=mock_proj_ctx, origin_message_id="msg_card")
 
-        # Verify patched content is Status Content
-        patch_content = handler.update_card.call_args[0][1]
-        assert "Status Content" in patch_content
+            # Verify state
+            state = handler._get_ui_state("p1")
+            assert state["view_mode"] == "status"
+
+            # Verify session dispatched events
+            dispatched_events = [call[0][0] for call in mock_session3.dispatch.call_args_list]
+            event_types = [e.type for e in dispatched_events]
+            assert CardEventType.STARTED in event_types
+            assert CardEventType.TEXT_DELTA in event_types

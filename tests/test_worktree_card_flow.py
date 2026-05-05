@@ -172,6 +172,8 @@ def test_worktree_tool_select_card_renders_buttons():
                     buttons.extend(_find_all_buttons(col.get("elements", [])))
             elif el.get("tag") == "column":
                 buttons.extend(_find_all_buttons(el.get("elements", [])))
+            elif el.get("tag") == "action":
+                buttons.extend(_find_all_buttons(el.get("actions", [])))
         return buttons
 
     tools = [

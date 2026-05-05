@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from src.card import CardBuilder
+from src.card.engine_snapshot import EngineSnapshot
 from src.card.models import EngineCardState
 from src.feishu.handlers.loop import LoopHandler
 from src.feishu.ws_client import FeishuWSClient
@@ -16,9 +17,9 @@ class TestLoopInteraction(unittest.TestCase):
         project = LoopProject(name="test_proj", root_path="/tmp", project_id="p1")
         project.status = LoopProjectStatus.RUNNING
 
-        # build_engine_card calls _build_deep_buttons internally
+        # build_info_card calls _build_deep_buttons internally
         # We need to ensure we can parse the result even if it's complex
-        _, card_content = CardBuilder.build_engine_card(
+        _, card_content = CardBuilder.build_info_card(
             project=project,
             state=EngineCardState(
                 title="Loop Status",
@@ -102,10 +103,10 @@ class TestLoopInteraction(unittest.TestCase):
         )
 
     def test_loop_handler_uses_loop_prefix(self):
-        """验证 LoopHandler 调用 CardBuilder 时传入 action_prefix='loop'"""
+        """验证 LoopHandler 通过 CardSession 管线渲染，metadata 包含 engine_type='loop'"""
         mock_ctx = MagicMock()
         # Mock settings
-        mock_ctx.settings.card_deep_compact_default = False
+        mock_ctx.settings.card.deep_compact_default = False
 
         handler = LoopHandler(mock_ctx)
 
@@ -117,23 +118,37 @@ class TestLoopInteraction(unittest.TestCase):
         mock_engine.project.satisfied_count = 0
         mock_engine.project.total_criteria = 10
         mock_engine.project.name = "test_proj"
+        mock_engine.engine_name = "Coco"
 
-        # Patch CardBuilder.build_engine_card
-        with patch("src.card.CardBuilder.build_engine_card") as mock_build:
-            mock_build.return_value = ("interactive", "{}")
+        # Setup snapshot mock for the new renderer path
+        snap = EngineSnapshot(
+            engine_name="Coco",
+            root_path="/tmp",
+            project_id="p1",
+            satisfied_count=0,
+            total_criteria=10,
+            is_running=True,
+            ext={"project": mock_engine.project},
+        )
+        mock_ctx.loop_engine_manager.snapshot.return_value = snap
 
-            # Call show_loop_status which calls build_engine_card
-            # Note: We mock reply_message to avoid network calls
+        # Ensure format_criteria_section returns a string (not MagicMock)
+        mock_ctx.loop_reporter.format_criteria_section.return_value = "Mock Criteria"
+
+        # Patch _create_session in BaseRenderer
+        with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create:
+            mock_session = MagicMock()
+            mock_create.return_value = mock_session
+
             handler.reply_text = MagicMock()
             handler.show_loop_status("msg_id", "chat_id", project)
 
-            # Verify action_prefix="loop" was passed
-            mock_build.assert_called()
-            call_args = mock_build.call_args
-            # Check kwargs
-            state = call_args.kwargs.get("state")
-            self.assertIsNotNone(state)
-            self.assertEqual(state.action_prefix, "loop")
+            # Verify session was created with loop metadata
+            mock_create.assert_called()
+            call_args = mock_create.call_args
+            metadata = call_args[0][2]  # 3rd positional arg is metadata (chat_id, message_id, metadata)
+            self.assertEqual(metadata.engine_type, "loop")
+            self.assertIn("Loop", metadata.mode_name)
 
     def test_ws_client_routes_loop_actions(self):
         """验证 FeishuWSClient 正确路由 loop_pause/resume/stop 动作"""
@@ -156,8 +171,8 @@ class TestLoopInteraction(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0

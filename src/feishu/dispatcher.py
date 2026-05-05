@@ -20,7 +20,7 @@ from ..agent.intent_recognizer import IntentType
 from ..utils.errors import get_error_detail
 from .emoji import EmojiReaction
 from .message_formatter import FeishuMessageFormatter as fmt
-from ..card.styles import UI_TEXT
+from ..card.ui_text import UI_TEXT
 
 logger = logging.getLogger(__name__)
 

@@ -92,4 +92,4 @@ def truncate_terminal_message(
         max_chars = TRUNCATION_LIMITS["terminal_message_max"]
     if len(value) <= max_chars:
         return value
-    return value[: max_chars - 3] + "..."
+    return value[: max_chars - 1] + "…"

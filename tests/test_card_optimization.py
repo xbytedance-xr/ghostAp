@@ -60,7 +60,7 @@ class TestCardOptimization:
         duration_line = "Time: 1s"
 
         # Test Loop Engine
-        _, card_json = CardBuilder.build_engine_card(
+        _, card_json = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(
                 title="Loop Test",
@@ -85,7 +85,7 @@ class TestCardOptimization:
         assert "Status: OK\nTime: 1s" in meta_element["content"]
 
         # Test Deep Engine (Should still use dot separator)
-        _, card_json = CardBuilder.build_engine_card(
+        _, card_json = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(
                 title="Deep Test",
@@ -214,7 +214,7 @@ class TestCardOptimization:
         error_msg = "\n".join(error_lines)
 
         # Compact mode + Error status
-        _, card_json = CardBuilder.build_engine_card(
+        _, card_json = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(
                 title="Task Error",  # Triggers status_key="error"
@@ -240,7 +240,7 @@ class TestCardOptimization:
 
         # Compact mode + Normal status
         normal_msg = "Normal line 1\n" + "a" * 2000
-        _, card_json = CardBuilder.build_engine_card(
+        _, card_json = CardBuilder.build_info_card(
             project=None,
             state=EngineCardState(title="Task Running", content=normal_msg, engine_name="Coco", compact=True),
         )
@@ -270,7 +270,7 @@ class TestCardOptimization:
             expanded=False,  # Should trigger Expand button
         )
 
-        _, card_json = CardBuilder.build_engine_card(project=None, state=state)
+        _, card_json = CardBuilder.build_info_card(project=None, state=state)
         card = json.loads(card_json)
 
         # Find the button section (usually at the end, after hr)

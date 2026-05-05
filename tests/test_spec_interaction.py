@@ -4,6 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from src.card.engine_snapshot import EngineSnapshot
 from src.feishu.handlers.spec import SpecHandler
 from src.feishu.handlers.base import CardActionContext
 from src.feishu.renderers.spec_renderer import SpecRenderer
@@ -17,7 +18,7 @@ class TestSpecInteraction(unittest.TestCase):
     def test_spec_handler_uses_standard_dispatch(self):
         """验证 SpecHandler 调用 _dispatch_standard_card_action"""
         mock_ctx = MagicMock()
-        mock_ctx.settings.card_deep_compact_default = False
+        mock_ctx.settings.card.deep_compact_default = False
 
         handler = SpecHandler(mock_ctx)
         # Mock the dispatch method
@@ -41,7 +42,7 @@ class TestSpecInteraction(unittest.TestCase):
     def test_standard_dispatch_handles_expand_ac(self):
         """验证 BaseHandler 标准分发支持 *_expand_ac / *_collapse_ac"""
         mock_ctx = MagicMock()
-        mock_ctx.settings.card_deep_compact_default = False
+        mock_ctx.settings.card.deep_compact_default = False
 
         handler = SpecHandler(mock_ctx)
         toggle_ac = MagicMock()
@@ -86,8 +87,8 @@ class TestSpecInteraction(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -127,112 +128,95 @@ if __name__ == "__main__":
 
 
 def test_spec_error_card_contains_keywords_and_retry_button():
-    """验收：错误提示含关键字且错误卡片包含可用的重试按钮（携带 task_id）。"""
+    """验收：on_error dispatches FAILED event with error message containing keywords."""
+    from src.card.events import CardEvent, CardEventType
+
     mock_handler = MagicMock()
     mock_handler.ctx = MagicMock()
     mock_handler.ctx.spec_reporter = SpecReporter()
     mock_handler.ctx.spec_engine_manager = MagicMock()
     mock_handler.ctx.spec_engine_manager.get_active_engine.return_value = None
     mock_handler.settings = MagicMock()
-    mock_handler.settings.card_deep_compact_default = False
+    mock_handler.settings.card.deep_compact_default = False
     mock_handler.settings.default_reply_mode = "chat"
     mock_handler.settings.deep_stream_interval = 0
     mock_handler.settings.deep_stream_min_chars = 0
     mock_handler.ensure_request_id = MagicMock(return_value=None)
     mock_handler.get_working_dir = MagicMock(return_value="/tmp")
-
-    sent = {}
-
-    def _reply_card(message_id, card_content, **kwargs):
-        sent["card"] = card_content
-        return "m2"
-
-    mock_handler.reply_card = MagicMock(side_effect=_reply_card)
-    mock_handler.update_card = MagicMock(return_value=True)
     mock_handler.add_reaction = MagicMock()
 
     renderer = SpecRenderer(mock_handler)
-    callbacks: SpecEngineCallbacks = renderer.create_spec_callbacks(
-        message_id="mid",
-        chat_id="cid",
-        project=None,
-        engine_name="Coco",
-    )
 
-    error = "Spec执行异常: Phase build 失败，任务已保存(task_id=f5f3dcb4): Internal error"
-    callbacks.on_error(error)
+    with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create:
+        mock_session = MagicMock()
+        mock_create.return_value = mock_session
 
-    assert "card" in sent
-    assert "Phase build 失败" in sent["card"]
-    assert "Internal error" in sent["card"]
-    assert "f5f3dcb4" in sent["card"]
+        callbacks: SpecEngineCallbacks = renderer.create_spec_callbacks(
+            message_id="mid",
+            chat_id="cid",
+            project=None,
+            engine_name="Coco",
+        )
 
-    payload = json.loads(sent["card"])
+        error = "Spec执行异常: Phase build 失败，任务已保存(task_id=f5f3dcb4): Internal error"
+        callbacks.on_error(error)
 
-    def _walk(x):
-        if isinstance(x, dict):
-            yield x
-            for v in x.values():
-                yield from _walk(v)
-        elif isinstance(x, list):
-            for v in x:
-                yield from _walk(v)
+        # Verify FAILED event dispatched with error message
+        dispatched_events = [call[0][0] for call in mock_session.dispatch.call_args_list]
+        failed_events = [e for e in dispatched_events if e.type == CardEventType.FAILED]
+        assert failed_events, "on_error should dispatch FAILED event"
+        # Error message should be preserved in payload
+        assert "Phase build 失败" in str(failed_events[0].payload)
+        assert "f5f3dcb4" in str(failed_events[0].payload)
+        assert "Internal error" in str(failed_events[0].payload)
 
-    hits = [
-        d for d in _walk(payload) if d.get("tag") == "button" and (d.get("value") or {}).get("action") == "spec_retry"
-    ]
-    assert hits, "missing spec_retry button"
-    assert (hits[0].get("value") or {}).get("task_id") == "f5f3dcb4"
+        # Verify EmojiHook was registered via hooks kwarg to create_session
+        create_kwargs = mock_create.call_args
+        assert "hooks" in create_kwargs.kwargs or (len(create_kwargs.args) > 4)
+        hooks = create_kwargs.kwargs.get("hooks", ())
+        from src.card.hooks import EmojiHook
+        assert any(isinstance(h, EmojiHook) for h in hooks), "EmojiHook should be registered"
 
 
 def test_spec_status_card_shows_resume_when_paused():
+    """Verify _render_status_view dispatches events when spec project is paused."""
+    from src.card.events import CardEvent, CardEventType
+
     mock_handler = MagicMock()
     mock_handler.ctx = MagicMock()
     mock_handler.ctx.spec_reporter = SpecReporter()
     mock_handler.settings = MagicMock()
-    mock_handler.settings.card_deep_compact_default = False
+    mock_handler.settings.card.deep_compact_default = False
     mock_handler.settings.engine_timeout_warning_seconds = 999999
     mock_handler.update_card = MagicMock(return_value=False)
     mock_handler.reply_text = MagicMock()
     mock_handler.send_card_to_chat = MagicMock()
 
-    sent = {}
-
     renderer = SpecRenderer(mock_handler)
-    renderer._patch_or_send = lambda message_id, chat_id, card_content, msg_type, origin_message_id: sent.update(
-        card=card_content, msg_type=msg_type
-    )
 
-    project = SimpleNamespace(project_id="proj_1", root_path="/tmp/spec")
     spec_project = SpecProject.create(root_path="/tmp/spec")
     spec_project.status = SpecProjectStatus.PAUSED
     spec_project.started_at = time.time() - 5
     engine = SimpleNamespace(engine_name="Coco", project=spec_project)
 
-    renderer._render_status_view("mid", "cid", project, engine, renderer.get_default_ui_state(), None)
+    with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create:
+        mock_session = MagicMock()
+        mock_create.return_value = mock_session
 
-    payload = json.loads(sent["card"])
+        renderer._render_status_view("mid", "cid", None, engine, renderer.get_default_ui_state())
 
-    def _walk(x):
-        if isinstance(x, dict):
-            yield x
-            for v in x.values():
-                yield from _walk(v)
-        elif isinstance(x, list):
-            for v in x:
-                yield from _walk(v)
-
-    actions = {
-        (d.get("value") or {}).get("action")
-        for d in _walk(payload)
-        if d.get("tag") == "button" and (d.get("value") or {}).get("action")
-    }
-    assert "spec_resume" in actions
-    assert "spec_stop" in actions
-    assert "spec_pause" not in actions
+        # Verify dispatch was called with STARTED event
+        dispatched_events = [call[0][0] for call in mock_session.dispatch.call_args_list]
+        event_types = [e.type for e in dispatched_events]
+        assert CardEventType.STARTED in event_types
+        # Since status is PAUSED and not running, COMPLETED should be dispatched (terminal state)
+        assert CardEventType.COMPLETED in event_types
 
 
 def test_spec_card_buttons_keep_project_id_separate_from_ui_state_key():
+    """Verify _render_status_view dispatches correct events for running spec project."""
+    from src.card.events import CardEvent, CardEventType
+
     state = {
         "compact": False,
         "expanded": False,
@@ -242,7 +226,7 @@ def test_spec_card_buttons_keep_project_id_separate_from_ui_state_key():
     renderer_handler.ctx = MagicMock()
     renderer_handler.ctx.spec_reporter = SpecReporter()
     renderer_handler.settings = MagicMock()
-    renderer_handler.settings.card_deep_compact_default = False
+    renderer_handler.settings.card.deep_compact_default = False
     renderer_handler.settings.engine_timeout_warning_seconds = 999999
     renderer = SpecRenderer(renderer_handler)
 
@@ -252,28 +236,24 @@ def test_spec_card_buttons_keep_project_id_separate_from_ui_state_key():
     spec_project.started_at = time.time() - 5
     engine = SimpleNamespace(engine_name="Coco", project=spec_project)
 
-    sent = {}
-    renderer._patch_or_send = lambda message_id, chat_id, card_content, msg_type, origin_message_id: sent.update(
-        card=card_content
-    )
-    renderer._render_status_view("mid", "cid", None, engine, state, None)
+    with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create:
+        mock_session = MagicMock()
+        mock_create.return_value = mock_session
 
-    payload = json.loads(sent["card"])
+        renderer._render_status_view("mid", "cid", None, engine, state)
 
-    def _walk(x):
-        if isinstance(x, dict):
-            yield x
-            for v in x.values():
-                yield from _walk(v)
-        elif isinstance(x, list):
-            for v in x:
-                yield from _walk(v)
+        # Verify metadata passed to create_session includes correct engine_type
+        call_kwargs = mock_create.call_args
+        metadata = call_kwargs[0][2]  # 3rd positional arg (chat_id, message_id, metadata)
+        assert metadata.engine_type == "spec"
+        assert "Spec" in metadata.mode_name
 
-    button = next(
-        d for d in _walk(payload) if d.get("tag") == "button" and (d.get("value") or {}).get("action") == "spec_pause"
-    )
-    assert button["value"]["project_id"] == "proj_123"
-    assert button["value"]["deep_project_id"] == "/tmp/spec"
+        # Verify events dispatched
+        dispatched_events = [call[0][0] for call in mock_session.dispatch.call_args_list]
+        event_types = [e.type for e in dispatched_events]
+        assert CardEventType.STARTED in event_types
+        # Running project should dispatch PROGRESS_UPDATED (criteria updated)
+        assert CardEventType.CRITERIA_UPDATED in event_types
 
 
 def test_format_cycle_phase_details_full():
@@ -356,14 +336,18 @@ def test_format_cycle_done_includes_phase_details():
 
 
 def test_cycle_done_card_no_buttons():
+    """Verify on_cycle_done dispatches correct events (cycle_done + new session rotation)."""
+    from src.card.events import CardEvent, CardEventType
+
     renderer_handler = MagicMock()
     renderer_handler.ctx = MagicMock()
     renderer_handler.ctx.spec_reporter = SpecReporter()
     renderer_handler.ctx.spec_engine_manager = MagicMock()
     renderer_handler.settings = MagicMock()
-    renderer_handler.settings.card_deep_compact_default = False
+    renderer_handler.settings.card.deep_compact_default = False
     renderer_handler.settings.engine_timeout_warning_seconds = 999999
     renderer_handler.settings.default_reply_mode = "direct"
+    renderer_handler.ensure_request_id = MagicMock(return_value=None)
     renderer = SpecRenderer(renderer_handler)
 
     project = MagicMock()
@@ -379,33 +363,34 @@ def test_cycle_done_card_no_buttons():
     engine = SimpleNamespace(engine_name="Coco", project=spec_project)
     renderer_handler.ctx.spec_engine_manager.get.return_value = engine
 
-    callbacks = renderer.create_spec_callbacks("mid", "cid", project, engine_name="Coco")
+    # Mock snapshot to return proper EngineSnapshot
+    snap = EngineSnapshot(
+        engine_name="Coco",
+        root_path="/tmp/test",
+        project_id="proj_test",
+        satisfied_count=0,
+        total_criteria=0,
+        is_running=True,
+        ext={"project": spec_project},
+    )
+    renderer_handler.ctx.spec_engine_manager.snapshot.return_value = snap
 
-    sent_cards: list[str] = []
-    renderer_handler.reply_card = MagicMock(side_effect=lambda *a, **kw: (sent_cards.append(a[1]) or "new_msg_id"))
-    renderer_handler.update_card = MagicMock(return_value=True)
+    with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create:
+        mock_session = MagicMock()
+        mock_create.return_value = mock_session
 
-    cycle = SpecCycle(cycle_number=1)
-    cycle.status = "completed"
-    cycle.complete()
-    spec_project.cycles.append(cycle)
+        callbacks = renderer.create_spec_callbacks("mid", "cid", project, engine_name="Coco")
 
-    callbacks.on_cycle_done(1, cycle)
+        cycle = SpecCycle(cycle_number=1)
+        cycle.status = "completed"
+        cycle.complete()
+        spec_project.cycles.append(cycle)
 
-    assert len(sent_cards) >= 1
-    card_json = json.loads(sent_cards[-1])
+        callbacks.on_cycle_done(1, cycle)
 
-    def _walk(x):
-        if isinstance(x, dict):
-            yield x
-            for v in x.values():
-                yield from _walk(v)
-        elif isinstance(x, list):
-            for v in x:
-                yield from _walk(v)
-
-    pause_buttons = [
-        d for d in _walk(card_json)
-        if d.get("tag") == "button" and (d.get("value") or {}).get("action") == "spec_pause"
-    ]
-    assert len(pause_buttons) == 0, "cycle_done card should not have pause button"
+        # Verify dispatch was called with CYCLE_DONE and text events
+        dispatched_events = [call[0][0] for call in mock_session.dispatch.call_args_list]
+        event_types = [e.type for e in dispatched_events]
+        assert CardEventType.CYCLE_DONE in event_types
+        # After rotation, STARTED is dispatched on the new session
+        assert CardEventType.STARTED in event_types

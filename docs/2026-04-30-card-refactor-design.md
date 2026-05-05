@@ -3,6 +3,8 @@
 > 日期: 2026-04-30
 > 目标: 参照 pokoclaw 的三层解耦架构，对 GhostAP 卡片系统进行激进式重写，实现状态/渲染/投递完全分离，确保 AI 过程消息不丢失，同时提升视觉审美和可维护性。
 
+> **另见**: [迁移 FAQ](./card-migration-faq.md) | [CHANGELOG](../CHANGELOG.md) | [ADR: Pipeline 边界](./adr-card-pipeline-boundary.md)
+
 ---
 
 ## 一、设计原则
@@ -940,7 +942,7 @@ collapsible_panel 边框色:
 # Before (紧耦合)
 class DeepHandler:
     async def run(self):
-        card_json = CardBuilder.build_engine_card(project, state)
+        card_json = CardBuilder.build_engine_card(project, state)  # DEPRECATED - see migration section below
         await self.smart_sender.send(card_json)
 
 # After (解耦)
@@ -1069,3 +1071,102 @@ def test_structure_change_triggers_update():
 | Header subtitle | 无 / 有 | 有 | 用户明确需求: 随时知道"谁在帮我干活" |
 | 工具状态图标 | emoji / 字符 | 轻量字符 (✓/✗/⏳) | 标题行用轻量字符保持紧凑，终态标记用大 emoji 保持醒目 |
 | styles 拆分 | 保留/拆分 | 拆分 5 文件 + 兼容期 re-export | 消除 God Object，逐步迁移 |
+
+---
+
+## 附录：迁移指南
+
+> 适用范围: 从旧版 `CardBuilder` + 直接 PATCH 迁移到新版 `CardSession` 三层流水线
+
+### 架构变更概述
+
+| 旧方式 | 新方式 |
+|--------|--------|
+| `CardBuilder.build_engine_card()` 直接构建 JSON | `CardSession.dispatch(CardEvent)` 事件驱动 |
+| 回调闭包中嵌入 emoji/context 副作用 | `SessionHook` 协议注入 (`EmojiHook`, `ContextPersistenceHook`) |
+| 各 renderer 手动管理 session dict | `BaseRenderer.create_session()` 统一创建 |
+| `CardDelivery` 内联惰性驱逐 | 后台 daemon 线程定时驱逐 + LRU 硬上限 |
+| 各 renderer 独立 type hint | `Dispatchable` 协议统一标注 |
+
+### 迁移步骤
+
+**Session 创建** — 统一走 `BaseRenderer.create_session()`，自动注入 hooks。
+
+```python
+from src.card.render.budget import RenderBudget
+
+# 在 renderer 中创建 session（自动注入 EmojiHook + ContextPersistenceHook）
+session = self.create_session(
+    chat_id=chat_id,
+    message_id=message_id,
+    budget=RenderBudget(engine_cmd="/deep"),
+)
+# 后续通过 dispatch 驱动卡片更新
+session.dispatch(CardEvent.started())
+```
+
+**类型标注** — 使用 `from src.card.protocols import Dispatchable` 作为 `CardSession` 和 `SessionRotator` 的协议基类。
+
+```python
+from src.card.protocols import Dispatchable, ManagedDispatchable
+
+def build_callbacks(session: Dispatchable) -> EngineCallbacks:
+    """类型标注使用 Dispatchable 协议而非具体类."""
+    ...
+```
+
+**UI_TEXT 导入** — 使用 `from src.card.ui_text import UI_TEXT`（`styles.py` re-export 已标记 DEPRECATED）。
+
+```python
+# ✅ 正确
+from src.card.ui_text import UI_TEXT
+
+# ❌ 已废弃，2026-06-01 后将 ImportError
+from src.card.styles import UI_TEXT
+```
+
+**Payload 截断** — 使用独立模块 `src.card.render.payload_truncator.check_and_truncate_payload()`。
+
+```python
+from src.card.render.payload_truncator import check_and_truncate_payload
+
+payload = card.to_feishu_json()
+truncated = check_and_truncate_payload(payload, max_bytes=28000)
+```
+
+**Terminal Hook** — `HookFirer` 内部通过 `threading.Event()` 保证 exactly-once，无需手动管理 fired 状态。
+
+```python
+# hooks 在 create_session 时自动注入，terminal 时自动触发
+# 无需手动调用 — 由 CardSession._deliver_and_track 终态路径处理
+```
+
+### 配置变更
+
+新增 `.env` 可配参数（均有默认值，无需强制设置）。完整列表见 `.env.example` 底部的 Card 配置区。
+
+### 旧调用点清理清单
+
+| 旧 API | 状态 | 替代方案 |
+|--------|------|----------|
+| `DirectCardSession` | ✅ 已移除 | `CardSession` / `StaticCardSession` |
+| `_create_direct_session()` | ✅ 已移除 | `BaseRenderer.create_session()` |
+| `CardBuilder.build_engine_card()` | ✅ 已完全移除 | `CardBuilder.build_info_card()` |
+| `EngineCardSender` | ✅ 已移除 | `CardSession.dispatch()` |
+| `BaseHandler.reply_message()` | ✅ 已移除 | `BaseHandler.reply_text()` |
+| `BaseHandler.patch_message()` | ✅ 已移除 | `BaseHandler.update_card()` |
+| `BaseHandler.send_message()` | ✅ 已移除 | `BaseHandler.send_text_to_chat()` |
+| `src/card/adapter.py` | ✅ 已移除 | `src/card/protocols.py` |
+
+### FAQ
+
+> 面向运维/部署者的 FAQ 见 [card-migration-faq.md](./card-migration-faq.md)
+
+**Q: 后台驱逐线程会影响性能吗？**
+A: 驱逐线程每 30 秒扫描一次，仅处理 TTL 过期且无活跃绑定的 zombie 锁。正常运行下对性能无可感知影响。
+
+**Q: Worktree 引擎的按钮 action 走什么路由？**
+A: 所有卡片按钮通过全局 `ActionDispatcher`（exact / prefix 匹配）路由，不经过 `CardSession.inbound_action`。
+
+**Q: 如何检查项目中是否仍在使用即将移除的弃用 shim？**
+A: 运行 `bash scripts/check_shim_deadline.sh`。该脚本会在 2026-06-01 后自动检测所有残留的 shim 文件（包括 `src/card/_session_ttl.py` 等 11 个文件）。建议将此脚本集成到 CI lint 步骤中，确保到期后能及时清理。

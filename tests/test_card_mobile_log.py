@@ -21,8 +21,8 @@ class TestCardMobileLog:
             action_prefix="loop",
             compact=True,
         )
-        # build_engine_card returns tuple(type, json_str)
-        _, card_json_str = CardBuilder.build_engine_card(None, state)
+        # build_info_card returns tuple(type, json_str)
+        _, card_json_str = CardBuilder.build_info_card(None, state)
         card_json = json.loads(card_json_str)
 
         # Check header template color
@@ -41,7 +41,7 @@ class TestCardMobileLog:
             action_prefix="deep",
             compact=True,
         )
-        _, card_json_str = CardBuilder.build_engine_card(None, state)
+        _, card_json_str = CardBuilder.build_info_card(None, state)
         card_json = json.loads(card_json_str)
 
         assert card_json["header"]["template"] == "turquoise"
@@ -60,7 +60,7 @@ class TestCardMobileLog:
             engine_name="Deep",
             action_prefix="deep",
         )
-        _, card_json_str = CardBuilder.build_engine_card(None, state)
+        _, card_json_str = CardBuilder.build_info_card(None, state)
         card_json = json.loads(card_json_str)
 
         # Find the content element (usually after directory and hr)
@@ -93,7 +93,7 @@ class TestCardMobileLog:
             engine_name="Deep",
             action_prefix="deep",
         )
-        _, card_json_str = CardBuilder.build_engine_card(None, state)
+        _, card_json_str = CardBuilder.build_info_card(None, state)
         card_json = json.loads(card_json_str)
 
         # Verify expand/collapse button logic
@@ -115,7 +115,7 @@ class TestCardMobileLog:
             engine_name="Deep",
             action_prefix="deep",
         )
-        _, card_json_str = CardBuilder.build_engine_card(None, state)
+        _, card_json_str = CardBuilder.build_info_card(None, state)
         card_json = json.loads(card_json_str)
 
         # Check header color (should be red for error)

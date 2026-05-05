@@ -6,14 +6,14 @@ import time
 import pytest
 
 from src.card.delivery.throttle import DeliveryThrottle, DELIVERY_INTERVAL_MS
-from src.card.render.renderer import RenderedCard
+from src.card.types import RenderedCard
 
 
 class TestDeliveryThrottle:
     """DeliveryThrottle tests."""
 
     def _make_rendered(self, sig: str = "sig1") -> list[RenderedCard]:
-        return [RenderedCard(card_json={"test": True}, structure_signature=sig)]
+        return [RenderedCard(_card_json={"test": True}, structure_signature=sig)]
 
     def test_immediate_flush(self):
         """immediate=True → callback invoked synchronously."""

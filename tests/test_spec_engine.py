@@ -2254,7 +2254,7 @@ class TestSpecHandler:
         reporter.get_goal_rewritten_title.return_value = "🎯 目标已更新"
         handler.ctx.spec_reporter = reporter
 
-        with patch("src.feishu.handlers.spec.CardBuilder.build_engine_card", return_value=("interactive", "card")):
+        with patch("src.feishu.handlers.spec.CardBuilder.build_info_card", return_value=("interactive", "card")):
             handler.update_spec_guidance("mid", "cid", "Q1: answer", project=None)
 
         engine.refine_goal_with_guidance.assert_called_once_with("Q1: answer")
@@ -2289,7 +2289,7 @@ class TestSpecHandler:
         reporter.get_guidance_injected_title.return_value = "💬 引导信息已注入"
         handler.ctx.spec_reporter = reporter
 
-        with patch("src.feishu.handlers.spec.CardBuilder.build_engine_card", return_value=("interactive", "card")):
+        with patch("src.feishu.handlers.spec.CardBuilder.build_info_card", return_value=("interactive", "card")):
             handler.update_spec_guidance("mid", "cid", "fallback test", project=None)
 
         engine.refine_goal_with_guidance.assert_called_once_with("fallback test")

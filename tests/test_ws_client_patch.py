@@ -30,8 +30,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -86,8 +86,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -138,8 +138,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -186,8 +186,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -242,8 +242,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -302,8 +302,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -356,8 +356,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -406,8 +406,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -457,8 +457,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -521,8 +521,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -555,8 +555,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -593,8 +593,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -650,8 +650,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -689,8 +689,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -747,8 +747,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -789,8 +789,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -837,8 +837,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -875,8 +875,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -938,8 +938,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -983,8 +983,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -1028,8 +1028,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -1066,8 +1066,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -1099,8 +1099,8 @@ class TestSystemCmdGateReadonlyBypass(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -1144,7 +1144,8 @@ class TestSystemCmdGateReadonlyBypass(unittest.TestCase):
             client._card_action_dedup_cache.is_duplicate.return_value = True
             data = self._make_card_data(action)
             result = client._handle_card_action(data)
-            self.assertIsNone(result)
+            # Dedup now returns toast instead of None
+            self.assertEqual(result, {"toast": {"type": "info", "content": "操作已受理，请勿重复点击"}})
             client._reply_text.assert_not_called()
 
     def test_non_readonly_action_blocked_by_gate(self):
@@ -1180,8 +1181,8 @@ class TestSystemCmdGateReadonlyBypass(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -1200,7 +1201,8 @@ class TestSystemCmdGateReadonlyBypass(unittest.TestCase):
 
             data = self._make_card_data("enter_coco")
             result = client._handle_card_action(data)
-            self.assertIsNone(result)
+            # Dedup now returns toast instead of None
+            self.assertEqual(result, {"toast": {"type": "info", "content": "操作已受理，请勿重复点击"}})
             client._reply_text.assert_not_called()
 
 
@@ -1225,8 +1227,8 @@ class TestIsSystemCardActionEngineControls(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -1294,8 +1296,8 @@ class TestOneShotDispatchToThread(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -1573,8 +1575,8 @@ class TestActiveThreadGuidance(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -1652,8 +1654,8 @@ class TestThreadPersistentProgramming(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -1752,8 +1754,8 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -2281,8 +2283,8 @@ class TestDualKeyThreadContext(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0
@@ -2500,8 +2502,8 @@ class TestSendLockConflictCardFacade(unittest.TestCase):
             mock_settings.task_scheduler_per_key_concurrency = 1
             mock_settings.message_cache_ttl = 300
             mock_settings.message_cache_max_size = 1000
-            mock_settings.card_action_dedup_ttl = 1
-            mock_settings.card_action_dedup_max_size = 5000
+            mock_settings.card.action_dedup_ttl = 1
+            mock_settings.card.action_dedup_max_size = 5000
             mock_settings.system_command_concurrency = 10
             mock_settings.spec_rate_limit_capacity = 100
             mock_settings.spec_rate_limit_fill_rate = 50.0

@@ -140,3 +140,16 @@ class TestBindingStore:
         binding = store.get("sess_1")
         assert len(binding.pages) == 3
         assert binding.pages[2].last_text == "text3"
+
+    def test_has_returns_true_for_existing(self):
+        store = BindingStore()
+        store.create("sess_1", "chat_abc")
+        assert store.has("sess_1") is True
+
+    def test_has_returns_false_for_missing(self):
+        store = BindingStore()
+        assert store.has("nonexistent") is False
+        # Also verify after removal
+        store.create("sess_2", "chat_xyz")
+        store.remove("sess_2")
+        assert store.has("sess_2") is False

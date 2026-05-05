@@ -20,6 +20,70 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _format_duration(seconds: int) -> str:
+    """Format seconds as Chinese-friendly '1800 秒（30 分钟）' with human-readable suffix."""
+    import math
+
+    if seconds <= 0:
+        return "0 秒"
+    if seconds % 60 == 0:
+        minutes = seconds // 60
+        return f"{seconds} 秒（{minutes} 分钟）"
+    # Non-exact minutes: approximate with ceiling
+    approx_min = math.ceil(seconds / 60)
+    return f"{seconds} 秒（~{approx_min} 分钟）"
+
+
+def _get_version() -> str:
+    """Return package version via importlib.metadata, fallback to pyproject.toml."""
+    try:
+        from importlib.metadata import version
+        return version("ghostap")
+    except Exception:
+        pass
+    # Fallback: read from pyproject.toml
+    try:
+        import pathlib
+        import tomllib
+
+        pyproject_path = pathlib.Path(__file__).resolve().parent.parent / "pyproject.toml"
+        if pyproject_path.exists():
+            with open(pyproject_path, "rb") as f:
+                data = tomllib.load(f)
+            return data.get("project", {}).get("version", "")
+    except Exception:
+        pass
+    return ""
+
+
+def _print_validate_summary(settings) -> None:
+    """Print structured --validate summary with version, groups, and units."""
+    version = _get_version()
+    if version:
+        print(f"GhostAP v{version} 配置校验通过")
+    else:
+        print("GhostAP 配置校验通过")
+    print()
+
+    # Group 1: 会话超时
+    print("[会话超时]")
+    print(f"  CARD_SESSION_IDLE_TIMEOUT           = {_format_duration(settings.card.session_idle_timeout)}")
+    print(f"  CARD_SESSION_IDLE_WARN_AT_REMAINING = {_format_duration(settings.card.session_idle_warn_at_remaining)}")
+    print()
+
+    # Group 2: 锁定参数
+    print("[锁定参数]")
+    print(f"  LOCK_UNDO_WINDOW_SECONDS = {_format_duration(settings.lock_undo_window_seconds)}")
+    print()
+
+    # Group 3: 高级参数
+    print("[高级参数]")
+    print(f"  CARD_DELIVERY_POOL_MAX_WORKERS = {settings.card.delivery_pool_max_workers} (threads)")
+    print(f"  CARD_MAX_CHARS                 = {settings.card.max_chars} chars")
+    print(f"  CARD_SESSION_LOCK_TTL          = {_format_duration(int(settings.card.session_lock_ttl))}")
+    print(f"  CARD_SESSION_LOCK_MAX          = {settings.card.session_lock_max}")
+
+
 class Application:
     def __init__(self):
         self.settings = get_settings()
@@ -176,7 +240,7 @@ def main(argv: Optional[list[str]] = None) -> None:
                     f"{'=' * 40}\n"
                 )
                 sys.exit(1)
-            print("配置校验通过")
+            _print_validate_summary(settings)
             sys.exit(0)
         except ConfigurationError as e:
             sys.stderr.write(f"{'=' * 40}\n[配置校验失败]\n{e}\n{'=' * 40}\n")

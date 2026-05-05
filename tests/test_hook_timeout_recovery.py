@@ -1,0 +1,187 @@
+"""Tests for _HookExecutorManager timeout recovery and executor rebuild."""
+
+import concurrent.futures
+import threading
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from src.card.hooks import _HookExecutorManager, _MAX_CONSECUTIVE_TIMEOUTS
+
+
+class TestHookExecutorManagerBasic:
+    """Basic executor manager operations."""
+
+    def test_submit_executes_callable(self):
+        """submit() runs the callable in the thread pool."""
+        mgr = _HookExecutorManager()
+        result = mgr.submit(lambda: 42)
+        assert result.result(timeout=5) == 42
+
+    def test_record_success_resets_counter(self):
+        """record_success() resets consecutive timeout counter."""
+        mgr = _HookExecutorManager()
+        mgr._consecutive_timeouts = 1
+        mgr.record_success()
+        assert mgr._consecutive_timeouts == 0
+
+
+class TestHookExecutorTimeout:
+    """Timeout tracking and executor rebuild."""
+
+    def test_single_timeout_does_not_rebuild(self):
+        """A single timeout increments counter but doesn't rebuild."""
+        mgr = _HookExecutorManager()
+        original_executor = mgr._executor
+
+        mgr.record_timeout()
+
+        assert mgr._consecutive_timeouts == 1
+        assert mgr._executor is original_executor
+
+    def test_max_timeouts_triggers_rebuild(self):
+        """Reaching _MAX_CONSECUTIVE_TIMEOUTS rebuilds the executor."""
+        mgr = _HookExecutorManager()
+        original_executor = mgr._executor
+
+        for _ in range(_MAX_CONSECUTIVE_TIMEOUTS):
+            mgr.record_timeout()
+
+        # Executor should have been rebuilt
+        assert mgr._executor is not original_executor
+        # Counter should be reset
+        assert mgr._consecutive_timeouts == 0
+        # Cleanup
+        mgr._executor.shutdown(wait=False)
+
+    def test_rebuild_shuts_down_old_executor(self):
+        """Old executor is shut down (non-blocking) after rebuild."""
+        mgr = _HookExecutorManager()
+        old_executor = mgr._executor
+
+        with patch.object(old_executor, 'shutdown') as mock_shutdown:
+            for _ in range(_MAX_CONSECUTIVE_TIMEOUTS):
+                mgr.record_timeout()
+            mock_shutdown.assert_called_once_with(wait=False)
+
+        mgr._executor.shutdown(wait=False)
+
+    def test_success_after_timeout_resets_counter(self):
+        """A success after a timeout resets the counter, preventing rebuild."""
+        mgr = _HookExecutorManager()
+        original_executor = mgr._executor
+
+        mgr.record_timeout()
+        assert mgr._consecutive_timeouts == 1
+
+        mgr.record_success()
+        assert mgr._consecutive_timeouts == 0
+
+        # Another timeout shouldn't rebuild yet
+        mgr.record_timeout()
+        assert mgr._executor is original_executor
+
+    def test_thread_safety_of_record_timeout(self):
+        """Concurrent record_timeout calls don't corrupt state."""
+        mgr = _HookExecutorManager()
+        num_threads = 10
+
+        def record_many():
+            for _ in range(5):
+                mgr.record_timeout()
+                mgr.record_success()
+
+        threads = [threading.Thread(target=record_many) for _ in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Should not crash and counter should be valid
+        assert mgr._consecutive_timeouts >= 0
+        mgr._executor.shutdown(wait=False)
+
+
+class TestHookTimeoutEndToEnd:
+    """End-to-end test: _fire_hooks_terminal with a slow hook does NOT block the pipeline."""
+
+    def test_slow_hook_does_not_block_pipeline(self, monkeypatch):
+        """A hook sleeping longer than HOOK_TIMEOUT_SECONDS should be timed out gracefully."""
+        import time
+        from unittest.mock import MagicMock
+        from src.card.delivery.engine import CardDelivery
+        from src.card.session import CardSession
+        from src.card.session.config import SessionConfig
+        from src.card.state.models import CardMetadata, CardState
+        from src.card.hooks import HOOK_TIMEOUT_SECONDS
+
+        class SlowHook:
+            def on_dispatched(self, event, state):
+                pass
+
+            def on_terminal(self, state, reason):
+                # Sleep much longer than timeout
+                time.sleep(HOOK_TIMEOUT_SECONDS + 2)
+
+        client = MagicMock()
+        delivery = CardDelivery(client)
+        config = SessionConfig(metadata=CardMetadata(engine_type="deep"))
+        session = CardSession(
+            delivery=delivery,
+            chat_id="test_timeout",
+            config=config,
+            hooks=(SlowHook(),),
+        )
+
+        # Dispatch a STARTED event to get state initialized
+        from src.card.events import CardEvent, CardEventType
+        session.dispatch(CardEvent(type=CardEventType.STARTED, payload={}))
+
+        # Now fire terminal — this should complete within HOOK_TIMEOUT_SECONDS + buffer
+        # not the full sleep duration of the hook
+        start = time.monotonic()
+        session.dispatch(CardEvent(type=CardEventType.COMPLETED, payload={}))
+        elapsed = time.monotonic() - start
+
+        # Should return much faster than the hook's sleep
+        # Give generous buffer but it should NOT wait for hook's full sleep (TIMEOUT + 2s)
+        assert elapsed < HOOK_TIMEOUT_SECONDS + 1.5, f"Pipeline blocked for {elapsed:.1f}s"
+        session.close()
+
+
+class TestHookExecutorTwoPhaseShutdown:
+    """Two-phase shutdown: graceful wait then forced cancel."""
+
+    def test_shutdown_waits_for_inflight_tasks(self):
+        """Phase 1 waits for submitted tasks to complete."""
+        import time
+        results = []
+
+        mgr = _HookExecutorManager()
+        # Submit a task that takes a moment
+        future = mgr.submit(lambda: (time.sleep(0.1), results.append("done")))
+
+        # shutdown should wait for it
+        mgr.shutdown()
+        assert "done" in results
+
+    def test_shutdown_idempotent(self):
+        """Calling shutdown() multiple times does not raise."""
+        mgr = _HookExecutorManager()
+        mgr.shutdown()
+        # Second call should not raise
+        mgr.shutdown()
+
+    def test_shutdown_phase2_on_exception(self):
+        """If shutdown() raises, it's caught and doesn't propagate."""
+        from unittest.mock import patch
+
+        mgr = _HookExecutorManager()
+        original_executor = mgr._executor
+
+        # Make shutdown call raise
+        def mock_shutdown(wait=False, cancel_futures=True):
+            raise RuntimeError("simulated interpreter shutdown")
+
+        with patch.object(original_executor, 'shutdown', side_effect=mock_shutdown):
+            mgr.shutdown()  # Should not raise

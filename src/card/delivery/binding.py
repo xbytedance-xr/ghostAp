@@ -39,6 +39,11 @@ class BindingStore:
         with self._lock:
             return self._bindings.get(session_id)
 
+    def has(self, session_id: str) -> bool:
+        """Check if a binding exists for a session."""
+        with self._lock:
+            return session_id in self._bindings
+
     def create(self, session_id: str, chat_id: str) -> DeliveryBinding:
         """Create a new binding for a session."""
         with self._lock:

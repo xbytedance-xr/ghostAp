@@ -1,7 +1,7 @@
 from typing import Optional, TYPE_CHECKING
 from ...card import CardBuilder
 from ...card.models import EngineStatusEntry
-from ...card.styles import UI_TEXT
+from ...card.ui_text import UI_TEXT
 
 if TYPE_CHECKING:
     from ..handler_context import HandlerContext

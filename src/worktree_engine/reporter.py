@@ -4,7 +4,7 @@ import logging
 
 from .models import WorktreeInfo, WorktreeRuntimeState, WorktreeUnit, WorktreeUnitStatus
 
-from ..card.styles import STATUS_DISPLAY_MAP
+from ..utils.constants import STATUS_DISPLAY_MAP
 from ..utils.ui_text import SPEC_UI_TEXT
 
 logger = logging.getLogger(__name__)
@@ -53,8 +53,7 @@ class WorktreeReporter:
 
         return "自动分配中"
 
-    @staticmethod
-    def build_unit_summary_lines(units: list[WorktreeUnit]) -> list[str]:
+    def build_unit_summary_lines(self, units: list[WorktreeUnit]) -> list[str]:
         lines: list[str] = []
         status_icon = {"completed": "✅", "failed": "❌", "cancelled": "⏹", "running": "🔄", "planned": "📋", "ready": "⏳"}
         for unit in units:
@@ -76,20 +75,20 @@ class WorktreeReporter:
             lines.append(f"- {icon} `{display_name}` · `{STATUS_DISPLAY_MAP.get(status, status)}` · {task_text} · {change_text} · {summary}")
         return lines
 
-    @staticmethod
-    def build_merge_notes(units: list[WorktreeUnit], base_branch: str) -> list[str]:
-        notes: list[str] = []
+    def build_merge_notes(self, units: list[WorktreeUnit], base_branch: str) -> list[dict]:
+        notes: list[dict] = []
         target = base_branch or "main"
         for unit in units:
             display_name = WorktreeReporter._get_unit_display_name(unit)
-
-            notes.append(
-                f"- `{display_name}` → 分支 `{unit.branch_name or '(未创建)'}` → worktree `{unit.worktree_path or '(未创建)'}` → 建议合并回 `{target}`"
-            )
+            branch = unit.branch_name or "(未创建)"
+            notes.append({
+                "branch": branch,
+                "status": "ready",
+                "summary": f"`{display_name}` → 分支 `{branch}` → 建议合并回 `{target}`",
+            })
         return notes
 
-    @staticmethod
-    def format_worktree_table(entries: list[WorktreeInfo]) -> str:
+    def format_worktree_table(self, entries: list[WorktreeInfo]) -> str:
         """Format worktree list into an aligned table string."""
         if not entries:
             return "(无 worktree)"

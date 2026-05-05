@@ -1,7 +1,7 @@
 """Text block sub-reducer."""
 from __future__ import annotations
 from dataclasses import replace
-from ..models import CardState, ContentBlock, FooterState
+from ..models import CardState, TextBlock, FooterState
 from ...events import CardEvent, CardEventType
 
 
@@ -10,36 +10,35 @@ def reduce_text(state: CardState, event: CardEvent) -> CardState:
     match event.type:
         case CardEventType.TEXT_STARTED:
             block_id = event.payload.get("block_id", "")
-            new_block = ContentBlock(kind="text", block_id=block_id, status="active", element_id=f"el_{block_id}")
+            new_block = TextBlock(block_id=block_id, status="active", element_id=f"el_{block_id}")
             return replace(state, blocks=state.blocks + (new_block,),
                            footer=replace(state.footer, status="thinking", status_text="💭 正在思考..."))
 
         case CardEventType.TEXT_DELTA:
             block_id = event.payload.get("block_id", "")
             text = event.payload.get("text", "")
-            blocks = list(state.blocks)
-            # Find or create the active text block
-            found = False
-            for i, b in enumerate(blocks):
-                if b.block_id == block_id and b.kind == "text":
-                    blocks[i] = replace(b, content=b.content + text)
-                    found = True
-                    break
-            if not found:
-                # Auto-create block for convenience (from_acp uses "_active_text")
-                new_block = ContentBlock(kind="text", block_id=block_id, status="active",
-                                         element_id=f"el_{block_id}", content=text)
-                blocks.append(new_block)
-            return replace(state, blocks=tuple(blocks))
+            # O(1) lookup via block_index
+            idx = state.block_index.get(block_id)
+            if idx is not None and idx < len(state.blocks) and state.blocks[idx].kind == "text":
+                b = state.blocks[idx]
+                updated = replace(b, content=b.content + text)
+                blocks = state.blocks[:idx] + (updated,) + state.blocks[idx + 1:]
+                return replace(state, blocks=blocks)
+            # Auto-create block for convenience (from_acp uses "_active_text").
+            new_block = TextBlock(block_id=block_id, status="active",
+                                     element_id=f"el_{block_id}", content=text)
+            return replace(state, blocks=state.blocks + (new_block,),
+                           footer=replace(state.footer, status="thinking", status_text="💭 正在思考..."))
 
         case CardEventType.TEXT_DONE:
             block_id = event.payload.get("block_id", "")
-            blocks = list(state.blocks)
-            for i, b in enumerate(blocks):
-                if b.block_id == block_id and b.kind == "text":
-                    blocks[i] = replace(b, status="completed", element_id=None)
-                    break
-            return replace(state, blocks=tuple(blocks),
-                           footer=replace(state.footer, status=None, status_text=None))
+            idx = state.block_index.get(block_id)
+            if idx is not None and idx < len(state.blocks) and state.blocks[idx].kind == "text":
+                b = state.blocks[idx]
+                updated = replace(b, status="completed", element_id=None)
+                blocks = state.blocks[:idx] + (updated,) + state.blocks[idx + 1:]
+                return replace(state, blocks=blocks,
+                               footer=replace(state.footer, status=None, status_text=None))
+            return replace(state, footer=replace(state.footer, status=None, status_text=None))
 
     return state

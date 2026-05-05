@@ -7,7 +7,194 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+from src.card.delivery.engine import CardDelivery
+from src.card.delivery.registry import delivery_registry
+from src.card.session import CardSession
+from src.card.state.models import CardMetadata
 from src.utils.retry import RetryPolicy
+
+
+@pytest.fixture(autouse=True)
+def _reset_delivery_registry():
+    """Reset DeliveryRegistry state between tests for isolation."""
+    delivery_registry.reset()
+    yield
+    delivery_registry.reset()
+
+
+@pytest.fixture(autouse=True)
+def _force_sync_delivery(monkeypatch):
+    """Force all CardSession instances to use synchronous delivery in tests.
+
+    The production code uses a thread pool for async delivery, but tests need
+    deterministic behavior. We patch __init__ to override _sync_delivery=True
+    regardless of what SessionConfig.sync_delivery was set to.
+    """
+    import inspect
+
+    # Defensive assertion: ensure CardSession.__init__ still sets _sync_delivery.
+    # If the constructor signature changes, this will fail loudly instead of
+    # silently leaving tests with async delivery (causing flaky failures).
+    _init_src = inspect.getsource(CardSession.__init__)
+    assert "_sync_delivery" in _init_src, (
+        "CardSession.__init__ no longer sets _sync_delivery. "
+        "Update this fixture to match the new constructor pattern."
+    )
+
+    _orig_init = CardSession.__init__
+
+    def _patched_init(self, *args, **kwargs):
+        _orig_init(self, *args, **kwargs)
+        # Override: always sync in tests for determinism
+        self._sync_delivery = True
+
+    monkeypatch.setattr(CardSession, "__init__", _patched_init)
+    yield
+
+
+# ---------------------------------------------------------------------------
+# Shared TrackingClient for adapter sequence integration tests.
+# ---------------------------------------------------------------------------
+
+class TrackingClient:
+    """Mock Feishu API client that tracks all card operations.
+
+    Uses dynamic IDs based on creation count.
+    """
+
+    def __init__(self):
+        self.created: list[dict] = []
+        self.updated: list[dict] = []
+
+    def create_card(self, chat_id, card_json, *, reply_to=None):
+        self.created.append(card_json)
+        idx = len(self.created)
+        return (f"msg_{idx}", f"card_{idx}")
+
+    def update_card(self, card_id, card_json, *, sequence=0):
+        self.updated.append(card_json)
+
+
+@pytest.fixture
+def tracking_client() -> TrackingClient:
+    """Provide a fresh TrackingClient instance."""
+    return TrackingClient()
+
+
+@pytest.fixture
+def make_card_delivery():
+    """Factory fixture: create a CardDelivery from a TrackingClient.
+
+    Teardown calls shutdown() on all created deliveries to stop background threads.
+    """
+    deliveries: list[CardDelivery] = []
+
+    def _factory(client: TrackingClient | None = None) -> tuple[CardDelivery, TrackingClient]:
+        if client is None:
+            client = TrackingClient()
+        d = CardDelivery(client)
+        deliveries.append(d)
+        return d, client
+
+    yield _factory
+
+    for d in deliveries:
+        try:
+            d._shutdown()
+        except Exception:
+            pass
+
+
+@pytest.fixture
+def make_card_session():
+    """Factory fixture: create a CardSession wired to a delivery.
+
+    Teardown calls close() on all created sessions and shutdown() on deliveries.
+    """
+    sessions: list[CardSession] = []
+    deliveries: list[CardDelivery] = []
+
+    def _factory(
+        *,
+        chat_id: str = "chat_test",
+        engine_type: str = "deep",
+        mode_name: str = "Test Agent",
+        delivery: CardDelivery | None = None,
+        client: TrackingClient | None = None,
+        session_id: str | None = None,
+    ) -> tuple[CardSession, TrackingClient]:
+        if client is None:
+            client = TrackingClient()
+        if delivery is None:
+            delivery = CardDelivery(client)
+            deliveries.append(delivery)
+        metadata = CardMetadata(engine_type=engine_type, mode_name=mode_name)
+        from src.card.session.config import SessionConfig
+        from src.card.session.config import SessionCallbacks
+        config = SessionConfig(metadata=metadata, sync_delivery=True)
+        session = CardSession(
+            chat_id=chat_id,
+            config=config,
+            delivery=delivery,
+            session_id=session_id,
+            callbacks=SessionCallbacks(notify_callback=lambda _cid, _txt: None),
+        )
+        sessions.append(session)
+        return session, client
+
+    yield _factory
+
+    for s in sessions:
+        try:
+            s.close()
+        except Exception:
+            pass
+    for d in deliveries:
+        try:
+            d._shutdown()
+        except Exception:
+            pass
+
+
+@pytest.fixture
+def make_session_rotator(make_card_session):
+    """Factory fixture: create a SessionRotator with auto-cleanup.
+
+    Args (keyword only):
+        factory: Optional callable returning a CardSession. Defaults to
+                 a factory that creates sessions via make_card_session.
+        engine_type: Engine type for the initial session (default "loop").
+        session_id: Optional custom initial session ID.
+
+    Returns:
+        Tuple of (SessionRotator, initial_CardSession, TrackingClient).
+    """
+    from src.card.session.rotator import SessionRotator
+
+    rotators: list[SessionRotator] = []
+
+    def _factory(
+        *,
+        factory: object = None,
+        engine_type: str = "loop",
+        session_id: str | None = None,
+    ):
+        initial_session, client = make_card_session(
+            engine_type=engine_type,
+            session_id=session_id,
+        )
+        rotator = SessionRotator(initial_session)
+        rotators.append(rotator)
+        return rotator, initial_session, client
+
+    yield _factory
+
+    for r in rotators:
+        try:
+            r.close()
+        except Exception:
+            pass
+
 
 _REAL_RUN = subprocess.run
 _REAL_POPEN_INIT = subprocess.Popen.__init__
@@ -71,6 +258,8 @@ def make_settings():
         streaming_adaptive_interval_max=3.0,
         streaming_adaptive_rate_low=10.0,
         streaming_adaptive_rate_high=100.0,
+        # Card session / lock
+        lock_undo_window_seconds=300,
     )
 
     def _factory(**overrides):
@@ -78,6 +267,23 @@ def make_settings():
         s = MagicMock()
         for k, v in merged.items():
             setattr(s, k, v)
+        # Provide nested card config with sane defaults (avoids MagicMock in math ops)
+        if not hasattr(s, "card") or isinstance(s.card, MagicMock):
+            card_mock = MagicMock()
+            card_mock.session_idle_timeout = 1800
+            card_mock.session_idle_warn_at_remaining = 300
+            card_mock.session_lock_max = 200
+            card_mock.session_lock_ttl = 7200
+            card_mock.session_max_rotations = 10
+            card_mock.max_chars = 28000
+            card_mock.button_size = "default"
+            card_mock.button_layout = "responsive"
+            card_mock.mobile_force_vertical = False
+            card_mock.mobile_layout_mode = "vertical"
+            card_mock.continuation_enabled = True
+            card_mock.action_dedup_ttl = 5
+            card_mock.action_dedup_max_size = 200
+            s.card = card_mock
         return s
 
     return _factory
@@ -127,57 +333,13 @@ def _block_real_ttadk_subprocess(request):
 # MAINTAIN: when adding a new @lru_cache in src/, register its cache_clear here.
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(autouse=True)
-def _mock_direct_session():
-    """Mock _create_direct_session to return a mock DirectCardSession.
-
-    The mock session tracks send/close calls and delegates to handler methods
-    for test assertions compatibility.
-    """
-
-    def _make_mock_session(handler, chat_id, message_id, *, session_id=None):
-        session = MagicMock()
-        session._handler = handler
-        session._message_id = None
-        session._closed = False
-        session.closed = False
-
-        def _send(card_content):
-            if isinstance(card_content, str):
-                import json
-                try:
-                    card_content = json.loads(card_content)
-                except (json.JSONDecodeError, TypeError):
-                    pass
-
-            # Delegate to handler for test assertion compatibility
-            if session._message_id:
-                # Update path
-                content_str = card_content if isinstance(card_content, str) else \
-                    __import__("json").dumps(card_content, ensure_ascii=False)
-                handler.update_card(session._message_id, content_str)
-            else:
-                # Create path
-                content_str = card_content if isinstance(card_content, str) else \
-                    __import__("json").dumps(card_content, ensure_ascii=False)
-                result = handler.reply_card(message_id, content_str)
-                session._message_id = result or "mock_reply_id"
-            return session._message_id
-
-        def _close():
-            session._closed = True
-            session.closed = True
-            session._message_id = None
-
-        session.send.side_effect = _send
-        session.close.side_effect = _close
-        type(session).message_id = property(lambda s: s._message_id)
-        return session
-
-    with patch("src.feishu.renderers.deep_renderer._create_direct_session", side_effect=_make_mock_session), \
-         patch("src.feishu.renderers.loop_renderer._create_direct_session", side_effect=_make_mock_session), \
-         patch("src.feishu.renderers.spec_renderer._create_direct_session", side_effect=_make_mock_session):
-        yield
+def _reset_hook_executor_between_tests():
+    """Reset the global hook executor to prevent cross-test state leakage."""
+    yield
+    from src.card.hooks import _reset_hook_executor
+    _reset_hook_executor()
 
 
 @pytest.fixture
@@ -230,6 +392,12 @@ def _clear_all_lru_caches():
         _compile_redaction_patterns.cache_clear()
     except Exception:
         pass
+    # renderer signature cache
+    try:
+        from src.card.render.renderer import _compute_sig_cached
+        _compute_sig_cached.cache_clear()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -270,3 +438,30 @@ def _reset_all_singletons():
         _reset_env_for_testing()
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Shim deadline CI guard — after 2026-06-01, deprecated shim imports fail tests.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True, scope="session")
+def _shim_deadline_guard():
+    """After the shim deadline, convert DeprecationWarning from shim modules to errors.
+
+    This ensures deprecated shim modules cannot be silently used past their removal date.
+    The shim modules themselves raise ImportError after deadline, but this guard catches
+    any DeprecationWarning that might slip through during the transition window.
+    """
+    import datetime
+    import warnings
+
+    deadline = datetime.date(2026, 6, 1)
+    if datetime.date.today() > deadline:
+        warnings.filterwarnings(
+            "error",
+            category=DeprecationWarning,
+            module=r"src\.card\.(?:session_config|session_factory|session_rotator|"
+                   r"static_session|delivery_tracker|action_dispatch|action_ids|"
+                   r"action_router|timer_manager|timer_scheduler|_session_ttl)",
+        )
+    yield

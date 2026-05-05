@@ -17,6 +17,7 @@ from src.card.builders.lock import (
     build_repo_lock_card,
     format_elapsed_ago,
     format_lock_duration,
+    format_undo_window,
     verify_command_sig,
 )
 
@@ -654,27 +655,27 @@ class TestHelpCardLockSection:
     def test_lock_section_hidden_when_disabled(self):
         from src.card.builders.system import SystemBuilder
         SystemBuilder._build_help_card_cached.cache_clear()
-        _, card_json = SystemBuilder.build_help_card(lock_enabled=False)
+        _, card_json = SystemBuilder.build_help_card(lock_enabled=False, session_idle_timeout=600, session_idle_warn_at_remaining=120, lock_undo_window_seconds=300)
         assert "群锁定" not in card_json
 
     def test_lock_section_shown_when_enabled(self):
         from src.card.builders.system import SystemBuilder
         SystemBuilder._build_help_card_cached.cache_clear()
-        _, card_json = SystemBuilder.build_help_card(lock_enabled=True)
+        _, card_json = SystemBuilder.build_help_card(lock_enabled=True, session_idle_timeout=600, session_idle_warn_at_remaining=120, lock_undo_window_seconds=300)
         assert "群锁定" in card_json
 
     def test_lock_section_title_admin(self):
         """AC-16: admin sees 'Bot 管理员专属' in the lock section title."""
         from src.card.builders.system import SystemBuilder
         SystemBuilder._build_help_card_cached.cache_clear()
-        _, card_json = SystemBuilder.build_help_card(lock_enabled=True, is_admin=True)
+        _, card_json = SystemBuilder.build_help_card(lock_enabled=True, is_admin=True, session_idle_timeout=600, session_idle_warn_at_remaining=120, lock_undo_window_seconds=300)
         assert "Bot 管理员专属" in card_json
 
     def test_lock_section_title_non_admin(self):
         """AC-15: non-admin does NOT see 'Bot 管理员专属' in the lock section title."""
         from src.card.builders.system import SystemBuilder
         SystemBuilder._build_help_card_cached.cache_clear()
-        _, card_json = SystemBuilder.build_help_card(lock_enabled=True, is_admin=False)
+        _, card_json = SystemBuilder.build_help_card(lock_enabled=True, is_admin=False, session_idle_timeout=600, session_idle_warn_at_remaining=120, lock_undo_window_seconds=300)
         assert "群锁定" in card_json
         assert "Bot 管理员专属" not in card_json
 
@@ -682,7 +683,7 @@ class TestHelpCardLockSection:
         """Admin help body groups commands under management and exempt headers."""
         from src.card.builders.system import SystemBuilder
         SystemBuilder._build_help_card_cached.cache_clear()
-        _, card_json = SystemBuilder.build_help_card(lock_enabled=True, is_admin=True)
+        _, card_json = SystemBuilder.build_help_card(lock_enabled=True, is_admin=True, session_idle_timeout=600, session_idle_warn_at_remaining=120, lock_undo_window_seconds=300)
         assert "管理命令" in card_json
         assert "锁定期间仍可使用的命令" in card_json
         assert "直接执行" in card_json
@@ -1019,7 +1020,7 @@ class TestVerifyCommandSig:
 
         mock_settings = MagicMock()
         mock_settings.app_secret = "real_secret"
-        mock_settings.sig_compat_deploy_date = "2026-04-26"
+        mock_settings.sig_compat_deploy_date = date.today().isoformat()
         mock_settings.sig_compat_window_days = 7
 
         with patch("src.utils.signing._get_signing_key", return_value="real_secret"), \
@@ -1522,3 +1523,133 @@ class TestChatHintFieldRemoved:
             is_same_sender=False,
         )
         assert "另一个群中持有该仓库锁" not in markdown
+
+
+# ---------------------------------------------------------------------------
+# format_undo_window
+# ---------------------------------------------------------------------------
+
+
+class TestFormatUndoWindow:
+    """Test format_undo_window utility."""
+
+    @pytest.mark.parametrize("secs,expected", [
+        (0, ""),
+        (60, "1 分钟"),
+        (120, "2 分钟"),
+        (180, "3 分钟"),
+        (300, "5 分钟"),
+        (600, "10 分钟"),
+    ])
+    def test_format_undo_window(self, secs, expected):
+        """format_undo_window produces friendly duration fragment (e.g. 'N 分钟')."""
+        assert format_undo_window(secs) == expected
+
+    def test_format_undo_window_no_urgency_hint(self):
+        """format_undo_window should never contain '即将失效' or '还剩' text."""
+        for secs in (0, 60, 120, 180, 300, 600):
+            result = format_undo_window(secs)
+            assert "即将失效" not in result
+            assert "还剩" not in result
+
+    def test_format_undo_window_non_multiple_of_60_rounds_and_warns(self):
+        """format_undo_window rounds non-60-multiple values and emits a warning (no crash)."""
+        # 90s → round(90/60)*60 = 120s → 2 分钟
+        result = format_undo_window(90)
+        assert result == "2 分钟"
+        # 45s → round(45/60)*60 = 60s → 1 分钟
+        result = format_undo_window(45)
+        assert result == "1 分钟"
+        # 30s → round(30/60)*60 = 60s → 1 分钟
+        result = format_undo_window(30)
+        assert result == "1 分钟"
+
+
+# ---------------------------------------------------------------------------
+# build_lock_help_body undo window display test
+# ---------------------------------------------------------------------------
+
+
+class TestLockHelpBodyUndoWindow:
+    """Verify build_lock_help_body shows correct undo window time."""
+
+    def test_undo_window_300_shows_5_minutes(self):
+        from src.card.builders.lock_chat import build_lock_help_body
+
+        body = build_lock_help_body(is_admin=True, lock_undo_window_seconds=300)
+        assert "5 分钟" in body
+
+    def test_undo_window_zero_uses_no_undo_text(self):
+        """When lock_undo_window_seconds=0, help body uses lock_help_admin_lock_cmd_no_undo key."""
+        from src.card.builders.lock_chat import build_lock_help_body
+        from src.card.styles_lock import LOCK_UI_TEXT
+
+        body = build_lock_help_body(is_admin=True, lock_undo_window_seconds=0)
+        expected_text = LOCK_UI_TEXT["lock_help_admin_lock_cmd_no_undo"]
+        assert expected_text in body
+        # Should NOT contain undo window display
+        assert "分钟" not in body
+
+
+# ---------------------------------------------------------------------------
+# Undo button creation conditional on window > 0
+# ---------------------------------------------------------------------------
+
+
+class TestLockChatUndoWindowZero:
+    """Verify undo buttons are not created when lock_undo_window_seconds=0."""
+
+    def test_undo_window_zero_returns_empty_buttons(self):
+        """When lock_undo_window_seconds=0, no undo button should be created."""
+        result = build_lock_success_card(
+            "lock", lock_undo_window_seconds=0
+        )
+        md, buttons = result
+        assert buttons == []
+        assert "撤销" not in md
+
+    def test_undo_window_positive_returns_button(self):
+        """When lock_undo_window_seconds=300, undo button should be present."""
+        result = build_lock_success_card(
+            "lock", lock_undo_window_seconds=300
+        )
+        md, buttons = result
+        assert len(buttons) == 1
+        assert "撤销" in md
+
+    def test_undo_window_zero_fallback_contains_unlock(self):
+        """AC-9: When lock_undo_window=0, fallback text includes /unlock guidance."""
+        result = build_lock_success_card(
+            "lock", lock_undo_window_seconds=0, locker_name="张三"
+        )
+        md, buttons = result
+        assert "/unlock" in md
+        assert "{locker_name}" not in md  # No raw placeholder
+
+    def test_undo_window_zero_locker_name_formatted(self):
+        """AC-8: locker_name is correctly substituted in no-undo fallback."""
+        result = build_lock_success_card(
+            "lock", lock_undo_window_seconds=0, locker_name="Alice"
+        )
+        md, _ = result
+        assert "Alice" in md
+
+    def test_locker_name_empty_fallback(self):
+        """When locker_name is empty string, no '由 锁定' or '由  锁定' appears."""
+        result = build_lock_success_card(
+            "lock", lock_undo_window_seconds=0, locker_name=""
+        )
+        md, _ = result
+        assert "由 锁定" not in md
+        assert "由  锁定" not in md
+        assert "🔒 已锁定" in md
+
+    def test_lock_template_no_extra_space(self):
+        """lock_success_lock_reply undo line has clear subject and action."""
+        from src.card.styles_lock import LOCK_UI_TEXT
+        tpl = LOCK_UI_TEXT["lock_success_lock_reply"]
+        rendered = tpl.format(lock_undo_window_display="5 分钟")
+        # New format: "💡 锁定后 5 分钟 内可随时撤销"
+        assert "锁定后" in rendered
+        assert "可随时撤销" in rendered
+        assert "5 分钟" in rendered

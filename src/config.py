@@ -1,14 +1,165 @@
 import logging as _logging
+import math
 import shlex
 import sys
 import threading
 from dataclasses import dataclass as _dataclass
 from typing import Literal, Optional, Callable
 
-from pydantic import ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.utils.env import is_test_environment
+
+
+class CardSessionConfig(BaseModel):
+    """Nested configuration for card session / delivery / UI parameters.
+
+    All fields map 1:1 to CARD_* environment variables. The parent Settings
+    class uses a model_validator to hoist flat card_* fields into this nested
+    model while keeping .env backward compatibility.
+    """
+
+    collapsible_enabled: bool = True
+    continuation_enabled: bool = True
+    button_layout: Literal["desktop", "mobile", "responsive"] = "responsive"
+    button_size: Literal["small", "medium", "large"] = "medium"
+    mobile_force_vertical: bool = True
+    mobile_layout_mode: str = "vertical"  # DEPRECATED
+    deep_compact_default: bool = False
+    max_chars: int = 28000
+    session_lock_max: int = 10_000
+    session_lock_ttl: float = 600.0
+    session_idle_timeout: int = 1800
+    session_idle_warn_at_remaining: int = 300
+    session_max_rotations: int = 20
+    action_dedup_ttl: int = 1
+    action_dedup_max_size: int = 5000
+    action_dedup_cleanup_interval: int = 30
+    delivery_pool_max_workers: int = 4
+
+    @field_validator("session_lock_max", mode="before")
+    @classmethod
+    def _session_lock_max_in_range(cls, v: int, info) -> int:
+        val = int(v)
+        if val < 1000 or val > 100_000:
+            raise ValueError(
+                f"card_session_lock_max 必须在 [1000, 100000] 范围内（当前值: {v}）"
+            )
+        return val
+
+    @field_validator("max_chars", mode="before")
+    @classmethod
+    def _max_chars_in_range(cls, v: int, info) -> int:
+        val = int(v)
+        if val < 1000 or val > 50000:
+            raise ValueError(
+                f"card_max_chars 必须在 [1000, 50000] 范围内（当前值: {v}）"
+            )
+        return val
+
+    @field_validator("session_lock_ttl", mode="before")
+    @classmethod
+    def _session_lock_ttl_in_range(cls, v: float, info) -> float:
+        val = float(v)
+        if val < 60 or val > 3600:
+            raise ValueError(
+                f"card_session_lock_ttl 必须在 [60, 3600] 范围内（秒）（当前值: {v}）"
+            )
+        # Auto-ceil to nearest multiple of 60
+        if val % 60 != 0:
+            new_val = math.ceil(val / 60) * 60
+            _logging.getLogger(__name__).info(
+                "CARD_SESSION_LOCK_TTL rounded up to %ds (from %s)", new_val, v
+            )
+            val = float(new_val)
+        return val
+
+    @field_validator("session_idle_timeout", mode="before")
+    @classmethod
+    def _session_idle_timeout_in_range(cls, v: int, info) -> int:
+        val = int(v)
+        if val < 300 or val > 7200:
+            raise ValueError(
+                f"card_session_idle_timeout 必须在 [300, 7200] 范围内（秒）（当前值: {v}）"
+            )
+        return val
+
+    @field_validator("session_idle_warn_at_remaining", mode="before")
+    @classmethod
+    def _session_idle_warn_at_remaining_in_range(cls, v: int, info) -> int:
+        val = int(v)
+        if val < 60 or val > 3600:
+            raise ValueError(
+                f"card_session_idle_warn_at_remaining 必须在 [60, 3600] 范围内（秒）（当前值: {v}）"
+            )
+        return val
+
+    @field_validator("session_max_rotations", mode="before")
+    @classmethod
+    def _session_max_rotations_in_range(cls, v: int, info) -> int:
+        val = int(v)
+        if val < 1 or val > 100:
+            raise ValueError(
+                f"card_session_max_rotations 必须在 [1, 100] 范围内（当前值: {v}）"
+            )
+        return val
+
+    @field_validator("delivery_pool_max_workers", mode="before")
+    @classmethod
+    def _delivery_pool_max_workers_in_range(cls, v: int, info) -> int:
+        val = int(v)
+        if val < 1 or val > 32:
+            raise ValueError(
+                f"card_delivery_pool_max_workers 必须在 [1, 32] 范围内（当前值: {v}）"
+            )
+        return val
+
+    @field_validator("action_dedup_ttl", mode="before")
+    @classmethod
+    def _action_dedup_ttl_in_range(cls, v: int, info) -> int:
+        val = int(v)
+        if val < 0 or val > 10:
+            raise ValueError(
+                f"card_action_dedup_ttl 必须在 [0, 10] 范围内（当前值: {v}）"
+            )
+        return val
+
+    @field_validator("action_dedup_max_size", mode="before")
+    @classmethod
+    def _action_dedup_max_size_in_range(cls, v: int, info) -> int:
+        val = int(v)
+        if val < 100 or val > 50_000:
+            raise ValueError(
+                f"card_action_dedup_max_size 必须在 [100, 50000] 范围内（当前值: {v}）"
+            )
+        return val
+
+    @field_validator("action_dedup_cleanup_interval", mode="before")
+    @classmethod
+    def _action_dedup_cleanup_interval_in_range(cls, v: int, info) -> int:
+        val = int(v)
+        if val < 1 or val > 3600:
+            raise ValueError(
+                f"card_action_dedup_cleanup_interval 必须在 [1, 3600] 范围内（秒）（当前值: {v}）"
+            )
+        return val
+
+    @model_validator(mode="after")
+    def _validate_cross_fields(self) -> "CardSessionConfig":
+        """Cross-field: session_lock_ttl must not exceed session_idle_timeout.
+        session_idle_warn_at_remaining must be less than session_idle_timeout."""
+        if self.session_lock_ttl > self.session_idle_timeout:
+            raise ValueError(
+                f"card_session_lock_ttl 必须 ≤ card_session_idle_timeout（秒），"
+                f"当前分别为 {self.session_lock_ttl} 和 {self.session_idle_timeout}"
+            )
+        if self.session_idle_warn_at_remaining >= self.session_idle_timeout:
+            raise ValueError(
+                f"card_session_idle_warn_at_remaining 必须 < card_session_idle_timeout（秒），"
+                f"当前分别为 {self.session_idle_warn_at_remaining} 和 {self.session_idle_timeout}"
+            )
+        return self
 
 
 class ConfigurationError(Exception):
@@ -323,14 +474,12 @@ class Settings(BaseSettings):
     worktree_pool_timeout: int = 600
 
     # Streaming card collapsible panels (tool calls / thoughts folded by default)
-    card_collapsible_enabled: bool = True
-
     # Engine card collapsible panels (Deep/Loop/Spec: structured content with collapsible panels)
     engine_collapsible_enabled: bool = True
 
     # Streaming card auto-continuation (create new card when content exceeds threshold)
-    card_continuation_enabled: bool = True
-    card_continuation_threshold_pct: float = 0.85
+    # Card session / delivery / UI configuration (nested model)
+    card: CardSessionConfig = CardSessionConfig()
 
     # Review metrics exporter
     # - "logger" (default): output via logging.info (original behaviour)
@@ -415,12 +564,6 @@ class Settings(BaseSettings):
     message_cache_max_size: int = 1000
     # 消息去重缓存清理间隔（秒）
     message_cache_cleanup_interval: int = 60
-    # 卡片动作去重 TTL（秒）
-    card_action_dedup_ttl: int = 1
-    # 卡片动作去重最大容量
-    card_action_dedup_max_size: int = 5000
-    # 卡片动作去重清理间隔（秒）
-    card_action_dedup_cleanup_interval: int = 30
     # 系统命令并发数
     system_command_concurrency: int = 10
     # Spec 引擎任务限流容量
@@ -447,7 +590,7 @@ class Settings(BaseSettings):
     # Deep engine streaming update throttling
     # - interval: minimum seconds between updates (unless forced)
     # - min_chars: minimum new characters accumulated before updating (unless forced/interval passed)
-    deep_stream_interval: float = 2.5
+    deep_stream_interval: float = 1.5
     deep_stream_min_chars: int = 350
     
     # Deep engine memory monitoring (percentage)
@@ -477,31 +620,6 @@ class Settings(BaseSettings):
     task_scheduler_max_concurrent: int = 20
     task_scheduler_per_key_concurrency: int = 1
 
-    # 卡片按钮布局策略：
-    # - desktop: 使用飞书 action 原生布局（更贴近桌面端观感）
-    # - mobile: 强制两列 column_set（手机端更稳定，一行两个按钮）
-    # - responsive: 默认值；<=2 个按钮用 action，>2 个按钮用两列 column_set
-    card_button_layout: str = "responsive"
-
-    # 卡片按钮尺寸 (medium/small/large)
-    card_button_size: str = "medium"
-
-    # 移动端强制垂直布局 (true: 移动端忽略 layout 设置，强制垂直堆叠; false: 遵循 layout 设置)
-    card_mobile_force_vertical: bool = True
-
-    # 移动端布局模式 (vertical: 垂直堆叠; flow: 流式自动换行)
-    # 当 card_mobile_force_vertical=True 且按钮数 > 2 时，此配置生效
-    card_mobile_layout_mode: str = "vertical"
-
-    # Deep Card Compact Mode
-    # If True, deep progress cards will default to a compact view (status line + progress bar + truncated content).
-    # Default is False so users see full content by default — the expand/collapse
-    # button still exists for manual control when content exceeds the full threshold.
-    card_deep_compact_default: bool = False
-
-    # 卡片流式更新最大字符数（避免 PATCH 载荷过大）
-    card_max_chars: int = 28000
-
     # 消息回复模式配置
     # - direct: 直接回复（消息显示在被回复消息下方）
     # - thread: 话题回复（使用 reply_in_thread=True，消息会显示在独立话题区域，更整洁）
@@ -528,6 +646,9 @@ class Settings(BaseSettings):
     chat_lock_max_duration: int = 86400  # 群锁最大持续时间（秒，默认 24h），超时自动释放
     chat_lock_cleanup_interval: int = 60  # 群锁清理线程扫描间隔（秒）
 
+    # /lock 撤销窗口时长（秒），用户锁定后可在此窗口内撤销
+    lock_undo_window_seconds: int = 300
+
     # /lock 确认卡片有效期（秒），超时后确认按钮失效
     lock_confirm_timeout: int = 120
 
@@ -543,6 +664,7 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # 管理员用户列表（用于群级锁权限判定）
     # Stored as frozenset for O(1) membership checks on hot paths.
+
     # Pydantic parses the env var as list[str] first; the validator below
     # converts it to frozenset after parsing.
     # ------------------------------------------------------------------
@@ -595,6 +717,21 @@ class Settings(BaseSettings):
             raise ValueError(f"{info.field_name.upper()} 必须 > 0（当前值: {v}）")
         return int(v)
 
+    @field_validator("lock_undo_window_seconds", mode="before")
+    @classmethod
+    def _lock_undo_window_seconds_in_range(cls, v: int, info) -> int:
+        val = int(v)
+        if val < 60 or val > 600:
+            raise ValueError(
+                f"LOCK_UNDO_WINDOW_SECONDS 必须在 [60, 600] 范围内（秒）（当前值: {v}）"
+            )
+        if val % 60 != 0:
+            raise ValueError(
+                f"LOCK_UNDO_WINDOW_SECONDS 必须为 60 的整数倍（当前值: {val}），"
+                "可选值如 60, 120, 180, 240, 300, …"
+            )
+        return val
+
     @field_validator(
         "spec_review_timeout", "spec_review_min_timeout", "spec_review_hard_floor",
         mode="before",
@@ -639,6 +776,44 @@ class Settings(BaseSettings):
             )
         return val
 
+    @model_validator(mode="before")
+    @classmethod
+    def _hoist_card_fields(cls, data: dict) -> dict:
+        """Collect flat card_* env keys into nested 'card' sub-dict for CardSessionConfig."""
+        if not isinstance(data, dict):
+            return data
+        # If 'card' is already a dict/model, skip hoisting (e.g. programmatic construction)
+        if "card" in data and isinstance(data["card"], (dict, CardSessionConfig)):
+            return data
+        # Map from flat Settings field name (card_xxx) to CardSessionConfig field name (xxx)
+        _CARD_FIELD_MAP = {
+            "card_collapsible_enabled": "collapsible_enabled",
+            "card_continuation_enabled": "continuation_enabled",
+            "card_button_layout": "button_layout",
+            "card_button_size": "button_size",
+            "card_mobile_force_vertical": "mobile_force_vertical",
+            "card_mobile_layout_mode": "mobile_layout_mode",
+            "card_deep_compact_default": "deep_compact_default",
+            "card_max_chars": "max_chars",
+            "card_session_lock_max": "session_lock_max",
+            "card_session_lock_ttl": "session_lock_ttl",
+            "card_session_idle_timeout": "session_idle_timeout",
+            "card_session_idle_warn_before": "session_idle_warn_at_remaining",
+            "card_session_idle_warn_at_remaining": "session_idle_warn_at_remaining",
+            "card_session_max_rotations": "session_max_rotations",
+            "card_delivery_pool_max_workers": "delivery_pool_max_workers",
+            "card_action_dedup_ttl": "action_dedup_ttl",
+            "card_action_dedup_max_size": "action_dedup_max_size",
+            "card_action_dedup_cleanup_interval": "action_dedup_cleanup_interval",
+        }
+        card_data: dict = {}
+        for flat_key, nested_key in _CARD_FIELD_MAP.items():
+            if flat_key in data:
+                card_data[nested_key] = data.pop(flat_key)
+        if card_data:
+            data["card"] = card_data
+        return data
+
     @model_validator(mode="after")
     def _validate_spec_review_cross_fields(self) -> "Settings":
         """Cross-field validation for spec review timing parameters."""
@@ -673,6 +848,18 @@ class Settings(BaseSettings):
         # NOTE: realistic budget check moved to _post_validate_warnings()
         return self
 
+    @model_validator(mode="after")
+    def _validate_lock_timing_cross_fields(self) -> "Settings":
+        """Cross-field: lock_undo_window_seconds should be >= lock_confirm_timeout."""
+        if self.lock_undo_window_seconds < self.lock_confirm_timeout:
+            _logging.getLogger(__name__).warning(
+                "lock_undo_window_seconds (%d) < lock_confirm_timeout (%d): "
+                "confirmation timeout exceeds undo window, which may confuse users. "
+                "Consider increasing lock_undo_window_seconds or decreasing lock_confirm_timeout.",
+                self.lock_undo_window_seconds, self.lock_confirm_timeout,
+            )
+        return self
+
     @property
     def command_blacklist(self) -> list[str]:
         return [cmd.strip() for cmd in self.sandbox_command_blacklist.split(",") if cmd.strip()]
@@ -700,13 +887,14 @@ _settings_lock = threading.Lock()  # leaf lock: never held while acquiring a Loc
 
 def _post_validate_warnings(settings: Settings) -> None:
     """Emit soft-constraint warnings AFTER Settings construction (not inside validator)."""
+    logger = _logging.getLogger(__name__)
     try:
         budget_limit = settings.spec_review_timeout * 2
         realistic_budget = (
             settings.spec_review_retry_max_delay + settings.spec_review_timeout
         ) * settings.spec_review_retry_max_attempts
         if realistic_budget > budget_limit and settings.spec_review_retry_max_attempts > 0:
-            _logging.getLogger(__name__).warning(
+            logger.warning(
                 "重试实际预算可能超限：(retry_max_delay + base_timeout) × max_attempts = %d，"
                 "超过 timeout × 2 = %d。首次 retry 耗时可能远超预期",
                 realistic_budget, budget_limit,
@@ -714,8 +902,20 @@ def _post_validate_warnings(settings: Settings) -> None:
     except (TypeError, AttributeError):
         pass  # gracefully handle mock/proxy settings objects
 
+    # Card Session config summary
+    try:
+        logger.info(
+            "CardSession config: idle_timeout=%ds, lock_ttl=%ds, max_rotations=%d, continuation=%s",
+            settings.card.session_idle_timeout,
+            settings.card.session_lock_ttl,
+            settings.card.session_max_rotations,
+            settings.card.continuation_enabled,
+        )
+    except (TypeError, AttributeError):
+        pass
 
-def _build_recommended_hint() -> str:
+
+def _build_spec_review_recommended_hint() -> str:
     """Dynamically build recommended combination from Settings field defaults."""
     fields_of_interest = [
         "spec_review_hard_floor",
@@ -729,6 +929,22 @@ def _build_recommended_hint() -> str:
         fi = Settings.model_fields.get(name)
         if fi and fi.default is not None:
             parts.append(f"{name.upper()}={fi.default}")
+    if not parts:
+        return ""
+    return f"\n（推荐组合: {', '.join(parts)}）"
+
+
+def _build_card_session_recommended_hint() -> str:
+    """Build recommended combination for Card Session cross-field errors."""
+    fields_of_interest = [
+        "session_lock_ttl",
+        "session_idle_timeout",
+    ]
+    parts = []
+    for name in fields_of_interest:
+        fi = CardSessionConfig.model_fields.get(name)
+        if fi and fi.default is not None:
+            parts.append(f"CARD_{name.upper()}={fi.default}")
     if not parts:
         return ""
     return f"\n（推荐组合: {', '.join(parts)}）"
@@ -758,7 +974,12 @@ def get_settings() -> Settings:
                                     default_hint = f"（默认值: {_default}）"
                             # For cross-field validation errors, provide recommended combination
                             if not default_hint and ("value_error" in err.get("type", "") or not loc):
-                                default_hint = _build_recommended_hint()
+                                # Detect card_session vs spec_review errors
+                                loc_lower = loc.lower()
+                                if "card_session" in loc_lower or "card_session" in msg.lower():
+                                    default_hint = _build_card_session_recommended_hint()
+                                else:
+                                    default_hint = _build_spec_review_recommended_hint()
                             lines.append(f"  - {(loc.upper() or '[跨字段校验]')}: {msg} {default_hint}".rstrip())
                         lines.append("建议: 检查 .env 文件中对应配置项的值是否合法")
                         raise ConfigurationError("\n".join(lines)) from e

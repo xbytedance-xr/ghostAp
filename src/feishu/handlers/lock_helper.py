@@ -13,7 +13,7 @@ import threading
 from dataclasses import dataclass as _dataclass
 from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
 
-from ...card.styles import UI_TEXT
+from ...card.ui_text import UI_TEXT
 
 if TYPE_CHECKING:
     from ...feishu.handler_context import HandlerContext

@@ -14,6 +14,8 @@ import pytest
 from src.feishu.handler_context import HandlerContext
 from src.feishu.handlers.base import BaseHandler
 from src.feishu.handlers.deep import DeepHandler
+from src.feishu.handlers.loop import LoopHandler
+from src.feishu.handlers.worktree import WorktreeHandler
 from src.feishu.handlers.diagnostics import DiagnosticsHandler
 from src.feishu.handlers.programming import (
     ClaudeModeHandler,
@@ -1232,63 +1234,62 @@ class TestDeepHandler:
             "project_id": "p1",
             "is_executing": True,
             "is_paused": False,
+            "completed": 3,
+            "total": 10,
         }
 
-        # Setup Patch client
-        h.update_card = MagicMock(return_value=True)
-
-        # Mock CardBuilder
-        with patch("src.feishu.handlers.deep.CardBuilder") as mock_cb:
-            mock_cb.build_engine_card.return_value = ("interactive", "{}")
+        # Mock CardSession creation
+        with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create:
+            mock_session = MagicMock()
+            mock_create.return_value = mock_session
 
             # Execute
             h.show_deep_status("msg1", "chat1", project=project, origin_message_id="origin1")
 
-            # Verify update_card called
-            h.update_card.assert_called_once()
-            # Verify reply_card NOT called
-            h.reply_card.assert_not_called()
+            # Verify CardSession was created and events dispatched
+            mock_create.assert_called_once()
+            calls = [c.args[0] for c in mock_session.dispatch.call_args_list]
+            types = [c.type.value for c in calls]
+            assert "started" in types
+            assert "text_delta" in types
 
     def test_show_deep_status_patch_failure_fallback(self):
         h, ctx = self._make()
         # Setup mock project and engine
         project = MagicMock()
         project.root_path = "/path/to/project"
+        project.project_id = "p1"
 
         engine = MagicMock()
         engine.project = MagicMock()
         engine.progress = MagicMock()
         engine.engine_name = "DeepEngine"
-        # Ensure string returns for JSON serialization if Real CardBuilder is used
-        engine.get_status_title.return_value = "Status Title"
 
         ctx.deep_engine_manager.get.return_value = engine
 
+        ctx.progress_reporter.format_status.return_value = "Status Content"
+        ctx.progress_reporter.get_status_title.return_value = "Status Title"
         ctx.progress_reporter.get_progress_info.return_value = {
             "progress_bar": "|||",
             "project_id": "p1",
-            "is_executing": True,
+            "is_executing": False,
             "is_paused": False,
+            "completed": 10,
+            "total": 10,
         }
 
-        # Setup Patch client to fail
-        h.update_card = MagicMock(return_value=False)
-
-        # Mock the CardBuilder used by DeepRenderer (which is where it's actually called)
-        # OR just rely on the fact that we fixed the engine mock return values.
-        # But to be safe and match the test style, let's mock where it's used.
-        # Since we saw in stack trace it was using real CardBuilder (because patch location was wrong),
-        # let's try to patch the correct location.
-        with patch("src.feishu.renderers.deep_renderer.CardBuilder") as mock_cb:
-            mock_cb.build_engine_card.return_value = ("interactive", "{}")
+        # Mock CardSession creation
+        with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create:
+            mock_session = MagicMock()
+            mock_create.return_value = mock_session
 
             # Execute
             h.show_deep_status("msg1", "chat1", project=project, origin_message_id="origin1")
 
-            # Verify update_card called
-            h.update_card.assert_called_once()
-            # Verify reply_card called (Fallback)
-            h.reply_card.assert_called_once()
+            # Verify completed was dispatched (not executing)
+            calls = [c.args[0] for c in mock_session.dispatch.call_args_list]
+            types = [c.type.value for c in calls]
+            assert "completed" in types
 
 
 # ======================================================================
@@ -1776,7 +1777,7 @@ class TestSpecHandlerLockIntegration:
         h.lock_helper._with_repo_lock = mock_with_repo_lock
 
         with patch("src.feishu.handlers.spec.CardBuilder") as mock_cb:
-            mock_cb.build_engine_card.return_value = ("interactive", "{}")
+            mock_cb.build_info_card.return_value = ("interactive", "{}")
             # start_spec_engine(message_id, chat_id, requirement, project)
             h.start_spec_engine("msg-1", "chat-1", "fix the bug", mock_project)
 
@@ -1811,7 +1812,7 @@ class TestSpecHandlerLockIntegration:
         h.lock_helper.send_lock_conflict_card = MagicMock()
 
         with patch("src.feishu.handlers.spec.CardBuilder") as mock_cb:
-            mock_cb.build_engine_card.return_value = ("interactive", "{}")
+            mock_cb.build_info_card.return_value = ("interactive", "{}")
             h.start_spec_engine("msg-1", "chat-1", "fix the bug", mock_project)
 
         assert submitted_fn is not None
@@ -2111,7 +2112,7 @@ class TestProgrammingHandlerLockConflict:
     def test_lock_conflict_sends_card(self):
         ctx = _make_handler_context()
         ctx.settings.coco_execution_timeout = 30
-        ctx.settings.card_collapsible_enabled = False
+        ctx.settings.card.collapsible_enabled = False
 
         h = CocoModeHandler(ctx)
         h.reply_text = MagicMock()
@@ -2170,7 +2171,7 @@ class TestNonStreamingHeartbeat:
         ctx = MagicMock()
         ctx.settings = MagicMock()
         ctx.settings.coco_execution_timeout = 600
-        ctx.settings.card_collapsible_enabled = False
+        ctx.settings.card.collapsible_enabled = False
         ctx.api_client_factory = MagicMock()
 
         with patch.object(CocoModeHandler, "settings", new_callable=PropertyMock, return_value=ctx.settings):
@@ -2388,6 +2389,9 @@ class TestHelpCardLockAlwaysVisible:
             is_admin=False,
             lock_enabled=True,
             chat_id="",
+            session_idle_timeout=600,
+            session_idle_warn_at_remaining=120,
+            lock_undo_window_seconds=300,
         )
         # The non-admin lock section title should be present
         assert "群锁定" in card_json
@@ -2402,6 +2406,9 @@ class TestHelpCardLockAlwaysVisible:
             is_admin=False,
             lock_enabled=False,
             chat_id="",
+            session_idle_timeout=600,
+            session_idle_warn_at_remaining=120,
+            lock_undo_window_seconds=300,
         )
         assert "群锁定" not in card_json
 
@@ -2502,3 +2509,120 @@ class TestSameSenderAutoDetection:
             ctx = helper._collect_lock_conflict_context(err)
 
         assert not hasattr(ctx, "chat_hint")
+
+
+# ======================================================================
+# Loop Handler integration tests
+# ======================================================================
+
+
+class TestLoopHandler:
+    """Integration tests for LoopHandler command routing and renderer delegation."""
+
+    def _make(self):
+        ctx = _make_handler_context()
+        h = LoopHandler(ctx)
+        h.reply_text = MagicMock()
+        h.reply_card = MagicMock(return_value="reply_1")
+        h.reply_error = MagicMock()
+        h.update_card = MagicMock()
+        h.add_reaction = MagicMock()
+        h.register_message_project = MagicMock()
+        return h, ctx
+
+    def test_handle_loop_command_status(self):
+        h, ctx = self._make()
+        h.show_loop_status = MagicMock()
+        h.handle_loop_command("m1", "c1", "/loop_status", None)
+        h.show_loop_status.assert_called_once()
+
+    def test_handle_loop_command_stop(self):
+        h, ctx = self._make()
+        h.stop_loop_engine = MagicMock()
+        h.handle_loop_command("m1", "c1", "/stop_loop", None)
+        h.stop_loop_engine.assert_called_once()
+
+    def test_handle_loop_command_pause(self):
+        h, ctx = self._make()
+        h.pause_loop_engine = MagicMock()
+        h.handle_loop_command("m1", "c1", "/loop_pause", None)
+        h.pause_loop_engine.assert_called_once()
+
+    def test_handle_loop_command_resume(self):
+        h, ctx = self._make()
+        h.resume_loop_engine = MagicMock()
+        h.handle_loop_command("m1", "c1", "/loop_resume", None)
+        h.resume_loop_engine.assert_called_once()
+
+    def test_handle_loop_command_empty(self):
+        h, ctx = self._make()
+        h.handle_loop_command("m1", "c1", "/loop", None)
+        h.reply_error.assert_called_once()
+
+    def test_handle_loop_command_start(self):
+        h, ctx = self._make()
+        h.start_loop_engine = MagicMock()
+        h.handle_loop_command("m1", "c1", "/loop build feature X", None)
+        h.start_loop_engine.assert_called_once_with("m1", "c1", "build feature X", None)
+
+    def test_handle_loop_command_guide_usage(self):
+        h, ctx = self._make()
+        h.handle_loop_command("m1", "c1", "/loop_guide", None)
+        h.reply_error.assert_called_once()
+
+    def test_handle_loop_command_guide_with_text(self):
+        h, ctx = self._make()
+        h.update_loop_guidance = MagicMock()
+        h.handle_loop_command("m1", "c1", "/loop_guide focus on tests", None)
+        h.update_loop_guidance.assert_called_once()
+
+    def test_renderer_is_loop_renderer(self):
+        h, ctx = self._make()
+        from src.feishu.renderers.loop_renderer import LoopRenderer
+        assert isinstance(h.renderer, LoopRenderer)
+
+
+# ======================================================================
+# Worktree Handler integration tests
+# ======================================================================
+
+
+class TestWorktreeHandler:
+    """Integration tests for WorktreeHandler command routing and renderer delegation."""
+
+    def _make(self):
+        ctx = _make_handler_context()
+        h = WorktreeHandler(ctx)
+        h.reply_text = MagicMock()
+        h.reply_card = MagicMock(return_value="reply_1")
+        h.reply_error = MagicMock()
+        h.update_card = MagicMock()
+        h.add_reaction = MagicMock()
+        h.register_message_project = MagicMock()
+        return h, ctx
+
+    def test_handle_worktree_command_no_project(self):
+        """Without active project, should reply error."""
+        h, ctx = self._make()
+        ctx.project_manager.get_active_project.return_value = None
+        h.handle_worktree_command("m1", "c1", project=None)
+        h.reply_error.assert_called_once()
+
+    def test_handle_worktree_command_with_project(self):
+        """With active project and tools, should start selection flow."""
+        h, ctx = self._make()
+        mock_project = MagicMock()
+        mock_project.project_id = "proj1"
+        mock_project.root_path = "/tmp/proj"
+        ctx.project_manager.get_active_project.return_value = mock_project
+
+        # Mock internal methods to avoid deep call chains
+        h._get_available_worktree_tools = MagicMock(return_value=[])
+        h.handle_worktree_command("m1", "c1", project=mock_project)
+        # With no tools, should reply error
+        h.reply_error.assert_called_once()
+
+    def test_renderer_is_worktree_renderer(self):
+        h, ctx = self._make()
+        from src.feishu.renderers.worktree_renderer import WorktreeRenderer
+        assert isinstance(h._renderer, WorktreeRenderer)

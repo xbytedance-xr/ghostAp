@@ -6,7 +6,7 @@ import logging
 from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
-from ...card.styles import UI_TEXT
+from ...card.ui_text import UI_TEXT
 from ...project import ContextEntryType, ContextSourceMode
 from .base import BaseHandler
 

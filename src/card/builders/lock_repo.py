@@ -10,7 +10,7 @@ import logging
 import os
 import time as _time
 
-from ..styles import UI_TEXT
+from ..ui_text import UI_TEXT
 from .lock_common import (
     MAX_COMMAND_TEXT_LENGTH,
     _build_p2p_multi_url,

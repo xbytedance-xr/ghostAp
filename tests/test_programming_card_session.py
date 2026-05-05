@@ -9,6 +9,7 @@ from src.card.programming_adapter import (
     build_programming_metadata,
 )
 from src.card.session import CardSession
+from src.card.session.config import SessionConfig
 from src.card.state.models import CardMetadata
 
 
@@ -33,9 +34,10 @@ def _make_programming_session(mode_name="coco", **kwargs):
     client = MockClient()
     delivery = CardDelivery(client)
     metadata = build_programming_metadata(mode_name, **kwargs)
+    config = SessionConfig(metadata=metadata)
     session = CardSession(
         chat_id="chat_prog",
-        metadata=metadata,
+        config=config,
         delivery=delivery,
         session_id=f"prog_{mode_name}",
     )

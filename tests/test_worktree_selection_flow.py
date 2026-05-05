@@ -218,7 +218,7 @@ def _make_system_handler() -> WorktreeHandler:
 # ---------------------------------------------------------------------------
 
 def test_wt_command_enters_selection_mode_and_shows_tool_prompt():
-    """AC: /wt enters worktree selection mode and displays the initial tool selection prompt."""
+    """AC: /wt enters worktree selection mode and dispatches WORKTREE_TOOL_SELECT event."""
     handler = _make_system_handler()
     project = ProjectContext(project_id="p-int", project_name="INT", root_path="/tmp/int")
     handler.ctx.project_manager.get_active_project.return_value = project
@@ -229,9 +229,10 @@ def test_wt_command_enters_selection_mode_and_shows_tool_prompt():
         {"provider": "cli", "tool_name": "claude", "display_name": "Claude",
          "description": "Claude CLI", "supports_model": True},
     ]
-    reply_mock = MagicMock()
+    mock_session = MagicMock()
+    mock_session.closed = False
     with patch.object(handler, "_get_available_worktree_tools", return_value=fake_tools), \
-         patch.object(handler, "reply_card", reply_mock):
+         patch.object(handler, "_get_or_create_session", return_value=mock_session):
         handler.handle_worktree_command("msg1", "chat1", project)
 
     # 1) State: selection active + stage == tool_select
@@ -239,17 +240,14 @@ def test_wt_command_enters_selection_mode_and_shows_tool_prompt():
     assert state.selection.active is True
     assert state.selection.stage == "tool_select"
 
-    # 2) reply_card was called (not reply_error)
-    reply_mock.assert_called_once()
-    call_args = reply_mock.call_args
-    assert call_args[0][0] == "msg1"  # message_id
-    sent_card_json = call_args[0][1]  # card content
+    # 2) session.dispatch was called with WORKTREE_TOOL_SELECT event
+    mock_session.dispatch.assert_called_once()
+    event = mock_session.dispatch.call_args[0][0]
+    from src.card.events import CardEventType
+    assert event.type == CardEventType.WORKTREE_TOOL_SELECT
 
-    # 3) Card contains tool selection action and tool names
-    card_str = sent_card_json if isinstance(sent_card_json, str) else json.dumps(sent_card_json, ensure_ascii=False)
-    assert "worktree_select_tool" in card_str
-    assert "Coco" in card_str
-    assert "Claude" in card_str
+    # 3) Event payload contains tools
+    assert len(event.payload["tools"]) == 2
 
 
 def test_wt_command_shows_single_ttadk_entry_in_top_level_tool_list():
@@ -262,16 +260,19 @@ def test_wt_command_shows_single_ttadk_entry_in_top_level_tool_list():
         {"provider": "acp", "tool_name": "coco", "display_name": "Coco", "description": "AI 编程", "supports_model": True},
         {"provider": "ttadk", "tool_name": "ttadk", "display_name": "TTADK", "description": "TTADK 多工具入口", "supports_model": False},
     ]
-    reply_mock = MagicMock()
+    mock_session = MagicMock()
+    mock_session.closed = False
 
     with patch.object(handler, "_get_available_worktree_tools", return_value=fake_tools), \
-         patch.object(handler, "reply_card", reply_mock):
+         patch.object(handler, "_get_or_create_session", return_value=mock_session):
         handler.handle_worktree_command("msg-ttadk", "chat1", project)
 
-    card_str = reply_mock.call_args[0][1]
-    assert "TTADK" in card_str
-    assert "TTADK · coco" not in card_str
-    assert "TTADK · claude" not in card_str
+    event = mock_session.dispatch.call_args[0][0]
+    # TTADK should be in the tools list
+    tool_names = [t.get("display_name", "") for t in event.payload["tools"]]
+    assert "TTADK" in tool_names
+    assert "TTADK · coco" not in tool_names
+    assert "TTADK · claude" not in tool_names
 
 
 def test_wt_command_top_level_tool_card_uses_product_entry_order():
@@ -287,16 +288,18 @@ def test_wt_command_top_level_tool_card_uses_product_entry_order():
         {"provider": "cli", "tool_name": "claude", "display_name": "Claude", "description": "Claude CLI", "supports_model": True},
         {"provider": "ttadk", "tool_name": "ttadk", "display_name": "TTADK", "description": "TTADK 多工具入口", "supports_model": False},
     ]
-    reply_mock = MagicMock()
+    mock_session = MagicMock()
+    mock_session.closed = False
 
     with patch.object(handler, "_get_available_worktree_tools", return_value=fake_tools), \
-         patch.object(handler, "reply_card", reply_mock):
+         patch.object(handler, "_get_or_create_session", return_value=mock_session):
         handler.handle_worktree_command("msg-order", "chat1", project)
 
-    card_str = reply_mock.call_args[0][1]
+    event = mock_session.dispatch.call_args[0][0]
+    tool_names = [t.get("display_name", "") for t in event.payload["tools"]]
+    # Tools should be in the order provided by _get_available_worktree_tools
     ordered_names = ["Coco", "Aiden", "Codex", "Claude", "TTADK"]
-    positions = [card_str.index(name) for name in ordered_names]
-    assert positions == sorted(positions)
+    assert tool_names == ordered_names
 
 
 def test_wt_command_without_project_returns_error():
@@ -348,10 +351,11 @@ def test_worktree_select_tool_skips_model_selection_if_only_one_model():
     # Mock models list with 1 item
     fake_models = [{"name": "m1", "display_name": "Model 1", "is_default": True}]
     
-    patch_message_mock = MagicMock(return_value=True)
+    mock_session = MagicMock()
+    mock_session.closed = False
     
     with patch.object(handler, "_get_models_for_tool", return_value=fake_models), \
-         patch.object(handler, "update_card", patch_message_mock):
+         patch.object(handler, "_get_or_create_session", return_value=mock_session):
         
         handler.handle_worktree_select_tool("msg1", "chat1", project_id="p-skip", value=fake_tool_value)
         
@@ -362,14 +366,15 @@ def test_worktree_select_tool_skips_model_selection_if_only_one_model():
     assert state.selection.selected_items[0].model_name == "m1"
     assert state.selection.stage == "tool_select"
     
-    # Verify CardBuilder.build_worktree_tool_select_card was called (not model select)
-    patch_message_mock.assert_called_once()
-    sent_card_json = patch_message_mock.call_args[0][1]
-    assert "选择工具" in sent_card_json
+    # Verify WORKTREE_TOOL_SELECT event dispatched (not model select)
+    mock_session.dispatch.assert_called_once()
+    event = mock_session.dispatch.call_args[0][0]
+    from src.card.events import CardEventType
+    assert event.type == CardEventType.WORKTREE_TOOL_SELECT
 
 
 def test_worktree_select_tool_shows_ttadk_subtool_card_for_aggregate_entry():
-    """Selecting the TTADK aggregate entry should open a TTADK-only subtool card instead of model selection."""
+    """Selecting the TTADK aggregate entry should dispatch WORKTREE_TOOL_SELECT with TTADK sub-tools."""
     handler = _make_system_handler()
     project = ProjectContext(project_id="p-agg", project_name="AGG", root_path="/tmp/agg")
     handler.ctx.project_manager.get_active_project.return_value = project
@@ -386,11 +391,12 @@ def test_worktree_select_tool_shows_ttadk_subtool_card_for_aggregate_entry():
         {"provider": "ttadk", "tool_name": "coco", "display_name": "TTADK · coco", "description": "TTADK · coco", "supports_model": True},
         {"provider": "ttadk", "tool_name": "claude", "display_name": "TTADK · claude", "description": "TTADK · claude", "supports_model": True},
     ]
-    patch_message_mock = MagicMock(return_value=True)
+    mock_session = MagicMock()
+    mock_session.closed = False
     handler._worktree_manager().start_selection(project)
 
     with patch.object(handler, "_get_ttadk_worktree_tools", return_value=fake_ttadk_tools), \
-         patch.object(handler, "update_card", patch_message_mock):
+         patch.object(handler, "_get_or_create_session", return_value=mock_session):
         handler.handle_worktree_select_tool("msg-agg", "chat1", project_id="p-agg", value=fake_tool_value)
 
     state = WorktreeManager.get_state(project)
@@ -398,12 +404,13 @@ def test_worktree_select_tool_shows_ttadk_subtool_card_for_aggregate_entry():
     assert state.selection.stage == "tool_select"
     assert state.selection.pending_item is None
 
-    patch_message_mock.assert_called_once()
-    sent_card_json = patch_message_mock.call_args[0][1]
-    assert "选择 TTADK 工具" in sent_card_json
-    assert "TTADK · coco" in sent_card_json
-    assert "TTADK · claude" in sent_card_json
-    assert "worktree_select_tool" in sent_card_json
+    mock_session.dispatch.assert_called_once()
+    event = mock_session.dispatch.call_args[0][0]
+    from src.card.events import CardEventType
+    assert event.type == CardEventType.WORKTREE_TOOL_SELECT
+    tool_names = [t.get("display_name", "") for t in event.payload["tools"]]
+    assert "TTADK · coco" in tool_names
+    assert "TTADK · claude" in tool_names
 
 
 def test_worktree_select_tool_skips_model_selection_for_coco_even_with_multiple_models():
@@ -428,10 +435,11 @@ def test_worktree_select_tool_skips_model_selection_for_coco_even_with_multiple_
         {"name": "m2", "display_name": "Model 2", "is_default": False}
     ]
     
-    patch_message_mock = MagicMock(return_value=True)
+    mock_session = MagicMock()
+    mock_session.closed = False
     
     with patch.object(handler, "_get_models_for_tool", return_value=fake_models), \
-         patch.object(handler, "update_card", patch_message_mock):
+         patch.object(handler, "_get_or_create_session", return_value=mock_session):
         
         handler.handle_worktree_select_tool("msg2", "chat1", project_id="p-coco", value=fake_tool_value)
         
@@ -441,6 +449,8 @@ def test_worktree_select_tool_skips_model_selection_for_coco_even_with_multiple_
     assert state.selection.selected_items[0].model_name == "m1" # Default one picked
     assert state.selection.stage == "tool_select"
     
-    patch_message_mock.assert_called_once()
-    sent_card_json = patch_message_mock.call_args[0][1]
-    assert "选择工具" in sent_card_json
+    # Verify WORKTREE_TOOL_SELECT event dispatched (skip model selection)
+    mock_session.dispatch.assert_called_once()
+    event = mock_session.dispatch.call_args[0][0]
+    from src.card.events import CardEventType
+    assert event.type == CardEventType.WORKTREE_TOOL_SELECT

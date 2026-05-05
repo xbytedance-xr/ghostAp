@@ -351,7 +351,7 @@ class LoopReporter:
         return "📊 Loop 状态"
 
     # ------------------------------------------------------------------
-    # Structured card sections (for build_engine_card new params)
+    # Structured card sections (for build_info_card params)
     # ------------------------------------------------------------------
 
     def format_status_line(self, project: LoopProject) -> str:

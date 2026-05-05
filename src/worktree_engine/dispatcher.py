@@ -3,12 +3,12 @@ from __future__ import annotations
 import logging
 import random
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Callable, Iterable, Optional
 
 from .models import WorktreeSelectionItem, WorktreeUnit, WorktreeUnitStatus
 from .reporter import REASON_DISPLAY_MAP
-from ..card.styles import UI_TEXT as _UI_TEXT
 from ..config import get_settings
 from ..utils.callbacks import safe_invoke
 from ..utils.errors import classify_timeout, get_error_detail, sanitize_futures_msg
@@ -164,6 +164,7 @@ class WorktreeDispatcher:
         if unit.status in (WorktreeUnitStatus.FAILED, WorktreeUnitStatus.CANCELLED):
             return
         unit.status = WorktreeUnitStatus.RUNNING
+        unit.metadata["started_at"] = time.time()
         safe_invoke(on_unit_update, unit, label="on_unit_update")
         
         # 如果尚未分配具体工具（理论上 plan 阶段已完成分配，这里做安全检查）

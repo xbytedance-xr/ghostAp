@@ -4,26 +4,29 @@ from typing import Optional
 
 from src.mode.manager import InteractionMode
 
-from ..config import get_settings
 from .styles import BUTTON_CONFIG, THEMES, ProjectTheme
-
-
-def get_button_size() -> str:
-    return get_settings().card_button_size or "medium"
+from .ui_text import UI_TEXT
 
 
 def get_theme(color: str) -> ProjectTheme:
     return THEMES.get(color, THEMES["green"])
 
 
-def apply_compact_style(button: dict) -> dict:
+def apply_compact_style(button: dict, *, button_size: str = "medium") -> dict:
     """Apply compact button styling (small size) for mobile friendliness."""
     if isinstance(button, dict) and button.get("tag") == "button":
-        button.setdefault("size", get_button_size())
+        button.setdefault("size", button_size or "medium")
     return button
 
 
-def _create_mode_button(key: str, action: str, project_id: Optional[str] = None, thread_root_id: Optional[str] = None) -> dict:
+def _create_mode_button(
+    key: str,
+    action: str,
+    project_id: Optional[str] = None,
+    thread_root_id: Optional[str] = None,
+    *,
+    button_size: str = "medium",
+) -> dict:
     """Create a button from config with dynamic action value."""
     config = BUTTON_CONFIG.get(key)
     if not config:
@@ -39,7 +42,7 @@ def _create_mode_button(key: str, action: str, project_id: Optional[str] = None,
         "tag": "button",
         "text": {"tag": "plain_text", "content": config["text"]},
         "type": config["type"],
-        "size": get_button_size(),
+        "size": button_size or "medium",
         "behaviors": [{"type": "callback", "value": value}],
     }
 
@@ -48,34 +51,53 @@ def build_mode_buttons(
     mode: Optional[InteractionMode] = None,
     project_id: Optional[str] = None,
     thread_root_id: Optional[str] = None,
+    *,
+    button_size: str = "medium",
 ) -> list[dict]:
     """Build mode-specific footer buttons (exit/enter mode + switch project)."""
     buttons = []
 
     if mode == InteractionMode.CLAUDE:
-        buttons.append(_create_mode_button("exit_claude", "exit_claude", project_id, thread_root_id))
-        buttons.append(_create_mode_button("switch_project", "switch_project"))
+        buttons.append(_create_mode_button("exit_claude", "exit_claude", project_id, thread_root_id, button_size=button_size))
+        buttons.append(_create_mode_button("switch_project", "switch_project", button_size=button_size))
     elif mode == InteractionMode.COCO:
-        buttons.append(_create_mode_button("exit_coco", "exit_coco", project_id, thread_root_id))
-        buttons.append(_create_mode_button("switch_project", "switch_project"))
+        buttons.append(_create_mode_button("exit_coco", "exit_coco", project_id, thread_root_id, button_size=button_size))
+        buttons.append(_create_mode_button("switch_project", "switch_project", button_size=button_size))
     elif mode == InteractionMode.GEMINI:
-        buttons.append(_create_mode_button("exit_gemini", "exit_gemini", project_id, thread_root_id))
-        buttons.append(_create_mode_button("switch_project", "switch_project"))
+        buttons.append(_create_mode_button("exit_gemini", "exit_gemini", project_id, thread_root_id, button_size=button_size))
+        buttons.append(_create_mode_button("switch_project", "switch_project", button_size=button_size))
     elif mode == InteractionMode.TTADK:
-        buttons.append(_create_mode_button("switch_ttadk_tool", "show_ttadk_menu", project_id, thread_root_id))
-        buttons.append(_create_mode_button("exit_ttadk", "exit_ttadk", project_id, thread_root_id))
-        buttons.append(_create_mode_button("switch_project", "switch_project"))
+        buttons.append(_create_mode_button("switch_ttadk_tool", "show_ttadk_menu", project_id, thread_root_id, button_size=button_size))
+        buttons.append(_create_mode_button("exit_ttadk", "exit_ttadk", project_id, thread_root_id, button_size=button_size))
+        buttons.append(_create_mode_button("switch_project", "switch_project", button_size=button_size))
     else:
-        buttons.append(_create_mode_button("enter_coco", "enter_coco", project_id, thread_root_id))
-        buttons.append(_create_mode_button("enter_claude", "enter_claude", project_id, thread_root_id))
-        buttons.append(_create_mode_button("enter_gemini", "enter_gemini", project_id, thread_root_id))
-        buttons.append(_create_mode_button("enter_ttadk", "enter_ttadk", project_id, thread_root_id))
+        buttons.append(_create_mode_button("enter_coco", "enter_coco", project_id, thread_root_id, button_size=button_size))
+        buttons.append(_create_mode_button("enter_claude", "enter_claude", project_id, thread_root_id, button_size=button_size))
+        buttons.append(_create_mode_button("enter_gemini", "enter_gemini", project_id, thread_root_id, button_size=button_size))
+        buttons.append(_create_mode_button("enter_ttadk", "enter_ttadk", project_id, thread_root_id, button_size=button_size))
 
     return [b for b in buttons if b]
 
 
-def build_responsive_layout(buttons: list[dict]) -> list[dict]:
+def build_responsive_layout(
+    buttons: list[dict],
+    *,
+    layout: str = "responsive",
+    mobile_force_vertical: bool = True,
+    mobile_layout_mode: str = "vertical",
+) -> list[dict]:
     """Build responsive button layout based on config setting.
+
+    Parameters
+    ----------
+    buttons : list[dict]
+        Button elements to lay out.
+    layout : str
+        Layout mode: "desktop", "mobile", "flow", or "responsive" (default).
+    mobile_force_vertical : bool
+        When True and layout is "responsive", force vertical for >2 buttons.
+    mobile_layout_mode : str
+        Sub-mode for mobile vertical ("vertical" or "flow").
 
     - desktop: native action layout (horizontal)
     - mobile: forced vertical stack for better touch targets
@@ -85,23 +107,29 @@ def build_responsive_layout(buttons: list[dict]) -> list[dict]:
     if not buttons:
         return []
 
-    settings = get_settings()
-    layout = (settings.card_button_layout or "responsive").strip().lower()
+    effective_layout = (layout or "responsive").strip().lower()
 
-    if layout == "desktop":
+    if effective_layout == "desktop":
         return _build_button_row_action(buttons)
-    if layout == "mobile":
+    if effective_layout == "mobile":
         return _build_button_vertical(buttons)
-    if layout == "flow":
+    if effective_layout == "flow":
         return _build_button_flow(buttons)
 
     # responsive (default)
 
     # Force vertical for >2 buttons if mobile optimization is enabled
     # This helps avoid clutter on small screens while keeping 2 buttons side-by-side
-    if settings.card_mobile_force_vertical and len(buttons) > 2:
-        mobile_mode = (settings.card_mobile_layout_mode or "vertical").strip().lower()
-        if mobile_mode == "flow":
+    if mobile_force_vertical and len(buttons) > 2:
+        effective_mobile_mode = (mobile_layout_mode or "vertical").strip().lower()
+        if effective_mobile_mode != "vertical":
+            import warnings
+            warnings.warn(
+                "card_mobile_layout_mode is deprecated; use card_mobile_force_vertical instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if effective_mobile_mode == "flow":
             return _build_button_flow(buttons)
         return _build_button_vertical(buttons)
 
@@ -148,15 +176,15 @@ def resolve_title_and_template(
             title = f"🧠 {project_name}"
     else:
         if mode == InteractionMode.CLAUDE:
-            mode_name = "Claude 编程模式"
+            mode_name = UI_TEXT["mode_name_claude"]
         elif mode == InteractionMode.COCO:
-            mode_name = "编程模式"
+            mode_name = UI_TEXT["mode_name_coco"]
         elif mode == InteractionMode.GEMINI:
-            mode_name = "Gemini 编程模式"
+            mode_name = UI_TEXT["mode_name_gemini"]
         elif mode == InteractionMode.TTADK:
             mode_name = f"TTADK{ttadk_suffix}"
         else:
-            mode_name = "智能模式"
+            mode_name = UI_TEXT["mode_name_smart"]
         title = f"{mode_icon} {mode_name}"
 
     return title, header_template
@@ -238,7 +266,7 @@ def build_quick_actions(actions: list[str], context: dict = None) -> list[dict]:
             buttons.append(
                 {
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "✅ 确认"},
+                    "text": {"tag": "plain_text", "content": UI_TEXT["qa_btn_confirm"]},
                     "type": "primary",
                     "value": {"action": "confirm", **context},
                 }
@@ -247,7 +275,7 @@ def build_quick_actions(actions: list[str], context: dict = None) -> list[dict]:
             buttons.append(
                 {
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "🔄 重试"},
+                    "text": {"tag": "plain_text", "content": UI_TEXT["qa_btn_retry"]},
                     "type": "primary",
                     "value": {"action": "retry_command", **context},
                 }
@@ -256,7 +284,7 @@ def build_quick_actions(actions: list[str], context: dict = None) -> list[dict]:
             buttons.append(
                 {
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "❌ 取消"},
+                    "text": {"tag": "plain_text", "content": UI_TEXT["qa_btn_cancel"]},
                     "type": "default",
                     "value": {"action": "cancel", **context},
                 }
@@ -265,7 +293,7 @@ def build_quick_actions(actions: list[str], context: dict = None) -> list[dict]:
             buttons.append(
                 {
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "▶️ 继续"},
+                    "text": {"tag": "plain_text", "content": UI_TEXT["qa_btn_continue"]},
                     "type": "primary",
                     "value": {"action": "continue", **context},
                 }
@@ -274,7 +302,7 @@ def build_quick_actions(actions: list[str], context: dict = None) -> list[dict]:
             buttons.append(
                 {
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "⏭️ 下一步"},
+                    "text": {"tag": "plain_text", "content": UI_TEXT["qa_btn_next"]},
                     "type": "primary",
                     "value": {"action": "next", **context},
                 }
@@ -283,7 +311,7 @@ def build_quick_actions(actions: list[str], context: dict = None) -> list[dict]:
             buttons.append(
                 {
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "🛑 停止"},
+                    "text": {"tag": "plain_text", "content": UI_TEXT["qa_btn_stop"]},
                     "type": "danger",
                     "value": {"action": "stop", **context},
                 }
@@ -292,7 +320,7 @@ def build_quick_actions(actions: list[str], context: dict = None) -> list[dict]:
             buttons.append(
                 {
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "➕ 创建项目"},
+                    "text": {"tag": "plain_text", "content": UI_TEXT["qa_btn_new_project"]},
                     "type": "primary",
                     "value": {"action": "new_project_prompt", **context},
                 }
@@ -301,7 +329,7 @@ def build_quick_actions(actions: list[str], context: dict = None) -> list[dict]:
             buttons.append(
                 {
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": "📋 项目列表"},
+                    "text": {"tag": "plain_text", "content": UI_TEXT["qa_btn_list_projects"]},
                     "type": "default",
                     "value": {"action": "show_board", **context},
                 }

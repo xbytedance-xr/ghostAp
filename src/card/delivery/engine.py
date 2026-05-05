@@ -2,76 +2,29 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import threading
-from dataclasses import dataclass
-from typing import Literal, Protocol
+import time
+
+from src.card.delivery.types import MutationOutcome, SequenceConflictError, TransportError
+from src.card.protocols import CardAPIClient
 
 from src.card.delivery.binding import BindingStore, PageBinding
+from src.card.delivery.lock_pool import SessionLockPool
+from src.card.delivery.page_mutator import PageMutator
+from src.card.delivery.registry import DeliveryRegistry, delivery_registry
 from src.card.delivery.sequence import SequenceManager
-from src.card.render.renderer import RenderedCard
+from src.card.delivery.ttl_set import TTLSet
+from src.card.types import RenderedCard
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Protocols: abstract Feishu API client
+# Outcome types (re-exported from src.card.delivery.types for backwards compat)
 # ---------------------------------------------------------------------------
 
-
-class CardAPIClient(Protocol):
-    """Protocol for Feishu card API operations."""
-
-    def create_card(
-        self, chat_id: str, card_json: dict, *, reply_to: str | None = None
-    ) -> tuple[str, str]:
-        """Create a card message. Returns (message_id, card_id)."""
-        ...
-
-    def update_card(self, card_id: str, card_json: dict, *, sequence: int = 0) -> None:
-        """Update (PATCH) a card by card_id."""
-        ...
-
-    def update_element(self, card_id: str, element_id: str, content: str, *, sequence: int = 0) -> None:
-        """Update a single element's content (element_content API)."""
-        ...
-
-    def create_streaming_card(self, card_json: dict) -> str:
-        """Create a CardKit card entity with streaming mode. Returns card_id."""
-        ...
-
-    def send_card_reference(
-        self, chat_id: str, card_id: str, *, reply_to: str | None = None
-    ) -> str:
-        """Send an IM message referencing a CardKit card. Returns message_id."""
-        ...
-
-
-# ---------------------------------------------------------------------------
-# Outcome types
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class MutationOutcome:
-    """Result of a card mutation attempt."""
-
-    kind: Literal["applied", "reconcile", "skipped"]
-    message: str = ""
-
-
-class SequenceConflictError(Exception):
-    """Raised when Feishu returns 300317 (sequence conflict)."""
-
-    def __init__(self, next_floor: int = 0):
-        self.next_floor = next_floor
-        super().__init__(f"Sequence conflict, floor={next_floor}")
-
-
-class TransportError(Exception):
-    """Raised on 5xx / timeout from Feishu API."""
-    pass
+__all__ = ["CardDelivery", "MutationOutcome", "SequenceConflictError", "TransportError", "CardAPIClient"]
 
 
 # ---------------------------------------------------------------------------
@@ -86,23 +39,87 @@ class CardDelivery:
     - Decides operation type (create / update / element_content)
     - Manages sequence numbers for optimistic concurrency
     - Handles reconciliation on conflict
+
+    Public API: deliver() and close() only.
+    Lifecycle management (shutdown/drain) is accessed via DeliveryRegistry.
+
+    Thread-safety: deliver() and close() are idempotent and concurrency-safe.
+    After close(session_id) completes, subsequent deliver() calls for that
+    session_id are no-ops.
     """
 
-    def __init__(self, client: CardAPIClient) -> None:
+    def __init__(
+        self,
+        client: CardAPIClient,
+        *,
+        max_session_locks: int = 10_000,
+        session_lock_ttl: float = 600.0,
+        eviction_interval: float = 30.0,
+        registry: "DeliveryRegistry | None" = None,
+    ) -> None:
         self._client = client
         self._bindings = BindingStore()
         self._sequences = SequenceManager()
-        # Global lock only for _session_locks dict registration (O(1) operations).
-        # Per-session RLock protects individual session I/O sequences.
-        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
-        self._session_locks: dict[str, threading.RLock] = {}
+        self._closed_sessions = TTLSet(ttl=3600.0, max_size=50_000)
+        self._mutator = PageMutator(client, self._bindings, self._sequences)
 
-    def _get_session_lock(self, session_id: str) -> threading.RLock:
-        """Get or create a per-session lock (short global lock hold)."""
-        with self._lock:
-            if session_id not in self._session_locks:
-                self._session_locks[session_id] = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
-            return self._session_locks[session_id]
+        # Delegate lock pool management
+        self._lock_pool = SessionLockPool(
+            max_locks=max_session_locks,
+            lock_ttl=session_lock_ttl,
+            eviction_interval=eviction_interval,
+            has_active_binding=self._bindings.has,
+            purge_callback=lambda: self._closed_sessions.purge(),
+        )
+
+        # Independent lock for _closed_sessions (decoupled from lock pool internals)
+        self._closed_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+
+        self._max_session_locks = max_session_locks
+        self._session_lock_ttl = session_lock_ttl
+        self._eviction_interval = eviction_interval
+
+        self._registry = registry or delivery_registry
+        self._registry.register(self)
+
+    def _shutdown(self) -> None:
+        """Stop background eviction thread. Called via DeliveryRegistry on graceful shutdown."""
+        self._lock_pool.shutdown()
+        self._registry.unregister(self)
+
+    @property
+    def _accepting_work(self) -> bool:
+        """Whether this delivery engine is accepting new work (read-only proxy to lock pool)."""
+        return self._lock_pool.accepting_work
+
+    def _drain(self, timeout: float = 5.0) -> bool:
+        """Wait for all in-flight deliveries on this instance to finish.
+
+        Returns True if all drained within *timeout*, False otherwise.
+        """
+        self._lock_pool.fence()
+        return self._lock_pool.drain(timeout=timeout)
+
+    def release_session_lock(self, session_id: str) -> None:
+        """Release the delivery lock for *session_id* (idempotent).
+
+        Public API — called by CardSession finalizer and close() to release
+        the per-session delivery lock on session termination.
+        """
+        self._lock_pool.release(session_id)
+
+    def __del__(self) -> None:
+        """Defense-in-depth: stop eviction thread if instance leaks without explicit shutdown."""
+        try:
+            self._lock_pool.shutdown()
+        except Exception:
+            pass
+
+    def __enter__(self) -> CardDelivery:
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self._shutdown()
 
     def deliver(
         self,
@@ -119,10 +136,37 @@ class CardDelivery:
         - Signature changed → card.update
         - Only text changed → element_content
         - No change → skip
+
+        Idempotent: returns empty list if session is already closed.
+
+        Timeout: This method does NOT enforce its own timeout. The underlying
+        Feishu API client is expected to raise TimeoutError (or similar) when
+        a request exceeds its configured timeout (default 30s). Such exceptions
+        are caught by PageMutator and surfaced as ``MutationOutcome(kind="reconcile")``.
+        Callers should NOT wrap deliver() in an external timeout — doing so risks
+        leaving per-session locks unreleased.
         """
-        session_lock = self._get_session_lock(session_id)
-        with session_lock:
-            return self._deliver_unlocked(session_id, chat_id, rendered, reply_to=reply_to)
+        if not self._lock_pool.accepting_work:
+            return [MutationOutcome(kind="rejected", message="delivery shutting down")]
+        with self._closed_lock:
+            if session_id in self._closed_sessions:
+                return []
+        # Acquire per-session lock (creates if needed, may evict LRU)
+        try:
+            session_lock = self._lock_pool.acquire(session_id)
+        except RuntimeError:
+            logger.error(
+                "Session lock capacity exhausted, rejecting new session %s",
+                session_id,
+            )
+            return [MutationOutcome(kind="rejected", message="session lock capacity exhausted")]
+
+        self._lock_pool.enter_delivery()
+        try:
+            with session_lock:
+                return self._deliver_unlocked(session_id, chat_id, rendered, reply_to=reply_to)
+        finally:
+            self._lock_pool.exit_delivery()
 
     def _deliver_unlocked(
         self,
@@ -133,74 +177,74 @@ class CardDelivery:
         reply_to: str | None = None,
     ) -> list[MutationOutcome]:
         """Internal deliver implementation (caller holds per-session lock)."""
+        # Second check under session lock: eliminates TOCTOU window between
+        # the fast-path _closed_lock check and per-session lock acquisition.
+        if session_id in self._closed_sessions:
+            return []
         binding = self._bindings.get(session_id)
         outcomes: list[MutationOutcome] = []
 
         if binding is None:
-            # First delivery: create all pages
             binding = self._bindings.create(session_id, chat_id)
             for card in rendered:
-                outcome = self._create_page(
-                    session_id, chat_id, card, reply_to=reply_to
-                )
+                outcome = self._create_page(session_id, chat_id, card, reply_to=reply_to)
                 outcomes.append(outcome)
         else:
-            # Subsequent delivery: compare with existing
             for card in rendered:
                 page_idx = card.page_index
                 existing_page = binding.pages.get(page_idx)
 
                 if existing_page is None:
-                    # New page appeared (pagination grew)
-                    outcome = self._create_page(
-                        session_id, chat_id, card, reply_to=reply_to
-                    )
+                    outcome = self._create_page(session_id, chat_id, card, reply_to=reply_to)
                 elif existing_page.signature != card.structure_signature:
-                    # Structure changed → full update
                     outcome = self._update_page(session_id, existing_page, card)
                 elif (
                     card.active_element is not None
                     and card.active_element.text != existing_page.last_text
                 ):
-                    # Only text changed → element_content streaming
                     outcome = self._stream_element(session_id, existing_page, card)
                 else:
-                    # No change
                     outcome = MutationOutcome(kind="skipped")
                 outcomes.append(outcome)
 
-            # Mark stale pages (if page count decreased)
-            for stale_idx in range(len(rendered), len(binding.pages)):
-                self._finalize_page(session_id, binding.pages[stale_idx])
+            # Finalize stale pages (pages in binding but not in current rendered set)
+            rendered_indices = {card.page_index for card in rendered}
+            for stale_idx in list(binding.pages.keys()):
+                if stale_idx not in rendered_indices:
+                    self._finalize_page(session_id, binding.pages[stale_idx])
 
         return outcomes
 
     def close(self, session_id: str) -> None:
         """Finalize a session: remove bindings, sequences, and session lock.
 
-        Lock order: session_lock held only for data cleanup, then released
-        before acquiring self._lock to remove the lock entry.  This ensures
-        the global lock ordering is always self._lock → session_lock (same
-        direction as _get_session_lock + deliver path).
+        Idempotent: safe to call multiple times for the same session_id.
         """
-        session_lock = self._get_session_lock(session_id)
+        with self._closed_lock:
+            if session_id in self._closed_sessions:
+                return
+            self._closed_sessions.add(session_id)
+
+        # Acquire existing session lock (or create temporary) for cleanup serialization
+        session_lock = self._lock_pool.get_existing(session_id)
+        if session_lock is None:
+            session_lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
+
         with session_lock:
             binding = self._bindings.remove(session_id)
             if binding is not None:
                 for page in binding.pages.values():
                     if page.card_id:
                         self._sequences.reset(page.card_id)
-        # After releasing session_lock, acquire global lock to pop the entry.
-        # No thread can re-create the session_lock entry for this session_id
-        # because bindings are already removed above (deliver would be a no-op).
-        with self._lock:
-            self._session_locks.pop(session_id, None)
+
+        # Remove lock entry
+        self._lock_pool.release(session_id)
 
     def get_binding(self, session_id: str):
         """Get the current binding for inspection/testing."""
         return self._bindings.get(session_id)
 
-    # ----- Internal operations -----
+    # ----- Internal operations (delegated to PageMutator) -----
 
     def _create_page(
         self,
@@ -210,102 +254,21 @@ class CardDelivery:
         *,
         reply_to: str | None = None,
     ) -> MutationOutcome:
-        """Create a new card page via API.
-
-        If the card has streaming mode enabled (active_element present),
-        use CardKit streaming card creation to get a proper card_id that
-        supports element_content updates. Falls back to IM API on failure.
-        """
-        try:
-            is_streaming = card.card_json.get("config", {}).get("streaming_mode", False)
-
-            if is_streaming:
-                # Try CardKit streaming path for proper card_id
-                try:
-                    card_id = self._client.create_streaming_card(card.card_json)
-                    message_id = self._client.send_card_reference(
-                        chat_id, card_id, reply_to=reply_to
-                    )
-                except Exception:
-                    # Fall back to IM API (element_content won't work but PATCH will)
-                    logger.debug("Streaming card creation failed, falling back to IM API")
-                    message_id, card_id = self._client.create_card(
-                        chat_id, card.card_json, reply_to=reply_to
-                    )
-            else:
-                message_id, card_id = self._client.create_card(
-                    chat_id, card.card_json, reply_to=reply_to
-                )
-
-            # Record binding
-            last_text = card.active_element.text if card.active_element else ""
-            self._bindings.set_page(
-                session_id=session_id,
-                page_index=card.page_index,
-                message_id=message_id,
-                card_id=card_id,
-                signature=card.structure_signature,
-                last_text=last_text,
-            )
-            return MutationOutcome(kind="applied", message=f"created:{message_id}")
-        except Exception as e:
-            logger.warning("Card create failed: %s", str(e))
-            return MutationOutcome(kind="reconcile", message=str(e))
+        """Create a new card page via API."""
+        return self._mutator.create_page(session_id, chat_id, card, reply_to=reply_to)
 
     def _update_page(
         self, session_id: str, page: PageBinding, card: RenderedCard
     ) -> MutationOutcome:
         """Update card structure via PATCH API."""
-        try:
-            seq = self._sequences.next_sequence(page.card_id)
-            self._client.update_card(page.card_id, card.card_json, sequence=seq)
-            # Update binding
-            self._bindings.update_signature(session_id, page.page_index, card.structure_signature)
-            if card.active_element:
-                self._bindings.update_text(session_id, page.page_index, card.active_element.text)
-            return MutationOutcome(kind="applied", message=f"updated:{page.card_id}")
-        except SequenceConflictError as e:
-            self._sequences.raise_floor(page.card_id, e.next_floor)
-            logger.debug("Sequence conflict on %s, raised floor to %d", page.card_id, e.next_floor)
-            return MutationOutcome(kind="reconcile", message="sequence_conflict")
-        except TransportError as e:
-            logger.warning("Transport error updating %s: %s", page.card_id, str(e))
-            return MutationOutcome(kind="reconcile", message=str(e))
-        except Exception as e:
-            logger.warning("Card update failed: %s", str(e))
-            return MutationOutcome(kind="reconcile", message=str(e))
+        return self._mutator.update_page(session_id, page, card)
 
     def _stream_element(
         self, session_id: str, page: PageBinding, card: RenderedCard
     ) -> MutationOutcome:
-        """Push text update via CardKit element_content API (if available).
-
-        Falls back to full PATCH if element update fails.
-        """
-        if card.active_element is None:
-            return MutationOutcome(kind="skipped")
-
-        try:
-            seq = self._sequences.next_sequence(page.card_id)
-            self._client.update_element(
-                page.card_id,
-                card.active_element.element_id,
-                card.active_element.text,
-                sequence=seq,
-            )
-            # Update text binding only (signature unchanged)
-            self._bindings.update_text(session_id, page.page_index, card.active_element.text)
-            return MutationOutcome(kind="applied", message=f"element:{page.card_id}")
-        except SequenceConflictError as e:
-            self._sequences.raise_floor(page.card_id, e.next_floor)
-            logger.debug("Element sequence conflict on %s, falling back to full update", page.card_id)
-            return self._update_page(session_id, page, card)
-        except Exception as e:
-            logger.debug("Element update failed (%s), falling back to full update", str(e))
-            return self._update_page(session_id, page, card)
+        """Push text update via CardKit element_content API."""
+        return self._mutator.stream_element(session_id, page, card)
 
     def _finalize_page(self, session_id: str, page: PageBinding) -> None:
-        """Finalize a stale page: reset sequence and remove from binding."""
-        if page.card_id:
-            self._sequences.reset(page.card_id)
-        self._bindings.remove_page(session_id, page.page_index)
+        """Finalize a stale page."""
+        self._mutator.finalize_page(session_id, page)

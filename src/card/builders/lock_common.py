@@ -7,7 +7,7 @@ chat-lock card modules.
 from __future__ import annotations
 
 import logging
-from ..styles import UI_TEXT
+from ..ui_text import UI_TEXT
 
 # -- Re-exported signing utilities (canonical implementation in src.utils.signing) --
 from src.utils.signing import (  # noqa: F401 — re-export for backward compatibility
@@ -29,6 +29,7 @@ __all__ = [
     "format_elapsed_ago",
     "format_friendly_duration",
     "format_lock_duration",
+    "format_undo_window",
 ]
 
 # Maximum length for command_text in retry button value payload.
@@ -108,3 +109,29 @@ def format_lock_duration(locked_at_mono: float) -> str:
     if minutes:
         return UI_TEXT["lock_held_hours_minutes"].format(h=hours, m=minutes)
     return UI_TEXT["lock_held_hours"].format(h=hours)
+
+
+def format_undo_window(seconds: int) -> str:
+    """Format lock undo window duration as friendly display string (duration only).
+
+    Returns only the time fragment (e.g. "5 分钟"), NOT a full sentence.
+    Callers are responsible for embedding this in their own template.
+
+    The config validator guarantees seconds is a multiple of 60 (and >= 60),
+    but this function defensively handles non-int/invalid inputs.
+    """
+    try:
+        seconds = int(seconds)
+    except (TypeError, ValueError, OverflowError):
+        return ""
+    if seconds <= 0:
+        return ""
+    if seconds % 60 != 0:
+        logging.getLogger(__name__).warning(
+            "lock undo window seconds (%d) is not a multiple of 60; rounding", seconds
+        )
+        seconds = round(seconds / 60) * 60
+        if seconds <= 0:
+            seconds = 60
+    minutes = max(1, seconds // 60)
+    return UI_TEXT["lock_undo_window_duration"].format(minutes=minutes)

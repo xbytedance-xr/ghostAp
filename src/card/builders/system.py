@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from functools import lru_cache
 from typing import TYPE_CHECKING, Optional
 
@@ -10,7 +11,9 @@ from src.utils.errors import GhostAPError, get_error_detail
 
 from ..models import ModelOptionView, ToolOptionView
 from ..shared import build_responsive_layout
-from ..styles import THRESHOLDS, UI_TEXT
+from ..styles import THRESHOLDS
+from ..themes import PANEL_STYLES
+from ..ui_text import UI_TEXT
 from .core import CoreBuilder
 from .lock import build_lock_help_body
 
@@ -777,10 +780,22 @@ class SystemBuilder:
         lock_enabled: bool = False,
         chat_id: str = "",
         no_admin_configured: bool = False,
+        *,
+        session_idle_timeout: Optional[int] = None,
+        session_idle_warn_at_remaining: Optional[int] = None,
+        lock_undo_window_seconds: Optional[int] = None,
     ) -> tuple[str, str]:
         """Build a categorized help card."""
+        from ...config import get_settings
         from ...mode import InteractionMode
-        
+
+        if session_idle_timeout is None:
+            session_idle_timeout = get_settings().card.session_idle_timeout
+        if session_idle_warn_at_remaining is None:
+            session_idle_warn_at_remaining = get_settings().card.session_idle_warn_at_remaining
+        if lock_undo_window_seconds is None:
+            lock_undo_window_seconds = get_settings().lock_undo_window_seconds
+
         mode_emoji = {
             InteractionMode.SMART: UI_TEXT["system_mode_smart"],
             InteractionMode.COCO: UI_TEXT["system_mode_coco"],
@@ -798,6 +813,11 @@ class SystemBuilder:
         root_path = project.root_path if project else None
         project_id = project.project_id if project else None
 
+        # Bucketize timeout params to reduce lru_cache key space (ceil to nearest 60s,
+        # matching the math.ceil display logic inside the cached builder)
+        _bucketed_timeout = math.ceil(session_idle_timeout / 60) * 60
+        _bucketed_warn = math.ceil(session_idle_warn_at_remaining / 60) * 60
+
         msg_type, card_json = SystemBuilder._build_help_card_cached(
             project_name=project_name,
             root_path=root_path,
@@ -807,12 +827,14 @@ class SystemBuilder:
             current_mode_str=current_mode_str,
             is_admin=is_admin,
             lock_enabled=lock_enabled,
+            session_idle_timeout=_bucketed_timeout,
+            session_idle_warn_at_remaining=_bucketed_warn,
         )
 
         # Post-cache injection: replace the lock-body placeholder with
         # live lock state so that lru_cache never freezes stale lock info.
         if lock_enabled and _LOCK_BODY_PLACEHOLDER in card_json:
-            live_body = build_lock_help_body(is_admin=is_admin, chat_id=chat_id)
+            live_body = build_lock_help_body(is_admin=is_admin, chat_id=chat_id, lock_undo_window_seconds=lock_undo_window_seconds)
             # FS-09: Append admin guidance when ADMIN_USER_IDS is empty
             if no_admin_configured:
                 live_body += "\n\n💡 如需群锁定功能，请联系 Bot 部署者完成配置"
@@ -834,6 +856,8 @@ class SystemBuilder:
         current_mode_str: str,
         is_admin: bool = False,
         lock_enabled: bool = False,
+        session_idle_timeout: int | None = None,
+        session_idle_warn_at_remaining: int | None = None,
     ) -> tuple[str, str]:
         """Build the help card with all commands expanded and mobile-friendly quick actions.
 
@@ -905,7 +929,29 @@ class SystemBuilder:
                 _LOCK_BODY_PLACEHOLDER,
             ))
 
-        tips = UI_TEXT["system_help_tips"]
+        if session_idle_timeout is None or session_idle_warn_at_remaining is None:
+            # Fallback defaults (should not normally be reached since build_help_card
+            # always passes values, but kept for safety / direct test calls).
+            session_idle_timeout = session_idle_timeout if session_idle_timeout is not None else 1800
+            session_idle_warn_at_remaining = session_idle_warn_at_remaining if session_idle_warn_at_remaining is not None else 300
+        timeout_seconds = session_idle_timeout
+        warn_before_seconds = session_idle_warn_at_remaining
+        # NOTE: config validator enforces minimum=300, sub-60s branch intentionally removed
+        timeout_minutes = max(1, math.ceil(timeout_seconds / 60))
+        if timeout_minutes >= 120:
+            hours = timeout_minutes // 60
+            timeout_display = f"{hours} 小时" if timeout_seconds % 3600 == 0 else f"约 {hours} 小时"
+        else:
+            timeout_display = f"{timeout_minutes} 分钟" if timeout_seconds % 60 == 0 else f"约 {timeout_minutes} 分钟"
+        warn_minutes = max(1, math.ceil(warn_before_seconds / 60))
+        if warn_before_seconds % 60 == 0:
+            warn_display = f"{warn_minutes} 分钟"
+        else:
+            warn_display = f"约 {warn_minutes} 分钟"
+        tips = UI_TEXT["system_help_tips"].format(
+            timeout_display=timeout_display,
+            warn_display=warn_display,
+        )
 
         elements = [
             {
@@ -924,12 +970,21 @@ class SystemBuilder:
         elements.append({"tag": "hr"})
 
         for idx, (title, body) in enumerate(sections):
-            elements.append({"tag": "markdown", "content": f"**{title}**\n{body}"})
-            if idx < len(sections) - 1:
-                elements.append({"tag": "hr"})
+            elements.append({
+                "tag": "collapsible_panel",
+                "expanded": idx == 0,
+                "header": {
+                    "title": {"tag": "markdown", "content": f"**{title}**"},
+                    "vertical_align": "center",
+                },
+                "border": {"color": "grey", "corner_radius": PANEL_STYLES["corner_radius"]},
+                "vertical_spacing": PANEL_STYLES["vertical_spacing"],
+                "padding": PANEL_STYLES["padding_standard"],
+                "elements": [{"tag": "markdown", "content": body}],
+            })
 
         elements.append({"tag": "hr"})
-        elements.append({"tag": "markdown", "text_size": "notation", "content": tips})
+        elements.append({"tag": "markdown", "content": tips, "text_size": "notation"})
 
         card = CoreBuilder._wrap_card(UI_TEXT["system_help_title"], "blue", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)

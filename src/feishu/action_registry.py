@@ -5,7 +5,7 @@ if TYPE_CHECKING:
     from .ws_client import FeishuWSClient
 
 from ..card import CardBuilder
-from ..card.styles import UI_TEXT
+from ..card.ui_text import UI_TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -250,6 +250,10 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         lambda mid, cid, pid, val: client._handle_worktree_retry_failed(mid, cid, pid, val),
         exact="worktree_retry_failed",
     )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_worktree_retry_all(mid, cid, pid, val),
+        exact="worktree_retry_all",
+    )
 
     # ACP
     client._register_action(
@@ -308,6 +312,38 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
 
     from .retry_handler import RetryCommandHandler
     client._register_action(RetryCommandHandler(_RetryDispatchAdapter(client)), exact="retry_command")
+
+    # Approval — dispatches APPROVAL_RESOLVED event to update CardSession state
+    def _handle_approval(mid, cid, pid, val, *, approved: bool):
+        logger.info("Approval action: approved=%s, message_id=%s, chat_id=%s", approved, mid, cid)
+        client._reply_text(mid, "✅ 已批准操作" if approved else "❌ 已拒绝操作")
+        # Dispatch APPROVAL_RESOLVED to the engine that rendered the approval card
+        try:
+            from ..card.events import CardEvent, CardEventType
+            engine_type = val.get("engine_type", "")
+            approval_val = {**val, "approved": approved}
+            if engine_type == "deep":
+                client._deep_handler.handle_card_action(mid, cid, "deep_approval_resolved", approval_val)
+            elif engine_type == "loop":
+                client._loop_handler.handle_card_action(mid, cid, "loop_approval_resolved", approval_val)
+            elif engine_type == "spec":
+                client._spec_handler.handle_card_action(mid, cid, "spec_approval_resolved", approval_val)
+            else:
+                # Fallback: try all engines (approval may not have engine_type in value)
+                logger.debug("approval: no engine_type, trying deep→loop→spec")
+                client._deep_handler.handle_card_action(mid, cid, "deep_approval_resolved", approval_val)
+        except Exception as exc:
+            logger.warning("Failed to dispatch APPROVAL_RESOLVED for message_id=%s: %s", mid, repr(exc))
+
+    client._register_action(
+        lambda mid, cid, pid, val: _handle_approval(mid, cid, pid, val, approved=True),
+        exact="approve_action",
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: _handle_approval(mid, cid, pid, val, approved=False),
+        exact="reject_action",
+    )
+
     client._register_action(
         lambda mid, cid, pid, val: client._handle_help_category(
             mid,
@@ -342,3 +378,20 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         lambda mid, cid, pid, val, type=None: client._spec_handler.handle_card_action(mid, cid, type, val),
         prefix="spec_",
     )
+
+    # Generic ENGINE_STOP — routes to correct handler based on engine_type in value
+    def _handle_engine_stop(mid, cid, pid, val):
+        engine_type = val.get("engine_type", "")
+        # Remap to engine-specific stop action and delegate to the correct handler
+        if engine_type == "deep":
+            client._deep_handler.handle_card_action(mid, cid, "deep_stop", val)
+        elif engine_type == "loop":
+            client._loop_handler.handle_card_action(mid, cid, "loop_stop", val)
+        elif engine_type == "spec":
+            client._spec_handler.handle_card_action(mid, cid, "spec_stop", val)
+        else:
+            logger.warning("engine_stop: unknown engine_type=%s, trying all handlers", engine_type)
+            # Fallback: try each handler (deep → loop → spec)
+            client._deep_handler.handle_card_action(mid, cid, "deep_stop", val)
+
+    client._register_action(_handle_engine_stop, exact="engine_stop")

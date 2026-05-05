@@ -23,40 +23,104 @@ from src.utils.time_ago import IdleHealth, compute_time_ago_bucket
 
 class TestFormatDuration:
     def test_zero(self):
-        assert format_duration(0) == "0秒"
+        assert format_duration(0) == "0 秒"
 
     def test_fractional_rounds_down(self):
-        assert format_duration(0.9) == "0秒"
+        assert format_duration(0.9) == "0 秒"
 
     def test_seconds_only(self):
-        assert format_duration(5) == "5秒"
-        assert format_duration(59) == "59秒"
+        assert format_duration(5) == "5 秒"
+        assert format_duration(59) == "59 秒"
 
     def test_minutes_boundary(self):
-        assert format_duration(60) == "1分0秒"
+        assert format_duration(60) == "1 分钟 0 秒"
 
     def test_minutes_and_seconds(self):
-        assert format_duration(225) == "3分45秒"
+        assert format_duration(225) == "3 分钟 45 秒"
 
     def test_just_under_one_hour(self):
-        assert format_duration(3599) == "59分59秒"
+        assert format_duration(3599) == "59 分钟 59 秒"
 
     def test_one_hour_boundary(self):
-        assert format_duration(3600) == "1小时0分0秒"
+        assert format_duration(3600) == "1 小时 0 分钟 0 秒"
 
     def test_hours_minutes_seconds(self):
-        assert format_duration(3661) == "1小时1分1秒"
+        assert format_duration(3661) == "1 小时 1 分钟 1 秒"
 
     def test_large_value(self):
         # 24 hours
-        assert format_duration(86400) == "24小时0分0秒"
+        assert format_duration(86400) == "24 小时 0 分钟 0 秒"
 
     def test_negative_clamped_to_zero(self):
-        assert format_duration(-10) == "0秒"
+        assert format_duration(-10) == "0 秒"
 
     def test_very_small_positive(self):
-        assert format_duration(0.001) == "0秒"
+        assert format_duration(0.001) == "0 秒"
 
+
+# ──────────────────────────────────────────────────────────────────────
+# footer _format_duration (uses UI_TEXT templates, different from utils format_duration)
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestFooterFormatDuration:
+    """Verify footer's _format_duration covers hours branch."""
+
+    def test_sub_second(self):
+        from src.card.render.footer import _format_duration
+        assert _format_duration(0) == "< 1 秒"
+        assert _format_duration(1) == "< 1 秒"
+
+    def test_seconds(self):
+        from src.card.render.footer import _format_duration
+        assert _format_duration(30) == "30 秒"
+
+    def test_minutes_seconds(self):
+        from src.card.render.footer import _format_duration
+        result = _format_duration(125)
+        assert result == "2 分钟 5 秒"
+
+    def test_one_hour_boundary(self):
+        from src.card.render.footer import _format_duration
+        result = _format_duration(3600)
+        assert result == "1 小时 0 分钟 0 秒"
+
+    def test_hours_minutes_seconds(self):
+        from src.card.render.footer import _format_duration
+        result = _format_duration(7261)
+        assert result == "2 小时 1 分钟 1 秒"
+
+
+class TestUITextDurationLiterals:
+    """Guard UI_TEXT time templates against regression to abbreviated forms."""
+
+    def test_duration_secs_has_spaced_unit(self):
+        from src.card.ui_text import UI_TEXT
+        assert "秒" in UI_TEXT["duration_secs"]
+        # Must use space-separated format
+        rendered = UI_TEXT["duration_secs"].format(seconds=5)
+        assert rendered == "5 秒"
+
+    def test_duration_mins_secs_has_full_units(self):
+        from src.card.ui_text import UI_TEXT
+        assert "分钟" in UI_TEXT["duration_mins_secs"]
+        assert "秒" in UI_TEXT["duration_mins_secs"]
+        rendered = UI_TEXT["duration_mins_secs"].format(minutes=3, seconds=45)
+        assert rendered == "3 分钟 45 秒"
+
+    def test_duration_hours_mins_secs_has_full_units(self):
+        from src.card.ui_text import UI_TEXT
+        assert "小时" in UI_TEXT["duration_hours_mins_secs"]
+        assert "分钟" in UI_TEXT["duration_hours_mins_secs"]
+        assert "秒" in UI_TEXT["duration_hours_mins_secs"]
+        rendered = UI_TEXT["duration_hours_mins_secs"].format(hours=1, minutes=2, seconds=3)
+        assert rendered == "1 小时 2 分钟 3 秒"
+
+    def test_time_ago_templates_use_full_units(self):
+        from src.card.ui_text import UI_TEXT
+        assert "分钟" in UI_TEXT["time_mins_ago"]
+        assert "小时" in UI_TEXT["time_hours_ago"]
+        assert "分钟" in UI_TEXT["time_hours_mins_ago"]
 
 # ──────────────────────────────────────────────────────────────────────
 # compute_time_ago_bucket & render_time_ago_cn
@@ -295,7 +359,7 @@ class TestAppendDurationToTitle:
 
     def test_positive_duration_appended(self):
         result = append_duration_to_title("🔄 执行中", 225)
-        assert result == "🔄 执行中 · 3分45秒"
+        assert result == "🔄 执行中 · 3 分钟 45 秒"
 
     def test_separator_is_middot(self):
         result = append_duration_to_title("title", 60)
@@ -303,11 +367,11 @@ class TestAppendDurationToTitle:
 
     def test_large_duration(self):
         result = append_duration_to_title("标题", 7261)
-        assert result == "标题 · 2小时1分1秒"
+        assert result == "标题 · 2 小时 1 分钟 1 秒"
 
     def test_small_duration(self):
         result = append_duration_to_title("标题", 3)
-        assert result == "标题 · 3秒"
+        assert result == "标题 · 3 秒"
 
 
 # ──────────────────────────────────────────────────────────────────────

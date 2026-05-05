@@ -1,85 +1,336 @@
 """Lifecycle sub-reducer."""
 from __future__ import annotations
 from dataclasses import replace
-from ..models import CardState, CardMetadata, HeaderState, FooterState, ButtonSpec
-from ...events import CardEvent, CardEventType
+from typing import cast
+from ..models import CardState, HeaderState, FooterState, ButtonSpec, TextBlock, EngineExtState
+from ...events import CardEvent, CardEventType, CompletedPayload, FailedPayload
+from ..button_intent import ButtonIntent
+from src.card.themes import TERMINAL_TEMPLATES
+from ...engine_meta import ENGINE_CMD_MAP
+from ...ui_text import UI_TEXT
+from ._shared import build_header
 
 
-# Header template colors by terminal state
-_TERMINAL_TEMPLATES: dict[str, str] = {
-    "completed": "green",
-    "failed": "red",
-    "cancelled": "grey",
-    "paused": "orange",
-    "awaiting_approval": "indigo",
+# Retry button action IDs per engine type
+_RETRY_ACTIONS: dict[str, str] = {
+    "deep": ButtonIntent.DEEP_RESUME,
+    "loop": ButtonIntent.LOOP_RESUME,
+    "spec": ButtonIntent.SPEC_RESUME,
+    "worktree": ButtonIntent.WORKTREE_RETRY_FAILED,
 }
 
-# Header template colors by mode (when running)
-_MODE_TEMPLATES: dict[str, str] = {
-    "Coco": "blue",
-    "Claude": "purple",
-    "Gemini": "turquoise",
-    "TTADK": "orange",
-    "Deep Agent": "turquoise",
-    "Loop Engine": "indigo",
-    "Spec Engine": "green",
-    "Smart": "turquoise",
+# Engine type → user-facing command — imported from engine_meta
+_ENGINE_CMD = ENGINE_CMD_MAP
+
+# Stop button action IDs per engine type
+_STOP_ACTIONS: dict[str, str] = {
+    "deep": ButtonIntent.ENGINE_STOP,
+    "loop": ButtonIntent.ENGINE_STOP,
+    "spec": ButtonIntent.ENGINE_STOP,
+    "worktree": ButtonIntent.WORKTREE_CANCEL,
+}
+
+# Engine-specific retry button CTA text (differentiated by engine_type)
+_RETRY_CTA_TEXT: dict[str, str] = {
+    "deep": "🔁 重新执行",
+    "loop": "🔁 重新执行",
+    "spec": "🔁 重新 Build",
+    "worktree": "🔁 重试失败项",
 }
 
 
-def _build_header(metadata: CardMetadata, terminal: str) -> HeaderState:
-    """Build header state from metadata and terminal status."""
-    # Title
-    if metadata.project_name:
-        title = f"{metadata.mode_emoji} {metadata.project_name} · {metadata.mode_name}"
-    else:
-        title = f"{metadata.mode_emoji} {metadata.mode_name} 编程模式"
+def _compute_duration(state: CardState, now: float | None) -> float | None:
+    """Compute elapsed duration from progress_started_at to now.
 
-    # Subtitle
-    parts = []
-    if metadata.tool_name:
-        parts.append(metadata.tool_name)
-    if metadata.model_name:
-        parts.append(metadata.model_name)
-    subtitle = "🔧 " + " · ".join(parts) if parts else None
+    Args:
+        state: Current card state.
+        now: Monotonic timestamp injected by CardSession (via event payload '_now').
+    """
+    started_at = state.footer.progress_started_at
+    if started_at is None or now is None:
+        return None
+    return now - started_at
 
-    # Template color: terminal overrides mode
-    template = _TERMINAL_TEMPLATES.get(terminal) or _MODE_TEMPLATES.get(metadata.mode_name, "blue")
 
-    return HeaderState(title=title, subtitle=subtitle, template=template)
+def _running_buttons(engine_type: str | None, compact: bool = False) -> tuple[ButtonSpec, ...]:
+    """Build buttons for running state (stop button + mode toggle).
+
+    Mode toggle button shows target mode with current state context:
+    - In compact mode: button says "切换完整模式" (switch TO full)
+    - In full mode: button says "切换精简模式" (switch TO compact)
+    """
+    if not engine_type or engine_type not in _STOP_ACTIONS:
+        return ()
+    mode_btn = ButtonSpec(
+        text=UI_TEXT["card_btn_mode_full"] if compact else UI_TEXT["card_btn_mode_compact"],
+        action_id=ButtonIntent.MODE_FULL if compact else ButtonIntent.MODE_COMPACT,
+        type="default",
+    )
+    stop_btn = ButtonSpec(
+        text=UI_TEXT["card_btn_stop"],
+        action_id=_STOP_ACTIONS[engine_type],
+        type="default",
+        confirm=UI_TEXT["card_btn_stop_confirm"],
+    )
+    return (mode_btn, stop_btn)
+
+
+def _stopping_buttons(engine_type: str | None) -> tuple[ButtonSpec, ...]:
+    """Build disabled stop button for STOPPING intermediate state."""
+    if not engine_type or engine_type not in _STOP_ACTIONS:
+        return ()
+    return (ButtonSpec(
+        text=UI_TEXT["card_btn_stop"],
+        action_id=_STOP_ACTIONS[engine_type],
+        type="default",
+        disabled=True,
+        disabled_text=UI_TEXT.get("card_btn_stopping", "正在停止…"),
+    ),)
 
 
 def reduce_lifecycle(state: CardState, event: CardEvent) -> CardState:
     """Handle lifecycle events: STARTED, COMPLETED, FAILED, CANCELLED, PAUSED, RESUMED."""
+    payload = event.payload or {}
+    now = payload.get("_now") if payload else None
     match event.type:
         case CardEventType.STARTED:
-            header = _build_header(state.metadata, "running")
+            header = build_header(state.metadata, "running")
             return replace(state, terminal="running", header=header,
-                           footer=FooterState(status="thinking", status_text="💭 正在思考..."))
+                           footer=FooterState(status="thinking", status_text=UI_TEXT["card_lifecycle_thinking"]),
+                           buttons=_running_buttons(state.metadata.engine_type, state.metadata.compact))
+
+        case CardEventType.STOPPING:
+            # Intermediate state: user clicked stop, awaiting engine acknowledgement
+            # Short-circuit if already terminal (COMPLETED/FAILED/CANCELLED arrived first)
+            if state.terminal and state.terminal != "running":
+                return state
+            # Show stopping banner in card body for mobile visibility
+            _stopping_status = UI_TEXT["card_lifecycle_stopping"]
+            _escalation_hint = UI_TEXT["card_stop_escalation_countdown"]
+            footer = replace(
+                state.footer,
+                status_text=f"{_stopping_status}\n{_escalation_hint}",
+                warning_banner=_stopping_status,
+                warning_type="info",
+            )
+            return replace(state, buttons=_stopping_buttons(state.metadata.engine_type), footer=footer)
 
         case CardEventType.COMPLETED:
-            header = _build_header(state.metadata, "completed")
-            return replace(state, terminal="completed", header=header,
-                           footer=FooterState(), buttons=())
+            # Idempotency guard: prevent duplicate terminal transitions
+            if state.terminal and state.terminal != "running":
+                return state
+            # For engines that own the header, preserve it and only change color
+            if state.header.header_source == "engine" and state.header.title:
+                header = replace(state.header, template=TERMINAL_TEMPLATES.get("completed", "green"))
+                # For worktree, update title/subtitle to indicate final completion
+                if state.metadata.engine_type == "worktree":
+                    header = replace(header,
+                                     title=UI_TEXT["worktree_header_completed"],
+                                     subtitle=UI_TEXT.get("worktree_completed_subtitle", "全部完成"))
+            else:
+                header = build_header(state.metadata, "completed")
+            # Append summary content block if provided
+            payload_c = cast(CompletedPayload, payload)
+            summary = payload_c.get("summary")
+            blocks = state.blocks
+            if summary:
+                blocks = blocks + (TextBlock(
+                    block_id="_summary", content=summary
+                ),)
+            engine_cmd = _ENGINE_CMD.get(state.metadata.engine_type or "", "").lstrip("/")
+            cta_text = UI_TEXT["card_completed_cta_fmt"].format(engine_cmd=engine_cmd) if engine_cmd else ""
+            return replace(state, terminal="completed", terminal_reason="completed",
+                           header=header, footer=FooterState(progress_pct=100, duration_seconds=_compute_duration(state, now), status_text=cta_text),
+                           buttons=(), blocks=blocks)
 
         case CardEventType.FAILED:
-            header = _build_header(state.metadata, "failed")
-            return replace(state, terminal="failed", header=header,
-                           footer=FooterState())
+            # Idempotency guard: prevent duplicate terminal transitions
+            if state.terminal and state.terminal != "running":
+                return state
+            # For engines that own the header, preserve it and only change color
+            if state.header.header_source == "engine" and state.header.title:
+                header = replace(state.header, template=TERMINAL_TEMPLATES.get("failed", "red"))
+            else:
+                header = build_header(state.metadata, "failed")
+            # Insert error message as visible content block
+            payload_f = cast(FailedPayload, payload)
+            error = payload_f.get("error", "")
+            blocks = state.blocks
+            engine_cmd = _ENGINE_CMD.get(state.metadata.engine_type or "", UI_TEXT["card_session_fallback_cmd"])
+            if error:
+                error_text = f"❌ {error}"
+            else:
+                # Select engine-specific error fallback text
+                _fallback_key = {
+                    "spec": "card_lifecycle_error_fallback_spec",
+                    "loop": "card_lifecycle_error_fallback_loop",
+                }.get(state.metadata.engine_type or "", "card_lifecycle_error_fallback")
+                error_text = UI_TEXT[_fallback_key].format(engine_cmd=engine_cmd)
+            blocks = blocks + (TextBlock(
+                block_id="_error", content=error_text
+            ),)
+            # Inject retry button based on engine type with differentiated CTA text
+            buttons_list: list[ButtonSpec] = []
+            engine_type = state.metadata.engine_type
+            if engine_type and engine_type in _RETRY_ACTIONS:
+                retry_text = _RETRY_CTA_TEXT.get(engine_type, UI_TEXT["card_lifecycle_retry_failed"])
+                buttons_list.append(ButtonSpec(
+                    text=retry_text,
+                    action_id=_RETRY_ACTIONS[engine_type],
+                    type="primary",
+                    confirm=UI_TEXT["card_btn_confirm_retry_body"],
+                ))
+            buttons_list.append(ButtonSpec(
+                text=UI_TEXT["card_lifecycle_show_details"],
+                action_id=ButtonIntent.SHOW_STATUS,
+            ))
+            buttons = tuple(buttons_list)
+            return replace(state, terminal="failed", terminal_reason="failed",
+                           header=header, footer=FooterState(duration_seconds=_compute_duration(state, now)),
+                           buttons=buttons, blocks=blocks)
 
         case CardEventType.CANCELLED:
-            header = _build_header(state.metadata, "cancelled")
-            return replace(state, terminal="cancelled", header=header,
-                           footer=FooterState(), buttons=())
+            # Idempotency guard: prevent duplicate terminal transitions
+            if state.terminal and state.terminal != "running":
+                return state
+            header = build_header(state.metadata, "cancelled")
+            blocks = state.blocks + (TextBlock(
+                block_id="_cancelled", content=UI_TEXT["card_lifecycle_cancelled_block"]
+            ),)
+            # Determine terminal reason: ttl_expired if specified in payload, else cancelled
+            reason = payload.get("reason", "cancelled") if payload else "cancelled"
+            # Preserve warning_banner from prior state (e.g. TTL expired text)
+            footer = FooterState(
+                status_text=UI_TEXT["card_lifecycle_cancelled_status"],
+                warning_banner=state.footer.warning_banner,
+                warning_type=state.footer.warning_type,
+                persistent_warning=bool(state.footer.warning_banner),
+                duration_seconds=_compute_duration(state, now),
+            )
+            # Inject restart button so user can re-trigger without retyping
+            cancel_buttons_list: list[ButtonSpec] = []
+            engine_type = state.metadata.engine_type
+            if engine_type and engine_type in _RETRY_ACTIONS:
+                cancel_buttons_list.append(ButtonSpec(
+                    text=UI_TEXT["card_lifecycle_restart"],
+                    action_id=_RETRY_ACTIONS[engine_type],
+                    type="primary",
+                    confirm=UI_TEXT["card_btn_confirm_retry_body"],
+                ))
+            # For TTL-expired cancellations, add a unified "show status" button
+            if reason == "ttl_expired":
+                cancel_buttons_list.append(ButtonSpec(
+                    text=UI_TEXT.get("card_btn_show_status", "📋 查看状态"),
+                    action_id=ButtonIntent.SHOW_STATUS,
+                    type="default",
+                ))
+            cancel_buttons = tuple(cancel_buttons_list)
+            return replace(state, terminal="cancelled", terminal_reason=reason,
+                           header=header, footer=footer, buttons=cancel_buttons, blocks=blocks)
+
+        case CardEventType.ARCHIVED:
+            header = build_header(state.metadata, "archived")
+            # Append sequence number to title if provided (e.g., "#1 已归档")
+            sequence = (event.payload or {}).get("sequence", 0)
+            if sequence:
+                header = HeaderState(
+                    title=f"{header.title} (#{sequence} 已归档)",
+                    subtitle=header.subtitle,
+                    template=header.template,
+                )
+            # Add navigation hint so user knows to look at the latest card
+            blocks = state.blocks + (TextBlock(
+                block_id="_archived_hint", content=UI_TEXT["card_lifecycle_archived_hint"]
+            ),)
+            footer = FooterState(
+                status="idle",
+                status_text=UI_TEXT["card_lifecycle_archived"],
+                duration_seconds=_compute_duration(state, now),
+            )
+            # Add URL button to navigate to the new card if message_id available
+            archived_buttons: tuple[ButtonSpec, ...] = ()
+            new_message_id = (event.payload or {}).get("new_message_id", "")
+            if new_message_id:
+                archived_buttons = (ButtonSpec(
+                    text=UI_TEXT.get("card_archived_navigate_btn", "📍 查看最新卡片"),
+                    action_id="url_navigate",
+                    type="default",
+                    url=f"https://applink.feishu.cn/client/message/link?msgId={new_message_id}",
+                ),)
+            else:
+                # Graceful degradation: no message_id available, show text hint
+                blocks = blocks + (TextBlock(
+                    block_id="_archived_nav_hint",
+                    content=UI_TEXT.get("card_archived_scroll_hint", "💡 请在对话底部查看最新卡片"),
+                ),)
+            return replace(state, terminal="archived", terminal_reason="archived",
+                           header=header, footer=footer, buttons=archived_buttons, blocks=blocks)
 
         case CardEventType.PAUSED:
-            header = _build_header(state.metadata, "paused")
+            header = build_header(state.metadata, "paused")
+            paused_buttons: tuple[ButtonSpec, ...] = ()
+            engine_type = state.metadata.engine_type
+            if engine_type and engine_type in _RETRY_ACTIONS:
+                paused_buttons = (ButtonSpec(
+                    text=UI_TEXT["card_lifecycle_resume"],
+                    action_id=_RETRY_ACTIONS[engine_type],
+                    type="primary",
+                ),)
             return replace(state, terminal="paused", header=header,
-                           footer=FooterState(status="idle"))
+                           footer=FooterState(status="idle", status_text=UI_TEXT["card_lifecycle_paused"]),
+                           buttons=paused_buttons)
 
         case CardEventType.RESUMED:
-            header = _build_header(state.metadata, "running")
+            header = build_header(state.metadata, "running")
             return replace(state, terminal="running", header=header,
-                           footer=FooterState(status="thinking", status_text="💭 正在思考..."))
+                           footer=FooterState(status="thinking", status_text=UI_TEXT["card_lifecycle_thinking"]),
+                           buttons=_running_buttons(state.metadata.engine_type, state.metadata.compact))
+
+        case CardEventType.BLOCKED:
+            header = build_header(state.metadata, "blocked")
+            reason = payload.get("reason", "") if payload else ""
+            # Store reason in engine_ext for rendering layer to access
+            ext = state.engine_ext or EngineExtState()
+            ext = replace(ext, blocked_reason=reason or None)
+            footer = FooterState(
+                status="idle",
+                status_text=UI_TEXT.get("card_lifecycle_blocked", "任务已阻塞"),
+                duration_seconds=_compute_duration(state, now),
+            )
+            # Inject restart button so user has an exit from blocked state
+            blocked_buttons: tuple[ButtonSpec, ...] = ()
+            engine_type = state.metadata.engine_type
+            if engine_type and engine_type in _RETRY_ACTIONS:
+                blocked_buttons = (ButtonSpec(
+                    text=UI_TEXT["card_lifecycle_restart"],
+                    action_id=_RETRY_ACTIONS[engine_type],
+                    type="primary",
+                ),)
+            return replace(state, terminal="blocked", header=header,
+                           footer=footer, buttons=blocked_buttons, engine_ext=ext)
+
+        case CardEventType.MODE_TOGGLED:
+            # Toggle compact mode and rebuild running buttons
+            compact = bool(payload.get("compact", not state.metadata.compact))
+            new_meta = replace(state.metadata, compact=compact)
+            # Only update buttons if currently running (non-terminal or running terminal)
+            if state.terminal == "running":
+                new_buttons = _running_buttons(new_meta.engine_type, compact)
+            else:
+                new_buttons = state.buttons
+            return replace(state, metadata=new_meta, buttons=new_buttons)
+
+        case CardEventType.STOP_ESCALATED:
+            # Escalate: replace buttons with danger force-stop button
+            engine_type = state.metadata.engine_type
+            if not engine_type or engine_type not in _STOP_ACTIONS:
+                return state
+            force_buttons = (ButtonSpec(
+                text=UI_TEXT.get("card_btn_force_stop", "⚠️ 强制停止"),
+                action_id=_STOP_ACTIONS[engine_type],
+                type="danger",
+                confirm=UI_TEXT.get("card_btn_confirm_stop_title_danger", "强制停止当前任务"),
+            ),)
+            return replace(state, buttons=force_buttons)
 
     return state

@@ -1,42 +1,353 @@
-"""Button group rendering."""
+"""Button group rendering.
+
+Handles ButtonIntent → action_id mapping and dynamic flex_mode selection.
+"""
 
 from __future__ import annotations
 
+import logging
+import re
+
+from src.card.actions.dispatch import (
+    APPROVE_ACTION,
+    DEEP_RESUME,
+    DEEP_STOP,
+    ENGINE_STOP,
+    LOOP_RESUME,
+    LOOP_STOP,
+    MODE_COMPACT,
+    MODE_FULL,
+    SHOW_STATUS,
+    SHOW_WORKTREE_MENU,
+    SPEC_RESUME,
+    SPEC_SKIP_RETRY,
+    SPEC_STOP,
+    REJECT_ACTION,
+    WORKTREE_CANCEL,
+    WORKTREE_CLEANUP,
+    WORKTREE_CONFIRM_START,
+    WORKTREE_FINISH_SELECTION,
+    WORKTREE_MERGE,
+    WORKTREE_RETRY_ALL,
+    WORKTREE_RETRY_FAILED,
+)
+from src.card.engine_meta import ENGINE_LABELS, ENGINE_LABEL_DEFAULT
+from src.card.render.budget import RenderBudget
+from src.card.state.button_intent import ButtonIntent
 from src.card.state.models import ButtonSpec, CardState
+from src.card.ui_text import UI_TEXT
+
+# ---------------------------------------------------------------------------
+# ButtonIntent → action_id mapping (single source of truth)
+# ---------------------------------------------------------------------------
+INTENT_TO_ACTION_ID: dict[str, str] = {
+    # Worktree
+    ButtonIntent.WORKTREE_FINISH_SELECTION: WORKTREE_FINISH_SELECTION,
+    ButtonIntent.WORKTREE_CONFIRM_START: WORKTREE_CONFIRM_START,
+    ButtonIntent.WORKTREE_MERGE: WORKTREE_MERGE,
+    ButtonIntent.WORKTREE_CLEANUP: WORKTREE_CLEANUP,
+    ButtonIntent.WORKTREE_RETRY_FAILED: WORKTREE_RETRY_FAILED,
+    ButtonIntent.WORKTREE_RETRY_ALL: WORKTREE_RETRY_ALL,
+    ButtonIntent.WORKTREE_CANCEL: WORKTREE_CANCEL,
+    ButtonIntent.WORKTREE_SHOW_MENU: SHOW_WORKTREE_MENU,
+    ButtonIntent.WORKTREE_MODIFY_TARGET: SHOW_WORKTREE_MENU,
+
+    # Deep engine
+    ButtonIntent.DEEP_RESUME: DEEP_RESUME,
+    ButtonIntent.DEEP_STOP: DEEP_STOP,
+
+    # Loop engine
+    ButtonIntent.LOOP_RESUME: LOOP_RESUME,
+    ButtonIntent.LOOP_STOP: LOOP_STOP,
+
+    # Spec engine
+    ButtonIntent.SPEC_RESUME: SPEC_RESUME,
+    ButtonIntent.SPEC_STOP: SPEC_STOP,
+    ButtonIntent.SPEC_SKIP_RETRY: SPEC_SKIP_RETRY,
+
+    # Engine stop (generic, routed by engine_type at dispatch time)
+    ButtonIntent.ENGINE_STOP: ENGINE_STOP,
+
+    # View mode toggle
+    ButtonIntent.MODE_FULL: MODE_FULL,
+    ButtonIntent.MODE_COMPACT: MODE_COMPACT,
+
+    # Global
+    ButtonIntent.SHOW_STATUS: SHOW_STATUS,
+
+    # Approval
+    ButtonIntent.APPROVE: APPROVE_ACTION,
+    ButtonIntent.REJECT: REJECT_ACTION,
+}
+
+# Import-time consistency check: every ButtonIntent must have a mapping.
+_intent_enum_members = set(ButtonIntent)
+_mapped_keys = set(INTENT_TO_ACTION_ID.keys())
+if _intent_enum_members != _mapped_keys:
+    raise RuntimeError(
+        f"ButtonIntent ↔ INTENT_TO_ACTION_ID out of sync.\n"
+        f"  In enum but not mapped: {_intent_enum_members - _mapped_keys}\n"
+        f"  In mapping but not enum: {_mapped_keys - _intent_enum_members}"
+    )
+del _intent_enum_members, _mapped_keys
+
+logger = logging.getLogger(__name__)
+
+# Resolved action_ids that require complex_interaction (loading state + debounce)
+_DESTRUCTIVE_ACTIONS = frozenset({
+    ENGINE_STOP, DEEP_STOP, LOOP_STOP, SPEC_STOP,
+    WORKTREE_CLEANUP, WORKTREE_MERGE, WORKTREE_CANCEL,
+    APPROVE_ACTION,
+})
+
+# Intents that represent "stop/cancel" actions
+_STOP_INTENTS = frozenset({
+    "intent.engine.stop", "intent.deep.stop", "intent.loop.stop",
+    "intent.spec.stop", "intent.worktree.cancel",
+})
+
+# Cancel intents (distinct from stop — these abort before execution starts)
+_CANCEL_INTENTS = frozenset({
+    "intent.worktree.cancel",
+})
+
+# White-list mapping: action_id (exact match) → confirm dialog title UI_TEXT key
+# Keys MUST be ButtonIntent enum values or registered action_ids.
+_CONFIRM_TITLE_MAP: dict[str, str] = {
+    # Stop intents — normal (gentle question for first-stage stop)
+    ButtonIntent.ENGINE_STOP: "card_btn_confirm_stop_title_normal",
+    ButtonIntent.DEEP_STOP: "card_btn_confirm_stop_title_normal",
+    ButtonIntent.LOOP_STOP: "card_btn_confirm_stop_title_normal",
+    ButtonIntent.SPEC_STOP: "card_btn_confirm_stop_title_normal",
+    # Retry/resume intents
+    ButtonIntent.DEEP_RESUME: "card_btn_confirm_retry_title",
+    ButtonIntent.LOOP_RESUME: "card_btn_confirm_retry_title",
+    ButtonIntent.SPEC_RESUME: "card_btn_confirm_retry_title",
+    ButtonIntent.WORKTREE_RETRY_FAILED: "card_btn_confirm_retry_title",
+    ButtonIntent.WORKTREE_RETRY_ALL: "card_btn_confirm_retry_title",
+    # Cancel intents — distinct from stop
+    ButtonIntent.WORKTREE_CANCEL: "card_btn_confirm_cancel_title",
+    # Execute/start
+    ButtonIntent.WORKTREE_CONFIRM_START: "card_btn_confirm_execute_title",
+    # Merge/cleanup
+    ButtonIntent.WORKTREE_MERGE: "card_btn_confirm_merge_title",
+    ButtonIntent.WORKTREE_CLEANUP: "card_btn_confirm_cleanup_title",
+    # Approval
+    ButtonIntent.APPROVE: "card_btn_confirm_approve_title",
+    ButtonIntent.REJECT: "card_btn_confirm_reject_title",
+}
+
+# Import-time assertion: every key in _CONFIRM_TITLE_MAP must be a ButtonIntent
+# member value or a registered action_id, preventing silent fallback bugs.
+_valid_keys = {m.value for m in ButtonIntent} | set(INTENT_TO_ACTION_ID.values())
+_invalid_keys = set(_CONFIRM_TITLE_MAP.keys()) - _valid_keys
+if _invalid_keys:
+    import warnings
+    warnings.warn(
+        f"_CONFIRM_TITLE_MAP contains keys that are neither ButtonIntent members "
+        f"nor registered action_ids: {sorted(_invalid_keys)}",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+del _valid_keys, _invalid_keys
+
+# Regex to match leading emoji sequences (emoji presentation + optional VS16 + ZWJ sequences)
+_LEADING_EMOJI_RE = re.compile(
+    r"^[\U0001F300-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]+\s*"
+)
 
 
-def _render_button(spec: ButtonSpec) -> dict:
-    """Render a single button element."""
-    btn: dict = {
+def _strip_leading_emoji(text: str) -> str:
+    """Strip leading emoji characters and optional trailing space from text."""
+    return _LEADING_EMOJI_RE.sub("", text)
+
+
+def _get_confirm_title(action_id: str, button_text: str = "") -> str:
+    """Get semantic confirm dialog title based on action_id white-list mapping.
+
+    Uses exact match only — no substring fallback. Unregistered actions
+    fall back to a generic template or default title.
+    """
+    ui_key = _CONFIRM_TITLE_MAP.get(action_id)
+    if ui_key:
+        return UI_TEXT.get(ui_key, UI_TEXT.get("card_btn_confirm_default_title", "确认操作？"))
+    # Use button label as fallback context (strip leading emoji for cleanliness)
+    if button_text:
+        clean_text = _strip_leading_emoji(button_text)
+        if clean_text:
+            return UI_TEXT.get("btn_confirm_template", "确认「{text}」？").format(text=clean_text)
+    return UI_TEXT.get("card_btn_confirm_default_title", "确认操作？")
+
+
+def _resolve_action_id(spec: ButtonSpec) -> str | None:
+    """Resolve the action_id from a ButtonSpec.
+
+    If the action_id is a ButtonIntent (starts with 'intent.'), maps it
+    via INTENT_TO_ACTION_ID. Otherwise uses the raw action_id string directly.
+
+    Returns None if the intent is not registered (graceful degradation).
+    """
+    action_id = spec.action_id
+    if action_id.startswith("intent."):
+        resolved = INTENT_TO_ACTION_ID.get(action_id)
+        if resolved is None:
+            logger.warning("Unknown ButtonIntent '%s', rendering as disabled button", action_id)
+        return resolved
+    return action_id
+
+
+def _is_stop_intent(spec: ButtonSpec) -> bool:
+    """Check if a button represents a stop/cancel action."""
+    return spec.action_id in _STOP_INTENTS
+
+
+def _render_button(spec: ButtonSpec, *, engine_type: str | None = None, budget: RenderBudget | None = None) -> dict:
+    """Render a single button element. Returns disabled button for unresolvable intents."""
+    button_size = budget.button_size if budget else "medium"
+
+    # URL button: opens a link instead of triggering a callback
+    if spec.url:
+        return {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": spec.text},
+            "type": spec.type,
+            "size": button_size,
+            "behaviors": [{"type": "open_url", "default_url": spec.url}],
+        }
+
+    action_id = _resolve_action_id(spec)
+    if action_id is None:
+        # Graceful degradation: render as disabled button with no action
+        btn: dict = {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": spec.text},
+            "type": "default",
+            "size": button_size,
+            "disabled": True,
+            "disabled_tips": {
+                "tag": "plain_text",
+                "content": UI_TEXT["card_btn_disabled_tips"],
+            },
+        }
+        return btn
+
+    # Explicitly disabled button (e.g. STOPPING intermediate state)
+    if spec.disabled:
+        btn = {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": spec.disabled_text or spec.text},
+            "type": spec.type,
+            "size": button_size,
+            "disabled": True,
+        }
+        if spec.disabled_text:
+            btn["disabled_tips"] = {"tag": "plain_text", "content": spec.disabled_text}
+        return btn
+    value: dict = {"action": action_id}
+    # Inject engine_type for ENGINE_STOP so the dispatcher can route correctly
+    if action_id == ENGINE_STOP and engine_type:
+        value["engine_type"] = engine_type
+
+    btn = {
         "tag": "button",
         "text": {"tag": "plain_text", "content": spec.text},
         "type": spec.type,
-        "value": {"action": spec.action_id},
+        "value": value,
+        "size": button_size,
     }
+
+    if action_id in _DESTRUCTIVE_ACTIONS:
+        btn["complex_interaction"] = True
 
     if spec.confirm is not None:
         btn["confirm"] = {
-            "title": {"tag": "plain_text", "content": "确认"},
+            "title": {"tag": "plain_text", "content": _get_confirm_title(spec.action_id, spec.text)},
             "text": {"tag": "plain_text", "content": spec.confirm},
         }
 
     return btn
 
 
-def render_buttons(state: CardState) -> list[dict]:
+def render_buttons(state: CardState, budget: RenderBudget | None = None) -> list[dict]:
     """Generate button group elements.
 
     Layout rules:
     - No buttons → empty list
-    - ≤2 buttons → column_set with one column per button
-    - >2 buttons → action block with flow layout
+    - 1 button → column_set with flex_mode 'none' (full width for mobile accessibility)
+    - 2 buttons → column_set with flex_mode 'bisect' (equal width)
+    - ≥3 buttons with card_mobile_force_vertical → action block with flow layout (vertical on mobile)
+    - 3 buttons otherwise → column_set with flex_mode 'none' (equal trisect)
+    - >3 buttons → action block with flow layout
     """
     if not state.buttons:
         return []
 
-    buttons = [_render_button(spec) for spec in state.buttons]
+    engine_type = state.metadata.engine_type if state.metadata else None
+    buttons = [_render_button(spec, engine_type=engine_type, budget=budget) for spec in state.buttons]
 
-    if len(buttons) <= 2:
+    elements = _layout_buttons(buttons, budget=budget)
+
+    return elements
+
+
+def _layout_buttons(buttons: list[dict], *, budget: RenderBudget | None = None) -> list[dict]:
+    """Internal: arrange buttons into layout elements."""
+
+    if len(buttons) == 1:
+        # Single button: full width for mobile accessibility (Apple HIG)
+        return [
+            {
+                "tag": "column_set",
+                "flex_mode": "none",
+                "background_style": "default",
+                "columns": [
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "elements": buttons,
+                    },
+                ],
+            }
+        ]
+
+    if len(buttons) == 2:
+        # Two buttons: equal split via bisect
+        columns = [
+            {
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "elements": [btn],
+            }
+            for btn in buttons
+        ]
+        return [
+            {
+                "tag": "column_set",
+                "flex_mode": "bisect",
+                "background_style": "default",
+                "columns": columns,
+            }
+        ]
+
+    # ≥3 buttons: check config for mobile force vertical
+    mobile_force_vertical = budget.mobile_force_vertical if budget else False
+    if mobile_force_vertical and len(buttons) >= 3:
+        # Vertical action flow for mobile accessibility
+        # Set min_width for better tap targets on mobile
+        for btn in buttons:
+            btn.setdefault("width", "default")
+        return [
+            {
+                "tag": "action",
+                "layout": "flow",
+                "actions": buttons,
+            }
+        ]
+
+    if len(buttons) == 3:
+        # Three buttons: equal trisect via weighted columns
         columns = [
             {
                 "tag": "column",
@@ -55,7 +366,7 @@ def render_buttons(state: CardState) -> list[dict]:
             }
         ]
 
-    # >2 buttons: action flow layout
+    # >3 buttons: action flow layout (auto-width, no full-row stretch)
     return [
         {
             "tag": "action",
@@ -63,3 +374,29 @@ def render_buttons(state: CardState) -> list[dict]:
             "actions": buttons,
         }
     ]
+
+
+def build_restart_button(engine_type: str, budget: RenderBudget | None = None) -> dict:
+    """Build a '重新开始' action button for terminal/TTL-expired cards.
+
+    The button triggers ENGINE_RESTART action which is routed by engine_type
+    to re-send the appropriate engine command.
+    """
+    from src.card.actions.dispatch import ENGINE_RESTART
+
+    label = ENGINE_LABELS.get(engine_type, ENGINE_LABEL_DEFAULT)
+    button_size = budget.button_size if budget else "medium"
+    return {
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": label},
+        "type": "default",
+        "complex_interaction": True,
+        "width": "default",
+        "size": button_size,
+        "behaviors": [
+            {
+                "type": "callback",
+                "value": {"action_id": ENGINE_RESTART, "engine_type": engine_type},
+            }
+        ],
+    }

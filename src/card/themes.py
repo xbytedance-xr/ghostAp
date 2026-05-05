@@ -70,7 +70,7 @@ ENGINE_STYLES = {
     "spec": {
         "color": "green",
         "icon": "🧠",
-        "label_format": "Deep Agent ({name})",
+        "label_format": "Spec Engine ({name})",
         "meta_separator": " · ",
         "features": {"history_button": False},
     },
@@ -94,10 +94,47 @@ ENGINE_STYLES = {
 # Collapsible Panel Styles — aligned with pokoclaw tool-calls.ts
 # ──────────────────────────────────────────────────────────────
 PANEL_STYLES = {
-    "corner_radius": "5px",
+    "corner_radius": "8px",
     "padding": "8px 8px 8px 8px",
     "vertical_spacing": "8px",
     "border_normal": "grey",
     "border_failed": "red",
     "border_history": "blue",
+    "border_plan": "indigo",
+    "border_active": "wathet",  # Active/running state (e.g. worktree panels)
+    "padding_standard": "8px 16px",  # Standard panel content padding
+    "padding_compact": "4px 12px",  # Compact padding for dense summaries
+}
+
+# ──────────────────────────────────────────────────────────────
+# Card Theme: unified color mapping for card headers
+# (Merged from card_theme.py — single source of truth for
+#  engine_type × phase → template color)
+# ──────────────────────────────────────────────────────────────
+
+# Header template colors by terminal state
+TERMINAL_TEMPLATES: dict[str, str] = {
+    "completed": "green",
+    "completed_empty": "orange",
+    "failed": "red",
+    "cancelled": "grey",
+    "archived": "grey",
+    "paused": "orange",
+    "awaiting_approval": "indigo",
+    "blocked": "red",
+    "denied": "red",
+    "continued": "green",
+}
+
+# Header template colors by mode name (when running)
+MODE_TEMPLATES: dict[str, str] = {
+    "Coco": "blue",
+    "Claude": "purple",
+    "Gemini": "turquoise",
+    "TTADK": "orange",
+    "Deep Agent": "violet",
+    "Loop Engine": "indigo",
+    "Spec Engine": "green",
+    "Worktree": "wathet",
+    "Smart": "turquoise",
 }

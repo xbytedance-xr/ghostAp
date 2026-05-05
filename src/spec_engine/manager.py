@@ -187,3 +187,20 @@ class SpecEngineManager(BaseEngineManager["SpecEngine"]):
             except Exception:
                 logger.debug("failed to attach persistence metadata", exc_info=True)
         return engine
+
+    def _build_snapshot(self, engine: "SpecEngine"):
+        """Build EngineSnapshot with Spec-specific fields."""
+        from src.card.engine_snapshot import EngineSnapshot
+        project = engine.project
+        return EngineSnapshot(
+            engine_name=engine.engine_name,
+            root_path=engine.root_path,
+            satisfied_count=project.satisfied_count if project else 0,
+            total_criteria=project.total_criteria if project else 0,
+            duration_seconds=project.duration() if project else None,
+            status=project.status.value if project else "",
+            is_running=engine.is_running,
+            cycle_count=len(project.cycles) if project else 0,
+            cycle_count_total=project.cycle_count_total if project else 0,
+            ext={"project": project},
+        )

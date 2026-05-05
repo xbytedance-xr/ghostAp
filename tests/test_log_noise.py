@@ -33,7 +33,7 @@ class TestLogNoise(unittest.TestCase):
 
         # Mock CardBuilder
         with patch("src.feishu.handlers.deep.CardBuilder") as mock_card_builder:
-            mock_card_builder.build_engine_card.return_value = ("interactive", "{}")
+            mock_card_builder.build_info_card.return_value = ("interactive", "{}")
 
             mock_engine = MagicMock()
             mock_ctx.deep_engine_manager.get_or_create.return_value = mock_engine
@@ -90,7 +90,7 @@ class TestLogNoise(unittest.TestCase):
 
         # Mock CardBuilder
         with patch("src.feishu.handlers.loop.CardBuilder") as mock_card_builder:
-            mock_card_builder.build_engine_card.return_value = ("interactive", "{}")
+            mock_card_builder.build_info_card.return_value = ("interactive", "{}")
 
             mock_engine = MagicMock()
             mock_ctx.loop_engine_manager.get_or_create.return_value = mock_engine
@@ -177,7 +177,7 @@ class TestLogNoise(unittest.TestCase):
 
         # Mock CardBuilder
         with patch("src.feishu.handlers.spec.CardBuilder") as mock_card_builder:
-            mock_card_builder.build_engine_card.return_value = ("interactive", "{}")
+            mock_card_builder.build_info_card.return_value = ("interactive", "{}")
 
             mock_engine = MagicMock()
             mock_ctx.spec_engine_manager.get_or_create.return_value = mock_engine
@@ -185,8 +185,8 @@ class TestLogNoise(unittest.TestCase):
             # Simulate TimeoutError in execute
             mock_engine.execute.side_effect = asyncio.TimeoutError("Simulated timeout")
 
-            # Patch logger
-            with patch("src.feishu.handlers.spec.logger") as mock_logger:
+            # Patch logger (warning now emitted from engine_base module)
+            with patch("src.feishu.handlers.engine_base.logger") as mock_logger:
 
                 def mock_submit(spec, func):
                     func(None)
@@ -201,10 +201,10 @@ class TestLogNoise(unittest.TestCase):
                 # Verify warning was logged
                 mock_logger.warning.assert_called()
                 args = mock_logger.warning.call_args
-                self.assertIn("Spec Engine 执行超时", args[0][0])
-                # After logger hardening, exception is passed as str(e) or repr(e)
-                self.assertIsInstance(args[0][2], str)
-                self.assertIn("Simulated timeout", args[0][2])
+                # engine_base uses f-string: "Spec Engine 执行超时 (task_id=...): ..."
+                log_msg = args[0][0]
+                self.assertIn("Spec Engine 执行超时", log_msg)
+                self.assertIn("Simulated timeout", log_msg)
 
                 # Verify NO error log for this exception
                 mock_logger.error.assert_not_called()

@@ -24,7 +24,7 @@ class TestRenderCardBasic:
 
     def test_empty_state_returns_single_page(self):
         state = CardState()
-        cards = render_card(state)
+        cards = render_card(state, RenderBudget())
         assert len(cards) == 1
         assert cards[0].page_index == 0
         assert cards[0].total_pages == 1
@@ -34,9 +34,9 @@ class TestRenderCardBasic:
             blocks=(ContentBlock(kind="text", block_id="t1", content="Hello world"),),
             header=HeaderState(title="Test", template="blue"),
         )
-        cards = render_card(state)
+        cards = render_card(state, RenderBudget())
         assert len(cards) == 1
-        card_json = cards[0].card_json
+        card_json = cards[0]._card_json
         assert card_json["schema"] == "2.0"
         assert card_json["header"]["title"]["content"] == "Test"
         # body should have the text element
@@ -48,8 +48,8 @@ class TestRenderCardBasic:
             blocks=(ContentBlock(kind="text", block_id="t1", content="content"),),
             header=HeaderState(title="Title", template="green"),
         )
-        cards = render_card(state)
-        card_json = cards[0].card_json
+        cards = render_card(state, RenderBudget())
+        card_json = cards[0]._card_json
         assert "schema" in card_json
         assert "config" in card_json
         assert "header" in card_json
@@ -74,8 +74,8 @@ class TestStreamingMode:
             ),
             terminal="running",
         )
-        cards = render_card(state)
-        assert cards[0].card_json["config"].get("streaming_mode") is True
+        cards = render_card(state, RenderBudget())
+        assert cards[0]._card_json["config"].get("streaming_mode") is True
 
     def test_streaming_disabled_when_completed(self):
         state = CardState(
@@ -90,8 +90,8 @@ class TestStreamingMode:
             ),
             terminal="completed",
         )
-        cards = render_card(state)
-        assert "streaming_mode" not in cards[0].card_json["config"]
+        cards = render_card(state, RenderBudget())
+        assert "streaming_mode" not in cards[0]._card_json["config"]
 
     def test_streaming_disabled_when_no_active_element(self):
         state = CardState(
@@ -105,8 +105,8 @@ class TestStreamingMode:
             ),
             terminal="running",
         )
-        cards = render_card(state)
-        assert "streaming_mode" not in cards[0].card_json["config"]
+        cards = render_card(state, RenderBudget())
+        assert "streaming_mode" not in cards[0]._card_json["config"]
 
 
 class TestActiveElement:
@@ -124,7 +124,7 @@ class TestActiveElement:
                 ),
             ),
         )
-        cards = render_card(state)
+        cards = render_card(state, RenderBudget())
         assert cards[0].active_element is not None
         assert cards[0].active_element.element_id == "el_stream"
         assert cards[0].active_element.text == "streaming text"
@@ -141,7 +141,7 @@ class TestActiveElement:
                 ),
             ),
         )
-        cards = render_card(state)
+        cards = render_card(state, RenderBudget())
         assert cards[0].active_element is None
 
     def test_no_active_element_without_element_id(self):
@@ -152,7 +152,7 @@ class TestActiveElement:
                 ),
             ),
         )
-        cards = render_card(state)
+        cards = render_card(state, RenderBudget())
         assert cards[0].active_element is None
 
 
@@ -205,8 +205,8 @@ class TestFooterAndButtons:
             blocks=(ContentBlock(kind="text", block_id="t1", content="text"),),
             footer=FooterState(status="thinking", status_text="🤔 思考中..."),
         )
-        cards = render_card(state)
-        body = cards[0].card_json["body"]["elements"]
+        cards = render_card(state, RenderBudget())
+        body = cards[0]._card_json["body"]["elements"]
         # Should have hr separator from footer
         assert any(el.get("tag") == "hr" for el in body)
 
@@ -215,10 +215,10 @@ class TestFooterAndButtons:
             blocks=(ContentBlock(kind="text", block_id="t1", content="text"),),
             buttons=(ButtonSpec(text="Stop", action_id="stop", type="danger"),),
         )
-        cards = render_card(state)
-        body = cards[0].card_json["body"]["elements"]
-        # Should have column_set for buttons
-        assert any(el.get("tag") == "column_set" for el in body)
+        cards = render_card(state, RenderBudget())
+        body = cards[0]._card_json["body"]["elements"]
+        # Single button renders as column_set with flex_mode 'none' (full width)
+        assert any(el.get("tag") == "column_set" and el.get("flex_mode") == "none" for el in body)
 
 
 class TestMultipleBlockTypes:
@@ -236,8 +236,8 @@ class TestMultipleBlockTypes:
                 ),
             ),
         )
-        cards = render_card(state)
-        body = cards[0].card_json["body"]["elements"]
+        cards = render_card(state, RenderBudget())
+        body = cards[0]._card_json["body"]["elements"]
         assert any(el.get("tag") == "collapsible_panel" for el in body)
 
     def test_reasoning_block_renders(self):
@@ -251,8 +251,8 @@ class TestMultipleBlockTypes:
                 ),
             ),
         )
-        cards = render_card(state)
-        body = cards[0].card_json["body"]["elements"]
+        cards = render_card(state, RenderBudget())
+        body = cards[0]._card_json["body"]["elements"]
         assert any(el.get("tag") == "collapsible_panel" for el in body)
 
     def test_plan_block_renders(self):
@@ -266,8 +266,8 @@ class TestMultipleBlockTypes:
                 ),
             ),
         )
-        cards = render_card(state)
-        body = cards[0].card_json["body"]["elements"]
+        cards = render_card(state, RenderBudget())
+        body = cards[0]._card_json["body"]["elements"]
         panels = [el for el in body if el.get("tag") == "collapsible_panel"]
         assert len(panels) == 1
 
@@ -285,8 +285,8 @@ class TestMultipleBlockTypes:
                 ContentBlock(kind="text", block_id="t2", content="Conclusion"),
             ),
         )
-        cards = render_card(state)
-        body = cards[0].card_json["body"]["elements"]
+        cards = render_card(state, RenderBudget())
+        body = cards[0]._card_json["body"]["elements"]
         # 3 content elements + 0 footer/buttons
         assert len(body) >= 3
         assert body[0]["tag"] == "markdown"
@@ -322,7 +322,7 @@ class TestPagination:
         budget = RenderBudget(byte_budget=5000)
         cards = render_card(state, budget)
         for card in cards:
-            assert card.card_json["header"]["title"]["content"] == "Multi-page"
+            assert card._card_json["header"]["title"]["content"] == "Multi-page"
 
 
 class TestApprovalRendering:
@@ -346,14 +346,14 @@ class TestApprovalRendering:
 
     def test_header_template_is_indigo(self):
         state = self._make_approval_state()
-        cards = render_card(state)
+        cards = render_card(state, RenderBudget())
         assert len(cards) >= 1
-        assert cards[0].card_json["header"]["template"] == "indigo"
+        assert cards[0]._card_json["header"]["template"] == "indigo"
 
     def test_buttons_approve_reject_present(self):
         state = self._make_approval_state()
-        cards = render_card(state)
-        body = cards[0].card_json["body"]["elements"]
+        cards = render_card(state, RenderBudget())
+        body = cards[0]._card_json["body"]["elements"]
         # Buttons render as column_set (2 buttons)
         column_sets = [el for el in body if el.get("tag") == "column_set"]
         assert len(column_sets) >= 1, "Should have a column_set for approve/reject buttons"
@@ -375,8 +375,8 @@ class TestApprovalRendering:
 
     def test_footer_status_text_contains_tool_name(self):
         state = self._make_approval_state(tool_name="bash")
-        cards = render_card(state)
-        body = cards[0].card_json["body"]["elements"]
+        cards = render_card(state, RenderBudget())
+        body = cards[0]._card_json["body"]["elements"]
         # Footer is: hr + markdown(status_text) [+ optional progress]
         hr_elements = [el for el in body if el.get("tag") == "hr"]
         assert len(hr_elements) >= 1, "Footer should have hr separator"
@@ -390,5 +390,5 @@ class TestApprovalRendering:
 
     def test_no_streaming_mode_during_approval(self):
         state = self._make_approval_state()
-        cards = render_card(state)
-        assert "streaming_mode" not in cards[0].card_json["config"]
+        cards = render_card(state, RenderBudget())
+        assert "streaming_mode" not in cards[0]._card_json["config"]

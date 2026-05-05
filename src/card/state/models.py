@@ -1,14 +1,23 @@
-"""Immutable card state dataclasses."""
+"""Immutable card state dataclasses.
+
+ContentBlock is a tagged-union: each block kind is a distinct frozen dataclass
+sharing common fields (kind, block_id, content, element_id, status).
+The Union type alias `ContentBlock` enables isinstance-based dispatch.
+"""
 
 from __future__ import annotations
 
+import copy
+import dataclasses
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import ClassVar, Literal, TypeAlias, TypedDict, Union, get_args
 
 
 TerminalStatus = Literal[
-    "running", "completed", "failed", "cancelled", "paused", "awaiting_approval"
+    "running", "completed", "failed", "cancelled", "paused", "awaiting_approval", "archived", "blocked"
 ]
+
+TerminalReason = Literal["completed", "cancelled", "ttl_expired", "failed", "archived"]
 
 BlockStatus = Literal["active", "completed", "failed"]
 
@@ -21,7 +30,12 @@ class CardMetadata:
     mode_emoji: str = "🤖"
     tool_name: str | None = None
     model_name: str | None = None
-    engine_type: str | None = None  # "deep" / "loop" / "spec" / None
+    engine_type: str | None = None  # "deep" / "loop" / "spec" / "worktree" / None
+    compact: bool = False
+    expanded: bool = False
+    expand_ac: bool = False
+    continuation_seq: int = 0  # >0 means this is a continuation card (续 #N)
+    idle_timeout_seconds: int | None = None  # Session idle timeout for footer display
 
 
 @dataclass(frozen=True)
@@ -30,14 +44,31 @@ class HeaderState:
     title: str = ""
     subtitle: str | None = None
     template: str = "blue"
+    header_source: Literal["lifecycle", "engine"] = "lifecycle"
 
 
 @dataclass(frozen=True)
 class FooterState:
-    """Card footer state."""
+    """Card footer state.
+
+    Contains progress and warning sub-fields for clear responsibility separation.
+    Progress rendering priority (mutually exclusive — highest wins):
+        1. ``progress_pct`` — raw percentage (0-100), rendered as visual bar by footer
+        2. ``progress`` — plain text progress description
+
+    Only the highest-priority non-None field is rendered. Callers should set
+    exactly one of these fields per dispatch to avoid ambiguity.
+    """
     status: Literal["thinking", "tool_running", "waiting_approval", "idle"] | None = None
     status_text: str | None = None
     progress: str | None = None
+    progress_pct: int | None = None  # Raw percentage (0-100), rendered by footer
+    warning_banner: str | None = None  # Warning text shown above footer
+    warning_type: Literal["success", "warning", "error", "info"] | None = None  # Semantic banner type
+    persistent_warning: bool = False  # If True, warning_banner is not cleared by content reducers
+    progress_started_at: float | None = None  # Monotonic time when progress tracking began
+    duration_seconds: float | None = None  # Total elapsed time (set on terminal events)
+    last_updated_at: str | None = None  # HH:MM timestamp of last successful delivery
 
 
 @dataclass(frozen=True)
@@ -47,32 +78,293 @@ class ButtonSpec:
     action_id: str = ""
     type: Literal["primary", "default", "danger"] = "default"
     confirm: str | None = None
+    url: str | None = None  # If set, renders as URL-open button instead of callback
+    disabled: bool = False
+    disabled_text: str | None = None  # Tooltip shown when button is disabled
+
+
+# ---------------------------------------------------------------------------
+# ContentBlock tagged-union: per-kind dataclasses
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class ContentBlock:
-    """Indivisible content atom in the card."""
-    kind: Literal["text", "tool_call", "reasoning", "plan"] = "text"
+class TextBlock:
+    """Plain text content block (supports streaming via element_id)."""
+    _atom_kind: ClassVar[str] = "text"
+    kind: Literal["text"] = "text"
     block_id: str = ""
     content: str = ""
     element_id: str | None = None
     status: BlockStatus = "active"
-    # tool_call specific
+
+
+@dataclass(frozen=True)
+class ToolBlock:
+    """Tool call content block."""
+    _atom_kind: ClassVar[str] = "tool_panel"
+    kind: Literal["tool_call"] = "tool_call"
+    block_id: str = ""
+    content: str = ""
+    element_id: str | None = None
+    status: BlockStatus = "active"
     tool_name: str | None = None
     tool_summary: str | None = None
     tool_input: str | None = None
     tool_output: str | None = None
-    # reasoning specific
+
+
+@dataclass(frozen=True)
+class ReasoningBlock:
+    """Reasoning/thinking content block."""
+    _atom_kind: ClassVar[str] = "reasoning"
+    kind: Literal["reasoning"] = "reasoning"
+    block_id: str = ""
+    content: str = ""
+    element_id: str | None = None
+    status: BlockStatus = "active"
     char_count: int = 0
+
+
+@dataclass(frozen=True)
+class PlanBlock:
+    """Plan content block."""
+    _atom_kind: ClassVar[str] = "plan"
+    kind: Literal["plan"] = "plan"
+    block_id: str = ""
+    content: str = ""
+    element_id: str | None = None
+    status: BlockStatus = "active"
+
+
+@dataclass(frozen=True)
+class PhaseBlock:
+    """Engine phase content block (Spec/Loop)."""
+    _atom_kind: ClassVar[str] = "phase_panel"
+    kind: Literal["phase"] = "phase"
+    block_id: str = ""
+    content: str = ""
+    element_id: str | None = None
+    status: BlockStatus = "active"
+    phase_name: str | None = None
+    cycle_num: int | None = None
+
+
+@dataclass(frozen=True)
+class CriteriaBlock:
+    """Acceptance criteria content block."""
+    _atom_kind: ClassVar[str] = "criteria_panel"
+    kind: Literal["criteria"] = "criteria"
+    block_id: str = ""
+    content: str = ""
+    element_id: str | None = None
+    status: BlockStatus = "active"
+
+
+# --- Worktree per-kind TypedDicts for structured data ---
+
+
+class WorktreeToolSelectData(TypedDict, total=False):
+    """Structured data for worktree_tool_select blocks."""
+    tools: list[dict]
+    selected: list[str]
+    message: str
+
+
+class WorktreeConfirmData(TypedDict, total=False):
+    """Structured data for worktree_confirm blocks."""
+    selected_items: list[dict]
+    goal: str
+    message: str
+
+
+class WorktreeUnitsData(TypedDict, total=False):
+    """Structured data for worktree_units blocks."""
+    units: list[dict]
+    message: str
+    completed: int
+    total: int
+
+
+class WorktreeMergeData(TypedDict, total=False):
+    """Structured data for worktree_merge blocks."""
+    merge_notes: list[dict]
+    base_branch: str
+
+
+class WorktreeCleanupData(TypedDict, total=False):
+    """Structured data for worktree_cleanup blocks."""
+    merge_notes: list[dict]
+    base_branch: str
+    merge_results: list[dict] | None
+    cleanup_phase: str
+
+
+@dataclass(frozen=True)
+class _WorktreeBlockBase:
+    """Base class for all worktree lifecycle blocks.
+
+    All worktree blocks share the same structure, differing only in
+    ``kind`` literal and ``data`` typing. Subclasses override these.
+    """
+    _atom_kind: ClassVar[str] = "worktree_panel"
+    kind: str = ""
+    block_id: str = ""
+    content: str = ""
+    element_id: str | None = None
+    status: BlockStatus = "active"
+    data: dict | None = None
+
+    def __post_init__(self) -> None:
+        if self.data is not None:
+            object.__setattr__(self, "data", copy.deepcopy(self.data))
+
+
+@dataclass(frozen=True)
+class WorktreeSelectBlock(_WorktreeBlockBase):
+    """Worktree tool selection block."""
+    kind: Literal["worktree_tool_select"] = "worktree_tool_select"
+    data: WorktreeToolSelectData | dict | None = None
+
+
+@dataclass(frozen=True)
+class WorktreeConfirmBlock(_WorktreeBlockBase):
+    """Worktree confirmation block."""
+    kind: Literal["worktree_confirm"] = "worktree_confirm"
+    data: WorktreeConfirmData | dict | None = None
+
+
+@dataclass(frozen=True)
+class WorktreeUnitsBlock(_WorktreeBlockBase):
+    """Worktree execution progress block."""
+    kind: Literal["worktree_units"] = "worktree_units"
+    data: WorktreeUnitsData | dict | None = None
+
+
+@dataclass(frozen=True)
+class WorktreeMergeBlock(_WorktreeBlockBase):
+    """Worktree merge block."""
+    kind: Literal["worktree_merge"] = "worktree_merge"
+    data: WorktreeMergeData | dict | None = None
+
+
+@dataclass(frozen=True)
+class WorktreeCleanupBlock(_WorktreeBlockBase):
+    """Worktree cleanup block."""
+    kind: Literal["worktree_cleanup"] = "worktree_cleanup"
+    data: WorktreeCleanupData | dict | None = None
+
+
+# Tagged-union type alias
+AnyContentBlock: TypeAlias = Union[
+    TextBlock, ToolBlock, ReasoningBlock, PlanBlock, PhaseBlock, CriteriaBlock,
+    WorktreeSelectBlock, WorktreeConfirmBlock, WorktreeUnitsBlock,
+    WorktreeMergeBlock, WorktreeCleanupBlock,
+]
+"""Union of all content block types. Use isinstance() for type-safe dispatch."""
+
+# Map kind → concrete class for the factory function
+_BLOCK_KIND_MAP: dict[str, type] = {
+    "text": TextBlock,
+    "tool_call": ToolBlock,
+    "reasoning": ReasoningBlock,
+    "plan": PlanBlock,
+    "phase": PhaseBlock,
+    "criteria": CriteriaBlock,
+    "worktree_tool_select": WorktreeSelectBlock,
+    "worktree_confirm": WorktreeConfirmBlock,
+    "worktree_units": WorktreeUnitsBlock,
+    "worktree_merge": WorktreeMergeBlock,
+    "worktree_cleanup": WorktreeCleanupBlock,
+}
+
+# Import-time completeness check: every AnyContentBlock subtype must be registered
+_registered_kinds = set(_BLOCK_KIND_MAP.keys())
+for _block_cls in get_args(AnyContentBlock):
+    _fields = {f.name: f for f in dataclasses.fields(_block_cls)}
+    _kind_field = _fields.get("kind")
+    if _kind_field is None or _kind_field.default is dataclasses.MISSING:
+        raise RuntimeError(
+            f"Block class {_block_cls.__name__} missing 'kind' field with default value"
+        )
+    if _kind_field.default not in _registered_kinds:
+        raise RuntimeError(
+            f"Block class {_block_cls.__name__} has kind={_kind_field.default!r} "
+            f"not registered in _BLOCK_KIND_MAP. Add it to the map."
+        )
+del _registered_kinds, _block_cls, _fields, _kind_field
+
+
+def ContentBlock(kind: str = "text", **kwargs) -> AnyContentBlock:  # noqa: N802
+    """Factory function: creates the appropriate block subtype based on kind.
+
+    Backwards-compatible with old ``ContentBlock(kind="text", block_id=..., ...)`` usage.
+    Only passes kwargs that the target class accepts, silently ignoring extras.
+
+    Extension pattern guidance:
+        - Use ``block.data`` (TypedDict) for UI-rendering-driven structured content
+          that is specific to a single block's visual representation (e.g. worktree
+          tool lists, unit progress, merge notes).
+        - Use ``CardState.engine_ext`` (EngineExtState) for cross-block aggregate
+          metadata shared across the entire card (e.g. cycle count, phase info,
+          criteria satisfaction counts).
+    """
+    cls = _BLOCK_KIND_MAP.get(kind, TextBlock)
+    # Filter kwargs to only fields the target class knows about
+    valid_fields = {f.name for f in dataclasses.fields(cls)}
+    filtered = {k: v for k, v in kwargs.items() if k in valid_fields}
+    return cls(**filtered)  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
+# Engine extension & top-level state
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class EngineExtState:
+    """Engine-specific extended state (Spec/Loop/Deep shared fields).
+
+    Isolated from core CardState to keep the model engine-agnostic.
+
+    Use this for cross-block aggregate metadata that applies to the entire card
+    (e.g. iteration cycle count, current phase label, criteria satisfaction).
+    For per-block structured UI data, use ``ContentBlock.data`` (TypedDict) instead.
+    """
+    criteria_section: str | None = None  # Rendered criteria markdown
+    criteria_satisfied: int = 0
+    criteria_total: int = 0
+    phase_info: str | None = None  # Current phase label
+    cycle_num: int = 0
+    max_cycles: int = 0
+    blocked_reason: str | None = None  # Reason for BLOCKED terminal state
 
 
 @dataclass(frozen=True)
 class CardState:
     """Top-level immutable card state produced by reducer."""
-    blocks: tuple[ContentBlock, ...] = ()
+    blocks: tuple[AnyContentBlock, ...] = ()
     terminal: TerminalStatus = "running"
+    terminal_reason: TerminalReason | None = None
     header: HeaderState = field(default_factory=HeaderState)
     footer: FooterState = field(default_factory=FooterState)
     buttons: tuple[ButtonSpec, ...] = ()
     metadata: CardMetadata = field(default_factory=CardMetadata)
     version: int = 0
+    # Incremented only on structural changes (block add/remove, terminal, header/buttons)
+    structural_version: int = 0
+    # Engine-specific extended state (None for non-engine cards)
+    engine_ext: EngineExtState | None = None
+    # Lazy O(1) block_id → index cache (built on first access, not on every state change)
+    _block_index_cache: dict[str, int] | None = field(
+        default=None, repr=False, compare=False, init=False
+    )
+
+    @property
+    def block_index(self) -> dict[str, int]:
+        """O(1) block_id → index lookup. Lazy-built on first access."""
+        cache = self._block_index_cache
+        if cache is None:
+            cache = {b.block_id: i for i, b in enumerate(self.blocks) if b.block_id}
+            object.__setattr__(self, "_block_index_cache", cache)
+        return cache

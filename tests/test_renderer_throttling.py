@@ -6,6 +6,7 @@ import pytest
 
 from src.acp import ACPEventType
 from src.card.builder import CardBuilder
+from src.card.engine_snapshot import EngineSnapshot
 from src.deep_engine.models import DeepProjectStatus
 from src.feishu.renderers.deep_renderer import DeepRenderer
 from src.feishu.renderers.loop_renderer import LoopRenderer
@@ -22,11 +23,12 @@ class TestRendererThrottling:
         handler.settings.deep_stream_interval = 0.0  # Instant for test
         handler.settings.deep_stream_min_chars = 0
         handler.settings.default_reply_mode = "thread"
-        handler.settings.card_deep_compact_default = False
+        handler.settings.card.deep_compact_default = False
 
         # Mock reporter
         handler.ctx.progress_reporter.format_summary.return_value = "Mock Summary"
         handler.ctx.loop_reporter.format_analyzing_done.return_value = "Mock Analyzing Done"
+        handler.ctx.loop_reporter.format_criteria_section.return_value = "Mock Criteria"
 
         # Mock engines
         mock_engine = MagicMock()
@@ -47,101 +49,112 @@ class TestRendererThrottling:
         return handler
 
     def test_deep_renderer_throttling(self, mock_handler):
-        """Test that DeepRenderer uses _StreamThrottle for streaming updates"""
+        """Test that DeepRenderer dispatches ACP events to CardSession"""
         mock_handler.settings.engine_collapsible_enabled = False
         renderer = DeepRenderer(mock_handler)
 
         mock_project = MagicMock()
         mock_project.project_id = "test_proj"
 
-        callbacks = renderer.create_deep_callbacks(
-            "msg_id", "chat_id", mock_project, initial_message_id="existing_msg_id"
-        )
+        with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create:
+            mock_session = MagicMock()
+            mock_create.return_value = mock_session
 
-        mock_event = MagicMock()
-        mock_event.event_type = ACPEventType.TEXT_CHUNK
-        mock_event.text = "some text content"
+            callbacks = renderer.create_deep_callbacks(
+                "msg_id", "chat_id", mock_project, initial_message_id="existing_msg_id"
+            )
 
-        with patch("src.feishu.renderers.deep_renderer.CardBuilder") as mock_builder:
-            mock_builder.build_engine_card.return_value = ("interactive", "{}")
+            mock_event = MagicMock()
+            mock_event.event_type = ACPEventType.TEXT_CHUNK
+            mock_event.text = "some text content"
 
-            # First event creates the card via reply_card (session starts with no message_id)
+            # Events should be dispatched to the CardSession
             callbacks.on_event(mock_event)
-            mock_handler.reply_card.assert_called()
+            assert mock_session.dispatch.called
 
-            # Reset and send second event — should go through update_card
-            mock_handler.reset_mock()
-            mock_handler.reply_card = MagicMock(return_value="new_msg")
-            mock_handler.update_card = MagicMock(return_value=True)
-
-            callbacks.on_event(mock_event)
-            mock_handler.update_card.assert_called()
+            # Verify it dispatched a text_delta event
+            calls = [c.args[0] for c in mock_session.dispatch.call_args_list]
+            types = [c.type.value for c in calls]
+            assert "text_delta" in types
 
     def test_deep_renderer_critical_update(self, mock_handler):
-        """Test that critical updates (success/error) always send via session"""
+        """Test that critical updates (success/error) dispatch terminal events to CardSession"""
         mock_handler.settings.engine_collapsible_enabled = False
         renderer = DeepRenderer(mock_handler)
         mock_project = MagicMock()
         mock_project.project_id = "test_proj"
 
-        callbacks = renderer.create_deep_callbacks(
-            "msg_id", "chat_id", mock_project, initial_message_id="reply_msg_id"
-        )
+        with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create:
+            mock_session = MagicMock()
+            mock_create.return_value = mock_session
 
-        # First call to initialize session state (sets _message_id via reply_card)
-        mock_event = MagicMock()
-        mock_event.event_type = ACPEventType.TEXT_CHUNK
-        mock_event.text = "chunk"
-
-        with patch("src.feishu.renderers.deep_renderer.CardBuilder") as mock_builder:
-            mock_builder.build_engine_card.return_value = ("interactive", "{}")
-            callbacks.on_event(mock_event)
-
-        # Now reset for clean verification
-        mock_handler.reset_mock()
-        mock_handler.reply_card = MagicMock(return_value="new_msg_id")
-        mock_handler.update_card = MagicMock(return_value=True)
-
-        with patch("src.feishu.renderers.deep_renderer.CardBuilder") as mock_builder:
-            mock_builder.build_engine_card.return_value = ("interactive", "{}")
+            callbacks = renderer.create_deep_callbacks(
+                "msg_id", "chat_id", mock_project, initial_message_id="reply_msg_id"
+            )
 
             mock_deep_project = MagicMock()
             mock_deep_project.status = DeepProjectStatus.COMPLETED
 
             callbacks.on_project_done(mock_deep_project)
 
-            # Critical updates go through session.send() → update_card
-            mock_handler.update_card.assert_called()
+            # Should dispatch completed event
+            calls = [c.args[0] for c in mock_session.dispatch.call_args_list]
+            types = [c.type.value for c in calls]
+            assert "completed" in types
 
     def test_loop_renderer_throttling(self, mock_handler):
-        """Test that LoopRenderer uses DirectCardSession for message delivery"""
+        """Test that LoopRenderer uses CardSession for event-driven message delivery"""
         renderer = LoopRenderer(mock_handler)
         mock_project = MagicMock()
         mock_project.project_id = "test_proj"
-        callbacks = renderer.create_loop_callbacks("msg_id", "chat_id", mock_project)
+        mock_project.root_path = "/tmp/test"
 
-        with patch("src.feishu.renderers.loop_renderer.CardBuilder") as mock_builder:
-            mock_builder.build_engine_card.return_value = ("interactive", "{}")
+        # Mock snapshot for on_iteration_start path
+        mock_lp = MagicMock()
+        mock_lp.satisfied_count = 2
+        mock_lp.total_criteria = 5
+        mock_lp.duration.return_value = 10.0
+        snap = EngineSnapshot(
+            engine_name="Coco",
+            root_path="/tmp/test",
+            satisfied_count=2,
+            total_criteria=5,
+            is_running=True,
+            ext={"project": mock_lp},
+        )
+        mock_handler.ctx.loop_engine_manager.snapshot.return_value = snap
+
+        with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create:
+            mock_session = MagicMock()
+            mock_create.return_value = mock_session
+
+            callbacks = renderer.create_loop_callbacks("msg_id", "chat_id", mock_project)
+
+            # Verify session was created with CardMetadata
+            mock_create.assert_called_once()
+            call_args = mock_create.call_args
+            assert call_args[0][0] == "chat_id"  # chat_id
+            metadata = call_args[0][2]
+            assert metadata.engine_type == "loop"
+
+            # on_analyzing_done dispatches STARTED + TEXT_DELTA
             mock_loop_project = MagicMock()
             callbacks.on_analyzing_done(mock_loop_project)
+            assert mock_session.dispatch.call_count == 2
 
-            # First send goes through reply_card (create path)
-            mock_handler.reply_card.assert_called()
-
-            # Reset
-            mock_handler.reset_mock()
-            mock_handler.reply_card = MagicMock(return_value="new_msg")
-            mock_handler.update_card = MagicMock(return_value=True)
-
-            # on_iteration_start should update existing card via update_card
+            # on_iteration_start dispatches CYCLE_STARTED + CRITERIA_UPDATED + WARNING_UPDATED
+            mock_session.reset_mock()
             callbacks.on_iteration_start(1, 5)
-
-            # Subsequent sends go through update_card
-            mock_handler.update_card.assert_called()
+            assert mock_session.dispatch.call_count >= 1  # At least CYCLE_STARTED
 
     def test_help_card_structure(self):
         """Test that build_help_card returns valid structure"""
-        msg_type, content_json = CardBuilder.build_help_card(category="main")
+        msg_type, content_json = CardBuilder.build_help_card(
+            category="main",
+            session_idle_timeout=600,
+            session_idle_warn_at_remaining=120,
+            lock_undo_window_seconds=300,
+        )
         content = json.loads(content_json)
 
         assert msg_type == "interactive"
@@ -153,8 +166,16 @@ class TestRendererThrottling:
         buttons_row = next((e for e in elements if e.get("tag") == "column_set"), None)
         assert buttons_row is not None
 
-        # Check for content text
-        text_elem = next(
-            (e for e in elements if e.get("tag") == "markdown" and "编程模式" in e.get("content", "")), None
-        )
-        assert text_elem is not None
+        # Check for content text (now inside collapsible_panel elements)
+        found = False
+        for e in elements:
+            if e.get("tag") == "collapsible_panel":
+                for inner in e.get("elements", []):
+                    if inner.get("tag") == "markdown" and "编程模式" in inner.get("content", ""):
+                        found = True
+                        break
+            elif e.get("tag") == "markdown" and "编程模式" in e.get("content", ""):
+                found = True
+            if found:
+                break
+        assert found

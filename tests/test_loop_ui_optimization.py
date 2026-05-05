@@ -10,26 +10,8 @@ class TestLoopUIOptimization(unittest.TestCase):
         self.mock_handler = MagicMock(spec=LoopHandler)
         self.mock_handler.ctx = MagicMock()  # Mock ctx explicitly
         self.mock_handler.settings = MagicMock()
-        self.mock_handler.settings.card_deep_compact_default = False
+        self.mock_handler.settings.card.deep_compact_default = False
         self.renderer = LoopRenderer(self.mock_handler)
-
-    def test_generate_progress_bar(self):
-        """Test the logic for generating emoji progress bars"""
-        # Case 1: Empty
-        self.assertEqual(self.renderer._generate_progress_bar(0, 0), "")
-
-        # Case 2: Small total (<= 10)
-        # 3/5 => ✅✅✅⬜️⬜️
-        bar = self.renderer._generate_progress_bar(3, 5)
-        self.assertEqual(bar, "✅✅✅⬜️⬜️")
-
-        # Case 3: Large total (> 10)
-        # 15/20 => ratio 0.75 => 7.5 => 7 filled, 3 empty => ✅✅✅✅✅✅✅⬜️⬜️⬜️ (15/20)
-        # MAX_BAR_LEN = 10
-        # filled = int(15/20 * 10) = int(7.5) = 7
-        bar = self.renderer._generate_progress_bar(15, 20)
-        expected = "✅" * 7 + "⬜️" * 3 + " (15/20)"
-        self.assertEqual(bar, expected)
 
     def test_render_ac_section_collapse(self):
         """Test AC section folding logic"""

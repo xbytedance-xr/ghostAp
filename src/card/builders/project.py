@@ -5,7 +5,7 @@ from urllib.parse import quote
 from src.project.context import ProjectContext, ProjectStatus
 from src.mode.manager import InteractionMode
 
-from ..styles import UI_TEXT
+from ..ui_text import UI_TEXT
 from ..shared import (
     apply_compact_style,
     build_responsive_layout,

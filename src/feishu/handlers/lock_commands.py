@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
-from ...card.styles import UI_TEXT
+from ...card.ui_text import UI_TEXT
 
 if TYPE_CHECKING:
     from ...chat_lock import ChatLockResult
@@ -42,6 +42,11 @@ class LockCommandsMixin:
         """
         from ...thread import get_current_sender_id, get_current_is_p2p, get_current_sender_name
         from ...card.builders.lock import build_lock_success_card
+        from ...config import get_settings as _get_settings
+
+        _settings = _get_settings()
+        _lock_undo_window = _settings.lock_undo_window_seconds
+        _app_id = getattr(_settings, "feishu_app_id", "") or ""
 
         # Lock/unlock is only meaningful in group chats.
         if get_current_is_p2p():
@@ -77,7 +82,7 @@ class LockCommandsMixin:
                         project=None, title=UI_TEXT["lock_card_title_hint"], content=_md, show_buttons=False)
                     self.reply_card(message_id, _card)
                 else:
-                    _reply = build_lock_success_card("lock", message=idempotent_msg)
+                    _reply = build_lock_success_card("lock", message=idempotent_msg, lock_undo_window_seconds=_lock_undo_window)
                     if isinstance(_reply, tuple):
                         _md, _btns = _reply
                         from ...card.builders.project import ProjectBuilder as _PB2
@@ -89,8 +94,6 @@ class LockCommandsMixin:
                     else:
                         self.reply_text(message_id, _reply)
                 if not result.idempotent:
-                    from ...config import get_settings as _get_settings
-                    _app_id = getattr(_get_settings(), "feishu_app_id", "") or ""
                     _broadcast = build_lock_success_card("lock", variant="broadcast", locker_name=sender_name, app_id=_app_id)
                     if isinstance(_broadcast, tuple):
                         from ...card.builders.project import ProjectBuilder

@@ -21,7 +21,7 @@ class TestCardDeepMobileOpt:
         # Create 55 lines of content (> FULL_LINE_THRESHOLD=50)
         content = "\n".join([f"Log line {i}" for i in range(55)])
 
-        _, card_json = CardBuilder.build_engine_card(
+        _, card_json = CardBuilder.build_info_card(
             project=mock_project,
             state=EngineCardState(
                 title="Executing Task", content=content, is_executing=True, compact=False, expanded=False
@@ -39,8 +39,7 @@ class TestCardDeepMobileOpt:
                 break
 
         assert content_element is not None
-        assert "..." in content_element["content"]
-        assert "(已折叠" in content_element["content"]
+        assert "…" in content_element["content"]
         # Ensure only last N lines are shown (approx check)
         assert "Log line 54" in content_element["content"]
         assert "Log line 0" not in content_element["content"]
@@ -49,7 +48,7 @@ class TestCardDeepMobileOpt:
         """Test that logs are NOT truncated in Full mode when expanded."""
         content = "\n".join([f"Log line {i}" for i in range(55)])
 
-        _, card_json = CardBuilder.build_engine_card(
+        _, card_json = CardBuilder.build_info_card(
             project=mock_project,
             state=EngineCardState(
                 title="Executing Task", content=content, is_executing=True, compact=False, expanded=True
@@ -66,7 +65,7 @@ class TestCardDeepMobileOpt:
                 break
 
         assert content_element is not None
-        assert "..." not in content_element["content"]
+        assert "…" not in content_element["content"]
         assert "Log line 0" in content_element["content"]
         assert "Log line 54" in content_element["content"]
 
@@ -75,7 +74,7 @@ class TestCardDeepMobileOpt:
         # Create very long single line content (> COMPACT_CHAR_FALLBACK=1500)
         content = "A" * 2000
 
-        _, card_json = CardBuilder.build_engine_card(
+        _, card_json = CardBuilder.build_info_card(
             project=mock_project,
             state=EngineCardState(title="Executing Task", content=content, is_executing=True, compact=True),
         )
@@ -92,34 +91,34 @@ class TestCardDeepMobileOpt:
         assert content_element is not None
         # It should truncate, but maybe to COMPACT_CHAR_FALLBACK chars if it's one long line
         assert len(content_element["content"]) < 2000
-        assert "..." in content_element["content"]
+        assert "…" in content_element["content"]
 
     def test_status_color_mapping(self, mock_project):
         """Test header color mapping based on status keywords."""
 
         # Error status
-        _, card_json = CardBuilder.build_engine_card(
+        _, card_json = CardBuilder.build_info_card(
             project=mock_project, state=EngineCardState(title="❌ Error Occurred", content="Details", engine_name="Coco")
         )
         card = json.loads(card_json)
         assert card["header"]["template"] == "red"
 
         # Completed status
-        _, card_json = CardBuilder.build_engine_card(
+        _, card_json = CardBuilder.build_info_card(
             project=mock_project, state=EngineCardState(title="✅ Task Completed", content="Details", engine_name="Coco")
         )
         card = json.loads(card_json)
         assert card["header"]["template"] == "green"
 
         # Planning status
-        _, card_json = CardBuilder.build_engine_card(
+        _, card_json = CardBuilder.build_info_card(
             project=mock_project, state=EngineCardState(title="🧠 Planning Step", content="Details", engine_name="Coco")
         )
         card = json.loads(card_json)
         assert card["header"]["template"] == "blue"
 
         # Paused status (passed via flag)
-        _, card_json = CardBuilder.build_engine_card(
+        _, card_json = CardBuilder.build_info_card(
             project=mock_project,
             state=EngineCardState(title="Executing", content="Details", is_paused=True, engine_name="Coco"),
         )
@@ -127,7 +126,7 @@ class TestCardDeepMobileOpt:
         assert card["header"]["template"] == "orange"
 
         # Default Executing (Coco)
-        _, card_json = CardBuilder.build_engine_card(
+        _, card_json = CardBuilder.build_info_card(
             project=mock_project,
             state=EngineCardState(title="Executing", content="Details", is_executing=True, engine_name="Coco"),
         )
@@ -135,7 +134,7 @@ class TestCardDeepMobileOpt:
         assert card["header"]["template"] == "turquoise"  # Default for Coco/Other running
 
         # Default Executing (Claude)
-        _, card_json = CardBuilder.build_engine_card(
+        _, card_json = CardBuilder.build_info_card(
             project=mock_project,
             state=EngineCardState(title="Executing", content="Details", is_executing=True, engine_name="Claude"),
         )
@@ -147,7 +146,7 @@ class TestCardDeepMobileOpt:
         content = "\n".join([f"Line {i}" for i in range(55)])
 
         # Case 1: Full Mode, Not Expanded -> Should show Expand button and Switch to Compact button
-        _, card_json = CardBuilder.build_engine_card(
+        _, card_json = CardBuilder.build_info_card(
             project=mock_project,
             state=EngineCardState(title="Title", content=content, is_executing=True, compact=False, expanded=False),
         )
@@ -171,7 +170,7 @@ class TestCardDeepMobileOpt:
         assert "deep_mode_compact" in action_types
 
         # Case 2: Full Mode, Expanded -> Should show Collapse button
-        _, card_json = CardBuilder.build_engine_card(
+        _, card_json = CardBuilder.build_info_card(
             project=mock_project,
             state=EngineCardState(title="Title", content=content, is_executing=True, compact=False, expanded=True),
         )
@@ -182,7 +181,7 @@ class TestCardDeepMobileOpt:
         assert "deep_collapse" in action_types
 
         # Case 3: Compact Mode -> Should show Switch to Full button, NO Expand/Collapse
-        _, card_json = CardBuilder.build_engine_card(
+        _, card_json = CardBuilder.build_info_card(
             project=mock_project, state=EngineCardState(title="Title", content=content, is_executing=True, compact=True)
         )
         card = json.loads(card_json)

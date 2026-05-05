@@ -1,0 +1,518 @@
+"""Card event dataclass and factory methods."""
+
+from __future__ import annotations
+
+import os
+import sys
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import Any, Generic, TypeVar, TYPE_CHECKING, overload
+
+from .types import CardEventType
+
+if TYPE_CHECKING:
+    from src.acp.models import ACPEvent
+    from .payloads import (
+        BlockedPayload,
+        CompletedPayload,
+        CriteriaUpdatedPayload,
+        CycleDonePayload,
+        CycleStartedPayload,
+        FailedPayload,
+        PhaseDonePayload,
+        PhaseStartedPayload,
+        PlanUpdatedPayload,
+        ProgressPayload,
+        ReasoningBlockPayload,
+        ReviewRetryPayload,
+        TextBlockPayload,
+        ToolDeltaPayload,
+        ToolDonePayload,
+        ToolFailedPayload,
+        ToolModelChangedPayload,
+        ToolStartedPayload,
+        WarningPayload,
+    )
+
+
+# Whether to run expensive per-element payload validation (only in DEBUG/test mode).
+# In production this is False to skip O(n) list-traversal checks in worktree factories.
+# Convention: top-level isinstance() type guards stay unconditional (cheap);
+# per-element structural checks (for-loop validators) MUST be wrapped with:
+#   if VALIDATE_PAYLOAD:
+VALIDATE_PAYLOAD = (
+    os.environ.get("DEBUG", "") == "1"
+    or "pytest" in sys.modules
+)
+
+# Payload type variable — used purely for type-checker narrowing.
+# At runtime, payload is always Mapping[str, Any].
+P = TypeVar("P", bound=Mapping[str, Any])
+
+
+@dataclass(frozen=True)
+class CardEvent(Generic[P]):
+    """Immutable card event dispatched to reducer.
+
+    Generic parameter P narrows the payload type for type-checkers.
+    At runtime, payload is always ``Mapping[str, Any]`` — no overhead.
+    """
+    type: CardEventType
+    payload: Mapping[str, Any] = field(default_factory=dict)
+
+    # --- Factory methods ---
+    # NOTE: @overload signatures live in .pyi stubs or are guarded by TYPE_CHECKING
+    # to avoid runtime overhead. The concrete implementations below serve both roles.
+
+    @classmethod
+    def started(cls) -> CardEvent[Mapping[str, Any]]:
+        """Signal that the engine session has started.
+
+        Payload: {} (empty)
+        Triggered when: Engine begins processing a user request.
+        """
+        return cls(type=CardEventType.STARTED)
+
+    @classmethod
+    def completed(cls, summary: str = "") -> CardEvent[CompletedPayload]:
+        """Signal successful completion of the engine session.
+
+        Payload: {summary?: str} — optional completion summary text.
+        Triggered when: Engine finishes all work successfully.
+        """
+        if not isinstance(summary, str):
+            raise TypeError(f"summary must be str, got {type(summary).__name__}")
+        payload = {}
+        if summary:
+            payload["summary"] = summary
+        return cls(type=CardEventType.COMPLETED, payload=payload)
+
+    @classmethod
+    def failed(cls, error: str = "") -> CardEvent[FailedPayload]:
+        """Signal that the engine session has failed.
+
+        Payload: {error: str} — error description text.
+        Triggered when: Engine encounters an unrecoverable error.
+        """
+        if not isinstance(error, str):
+            raise TypeError(f"error must be str, got {type(error).__name__}")
+        return cls(type=CardEventType.FAILED, payload={"error": error})
+
+    @classmethod
+    def cancelled(cls, *, reason: str | None = None) -> CardEvent[Mapping[str, Any]]:
+        """Signal that the user has cancelled the engine session.
+
+        Payload: {reason?: str} — optional cancellation reason (e.g. 'ttl_expired').
+        Triggered when: User explicitly cancels via button or command, or TTL expires.
+        """
+        payload = {"reason": reason} if reason else {}
+        return cls(type=CardEventType.CANCELLED, payload=payload)
+
+    @classmethod
+    def archived(cls, summary: str = "", sequence: int = 0, new_message_id: str = "") -> CardEvent[Mapping[str, Any]]:
+        """Signal that the session has been archived (rotated out by SessionRotator).
+
+        Payload: {summary?: str, sequence?: int, new_message_id?: str}
+        Triggered when: SessionRotator replaces active session with a new one.
+        new_message_id: the message_id of the new (replacement) card, for navigation URL.
+        """
+        payload = {}
+        if summary:
+            payload["summary"] = summary
+        if sequence:
+            payload["sequence"] = sequence
+        if new_message_id:
+            payload["new_message_id"] = new_message_id
+        return cls(type=CardEventType.ARCHIVED, payload=payload)
+
+    @classmethod
+    def blocked(cls, reason: str = "") -> CardEvent[BlockedPayload]:
+        """Signal that the engine session is blocked and cannot proceed.
+
+        Payload: {reason?: str} — optional reason explaining why the task is blocked.
+        Triggered when: Engine encounters a blocking condition (e.g. lock conflict, awaiting external input).
+        """
+        if not isinstance(reason, str):
+            raise TypeError(f"reason must be str, got {type(reason).__name__}")
+        payload = {}
+        if reason:
+            payload["reason"] = reason
+        return cls(type=CardEventType.BLOCKED, payload=payload)
+
+    @classmethod
+    def text_started(cls, block_id: str) -> CardEvent[TextBlockPayload]:
+        """Signal the start of a new text content block.
+
+        Payload: {block_id: str} — unique identifier for the text block.
+        Triggered when: Engine begins streaming a new text segment.
+        """
+        if not block_id:
+            raise ValueError("block_id is required for text_started")
+        return cls(type=CardEventType.TEXT_STARTED, payload={"block_id": block_id})
+
+    @classmethod
+    def text_delta(cls, block_id: str, text: str) -> CardEvent[TextBlockPayload]:
+        """Append text content to an active text block.
+
+        Payload: {block_id: str, text: str} — incremental text chunk.
+        Triggered when: Engine streams a text chunk for the active block.
+        """
+        if not block_id:
+            raise ValueError("block_id is required for text_delta")
+        return cls(type=CardEventType.TEXT_DELTA, payload={"block_id": block_id, "text": text})
+
+    @classmethod
+    def text_done(cls, block_id: str) -> CardEvent[TextBlockPayload]:
+        """Signal that a text block has finished streaming.
+
+        Payload: {block_id: str}
+        Triggered when: Engine completes the current text segment.
+        """
+        if not block_id:
+            raise ValueError("block_id is required for text_done")
+        return cls(type=CardEventType.TEXT_DONE, payload={"block_id": block_id})
+
+    @classmethod
+    def reasoning_started(cls, block_id: str) -> CardEvent[ReasoningBlockPayload]:
+        """Signal the start of a reasoning/thinking block.
+
+        Payload: {block_id: str}
+        Triggered when: Model enters thinking/reasoning mode.
+        """
+        if not block_id:
+            raise ValueError("block_id is required for reasoning_started")
+        return cls(type=CardEventType.REASONING_STARTED, payload={"block_id": block_id})
+
+    @classmethod
+    def reasoning_delta(cls, block_id: str, text: str) -> CardEvent[ReasoningBlockPayload]:
+        """Append content to an active reasoning block.
+
+        Payload: {block_id: str, text: str}
+        Triggered when: Model streams a reasoning chunk.
+        """
+        if not block_id:
+            raise ValueError("block_id is required for reasoning_delta")
+        return cls(type=CardEventType.REASONING_DELTA, payload={"block_id": block_id, "text": text})
+
+    @classmethod
+    def reasoning_done(cls, block_id: str) -> CardEvent[ReasoningBlockPayload]:
+        """Signal that a reasoning block has finished.
+
+        Payload: {block_id: str}
+        Triggered when: Model exits thinking/reasoning mode.
+        """
+        if not block_id:
+            raise ValueError("block_id is required for reasoning_done")
+        return cls(type=CardEventType.REASONING_DONE, payload={"block_id": block_id})
+
+    @classmethod
+    def tool_started(cls, block_id: str, tool_name: str, tool_input: str = "") -> CardEvent[ToolStartedPayload]:
+        """Signal the start of a tool call execution.
+
+        Payload: {block_id: str, tool_name: str, tool_input: str}
+        Triggered when: Agent invokes a tool (file read, shell command, etc.).
+        """
+        if not block_id:
+            raise ValueError("block_id is required for tool_started")
+        if not isinstance(tool_name, str):
+            raise TypeError(f"tool_name must be str, got {type(tool_name).__name__}")
+        return cls(type=CardEventType.TOOL_STARTED, payload={
+            "block_id": block_id, "tool_name": tool_name, "tool_input": tool_input,
+        })
+
+    @classmethod
+    def tool_delta(cls, block_id: str, content: str) -> CardEvent[ToolDeltaPayload]:
+        """Append streaming output to an active tool call block.
+
+        Payload: {block_id: str, content: str}
+        Triggered when: Tool produces incremental output.
+        """
+        if not block_id:
+            raise ValueError("block_id is required for tool_delta")
+        return cls(type=CardEventType.TOOL_DELTA, payload={"block_id": block_id, "content": content})
+
+    @classmethod
+    def tool_done(cls, block_id: str, tool_output: str = "", tool_summary: str = "") -> CardEvent[ToolDonePayload]:
+        """Signal successful completion of a tool call.
+
+        Payload: {block_id: str, tool_output: str, tool_summary: str}
+        Triggered when: Tool finishes execution successfully.
+        """
+        if not block_id:
+            raise ValueError("block_id is required for tool_done")
+        return cls(type=CardEventType.TOOL_DONE, payload={
+            "block_id": block_id, "tool_output": tool_output, "tool_summary": tool_summary,
+        })
+
+    @classmethod
+    def tool_failed(cls, block_id: str, error: str = "") -> CardEvent[ToolFailedPayload]:
+        """Signal that a tool call has failed.
+
+        Payload: {block_id: str, error: str}
+        Triggered when: Tool execution encounters an error.
+        """
+        if not block_id:
+            raise ValueError("block_id is required for tool_failed")
+        return cls(type=CardEventType.TOOL_FAILED, payload={"block_id": block_id, "error": error})
+
+    @classmethod
+    def plan_updated(cls, content: str) -> CardEvent[PlanUpdatedPayload]:
+        """Update the plan/checklist display in the card.
+
+        Payload: {content: str} — formatted plan text (markdown checklist).
+        Triggered when: Agent updates its execution plan.
+        """
+        if not isinstance(content, str):
+            raise TypeError(f"content must be str, got {type(content).__name__}")
+        return cls(type=CardEventType.PLAN_UPDATED, payload={"content": content})
+
+    @classmethod
+    def tool_model_changed(cls, tool_name: str | None = None, model_name: str | None = None) -> CardEvent[ToolModelChangedPayload]:
+        """Update the tool/model metadata displayed in the card header.
+
+        Payload: {tool_name?: str | None, model_name?: str | None}
+        Triggered when: User switches tool or model mid-session (e.g. via TTADK).
+        """
+        return cls(type=CardEventType.TOOL_MODEL_CHANGED, payload={
+            "tool_name": tool_name, "model_name": model_name,
+        })
+
+    @classmethod
+    def progress_updated(cls, current: int, total: int, label: str = "") -> CardEvent[ProgressPayload]:
+        """Update the progress indicator in the card footer.
+
+        Payload: {current: int, total: int, label?: str}
+        Triggered when: Engine completes a discrete step (tool call, file operation, etc.).
+        """
+        if not isinstance(current, int):
+            raise TypeError(f"current must be int, got {type(current).__name__}")
+        if not isinstance(total, int):
+            raise TypeError(f"total must be int, got {type(total).__name__}")
+        return cls(type=CardEventType.PROGRESS_UPDATED, payload={
+            "current": current, "total": total, "label": label,
+        })
+
+    @classmethod
+    def cycle_started(cls, cycle_num: int, max_cycles: int) -> CardEvent[CycleStartedPayload]:
+        """Signal the start of an engine iteration cycle.
+
+        Payload: {cycle_num: int, max_cycles: int}
+        Triggered when: Spec/Loop engine begins a new iteration cycle.
+        """
+        if not isinstance(cycle_num, int):
+            raise TypeError(f"cycle_num must be int, got {type(cycle_num).__name__}")
+        if not isinstance(max_cycles, int):
+            raise TypeError(f"max_cycles must be int, got {type(max_cycles).__name__}")
+        return cls(type=CardEventType.CYCLE_STARTED, payload={
+            "cycle_num": cycle_num, "max_cycles": max_cycles,
+        })
+
+    @classmethod
+    def cycle_done(cls, cycle_num: int, status: str = "completed") -> CardEvent[CycleDonePayload]:
+        """Signal the completion of an engine iteration cycle.
+
+        Payload: {cycle_num: int, status: str}
+        Triggered when: Spec/Loop engine finishes one cycle (regardless of outcome).
+        """
+        if not isinstance(cycle_num, int):
+            raise TypeError(f"cycle_num must be int, got {type(cycle_num).__name__}")
+        if not isinstance(status, str):
+            raise TypeError(f"status must be str, got {type(status).__name__}")
+        return cls(type=CardEventType.CYCLE_DONE, payload={
+            "cycle_num": cycle_num, "status": status,
+        })
+
+    @classmethod
+    def phase_started(cls, cycle_num: int, phase: str) -> CardEvent[PhaseStartedPayload]:
+        """Signal that a named phase has begun within a cycle.
+
+        Payload: {cycle_num: int, phase: str}
+        Triggered when: Engine enters a phase (e.g. "planning", "coding", "review").
+        """
+        if not isinstance(cycle_num, int):
+            raise TypeError(f"cycle_num must be int, got {type(cycle_num).__name__}")
+        if not phase:
+            raise ValueError("phase is required for phase_started")
+        return cls(type=CardEventType.PHASE_STARTED, payload={
+            "cycle_num": cycle_num, "phase": phase,
+        })
+
+    @classmethod
+    def phase_done(cls, cycle_num: int, phase: str, output: str = "") -> CardEvent[PhaseDonePayload]:
+        """Signal that a named phase has completed.
+
+        Payload: {cycle_num: int, phase: str, output: str}
+        Triggered when: Engine completes a phase; output contains phase summary.
+        """
+        if not isinstance(cycle_num, int):
+            raise TypeError(f"cycle_num must be int, got {type(cycle_num).__name__}")
+        if not phase:
+            raise ValueError("phase is required for phase_done")
+        return cls(type=CardEventType.PHASE_DONE, payload={
+            "cycle_num": cycle_num, "phase": phase, "output": output,
+        })
+
+    @classmethod
+    def review_retry(cls, cycle_num: int, attempt: int, max_attempts: int, status: str = "executing", delay_sec: float = 0) -> CardEvent[ReviewRetryPayload]:
+        """Signal a review retry attempt within the Spec engine.
+
+        Payload: {cycle_num, attempt, max_attempts, status, delay_sec}
+        Status values: "waiting" (delay), "executing" (in-flight), "exhausted" (gave up).
+        Triggered when: Spec engine retries criteria review after failure.
+        """
+        if not isinstance(cycle_num, int):
+            raise TypeError(f"cycle_num must be int, got {type(cycle_num).__name__}")
+        if not isinstance(attempt, int):
+            raise TypeError(f"attempt must be int, got {type(attempt).__name__}")
+        if not isinstance(max_attempts, int):
+            raise TypeError(f"max_attempts must be int, got {type(max_attempts).__name__}")
+        return cls(type=CardEventType.REVIEW_RETRY, payload={
+            "cycle_num": cycle_num, "attempt": attempt, "max_attempts": max_attempts,
+            "status": status, "delay_sec": delay_sec,
+        })
+
+    @classmethod
+    def criteria_updated(cls, content: str, satisfied_count: int = 0, total_count: int = 0) -> CardEvent[CriteriaUpdatedPayload]:
+        """Update the acceptance criteria display in the card.
+
+        Payload: {content: str, satisfied_count: int, total_count: int}
+        Triggered when: Spec engine re-evaluates criteria satisfaction.
+        """
+        if not isinstance(content, str):
+            raise TypeError(f"content must be str, got {type(content).__name__}")
+        if not isinstance(satisfied_count, int):
+            raise TypeError(f"satisfied_count must be int, got {type(satisfied_count).__name__}")
+        if not isinstance(total_count, int):
+            raise TypeError(f"total_count must be int, got {type(total_count).__name__}")
+        return cls(type=CardEventType.CRITERIA_UPDATED, payload={
+            "content": content, "satisfied_count": satisfied_count, "total_count": total_count,
+        })
+
+    @classmethod
+    def warning_updated(cls, warning: str, *, show_keep_alive_btn: bool = False, keep_alive_minutes: int = 0) -> CardEvent[WarningPayload]:
+        """Update or clear the warning banner in the card footer.
+
+        Payload: {warning: str, show_keep_alive_btn: bool, keep_alive_minutes: int} — empty string clears the banner.
+        Triggered when: Engine detects approaching limits (token, time, cost).
+        """
+        return cls(type=CardEventType.WARNING_UPDATED, payload={"warning": warning, "show_keep_alive_btn": show_keep_alive_btn, "keep_alive_minutes": keep_alive_minutes})
+
+    # --- UI control ---
+
+    @classmethod
+    def mode_toggled(cls, compact: bool) -> CardEvent[Mapping[str, Any]]:
+        """Toggle card display mode (full ↔ compact).
+
+        Args:
+            compact: Target state — True means switch to compact view.
+        """
+        return cls(type=CardEventType.MODE_TOGGLED, payload={"compact": compact})
+
+    @classmethod
+    def stop_escalated(cls) -> CardEvent[Mapping[str, Any]]:
+        """Escalate a pending stop to force-stop after timeout."""
+        return cls(type=CardEventType.STOP_ESCALATED)
+
+    # --- Worktree factory methods (delegates to src.card.events.worktree) ---
+    # DEPRECATED: Use src.card.events.worktree functions directly. These proxies
+    # will be removed after 2026-06-01.
+
+    @classmethod
+    def worktree_progress(
+        cls, units: list[dict], project_id: str = "", message: str = "", silent: bool = False
+    ) -> CardEvent[Mapping[str, Any]]:
+        """Worktree execution progress update."""
+        import warnings
+        warnings.warn(
+            "CardEvent.worktree_progress() is deprecated, use src.card.events.worktree.worktree_progress() directly. "
+            "This proxy will be removed after 2026-06-01.",
+            DeprecationWarning, stacklevel=2,
+        )
+        from .worktree import worktree_progress
+        return worktree_progress(units, project_id, message, silent=silent)
+
+    @classmethod
+    def worktree_tool_select(
+        cls, tools: list[dict], selected: list[str] | None = None,
+        project_id: str = "", message: str = "",
+    ) -> CardEvent[Mapping[str, Any]]:
+        """Worktree tool selection card state."""
+        import warnings
+        warnings.warn(
+            "CardEvent.worktree_tool_select() is deprecated, use src.card.events.worktree.worktree_tool_select() directly. "
+            "This proxy will be removed after 2026-06-01.",
+            DeprecationWarning, stacklevel=2,
+        )
+        from .worktree import worktree_tool_select
+        return worktree_tool_select(tools, selected, project_id, message)
+
+    @classmethod
+    def worktree_confirm(
+        cls, selected_items: list[dict], goal: str = "",
+        project_id: str = "", message: str = "",
+    ) -> CardEvent[Mapping[str, Any]]:
+        """Worktree execution confirmation card state."""
+        import warnings
+        warnings.warn(
+            "CardEvent.worktree_confirm() is deprecated, use src.card.events.worktree.worktree_confirm() directly. "
+            "This proxy will be removed after 2026-06-01.",
+            DeprecationWarning, stacklevel=2,
+        )
+        from .worktree import worktree_confirm
+        return worktree_confirm(selected_items, goal, project_id, message)
+
+    @classmethod
+    def worktree_cleanup(
+        cls, merge_notes: list[dict], base_branch: str = "main",
+        merge_results: list[dict] | None = None,
+        project_id: str = "", units: list[dict] | None = None,
+        cleanup_phase: str = "summary",
+    ) -> CardEvent[Mapping[str, Any]]:
+        """Worktree cleanup/merge action card state."""
+        import warnings
+        warnings.warn(
+            "CardEvent.worktree_cleanup() is deprecated, use src.card.events.worktree.worktree_cleanup() directly. "
+            "This proxy will be removed after 2026-06-01.",
+            DeprecationWarning, stacklevel=2,
+        )
+        from .worktree import worktree_cleanup
+        return worktree_cleanup(merge_notes, base_branch, merge_results, project_id, units, cleanup_phase)
+
+    @classmethod
+    def worktree_merge(
+        cls, merge_notes: list[dict], base_branch: str = "main",
+        project_id: str = "",
+    ) -> CardEvent[Mapping[str, Any]]:
+        """Worktree merge entry card state."""
+        import warnings
+        warnings.warn(
+            "CardEvent.worktree_merge() is deprecated, use src.card.events.worktree.worktree_merge() directly. "
+            "This proxy will be removed after 2026-06-01.",
+            DeprecationWarning, stacklevel=2,
+        )
+        from .worktree import worktree_merge
+        return worktree_merge(merge_notes, base_branch, project_id)
+
+    @classmethod
+    def worktree_completed_no_change(
+        cls, units: list[dict], project_id: str = "", message: str = ""
+    ) -> CardEvent[Mapping[str, Any]]:
+        """Worktree execution completed with no file changes."""
+        import warnings
+        warnings.warn(
+            "CardEvent.worktree_completed_no_change() is deprecated, use src.card.events.worktree.worktree_completed_no_change() directly. "
+            "This proxy will be removed after 2026-06-01.",
+            DeprecationWarning, stacklevel=2,
+        )
+        from .worktree import worktree_completed_no_change
+        return worktree_completed_no_change(units, project_id, message)
+
+    @classmethod
+    def from_acp(cls, acp_event: "ACPEvent") -> CardEvent[Mapping[str, Any]]:
+        """Convert an ACPEvent to a CardEvent.
+
+        Delegates to :func:`src.card.events.acp_adapter.card_event_from_acp`.
+        """
+        from .acp_adapter import card_event_from_acp
+
+        return card_event_from_acp(acp_event)

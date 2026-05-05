@@ -292,7 +292,7 @@ class BaseEngine:
         Returns:
             The formatted user-facing error message.
         """
-        from .card.styles import UI_TEXT
+        from .card.ui_text import UI_TEXT
 
         detail = get_error_detail(error)
         kind = UI_TEXT.get("engine_error_timeout", "超时") if is_timeout else UI_TEXT.get("engine_error_exception", "异常")
@@ -419,6 +419,33 @@ class BaseEngineManager(Generic[T]):
 
     def get_active_engines(self, chat_id: str) -> list[T]:
         return [e for e in self._iter_chat_engines(chat_id) if e.is_running]
+
+    def snapshot(self, chat_id: str, root_path: str):
+        """Return an EngineSnapshot DTO for rendering, or None if engine not found.
+
+        Subclasses should override _build_snapshot() for engine-specific fields.
+        """
+        engine = self.get(chat_id, root_path)
+        if engine is None:
+            return None
+        return self._build_snapshot(engine)
+
+    def snapshot_active(self, chat_id: str) -> list:
+        """Return snapshots of all active engines for a given chat."""
+        return [self._build_snapshot(e) for e in self.get_active_engines(chat_id)]
+
+    def _build_snapshot(self, engine: T):
+        """Build an EngineSnapshot from an engine instance.
+
+        Default implementation provides common fields. Subclasses override
+        to add engine-specific data.
+        """
+        from src.card.engine_snapshot import EngineSnapshot
+        return EngineSnapshot(
+            engine_name=getattr(engine, "engine_name", ""),
+            root_path=getattr(engine, "root_path", ""),
+            is_running=getattr(engine, "is_running", False),
+        )
 
     def list_engines(self, chat_id: Optional[str] = None) -> list[T]:
         if chat_id is None:

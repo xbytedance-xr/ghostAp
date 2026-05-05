@@ -38,7 +38,9 @@ markers = [
 ]
 filterwarnings = [
     "ignore::DeprecationWarning:lark_oapi.*",
-    "ignore::DeprecationWarning:websockets.*"
+    "ignore::DeprecationWarning:websockets.*",
+    "once:.*is deprecated.*:DeprecationWarning:src\\.card\\.",
+    "once:.*is deprecated.*:DeprecationWarning:tests\\.",
 ]
 
 [tool.coverage.run]
@@ -68,10 +70,38 @@ select = [
     "W",   # pycodestyle warnings
     "F",   # pyflakes
     "I",   # isort
+    "TID251", # flake8-tidy-imports: banned-api (deprecated shim detection)
 ]
 ignore = [
     "E501", # keep line-length enforcement in formatter (ruff format); do not fail lint
 ]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"src.card.session_config".msg = "Deprecated shim — use src.card.session.config instead (removal: 2026-06-01)"
+"src.card.session_factory".msg = "Deprecated shim — use src.card.session.factory instead (removal: 2026-06-01)"
+"src.card.session_rotator".msg = "Deprecated shim — use src.card.session.rotator instead (removal: 2026-06-01)"
+"src.card.static_session".msg = "Deprecated shim — use src.card.session.static instead (removal: 2026-06-01)"
+"src.card.delivery_tracker".msg = "Deprecated shim — use src.card.delivery.tracker instead (removal: 2026-06-01)"
+"src.card.action_dispatch".msg = "Deprecated shim — use src.card.actions.dispatch instead (removal: 2026-06-01)"
+"src.card.action_ids".msg = "Deprecated shim — use src.card.actions.dispatch instead (removal: 2026-06-01)"
+"src.card.action_router".msg = "Deprecated shim — use src.card.actions.router instead (removal: 2026-06-01)"
+"src.card.timer_manager".msg = "Deprecated shim — use src.card.timers.manager instead (removal: 2026-06-01)"
+"src.card.timer_scheduler".msg = "Deprecated shim — use src.card.timers.scheduler instead (removal: 2026-06-01)"
+"src.card._session_ttl".msg = "Deprecated shim — use src.card.session.ttl instead (removal: 2026-06-01)"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["TID251"]  # allow deprecated imports in tests for backward-compat testing
+"src/card/session_config.py" = ["TID251"]  # shim files themselves
+"src/card/session_factory.py" = ["TID251"]
+"src/card/session_rotator.py" = ["TID251"]
+"src/card/static_session.py" = ["TID251"]
+"src/card/delivery_tracker.py" = ["TID251"]
+"src/card/action_dispatch.py" = ["TID251"]
+"src/card/action_ids.py" = ["TID251"]
+"src/card/action_router.py" = ["TID251"]
+"src/card/timer_manager.py" = ["TID251"]
+"src/card/timer_scheduler.py" = ["TID251"]
+"src/card/_session_ttl.py" = ["TID251"]
 
 [tool.ruff.format]
 quote-style = "double"

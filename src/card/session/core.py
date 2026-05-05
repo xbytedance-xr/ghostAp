@@ -18,17 +18,12 @@ from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from src.card.session._constants import ENGINE_CMD_MAP, ENGINE_NAME_MAP
-from src.card.session._ttl_mixin import TTLActuator, TTLContext
-from src.card.session.ttl import TTLHandler
-from src.card.actions.router import ActionRouter
-from src.card.delivery.tracker import DeliveryTracker, PendingAction
+from src.card.delivery.tracker import PendingAction
 from src.card.events import CardEvent, CardEventType, VALIDATE_PAYLOAD
-from src.card.hooks import HookFirer
 from src.card.render.fallback import render_fallback_card
 from src.card.render.renderer import render_card
 from src.card.session.config import SessionCallbacks
 from src.card.state.reducer import reduce_card_state
-from src.card.timers.manager import SessionTimerManager
 from src.card.ui_text import UI_TEXT
 
 if TYPE_CHECKING:
@@ -136,28 +131,11 @@ class CardSession:
         hooks: tuple[SessionHook, ...] | None = None,
         action_registry: dict[str, Callable[[dict], CardEvent]] | None = None,
     ) -> None:
-        # Merge convenience kwargs into callbacks (internal API, no deprecation warning)
-        if hooks is not None or action_registry is not None:
-            base = callbacks or SessionCallbacks()
-            cbs = SessionCallbacks(
-                notify_callback=base.notify_callback,
-                cancel_callback=base.cancel_callback,
-                reply_text_fn=base.reply_text_fn,
-                action_registry=action_registry if action_registry is not None else base.action_registry,
-                hooks=hooks if hooks is not None else base.hooks,
-            )
-        else:
-            cbs = callbacks or SessionCallbacks()
+        # --- Parameter normalization ---
+        cbs = self._merge_callbacks(callbacks, hooks, action_registry)
+        self._warn_no_notify(chat_id, cbs, session_id)
 
-        # Fail-fast: real sessions must have at least one notification channel.
-        # Skippable via _require_notify=False for snapshot/test construction.
-        if chat_id and cbs.notify_callback is None and cbs.reply_text_fn is None:
-            logger.warning(
-                "CardSession %s: no notification channel (notify_callback/reply_text_fn). "
-                "Capacity-exhaustion rejections will be silently lost.",
-                session_id or "(pending)",
-            )
-
+        # --- Core identity & state ---
         self._session_id = session_id or str(uuid.uuid4())
         self._chat_id = chat_id
         self._metadata = config.metadata
@@ -166,88 +144,95 @@ class CardSession:
         self._reply_to = config.reply_to
         self._closed = threading.Event()
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
-        self._action_registry: dict[str, Callable[[dict], CardEvent]] = cbs.action_registry or {}
-        self._action_router = ActionRouter(
-            session_id=self._session_id,
-            engine_type=self._metadata.engine_type or "",
-            action_registry=self._action_registry,
-        )
+        self._clock = config.clock
+        self._sync_delivery = bool(config.sync_delivery)
         self._notify_callback = cbs.notify_callback
         self._cancel_callback = cbs.cancel_callback
         self._reply_text_fn = cbs.reply_text_fn
-        self._sync_delivery = bool(config.sync_delivery)
-        if cbs.notify_callback is None:
-            logger.debug("CardSession %s: created without notify_callback, degraded notification via warning_banner", self._session_id)
-        self._tracker = DeliveryTracker()
-        self._clock = config.clock
-        ttl_seconds = config.ttl_seconds if config.ttl_seconds is not None else 1800.0
         self._hooks: tuple[SessionHook, ...] = cbs.hooks
-        self._hook_firer = HookFirer(cbs.hooks, self._session_id)
-        _warn_before = config.warn_before_seconds if config.warn_before_seconds is not None else 420.0
-        self._timers = SessionTimerManager(
-            session_id=self._session_id,
-            ttl_seconds=ttl_seconds,
-            clock=self._clock,
-            retry_delay=config.retry_delay,
-            warn_before_seconds=_warn_before,
-        )
+        self._action_registry: dict[str, Callable[[dict], CardEvent]] = cbs.action_registry or {}
         self._stop_escalation_handle: "TimerHandle | None" = None
-        self._stop_escalation_delay: float = 30.0  # seconds before force-stop button appears
+        self._stop_escalation_delay: float = 30.0
 
-        # Build collaborators (TTL stack + delivery coordinator)
-        self._init_collaborators(ttl_seconds)
-        # Register weakref.finalize for safe delivery lock cleanup on GC
+        # --- Delegate collaborator construction to SessionBuilder ---
+        self._build_and_assign(config, cbs)
+
+    # ------------------------------------------------------------------
+    # Private helpers split from __init__ for readability
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _merge_callbacks(
+        callbacks: SessionCallbacks | None,
+        hooks: tuple[SessionHook, ...] | None,
+        action_registry: dict[str, Callable[[dict], CardEvent]] | None,
+    ) -> SessionCallbacks:
+        """Merge convenience kwargs into a single SessionCallbacks instance."""
+        if hooks is not None or action_registry is not None:
+            base = callbacks or SessionCallbacks()
+            return SessionCallbacks(
+                notify_callback=base.notify_callback,
+                cancel_callback=base.cancel_callback,
+                reply_text_fn=base.reply_text_fn,
+                action_registry=action_registry if action_registry is not None else base.action_registry,
+                hooks=hooks if hooks is not None else base.hooks,
+            )
+        return callbacks or SessionCallbacks()
+
+    @staticmethod
+    def _warn_no_notify(chat_id: str, cbs: SessionCallbacks, session_id: str | None) -> None:
+        if chat_id and cbs.notify_callback is None and cbs.reply_text_fn is None:
+            logger.warning(
+                "CardSession %s: no notification channel (notify_callback/reply_text_fn). "
+                "Capacity-exhaustion rejections will be silently lost.",
+                session_id or "(pending)",
+            )
+
+    def _build_and_assign(self, config: "SessionConfig", cbs: SessionCallbacks) -> None:
+        """Use SessionBuilder to construct collaborators and assign to self."""
+        from src.card.session.builder import SessionBuilder
+
+        ttl_seconds = config.ttl_seconds if config.ttl_seconds is not None else 1800.0
+        warn_before = config.warn_before_seconds if config.warn_before_seconds is not None else 420.0
+
+        collab = SessionBuilder(
+            session_id=self._session_id,
+            chat_id=self._chat_id,
+            metadata=self._metadata,
+            delivery=self._delivery,
+            budget=self._budget,
+            reply_to=self._reply_to,
+            lock=self._lock,
+            closed=self._closed,
+            clock=self._clock,
+            callbacks=cbs,
+            ttl_seconds=ttl_seconds,
+            warn_before_seconds=warn_before,
+            retry_delay=config.retry_delay,
+            deliver_and_track_fn=self._deliver_and_track,
+            engine_cmd_fn=lambda _ref=weakref.ref(self): (_ref().engine_cmd if _ref() else ""),
+            engine_name_fn=lambda _ref=weakref.ref(self): (_ref().engine_name if _ref() else ""),
+        ).build()
+
+        # Assign collaborators
+        self._action_router = collab.action_router
+        self._tracker = collab.tracker
+        self._hook_firer = collab.hook_firer
+        self._timers = collab.timers
+        self._ttl_ctx = collab.ttl_ctx
+        self._ttl_actuator = collab.ttl_actuator
+        self._ttl_handler = collab.ttl_handler
+        self._coordinator = collab.coordinator
+
+        # TTLHandler needs the session as decider (circular ref resolved here)
+        self._ttl_handler._d = self  # type: ignore[attr-defined]
+
+        # GC safety: weakref.finalize for delivery lock cleanup
         self._finalizer = weakref.finalize(
             self, _release_lock, weakref.ref(self._delivery), self._session_id
         )
         # Start the idle TTL timer
         self._reset_ttl_timer()
-
-    def _init_collaborators(self, ttl_seconds: float) -> None:
-        """Build TTL stack and delivery coordinator (extracted from __init__ for readability)."""
-        _mutable = TTLContext._MutableState(
-            state=None,
-            ttl_warned=False,
-            terminal_reason=None,
-            last_dispatch_time=self._clock(),
-            ttl_seconds=ttl_seconds,
-        )
-        self._ttl_ctx = TTLContext(
-            lock=self._lock,
-            clock=self._clock,
-            closed=self._closed,
-            session_id=self._session_id,
-            chat_id=self._chat_id,
-            metadata=self._metadata,
-            budget=self._budget,
-            timers=self._timers,
-            delivery=self._delivery,
-            reply_to=self._reply_to,
-            notify_callback=self._notify_callback,
-            reply_text_fn=self._reply_text_fn,
-            hook_firer=self._hook_firer,
-            tracker=self._tracker,
-            deliver_and_track=self._deliver_and_track,
-            engine_cmd_fn=lambda _ref=weakref.ref(self): (_ref().engine_cmd if _ref() else ""),
-            engine_name_fn=lambda _ref=weakref.ref(self): (_ref().engine_name if _ref() else ""),
-            mutable=_mutable,
-        )
-        self._ttl_actuator = TTLActuator(self._ttl_ctx)
-        self._ttl_handler = TTLHandler(decider=self, actuator=self._ttl_actuator)
-
-        from src.card.dispatch_coordinator import DispatchDeliveryCoordinator
-        self._coordinator = DispatchDeliveryCoordinator(
-            session_id=self._session_id,
-            chat_id=self._chat_id,
-            delivery=self._delivery,
-            tracker=self._tracker,
-            hook_firer=self._hook_firer,
-            ttl_handler=self._ttl_handler,
-            notify_callback=self._notify_callback,
-            cancel_callback=self._cancel_callback,
-            reply_text_fn=self._reply_text_fn,
-            reply_to=self._reply_to,
-        )
 
     @property
     def session_id(self) -> str:

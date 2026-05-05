@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
 from ...card.builders.system import SystemBuilder
-from ...card.styles import UI_TEXT
+from ...card.ui_text import UI_TEXT
 from ...ttadk import get_ttadk_manager
 from ...ttadk.manager import auto_update_ttadk
 from ...utils.errors import get_error_detail

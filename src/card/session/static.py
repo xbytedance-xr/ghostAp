@@ -1,14 +1,9 @@
-"""DirectCardSession: bypass reduce/render for pre-built card JSON.
+"""StaticCardSession: lightweight card delivery for pre-built JSON.
 
-For interactive cards (buttons, selectors, inputs) that cannot be produced
-by the standard CardState → render pipeline.  Wraps CardDelivery directly.
+Wraps CardDelivery directly without reduce/render pipeline.
+Suitable for static/pre-built cards (diagnostics, project info, etc.).
 
-Usage:
-    session = DirectCardSession(delivery, chat_id, reply_to=message_id)
-    session.send(card_json)           # creates card
-    session.send(updated_card_json)   # patches card (structure changed)
-    mid = session.message_id          # get created message_id
-    session.close()                   # cleanup bindings
+Thread-safety: Uses threading.Event for closed state, consistent with CardSession.
 """
 
 from __future__ import annotations
@@ -16,11 +11,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
 import uuid
 from typing import Optional
 
 from src.card.delivery.engine import CardDelivery
-from src.card.render.renderer import RenderedCard
+from src.card.protocols import Session  # noqa: F401 — structural compliance
+from src.card.types import RenderedCard
 
 logger = logging.getLogger(__name__)
 
@@ -31,15 +28,15 @@ def _compute_json_signature(card_json: dict) -> str:
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
-class DirectCardSession:
-    """Direct card session for pre-built card JSON.
+class StaticCardSession:
+    """Lightweight card session for pre-built card JSON.
 
     Bypasses reduce/render pipeline — delivers pre-built card JSON through
     CardDelivery for unified binding management and sequence tracking.
 
     Suitable for:
-    - Interactive cards with buttons/selectors (WorktreeHandler)
-    - Progress cards with manual update patterns (DiagnosticsHandler /diff)
+    - Static info cards (diagnostics, project info)
+    - Progress cards with manual update patterns
     - Any card where the caller builds the full JSON externally
     """
 
@@ -55,7 +52,7 @@ class DirectCardSession:
         self._chat_id = chat_id
         self._session_id = session_id or str(uuid.uuid4())
         self._reply_to = reply_to
-        self._closed = False
+        self._closed = threading.Event()
 
     @property
     def session_id(self) -> str:
@@ -73,7 +70,7 @@ class DirectCardSession:
 
     @property
     def closed(self) -> bool:
-        return self._closed
+        return self._closed.is_set()
 
     def send(self, card_json: dict | str) -> Optional[str]:
         """Send or update a card.
@@ -84,35 +81,44 @@ class DirectCardSession:
         Args:
             card_json: Complete Feishu Schema 2.0 card JSON (dict or JSON string).
         """
-        if self._closed:
-            logger.debug("DirectCardSession %s: send after close, ignoring", self._session_id)
+        if self._closed.is_set():
+            logger.debug("StaticCardSession %s: send after close, ignoring", self._session_id)
             return None
 
         if isinstance(card_json, str):
             card_json = json.loads(card_json)
 
         signature = _compute_json_signature(card_json)
+        content_hash = hashlib.md5(json.dumps(card_json, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         rendered = [
             RenderedCard(
-                card_json=card_json,
+                _card_json=card_json,
                 structure_signature=signature,
+                content_hash=content_hash,
                 active_element=None,
                 page_index=0,
                 total_pages=1,
             )
         ]
 
-        self._delivery.deliver(
-            session_id=self._session_id,
-            chat_id=self._chat_id,
-            rendered=rendered,
-            reply_to=self._reply_to,
-        )
+        try:
+            self._delivery.deliver(
+                session_id=self._session_id,
+                chat_id=self._chat_id,
+                rendered=rendered,
+                reply_to=self._reply_to,
+            )
+        except Exception as exc:
+            logger.warning("StaticCardSession %s: deliver failed: %s", self._session_id, repr(exc))
+            return None
         return self.message_id
 
     def close(self) -> None:
         """Finalize session: release bindings and sequences. Idempotent."""
-        if self._closed:
+        if self._closed.is_set():
             return
-        self._closed = True
-        self._delivery.close(self._session_id)
+        self._closed.set()
+        try:
+            self._delivery.close(self._session_id)
+        except Exception as exc:
+            logger.debug("StaticCardSession %s: close failed: %s", self._session_id, repr(exc))

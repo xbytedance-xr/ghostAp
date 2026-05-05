@@ -7,12 +7,14 @@ notifications, confirmation flows, and help sections.
 from __future__ import annotations
 
 import logging
+import time as _t_wall
 from typing import Optional
 
-from ..styles import UI_TEXT
+from ..ui_text import UI_TEXT
 from .lock_common import (
     _build_p2p_multi_url,
     _compute_command_sig,
+    format_undo_window,
 )
 
 logger = logging.getLogger(__name__)
@@ -91,10 +93,9 @@ def build_chat_lock_card(
     auto_unlock_line = ""
     if locked_at_wall is not None:
         try:
-            import time as _t
             from .lock_common import format_friendly_duration
             max_dur = max_duration_seconds if max_duration_seconds is not None else 86400
-            remaining = max_dur - (_t.time() - locked_at_wall)
+            remaining = max_dur - (_t_wall.time() - locked_at_wall)
             if remaining > 60:
                 _time_str = format_friendly_duration(remaining)
                 auto_unlock_line = f"\n{UI_TEXT['chat_lock_auto_unlock_hint'].format(time=_time_str)}\n"
@@ -140,6 +141,7 @@ def build_chat_lock_card(
 
 def build_lock_success_card(
     action: str, message: str = "", *, variant: str = "reply", locker_name: str = "", app_id: str = "",
+    lock_undo_window_seconds: int = 300,
 ) -> str | tuple[str, list[dict]]:
     """Build a response card after a successful /lock or /unlock command.
 
@@ -185,21 +187,29 @@ def build_lock_success_card(
             return md, buttons
         if message:
             return UI_TEXT["lock_success_lock_idempotent"].format(message=message)
-        # Non-idempotent lock reply: include an undo button (5 min window)
-        md = UI_TEXT["lock_success_lock_reply"]
-        import time as _t_wall
-        undo_buttons: list[dict] = [{
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": UI_TEXT["lock_success_lock_undo_btn"]},
-            "type": "default",
-            "value": {
-                "action": "retry_command",
-                "_t": "/unlock",
-                "_s": _compute_command_sig("/unlock"),
-                "_ul": True,
-                "_ue": int(_t_wall.time()) + 300,
-            },
-        }]
+        # Non-idempotent lock reply: include an undo button (configurable window)
+        _undo_display = format_undo_window(lock_undo_window_seconds)
+        if _undo_display:
+            md = UI_TEXT["lock_success_lock_reply"].format(lock_undo_window_display=_undo_display)
+            undo_buttons: list[dict] = [{
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": UI_TEXT["lock_success_lock_undo_btn"]},
+                "type": "default",
+                "value": {
+                    "action": "retry_command",
+                    "_t": "/unlock",
+                    "_s": _compute_command_sig("/unlock"),
+                    "_ul": True,
+                    "_ue": int(_t_wall.time()) + lock_undo_window_seconds,
+                },
+            }]
+        else:
+            if locker_name:
+                _tpl = UI_TEXT.get("lock_success_lock_reply_no_undo", "🔒 已锁定，如需解锁请使用 /unlock")
+                md = _tpl.format(locker_name=locker_name)
+            else:
+                md = UI_TEXT.get("lock_success_lock_reply_no_undo_anonymous", "**🔒 已锁定**\n\n非 Bot 管理员的指令将不被 Bot 执行。\nBot 管理员可发送 `/unlock` 解锁。")
+            undo_buttons = []
         return md, undo_buttons
     # unlock
     if variant == "broadcast":
@@ -230,7 +240,7 @@ def build_lock_confirm_card(chat_id: str, *, confirm_timeout: Optional[int] = No
     return "此功能已更新，请重新发送 /lock", []
 
 
-def build_lock_help_body(is_admin: bool = False, chat_id: str = "", *, chat_lock_manager=None, allowed_commands_display: Optional[str] = None) -> str:
+def build_lock_help_body(is_admin: bool = False, chat_id: str = "", *, chat_lock_manager=None, allowed_commands_display: Optional[str] = None, lock_undo_window_seconds: int = 300) -> str:
     """Generate lock help section body dynamically from authoritative command sets.
 
     When *chat_id* is provided and the chat is locked, non-admin users see
@@ -248,9 +258,13 @@ def build_lock_help_body(is_admin: bool = False, chat_id: str = "", *, chat_lock
         _user_cmds_display = ChatLockManager.get_allowed_commands_display()
     lines: list[str] = []
     if is_admin:
+        _undo_display = format_undo_window(lock_undo_window_seconds)
         lines.append(UI_TEXT["lock_dual_concept_explain"])
         lines.append(UI_TEXT["lock_help_admin_group_mgmt"])
-        lines.append(UI_TEXT["lock_help_admin_lock_cmd"])
+        if _undo_display:
+            lines.append(UI_TEXT["lock_help_admin_lock_cmd"].format(lock_undo_window_display=_undo_display))
+        else:
+            lines.append(UI_TEXT["lock_help_admin_lock_cmd_no_undo"])
         lines.append(UI_TEXT["lock_help_admin_unlock_cmd"])
         lines.append(UI_TEXT["lock_help_admin_group_info"])
         lines.append(UI_TEXT["lock_help_admin_exempt_cmds"].format(cmd_list=_user_cmds_display))

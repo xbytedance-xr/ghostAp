@@ -9,7 +9,8 @@ from src.mode.manager import InteractionMode
 from ..shared import (
     build_mode_buttons,
 )
-from ..styles import THRESHOLDS, UI_TEXT
+from ..styles import THRESHOLDS
+from ..ui_text import UI_TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +181,8 @@ class CoreBuilder:
     def _build_footer_buttons(
         project: Optional[ProjectContext],
         mode: Optional[InteractionMode] = None,
+        *,
+        button_size: str = "medium",
     ) -> list[dict]:
         project_id_raw = getattr(project, "project_id", None) if project else None
         project_id = str(project_id_raw) if isinstance(project_id_raw, (str, int)) else None
@@ -202,7 +205,7 @@ class CoreBuilder:
             elif getattr(project, "coco_mode", False):
                 effective_mode = InteractionMode.COCO
 
-        return build_mode_buttons(effective_mode, project_id, thread_root_id=thread_root_id)
+        return build_mode_buttons(effective_mode, project_id, thread_root_id=thread_root_id, button_size=button_size)
 
     @staticmethod
     def _build_footer_note(project: Optional[ProjectContext], working_dir: Optional[str] = None) -> Optional[dict]:

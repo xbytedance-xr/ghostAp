@@ -299,7 +299,7 @@ class TestUndoLockExpiry:
         handler("mid_undo_1", "chat_1", None, val)
         dispatch.reply_text.assert_called_once()
         msg = dispatch.reply_text.call_args[0][1]
-        assert "撤销窗口已过期" in msg
+        assert "撤销窗口已关闭" in msg
         # Should NOT dispatch the /unlock command
         dispatch.process_with_intent.assert_not_called()
 

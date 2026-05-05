@@ -495,6 +495,9 @@ class TestHelpCardLockPlaceholderInjection:
                 is_admin=False,
                 lock_enabled=True,
                 chat_id="chat_placeholder_test",
+                session_idle_timeout=600,
+                session_idle_warn_at_remaining=120,
+                lock_undo_window_seconds=300,
             )
         # Placeholder must be gone; real lock body injected
         assert _LOCK_BODY_PLACEHOLDER not in card_json

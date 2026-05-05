@@ -122,5 +122,5 @@ class TestTruncateTerminalMessage:
     def test_over_limit(self):
         over = "a" * 2000
         result = truncate_terminal_message(over)
-        assert result.endswith("...")
+        assert result.endswith("…")
         assert len(result) == 1600

@@ -8,15 +8,15 @@ from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
 from ...card.models import EngineCardState
-from ...card.styles import UI_TEXT
+from ...card.ui_text import UI_TEXT
 from ...loop_engine.models import LoopProjectStatus
 from ...utils.text import generate_task_id
 from ..emoji import EmojiReaction
-from ..renderers.loop_renderer import LoopRenderer
 from .engine_base import BaseEngineHandler
 from .base import CardActionContext
 
 if TYPE_CHECKING:
+    from ...card.protocols import RendererProtocol
     from ...project import ProjectContext
     from ..handler_context import HandlerContext
 
@@ -26,9 +26,12 @@ logger = logging.getLogger(__name__)
 class LoopHandler(BaseEngineHandler):
     """Manages the full lifecycle of Loop Engine tasks."""
 
-    def __init__(self, ctx: "HandlerContext") -> None:
+    def __init__(self, ctx: "HandlerContext", renderer: "RendererProtocol | None" = None) -> None:
         super().__init__(ctx)
-        self.renderer = LoopRenderer(self)
+        if renderer is None:
+            from ..renderers import get_renderer
+            renderer = get_renderer("loop", self)
+        self.renderer = renderer
 
     def _get_engine_manager(self):
         return self.ctx.loop_engine_manager
@@ -124,7 +127,7 @@ class LoopHandler(BaseEngineHandler):
         # 发送启动卡片
         content = reporter.format_analyzing_start(requirement)
         title = reporter.get_analyzing_start_title()
-        msg_type, card_content = CardBuilder.build_engine_card(
+        msg_type, card_content = CardBuilder.build_info_card(
             project=project,
             state=EngineCardState(
                 title=title,
@@ -246,7 +249,7 @@ class LoopHandler(BaseEngineHandler):
         title = reporter.get_guidance_injected_title()
         engine_name = engine.engine_name
 
-        msg_type, card_content = CardBuilder.build_engine_card(
+        msg_type, card_content = CardBuilder.build_info_card(
             project=project,
             state=EngineCardState(
                 title=title,

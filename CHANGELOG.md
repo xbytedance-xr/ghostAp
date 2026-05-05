@@ -1,0 +1,69 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+> **另见**: [卡片管线迁移 FAQ](docs/card-migration-faq.md) | [迁移设计文档](docs/2026-04-30-card-refactor-design.md) | [ADR: Pipeline 边界](docs/adr-card-pipeline-boundary.md)
+
+## [Unreleased]
+
+### Added
+
+- **SessionLockPool**: Extracted from `CardDelivery` into `src/card/delivery/lock_pool.py`. Provides per-session RLock management with LRU eviction, TTL-based cleanup, and O(1) `drain()` via `threading.Condition` + in-flight counter.
+- **TTLActuatorMixin**: Extracted from `CardSession` into `src/card/session/_ttl_mixin.py`. Encapsulates 15+ TTL actuator protocol methods (get_ttl_state, reduce_and_render, mark_ttl_expired, force_terminate, deliver_terminal, etc.).
+- **Config validator**: `@field_validator` for `action_dedup_cleanup_interval` ensuring value in [1, 3600].
+- **Domain partition comments** in `src/card/protocols.py` for clearer section navigation.
+
+### Changed
+
+- **`BaseRenderer._create_session()` → `BaseRenderer.create_session()`**: Renamed to public API (no underscore prefix). All renderer subclasses and test patch targets updated.
+- **`CardDelivery.drain_in_flight()`**: Now uses O(1) counter-based wait instead of O(n) lock iteration.
+- **Shim deprecation messages**: All 10 shim modules now include `(deprecated in v0.1.0)` version marker.
+- **`src/card/action_ids.py`**: Converted from eager `from X import *` + module-level `warnings.warn` to lazy `__getattr__` + `__dir__` pattern (warning fires only on attribute access, not import).
+
+### Deprecated
+
+- **Re-export shim modules** (deprecated since 2026-05-04, removal deadline: **2026-06-01**):
+
+  The following top-level shim files under `src/card/` now emit `DeprecationWarning` when
+  their exported symbols are accessed. Callers should migrate to the canonical import paths
+  listed below before the removal deadline.
+
+  | Deprecated shim module | Migrate to |
+  |---|---|
+  | `src.card.session_config` | `src.card.session.config` |
+  | `src.card.session_factory` | `src.card.session.factory` |
+  | `src.card.session_rotator` | `src.card.session.rotator` |
+  | `src.card.static_session` | `src.card.session.static` |
+  | `src.card.delivery_tracker` | `src.card.delivery.tracker` |
+  | `src.card.action_dispatch` | `src.card.actions.dispatch` |
+  | `src.card.action_ids` | `src.card.actions.dispatch` |
+  | `src.card.action_router` | `src.card.actions.router` |
+  | `src.card.timer_manager` | `src.card.timers.manager` |
+  | `src.card.timer_scheduler` | `src.card.timers.scheduler` |
+
+  After **2026-06-01**, these shim files will be deleted and the change will be declared as a
+  **breaking change**. All imports must be updated to the canonical paths before that date.
+
+### ⚠️ Breaking Changes
+
+- **`DirectCardSession` 已删除**: `src/card/direct_session.py` 已移除。所有引擎渲染器现使用 `BaseRenderer.create_session()` → `CardSession.dispatch()`。
+- **`CardBuilder.build_engine_card()` 已移除**: 访问将触发 `AttributeError`。使用新管线 `renderer.create_session()` + `session.dispatch(CardEvent.*)` 替代。
+- **`src/card/adapter.py` 已删除**: 适配逻辑迁移至 `src/card/events/acp_adapter.py` 及 `src/card/protocols.py`。
+- **`src/card/events.py` 顶层模块已删除**: 重构为 `src/card/events/` 包。
+- **`BaseHandler` 旧方法已移除**: `reply_message`/`patch_message`/`send_message` 调用将 raise `NotImplementedError`。
+
+### Removed
+
+- **`src/card/direct_session.py`** (`DirectCardSession`): Replaced by `CardSession` (`src.card.session.core`). All engine renderers now use `BaseRenderer.create_session()` → `CardSession.dispatch()`.
+- **`src/card/adapter.py`**: Replaced by per-engine adapter functions in `src/card/events/acp_adapter.py` and engine-specific protocols in `src/card/protocols.py`.
+- **`src/card/events.py`** (top-level module): Refactored into `src/card/events/` package (`types.py`, `factories.py`, `payloads.py`, `acp_adapter.py`).
+- **`CardBuilder.build_engine_card()`**: 已完全移除（访问将触发 `AttributeError`）。Use `renderer.create_session()` + `session.dispatch(CardEvent.*)` instead.
+- **Migration verification**: Run `grep -rn 'build_engine_card\|DirectCardSession\|_create_direct_session' src/` to confirm no legacy references remain.
+
+### Migration FAQ
+
+- **旧卡片上的按钮还能用吗？**
+  已发送的旧卡片中的按钮将不再响应新操作（点击后会提示"按钮已失效"），但历史展示内容保持不变。请重新发送对应命令以获取新卡片。
+
+- **升级后历史对话中的旧卡片会怎样？**
+  历史对话中的旧卡片会保留为只读状态，显示内容不受影响，但交互功能（按钮、续期等）不再可用。新任务会自动使用新卡片格式。

@@ -1,0 +1,40 @@
+"""Cycle lifecycle sub-reducer for Spec/Loop engines."""
+from __future__ import annotations
+import logging
+from dataclasses import replace
+from ..models import CardState, FooterState, HeaderState
+from ...events import CardEvent, CardEventType
+
+logger = logging.getLogger(__name__)
+
+
+def reduce_cycle(state: CardState, event: CardEvent) -> CardState:
+    """Handle CYCLE_STARTED / CYCLE_DONE events."""
+    if state.engine_ext is None:
+        logger.warning("reduce_cycle called with engine_ext=None, event=%s", event.type)
+        return state
+    match event.type:
+        case CardEventType.CYCLE_STARTED:
+            cycle_num = event.payload.get("cycle_num", 1)
+            max_cycles = event.payload.get("max_cycles", 1)
+            ext = replace(state.engine_ext, cycle_num=cycle_num, max_cycles=max_cycles)
+            footer = replace(state.footer, status="tool_running",
+                             status_text=f"⏳ 迭代 {cycle_num}/{max_cycles}")
+            # Inject iteration/cycle info into header subtitle
+            if max_cycles > 1:
+                subtitle = f"Cycle {cycle_num}/{max_cycles}"
+            else:
+                subtitle = f"Iteration {cycle_num}"
+            header = replace(state.header, subtitle=subtitle) if state.header else None
+            changes: dict = {"engine_ext": ext, "footer": footer, "terminal": "running"}
+            if header:
+                changes["header"] = header
+            return replace(state, **changes)
+
+        case CardEventType.CYCLE_DONE:
+            cycle_num = event.payload.get("cycle_num", state.engine_ext.cycle_num)
+            ext = replace(state.engine_ext, cycle_num=cycle_num)
+            footer = replace(state.footer, status="idle", status_text=None)
+            return replace(state, engine_ext=ext, footer=footer)
+
+    return state
