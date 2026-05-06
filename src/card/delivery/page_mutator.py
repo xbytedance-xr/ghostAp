@@ -86,6 +86,14 @@ class PageMutator:
             logger.debug("Sequence conflict on %s, raised floor to %d", page.card_id, e.next_floor)
             return MutationOutcome(kind="reconcile", message="sequence_conflict")
         except TransportError as e:
+            if e.is_permanent:
+                logger.warning(
+                    "Permanent transport error on %s (code=%d), removing binding to force recreation",
+                    page.card_id, e.code,
+                )
+                self._bindings.remove_page(session_id, page.page_index)
+                self._sequences.reset(page.card_id)
+                return MutationOutcome(kind="reconcile", message=f"permanent:{e.code}")
             logger.warning("Transport error updating %s: %s", page.card_id, str(e))
             return MutationOutcome(kind="reconcile", message=str(e))
         except Exception as e:
@@ -113,6 +121,17 @@ class PageMutator:
         except SequenceConflictError as e:
             self._sequences.raise_floor(page.card_id, e.next_floor)
             logger.debug("Element sequence conflict on %s, falling back to full update", page.card_id)
+            return self.update_page(session_id, page, card)
+        except TransportError as e:
+            if e.is_permanent:
+                logger.warning(
+                    "Permanent transport error on %s (code=%d), removing binding to force recreation",
+                    page.card_id, e.code,
+                )
+                self._bindings.remove_page(session_id, page.page_index)
+                self._sequences.reset(page.card_id)
+                return MutationOutcome(kind="reconcile", message=f"permanent:{e.code}")
+            logger.debug("Element update failed (%s), falling back to full update", str(e))
             return self.update_page(session_id, page, card)
         except Exception as e:
             logger.debug("Element update failed (%s), falling back to full update", str(e))

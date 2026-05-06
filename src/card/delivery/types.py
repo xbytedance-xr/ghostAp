@@ -23,5 +23,18 @@ class SequenceConflictError(Exception):
 
 
 class TransportError(Exception):
-    """Raised on 5xx / timeout from Feishu API."""
-    pass
+    """Raised on API failure from Feishu API."""
+
+    # Permanent error codes — retrying won't help
+    PERMANENT_CODES = frozenset({
+        99992354,  # message_id not exists / invalid
+    })
+
+    def __init__(self, message: str = "", *, code: int = 0):
+        self.code = code
+        super().__init__(message)
+
+    @property
+    def is_permanent(self) -> bool:
+        """Whether this error is permanent (retrying won't help)."""
+        return self.code in self.PERMANENT_CODES

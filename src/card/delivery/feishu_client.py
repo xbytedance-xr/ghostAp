@@ -117,7 +117,8 @@ class FeishuCardAPIClient:
             if response.code == 300317:
                 raise SequenceConflictError(next_floor=sequence + 1)
             raise TransportError(
-                f"Patch failed: code={response.code}, msg={response.msg}, card_id={card_id}"
+                f"Patch failed: code={response.code}, msg={response.msg}, card_id={card_id}",
+                code=response.code,
             )
 
     def update_element(
@@ -149,7 +150,8 @@ class FeishuCardAPIClient:
             if response.code == 300317:  # Sequence conflict
                 raise SequenceConflictError(next_floor=sequence + 1)
             raise TransportError(
-                f"Element update failed: code={response.code}, msg={response.msg}"
+                f"Element update failed: code={response.code}, msg={response.msg}",
+                code=response.code,
             )
 
     def create_streaming_card(self, card_json: dict) -> str:
