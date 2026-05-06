@@ -89,7 +89,7 @@ def render_card(
                 "corner_radius": "5px",
                 "padding": "4px 12px",
                 "margin": "0 8px",
-                "elements": [{"tag": "markdown", "content": banner_text, "text_align": "left", "text_color": "dark"}],
+                "elements": [{"tag": "markdown", "content": banner_text, "text_align": "left"}],
             }
             body_elements.insert(0, top_banner)
             # Spacer after banner for visual separation (compact for mobile)
@@ -104,7 +104,7 @@ def render_card(
                 "corner_radius": "5px",
                 "padding": "4px 12px",
                 "margin": "0 8px",
-                "elements": [{"tag": "markdown", "content": f"{icon} **{state.footer.warning_banner}**", "text_align": "left", "text_color": "dark"}],
+                "elements": [{"tag": "markdown", "content": f"{icon} **{state.footer.warning_banner}**", "text_align": "left"}],
             }
             body_elements.insert(0, warning_note)
             body_elements.insert(1, {"tag": "div", "padding": "4px 0"})

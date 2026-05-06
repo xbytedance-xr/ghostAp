@@ -110,14 +110,14 @@ def _render_stepper(current_step: int) -> list[dict]:
             elements.append({"tag": "markdown", "content": f"{active_text} ", "text_size": "notation"})
             # Pending part in grey
             pending_text = " ".join(pending_parts) + f" {step_counter}"
-            elements.append({"tag": "markdown", "content": pending_text, "text_size": "notation", "text_color": "grey"})
+            elements.append({"tag": "markdown", "content": pending_text, "text_size": "notation"})
         else:
             # All steps complete
             elements.append({"tag": "markdown", "content": f"{active_text} {step_counter}", "text_size": "notation"})
     else:
         # First step is current (shouldn't happen but handle gracefully)
         pending_text = " ".join(pending_parts) + f" {step_counter}"
-        elements.append({"tag": "markdown", "content": pending_text, "text_size": "notation", "text_color": "grey"})
+        elements.append({"tag": "markdown", "content": pending_text, "text_size": "notation"})
 
     return elements
 
@@ -167,7 +167,7 @@ def render_worktree_panel(block: ContentBlock) -> dict:
         hint_text = UI_TEXT.get(hint_key, "")
         elements = stepper_elements + [title_el]
         if hint_text:
-            elements.append({"tag": "markdown", "content": hint_text, "text_size": "notation", "text_color": "grey"})
+            elements.append({"tag": "markdown", "content": hint_text, "text_size": "notation"})
         elements.append(content_el)
         return {
             "tag": "div",

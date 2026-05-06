@@ -142,7 +142,7 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
         parts.append(bar_part)
         content = " · ".join(parts) if len(parts) > 1 else parts[0]
         elements.append(
-            {"tag": "markdown", "content": content, "text_size": "notation", "text_color": "grey"}
+            {"tag": "markdown", "content": content, "text_size": "notation"}
         )
     elif state.footer.progress is not None:
         # Plain progress text merged with status
@@ -151,11 +151,11 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
         else:
             content = state.footer.progress
         elements.append(
-            {"tag": "markdown", "content": content, "text_size": "notation", "text_color": "grey"}
+            {"tag": "markdown", "content": content, "text_size": "notation"}
         )
     elif status_text:
         elements.append(
-            {"tag": "markdown", "content": status_text, "text_size": "notation", "text_color": "grey"}
+            {"tag": "markdown", "content": status_text, "text_size": "notation"}
         )
 
     # Duration on terminal states
@@ -163,7 +163,7 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
         duration_str = _format_duration(state.footer.duration_seconds)
         duration_text = UI_TEXT["card_footer_duration_fmt"].format(duration=duration_str)
         elements.append(
-            {"tag": "markdown", "content": duration_text, "text_size": "notation", "text_color": "grey"}
+            {"tag": "markdown", "content": duration_text, "text_size": "notation"}
         )
 
     # Blocked reason as visible text below footer status
@@ -184,20 +184,20 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
                 timeout_display = _format_idle_timeout(state.metadata.idle_timeout_seconds)
                 hint = UI_TEXT["card_footer_idle_timeout_hint"].format(timeout_display=timeout_display)
                 elements.append(
-                    {"tag": "markdown", "content": hint, "text_size": "notation", "text_color": "grey"}
+                    {"tag": "markdown", "content": hint, "text_size": "notation"}
                 )
             else:
                 timeout_display = _format_idle_timeout(state.metadata.idle_timeout_seconds)
                 hint = UI_TEXT["card_footer_idle_timeout_hint"].format(timeout_display=timeout_display)
                 elements.append(
-                    {"tag": "markdown", "content": hint, "text_size": "notation", "text_color": "grey"}
+                    {"tag": "markdown", "content": hint, "text_size": "notation"}
                 )
 
     # Last updated timestamp on non-terminal (active) cards
     if not state.terminal and state.footer.last_updated_at:
         _ts_display = _format_timestamp(state.footer.last_updated_at)
         elements.append(
-            {"tag": "markdown", "content": UI_TEXT["card_footer_last_updated"].format(timestamp=_ts_display), "text_size": "notation", "text_color": "grey"}
+            {"tag": "markdown", "content": UI_TEXT["card_footer_last_updated"].format(timestamp=_ts_display), "text_size": "notation"}
         )
 
     return elements

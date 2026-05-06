@@ -1,6 +1,9 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
+## 2026-05-06
+- **修复话题回复 pending 误判 + 卡片 text_color 属性不兼容** — 修复 `_dispatch_empty_text` 在话题回复场景错误返回 pending 提示的 bug（增加 root_id 检查跳过 pending）；移除飞书卡片不支持的 `text_color` 属性修复卡片创建失败导致"正在思考"卡住的问题 → [详细记录](2026-05-06.md)
+
 ## 2026-05-01
 - **Renderer 迁移 + BaseHandler API 统一（B-016-6 / B-016-12）** — 三 Renderer（Deep/Loop/Spec）从 EngineCardSender 迁移到 DirectCardSession（新增 _StreamThrottle + _create_direct_session）；BaseHandler 新增 5 个统一 API 方法（reply_text/reply_card/update_card/send_card_to_chat/send_text_to_chat）并迁移 4 个 handler 文件调用点；旧方法保留供基础设施使用；Backlog B-016-6/B-016-12 清零；4070 passed 零回归 → [详细记录](2026-05-01.md)
 

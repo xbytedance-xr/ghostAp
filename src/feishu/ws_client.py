@@ -1162,7 +1162,8 @@ class FeishuWSClient:
                 # But wait, if image_keys exist, text might be empty but valid (image only).
                 # _handle_image_content handles text augmentation.
                 # If we are here and text is empty, check if we should show help or dispatch to mode.
-                self._dispatch_empty_text(message_id, chat_id, project, task_ctx)
+                _root_id = getattr(message, "root_id", None)
+                self._dispatch_empty_text(message_id, chat_id, project, task_ctx, root_id=_root_id)
                 return
 
             self._dispatch_message_logic(
@@ -1456,8 +1457,8 @@ class FeishuWSClient:
         except Exception as e:
             logger.debug("update_project_id失败: run_id=%s, err=%s", task_ctx.run_id, get_error_detail(e))
 
-    def _dispatch_empty_text(self, message_id, chat_id, project, task_ctx):
-        """处理“文本为空”的情况：在编程模式下仍转发（保持会话），否则展示帮助。"""
+    def _dispatch_empty_text(self, message_id, chat_id, project, task_ctx, *, root_id=None):
+        """处理"文本为空"的情况：在编程模式下仍转发（保持会话），否则展示帮助。"""
         from ..mode import InteractionMode
 
         _pid = project.project_id if project else None
@@ -1473,7 +1474,9 @@ class FeishuWSClient:
             InteractionMode.GEMINI,
             InteractionMode.TTADK,
         }:
-            if not get_current_thread_id() and self.settings.thread_programming_enabled:
+            # 如果消息来自话题（有 root_id），说明用户已经在话题中，
+            # 不应该提示"创建编程话题"，而应直接转发给 handler 处理。
+            if not root_id and not get_current_thread_id() and self.settings.thread_programming_enabled:
                 pending, handler = self._is_one_shot_pending(chat_id, _pid, current_mode)
                 if pending:
                     self._reply_text(
