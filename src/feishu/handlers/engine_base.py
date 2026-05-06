@@ -269,7 +269,7 @@ class BaseEngineHandler(BaseHandler):
         # Fallback: plain text reply (ensures errors are never lost)
         try:
             error_title = reporter.get_error_title()
-            self.reply_text(f"{error_title}\n\n{final_content}", message_id=message_id)
+            self.reply_text(message_id, f"{error_title}\n\n{final_content}")
         except Exception as send_err:
             logger.error(
                 "%s Engine 发送错误消息失败: %s", self._get_engine_name_prefix(), send_err

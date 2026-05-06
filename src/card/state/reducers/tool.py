@@ -41,6 +41,10 @@ def reduce_tool(state: CardState, event: CardEvent) -> CardState:
             idx = state.block_index.get(block_id)
             if idx is not None and idx < len(state.blocks) and state.blocks[idx].kind == "tool_call":
                 b = state.blocks[idx]
+                # Backward-compatible fallback: some tool adapters stream output via TOOL_DELTA
+                # into block.content but don't populate tool_output on TOOL_DONE.
+                if not tool_output and getattr(b, "content", ""):
+                    tool_output = b.content
                 updated = replace(b, status="completed",
                                      tool_output=tool_output, tool_summary=tool_summary)
                 blocks = state.blocks[:idx] + (updated,) + state.blocks[idx + 1:]

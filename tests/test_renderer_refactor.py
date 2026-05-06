@@ -177,7 +177,7 @@ class TestOnEngineErrorUsesGetActiveSession(unittest.TestCase):
             request_id=None,
         )
 
-        handler.reply_text.assert_called_once()
+        handler.reply_text.assert_called_once_with("m1", "Error\n\nError content")
 
 
 class TestSessionAutoCleanupOnTerminal(unittest.TestCase):

@@ -218,16 +218,91 @@ def _parse_tool_call(update: ToolCallStart | ToolCallProgress) -> ToolCallInfo:
         locations = [loc.path for loc in update.locations]
 
     title = update.title or ""
-    content = ""
     raw_input = getattr(update, "raw_input", None)
-    if raw_input and _is_todo_tool(title, raw_input):
-        content = _format_todo_content(raw_input)
+    raw_output = getattr(update, "raw_output", None)
+    status = (update.status or "in_progress").strip() or "in_progress"
+
+    def _json_dump(obj: Any) -> str:
+        try:
+            return json.dumps(obj, ensure_ascii=False, indent=2)
+        except Exception:
+            return str(obj)
+
+    def _truncate(s: str, max_chars: int) -> str:
+        s = s or ""
+        if len(s) <= max_chars:
+            return s
+        return s[:max_chars] + "\n... (truncated)"
+
+    # Prefer tool kind for rendering decisions; fall back to title heuristics.
+    kind = (update.kind or "other").strip() or "other"
+    is_execute = (kind == "execute") or ("bash" in title.lower())
+
+    # Decide which side to render into ToolCallInfo.content:
+    # - in_progress/pending: show input
+    # - completed/failed: show output
+    use_output = status in ("completed", "failed")
+
+    content = ""
+    if not use_output:
+        # ---- input side ----
+        if raw_input and _is_todo_tool(title, raw_input):
+            content = _format_todo_content(raw_input)
+        elif is_execute:
+            if isinstance(raw_input, dict):
+                content = str(
+                    raw_input.get("command")
+                    or raw_input.get("cmd")
+                    or raw_input.get("shell_command")
+                    or ""
+                )
+            elif isinstance(raw_input, str):
+                content = raw_input
+            elif raw_input is not None:
+                content = _json_dump(raw_input)
+        else:
+            if isinstance(raw_input, str):
+                content = raw_input
+            elif raw_input is not None:
+                content = _json_dump(raw_input)
+
+        content = _truncate((content or "").strip("\n"), 4000)
+    else:
+        # ---- output side ----
+        if is_execute:
+            if isinstance(raw_output, dict):
+                # Best-effort normalize common shapes
+                out = raw_output.get("output")
+                if isinstance(out, str) and out.strip():
+                    content = out
+                else:
+                    stdout = raw_output.get("stdout") or ""
+                    stderr = raw_output.get("stderr") or ""
+                    parts = []
+                    if isinstance(stdout, str) and stdout:
+                        parts.append(stdout)
+                    if isinstance(stderr, str) and stderr:
+                        parts.append(stderr)
+                    content = "\n".join(parts).strip("\n")
+                    if not content:
+                        content = _json_dump(raw_output)
+            elif isinstance(raw_output, str):
+                content = raw_output
+            elif raw_output is not None:
+                content = _json_dump(raw_output)
+        else:
+            if isinstance(raw_output, str):
+                content = raw_output
+            elif raw_output is not None:
+                content = _json_dump(raw_output)
+
+        content = _truncate((content or "").strip("\n"), 12000)
 
     return ToolCallInfo(
         id=update.tool_call_id,
         title=title,
-        kind=update.kind or "other",
-        status=update.status or "in_progress",
+        kind=kind,
+        status=status,
         content=content,
         locations=locations,
     )

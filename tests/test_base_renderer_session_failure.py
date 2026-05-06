@@ -34,9 +34,10 @@ class TestCreateSessionFailure:
                     message_id="test_msg",
                 )
 
-        handler.reply_text.assert_called_once()
-        call_text = handler.reply_text.call_args[0][0]
-        assert "使用人数较多" in call_text
+        handler.reply_text.assert_called_once_with(
+            "test_msg",
+            "当前使用人数较多，请稍后重试，或重新发送命令",
+        )
 
     def test_factory_error_reraises(self):
         """The exception is re-raised after sending fallback text."""

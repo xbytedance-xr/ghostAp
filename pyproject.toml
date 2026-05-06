@@ -8,6 +8,7 @@ dependencies = [
     "agent-client-protocol>=0.8.0",
     "pydantic-settings>=2.6.0",
     "python-dotenv>=1.0.0",
+    "pyyaml>=6.0.0",
     "psutil>=7.2.2",
 ]
 

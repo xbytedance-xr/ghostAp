@@ -92,6 +92,60 @@ class TestCardSessionDispatch:
         assert len(tool_blocks) == 1
         assert tool_blocks[0].tool_name == "bash"
 
+    def test_tool_panel_has_input_and_output_from_acp_raw_fields(self):
+        """ACP ToolCall raw_input/raw_output should surface in tool panel."""
+        from types import SimpleNamespace
+
+        from src.acp.client import _parse_tool_call
+        from src.acp.models import ACPEvent, ACPEventType
+        from src.card.events.acp_adapter import card_event_from_acp
+        from src.card.render.tools import render_tool_panel
+
+        session, _, _ = self._make_session()
+        session.dispatch(CardEvent(type=CardEventType.STARTED))
+
+        # Start: input is taken from raw_input (execute kind → command string)
+        start_update = SimpleNamespace(
+            tool_call_id="tc_raw_1",
+            title="bash",
+            kind="execute",
+            status="in_progress",
+            raw_input={"command": "ls -la"},
+            raw_output=None,
+            locations=[],
+        )
+        start_info = _parse_tool_call(start_update)
+        ev_start = ACPEvent(event_type=ACPEventType.TOOL_CALL_START, tool_call=start_info)
+        session.dispatch(card_event_from_acp(ev_start))
+
+        # Done: output is taken from raw_output (execute kind → output text)
+        done_update = SimpleNamespace(
+            tool_call_id="tc_raw_1",
+            title="bash",
+            kind="execute",
+            status="completed",
+            raw_input={"command": "ls -la"},
+            raw_output={"output": "file1\nfile2\n"},
+            locations=[],
+        )
+        done_info = _parse_tool_call(done_update)
+        ev_done = ACPEvent(event_type=ACPEventType.TOOL_CALL_DONE, tool_call=done_info)
+        session.dispatch(card_event_from_acp(ev_done))
+
+        state = session.state
+        assert state is not None
+        tool_blocks = [b for b in state.blocks if b.kind == "tool_call"]
+        assert len(tool_blocks) == 1
+        b = tool_blocks[0]
+        assert "ls -la" in (b.tool_input or "")
+        assert "file1" in (b.tool_output or "")
+
+        panel = render_tool_panel(b)
+        # Detail content is a markdown element inside collapsible panel
+        detail_md = panel["elements"][0]["content"]
+        assert "ls -la" in detail_md
+        assert "file1" in detail_md
+
     def test_dispatch_completed_closes_session(self):
         session, client, _ = self._make_session()
         session.dispatch(CardEvent(type=CardEventType.STARTED))

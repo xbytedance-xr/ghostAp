@@ -123,6 +123,9 @@ class BaseRenderer:
         cbs = SessionCallbacks(
             notify_callback=notify_callback,
             cancel_callback=cancel_callback,
+            # Fail-close: factory requires at least one notification channel.
+            # reply_text_fn is the most universally safe default for Feishu handlers.
+            reply_text_fn=self.handler.reply_text,
             action_registry=merged_registry,
             hooks=hooks,
         )
@@ -140,7 +143,7 @@ class BaseRenderer:
             return self._get_session_factory().create(**kwargs)
         except Exception:
             logger.exception("Failed to create CardSession, falling back to text reply")
-            self.handler.reply_text("当前使用人数较多，请稍后重试，或重新发送命令")
+            self.handler.reply_text(message_id, "当前使用人数较多，请稍后重试，或重新发送命令")
             raise
 
     def _get_session_factory(self):

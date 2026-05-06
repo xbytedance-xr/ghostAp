@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-05-06
+- **修复 Deep 错误降级回复参数错位** — 修复 `BaseRenderer.create_session()` 和 `BaseEngineHandler._on_engine_error()` 在降级文本回复时错误调用 `reply_text` 的问题，避免出现 `missing 1 required positional argument: 'text'` 与 `got multiple values for argument 'message_id'`；补充回归测试锁定调用顺序 → [详细记录](2026-05-06.md)
 - **修复话题回复 pending 误判 + 卡片 text_color 属性不兼容** — 修复 `_dispatch_empty_text` 在话题回复场景错误返回 pending 提示的 bug（增加 root_id 检查跳过 pending）；移除飞书卡片不支持的 `text_color` 属性修复卡片创建失败导致"正在思考"卡住的问题 → [详细记录](2026-05-06.md)
 
 ## 2026-05-01
