@@ -93,7 +93,7 @@ del _intent_enum_members, _mapped_keys
 
 logger = logging.getLogger(__name__)
 
-# Resolved action_ids that require complex_interaction (loading state + debounce)
+# Resolved action_ids that require confirm dialog (destructive/irreversible actions)
 _DESTRUCTIVE_ACTIONS = frozenset({
     ENGINE_STOP, DEEP_STOP, LOOP_STOP, SPEC_STOP,
     WORKTREE_CLEANUP, WORKTREE_MERGE, WORKTREE_CANCEL,
@@ -256,13 +256,15 @@ def _render_button(spec: ButtonSpec, *, engine_type: str | None = None, budget: 
         "size": button_size,
     }
 
-    if action_id in _DESTRUCTIVE_ACTIONS:
-        btn["complex_interaction"] = True
-
     if spec.confirm is not None:
         btn["confirm"] = {
             "title": {"tag": "plain_text", "content": _get_confirm_title(spec.action_id, spec.text)},
             "text": {"tag": "plain_text", "content": spec.confirm},
+        }
+    elif action_id in _DESTRUCTIVE_ACTIONS:
+        btn["confirm"] = {
+            "title": {"tag": "plain_text", "content": _get_confirm_title(spec.action_id, spec.text)},
+            "text": {"tag": "plain_text", "content": UI_TEXT.get("card_btn_confirm_default_text", "此操作不可撤销，确认继续？")},
         }
 
     return btn
@@ -390,9 +392,12 @@ def build_restart_button(engine_type: str, budget: RenderBudget | None = None) -
         "tag": "button",
         "text": {"tag": "plain_text", "content": label},
         "type": "default",
-        "complex_interaction": True,
         "width": "default",
         "size": button_size,
+        "confirm": {
+            "title": {"tag": "plain_text", "content": UI_TEXT.get("card_btn_confirm_retry_title", "确认重新开始？")},
+            "text": {"tag": "plain_text", "content": UI_TEXT.get("card_btn_confirm_default_text", "此操作不可撤销，确认继续？")},
+        },
         "behaviors": [
             {
                 "type": "callback",

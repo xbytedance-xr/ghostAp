@@ -82,8 +82,8 @@ class TestIsStopIntent:
         )
 
 
-class TestComplexInteraction:
-    """Verify destructive buttons get complex_interaction: True for debounce."""
+class TestDestructiveConfirm:
+    """Verify destructive buttons get confirm dialog for user protection."""
 
     @pytest.mark.parametrize("intent", [
         "intent.engine.stop",
@@ -95,11 +95,12 @@ class TestComplexInteraction:
         "intent.worktree.cancel",
         "intent.approval.approve",
     ])
-    def test_destructive_buttons_have_complex_interaction(self, intent: str):
-        """Buttons resolving to destructive action_ids must set complex_interaction."""
+    def test_destructive_buttons_have_confirm(self, intent: str):
+        """Buttons resolving to destructive action_ids must have confirm dialog."""
         spec = ButtonSpec(text="Test", action_id=intent, type="danger")
         btn = _render_button(spec)
-        assert btn.get("complex_interaction") is True
+        assert "confirm" in btn
+        assert "complex_interaction" not in btn
 
     @pytest.mark.parametrize("intent", [
         "intent.worktree.confirm_start",
