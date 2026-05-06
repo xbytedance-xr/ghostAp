@@ -109,7 +109,7 @@ class DeepRenderer(BaseRenderer):
             renderer.process_event(event)
 
             # Track progress for progress_updated dispatch
-            if event.type == ACPEventType.TOOL_CALL_START:
+            if event.event_type == ACPEventType.TOOL_CALL_START:
                 # Close the active main text block before the first tool starts
                 if _tool_count[0] == 0:
                     session.dispatch(CardEvent.text_done("_main_text"))
@@ -120,12 +120,12 @@ class DeepRenderer(BaseRenderer):
                     total=max(_plan_steps[0], _tool_count[0]),
                     label=label,
                 ))
-            elif event.type == ACPEventType.PLAN_UPDATE:
-                plan_content = getattr(event, "content", "") or ""
-                steps = plan_content.count("\n- ") + plan_content.count("\n* ")
-                if steps > 0:
-                    _plan_steps[0] = steps
-                    _phase[0] = "executing"
+            elif event.event_type == ACPEventType.PLAN_UPDATE:
+                if event.plan and event.plan.entries:
+                    steps = len(event.plan.entries)
+                    if steps > 0:
+                        _plan_steps[0] = steps
+                        _phase[0] = "executing"
 
             # Convert ACP event to CardEvent and dispatch
             card_event = CardEvent.from_acp(event)

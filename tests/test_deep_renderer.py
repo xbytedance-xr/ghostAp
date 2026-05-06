@@ -210,7 +210,7 @@ class TestDeepRenderer:
             # Simulate a tool call event
             from src.acp import ACPEvent, ACPEventType
             tool_event = MagicMock()
-            tool_event.type = ACPEventType.TOOL_CALL_START
+            tool_event.event_type = ACPEventType.TOOL_CALL_START
             tool_event.tool_name = "write_file"
             tool_event.tool_input = "{}"
             tool_event.content = None

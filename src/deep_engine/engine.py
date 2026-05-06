@@ -160,7 +160,7 @@ class DeepEngine(BaseEngine):
                     callbacks.on_text(event.text or "")
             except Exception as e:
                 from ..utils.errors import get_error_detail
-                logger.debug("[Deep] on_event 回调异常(已捕获): %s", get_error_detail(e))
+                logger.warning("[Deep] on_event 回调异常(已捕获): %s", get_error_detail(e))
 
         return on_event
 
