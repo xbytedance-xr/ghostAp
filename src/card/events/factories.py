@@ -323,19 +323,21 @@ class CardEvent(Generic[P]):
         })
 
     @classmethod
-    def phase_started(cls, cycle_num: int, phase: str) -> CardEvent[PhaseStartedPayload]:
+    def phase_started(cls, cycle_num: int, phase: str, *, subtitle: str | None = None) -> CardEvent[PhaseStartedPayload]:
         """Signal that a named phase has begun within a cycle.
 
-        Payload: {cycle_num: int, phase: str}
+        Payload: {cycle_num: int, phase: str, subtitle?: str}
         Triggered when: Engine enters a phase (e.g. "planning", "coding", "review").
+        If subtitle is provided, the header subtitle is updated to this value.
         """
         if not isinstance(cycle_num, int):
             raise TypeError(f"cycle_num must be int, got {type(cycle_num).__name__}")
         if not phase:
             raise ValueError("phase is required for phase_started")
-        return cls(type=CardEventType.PHASE_STARTED, payload={
-            "cycle_num": cycle_num, "phase": phase,
-        })
+        payload: dict = {"cycle_num": cycle_num, "phase": phase}
+        if subtitle is not None:
+            payload["subtitle"] = subtitle
+        return cls(type=CardEventType.PHASE_STARTED, payload=payload)
 
     @classmethod
     def phase_done(cls, cycle_num: int, phase: str, output: str = "") -> CardEvent[PhaseDonePayload]:

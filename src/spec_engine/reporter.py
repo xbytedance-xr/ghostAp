@@ -63,6 +63,27 @@ class SpecReporter:
                 parts.append(f"⬜{p.display_name}")
         return " → ".join(parts)
 
+    def format_phase_subtitle(self, cycle: int, max_cycles: int, current_phase: SpecPhase, completed: bool = False) -> str:
+        """Compact phase progress for header subtitle.
+
+        Example: "Cycle 1/3 · Spec ✅ Plan ✅ Task ✅ Build ▶️ Review ⬜"
+        """
+        phases = list(SpecPhase)
+        current_idx = phases.index(current_phase) if current_phase in phases else -1
+        parts: list[str] = []
+        for i, p in enumerate(phases):
+            short_name = p.value.capitalize()
+            if i < current_idx:
+                parts.append(f"{short_name} ✅")
+            elif i == current_idx:
+                parts.append(f"{short_name} {'✅' if completed else '▶️'}")
+            else:
+                parts.append(f"{short_name} ⬜")
+        phase_text = " ".join(parts)
+        if max_cycles > 1:
+            return f"Cycle {cycle}/{max_cycles} · {phase_text}"
+        return phase_text
+
     def format_phase_start_content(self, cycle: int, phase: SpecPhase, max_cycles: int) -> str:
         progress = self.format_phase_progress(phase, completed=False)
         return f"{progress}\n\n{phase.emoji} **{phase.display_name}** 执行中..."

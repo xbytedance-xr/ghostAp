@@ -30,6 +30,7 @@ def reduce_phase(state: CardState, event: CardEvent) -> CardState:
         case CardEventType.PHASE_STARTED:
             cycle_num = event.payload.get("cycle_num", state.engine_ext.cycle_num)
             phase = event.payload.get("phase", "")
+            subtitle = event.payload.get("subtitle")
             block_id = f"phase_{cycle_num}_{phase}"
             # Idempotency: if an active phase block with same id exists, replace it
             new_blocks = tuple(
@@ -47,8 +48,11 @@ def reduce_phase(state: CardState, event: CardEvent) -> CardState:
             footer = replace(state.footer, status="tool_running",
                              status_text=f"⏳ {display_name}")
             ext = replace(state.engine_ext, phase_info=phase)
-            return replace(state, blocks=new_blocks + (block,),
-                           engine_ext=ext, footer=footer)
+            changes: dict = {"blocks": new_blocks + (block,), "engine_ext": ext, "footer": footer}
+            # Update header subtitle if provided (e.g. phase progress text)
+            if subtitle is not None and state.header:
+                changes["header"] = replace(state.header, subtitle=subtitle)
+            return replace(state, **changes)
 
         case CardEventType.PHASE_DONE:
             cycle_num = event.payload.get("cycle_num", state.engine_ext.cycle_num)

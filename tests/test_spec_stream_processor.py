@@ -143,30 +143,49 @@ class TestOnPhaseEventThrottle:
         proc, deps = _make_processor()
         proc._acp_renderer.process_event = MagicMock()
         ev = self._make_event(ACPEventType.TEXT_CHUNK)
-        proc.on_phase_event(1, SpecPhase.BUILD, ev)
-        # No text_delta dispatch for TEXT_CHUNK (only footer_status changes)
+        # For non-Build phases, TEXT_CHUNK should not produce any dispatch
+        proc.on_phase_event(1, SpecPhase.SPEC, ev)
         dispatched_types = [
             call[0][0].type for call in deps["rotator"].dispatch.call_args_list
         ]
         assert CardEventType.TEXT_DELTA not in dispatched_types
 
-    def test_tool_call_done_triggers_update_when_throttle_passes(self):
+    def test_build_phase_text_chunk_forwards_as_text_delta(self):
+        """In Build phase, TEXT_CHUNK events are forwarded as TEXT_DELTA via card_event_from_acp."""
         proc, deps = _make_processor()
-        # Reset throttle to allow through
-        proc._throttle.last_stream_ts = 0.0
-        proc._throttle.last_stream_text_len = 0
-
-        ev = self._make_event(ACPEventType.TOOL_CALL_DONE)
-        # Mock acp_renderer.render_summary
-        proc._acp_renderer.render_summary = MagicMock(return_value="tool: done (5s)")
         proc._acp_renderer.process_event = MagicMock()
-
+        ev = self._make_event(ACPEventType.TEXT_CHUNK)
+        ev.text = "hello"
+        ev.tool_call = None
+        ev.plan = None
         proc.on_phase_event(1, SpecPhase.BUILD, ev)
-        # Should dispatch text_delta
         dispatched_types = [
             call[0][0].type for call in deps["rotator"].dispatch.call_args_list
         ]
         assert CardEventType.TEXT_DELTA in dispatched_types
+
+    def test_tool_call_done_triggers_update_when_throttle_passes(self):
+        proc, deps = _make_processor()
+        proc._acp_renderer.process_event = MagicMock()
+
+        ev = self._make_event(ACPEventType.TOOL_CALL_DONE)
+        # Mock tool_call for card_event_from_acp
+        tc = MagicMock()
+        tc.id = "tool_1"
+        tc.title = "done"
+        tc.content = "output"
+        tc.status = "completed"
+        ev.tool_call = tc
+        ev.text = None
+        ev.plan = None
+
+        proc.on_phase_event(1, SpecPhase.BUILD, ev)
+        # Build phase: TOOL_CALL_DONE dispatches TOOL_DONE + PROGRESS_UPDATED
+        dispatched_types = [
+            call[0][0].type for call in deps["rotator"].dispatch.call_args_list
+        ]
+        assert CardEventType.TOOL_DONE in dispatched_types
+        assert CardEventType.PROGRESS_UPDATED in dispatched_types
 
     def test_footer_status_tracking(self):
         proc, _ = _make_processor()

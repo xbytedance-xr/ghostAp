@@ -12,7 +12,7 @@ from dataclasses import replace as _replace
 from typing import TYPE_CHECKING, NamedTuple, Optional
 
 from ...acp import ACPEventRenderer, ACPEventType
-from ...card.events import CardEvent
+from ...card.events import CardEvent, card_event_from_acp
 from ...card.render.budget import RenderBudget
 from ...card.render.throttle import StreamThrottle
 from ...card.state.models import CardMetadata
@@ -94,6 +94,9 @@ class SpecStreamProcessor:
         self._acp_renderer: ACPEventRenderer = ACPEventRenderer()
         self._footer_status: Optional[str] = None
         self._last_phase_content: str = ""
+        # Build phase tool tracking
+        self._build_tool_count: int = 0
+        self._build_file_set: set[str] = set()
 
     # ------------------------------------------------------------------
     # Private helpers (previously nested closures)
@@ -239,13 +242,21 @@ class SpecStreamProcessor:
         self._footer_status = "tool_running"
 
         _, spec_project, state, max_c = self._get_engine_and_state()
-        content = self._reporter.format_phase_start_content(cycle_num, phase, max_c)
-        self._last_phase_content = content
+        subtitle = self._reporter.format_phase_subtitle(cycle_num, max_c, phase, completed=False)
 
         self._rotator.dispatch(
-            CardEvent.phase_started(cycle_num, phase.value if hasattr(phase, 'value') else str(phase))
+            CardEvent.phase_started(cycle_num, phase.value if hasattr(phase, 'value') else str(phase), subtitle=subtitle)
         )
-        self._rotator.dispatch(CardEvent.text_delta("_phase", content))
+
+        if phase == SpecPhase.BUILD:
+            # Build phase: use tool panels, no text content needed
+            self._build_tool_count = 0
+            self._build_file_set = set()
+        else:
+            # Non-Build phases: keep text-based display (without phase progress bar in body)
+            content = f"{phase.emoji} **{phase.display_name}** 执行中..."
+            self._last_phase_content = content
+            self._rotator.dispatch(CardEvent.text_delta("_phase", content))
 
     def on_phase_event(self, cycle_num: int, phase: SpecPhase, event) -> None:
         """Real-time ACP event processing."""
@@ -259,41 +270,83 @@ class SpecStreamProcessor:
         elif event.event_type == ACPEventType.TEXT_CHUNK:
             self._footer_status = None
 
-        # Only trigger card update on meaningful events (throttled)
-        if event.event_type not in (
-            ACPEventType.TOOL_CALL_DONE,
-            ACPEventType.PLAN_UPDATE,
-        ):
-            return
+        if phase == SpecPhase.BUILD:
+            # Build phase: forward ACP events as native CardEvents (tool panels, plan)
+            self._dispatch_build_event(event)
+        else:
+            # Non-Build phases: text-based display (existing behavior)
+            if event.event_type not in (
+                ACPEventType.TOOL_CALL_DONE,
+                ACPEventType.PLAN_UPDATE,
+            ):
+                return
 
-        tool_summary = self._acp_renderer.render_summary()
-        if not self._throttle.check_throttle(len(tool_summary), force=False, min_interval=2.0, min_new_chars=10):
-            return
+            tool_summary = self._acp_renderer.render_summary()
+            if not self._throttle.check_throttle(len(tool_summary), force=False, min_interval=2.0, min_new_chars=10):
+                return
 
-        _, spec_project, state, max_c = self._get_engine_and_state()
-        base_content = self._reporter.format_phase_start_content(cycle_num, phase, max_c)
+            _, spec_project, state, max_c = self._get_engine_and_state()
+            base_content = f"{phase.emoji} **{phase.display_name}** 执行中..."
 
-        if tool_summary:
-            base_content += f"\n---\n{tool_summary}"
+            if tool_summary:
+                base_content += f"\n---\n{tool_summary}"
 
-        self._last_phase_content = base_content
-        self._rotator.dispatch(CardEvent.text_delta("_phase", base_content))
-        self._throttle.update_stream_state(len(tool_summary))
+            self._last_phase_content = base_content
+            self._rotator.dispatch(CardEvent.text_delta("_phase", base_content))
+            self._throttle.update_stream_state(len(tool_summary))
+
+    def _dispatch_build_event(self, event) -> None:
+        """Dispatch Build-phase ACP events as native tool/plan CardEvents."""
+        card_evt = card_event_from_acp(event)
+
+        # Track tool/file counts for footer progress
+        if event.event_type == ACPEventType.TOOL_CALL_DONE:
+            self._build_tool_count += 1
+            # Extract file paths from tool calls for file count
+            tc = event.tool_call
+            if tc and tc.title:
+                # Common tool names that reference files
+                title_lower = tc.title.lower() if tc.title else ""
+                if any(kw in title_lower for kw in ("write", "edit", "create", "read")):
+                    # Try to extract path from content
+                    content = tc.content or ""
+                    if content and "/" in content:
+                        # Rough heuristic: first line might be a path
+                        first_line = content.split("\n")[0].strip()
+                        if "/" in first_line and len(first_line) < 200:
+                            self._build_file_set.add(first_line)
+            # Update footer with progress
+            progress_text = f"🔨 {self._build_tool_count} 次工具调用"
+            if self._build_file_set:
+                progress_text += f" · {len(self._build_file_set)} 文件"
+            self._rotator.dispatch(CardEvent.progress_updated(
+                current=self._build_tool_count, total=0, label=progress_text
+            ))
+
+        # Forward the converted event to the card session
+        self._rotator.dispatch(card_evt)
 
     def on_phase_done(self, cycle_num: int, phase: SpecPhase, output: str) -> None:
         _, spec_project, state, max_c = self._get_engine_and_state()
-        content = self._reporter.format_phase_done_content(cycle_num, phase, max_c, output)
-
-        tool_summary = self._acp_renderer.render_summary()
-        if tool_summary:
-            content += f"\n---\n{tool_summary}"
         self._footer_status = None
-        self._last_phase_content = content
 
         self._rotator.dispatch(CardEvent.phase_done(
             cycle_num, phase.value if hasattr(phase, 'value') else str(phase), output
         ))
-        self._rotator.dispatch(CardEvent.text_delta("_phase", content))
+
+        if phase == SpecPhase.BUILD:
+            # Build phase: tool panels already rendered, just show summary
+            summary = self._reporter._extract_phase_summary(phase, output)
+            done_text = f"🔨 **构建完成**  {summary}" if summary else "🔨 **构建完成**"
+            self._rotator.dispatch(CardEvent.text_delta("_phase", done_text))
+        else:
+            # Non-Build phases: text-based summary
+            content = self._reporter.format_phase_done_content(cycle_num, phase, max_c, output)
+            tool_summary = self._acp_renderer.render_summary()
+            if tool_summary:
+                content += f"\n---\n{tool_summary}"
+            self._last_phase_content = content
+            self._rotator.dispatch(CardEvent.text_delta("_phase", content))
 
     def on_phase_retry(self, attempt: int, max_attempts: int, detail: str) -> None:
         """Push phase-level retry status."""
