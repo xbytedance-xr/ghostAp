@@ -1583,6 +1583,27 @@ class FeishuWSClient:
                     shell_fast_tracked=shell_fast_tracked,
                 )
         else:
+            # Project-chat default: when the chat is bound to a project via
+            # /new-chat and the message is neither a slash command, a shell-like
+            # invocation, nor an image-only message, route free-form text into
+            # the Coco programming flow (model-select card + pending prompt).
+            # Slash commands (command_match is not None) always fall through to
+            # _process_with_intent so that /coco, /help, /deep, /wt, /exit, ...
+            # keep their highest priority.
+            if (
+                command_match is None
+                and not is_image_only
+                and text
+                and not self._intent_recognizer.looks_like_shell(text)
+            ):
+                bound_project = self._project_manager.find_by_bound_chat_id(chat_id)
+                if bound_project is not None:
+                    self._add_reaction(message_id, EmojiReaction.on_coco_mode())
+                    self._add_reaction(message_id, EmojiReaction.on_processing())
+                    self._message_dispatcher._handle_enter_coco(
+                        message_id, chat_id, bound_project, pending_prompt=text,
+                    )
+                    return
             self._process_with_intent(
                 message_id,
                 chat_id,

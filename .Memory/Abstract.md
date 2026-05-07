@@ -2,6 +2,8 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-05-07
+- **项目群自由文本默认进 Coco + Slash 最高优先级** — 新增 `ProjectManager.find_by_bound_chat_id` 反向索引 + `IntentRecognizer.looks_like_shell` 公共判定；`SystemHandler` 增加 `pending_prompt` 暂存（LRU 256），模型选择完成后自动把原始需求转发给 Coco；`_dispatch_message_logic` 非编程模式分支在项目群自由文本场景走 `_handle_enter_coco(pending_prompt=text)`，slash 命令（command_match 非空）始终回到 intent 链路保持最高优先级；shell/image_only/非项目群行为不变；新增测试 19 passed，定向回归零新增失败 → [详细记录](2026-05-07.md)
+- **编程模式卡片切换为任务级展示并同步约束文档** — Programming 卡片改为按 `in_progress` 任务轮换主卡、按 agent/subagent 工具调用拆分并发子任务卡，plan 统一展示"整体任务列表 + 当前进行中"且置顶；同步把该策略写入 `AGENTS.md`/`CLAUDE.md`，并修复 `ProgrammingCardSession.finish()/fail()` 未关闭 rotator 的回归问题；回归测试 `122 passed` → [详细记录](2026-05-07.md)
 - **统一 Spec/Loop/Deep/Worktree 卡片到直接编程模式结构** — 新增共享 `_ACPStreamBridge`/`_dispatch_text_block()`，把四种模式的 ACP 流统一归约到 direct programming 风格的 `CardEvent`；Loop/Spec 按 iteration/cycle 旋转独立卡片，Worktree 标题复用共享 header 并保留并发多卡；定向回归 `67 passed` → [详细记录](2026-05-07.md)
 - **修复 `/wt` 命令识别与路由闭环** — 引入 `SlashCommandParser`/`CommandMatch` 统一解析（大小写不敏感、空格/Tab 分隔、`/wt`→`/worktree` 归一化），并接入 `SystemHandler`/`WorktreeHandler`/`FeishuWSClient`/`ChatLockGate` 形成 SSOT；帮助卡补充 `/wt`/`/worktree` 与分隔符说明并加测试锁定；定向回归：worktree+锁 149 passed，help card 1 passed → [详细记录](2026-05-07.md)
 - **重构 Slash 命令消费链路（`CommandMatch` SSOT）** — 解析改为 request-scoped 并全链路透传；`ChatLockManager.should_block()` 用 `Protocol` 解耦并移除 `raw_text/has_args` 兜底推断；`SystemHandler` 的 `/switch`/`/new`/`/close` 参数消费统一改用 `CommandMatch.args`；全量测试 `5645 passed` → [详细记录](2026-05-07.md)

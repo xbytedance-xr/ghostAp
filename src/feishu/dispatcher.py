@@ -329,15 +329,24 @@ class MessageDispatcher:
                 return
         self.client._reply_text(message_id, "🤔 无法理解你的意图")
 
-    def _handle_enter_coco(self, message_id: str, chat_id: str, project):
+    def _handle_enter_coco(self, message_id: str, chat_id: str, project, *, pending_prompt: Optional[str] = None):
         try:
             project_id = project.project_id if project else None
             self.client._system_handler.handle_select_acp_tool(
                 message_id, chat_id, "coco", project_id=project_id,
+                pending_prompt=pending_prompt,
             )
         except Exception as e:
             logger.warning("展示 Coco 模型选择卡失败，回退直接进入: %s", get_error_detail(e))
             self.client._enter_coco_mode(message_id, chat_id, project=project)
+            # Best-effort: forward the pending prompt after fallback entry.
+            if pending_prompt:
+                handle_fn = getattr(self.client, "_handle_coco_message", None)
+                if handle_fn:
+                    try:
+                        handle_fn(message_id, chat_id, pending_prompt, project)
+                    except Exception as fwd_err:
+                        logger.warning("fallback 转发 pending prompt 失败: %s", str(fwd_err))
 
     def _auto_enter_and_forward(self, mode: str, message_id: str, chat_id: str, text: str, project):
         """Auto-enter programming mode and forward message (default ACP tool)."""

@@ -36,6 +36,31 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         self._ttadk_flow_start_times: dict[str, float] = {}
         self._ttadk_flow_last_duration_ms: OrderedDict[str, int] = OrderedDict()
         self._TTADK_FLOW_DURATION_MAX_SIZE = 200
+        # Pending programming prompts stashed when showing the ACP model-select
+        # card. After the user picks a model and enters the mode, the stashed
+        # prompt is forwarded to the mode handler as the first requirement.
+        # Keyed by f"{chat_id}:{tool_name}".
+        self._pending_prompts: "OrderedDict[str, str]" = OrderedDict()
+        self._PENDING_PROMPTS_MAX_SIZE = 256
+
+    @staticmethod
+    def _pending_prompt_key(chat_id: str, tool_name: str) -> str:
+        return f"{chat_id}:{(tool_name or '').lower()}"
+
+    def _stash_pending_prompt(self, chat_id: str, tool_name: str, prompt: str) -> None:
+        if not prompt or not chat_id or not tool_name:
+            return
+        key = self._pending_prompt_key(chat_id, tool_name)
+        self._pending_prompts[key] = prompt
+        self._pending_prompts.move_to_end(key)
+        while len(self._pending_prompts) > self._PENDING_PROMPTS_MAX_SIZE:
+            self._pending_prompts.popitem(last=False)
+
+    def _pop_pending_prompt(self, chat_id: str, tool_name: str) -> Optional[str]:
+        if not chat_id or not tool_name:
+            return None
+        key = self._pending_prompt_key(chat_id, tool_name)
+        return self._pending_prompts.pop(key, None)
 
     def _init_command_registry(self):
         """Initialize the command dispatch registry."""
@@ -390,7 +415,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         tool_name: str,
         model_name: str,
         project: Optional["ProjectContext"] = None,
-    ) -> None:
+    ) -> bool:
         target_project = project or self.project_manager.get_active_project(chat_id)
         if target_project:
             target_project.acp_tool_name = tool_name
@@ -418,9 +443,10 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
                 handler.switch_model(message_id, chat_id, model_name, project=target_project)
             else:
                 handler.enter_mode(message_id, chat_id, project=target_project)
-            return
+            return True
 
         self.reply_error(message_id, UI_TEXT["system_acp_unsupported_tool"].format(tool_name=tool_name))
+        return False
 
     def handle_acp_command(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         project_id = project.project_id if project else None
@@ -446,7 +472,15 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         """
         return fetch_acp_models(tool_name, cwd=cwd, current_model=current_model)
 
-    def handle_select_acp_tool(self, message_id: str, chat_id: str, tool_name: str, project_id: Optional[str] = None):
+    def handle_select_acp_tool(
+        self,
+        message_id: str,
+        chat_id: str,
+        tool_name: str,
+        project_id: Optional[str] = None,
+        *,
+        pending_prompt: Optional[str] = None,
+    ):
         tool = (tool_name or "").strip().lower()
         if not tool:
             self.reply_error(message_id, UI_TEXT["system_acp_select_tool_prompt"])
@@ -463,6 +497,11 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         if not models:
             self.reply_error(message_id, UI_TEXT["system_acp_get_models_failed"].format(tool=tool))
             return
+
+        # Stash the pending prompt (if provided) so that after the user picks a
+        # model, the mode handler picks it up as the first programming request.
+        if pending_prompt:
+            self._stash_pending_prompt(chat_id, tool, pending_prompt)
 
         msg_type, card_content = CardBuilder.build_acp_model_select_card(models, tool, project_id, current_model=current_model)
         self.reply_card(message_id, card_content)
@@ -486,7 +525,22 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
 
         msg_type, card_content = CardBuilder.build_switching_status_card(tool, model)
         self.reply_card(message_id, card_content)
-        self._enter_mode_with_acp_model(message_id, chat_id, tool, model, project)
+        entered = self._enter_mode_with_acp_model(message_id, chat_id, tool, model, project)
+
+        # If we entered the mode and a prompt was stashed (project-chat default
+        # Coco flow), forward it to the mode handler as the first requirement.
+        if entered:
+            pending = self._pop_pending_prompt(chat_id, tool)
+            if pending:
+                handler = self.get_handler(tool)
+                if handler and hasattr(handler, "handle_message"):
+                    try:
+                        handler.handle_message(
+                            message_id, chat_id, pending,
+                            project or self.project_manager.get_active_project(chat_id),
+                        )
+                    except Exception as e:
+                        logger.warning("forwarding pending prompt failed: %s", str(e))
 
     # ------------------------------------------------------------------
     # /model command — list/switch models for current ACP tool

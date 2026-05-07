@@ -22,6 +22,10 @@ class ProjectManager:
     def __init__(self, storage_path: Optional[str] = None):
         self._projects: dict[str, ProjectContext] = {}
         self._active_project: dict[str, str] = {}
+        # Reverse index: bound_chat_id -> project_id, maintained by _rebuild_bound_chat_index
+        # which is invoked from _save_projects and _load_projects. Any code path that mutates
+        # ProjectContext.bound_chat_id MUST eventually call _save_projects to keep this in sync.
+        self._bound_chat_index: dict[str, str] = {}
         self._lock = ordered_rlock(LockLevel.PROJECT_MANAGER, name="ProjectManager._lock")
         self._color_index = 0
 
@@ -437,8 +441,39 @@ class ProjectManager:
             }
             with self._file_lock(True):
                 self._write_atomic(data)
+            self._rebuild_bound_chat_index()
         except Exception as e:
             logger.error("保存项目数据失败: %s", get_error_detail(e))
+
+    def _rebuild_bound_chat_index(self):
+        """Rebuild the reverse index (bound_chat_id -> project_id).
+
+        Called from _save_projects and _load_projects; must hold self._lock
+        (both callers already do, since _save_projects is only called from
+        locked sections and _load_projects runs during __init__).
+        """
+        index: dict[str, str] = {}
+        for pid, ctx in self._projects.items():
+            if ctx.bound_chat_id:
+                # Last-write wins on duplicate bound_chat_id (should be unique by design,
+                # but defensive in case of inconsistent state)
+                index[ctx.bound_chat_id] = pid
+        self._bound_chat_index = index
+
+    def find_by_bound_chat_id(self, chat_id: str) -> Optional[ProjectContext]:
+        """Return the project whose bound_chat_id equals *chat_id*, if any.
+
+        Used to detect "project chat" groups created via /new-chat, so the
+        dispatcher can route free-form text directly into Coco programming mode.
+        Returns None when no project is bound to this chat.
+        """
+        if not chat_id:
+            return None
+        with self._lock:
+            project_id = self._bound_chat_index.get(chat_id)
+            if not project_id:
+                return None
+            return self._projects.get(project_id)
 
     def _load_projects(self):
         if not self._storage_path.exists():
@@ -461,6 +496,7 @@ class ProjectManager:
 
             self._active_project = data.get("active_project", {})
             self._color_index = data.get("color_index", 0)
+            self._rebuild_bound_chat_index()
         except Exception as e:
             corrupt_path = Path(f"{self._storage_path}.corrupt.{int(time.time())}")
             try:

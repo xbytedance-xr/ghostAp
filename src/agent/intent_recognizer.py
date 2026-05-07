@@ -716,11 +716,7 @@ class IntentRecognizer:
         if first_word in self.COMMON_WORDS:
             return None
 
-        if (
-            re.match(r"^[a-z][a-z0-9_.-]*$", first_word)
-            and 2 <= len(first_word) <= 15
-            and not any(kw in text_lower for kw in ["帮", "请", "能", "可以", "想", "吗", "呢"])
-        ):
+        if self._looks_like_shell_token(first_word, text_lower):
             return IntentResult.single(
                 intent=IntentType.SHELL_COMMAND,
                 confidence=0.7,
@@ -738,6 +734,51 @@ class IntentRecognizer:
         if path.startswith("~"):
             path = os.path.expanduser(path)
         return path
+
+    @staticmethod
+    def _looks_like_shell_token(first_word: str, text_lower: str) -> bool:
+        """Shared heuristic for command-like tokens.
+
+        Returns True when the first whitespace-delimited token resembles a
+        shell command name (lowercase identifier 2-15 chars) AND the text
+        does not contain natural-language Chinese hint words that usually
+        signal a programming request rather than a shell command.
+        """
+        if not first_word:
+            return False
+        if not re.match(r"^[a-z][a-z0-9_.-]*$", first_word):
+            return False
+        if not (2 <= len(first_word) <= 15):
+            return False
+        if any(kw in text_lower for kw in ("帮", "请", "能", "可以", "想", "吗", "呢")):
+            return False
+        return True
+
+    def looks_like_shell(self, text: str) -> bool:
+        """Public: does *text* look like a shell command invocation?
+
+        True when the first token is in the SHELL_COMMANDS whitelist, is
+        literally ``cd``, or matches the command-token heuristic used by
+        ``_quick_match`` (but not when it looks like a natural-language
+        programming request). Empty text returns False.
+
+        Callers (e.g. project-chat auto-Coco routing) use this to decide
+        whether to fall through to shell execution instead of forwarding
+        the text to a programming agent as a new requirement.
+        """
+        if not text:
+            return False
+        text_lower = text.lower().strip()
+        if not text_lower:
+            return False
+        first_word = text_lower.split()[0]
+        if first_word == "cd":
+            return True
+        if first_word in self.SHELL_COMMANDS:
+            return True
+        if first_word in self.COMMON_WORDS:
+            return False
+        return self._looks_like_shell_token(first_word, text_lower)
 
     def _get_fallback_intent(self, current_mode: str) -> IntentType:
         if current_mode == "coco":
