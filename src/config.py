@@ -664,23 +664,29 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # 管理员用户列表（用于群级锁权限判定）
     # Stored as frozenset for O(1) membership checks on hot paths.
-
-    # Pydantic parses the env var as list[str] first; the validator below
-    # converts it to frozenset after parsing.
+    # Declared as str to prevent pydantic-settings from attempting JSON parse
+    # on plain comma-separated values; converted to frozenset in model_validator.
     # ------------------------------------------------------------------
-    admin_user_ids: frozenset[str] = frozenset()
+    admin_user_ids: str = ""
 
     @field_validator("admin_user_ids", mode="before")
     @classmethod
-    def _coerce_admin_user_ids(cls, v):
-        """Accept list / comma-separated string and convert to frozenset."""
-        if isinstance(v, str):
-            v = [s.strip() for s in v.split(",") if s.strip()]
-        if isinstance(v, (list, tuple, set)):
-            return frozenset(v)
-        if isinstance(v, frozenset):
-            return v
-        return frozenset()
+    def _normalize_admin_user_ids_input(cls, v):
+        """Normalize list/set/frozenset input to comma-separated string."""
+        if isinstance(v, (list, tuple, set, frozenset)):
+            return ",".join(v)
+        return v if v is not None else ""
+
+    @model_validator(mode="after")
+    def _coerce_admin_user_ids(self) -> "Settings":
+        """Convert comma-separated admin_user_ids string to frozenset for O(1) lookup."""
+        raw = self.admin_user_ids
+        if not raw or not isinstance(raw, str):
+            parsed = frozenset()
+        else:
+            parsed = frozenset(s.strip() for s in raw.split(",") if s.strip())
+        object.__setattr__(self, "admin_user_ids", parsed)
+        return self
 
     # ------------------------------------------------------------------
     # 项目 chat 隔离 — allowed_chat_ids 上限
