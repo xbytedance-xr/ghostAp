@@ -1,6 +1,9 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
+## 2026-05-08
+- **修复项目群已在编程模式时重复展示模型选择卡与冗余通知** — `_handle_enter_coco` 增加 `is_coco_mode` 守卫跳过模型选择；`_enter_mode_with_acp_model` 补传 `project_id` 给 mode_checker 修复项目级模式误判，并对 `enter_mode` 传 `silent=True` 消除冗余通知；24 related tests passed → [详细记录](2026-05-08.md)
+
 ## 2026-05-07
 - **项目群自由文本默认进 Coco + Slash 最高优先级** — 新增 `ProjectManager.find_by_bound_chat_id` 反向索引 + `IntentRecognizer.looks_like_shell` 公共判定；`SystemHandler` 增加 `pending_prompt` 暂存（LRU 256），模型选择完成后自动把原始需求转发给 Coco；`_dispatch_message_logic` 非编程模式分支在项目群自由文本场景走 `_handle_enter_coco(pending_prompt=text)`，slash 命令（command_match 非空）始终回到 intent 链路保持最高优先级；shell/image_only/非项目群行为不变；新增测试 19 passed，定向回归零新增失败 → [详细记录](2026-05-07.md)
 - **编程模式卡片切换为任务级展示并同步约束文档** — Programming 卡片改为按 `in_progress` 任务轮换主卡、按 agent/subagent 工具调用拆分并发子任务卡，plan 统一展示"整体任务列表 + 当前进行中"且置顶；同步把该策略写入 `AGENTS.md`/`CLAUDE.md`，并修复 `ProgrammingCardSession.finish()/fail()` 未关闭 rotator 的回归问题；回归测试 `122 passed` → [详细记录](2026-05-07.md)

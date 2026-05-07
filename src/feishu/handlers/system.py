@@ -438,11 +438,13 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
                 handler.current_model = model_name
             # If already in this mode, switch model on the active session instead of
             # calling enter_mode() which would return early with an "already in mode" warning.
+            _project_id = target_project.project_id if target_project else None
             mode_checker = getattr(self.mode_manager, _mode_check, None)
-            if callable(mode_checker) and mode_checker(chat_id) and hasattr(handler, "switch_model"):
+            if callable(mode_checker) and mode_checker(chat_id, project_id=_project_id) and hasattr(handler, "switch_model"):
                 handler.switch_model(message_id, chat_id, model_name, project=target_project)
             else:
-                handler.enter_mode(message_id, chat_id, project=target_project)
+                # silent=True: model selection card already informs the user, no need for redundant "已开启" notification
+                handler.enter_mode(message_id, chat_id, project=target_project, silent=True)
             return True
 
         self.reply_error(message_id, UI_TEXT["system_acp_unsupported_tool"].format(tool_name=tool_name))

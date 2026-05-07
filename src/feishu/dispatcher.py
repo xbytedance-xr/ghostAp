@@ -330,10 +330,20 @@ class MessageDispatcher:
         self.client._reply_text(message_id, "🤔 无法理解你的意图")
 
     def _handle_enter_coco(self, message_id: str, chat_id: str, project, *, pending_prompt: Optional[str] = None):
+        # If already in coco mode, skip model selection — just forward the pending prompt
+        _pid = project.project_id if project else None
+        if self.client._mode_manager.is_coco_mode(chat_id, project_id=_pid):
+            if pending_prompt:
+                handler = self.client._get_mode_handler(
+                    self.client._mode_manager.get_mode(chat_id, project_id=_pid)
+                )
+                if handler:
+                    handler.handle_message(message_id, chat_id, pending_prompt, project)
+            return
+
         try:
-            project_id = project.project_id if project else None
             self.client._system_handler.handle_select_acp_tool(
-                message_id, chat_id, "coco", project_id=project_id,
+                message_id, chat_id, "coco", project_id=_pid,
                 pending_prompt=pending_prompt,
             )
         except Exception as e:

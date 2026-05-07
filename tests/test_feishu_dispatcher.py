@@ -78,6 +78,7 @@ class TestMessageDispatcher:
     def test_execute_single_task_enter_coco(self):
         task = MagicMock()
         task.intent = IntentType.ENTER_COCO
+        self.client._mode_manager.is_coco_mode.return_value = False
         
         self.dispatcher.execute_single_task("m1", "c1", task, "/coco", None)
         
