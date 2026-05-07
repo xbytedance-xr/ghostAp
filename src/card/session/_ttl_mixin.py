@@ -96,16 +96,18 @@ class TTLActuator:
 
     __slots__ = ("_ctx",)
 
+    _LOCK_ACQUIRE_TIMEOUT: float = 1.0
+
     def __init__(self, ctx: TTLContext) -> None:
         self._ctx = ctx
 
     def get_ttl_state(self) -> TTLState | None:
         """Return a consistent snapshot of TTL-relevant session state.
 
-        Returns None if the lock cannot be acquired within 1s (contention).
+        Returns None if the lock cannot be acquired within _LOCK_ACQUIRE_TIMEOUT (contention).
         """
         ctx = self._ctx
-        acquired = ctx.lock.acquire(timeout=1.0)
+        acquired = ctx.lock.acquire(timeout=self._LOCK_ACQUIRE_TIMEOUT)
         if not acquired:
             return None
         try:

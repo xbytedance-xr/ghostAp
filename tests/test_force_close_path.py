@@ -15,8 +15,14 @@ from src.card.events import CardEvent, CardEventType
 from src.card.types import RenderedCard
 from src.card.session import CardSession
 from src.card.session.config import SessionCallbacks, SessionConfig
+from src.card.session._ttl_mixin import TTLActuator
 from src.card.state.models import CardMetadata
 
+
+@pytest.fixture(autouse=True)
+def _fast_ttl_lock_timeout(monkeypatch):
+    """Reduce TTL lock acquire timeout from 1s to 0.01s to speed up tests."""
+    monkeypatch.setattr(TTLActuator, "_LOCK_ACQUIRE_TIMEOUT", 0.01)
 
 class _MockClient:
     """Minimal mock Feishu client for CardSession tests."""

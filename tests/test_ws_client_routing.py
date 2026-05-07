@@ -31,6 +31,9 @@ def mock_ws_client():
         # Mock out message duplicate check to always pass
         client._message_cache.is_duplicate = MagicMock(return_value=False)
 
+        # Block real Feishu API calls (add_reaction triggers real HTTP requests)
+        client._add_reaction = MagicMock()
+
         yield client
         client.close()
 

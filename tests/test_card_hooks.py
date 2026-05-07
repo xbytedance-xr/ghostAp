@@ -434,7 +434,7 @@ class TestHookConcurrentStress:
             sessions.append(s)
 
         # Allow fire_dispatched hooks to complete and release semaphore slots
-        time.sleep(1.0)
+        time.sleep(0.2)
 
         errors = []
 
@@ -655,13 +655,15 @@ class TestOnDispatchedHookTimeout:
     def test_slow_hook_does_not_block_dispatch(self):
         """A hook that sleeps should not prevent dispatch from completing within timeout."""
         import time
+        import threading
         from src.card.hooks import HookFirer, DISPATCHED_HOOK_TIMEOUT
 
         state = _make_terminal_state("completed")
+        cancel = threading.Event()
 
         class SlowHook:
             def on_dispatched(self, event, state):
-                time.sleep(10.0)  # Much longer than timeout
+                cancel.wait(timeout=DISPATCHED_HOOK_TIMEOUT + 1.0)  # Longer than timeout
             def on_terminal(self, state, reason):
                 pass
 
@@ -674,6 +676,8 @@ class TestOnDispatchedHookTimeout:
 
         # Should return within DISPATCHED_HOOK_TIMEOUT + small margin
         assert elapsed < DISPATCHED_HOOK_TIMEOUT + 1.0, f"fire_dispatched blocked for {elapsed:.1f}s"
+        # Signal the hook to exit immediately for fast teardown
+        cancel.set()
 
 
 class TestResetHookExecutorShutdown:

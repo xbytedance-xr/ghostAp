@@ -44,12 +44,12 @@ class MockDeliveryClient:
         pass
 
 
-def _make_session(*, notify_callback=None, reply_text_fn=None):
+def _make_session(*, notify_callback=None, reply_text_fn=None, retry_delay=0.1):
     """Create a CardSession with configurable callbacks."""
     client = MockDeliveryClient()
     delivery = CardDelivery(client)
     metadata = CardMetadata(mode_name="Deep", tool_name="coco", model_name="gpt-4o", engine_type="deep")
-    config = SessionConfig(metadata=metadata, reply_to="msg_origin")
+    config = SessionConfig(metadata=metadata, reply_to="msg_origin", retry_delay=retry_delay)
     callbacks = SessionCallbacks(
         notify_callback=notify_callback,
         reply_text_fn=reply_text_fn,
@@ -84,10 +84,9 @@ class TestTerminalRetryFallback:
         # Dispatch terminal event — delivery will fail, scheduling retry
         session.dispatch(CardEvent(type=CardEventType.COMPLETED))
 
-        # Wait for retry timer to fire (retry is scheduled after ~1s typically)
-        # Give enough time for the retry to execute
+        # Wait for retry timer to fire (retry_delay=0.1s in test)
         import time
-        time.sleep(3.0)
+        time.sleep(0.5)
 
         # reply_text_fn should have been called with a message about task ended
         if reply_fn.called:

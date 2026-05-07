@@ -12,25 +12,34 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
-from src.card.hooks import HookFirer, HOOK_TIMEOUT_SECONDS
+import src.card.hooks as hooks_mod
+from src.card.hooks import HookFirer
+
+
+# Use a fast timeout for tests (patched below)
+_FAST_HOOK_TIMEOUT = 1.0
 
 
 class SlowHook:
-    """A hook that sleeps for a configurable duration."""
+    """A hook that waits for a configurable duration (cancellable)."""
 
     def __init__(self, delay: float, name: str = "slow"):
         self.delay = delay
         self.name = name
         self.terminal_called = threading.Event()
         self.dispatched_called = threading.Event()
+        self._cancel = threading.Event()
+
+    def cancel(self):
+        self._cancel.set()
 
     def on_dispatched(self, event, state):
         self.dispatched_called.set()
-        time.sleep(self.delay)
+        self._cancel.wait(timeout=self.delay)
 
     def on_terminal(self, state, reason):
         self.terminal_called.set()
-        time.sleep(self.delay)
+        self._cancel.wait(timeout=self.delay)
 
 
 class FastHook:
@@ -49,6 +58,14 @@ class FastHook:
 
 class TestHookMultiTimeout(unittest.TestCase):
     """HookFirer behavior with multiple hooks and timeouts."""
+
+    def setUp(self):
+        # Patch HOOK_TIMEOUT_SECONDS for fast tests
+        self._patcher = patch.object(hooks_mod, "HOOK_TIMEOUT_SECONDS", _FAST_HOOK_TIMEOUT)
+        self._patcher.start()
+
+    def tearDown(self):
+        self._patcher.stop()
 
     def test_fast_hooks_all_complete(self):
         """Multiple fast hooks all fire successfully."""
@@ -73,7 +90,7 @@ class TestHookMultiTimeout(unittest.TestCase):
 
     def test_slow_hook_does_not_block_fast_hook(self):
         """A slow hook timing out doesn't prevent fast hooks from completing."""
-        slow = SlowHook(delay=HOOK_TIMEOUT_SECONDS + 2, name="blocker")
+        slow = SlowHook(delay=_FAST_HOOK_TIMEOUT + 2, name="blocker")
         fast = FastHook()
         firer = HookFirer(hooks=(slow, fast), session_id="test_sess")
         state = MagicMock()
@@ -84,8 +101,10 @@ class TestHookMultiTimeout(unittest.TestCase):
 
         # Fast hook should have completed
         self.assertEqual(fast.terminal_reasons, ["completed"])
-        # Total time should be close to HOOK_TIMEOUT_SECONDS, not much more
-        self.assertLess(elapsed, HOOK_TIMEOUT_SECONDS + 3)
+        # Total time should be close to _FAST_HOOK_TIMEOUT, not much more
+        self.assertLess(elapsed, _FAST_HOOK_TIMEOUT + 1.5)
+        # Allow hook thread to exit immediately
+        slow.cancel()
 
     def test_fire_terminal_concurrent_calls_safe(self):
         """Calling fire_terminal from multiple threads is safe (exactly-once)."""

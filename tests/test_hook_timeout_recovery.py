@@ -108,20 +108,27 @@ class TestHookTimeoutEndToEnd:
     def test_slow_hook_does_not_block_pipeline(self, monkeypatch):
         """A hook sleeping longer than HOOK_TIMEOUT_SECONDS should be timed out gracefully."""
         import time
+        import threading
         from unittest.mock import MagicMock
         from src.card.delivery.engine import CardDelivery
         from src.card.session import CardSession
         from src.card.session.config import SessionConfig
         from src.card.state.models import CardMetadata, CardState
-        from src.card.hooks import HOOK_TIMEOUT_SECONDS
+        import src.card.hooks as hooks_mod
+
+        # Speed up test by reducing the timeout constant
+        monkeypatch.setattr(hooks_mod, "HOOK_TIMEOUT_SECONDS", 1.0)
+        FAST_TIMEOUT = 1.0
+
+        cancel = threading.Event()
 
         class SlowHook:
             def on_dispatched(self, event, state):
                 pass
 
             def on_terminal(self, state, reason):
-                # Sleep much longer than timeout
-                time.sleep(HOOK_TIMEOUT_SECONDS + 2)
+                # Wait much longer than timeout (cancellable for fast teardown)
+                cancel.wait(timeout=FAST_TIMEOUT + 2)
 
         client = MagicMock()
         delivery = CardDelivery(client)
@@ -144,8 +151,8 @@ class TestHookTimeoutEndToEnd:
         elapsed = time.monotonic() - start
 
         # Should return much faster than the hook's sleep
-        # Give generous buffer but it should NOT wait for hook's full sleep (TIMEOUT + 2s)
-        assert elapsed < HOOK_TIMEOUT_SECONDS + 1.5, f"Pipeline blocked for {elapsed:.1f}s"
+        assert elapsed < FAST_TIMEOUT + 1.5, f"Pipeline blocked for {elapsed:.1f}s"
+        cancel.set()  # Allow hook thread to exit immediately
         session.close()
 
 
