@@ -236,7 +236,13 @@ def _parse_tool_call(update: ToolCallStart | ToolCallProgress) -> ToolCallInfo:
 
     # Prefer tool kind for rendering decisions; fall back to title heuristics.
     kind = (update.kind or "other").strip() or "other"
-    is_execute = (kind == "execute") or ("bash" in title.lower())
+    title_lower = title.lower()
+    is_execute = (kind == "execute") or ("bash" in title_lower)
+    is_agent_task = (
+        kind == "agent"
+        or title_lower == "agent"
+        or (isinstance(raw_input, dict) and any(k in raw_input for k in ("subagent_type", "description", "prompt")))
+    )
 
     # Decide which side to render into ToolCallInfo.content.
     # NOTE: tests rely on conservative rendering: only TodoWrite and execute-like
@@ -265,7 +271,25 @@ def _parse_tool_call(update: ToolCallStart | ToolCallProgress) -> ToolCallInfo:
             elif raw_input is not None:
                 content = _json_dump(raw_input)
 
-        # For non-execute tools, keep content empty to reduce noise.
+        elif is_agent_task:
+            if isinstance(raw_input, dict):
+                description = str(raw_input.get("description") or "").strip()
+                prompt = str(raw_input.get("prompt") or "").strip()
+                subagent_type = str(raw_input.get("subagent_type") or "").strip()
+                parts = []
+                if description:
+                    parts.append(description)
+                if subagent_type:
+                    parts.append(f"子代理：{subagent_type}")
+                if prompt:
+                    prompt_first_line = prompt.splitlines()[0].strip()
+                    if prompt_first_line and prompt_first_line != description:
+                        parts.append(prompt_first_line)
+                content = "\n".join(parts)
+            elif isinstance(raw_input, str):
+                content = raw_input
+
+        # For other non-execute tools, keep content empty to reduce noise.
 
         content = _truncate((content or "").strip("\n"), 4000)
     else:

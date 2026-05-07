@@ -131,18 +131,11 @@ class TestLoopHandlerPatch:
             record.status = IterationStatus.SUCCESS
             callbacks.on_iteration_done(1, record)
 
-            # Session 1 should receive CYCLE_DONE and then ARCHIVED (stale stub via rotate)
+            # Session 1 should receive CYCLE_DONE + text + criteria via rotator (no rotation)
             dispatched_1 = [call[0][0] for call in mock_session_1.dispatch.call_args_list]
             types_1 = [e.type for e in dispatched_1]
             assert CardEventType.CYCLE_DONE in types_1
-            assert CardEventType.ARCHIVED in types_1
-
-            # New session created and STARTED + TEXT_DELTA dispatched
-            assert mock_create.call_count == 2
-            dispatched_2 = [call[0][0] for call in mock_session_2.dispatch.call_args_list]
-            types_2 = [e.type for e in dispatched_2]
-            assert CardEventType.STARTED in types_2
-            assert CardEventType.TEXT_DELTA in types_2
+            assert CardEventType.CRITERIA_UPDATED in types_1
 
     def test_loop_project_done_dispatches_completed(self, handler):
         """Test that on_project_done dispatches COMPLETED event."""
@@ -174,17 +167,11 @@ class TestLoopHandlerPatch:
 
             callbacks.on_project_done(mock_project)
 
-            # Session 1 receives ARCHIVED event (stale stub via rotate)
+            # Session 1 receives text + criteria + COMPLETED via rotator (no rotation)
             dispatched_1 = [call[0][0] for call in mock_session_1.dispatch.call_args_list]
             types_1 = [e.type for e in dispatched_1]
-            assert CardEventType.ARCHIVED in types_1
-
-            # New session dispatches STARTED + text + criteria + COMPLETED
-            dispatched = [call[0][0] for call in mock_session_2.dispatch.call_args_list]
-            types = [e.type for e in dispatched]
-            assert CardEventType.STARTED in types
-            assert CardEventType.COMPLETED in types
-            assert CardEventType.CRITERIA_UPDATED in types
+            assert CardEventType.COMPLETED in types_1
+            assert CardEventType.CRITERIA_UPDATED in types_1
 
             # Verify EmojiHook was registered via hooks kwarg to create_session
             create_kwargs = mock_create.call_args_list[0]

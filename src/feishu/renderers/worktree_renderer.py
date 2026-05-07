@@ -79,7 +79,8 @@ class WorktreeRenderer(BaseRenderer):
 
             metadata = self.build_unit_metadata(
                 CardMetadata(
-                    engine_type="worktree", mode_name=f"Worktree · {tool_name or 'Coco'}", mode_emoji="🌳"
+                    engine_type="worktree", mode_name="Worktree", mode_emoji="🌳",
+                    tool_name=tool_name or "Coco",
                 ),
                 unit_id=project_id,
                 unit_kind="worktree",

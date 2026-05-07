@@ -121,7 +121,7 @@ class TTLHandler:
         remaining_min = max(1, int((state.ttl_seconds - state.idle_seconds) / 60))
         warning_text = UI_TEXT["card_session_ttl_prewarning"].format(minutes=remaining_min, engine_name=d.engine_name)
 
-        events = [CardEvent.warning_updated(warning_text, show_keep_alive_btn=True, keep_alive_minutes=remaining_min)]
+        events = [CardEvent.warning_updated(warning_text)]
         try:
             rendered = a.reduce_and_render(events)
         except Exception as exc:

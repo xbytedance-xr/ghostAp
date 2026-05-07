@@ -69,8 +69,9 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
         state = self.get_ui_state(loop_project_id)
         metadata = CardMetadata(
             engine_type="loop",
-            mode_name=f"Loop · {engine_name}",
+            mode_name="Loop",
             mode_emoji="🔁",
+            tool_name=engine_name,
             compact=state["compact"],
             expanded=state["expanded"],
             expand_ac=state.get("expand_ac", False),
@@ -92,8 +93,9 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
             meta = self.build_unit_metadata(
                 CardMetadata(
                     engine_type="loop",
-                    mode_name=f"Loop · {engine_name}",
+                    mode_name="Loop",
                     mode_emoji="🔁",
+                    tool_name=engine_name,
                     compact=st["compact"],
                     expanded=st["expanded"],
                     expand_ac=st.get("expand_ac", False),
@@ -263,8 +265,9 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
                 )
                 metadata = CardMetadata(
                     engine_type="loop",
-                    mode_name=f"Loop · {engine_name}",
+                    mode_name="Loop",
                     mode_emoji="🔁",
+                    tool_name=engine_name,
                 )
                 session = self.create_session(chat_id, message_id, metadata, budget=RenderBudget(engine_cmd="/loop"))
                 session.dispatch(CardEvent.started())

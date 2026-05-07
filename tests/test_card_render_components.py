@@ -290,27 +290,27 @@ class TestBannerUnifiedPosition:
 
     def test_error_banner_in_body_top(self):
         elements = self._render_with_banner("error")
-        assert elements[0]["tag"] == "div"
+        assert elements[0]["tag"] == "column_set"
         assert elements[0]["background_style"] == "red"
-        assert "Test banner message" in elements[0]["elements"][0]["content"]
+        assert "Test banner message" in elements[0]["columns"][0]["elements"][0]["content"]
 
     def test_warning_banner_in_body_top(self):
         elements = self._render_with_banner("warning")
-        assert elements[0]["tag"] == "div"
+        assert elements[0]["tag"] == "column_set"
         assert elements[0]["background_style"] == "yellow"
-        assert "Test banner message" in elements[0]["elements"][0]["content"]
+        assert "Test banner message" in elements[0]["columns"][0]["elements"][0]["content"]
 
     def test_info_banner_in_body_top(self):
         elements = self._render_with_banner("info")
-        assert elements[0]["tag"] == "div"
+        assert elements[0]["tag"] == "column_set"
         assert elements[0]["background_style"] == "wathet"
-        assert "Test banner message" in elements[0]["elements"][0]["content"]
+        assert "Test banner message" in elements[0]["columns"][0]["elements"][0]["content"]
 
     def test_success_banner_in_body_top(self):
         elements = self._render_with_banner("success")
-        assert elements[0]["tag"] == "div"
+        assert elements[0]["tag"] == "column_set"
         assert elements[0]["background_style"] == "green"
-        assert "Test banner message" in elements[0]["elements"][0]["content"]
+        assert "Test banner message" in elements[0]["columns"][0]["elements"][0]["content"]
 
 
 # ---------------------------------------------------------------------------
@@ -544,8 +544,8 @@ class TestBannerMultiPagePosition:
         # Verify banner appears only on the FIRST page
         first_body = cards[0]._card_json["body"]["elements"]
         first_elem = first_body[0]
-        assert first_elem["tag"] == "div", (
-            f"Page 0: first element should be banner div, got {first_elem.get('tag')}"
+        assert first_elem["tag"] == "column_set", (
+            f"Page 0: first element should be banner column_set, got {first_elem.get('tag')}"
         )
         assert first_elem["background_style"] == "yellow", (
             "Page 0: warning banner should be yellow"

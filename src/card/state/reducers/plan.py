@@ -13,15 +13,9 @@ def reduce_plan(state: CardState, event: CardEvent) -> CardState:
         return state
 
     content = event.payload.get("content", "")
-    blocks = list(state.blocks)
+    blocks = [b for b in state.blocks if not (b.block_id == PLAN_BLOCK_ID and b.kind == "plan")]
 
-    # Find existing plan block and update, or create new
-    for i, b in enumerate(blocks):
-        if b.block_id == PLAN_BLOCK_ID and b.kind == "plan":
-            blocks[i] = replace(b, content=content)
-            return replace(state, blocks=tuple(blocks))
-
-    # Create new plan block
+    # Keep the plan panel at the beginning of the card so task context stays visible.
     new_block = PlanBlock(block_id=PLAN_BLOCK_ID, status="active", content=content)
-    blocks.append(new_block)
+    blocks.insert(0, new_block)
     return replace(state, blocks=tuple(blocks))

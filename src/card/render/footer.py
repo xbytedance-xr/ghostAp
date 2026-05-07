@@ -104,7 +104,8 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
     Layout order:
       1. hr separator
       2. Status text + progress merged (notation size)
-      3. Duration (terminal states only)
+      3. Tool/model info line
+      4. Duration (terminal states show final, running states show elapsed)
 
     Note: All warning banners (error/warning/info/success) are now rendered
     at body top by renderer.py for unified positioning.
@@ -158,12 +159,28 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
             {"tag": "markdown", "content": status_text, "text_size": "notation"}
         )
 
-    # Duration on terminal states
+    # Tool/model info line + duration (combined into one line)
+    meta_parts = []
+    if state.metadata.tool_name:
+        meta_parts.append(f"🔧 {state.metadata.tool_name}")
+    if state.metadata.model_name:
+        meta_parts.append(f"🧩 {state.metadata.model_name}")
+
+    # Duration: terminal states use final duration_seconds; running states compute elapsed
+    duration_str = None
     if state.footer.duration_seconds is not None and state.terminal in ("completed", "failed", "cancelled", "blocked", "archived", "ttl_expired"):
         duration_str = _format_duration(state.footer.duration_seconds)
-        duration_text = UI_TEXT["card_footer_duration_fmt"].format(duration=duration_str)
+    elif state.footer.progress_started_at is not None and not state.terminal:
+        elapsed = time.monotonic() - state.footer.progress_started_at
+        if elapsed >= 1:
+            duration_str = _format_duration(elapsed)
+
+    if duration_str:
+        meta_parts.append(f"⏱ {duration_str}")
+
+    if meta_parts:
         elements.append(
-            {"tag": "markdown", "content": duration_text, "text_size": "notation"}
+            {"tag": "markdown", "content": " · ".join(meta_parts), "text_size": "notation"}
         )
 
     # Blocked reason as visible text below footer status

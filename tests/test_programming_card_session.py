@@ -20,7 +20,7 @@ class MockClient:
 
     def create_card(self, chat_id, card_json, *, reply_to=None):
         self._counter += 1
-        self.creates.append({"chat_id": chat_id})
+        self.creates.append({"chat_id": chat_id, "card_json": card_json, "reply_to": reply_to})
         return (f"msg_{self._counter}", f"card_{self._counter}")
 
     def update_card(self, card_id, card_json, *, sequence=0):
@@ -34,14 +34,26 @@ def _make_programming_session(mode_name="coco", **kwargs):
     client = MockClient()
     delivery = CardDelivery(client)
     metadata = build_programming_metadata(mode_name, **kwargs)
-    config = SessionConfig(metadata=metadata)
+    config = SessionConfig(metadata=metadata, reply_to="origin_msg")
     session = CardSession(
         chat_id="chat_prog",
         config=config,
         delivery=delivery,
         session_id=f"prog_{mode_name}",
     )
-    return ProgrammingCardSession(session), client
+
+    counter = {"value": 1}
+
+    def make_task_session(task_metadata: CardMetadata) -> CardSession:
+        counter["value"] += 1
+        return CardSession(
+            chat_id="chat_prog",
+            config=SessionConfig(metadata=task_metadata, reply_to="origin_msg"),
+            delivery=delivery,
+            session_id=f"prog_{mode_name}_{counter['value']}",
+        )
+
+    return ProgrammingCardSession(session, session_factory=make_task_session, base_metadata=metadata), client
 
 
 class TestBuildProgrammingMetadata:
@@ -178,6 +190,85 @@ class TestProgrammingCardSession:
         state = pcs.session.state
         text_blocks = [b for b in state.blocks if b.kind == "text"]
         assert len(text_blocks) >= 2  # Before and after tool
+
+    def test_plan_block_moves_to_card_start_with_task_sections(self):
+        from src.acp.models import ACPEvent, ACPEventType, PlanEntryInfo, PlanInfo
+
+        pcs, _ = _make_programming_session()
+        pcs.start()
+        pcs.on_text("先输出一些文本")
+        pcs._flush_now()
+
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.PLAN_UPDATE,
+            plan=PlanInfo(entries=[
+                PlanEntryInfo(content="梳理卡片链路", status="completed"),
+                PlanEntryInfo(content="实现任务分卡", status="in_progress"),
+                PlanEntryInfo(content="补充回归测试", status="pending"),
+            ]),
+        ))
+
+        state = pcs.session.state
+        assert state.blocks[0].kind == "plan"
+        assert "整体任务列表" in state.blocks[0].content
+        assert "当前进行中" in state.blocks[0].content
+        assert "实现任务分卡" in state.blocks[0].content
+
+    def test_task_switch_opens_new_card_instead_of_overwriting_previous_one(self):
+        from src.acp.models import ACPEvent, ACPEventType, PlanEntryInfo, PlanInfo
+
+        pcs, client = _make_programming_session()
+        pcs.start()
+
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.PLAN_UPDATE,
+            plan=PlanInfo(entries=[
+                PlanEntryInfo(content="任务 A", status="in_progress"),
+                PlanEntryInfo(content="任务 B", status="pending"),
+            ]),
+        ))
+        first_task_message_id = pcs.get_message_id()
+
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.PLAN_UPDATE,
+            plan=PlanInfo(entries=[
+                PlanEntryInfo(content="任务 A", status="completed"),
+                PlanEntryInfo(content="任务 B", status="in_progress"),
+            ]),
+        ))
+
+        assert len(client.creates) >= 2
+        assert pcs.get_message_id() != first_task_message_id
+        assert "任务 B" in (pcs.session.state.metadata.unit_label or "")
+
+    def test_parallel_agent_tasks_open_independent_cards(self):
+        from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
+
+        pcs, client = _make_programming_session()
+        pcs.start()
+
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(
+                id="agent-task-1",
+                title="Agent",
+                kind="other",
+                status="in_progress",
+                content="实现后端接口\n子代理：Explore",
+            ),
+        ))
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(
+                id="agent-task-2",
+                title="Agent",
+                kind="other",
+                status="in_progress",
+                content="补充前端回归测试\n子代理：Explore",
+            ),
+        ))
+
+        assert len(client.creates) >= 3
 
 
 class TestSessionMetadataPerMode:

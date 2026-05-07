@@ -204,6 +204,10 @@ def compute_structure_signature(state: CardState) -> str:
     parts.append(f"header:{state.header.title}:{state.header.template}")
     if state.header.subtitle is not None:
         parts.append(f"sub:{state.header.subtitle}")
+    if state.metadata.tool_name:
+        parts.append(f"tool:{state.metadata.tool_name}")
+    if state.metadata.model_name:
+        parts.append(f"model:{state.metadata.model_name}")
     if state.footer.status is not None:
         parts.append(f"footer:{state.footer.status}")
     parts.append(f"buttons:{len(state.buttons)}")

@@ -106,7 +106,8 @@ class TestMainReducer:
         s = reduce_card_state(s, CardEvent.tool_model_changed(model_name="claude-sonnet-4-20250514"))
         assert s.metadata.model_name == "claude-sonnet-4-20250514"
         assert s.metadata.tool_name == "coco"  # unchanged
-        assert "claude-sonnet-4-20250514" in (s.header.subtitle or "")
+        # Tool/model info now shown in footer, header subtitle is None
+        assert s.header.subtitle is None
 
     def test_progress_updated(self):
         s = reduce_card_state(None, CardEvent.started(), metadata=_meta())

@@ -59,7 +59,7 @@ def _make_processor(**overrides):
     renderer.ctx = MagicMock()
     renderer.ctx.spec_engine_manager.snapshot = MagicMock(return_value=snap)
 
-    metadata = CardMetadata(engine_type="spec", mode_name="Spec · Coco", mode_emoji="📋")
+    metadata = CardMetadata(engine_type="spec", mode_name="Spec", mode_emoji="📋")
     budget = RenderBudget(engine_cmd="/spec")
     throttle = StreamThrottle(min_interval=1.0, min_chars=20)
 
@@ -106,13 +106,13 @@ class TestRotateSession:
 
     def test_rotate_session_calls_rotator_rotate(self):
         proc, deps = _make_processor()
-        proc._rotate_session()
+        proc._rotate_session(1)
         deps["rotator"].rotate.assert_called_once()
 
     def test_rotate_session_uses_delivered_message_id(self):
         proc, deps = _make_processor()
         deps["rotator"].current.delivered_message_id = "msg_old"
-        proc._rotate_session()
+        proc._rotate_session(1)
         # The lambda passed to rotate should call renderer.create_session
         factory_fn = deps["rotator"].rotate.call_args[0][0]
         factory_fn()
@@ -124,7 +124,7 @@ class TestRotateSession:
     def test_rotate_session_falls_back_to_original_message_id(self):
         proc, deps = _make_processor()
         deps["rotator"].current.delivered_message_id = None
-        proc._rotate_session()
+        proc._rotate_session(1)
         factory_fn = deps["rotator"].rotate.call_args[0][0]
         factory_fn()
         call_args = deps["renderer"].create_session.call_args
@@ -143,12 +143,13 @@ class TestOnPhaseEventThrottle:
         proc, deps = _make_processor()
         proc._acp_renderer.process_event = MagicMock()
         ev = self._make_event(ACPEventType.TEXT_CHUNK)
-        # For non-Build phases, TEXT_CHUNK should not produce any dispatch
+        # Non-Build phases forward TEXT_CHUNK via stream bridge (TEXT_STARTED + TEXT_DELTA)
         proc.on_phase_event(1, SpecPhase.SPEC, ev)
         dispatched_types = [
             call[0][0].type for call in deps["rotator"].dispatch.call_args_list
         ]
-        assert CardEventType.TEXT_DELTA not in dispatched_types
+        assert CardEventType.TEXT_STARTED in dispatched_types
+        assert CardEventType.TEXT_DELTA in dispatched_types
 
     def test_build_phase_text_chunk_forwards_as_text_delta(self):
         """In Build phase, TEXT_CHUNK events are forwarded as TEXT_DELTA via card_event_from_acp."""

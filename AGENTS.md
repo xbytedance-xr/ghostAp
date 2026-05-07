@@ -177,6 +177,7 @@ Card pipeline 各层遵循严格的单向依赖约束，禁止反向 import：
 - Tests and temp code go in `tests/`, keep root directory clean
 - When solving problems, consider at least two approaches and pick the best one
 - **编程模式兼容**: 所有编程模式（Coco/Claude/Aiden/Codex/Gemini/TTADK）相关的后续功能，默认必须实现全模式兼容，除非用户明确指定不需要兼容
+- **飞书卡片任务级展示原则**: 编程相关卡片默认遵循“一个任务一张卡片”；卡片开头必须先展示“整体任务列表”和“当前进行中”任务；发生并发 subagent 时每个子任务独立维护自己的消息卡片并持续更新；单卡超限时必须新开续卡且保留原卡内容，新卡开头继续展示整体任务列表与当前进行中；工具调用详情保持现有展示方式，但应尽量避免空数据块
 - **提交信息规范**: 提交信息必须准确描述所有修改的文件和变更范围，详细规范请参考 [docs/commit-message-guidelines.md](docs/commit-message-guidelines.md)
 - **Git Hooks**: 项目已配置 pre-commit 和 commit-msg hooks 来帮助确保提交信息质量，这些 hooks 会在提交时自动运行并提供提示
 

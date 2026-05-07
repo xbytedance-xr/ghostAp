@@ -420,7 +420,8 @@ class TestReduceWorktreeCompletedNoChange:
         )
         new = reduce_worktree(state, event)
         assert new.header.template == "wathet"
-        assert "完成" in new.header.title
+        # Header title reuses programming mode title; subtitle shows no-change message
+        assert new.header.subtitle is not None
 
 
 class TestWorktreeProgressSilentBranch:

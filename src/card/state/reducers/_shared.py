@@ -29,13 +29,8 @@ def build_header(metadata: CardMetadata, terminal: str) -> HeaderState:
     if metadata.continuation_seq > 0:
         title = f"{title} (续 #{metadata.continuation_seq})"
 
-    # Subtitle
-    parts = []
-    if metadata.tool_name:
-        parts.append(metadata.tool_name)
-    if metadata.model_name:
-        parts.append(metadata.model_name)
-    subtitle = "🔧 " + " · ".join(parts) if parts else None
+    # Subtitle: tool/model info moved to footer, header only shows project + mode
+    subtitle = None
 
     # Template color: terminal overrides mode
     template = TERMINAL_TEMPLATES.get(terminal) or MODE_TEMPLATES.get(metadata.mode_name, "blue")

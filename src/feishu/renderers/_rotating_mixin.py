@@ -53,8 +53,9 @@ class RotatingRendererMixin:
         """Create a fresh CardSession for view rendering."""
         metadata = CardMetadata(
             engine_type=self._engine_type,
-            mode_name=f"{self._mode_prefix} · {engine_name}",
+            mode_name=self._mode_prefix,
             mode_emoji=self._mode_emoji,
+            tool_name=engine_name,
             compact=state.get("compact", False),
             expanded=state.get("expanded", False),
             expand_ac=state.get("expand_ac", False),

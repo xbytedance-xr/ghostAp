@@ -301,23 +301,45 @@ def test_acp_manager_session_starter_success_is_not_overwritten(monkeypatch):
 class MockToolCallStart:
     """Mock ToolCallStart ACP schema object."""
 
-    def __init__(self, tool_call_id="tc1", title="Read file", kind="read", status="in_progress", locations=None):
+    def __init__(
+        self,
+        tool_call_id="tc1",
+        title="Read file",
+        kind="read",
+        status="in_progress",
+        locations=None,
+        raw_input=None,
+        raw_output=None,
+    ):
         self.tool_call_id = tool_call_id
         self.title = title
         self.kind = kind
         self.status = status
         self.locations = locations or []
+        self.raw_input = raw_input
+        self.raw_output = raw_output
 
 
 class MockToolCallProgress:
     """Mock ToolCallProgress ACP schema object."""
 
-    def __init__(self, tool_call_id="tc1", title="Read file", kind="read", status="completed", locations=None):
+    def __init__(
+        self,
+        tool_call_id="tc1",
+        title="Read file",
+        kind="read",
+        status="completed",
+        locations=None,
+        raw_input=None,
+        raw_output=None,
+    ):
         self.tool_call_id = tool_call_id
         self.title = title
         self.kind = kind
         self.status = status
         self.locations = locations or []
+        self.raw_input = raw_input
+        self.raw_output = raw_output
 
 
 class MockLocation:
@@ -358,6 +380,20 @@ class TestParseToolCall:
         update = MockToolCallStart(kind=None)
         tc = _parse_tool_call(update)
         assert tc.kind == "other"
+
+    def test_agent_tool_keeps_task_description_for_task_cards(self):
+        update = MockToolCallStart(
+            title="Agent",
+            kind="other",
+            status="in_progress",
+            raw_input={
+                "description": "实现后端接口",
+                "prompt": "请实现 `/api/tasks` 接口并补测试",
+                "subagent_type": "Explore",
+            },
+        )
+        tc = _parse_tool_call(update)
+        assert "实现后端接口" in tc.content
 
 
 class TestParsePlan:

@@ -198,9 +198,8 @@ class TestHeaderSubtitle:
         state = session.state
         assert state.metadata.tool_name == "claude"
         assert state.metadata.model_name == "claude-4-sonnet"
-        # Header subtitle should reflect new tool/model
-        assert state.header.subtitle is not None
-        assert "claude" in state.header.subtitle
+        # Tool/model info is now shown in footer, not header subtitle
+        assert state.header.subtitle is None
 
 
 class TestSpecEngineFlow:

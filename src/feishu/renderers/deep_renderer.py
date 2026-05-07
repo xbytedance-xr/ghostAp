@@ -81,9 +81,10 @@ class DeepRenderer(BaseRenderer):
         # New pipeline: CardSession (event-driven)
         metadata = CardMetadata(
             project_name=project.project_id if project else None,
-            mode_name=f"Deep · {engine_name}",
+            mode_name="Deep",
             mode_emoji="🧠",
             engine_type="deep",
+            tool_name=engine_name,
         )
         session: Dispatchable = self.create_session(chat_id, message_id, metadata, hooks=hooks, budget=RenderBudget(engine_cmd="/deep"))
         self._current_session = session
@@ -203,9 +204,10 @@ class DeepRenderer(BaseRenderer):
                 )
                 metadata = CardMetadata(
                     project_name=project.project_id if project else None,
-                    mode_name=f"Deep · {engine_name}",
+                    mode_name="Deep",
                     mode_emoji="🧠",
                     engine_type="deep",
+                    tool_name=engine_name,
                 )
                 session = self.create_session(chat_id, message_id, metadata, budget=RenderBudget(engine_cmd="/deep"))
                 session.dispatch(CardEvent.started())
@@ -240,9 +242,10 @@ class DeepRenderer(BaseRenderer):
         # Build status card via CardSession
         metadata = CardMetadata(
             project_name=project.project_id if project else None,
-            mode_name=f"Deep · {engine_name}",
+            mode_name="Deep",
             mode_emoji="🧠",
             engine_type="deep",
+            tool_name=engine_name,
         )
         session = self.create_session(chat_id, message_id, metadata, budget=RenderBudget(engine_cmd="/deep"))
         session.dispatch(CardEvent.started())

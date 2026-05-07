@@ -72,11 +72,22 @@ def card_event_from_acp(acp_event: "ACPEvent") -> CardEvent:
         case AET.PLAN_UPDATE:
             plan = acp_event.plan
             if plan:
-                lines = []
+                current_lines = []
+                overall_lines = []
                 for entry in plan.entries:
                     icon = {"completed": "✅", "in_progress": "⏳", "pending": "○"}.get(entry.status, "○")
-                    lines.append(f"{icon} {entry.content}")
-                content = "\n".join(lines)
+                    line = f"{icon} {entry.content}"
+                    overall_lines.append(line)
+                    if entry.status == "in_progress":
+                        current_lines.append(f"- {entry.content}")
+                sections = ["📋 **整体任务列表**"]
+                sections.extend(overall_lines)
+                sections.extend([
+                    "",
+                    "🚧 **当前进行中**",
+                ])
+                sections.extend(current_lines or ["- 暂无"])
+                content = "\n".join(sections)
             else:
                 content = ""
             return CardEvent(type=CardEventType.PLAN_UPDATED, payload={"content": content})

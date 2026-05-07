@@ -67,7 +67,7 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
         # Build metadata for card sessions
         metadata = CardMetadata(
             engine_type="spec",
-            mode_name=f"Spec · {engine_name}",
+            mode_name="Spec",
             mode_emoji="📋",
             tool_name=engine_name,
             model_name=model_name or None,
@@ -131,8 +131,9 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
                 )
                 metadata = CardMetadata(
                     engine_type="spec",
-                    mode_name=f"Spec · {engine_name}",
+                    mode_name="Spec",
                     mode_emoji="📋",
+                    tool_name=engine_name,
                 )
                 session = self.create_session(chat_id, message_id, metadata, budget=RenderBudget(engine_cmd="/spec"))
                 session.dispatch(CardEvent.started())
@@ -232,8 +233,9 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
         ui_state = state or self.get_default_ui_state()
         metadata = CardMetadata(
             engine_type="spec",
-            mode_name=f"Spec · {engine_name}",
+            mode_name="Spec",
             mode_emoji="📋",
+            tool_name=engine_name,
             compact=ui_state.get("compact", False),
             expanded=ui_state.get("expanded", False),
             expand_ac=ui_state.get("expand_ac", False),

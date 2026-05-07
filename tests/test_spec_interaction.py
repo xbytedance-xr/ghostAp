@@ -392,5 +392,5 @@ def test_cycle_done_card_no_buttons():
         dispatched_events = [call[0][0] for call in mock_session.dispatch.call_args_list]
         event_types = [e.type for e in dispatched_events]
         assert CardEventType.CYCLE_DONE in event_types
-        # After rotation, STARTED is dispatched on the new session
-        assert CardEventType.STARTED in event_types
+        # Criteria updated should also be dispatched
+        assert CardEventType.CRITERIA_UPDATED in event_types
