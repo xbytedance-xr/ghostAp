@@ -19,6 +19,7 @@ from .reducers.cycle import reduce_cycle
 from .reducers.phase import reduce_phase
 from .reducers.criteria import reduce_criteria
 from .reducers.worktree import reduce_worktree
+from .reducers.task_list import reduce_task_list
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,8 @@ _REDUCER_DISPATCH: dict[CardEventType, Callable[[CardState, CardEvent], CardStat
     # UI control events
     CardEventType.MODE_TOGGLED: reduce_lifecycle,
     CardEventType.STOP_ESCALATED: reduce_lifecycle,
+    # Task-level card management
+    CardEventType.TASK_LIST_UPDATED: reduce_task_list,
 }
 
 # Events that cause structural changes (block add/remove, terminal, header/buttons change)
@@ -186,6 +189,8 @@ _STRUCTURAL_EVENTS = frozenset({
     # UI control (buttons change)
     CardEventType.MODE_TOGGLED,
     CardEventType.STOP_ESCALATED,
+    # Task-level card management (block structure change)
+    CardEventType.TASK_LIST_UPDATED,
 })
 
 

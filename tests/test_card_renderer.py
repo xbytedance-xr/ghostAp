@@ -93,6 +93,8 @@ class TestUnifiedCardSections:
                     kind="tool_call",
                     block_id="tool1",
                     tool_name="Read",
+                    tool_input='{"path": "/src/main.py"}',
+                    tool_output="read ok",
                     tool_summary="read ok",
                     status="completed",
                 ),

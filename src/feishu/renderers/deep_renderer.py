@@ -6,14 +6,17 @@ from typing import TYPE_CHECKING, Optional
 
 from ...acp import ACPEvent, ACPEventRenderer, ACPEventType
 from ...card.events import CardEvent
+from ...card.orchestrator import TaskOrchestrator
 from ...card.render.budget import RenderBudget
 from ...card.state.models import CardMetadata
+from ...card.stream_bridge import ACPStreamBridge
+from ...card.task_registry import TaskRegistry, tasks_from_plan_entries
 from ...card.ui_text import UI_TEXT
 from ...deep_engine import DeepEngineCallbacks
 from ...deep_engine.models import DeepProject, DeepProjectStatus
 from ...project import ContextSourceMode
 from ..emoji import EmojiReaction
-from .base import BaseRenderer, _ACPStreamBridge, _dispatch_text_block, _StreamThrottle
+from .base import BaseRenderer, _dispatch_text_block, _StreamThrottle
 
 if TYPE_CHECKING:
     from ...card.protocols import Dispatchable
@@ -22,6 +25,9 @@ if TYPE_CHECKING:
     from ..handlers.deep import DeepHandler
 
 logger = logging.getLogger(__name__)
+
+# Minimum plan steps to trigger multi-card mode
+_MIN_TASKS_FOR_MULTI_CARD = 2
 
 
 class DeepRenderer(BaseRenderer):
@@ -86,12 +92,34 @@ class DeepRenderer(BaseRenderer):
             engine_type="deep",
             tool_name=engine_name,
         )
-        session: Dispatchable = self.create_session(chat_id, message_id, metadata, hooks=hooks, budget=RenderBudget(engine_cmd="/deep"))
+        _deep_budget = RenderBudget(engine_cmd="/deep")
+
+        # Create thinking-phase session (the first card)
+        session: Dispatchable = self.create_session(chat_id, message_id, metadata, hooks=hooks, budget=_deep_budget)
         self._current_session = session
+
+        # TaskOrchestrator: manages per-task card creation after plan is detected
+        def _task_session_creator(task_id: str):
+            """Create a new card session for a specific task."""
+            from dataclasses import replace as _replace
+            task_item = orchestrator.registry.get(task_id)
+            task_label = task_item.name if task_item else task_id
+            task_metadata = _replace(metadata, unit_label=task_label, unit_id=task_id)
+            return self.create_session(chat_id, message_id, task_metadata, hooks=hooks, budget=_deep_budget)
+
+        from ...config import get_settings
+        _multi_card_enabled = get_settings().card.task_level_cards_enabled
+
+        orchestrator = TaskOrchestrator(
+            chat_id=chat_id,
+            session_creator=_task_session_creator,
+            bridge_factory=ACPStreamBridge if _multi_card_enabled else None,
+        )
+        orchestrator.set_thinking_session(session)
 
         # ACP event renderer for structured content
         renderer = ACPEventRenderer()
-        stream_bridge = _ACPStreamBridge(session)
+        stream_bridge = ACPStreamBridge(session)
         # Progress tracking state
         _start_time = [time.time()]
         _tool_count = [0]
@@ -106,27 +134,48 @@ class DeepRenderer(BaseRenderer):
             _phase[0] = "executing"
 
         def on_event(event: ACPEvent):
-            """Process ACP events and dispatch to CardSession."""
+            """Process ACP events and dispatch to CardSession.
+
+            Routes events to thinking session before plan, then to per-task sessions.
+            """
             renderer.process_event(event)
 
             # Track progress for progress_updated dispatch
             if event.event_type == ACPEventType.TOOL_CALL_START:
                 _tool_count[0] += 1
-                label = "🔄 执行中" if _phase[0] == "executing" else "🧠 分析/规划中"
-                session.dispatch(CardEvent.progress_updated(
-                    current=_tool_count[0],
-                    total=max(_plan_steps[0], _tool_count[0]),
-                    label=label,
-                ))
-            elif event.event_type == ACPEventType.PLAN_UPDATE:
+
+            # Detect PLAN_UPDATE and trigger multi-card split if applicable
+            if event.event_type == ACPEventType.PLAN_UPDATE:
                 if event.plan and event.plan.entries:
                     steps = len(event.plan.entries)
                     if steps > 0:
                         _plan_steps[0] = steps
                         _phase[0] = "executing"
 
-            # Convert ACP stream to unified programming-style card sections
-            stream_bridge.on_event(event)
+                    # Unified plan detection + status broadcast
+                    if _multi_card_enabled:
+                        orchestrator.handle_plan_update(event, stream_bridge)
+
+            # Dispatch progress event on tool call start
+            if event.event_type == ACPEventType.TOOL_CALL_START:
+                label = "🔄 执行中" if _phase[0] == "executing" else "🧠 分析/规划中"
+                progress_event = CardEvent.progress_updated(
+                    current=_tool_count[0],
+                    total=max(_plan_steps[0], _tool_count[0]),
+                    label=label,
+                )
+                if orchestrator.has_plan and not orchestrator.is_fallback_mode:
+                    task_id = orchestrator.resolver.resolve(event) if orchestrator.resolver else ""
+                    if task_id:
+                        orchestrator.dispatch_to_task(task_id, progress_event)
+                else:
+                    session.dispatch(progress_event)
+
+            # Route ACP event content to the correct session/bridge
+            if _multi_card_enabled and orchestrator.has_plan and not orchestrator.is_fallback_mode:
+                orchestrator.route_acp_event(event, stream_bridge)
+            else:
+                stream_bridge.on_event(event)
 
             # Check for warning banner based on elapsed time
             elapsed = time.time() - _start_time[0]
@@ -141,17 +190,24 @@ class DeepRenderer(BaseRenderer):
             tool_calls_count = snap.tool_calls_count if snap else _tool_count[0]
             summary = f"✅ 执行完成 · 工具调用: {tool_calls_count}"
 
-            # Dispatch completion with summary (hooks fire automatically via CardSession)
-            if deep_project.status == DeepProjectStatus.COMPLETED:
-                session.dispatch(CardEvent.completed(summary=summary))
+            if orchestrator.has_plan and not orchestrator.is_fallback_mode:
+                # Close orchestrator (dispatches COMPLETED to all task sessions)
+                orchestrator.close()
             else:
-                session.dispatch(CardEvent.failed("执行未完成"))
+                # Dispatch completion with summary (hooks fire automatically via CardSession)
+                if deep_project.status == DeepProjectStatus.COMPLETED:
+                    session.dispatch(CardEvent.completed(summary=summary))
+                else:
+                    session.dispatch(CardEvent.failed("执行未完成"))
             self._current_session = None
 
         def on_error(error: str):
             stream_bridge.close_open_blocks()
-            # Dispatch failure (hooks fire automatically via CardSession)
-            session.dispatch(CardEvent.failed(error))
+            if orchestrator.has_plan and not orchestrator.is_fallback_mode:
+                orchestrator.close()
+            else:
+                # Dispatch failure (hooks fire automatically via CardSession)
+                session.dispatch(CardEvent.failed(error))
             self._current_session = None
 
         return DeepEngineCallbacks(

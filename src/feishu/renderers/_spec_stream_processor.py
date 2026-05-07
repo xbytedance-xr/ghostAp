@@ -12,9 +12,12 @@ from typing import TYPE_CHECKING, NamedTuple, Optional
 
 from ...acp import ACPEventRenderer, ACPEventType
 from ...card.events import CardEvent, card_event_from_acp
+from ...card.orchestrator import TaskOrchestrator
 from ...card.render.budget import RenderBudget
 from ...card.render.throttle import StreamThrottle
 from ...card.state.models import CardMetadata
+from ...card.stream_bridge import ACPStreamBridge
+from ...card.task_registry import tasks_from_plan_entries
 from ...card.ui_text import UI_TEXT
 from ...spec_engine import SpecEngineCallbacks
 from ...spec_engine.models import (
@@ -24,13 +27,16 @@ from ...spec_engine.models import (
     SpecProject,
 )
 from ...spec_engine.retry_status import RetryEvent, RetryStatus
-from .base import _ACPStreamBridge, _dispatch_text_block
+from .base import _dispatch_text_block
 
 if TYPE_CHECKING:
     from ...card.session_rotator import SessionRotator
     from ...spec_engine.reporter import SpecReporter
 
 logger = logging.getLogger(__name__)
+
+# Minimum plan steps to trigger multi-card mode in Spec Build phase
+_MIN_TASKS_FOR_MULTI_CARD = 2
 
 # RetryStatus → UI_TEXT key mapping (class-level constant)
 _RETRY_STATUS_TEXT: dict[RetryStatus, str] = {
@@ -94,10 +100,28 @@ class SpecStreamProcessor:
         self._acp_renderer: ACPEventRenderer = ACPEventRenderer()
         self._footer_status: Optional[str] = None
         self._last_phase_content: str = ""
-        self._stream_bridge = _ACPStreamBridge(self._rotator)
+        self._stream_bridge = ACPStreamBridge(self._rotator)
         # Build phase tool tracking
         self._build_tool_count: int = 0
         self._build_file_set: set[str] = set()
+
+        # TaskOrchestrator for multi-card within a Spec cycle's Build phase
+        def _task_session_creator(task_id: str):
+            from dataclasses import replace as _replace
+            task_item = self._orchestrator.registry.get(task_id)
+            task_label = task_item.name if task_item else task_id
+            task_metadata = _replace(metadata, unit_label=task_label, unit_id=task_id)
+            return renderer.create_session(chat_id, message_id, task_metadata, hooks=hooks, budget=budget)
+
+        from ...config import get_settings
+        self._multi_card_enabled = get_settings().card.task_level_cards_enabled
+
+        self._orchestrator = TaskOrchestrator(
+            chat_id=chat_id,
+            session_creator=_task_session_creator,
+            bridge_factory=ACPStreamBridge if self._multi_card_enabled else None,
+        )
+        self._orchestrator.set_thinking_session(self._rotator)
 
     # ------------------------------------------------------------------
     # Private helpers (previously nested closures)
@@ -224,6 +248,10 @@ class SpecStreamProcessor:
             total_count=spec_project.total_criteria,
         ))
 
+        # Close orchestrator if in multi-card mode
+        if self._orchestrator.has_plan and not self._orchestrator.is_fallback_mode:
+            self._orchestrator.close()
+
         # Terminal event (hooks fire emoji automatically)
         if spec_project.status.value == "completed":
             self._rotator.dispatch(CardEvent.completed())
@@ -235,6 +263,11 @@ class SpecStreamProcessor:
         self._renderer.update_ui_state(
             self._spec_project_id, view_mode="error", view_context={"error": error}
         )
+
+        # Close orchestrator if in multi-card mode
+        if self._orchestrator.has_plan and not self._orchestrator.is_fallback_mode:
+            self._orchestrator.close()
+
         # Hooks fire emoji automatically on terminal delivery
         self._stream_bridge.close_open_blocks()
         self._rotator.dispatch(CardEvent.failed(error))
@@ -268,9 +301,16 @@ class SpecStreamProcessor:
         elif event.event_type == ACPEventType.TEXT_CHUNK:
             self._footer_status = None
 
+        # Detect PLAN_UPDATE for multi-card split in BUILD phase
+        if self._multi_card_enabled and event.event_type == ACPEventType.PLAN_UPDATE and phase == SpecPhase.BUILD:
+            self._orchestrator.handle_plan_update(event, self._stream_bridge)
+
         if phase == SpecPhase.BUILD:
-            # Build phase: forward ACP events as native CardEvents (tool panels, plan)
-            self._dispatch_build_event(event)
+            # Build phase: route through orchestrator if multi-card enabled
+            if self._multi_card_enabled and self._orchestrator.has_plan and not self._orchestrator.is_fallback_mode:
+                self._orchestrator.route_acp_event(event, self._stream_bridge)
+            else:
+                self._dispatch_build_event(event)
         else:
             self._stream_bridge.on_event(event)
 

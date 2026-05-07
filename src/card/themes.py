@@ -102,6 +102,7 @@ PANEL_STYLES = {
     "border_history": "blue",
     "border_plan": "indigo",
     "border_active": "wathet",  # Active/running state (e.g. worktree panels)
+    "border_task_list": "indigo",  # Task list panel (multi-card orchestration) — distinct from engine headers
     "padding_standard": "8px 16px",  # Standard panel content padding
     "padding_compact": "4px 12px",  # Compact padding for dense summaries
 }

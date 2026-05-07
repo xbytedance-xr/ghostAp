@@ -228,3 +228,20 @@ class WorktreeCompletedNoChangePayload(TypedDict):
     units: list[WorktreeUnitPayload]
     project_id: str
     message: str
+
+
+# ---------------------------------------------------------------------------
+# Task-level card management payload TypedDicts
+# ---------------------------------------------------------------------------
+
+class TaskSnapshotPayload(TypedDict):
+    """Single task item in task list payload."""
+    task_id: str
+    name: str
+    status: Literal["pending", "in_progress", "completed", "failed"]
+
+
+class TaskListUpdatedPayload(TypedDict):
+    """Payload for TASK_LIST_UPDATED event."""
+    tasks: list[TaskSnapshotPayload]
+    current_task_id: str

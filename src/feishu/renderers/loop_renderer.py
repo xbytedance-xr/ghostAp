@@ -3,9 +3,13 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any, Optional
 
+from ...acp import ACPEventType
 from ...card.events import CardEvent
+from ...card.orchestrator import TaskOrchestrator
 from ...card.render.budget import RenderBudget
 from ...card.state.models import CardMetadata
+from ...card.stream_bridge import ACPStreamBridge
+from ...card.task_registry import tasks_from_plan_entries
 from ...card.ui_text import UI_TEXT
 from ...loop_engine import LoopEngineCallbacks
 from ...loop_engine.models import (
@@ -16,7 +20,7 @@ from ...loop_engine.models import (
 from ...utils.text import append_duration_to_title
 from ..emoji import EmojiReaction
 from ._rotating_mixin import EngineView, RotatingRendererMixin
-from .base import BaseRenderer, _ACPStreamBridge, _dispatch_text_block
+from .base import BaseRenderer, _dispatch_text_block
 
 if TYPE_CHECKING:
     from ...card.protocols import Dispatchable
@@ -25,6 +29,9 @@ if TYPE_CHECKING:
     from ..handlers.loop import LoopHandler
 
 logger = logging.getLogger(__name__)
+
+# Minimum plan steps to trigger multi-card mode within a Loop iteration
+_MIN_TASKS_FOR_MULTI_CARD = 2
 
 
 class LoopRenderer(RotatingRendererMixin, BaseRenderer):
@@ -84,7 +91,37 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
         _loop_budget = RenderBudget(engine_cmd="/loop")
         rotator: SessionRotator = self._create_rotator(chat_id, message_id, metadata, hooks=hooks, budget=_loop_budget)
         self._current_session = rotator
-        stream_bridge = _ACPStreamBridge(rotator)
+        stream_bridge = ACPStreamBridge(rotator)
+
+        # TaskOrchestrator for multi-card within an iteration
+        def _task_session_creator(task_id: str):
+            from dataclasses import replace as _replace
+            task_item = orchestrator.registry.get(task_id)
+            task_label = task_item.name if task_item else task_id
+            task_metadata = _replace(metadata, unit_label=task_label, unit_id=task_id)
+            return self.create_session(chat_id, message_id, task_metadata, hooks=hooks, budget=_loop_budget)
+
+        from ...config import get_settings
+        _multi_card_enabled = get_settings().card.task_level_cards_enabled
+
+        orchestrator = TaskOrchestrator(
+            chat_id=chat_id,
+            session_creator=_task_session_creator,
+            bridge_factory=ACPStreamBridge if _multi_card_enabled else None,
+        )
+        orchestrator.set_thinking_session(rotator)
+
+        def _reset_orchestrator():
+            """Reset orchestrator for a new iteration (allows fresh plan detection)."""
+            nonlocal orchestrator
+            orchestrator.reset()
+            # Create fresh orchestrator for the new iteration
+            orchestrator = TaskOrchestrator(
+                chat_id=chat_id,
+                session_creator=_task_session_creator,
+                bridge_factory=ACPStreamBridge if _multi_card_enabled else None,
+            )
+            orchestrator.set_thinking_session(rotator)
 
         def _new_session(iteration: int):
             """Atomically rotate to a new session (iteration boundary)."""
@@ -122,6 +159,10 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
             # View State Update: Status
             self.update_ui_state(loop_project_id, view_mode="status", view_context={})
 
+            # Reset orchestrator for fresh plan detection in new iteration
+            if _multi_card_enabled:
+                _reset_orchestrator()
+
             _new_session(current)
             rotator.dispatch(CardEvent.started())
 
@@ -145,7 +186,15 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
                     rotator.dispatch(CardEvent.warning_updated(warning))
 
         def on_iteration_event(iteration: int, event):
-            stream_bridge.on_event(event)
+            # Unified plan detection + status broadcast
+            if _multi_card_enabled and event.event_type == ACPEventType.PLAN_UPDATE:
+                orchestrator.handle_plan_update(event, stream_bridge)
+
+            # Route ACP event content to the correct session/bridge
+            if _multi_card_enabled and orchestrator.has_plan and not orchestrator.is_fallback_mode:
+                orchestrator.route_acp_event(event, stream_bridge)
+            else:
+                stream_bridge.on_event(event)
 
         def on_iteration_done(iteration: int, record: IterationRecord):
             # View State Update: Iteration Done
@@ -210,6 +259,10 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
                 total_count=loop_project.total_criteria,
             ))
 
+            # Close orchestrator if in multi-card mode
+            if orchestrator.has_plan and not orchestrator.is_fallback_mode:
+                orchestrator.close()
+
             # Terminal event — auto-closes session (hooks fire emoji automatically)
             if loop_project.status.value == "completed":
                 rotator.dispatch(CardEvent.completed())
@@ -220,6 +273,10 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
         def on_error(error: str):
             # View State Update: Error
             self.update_ui_state(loop_project_id, view_mode="error", view_context={"error": error})
+
+            # Close orchestrator if in multi-card mode
+            if orchestrator.has_plan and not orchestrator.is_fallback_mode:
+                orchestrator.close()
 
             # Hooks fire emoji automatically on terminal delivery
             stream_bridge.close_open_blocks()

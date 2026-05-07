@@ -16,6 +16,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from src.acp.models import ACPEvent
     from src.card.events import CardEvent
     from src.card.state.models import CardState
     from src.card.types import RenderedCard
@@ -317,6 +318,32 @@ class ActionDispatcher(Protocol):
         ...
 
 
+# ---------------------------------------------------------------------------
+# StreamBridge protocol (ACP event → CardEvent bridge)
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class StreamBridge(Protocol):
+    """Protocol for ACP stream bridges that normalize ACP events into CardEvent sequences.
+
+    Implementations convert raw ACP streaming events (text chunks, thought chunks,
+    tool calls) into structured CardEvent sequences dispatched to a Dispatchable target.
+    """
+
+    def on_event(self, acp_event: "ACPEvent") -> None:
+        """Process an ACP event and dispatch corresponding CardEvents."""
+        ...
+
+    def close_open_blocks(self) -> None:
+        """Close any currently open text/reasoning blocks."""
+        ...
+
+    def bind(self, dispatchable: "Dispatchable") -> None:
+        """Rebind the bridge to a new dispatchable target (closes open blocks first)."""
+        ...
+
+
 __all__ = [
     "Session",
     "TTLState",
@@ -331,4 +358,5 @@ __all__ = [
     "Dispatchable",
     "ManagedDispatchable",
     "CardAPIClient",
+    "StreamBridge",
 ]

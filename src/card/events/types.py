@@ -50,3 +50,5 @@ class CardEventType(str, Enum):
     # UI control
     MODE_TOGGLED = "mode_toggled"
     STOP_ESCALATED = "stop_escalated"
+    # Task-level card management
+    TASK_LIST_UPDATED = "task_list_updated"

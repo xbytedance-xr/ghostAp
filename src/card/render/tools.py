@@ -23,8 +23,25 @@ _PATH_TOOLS = {"read", "write", "edit", "read_file", "write_file", "edit_file"}
 _SEARCH_TOOLS = {"grep", "search", "find", "glob", "search_codebase"}
 
 
-def render_tool_panel(block: ContentBlock) -> dict:
-    """Render a single tool call as a collapsible_panel."""
+def _is_empty_data(value) -> bool:
+    """Check if a tool input/output value is considered empty."""
+    if value is None:
+        return True
+    if isinstance(value, str) and not value.strip():
+        return True
+    if isinstance(value, (dict, list)) and not value:
+        return True
+    return False
+
+
+def render_tool_panel(block: ContentBlock) -> dict | None:
+    """Render a single tool call as a collapsible_panel.
+
+    Returns None if both tool_input and tool_output are empty.
+    """
+    if _is_empty_data(block.tool_input) and _is_empty_data(block.tool_output):
+        return None
+
     icon = _STATUS_ICONS.get(block.status, "⏳")
     summary = generate_tool_summary(block)
     title_text = f"{icon} **{block.tool_name or 'tool'}** — {summary}"
@@ -55,10 +72,15 @@ def render_tool_panel(block: ContentBlock) -> dict:
     }
 
 
-def render_tool_history_panel(blocks: list[ContentBlock]) -> dict:
-    """Render multiple completed tools as a folded panel."""
-    n = len(blocks)
-    nested = [render_tool_panel(b) for b in blocks]
+def render_tool_history_panel(blocks: list[ContentBlock]) -> dict | None:
+    """Render multiple completed tools as a folded panel.
+
+    Returns None if all tool panels are empty.
+    """
+    nested = [p for b in blocks if (p := render_tool_panel(b)) is not None]
+    if not nested:
+        return None
+    n = len(nested)
 
     return {
         "tag": "collapsible_panel",
@@ -151,23 +173,26 @@ def _render_detail(block: ContentBlock) -> str:
     tool_name = (block.tool_name or "").lower()
     tool_input = block.tool_input or ""
     tool_output = block.tool_output or ""
+    output_empty = _is_empty_data(block.tool_output)
 
     if tool_name in _BASH_TOOLS:
-        return _render_bash_detail(tool_input, tool_output)
-    return _render_generic_detail(tool_input, tool_output)
+        return _render_bash_detail(tool_input, tool_output, output_empty)
+    return _render_generic_detail(tool_input, tool_output, output_empty)
 
 
-def _render_bash_detail(tool_input: str, tool_output: str) -> str:
+def _render_bash_detail(tool_input: str, tool_output: str, output_empty: bool = False) -> str:
     """Render bash-specific detail."""
     parts = [f"{UI_TEXT['tool_label_command']}\n```bash\n{tool_input}\n```"]
-    output = _truncate_output(tool_output)
-    parts.append(f"{UI_TEXT['tool_label_result']}\n```\n{output}\n```")
+    if not output_empty:
+        output = _truncate_output(tool_output)
+        parts.append(f"{UI_TEXT['tool_label_result']}\n```\n{output}\n```")
     return "\n".join(parts)
 
 
-def _render_generic_detail(tool_input: str, tool_output: str) -> str:
+def _render_generic_detail(tool_input: str, tool_output: str, output_empty: bool = False) -> str:
     """Render generic tool detail."""
     parts = [f"{UI_TEXT['tool_label_input']}\n```json\n{tool_input}\n```"]
-    output = _truncate_output(tool_output)
-    parts.append(f"{UI_TEXT['tool_label_output']}\n```\n{output}\n```")
+    if not output_empty:
+        output = _truncate_output(tool_output)
+        parts.append(f"{UI_TEXT['tool_label_output']}\n```\n{output}\n```")
     return "\n".join(parts)

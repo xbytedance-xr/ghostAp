@@ -39,51 +39,23 @@ class _ACPStreamBridge:
 
     Reused by Deep/Loop/Spec renderers so text, reasoning and tool panels follow
     the same event sequencing as direct programming mode.
+
+    DEPRECATED: Use src.card.stream_bridge.ACPStreamBridge directly.
+    This class is kept for backward-compatible imports only.
     """
 
     def __init__(self, dispatchable) -> None:
-        self._dispatchable = dispatchable
-        self._text_active = False
-        self._reasoning_active = False
+        from src.card.stream_bridge import ACPStreamBridge as _Impl
+        self._impl = _Impl(dispatchable)
 
     def bind(self, dispatchable) -> None:
-        self.close_open_blocks()
-        self._dispatchable = dispatchable
-        self._text_active = False
-        self._reasoning_active = False
+        self._impl.bind(dispatchable)
 
     def on_event(self, acp_event) -> None:
-        from ...acp import ACPEventType
-        from ...card.events import CardEvent, card_event_from_acp
-
-        if acp_event.event_type == ACPEventType.THOUGHT_CHUNK:
-            if self._text_active:
-                self._dispatchable.dispatch(CardEvent.text_done("_active_text"))
-                self._text_active = False
-            if not self._reasoning_active:
-                self._dispatchable.dispatch(CardEvent.reasoning_started("_active_reasoning"))
-                self._reasoning_active = True
-        elif acp_event.event_type == ACPEventType.TEXT_CHUNK:
-            if self._reasoning_active:
-                self._dispatchable.dispatch(CardEvent.reasoning_done("_active_reasoning"))
-                self._reasoning_active = False
-            if not self._text_active:
-                self._dispatchable.dispatch(CardEvent.text_started("_active_text"))
-                self._text_active = True
-        elif acp_event.event_type == ACPEventType.TOOL_CALL_START:
-            self.close_open_blocks()
-
-        self._dispatchable.dispatch(card_event_from_acp(acp_event))
+        self._impl.on_event(acp_event)
 
     def close_open_blocks(self) -> None:
-        from ...card.events import CardEvent
-
-        if self._reasoning_active:
-            self._dispatchable.dispatch(CardEvent.reasoning_done("_active_reasoning"))
-            self._reasoning_active = False
-        if self._text_active:
-            self._dispatchable.dispatch(CardEvent.text_done("_active_text"))
-            self._text_active = False
+        self._impl.close_open_blocks()
 
 
 # ---------------------------------------------------------------------------

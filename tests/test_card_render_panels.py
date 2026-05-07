@@ -154,3 +154,96 @@ class TestPlanPanel:
         assert result["border"]["color"] == "indigo"
         assert "执行计划" in result["header"]["title"]["content"]
         assert result["elements"][0]["content"] == content
+
+
+class TestToolPanelEmptyData:
+    """AC7: render_tool_panel returns None when both input and output are empty.
+    AC8: when only output is empty, panel only renders input section."""
+
+    @pytest.mark.parametrize("tool_input,tool_output", [
+        (None, None),
+        ("", ""),
+        ("  ", "  "),
+        ({}, {}),
+        ([], []),
+        (None, ""),
+        ("", None),
+    ])
+    def test_both_empty_returns_none(self, tool_input, tool_output):
+        """AC7: Both input and output empty → returns None."""
+        block = ContentBlock(
+            kind="tool_call", block_id="t1", status="completed",
+            tool_name="read", tool_input=tool_input, tool_output=tool_output,
+        )
+        result = render_tool_panel(block)
+        assert result is None
+
+    def test_only_output_empty_renders_input_only(self):
+        """AC8: Output empty, input present → renders input without output section."""
+        block = ContentBlock(
+            kind="tool_call", block_id="t1", status="completed",
+            tool_name="read", tool_input='{"path": "/foo.py"}', tool_output=None,
+        )
+        result = render_tool_panel(block)
+        assert result is not None
+        detail_content = result["elements"][0]["content"]
+        assert "**输入**" in detail_content
+        assert "**输出**" not in detail_content
+
+    def test_only_output_empty_bash(self):
+        """AC8: Bash tool with empty output → renders command without result section."""
+        block = ContentBlock(
+            kind="tool_call", block_id="t1", status="completed",
+            tool_name="bash", tool_input="ls -la", tool_output="",
+        )
+        result = render_tool_panel(block)
+        assert result is not None
+        detail_content = result["elements"][0]["content"]
+        assert "**命令**" in detail_content
+        assert "**结果**" not in detail_content
+
+    def test_only_input_empty_renders_output_only(self):
+        """Input empty, output present → still renders panel (returns not None)."""
+        block = ContentBlock(
+            kind="tool_call", block_id="t1", status="completed",
+            tool_name="read", tool_input=None, tool_output="some content",
+        )
+        result = render_tool_panel(block)
+        assert result is not None
+
+    def test_both_present_renders_normally(self):
+        """Both input and output present → normal render."""
+        block = ContentBlock(
+            kind="tool_call", block_id="t1", status="completed",
+            tool_name="read", tool_input='{"path": "/x.py"}', tool_output="content",
+        )
+        result = render_tool_panel(block)
+        assert result is not None
+        detail_content = result["elements"][0]["content"]
+        assert "**输入**" in detail_content
+        assert "**输出**" in detail_content
+
+    def test_history_panel_all_empty_returns_none(self):
+        """AC7: History panel with all empty tools returns None."""
+        blocks = [
+            ContentBlock(kind="tool_call", block_id=f"t{i}", status="completed",
+                        tool_name="read", tool_input=None, tool_output=None)
+            for i in range(3)
+        ]
+        result = render_tool_history_panel(blocks)
+        assert result is None
+
+    def test_history_panel_partial_empty_filters(self):
+        """History panel filters out empty tools, counts only non-empty."""
+        blocks = [
+            ContentBlock(kind="tool_call", block_id="t0", status="completed",
+                        tool_name="read", tool_input=None, tool_output=None),
+            ContentBlock(kind="tool_call", block_id="t1", status="completed",
+                        tool_name="bash", tool_input="ls", tool_output="ok"),
+            ContentBlock(kind="tool_call", block_id="t2", status="completed",
+                        tool_name="bash", tool_input="pwd", tool_output="/home"),
+        ]
+        result = render_tool_history_panel(blocks)
+        assert result is not None
+        assert "2 个工具调用已完成" in result["header"]["title"]["content"]
+        assert len(result["elements"]) == 2

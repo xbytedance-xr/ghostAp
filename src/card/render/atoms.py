@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 AtomKind = Literal[
     "text", "tool_panel", "tool_history", "reasoning", "plan",
     "criteria_panel", "phase_panel", "warning_banner", "progress_bar",
-    "worktree_panel",
+    "worktree_panel", "task_list",
 ]
 
 @dataclass
@@ -182,6 +182,19 @@ def _block_to_worktree_atom(block: ContentBlock) -> RenderAtom:
     return atom
 
 
+def _block_to_task_list_atom(block: ContentBlock) -> RenderAtom:
+    # Build content from tasks for size estimation
+    tasks = getattr(block, "tasks", ())
+    content_lines = [t.get("name", "") for t in tasks] if tasks else []
+    content = "\n".join(content_lines)
+    atom = RenderAtom(
+        kind="task_list", block_id=block.block_id, content=content,
+        splittable=False, node_count=1,
+    )
+    atom.byte_size = estimate_atom_size(atom)
+    return atom
+
+
 # Registry: maps block.kind → handler function.
 # tool_call is handled separately due to lookahead grouping logic.
 # Lazy-initialized on first use to avoid import-time coupling with block_registry.
@@ -192,6 +205,7 @@ _ATOM_HANDLER_DISPATCH: dict[str, Callable[[ContentBlock], RenderAtom]] = {
     "plan": _block_to_plan_atom,
     "criteria": _block_to_criteria_atom,
     "phase": _block_to_phase_atom,
+    "task_list": _block_to_task_list_atom,
 }
 
 # Module-level lazy cache for block kind handlers (avoids @functools.cache semantics)

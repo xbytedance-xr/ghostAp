@@ -6,7 +6,7 @@ import threading
 from dataclasses import dataclass as _dataclass
 from typing import Literal, Optional, Callable
 
-from pydantic import BaseModel, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.utils.env import is_test_environment
@@ -37,6 +37,10 @@ class CardSessionConfig(BaseModel):
     action_dedup_max_size: int = 5000
     action_dedup_cleanup_interval: int = 30
     delivery_pool_max_workers: int = 4
+    task_level_cards_enabled: bool = Field(
+        default=True,
+        description="启用后多步任务使用独立飞书卡片展示每个子任务，关闭则退化为单卡模式",
+    )
 
     @field_validator("session_lock_max", mode="before")
     @classmethod
@@ -811,6 +815,7 @@ class Settings(BaseSettings):
             "card_action_dedup_ttl": "action_dedup_ttl",
             "card_action_dedup_max_size": "action_dedup_max_size",
             "card_action_dedup_cleanup_interval": "action_dedup_cleanup_interval",
+            "card_task_level_cards_enabled": "task_level_cards_enabled",
         }
         card_data: dict = {}
         for flat_key, nested_key in _CARD_FIELD_MAP.items():

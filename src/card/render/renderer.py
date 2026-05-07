@@ -25,7 +25,7 @@ from src.card.ui_text import UI_TEXT
 
 logger = logging.getLogger(__name__)
 
-_STATUS_ATOM_KINDS = frozenset({"warning_banner", "progress_bar", "phase_panel", "criteria_panel"})
+_STATUS_ATOM_KINDS = frozenset({"warning_banner", "progress_bar", "phase_panel", "criteria_panel", "task_list"})
 _BODY_ATOM_KINDS = frozenset({"text", "reasoning", "plan", "worktree_panel"})
 _APPENDIX_ATOM_KINDS = frozenset({"tool_panel", "tool_history"})
 
@@ -252,14 +252,14 @@ def _render_atom_text(atom: RenderAtom, state: CardState, budget: RenderBudget, 
     return _render_text_element(atom, block_index)
 
 
-def _render_atom_tool_panel(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict:
+def _render_atom_tool_panel(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict | None:
     block = block_index.get(atom.block_id)
     if block is not None:
         return render_tool_panel(block)
     return {"tag": "markdown", "content": atom.content}
 
 
-def _render_atom_tool_history(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict:
+def _render_atom_tool_history(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict | None:
     blocks = _find_tool_history_blocks(state, atom.block_id)
     if blocks:
         return render_tool_history_panel(blocks)
@@ -305,6 +305,15 @@ def _render_atom_worktree_panel(atom: RenderAtom, state: CardState, budget: Rend
     return render_worktree_panel(block)
 
 
+def _render_atom_task_list(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict | None:
+    """Look up the ContentBlock for this atom and delegate to render_task_list_panel."""
+    from src.card.render.task_list import render_task_list_panel
+    block = block_index.get(atom.block_id)
+    if block is None:
+        return {"tag": "markdown", "content": atom.content}
+    return render_task_list_panel(block)
+
+
 # Atom renderer registry: maps atom.kind → renderer function.
 # To add a new atom kind, define a function with the standard signature and register it here.
 _ATOM_RENDERERS: dict[str, Callable[[RenderAtom, CardState, RenderBudget, dict], dict | None]] = {
@@ -318,6 +327,7 @@ _ATOM_RENDERERS: dict[str, Callable[[RenderAtom, CardState, RenderBudget, dict],
     "warning_banner": _render_atom_warning_banner,
     "progress_bar": _render_atom_progress_bar,
     "worktree_panel": _render_atom_worktree_panel,
+    "task_list": _render_atom_task_list,
 }
 
 # Validate AtomKind ↔ _ATOM_RENDERERS single source of truth at import time.
@@ -364,6 +374,7 @@ def _order_atoms_by_section(atoms: list[RenderAtom]) -> list[RenderAtom]:
 
     Preserve relative order inside each section so streaming updates remain stable.
     Unknown atoms stay in body section by default to avoid dropping content.
+    Within status section, task_list always comes first.
     """
     status_atoms: list[RenderAtom] = []
     body_atoms: list[RenderAtom] = []
@@ -378,6 +389,11 @@ def _order_atoms_by_section(atoms: list[RenderAtom]) -> list[RenderAtom]:
             body_atoms.append(atom)
         else:
             body_atoms.append(atom)
+
+    # Ensure task_list atoms always appear first in status section
+    task_list_atoms = [a for a in status_atoms if a.kind == "task_list"]
+    other_status = [a for a in status_atoms if a.kind != "task_list"]
+    status_atoms = [*task_list_atoms, *other_status]
 
     return [*status_atoms, *body_atoms, *appendix_atoms]
 

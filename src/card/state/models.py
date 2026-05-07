@@ -10,7 +10,10 @@ from __future__ import annotations
 import copy
 import dataclasses
 from dataclasses import dataclass, field
-from typing import ClassVar, Literal, TypeAlias, TypedDict, Union, get_args
+from typing import TYPE_CHECKING, ClassVar, Literal, TypeAlias, TypedDict, Union, get_args
+
+if TYPE_CHECKING:
+    from src.card.events.payloads import TaskSnapshotPayload
 
 
 TerminalStatus = Literal[
@@ -258,11 +261,23 @@ class WorktreeCleanupBlock(_WorktreeBlockBase):
     data: WorktreeCleanupData | dict | None = None
 
 
+@dataclass(frozen=True)
+class TaskListBlock:
+    """Task list block — shows all tasks and highlights current task."""
+    _atom_kind: ClassVar[str] = "task_list"
+    kind: Literal["task_list"] = "task_list"
+    block_id: str = "_task_list"
+    tasks: tuple[TaskSnapshotPayload, ...] = ()  # Each item: task_id, name, status
+    current_task_id: str = ""
+    element_id: str | None = None
+    status: BlockStatus = "active"
+
+
 # Tagged-union type alias
 AnyContentBlock: TypeAlias = Union[
     TextBlock, ToolBlock, ReasoningBlock, PlanBlock, PhaseBlock, CriteriaBlock,
     WorktreeSelectBlock, WorktreeConfirmBlock, WorktreeUnitsBlock,
-    WorktreeMergeBlock, WorktreeCleanupBlock,
+    WorktreeMergeBlock, WorktreeCleanupBlock, TaskListBlock,
 ]
 """Union of all content block types. Use isinstance() for type-safe dispatch."""
 
@@ -279,6 +294,7 @@ _BLOCK_KIND_MAP: dict[str, type] = {
     "worktree_units": WorktreeUnitsBlock,
     "worktree_merge": WorktreeMergeBlock,
     "worktree_cleanup": WorktreeCleanupBlock,
+    "task_list": TaskListBlock,
 }
 
 # Import-time completeness check: every AnyContentBlock subtype must be registered
