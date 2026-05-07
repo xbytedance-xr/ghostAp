@@ -171,6 +171,26 @@ class TestHandleModelCommandList(unittest.TestCase):
         title = card["header"]["title"]["content"].lower()
         self.assertIn("coco", title)
 
+    def test_model_list_card_carries_thread_root_id(self):
+        fake_models = [MagicMock()]
+        fake_models[0].name = "gpt-5.2"
+        fake_models[0].description = "GPT-5.2"
+        fake_models[0].is_default = True
+        with self._patch_fetch(fake_models), patch("src.thread.get_current_thread_id", return_value="thread1"):
+            self.handler.handle_model_command("msg1", "chat1", "/model list")
+
+        card_str = self.handler.reply_card.call_args[0][1]
+        card = json.loads(card_str)
+        values = []
+        for element in card["body"]["elements"]:
+            for column in element.get("columns", []):
+                for child in column.get("elements", []):
+                    if child.get("tag") == "button":
+                        values.append(child.get("value", {}))
+
+        self.assertTrue(values)
+        self.assertTrue(all(v.get("thread_root_id") == "thread1" for v in values))
+
     def test_model_list_error_when_no_models(self):
         with self._patch_fetch([]):
             self.handler.handle_model_command("msg1", "chat1", "/model list")
@@ -214,10 +234,46 @@ class TestHandleModelCommandSwitch(unittest.TestCase):
         mock_enter.assert_not_called()
         self.handler.reply_error.assert_called_once()
 
-    def test_model_switch_sends_progress_message(self):
+    def test_model_switch_does_not_send_progress_card(self):
         with patch.object(self.handler, "_enter_mode_with_acp_model"):
             self.handler.handle_model_command("msg1", "chat1", "/model gpt-5.2")
-        # First reply should be a card with the model name (switching status card)
-        first_call = self.handler.reply_card.call_args_list[0]
-        card_str = first_call[0][1]
-        self.assertIn("gpt-5.2", card_str)
+        self.handler.reply_card.assert_not_called()
+
+
+class TestHandleSelectAcpModelPendingPrompt(unittest.TestCase):
+    def setUp(self):
+        self.handler = _make_handler()
+
+    def test_pending_prompt_starts_thread_instead_of_top_level_mode(self):
+        self.handler.settings.thread_programming_enabled = True
+        self.handler._stash_pending_prompt("chat1", "coco", "这个项目是干什么的")
+
+        project = MagicMock()
+        project.project_id = "ghostap"
+        project.project_name = "ghostAp"
+        project.root_path = "/repo/ghostAp"
+        project.theme_color = "blue"
+
+        coco_handler = self.handler.get_handler("coco")
+        coco_handler.mode_name = "Coco"
+        coco_handler.mode_emoji = "💭"
+        coco_handler.reply_card.return_value = "thread1"
+        coco_handler._get_session_manager.return_value.get_session.return_value = MagicMock()
+
+        with patch("src.thread.get_current_thread_id", return_value=None):
+            self.handler.handle_select_acp_model("msg1", "chat1", "coco", "gpt-5.2", project)
+
+        self.handler.reply_card.assert_not_called()
+        coco_handler.enter_mode.assert_called_once_with(
+            "thread1",
+            "chat1",
+            silent=True,
+            project=project,
+            thread_id="thread1",
+        )
+        coco_handler.handle_message.assert_called_once_with(
+            "msg1",
+            "chat1",
+            "这个项目是干什么的",
+            project,
+        )

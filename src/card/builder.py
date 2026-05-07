@@ -380,8 +380,20 @@ class CardBuilder:
         return SystemBuilder.build_acp_tool_select_card(tools, project_id=project_id, current_tool=current_tool)
 
     @staticmethod
-    def build_acp_model_select_card(models: list, tool_name: str, project_id: Optional[str] = None, current_model: Optional[str] = None) -> tuple[str, str]:
-        return SystemBuilder.build_acp_model_select_card(models, tool_name, project_id=project_id, current_model=current_model)
+    def build_acp_model_select_card(
+        models: list,
+        tool_name: str,
+        project_id: Optional[str] = None,
+        current_model: Optional[str] = None,
+        thread_root_id: Optional[str] = None,
+    ) -> tuple[str, str]:
+        return SystemBuilder.build_acp_model_select_card(
+            models,
+            tool_name,
+            project_id=project_id,
+            current_model=current_model,
+            thread_root_id=thread_root_id,
+        )
 
     @staticmethod
     def build_command_menu_card(project: Optional[ProjectContext] = None) -> tuple[str, str]:
@@ -527,4 +539,3 @@ class CardBuilder:
     build_worktree_cleanup_card = staticmethod(WorktreeBuilder.build_worktree_cleanup_card)
     build_worktree_result_card = staticmethod(WorktreeBuilder.build_worktree_result_card)
     build_worktree_merge_entry_card = staticmethod(WorktreeBuilder.build_worktree_merge_entry_card)
-

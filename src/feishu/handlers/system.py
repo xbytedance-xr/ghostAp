@@ -450,6 +450,96 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         self.reply_error(message_id, UI_TEXT["system_acp_unsupported_tool"].format(tool_name=tool_name))
         return False
 
+    def _dispatch_pending_prompt_to_thread(
+        self,
+        message_id: str,
+        chat_id: str,
+        pending: str,
+        handler,
+        project: Optional["ProjectContext"],
+    ) -> bool:
+        """Create a programming thread and run the stashed prompt in it."""
+        from ...thread import set_current_thread_id
+
+        mode_name = getattr(handler, "mode_name", "Coco")
+        mode_emoji = getattr(handler, "mode_emoji", "💭")
+        project_id = project.project_id if project else None
+        content = (
+            f"{mode_emoji} 正在创建编程话题…\n\n"
+            f"你的需求将在话题中由 {mode_name} 处理"
+        )
+
+        if project:
+            _, card_content = CardBuilder.build_project_response_card(
+                project,
+                f"{mode_emoji} {mode_name} 编程话题",
+                content,
+                show_buttons=False,
+                footer=UI_TEXT["mode_project_dir_label"].format(path=project.root_path),
+            )
+            thread_root_id = handler.reply_card(
+                message_id, card_content, reply_in_thread=True
+            )
+            if thread_root_id:
+                handler.register_message_project(thread_root_id, project)
+        else:
+            thread_root_id = handler.reply_text(
+                message_id, content, reply_in_thread=True
+            )
+
+        if not thread_root_id:
+            self.reply_text(message_id, UI_TEXT["ws_thread_create_failed"])
+            return False
+
+        alias_keys = [message_id] if message_id != thread_root_id else []
+        try:
+            set_current_thread_id(thread_root_id)
+            handler.enter_mode(
+                thread_root_id,
+                chat_id,
+                silent=True,
+                project=project,
+                thread_id=thread_root_id,
+            )
+            session = handler._get_session_manager().get_session(
+                chat_id,
+                project_id=project_id,
+                thread_id=thread_root_id,
+            )
+            if not session:
+                self.mode_manager.exit_to_smart(chat_id, project_id=project_id)
+                if project:
+                    handler._set_mode_on_project(project, False)
+                self.reply_text(
+                    message_id,
+                    UI_TEXT["ws_session_fail_msg"].format(
+                        name=mode_name,
+                        cmd=mode_name.lower(),
+                    ),
+                )
+                return False
+
+            self.mode_manager.exit_to_smart(chat_id, project_id=project_id)
+            if project:
+                handler._set_mode_on_project(project, False)
+            handler._register_thread_context(
+                thread_root_id,
+                chat_id,
+                project,
+                session,
+                alias_keys=alias_keys,
+            )
+            handler.handle_message(message_id, chat_id, pending, project)
+            return True
+        except Exception as e:
+            logger.warning("模型选择后创建编程话题失败: %s", str(e), exc_info=True)
+            self.mode_manager.exit_to_smart(chat_id, project_id=project_id)
+            if project:
+                handler._set_mode_on_project(project, False)
+            return False
+        finally:
+            set_current_thread_id(None)
+
     def handle_acp_command(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         project_id = project.project_id if project else None
         current_tool = project.acp_tool_name if project else None
@@ -505,7 +595,14 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         if pending_prompt:
             self._stash_pending_prompt(chat_id, tool, pending_prompt)
 
-        msg_type, card_content = CardBuilder.build_acp_model_select_card(models, tool, project_id, current_model=current_model)
+        from ...thread import get_current_thread_id
+        msg_type, card_content = CardBuilder.build_acp_model_select_card(
+            models,
+            tool,
+            project_id,
+            current_model=current_model,
+            thread_root_id=get_current_thread_id(),
+        )
         self.reply_card(message_id, card_content)
 
     def handle_refresh_acp_models(self, message_id: str, chat_id: str, tool_name: str, project_id: Optional[str] = None):
@@ -525,24 +622,40 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             self.reply_error(message_id, UI_TEXT["system_acp_select_model_prompt"])
             return
 
-        msg_type, card_content = CardBuilder.build_switching_status_card(tool, model)
-        self.reply_card(message_id, card_content)
-        entered = self._enter_mode_with_acp_model(message_id, chat_id, tool, model, project)
+        target_project = project or self.project_manager.get_active_project(chat_id)
+        pending = self._pop_pending_prompt(chat_id, tool)
+        handler = self.get_handler(tool)
+
+        if target_project:
+            target_project.acp_tool_name = tool
+            target_project.acp_model_name = model
+        if handler and hasattr(handler, "current_model"):
+            handler.current_model = model
+
+        if pending and handler and hasattr(handler, "handle_message"):
+            from ...thread import get_current_thread_id
+
+            if self.settings.thread_programming_enabled and not get_current_thread_id():
+                self._dispatch_pending_prompt_to_thread(
+                    message_id,
+                    chat_id,
+                    pending,
+                    handler,
+                    target_project,
+                )
+                return
+
+        entered = self._enter_mode_with_acp_model(message_id, chat_id, tool, model, target_project)
 
         # If we entered the mode and a prompt was stashed (project-chat default
         # Coco flow), forward it to the mode handler as the first requirement.
-        if entered:
-            pending = self._pop_pending_prompt(chat_id, tool)
-            if pending:
-                handler = self.get_handler(tool)
-                if handler and hasattr(handler, "handle_message"):
-                    try:
-                        handler.handle_message(
-                            message_id, chat_id, pending,
-                            project or self.project_manager.get_active_project(chat_id),
-                        )
-                    except Exception as e:
-                        logger.warning("forwarding pending prompt failed: %s", str(e))
+        if entered and pending and handler and hasattr(handler, "handle_message"):
+            try:
+                handler.handle_message(
+                    message_id, chat_id, pending, target_project,
+                )
+            except Exception as e:
+                logger.warning("forwarding pending prompt failed: %s", str(e))
 
     # ------------------------------------------------------------------
     # /model command — list/switch models for current ACP tool
@@ -567,7 +680,8 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         }
         for mode_check, tool in mode_to_tool.items():
             checker = getattr(self.mode_manager, f"is_{mode_check}_mode", None)
-            if callable(checker) and checker(chat_id):
+            project_id = project.project_id if project else None
+            if callable(checker) and checker(chat_id, project_id=project_id):
                 return tool
 
         return "coco"
@@ -610,7 +724,14 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             if not models:
                 self.reply_error(message_id, UI_TEXT["system_acp_get_models_failed"].format(tool_name=tool_name))
                 return
-            msg_type, card_content = CardBuilder.build_acp_model_select_card(models, tool_name, project_id, current_model=current_model)
+            from ...thread import get_current_thread_id
+            msg_type, card_content = CardBuilder.build_acp_model_select_card(
+                models,
+                tool_name,
+                project_id,
+                current_model=current_model,
+                thread_root_id=get_current_thread_id(),
+            )
             self.reply_card(message_id, card_content)
             return
 
@@ -629,8 +750,6 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             )
             return
 
-        msg_type, card_content = CardBuilder.build_switching_status_card(tool_name, model_name)
-        self.reply_card(message_id, card_content)
         self._enter_mode_with_acp_model(message_id, chat_id, tool_name, model_name, project)
 
     # ------------------------------------------------------------------

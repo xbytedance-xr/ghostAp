@@ -628,6 +628,7 @@ class SystemBuilder:
         tool_name: str,
         project_id: Optional[str] = None,
         current_model: Optional[str] = None,
+        thread_root_id: Optional[str] = None,
     ) -> tuple[str, str]:
         """Build an interactive card for ACP model selection.
 
@@ -679,6 +680,7 @@ class SystemBuilder:
                         "tool_name": tool_name,
                         "model_name": m.name,
                         "project_id": project_id,
+                        "thread_root_id": thread_root_id,
                     },
                 }
             )
@@ -696,6 +698,7 @@ class SystemBuilder:
                             "action": "refresh_acp_models",
                             "tool_name": tool_name,
                             "project_id": project_id,
+                            "thread_root_id": thread_root_id,
                         },
                     }
                 ]
