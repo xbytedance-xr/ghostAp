@@ -28,6 +28,9 @@ class CardMetadata:
     project_name: str | None = None
     mode_name: str = "Coco"
     mode_emoji: str = "🤖"
+    unit_id: str | None = None
+    unit_kind: str | None = None
+    unit_label: str | None = None
     tool_name: str | None = None
     model_name: str | None = None
     engine_type: str | None = None  # "deep" / "loop" / "spec" / "worktree" / None

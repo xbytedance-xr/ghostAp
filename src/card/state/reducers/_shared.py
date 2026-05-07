@@ -22,6 +22,9 @@ def build_header(metadata: CardMetadata, terminal: str) -> HeaderState:
             emoji=metadata.mode_emoji, mode_name=metadata.mode_name
         )
 
+    if metadata.unit_label:
+        title = f"{title} · {metadata.unit_label}"
+
     # Append continuation marker for rotated cards
     if metadata.continuation_seq > 0:
         title = f"{title} (续 #{metadata.continuation_seq})"

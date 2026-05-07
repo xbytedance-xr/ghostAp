@@ -77,8 +77,13 @@ class WorktreeRenderer(BaseRenderer):
             if session:
                 return session
 
-            metadata = CardMetadata(
-                engine_type="worktree", mode_name=f"Worktree · {tool_name or 'Coco'}", mode_emoji="🌳"
+            metadata = self.build_unit_metadata(
+                CardMetadata(
+                    engine_type="worktree", mode_name=f"Worktree · {tool_name or 'Coco'}", mode_emoji="🌳"
+                ),
+                unit_id=project_id,
+                unit_kind="worktree",
+                unit_label=project_id,
             )
             hooks = self._build_hooks(reply_to or "", chat_id=chat_id)
             gc_hook = _WorktreeGCHook(self, project_id)

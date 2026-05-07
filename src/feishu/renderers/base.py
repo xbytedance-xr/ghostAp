@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Optional
 
 from src.card.render.throttle import StreamThrottle
@@ -20,6 +21,69 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _StreamThrottle = StreamThrottle
+
+
+def _dispatch_text_block(dispatchable, block_id: str, content: str) -> None:
+    """Dispatch a completed text block when content is non-empty."""
+    if not content:
+        return
+    from ...card.events import CardEvent
+
+    dispatchable.dispatch(CardEvent.text_started(block_id))
+    dispatchable.dispatch(CardEvent.text_delta(block_id, content))
+    dispatchable.dispatch(CardEvent.text_done(block_id))
+
+
+class _ACPStreamBridge:
+    """Normalize ACP streaming into programming-mode-like card blocks.
+
+    Reused by Deep/Loop/Spec renderers so text, reasoning and tool panels follow
+    the same event sequencing as direct programming mode.
+    """
+
+    def __init__(self, dispatchable) -> None:
+        self._dispatchable = dispatchable
+        self._text_active = False
+        self._reasoning_active = False
+
+    def bind(self, dispatchable) -> None:
+        self.close_open_blocks()
+        self._dispatchable = dispatchable
+        self._text_active = False
+        self._reasoning_active = False
+
+    def on_event(self, acp_event) -> None:
+        from ...acp import ACPEventType
+        from ...card.events import CardEvent, card_event_from_acp
+
+        if acp_event.event_type == ACPEventType.THOUGHT_CHUNK:
+            if self._text_active:
+                self._dispatchable.dispatch(CardEvent.text_done("_active_text"))
+                self._text_active = False
+            if not self._reasoning_active:
+                self._dispatchable.dispatch(CardEvent.reasoning_started("_active_reasoning"))
+                self._reasoning_active = True
+        elif acp_event.event_type == ACPEventType.TEXT_CHUNK:
+            if self._reasoning_active:
+                self._dispatchable.dispatch(CardEvent.reasoning_done("_active_reasoning"))
+                self._reasoning_active = False
+            if not self._text_active:
+                self._dispatchable.dispatch(CardEvent.text_started("_active_text"))
+                self._text_active = True
+        elif acp_event.event_type == ACPEventType.TOOL_CALL_START:
+            self.close_open_blocks()
+
+        self._dispatchable.dispatch(card_event_from_acp(acp_event))
+
+    def close_open_blocks(self) -> None:
+        from ...card.events import CardEvent
+
+        if self._reasoning_active:
+            self._dispatchable.dispatch(CardEvent.reasoning_done("_active_reasoning"))
+            self._reasoning_active = False
+        if self._text_active:
+            self._dispatchable.dispatch(CardEvent.text_done("_active_text"))
+            self._text_active = False
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +117,27 @@ class BaseRenderer:
         through the session pipeline for full hook lifecycle support.
         """
         return None
+
+    def build_unit_metadata(
+        self,
+        metadata,
+        *,
+        unit_id: str | None = None,
+        unit_kind: str | None = None,
+        unit_label: str | None = None,
+        continuation_seq: int | None = None,
+    ):
+        """Clone base metadata with iteration/cycle-scoped labeling."""
+        changes: dict[str, Any] = {}
+        if unit_id is not None:
+            changes["unit_id"] = unit_id
+        if unit_kind is not None:
+            changes["unit_kind"] = unit_kind
+        if unit_label is not None:
+            changes["unit_label"] = unit_label
+        if continuation_seq is not None:
+            changes["continuation_seq"] = continuation_seq
+        return replace(metadata, **changes) if changes else metadata
 
     def _build_hooks(
         self,

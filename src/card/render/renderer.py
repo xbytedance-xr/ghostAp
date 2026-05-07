@@ -25,6 +25,10 @@ from src.card.ui_text import UI_TEXT
 
 logger = logging.getLogger(__name__)
 
+_STATUS_ATOM_KINDS = frozenset({"warning_banner", "progress_bar", "phase_panel", "criteria_panel"})
+_BODY_ATOM_KINDS = frozenset({"text", "reasoning", "plan", "worktree_panel"})
+_APPENDIX_ATOM_KINDS = frozenset({"tool_panel", "tool_history"})
+
 
 # Banner background color and icon by warning_type
 _BANNER_STYLES: dict[str, tuple[str, str]] = {
@@ -33,6 +37,28 @@ _BANNER_STYLES: dict[str, tuple[str, str]] = {
     "info": ("wathet", "ℹ️"),
     "success": ("green", "✅"),
 }
+
+
+def _build_column_banner(*, content: str, background_style: str) -> dict:
+    """Build a compact banner using column_set.
+
+    Feishu Schema 2.0 does not allow `padding`/`background_style` on `div`.
+    Use `column_set` which supports `background_style`.
+    """
+    return {
+        "tag": "column_set",
+        "flex_mode": "stretch",
+        "background_style": background_style,
+        "columns": [
+            {
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "vertical_align": "center",
+                "elements": [{"tag": "markdown", "content": content, "text_align": "left"}],
+            }
+        ],
+    }
 
 
 def _engine_type_to_cmd(engine_type: str | None) -> str:
@@ -62,7 +88,7 @@ def render_card(
     }
 
     # 1. Flatten blocks to atoms
-    atoms = flatten_to_atoms(state.blocks, budget)
+    atoms = _order_atoms_by_section(flatten_to_atoms(state.blocks, budget))
 
     # 2. Paginate
     pages = paginate_atoms(atoms, budget)
@@ -83,31 +109,17 @@ def render_card(
         if page_idx == 0 and state.footer.warning_banner and state.footer.warning_type:
             bg_style, icon = _BANNER_STYLES.get(state.footer.warning_type, ("grey", "ℹ️"))
             banner_text = f"{icon} **{state.footer.warning_banner}**"
-            top_banner = {
-                "tag": "div",
-                "background_style": bg_style,
-                "corner_radius": "5px",
-                "padding": "4px 12px",
-                "margin": "0 8px",
-                "elements": [{"tag": "markdown", "content": banner_text, "text_align": "left"}],
-            }
+            top_banner = _build_column_banner(content=banner_text, background_style=bg_style)
             body_elements.insert(0, top_banner)
-            # Spacer after banner for visual separation (compact for mobile)
-            body_elements.insert(1, {"tag": "div", "padding": "4px 0"})
 
         # Non-first pages: styled warning banner (consistent sizing) so users on any page can see it
         if page_idx > 0 and state.footer.warning_banner:
             bg_style, icon = _BANNER_STYLES.get(state.footer.warning_type or "warning", ("grey", "ℹ️"))
-            warning_note = {
-                "tag": "div",
-                "background_style": bg_style,
-                "corner_radius": "5px",
-                "padding": "4px 12px",
-                "margin": "0 8px",
-                "elements": [{"tag": "markdown", "content": f"{icon} **{state.footer.warning_banner}**", "text_align": "left"}],
-            }
+            warning_note = _build_column_banner(
+                content=f"{icon} **{state.footer.warning_banner}**",
+                background_style=bg_style,
+            )
             body_elements.insert(0, warning_note)
-            body_elements.insert(1, {"tag": "div", "padding": "4px 0"})
 
         # Append footer and buttons only on the last page
         if page_idx == total_pages - 1:
@@ -343,6 +355,29 @@ def _render_atoms_to_elements(
     return elements
 
 
+def _order_atoms_by_section(atoms: list[RenderAtom]) -> list[RenderAtom]:
+    """Render sections in stable order: status → body → appendix.
+
+    Preserve relative order inside each section so streaming updates remain stable.
+    Unknown atoms stay in body section by default to avoid dropping content.
+    """
+    status_atoms: list[RenderAtom] = []
+    body_atoms: list[RenderAtom] = []
+    appendix_atoms: list[RenderAtom] = []
+
+    for atom in atoms:
+        if atom.kind in _STATUS_ATOM_KINDS:
+            status_atoms.append(atom)
+        elif atom.kind in _APPENDIX_ATOM_KINDS:
+            appendix_atoms.append(atom)
+        elif atom.kind in _BODY_ATOM_KINDS:
+            body_atoms.append(atom)
+        else:
+            body_atoms.append(atom)
+
+    return [*status_atoms, *body_atoms, *appendix_atoms]
+
+
 def _render_text_element(atom: RenderAtom, block_index: dict[str, ContentBlock]) -> dict:
     """Render a text atom. If it's the active block, assign element_id for streaming."""
     block = block_index.get(atom.block_id)
@@ -445,11 +480,5 @@ def _render_criteria_panel(atom: RenderAtom, state: CardState) -> dict:
 
 def _render_phase_panel(atom: RenderAtom) -> dict:
     """Render phase info as a visually distinct block with wathet background."""
-    return {
-        "tag": "div",
-        "background_style": "wathet",
-        "padding": "4px 12px",
-        "corner_radius": "5px",
-        "elements": [{"tag": "markdown", "content": f"⚙️ {atom.content}"}],
-    }
-
+    # Avoid unsupported div styling fields (padding/background_style).
+    return _build_column_banner(content=f"⚙️ {atom.content}", background_style="wathet")

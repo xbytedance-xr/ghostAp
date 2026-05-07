@@ -16,7 +16,7 @@ from ...loop_engine.models import (
 from ...utils.text import append_duration_to_title
 from ..emoji import EmojiReaction
 from ._rotating_mixin import EngineView, RotatingRendererMixin
-from .base import BaseRenderer
+from .base import BaseRenderer, _ACPStreamBridge, _dispatch_text_block
 
 if TYPE_CHECKING:
     from ...card.protocols import Dispatchable
@@ -83,23 +83,30 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
         _loop_budget = RenderBudget(engine_cmd="/loop")
         rotator: SessionRotator = self._create_rotator(chat_id, message_id, metadata, hooks=hooks, budget=_loop_budget)
         self._current_session = rotator
+        stream_bridge = _ACPStreamBridge(rotator)
 
-        def _new_session():
+        def _new_session(iteration: int):
             """Atomically rotate to a new session (iteration boundary)."""
             # Re-read UI state for updated preferences
             st = self.get_ui_state(loop_project_id)
-            meta = CardMetadata(
-                engine_type="loop",
-                mode_name=f"Loop · {engine_name}",
-                mode_emoji="🔁",
-                compact=st["compact"],
-                expanded=st["expanded"],
-                expand_ac=st.get("expand_ac", False),
+            meta = self.build_unit_metadata(
+                CardMetadata(
+                    engine_type="loop",
+                    mode_name=f"Loop · {engine_name}",
+                    mode_emoji="🔁",
+                    compact=st["compact"],
+                    expanded=st["expanded"],
+                    expand_ac=st.get("expand_ac", False),
+                ),
+                unit_id=str(iteration),
+                unit_kind="iteration",
+                unit_label=f"第 {iteration} 轮",
                 continuation_seq=rotator.rotation_count + 1,
             )
             # Use old card's delivered message_id as reply_to for navigation chain
             old_msg_id = rotator.current.delivered_message_id or message_id
             rotator.rotate(lambda: self.create_session(chat_id, old_msg_id, meta, hooks=hooks, budget=_loop_budget))
+            stream_bridge.bind(rotator)
 
         def on_analyzing_done(loop_project: LoopProject):
             # View State Update: Status
@@ -112,6 +119,9 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
         def on_iteration_start(current: int, max_iterations: int):
             # View State Update: Status
             self.update_ui_state(loop_project_id, view_mode="status", view_context={})
+
+            _new_session(current)
+            rotator.dispatch(CardEvent.started())
 
             snap = self.ctx.loop_engine_manager.snapshot(chat_id, project.root_path if project else "")
             lp = snap.ext.get("project") if snap else None
@@ -132,23 +142,21 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
                 if warning:
                     rotator.dispatch(CardEvent.warning_updated(warning))
 
+        def on_iteration_event(iteration: int, event):
+            stream_bridge.on_event(event)
+
         def on_iteration_done(iteration: int, record: IterationRecord):
             # View State Update: Iteration Done
             self.update_ui_state(loop_project_id, view_mode="iteration_done", view_context={"iteration_id": iteration})
+            stream_bridge.close_open_blocks()
 
             snap = self.ctx.loop_engine_manager.snapshot(chat_id, project.root_path if project else "")
             if snap and snap.ext.get("project"):
                 lp = snap.ext["project"]
                 # Dispatch cycle done on current session
                 rotator.dispatch(CardEvent.cycle_done(iteration))
-
-                # Iteration boundary: close old session, create new one (new card)
-                _new_session()
-
-                # Populate new session with iteration done state
-                rotator.dispatch(CardEvent.started())
                 iter_content = reporter.format_iteration_done(iteration, record)
-                rotator.dispatch(CardEvent.text_delta("_main", iter_content))
+                _dispatch_text_block(rotator, f"_iteration_done_{iteration}", iter_content)
 
                 criteria_section = reporter.format_criteria_section(lp)
                 rotator.dispatch(CardEvent.criteria_updated(
@@ -163,7 +171,7 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
 
             snap = self.ctx.loop_engine_manager.snapshot(chat_id, project.root_path if project else "")
             content = reporter.format_review_result(review)
-            rotator.dispatch(CardEvent.text_delta("_review", content))
+            _dispatch_text_block(rotator, f"_review_{iteration}", content)
 
             if snap and snap.ext.get("project"):
                 lp = snap.ext["project"]
@@ -189,13 +197,9 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
         def on_project_done(loop_project: LoopProject):
             # View State Update: Status (completed)
             self.update_ui_state(loop_project_id, view_mode="status", view_context={})
-
-            # Project done: close+recreate for final card
-            _new_session()
-
-            rotator.dispatch(CardEvent.started())
+            stream_bridge.close_open_blocks()
             content = reporter.format_project_done(loop_project)
-            rotator.dispatch(CardEvent.text_delta("_main", content))
+            _dispatch_text_block(rotator, "_project_done", content)
 
             criteria_section = reporter.format_criteria_section(loop_project)
             rotator.dispatch(CardEvent.criteria_updated(
@@ -216,12 +220,14 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
             self.update_ui_state(loop_project_id, view_mode="error", view_context={"error": error})
 
             # Hooks fire emoji automatically on terminal delivery
+            stream_bridge.close_open_blocks()
             rotator.dispatch(CardEvent.failed(error))
             self._current_session = None
 
         return LoopEngineCallbacks(
             on_analyzing_done=on_analyzing_done,
             on_iteration_start=on_iteration_start,
+            on_iteration_event=on_iteration_event,
             on_iteration_done=on_iteration_done,
             on_review_done=on_review_done,
             on_project_done=on_project_done,

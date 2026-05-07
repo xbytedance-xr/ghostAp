@@ -14,6 +14,18 @@ from ..models import (
 from ...events import CardEvent, CardEventType
 from ..button_intent import ButtonIntent
 from ...ui_text import UI_TEXT
+from ._shared import build_header
+
+
+def _build_worktree_header(state: CardState, subtitle: str) -> HeaderState:
+    """Reuse shared programming-style title while updating worktree step subtitle."""
+    current = state.header if state.header and state.header.title else build_header(state.metadata, state.terminal)
+    return HeaderState(
+        title=current.title,
+        subtitle=subtitle,
+        template="wathet",
+        header_source="lifecycle",
+    )
 
 
 def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
@@ -37,7 +49,7 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
                     ButtonSpec(text=UI_TEXT["wt_btn_confirm_selection"], action_id=ButtonIntent.WORKTREE_FINISH_SELECTION, type="primary"),
                 )
 
-            header = HeaderState(title=UI_TEXT["worktree_header_tool_select"], subtitle=UI_TEXT["worktree_step_tool_select"], template="wathet", header_source="engine")
+            header = _build_worktree_header(state, UI_TEXT["worktree_step_tool_select"])
             footer_text = UI_TEXT["wt_hint_select_at_least_one"] if not selected else UI_TEXT["worktree_footer_confirm_hint"]
             footer = FooterState(status="idle", status_text=footer_text)
             return replace(state, blocks=(block,), buttons=buttons, footer=footer, header=header)
@@ -58,7 +70,7 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
                 ButtonSpec(text=UI_TEXT["wt_btn_reselect"], action_id=ButtonIntent.WORKTREE_SHOW_MENU),
                 ButtonSpec(text=UI_TEXT["wt_btn_cancel"], action_id=ButtonIntent.WORKTREE_CANCEL, type="danger"),
             )
-            header = HeaderState(title=UI_TEXT["worktree_header_confirm"], subtitle=UI_TEXT["worktree_step_confirm"], template="wathet", header_source="engine")
+            header = _build_worktree_header(state, UI_TEXT["worktree_step_confirm"])
             footer = FooterState(status="idle", status_text=UI_TEXT["worktree_footer_awaiting_confirm"])
             return replace(state, blocks=(block,), buttons=buttons, footer=footer, header=header)
 
@@ -101,7 +113,7 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
                         ButtonSpec(text=UI_TEXT["wt_btn_retry_failed"], action_id=ButtonIntent.WORKTREE_RETRY_FAILED, type="primary", confirm=UI_TEXT["wt_btn_confirm_retry"]),
                     ) + buttons
 
-            header = HeaderState(title=UI_TEXT["worktree_header_execute"], subtitle=UI_TEXT["worktree_step_units"], template="wathet", header_source="engine")
+            header = _build_worktree_header(state, UI_TEXT["worktree_step_units"])
             is_silent = event.payload.get("silent", False)
             if total > 0 and completed == total:
                 footer = FooterState(status="tool_running", progress=progress_text,
@@ -131,7 +143,7 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
                     confirm=UI_TEXT["wt_btn_confirm_merge"].format(base_branch=base_branch),
                 ),
             )
-            header = HeaderState(title=UI_TEXT["worktree_header_integrate"], subtitle=UI_TEXT["worktree_step_merge"], template="wathet", header_source="engine")
+            header = _build_worktree_header(state, UI_TEXT["worktree_step_merge"])
             footer = FooterState(status="idle", status_text=UI_TEXT["worktree_footer_pending_merge"])
             return replace(state, blocks=(block,), buttons=buttons, footer=footer, header=header)
 
@@ -196,7 +208,7 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
                 )
             buttons = tuple(buttons_list)
 
-            header = HeaderState(title=UI_TEXT["worktree_header_integrate"], subtitle=UI_TEXT["worktree_step_cleanup"], template="wathet", header_source="engine")
+            header = _build_worktree_header(state, UI_TEXT["worktree_step_cleanup"])
             footer = FooterState(status="idle", status_text=UI_TEXT["worktree_footer_merge_cleanup"])
             return replace(state, blocks=(block,), buttons=buttons, footer=footer, header=header)
 
@@ -214,7 +226,7 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
                 ButtonSpec(text=UI_TEXT["wt_btn_retry_all"], action_id=ButtonIntent.WORKTREE_RETRY_ALL, type="primary", confirm=UI_TEXT["wt_btn_confirm_retry_all"]),
                 ButtonSpec(text=UI_TEXT["wt_btn_cancel"], action_id=ButtonIntent.WORKTREE_CANCEL, type="danger"),
             )
-            header = HeaderState(title=UI_TEXT["worktree_header_completed"], subtitle=UI_TEXT["worktree_no_change_subtitle"], template="wathet", header_source="engine")
+            header = _build_worktree_header(state, UI_TEXT["worktree_no_change_subtitle"])
             footer = FooterState(status="idle", status_text=message)
             return replace(state, blocks=(block,), buttons=buttons, footer=footer, header=header, terminal="completed_empty")
 

@@ -301,18 +301,26 @@ def _render_worktree_units(data: dict) -> dict:
     if not failed_lines:
         return panel
 
-    # Failed units rendered as red div ABOVE the panel with spacing
+    # Failed units promoted ABOVE the panel.
+    # Feishu Schema 2.0 does not allow `padding`/`background_style` on `div`,
+    # so use `column_set` to provide background emphasis.
     failed_div = {
-        "tag": "div",
+        "tag": "column_set",
+        "flex_mode": "stretch",
         "background_style": "red",
-        "corner_radius": PANEL_STYLES["corner_radius"],
-        "padding": PANEL_STYLES["padding_compact"],
-        "elements": [{"tag": "markdown", "content": "\n".join(failed_lines)}],
+        "columns": [
+            {
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "vertical_align": "top",
+                "elements": [{"tag": "markdown", "content": "\n".join(failed_lines)}],
+            }
+        ],
     }
-    spacer = {"tag": "div", "padding": "4px 0"}
     return {
         "tag": "div",
-        "elements": [failed_div, spacer, panel],
+        "elements": [failed_div, panel],
     }
 
 

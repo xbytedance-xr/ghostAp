@@ -1,7 +1,9 @@
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.acp import ACPEventType
 from src.card.engine_snapshot import EngineSnapshot
 from src.card.events import CardEvent, CardEventType
 from src.card.state.models import CardMetadata
@@ -153,6 +155,141 @@ class TestLoopRenderer:
             # Verify error message is in the payload
             failed_event = next(e for e in dispatched_events if e.type == CardEventType.FAILED)
             assert failed_event.payload["error"] == "Test Loop Error"
+
+    def test_iteration_events_stream_tool_calls_to_current_iteration_card(self, mock_handler):
+        renderer = LoopRenderer(mock_handler)
+
+        proj = MagicMock(spec=ProjectContext)
+        proj.project_id = "p1"
+        proj.root_path = "/tmp/p1"
+
+        mock_loop_project = MagicMock(spec=LoopProject)
+        mock_loop_project.name = "test_proj"
+        mock_loop_project.root_path = "/tmp/p1"
+        mock_loop_project.project_id = "p1"
+        mock_loop_project.satisfied_count = 1
+        mock_loop_project.total_criteria = 3
+        mock_loop_project.duration.return_value = 5.0
+
+        snap = EngineSnapshot(
+            engine_name="Coco",
+            root_path="/tmp/p1",
+            satisfied_count=1,
+            total_criteria=3,
+            is_running=True,
+            ext={"project": mock_loop_project},
+        )
+        mock_handler.ctx.loop_engine_manager.snapshot.return_value = snap
+
+        with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create:
+            mock_session = MagicMock()
+            mock_session.closed = False
+            mock_session.delivered_message_id = "msg-loop-1"
+            mock_create.return_value = mock_session
+
+            callbacks = renderer.create_loop_callbacks("msg1", "chat1", proj)
+
+            assert callbacks.on_iteration_event is not None
+
+            tool_event = SimpleNamespace(
+                event_type=ACPEventType.TOOL_CALL_START,
+                tool_call=SimpleNamespace(id="tool-1", title="Read", content="README.md", status="running"),
+            )
+
+            mock_session.dispatch.reset_mock()
+            callbacks.on_iteration_event(1, tool_event)
+
+            dispatched_events = [call.args[0] for call in mock_session.dispatch.call_args_list]
+            event_types = [event.type for event in dispatched_events]
+            assert CardEventType.TOOL_STARTED in event_types
+
+    def test_first_iteration_rotates_to_iteration_scoped_card(self, mock_handler):
+        renderer = LoopRenderer(mock_handler)
+
+        proj = MagicMock(spec=ProjectContext)
+        proj.project_id = "p1"
+        proj.root_path = "/tmp/p1"
+
+        mock_loop_project = MagicMock(spec=LoopProject)
+        mock_loop_project.name = "test_proj"
+        mock_loop_project.root_path = "/tmp/p1"
+        mock_loop_project.project_id = "p1"
+        mock_loop_project.satisfied_count = 0
+        mock_loop_project.total_criteria = 2
+        mock_loop_project.duration.return_value = 2.0
+
+        snap = EngineSnapshot(
+            engine_name="Coco",
+            root_path="/tmp/p1",
+            satisfied_count=0,
+            total_criteria=2,
+            is_running=True,
+            ext={"project": mock_loop_project},
+        )
+        mock_handler.ctx.loop_engine_manager.snapshot.return_value = snap
+
+        created_metadata: list[CardMetadata] = []
+
+        def fake_create_session(chat_id, reply_to, metadata, hooks=(), budget=None):
+            session = MagicMock()
+            session.closed = False
+            session.delivered_message_id = f"delivered-{len(created_metadata)}"
+            created_metadata.append(metadata)
+            return session
+
+        with patch("src.feishu.renderers.base.BaseRenderer.create_session", side_effect=fake_create_session):
+            callbacks = renderer.create_loop_callbacks("msg1", "chat1", proj)
+            callbacks.on_iteration_start(1, 3)
+
+        assert len(created_metadata) >= 2
+        assert created_metadata[1].unit_label == "第 1 轮"
+
+    def test_error_closes_active_stream_blocks_before_failed(self, mock_handler):
+        renderer = LoopRenderer(mock_handler)
+
+        proj = MagicMock(spec=ProjectContext)
+        proj.project_id = "p1"
+        proj.root_path = "/tmp/p1"
+
+        mock_loop_project = MagicMock(spec=LoopProject)
+        mock_loop_project.name = "test_proj"
+        mock_loop_project.root_path = "/tmp/p1"
+        mock_loop_project.project_id = "p1"
+        mock_loop_project.satisfied_count = 0
+        mock_loop_project.total_criteria = 2
+        mock_loop_project.duration.return_value = 2.0
+
+        snap = EngineSnapshot(
+            engine_name="Coco",
+            root_path="/tmp/p1",
+            satisfied_count=0,
+            total_criteria=2,
+            is_running=True,
+            ext={"project": mock_loop_project},
+        )
+        mock_handler.ctx.loop_engine_manager.snapshot.return_value = snap
+
+        with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create:
+            mock_session = MagicMock()
+            mock_session.closed = False
+            mock_session.delivered_message_id = "msg-loop-1"
+            mock_create.return_value = mock_session
+
+            callbacks = renderer.create_loop_callbacks("msg1", "chat1", proj)
+
+            text_event = SimpleNamespace(
+                event_type=ACPEventType.TEXT_CHUNK,
+                text="hello",
+                tool_call=None,
+            )
+            callbacks.on_iteration_event(1, text_event)
+            mock_session.dispatch.reset_mock()
+
+            callbacks.on_error("boom")
+
+            dispatched_events = [call.args[0] for call in mock_session.dispatch.call_args_list]
+            event_types = [event.type for event in dispatched_events]
+            assert event_types[:2] == [CardEventType.TEXT_DONE, CardEventType.FAILED]
 
 
 class TestLoopRendererCreateRotator:

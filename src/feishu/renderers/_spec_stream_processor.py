@@ -8,7 +8,6 @@ an explicit state class. All mutable state that was previously captured via
 from __future__ import annotations
 
 import logging
-from dataclasses import replace as _replace
 from typing import TYPE_CHECKING, NamedTuple, Optional
 
 from ...acp import ACPEventRenderer, ACPEventType
@@ -25,6 +24,7 @@ from ...spec_engine.models import (
     SpecProject,
 )
 from ...spec_engine.retry_status import RetryEvent, RetryStatus
+from .base import _ACPStreamBridge, _dispatch_text_block
 
 if TYPE_CHECKING:
     from ...card.session_rotator import SessionRotator
@@ -94,6 +94,7 @@ class SpecStreamProcessor:
         self._acp_renderer: ACPEventRenderer = ACPEventRenderer()
         self._footer_status: Optional[str] = None
         self._last_phase_content: str = ""
+        self._stream_bridge = _ACPStreamBridge(self._rotator)
         # Build phase tool tracking
         self._build_tool_count: int = 0
         self._build_file_set: set[str] = set()
@@ -102,9 +103,15 @@ class SpecStreamProcessor:
     # Private helpers (previously nested closures)
     # ------------------------------------------------------------------
 
-    def _rotate_session(self) -> None:
+    def _rotate_session(self, cycle_num: int) -> None:
         """Atomically rotate to a new session (cycle boundary)."""
-        cont_meta = _replace(self._metadata, continuation_seq=self._rotator.rotation_count + 1)
+        cont_meta = self._renderer.build_unit_metadata(
+            self._metadata,
+            unit_id=str(cycle_num),
+            unit_kind="cycle",
+            unit_label=f"第 {cycle_num} 轮",
+            continuation_seq=self._rotator.rotation_count + 1,
+        )
         old_msg_id = self._rotator.current.delivered_message_id or self._message_id
         renderer = self._renderer
         chat_id = self._chat_id
@@ -113,6 +120,7 @@ class SpecStreamProcessor:
         self._rotator.rotate(
             lambda: renderer.create_session(chat_id, old_msg_id, cont_meta, hooks=hooks, budget=budget)
         )
+        self._stream_bridge.bind(self._rotator)
 
     def _get_engine_and_state(self) -> _EngineContext:
         """Return structured engine context."""
@@ -136,6 +144,8 @@ class SpecStreamProcessor:
     def on_cycle_start(self, current: int, max_cycles: int) -> None:
         self._max_cycles = max_cycles
         self._renderer.update_ui_state(self._spec_project_id, view_mode="status", view_context={})
+        self._rotate_session(current)
+        self._rotator.dispatch(CardEvent.started())
 
         _, spec_project, state, _ = self._get_engine_and_state()
 
@@ -157,17 +167,13 @@ class SpecStreamProcessor:
         self._renderer.update_ui_state(
             self._spec_project_id, view_mode="cycle_done", view_context={"cycle_num": cycle_num}
         )
+        self._stream_bridge.close_open_blocks()
 
         _, spec_project, state, _ = self._get_engine_and_state()
         if spec_project:
             self._rotator.dispatch(CardEvent.cycle_done(cycle_num))
-
-            # Cycle boundary: rotate to new card
-            self._rotate_session()
-
-            self._rotator.dispatch(CardEvent.started())
             content = self._reporter.format_cycle_done(cycle_num, cycle)
-            self._rotator.dispatch(CardEvent.text_delta("_cycle_done", content))
+            _dispatch_text_block(self._rotator, f"_cycle_done_{cycle_num}", content)
 
             criteria_section = self._reporter.format_criteria_section(spec_project)
             self._rotator.dispatch(CardEvent.criteria_updated(
@@ -182,7 +188,7 @@ class SpecStreamProcessor:
         )
 
         content = self._reporter.format_review_result(review, cycle_num)
-        self._rotator.dispatch(CardEvent.text_delta("_review", content))
+        _dispatch_text_block(self._rotator, f"_review_{cycle_num}", content)
 
         _, spec_project, state, _ = self._get_engine_and_state()
         if spec_project:
@@ -207,13 +213,9 @@ class SpecStreamProcessor:
 
     def on_project_done(self, spec_project: SpecProject) -> None:
         self._renderer.update_ui_state(self._spec_project_id, view_mode="status", view_context={})
-
-        # Project done: rotate to final card
-        self._rotate_session()
-
-        self._rotator.dispatch(CardEvent.started())
+        self._stream_bridge.close_open_blocks()
         content = self._reporter.format_project_done(spec_project)
-        self._rotator.dispatch(CardEvent.text_delta("_main", content))
+        _dispatch_text_block(self._rotator, "_project_done", content)
 
         criteria_section = self._reporter.format_criteria_section(spec_project)
         self._rotator.dispatch(CardEvent.criteria_updated(
@@ -234,6 +236,7 @@ class SpecStreamProcessor:
             self._spec_project_id, view_mode="error", view_context={"error": error}
         )
         # Hooks fire emoji automatically on terminal delivery
+        self._stream_bridge.close_open_blocks()
         self._rotator.dispatch(CardEvent.failed(error))
         self._renderer._current_session = None
 
@@ -252,11 +255,6 @@ class SpecStreamProcessor:
             # Build phase: use tool panels, no text content needed
             self._build_tool_count = 0
             self._build_file_set = set()
-        else:
-            # Non-Build phases: keep text-based display (without phase progress bar in body)
-            content = f"{phase.emoji} **{phase.display_name}** 执行中..."
-            self._last_phase_content = content
-            self._rotator.dispatch(CardEvent.text_delta("_phase", content))
 
     def on_phase_event(self, cycle_num: int, phase: SpecPhase, event) -> None:
         """Real-time ACP event processing."""
@@ -274,26 +272,7 @@ class SpecStreamProcessor:
             # Build phase: forward ACP events as native CardEvents (tool panels, plan)
             self._dispatch_build_event(event)
         else:
-            # Non-Build phases: text-based display (existing behavior)
-            if event.event_type not in (
-                ACPEventType.TOOL_CALL_DONE,
-                ACPEventType.PLAN_UPDATE,
-            ):
-                return
-
-            tool_summary = self._acp_renderer.render_summary()
-            if not self._throttle.check_throttle(len(tool_summary), force=False, min_interval=2.0, min_new_chars=10):
-                return
-
-            _, spec_project, state, max_c = self._get_engine_and_state()
-            base_content = f"{phase.emoji} **{phase.display_name}** 执行中..."
-
-            if tool_summary:
-                base_content += f"\n---\n{tool_summary}"
-
-            self._last_phase_content = base_content
-            self._rotator.dispatch(CardEvent.text_delta("_phase", base_content))
-            self._throttle.update_stream_state(len(tool_summary))
+            self._stream_bridge.on_event(event)
 
     def _dispatch_build_event(self, event) -> None:
         """Dispatch Build-phase ACP events as native tool/plan CardEvents."""
@@ -329,6 +308,7 @@ class SpecStreamProcessor:
     def on_phase_done(self, cycle_num: int, phase: SpecPhase, output: str) -> None:
         _, spec_project, state, max_c = self._get_engine_and_state()
         self._footer_status = None
+        self._stream_bridge.close_open_blocks()
 
         self._rotator.dispatch(CardEvent.phase_done(
             cycle_num, phase.value if hasattr(phase, 'value') else str(phase), output
@@ -338,15 +318,11 @@ class SpecStreamProcessor:
             # Build phase: tool panels already rendered, just show summary
             summary = self._reporter._extract_phase_summary(phase, output)
             done_text = f"🔨 **构建完成**  {summary}" if summary else "🔨 **构建完成**"
-            self._rotator.dispatch(CardEvent.text_delta("_phase", done_text))
+            _dispatch_text_block(self._rotator, f"_phase_done_{cycle_num}_{phase.value}", done_text)
         else:
-            # Non-Build phases: text-based summary
+            # Non-Build phases: append concise summary after streamed content
             content = self._reporter.format_phase_done_content(cycle_num, phase, max_c, output)
-            tool_summary = self._acp_renderer.render_summary()
-            if tool_summary:
-                content += f"\n---\n{tool_summary}"
-            self._last_phase_content = content
-            self._rotator.dispatch(CardEvent.text_delta("_phase", content))
+            _dispatch_text_block(self._rotator, f"_phase_done_{cycle_num}_{phase.value}", content)
 
     def on_phase_retry(self, attempt: int, max_attempts: int, detail: str) -> None:
         """Push phase-level retry status."""

@@ -1,5 +1,7 @@
 """Tests for src/card/render/renderer.py — main render entry point."""
 
+import time
+
 import pytest
 
 from src.card.render.budget import RenderBudget
@@ -17,6 +19,17 @@ from src.card.state.models import (
     FooterState,
     HeaderState,
 )
+
+
+def _iter_dict_nodes(obj):
+    """Yield all dict nodes in a nested (dict/list) structure."""
+    if isinstance(obj, dict):
+        yield obj
+        for v in obj.values():
+            yield from _iter_dict_nodes(v)
+    elif isinstance(obj, list):
+        for it in obj:
+            yield from _iter_dict_nodes(it)
 
 
 class TestRenderCardBasic:
@@ -58,6 +71,47 @@ class TestRenderCardBasic:
         assert card_json["config"]["update_multi"] is True
 
 
+class TestUnifiedCardSections:
+    def test_header_includes_execution_unit_label(self):
+        from src.card.state.reducers._shared import build_header
+
+        metadata = CardMetadata(
+            engine_type="loop",
+            mode_name="Loop · Coco",
+            mode_emoji="🔁",
+            unit_label="第 2 轮",
+        )
+
+        header = build_header(metadata, "running")
+
+        assert "第 2 轮" in header.title
+
+    def test_render_card_orders_status_body_and_appendix_sections(self):
+        state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="tool_call",
+                    block_id="tool1",
+                    tool_name="Read",
+                    tool_summary="read ok",
+                    status="completed",
+                ),
+                ContentBlock(kind="text", block_id="body1", content="正文内容"),
+                ContentBlock(kind="phase", block_id="phase1", content="第 1 轮 · Build"),
+            ),
+            metadata=CardMetadata(engine_type="spec", mode_name="Spec · Coco", mode_emoji="📋"),
+        )
+
+        cards = render_card(state, RenderBudget(tool_history_fold_threshold=99))
+        body = cards[0]._card_json["body"]["elements"]
+
+        phase_idx = next(i for i, el in enumerate(body) if "第 1 轮 · Build" in str(el))
+        text_idx = next(i for i, el in enumerate(body) if el.get("content") == "正文内容")
+        tool_idx = next(i for i, el in enumerate(body) if "Read" in str(el) and "read ok" in str(el))
+
+        assert phase_idx < text_idx < tool_idx
+
+
 class TestStreamingMode:
     """streaming_mode in config."""
 
@@ -92,6 +146,57 @@ class TestStreamingMode:
         )
         cards = render_card(state, RenderBudget())
         assert "streaming_mode" not in cards[0]._card_json["config"]
+
+
+class TestSchemaDivStyleSafety:
+    """Regression tests: avoid illegal style fields on `div` (Feishu Schema 2.0)."""
+
+    def test_warning_banner_does_not_style_div(self):
+        state = CardState(
+            blocks=(ContentBlock(kind="text", block_id="t1", content="hello"),),
+            footer=FooterState(warning_banner="卡片解析应成功", warning_type="warning"),
+        )
+        cards = render_card(state, RenderBudget())
+        card_json = cards[0]._card_json
+        for node in _iter_dict_nodes(card_json):
+            if node.get("tag") == "div":
+                assert "padding" not in node
+                assert "background_style" not in node
+
+    def test_phase_panel_does_not_style_div(self):
+        state = CardState(
+            blocks=(ContentBlock(kind="phase", block_id="p1", content="Spec · Build"),),
+        )
+        cards = render_card(state, RenderBudget())
+        card_json = cards[0]._card_json
+        for node in _iter_dict_nodes(card_json):
+            if node.get("tag") == "div":
+                assert "padding" not in node
+                assert "background_style" not in node
+
+    def test_worktree_failed_units_does_not_style_div(self):
+        state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="worktree_units",
+                    block_id="w1",
+                    content="",
+                    data={
+                        "message": "执行中",
+                        "units": [
+                            {"name": "unit-a", "status": "failed", "error": "boom"},
+                            {"name": "unit-b", "status": "running", "metadata": {"started_at": time.time()}},
+                        ],
+                    },
+                ),
+            ),
+        )
+        cards = render_card(state, RenderBudget())
+        card_json = cards[0]._card_json
+        for node in _iter_dict_nodes(card_json):
+            if node.get("tag") == "div":
+                assert "padding" not in node
+                assert "background_style" not in node
 
     def test_streaming_disabled_when_no_active_element(self):
         state = CardState(
@@ -291,9 +396,9 @@ class TestMultipleBlockTypes:
         assert len(body) >= 3
         assert body[0]["tag"] == "markdown"
         assert body[0]["content"] == "Intro"
-        assert body[1]["tag"] == "collapsible_panel"
-        assert body[2]["tag"] == "markdown"
-        assert body[2]["content"] == "Conclusion"
+        assert body[1]["tag"] == "markdown"
+        assert body[1]["content"] == "Conclusion"
+        assert body[2]["tag"] == "collapsible_panel"
 
 
 class TestPagination:

@@ -2,8 +2,10 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-05-07
+- **统一 Spec/Loop/Deep/Worktree 卡片到直接编程模式结构** — 新增共享 `_ACPStreamBridge`/`_dispatch_text_block()`，把四种模式的 ACP 流统一归约到 direct programming 风格的 `CardEvent`；Loop/Spec 按 iteration/cycle 旋转独立卡片，Worktree 标题复用共享 header 并保留并发多卡；定向回归 `67 passed` → [详细记录](2026-05-07.md)
 - **修复 `/wt` 命令识别与路由闭环** — 引入 `SlashCommandParser`/`CommandMatch` 统一解析（大小写不敏感、空格/Tab 分隔、`/wt`→`/worktree` 归一化），并接入 `SystemHandler`/`WorktreeHandler`/`FeishuWSClient`/`ChatLockGate` 形成 SSOT；帮助卡补充 `/wt`/`/worktree` 与分隔符说明并加测试锁定；定向回归：worktree+锁 149 passed，help card 1 passed → [详细记录](2026-05-07.md)
 - **重构 Slash 命令消费链路（`CommandMatch` SSOT）** — 解析改为 request-scoped 并全链路透传；`ChatLockManager.should_block()` 用 `Protocol` 解耦并移除 `raw_text/has_args` 兜底推断；`SystemHandler` 的 `/switch`/`/new`/`/close` 参数消费统一改用 `CommandMatch.args`；全量测试 `5645 passed` → [详细记录](2026-05-07.md)
+- **修复卡片 Patch failed：`div` 元素不支持 `padding/background_style`** — 将 warning banner / phase / worktree failed units 的样式块从 `div` 改为 `column_set`，避免 Schema 2.0 解析失败；新增递归断言测试锁定 `div` 不再包含上述字段；定向回归 `test_card_renderer.py` 28 passed → [详细记录](2026-05-07.md)
 
 ## 2026-05-06
 - **修复 Deep 错误降级回复参数错位** — 修复 `BaseRenderer.create_session()` 和 `BaseEngineHandler._on_engine_error()` 在降级文本回复时错误调用 `reply_text` 的问题，避免出现 `missing 1 required positional argument: 'text'` 与 `got multiple values for argument 'message_id'`；补充回归测试锁定调用顺序 → [详细记录](2026-05-06.md)

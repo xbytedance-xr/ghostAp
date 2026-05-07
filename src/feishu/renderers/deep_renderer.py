@@ -13,7 +13,7 @@ from ...deep_engine import DeepEngineCallbacks
 from ...deep_engine.models import DeepProject, DeepProjectStatus
 from ...project import ContextSourceMode
 from ..emoji import EmojiReaction
-from .base import BaseRenderer, _StreamThrottle
+from .base import BaseRenderer, _ACPStreamBridge, _dispatch_text_block, _StreamThrottle
 
 if TYPE_CHECKING:
     from ...card.protocols import Dispatchable
@@ -90,6 +90,7 @@ class DeepRenderer(BaseRenderer):
 
         # ACP event renderer for structured content
         renderer = ACPEventRenderer()
+        stream_bridge = _ACPStreamBridge(session)
         # Progress tracking state
         _start_time = [time.time()]
         _tool_count = [0]
@@ -100,8 +101,7 @@ class DeepRenderer(BaseRenderer):
             # Start the card session
             session.dispatch(CardEvent.started())
             content = f"🚀 ACP Deep 执行开始\n\n📂 **{deep_project.name}**\n🔗 路径: `{deep_project.root_path}`"
-            session.dispatch(CardEvent.text_started("_main_text"))
-            session.dispatch(CardEvent.text_delta("_main_text", content))
+            _dispatch_text_block(session, "_main_text", content)
             _phase[0] = "executing"
 
         def on_event(event: ACPEvent):
@@ -110,9 +110,6 @@ class DeepRenderer(BaseRenderer):
 
             # Track progress for progress_updated dispatch
             if event.event_type == ACPEventType.TOOL_CALL_START:
-                # Close the active main text block before the first tool starts
-                if _tool_count[0] == 0:
-                    session.dispatch(CardEvent.text_done("_main_text"))
                 _tool_count[0] += 1
                 label = "🔄 执行中" if _phase[0] == "executing" else "🧠 分析/规划中"
                 session.dispatch(CardEvent.progress_updated(
@@ -127,9 +124,8 @@ class DeepRenderer(BaseRenderer):
                         _plan_steps[0] = steps
                         _phase[0] = "executing"
 
-            # Convert ACP event to CardEvent and dispatch
-            card_event = CardEvent.from_acp(event)
-            session.dispatch(card_event)
+            # Convert ACP stream to unified programming-style card sections
+            stream_bridge.on_event(event)
 
             # Check for warning banner based on elapsed time
             elapsed = time.time() - _start_time[0]
@@ -138,6 +134,7 @@ class DeepRenderer(BaseRenderer):
                 session.dispatch(CardEvent.warning_updated(warning))
 
         def on_project_done(deep_project: DeepProject):
+            stream_bridge.close_open_blocks()
             # Build execution summary
             snap = self._get_engine(chat_id, root_path, project)
             tool_calls_count = snap.tool_calls_count if snap else _tool_count[0]
@@ -151,6 +148,7 @@ class DeepRenderer(BaseRenderer):
             self._current_session = None
 
         def on_error(error: str):
+            stream_bridge.close_open_blocks()
             # Dispatch failure (hooks fire automatically via CardSession)
             session.dispatch(CardEvent.failed(error))
             self._current_session = None

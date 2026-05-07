@@ -8,8 +8,14 @@ Covers:
 
 from unittest.mock import MagicMock, patch
 
+from src.acp import ACPEventType
 from src.card.styles import UI_TEXT
+from src.card.events import CardEventType
+from src.card.render.budget import RenderBudget
+from src.card.state.models import CardMetadata
+from src.feishu.renderers._spec_stream_processor import SpecStreamProcessor
 from src.spec_engine.retry_status import RetryStatus
+from src.spec_engine.models import SpecPhase
 
 
 class TestOnPhaseRetryUsesUIText:
@@ -114,3 +120,103 @@ class TestOnReviewRetryAllStatuses:
         """retry_no_retry requires no .format() placeholders."""
         text = UI_TEXT["retry_no_retry"]
         assert "{" not in text
+
+
+class TestSpecStreamProcessorUnifiedCycleCard:
+    def test_non_build_phase_forwards_tool_events_as_native_card_events(self):
+        reporter = MagicMock()
+        reporter.format_phase_subtitle.return_value = "第 1 轮 · Plan"
+        reporter.format_criteria_section.return_value = "Criteria"
+
+        spec_project = MagicMock()
+        spec_project.cycle_count_total = 3
+        spec_project.satisfied_count = 0
+        spec_project.total_criteria = 2
+        spec_project.duration.return_value = 2.0
+
+        renderer = MagicMock()
+        renderer.ctx.spec_engine_manager.snapshot.return_value = MagicMock(ext={"project": spec_project})
+        renderer.get_ui_state.return_value = {}
+        renderer.check_warning_banner.return_value = None
+
+        rotator = MagicMock()
+        throttle = MagicMock()
+
+        processor = SpecStreamProcessor(
+            rotator=rotator,
+            reporter=reporter,
+            metadata=CardMetadata(engine_type="spec", mode_name="Spec · Coco", mode_emoji="📋"),
+            hooks=(),
+            budget=RenderBudget(engine_cmd="/spec"),
+            spec_project_id="p1",
+            message_id="msg1",
+            chat_id="chat1",
+            renderer=renderer,
+            project_root_path="/tmp/p1",
+            throttle=throttle,
+        )
+
+        processor.on_phase_start(1, SpecPhase.PLAN)
+        rotator.dispatch.reset_mock()
+
+        tool_event = MagicMock()
+        tool_event.event_type = ACPEventType.TOOL_CALL_START
+        tool_event.tool_call = MagicMock(id="tool-1", title="Read", content="README.md", status="running")
+        tool_event.text = None
+
+        processor.on_phase_event(1, SpecPhase.PLAN, tool_event)
+
+        dispatched_events = [call.args[0] for call in rotator.dispatch.call_args_list]
+        event_types = [event.type for event in dispatched_events]
+        assert CardEventType.TOOL_STARTED in event_types
+
+    def test_error_closes_active_stream_blocks_before_failed(self):
+        reporter = MagicMock()
+        reporter.format_phase_subtitle.return_value = "第 1 轮 · Plan"
+        reporter.format_criteria_section.return_value = "Criteria"
+
+        spec_project = MagicMock()
+        spec_project.cycle_count_total = 3
+        spec_project.satisfied_count = 0
+        spec_project.total_criteria = 2
+        spec_project.duration.return_value = 2.0
+
+        renderer = MagicMock()
+        renderer.ctx.spec_engine_manager.snapshot.return_value = MagicMock(ext={"project": spec_project})
+        renderer.get_ui_state.return_value = {}
+        renderer.check_warning_banner.return_value = None
+
+        rotator = MagicMock()
+        throttle = MagicMock()
+
+        processor = SpecStreamProcessor(
+            rotator=rotator,
+            reporter=reporter,
+            metadata=CardMetadata(engine_type="spec", mode_name="Spec · Coco", mode_emoji="📋"),
+            hooks=(),
+            budget=RenderBudget(engine_cmd="/spec"),
+            spec_project_id="p1",
+            message_id="msg1",
+            chat_id="chat1",
+            renderer=renderer,
+            project_root_path="/tmp/p1",
+            throttle=throttle,
+        )
+
+        processor.on_cycle_start(1, 3)
+        processor.on_phase_start(1, SpecPhase.PLAN)
+        rotator.dispatch.reset_mock()
+
+        text_event = MagicMock()
+        text_event.event_type = ACPEventType.TEXT_CHUNK
+        text_event.text = "hello"
+        text_event.tool_call = None
+
+        processor.on_phase_event(1, SpecPhase.PLAN, text_event)
+        rotator.dispatch.reset_mock()
+
+        processor.on_error("boom")
+
+        dispatched_events = [call.args[0] for call in rotator.dispatch.call_args_list]
+        event_types = [event.type for event in dispatched_events]
+        assert event_types[:2] == [CardEventType.TEXT_DONE, CardEventType.FAILED]
