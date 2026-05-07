@@ -112,14 +112,19 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
     """
     elements: list[dict] = []
 
-    if state.footer.status is None:
+    # Determine if we have any status/progress content to show
+    has_status_content = state.footer.status is not None
+    # Also render footer for terminal states (tool/model/duration)
+    has_meta_content = bool(state.metadata.tool_name or state.metadata.model_name or state.footer.duration_seconds)
+
+    if not has_status_content and not has_meta_content:
         return []
 
     elements.append({"tag": "hr"})
     status_text = state.footer.status_text or ""
 
-    # Progress rendering: merge status + progress bar into one line
-    if state.footer.progress_pct is not None:
+    # Progress rendering: merge status + progress bar into one line (only when status is active)
+    if has_status_content and state.footer.progress_pct is not None:
         bar_color = _ENGINE_PROGRESS_COLOR.get(state.metadata.engine_type or "", "blue")
         mobile_segs = MOBILE_SEGMENTS if (budget is None or budget.mobile) else None
         bar_text = render_progress_bar(state.footer.progress_pct, color=bar_color, mobile_segments=mobile_segs)
@@ -145,7 +150,7 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
         elements.append(
             {"tag": "markdown", "content": content, "text_size": "notation"}
         )
-    elif state.footer.progress is not None:
+    elif has_status_content and state.footer.progress is not None:
         # Plain progress text merged with status
         if status_text:
             content = f"{status_text} · {state.footer.progress}"
@@ -154,7 +159,12 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
         elements.append(
             {"tag": "markdown", "content": content, "text_size": "notation"}
         )
-    elif status_text:
+    elif has_status_content and status_text:
+        elements.append(
+            {"tag": "markdown", "content": status_text, "text_size": "notation"}
+        )
+    elif not has_status_content and status_text:
+        # Terminal states: show CTA text even without active status
         elements.append(
             {"tag": "markdown", "content": status_text, "text_size": "notation"}
         )

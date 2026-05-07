@@ -105,7 +105,7 @@ class ProgrammingCardSession:
 
     @property
     def closed(self) -> bool:
-        return self._rotator.closed
+        return self._rotator.closed or self._rotator.current.closed
 
     def start(self) -> None:
         """Start the card (creates initial card in Feishu)."""
@@ -181,7 +181,6 @@ class ProgrammingCardSession:
             self._text_active = False
         self._rotator.dispatch(CardEvent.completed())
         self._finish_agent_sessions(failed=False)
-        self._rotator.close()
 
     def fail(self, error: str = "") -> None:
         """Mark the session as failed."""
@@ -198,7 +197,6 @@ class ProgrammingCardSession:
             self._text_active = False
         self._rotator.dispatch(CardEvent.failed(error))
         self._finish_agent_sessions(failed=True, error=error)
-        self._rotator.close()
 
     def update_tool_model(self, tool_name: str | None = None, model_name: str | None = None) -> None:
         """Update the displayed tool/model in header subtitle."""

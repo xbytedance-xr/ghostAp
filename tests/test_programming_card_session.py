@@ -34,7 +34,7 @@ def _make_programming_session(mode_name="coco", **kwargs):
     client = MockClient()
     delivery = CardDelivery(client)
     metadata = build_programming_metadata(mode_name, **kwargs)
-    config = SessionConfig(metadata=metadata, reply_to="origin_msg")
+    config = SessionConfig(metadata=metadata, reply_to="origin_msg", sync_delivery=True)
     session = CardSession(
         chat_id="chat_prog",
         config=config,
