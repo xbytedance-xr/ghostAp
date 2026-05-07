@@ -20,6 +20,7 @@ from unittest.mock import MagicMock, patch
 
 from src.feishu.chat_lock_gate import ChatLockGate
 from src.feishu.message_cache import MessageCache
+from src.feishu.slash_command_parser import CommandMatch, SlashCommandParser
 
 
 def _make_gate(
@@ -59,7 +60,7 @@ class TestCheckMessage(unittest.TestCase):
         clm.should_block.return_value = False
         gate, _ = _make_gate(clm=clm, handler=MagicMock())
 
-        assert gate.check("chat", "user", "msg", command="/test") is False
+        assert gate.check("chat", "user", "msg") is False
 
     def test_blocked_returns_true_and_sends_card(self):
         clm = MagicMock()
@@ -77,6 +78,37 @@ class TestCheckMessage(unittest.TestCase):
 
         assert gate.check("chat", "user", "msg") is True
         host._reply_text.assert_called_once()
+
+    def test_blocked_wt_goal_with_tab_still_sends_visible_intercept_feedback(self):
+        clm = MagicMock()
+        clm.should_block.return_value = True
+        handler = MagicMock()
+        gate, _ = _make_gate(clm=clm, handler=handler)
+
+        m = SlashCommandParser.parse("/wt\t实现登录功能")
+        assert m is not None
+        assert gate.check("chat", "user", "msg", command_match=m) is True
+        handler.send_chat_lock_intercept_card.assert_called_once_with("msg", "chat", clm)
+
+    def test_gate_check_never_reparses_text(self):
+        """Gate must consume request-scoped CommandMatch (SSOT)."""
+        clm = MagicMock()
+        clm.should_block.return_value = True
+        handler = MagicMock()
+        gate, _ = _make_gate(clm=clm, handler=handler)
+
+        m = CommandMatch(
+            raw_text="/wt",
+            normalized_text="/wt",
+            raw_command="/wt",
+            command="/worktree",
+            args="",
+            has_args=False,
+        )
+
+        with patch("src.feishu.slash_command_parser.SlashCommandParser.parse") as p:
+            assert gate.check("chat", "user", "msg", command_match=m) is True
+            assert p.call_count == 0
 
 
 class TestCheckCardAction(unittest.TestCase):

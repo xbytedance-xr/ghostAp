@@ -15,7 +15,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Callable, Optional, Protocol, runtime_checkable
 
 from src.config import get_settings
 from src.utils.lock_order import LockLevel, ordered_lock
@@ -229,7 +229,25 @@ class ChatLockManager:
         with self._mu:
             return chat_id in self._locks
 
-    def should_block(self, chat_id: str, user_id: str, command: Optional[str] = None, *, raw_text: str = "") -> bool:
+    @runtime_checkable
+    class _CommandMatchLike(Protocol):
+        """最小 slash DTO 契约（避免 core 反向依赖 feishu 包）。
+
+        下游只依赖：
+        - command: canonical 命令（lowercase, e.g. "/worktree"）
+        - has_args: 是否携带参数（args 非空）
+        """
+
+        command: str
+        has_args: bool
+
+    def should_block(
+        self,
+        chat_id: str,
+        user_id: str,
+        *,
+        command_match: Optional["ChatLockManager._CommandMatchLike"] = None,
+    ) -> bool:
         """Return True if the message from *user_id* in *chat_id* should be blocked.
 
         - Read-only commands (``/status``, ``/help``, etc.) are always allowed.
@@ -239,15 +257,16 @@ class ChatLockManager:
         - If chat is locked and user is admin → False (allow).
         - If chat is locked and user is NOT admin → True (block).
         """
+        cmd = (getattr(command_match, "command", "") or "").strip().lower() if command_match else ""
+
         # Read-only and safe-interrupt commands are never blocked.
-        if command and (command in READONLY_COMMANDS or command in SAFE_INTERRUPT_COMMANDS):
+        if cmd and (cmd in READONLY_COMMANDS or cmd in SAFE_INTERRUPT_COMMANDS):
             return False
 
         # F-13: /wt and /worktree are read-only only when invoked without subarguments.
-        if command in ("/wt", "/worktree"):
-            stripped = raw_text.strip() if raw_text else ""
+        if cmd == "/worktree":
             # No subargument → read-only (show worktree list)
-            if stripped in ("/wt", "/worktree", ""):
+            if command_match is not None and getattr(command_match, "has_args", True) is False:
                 return False
 
         # Compute admin status outside the lock to avoid I/O inside the

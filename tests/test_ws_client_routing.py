@@ -125,6 +125,34 @@ def test_process_message_async_auto_enter_mode(mock_ws_client: FeishuWSClient):
     )
 
 
+def test_process_message_async_slash_parse_is_request_scoped(mock_ws_client: FeishuWSClient):
+    """SlashCommandParser.parse must be called exactly once per message."""
+    msg = create_mock_message("hello")
+    mock_ws_client._validate_message = MagicMock(return_value=True)
+
+    # Ensure we go through SMART routing (no auto-enter mode)
+    project = ProjectContext("proj_1", "Test", "/tmp")
+    mock_ws_client._resolve_message_context = MagicMock(return_value=(project, None))
+    mock_ws_client._get_effective_mode = MagicMock(return_value=(InteractionMode.SMART, False))
+    mock_ws_client._chat_lock_gate.check = MagicMock(return_value=False)
+
+    # Avoid coupling to downstream task execution in this test
+    mock_ws_client._intent_recognizer.recognize.return_value = IntentResult(
+        confidence=0.9,
+        tasks=[TaskStep(intent=IntentType.CREATE_PROJECT, data={"name": "p"}, description="Create")],
+    )
+    mock_ws_client._message_dispatcher.execute_single_task = MagicMock()
+
+    # Keep message parsing minimal
+    mock_img_handler = MagicMock()
+    mock_img_handler.parse_message.return_value = MagicMock(text="hello", image_keys=[])
+    mock_ws_client._get_image_handler = MagicMock(return_value=mock_img_handler)
+
+    with patch("src.feishu.ws_client.SlashCommandParser.parse", return_value=None) as p:
+        mock_ws_client._process_message_async(msg, task_ctx=MagicMock())
+        assert p.call_count == 1
+
+
 def test_process_with_intent_multitask(mock_ws_client: FeishuWSClient):
     """Test that intent recognizer correctly triggers multi-task execution."""
     project = ProjectContext("proj_1", "Test", "/tmp")
@@ -269,6 +297,7 @@ class TestChatLockInterceptFallback:
         from unittest.mock import MagicMock
         from src.feishu.chat_lock_gate import ChatLockGate
         from src.feishu.message_cache import MessageCache
+        from src.feishu.slash_command_parser import SlashCommandParser
 
         clm = MagicMock()
         clm.should_block.return_value = True
@@ -280,9 +309,9 @@ class TestChatLockInterceptFallback:
         cache = MessageCache(ttl=30, max_size=10_000, cleanup_interval=60)
         gate = ChatLockGate(chat_lock_manager=clm, dedup_cache=cache, host=host)
 
-        blocked = gate._try_block(
-            "chat_1", "user_1", "msg_1", command="/test", raw_text="/test",
-        )
+        m = SlashCommandParser.parse("/test")
+        assert m is not None
+        blocked = gate._try_block("chat_1", "user_1", "msg_1", command_match=m)
         assert blocked is True
         handler.send_chat_lock_intercept_card.assert_called_once_with("msg_1", "chat_1", clm)
 

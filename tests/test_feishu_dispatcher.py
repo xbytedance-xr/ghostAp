@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 from src.feishu.dispatcher import MessageDispatcher
 from src.agent.intent_recognizer import IntentType
 from src.mode.manager import InteractionMode
+from src.feishu.slash_command_parser import SlashCommandParser
 
 class TestMessageDispatcher:
     def setup_method(self):
@@ -13,11 +14,17 @@ class TestMessageDispatcher:
         self.client._is_deep_command.return_value = True
         self.client._is_loop_command.return_value = False
         self.client._is_spec_command.return_value = False
-        self.client._is_interceptable_command.return_value = False
+        self.client._is_interceptable_command_match.return_value = False
         
         self.client._get_effective_mode.return_value = (InteractionMode.SMART, False)
         
-        self.dispatcher.process_with_intent("m1", "c1", "/deep task", None)
+        self.dispatcher.process_with_intent(
+            "m1",
+            "c1",
+            "/deep task",
+            None,
+            command_match=SlashCommandParser.parse("/deep task"),
+        )
         
         self.client._handle_deep_command.assert_called_once_with("m1", "c1", "/deep task", None)
         assert self.client._add_reaction.call_count >= 1
@@ -27,7 +34,7 @@ class TestMessageDispatcher:
         self.client._is_deep_command.return_value = False
         self.client._is_loop_command.return_value = False
         self.client._is_spec_command.return_value = False
-        self.client._is_interceptable_command.return_value = False
+        self.client._is_interceptable_command_match.return_value = False
         self.client._is_exit_command.return_value = False
         self.client.settings.thread_programming_enabled = False
         
@@ -37,7 +44,13 @@ class TestMessageDispatcher:
         mock_handler = MagicMock()
         self.client._get_mode_handler.return_value = mock_handler
 
-        self.dispatcher.process_with_intent("m1", "c1", "hello coco", None)
+        self.dispatcher.process_with_intent(
+            "m1",
+            "c1",
+            "hello coco",
+            None,
+            command_match=SlashCommandParser.parse("hello coco"),
+        )
 
         self.client._get_mode_handler.assert_called_once_with(InteractionMode.COCO)
         mock_handler.handle_message.assert_called_once_with("m1", "c1", "hello coco", None)
@@ -46,13 +59,19 @@ class TestMessageDispatcher:
         self.client._is_deep_command.return_value = False
         self.client._is_loop_command.return_value = False
         self.client._is_spec_command.return_value = False
-        self.client._is_interceptable_command.return_value = False
+        self.client._is_interceptable_command_match.return_value = False
         self.client._is_exit_command.return_value = True
         self.client._control_plane.should_defer_exit.return_value = False
         
         self.client._get_effective_mode.return_value = (InteractionMode.COCO, True)
         
-        self.dispatcher.process_with_intent("m1", "c1", "/exit", None)
+        self.dispatcher.process_with_intent(
+            "m1",
+            "c1",
+            "/exit",
+            None,
+            command_match=SlashCommandParser.parse("/exit"),
+        )
         
         self.client._exit_current_mode.assert_called_once()
 
@@ -97,7 +116,7 @@ class TestMessageDispatcher:
         self.client._is_deep_command.return_value = False
         self.client._is_loop_command.return_value = False
         self.client._is_spec_command.return_value = False
-        self.client._is_interceptable_command.return_value = False
+        self.client._is_interceptable_command_match.return_value = False
         self.client._get_effective_mode.return_value = (InteractionMode.SMART, False)
         self.client._pending_image_lock = MagicMock()
         self.client._pending_image_only = set()
@@ -107,5 +126,11 @@ class TestMessageDispatcher:
         self.client._intent_recognizer.recognize.return_value = intent_result
         
         with patch.object(self.dispatcher, "execute_single_task") as mock_exec:
-            self.dispatcher.process_with_intent("m1", "c1", "help me", None)
+            self.dispatcher.process_with_intent(
+                "m1",
+                "c1",
+                "help me",
+                None,
+                command_match=SlashCommandParser.parse("help me"),
+            )
             mock_exec.assert_called_once()

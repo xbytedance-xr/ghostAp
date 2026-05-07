@@ -82,6 +82,7 @@ UI_TEXT = {
     "system_help_deep_prompt": "💭 启动 Deep Engine\n\n请发送: `/deep <你的需求>`\n\n例如: `/deep 帮我重构 src/feishu 模块`",
     "system_help_project_section": "\n\n📋 **项目管理命令**\n• `/projects` - 查看项目看板\n• `/new 名称 路径` - 创建新项目\n• `/switch 名称` - 切换项目\n• `/status` - 查看所有引擎任务状态（Deep/Loop/Spec）\n• `/status <task_id>` - 查看指定任务详情\n• `/diff` - 查看最近两次版本变更（Diff 报告）",
     "system_new_project_usage": "用法: `/new 项目名 [路径]`",
+    "system_close_project_usage": "用法: `/close <项目名>`\n例如: `/close myApp`",
     "system_current_project": "当前项目: **{name}**\n\n{help}{project_help}",
     "system_help_default": "{help}{project_help}",
     "system_mode_smart": "💭 智能模式",
@@ -168,6 +169,8 @@ UI_TEXT = {
     "system_acp_tool_desc_codex": "OpenAI Codex",
     "system_acp_tool_desc_gemini": "Google Gemini CLI",
     "system_arg_error": "参数错误",
+    "system_internal_error": "系统错误",
+    "system_slash_parse_missing": "命令解析结果缺失（系统侧），请重新发送该命令重试",
     "system_acp_unsupported_tool": "不支持的 ACP 工具: {tool_name}",
     "system_acp_no_available_tools": "未检测到可用 ACP 工具",
     "system_acp_select_tool_prompt": "请选择 ACP 工具",
@@ -310,9 +313,11 @@ UI_TEXT = {
     ),
     "system_help_section_worktree": "🌳 Worktree · 多工具并行执行",
     "system_help_section_worktree_body": (
+        "`/wt` · 进入 Worktree 工具选择流程\n"
         "`/wt <目标>` · 启动 Worktree 并行执行\n"
-        "`/wt` · 进入工具选择流程\n"
-        "支持多工具组合并行：选择工具 → 设定目标 → 自动分配 → 并行执行 → 合并结果"
+        "`/worktree <目标>` · 等价别名（同样支持）\n"
+        "分隔符支持空格/Tab：例如 `/wt\\t实现登录功能` 或 `/worktree 实现登录功能`\n"
+        "流程：选择工具 → 设定目标 → 自动分配 → 并行执行 → 合并结果"
     ),
     "system_help_tips": (
         "**💡 使用提示**\n"

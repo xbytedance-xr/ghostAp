@@ -21,6 +21,7 @@ from ..utils.errors import get_error_detail
 from .emoji import EmojiReaction
 from .message_formatter import FeishuMessageFormatter as fmt
 from ..card.ui_text import UI_TEXT
+from .slash_command_parser import CommandMatch
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ class MessageDispatcher:
         text: str,
         project: Optional['ProjectContext'] = None,
         *,
+        command_match: CommandMatch | None = None,
         shell_fast_tracked: bool = False,
     ):
         """SMART mode routing logic."""
@@ -64,8 +66,9 @@ class MessageDispatcher:
             self.client._handle_spec_command(message_id, chat_id, text, project)
             return
 
-        if self.client._is_interceptable_command(text):
-            self.client._handle_intercepted_command(message_id, chat_id, text, project)
+        # Request-scoped slash parsing: do NOT re-parse raw text here.
+        if self.client._is_interceptable_command_match(command_match):
+            self.client._handle_intercepted_command(message_id, chat_id, text, project, command_match=command_match)
             return
 
         # Worktree mode
@@ -560,4 +563,3 @@ class MessageDispatcher:
             v = task.data.get(key, "")
             return fmt.format(v=v) if v else fallback
         return UI_TEXT["task_desc_unknown"]
-

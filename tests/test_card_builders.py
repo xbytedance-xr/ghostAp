@@ -169,6 +169,23 @@ def test_help_card_mentions_new_chat_project_group():
     assert "项目群" in card_text
 
 
+def test_help_card_mentions_worktree_wt_alias_and_separators():
+    """Verify Worktree help text documents /wt, /worktree and separators."""
+    SystemBuilder._build_help_card_cached.cache_clear()
+
+    msg_type, card_json = SystemBuilder.build_help_card(
+        session_idle_timeout=600,
+        session_idle_warn_at_remaining=120,
+        lock_undo_window_seconds=300,
+    )
+
+    assert msg_type == "interactive"
+    card_text = json.dumps(json.loads(card_json), ensure_ascii=False)
+    assert "/wt" in card_text
+    assert "/worktree" in card_text
+    assert "分隔符支持空格/Tab" in card_text
+
+
 def test_project_status_card_includes_switch_and_group_jump_without_duplicate_path():
     project = ProjectContext(project_id="p1", project_name="P1", root_path="/tmp/p1")
     project.bound_chat_id = "oc_group_123"

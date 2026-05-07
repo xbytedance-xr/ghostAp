@@ -7,6 +7,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from src.chat_lock import ChatLockCode, ChatLockManager
+from src.feishu.slash_command_parser import SlashCommandParser
 
 
 @pytest.fixture()
@@ -83,6 +84,35 @@ class TestChatLock:
             result = mgr.unlock_chat("chat_1", ADMIN_ID)
             assert result.success is True  # not locked, still OK
             assert result.code == ChatLockCode.NOT_LOCKED
+
+    def test_locked_chat_allows_bare_wt_with_tab_whitespace(self, mgr: ChatLockManager):
+        with _mock_settings([ADMIN_ID]):
+            mgr.lock_chat("chat_1", ADMIN_ID)
+            m = SlashCommandParser.parse("/wt\t")
+            assert m is not None
+            assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m) is False
+
+    def test_locked_chat_allows_bare_worktree_uppercase_when_parsed(self, mgr: ChatLockManager):
+        """Case-insensitive contract: '/WORKTREE\t' should be treated as bare worktree when parsed."""
+        with _mock_settings([ADMIN_ID]):
+            mgr.lock_chat("chat_1", ADMIN_ID)
+            m = SlashCommandParser.parse("/WORKTREE\t")
+            assert m is not None
+            assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m) is False
+
+    def test_locked_chat_blocks_wt_goal_with_tab_whitespace(self, mgr: ChatLockManager):
+        with _mock_settings([ADMIN_ID]):
+            mgr.lock_chat("chat_1", ADMIN_ID)
+            m = SlashCommandParser.parse("/wt\t实现登录功能")
+            assert m is not None
+            assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m) is True
+
+    def test_locked_chat_blocks_worktree_goal_uppercase_when_parsed(self, mgr: ChatLockManager):
+        with _mock_settings([ADMIN_ID]):
+            mgr.lock_chat("chat_1", ADMIN_ID)
+            m = SlashCommandParser.parse("/WORKTREE\tgoal")
+            assert m is not None
+            assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m) is True
 
 
 class TestHandleLockCommand:
@@ -236,7 +266,9 @@ class TestReadonlyCommands:
             mgr.lock_chat("chat_1", ADMIN_ID)
             from src.chat_lock import READONLY_COMMANDS
             for cmd in READONLY_COMMANDS:
-                assert mgr.should_block("chat_1", NON_ADMIN_ID, command=cmd) is False, (
+                m = SlashCommandParser.parse(cmd)
+                assert m is not None
+                assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m) is False, (
                     f"READONLY command {cmd} should not be blocked"
                 )
 
@@ -255,7 +287,9 @@ class TestReadonlyCommands:
             mgr.lock_chat("chat_1", ADMIN_ID)
             from src.chat_lock import SAFE_INTERRUPT_COMMANDS
             for cmd in SAFE_INTERRUPT_COMMANDS:
-                assert mgr.should_block("chat_1", NON_ADMIN_ID, command=cmd) is False, (
+                m = SlashCommandParser.parse(cmd)
+                assert m is not None
+                assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m) is False, (
                     f"SAFE_INTERRUPT command {cmd} should not be blocked"
                 )
 
@@ -268,20 +302,28 @@ class TestReadonlyCommands:
         """F-13: /wt and /worktree without subarguments should NOT be blocked."""
         with _mock_settings([ADMIN_ID]):
             mgr.lock_chat("chat_1", ADMIN_ID)
-            assert mgr.should_block("chat_1", NON_ADMIN_ID, command="/wt", raw_text="/wt") is False
-            assert mgr.should_block("chat_1", NON_ADMIN_ID, command="/worktree", raw_text="/worktree") is False
+            m1 = SlashCommandParser.parse("/wt")
+            m2 = SlashCommandParser.parse("/worktree")
+            assert m1 is not None and m2 is not None
+            assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m1) is False
+            assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m2) is False
 
     def test_wt_worktree_blocked_with_subargs(self, mgr: ChatLockManager):
         """F-13: /wt and /worktree with subarguments should be blocked."""
         with _mock_settings([ADMIN_ID]):
             mgr.lock_chat("chat_1", ADMIN_ID)
-            assert mgr.should_block("chat_1", NON_ADMIN_ID, command="/wt", raw_text="/wt merge") is True
-            assert mgr.should_block("chat_1", NON_ADMIN_ID, command="/worktree", raw_text="/worktree create feat") is True
+            m1 = SlashCommandParser.parse("/wt merge")
+            m2 = SlashCommandParser.parse("/worktree create feat")
+            assert m1 is not None and m2 is not None
+            assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m1) is True
+            assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m2) is True
 
     def test_non_readonly_command_blocked(self, mgr: ChatLockManager):
         with _mock_settings([ADMIN_ID]):
             mgr.lock_chat("chat_1", ADMIN_ID)
-            assert mgr.should_block("chat_1", NON_ADMIN_ID, command="/run") is True
+            m = SlashCommandParser.parse("/run")
+            assert m is not None
+            assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m) is True
 
     def test_no_command_blocked(self, mgr: ChatLockManager):
         """Regular messages (no command) should be blocked when locked."""
@@ -433,17 +475,23 @@ class TestReadonlyCommandsExpansion:
     def test_help_chinese_bypasses_lock(self, mgr: ChatLockManager):
         with _mock_settings([ADMIN_ID]):
             mgr.lock_chat("chat_1", ADMIN_ID)
-            assert mgr.should_block("chat_1", NON_ADMIN_ID, command="/帮助") is False
+            m = SlashCommandParser.parse("/帮助")
+            assert m is not None
+            assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m) is False
 
     def test_exit_bypasses_lock(self, mgr: ChatLockManager):
         with _mock_settings([ADMIN_ID]):
             mgr.lock_chat("chat_1", ADMIN_ID)
-            assert mgr.should_block("chat_1", NON_ADMIN_ID, command="/exit") is False
+            m = SlashCommandParser.parse("/exit")
+            assert m is not None
+            assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m) is False
 
     def test_quit_bypasses_lock(self, mgr: ChatLockManager):
         with _mock_settings([ADMIN_ID]):
             mgr.lock_chat("chat_1", ADMIN_ID)
-            assert mgr.should_block("chat_1", NON_ADMIN_ID, command="/quit") is False
+            m = SlashCommandParser.parse("/quit")
+            assert m is not None
+            assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m) is False
 
 
 # ---------------------------------------------------------------------------

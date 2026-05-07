@@ -6,6 +6,7 @@ if TYPE_CHECKING:
 
 from ..card import CardBuilder
 from ..card.ui_text import UI_TEXT
+from .slash_command_parser import SlashCommandParser
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +29,14 @@ class _RetryDispatchAdapter:
     def try_block_with_chat_lock(
         self, chat_id: str, sender_id: str, message_id: str, *, raw_text: str = "",
     ) -> bool:
+        # Best-effort: keep retry dispatch compatible with the main gate API.
+        # Parse once and pass the structured CommandMatch to the gate.
+        try:
+            m = SlashCommandParser.parse(raw_text)
+        except Exception:
+            m = None
         return self._client._chat_lock_gate.check(
-            chat_id, sender_id, message_id, raw_text=raw_text,
+            chat_id, sender_id, message_id, command_match=m,
         )
 
     def get_project_for_chat(self, project_id: str, chat_id: str) -> Any:

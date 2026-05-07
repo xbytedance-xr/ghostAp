@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from src.agent.intent_recognizer import IntentType, TaskStep
 
 from src.feishu.ws_client import FeishuWSClient
+from src.feishu.slash_command_parser import SlashCommandParser
 from src.mode import InteractionMode
 
 
@@ -532,8 +533,8 @@ class TestCardActionHandler(unittest.TestCase):
             mock_get_settings.return_value = mock_settings
 
             client = FeishuWSClient(MagicMock())
-            self.assertTrue(client._is_interceptable_command("/diff"))
-            self.assertTrue(client._is_interceptable_command("/diff current"))
+            self.assertTrue(client._is_interceptable_command_match(SlashCommandParser.parse("/diff")))
+            self.assertTrue(client._is_interceptable_command_match(SlashCommandParser.parse("/diff current")))
 
     def test_process_with_intent_routes_diff_in_smart_mode(self):
         """验证 Smart 模式下 /diff 走系统命令分支，而不是进入 intent 识别/执行"""
@@ -569,8 +570,11 @@ class TestCardActionHandler(unittest.TestCase):
             client._mode_manager.get_mode.return_value = InteractionMode.SMART
             client._handle_intercepted_command = MagicMock()
 
-            client._process_with_intent("m1", "c1", "/diff", project=None)
-            client._handle_intercepted_command.assert_called_once()
+            command_match = SlashCommandParser.parse("/diff")
+            client._process_with_intent("m1", "c1", "/diff", project=None, command_match=command_match)
+            client._handle_intercepted_command.assert_called_once_with(
+                "m1", "c1", "/diff", None, command_match=command_match
+            )
 
 
     def test_process_with_intent_routes_ttadk(self):
@@ -611,7 +615,6 @@ class TestCardActionHandler(unittest.TestCase):
             client._is_deep_command = MagicMock(return_value=False)
             client._is_loop_command = MagicMock(return_value=False)
             client._is_spec_command = MagicMock(return_value=False)
-            client._is_interceptable_command = MagicMock(return_value=False)
             client._is_exit_command = MagicMock(return_value=False)
 
             client._ttadk_handler = MagicMock()
@@ -707,7 +710,6 @@ class TestCardActionHandler(unittest.TestCase):
             client._is_deep_command = MagicMock(return_value=False)
             client._is_loop_command = MagicMock(return_value=False)
             client._is_spec_command = MagicMock(return_value=False)
-            client._is_interceptable_command = MagicMock(return_value=False)
             client._is_exit_command = MagicMock(return_value=False)
 
             mock_handler = MagicMock()
@@ -1679,7 +1681,14 @@ class TestThreadPersistentProgramming(unittest.TestCase):
         project = MagicMock()
         project.project_id = "p1"
 
-        client._dispatch_message_logic("m2", "c1", "继续写", project, auto_enter_mode="coco")
+        client._dispatch_message_logic(
+            "m2",
+            "c1",
+            "继续写",
+            project,
+            auto_enter_mode="coco",
+            command_match=SlashCommandParser.parse("继续写"),
+        )
 
         handler.handle_message.assert_called_once_with("m2", "c1", "继续写", project)
         client._process_with_intent.assert_not_called()
@@ -1692,7 +1701,14 @@ class TestThreadPersistentProgramming(unittest.TestCase):
         client._get_mode_handler = MagicMock(return_value=handler)
 
         project = MagicMock()
-        client._dispatch_message_logic("m2", "c1", "改一下", project, auto_enter_mode="coco")
+        client._dispatch_message_logic(
+            "m2",
+            "c1",
+            "改一下",
+            project,
+            auto_enter_mode="coco",
+            command_match=SlashCommandParser.parse("改一下"),
+        )
 
         client._enter_coco_mode.assert_not_called()
 
@@ -1702,7 +1718,14 @@ class TestThreadPersistentProgramming(unittest.TestCase):
         client._exit_current_mode = MagicMock()
 
         project = MagicMock()
-        client._dispatch_message_logic("m2", "c1", "/exit", project, auto_enter_mode="coco")
+        client._dispatch_message_logic(
+            "m2",
+            "c1",
+            "/exit",
+            project,
+            auto_enter_mode="coco",
+            command_match=SlashCommandParser.parse("/exit"),
+        )
 
         client._exit_current_mode.assert_called_once()
 
@@ -1715,7 +1738,14 @@ class TestThreadPersistentProgramming(unittest.TestCase):
             client._get_mode_handler = MagicMock(return_value=handler)
             project = MagicMock()
 
-            client._dispatch_message_logic(f"m_{mode}", "c1", "do stuff", project, auto_enter_mode=mode)
+            client._dispatch_message_logic(
+                f"m_{mode}",
+                "c1",
+                "do stuff",
+                project,
+                auto_enter_mode=mode,
+                command_match=SlashCommandParser.parse("do stuff"),
+            )
 
             handler.handle_message.assert_called_once_with(f"m_{mode}", "c1", "do stuff", project)
 
@@ -1726,7 +1756,14 @@ class TestThreadPersistentProgramming(unittest.TestCase):
         client._get_mode_handler = MagicMock()
 
         project = MagicMock()
-        client._dispatch_message_logic("m1", "c1", "你好", project, auto_enter_mode=None)
+        client._dispatch_message_logic(
+            "m1",
+            "c1",
+            "你好",
+            project,
+            auto_enter_mode=None,
+            command_match=SlashCommandParser.parse("你好"),
+        )
 
         client._process_with_intent.assert_called_once()
         client._get_mode_handler.assert_not_called()
@@ -2048,7 +2085,14 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
         client._get_mode_handler = MagicMock(return_value=None)
 
         project = MagicMock()
-        client._dispatch_message_logic("m1", "c1", "改一下", project, auto_enter_mode="coco")
+        client._dispatch_message_logic(
+            "m1",
+            "c1",
+            "改一下",
+            project,
+            auto_enter_mode="coco",
+            command_match=SlashCommandParser.parse("改一下"),
+        )
 
         client._process_with_intent.assert_called_once()
 
@@ -2059,7 +2103,14 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
         client._get_mode_handler = MagicMock()
 
         project = MagicMock()
-        client._dispatch_message_logic("m1", "c1", "/coco", project, auto_enter_mode="coco")
+        client._dispatch_message_logic(
+            "m1",
+            "c1",
+            "/coco",
+            project,
+            auto_enter_mode="coco",
+            command_match=SlashCommandParser.parse("/coco"),
+        )
 
         client._reply_text.assert_called_once()
         call_str = str(client._reply_text.call_args)
@@ -2074,9 +2125,23 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
         client._process_with_intent = MagicMock()
 
         project = MagicMock()
-        client._dispatch_message_logic("m1", "c1", "/deep 写一个函数", project, auto_enter_mode="coco")
+        client._dispatch_message_logic(
+            "m1",
+            "c1",
+            "/deep 写一个函数",
+            project,
+            auto_enter_mode="coco",
+            command_match=SlashCommandParser.parse("/deep 写一个函数"),
+        )
 
-        client._process_with_intent.assert_called_once_with("m1", "c1", "/deep 写一个函数", project, shell_fast_tracked=False)
+        client._process_with_intent.assert_called_once_with(
+            "m1",
+            "c1",
+            "/deep 写一个函数",
+            project,
+            command_match=SlashCommandParser.parse("/deep 写一个函数"),
+            shell_fast_tracked=False,
+        )
         client._get_mode_handler.assert_not_called()
 
     def test_dispatch_message_logic_exit_with_defer(self):
@@ -2090,7 +2155,14 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
 
         project = MagicMock()
         project.project_id = "p1"
-        client._dispatch_message_logic("m1", "c1", "/exit", project, auto_enter_mode="coco")
+        client._dispatch_message_logic(
+            "m1",
+            "c1",
+            "/exit",
+            project,
+            auto_enter_mode="coco",
+            command_match=SlashCommandParser.parse("/exit"),
+        )
 
         client._control_plane.should_defer_exit.assert_called_once()
         client._control_plane.request_deferred_exit.assert_called_once()

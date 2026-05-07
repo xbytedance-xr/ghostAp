@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from src.card.builders.system import SystemBuilder
 from src.feishu.handlers.system import SystemHandler
 from src.feishu.ws_client import FeishuWSClient
+from src.feishu.slash_command_parser import SlashCommandParser
 
 
 class TestRefactorRobustness(unittest.TestCase):
@@ -104,16 +105,31 @@ class TestRefactorRobustness(unittest.TestCase):
         }.get(k)
     
         # Test exact match
-        handler.handle_intercepted_command("mid", "cid", "/coco_info")
+        handler.handle_intercepted_command(
+            "mid",
+            "cid",
+            "/coco_info",
+            command_match=SlashCommandParser.parse("/coco_info"),
+        )
         coco_mock.show_info.assert_called_with("mid", "cid", None)
     
         # Test prefix match
-        handler.handle_intercepted_command("mid", "cid", "/status detail")
+        handler.handle_intercepted_command(
+            "mid",
+            "cid",
+            "/status detail",
+            command_match=SlashCommandParser.parse("/status detail"),
+        )
         diagnostics_mock.show_unified_status.assert_called_with("mid", "cid", "/status detail", None)
     
         # Test fallback
         with patch.object(handler, "show_full_help") as mock_help:
-            handler.handle_intercepted_command("mid", "cid", "/unknown_cmd")
+            handler.handle_intercepted_command(
+                "mid",
+                "cid",
+                "/unknown_cmd",
+                command_match=SlashCommandParser.parse("/unknown_cmd"),
+            )
             mock_help.assert_called_with("mid", "cid", None)
 
     def test_ws_client_refactor_structure(self):

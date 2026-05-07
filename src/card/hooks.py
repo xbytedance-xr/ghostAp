@@ -47,11 +47,14 @@ class _HookExecutorManager:
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._executor = self._create_executor()
         self._consecutive_timeouts = 0
-        self._semaphore = threading.BoundedSemaphore(self._get_max_workers() * 4)
+        self._capacity = self._get_max_workers() * 4
+        self._semaphore = threading.BoundedSemaphore(self._capacity)
 
     @staticmethod
     def _get_max_workers() -> int:
-        max_workers = 4  # default
+        # Default should cover short bursts of terminal hooks (e.g. many sessions
+        # completing concurrently) while keeping the pool small in production.
+        max_workers = 6
         try:
             from src.config import get_settings
             val = getattr(get_settings(), "hook_pool_max_workers", None)
@@ -69,10 +72,14 @@ class _HookExecutorManager:
     def submit(self, fn, *args):
         """Submit a callable to the executor with backpressure protection.
 
-        If all worker slots are occupied, degrades to fire-and-forget (skips submission).
+        If all worker slots are occupied, degrades to fire-and-forget
+        (skips submission) to protect the dispatch hot path.
         """
         if not self._semaphore.acquire(blocking=False):
-            logger.warning("Hook executor: backpressure triggered, skipping hook submission (all %d slots occupied)", self._get_max_workers())
+            logger.warning(
+                "Hook executor: backpressure triggered, skipping hook submission (all %d slots occupied)",
+                self._capacity,
+            )
             return None
         with self._lock:
             try:
@@ -81,6 +88,7 @@ class _HookExecutorManager:
             except Exception:
                 self._semaphore.release()
                 raise
+
 
     def _wrap_with_semaphore_release(self, fn):
         """Wrap fn so semaphore is released after completion."""

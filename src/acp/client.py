@@ -238,17 +238,21 @@ def _parse_tool_call(update: ToolCallStart | ToolCallProgress) -> ToolCallInfo:
     kind = (update.kind or "other").strip() or "other"
     is_execute = (kind == "execute") or ("bash" in title.lower())
 
-    # Decide which side to render into ToolCallInfo.content:
-    # - in_progress/pending: show input
-    # - completed/failed: show output
+    # Decide which side to render into ToolCallInfo.content.
+    # NOTE: tests rely on conservative rendering: only TodoWrite and execute-like
+    # tools populate content on the input side; read/list/etc keep it empty.
     use_output = status in ("completed", "failed")
 
     content = ""
-    if not use_output:
+
+    # TodoWrite: always extract checklist from raw_input, regardless of status.
+    if raw_input and _is_todo_tool(title, raw_input):
+        content = _format_todo_content(raw_input)
+        use_output = False
+
+    if not use_output and not content:
         # ---- input side ----
-        if raw_input and _is_todo_tool(title, raw_input):
-            content = _format_todo_content(raw_input)
-        elif is_execute:
+        if is_execute:
             if isinstance(raw_input, dict):
                 content = str(
                     raw_input.get("command")
@@ -260,11 +264,8 @@ def _parse_tool_call(update: ToolCallStart | ToolCallProgress) -> ToolCallInfo:
                 content = raw_input
             elif raw_input is not None:
                 content = _json_dump(raw_input)
-        else:
-            if isinstance(raw_input, str):
-                content = raw_input
-            elif raw_input is not None:
-                content = _json_dump(raw_input)
+
+        # For non-execute tools, keep content empty to reduce noise.
 
         content = _truncate((content or "").strip("\n"), 4000)
     else:

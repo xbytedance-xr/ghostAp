@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch, call
 from src.card import CardBuilder
 from src.feishu.handlers.worktree import WorktreeHandler
 from src.feishu.handlers.system import SystemHandler
+from src.feishu.slash_command_parser import SlashCommandParser
 from src.project.context import ProjectContext
 from src.worktree_engine.manager import WorktreeManager
 from src.worktree_engine.models import (
@@ -683,11 +684,12 @@ def test_execute_goal_emits_execution_events_on_success_and_failure():
 # ---------------------------------------------------------------------------
 
 def test_is_interceptable_command_wt_with_goal():
-    assert SystemHandler.is_interceptable_command("/wt 实现登录功能")
-    assert SystemHandler.is_interceptable_command("/worktree 重构认证")
-    assert SystemHandler.is_interceptable_command("/wt")
-    assert SystemHandler.is_interceptable_command("/worktree")
-    assert not SystemHandler.is_interceptable_command("/wtzzzz")
+    m = SlashCommandParser.parse
+    assert SystemHandler.is_interceptable_command_match(m("/wt 实现登录功能"))
+    assert SystemHandler.is_interceptable_command_match(m("/worktree 重构认证"))
+    assert SystemHandler.is_interceptable_command_match(m("/wt"))
+    assert SystemHandler.is_interceptable_command_match(m("/worktree"))
+    assert not SystemHandler.is_interceptable_command_match(m("/wtzzzz"))
 
 
 # ---------------------------------------------------------------------------

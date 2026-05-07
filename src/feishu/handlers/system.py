@@ -18,6 +18,7 @@ from ..message_formatter import FeishuMessageFormatter as fmt
 from .base import BaseHandler
 from .lock_commands import LockCommandsMixin
 from .ttadk_commands import TTADKCommandsMixin
+from ..slash_command_parser import CommandMatch
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
@@ -53,7 +54,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/switch": lambda m, c, t, p: self.get_handler("project").show_project_board(m, c),
             "/ttadk": lambda m, c, t, p: self.handle_ttadk_command(m, c, p),
             "/acp": lambda m, c, t, p: self.handle_acp_command(m, c, p),
-            "/wt": lambda m, c, t, p: self.get_handler("worktree").handle_worktree_command(m, c, p),
+            # Worktree: canonical command is /worktree (aliases like /wt are normalized by SlashCommandParser)
             "/worktree": lambda m, c, t, p: self.get_handler("worktree").handle_worktree_command(m, c, p),
             "/ttadk_info": lambda m, c, t, p: self.show_ttadk_info(m, c),
             "/ttadk_refresh": lambda m, c, t, p: self.refresh_ttadk_models(m, c, p),
@@ -72,16 +73,11 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             ("/tasks", lambda m, c, t, p: self.get_handler("diagnostics").show_task_board(m, c, t, p)),
             ("/diff", lambda m, c, t, p: self.get_handler("diagnostics").show_context_diff(m, c, t, p)),
             ("/trace", lambda m, c, t, p: self.get_handler("diagnostics").show_message_trace(m, c, t, p)),
-            ("/worktree ", lambda m, c, t, p: self.get_handler("worktree").handle_worktree_prefix_command(m, c, t, p)),
-            ("/wt ", lambda m, c, t, p: self.get_handler("worktree").handle_worktree_prefix_command(m, c, t, p)),
-            ("/switch ", self._handle_switch_command),
-            ("/new ", self._handle_new_project_command),
-            ("/close ", self._handle_close_command),
-            ("/model ", self.handle_model_command),
+            ("/model", self.handle_model_command),
         ]
 
-    def _handle_switch_command(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"]):
-        name = text[8:].strip()
+    def _handle_switch_args(self, message_id: str, chat_id: str, args: str) -> None:
+        name = (args or "").strip()
         if name:
             self.get_handler("project").switch_project(
                 message_id,
@@ -93,10 +89,9 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         else:
             self.get_handler("project").show_project_board(message_id, chat_id)
 
-    def _handle_new_project_command(
-        self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"]
-    ):
-        parts = text[5:].strip().split(None, 1)
+
+    def _handle_new_project_args(self, message_id: str, chat_id: str, args: str) -> None:
+        parts = (args or "").strip().split(None, 1)
         name = parts[0] if parts else ""
         path = parts[1] if len(parts) > 1 else self.get_working_dir(chat_id)
         if name:
@@ -106,10 +101,16 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
                 message_id, UI_TEXT["system_new_project_usage"], title=UI_TEXT["system_arg_error"]
             )
 
-    def _handle_close_command(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"]):
-        name = text[7:].strip()
+    def _handle_close_args(self, message_id: str, chat_id: str, args: str) -> None:
+        name = (args or "").strip()
         if name:
             self.get_handler("project").close_project(message_id, chat_id, name)
+        else:
+            self.reply_error(
+                message_id,
+                UI_TEXT["system_close_project_usage"],
+                title=UI_TEXT["system_arg_error"],
+            )
 
     # ------------------------------------------------------------------
     # Command predicates
@@ -217,8 +218,16 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         return first_word in shell_prefixes
 
     @staticmethod
-    def is_interceptable_command(text: str) -> bool:
-        text_lower = text.lower().strip()
+    def is_interceptable_command_match(command_match: CommandMatch | None) -> bool:
+        """Return True when *command_match* should be routed to SystemHandler.
+
+        NOTE: This is the request-scoped SSOT variant (no parsing).
+        """
+        m = command_match
+        if not m:
+            return False
+        cmd = m.command
+
         exact_commands = {
             "/help",
             "/帮助",
@@ -237,7 +246,6 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/trace",
             "/ttadk",
             "/acp",
-            "/wt",
             "/worktree",
             "/ttadk_refresh",
             "/menu",
@@ -245,28 +253,74 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/lock",
             "/unlock",
         }
-        if text_lower in exact_commands:
+        if not m.has_args and cmd in exact_commands:
             return True
-        prefix_commands = ("/worktree ", "/wt ", "/switch ", "/new ", "/close ", "/tasks ", "/diff ", "/trace ", "/status ", "/model ")
-        return any(text_lower.startswith(p) for p in prefix_commands)
+        prefix_commands = {
+            "/worktree",
+            "/switch",
+            "/new",
+            "/close",
+            "/tasks",
+            "/diff",
+            "/trace",
+            "/status",
+            "/model",
+        }
+        return cmd in prefix_commands
 
     # ------------------------------------------------------------------
     # Intercepted command router
     # ------------------------------------------------------------------
     def handle_intercepted_command(
-        self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"] = None
+        self,
+        message_id: str,
+        chat_id: str,
+        text: str,
+        project: Optional["ProjectContext"] = None,
+        *,
+        command_match: CommandMatch | None = None,
     ):
-        text_lower = text.lower().strip()
+        m = command_match
+        if not m:
+            # SSOT: intercepted commands must carry request-scoped CommandMatch.
+            self.reply_error(message_id, UI_TEXT["system_slash_parse_missing"], title=UI_TEXT["system_internal_error"])
+            return
+        # Use canonical command as routing key, but keep original text for handlers
+        # that still need it for legacy parsing (non-worktree).
+        text_lower = m.command
+
+        # Worktree is special: route directly with parsed goal to avoid handler-side slicing.
+        if text_lower == "/worktree" and m.has_args:
+            wt = self.get_handler("worktree")
+            if wt:
+                # Prefer passing the parsed CommandMatch through the chain.
+                if hasattr(wt, "handle_worktree_command_match"):
+                    wt.handle_worktree_command_match(message_id, chat_id, m, project=project)
+                else:
+                    wt.handle_worktree_command(message_id, chat_id, project, goal=m.args)
+                return
 
         # 1. Try exact match
-        handler = self._exact_handlers.get(text_lower)
-        if handler:
-            handler(message_id, chat_id, text, project)
+        if not m.has_args:
+            handler = self._exact_handlers.get(text_lower)
+            if handler:
+                handler(message_id, chat_id, text, project)
+                return
+
+        # 1b. Prefix commands that historically used text slicing: route with parsed args.
+        if text_lower == "/switch":
+            self._handle_switch_args(message_id, chat_id, m.args)
+            return
+        if text_lower == "/new":
+            self._handle_new_project_args(message_id, chat_id, m.args)
+            return
+        if text_lower == "/close":
+            self._handle_close_args(message_id, chat_id, m.args)
             return
 
         # 2. Try prefix match
         for prefix, handler in self._prefix_handlers:
-            if text_lower.startswith(prefix):
+            if text_lower == prefix:
                 handler(message_id, chat_id, text, project)
                 return
 

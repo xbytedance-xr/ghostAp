@@ -17,6 +17,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from src.feishu.handlers.system import SystemHandler
+from src.feishu.slash_command_parser import SlashCommandParser
 
 
 def _make_handler():
@@ -53,24 +54,28 @@ def _make_handler():
 # ---------------------------------------------------------------------------
 class TestIsInterceptableCommand(unittest.TestCase):
     def test_model_exact(self):
-        self.assertTrue(SystemHandler.is_interceptable_command("/model"))
+        self.assertTrue(SystemHandler.is_interceptable_command_match(SlashCommandParser.parse("/model")))
 
     def test_model_list(self):
-        self.assertTrue(SystemHandler.is_interceptable_command("/model list"))
+        self.assertTrue(SystemHandler.is_interceptable_command_match(SlashCommandParser.parse("/model list")))
 
     def test_model_name(self):
-        self.assertTrue(SystemHandler.is_interceptable_command("/model gpt-5.2"))
+        self.assertTrue(SystemHandler.is_interceptable_command_match(SlashCommandParser.parse("/model gpt-5.2")))
 
     def test_model_switch(self):
-        self.assertTrue(SystemHandler.is_interceptable_command("/model switch claude-3.7-sonnet"))
+        self.assertTrue(
+            SystemHandler.is_interceptable_command_match(
+                SlashCommandParser.parse("/model switch claude-3.7-sonnet")
+            )
+        )
 
     def test_model_upper_case(self):
         # case-insensitive check
-        self.assertTrue(SystemHandler.is_interceptable_command("/Model"))
+        self.assertTrue(SystemHandler.is_interceptable_command_match(SlashCommandParser.parse("/Model")))
 
     def test_unrelated_not_matched(self):
-        self.assertFalse(SystemHandler.is_interceptable_command("/mode"))
-        self.assertFalse(SystemHandler.is_interceptable_command("model"))
+        self.assertFalse(SystemHandler.is_interceptable_command_match(SlashCommandParser.parse("/mode")))
+        self.assertFalse(SystemHandler.is_interceptable_command_match(SlashCommandParser.parse("model")))
 
 
 # ---------------------------------------------------------------------------

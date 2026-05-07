@@ -8,16 +8,37 @@ from src.feishu.handlers.system import SystemHandler
 from src.feishu.handlers.worktree import WorktreeHandler
 from src.card.styles import UI_TEXT
 from src.card.builder import CardBuilder
+from src.feishu.slash_command_parser import SlashCommandParser
 from src.worktree_engine.manager import WorktreeManager
-from src.worktree_engine.models import WorktreeRuntimeState, WorktreeSelectionItem
+from src.worktree_engine.models import (
+    WorktreeJourneyStatus,
+    WorktreeRuntimeState,
+    WorktreeSelectionItem,
+    WorktreeUnit,
+    WorktreeUnitStatus,
+)
 from src.feishu.ws_client import FeishuWSClient
 
 
 class TestWorktreeCommandRouting(unittest.TestCase):
     def test_system_handler_recognizes_worktree_commands(self):
-        self.assertTrue(SystemHandler.is_interceptable_command("/wt"))
-        self.assertTrue(SystemHandler.is_interceptable_command("/worktree"))
-        self.assertFalse(SystemHandler.is_interceptable_command("/wt-extra"))
+        m = SlashCommandParser.parse
+        self.assertTrue(SystemHandler.is_interceptable_command_match(m("/wt")))
+        self.assertTrue(SystemHandler.is_interceptable_command_match(m("/worktree")))
+        self.assertFalse(SystemHandler.is_interceptable_command_match(m("/wt-extra")))
+
+    def test_system_handler_recognizes_worktree_commands_with_common_whitespace(self):
+        m = SlashCommandParser.parse
+        self.assertTrue(SystemHandler.is_interceptable_command_match(m("  /WT  ")))
+        self.assertTrue(SystemHandler.is_interceptable_command_match(m("/wt\t实现登录功能")))
+        self.assertTrue(SystemHandler.is_interceptable_command_match(m("/worktree\t实现登录功能")))
+
+    def test_system_handler_keeps_other_slash_commands_interceptable(self):
+        m = SlashCommandParser.parse
+        self.assertTrue(SystemHandler.is_interceptable_command_match(m("/help")))
+        self.assertTrue(SystemHandler.is_interceptable_command_match(m("/status\tall")))
+        self.assertTrue(SystemHandler.is_interceptable_command_match(m("/model\tgpt-5")))
+        self.assertFalse(SystemHandler.is_interceptable_command_match(m("/wt-extra")))
 
     def test_process_card_action_routes_show_worktree_menu(self):
         with (
@@ -312,7 +333,7 @@ class TestWorktreeCommandRouting(unittest.TestCase):
             client._is_deep_command = MagicMock(return_value=False)
             client._is_loop_command = MagicMock(return_value=False)
             client._is_spec_command = MagicMock(return_value=False)
-            client._is_interceptable_command = MagicMock(return_value=False)
+            client._is_interceptable_command_match = MagicMock(return_value=False)
             client._is_exit_command = MagicMock(return_value=False)
 
             client._add_reaction = MagicMock()
@@ -327,7 +348,15 @@ class TestWorktreeCommandRouting(unittest.TestCase):
             project = SimpleNamespace(project_id="p1", worktree_state=state)
 
             with patch("src.feishu.ws_client.WorktreeManager.is_awaiting_goal", return_value=True) as mock_flag:
-                client._process_with_intent("m1", "c1", "实现登录功能", project, shell_fast_tracked=False)
+                command_match = SlashCommandParser.parse("实现登录功能")
+                client._process_with_intent(
+                    "m1",
+                    "c1",
+                    "实现登录功能",
+                    project,
+                    command_match=command_match,
+                    shell_fast_tracked=False,
+                )
 
             mock_flag.assert_called_once_with(state)
             client._handle_worktree_execute.assert_called_once_with("m1", "c1", "实现登录功能", project)
@@ -353,7 +382,7 @@ class TestWorktreeCommandRouting(unittest.TestCase):
             client._is_deep_command = MagicMock(return_value=False)
             client._is_loop_command = MagicMock(return_value=False)
             client._is_spec_command = MagicMock(return_value=False)
-            client._is_interceptable_command = MagicMock(return_value=False)
+            client._is_interceptable_command_match = MagicMock(return_value=False)
             client._is_exit_command = MagicMock(return_value=False)
 
             client._add_reaction = MagicMock()
@@ -375,11 +404,68 @@ class TestWorktreeCommandRouting(unittest.TestCase):
             project = SimpleNamespace(project_id="p1", worktree_state=state)
 
             with patch("src.feishu.ws_client.WorktreeManager.is_awaiting_goal", return_value=False) as mock_flag:
-                client._process_with_intent("m2", "c1", "实现登录功能", project, shell_fast_tracked=False)
+                command_match = SlashCommandParser.parse("实现登录功能")
+                client._process_with_intent(
+                    "m2",
+                    "c1",
+                    "实现登录功能",
+                    project,
+                    command_match=command_match,
+                    shell_fast_tracked=False,
+                )
 
             mock_flag.assert_called_once_with(state)
             client._handle_worktree_execute.assert_not_called()
             client._intent_recognizer.recognize.assert_called_once()
+
+    def test_is_awaiting_goal_returns_true_only_for_pending_with_ready_units(self):
+        state = WorktreeRuntimeState()
+        state.journey.status = WorktreeJourneyStatus.PENDING
+        state.units = [WorktreeUnit(unit_id="u1", status=WorktreeUnitStatus.READY)]
+
+        self.assertTrue(WorktreeManager.is_awaiting_goal(state))
+
+    def test_is_awaiting_goal_returns_false_for_failed_journey_even_with_ready_units(self):
+        state = WorktreeRuntimeState()
+        state.journey.status = WorktreeJourneyStatus.FAILED
+        state.units = [WorktreeUnit(unit_id="u1", status=WorktreeUnitStatus.READY)]
+
+        self.assertFalse(WorktreeManager.is_awaiting_goal(state))
+
+    def test_dispatch_message_logic_routes_wt_goal_to_process_with_intent_in_auto_enter_mode(self):
+        with (
+            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+            patch("src.feishu.ws_client.ACPSessionManager"),
+            patch("src.feishu.ws_client.IntentRecognizer"),
+            patch("src.feishu.ws_client.ProjectManager"),
+            patch("src.feishu.ws_client.MessageProjectMapper"),
+            patch("src.feishu.ws_client.DeepEngineManager"),
+            patch("src.feishu.ws_client.ProgressReporter"),
+            patch("src.mode.ModeManager"),
+        ):
+            client = self._build_ws_client(mock_get_settings)
+            programming_handler = MagicMock()
+            client._get_mode_handler = MagicMock(return_value=programming_handler)
+            client._process_with_intent = MagicMock()
+            client._is_exit_command = MagicMock(return_value=False)
+            client._is_programming_entry_command = MagicMock(return_value=False)
+            client._is_deep_command = MagicMock(return_value=False)
+            client._is_loop_command = MagicMock(return_value=False)
+            client._is_spec_command = MagicMock(return_value=False)
+
+            client._dispatch_message_logic(
+                "msg-1", "chat-1", "/wt\t实现登录功能", None, auto_enter_mode="coco", shell_fast_tracked=False
+            )
+
+            client._process_with_intent.assert_called_once_with(
+                "msg-1",
+                "chat-1",
+                "/wt\t实现登录功能",
+                None,
+                command_match=SlashCommandParser.parse("/wt\t实现登录功能"),
+                shell_fast_tracked=False,
+            )
+            programming_handler.handle_message.assert_not_called()
 
     def test_show_tools_status_last_used_uses_timeago_bucket(self):
         """show_tools_status 应基于 TimeAgo 语义层渲染 last_used 文案。"""
@@ -444,8 +530,122 @@ class TestWorktreeCommandRouting(unittest.TestCase):
     
         value = {"action": "worktree_confirm_start", "worktree_goal": "Refactor everything"}
         handler.handle_worktree_confirm_start("msg-1", "chat-1", project_id="p1", value=value)
-    
+
         handler.handle_worktree_execute.assert_called_once_with("msg-1", "chat-1", "Refactor everything", project=project)
+
+    def test_handle_intercepted_command_routes_exact_wt_to_worktree_handler(self):
+        handler = self._build_system_handler()
+        worktree_handler = MagicMock()
+        handler.get_handler = MagicMock(return_value=worktree_handler)
+
+        handler.handle_intercepted_command(
+            "msg-1",
+            "chat-1",
+            "/wt",
+            project=None,
+            command_match=SlashCommandParser.parse("/wt"),
+        )
+
+        worktree_handler.handle_worktree_command.assert_called_once_with("msg-1", "chat-1", None)
+
+    def test_handle_intercepted_command_routes_wt_goal_with_tab_separator(self):
+        handler = self._build_system_handler()
+        worktree_handler = MagicMock()
+        handler.get_handler = MagicMock(return_value=worktree_handler)
+
+        handler.handle_intercepted_command(
+            "msg-1",
+            "chat-1",
+            "/wt\t实现登录功能",
+            project=None,
+            command_match=SlashCommandParser.parse("/wt\t实现登录功能"),
+        )
+
+        worktree_handler.handle_worktree_command_match.assert_called_once()
+        _args, _kwargs = worktree_handler.handle_worktree_command_match.call_args
+        assert _args[0] == "msg-1"
+        assert _args[1] == "chat-1"
+        assert getattr(_args[2], "command", None) == "/worktree"
+        assert getattr(_args[2], "args", None) == "实现登录功能"
+
+    def test_handle_intercepted_command_routes_worktree_goal_with_tab_and_uppercase(self):
+        handler = self._build_system_handler()
+        worktree_handler = MagicMock()
+        handler.get_handler = MagicMock(return_value=worktree_handler)
+
+        handler.handle_intercepted_command(
+            "msg-1",
+            "chat-1",
+            "/WORKTREE\tgoal",
+            project=None,
+            command_match=SlashCommandParser.parse("/WORKTREE\tgoal"),
+        )
+
+        worktree_handler.handle_worktree_command_match.assert_called_once()
+        _args, _kwargs = worktree_handler.handle_worktree_command_match.call_args
+        assert _args[0] == "msg-1"
+        assert _args[1] == "chat-1"
+        assert getattr(_args[2], "command", None) == "/worktree"
+        assert getattr(_args[2], "args", None) == "goal"
+
+    def test_handle_intercepted_command_routes_switch_uses_parsed_args(self):
+        """/switch 参数解析应基于 SlashCommandParser.args，而不是 text 切片。"""
+        handler = self._build_system_handler()
+        project_handler = MagicMock()
+
+        def _get(key: str):
+            if key == "project":
+                return project_handler
+            # These are passed through as kw handlers
+            if key in {"coco", "claude"}:
+                return MagicMock()
+            return None
+
+        handler.get_handler = MagicMock(side_effect=_get)
+
+        handler.handle_intercepted_command(
+            "msg-1",
+            "chat-1",
+            "/SWITCH\tproj-x",
+            project=None,
+            command_match=SlashCommandParser.parse("/SWITCH\tproj-x"),
+        )
+
+        project_handler.switch_project.assert_called_once()
+        _args, _kwargs = project_handler.switch_project.call_args
+        assert _args[:3] == ("msg-1", "chat-1", "proj-x")
+
+    def test_handle_intercepted_command_routes_new_preserves_multi_word_path(self):
+        """/new <name> <path with spaces> 应保留 path 内部空格。"""
+        handler = self._build_system_handler()
+        project_handler = MagicMock()
+        handler.get_handler = MagicMock(return_value=project_handler)
+        handler.get_working_dir = MagicMock(return_value="/cwd")
+
+        handler.handle_intercepted_command(
+            "msg-1",
+            "chat-1",
+            "/new proj /tmp/a b",
+            project=None,
+            command_match=SlashCommandParser.parse("/new proj /tmp/a b"),
+        )
+
+        project_handler.create_project.assert_called_once_with("msg-1", "chat-1", "proj", "/tmp/a b")
+
+    def test_handle_intercepted_command_routes_close_uses_parsed_args(self):
+        handler = self._build_system_handler()
+        project_handler = MagicMock()
+        handler.get_handler = MagicMock(return_value=project_handler)
+
+        handler.handle_intercepted_command(
+            "msg-1",
+            "chat-1",
+            "/close\tproj-y",
+            project=None,
+            command_match=SlashCommandParser.parse("/close\tproj-y"),
+        )
+
+        project_handler.close_project.assert_called_once_with("msg-1", "chat-1", "proj-y")
 
     def _build_system_handler(self):
         """Build a minimally-mocked SystemHandler for direct method tests."""
@@ -553,6 +753,45 @@ class TestWorktreeCommandRouting(unittest.TestCase):
         handler.reply_error.assert_called_once()
         args, _ = handler.reply_error.call_args
         self.assertIn("工具", args[1])
+
+    def test_handle_worktree_prefix_command_with_goal_dispatches_visible_start_feedback(self):
+        """带 goal 的 /wt 前缀命令应启动选择流并下发可见卡片反馈。"""
+        handler = self._build_worktree_handler()
+
+        project = MagicMock()
+        project.project_id = "proj-42"
+        fake_tools = [
+            {
+                "provider": "acp", "tool_name": "coco", "display_name": "Coco",
+                "supports_model": False, "description": "AI", "model_optional": False,
+            }
+        ]
+        handler._get_available_worktree_tools = MagicMock(return_value=fake_tools)
+
+        mock_mgr = MagicMock()
+        mock_state = MagicMock()
+        mock_state.selection.selected_items = []
+        mock_mgr.get_state.return_value = mock_state
+        handler._worktree_manager = MagicMock(return_value=mock_mgr)
+
+        mock_session = MagicMock()
+        mock_session.closed = False
+        with patch.object(handler, "_get_or_create_session", return_value=mock_session):
+            handler.handle_worktree_prefix_command("msg-1", "chat-1", "/wt\t实现登录功能", project)
+
+        mock_mgr.start_selection.assert_called_once_with(project, goal="实现登录功能")
+        mock_session.dispatch.assert_called_once()
+
+    def test_handle_worktree_prefix_command_returns_error_when_project_missing(self):
+        """带 goal 的 /wt 前缀命令在无项目时必须返回显式错误。"""
+        handler = self._build_worktree_handler()
+        handler.project_manager.get_active_project.return_value = None
+
+        handler.handle_worktree_prefix_command("msg-1", "chat-1", "/wt\t实现登录功能")
+
+        handler.reply_error.assert_called_once()
+        args, _ = handler.reply_error.call_args
+        self.assertIn("项目", args[1])
 
     def test_worktree_confirm_card_banner_includes_goal_and_selection_summary(self):
         """自动执行路径下的确认卡片 Banner 应包含 goal 摘要与工具/模型标签。"""
@@ -700,3 +939,30 @@ class TestWorktreeCommandRouting(unittest.TestCase):
             coco_active = active_sessions_arg.get("coco")
             assert coco_active is not None
             assert coco_active["chat_id"] == "chat-xyz"
+
+
+class TestSlashCommandParser(unittest.TestCase):
+    def test_parse_worktree_alias_and_args(self):
+        m = SlashCommandParser.parse("  /WT\t实现登录功能  ")
+        self.assertIsNotNone(m)
+        assert m is not None
+        self.assertEqual(m.raw_command, "/wt")
+        self.assertEqual(m.command, "/worktree")
+        self.assertEqual(m.args, "实现登录功能")
+        self.assertTrue(m.has_args)
+
+    def test_parse_worktree_canonical_and_args(self):
+        m = SlashCommandParser.parse("/WORKTREE\tgoal")
+        self.assertIsNotNone(m)
+        assert m is not None
+        self.assertEqual(m.command, "/worktree")
+        self.assertEqual(m.args, "goal")
+        self.assertTrue(m.has_args)
+
+    def test_parse_non_command_returns_none(self):
+        self.assertIsNone(SlashCommandParser.parse(""))
+        self.assertIsNone(SlashCommandParser.parse("hello"))
+
+    def test_match_filters_allowed_commands(self):
+        self.assertIsNotNone(SlashCommandParser.match("/wt\tgoal", allowed_commands=["/worktree"]))
+        self.assertIsNone(SlashCommandParser.match("/wt\tgoal", allowed_commands=["/status"]))

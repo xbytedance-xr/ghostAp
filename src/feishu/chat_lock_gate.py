@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
 
 from ..card.ui_text import UI_TEXT
+from .slash_command_parser import CommandMatch
 
 if TYPE_CHECKING:
     from ..chat_lock import ChatLockManager
@@ -88,17 +89,19 @@ class ChatLockGate:
         sender_id: str,
         message_id: str,
         *,
-        command: str | None = None,
-        raw_text: str = "",
+        command_match: CommandMatch | None = None,
     ) -> bool:
         """Check whether a *message* should be blocked by the chat lock.
 
         Returns ``True`` if blocked (caller should ``return``).
         Uses fail-close semantics: exceptions → non-admin in locked chat blocked.
         """
+        # Single source of truth: CommandMatch (or None for non-slash messages)
+        _match = command_match
+
         return self._fail_close_check(
             chat_id, sender_id, message_id,
-            command=command, raw_text=raw_text,
+            command_match=_match,
             is_card_action=False, action_type="",
         )
 
@@ -141,8 +144,7 @@ class ChatLockGate:
         sender_id: str,
         message_id: str,
         *,
-        command: str | None = None,
-        raw_text: str = "",
+        command_match: CommandMatch | None = None,
         is_card_action: bool = False,
         action_type: str = "",
     ) -> bool:
@@ -156,7 +158,7 @@ class ChatLockGate:
         try:
             if self._try_block(
                 chat_id, sender_id, message_id,
-                command=command, raw_text=raw_text,
+                command_match=command_match,
                 is_card_action=is_card_action, action_type=action_type,
             ):
                 return True
@@ -183,8 +185,7 @@ class ChatLockGate:
         sender_id: str,
         message_id: str,
         *,
-        command: str | None = None,
-        raw_text: str = "",
+        command_match: CommandMatch | None = None,
         is_card_action: bool = False,
         action_type: str = "",
     ) -> bool:
@@ -196,7 +197,7 @@ class ChatLockGate:
         if is_card_action:
             blocked = clm.should_block_card_action(chat_id, sender_id, action_type)
         else:
-            blocked = clm.should_block(chat_id, sender_id, command=command, raw_text=raw_text)
+            blocked = clm.should_block(chat_id, sender_id, command_match=command_match)
 
         if not blocked:
             return False

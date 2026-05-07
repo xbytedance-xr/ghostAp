@@ -27,6 +27,7 @@ from src.feishu.handlers.programming import (
 )
 from src.feishu.handlers.project import ProjectHandler
 from src.feishu.handlers.system import SystemHandler
+from src.feishu.slash_command_parser import SlashCommandParser
 from src.mode.manager import InteractionMode
 from src.ttadk.models import TTADKModel, TTADKTool
 
@@ -194,21 +195,22 @@ class TestSystemHandlerPredicates:
         assert SystemHandler.is_deep_command("deep") is False
 
     def test_interceptable_commands(self):
-        assert SystemHandler.is_interceptable_command("/help") is True
-        assert SystemHandler.is_interceptable_command("/帮助") is True
-        assert SystemHandler.is_interceptable_command("/coco_info") is True
-        assert SystemHandler.is_interceptable_command("/claude_info") is True
-        assert SystemHandler.is_interceptable_command("/gemini_info") is True
-        assert SystemHandler.is_interceptable_command("/projects") is True
-        assert SystemHandler.is_interceptable_command("/status") is True
-        assert SystemHandler.is_interceptable_command("/switch foo") is True
-        assert SystemHandler.is_interceptable_command("/new myproject /tmp") is True
-        assert SystemHandler.is_interceptable_command("/tasks") is True
-        assert SystemHandler.is_interceptable_command("/diff") is True
-        assert SystemHandler.is_interceptable_command("/trace") is True
-        assert SystemHandler.is_interceptable_command("/exit") is False
-        assert SystemHandler.is_interceptable_command("/deep stuff") is False
-        assert SystemHandler.is_interceptable_command("hello") is False
+        m = SlashCommandParser.parse
+        assert SystemHandler.is_interceptable_command_match(m("/help")) is True
+        assert SystemHandler.is_interceptable_command_match(m("/帮助")) is True
+        assert SystemHandler.is_interceptable_command_match(m("/coco_info")) is True
+        assert SystemHandler.is_interceptable_command_match(m("/claude_info")) is True
+        assert SystemHandler.is_interceptable_command_match(m("/gemini_info")) is True
+        assert SystemHandler.is_interceptable_command_match(m("/projects")) is True
+        assert SystemHandler.is_interceptable_command_match(m("/status")) is True
+        assert SystemHandler.is_interceptable_command_match(m("/switch foo")) is True
+        assert SystemHandler.is_interceptable_command_match(m("/new myproject /tmp")) is True
+        assert SystemHandler.is_interceptable_command_match(m("/tasks")) is True
+        assert SystemHandler.is_interceptable_command_match(m("/diff")) is True
+        assert SystemHandler.is_interceptable_command_match(m("/trace")) is True
+        assert SystemHandler.is_interceptable_command_match(m("/exit")) is False
+        assert SystemHandler.is_interceptable_command_match(m("/deep stuff")) is False
+        assert SystemHandler.is_interceptable_command_match(m("hello")) is False
 
 
 class TestSystemHandlerRouting:
@@ -235,47 +237,53 @@ class TestSystemHandlerRouting:
     def test_route_help(self):
         h = self._make()
         h.show_full_help = MagicMock()
-        h.handle_intercepted_command("m1", "c1", "/help", None)
+        h.handle_intercepted_command("m1", "c1", "/help", None, command_match=SlashCommandParser.parse("/help"))
         h.show_full_help.assert_called_once_with("m1", "c1", None)
 
     def test_route_coco_info(self):
         h = self._make()
-        h.handle_intercepted_command("m1", "c1", "/coco_info", None)
+        h.handle_intercepted_command("m1", "c1", "/coco_info", None, command_match=SlashCommandParser.parse("/coco_info"))
         h.coco_handler.show_info.assert_called_once_with("m1", "c1", None)
 
     def test_route_claude_info(self):
         h = self._make()
-        h.handle_intercepted_command("m1", "c1", "/claude_info", None)
+        h.handle_intercepted_command("m1", "c1", "/claude_info", None, command_match=SlashCommandParser.parse("/claude_info"))
         h.claude_handler.show_info.assert_called_once_with("m1", "c1", None)
 
     def test_route_projects(self):
         h = self._make()
-        h.handle_intercepted_command("m1", "c1", "/projects", None)
+        h.handle_intercepted_command("m1", "c1", "/projects", None, command_match=SlashCommandParser.parse("/projects"))
         h.project_handler.show_project_board.assert_called_once_with("m1", "c1")
 
     def test_route_tasks(self):
         h = self._make()
-        h.handle_intercepted_command("m1", "c1", "/tasks", None)
+        h.handle_intercepted_command("m1", "c1", "/tasks", None, command_match=SlashCommandParser.parse("/tasks"))
         h.diagnostics_handler.show_task_board.assert_called_once_with("m1", "c1", "/tasks", None)
 
     def test_route_diff(self):
         h = self._make()
-        h.handle_intercepted_command("m1", "c1", "/diff", None)
+        h.handle_intercepted_command("m1", "c1", "/diff", None, command_match=SlashCommandParser.parse("/diff"))
         h.diagnostics_handler.show_context_diff.assert_called_once_with("m1", "c1", "/diff", None)
 
     def test_route_trace(self):
         h = self._make()
-        h.handle_intercepted_command("m1", "c1", "/trace msg123", None)
+        h.handle_intercepted_command("m1", "c1", "/trace msg123", None, command_match=SlashCommandParser.parse("/trace msg123"))
         h.diagnostics_handler.show_message_trace.assert_called_once_with("m1", "c1", "/trace msg123", None)
 
     def test_route_new_project(self):
         h = self._make()
-        h.handle_intercepted_command("m1", "c1", "/new myapp /tmp/myapp", None)
+        h.handle_intercepted_command(
+            "m1",
+            "c1",
+            "/new myapp /tmp/myapp",
+            None,
+            command_match=SlashCommandParser.parse("/new myapp /tmp/myapp"),
+        )
         h.project_handler.create_project.assert_called_once_with("m1", "c1", "myapp", "/tmp/myapp")
 
     def test_route_close_project(self):
         h = self._make()
-        h.handle_intercepted_command("m1", "c1", "/close myapp", None)
+        h.handle_intercepted_command("m1", "c1", "/close myapp", None, command_match=SlashCommandParser.parse("/close myapp"))
         h.project_handler.close_project.assert_called_once_with("m1", "c1", "myapp")
 
     def test_exit_current_mode_coco(self):

@@ -16,6 +16,7 @@ from ...card.ui_text import UI_TEXT
 from ...worktree_engine.models import WorktreeUnitStatus, truncate_goal
 from ...repo_lock import LockConflictError
 from ...utils.errors import get_error_detail
+from ..slash_command_parser import CommandMatch, SlashCommandParser
 from .base import BaseHandler
 
 if TYPE_CHECKING:
@@ -163,13 +164,33 @@ class WorktreeHandler(BaseHandler):
     def handle_worktree_prefix_command(
         self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"] = None
     ):
-        """Parse '/wt <goal>' or '/worktree <goal>' and delegate to handle_worktree_command."""
-        text_lower = text.lower().strip()
-        if text_lower.startswith("/worktree"):
-            goal = text[len("/worktree"):].strip()
-        else:
-            goal = text[len("/wt"):].strip()
-        self.handle_worktree_command(message_id, chat_id, project, goal=goal)
+        """Backward-compatible entry for '/wt <goal>' and '/worktree <goal>'.
+
+        Do not parse via ``startswith()+切片``: defer to the shared
+        :class:`~src.feishu.slash_command_parser.SlashCommandParser`.
+        """
+        m = SlashCommandParser.parse(text)
+        if not m or m.command != "/worktree":
+            # Not a worktree slash command; fall back to the legacy behavior (no goal).
+            self.handle_worktree_command(message_id, chat_id, project, goal="")
+            return
+        self.handle_worktree_command_match(message_id, chat_id, m, project=project)
+
+    def handle_worktree_command_match(
+        self,
+        message_id: str,
+        chat_id: str,
+        command_match: CommandMatch,
+        *,
+        project: Optional["ProjectContext"] = None,
+        from_card: bool = False,
+    ) -> None:
+        """Primary entry for worktree slash commands.
+
+        全链路只消费 CommandMatch（单一事实源），避免 handler 内二次 parse。
+        """
+        goal = (command_match.args or "").strip() if command_match.command == "/worktree" else ""
+        self.handle_worktree_command(message_id, chat_id, project, from_card=from_card, goal=goal)
 
     def handle_worktree_command(
         self,

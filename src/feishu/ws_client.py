@@ -86,8 +86,14 @@ from .image_handler import FeishuImageHandler
 from .message_cache import MessageCache
 from .message_formatter import FeishuMessageFormatter as fmt
 from .ws_health import WSHealthMonitor
+from .slash_command_parser import CommandMatch, SlashCommandParser
 
 logger = logging.getLogger(__name__)
+
+# Sentinel used to distinguish "caller didn't provide command_match" from
+# "caller provided command_match=None". This ensures request-scoped SSOT:
+# parse exactly once at WS ingress, then thread the result through.
+_COMMAND_MATCH_MISSING: object = object()
 
 
 def _frame_header_value(frame: Any, key: str) -> Optional[str]:
@@ -767,9 +773,9 @@ class FeishuWSClient:
         return SystemHandler.is_spec_command(text)
 
     @staticmethod
-    def _is_interceptable_command(text: str) -> bool:
-        """判断是否为需要系统层拦截的命令（帮助/项目/状态等）。"""
-        return SystemHandler.is_interceptable_command(text)
+    def _is_interceptable_command_match(command_match: CommandMatch | None) -> bool:
+        """SSOT variant: decide based on request-scoped CommandMatch."""
+        return SystemHandler.is_interceptable_command_match(command_match)
 
     @staticmethod
     def _is_worktree_awaiting_goal(project: "ProjectContext") -> bool:
@@ -1094,23 +1100,28 @@ class FeishuWSClient:
             if not self._validate_message(message, request_id):
                 return
 
-            # 1b. Chat lock interception (fail-close: non-admin blocked on exception).
-            try:
-                _early_text = self._extract_text_from_message(data)
-                _cmd = _early_text.strip().split()[0] if _early_text.strip() else None
-            except Exception:
-                _early_text = ""
-                _cmd = None
-            if self._chat_lock_gate.check(
-                chat_id, _sender_id, message_id,
-                command=_cmd, raw_text=_early_text,
-            ):
-                return
-
             # 2. Parse Content
             image_handler = self._get_image_handler()
             parse_result = image_handler.parse_message(message.message_type, message.content)
             text = self._clean_at_text(parse_result.text)
+
+            # 2b. Slash parsing is request-scoped: parse once and reuse.
+            # This match becomes the single source of truth for downstream
+            # slash consumers (gate/system/worktree).
+            try:
+                command_match = SlashCommandParser.parse(text)
+            except Exception:
+                command_match = None
+
+            # 2c. Chat lock interception (fail-close: non-admin blocked on exception).
+            # Use the request-scoped CommandMatch instead of re-parsing raw text.
+            if self._chat_lock_gate.check(
+                chat_id,
+                _sender_id,
+                message_id,
+                command_match=command_match,
+            ):
+                return
 
             # 3. Handle Images (if any)
             is_image_only = False
@@ -1172,6 +1183,7 @@ class FeishuWSClient:
                 text,
                 project,
                 auto_enter_mode,
+                command_match=command_match,
                 is_image_only=is_image_only,
                 shell_fast_tracked=shell_fast_tracked,
             )
@@ -1495,9 +1507,26 @@ class FeishuWSClient:
             self._show_help(message_id, chat_id)
 
     def _dispatch_message_logic(
-        self, message_id, chat_id, text, project, auto_enter_mode, is_image_only=False, shell_fast_tracked=False
+        self,
+        message_id,
+        chat_id,
+        text,
+        project,
+        auto_enter_mode,
+        *,
+        command_match=_COMMAND_MATCH_MISSING,
+        is_image_only=False,
+        shell_fast_tracked=False,
     ):
         """根据 auto-enter 与当前模式，将消息路由到对应编程模式或 SMART 处理路径。"""
+        # Compatibility: some unit tests call _dispatch_message_logic directly.
+        # In the real message ingress path, command_match is always provided.
+        if command_match is _COMMAND_MATCH_MISSING:
+            try:
+                command_match = SlashCommandParser.parse(text)
+            except Exception:
+                command_match = None
+
         if auto_enter_mode:
             if self._is_exit_command(text):
                 self._add_reaction(message_id, EmojiReaction.on_coco_mode())
@@ -1515,13 +1544,27 @@ class FeishuWSClient:
                 )
                 return
             if self._is_deep_command(text) or self._is_loop_command(text) or self._is_spec_command(text):
-                self._process_with_intent(message_id, chat_id, text, project, shell_fast_tracked=shell_fast_tracked)
+                self._process_with_intent(
+                    message_id,
+                    chat_id,
+                    text,
+                    project,
+                    command_match=command_match,
+                    shell_fast_tracked=shell_fast_tracked,
+                )
                 return
             # Interceptable system commands (/wt, /worktree, /help, /status, etc.)
             # must be routed to the system handler even inside thread programming mode,
             # otherwise they are swallowed by the programming mode handler silently.
-            if self._is_interceptable_command(text):
-                self._process_with_intent(message_id, chat_id, text, project, shell_fast_tracked=shell_fast_tracked)
+            if self._is_interceptable_command_match(command_match):
+                self._process_with_intent(
+                    message_id,
+                    chat_id,
+                    text,
+                    project,
+                    command_match=command_match,
+                    shell_fast_tracked=shell_fast_tracked,
+                )
                 return
         if auto_enter_mode and auto_enter_mode in {"coco", "claude", "aiden", "codex", "gemini", "ttadk"}:
             from ..mode import InteractionMode
@@ -1531,9 +1574,23 @@ class FeishuWSClient:
                 self._add_reaction(message_id, EmojiReaction.on_processing())
                 handler.handle_message(message_id, chat_id, text, project)
             else:
-                self._process_with_intent(message_id, chat_id, text, project, shell_fast_tracked=shell_fast_tracked)
+                self._process_with_intent(
+                    message_id,
+                    chat_id,
+                    text,
+                    project,
+                    command_match=command_match,
+                    shell_fast_tracked=shell_fast_tracked,
+                )
         else:
-            self._process_with_intent(message_id, chat_id, text, project, shell_fast_tracked=shell_fast_tracked)
+            self._process_with_intent(
+                message_id,
+                chat_id,
+                text,
+                project,
+                command_match=command_match,
+                shell_fast_tracked=shell_fast_tracked,
+            )
 
     def _handle_card_action(self, data: P2CardActionTrigger) -> Optional[P2CardActionTriggerResponse]:
         """飞书卡片回调入口：做去重 + 任务入队（system action 走快通道）。"""
@@ -1950,11 +2007,23 @@ class FeishuWSClient:
         text: str,
         project: Optional[ProjectContext] = None,
         *,
+        command_match=_COMMAND_MATCH_MISSING,
         shell_fast_tracked: bool = False,
     ):
         """SMART 模式下的主路由：控制命令优先，其次进入意图识别/多任务执行。"""
+        # Compatibility: allow callers outside ws message ingress to omit command_match.
+        if command_match is _COMMAND_MATCH_MISSING:
+            try:
+                command_match = SlashCommandParser.parse(text)
+            except Exception:
+                command_match = None
         self._message_dispatcher.process_with_intent(
-            message_id, chat_id, text, project, shell_fast_tracked=shell_fast_tracked
+            message_id,
+            chat_id,
+            text,
+            project,
+            command_match=command_match,
+            shell_fast_tracked=shell_fast_tracked,
         )
 
     def _execute_multi_tasks(
