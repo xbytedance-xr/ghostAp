@@ -610,7 +610,10 @@ class ProgrammingModeHandler(BaseHandler):
         session = self._get_session_manager().get_session(chat_id, project_id=project_id, thread_id=thread_id)
 
         if not session:
-            self.enter_mode(message_id, chat_id, project=project, thread_id=thread_id)
+            # Recovery 路径：silent=True 避免在仍未拿到 session 时再 reply "已开启 X 编程模式"，
+            # 否则用户会先后看到 "已开启..." 和 "会话启动失败" 两条消息，把启动失败的根因
+            # 误导为"已经在模式中但启动不了"。最终统一由下方 mode_session_fail_msg 给出错误。
+            self.enter_mode(message_id, chat_id, silent=True, project=project, thread_id=thread_id)
             if not project:
                 working_dir = self.get_working_dir(chat_id)
                 try:

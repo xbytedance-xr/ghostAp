@@ -650,6 +650,40 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         # If we entered the mode and a prompt was stashed (project-chat default
         # Coco flow), forward it to the mode handler as the first requirement.
         if entered and pending and handler and hasattr(handler, "handle_message"):
+            # 在 thread_programming_enabled 模式下，_enter_mode_with_acp_model 走的
+            # silent enter_mode 不会真正起 session（只标记 mode_manager），随后 handle_message
+            # 拿不到 session 会走 recovery 分支，但 recovery 在 chat-level 同样起不了 thread session，
+            # 最终只能 reply "Coco 会话启动失败"。这里改为直接重新创建编程话题，复用已经
+            # 验证过的 _dispatch_pending_prompt_to_thread 路径。
+            from ...thread import get_current_thread_id
+
+            target_project_id = target_project.project_id if target_project else None
+            session_ok = False
+            try:
+                session_ok = bool(
+                    handler._get_session_manager().get_session(
+                        chat_id,
+                        project_id=target_project_id,
+                        thread_id=get_current_thread_id(),
+                    )
+                )
+            except Exception:
+                logger.debug("session lookup before pending forward failed", exc_info=True)
+
+            if (
+                not session_ok
+                and self.settings.thread_programming_enabled
+                and not get_current_thread_id()
+            ):
+                self._dispatch_pending_prompt_to_thread(
+                    message_id,
+                    chat_id,
+                    pending,
+                    handler,
+                    target_project,
+                )
+                return
+
             try:
                 handler.handle_message(
                     message_id, chat_id, pending, target_project,
