@@ -6,7 +6,6 @@ from .builders.core import CoreBuilder
 from .builders.deep import DeepBuilder
 from .builders.project import ProjectBuilder
 from .builders.system import SystemBuilder
-from .builders.worktree import WorktreeBuilder
 from .models import EngineCardState
 from .shared import apply_compact_style
 
@@ -528,14 +527,3 @@ class CardBuilder:
         return DeepBuilder.build_history_list_card(
             project, title, content, history_buttons, page, has_next, deep_project_id, engine_name
         )
-
-    # --- Worktree Selection / Execution Delegates ---
-
-    build_worktree_tool_select_card = staticmethod(WorktreeBuilder.build_worktree_tool_select_card)
-    build_worktree_ttadk_tool_select_card = staticmethod(WorktreeBuilder.build_worktree_ttadk_tool_select_card)
-    build_worktree_model_select_card = staticmethod(WorktreeBuilder.build_worktree_model_select_card)
-    build_worktree_confirm_card = staticmethod(WorktreeBuilder.build_worktree_confirm_card)
-    build_worktree_progress_card = staticmethod(WorktreeBuilder.build_worktree_progress_card)
-    build_worktree_cleanup_card = staticmethod(WorktreeBuilder.build_worktree_cleanup_card)
-    build_worktree_result_card = staticmethod(WorktreeBuilder.build_worktree_result_card)
-    build_worktree_merge_entry_card = staticmethod(WorktreeBuilder.build_worktree_merge_entry_card)

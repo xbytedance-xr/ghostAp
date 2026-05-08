@@ -139,43 +139,6 @@ class CardLayoutSpec:
     terminal_state: Optional[str] = None  # completed/failed/cancelled/blocked etc.
 
 
-class BannerKind(str, Enum):
-    """Worktree Banner 语义类型枚举，用于 _resolve_banner_text 路由。"""
-
-    AUTO_EXECUTE = "auto_execute"
-    PROGRESS = "progress"
-    RESULT = "result"
-
-
-@dataclass(frozen=True)
-class WorktreeBannerContext:
-    """用于构造 Worktree 自动执行/启动 Banner 的结构化上下文。
-
-    说明：
-    - message: Banner 的首行文案，一般为状态类提示（例如"正在自动执行……"）；为空时不输出
-    - goal: 用户输入的总体任务目标
-    - tool_name/model_name: 逻辑上的工具/模型标识（可选，主要用于调试与扩展）
-    - is_auto_execute: 是否为自动执行/快速路径场景
-    - selected_items: 已选组合的原始字典列表（通常来自 WorktreeSelectionItem.to_dict()）
-    - banner_kind: Banner 的语义类型标签，使用 BannerKind 枚举确保类型安全
-
-    兼容性约定：
-    - 所有字段均提供安全默认值（空字符串/None/True），旧调用方只填充部分字段时行为保持稳定；
-    - 当前实现中，工具/模型标签展示仍以 selected_items 为主；tool_name/model_name 仍主要为后续扩展预留。
-    """
-
-    # 第 1 行：状态文案（可选）
-    message: str = ""
-    # 第 2 行：用户任务目标摘要
-    goal: str = ""
-    tool_name: Optional[str] = None
-    model_name: Optional[str] = None
-    is_auto_execute: bool = True
-    selected_items: Optional[list[dict]] = None
-    # Banner 类型标签，使用 BannerKind 枚举
-    banner_kind: Optional[BannerKind] = None
-
-
 class KeyEventKind(str, Enum):
     """卡片侧“关键事件”最小集合（跨 Normal/Deep/Loop/Spec 统一语义）。
 

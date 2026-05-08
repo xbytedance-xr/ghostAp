@@ -46,6 +46,7 @@ def worktree_progress(
 def worktree_tool_select(
     tools: list[dict], selected: list[str] | None = None,
     project_id: str = "", message: str = "",
+    select_action: str = "worktree_select_tool",
 ) -> CardEvent:
     """Worktree tool selection card state.
 
@@ -54,6 +55,7 @@ def worktree_tool_select(
         selected: list of currently selected tool IDs.
         project_id: associated project identifier.
         message: optional prompt message.
+        select_action: action emitted by option buttons.
     Triggered when: user enters worktree flow or toggles tool selection.
     """
     if not isinstance(tools, list):
@@ -65,6 +67,7 @@ def worktree_tool_select(
     payload: WorktreeToolSelectPayload = {
         "tools": tools, "selected": selected or [],
         "project_id": project_id, "message": message,
+        "select_action": select_action,
     }
     return CardEvent(type=CardEventType.WORKTREE_TOOL_SELECT, payload=payload)
 

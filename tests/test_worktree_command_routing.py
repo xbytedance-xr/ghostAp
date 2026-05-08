@@ -1,4 +1,3 @@
-import json
 import time
 import unittest
 from types import SimpleNamespace
@@ -13,7 +12,6 @@ from src.worktree_engine.manager import WorktreeManager
 from src.worktree_engine.models import (
     WorktreeJourneyStatus,
     WorktreeRuntimeState,
-    WorktreeSelectionItem,
     WorktreeUnit,
     WorktreeUnitStatus,
 )
@@ -792,116 +790,6 @@ class TestWorktreeCommandRouting(unittest.TestCase):
         handler.reply_error.assert_called_once()
         args, _ = handler.reply_error.call_args
         self.assertIn("项目", args[1])
-
-    def test_worktree_confirm_card_banner_includes_goal_and_selection_summary(self):
-        """自动执行路径下的确认卡片 Banner 应包含 goal 摘要与工具/模型标签。"""
-
-        # 构造一个典型的 selection item（包含工具与模型信息）
-        item = WorktreeSelectionItem(
-            provider="ttadk",
-            tool_name="coco",
-            display_name="Coco",
-            model_name="gpt-5.1",
-            model_display_name="gpt-5.1",
-            supports_model=True,
-        )
-        selected = [item.to_dict()]
-
-        goal = "Refactor everything"
-        _, card_json = CardBuilder.build_worktree_confirm_card(
-            selected,
-            project_id="p1",
-            message=UI_TEXT["worktree_auto_executing_banner"],
-            goal=goal,
-        )
-        card = json.loads(card_json)
-
-        # 提取所有 markdown 内容，定位包含自动执行 Banner 的那一块
-        contents: list[str] = []
-        for el in card["body"]["elements"]:
-            if el.get("tag") != "column_set":
-                continue
-            for col in el.get("columns", []):
-                for inner in col.get("elements", []):
-                    if inner.get("tag") == "markdown":
-                        contents.append(inner.get("content", ""))
-
-        banner_md = next(c for c in contents if UI_TEXT["worktree_auto_executing_banner"] in c)
-
-        # 1. 原始自动执行文案仍然存在
-        assert UI_TEXT["worktree_auto_executing_banner"] in banner_md
-        # 2. Goal 摘要以「...」形式出现
-        assert "「Refactor everything" in banner_md
-        # 3. 工具/模型标签采用 "Coco · gpt-5.1" 形式
-        assert "Coco · gpt-5.1" in banner_md
-
-    def test_worktree_confirm_card_banner_truncates_long_goal(self):
-        """超长 goal 文本在 Banner 中应被安全截断。"""
-
-        item = WorktreeSelectionItem(
-            provider="ttadk",
-            tool_name="coco",
-            display_name="Coco",
-            model_name="gpt-5.1",
-            model_display_name="gpt-5.1",
-            supports_model=True,
-        )
-        selected = [item.to_dict()]
-
-        long_goal = "A" * 200
-        _, card_json = CardBuilder.build_worktree_confirm_card(
-            selected,
-            project_id="p1",
-            message=UI_TEXT["worktree_auto_executing_banner"],
-            goal=long_goal,
-        )
-        card = json.loads(card_json)
-
-        contents: list[str] = []
-        for el in card["body"]["elements"]:
-            if el.get("tag") != "column_set":
-                continue
-            for col in el.get("columns", []):
-                for inner in col.get("elements", []):
-                    if inner.get("tag") == "markdown":
-                        contents.append(inner.get("content", ""))
-
-        banner_md = next(c for c in contents if UI_TEXT["worktree_auto_executing_banner"] in c)
-
-        # 根据 _shorten_goal_for_banner 的策略，期望形如 "AAA…" 的截断结果
-        expected_goal_snippet = "A" * 79 + "…"
-        assert expected_goal_snippet in banner_md
-        # 不应包含连续 100 个 'A'，以避免未截断的长文案
-        assert "A" * 100 not in banner_md
-
-    def test_worktree_confirm_card_banner_handles_empty_selection_gracefully(self):
-        """当 selected_items 为空时，Banner 不应因工具信息缺失而报错。"""
-
-        goal = "Do something"
-        _, card_json = CardBuilder.build_worktree_confirm_card(
-            [],
-            project_id="p1",
-            message=UI_TEXT["worktree_auto_executing_banner"],
-            goal=goal,
-        )
-        card = json.loads(card_json)
-
-        contents: list[str] = []
-        for el in card["body"]["elements"]:
-            if el.get("tag") != "column_set":
-                continue
-            for col in el.get("columns", []):
-                for inner in col.get("elements", []):
-                    if inner.get("tag") == "markdown":
-                        contents.append(inner.get("content", ""))
-
-        banner_md = next(c for c in contents if UI_TEXT["worktree_auto_executing_banner"] in c)
-
-        # Goal 摘要仍然存在
-        assert "「Do something" in banner_md
-        # 但由于没有选择任何工具，"使用：" 行不会出现
-        assert "使用：" not in banner_md
-
 
     def test_show_tools_status_active_sessions_use_parsed_chat_id_field(self):
         """show_tools_status 应优先使用 list_active_sessions 暴露的 chat_id 字段。"""

@@ -4,6 +4,11 @@ Covers boundary cases: data=None, empty lists, missing fields, unknown kinds.
 """
 import pytest
 
+from src.card.events import CardEvent
+from src.card.render.budget import RenderBudget
+from src.card.render.renderer import render_card
+from src.card.state.models import CardMetadata, CardState
+from src.card.state.reducer import reduce_card_state
 from src.card.render.worktree import render_worktree_panel
 from src.card.state.models import (
     WorktreeSelectBlock,
@@ -12,6 +17,20 @@ from src.card.state.models import (
     WorktreeMergeBlock,
     WorktreeCleanupBlock,
 )
+
+
+def _collect_buttons(node):
+    if isinstance(node, dict):
+        found = [node] if node.get("tag") == "button" else []
+        for value in node.values():
+            found.extend(_collect_buttons(value))
+        return found
+    if isinstance(node, list):
+        found = []
+        for item in node:
+            found.extend(_collect_buttons(item))
+        return found
+    return []
 
 
 class TestRenderWorktreePanelDataNone:
@@ -111,6 +130,104 @@ class TestRenderWorktreePanelMissingFields:
         })
         result = render_worktree_panel(block)
         assert result is not None
+
+
+class TestRenderWorktreeToolSelectInteractions:
+    """Tool selection rows must be real Feishu actions, not static markdown checkboxes."""
+
+    def test_tool_select_panel_renders_tool_callback_buttons(self):
+        block = WorktreeSelectBlock(
+            block_id="ts",
+            data={
+                "project_id": "proj-1",
+                "tools": [
+                    {
+                        "provider": "acp",
+                        "tool_name": "coco",
+                        "display_name": "Coco",
+                        "description": "字节跳动 AI",
+                        "supports_model": True,
+                    },
+                    {
+                        "provider": "cli",
+                        "tool_name": "claude",
+                        "display_name": "Claude",
+                        "description": "Anthropic Claude CLI",
+                        "supports_model": False,
+                    },
+                ],
+                "selected": [{"tool_name": "coco", "display_name": "Coco"}],
+            },
+        )
+
+        result = render_worktree_panel(block)
+        buttons = _collect_buttons(result)
+        values = [btn.get("value", {}) for btn in buttons]
+
+        assert {
+            "action": "worktree_select_tool",
+            "tool_name": "coco",
+            "display_name": "Coco",
+            "provider": "acp",
+            "supports_model": True,
+            "skip_model_selection": False,
+            "project_id": "proj-1",
+        } in values
+        assert any(v.get("tool_name") == "claude" for v in values)
+
+    def test_reducer_render_path_keeps_tool_buttons_interactive(self):
+        state = CardState(metadata=CardMetadata(engine_type="worktree"))
+        state = reduce_card_state(
+            state,
+            CardEvent.worktree_tool_select(
+                tools=[
+                    {
+                        "provider": "acp",
+                        "tool_name": "coco",
+                        "display_name": "Coco",
+                        "description": "字节跳动 AI",
+                        "supports_model": True,
+                    }
+                ],
+                selected=[],
+                project_id="proj-render",
+            ),
+        )
+
+        rendered = render_card(state, RenderBudget())[0].to_feishu_json()
+        buttons = _collect_buttons(rendered)
+        assert any(
+            btn.get("value", {}).get("action") == "worktree_select_tool"
+            and btn.get("value", {}).get("tool_name") == "coco"
+            and btn.get("value", {}).get("project_id") == "proj-render"
+            for btn in buttons
+        )
+
+    def test_model_select_panel_routes_model_callbacks(self):
+        block = WorktreeSelectBlock(
+            block_id="models",
+            data={
+                "project_id": "proj-2",
+                "select_action": "worktree_select_model",
+                "tools": [
+                    {
+                        "id": "gpt-5.2",
+                        "name": "GPT-5.2",
+                        "description": "模型: GPT-5.2",
+                    }
+                ],
+                "selected": [],
+            },
+        )
+
+        result = render_worktree_panel(block)
+        values = [btn.get("value", {}) for btn in _collect_buttons(result)]
+        assert {
+            "action": "worktree_select_model",
+            "model_name": "gpt-5.2",
+            "model_display_name": "GPT-5.2",
+            "project_id": "proj-2",
+        } in values
 
 
 class TestRenderWorktreePanelUnknownKind:

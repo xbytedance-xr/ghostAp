@@ -8,6 +8,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from src.card.actions.dispatch import WORKTREE_SELECT_MODEL, WORKTREE_SELECT_TOOL
 from src.card.state.models import ContentBlock
 from src.card.themes import PANEL_STYLES
 from src.card.ui_text import UI_TEXT
@@ -140,7 +141,7 @@ def render_worktree_panel(block: ContentBlock) -> dict:
     kind = block.kind
 
     if kind == "worktree_tool_select":
-        content_els = _render_worktree_tool_select(data)
+        content_el = _render_worktree_tool_select(data)
     elif kind == "worktree_confirm":
         content_el = _render_worktree_confirm(data)
     elif kind == "worktree_units":
@@ -168,11 +169,7 @@ def render_worktree_panel(block: ContentBlock) -> dict:
         elements = stepper_elements + [title_el]
         if hint_text:
             elements.append({"tag": "markdown", "content": hint_text, "text_size": "notation"})
-        # Handle list vs single element return
-        if kind == "worktree_tool_select":
-            elements.extend(content_els)
-        else:
-            elements.append(content_el)
+        elements.append(content_el)
         return {
             "tag": "column_set",
             "flex_mode": "none",
@@ -184,75 +181,138 @@ def render_worktree_panel(block: ContentBlock) -> dict:
                 "elements": elements,
             }],
         }
-    # Fallback for kinds without step mapping
-    if kind == "worktree_tool_select":
-        return {
-            "tag": "column_set",
-            "flex_mode": "none",
-            "columns": [{
-                "tag": "column",
-                "width": "weighted",
-                "weight": 1,
-                "vertical_align": "top",
-                "elements": content_els,
-            }],
-        }
     return content_el
 
 
-def _render_worktree_tool_select(data: dict) -> list[dict]:
-    """Render tool selection panel with interactive buttons.
-
-    Returns a list of elements: description markdown + tool selection buttons.
-    Buttons use column_set grid layout (Schema V2 compatible, not 'action' tag).
-    """
+def _render_worktree_tool_select(data: dict) -> dict:
+    """Render tool selection panel."""
     tools = data.get("tools", [])
     selected = data.get("selected", [])
     message = data.get("message", "")
-    project_id = data.get("project_id", "")
-
-    lines = []
-    if message:
-        lines.append(message)
-
-    # Build description list
-    for tool in tools:
-        tool_id = tool.get("id", tool.get("tool_name", ""))
-        name = tool.get("name", tool.get("display_name", tool_id))
-        desc = tool.get("description", "")
-        marker = UI_TEXT["worktree_tool_selected"] if tool_id in selected else UI_TEXT["worktree_tool_unselected"]
-        line = f"{marker} **{name}**"
-        if desc:
-            line += f" — {desc}"
-        lines.append(line)
+    project_id = str(data.get("project_id") or "")
+    default_action = str(data.get("select_action") or WORKTREE_SELECT_TOOL)
+    selected_keys = _selected_tool_keys(selected)
 
     elements: list[dict] = []
-    elements.append({"tag": "markdown", "content": "\n".join(lines)})
+    lines: list[str] = []
+    if message:
+        lines.append(message)
+    if lines:
+        elements.append({"tag": "markdown", "content": "\n".join(lines)})
 
-    # Build interactive tool selection buttons using column_set grid (Schema V2 compatible)
-    if tools:
-        from src.card.shared import build_responsive_layout
+    for tool in tools:
+        elements.append(
+            _render_worktree_select_option(
+                tool,
+                project_id=project_id,
+                default_action=default_action,
+                selected_keys=selected_keys,
+            )
+        )
 
-        buttons: list[dict] = []
-        for tool in tools:
-            tool_id = tool.get("id", tool.get("tool_name", ""))
-            name = tool.get("name", tool.get("display_name", tool_id))
-            buttons.append({
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": name},
-                "type": "default",
-                "value": {
-                    "action": "worktree_select_tool",
-                    "tool_name": tool_id,
-                    "provider": tool.get("provider", ""),
-                    "supports_model": tool.get("supports_model", False),
-                    "skip_model_selection": tool.get("skip_model_selection", False),
-                    "project_id": project_id,
-                },
-            })
-        elements.extend(build_responsive_layout(buttons))
+    if not elements:
+        elements.append({"tag": "markdown", "content": UI_TEXT.get("worktree_data_empty", "暂无数据")})
 
-    return elements
+    return {
+        "tag": "column_set",
+        "flex_mode": "none",
+        "columns": [{
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "vertical_align": "top",
+            "elements": elements,
+        }],
+    }
+
+
+def _selected_tool_keys(selected: list) -> set[str]:
+    """Normalize selected worktree items for display-only highlighting."""
+    keys: set[str] = set()
+    for item in selected or []:
+        if isinstance(item, str):
+            if item:
+                keys.add(item)
+            continue
+        if not isinstance(item, dict):
+            continue
+        for field in ("tool_name", "id", "name", "display_name"):
+            value = str(item.get(field) or "").strip()
+            if value:
+                keys.add(value)
+    return keys
+
+
+def _tool_identity(tool: dict) -> tuple[str, str, str]:
+    tool_id = str(tool.get("tool_name") or tool.get("id") or tool.get("name") or "").strip()
+    name = str(tool.get("display_name") or tool.get("name") or tool_id).strip()
+    desc = str(tool.get("description") or "").strip()
+    return tool_id, name, desc
+
+
+def _render_worktree_select_option(
+    tool: dict,
+    *,
+    project_id: str,
+    default_action: str,
+    selected_keys: set[str],
+) -> dict:
+    """Render one tool/model choice as a real callback button row."""
+    tool_id, name, desc = _tool_identity(tool)
+    action = str(tool.get("action") or default_action or WORKTREE_SELECT_TOOL)
+    is_selected = bool({tool_id, name} & selected_keys)
+
+    if action == WORKTREE_SELECT_MODEL:
+        value = {
+            "action": WORKTREE_SELECT_MODEL,
+            "model_name": tool_id,
+            "model_display_name": name,
+            "project_id": project_id,
+        }
+        button_text = name
+    else:
+        value = {
+            "action": WORKTREE_SELECT_TOOL,
+            "tool_name": tool_id,
+            "display_name": name,
+            "provider": tool.get("provider", ""),
+            "supports_model": bool(tool.get("supports_model", False)),
+            "skip_model_selection": bool(tool.get("skip_model_selection", False)),
+            "project_id": project_id,
+        }
+        button_text = f"{UI_TEXT['worktree_tool_selected']} {name}" if is_selected else name
+
+    title = f"**{name}**"
+    if desc:
+        title += f" — {desc}"
+
+    return {
+        "tag": "column_set",
+        "flex_mode": "bisect",
+        "background_style": "default",
+        "columns": [
+            {
+                "tag": "column",
+                "width": "weighted",
+                "weight": 2,
+                "vertical_align": "center",
+                "elements": [{"tag": "markdown", "content": title}],
+            },
+            {
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "vertical_align": "center",
+                "elements": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": button_text},
+                    "type": "primary" if is_selected else "default",
+                    "value": value,
+                    "size": "medium",
+                }],
+            },
+        ],
+    }
 
 
 def _render_worktree_confirm(data: dict) -> dict:

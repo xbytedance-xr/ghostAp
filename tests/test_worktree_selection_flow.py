@@ -1,7 +1,5 @@
-import json
 from unittest.mock import MagicMock, patch
 
-from src.card import CardBuilder
 from src.feishu.handler_context import HandlerContext
 from src.feishu.handlers.worktree import WorktreeHandler
 from src.project.context import ProjectContext
@@ -156,49 +154,6 @@ def test_three_tool_selection_loop_and_confirm():
     assert items[1].model_name == "gpt-5.2"
     assert items[2].tool_name == "tmates"
     assert items[2].supports_model is False
-
-
-def test_handle_worktree_command_enters_selection_and_sends_tool_card():
-    """Integration: /wt command triggers start_selection + tool select card with correct state and content."""
-    project = ProjectContext(project_id="p-wt", project_name="WT-Test", root_path="/tmp/wt-test")
-    manager = WorktreeManager(project_manager=None)
-
-    # --- Step 1: simulate handle_worktree_command logic ---
-    # This mirrors src/feishu/handlers/system.py:handle_worktree_command
-    state = manager.start_selection(project)
-
-    # Fake available tools (normally from _get_available_worktree_tools)
-    tools = [
-        WorktreeToolOption(
-            provider="acp", tool_name="coco", display_name="Coco",
-            description="字节跳动 AI 编程", supports_model=False,
-        ).__dict__,
-        WorktreeToolOption(
-            provider="cli", tool_name="claude", display_name="Claude",
-            description="Anthropic Claude CLI", supports_model=False,
-        ).__dict__,
-    ]
-
-    selected_dicts = [item.to_dict() for item in state.selection.selected_items]
-    msg_type, card_json = CardBuilder.build_worktree_tool_select_card(
-        tools, selected_dicts, project.project_id,
-    )
-
-    # --- Step 2: verify state ---
-    assert state.selection.active is True
-    assert state.selection.stage == "tool_select"
-
-    # --- Step 3: verify card output ---
-    assert msg_type == "interactive"
-
-    card = json.loads(card_json)
-    card_str = json.dumps(card, ensure_ascii=False)
-
-    # Card must contain worktree_select_tool action for each tool
-    assert "worktree_select_tool" in card_str
-    assert "Coco" in card_str
-    assert "Claude" in card_str
-    assert project.project_id in card_str
 
 
 # ---------------------------------------------------------------------------

@@ -6,17 +6,14 @@ import pytest
 from src.card.builder import CardBuilder
 from src.card.builders.core import CoreBuilder
 from src.card.builders.project import ProjectBuilder
-from src.card.builders.worktree import WorktreeBuilder
 from src.card.styles import UI_TEXT
 from src.card.builders.system import SystemBuilder
 from src.card.builders.deep import DeepBuilder
 from src.card.models import (
-    BannerKind,
     EngineCardState,
     EngineStatusEntry,
     ModelOptionView,
     ToolOptionView,
-    WorktreeBannerContext,
 )
 from src.project.context import ProjectContext
 
@@ -36,56 +33,6 @@ def _collect_buttons(card: dict) -> list[dict]:
 
     walk(card)
     return buttons
-
-
-def test_shorten_goal_for_banner_cleans_newlines():
-    """Verify that _shorten_goal_for_banner correctly cleans up newlines and excessive spaces."""
-    
-    # 1. 包含换行符的短文本
-    goal1 = "This is a\nmultiline\ngoal"
-    res1 = WorktreeBuilder._shorten_goal_for_banner(goal1)
-    assert res1 == "This is a multiline goal"
-    assert "\n" not in res1
-    
-    # 2. 包含连续空行及多余空白的文本
-    goal2 = "Task with \n\n  multiple \r\n\n blank lines"
-    res2 = WorktreeBuilder._shorten_goal_for_banner(goal2)
-    assert res2 == "Task with multiple blank lines"
-    
-    # 3. 超长且包含换行符的文本需要被清洗并正确截断
-    # 我们期望截断发生在单行化之后的第 max_len 处
-    goal3 = "A\n" * 40 + "B" * 50  # 长文本
-    res3 = WorktreeBuilder._shorten_goal_for_banner(goal3, max_len=80)
-    assert len(res3) == 80
-    assert res3.endswith("…")
-    assert "\n" not in res3
-    
-    # 4. 包含 Markdown 标记的文本应该被清洗，防止加粗语法被破坏
-    goal4 = "**Bold** and \n**newline**"
-    res4 = WorktreeBuilder._shorten_goal_for_banner(goal4)
-    assert res4 == "Bold and newline"
-    assert "**" not in res4
-    
-    # 5. 超长带有 Markdown 标记的截断测试
-    # "**" + "A"*80 + "**" 移除 "**" 后是 "A"*80
-    # 长度刚好等于 max_len，所以不应该被截断补省略号
-    goal5 = "**" + "A" * 80 + "**"
-    res5 = WorktreeBuilder._shorten_goal_for_banner(goal5, max_len=80)
-    assert len(res5) <= 80
-    assert res5 == "A" * 80
-    assert "**" not in res5
-    
-    # 6. 超过 max_len 带有 Markdown 标记的截断测试
-    goal6 = "**" + "A" * 85 + "**"
-    res6 = WorktreeBuilder._shorten_goal_for_banner(goal6, max_len=80)
-    assert len(res6) <= 80
-    assert res6.endswith("…")
-    assert "**" not in res6
-
-    # 7. 空文本
-    assert WorktreeBuilder._shorten_goal_for_banner(None) == ""
-    assert WorktreeBuilder._shorten_goal_for_banner("") == ""
-    assert WorktreeBuilder._shorten_goal_for_banner("   \n  ") == ""
 
 
 def test_tool_option_view_defaults():
@@ -232,40 +179,6 @@ def test_project_board_includes_group_jump_for_bound_project():
     )
 
 
-def test_worktree_builder_with_message_banner():
-    """Verify that WorktreeBuilder cards include the banner when message is provided."""
-    project = ProjectContext(project_id="p1", project_name="P1", root_path="/tmp/p1")
-    message = "Tool selected: Claude"
-    
-    # 1. Tool select card
-    msg_type, card_json = WorktreeBuilder.build_worktree_tool_select_card(
-        tools=[], selected_items=[], project_id=project.project_id, message=message
-    )
-    card = json.loads(card_json)
-    elements = card["body"]["elements"]
-    assert elements[0]["tag"] == "column_set"
-    assert elements[0]["background_style"] == "green"  # worktree 使用 success 类型
-    assert message in elements[0]["columns"][0]["elements"][0]["content"]
-    
-    # 2. Model select card
-    msg_type, card_json = WorktreeBuilder.build_worktree_model_select_card(
-        models=[], tool_display_name="Claude", selected_items=[], project_id=project.project_id, message=message
-    )
-    card = json.loads(card_json)
-    elements = card["body"]["elements"]
-    assert elements[0]["tag"] == "column_set"
-    assert elements[0]["background_style"] == "green"  # worktree 使用 success 类型
-    
-    # 3. Progress card (uses info banner)
-    msg_type, card_json = WorktreeBuilder.build_worktree_progress_card(
-        units=[], project_id=project.project_id, message=message
-    )
-    card = json.loads(card_json)
-    elements = card["body"]["elements"]
-    assert elements[0]["tag"] == "column_set"
-    assert elements[0]["background_style"] == "wathet"  # progress card 使用 info 类型
-
-
 def test_system_builder_soft_failure_banner():
     """Verify that SystemBuilder.build_ttadk_soft_failure_card uses the banner."""
     message = "TTADK Timeout"
@@ -301,204 +214,6 @@ def test_deep_builder_warning_banner():
             break
 
     assert banner_found is True
-
-
-def test_worktree_auto_execute_banner_helper_basic():
-    """_build_auto_execute_banner_text 应拼接基础文案 + goal 摘要 + 工具摘要。"""
-
-    ctx = WorktreeBannerContext(
-        message=UI_TEXT["worktree_auto_executing_banner"],
-        goal="Refactor everything",
-        selected_items=[{"display_label": "Coco / gpt-5.1"}],
-        banner_kind=BannerKind.AUTO_EXECUTE,
-    )
-
-    banner = WorktreeBuilder._build_auto_execute_banner_text(ctx)
-
-    # 1. 原始自动执行文案
-    assert UI_TEXT["worktree_auto_executing_banner"] in banner
-    # 2. goal 摘要以「」包裹
-    assert "「Refactor everything" in banner
-    # 3. 工具/模型标签采用 "Coco · gpt-5.1" 形式
-    assert "Coco · gpt-5.1" in banner
-
-
-def test_worktree_auto_execute_banner_helper_empty_fields():
-    """空 goal / selected_items 时仅保留基础文案，不应报错。"""
-
-    ctx = WorktreeBannerContext(
-        message=UI_TEXT["worktree_auto_executing_banner"],
-        goal="",
-        selected_items=None,
-        banner_kind=BannerKind.AUTO_EXECUTE,
-    )
-
-    banner = WorktreeBuilder._build_auto_execute_banner_text(ctx)
-
-    # 仅包含基础自动执行文案，不包含 goal 行和 "使用：" 行
-    assert UI_TEXT["worktree_auto_executing_banner"] in banner
-    assert "「" not in banner
-    assert "使用：" not in banner
-
-
-def test_worktree_confirm_card_grouping():
-    """Verify that build_worktree_confirm_card groups input and action correctly."""
-    selected_items = [{"display_label": "Coco (GPT-4)"}]
-    project_id = "test-project"
-
-    msg_type, card_json = WorktreeBuilder.build_worktree_confirm_card(
-        selected_items=selected_items, project_id=project_id
-    )
-
-    assert msg_type == "interactive"
-    card = json.loads(card_json)
-    elements = card["body"]["elements"]
-
-    # Check elements:
-    # 0: Content (Selection list)
-    # 1: Banner (column_set)
-    # 2: Hot Area (column_set with wathet background)
-
-    assert elements[0]["tag"] == "markdown"
-    assert "即将启动以下工具-模型组合" in elements[0]["content"]
-
-    assert elements[1]["tag"] == "column_set"
-    assert "开始执行" in elements[1]["columns"][0]["elements"][0]["content"]
-
-    hot_area = elements[2]
-    assert hot_area["tag"] == "column_set"
-    assert hot_area["background_style"] == "wathet"
-
-    # Inside hot area column
-    column_elements = hot_area["columns"][0]["elements"]
-    assert column_elements[0]["tag"] == "input"
-    assert column_elements[0]["name"] == "worktree_goal"
-
-    assert column_elements[1]["tag"] == "button"
-    assert column_elements[1]["text"]["content"] == "确认并开始执行"
-
-
-def test_worktree_progress_card_ready_grouping():
-    """Verify that build_worktree_progress_card groups input and action when ready."""
-    units = [
-        {"tool_name": "coco", "display_name": "Coco", "status": "ready", "task_title": "Ready task"}
-    ]
-    project_id = "test-project"
-
-    msg_type, card_json = WorktreeBuilder.build_worktree_progress_card(
-        units=units, project_id=project_id
-    )
-
-    card = json.loads(card_json)
-    elements = card["body"]["elements"]
-
-    # elements[0]: Info banner (if message provided, here message="")
-    # elements[0]: Content (Progress list)
-    # elements[1]: Banner (Ready guidance)
-    # elements[2]: Hot Area (column_set)
-
-    # Note: build_worktree_progress_card adds message banner at index 0 if message exists.
-    # If no message, elements[0] is content.
-
-    assert elements[0]["tag"] == "markdown"
-    assert "**执行进度：**" in elements[0]["content"]
-
-    assert elements[1]["tag"] == "column_set"
-    assert "所有单元已就绪" in elements[1]["columns"][0]["elements"][0]["content"]
-
-    hot_area = elements[2]
-    assert hot_area["tag"] == "column_set"
-    assert hot_area["background_style"] == "wathet"
-    assert hot_area["columns"][0]["elements"][0]["tag"] == "input"
-    assert hot_area["columns"][0]["elements"][1]["tag"] == "button"
-
-
-def test_worktree_progress_card_with_failure():
-    """Verify that build_worktree_progress_card shows error details for failed units."""
-    units = [
-        {
-            "tool_name": "coco",
-            "display_name": "Coco",
-            "status": "failed",
-            "task_title": "Fix bugs",
-            "error": "执行超时: connection lost"
-        }
-    ]
-    project_id = "test-project"
-
-    msg_type, card_json = WorktreeBuilder.build_worktree_progress_card(
-        units=units, project_id=project_id
-    )
-
-    card = json.loads(card_json)
-    content = card["body"]["elements"][0]["content"]
-
-    assert "❌ **Coco** · `failed` · Fix bugs" in content
-    assert "> 🔍 **失败原因**：执行超时: connection lost" in content
-
-
-# ------------------------------------------------------------------
-# Dynamic progress card title tests
-# ------------------------------------------------------------------
-
-
-def _get_progress_card_header(units):
-    """Helper: build progress card and return (header_title, header_color)."""
-    _, card_json = WorktreeBuilder.build_worktree_progress_card(units=units)
-    card = json.loads(card_json)
-    header = card["header"]
-    return header["title"]["content"], header["template"]
-
-
-def test_worktree_progress_card_title_ready():
-    """All units ready → title contains '就绪', color turquoise."""
-    units = [
-        {"tool_name": "coco", "display_name": "Coco", "status": "ready", "task_title": ""},
-        {"tool_name": "claude", "display_name": "Claude", "status": "ready", "task_title": ""},
-    ]
-    title, color = _get_progress_card_header(units)
-    assert "就绪" in title
-    assert color == "turquoise"
-
-
-def test_worktree_progress_card_title_running():
-    """At least one unit running → title contains '执行中', color blue."""
-    units = [
-        {"tool_name": "coco", "display_name": "Coco", "status": "running", "task_title": "Task A"},
-        {"tool_name": "claude", "display_name": "Claude", "status": "ready", "task_title": ""},
-    ]
-    title, color = _get_progress_card_header(units)
-    assert "执行中" in title
-    assert color == "blue"
-
-
-def test_worktree_progress_card_title_completed():
-    """All units completed → title contains '已完成', color green."""
-    units = [
-        {"tool_name": "coco", "display_name": "Coco", "status": "completed", "task_title": "Done"},
-        {"tool_name": "claude", "display_name": "Claude", "status": "completed", "task_title": "Done"},
-    ]
-    title, color = _get_progress_card_header(units)
-    assert "已完成" in title
-    assert color == "green"
-
-
-def test_worktree_progress_card_title_partial_failure():
-    """Failed units with no running → title contains '部分失败', color red."""
-    units = [
-        {"tool_name": "coco", "display_name": "Coco", "status": "completed", "task_title": "Done"},
-        {"tool_name": "claude", "display_name": "Claude", "status": "failed", "task_title": "Oops", "error": "timeout"},
-    ]
-    title, color = _get_progress_card_header(units)
-    assert "部分失败" in title
-    assert color == "red"
-
-
-def test_worktree_progress_card_title_empty_units():
-    """Empty units list → default title '执行中', color blue."""
-    title, color = _get_progress_card_header([])
-    assert "执行中" in title
-    assert color == "blue"
 
 
 # ------------------------------------------------------------------

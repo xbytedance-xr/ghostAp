@@ -437,6 +437,7 @@ class CardEvent(Generic[P]):
     def worktree_tool_select(
         cls, tools: list[dict], selected: list[str] | None = None,
         project_id: str = "", message: str = "",
+        select_action: str = "worktree_select_tool",
     ) -> CardEvent[Mapping[str, Any]]:
         """Worktree tool selection card state."""
         import warnings
@@ -446,7 +447,7 @@ class CardEvent(Generic[P]):
             DeprecationWarning, stacklevel=2,
         )
         from .worktree import worktree_tool_select
-        return worktree_tool_select(tools, selected, project_id, message)
+        return worktree_tool_select(tools, selected, project_id, message, select_action=select_action)
 
     @classmethod
     def worktree_confirm(
