@@ -100,6 +100,12 @@ def flatten_to_atoms(
                     )
                     atom.byte_size = estimate_atom_size(atom)
                     atoms.append(atom)
+                    # Emit interleaved text/reasoning blocks that were absorbed
+                    # during lookahead — they must not be silently discarded.
+                    for ib in interleaved:
+                        handler = handlers.get(ib.kind)
+                        if handler is not None:
+                            atoms.append(handler(ib))
                 else:
                     # Below threshold: render each tool individually, with
                     # interleaved blocks in their original positions
