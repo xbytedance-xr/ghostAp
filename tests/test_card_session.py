@@ -2689,3 +2689,312 @@ class TestRenderFallbackNoneNocrash:
         assert len(client.creates) == creates_before
         # Session should still be alive (not closed)
         assert not session.closed
+
+
+class TestOnFirstDeliverGuards:
+    """AC-24: on_first_deliver fires exactly once, dedup with hooks, empty msg_id guard."""
+
+    def _make_session(self, **kwargs):
+        client = MockDeliveryClient()
+        delivery = CardDelivery(client)
+        metadata = CardMetadata(mode_name="Coco", tool_name="coco", model_name="gpt-4o")
+        config = SessionConfig(metadata=metadata)
+        session = CardSession(
+            chat_id="chat_guard",
+            config=config,
+            delivery=delivery,
+            session_id="guard_sess",
+            **kwargs,
+        )
+        return session, client
+
+    def test_fires_once_on_first_delivery(self):
+        """on_first_deliver callback fires exactly once on first successful delivery."""
+        session, client = self._make_session()
+        calls = []
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            session.on_first_deliver = lambda msg_id: calls.append(msg_id)
+
+        # First dispatch creates card → triggers on_first_deliver
+        session.dispatch(CardEvent(type=CardEventType.STARTED))
+        assert len(calls) == 1
+        assert calls[0] == "msg_1"
+
+        # Second dispatch updates card — should NOT fire again
+        session.dispatch(CardEvent(type=CardEventType.TEXT_DELTA, payload={"text": "hello"}))
+        assert len(calls) == 1
+
+    def test_rejected_delivery_does_not_fire(self):
+        """on_first_deliver does NOT fire if delivery fails with exception."""
+        from unittest.mock import patch as _patch
+
+        session, client = self._make_session()
+        calls = []
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            session.on_first_deliver = lambda msg_id: calls.append(msg_id)
+
+        # Make the client raise on create_card to simulate delivery failure
+        client.create_card = MagicMock(side_effect=RuntimeError("network error"))
+        session.dispatch(CardEvent(type=CardEventType.STARTED))
+
+        assert len(calls) == 0
+
+    def test_dedup_legacy_suppresses_hooks(self):
+        """When on_first_deliver (legacy) is set, hook on_first_delivered does NOT fire."""
+        class TrackingHook:
+            def __init__(self):
+                self.delivered_calls = []
+
+            def on_first_delivered(self, session_id: str, msg_id: str) -> None:
+                self.delivered_calls.append(msg_id)
+
+            def on_dispatched(self, event, state):
+                pass
+
+            def on_terminal(self, state, reason):
+                pass
+
+        hook = TrackingHook()
+        session, client = self._make_session(hooks=(hook,))
+        legacy_calls = []
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            session.on_first_deliver = lambda msg_id: legacy_calls.append(msg_id)
+
+        session.dispatch(CardEvent(type=CardEventType.STARTED))
+
+        # Legacy fires
+        assert len(legacy_calls) == 1
+        # Hook does NOT fire (dedup)
+        assert len(hook.delivered_calls) == 0
+
+    def test_no_legacy_fires_hooks(self):
+        """When on_first_deliver is NOT set, hook on_first_delivered fires normally."""
+        class TrackingHook:
+            def __init__(self):
+                self.delivered_calls = []
+
+            def on_first_delivered(self, session_id: str, msg_id: str) -> None:
+                self.delivered_calls.append(msg_id)
+
+            def on_dispatched(self, event, state):
+                pass
+
+            def on_terminal(self, state, reason):
+                pass
+
+        hook = TrackingHook()
+        session, client = self._make_session(hooks=(hook,))
+
+        session.dispatch(CardEvent(type=CardEventType.STARTED))
+
+        # Hook fires since no legacy callback
+        assert len(hook.delivered_calls) == 1
+        assert hook.delivered_calls[0] == "msg_1"
+
+    def test_deprecation_warning_on_set(self):
+        """Setting on_first_deliver emits DeprecationWarning."""
+        session, _ = self._make_session()
+        import warnings
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            session.on_first_deliver = lambda msg_id: None
+        assert any(issubclass(x.category, DeprecationWarning) for x in w)
+
+    def test_dedup_legacy_suppresses_post_add_hooks(self):
+        """AC-TEST-5: Hook added via add_hook() AFTER construction is also suppressed when legacy exists."""
+        import logging
+        import warnings
+
+        class PostHook:
+            def __init__(self):
+                self.delivered_calls = []
+
+            def on_first_delivered(self, session_id: str, msg_id: str) -> None:
+                self.delivered_calls.append(msg_id)
+
+            def on_dispatched(self, event, state):
+                pass
+
+            def on_terminal(self, state, reason):
+                pass
+
+        session, client = self._make_session()
+        legacy_calls = []
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            session.on_first_deliver = lambda msg_id: legacy_calls.append(msg_id)
+
+        # Post-inject hook via add_hook
+        post_hook = PostHook()
+        session.add_hook(post_hook)
+
+        # Dispatch
+        session.dispatch(CardEvent(type=CardEventType.STARTED))
+
+        # Legacy fires
+        assert len(legacy_calls) == 1
+        # Post-injected hook does NOT fire (suppressed by legacy)
+        assert len(post_hook.delivered_calls) == 0
+
+
+# ─── Task 17 [AC-TEST-2]: TestAddHookIntegration ───
+
+
+class TestAddHookIntegration:
+    """AC-TEST-2: Real CardSession.add_hook() → HookFirer.append_hook() integration."""
+
+    def _make_session(self, **kwargs):
+        client = MockDeliveryClient()
+        delivery = CardDelivery(client)
+        metadata = CardMetadata(mode_name="Coco", tool_name="coco", model_name="gpt-4o")
+        config = SessionConfig(metadata=metadata)
+        session = CardSession(
+            chat_id="chat_add_hook",
+            config=config,
+            delivery=delivery,
+            session_id="add_hook_sess",
+            **kwargs,
+        )
+        return session, client
+
+    def test_add_hook_then_deliver_fires_on_first_delivered(self):
+        """add_hook(spy) → dispatch triggers delivery → spy.on_first_delivered is called."""
+        class SpyHook:
+            def __init__(self):
+                self.delivered_calls = []
+
+            def on_first_delivered(self, session_id: str, msg_id: str) -> None:
+                self.delivered_calls.append((session_id, msg_id))
+
+            def on_dispatched(self, event, state):
+                pass
+
+            def on_terminal(self, state, reason):
+                pass
+
+        spy = SpyHook()
+        session, client = self._make_session()
+        session.add_hook(spy)
+
+        # Dispatch a STARTED event — this triggers create_card → first delivery
+        session.dispatch(CardEvent(type=CardEventType.STARTED))
+
+        # Verify spy was called
+        assert len(spy.delivered_calls) == 1
+        assert spy.delivered_calls[0][0] == "add_hook_sess"
+        assert spy.delivered_calls[0][1] == "msg_1"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TestOnFirstDeliverException (AC-R20)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestOnFirstDeliverException:
+    """Legacy on_first_deliver callback raising an exception must not crash session."""
+
+    def _make_session(self):
+        client = MockDeliveryClient()
+        delivery = CardDelivery(client)
+        metadata = CardMetadata(mode_name="Test", tool_name="test", model_name="gpt-4o")
+        config = SessionConfig(metadata=metadata)
+        session = CardSession(
+            chat_id="chat_exc",
+            config=config,
+            delivery=delivery,
+            session_id="exc_sess",
+        )
+        return session, client
+
+    def test_exception_in_callback_does_not_crash(self):
+        """Session survives when on_first_deliver raises RuntimeError."""
+        import warnings
+        session, client = self._make_session()
+
+        def exploding_callback(msg_id: str):
+            raise RuntimeError("boom in callback")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            session.on_first_deliver = exploding_callback
+
+        # Dispatch events to trigger card creation and first delivery
+        session.dispatch(CardEvent(type=CardEventType.STARTED))
+        session.dispatch(CardEvent.text_started("b1"))
+        session.dispatch(CardEvent.text_delta("b1", "hello"))
+
+        # Session should still be alive - card created
+        assert len(client.creates) >= 1
+
+    def test_subsequent_dispatch_works_after_callback_exception(self):
+        """After callback exception, further dispatch still works."""
+        import warnings
+        session, client = self._make_session()
+
+        def exploding_callback(msg_id: str):
+            raise RuntimeError("boom")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            session.on_first_deliver = exploding_callback
+
+        session.dispatch(CardEvent(type=CardEventType.STARTED))
+        session.dispatch(CardEvent.text_started("b1"))
+        session.dispatch(CardEvent.text_delta("b1", "first"))
+
+        # Subsequent dispatch should not raise
+        session.dispatch(CardEvent.text_delta("b1", " second"))
+        session.dispatch(CardEvent.text_done("b1"))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# TestAddHookWithLegacyWarning (AC-R5)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestAddHookWithLegacyWarning:
+    """add_hook() emits DeprecationWarning when legacy on_first_deliver is set."""
+
+    def _make_session(self):
+        client = MockDeliveryClient()
+        delivery = CardDelivery(client)
+        metadata = CardMetadata(mode_name="Test", tool_name="test", model_name="gpt-4o")
+        config = SessionConfig(metadata=metadata)
+        session = CardSession(
+            chat_id="chat_w",
+            config=config,
+            delivery=delivery,
+            session_id="warn_sess",
+        )
+        return session
+
+    def test_add_hook_with_legacy_triggers_deprecation_warning(self):
+        """Setting legacy callback then calling add_hook emits DeprecationWarning."""
+        import warnings
+        session = self._make_session()
+
+        # Set legacy callback (triggers its own deprecation)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            session.on_first_deliver = lambda msg_id: None
+
+        # Now add_hook should emit DeprecationWarning
+        class DummyHook:
+            def on_dispatched(self, event, state): pass
+            def on_terminal(self, state, reason): pass
+            def on_first_delivered(self, sid, mid): pass
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            session.add_hook(DummyHook())
+
+        dep_warnings = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert len(dep_warnings) >= 1
+        assert "on_first_deliver" in str(dep_warnings[0].message)
+

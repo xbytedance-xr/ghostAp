@@ -41,6 +41,26 @@ class CardSessionConfig(BaseModel):
         default=True,
         description="启用后多步任务使用独立飞书卡片展示每个子任务，关闭则退化为单卡模式",
     )
+    max_task_cards: int = Field(
+        default=8,
+        description="单次执行中任务级卡片数量上限，超出后合并到最后一张卡片",
+    )
+
+    @field_validator("max_task_cards", mode="before")
+    @classmethod
+    def _max_task_cards_in_range(cls, v: int, info) -> int:
+        try:
+            val = int(v)
+        except (ValueError, TypeError):
+            raise ValueError(
+                f"card_max_task_cards 必须为有效整数（当前值: {v!r}）。"
+                f"请检查环境变量 CARD_MAX_TASK_CARDS 的拼写"
+            )
+        if val < 1 or val > 20:
+            raise ValueError(
+                f"card_max_task_cards 必须在 1~20 范围内（当前值: {v}）"
+            )
+        return val
 
     @field_validator("session_lock_max", mode="before")
     @classmethod
@@ -816,6 +836,7 @@ class Settings(BaseSettings):
             "card_action_dedup_max_size": "action_dedup_max_size",
             "card_action_dedup_cleanup_interval": "action_dedup_cleanup_interval",
             "card_task_level_cards_enabled": "task_level_cards_enabled",
+            "card_max_task_cards": "max_task_cards",
         }
         card_data: dict = {}
         for flat_key, nested_key in _CARD_FIELD_MAP.items():

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Callable
 from src.card.events import CardEvent
 from src.card.events.types import CardEventType
 from src.card.protocols import Session  # noqa: F401 — structural compliance
+from src.card.nav_link import format_navigation_link
 from src.card.ui_text import UI_TEXT
 
 if TYPE_CHECKING:
@@ -139,8 +140,9 @@ class SessionRotator:
                 # Dispatch user-visible truncation notice
                 try:
                     _engine_cmd = getattr(self._session, "engine_cmd", "")
+                    cmd_hint = f"\n发送 {_engine_cmd}_status 可查看完整记录" if _engine_cmd else ""
                     self._session.dispatch(CardEvent.warning_updated(
-                        UI_TEXT["card_session_rotation_truncated"].format(engine_cmd=_engine_cmd)
+                        UI_TEXT["card_session_rotation_truncated"].format(cmd_hint=cmd_hint)
                     ))
                 except Exception:
                     logger.debug("SessionRotator: truncation notice dispatch failed", exc_info=True)
@@ -181,25 +183,20 @@ class SessionRotator:
             rotation_seq = self._rotation_count
 
         # Phase 4: Mark old card as archived (outside lock)
-        sid_short = old_session.session_id[-6:] if old_session.session_id else "------"
         new_msg_id = getattr(new_session, "delivered_message_id", "") or ""
-        new_sid_short = new_session.session_id[-6:] if new_session.session_id else "------"
-        if new_msg_id:
-            nav_text = f"[查看最新卡片](lark://message/{new_msg_id})"
-        else:
-            nav_text = f"请查看下方最新卡片（会话 {new_sid_short}）"
-            # Fallback: send text notification when deep-link is unavailable
+
+        nav_summary, fallback_notice = format_navigation_link(
+            new_msg_id=new_msg_id or None,
+            rotation_seq=rotation_seq,
+        )
+        if fallback_notice:
             try:
-                fallback_notice = UI_TEXT.get(
-                    "card_archived_navigate_fallback",
-                    f"📍 卡片已续传，请查看下方最新卡片（会话 {new_sid_short}）",
-                )
                 new_session.notify_user(fallback_notice)
             except Exception:
                 logger.debug("SessionRotator: fallback notify failed for session %s", new_session.session_id)
         try:
             old_session.dispatch(CardEvent.archived(
-                summary=f"▼ 第 {rotation_seq}/{rotation_seq + 1} 张 · {nav_text} · {sid_short}",
+                summary=nav_summary,
                 sequence=rotation_seq,
                 new_message_id=new_msg_id,
             ))

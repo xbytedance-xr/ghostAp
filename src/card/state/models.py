@@ -273,11 +273,24 @@ class TaskListBlock:
     status: BlockStatus = "active"
 
 
+@dataclass(frozen=True)
+class SeparatorBlock:
+    """Section separator block — visual divider for overflow tasks merged into a card."""
+    _atom_kind: ClassVar[str] = "separator"
+    kind: Literal["separator"] = "separator"
+    block_id: str = ""
+    task_name: str = ""
+    is_first_overflow: bool = False
+    status_emoji: str = "⏳"
+    element_id: str | None = None
+    status: BlockStatus = "completed"
+
+
 # Tagged-union type alias
 AnyContentBlock: TypeAlias = Union[
     TextBlock, ToolBlock, ReasoningBlock, PlanBlock, PhaseBlock, CriteriaBlock,
     WorktreeSelectBlock, WorktreeConfirmBlock, WorktreeUnitsBlock,
-    WorktreeMergeBlock, WorktreeCleanupBlock, TaskListBlock,
+    WorktreeMergeBlock, WorktreeCleanupBlock, TaskListBlock, SeparatorBlock,
 ]
 """Union of all content block types. Use isinstance() for type-safe dispatch."""
 
@@ -295,6 +308,7 @@ _BLOCK_KIND_MAP: dict[str, type] = {
     "worktree_merge": WorktreeMergeBlock,
     "worktree_cleanup": WorktreeCleanupBlock,
     "task_list": TaskListBlock,
+    "separator": SeparatorBlock,
 }
 
 # Import-time completeness check: every AnyContentBlock subtype must be registered

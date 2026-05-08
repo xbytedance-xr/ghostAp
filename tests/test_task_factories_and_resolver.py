@@ -221,3 +221,62 @@ class TestTaskIdResolver:
         resolver = TaskIdResolver([])
         assert resolver.current_task_id == ""
         assert resolver.resolve(None) == ""
+
+    # --- mark_inactive tests (AC15) ---
+
+    def test_mark_inactive_fallback_to_most_recent(self):
+        """When the active task is deactivated, falls back to the most recently activated remaining task."""
+        import time as _time
+        resolver = TaskIdResolver(["t1", "t2", "t3"])
+        resolver.mark_active("t1")
+        _time.sleep(0.01)
+        resolver.mark_active("t2")
+        _time.sleep(0.01)
+        resolver.mark_active("t3")
+        assert resolver.current_task_id == "t3"
+
+        # Deactivate t3 → should fall back to t2 (most recently activated remaining)
+        resolver.mark_inactive("t3")
+        assert resolver.current_task_id == "t2"
+        assert "t3" not in resolver.active_task_ids
+
+    def test_mark_inactive_fallback_preserves_order(self):
+        """When multiple tasks are active and one is deactivated, picks by activation time."""
+        import time as _time
+        resolver = TaskIdResolver(["t1", "t2", "t3"])
+        resolver.mark_active("t1")
+        _time.sleep(0.01)
+        resolver.mark_active("t3")
+        _time.sleep(0.01)
+        resolver.mark_active("t2")  # t2 was activated last
+
+        # Deactivate t2 → should fall back to t3 (next most recent)
+        resolver.mark_inactive("t2")
+        assert resolver.current_task_id == "t3"
+
+    def test_mark_inactive_no_remaining_keeps_last_index(self):
+        """When all active tasks are deactivated, keeps last known index/id unchanged."""
+        resolver = TaskIdResolver(["t1", "t2", "t3"])
+        resolver.mark_active("t2")
+        assert resolver.current_task_id == "t2"
+
+        # Deactivate t2 — no remaining active tasks
+        resolver.mark_inactive("t2")
+        # Should keep "t2" as last_active_id (no fallback target)
+        assert resolver.current_task_id == "t2"
+        assert len(resolver.active_task_ids) == 0
+
+    def test_mark_inactive_non_active_task_is_noop(self):
+        """Deactivating a task that isn't active should be a no-op."""
+        resolver = TaskIdResolver(["t1", "t2", "t3"])
+        resolver.mark_active("t1")
+        resolver.mark_inactive("t2")
+        assert resolver.current_task_id == "t1"
+        assert "t1" in resolver.active_task_ids
+
+    def test_mark_inactive_unknown_task_is_noop(self):
+        """Deactivating an unknown task_id should be safe."""
+        resolver = TaskIdResolver(["t1", "t2"])
+        resolver.mark_active("t1")
+        resolver.mark_inactive("unknown_id")
+        assert resolver.current_task_id == "t1"

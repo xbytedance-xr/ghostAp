@@ -110,12 +110,12 @@ class DeepRenderer(BaseRenderer):
         from ...config import get_settings
         _multi_card_enabled = get_settings().card.task_level_cards_enabled
 
-        orchestrator = TaskOrchestrator(
+        orchestrator = TaskOrchestrator.from_settings(
             chat_id=chat_id,
             session_creator=_task_session_creator,
-            bridge_factory=ACPStreamBridge if _multi_card_enabled else None,
+            thinking_session=session,
+            bridge_class=ACPStreamBridge,
         )
-        orchestrator.set_thinking_session(session)
 
         # ACP event renderer for structured content
         renderer = ACPEventRenderer()
@@ -129,7 +129,7 @@ class DeepRenderer(BaseRenderer):
         def on_analyzing_done(deep_project: DeepProject):
             # Start the card session
             session.dispatch(CardEvent.started())
-            content = f"🚀 ACP Deep 执行开始\n\n📂 **{deep_project.name}**\n🔗 路径: `{deep_project.root_path}`"
+            content = UI_TEXT["deep_exec_start"].format(project_name=deep_project.name, root_path=deep_project.root_path)
             _dispatch_text_block(session, "_main_text", content)
             _phase[0] = "executing"
 
@@ -158,7 +158,7 @@ class DeepRenderer(BaseRenderer):
 
             # Dispatch progress event on tool call start
             if event.event_type == ACPEventType.TOOL_CALL_START:
-                label = "🔄 执行中" if _phase[0] == "executing" else "🧠 分析/规划中"
+                label = UI_TEXT["deep_phase_executing"] if _phase[0] == "executing" else UI_TEXT["deep_phase_planning"]
                 progress_event = CardEvent.progress_updated(
                     current=_tool_count[0],
                     total=max(_plan_steps[0], _tool_count[0]),
@@ -172,10 +172,7 @@ class DeepRenderer(BaseRenderer):
                     session.dispatch(progress_event)
 
             # Route ACP event content to the correct session/bridge
-            if _multi_card_enabled and orchestrator.has_plan and not orchestrator.is_fallback_mode:
-                orchestrator.route_acp_event(event, stream_bridge)
-            else:
-                stream_bridge.on_event(event)
+            orchestrator.route_or_fallback(event, stream_bridge)
 
             # Check for warning banner based on elapsed time
             elapsed = time.time() - _start_time[0]
@@ -188,7 +185,7 @@ class DeepRenderer(BaseRenderer):
             # Build execution summary
             snap = self._get_engine(chat_id, root_path, project)
             tool_calls_count = snap.tool_calls_count if snap else _tool_count[0]
-            summary = f"✅ 执行完成 · 工具调用: {tool_calls_count}"
+            summary = UI_TEXT["deep_exec_completed"].format(tool_calls_count=tool_calls_count)
 
             if orchestrator.has_plan and not orchestrator.is_fallback_mode:
                 # Close orchestrator (dispatches COMPLETED to all task sessions)
@@ -198,7 +195,7 @@ class DeepRenderer(BaseRenderer):
                 if deep_project.status == DeepProjectStatus.COMPLETED:
                     session.dispatch(CardEvent.completed(summary=summary))
                 else:
-                    session.dispatch(CardEvent.failed("执行未完成"))
+                    session.dispatch(CardEvent.failed(UI_TEXT["deep_exec_incomplete"]))
             self._current_session = None
 
         def on_error(error: str):
@@ -319,7 +316,7 @@ class DeepRenderer(BaseRenderer):
             session.dispatch(CardEvent.progress_updated(
                 current=progress_info.get("completed", 0),
                 total=progress_info.get("total", 0),
-                label="执行中" if progress_info["is_executing"] else "已完成",
+                label=UI_TEXT["deep_progress_executing"] if progress_info["is_executing"] else UI_TEXT["deep_progress_done"],
             ))
 
         # Warning banner

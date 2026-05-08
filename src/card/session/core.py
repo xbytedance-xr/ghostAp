@@ -154,12 +154,70 @@ class CardSession:
         self._stop_escalation_handle: "TimerHandle | None" = None
         self._stop_escalation_delay: float = 30.0
 
+        # Optional callback fired once after first successful delivery with message_id
+        # DEPRECATED: use SessionHook.on_first_delivered instead. Kept for backward compat.
+        self._on_first_deliver: Callable[[str], None] | None = None
+        self._on_first_deliver_warned: bool = False
+        self._first_deliver_fired: bool = False
+
         # --- Delegate collaborator construction to SessionBuilder ---
         self._build_and_assign(config, cbs)
 
     # ------------------------------------------------------------------
     # Private helpers split from __init__ for readability
     # ------------------------------------------------------------------
+
+    @property
+    def on_first_deliver(self) -> Callable[[str], None] | None:
+        """Legacy callback fired once after first delivery. DEPRECATED."""
+        return self._on_first_deliver
+
+    @on_first_deliver.setter
+    def on_first_deliver(self, value: Callable[[str], None] | None) -> None:
+        """Set legacy callback. Emits DeprecationWarning on first use.
+
+        Migration: use SessionHook.on_first_delivered instead::
+
+            class MyHook:
+                def on_first_delivered(self, session_id: str, msg_id: str) -> None:
+                    # your logic here
+                    pass
+
+            session = CardSession(..., hooks=(MyHook(),))
+        """
+        self._on_first_deliver = value
+        if value is not None and not self._on_first_deliver_warned:
+            self._on_first_deliver_warned = True
+            warnings.warn(
+                "CardSession.on_first_deliver is deprecated; "
+                "use SessionHook.on_first_delivered instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            logger.debug(
+                "CardSession %s: on_first_deliver set (deprecated)",
+                self._session_id,
+            )
+
+    def add_hook(self, hook: "SessionHook") -> None:
+        """Append a lifecycle hook after construction.
+
+        Thread-safe; delegates to HookFirer.append_hook().
+        Should be called before the session is exposed to concurrent dispatch.
+        """
+        if self._on_first_deliver is not None:
+            warnings.warn(
+                "Legacy on_first_deliver is set; hook.on_first_delivered will be suppressed. "
+                "Migrate to SessionHook.on_first_delivered.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            logger.warning(
+                "CardSession %s: add_hook() called while legacy on_first_deliver is set; "
+                "hook.on_first_delivered will NOT fire",
+                self._session_id,
+            )
+        self._hook_firer.append_hook(hook)
 
     @staticmethod
     def _merge_callbacks(
@@ -266,7 +324,10 @@ class CardSession:
     @property
     def delivered_message_id(self) -> str:
         """Return the Feishu message_id of the delivered card (page 0), or empty string."""
-        binding = self._delivery.get_binding(self._session_id)
+        get_binding = getattr(self._delivery, "get_binding", None)
+        if get_binding is None:
+            return ""
+        binding = get_binding(self._session_id)
         if binding and 0 in binding.pages:
             return binding.pages[0].message_id
         return ""
@@ -483,6 +544,7 @@ class CardSession:
 
     def _deliver_and_track(self, rendered: list, is_terminal: bool, *, event: CardEvent | None = None) -> None:
         """Deliver rendered cards via coordinator and handle outcomes."""
+        _fire_first_deliver_msg_id: str | None = None
         try:
             outcomes = self._coordinator.deliver(rendered)
             # Check for rejected outcomes (capacity exhausted or shutdown)
@@ -496,6 +558,13 @@ class CardSession:
             # Delivery succeeded — update tracker and close if terminal
             with self._lock:
                 self._coordinator.on_success(is_terminal)
+                # Snapshot first-deliver state inside lock, execute callback outside
+                if not self._first_deliver_fired:
+                    _candidate_cb = self.on_first_deliver
+                    _candidate_msg_id = self.delivered_message_id
+                    if (_candidate_cb is not None or self._hook_firer.has_hooks) and _candidate_msg_id:
+                        self._first_deliver_fired = True
+                        _fire_first_deliver_msg_id = _candidate_msg_id
                 # Update footer timestamp on successful delivery (non-terminal)
                 if not is_terminal and self._state and self._state.footer:
                     _now_hhmm = time.strftime("%m-%d %H:%M")
@@ -510,6 +579,24 @@ class CardSession:
         except Exception as exc:
             self._coordinator.on_failure(exc, rendered, is_terminal, engine_cmd=self.engine_cmd)
             return
+
+        # Fire on_first_deliver callback OUTSIDE the lock to avoid lock nesting
+        if _fire_first_deliver_msg_id:
+            # Legacy callback (deprecated) — use lock-snapshotted _candidate_cb
+            if _candidate_cb is not None:
+                try:
+                    _candidate_cb(_fire_first_deliver_msg_id)
+                except Exception:
+                    logger.debug("CardSession %s: on_first_deliver callback failed", self._session_id)
+                if self._hook_firer.has_hooks:
+                    logger.warning(
+                        "CardSession %s: legacy on_first_deliver suppressed %d hook(s) on_first_delivered",
+                        self._session_id, len(self._hook_firer._hooks),
+                    )
+            else:
+                # Hook-based callback — only fire if legacy callback is NOT set,
+                # to prevent double-trigger when both mechanisms coexist.
+                self._hook_firer.fire_first_delivered(_fire_first_deliver_msg_id)
 
         # Finalize only on successful terminal delivery
         if is_terminal:

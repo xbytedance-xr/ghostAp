@@ -116,12 +116,12 @@ class SpecStreamProcessor:
         from ...config import get_settings
         self._multi_card_enabled = get_settings().card.task_level_cards_enabled
 
-        self._orchestrator = TaskOrchestrator(
+        self._orchestrator = TaskOrchestrator.from_settings(
             chat_id=chat_id,
             session_creator=_task_session_creator,
-            bridge_factory=ACPStreamBridge if self._multi_card_enabled else None,
+            thinking_session=self._rotator,
+            bridge_class=ACPStreamBridge,
         )
-        self._orchestrator.set_thinking_session(self._rotator)
 
     # ------------------------------------------------------------------
     # Private helpers (previously nested closures)
@@ -133,7 +133,7 @@ class SpecStreamProcessor:
             self._metadata,
             unit_id=str(cycle_num),
             unit_kind="cycle",
-            unit_label=f"第 {cycle_num} 轮",
+            unit_label=UI_TEXT["spec_cycle_label"].format(cycle_num=cycle_num),
             continuation_seq=self._rotator.rotation_count + 1,
         )
         old_msg_id = self._rotator.current.delivered_message_id or self._message_id
@@ -168,6 +168,7 @@ class SpecStreamProcessor:
     def on_cycle_start(self, current: int, max_cycles: int) -> None:
         self._max_cycles = max_cycles
         self._renderer.update_ui_state(self._spec_project_id, view_mode="status", view_context={})
+        self._orchestrator.reset()
         self._rotate_session(current)
         self._rotator.dispatch(CardEvent.started())
 
@@ -307,7 +308,7 @@ class SpecStreamProcessor:
 
         if phase == SpecPhase.BUILD:
             # Build phase: route through orchestrator if multi-card enabled
-            if self._multi_card_enabled and self._orchestrator.has_plan and not self._orchestrator.is_fallback_mode:
+            if self._orchestrator.has_plan and not self._orchestrator.is_fallback_mode:
                 self._orchestrator.route_acp_event(event, self._stream_bridge)
             else:
                 self._dispatch_build_event(event)
@@ -335,9 +336,9 @@ class SpecStreamProcessor:
                         if "/" in first_line and len(first_line) < 200:
                             self._build_file_set.add(first_line)
             # Update footer with progress
-            progress_text = f"🔨 {self._build_tool_count} 次工具调用"
+            progress_text = UI_TEXT["spec_build_progress"].format(tool_count=self._build_tool_count)
             if self._build_file_set:
-                progress_text += f" · {len(self._build_file_set)} 文件"
+                progress_text += UI_TEXT["spec_build_progress_files"].format(file_count=len(self._build_file_set))
             self._rotator.dispatch(CardEvent.progress_updated(
                 current=self._build_tool_count, total=0, label=progress_text
             ))
@@ -357,7 +358,7 @@ class SpecStreamProcessor:
         if phase == SpecPhase.BUILD:
             # Build phase: tool panels already rendered, just show summary
             summary = self._reporter._extract_phase_summary(phase, output)
-            done_text = f"🔨 **构建完成**  {summary}" if summary else "🔨 **构建完成**"
+            done_text = UI_TEXT["spec_build_done"].format(summary=summary) if summary else UI_TEXT["spec_build_done_plain"]
             _dispatch_text_block(self._rotator, f"_phase_done_{cycle_num}_{phase.value}", done_text)
         else:
             # Non-Build phases: append concise summary after streamed content

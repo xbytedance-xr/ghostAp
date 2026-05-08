@@ -9,6 +9,10 @@ Key naming conventions:
 - `<engine>_*` (deep_*, loop_*, spec_*) — engine-specific card content.
 """
 
+import types
+
+__all__ = ["UI_TEXT"]
+
 # UI Text Constants
 UI_TEXT = {
     # Core Card UI
@@ -845,7 +849,51 @@ UI_TEXT = {
     # --- Hook failure notice (extracted from hooks.py) ---
     "hook_persistence_failed_notice": "⚠️ 执行结果保存失败，您可重新运行 {engine_cmd} 查看最新结果",
     # --- Session rotation truncation ---
-    "card_session_rotation_truncated": "⚠️ 这是最后一张卡片，内容将精简显示。后续输出合并于此，超出部分可能被截断。\n发送 {engine_cmd}_status 可查看完整记录",
+    "card_session_rotation_truncated": "⚠️ 这是最后一张卡片，内容将精简显示。后续输出合并于此，超出部分可能被截断。{cmd_hint}",
+    # --- Task orchestrator ---
+    "orch_plan_archived": "✅ 规划完成 — 共 {task_count} 个任务\n{task_list}",
+    "orch_continuation_link": "↓ 第 {seq} 篇 · [{link_text} →](lark://message/{msg_id})",
+    "orch_continuation_link_fallback": "↓ 第 {seq} 篇 · 请查看下方最新卡片",
+    "orch_continuation_hint": "↩ 第 {page} 篇 · 承接前篇",
+    "orch_task_continuation_nav": "\n\n---\n↓ 任务「{task_name}」第 {page} 篇 · [{link_text} →](lark://message/{msg_id})",
+    "orch_task_continuation_nav_fallback": "\n\n---\n↓ 任务「{task_name}」第 {page} 篇 · 请查看下方最新卡片",
+    "orch_fallback_warning": "⚠️ 任务已合并展示（可能由网络波动引起，不影响执行结果；如持续出现请联系管理员）",
+    "orch_flood_merged": "📎 任务「{task_name}」已合并展示于此",
+    "orch_archived_navigate_fallback": "↓ 内容已续至下方卡片，请查看下方最新卡片",
+    "orch_plan_transition_hint": "以下每个任务将在独立卡片中展示 · [查看首个任务 →](lark://message/{first_task_msg_id})",
+    "orch_plan_transition_hint_no_link": "以下每个任务将在独立卡片中展示 ↓",
+    "orch_plan_transition_hint_overflow": "以下 {independent_count} 个任务将在独立卡片中展示，其余 {merged_count} 个合并至最后一张 ↓",
+    "orch_back_link": "↑ [前篇](lark://message/{msg_id})",
+    "orch_back_link_with_task": "↑ [「{task_name}」前篇](lark://message/{msg_id})",
+    "orch_nav_link_text": "查看最新卡片",
+    "orch_overflow_separator": "---\n📎 {status_emoji} **{task_name}**\n",
+    "orch_overflow_separator_first": "---\n📌 以下任务合并展示\n\n---\n📎 {status_emoji} **{task_name}**\n",
+    "orch_overflow_collapsed": "---\n📌 …及 {count} 项更多任务合并展示\n",
+    "orch_rotation_failed_notice": "⚠️ 内容过长无法创建新卡片，后续内容将继续在本卡片追加",
+    # --- Task status prefixes ---
+    "orch_task_status_pending": "⏳",
+    "orch_task_status_running": "🔄",
+    "orch_task_status_done": "✅",
+    "orch_task_status_failed": "❌",
+    # --- Tool panel ---
+    "tool_history_panel_header": "🔧 **{n} 个工具调用已完成**",
+    # --- Renderer inline text ---
+    "deep_exec_start": "🚀 ACP Deep 执行开始\n\n📂 **{project_name}**\n🔗 路径: `{root_path}`",
+    "deep_phase_executing": "🔄 执行中",
+    "deep_phase_planning": "🧠 分析/规划中",
+    "deep_exec_completed": "✅ 执行完成 · 工具调用: {tool_calls_count}",
+    "deep_exec_incomplete": "⚠️ 执行未完成（已完成 {completed}/{total} 步）\n💡 重试: /deep 继续执行",
+    "deep_progress_executing": "执行中",
+    "deep_progress_done": "已完成",
+    "loop_iteration_label": "第 {iteration} 轮",
+    "loop_error_unknown": "未知错误",
+    "loop_summary_header": "📋 共 {total} 次迭代\n",
+    "loop_iteration_title": "{status_icon} **迭代 {iteration}**",
+    "spec_cycle_label": "第 {cycle_num} 轮",
+    "spec_build_progress": "🔨 {tool_count} 次工具调用",
+    "spec_build_progress_files": " · {file_count} 文件",
+    "spec_build_done": "🔨 **构建完成**  {summary}",
+    "spec_build_done_plain": "🔨 **构建完成**",
 }
 
 # DEPRECATED since v0.9, removal: 2026-06-01
@@ -888,3 +936,9 @@ _cmds = list(ENGINE_CMD_MAP.values())
 UI_TEXT["card_session_ttl_expired_commands"] = (
     "、".join(_cmds[:-1]) + " 或 " + _cmds[-1] if len(_cmds) > 1 else _cmds[0]
 )
+
+# Keep mutable reference for testing (mock.patch.dict targets this)
+_MUTABLE_UI_TEXT = UI_TEXT
+
+# Freeze UI_TEXT as read-only to prevent accidental runtime mutation
+UI_TEXT = types.MappingProxyType(UI_TEXT)  # type: ignore[assignment]

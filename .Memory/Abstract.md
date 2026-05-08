@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-05-08
+- **修复飞书卡片多任务展示审查缺陷（23 项）** — orchestrator 线程安全重构（两阶段锁+_rotation_counts dict）、深链异步回填（on_first_deliver 回调）、overflow 通知、过渡引导文案、UI_TEXT 冻结为 MappingProxyType、max_task_cards 默认值调为 5 并加 ge=1 校验；新增 330+ tests，集成 1015 passed → [详细记录](2026-05-08.md)
 - **修复模型选择后 pending prompt 在线程模式下启动失败** — 定位到 `select_acp_model` action 缺少 `thread_root_id`、`build_switching_status_card()` 文本被 `reply_card()` 错发、pending prompt 在线程模式下未创建 session 直接转发三重根因；移除冗余切换提醒，模型选择后直接创建编程话题并投递原始需求；相关回归 65 passed，全量停在既有 worktree render 旧失败 → [详细记录](2026-05-08.md)
 - **修复项目群已在编程模式时重复展示模型选择卡与冗余通知** — `_handle_enter_coco` 增加 `is_coco_mode` 守卫跳过模型选择；`_enter_mode_with_acp_model` 补传 `project_id` 给 mode_checker 修复项目级模式误判，并对 `enter_mode` 传 `silent=True` 消除冗余通知；24 related tests passed → [详细记录](2026-05-08.md)
 

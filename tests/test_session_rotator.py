@@ -472,7 +472,7 @@ class TestSessionRotatorArchiveSequence:
         assert s3_archived.payload.get("sequence") == 3
 
     def test_archive_stub_contains_page_numbers(self):
-        """Archived stub summary includes 第 N/M 张 format."""
+        """Archived stub summary includes 第 N 篇 format."""
         s1 = self._make_mock_session()
         s2 = self._make_mock_session()
         rotator = SessionRotator(s1)
@@ -480,7 +480,7 @@ class TestSessionRotatorArchiveSequence:
 
         archived_event = s1.dispatch.call_args[0][0]
         summary = archived_event.payload.get("summary", "")
-        assert "第 1/2 张" in summary
+        assert "第 1 篇" in summary
         assert "查看最新卡片" in summary
 
     def test_archive_stub_page_numbers_increment(self):
@@ -494,8 +494,8 @@ class TestSessionRotatorArchiveSequence:
 
         s1_summary = s1.dispatch.call_args[0][0].payload.get("summary", "")
         s2_summary = s2.dispatch.call_args[0][0].payload.get("summary", "")
-        assert "第 1/2 张" in s1_summary
-        assert "第 2/3 张" in s2_summary
+        assert "第 1 篇" in s1_summary
+        assert "第 2 篇" in s2_summary
 
 
 class TestSessionRotatorMaxRotationsTruncation:

@@ -385,29 +385,22 @@ class TestRenderWorktreeUnits:
 
     def _get_content(self, result: dict) -> str:
         """Extract markdown content from collapsible_panel, div-wrapped, or plain markdown result."""
-        if result.get("tag") == "collapsible_panel":
-            # Gather all markdown content from all elements (including nested divs)
-            parts = []
-            for elem in result.get("elements", []):
-                if elem.get("tag") == "markdown":
-                    parts.append(elem.get("content", ""))
-                elif elem.get("tag") == "div":
-                    for inner in elem.get("elements", []):
-                        if inner.get("tag") == "markdown":
-                            parts.append(inner.get("content", ""))
-            return "\n".join(parts)
-        if result.get("tag") == "div":
-            # Recursively gather all markdown content from nested elements
-            parts = []
-            for elem in result.get("elements", []):
-                if elem.get("tag") == "markdown":
-                    parts.append(elem.get("content", ""))
-                elif elem.get("tag") in ("div", "collapsible_panel"):
-                    for inner in elem.get("elements", []):
-                        if inner.get("tag") == "markdown":
-                            parts.append(inner.get("content", ""))
-            return "\n".join(parts)
-        return result.get("content", "")
+        parts = []
+        self._collect_markdown(result, parts)
+        return "\n".join(parts)
+
+    def _collect_markdown(self, node: dict, parts: list[str]) -> None:
+        """Recursively collect all markdown content from a Feishu card element tree."""
+        if node.get("tag") == "markdown":
+            parts.append(node.get("content", ""))
+            return
+        # Recurse into known container keys
+        for key in ("elements", "columns"):
+            children = node.get(key)
+            if isinstance(children, list):
+                for child in children:
+                    if isinstance(child, dict):
+                        self._collect_markdown(child, parts)
 
     def test_normal_render(self):
         data = {

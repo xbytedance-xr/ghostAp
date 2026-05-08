@@ -104,24 +104,24 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
         from ...config import get_settings
         _multi_card_enabled = get_settings().card.task_level_cards_enabled
 
-        orchestrator = TaskOrchestrator(
+        orchestrator = TaskOrchestrator.from_settings(
             chat_id=chat_id,
             session_creator=_task_session_creator,
-            bridge_factory=ACPStreamBridge if _multi_card_enabled else None,
+            thinking_session=rotator,
+            bridge_class=ACPStreamBridge,
         )
-        orchestrator.set_thinking_session(rotator)
 
         def _reset_orchestrator():
             """Reset orchestrator for a new iteration (allows fresh plan detection)."""
             nonlocal orchestrator
             orchestrator.reset()
             # Create fresh orchestrator for the new iteration
-            orchestrator = TaskOrchestrator(
+            orchestrator = TaskOrchestrator.from_settings(
                 chat_id=chat_id,
                 session_creator=_task_session_creator,
-                bridge_factory=ACPStreamBridge if _multi_card_enabled else None,
+                thinking_session=rotator,
+                bridge_class=ACPStreamBridge,
             )
-            orchestrator.set_thinking_session(rotator)
 
         def _new_session(iteration: int):
             """Atomically rotate to a new session (iteration boundary)."""
@@ -139,7 +139,7 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
                 ),
                 unit_id=str(iteration),
                 unit_kind="iteration",
-                unit_label=f"第 {iteration} 轮",
+                unit_label=UI_TEXT["loop_iteration_label"].format(iteration=iteration),
                 continuation_seq=rotator.rotation_count + 1,
             )
             # Use old card's delivered message_id as reply_to for navigation chain
@@ -191,10 +191,7 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
                 orchestrator.handle_plan_update(event, stream_bridge)
 
             # Route ACP event content to the correct session/bridge
-            if _multi_card_enabled and orchestrator.has_plan and not orchestrator.is_fallback_mode:
-                orchestrator.route_acp_event(event, stream_bridge)
-            else:
-                stream_bridge.on_event(event)
+            orchestrator.route_or_fallback(event, stream_bridge)
 
         def on_iteration_done(iteration: int, record: IterationRecord):
             # View State Update: Iteration Done
@@ -346,7 +343,7 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
             iteration_id = view_context.get("iteration_id")
             self._render_review_view(message_id, chat_id, project, engine, state, iteration_id)
         elif view_mode == "error":
-            error_msg = view_context.get("error", "未知错误")
+            error_msg = view_context.get("error", UI_TEXT["loop_error_unknown"])
             self._render_error_view(message_id, chat_id, project, engine, state, error_msg)
         elif view_mode == "history":
             self._render_history_view(message_id, chat_id, project, engine, state)
@@ -433,10 +430,10 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
         current_page_items = reversed_iterations[start_idx:end_idx] if start_idx < total else []
 
         # Build history content
-        lines = [f"📋 共 {total} 次迭代\n"]
+        lines = [UI_TEXT["loop_summary_header"].format(total=total)]
         for it in current_page_items:
             status_icon = "✅" if it.status.value == "success" else "❌" if it.status.value == "failed" else "🔄"
-            lines.append(f"{status_icon} **迭代 {it.iteration}**")
+            lines.append(UI_TEXT["loop_iteration_title"].format(status_icon=status_icon, iteration=it.iteration))
 
         session = self._build_view_session(chat_id, message_id, engine_name, state)
         session.dispatch(CardEvent.started())

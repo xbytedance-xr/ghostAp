@@ -26,11 +26,13 @@ class TestSessionHookProtocol:
     """Verify that SessionHook protocol works as expected."""
 
     def test_protocol_isinstance_check(self):
-        """Classes implementing both methods satisfy the protocol."""
+        """Classes implementing all protocol methods satisfy the protocol."""
         class MyHook:
             def on_dispatched(self, event, state):
                 pass
             def on_terminal(self, state, reason):
+                pass
+            def on_first_delivered(self, session_id, msg_id):
                 pass
 
         assert isinstance(MyHook(), SessionHook)
@@ -722,3 +724,250 @@ class TestEmojiHookEmptyMessageId:
         state = _make_terminal_state("failed")
         hook.on_terminal(state, "failed")
         add_reaction.assert_not_called()
+
+
+class TestFireFirstDeliveredTimeout:
+    """AC14: fire_first_delivered with slow hook does not block beyond timeout."""
+
+    def test_slow_hook_does_not_block(self):
+        """A hook sleeping 5s should be cancelled within DISPATCHED_HOOK_TIMEOUT (3s)."""
+        import time
+        from src.card.hooks import HookFirer, DISPATCHED_HOOK_TIMEOUT
+
+        class SlowHook:
+            def on_first_delivered(self, session_id: str, msg_id: str) -> None:
+                time.sleep(5.0)
+
+            def on_dispatched(self, event, state):
+                pass
+
+            def on_terminal(self, state, reason):
+                pass
+
+        class FastHook:
+            def __init__(self):
+                self.called = False
+
+            def on_first_delivered(self, session_id: str, msg_id: str) -> None:
+                self.called = True
+
+            def on_dispatched(self, event, state):
+                pass
+
+            def on_terminal(self, state, reason):
+                pass
+
+        slow = SlowHook()
+        fast = FastHook()
+        firer = HookFirer(hooks=(slow, fast), session_id="test_session")
+
+        start = time.monotonic()
+        firer.fire_first_delivered("om_msg_001")
+        elapsed = time.monotonic() - start
+
+        # Total time should be bounded by timeout (3s) + small overhead
+        assert elapsed < DISPATCHED_HOOK_TIMEOUT + 0.5, (
+            f"fire_first_delivered took {elapsed:.1f}s, expected < {DISPATCHED_HOOK_TIMEOUT + 0.5}s"
+        )
+        # The fast hook should still execute
+        assert fast.called is True
+
+
+class TestFireFirstDeliveredEdgeCases:
+    """AC-R18/AC-R19: edge cases for fire_first_delivered."""
+
+    def test_hook_exception_swallowed(self):
+        """Non-timeout exception in hook is swallowed and doesn't block subsequent hooks."""
+        from src.card.hooks import HookFirer
+
+        call_order = []
+
+        class ExplodingHook:
+            def on_first_delivered(self, session_id: str, msg_id: str) -> None:
+                call_order.append("exploding")
+                raise RuntimeError("boom")
+
+            def on_dispatched(self, event, state):
+                pass
+
+            def on_terminal(self, state, reason):
+                pass
+
+        class GoodHook:
+            def on_first_delivered(self, session_id: str, msg_id: str) -> None:
+                call_order.append("good")
+
+            def on_dispatched(self, event, state):
+                pass
+
+            def on_terminal(self, state, reason):
+                pass
+
+        firer = HookFirer(session_id="test_exc", hooks=(ExplodingHook(), GoodHook()))
+        # Should not raise
+        firer.fire_first_delivered("om_msg_001")
+        import time
+        time.sleep(0.5)  # Give threads time to complete
+        assert "good" in call_order, f"GoodHook not called. Order: {call_order}"
+
+    def test_empty_msg_id_noop(self):
+        """fire_first_delivered('') does not execute any hook."""
+        from src.card.hooks import HookFirer
+
+        called = []
+
+        class TrackingHook:
+            def on_first_delivered(self, session_id: str, msg_id: str) -> None:
+                called.append(msg_id)
+
+            def on_dispatched(self, event, state):
+                pass
+
+            def on_terminal(self, state, reason):
+                pass
+
+        firer = HookFirer(session_id="test_empty", hooks=(TrackingHook(),))
+        firer.fire_first_delivered("")
+        import time
+        time.sleep(0.2)
+        assert len(called) == 0, f"Hook should not fire on empty msg_id, got: {called}"
+
+
+# ─── Task 15 [AC-TEST-1]: TestAppendHookIntegration ───
+
+
+class TestAppendHookIntegration:
+    """AC-TEST-1: HookFirer.append_hook() dynamically adds hooks that are reached by fire_* methods."""
+
+    def test_appended_hook_reached_by_fire_dispatched(self):
+        """fire_dispatched calls on_dispatched on a hook added via append_hook."""
+        import time
+        from src.card.hooks import HookFirer
+
+        calls = []
+
+        class DynHook:
+            def on_dispatched(self, event, state):
+                calls.append(("dispatched", event, state))
+
+            def on_terminal(self, state, reason):
+                pass
+
+            def on_first_delivered(self, session_id, msg_id):
+                pass
+
+        firer = HookFirer(session_id="append_test", hooks=())
+        firer.append_hook(DynHook())
+
+        state = _make_terminal_state("completed")
+        event = CardEvent(type=CardEventType.STARTED)
+        firer.fire_dispatched(event, state)
+        time.sleep(0.5)
+        assert len(calls) == 1
+        assert calls[0][0] == "dispatched"
+
+    def test_appended_hook_reached_by_fire_terminal(self):
+        """fire_terminal calls on_terminal on a hook added via append_hook."""
+        import time
+        from src.card.hooks import HookFirer
+
+        calls = []
+
+        class DynHook:
+            def on_dispatched(self, event, state):
+                pass
+
+            def on_terminal(self, state, reason):
+                calls.append(("terminal", reason))
+
+            def on_first_delivered(self, session_id, msg_id):
+                pass
+
+        firer = HookFirer(session_id="append_term", hooks=())
+        firer.append_hook(DynHook())
+
+        state = _make_terminal_state("completed")
+        firer.fire_terminal(state, "completed")
+        time.sleep(0.5)
+        assert len(calls) == 1
+        assert calls[0] == ("terminal", "completed")
+
+    def test_appended_hook_reached_by_fire_first_delivered(self):
+        """fire_first_delivered calls on_first_delivered on a hook added via append_hook."""
+        import time
+        from src.card.hooks import HookFirer
+
+        calls = []
+
+        class DynHook:
+            def on_dispatched(self, event, state):
+                pass
+
+            def on_terminal(self, state, reason):
+                pass
+
+            def on_first_delivered(self, session_id, msg_id):
+                calls.append(("delivered", session_id, msg_id))
+
+        firer = HookFirer(session_id="append_fd", hooks=())
+        firer.append_hook(DynHook())
+
+        firer.fire_first_delivered("om_msg_42")
+        time.sleep(0.5)
+        assert len(calls) == 1
+        assert calls[0] == ("delivered", "append_fd", "om_msg_42")
+
+
+# ─── Task 16 [AC-TEST-4]: TestAppendHookConcurrency ───
+
+
+class TestAppendHookConcurrency:
+    """AC-TEST-4: Concurrent append_hook + fire_first_delivered — no lost hooks, no crash."""
+
+    def test_concurrent_append_and_fire_no_loss(self):
+        """10 threads concurrently append hooks + fire_first_delivered — all hooks reached."""
+        import threading
+        import time
+        from src.card.hooks import HookFirer
+
+        NUM_THREADS = 10
+        firer = HookFirer(session_id="concurrent_test", hooks=())
+        delivered_calls: list[str] = []
+        lock = threading.Lock()
+
+        class CountingHook:
+            def __init__(self, idx: int):
+                self.idx = idx
+
+            def on_dispatched(self, event, state):
+                pass
+
+            def on_terminal(self, state, reason):
+                pass
+
+            def on_first_delivered(self, session_id, msg_id):
+                with lock:
+                    delivered_calls.append(f"hook_{self.idx}")
+
+        barrier = threading.Barrier(NUM_THREADS)
+
+        def worker(idx: int):
+            barrier.wait()
+            firer.append_hook(CountingHook(idx))
+            # Fire after append — some hooks from other threads may not be appended yet
+            firer.fire_first_delivered(f"msg_{idx}")
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(NUM_THREADS)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        # Give executor time to finish
+        time.sleep(1.0)
+
+        # At minimum, each fire_first_delivered should not crash.
+        # At least 1 hook should have been called (the one appended by the same thread before fire).
+        assert len(delivered_calls) >= NUM_THREADS, (
+            f"Expected at least {NUM_THREADS} calls, got {len(delivered_calls)}"
+        )

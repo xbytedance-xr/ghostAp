@@ -203,3 +203,66 @@ class TestSpecRendererMultiCard:
 
         # Still just 1 card
         assert tracker.create_card_count == 1
+
+    def test_ac1_create_card_equals_task_count_plus_one(self):
+        """AC1: create_card calls == task_count + 1 (thinking/rotator card).
+
+        For 4 subtasks in BUILD phase, total create_card calls should be exactly 5:
+        1 (thinking/rotator) + 4 (per-task cards).
+        """
+        renderer, tracker = self._setup_renderer()
+
+        callbacks = renderer.create_spec_callbacks(
+            message_id="msg_1",
+            chat_id="chat_1",
+            project=None,
+        )
+
+        task_count = 4
+        plan_event = _make_plan_event([
+            ("Implement auth module", "pending"),
+            ("Add database migration", "pending"),
+            ("Write integration tests", "pending"),
+            ("Update API documentation", "pending"),
+        ])
+        callbacks.on_phase_event(1, SpecPhase.BUILD, plan_event)
+
+        expected_card_count = task_count + 1  # +1 for thinking/rotator card
+        assert tracker.create_card_count == expected_card_count, (
+            f"AC1 violation: expected {expected_card_count} create_card calls "
+            f"(task_count={task_count} + 1 thinking), got {tracker.create_card_count}"
+        )
+
+    def test_route_or_fallback_called_in_build(self):
+        """After plan reception in BUILD phase, events are routed through route_acp_event."""
+        from unittest.mock import patch as mock_patch
+        from src.card.orchestrator import TaskOrchestrator
+
+        renderer, tracker = self._setup_renderer()
+
+        callbacks = renderer.create_spec_callbacks(
+            message_id="msg_1",
+            chat_id="chat_1",
+            project=None,
+        )
+
+        # Send a multi-task plan first
+        plan_event = _make_plan_event([
+            ("Task A", "pending"),
+            ("Task B", "pending"),
+        ])
+        callbacks.on_phase_event(1, SpecPhase.BUILD, plan_event)
+
+        # Now send a text event in BUILD — should go through route_acp_event
+        text_event = ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="building...")
+        original_route = TaskOrchestrator.route_acp_event
+        call_count = []
+
+        def _spy(self_orch, *args, **kwargs):
+            call_count.append(1)
+            return original_route(self_orch, *args, **kwargs)
+
+        with mock_patch.object(TaskOrchestrator, "route_acp_event", _spy):
+            callbacks.on_phase_event(1, SpecPhase.BUILD, text_event)
+            assert len(call_count) > 0, "route_acp_event was not called"
+

@@ -17,7 +17,7 @@ from src.card.events import CardEvent, CardEventType
 from src.card.render.budget import RenderBudget
 from src.card.render.throttle import StreamThrottle
 from src.card.state.models import CardMetadata
-from src.card.ui_text import UI_TEXT
+from src.card.ui_text import UI_TEXT, _MUTABLE_UI_TEXT
 from src.feishu.renderers._spec_stream_processor import SpecStreamProcessor
 from src.spec_engine import SpecEngineCallbacks
 from src.spec_engine.models import SpecPhase, SpecProject, SpecProjectStatus
@@ -238,7 +238,7 @@ class TestOnReviewRetryBranches:
         ev = self._make_event(RetryStatus.EXHAUSTED, max_attempts=3)
         # retry_exhausted format requires {n} and {elapsed_friendly}; the processor
         # only passes n — patch UI_TEXT to avoid KeyError from missing placeholder
-        with patch.dict(UI_TEXT, {"retry_exhausted": "已重试 {n} 次"}):
+        with patch.dict(_MUTABLE_UI_TEXT, {"retry_exhausted": "已重试 {n} 次"}):
             proc.on_review_retry(1, ev)
         assert proc._footer_status is not None
         assert "3" in proc._footer_status

@@ -179,6 +179,33 @@ class TestLoopRendererMultiCard:
         # Still just 1 card (rotator)
         assert tracker.create_card_count == 1
 
+    def test_ac1_create_card_equals_task_count_plus_one(self):
+        """AC1: create_card calls == task_count + 1 (thinking/rotator card).
+
+        For 2 subtasks, total create_card calls should be exactly 3:
+        1 (thinking/rotator) + 2 (per-task cards).
+        """
+        renderer, tracker = self._setup_renderer()
+
+        callbacks = renderer.create_loop_callbacks(
+            message_id="msg_1",
+            chat_id="chat_1",
+            project=None,
+        )
+
+        task_count = 2
+        plan_event = _make_plan_event([
+            ("Implement feature", "pending"),
+            ("Write tests", "pending"),
+        ])
+        callbacks.on_iteration_event(1, plan_event)
+
+        expected_card_count = task_count + 1  # +1 for thinking/rotator card
+        assert tracker.create_card_count == expected_card_count, (
+            f"AC1 violation: expected {expected_card_count} create_card calls "
+            f"(task_count={task_count} + 1 thinking), got {tracker.create_card_count}"
+        )
+
     def test_single_step_plan_no_split(self):
         """Single-step plan doesn't trigger multi-card."""
         renderer, tracker = self._setup_renderer()
@@ -194,3 +221,37 @@ class TestLoopRendererMultiCard:
 
         # No split
         assert tracker.create_card_count == 1
+
+    def test_route_or_fallback_called_after_plan(self):
+        """After plan reception, text events are routed through route_or_fallback."""
+        from unittest.mock import patch as mock_patch
+        from src.card.orchestrator import TaskOrchestrator
+
+        renderer, tracker = self._setup_renderer()
+
+        callbacks = renderer.create_loop_callbacks(
+            message_id="msg_1",
+            chat_id="chat_1",
+            project=None,
+        )
+
+        # Send a multi-task plan first
+        plan_event = _make_plan_event([
+            ("Task A", "pending"),
+            ("Task B", "pending"),
+        ])
+        callbacks.on_iteration_event(1, plan_event)
+
+        # Now send a text event — should go through route_or_fallback
+        text_event = ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="hello")
+        original_route = TaskOrchestrator.route_or_fallback
+        call_count = []
+
+        def _spy(self_orch, *args, **kwargs):
+            call_count.append(1)
+            return original_route(self_orch, *args, **kwargs)
+
+        with mock_patch.object(TaskOrchestrator, "route_or_fallback", _spy):
+            callbacks.on_iteration_event(1, text_event)
+            assert len(call_count) > 0, "route_or_fallback was not called"
+
