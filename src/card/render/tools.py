@@ -9,6 +9,7 @@ from src.card.ui_text import UI_TEXT
 
 _MAX_OUTPUT_CHARS = 2000
 _MAX_SUMMARY_CHARS = 80
+_MAX_ACTIVITY_DETAILS = 6
 
 _STATUS_ICONS = {
     "active": "⏳",
@@ -24,6 +25,13 @@ _SEARCH_TOOLS = {"grep", "search", "find", "glob", "search_codebase"}
 
 # Tools rendered as compact single-line summary (no input/output detail)
 _COMPACT_TOOLS = {"task", "todowrite", "todo_write"}
+
+_COMMAND_TOOLS = _BASH_TOOLS
+_EDIT_TOOLS = {"write", "edit", "multi_edit", "write_file", "edit_file", "replace"}
+_EXPLORE_TOOLS = {
+    "read", "read_file", "grep", "search", "find", "glob",
+    "search_codebase", "list", "ls", "list_dir",
+}
 
 
 def _is_empty_data(value) -> bool:
@@ -112,6 +120,93 @@ def render_tool_history_panel(blocks: list[ContentBlock]) -> dict | None:
     }
 
 
+def render_activity_summary_panel(blocks: list[ContentBlock] | tuple[ContentBlock, ...]) -> dict | None:
+    """Render a compact, persistent activity summary for programming cards."""
+    tool_blocks = [b for b in blocks if getattr(b, "kind", "") == "tool_call"]
+    if not tool_blocks:
+        return None
+
+    explored: set[str] = set()
+    edited: set[str] = set()
+    command_count = 0
+    active_count = 0
+    failed_count = 0
+    detail_lines: list[str] = []
+
+    for block in tool_blocks:
+        tool_name = (getattr(block, "tool_name", "") or "").lower()
+        status = getattr(block, "status", "")
+        summary = _activity_target(block)
+
+        if status == "active":
+            active_count += 1
+        elif status == "failed":
+            failed_count += 1
+
+        if tool_name in _COMMAND_TOOLS:
+            if status != "active":
+                command_count += 1
+            if summary:
+                detail_lines.append(_activity_detail("运行失败" if status == "failed" else "已运行", summary))
+            continue
+
+        if tool_name in _EDIT_TOOLS:
+            if summary:
+                edited.add(summary)
+                detail_lines.append(_activity_detail("已编辑", summary))
+            continue
+
+        if tool_name in _EXPLORE_TOOLS:
+            if summary:
+                explored.add(summary)
+                detail_lines.append(_activity_detail("已探索", summary))
+            continue
+
+        if summary:
+            detail_lines.append(_activity_detail("已调用", f"{block.tool_name}: {summary}"))
+
+    header_parts: list[str] = []
+    if explored:
+        header_parts.append(f"已探索 {len(explored)} 项")
+    if edited:
+        header_parts.append(f"已编辑 {len(edited)} 个文件")
+    if command_count:
+        header_parts.append(f"已运行 {command_count} 条命令")
+    if active_count:
+        header_parts.append(f"正在运行 {active_count} 项")
+    if failed_count:
+        header_parts.append(f"{failed_count} 项失败")
+
+    if not header_parts:
+        return None
+
+    visible_details = detail_lines[-_MAX_ACTIVITY_DETAILS:]
+    hidden_count = max(0, len(detail_lines) - len(visible_details))
+    detail_content = "\n".join(f"- {line}" for line in visible_details)
+    if hidden_count:
+        detail_content += f"\n- 还有 {hidden_count} 项较早操作已折叠"
+
+    return {
+        "tag": "collapsible_panel",
+        "expanded": True,
+        "header": {
+            "title": {"tag": "markdown", "content": f"▣ **{', '.join(header_parts)}**"},
+            "vertical_align": "center",
+            "icon": {
+                "tag": "standard_icon",
+                "token": "down-small-ccm_outlined",
+                "size": "16px 16px",
+            },
+            "icon_position": "follow_text",
+            "icon_expanded_angle": -180,
+        },
+        "border": {"color": PANEL_STYLES["border_history"], "corner_radius": PANEL_STYLES["corner_radius"]},
+        "vertical_spacing": PANEL_STYLES["vertical_spacing"],
+        "padding": PANEL_STYLES["padding_standard"],
+        "elements": [{"tag": "markdown", "content": detail_content}],
+    }
+
+
 def generate_tool_summary(block: ContentBlock) -> str:
     """Generate a short summary for a tool call."""
     tool_name = (block.tool_name or "").lower()
@@ -152,6 +247,39 @@ def generate_tool_summary(block: ContentBlock) -> str:
     if block.tool_summary:
         return block.tool_summary
     return block.tool_name or ""
+
+
+def _activity_target(block: ContentBlock) -> str:
+    tool_name = (block.tool_name or "").lower()
+    tool_input = block.tool_input or ""
+
+    if tool_name in _COMMAND_TOOLS:
+        return _first_non_empty_line(tool_input) or generate_tool_summary(block)
+
+    path = _extract_json_field(tool_input, ("path", "file_path", "file", "directory", "dir"))
+    if path:
+        return path
+
+    return generate_tool_summary(block)
+
+
+def _activity_detail(action: str, target: str) -> str:
+    return f"{action} `{_truncate_activity_target(target)}`"
+
+
+def _truncate_activity_target(value: str) -> str:
+    value = value.strip()
+    if len(value) <= 120:
+        return value
+    return value[:117] + "…"
+
+
+def _first_non_empty_line(value: str) -> str:
+    for line in value.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return ""
 
 
 def _extract_json_field(text: str, fields: tuple[str, ...]) -> str:

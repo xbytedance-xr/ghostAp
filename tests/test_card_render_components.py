@@ -441,6 +441,42 @@ class TestRenderWorktreeConfirm:
         result = _render_worktree_confirm(data)
         assert "已选组合" in result["content"]
 
+    def test_renders_agent_tool_model_tuple_from_selection_item_dicts(self):
+        data = {
+            "selected_items": [
+                {
+                    "agent_display_name": "",
+                    "display_name": "Coco",
+                    "effective_model_display_name": "Doubao Pro",
+                    "display_label": "Coco / Doubao Pro",
+                },
+                {
+                    "agent_display_name": "",
+                    "display_name": "Claude",
+                    "effective_model_display_name": "默认模型",
+                    "display_label": "Claude / 默认模型",
+                },
+                {
+                    "agent_display_name": "TTADK",
+                    "display_name": "Codex",
+                    "effective_model_display_name": "GPT-5.2",
+                    "display_label": "TTADK · Codex / GPT-5.2",
+                },
+            ],
+            "goal": "",
+            "message": "",
+        }
+
+        result = _render_worktree_confirm(data)
+
+        assert "Coco" in result["content"]
+        assert "Doubao Pro" in result["content"]
+        assert "Claude" in result["content"]
+        assert "默认模型" in result["content"]
+        assert "TTADK" in result["content"]
+        assert "Codex" in result["content"]
+        assert "GPT-5.2" in result["content"]
+
 
 class TestRenderWorktreeUnits:
     """Tests for _render_worktree_units."""
@@ -678,6 +714,44 @@ class TestToolHistoryEmoji:
         title_content = result["header"]["title"]["content"]
         assert "🔧" in title_content
         assert "📋" not in title_content
+
+
+class TestActivitySummaryPanel:
+    """Verify programming activity summary mirrors command/edit/explore progress."""
+
+    def test_activity_summary_groups_explore_edit_and_command_counts(self):
+        from src.card.render.tools import render_activity_summary_panel
+        from src.card.state.models import ContentBlock
+
+        blocks = [
+            ContentBlock(
+                kind="tool_call",
+                status="completed",
+                tool_name="read",
+                tool_input='{"path": "src/app.py"}',
+            ),
+            ContentBlock(
+                kind="tool_call",
+                status="completed",
+                tool_name="edit",
+                tool_input='{"path": "src/app.py"}',
+            ),
+            ContentBlock(
+                kind="tool_call",
+                status="completed",
+                tool_name="bash",
+                tool_input="uv run python -m pytest tests/test_app.py -q",
+            ),
+        ]
+
+        result = render_activity_summary_panel(blocks)
+        rendered = str(result)
+
+        assert "已探索 1 项" in rendered
+        assert "已编辑 1 个文件" in rendered
+        assert "已运行 1 条命令" in rendered
+        assert "src/app.py" in rendered
+        assert "uv run python -m pytest tests/test_app.py -q" in rendered
 
 
 class TestCriteriaPanelIcon:

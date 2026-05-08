@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 from src.card.engine_meta import engine_type_to_cmd
 from src.card.types import ActiveElement, RenderedCard
-from src.card.render.atoms import AtomKind, RenderAtom, flatten_to_atoms
+from src.card.render.atoms import AtomKind, RenderAtom, estimate_atom_size, flatten_to_atoms
 from src.card.render.budget import RenderBudget
 from src.card.render.buttons import render_buttons
 from src.card.render.footer import render_footer
@@ -17,7 +17,7 @@ from src.card.render.header import render_header
 from src.card.render.pagination import paginate_atoms
 from src.card.render.plan import render_plan_panel
 from src.card.render.reasoning import render_reasoning_panel
-from src.card.render.tools import render_tool_history_panel, render_tool_panel
+from src.card.render.tools import render_activity_summary_panel, render_tool_history_panel, render_tool_panel
 from src.card.render.worktree import render_worktree_panel
 from src.card.state.models import CardState, ContentBlock
 from src.card.themes import PANEL_STYLES
@@ -26,7 +26,7 @@ from src.card.ui_text import UI_TEXT
 logger = logging.getLogger(__name__)
 
 _STATUS_ATOM_KINDS = frozenset({"warning_banner", "progress_bar", "phase_panel", "criteria_panel", "task_list"})
-_BODY_ATOM_KINDS = frozenset({"text", "reasoning", "plan", "worktree_panel"})
+_BODY_ATOM_KINDS = frozenset({"text", "reasoning", "plan", "worktree_panel", "activity_summary"})
 _APPENDIX_ATOM_KINDS = frozenset({"tool_panel", "tool_history"})
 
 
@@ -88,7 +88,7 @@ def render_card(
     }
 
     # 1. Flatten blocks to atoms
-    atoms = _order_atoms_by_section(flatten_to_atoms(state.blocks, budget))
+    atoms = _order_atoms_by_section(_with_activity_summary_atom(flatten_to_atoms(state.blocks, budget), state))
 
     # 2. Paginate
     pages = paginate_atoms(atoms, budget)
@@ -276,6 +276,12 @@ def _render_atom_tool_history(atom: RenderAtom, state: CardState, budget: Render
     return {"tag": "markdown", "content": atom.content}
 
 
+def _render_atom_activity_summary(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict | None:
+    if atom.elements:
+        return atom.elements[0]
+    return None
+
+
 def _render_atom_reasoning(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict:
     block = block_index.get(atom.block_id)
     if block is not None:
@@ -330,6 +336,7 @@ _ATOM_RENDERERS: dict[str, Callable[[RenderAtom, CardState, RenderBudget, dict],
     "text": _render_atom_text,
     "tool_panel": _render_atom_tool_panel,
     "tool_history": _render_atom_tool_history,
+    "activity_summary": _render_atom_activity_summary,
     "reasoning": _render_atom_reasoning,
     "plan": _render_atom_plan,
     "criteria_panel": _render_atom_criteria,
@@ -406,6 +413,32 @@ def _order_atoms_by_section(atoms: list[RenderAtom]) -> list[RenderAtom]:
     status_atoms = [*task_list_atoms, *other_status]
 
     return [*status_atoms, *body_atoms, *appendix_atoms]
+
+
+def _with_activity_summary_atom(atoms: list[RenderAtom], state: CardState) -> list[RenderAtom]:
+    """Insert a derived process summary after task/plan context and before streamed text."""
+    if state.metadata.engine_type is not None or not state.metadata.tool_name:
+        return atoms
+
+    panel = render_activity_summary_panel(state.blocks)
+    if panel is None:
+        return atoms
+
+    activity_atom = RenderAtom(
+        kind="activity_summary",
+        elements=[panel],
+        block_id="_activity_summary",
+        content=str(panel),
+        splittable=False,
+        node_count=1,
+    )
+    activity_atom.byte_size = estimate_atom_size(activity_atom)
+
+    insert_at = 0
+    for idx, atom in enumerate(atoms):
+        if atom.kind in {"task_list", "plan"}:
+            insert_at = idx + 1
+    return [*atoms[:insert_at], activity_atom, *atoms[insert_at:]]
 
 
 def _render_text_element(atom: RenderAtom, block_index: dict[str, ContentBlock]) -> dict:

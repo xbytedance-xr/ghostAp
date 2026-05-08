@@ -89,6 +89,20 @@ class WorktreeHandler(BaseHandler):
         )
 
     @staticmethod
+    def _normalize_ttadk_tool_option(tool: dict) -> dict:
+        """Normalize TTADK subtool choices to agent + tool + model semantics."""
+        item = dict(tool or {})
+        item["provider"] = "ttadk"
+        item["agent_name"] = item.get("agent_name") or "ttadk"
+        display_name = str(item.get("display_name") or item.get("tool_name") or item.get("name") or "").strip()
+        prefix = "TTADK · "
+        if display_name.startswith(prefix):
+            display_name = display_name[len(prefix):].strip()
+        if display_name:
+            item["display_name"] = display_name
+        return item
+
+    @staticmethod
     def _resolve_worktree_goal(value: dict, state=None) -> str:
         """Unify goal resolution from card value + state fallback."""
         return str(
@@ -256,7 +270,7 @@ class WorktreeHandler(BaseHandler):
 
         if provider == "ttadk" and tool_name == "ttadk":
             selected_dicts = [item.to_dict() for item in state.selection.selected_items]
-            ttadk_tools = self._get_ttadk_worktree_tools()
+            ttadk_tools = [self._normalize_ttadk_tool_option(t) for t in self._get_ttadk_worktree_tools()]
             # Show TTADK tool selection via session dispatch
             session = self._get_or_create_session(chat_id, pid)
             session.dispatch(CardEvent.worktree_tool_select(
@@ -271,6 +285,7 @@ class WorktreeHandler(BaseHandler):
             provider=provider,
             tool_name=tool_name,
             display_name=value.get("display_name") or tool_name,
+            agent_name=value.get("agent_name") or "",
             supports_model=bool(supports_model),
             model_optional=True,
             skip_model_selection=bool(skip_model_selection),
@@ -293,7 +308,7 @@ class WorktreeHandler(BaseHandler):
                 tool_name, provider=provider, cwd=cwd, current_model=current_model
             )
             # Worktree 强调"工具 × 模型"组合，必须让用户显式选模型；只有完全拿不到
-            # 模型列表时才回退为"工具内置模型"直接添加。len==1 也仍展示模型卡，方便
+            # 模型列表时才回退为"默认模型"直接添加。len==1 也仍展示模型卡，方便
             # 后续运行环境扩充模型时无需改 UI 路径。
             if not models or option.skip_model_selection:
                 should_skip_model = True

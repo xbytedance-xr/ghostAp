@@ -66,6 +66,7 @@ class WorktreeDispatcher:
             
             # 动态绑定工具
             unit.provider = tool.provider
+            unit.agent_name = tool.agent_name
             unit.tool_name = tool.tool_name
             unit.selection_key = tool.selection_key
             unit.display_name = tool.display_name

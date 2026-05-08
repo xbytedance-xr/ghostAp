@@ -168,6 +168,7 @@ class TestRenderWorktreeToolSelectInteractions:
             "action": "worktree_select_tool",
             "tool_name": "coco",
             "display_name": "Coco",
+            "agent_name": "",
             "provider": "acp",
             "supports_model": True,
             "skip_model_selection": False,

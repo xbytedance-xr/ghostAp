@@ -48,7 +48,7 @@ def test_worktree_selection_flow_supports_tool_model_loop_and_finalize():
     assert added is True
     assert len(state.selection.selected_items) == 2
     assert state.selection.selected_items[1].supports_model is False
-    assert "工具内置模型" in state.selection.selected_items[1].display_label
+    assert "默认模型" in state.selection.selected_items[1].display_label
 
     state = manager.finalize_selection(project)
 
@@ -390,7 +390,7 @@ def test_worktree_select_tool_shows_model_card_even_with_single_model():
 
 
 def test_worktree_select_tool_falls_back_when_no_models_returned():
-    """无可用模型时应自动 fallback 添加为'工具内置模型'，避免出现空模型卡。"""
+    """无可用模型时应自动 fallback 添加为默认模型，避免出现空模型卡。"""
     handler = _make_system_handler()
     project = ProjectContext(project_id="p-empty", project_name="EMPTY", root_path="/tmp/empty")
     handler.ctx.project_manager.get_active_project.return_value = project
@@ -419,84 +419,74 @@ def test_worktree_select_tool_falls_back_when_no_models_returned():
     assert state.selection.stage == "tool_select"
 
 
-def test_worktree_select_tool_shows_ttadk_subtool_card_for_aggregate_entry():
-    """Selecting the TTADK aggregate entry should dispatch WORKTREE_TOOL_SELECT with TTADK sub-tools."""
+def test_worktree_card_click_flow_accumulates_native_default_and_ttadk_model_tools():
+    """Click flow: ACP tool→model, native default tool, TTADK→tool→model, then confirm."""
     handler = _make_system_handler()
-    project = ProjectContext(project_id="p-agg", project_name="AGG", root_path="/tmp/agg")
+    project = ProjectContext(project_id="p-clicks", project_name="CLICKS", root_path="/tmp/clicks")
     handler.ctx.project_manager.get_active_project.return_value = project
     handler.ctx.project_manager.get_project.return_value = project
     handler.ctx.project_manager.get_project_for_chat.return_value = project
 
-    fake_tool_value = {
-        "tool_name": "ttadk",
-        "provider": "ttadk",
-        "supports_model": False,
-        "display_name": "TTADK",
-    }
-    fake_ttadk_tools = [
-        {"provider": "ttadk", "tool_name": "coco", "display_name": "TTADK · coco", "description": "TTADK · coco", "supports_model": True},
-        {"provider": "ttadk", "tool_name": "claude", "display_name": "TTADK · claude", "description": "TTADK · claude", "supports_model": True},
+    top_tools = [
+        {"provider": "acp", "tool_name": "coco", "display_name": "Coco", "supports_model": True},
+        {"provider": "cli", "tool_name": "claude", "display_name": "Claude", "supports_model": False},
+        {"provider": "ttadk", "tool_name": "ttadk", "display_name": "TTADK", "supports_model": False},
     ]
+    ttadk_tools = [
+        {"provider": "ttadk", "tool_name": "codex", "display_name": "TTADK · codex", "supports_model": True},
+    ]
+
+    def models_for(tool_name, provider="ttadk", **_kwargs):
+        if provider == "acp" and tool_name == "coco":
+            return [{"name": "doubao-pro", "display_name": "Doubao Pro", "is_default": True}]
+        if provider == "ttadk" and tool_name == "codex":
+            return [{"name": "gpt-5.2", "display_name": "GPT-5.2", "is_default": True}]
+        return []
+
     mock_session = MagicMock()
     mock_session.closed = False
-    handler._worktree_manager().start_selection(project)
 
-    with patch.object(handler, "_get_ttadk_worktree_tools", return_value=fake_ttadk_tools), \
+    with patch.object(handler, "_get_available_worktree_tools", return_value=top_tools), \
+         patch.object(handler, "_get_ttadk_worktree_tools", return_value=ttadk_tools), \
+         patch.object(handler, "_get_models_for_tool", side_effect=models_for), \
          patch.object(handler, "_get_or_create_session", return_value=mock_session):
-        handler.handle_worktree_select_tool("msg-agg", "chat1", project_id="p-agg", value=fake_tool_value)
+        handler.handle_worktree_command("msg-start", "chat1", project)
+        handler.handle_worktree_select_tool(
+            "msg-coco", "chat1", project_id="p-clicks",
+            value={"provider": "acp", "tool_name": "coco", "display_name": "Coco", "supports_model": True},
+        )
+        handler.handle_worktree_select_model(
+            "msg-coco-model", "chat1", project_id="p-clicks",
+            value={"model_name": "doubao-pro", "model_display_name": "Doubao Pro"},
+        )
+        handler.handle_worktree_select_tool(
+            "msg-claude", "chat1", project_id="p-clicks",
+            value={"provider": "cli", "tool_name": "claude", "display_name": "Claude", "supports_model": False},
+        )
+        handler.handle_worktree_select_tool(
+            "msg-ttadk", "chat1", project_id="p-clicks",
+            value={"provider": "ttadk", "tool_name": "ttadk", "display_name": "TTADK", "supports_model": False},
+        )
+        ttadk_event = mock_session.dispatch.call_args[0][0]
+        assert [(t["agent_name"], t["display_name"]) for t in ttadk_event.payload["tools"]] == [
+            ("ttadk", "codex")
+        ]
+        handler.handle_worktree_select_tool(
+            "msg-codex", "chat1", project_id="p-clicks",
+            value={"provider": "ttadk", "agent_name": "ttadk", "tool_name": "codex", "display_name": "codex", "supports_model": True},
+        )
+        handler.handle_worktree_select_model(
+            "msg-codex-model", "chat1", project_id="p-clicks",
+            value={"model_name": "gpt-5.2", "model_display_name": "GPT-5.2"},
+        )
+        handler.handle_finish_worktree_selection("msg-finish", "chat1", project_id="p-clicks")
 
     state = WorktreeManager.get_state(project)
-    assert state.selection.active is True
-    assert state.selection.stage == "tool_select"
-    assert state.selection.pending_item is None
-
-    mock_session.dispatch.assert_called_once()
-    event = mock_session.dispatch.call_args[0][0]
-    from src.card.events import CardEventType
-    assert event.type == CardEventType.WORKTREE_TOOL_SELECT
-    tool_names = [t.get("display_name", "") for t in event.payload["tools"]]
-    assert "TTADK · coco" in tool_names
-    assert "TTADK · claude" in tool_names
-
-
-def test_worktree_select_tool_skips_model_selection_for_coco_even_with_multiple_models():
-    """AC: if tool is 'coco', skip model selection even if it might have multiple models."""
-    handler = _make_system_handler()
-    project = ProjectContext(project_id="p-coco", project_name="COCO", root_path="/tmp/coco")
-    handler.ctx.project_manager.get_active_project.return_value = project
-    handler.ctx.project_manager.get_project.return_value = project
-    handler.ctx.project_manager.get_project_for_chat.return_value = project
-
-    fake_tool_value = {
-        "tool_name": "coco",
-        "provider": "acp",
-        "supports_model": True,
-        "display_name": "Coco",
-        "skip_model_selection": True
-    }
-    
-    # Mock multiple models
-    fake_models = [
-        {"name": "m1", "display_name": "Model 1", "is_default": True},
-        {"name": "m2", "display_name": "Model 2", "is_default": False}
+    exported = [item.to_dict() for item in state.selection.selected_items]
+    assert [(i["agent_name"], i["tool_name"], i["effective_model_display_name"]) for i in exported] == [
+        ("", "coco", "Doubao Pro"),
+        ("", "claude", "默认模型"),
+        ("ttadk", "codex", "GPT-5.2"),
     ]
-    
-    mock_session = MagicMock()
-    mock_session.closed = False
-    
-    with patch.object(handler, "_get_models_for_tool", return_value=fake_models), \
-         patch.object(handler, "_get_or_create_session", return_value=mock_session):
-        
-        handler.handle_worktree_select_tool("msg2", "chat1", project_id="p-coco", value=fake_tool_value)
-        
-    state = WorktreeManager.get_state(project)
-    assert len(state.selection.selected_items) == 1
-    assert state.selection.selected_items[0].tool_name == "coco"
-    assert state.selection.selected_items[0].model_name == "m1" # Default one picked
-    assert state.selection.stage == "tool_select"
-    
-    # Verify WORKTREE_TOOL_SELECT event dispatched (skip model selection)
-    mock_session.dispatch.assert_called_once()
-    event = mock_session.dispatch.call_args[0][0]
-    from src.card.events import CardEventType
-    assert event.type == CardEventType.WORKTREE_TOOL_SELECT
+    confirm_event = mock_session.dispatch.call_args[0][0]
+    assert confirm_event.payload["selected_items"] == exported

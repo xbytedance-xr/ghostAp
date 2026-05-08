@@ -368,6 +368,7 @@ def _render_worktree_select_option(
             "action": WORKTREE_SELECT_TOOL,
             "tool_name": tool_id,
             "display_name": name,
+            "agent_name": tool.get("agent_name", ""),
             "provider": tool.get("provider", ""),
             "supports_model": bool(tool.get("supports_model", False)),
             "skip_model_selection": bool(tool.get("skip_model_selection", False)),
@@ -421,13 +422,41 @@ def _render_worktree_confirm(data: dict) -> dict:
         lines.append(message)
     lines.append(UI_TEXT["worktree_render_selected_items"])
     for item in selected_items:
-        tool = item.get("tool", "")
-        model = item.get("model", "")
-        lines.append(f"- {tool} ({model})")
+        lines.append(f"- {_format_confirm_selection_item(item)}")
     if goal:
         lines.append(f"\n{UI_TEXT['worktree_render_goal'].format(goal=goal)}")
 
     return {"tag": "markdown", "content": "\n".join(lines)}
+
+
+def _format_confirm_selection_item(item: dict) -> str:
+    """Format one selected programming tuple as agent/tool/model."""
+    if not isinstance(item, dict):
+        return str(item or "").strip() or "(unknown)"
+
+    label = str(item.get("display_label") or "").strip()
+    if label:
+        return label
+
+    agent = str(item.get("agent_display_name") or item.get("agent_name") or "").strip()
+    tool = str(
+        item.get("tool")
+        or item.get("display_name")
+        or item.get("tool_name")
+        or ""
+    ).strip()
+    model = str(
+        item.get("model")
+        or item.get("effective_model_display_name")
+        or item.get("model_display_name")
+        or item.get("model_name")
+        or "默认模型"
+    ).strip()
+
+    subject = tool or "(unknown)"
+    if agent:
+        subject = f"{agent} · {subject}"
+    return f"{subject} / {model or '默认模型'}"
 
 
 def _render_worktree_units(data: dict) -> dict:

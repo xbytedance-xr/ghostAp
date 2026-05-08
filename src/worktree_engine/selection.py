@@ -11,6 +11,7 @@ class WorktreeToolOption:
     provider: str
     tool_name: str
     display_name: str
+    agent_name: str = ""
     description: str = ""
     supports_model: bool = True
     model_optional: bool = False
@@ -35,10 +36,16 @@ def provider_display_name(provider: str) -> str:
 
 
 def build_selection_item(option: WorktreeToolOption) -> WorktreeSelectionItem:
+    provider = str(option.provider or "").strip().lower()
+    tool_name = str(option.tool_name or "").strip().lower()
+    agent_name = str(option.agent_name or "").strip().lower()
+    if not agent_name and provider == "ttadk" and tool_name != "ttadk":
+        agent_name = "ttadk"
     return WorktreeSelectionItem(
-        provider=str(option.provider or "").strip().lower(),
-        tool_name=str(option.tool_name or "").strip().lower(),
+        provider=provider,
+        tool_name=tool_name,
         display_name=str(option.display_name or option.tool_name or "").strip(),
+        agent_name=agent_name,
         supports_model=bool(option.supports_model),
         model_optional=bool(option.model_optional),
         skip_model_selection=bool(option.skip_model_selection),

@@ -62,6 +62,7 @@ class WorktreeSelectionItem:
     provider: str
     tool_name: str
     display_name: str
+    agent_name: str = ""
     model_name: Optional[str] = None
     model_display_name: Optional[str] = None
     supports_model: bool = True
@@ -75,17 +76,36 @@ class WorktreeSelectionItem:
         return f"{self.provider}:{self.tool_name}:{model}"
 
     @property
+    def agent_display_name(self) -> str:
+        agent = _clean_str(self.agent_name)
+        if agent == "ttadk":
+            return "TTADK"
+        return agent.upper() if agent else ""
+
+    @property
+    def effective_model_name(self) -> str:
+        return _clean_str(self.model_name, default="default")
+
+    @property
+    def effective_model_display_name(self) -> str:
+        return _clean_str(self.model_display_name or self.model_name, default="默认模型")
+
+    @property
     def display_label(self) -> str:
-        if self.model_name:
-            return f"{self.display_name} / {self.model_display_name or self.model_name}"
-        if self.supports_model:
-            return f"{self.display_name} / 默认模型"
-        return f"{self.display_name} / 工具内置模型"
+        base = _clean_str(self.display_name or self.tool_name, default="(unknown)")
+        if self.agent_display_name:
+            base = f"{self.agent_display_name} · {base}"
+        return f"{base} / {self.effective_model_display_name}"
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
+        data["agent_display_name"] = self.agent_display_name
+        data["effective_model_name"] = self.effective_model_name
+        data["effective_model_display_name"] = self.effective_model_display_name
         data["selection_key"] = self.selection_key
         data["display_label"] = self.display_label
+        data["tool"] = _clean_str(self.display_name or self.tool_name)
+        data["model"] = self.effective_model_display_name
         return data
 
     @classmethod
@@ -97,10 +117,14 @@ class WorktreeSelectionItem:
         display_name = _clean_str(data.get("display_name") or tool_name)
         if not provider or not tool_name:
             return None
+        agent_name = _clean_str(data.get("agent_name"))
+        if not agent_name and provider == "ttadk" and tool_name != "ttadk":
+            agent_name = "ttadk"
         return cls(
             provider=provider,
             tool_name=tool_name,
             display_name=display_name,
+            agent_name=agent_name,
             model_name=_clean_optional_str(data.get("model_name")),
             model_display_name=_clean_optional_str(data.get("model_display_name")),
             supports_model=bool(data.get("supports_model", True)),
@@ -284,6 +308,7 @@ class WorktreeUnit:
     unit_id: str
     selection_key: str = ""
     provider: str = ""
+    agent_name: str = ""
     tool_name: str = ""
     display_name: str = ""
     model_name: Optional[str] = None
@@ -306,6 +331,7 @@ class WorktreeUnit:
             "unit_id": self.unit_id,
             "selection_key": self.selection_key,
             "provider": self.provider,
+            "agent_name": self.agent_name,
             "tool_name": self.tool_name,
             "display_name": self.display_name,
             "model_name": self.model_name,
@@ -328,11 +354,17 @@ class WorktreeUnit:
         unit_id = _clean_str(data.get("unit_id"))
         if not unit_id:
             return None
+        provider = _clean_str(data.get("provider"))
+        tool_name = _clean_str(data.get("tool_name"))
+        agent_name = _clean_str(data.get("agent_name"))
+        if not agent_name and provider == "ttadk" and tool_name != "ttadk":
+            agent_name = "ttadk"
         unit = cls(
             unit_id=unit_id,
             selection_key=_clean_str(data.get("selection_key")),
-            provider=_clean_str(data.get("provider")),
-            tool_name=_clean_str(data.get("tool_name")),
+            provider=provider,
+            agent_name=agent_name,
+            tool_name=tool_name,
             display_name=_clean_str(data.get("display_name") or data.get("tool_name")),
             model_name=_clean_optional_str(data.get("model_name")),
             branch_name=_clean_str(data.get("branch_name")),

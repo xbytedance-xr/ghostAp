@@ -1323,7 +1323,7 @@ class TestAtomRendererRegistry:
         expected_kinds = {
             "text", "tool_panel", "tool_history", "reasoning", "plan",
             "criteria_panel", "phase_panel", "warning_banner",
-            "progress_bar", "worktree_panel", "task_list",
+            "progress_bar", "worktree_panel", "task_list", "activity_summary",
         }
         assert expected_kinds == set(_ATOM_RENDERERS.keys())
 
@@ -2997,4 +2997,3 @@ class TestAddHookWithLegacyWarning:
         dep_warnings = [w for w in caught if issubclass(w.category, DeprecationWarning)]
         assert len(dep_warnings) >= 1
         assert "on_first_deliver" in str(dep_warnings[0].message)
-

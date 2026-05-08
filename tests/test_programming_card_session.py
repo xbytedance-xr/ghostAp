@@ -270,6 +270,47 @@ class TestProgrammingCardSession:
 
         assert len(client.creates) >= 3
 
+    def test_render_keeps_process_summary_after_later_text_updates(self):
+        from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
+        from src.card.render.budget import RenderBudget
+        from src.card.render.renderer import render_card
+
+        pcs, _ = _make_programming_session()
+        pcs.start()
+        pcs.on_text("先说明目标。")
+        pcs._flush_now()
+
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(
+                id="cmd-1",
+                title="bash",
+                kind="execute",
+                status="running",
+                content="uv run python -m pytest tests/test_example.py -q",
+            ),
+        ))
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE,
+            tool_call=ToolCallInfo(
+                id="cmd-1",
+                title="bash",
+                kind="execute",
+                status="completed",
+                content="1 passed",
+            ),
+        ))
+        pcs.on_text("后续正文继续更新。")
+        pcs._flush_now()
+
+        cards = render_card(pcs.session.state, RenderBudget())
+        body = cards[0]._card_json["body"]["elements"]
+        rendered_text = str(body)
+
+        assert "已运行 1 条命令" in rendered_text
+        assert "uv run python -m pytest tests/test_example.py -q" in rendered_text
+        assert rendered_text.index("已运行 1 条命令") < rendered_text.index("后续正文继续更新。")
+
 
 class TestSessionMetadataPerMode:
     """Each mode produces correct metadata in the session."""

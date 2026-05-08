@@ -175,6 +175,8 @@ def test_get_ttadk_tools_returns_concrete_ttadk_tools():
         result = discovery.get_ttadk_tools()
 
     assert [tool["tool_name"] for tool in result] == ["coco", "claude"]
+    assert [tool["display_name"] for tool in result] == ["coco", "claude"]
+    assert all(tool["agent_name"] == "ttadk" for tool in result)
     assert all(tool["provider"] == "ttadk" for tool in result)
     assert result[1]["skip_model_selection"] is True
 

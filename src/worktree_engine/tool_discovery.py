@@ -141,7 +141,8 @@ class WorktreeToolDiscovery:
                     WorktreeToolOption(
                         provider="ttadk",
                         tool_name=name,
-                        display_name=f"TTADK · {name}",
+                        display_name=name,
+                        agent_name="ttadk",
                         description=f"TTADK · {name}",
                         supports_model=True,
                         model_optional=True,

@@ -28,45 +28,51 @@ TOOL_TTADK = WorktreeToolOption(provider="ttadk", tool_name="codex", display_nam
 TOOL_CLI = WorktreeToolOption(provider="cli", tool_name="claude", display_name="Claude", supports_model=False)
 
 
-def test_full_selection_cycle():
-    """tool_select → model_select → review → continue → tool_select → finish → ready."""
+def test_selection_items_expose_agent_tool_model_tuple_with_default_model():
+    """Selected tools should expose the programming tuple: agent + tool + model."""
     mgr = _make_manager()
     project = _make_project()
+    mgr.start_selection(project)
 
-    # Start
-    state = mgr.start_selection(project)
-    assert state.selection.stage == "tool_select"
-    assert state.selection.active is True
+    mgr.select_tool(
+        project,
+        WorktreeToolOption(provider="acp", tool_name="coco", display_name="Coco", supports_model=True),
+    )
+    mgr.add_pending_item(project, model_name="doubao-pro", model_display_name="Doubao Pro")
 
-    # Select TTADK tool (supports model)
-    state = mgr.select_tool(project, TOOL_TTADK)
-    assert state.selection.stage == "model_select"
-    assert state.selection.pending_item is not None
+    mgr.back_to_tool_selection(project)
+    mgr.select_tool(
+        project,
+        WorktreeToolOption(provider="cli", tool_name="claude", display_name="Claude", supports_model=False),
+    )
+    mgr.add_pending_item(project)
 
-    # Add model
-    state, added, msg = mgr.add_pending_item(project, model_name="gpt-4.1")
+    mgr.back_to_tool_selection(project)
+    mgr.select_tool(
+        project,
+        WorktreeToolOption(provider="ttadk", tool_name="codex", display_name="Codex", supports_model=True),
+    )
+    state, added, _ = mgr.add_pending_item(
+        project, model_name="gpt-5.2", model_display_name="GPT-5.2",
+    )
+
     assert added is True
-    assert state.selection.stage == "review"
-    assert len(state.selection.selected_items) == 1
-
-    # Continue → back to tool_select
-    state = mgr.back_to_tool_selection(project)
-    assert state.selection.stage == "tool_select"
-
-    # Select ACP tool (no model)
-    state = mgr.select_tool(project, TOOL_ACP)
-    assert state.selection.stage == "review"  # skipped model_select
-
-    # Add without model
-    state, added, _ = mgr.add_pending_item(project)
-    assert added is True
-    assert len(state.selection.selected_items) == 2
-
-    # Finalize
-    state = mgr.finalize_selection(project)
-    assert state.selection.stage == "ready"
-    assert state.enabled is True
-    assert len(state.summary_lines) == 2
+    exported = [item.to_dict() for item in state.selection.selected_items]
+    assert [
+        (item["agent_name"], item["tool_name"], item["effective_model_display_name"], item["display_label"])
+        for item in exported
+    ] == [
+        ("", "coco", "Doubao Pro", "Coco / Doubao Pro"),
+        ("", "claude", "默认模型", "Claude / 默认模型"),
+        ("ttadk", "codex", "GPT-5.2", "TTADK · Codex / GPT-5.2"),
+    ]
+    assert [item["selection_key"] for item in exported] == [
+        "acp:coco:doubao-pro",
+        "cli:claude:default",
+        "ttadk:codex:gpt-5.2",
+    ]
+    assert exported[1]["model_name"] is None
+    assert exported[1]["effective_model_name"] == "default"
 
 
 def test_skip_model_for_non_ttadk():
@@ -153,4 +159,3 @@ def test_reset_selection_clears_all():
     state = mgr.reset_selection(project)
     assert len(state.selection.selected_items) == 0
     assert state.selection.stage == "tool_select"
-
