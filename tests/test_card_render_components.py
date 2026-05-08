@@ -339,15 +339,28 @@ class TestRenderWorktreeToolSelect:
             "message": "Choose tools:",
         }
         result = _render_worktree_tool_select(data)
-        assert result["tag"] == "markdown"
-        assert "✅" in result["content"]
-        assert "Coco" in result["content"]
+        assert isinstance(result, list)
+        # First element is the markdown description
+        md_el = result[0]
+        assert md_el["tag"] == "markdown"
+        assert "✅" in md_el["content"]
+        assert "Coco" in md_el["content"]
+        # Second element is a column_set button layout (Schema V2 compatible)
+        btn_layout = result[1]
+        assert btn_layout["tag"] == "column_set"
+        # Find the button inside column elements
+        btn = btn_layout["columns"][0]["elements"][0]
+        assert btn["tag"] == "button"
+        assert btn["value"]["action"] == "worktree_select_tool"
 
     def test_empty_tools(self):
         data = {"tools": [], "selected": [], "message": ""}
         result = _render_worktree_tool_select(data)
-        assert result["tag"] == "markdown"
-        assert result["content"] == ""
+        assert isinstance(result, list)
+        assert result[0]["tag"] == "markdown"
+        assert result[0]["content"] == ""
+        # No action element when tools list is empty
+        assert len(result) == 1
 
     def test_unselected_tool(self):
         data = {
@@ -356,7 +369,7 @@ class TestRenderWorktreeToolSelect:
             "message": "",
         }
         result = _render_worktree_tool_select(data)
-        assert "⬜" in result["content"]
+        assert "⬜" in result[0]["content"]
 
 
 class TestRenderWorktreeConfirm:

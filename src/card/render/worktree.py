@@ -140,7 +140,7 @@ def render_worktree_panel(block: ContentBlock) -> dict:
     kind = block.kind
 
     if kind == "worktree_tool_select":
-        content_el = _render_worktree_tool_select(data)
+        content_els = _render_worktree_tool_select(data)
     elif kind == "worktree_confirm":
         content_el = _render_worktree_confirm(data)
     elif kind == "worktree_units":
@@ -168,7 +168,11 @@ def render_worktree_panel(block: ContentBlock) -> dict:
         elements = stepper_elements + [title_el]
         if hint_text:
             elements.append({"tag": "markdown", "content": hint_text, "text_size": "notation"})
-        elements.append(content_el)
+        # Handle list vs single element return
+        if kind == "worktree_tool_select":
+            elements.extend(content_els)
+        else:
+            elements.append(content_el)
         return {
             "tag": "column_set",
             "flex_mode": "none",
@@ -180,18 +184,38 @@ def render_worktree_panel(block: ContentBlock) -> dict:
                 "elements": elements,
             }],
         }
+    # Fallback for kinds without step mapping
+    if kind == "worktree_tool_select":
+        return {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "columns": [{
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "vertical_align": "top",
+                "elements": content_els,
+            }],
+        }
     return content_el
 
 
-def _render_worktree_tool_select(data: dict) -> dict:
-    """Render tool selection panel."""
+def _render_worktree_tool_select(data: dict) -> list[dict]:
+    """Render tool selection panel with interactive buttons.
+
+    Returns a list of elements: description markdown + tool selection buttons.
+    Buttons use column_set grid layout (Schema V2 compatible, not 'action' tag).
+    """
     tools = data.get("tools", [])
     selected = data.get("selected", [])
     message = data.get("message", "")
+    project_id = data.get("project_id", "")
 
     lines = []
     if message:
         lines.append(message)
+
+    # Build description list
     for tool in tools:
         tool_id = tool.get("id", tool.get("tool_name", ""))
         name = tool.get("name", tool.get("display_name", tool_id))
@@ -202,7 +226,33 @@ def _render_worktree_tool_select(data: dict) -> dict:
             line += f" — {desc}"
         lines.append(line)
 
-    return {"tag": "markdown", "content": "\n".join(lines)}
+    elements: list[dict] = []
+    elements.append({"tag": "markdown", "content": "\n".join(lines)})
+
+    # Build interactive tool selection buttons using column_set grid (Schema V2 compatible)
+    if tools:
+        from src.card.shared import build_responsive_layout
+
+        buttons: list[dict] = []
+        for tool in tools:
+            tool_id = tool.get("id", tool.get("tool_name", ""))
+            name = tool.get("name", tool.get("display_name", tool_id))
+            buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": name},
+                "type": "default",
+                "value": {
+                    "action": "worktree_select_tool",
+                    "tool_name": tool_id,
+                    "provider": tool.get("provider", ""),
+                    "supports_model": tool.get("supports_model", False),
+                    "skip_model_selection": tool.get("skip_model_selection", False),
+                    "project_id": project_id,
+                },
+            })
+        elements.extend(build_responsive_layout(buttons))
+
+    return elements
 
 
 def _render_worktree_confirm(data: dict) -> dict:

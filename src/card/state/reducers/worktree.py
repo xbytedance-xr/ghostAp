@@ -36,7 +36,8 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
             selected = event.payload.get("selected", [])
             message = event.payload.get("message", "")
 
-            data = {"tools": tools, "selected": selected, "message": message}
+            project_id = event.payload.get("project_id", "")
+            data = {"tools": tools, "selected": selected, "message": message, "project_id": project_id}
             block = WorktreeSelectBlock(
                 block_id="worktree_tool_list",
                 data=data,
