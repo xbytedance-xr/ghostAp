@@ -234,6 +234,14 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         exact="worktree_select_model",
     )
     client._register_action(
+        lambda mid, cid, pid, val: client._handle_worktree_remove_item(mid, cid, pid, val),
+        exact="worktree_remove_item",
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_worktree_clear_items(mid, cid, pid, val),
+        exact="worktree_clear_items",
+    )
+    client._register_action(
         lambda mid, cid, pid, val: client._handle_worktree_confirm_start(mid, cid, pid, val),
         exact="worktree_confirm_start",
     )

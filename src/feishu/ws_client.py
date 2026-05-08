@@ -1817,6 +1817,8 @@ class FeishuWSClient:
                 "worktree_finish_selection",
                 "worktree_select_tool",
                 "worktree_select_model",
+                "worktree_remove_item",
+                "worktree_clear_items",
                 "worktree_confirm_start",
                 "worktree_execute_action",
                 "worktree_merge",

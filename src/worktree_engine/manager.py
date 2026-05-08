@@ -185,6 +185,16 @@ class WorktreeManager:
     def back_to_tool_selection(self, project: ProjectContext) -> WorktreeRuntimeState:
         return self._selection.back_to_tool_selection(project)
 
+    def remove_selected_item(
+        self, project: ProjectContext, selection_key: str
+    ) -> tuple[WorktreeRuntimeState, bool, str]:
+        return self._selection.remove_selected_item(project, selection_key)
+
+    def clear_selected_items(
+        self, project: ProjectContext
+    ) -> tuple[WorktreeRuntimeState, int, str]:
+        return self._selection.clear_selected_items(project)
+
     def finalize_selection(self, project: ProjectContext) -> WorktreeRuntimeState:
         return self._selection.finalize_selection(project)
 

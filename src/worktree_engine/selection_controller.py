@@ -81,6 +81,40 @@ class WorktreeSelectionController:
         state.selection.last_message = f"已忽略重复选择：{existing.display_label}"
         return state, False, state.selection.last_message
 
+    def remove_selected_item(
+        self, project: ProjectContext, selection_key: str
+    ) -> tuple[WorktreeRuntimeState, bool, str]:
+        """Remove an already-selected item by selection_key.
+
+        Always returns to TOOL_SELECT stage so the user can continue adding tools.
+        """
+        state = self._get_state(project)
+        removed = state.selection.remove_item(selection_key)
+        state.selection.active = True
+        state.selection.pending_item = None
+        state.selection.stage = WorktreeSelectionStage.TOOL_SELECT
+        state.selection.last_error = ""
+        if removed is None:
+            state.selection.last_message = "未找到对应已选项"
+            return state, False, state.selection.last_message
+        state.selection.last_message = f"已移除 {removed.display_label}"
+        return state, True, state.selection.last_message
+
+    def clear_selected_items(
+        self, project: ProjectContext
+    ) -> tuple[WorktreeRuntimeState, int, str]:
+        """Clear all selected items and return to TOOL_SELECT stage."""
+        state = self._get_state(project)
+        n = state.selection.clear_items()
+        state.selection.active = True
+        state.selection.pending_item = None
+        state.selection.stage = WorktreeSelectionStage.TOOL_SELECT
+        state.selection.last_error = ""
+        state.selection.last_message = (
+            f"已清空已选 {n} 项" if n > 0 else "当前没有已选项"
+        )
+        return state, n, state.selection.last_message
+
     def back_to_tool_selection(self, project: ProjectContext) -> WorktreeRuntimeState:
         state = self._get_state(project)
         state.selection.pending_item = None

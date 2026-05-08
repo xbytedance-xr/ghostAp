@@ -363,6 +363,58 @@ class WorktreeHandler(BaseHandler):
             tools=tools, selected=selected_dicts, project_id=pid, message=msg,
         ))
 
+    def handle_worktree_remove_item(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: Optional[str] = None,
+        value: dict | None = None,
+    ):
+        """Card action: remove a single already-selected item from the list."""
+        value = value or {}
+        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else self.project_manager.get_active_project(chat_id)
+        if not project:
+            self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
+            return
+
+        selection_key = str(value.get("selection_key") or value.get("_option") or "").strip()
+        mgr = self._worktree_manager()
+        _, _, msg = mgr.remove_selected_item(project, selection_key)
+
+        state = mgr.get_state(project)
+        selected_dicts = [item.to_dict() for item in state.selection.selected_items]
+        pid = project.project_id
+        tools = self._get_available_worktree_tools()
+        session = self._get_or_create_session(chat_id, pid)
+        session.dispatch(CardEvent.worktree_tool_select(
+            tools=tools, selected=selected_dicts, project_id=pid, message=msg,
+        ))
+
+    def handle_worktree_clear_items(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: Optional[str] = None,
+        value: dict | None = None,
+    ):
+        """Card action: clear all selected items and return to tool selection."""
+        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else self.project_manager.get_active_project(chat_id)
+        if not project:
+            self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
+            return
+
+        mgr = self._worktree_manager()
+        _, _, msg = mgr.clear_selected_items(project)
+
+        state = mgr.get_state(project)
+        selected_dicts = [item.to_dict() for item in state.selection.selected_items]
+        pid = project.project_id
+        tools = self._get_available_worktree_tools()
+        session = self._get_or_create_session(chat_id, pid)
+        session.dispatch(CardEvent.worktree_tool_select(
+            tools=tools, selected=selected_dicts, project_id=pid, message=msg,
+        ))
+
     def handle_finish_worktree_selection(
         self,
         message_id: str,

@@ -8,7 +8,13 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from src.card.actions.dispatch import WORKTREE_SELECT_MODEL, WORKTREE_SELECT_TOOL
+from src.card.actions.dispatch import (
+    WORKTREE_CLEAR_ITEMS,
+    WORKTREE_FINISH_SELECTION,
+    WORKTREE_REMOVE_ITEM,
+    WORKTREE_SELECT_MODEL,
+    WORKTREE_SELECT_TOOL,
+)
 from src.card.state.models import ContentBlock
 from src.card.themes import PANEL_STYLES
 from src.card.ui_text import UI_TEXT
@@ -185,20 +191,29 @@ def render_worktree_panel(block: ContentBlock) -> dict:
 
 
 def _render_worktree_tool_select(data: dict) -> dict:
-    """Render tool selection panel."""
+    """Render the worktree tool/model selection panel.
+
+    Layout (TOOL_SELECT stage):
+      [可选] 顶部 message banner
+      [tool rows]            每行：工具描述 + "+ 添加 X" 按钮
+      ── hr ──
+      [已选组合 (N)]          仅当 N>0 时展示，每条带 ✕ 移除 + 清空按钮
+      [✅ 确认选择 / 置灰提示]  N>0 highlighted；N==0 灰底提示
+
+    Layout (MODEL_SELECT stage):
+      仅展示 banner + 模型按钮，不展示已选/确认（由用户选模型后回到 TOOL_SELECT）。
+    """
     tools = data.get("tools", [])
     selected = data.get("selected", [])
     message = data.get("message", "")
     project_id = str(data.get("project_id") or "")
     default_action = str(data.get("select_action") or WORKTREE_SELECT_TOOL)
     selected_keys = _selected_tool_keys(selected)
+    is_model_select = default_action == WORKTREE_SELECT_MODEL
 
     elements: list[dict] = []
-    lines: list[str] = []
     if message:
-        lines.append(message)
-    if lines:
-        elements.append({"tag": "markdown", "content": "\n".join(lines)})
+        elements.append({"tag": "markdown", "content": message})
 
     for tool in tools:
         elements.append(
@@ -213,6 +228,39 @@ def _render_worktree_tool_select(data: dict) -> dict:
     if not elements:
         elements.append({"tag": "markdown", "content": UI_TEXT.get("worktree_data_empty", "暂无数据")})
 
+    if not is_model_select:
+        selected_dicts = [item for item in (selected or []) if isinstance(item, dict)]
+        if selected_dicts:
+            elements.append({"tag": "hr"})
+            elements.append({
+                "tag": "markdown",
+                "content": UI_TEXT["worktree_selected_block_title"].format(count=len(selected_dicts)),
+            })
+            for item in selected_dicts:
+                elements.append(_render_selected_item_row(item, project_id=project_id))
+            elements.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": UI_TEXT["worktree_clear_items_btn"]},
+                "type": "default",
+                "value": {"action": WORKTREE_CLEAR_ITEMS, "project_id": project_id},
+                "size": "medium",
+            })
+
+        elements.append({"tag": "hr"})
+        if selected_dicts:
+            confirm_text = UI_TEXT["worktree_confirm_selection_btn"]
+            confirm_type = "primary"
+        else:
+            confirm_text = UI_TEXT["worktree_confirm_selection_disabled_btn"]
+            confirm_type = "default"
+        elements.append({
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": confirm_text},
+            "type": confirm_type,
+            "value": {"action": WORKTREE_FINISH_SELECTION, "project_id": project_id},
+            "size": "medium",
+        })
+
     return {
         "tag": "column_set",
         "flex_mode": "none",
@@ -223,6 +271,48 @@ def _render_worktree_tool_select(data: dict) -> dict:
             "vertical_align": "top",
             "elements": elements,
         }],
+    }
+
+
+def _render_selected_item_row(item: dict, *, project_id: str) -> dict:
+    """One already-selected item row: label + ✕ remove button."""
+    label = str(
+        item.get("display_label")
+        or item.get("display_name")
+        or item.get("tool_name")
+        or ""
+    ).strip() or "(unknown)"
+    selection_key = str(item.get("selection_key") or "").strip()
+    return {
+        "tag": "column_set",
+        "flex_mode": "bisect",
+        "background_style": "default",
+        "columns": [
+            {
+                "tag": "column",
+                "width": "weighted",
+                "weight": 3,
+                "vertical_align": "center",
+                "elements": [{"tag": "markdown", "content": f"• {label}"}],
+            },
+            {
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "vertical_align": "center",
+                "elements": [{
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": UI_TEXT["worktree_remove_item_btn"]},
+                    "type": "default",
+                    "value": {
+                        "action": WORKTREE_REMOVE_ITEM,
+                        "selection_key": selection_key,
+                        "project_id": project_id,
+                    },
+                    "size": "small",
+                }],
+            },
+        ],
     }
 
 
@@ -258,9 +348,10 @@ def _render_worktree_select_option(
     selected_keys: set[str],
 ) -> dict:
     """Render one tool/model choice as a real callback button row."""
+    # `selected_keys` 保留在签名以便未来其他高亮策略复用；当前已选状态由独立 "已选组合" 板块呈现
+    _ = selected_keys
     tool_id, name, desc = _tool_identity(tool)
     action = str(tool.get("action") or default_action or WORKTREE_SELECT_TOOL)
-    is_selected = bool({tool_id, name} & selected_keys)
 
     if action == WORKTREE_SELECT_MODEL:
         value = {
@@ -270,6 +361,7 @@ def _render_worktree_select_option(
             "project_id": project_id,
         }
         button_text = name
+        button_type = "default"
     else:
         value = {
             "action": WORKTREE_SELECT_TOOL,
@@ -280,7 +372,9 @@ def _render_worktree_select_option(
             "skip_model_selection": bool(tool.get("skip_model_selection", False)),
             "project_id": project_id,
         }
-        button_text = f"{UI_TEXT['worktree_tool_selected']} {name}" if is_selected else name
+        button_text = UI_TEXT["worktree_add_tool_btn"].format(name=name)
+        # 工具按钮始终保持可点击的中性样式，让 "已选组合" 板块承担状态反馈
+        button_type = "default"
 
     title = f"**{name}**"
     if desc:
@@ -306,7 +400,7 @@ def _render_worktree_select_option(
                 "elements": [{
                     "tag": "button",
                     "text": {"tag": "plain_text", "content": button_text},
-                    "type": "primary" if is_selected else "default",
+                    "type": button_type,
                     "value": value,
                     "size": "medium",
                 }],

@@ -58,6 +58,67 @@ def test_worktree_selection_flow_supports_tool_model_loop_and_finalize():
     assert len(state.summary_lines) == 2
 
 
+def test_worktree_selection_remove_item_returns_to_tool_select_stage():
+    """remove_selected_item 删除指定 selection_key 后回到 TOOL_SELECT 以便继续添加。"""
+    project = ProjectContext(project_id="p_rm", project_name="P_RM", root_path="/tmp/p_rm")
+    manager = WorktreeManager(project_manager=None)
+    manager.start_selection(project)
+
+    coco_opt = WorktreeToolOption(
+        provider="acp", tool_name="coco", display_name="Coco",
+        supports_model=True, model_optional=True,
+    )
+    manager.select_tool(project, coco_opt)
+    manager.add_pending_item(project, model_name="m1", model_display_name="M1")
+    manager.back_to_tool_selection(project)
+    manager.select_tool(project, coco_opt)
+    state, _, _ = manager.add_pending_item(project, model_name="m2", model_display_name="M2")
+    assert len(state.selection.selected_items) == 2
+
+    target_key = state.selection.selected_items[0].selection_key
+    state, removed, msg = manager.remove_selected_item(project, target_key)
+
+    assert removed is True
+    assert "已移除" in msg
+    assert len(state.selection.selected_items) == 1
+    assert state.selection.selected_items[0].model_name == "m2"
+    assert state.selection.stage == "tool_select"
+    assert state.selection.active is True
+
+
+def test_worktree_selection_remove_item_unknown_key_is_safe():
+    project = ProjectContext(project_id="p_rm2", project_name="P_RM2", root_path="/tmp/p_rm2")
+    manager = WorktreeManager(project_manager=None)
+    manager.start_selection(project)
+
+    state, removed, msg = manager.remove_selected_item(project, "no:such:key")
+    assert removed is False
+    assert "未找到" in msg
+    assert state.selection.stage == "tool_select"
+
+
+def test_worktree_selection_clear_items_resets_to_tool_select_stage():
+    project = ProjectContext(project_id="p_clr", project_name="P_CLR", root_path="/tmp/p_clr")
+    manager = WorktreeManager(project_manager=None)
+    manager.start_selection(project)
+
+    opt = WorktreeToolOption(
+        provider="acp", tool_name="claude", display_name="Claude",
+        supports_model=True, model_optional=True,
+    )
+    manager.select_tool(project, opt)
+    manager.add_pending_item(project, model_name="sonnet", model_display_name="Sonnet")
+    manager.back_to_tool_selection(project)
+    manager.select_tool(project, opt)
+    manager.add_pending_item(project, model_name="opus", model_display_name="Opus")
+
+    state, n, msg = manager.clear_selected_items(project)
+    assert n == 2
+    assert "已清空已选 2 项" in msg
+    assert state.selection.selected_items == []
+    assert state.selection.stage == "tool_select"
+
+
 def test_worktree_selection_dedupes_duplicate_tool_model_pairs():
     project = ProjectContext(project_id="p2", project_name="P2", root_path="/tmp/p2")
     manager = WorktreeManager(project_manager=None)

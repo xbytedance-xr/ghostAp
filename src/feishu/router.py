@@ -85,6 +85,8 @@ FORWARDING_MAP: dict[str, tuple[str, str]] = {
     "_handle_finish_worktree_selection": ("worktree", "handle_finish_worktree_selection"),
     "_handle_worktree_select_tool": ("worktree", "handle_worktree_select_tool"),
     "_handle_worktree_select_model": ("worktree", "handle_worktree_select_model"),
+    "_handle_worktree_remove_item": ("worktree", "handle_worktree_remove_item"),
+    "_handle_worktree_clear_items": ("worktree", "handle_worktree_clear_items"),
     "_handle_worktree_confirm_start": ("worktree", "handle_worktree_confirm_start"),
     "_handle_worktree_execute_action": ("worktree", "handle_worktree_execute_action"),
     "_handle_worktree_merge": ("worktree", "handle_worktree_merge"),

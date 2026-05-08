@@ -224,6 +224,22 @@ class WorktreeSelectionState:
         self.selected_items.append(item)
         return True, item
 
+    def remove_item(self, selection_key: str) -> Optional[WorktreeSelectionItem]:
+        """Remove a selected item by selection_key. Returns the removed item or None."""
+        key = (selection_key or "").strip()
+        if not key:
+            return None
+        for idx, existing in enumerate(self.selected_items):
+            if existing.selection_key == key:
+                return self.selected_items.pop(idx)
+        return None
+
+    def clear_items(self) -> int:
+        """Clear all selected items. Returns the number removed."""
+        n = len(self.selected_items)
+        self.selected_items.clear()
+        return n
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "active": bool(self.active),

@@ -349,33 +349,80 @@ class TestRenderWorktreeToolSelect:
         data = {
             "project_id": "p1",
             "tools": [{"id": "coco", "name": "Coco", "description": "AI assistant"}],
-            "selected": ["coco"],
+            "selected": [
+                {
+                    "selection_key": "acp:coco:default",
+                    "display_label": "Coco / 默认模型",
+                    "tool_name": "coco",
+                }
+            ],
             "message": "Choose tools:",
         }
         result = _render_worktree_tool_select(data)
         assert result["tag"] == "column_set"
         buttons = self._collect_buttons(result)
-        assert buttons[0]["text"]["content"] == "✅ Coco"
+        # 第一个按钮：工具行的 "+ 添加 Coco"
+        assert buttons[0]["text"]["content"] == "+ 添加 Coco"
         assert buttons[0]["value"]["action"] == "worktree_select_tool"
         assert buttons[0]["value"]["tool_name"] == "coco"
         assert buttons[0]["value"]["project_id"] == "p1"
+        # 已选组合的 ✕ 移除按钮
+        remove_btns = [b for b in buttons if b["value"].get("action") == "worktree_remove_item"]
+        assert remove_btns
+        assert remove_btns[0]["value"]["selection_key"] == "acp:coco:default"
+        # 清空 + 确认按钮
+        actions = [b["value"].get("action") for b in buttons]
+        assert "worktree_clear_items" in actions
+        assert "worktree_finish_selection" in actions
+        # 确认按钮在 N>0 时为 primary
+        confirm_btns = [b for b in buttons if b["value"].get("action") == "worktree_finish_selection"]
+        assert confirm_btns[0]["type"] == "primary"
 
     def test_empty_tools(self):
-        data = {"tools": [], "selected": [], "message": ""}
+        data = {"project_id": "p1", "tools": [], "selected": [], "message": ""}
         result = _render_worktree_tool_select(data)
         assert result["tag"] == "column_set"
-        assert self._collect_buttons(result) == []
+        buttons = self._collect_buttons(result)
+        # 空 tools + 空 selected：仍展示置灰确认按钮，无清空/移除按钮
+        actions = [b["value"].get("action") for b in buttons]
+        assert "worktree_finish_selection" in actions
+        assert "worktree_remove_item" not in actions
+        assert "worktree_clear_items" not in actions
+        # 置灰态：type=default + 文本含 "至少选 1 个"
+        confirm_btns = [b for b in buttons if b["value"].get("action") == "worktree_finish_selection"]
+        assert confirm_btns[0]["type"] == "default"
+        assert "至少选 1 个" in confirm_btns[0]["text"]["content"]
 
     def test_unselected_tool(self):
         data = {
+            "project_id": "p1",
             "tools": [{"id": "claude", "name": "Claude"}],
             "selected": [],
             "message": "",
         }
         result = _render_worktree_tool_select(data)
         buttons = self._collect_buttons(result)
-        assert buttons[0]["text"]["content"] == "Claude"
-        assert buttons[0]["type"] == "default"
+        # 工具按钮："+ 添加 Claude"，type=default（中性，不再以高亮反映已选）
+        tool_btns = [b for b in buttons if b["value"].get("action") == "worktree_select_tool"]
+        assert tool_btns[0]["text"]["content"] == "+ 添加 Claude"
+        assert tool_btns[0]["type"] == "default"
+
+    def test_model_select_stage_skips_selected_block(self):
+        """MODEL_SELECT 阶段不应渲染已选组合/清空/确认按钮，由用户选完模型后回到 TOOL_SELECT。"""
+        data = {
+            "project_id": "p1",
+            "tools": [{"id": "gpt-4", "name": "GPT-4"}],
+            "selected": [{"selection_key": "acp:coco:default", "display_label": "Coco"}],
+            "message": "选模型",
+            "select_action": "worktree_select_model",
+        }
+        result = _render_worktree_tool_select(data)
+        buttons = self._collect_buttons(result)
+        actions = [b["value"].get("action") for b in buttons]
+        assert "worktree_finish_selection" not in actions
+        assert "worktree_remove_item" not in actions
+        assert "worktree_clear_items" not in actions
+        assert "worktree_select_model" in actions
 
 
 class TestRenderWorktreeConfirm:
