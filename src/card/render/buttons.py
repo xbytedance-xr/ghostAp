@@ -247,6 +247,10 @@ def _render_button(spec: ButtonSpec, *, engine_type: str | None = None, budget: 
     # Inject engine_type for ENGINE_STOP so the dispatcher can route correctly
     if action_id == ENGINE_STOP and engine_type:
         value["engine_type"] = engine_type
+    # Prefix mode toggle actions with engine_type for correct prefix routing
+    # (ws_client dispatcher expects "{engine_type}_mode_compact" / "{engine_type}_mode_full")
+    if action_id in (MODE_FULL, MODE_COMPACT) and engine_type:
+        value["action"] = f"{engine_type}_{action_id}"
 
     btn = {
         "tag": "button",

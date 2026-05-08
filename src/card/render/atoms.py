@@ -59,6 +59,7 @@ def flatten_to_atoms(
     atoms: list[RenderAtom] = []
     i = 0
     n = len(blocks)
+    handlers = _get_block_kind_handlers()
 
     while i < n:
         block = blocks[i]
@@ -67,13 +68,20 @@ def flatten_to_atoms(
             # Tool calls require lookahead grouping — handled explicitly
             if block.status == "completed":
                 group_start = i
-                while (
-                    i < n
-                    and blocks[i].kind == "tool_call"
-                    and blocks[i].status == "completed"
-                ):
-                    i += 1
-                group = blocks[group_start:i]
+                # Scan forward: group completed tools even when interleaved with
+                # reasoning/text blocks (which get their own atoms separately).
+                # This prevents reasoning from breaking tool grouping and ensures
+                # the fold threshold is evaluated on the aggregate count.
+                interleaved: list[ContentBlock] = []
+                while i < n:
+                    if blocks[i].kind == "tool_call" and blocks[i].status == "completed":
+                        i += 1
+                    elif blocks[i].kind in ("reasoning", "text"):
+                        interleaved.append(blocks[i])
+                        i += 1
+                    else:
+                        break
+                group = [b for b in blocks[group_start:i] if b.kind == "tool_call" and b.status == "completed"]
 
                 if len(group) >= budget.tool_history_fold_threshold:
                     # Fold into a single tool_history atom
@@ -93,10 +101,16 @@ def flatten_to_atoms(
                     atom.byte_size = estimate_atom_size(atom)
                     atoms.append(atom)
                 else:
-                    # Individual tool_panel atoms
-                    for b in group:
-                        atom = _tool_block_to_atom(b)
-                        atoms.append(atom)
+                    # Below threshold: render each tool individually, with
+                    # interleaved blocks in their original positions
+                    for b in blocks[group_start:i]:
+                        if b.kind == "tool_call":
+                            atom = _tool_block_to_atom(b)
+                            atoms.append(atom)
+                        else:
+                            handler = handlers.get(b.kind)
+                            if handler is not None:
+                                atoms.append(handler(b))
             else:
                 # Active or failed tool_call → never folded
                 atom = _tool_block_to_atom(block)
@@ -104,7 +118,6 @@ def flatten_to_atoms(
                 i += 1
         else:
             # Registry dispatch for all other block kinds
-            handlers = _get_block_kind_handlers()
             handler = handlers.get(block.kind)
             if handler is not None:
                 atom = handler(block)
@@ -195,6 +208,20 @@ def _block_to_task_list_atom(block: ContentBlock) -> RenderAtom:
     return atom
 
 
+def _block_to_separator_atom(block: ContentBlock) -> RenderAtom:
+    task_name = getattr(block, "task_name", "")
+    is_first = getattr(block, "is_first_overflow", False)
+    status_emoji = getattr(block, "status_emoji", "⏳")
+    key = "orch_overflow_separator_first" if is_first else "orch_overflow_separator"
+    content = UI_TEXT[key].format(task_name=task_name, status_emoji=status_emoji)
+    atom = RenderAtom(
+        kind="text", block_id=block.block_id, content=content,
+        splittable=False, node_count=1,
+    )
+    atom.byte_size = estimate_atom_size(atom)
+    return atom
+
+
 # Registry: maps block.kind → handler function.
 # tool_call is handled separately due to lookahead grouping logic.
 # Lazy-initialized on first use to avoid import-time coupling with block_registry.
@@ -206,6 +233,7 @@ _ATOM_HANDLER_DISPATCH: dict[str, Callable[[ContentBlock], RenderAtom]] = {
     "criteria": _block_to_criteria_atom,
     "phase": _block_to_phase_atom,
     "task_list": _block_to_task_list_atom,
+    "separator": _block_to_separator_atom,
 }
 
 # Module-level lazy cache for block kind handlers (avoids @functools.cache semantics)

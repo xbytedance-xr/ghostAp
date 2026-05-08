@@ -28,6 +28,7 @@ class TransportError(Exception):
     # Permanent error codes — retrying won't help
     PERMANENT_CODES = frozenset({
         99992354,  # message_id not exists / invalid
+        230099,    # card content invalid (e.g. element exceeds the 200-component limit)
     })
 
     def __init__(self, message: str = "", *, code: int = 0):

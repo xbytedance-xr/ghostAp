@@ -142,6 +142,16 @@ def render_card(
             active_element=active_element,
         )
 
+        # Post-render node count check (early warning for regressions)
+        from src.card.render.payload_truncator import count_tagged_nodes
+        node_count = count_tagged_nodes(card_json)
+        if node_count > 200:
+            logger.warning(
+                "Rendered card page %d has %d nodes (exceeds Feishu 200-element limit), "
+                "payload_truncator will attempt truncation at delivery layer",
+                page_idx, node_count,
+            )
+
         # Compute per-page structure signature from body content
         # This ensures only pages with actual changes trigger API updates
         page_sig_parts = [global_sig, f"page:{page_idx}"]

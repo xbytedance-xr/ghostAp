@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+import json
 import logging
 
 from src.card.delivery.binding import BindingStore, PageBinding
 from src.card.delivery.sequence import SequenceManager
 from src.card.delivery.types import MutationOutcome, SequenceConflictError, TransportError
+from src.card.render.payload_truncator import check_and_truncate_payload
 from src.card.types import RenderedCard
 
 logger = logging.getLogger(__name__)
+
+
+def _guard_payload(card_payload: dict) -> dict:
+    """Pre-flight guard: truncate payload if it exceeds Feishu limits (200 elements)."""
+    raw = json.dumps(card_payload, ensure_ascii=False)
+    guarded = check_and_truncate_payload(raw)
+    if guarded is raw:
+        return card_payload
+    return json.loads(guarded)
 
 
 class PageMutator:
@@ -36,7 +47,7 @@ class PageMutator:
         """Create a new card page via API."""
 
         try:
-            card_payload = card.to_feishu_json()
+            card_payload = _guard_payload(card.to_feishu_json())
             is_streaming = card_payload.get("config", {}).get("streaming_mode", False)
 
             if is_streaming:
@@ -76,7 +87,7 @@ class PageMutator:
 
         try:
             seq = self._sequences.next_sequence(page.card_id)
-            self._client.update_card(page.card_id, card.to_feishu_json(), sequence=seq)
+            self._client.update_card(page.card_id, _guard_payload(card.to_feishu_json()), sequence=seq)
             self._bindings.update_signature(session_id, page.page_index, card.structure_signature)
             if card.active_element:
                 self._bindings.update_text(session_id, page.page_index, card.active_element.text)

@@ -8,6 +8,10 @@ from src.card.render.budget import RenderBudget
 # Approximate overhead for card config/header/footer skeleton
 BASE_OVERHEAD = 500
 
+# Fixed node overhead for elements injected after pagination:
+# header/config(3) + banner(3) + footer(8) + buttons(6) = 20
+FIXED_NODE_OVERHEAD = 20
+
 
 def paginate_atoms(
     atoms: list[RenderAtom], budget: RenderBudget
@@ -23,6 +27,7 @@ def paginate_atoms(
         return [[]]
 
     page_budget = budget.byte_budget - BASE_OVERHEAD
+    effective_node_budget = budget.node_budget - FIXED_NODE_OVERHEAD
     pages: list[list[RenderAtom]] = [[]]
     current_bytes = 0
     current_nodes = 0
@@ -33,7 +38,7 @@ def paginate_atoms(
         # Check if atom fits in current page
         if (
             current_bytes + atom_size <= page_budget
-            and current_nodes + atom.node_count <= budget.node_budget
+            and current_nodes + atom.node_count <= effective_node_budget
         ):
             pages[-1].append(atom)
             current_bytes += atom_size
@@ -64,7 +69,7 @@ def paginate_atoms(
                     )
                     if (
                         current_bytes + part_size > page_budget
-                        or current_nodes + part.node_count > budget.node_budget
+                        or current_nodes + part.node_count > effective_node_budget
                     ):
                         pages.append([])
                         current_bytes = 0

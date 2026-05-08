@@ -22,6 +22,9 @@ _PATH_TOOLS = {"read", "write", "edit", "read_file", "write_file", "edit_file"}
 
 _SEARCH_TOOLS = {"grep", "search", "find", "glob", "search_codebase"}
 
+# Tools rendered as compact single-line summary (no input/output detail)
+_COMPACT_TOOLS = {"task", "todowrite", "todo_write"}
+
 
 def _is_empty_data(value) -> bool:
     """Check if a tool input/output value is considered empty."""
@@ -38,7 +41,13 @@ def render_tool_panel(block: ContentBlock) -> dict | None:
     """Render a single tool call as a collapsible_panel.
 
     Returns None if both tool_input and tool_output are empty.
+
+    Design intent (AC7/AC8):
+    - AC7: When both input AND output are empty → returns None (panel omitted entirely).
+    - AC8: When only output is empty (input non-empty) → renders input section only,
+            no empty output section appears in the card JSON.
     """
+    # AC7: suppress entirely when both sides are empty
     if _is_empty_data(block.tool_input) and _is_empty_data(block.tool_output):
         return None
 
@@ -86,7 +95,7 @@ def render_tool_history_panel(blocks: list[ContentBlock]) -> dict | None:
         "tag": "collapsible_panel",
         "expanded": False,
         "header": {
-            "title": {"tag": "markdown", "content": f"🔧 **{n} 个工具调用已完成**"},
+            "title": {"tag": "markdown", "content": UI_TEXT["tool_history_panel_header"].format(n=n)},
             "vertical_align": "center",
             "icon": {
                 "tag": "standard_icon",
@@ -169,11 +178,19 @@ def _truncate_output(output: str) -> str:
 
 
 def _render_detail(block: ContentBlock) -> str:
-    """Render detail content based on tool type."""
+    """Render detail content based on tool type.
+
+    AC8 enforcement: output_empty flag is passed to sub-renderers which skip the
+    output section when True, ensuring no empty output block in the card JSON.
+    """
     tool_name = (block.tool_name or "").lower()
     tool_input = block.tool_input or ""
     tool_output = block.tool_output or ""
     output_empty = _is_empty_data(block.tool_output)
+
+    # Compact tools (task, todowrite): single-line description only
+    if tool_name in _COMPACT_TOOLS:
+        return _render_compact_detail(tool_input)
 
     if tool_name in _BASH_TOOLS:
         return _render_bash_detail(tool_input, tool_output, output_empty)
@@ -187,6 +204,22 @@ def _render_bash_detail(tool_input: str, tool_output: str, output_empty: bool = 
         output = _truncate_output(tool_output)
         parts.append(f"{UI_TEXT['tool_label_result']}\n```\n{output}\n```")
     return "\n".join(parts)
+
+
+def _render_compact_detail(tool_input: str) -> str:
+    """Render compact single-line detail for task/todowrite tools.
+
+    Extracts 'description' or 'query' from JSON input, or shows first line.
+    """
+    desc = _extract_json_field(tool_input, ("description", "query", "content", "name"))
+    if desc:
+        return desc
+    # Fallback: first non-empty line of raw input
+    for line in tool_input.split("\n"):
+        stripped = line.strip()
+        if stripped and stripped not in ("{", "}", "[", "]"):
+            return stripped[:_MAX_SUMMARY_CHARS] + ("…" if len(stripped) > _MAX_SUMMARY_CHARS else "")
+    return ""
 
 
 def _render_generic_detail(tool_input: str, tool_output: str, output_empty: bool = False) -> str:
