@@ -292,7 +292,10 @@ class WorktreeHandler(BaseHandler):
             models = self._get_models_for_tool(
                 tool_name, provider=provider, cwd=cwd, current_model=current_model
             )
-            if len(models) <= 1 or option.skip_model_selection:
+            # Worktree 强调"工具 × 模型"组合，必须让用户显式选模型；只有完全拿不到
+            # 模型列表时才回退为"工具内置模型"直接添加。len==1 也仍展示模型卡，方便
+            # 后续运行环境扩充模型时无需改 UI 路径。
+            if not models or option.skip_model_selection:
                 should_skip_model = True
 
         if not should_skip_model:

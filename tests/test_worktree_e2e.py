@@ -51,15 +51,17 @@ class TestWorktreeE2E:
         # No confirm button when nothing selected
         assert len(state.buttons) == 0
 
-    def test_tool_select_with_selection_has_confirm_button(self):
+    def test_tool_select_reducer_emits_no_buttons(self):
+        """Reducer 不再产出 footer 按钮——render 层全权负责确认/移除/清空，
+        以避免与卡片内嵌的 '✅ 确认选择' 按钮重复出现。
+        """
         state = self._initial_state()
         event = CardEvent(
             type=CardEventType.WORKTREE_TOOL_SELECT,
             payload={"tools": [{"name": "coco", "id": "coco"}], "selected": ["coco"]},
         )
         state = _reduce(state, event)
-        assert len(state.buttons) == 1
-        assert state.buttons[0].action_id == ButtonIntent.WORKTREE_FINISH_SELECTION
+        assert state.buttons == ()
 
     # ------------------------------------------------------------------
     # Step 2: Confirmation

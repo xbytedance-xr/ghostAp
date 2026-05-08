@@ -50,12 +50,9 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
                 data=data,
             )
 
-            # Buttons: finish selection
+            # 不在 reducer 层下发 footer 按钮：确认 / 移除 / 清空 等按钮统一由
+            # render 层的 _render_worktree_tool_select 内嵌输出，避免出现两个 "确认选择"。
             buttons: tuple[ButtonSpec, ...] = ()
-            if selected:
-                buttons = (
-                    ButtonSpec(text=UI_TEXT["wt_btn_confirm_selection"], action_id=ButtonIntent.WORKTREE_FINISH_SELECTION, type="primary"),
-                )
 
             header = _build_worktree_header(state, UI_TEXT["worktree_step_tool_select"])
             footer_text = UI_TEXT["wt_hint_select_at_least_one"] if not selected else UI_TEXT["worktree_footer_confirm_hint"]

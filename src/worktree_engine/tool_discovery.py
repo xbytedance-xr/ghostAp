@@ -76,7 +76,11 @@ class WorktreeToolDiscovery:
                 provider_type = "acp"
                 supports_model = True
                 model_optional = True
-                skip = getattr(provider_obj, "skip_model_selection", False)
+                # Worktree 场景的核心语义是"工具 × 模型"组合作为最小单位，
+                # 因此即便 ACP provider 配置了 skip_model_selection（如 Coco/Aiden 在普通
+                # ACP 启动时为简化交互而跳过），worktree 仍必须弹模型选择卡，否则同工具
+                # 多次添加会因 selection_key 撞车被 dedup 拦截。
+                skip = False
             else:
                 provider_type = "cli"
                 supports_model = False

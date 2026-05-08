@@ -500,7 +500,10 @@ class TestReduceWorktree:
         """Base state with worktree metadata."""
         return _base_state(metadata=CardMetadata(engine_type="worktree"))
 
-    def test_tool_select_sets_block_and_buttons(self, wt_state):
+    def test_tool_select_sets_block_no_reducer_buttons(self, wt_state):
+        """Tool-select reducer 不再下发 footer 按钮——确认/移除/清空 由 render 层负责
+        以避免与卡片内嵌的 '✅ 确认选择' 按钮重复出现。
+        """
         from src.card.state.reducers.worktree import reduce_worktree
         event = CardEvent(type=CardEventType.WORKTREE_TOOL_SELECT, payload={
             "tools": [{"name": "coco"}, {"name": "claude"}],
@@ -511,9 +514,8 @@ class TestReduceWorktree:
         assert len(new.blocks) == 1
         assert new.blocks[0].kind == "worktree_tool_select"
         assert new.blocks[0].data["selected"] == ["coco"]
-        # With selection → has confirm button
-        assert len(new.buttons) == 1
-        assert new.buttons[0].action_id == ButtonIntent.WORKTREE_FINISH_SELECTION
+        # Render 层全权负责 confirm/remove/clear 按钮
+        assert new.buttons == ()
 
     def test_tool_select_no_selection_no_buttons(self, wt_state):
         from src.card.state.reducers.worktree import reduce_worktree

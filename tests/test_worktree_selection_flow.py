@@ -348,45 +348,75 @@ def test_wt_command_without_available_tools_returns_error():
     assert "当前环境没有可用的编程工具" in error_text
 
 
-def test_worktree_select_tool_skips_model_selection_if_only_one_model():
-    """AC: if a tool has only 1 model, skip model selection card and auto-add it."""
+def test_worktree_select_tool_shows_model_card_even_with_single_model():
+    """Worktree 始终弹模型选择卡（即便 models==1）以贯彻'工具×模型'语义。
+
+    旧行为为 len(models)<=1 时自动 skip + 直接添加；改造后需要展示模型卡，让用户
+    显式确认所选模型，从而支持后续同工具不同模型多次添加。
+    """
     handler = _make_system_handler()
-    project = ProjectContext(project_id="p-skip", project_name="SKIP", root_path="/tmp/skip")
+    project = ProjectContext(project_id="p-show", project_name="SHOW", root_path="/tmp/show")
     handler.ctx.project_manager.get_active_project.return_value = project
     handler.ctx.project_manager.get_project.return_value = project
     handler.ctx.project_manager.get_project_for_chat.return_value = project
 
-    # Mock tool with supports_model=True but only 1 model
     fake_tool_value = {
         "tool_name": "single_model_tool",
         "provider": "ttadk",
         "supports_model": True,
-        "display_name": "SingleTool"
+        "display_name": "SingleTool",
     }
-    
-    # Mock models list with 1 item
     fake_models = [{"name": "m1", "display_name": "Model 1", "is_default": True}]
-    
+
     mock_session = MagicMock()
     mock_session.closed = False
-    
+
     with patch.object(handler, "_get_models_for_tool", return_value=fake_models), \
          patch.object(handler, "_get_or_create_session", return_value=mock_session):
-        
-        handler.handle_worktree_select_tool("msg1", "chat1", project_id="p-skip", value=fake_tool_value)
-        
-    # Verify state: item should have been added and stage back to tool_select
+        handler.handle_worktree_select_tool("msg1", "chat1", project_id="p-show", value=fake_tool_value)
+
     state = WorktreeManager.get_state(project)
-    assert len(state.selection.selected_items) == 1
-    assert state.selection.selected_items[0].tool_name == "single_model_tool"
-    assert state.selection.selected_items[0].model_name == "m1"
-    assert state.selection.stage == "tool_select"
-    
-    # Verify WORKTREE_TOOL_SELECT event dispatched (not model select)
+    # 卡片仍处于 model_select 阶段（pending_item 非空，selected_items 仍为空）
+    assert state.selection.stage == "model_select"
+    assert state.selection.pending_item is not None
+    assert state.selection.pending_item.tool_name == "single_model_tool"
+    assert state.selection.selected_items == []
+
     mock_session.dispatch.assert_called_once()
     event = mock_session.dispatch.call_args[0][0]
     from src.card.events import CardEventType
     assert event.type == CardEventType.WORKTREE_TOOL_SELECT
+    assert event.payload.get("select_action") == "worktree_select_model"
+
+
+def test_worktree_select_tool_falls_back_when_no_models_returned():
+    """无可用模型时应自动 fallback 添加为'工具内置模型'，避免出现空模型卡。"""
+    handler = _make_system_handler()
+    project = ProjectContext(project_id="p-empty", project_name="EMPTY", root_path="/tmp/empty")
+    handler.ctx.project_manager.get_active_project.return_value = project
+    handler.ctx.project_manager.get_project.return_value = project
+    handler.ctx.project_manager.get_project_for_chat.return_value = project
+
+    fake_tool_value = {
+        "tool_name": "no_model_tool",
+        "provider": "acp",
+        "supports_model": True,
+        "display_name": "NoModelTool",
+    }
+
+    mock_session = MagicMock()
+    mock_session.closed = False
+
+    with patch.object(handler, "_get_models_for_tool", return_value=[]), \
+         patch.object(handler, "_get_or_create_session", return_value=mock_session), \
+         patch.object(handler, "_get_available_worktree_tools", return_value=[]):
+        handler.handle_worktree_select_tool("msg-e", "chat-e", project_id="p-empty", value=fake_tool_value)
+
+    state = WorktreeManager.get_state(project)
+    # 0 模型分支：直接添加 + 回到 tool_select
+    assert len(state.selection.selected_items) == 1
+    assert state.selection.selected_items[0].tool_name == "no_model_tool"
+    assert state.selection.stage == "tool_select"
 
 
 def test_worktree_select_tool_shows_ttadk_subtool_card_for_aggregate_entry():

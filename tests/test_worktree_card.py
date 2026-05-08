@@ -40,14 +40,15 @@ class TestReduceWorktreeToolSelect:
         assert data["selected"] == ["coco"]
         assert data["message"] == "请选择工具"
 
-    def test_tool_select_with_selection_shows_confirm_button(self):
+    def test_tool_select_reducer_emits_no_buttons(self):
+        """Reducer 不再产出 footer 按钮——render 层全权负责确认/移除/清空。"""
         state = _base_state()
         event = CardEvent.worktree_tool_select(
             tools=[{"id": "coco", "name": "Coco"}],
             selected=["coco"],
         )
         new = reduce_worktree(state, event)
-        assert any(b.action_id == ButtonIntent.WORKTREE_FINISH_SELECTION for b in new.buttons)
+        assert new.buttons == ()
 
     def test_tool_select_empty_selection_no_confirm_button(self):
         state = _base_state()
