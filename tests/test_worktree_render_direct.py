@@ -21,7 +21,7 @@ class TestRenderWorktreePanelDataNone:
         block = WorktreeSelectBlock(block_id="ts", data=None)
         result = render_worktree_panel(block)
         assert result is not None
-        assert result.get("tag") in ("markdown", "collapsible_panel", "div")
+        assert result.get("tag") in ("markdown", "collapsible_panel", "column_set")
 
     def test_confirm_data_none(self):
         block = WorktreeConfirmBlock(block_id="cf", data=None)
@@ -56,14 +56,15 @@ class TestRenderWorktreePanelEmptyLists:
     def test_units_empty_units(self):
         block = WorktreeUnitsBlock(block_id="un", data={"units": [], "message": ""})
         result = render_worktree_panel(block)
-        # render_worktree_panel wraps in div with stepper elements + content
-        assert result["tag"] == "div"
+        # render_worktree_panel wraps in column_set with stepper elements + content
+        assert result["tag"] == "column_set"
+        elements = result["columns"][0]["elements"]
         # Stepper produces 2 markdown elements (active + pending) + 1 content element
-        assert len(result["elements"]) >= 2
+        assert len(elements) >= 2
         # First element is stepper markdown (active part)
-        assert result["elements"][0]["tag"] == "markdown"
+        assert elements[0]["tag"] == "markdown"
         # Last element is the collapsible_panel
-        panel = result["elements"][-1]
+        panel = elements[-1]
         assert panel["tag"] == "collapsible_panel"
         assert len(panel["elements"]) >= 1
 
@@ -90,9 +91,9 @@ class TestRenderWorktreePanelMissingFields:
             "message": "",
         })
         result = render_worktree_panel(block)
-        # Wrapped in div with stepper
-        assert result["tag"] == "div"
-        panel = result["elements"][-1]
+        # Wrapped in column_set with stepper
+        assert result["tag"] == "column_set"
+        panel = result["columns"][0]["elements"][-1]
         assert panel["tag"] == "collapsible_panel"
 
     def test_tool_select_missing_selected(self):
@@ -217,9 +218,10 @@ class TestWorktreeStepperHintRendering:
     def test_tool_select_has_hint(self):
         block = WorktreeSelectBlock(block_id="ts", data={"tools": [{"name": "Coco"}], "selected": []})
         result = render_worktree_panel(block)
-        assert result["tag"] == "div"
+        assert result["tag"] == "column_set"
+        elements = result["columns"][0]["elements"]
         # Find hint element
-        hints = [el for el in result["elements"]
+        hints = [el for el in elements
                  if el.get("tag") == "markdown"
                  and el.get("text_size") == "notation"
                  and "工具" in el.get("content", "")]
@@ -230,8 +232,9 @@ class TestWorktreeStepperHintRendering:
             "selected": [{"name": "Coco"}], "goal": "test goal", "project_id": "p1"
         })
         result = render_worktree_panel(block)
-        assert result["tag"] == "div"
-        hints = [el for el in result["elements"]
+        assert result["tag"] == "column_set"
+        elements = result["columns"][0]["elements"]
+        hints = [el for el in elements
                  if el.get("tag") == "markdown"
                  and el.get("text_size") == "notation"
                  and "确认" in el.get("content", "")]
@@ -240,8 +243,9 @@ class TestWorktreeStepperHintRendering:
     def test_units_has_hint(self):
         block = WorktreeUnitsBlock(block_id="un", data={"units": [], "message": ""})
         result = render_worktree_panel(block)
-        assert result["tag"] == "div"
-        hints = [el for el in result["elements"]
+        assert result["tag"] == "column_set"
+        elements = result["columns"][0]["elements"]
+        hints = [el for el in elements
                  if el.get("tag") == "markdown"
                  and el.get("text_size") == "notation"
                  and "执行中" in el.get("content", "")]
@@ -250,8 +254,9 @@ class TestWorktreeStepperHintRendering:
     def test_merge_has_hint(self):
         block = WorktreeMergeBlock(block_id="mg", data={"merge_notes": [], "base_branch": "main"})
         result = render_worktree_panel(block)
-        assert result["tag"] == "div"
-        hints = [el for el in result["elements"]
+        assert result["tag"] == "column_set"
+        elements = result["columns"][0]["elements"]
+        hints = [el for el in elements
                  if el.get("tag") == "markdown"
                  and el.get("text_size") == "notation"
                  and "合并" in el.get("content", "")]

@@ -170,8 +170,15 @@ def render_worktree_panel(block: ContentBlock) -> dict:
             elements.append({"tag": "markdown", "content": hint_text, "text_size": "notation"})
         elements.append(content_el)
         return {
-            "tag": "div",
-            "elements": elements,
+            "tag": "column_set",
+            "flex_mode": "none",
+            "columns": [{
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "vertical_align": "top",
+                "elements": elements,
+            }],
         }
     return content_el
 
@@ -319,8 +326,15 @@ def _render_worktree_units(data: dict) -> dict:
         ],
     }
     return {
-        "tag": "div",
-        "elements": [failed_div, panel],
+        "tag": "column_set",
+        "flex_mode": "none",
+        "columns": [{
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "vertical_align": "top",
+            "elements": [failed_div, panel],
+        }],
     }
 
 
