@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -110,12 +111,26 @@ class WorktreeGitService:
 
     def _validate_custom_path(self, custom_path: str) -> None:
         """Validate a user-supplied custom worktree path for safety."""
-        resolved = str(Path(custom_path).resolve())
         if ".." in Path(custom_path).parts:
             raise WorktreeGitError(f"自定义路径包含 '..'，拒绝操作: {custom_path}")
+        # macOS 上 `/etc`、`/var` 等是 `/private/...` 的符号链接，仅比对 abspath 会漏掉系统
+        # 目录；同时比对 abspath 与 realpath，并把禁区前缀扩展到其 realpath 形式。
+        raw_abs = os.path.abspath(custom_path)
+        real_abs = os.path.realpath(custom_path)
+        # 系统级 tempdir（如 macOS 上的 `/var/folders/...`、Linux 上的 `/tmp/...`）属用户
+        # 可写区，必须放行，避免在 `/var` 禁区下误伤合法 tempdir。
+        sys_tmp = os.path.realpath(tempfile.gettempdir())
+        for cand in (raw_abs, real_abs):
+            if cand == sys_tmp or cand.startswith(sys_tmp + "/"):
+                return
+        forbidden_markers: set[str] = set()
         for prefix in self._FORBIDDEN_PREFIXES:
-            if resolved == prefix or resolved.startswith(prefix + "/"):
-                raise WorktreeGitError(f"自定义路径指向系统目录，拒绝操作: {custom_path}")
+            forbidden_markers.add(prefix)
+            forbidden_markers.add(os.path.realpath(prefix))
+        for marker in forbidden_markers:
+            for cand in (raw_abs, real_abs):
+                if cand == marker or cand.startswith(marker + "/"):
+                    raise WorktreeGitError(f"自定义路径指向系统目录，拒绝操作: {custom_path}")
 
     def create_worktree(
         self,

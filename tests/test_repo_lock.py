@@ -11,6 +11,10 @@ import pytest
 
 from src.repo_lock import AcquireResult, LockConflictError, RepoLockInfo, RepoLockManager
 
+# `RepoLockManager` 内部用 `os.path.realpath` 归一化 key，macOS 上 `/tmp` 是 `/private/tmp`
+# 的符号链接。测试硬编码 `/tmp/...` 会与归一化结果错位，因此统一通过 `_TMP` 拼接。
+_TMP = os.path.realpath("/tmp")
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -32,12 +36,12 @@ def mgr():
 class TestRepoLockAcquire:
 
     def test_acquire_success(self, mgr: RepoLockManager):
-        result = mgr.acquire("/tmp/repo1", "chat_A")
+        result = mgr.acquire(f"{_TMP}/repo1", "chat_A")
         assert result.success is True
 
     def test_acquire_reentrant(self, mgr: RepoLockManager):
-        mgr.acquire("/tmp/repo1", "chat_A")
-        result = mgr.acquire("/tmp/repo1", "chat_A")
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")
+        result = mgr.acquire(f"{_TMP}/repo1", "chat_A")
         assert result.success is True
         # Check refcount via list_locks
         locks = mgr.list_locks()
@@ -45,33 +49,33 @@ class TestRepoLockAcquire:
         assert locks[0].refcount == 2
 
     def test_acquire_conflict(self, mgr: RepoLockManager):
-        mgr.acquire("/tmp/repo1", "chat_A")
-        result = mgr.acquire("/tmp/repo1", "chat_B")
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")
+        result = mgr.acquire(f"{_TMP}/repo1", "chat_B")
         assert result.success is False
         assert result.holder_chat_id == "chat_A"
         assert result.locked_since is not None
 
     def test_acquire_p2p_bypass(self, mgr: RepoLockManager):
-        mgr.acquire("/tmp/repo1", "chat_A")
-        result = mgr.acquire("/tmp/repo1", "chat_B", is_p2p=True)
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")
+        result = mgr.acquire(f"{_TMP}/repo1", "chat_B", is_p2p=True)
         assert result.success is True
 
     def test_release_and_reacquire(self, mgr: RepoLockManager):
-        mgr.acquire("/tmp/repo1", "chat_A")
-        mgr.acquire("/tmp/repo1", "chat_A")  # refcount = 2
-        mgr.release("/tmp/repo1", "chat_A")  # refcount = 1
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")  # refcount = 2
+        mgr.release(f"{_TMP}/repo1", "chat_A")  # refcount = 1
         # Still held by chat_A
-        result = mgr.acquire("/tmp/repo1", "chat_B")
+        result = mgr.acquire(f"{_TMP}/repo1", "chat_B")
         assert result.success is False
 
-        mgr.release("/tmp/repo1", "chat_A")  # refcount = 0 → removed
-        result = mgr.acquire("/tmp/repo1", "chat_B")
+        mgr.release(f"{_TMP}/repo1", "chat_A")  # refcount = 0 → removed
+        result = mgr.acquire(f"{_TMP}/repo1", "chat_B")
         assert result.success is True
 
     def test_force_release(self, mgr: RepoLockManager):
-        mgr.acquire("/tmp/repo1", "chat_A")
-        mgr.force_release("/tmp/repo1")
-        result = mgr.acquire("/tmp/repo1", "chat_B")
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")
+        mgr.force_release(f"{_TMP}/repo1")
+        result = mgr.acquire(f"{_TMP}/repo1", "chat_B")
         assert result.success is True
 
     def test_path_normalization(self, mgr: RepoLockManager):
@@ -89,24 +93,24 @@ class TestRepoLockAcquire:
         assert result2.success is False
 
     def test_list_locks(self, mgr: RepoLockManager):
-        mgr.acquire("/tmp/repo1", "chat_A")
-        mgr.acquire("/tmp/repo2", "chat_B")
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")
+        mgr.acquire(f"{_TMP}/repo2", "chat_B")
         locks = mgr.list_locks()
         assert len(locks) == 2
         paths = {l.root_path for l in locks}
-        assert "/tmp/repo1" in paths
-        assert "/tmp/repo2" in paths
+        assert f"{_TMP}/repo1" in paths
+        assert f"{_TMP}/repo2" in paths
 
     def test_idle_timeout_cleanup(self, mgr: RepoLockManager):
         mgr._idle_timeout = 1  # 1 second timeout for testing
-        mgr.acquire("/tmp/repo1", "chat_A")
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")
         # Simulate a leaked lock entry with refcount=0 (e.g. bug in caller)
         with mgr._mu:
-            mgr._locks["/tmp/repo1"].refcount = 0
+            mgr._locks[f"{_TMP}/repo1"].refcount = 0
         time.sleep(1.5)  # Wait for lock to become idle
         mgr._cleanup_idle()
         # Lock should be cleaned up
-        result = mgr.acquire("/tmp/repo1", "chat_B")
+        result = mgr.acquire(f"{_TMP}/repo1", "chat_B")
         assert result.success is True
 
     def test_cleanup_skips_active_refcount_on_idle(self, mgr: RepoLockManager):
@@ -117,97 +121,97 @@ class TestRepoLockAcquire:
         """
         mgr._idle_timeout = 0  # everything is "idle"
         mgr._hard_timeout = 999999  # hard_timeout won't trigger
-        mgr.acquire("/tmp/repo1", "chat_A")
-        mgr.acquire("/tmp/repo1", "chat_A")  # refcount = 2
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")  # refcount = 2
         mgr._cleanup_idle()
         # Lock should NOT be reclaimed — refcount > 0 is protected
         locks = mgr.list_locks()
         assert len(locks) == 1
         assert locks[0].refcount == 2
         # Another chat should still be blocked
-        result = mgr.acquire("/tmp/repo1", "chat_B")
+        result = mgr.acquire(f"{_TMP}/repo1", "chat_B")
         assert result.success is False
 
     def test_cleanup_evicts_zero_refcount(self, mgr: RepoLockManager):
         """F-01: _cleanup_idle evicts entries with refcount <= 0 and idle."""
         mgr._idle_timeout = 0
-        mgr.acquire("/tmp/repo1", "chat_A")
-        mgr.release("/tmp/repo1", "chat_A")  # refcount = 0, removed by release
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")
+        mgr.release(f"{_TMP}/repo1", "chat_A")  # refcount = 0, removed by release
         # Re-acquire to get refcount=1, then force refcount=0 without release
-        mgr.acquire("/tmp/repo2", "chat_B")
+        mgr.acquire(f"{_TMP}/repo2", "chat_B")
         # Manually set refcount to 0 for testing
         with mgr._mu:
-            mgr._locks["/tmp/repo2"].refcount = 0
+            mgr._locks[f"{_TMP}/repo2"].refcount = 0
         mgr._cleanup_idle()
         assert mgr.list_locks() == []
 
     def test_cleanup_removes_token_mapping(self, mgr: RepoLockManager):
         """F-02: _cleanup_idle removes token mappings for evicted paths."""
         mgr._idle_timeout = 0
-        mgr.acquire("/tmp/repo1", "chat_A")
-        token = mgr.path_to_token("/tmp/repo1")
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")
+        token = mgr.path_to_token(f"{_TMP}/repo1")
         assert token
-        assert mgr.token_to_path(token) == "/tmp/repo1"
+        assert mgr.token_to_path(token) == f"{_TMP}/repo1"
         # Force refcount to 0 so cleanup can evict
         with mgr._mu:
-            mgr._locks["/tmp/repo1"].refcount = 0
+            mgr._locks[f"{_TMP}/repo1"].refcount = 0
         mgr._cleanup_idle()
         # Token mapping should be cleaned up
         assert mgr.token_to_path(token) is None
         # path_to_token cache should also be cleared
         with mgr._mu:
-            assert "/tmp/repo1" not in mgr._path_to_token
+            assert f"{_TMP}/repo1" not in mgr._path_to_token
 
     def test_release_cleans_token_mapping(self, mgr: RepoLockManager):
         """release() should clean up token mappings when refcount reaches 0."""
-        mgr.acquire("/tmp/repo1", "chat_A")
-        token = mgr.path_to_token("/tmp/repo1")
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")
+        token = mgr.path_to_token(f"{_TMP}/repo1")
         assert token
-        assert mgr.token_to_path(token) == "/tmp/repo1"
-        mgr.release("/tmp/repo1", "chat_A")  # refcount 0 → entry removed
+        assert mgr.token_to_path(token) == f"{_TMP}/repo1"
+        mgr.release(f"{_TMP}/repo1", "chat_A")  # refcount 0 → entry removed
         # Token mapping should be cleaned up
         assert mgr.token_to_path(token) is None
         with mgr._mu:
-            assert "/tmp/repo1" not in mgr._path_to_token
+            assert f"{_TMP}/repo1" not in mgr._path_to_token
 
     def test_force_release_cleans_token_mapping(self, mgr: RepoLockManager):
         """force_release() should clean up token mappings."""
-        mgr.acquire("/tmp/repo1", "chat_A")
-        token = mgr.path_to_token("/tmp/repo1")
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")
+        token = mgr.path_to_token(f"{_TMP}/repo1")
         assert token
-        assert mgr.token_to_path(token) == "/tmp/repo1"
-        mgr.force_release("/tmp/repo1")
+        assert mgr.token_to_path(token) == f"{_TMP}/repo1"
+        mgr.force_release(f"{_TMP}/repo1")
         # Token mapping should be cleaned up
         assert mgr.token_to_path(token) is None
         with mgr._mu:
-            assert "/tmp/repo1" not in mgr._path_to_token
+            assert f"{_TMP}/repo1" not in mgr._path_to_token
 
     def test_cleanup_idle_skips_recently_touched(self, mgr: RepoLockManager):
         """AC-18: _cleanup_idle must NOT evict entries that are recently touched
         (simulating active operations keeping the lock alive via touch())."""
         mgr._idle_timeout = 1  # 1 second timeout for testing
-        mgr.acquire("/tmp/repo1", "chat_A")
-        mgr.acquire("/tmp/repo1", "chat_A")  # refcount = 2
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")  # refcount = 2
 
         time.sleep(0.6)
-        mgr.touch("/tmp/repo1", "chat_A")  # refresh last_active_time
+        mgr.touch(f"{_TMP}/repo1", "chat_A")  # refresh last_active_time
         time.sleep(0.6)
         # Total elapsed > 1s from acquire, but touch was recent (0.6s ago)
         mgr._cleanup_idle()
 
         # Lock should still be held because touch refreshed last_active_time
-        result = mgr.acquire("/tmp/repo1", "chat_B")
+        result = mgr.acquire(f"{_TMP}/repo1", "chat_B")
         assert result.success is False  # still held by chat_A
 
     def test_touch_prevents_timeout(self, mgr: RepoLockManager):
         mgr._idle_timeout = 1
-        mgr.acquire("/tmp/repo1", "chat_A")
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")
         time.sleep(0.6)
-        mgr.touch("/tmp/repo1", "chat_A")
+        mgr.touch(f"{_TMP}/repo1", "chat_A")
         time.sleep(0.6)
         mgr._cleanup_idle()
         # Lock should still be held because touch refreshed it
-        result = mgr.acquire("/tmp/repo1", "chat_B")
+        result = mgr.acquire(f"{_TMP}/repo1", "chat_B")
         assert result.success is False
 
     def test_acquire_none_path(self, mgr: RepoLockManager):
@@ -215,16 +219,16 @@ class TestRepoLockAcquire:
         assert result.success is True  # empty path → no-op success
 
     def test_release_wrong_chat_noop(self, mgr: RepoLockManager):
-        mgr.acquire("/tmp/repo1", "chat_A")
-        mgr.release("/tmp/repo1", "chat_B")  # wrong chat → no-op
-        result = mgr.acquire("/tmp/repo1", "chat_B")
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")
+        mgr.release(f"{_TMP}/repo1", "chat_B")  # wrong chat → no-op
+        result = mgr.acquire(f"{_TMP}/repo1", "chat_B")
         assert result.success is False  # still held by chat_A
 
     def test_cleanup_idle_skips_active_refcount(self, mgr: RepoLockManager):
         """H-1: refcount > 0 entries must NOT be evicted by idle_timeout alone."""
         mgr._idle_timeout = 0  # everything is "idle"
         mgr._hard_timeout = 999999  # hard_timeout won't trigger
-        mgr.acquire("/tmp/repo1", "chat_A")  # refcount = 1
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")  # refcount = 1
         mgr._cleanup_idle()
         # Lock must still be held
         locks = mgr.list_locks()
@@ -238,15 +242,15 @@ class TestRepoLockAcquire:
 
         mgr._idle_timeout = 999999  # idle won't trigger
         mgr._hard_timeout = 0  # everything exceeds hard_timeout
-        mgr.acquire("/tmp/repo1", "chat_A")
-        mgr.acquire("/tmp/repo1", "chat_A")  # refcount = 2
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")  # refcount = 2
 
         with caplog.at_level(logging.CRITICAL, logger="src.repo_lock"):
             mgr._cleanup_idle()
 
         # Lock should be force-reclaimed by hard_timeout
         assert mgr.list_locks() == []
-        result = mgr.acquire("/tmp/repo1", "chat_B")
+        result = mgr.acquire(f"{_TMP}/repo1", "chat_B")
         assert result.success is True
 
         # Verify CRITICAL log emitted for hard-timeout force-reclaim
@@ -259,7 +263,7 @@ class TestRepoLockAcquire:
 
         mgr._idle_timeout = 0  # everything is "idle"
         mgr._hard_timeout = 999999  # hard_timeout won't trigger
-        mgr.acquire("/tmp/repo1", "chat_A")  # refcount = 1
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")  # refcount = 1
 
         with caplog.at_level(logging.WARNING, logger="src.repo_lock"):
             mgr._cleanup_idle()
@@ -278,29 +282,29 @@ class TestRepoLockAcquire:
         """Phase 2 hard_timeout eviction must also clean path↔token mappings."""
         mgr._idle_timeout = 999999
         mgr._hard_timeout = 0  # everything exceeds hard_timeout
-        mgr.acquire("/tmp/repo1", "chat_A")
-        token = mgr.path_to_token("/tmp/repo1")
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")
+        token = mgr.path_to_token(f"{_TMP}/repo1")
         assert token
-        assert mgr.token_to_path(token) == "/tmp/repo1"
+        assert mgr.token_to_path(token) == f"{_TMP}/repo1"
 
         mgr._cleanup_idle()
 
         # Token mapping should be cleaned up after hard-timeout eviction
         assert mgr.token_to_path(token) is None
         with mgr._mu:
-            assert "/tmp/repo1" not in mgr._path_to_token
+            assert f"{_TMP}/repo1" not in mgr._path_to_token
 
     def test_cleanup_idle_evicts_zero_refcount(self, mgr: RepoLockManager):
         """Regression: refcount == 0 + idle > timeout → still evicted normally."""
         mgr._idle_timeout = 0
         mgr._hard_timeout = 999999
-        mgr.acquire("/tmp/repo1", "chat_A")
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")
         # Manually force refcount to 0 (simulating a bug in caller)
         with mgr._mu:
-            mgr._locks["/tmp/repo1"].refcount = 0
+            mgr._locks[f"{_TMP}/repo1"].refcount = 0
         mgr._cleanup_idle()
         assert mgr.list_locks() == []
-        result = mgr.acquire("/tmp/repo1", "chat_B")
+        result = mgr.acquire(f"{_TMP}/repo1", "chat_B")
         assert result.success is True
 
 
@@ -308,20 +312,20 @@ class TestPathToken:
     """Tests for RepoLockManager.path_to_token / token_to_path."""
 
     def test_path_to_token_roundtrip(self, mgr: RepoLockManager):
-        token = mgr.path_to_token("/tmp/repo1")
+        token = mgr.path_to_token(f"{_TMP}/repo1")
         assert token  # non-empty
         assert len(token) == 32  # sha256 hex prefix
         resolved = mgr.token_to_path(token)
-        assert resolved == "/tmp/repo1"
+        assert resolved == f"{_TMP}/repo1"
 
     def test_path_to_token_deterministic(self, mgr: RepoLockManager):
-        t1 = mgr.path_to_token("/tmp/repo1")
-        t2 = mgr.path_to_token("/tmp/repo1")
+        t1 = mgr.path_to_token(f"{_TMP}/repo1")
+        t2 = mgr.path_to_token(f"{_TMP}/repo1")
         assert t1 == t2
 
     def test_path_to_token_different_paths(self, mgr: RepoLockManager):
-        t1 = mgr.path_to_token("/tmp/repo1")
-        t2 = mgr.path_to_token("/tmp/repo2")
+        t1 = mgr.path_to_token(f"{_TMP}/repo1")
+        t2 = mgr.path_to_token(f"{_TMP}/repo2")
         assert t1 != t2
 
     def test_token_to_path_unknown(self, mgr: RepoLockManager):
@@ -338,22 +342,22 @@ class TestGetLockInfo:
     """Tests for RepoLockManager.get_lock_info O(1) lookup."""
 
     def test_get_lock_info_returns_info(self, mgr: RepoLockManager):
-        mgr.acquire("/tmp/repo1", "chat_A")
-        info = mgr.get_lock_info("/tmp/repo1")
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")
+        info = mgr.get_lock_info(f"{_TMP}/repo1")
         assert info is not None
         assert info.chat_id == "chat_A"
         assert info.refcount == 1
-        assert info.root_path == "/tmp/repo1"
+        assert info.root_path == f"{_TMP}/repo1"
         assert info.idle_seconds >= 0
 
     def test_get_lock_info_returns_none_when_not_locked(self, mgr: RepoLockManager):
-        info = mgr.get_lock_info("/tmp/repo1")
+        info = mgr.get_lock_info(f"{_TMP}/repo1")
         assert info is None
 
     def test_get_lock_info_after_release(self, mgr: RepoLockManager):
-        mgr.acquire("/tmp/repo1", "chat_A")
-        mgr.release("/tmp/repo1", "chat_A")
-        info = mgr.get_lock_info("/tmp/repo1")
+        mgr.acquire(f"{_TMP}/repo1", "chat_A")
+        mgr.release(f"{_TMP}/repo1", "chat_A")
+        info = mgr.get_lock_info(f"{_TMP}/repo1")
         assert info is None
 
     def test_get_lock_info_empty_path(self, mgr: RepoLockManager):
@@ -401,13 +405,13 @@ class TestIsP2PThreadLocalPropagation:
             handler.register_message_project = MagicMock()
             handler.record_mode_transition = MagicMock()
             handler.inject_bridge_context = MagicMock(side_effect=lambda t, p, **kw: t)
-            handler.get_working_dir = MagicMock(return_value="/tmp/test")
+            handler.get_working_dir = MagicMock(return_value=f"{_TMP}/test")
             handler.ensure_request_id = MagicMock(return_value="req-1")
 
             # Mock project with root_path
             mock_project = MagicMock()
             mock_project.project_id = "proj-1"
-            mock_project.root_path = "/tmp/test"
+            mock_project.root_path = f"{_TMP}/test"
 
             # Mock repo_lock_manager on ctx
             mock_lock_mgr = MagicMock()
@@ -450,12 +454,12 @@ class TestIsP2PThreadLocalPropagation:
             handler.register_message_project = MagicMock()
             handler.record_mode_transition = MagicMock()
             handler.inject_bridge_context = MagicMock(side_effect=lambda t, p, **kw: t)
-            handler.get_working_dir = MagicMock(return_value="/tmp/test")
+            handler.get_working_dir = MagicMock(return_value=f"{_TMP}/test")
             handler.ensure_request_id = MagicMock(return_value="req-1")
 
             mock_project = MagicMock()
             mock_project.project_id = "proj-1"
-            mock_project.root_path = "/tmp/test"
+            mock_project.root_path = f"{_TMP}/test"
 
             mock_lock_mgr = MagicMock()
             mock_lock_result = MagicMock()
@@ -489,7 +493,7 @@ class TestIsP2PThreadLocalPropagation:
             handler = BaseEngineHandler(mock_ctx)
 
             mock_project = MagicMock()
-            mock_project.root_path = "/tmp/test"
+            mock_project.root_path = f"{_TMP}/test"
 
             mock_lock_mgr = MagicMock()
             mock_lock_result = MagicMock()
@@ -535,7 +539,7 @@ class TestIsP2PThreadLocalPropagation:
 
             mock_project = MagicMock()
             mock_project.project_id = "proj-1"
-            mock_project.root_path = "/tmp/test"
+            mock_project.root_path = f"{_TMP}/test"
             mock_ctx.project_manager.get_active_project.return_value = mock_project
 
             mock_lock_mgr = MagicMock()
@@ -584,7 +588,7 @@ class TestIsP2PThreadLocalPropagation:
             handler = BaseEngineHandler(mock_ctx)
 
             mock_project = MagicMock()
-            mock_project.root_path = "/tmp/test"
+            mock_project.root_path = f"{_TMP}/test"
 
             mock_lock_mgr = MagicMock()
             mock_lock_result = MagicMock()
@@ -634,7 +638,7 @@ class TestIsP2PThreadLocalPropagation:
                 mock_subprocess.run.return_value = mock_process
 
                 executor = SandboxExecutor(subprocess_executor=mock_subprocess)
-                result = executor.execute("echo test", cwd="/tmp/test", chat_id="chat-1")
+                result = executor.execute("echo test", cwd=f"{_TMP}/test", chat_id="chat-1")
 
                 # hold() should NOT be called — no independent lock acquisition
                 mock_lock_mgr.hold.assert_not_called()
@@ -661,7 +665,7 @@ class TestRepoLockHold:
     def test_hold_success(self, mgr: RepoLockManager):
         """Body executes under lock via hold() and lock is released on exit."""
         body = MagicMock(return_value=42)
-        with mgr.hold("/tmp/repo", "chat_A") as lock_result:
+        with mgr.hold(f"{_TMP}/repo", "chat_A") as lock_result:
             assert lock_result.success
             result = body()
         assert result == 42
@@ -671,28 +675,28 @@ class TestRepoLockHold:
 
     def test_hold_conflict(self, mgr: RepoLockManager):
         """When another chat holds the lock, hold() raises LockConflictError."""
-        mgr.acquire("/tmp/repo", "chat_A")
+        mgr.acquire(f"{_TMP}/repo", "chat_A")
         body = MagicMock()
         with pytest.raises(LockConflictError) as exc_info:
-            with mgr.hold("/tmp/repo", "chat_B"):
+            with mgr.hold(f"{_TMP}/repo", "chat_B"):
                 body()
         body.assert_not_called()
         assert exc_info.value.holder_chat_id == "chat_A"
 
     def test_hold_conflict_raises_lock_conflict_error(self, mgr: RepoLockManager):
         """hold() raises LockConflictError with correct attributes on conflict."""
-        mgr.acquire("/tmp/repo", "chat_A")
+        mgr.acquire(f"{_TMP}/repo", "chat_A")
         with pytest.raises(LockConflictError) as exc_info:
-            with mgr.hold("/tmp/repo", "chat_B"):
+            with mgr.hold(f"{_TMP}/repo", "chat_B"):
                 pass
         assert exc_info.value.holder_chat_id == "chat_A"
-        assert exc_info.value.root_path == "/tmp/repo"
+        assert exc_info.value.root_path == f"{_TMP}/repo"
 
     def test_hold_p2p_bypass(self, mgr: RepoLockManager):
         """With is_p2p=True, lock conflict is bypassed via hold()."""
-        mgr.acquire("/tmp/repo", "chat_A")
+        mgr.acquire(f"{_TMP}/repo", "chat_A")
         body = MagicMock(return_value="bypassed")
-        with mgr.hold("/tmp/repo", "chat_B", is_p2p=True) as lock_result:
+        with mgr.hold(f"{_TMP}/repo", "chat_B", is_p2p=True) as lock_result:
             assert lock_result.success
             result = body()
         assert result == "bypassed"
@@ -701,7 +705,7 @@ class TestRepoLockHold:
     def test_hold_body_exception_releases_lock(self, mgr: RepoLockManager):
         """When body raises, lock is still released on context exit."""
         with pytest.raises(ValueError, match="boom"):
-            with mgr.hold("/tmp/repo", "chat_A") as lock_result:
+            with mgr.hold(f"{_TMP}/repo", "chat_A") as lock_result:
                 assert lock_result.success
                 raise ValueError("boom")
         # Lock must be released despite the exception
@@ -726,7 +730,7 @@ class TestLazyCleanupThread:
     def test_thread_starts_on_first_acquire(self):
         m = RepoLockManager(idle_timeout=999, cleanup_interval=999)
         try:
-            m.acquire("/tmp/repo", "chat_A")
+            m.acquire(f"{_TMP}/repo", "chat_A")
             assert m._cleanup_thread is not None
             assert m._cleanup_thread.is_alive()
         finally:
@@ -734,7 +738,7 @@ class TestLazyCleanupThread:
 
     def test_shutdown_clears_thread_ref(self):
         m = RepoLockManager(idle_timeout=999, cleanup_interval=999)
-        m.acquire("/tmp/repo", "chat_A")
+        m.acquire(f"{_TMP}/repo", "chat_A")
         assert m._cleanup_thread is not None
         m.shutdown()
         assert m._cleanup_thread is None
@@ -752,7 +756,7 @@ class TestRepoLockConcurrency:
 
         def try_acquire(chat_id):
             barrier.wait()
-            results[chat_id] = mgr.acquire("/tmp/contested", chat_id)
+            results[chat_id] = mgr.acquire(f"{_TMP}/contested", chat_id)
 
         threads = [threading.Thread(target=try_acquire, args=(f"chat_{i}",)) for i in range(10)]
         for t in threads:
@@ -779,7 +783,7 @@ class TestRepoLockConcurrency:
                 errors.append(e)
 
         threads = [
-            threading.Thread(target=cycle, args=(f"chat_{i}", f"/tmp/repo_{i % 3}"))
+            threading.Thread(target=cycle, args=(f"chat_{i}", f"{_TMP}/repo_{i % 3}"))
             for i in range(6)
         ]
         for t in threads:
@@ -794,7 +798,7 @@ class TestRepoLockConcurrency:
         results = []
 
         def run(idx):
-            with mgr.hold(f"/tmp/repo_{idx}", f"chat_{idx}") as lock_result:
+            with mgr.hold(f"{_TMP}/repo_{idx}", f"chat_{idx}") as lock_result:
                 results.append(idx)
 
         threads = [threading.Thread(target=run, args=(i,)) for i in range(10)]
@@ -830,7 +834,7 @@ class TestRepoLockConcurrency:
 
         threads = [threading.Thread(target=cleanup_loop)]
         threads += [
-            threading.Thread(target=acquire_release_loop, args=(f"chat_{i}", f"/tmp/repo_{i % 3}"))
+            threading.Thread(target=acquire_release_loop, args=(f"chat_{i}", f"{_TMP}/repo_{i % 3}"))
             for i in range(6)
         ]
         for t in threads:
@@ -846,7 +850,7 @@ class TestRepoLockInfoFrozen:
 
     def test_frozen_raises_on_assignment(self):
         info = RepoLockInfo(
-            root_path="/tmp/test",
+            root_path=f"{_TMP}/test",
             chat_id="chat1",
             refcount=1,
             acquired_at=100.0,
@@ -925,11 +929,11 @@ class TestHardTimeoutCallback:
             on_hard_timeout_reclaim=on_reclaim,
         )
         try:
-            m.acquire("/tmp/repo_cb", "chat_X")
+            m.acquire(f"{_TMP}/repo_cb", "chat_X")
             m._cleanup_idle()
 
             assert len(reclaimed) == 1
-            assert reclaimed[0] == ("/tmp/repo_cb", "chat_X")
+            assert reclaimed[0] == (f"{_TMP}/repo_cb", "chat_X")
             # Lock should be evicted
             assert m.list_locks() == []
         finally:
@@ -949,7 +953,7 @@ class TestHardTimeoutCallback:
             on_hard_timeout_reclaim=bad_callback,
         )
         try:
-            m.acquire("/tmp/repo_cb2", "chat_Y")
+            m.acquire(f"{_TMP}/repo_cb2", "chat_Y")
 
             with caplog.at_level(logging.ERROR, logger="src.repo_lock"):
                 m._cleanup_idle()  # must not raise
@@ -975,7 +979,7 @@ class TestOrphanTokenCleanup:
         m = RepoLockManager(idle_timeout=1, cleanup_interval=999)
         try:
             # Create a token mapping without acquiring a lock
-            token = m.path_to_token("/tmp/orphan_repo")
+            token = m.path_to_token(f"{_TMP}/orphan_repo")
             assert token
             assert m.token_to_path(token) is not None
 
@@ -993,10 +997,10 @@ class TestOrphanTokenCleanup:
         """Tokens for paths with active locks must NOT be cleaned."""
         m = RepoLockManager(idle_timeout=999, cleanup_interval=999)
         try:
-            m.acquire("/tmp/active_repo", "chatA")
-            token = m.path_to_token("/tmp/active_repo")
+            m.acquire(f"{_TMP}/active_repo", "chatA")
+            token = m.path_to_token(f"{_TMP}/active_repo")
             # Also create an orphan
-            orphan_token = m.path_to_token("/tmp/orphan_repo2")
+            orphan_token = m.path_to_token(f"{_TMP}/orphan_repo2")
 
             m._cleanup_idle()
 
@@ -1018,12 +1022,12 @@ class TestTokenMappingCapacityLimit:
         try:
             # Fill up with orphan tokens (no acquire)
             for i in range(10):
-                m.path_to_token(f"/tmp/cap_repo_{i}")
+                m.path_to_token(f"{_TMP}/cap_repo_{i}")
             with m._mu:
                 assert len(m._token_to_path) == 10
 
             # Next token should trigger orphan purge (all are orphans)
-            new_token = m.path_to_token("/tmp/cap_repo_new")
+            new_token = m.path_to_token(f"{_TMP}/cap_repo_new")
             assert new_token
             with m._mu:
                 # Only the newly added one should remain
@@ -1037,12 +1041,12 @@ class TestTokenMappingCapacityLimit:
         try:
             # Acquire 5 locks and map them (fills capacity with non-orphans)
             for i in range(5):
-                m.acquire(f"/tmp/locked_repo_{i}", "chatA")
-                m.path_to_token(f"/tmp/locked_repo_{i}")
+                m.acquire(f"{_TMP}/locked_repo_{i}", "chatA")
+                m.path_to_token(f"{_TMP}/locked_repo_{i}")
 
             # Adding one more when capacity is full of active locks
             # should return token without caching
-            extra_token = m.path_to_token("/tmp/extra_repo")
+            extra_token = m.path_to_token(f"{_TMP}/extra_repo")
             assert extra_token  # token is still returned
             # But it should NOT be cached (capacity full, no orphans to purge)
             assert m.token_to_path(extra_token) is None
@@ -1061,22 +1065,22 @@ class TestRepoLockDoubleRelease:
     def test_double_release_same_chat(self):
         m = RepoLockManager(idle_timeout=999, cleanup_interval=999, hard_timeout=9999)
         try:
-            result = m.acquire("/tmp/dr_repo", "chat_a")
+            result = m.acquire(f"{_TMP}/dr_repo", "chat_a")
             assert result.success
-            m.release("/tmp/dr_repo", "chat_a")
+            m.release(f"{_TMP}/dr_repo", "chat_a")
             # Second release should be a no-op (entry already removed)
-            m.release("/tmp/dr_repo", "chat_a")
-            assert m.get_lock_info("/tmp/dr_repo") is None
+            m.release(f"{_TMP}/dr_repo", "chat_a")
+            assert m.get_lock_info(f"{_TMP}/dr_repo") is None
         finally:
             m.shutdown()
 
     def test_release_wrong_chat_is_noop(self):
         m = RepoLockManager(idle_timeout=999, cleanup_interval=999, hard_timeout=9999)
         try:
-            m.acquire("/tmp/dr_repo2", "chat_a")
+            m.acquire(f"{_TMP}/dr_repo2", "chat_a")
             # Another chat tries to release — should be silently ignored
-            m.release("/tmp/dr_repo2", "chat_b")
-            info = m.get_lock_info("/tmp/dr_repo2")
+            m.release(f"{_TMP}/dr_repo2", "chat_b")
+            info = m.get_lock_info(f"{_TMP}/dr_repo2")
             assert info is not None
             assert info.chat_id == "chat_a"
         finally:
@@ -1086,7 +1090,7 @@ class TestRepoLockDoubleRelease:
         m = RepoLockManager(idle_timeout=999, cleanup_interval=999, hard_timeout=9999)
         try:
             # Release a path that was never acquired
-            m.release("/tmp/never_acquired", "chat_x")
+            m.release(f"{_TMP}/never_acquired", "chat_x")
             # Should not raise
         finally:
             m.shutdown()
@@ -1094,11 +1098,11 @@ class TestRepoLockDoubleRelease:
     def test_force_release_already_released(self):
         m = RepoLockManager(idle_timeout=999, cleanup_interval=999, hard_timeout=9999)
         try:
-            m.acquire("/tmp/fr_repo", "chat_a")
-            m.force_release("/tmp/fr_repo")
+            m.acquire(f"{_TMP}/fr_repo", "chat_a")
+            m.force_release(f"{_TMP}/fr_repo")
             # Double force_release — should be safe
-            m.force_release("/tmp/fr_repo")
-            assert m.get_lock_info("/tmp/fr_repo") is None
+            m.force_release(f"{_TMP}/fr_repo")
+            assert m.get_lock_info(f"{_TMP}/fr_repo") is None
         finally:
             m.shutdown()
 
@@ -1113,11 +1117,11 @@ class TestIsHeldBy:
 
     def test_is_held_by_basic(self, mgr):
         """acquire → is_held_by True; release → is_held_by False."""
-        mgr.acquire("/tmp/held_repo", "chat_x")
-        assert mgr.is_held_by("/tmp/held_repo", "chat_x") is True
-        assert mgr.is_held_by("/tmp/held_repo", "chat_y") is False
-        mgr.release("/tmp/held_repo", "chat_x")
-        assert mgr.is_held_by("/tmp/held_repo", "chat_x") is False
+        mgr.acquire(f"{_TMP}/held_repo", "chat_x")
+        assert mgr.is_held_by(f"{_TMP}/held_repo", "chat_x") is True
+        assert mgr.is_held_by(f"{_TMP}/held_repo", "chat_y") is False
+        mgr.release(f"{_TMP}/held_repo", "chat_x")
+        assert mgr.is_held_by(f"{_TMP}/held_repo", "chat_x") is False
 
     def test_is_held_by_invalid_path(self, mgr):
         """Invalid/empty path returns False without error."""
@@ -1125,11 +1129,11 @@ class TestIsHeldBy:
 
     def test_is_held_by_not_locked(self, mgr):
         """Non-existent lock returns False."""
-        assert mgr.is_held_by("/tmp/nonexistent_path_xyz", "chat_x") is False
+        assert mgr.is_held_by(f"{_TMP}/nonexistent_path_xyz", "chat_x") is False
 
     def test_is_held_by_thread_safety(self, mgr):
         """100 concurrent threads calling is_held_by produce no exceptions."""
-        mgr.acquire("/tmp/ts_repo", "chat_ts")
+        mgr.acquire(f"{_TMP}/ts_repo", "chat_ts")
         barrier = threading.Barrier(100)
         errors = []
 
@@ -1137,8 +1141,8 @@ class TestIsHeldBy:
             try:
                 barrier.wait(timeout=5)
                 for _ in range(50):
-                    mgr.is_held_by("/tmp/ts_repo", "chat_ts")
-                    mgr.is_held_by("/tmp/ts_repo", "chat_other")
+                    mgr.is_held_by(f"{_TMP}/ts_repo", "chat_ts")
+                    mgr.is_held_by(f"{_TMP}/ts_repo", "chat_other")
             except Exception as e:
                 errors.append(e)
 
@@ -1149,7 +1153,7 @@ class TestIsHeldBy:
             t.join(timeout=10)
 
         assert not errors, f"Thread safety errors: {errors}"
-        mgr.release("/tmp/ts_repo", "chat_ts")
+        mgr.release(f"{_TMP}/ts_repo", "chat_ts")
 
 
 class TestRepoLockE2ELifecycle:
@@ -1158,30 +1162,30 @@ class TestRepoLockE2ELifecycle:
     def test_e2e_lock_lifecycle(self, mgr: RepoLockManager):
         """acquire(A) → list_locks visible → release(A) → acquire(B) succeeds."""
         # Step 1: chat_A acquires
-        result_a = mgr.acquire("/tmp/e2e_repo", "chat_A")
+        result_a = mgr.acquire(f"{_TMP}/e2e_repo", "chat_A")
         assert result_a.success is True
 
         # Step 2: lock is visible in list_locks
         locks = mgr.list_locks()
-        assert any(lock.chat_id == "chat_A" and "/tmp/e2e_repo" in lock.root_path for lock in locks)
+        assert any(lock.chat_id == "chat_A" and f"{_TMP}/e2e_repo" in lock.root_path for lock in locks)
 
         # Step 3: chat_B cannot acquire while A holds
-        result_b_conflict = mgr.acquire("/tmp/e2e_repo", "chat_B")
+        result_b_conflict = mgr.acquire(f"{_TMP}/e2e_repo", "chat_B")
         assert result_b_conflict.success is False
 
         # Step 4: chat_A releases
-        mgr.release("/tmp/e2e_repo", "chat_A")
+        mgr.release(f"{_TMP}/e2e_repo", "chat_A")
 
         # Step 5: lock is no longer visible
         locks_after = mgr.list_locks()
-        assert not any("/tmp/e2e_repo" in lock.root_path for lock in locks_after)
+        assert not any(f"{_TMP}/e2e_repo" in lock.root_path for lock in locks_after)
 
         # Step 6: chat_B can now acquire
-        result_b_ok = mgr.acquire("/tmp/e2e_repo", "chat_B")
+        result_b_ok = mgr.acquire(f"{_TMP}/e2e_repo", "chat_B")
         assert result_b_ok.success is True
 
         # Cleanup
-        mgr.release("/tmp/e2e_repo", "chat_B")
+        mgr.release(f"{_TMP}/e2e_repo", "chat_B")
 
     def test_shutdown_during_active_hold(self):
         """shutdown() while a thread holds a lock must not deadlock or raise."""
@@ -1190,9 +1194,9 @@ class TestRepoLockE2ELifecycle:
 
         def hold_lock():
             try:
-                m.acquire("/tmp/shutdown_repo", "chat_hold")
+                m.acquire(f"{_TMP}/shutdown_repo", "chat_hold")
                 time.sleep(2)
-                m.release("/tmp/shutdown_repo", "chat_hold")
+                m.release(f"{_TMP}/shutdown_repo", "chat_hold")
             except Exception as e:
                 errors.append(e)
 
@@ -1231,9 +1235,9 @@ class TestNormalizePathEdgeCases:
             assert result.holder_chat_id == "chat_A"
 
     def test_trailing_slash_normalization(self, mgr: RepoLockManager):
-        """/tmp/repo/ and /tmp/repo must resolve to the same lock key."""
-        mgr.acquire("/tmp/trailing_slash_repo", "chat_A")
-        result = mgr.acquire("/tmp/trailing_slash_repo/", "chat_B")
+        """Trailing slash variants of a repo path must resolve to the same lock key."""
+        mgr.acquire(f"{_TMP}/trailing_slash_repo", "chat_A")
+        result = mgr.acquire(f"{_TMP}/trailing_slash_repo/", "chat_B")
         assert result.success is False
 
     def test_symlink_resolution(self, mgr: RepoLockManager):
@@ -1269,30 +1273,30 @@ class TestBlockedChatsNotification:
 
         mgr.on_release.subscribe(handler)
 
-        mgr.acquire("/tmp/notify_repo", "chat_A")
+        mgr.acquire(f"{_TMP}/notify_repo", "chat_A")
         # chat_B and chat_C try and fail → become blocked
-        mgr.acquire("/tmp/notify_repo", "chat_B")
-        mgr.acquire("/tmp/notify_repo", "chat_C")
+        mgr.acquire(f"{_TMP}/notify_repo", "chat_B")
+        mgr.acquire(f"{_TMP}/notify_repo", "chat_C")
 
         # Release → should notify chat_B and chat_C
-        mgr.release("/tmp/notify_repo", "chat_A")
+        mgr.release(f"{_TMP}/notify_repo", "chat_A")
 
         assert len(notifications) == 1
         path, chats = notifications[0]
-        assert "/tmp/notify_repo" in path or path == os.path.realpath("/tmp/notify_repo")
+        assert f"{_TMP}/notify_repo" in path or path == os.path.realpath(f"{_TMP}/notify_repo")
         assert "chat_B" in chats
         assert "chat_C" in chats
 
     def test_blocked_chats_bounded(self, mgr: RepoLockManager):
         """At most 10 blocked chat_ids are tracked per lock."""
-        mgr.acquire("/tmp/bounded_repo", "holder_chat")
+        mgr.acquire(f"{_TMP}/bounded_repo", "holder_chat")
 
         # 15 different chats try to acquire (all fail)
         for i in range(15):
-            mgr.acquire("/tmp/bounded_repo", f"blocked_{i}")
+            mgr.acquire(f"{_TMP}/bounded_repo", f"blocked_{i}")
 
         # Check internal state: at most 10
-        key = os.path.realpath("/tmp/bounded_repo")
+        key = os.path.realpath(f"{_TMP}/bounded_repo")
         with mgr._mu:
             blocked = mgr._blocked_chats.get(key, set())
             assert len(blocked) <= 10
@@ -1302,9 +1306,9 @@ class TestBlockedChatsNotification:
         notifications: list[tuple] = []
         mgr.on_release.subscribe(lambda p, c: notifications.append((p, c)))
 
-        mgr.acquire("/tmp/force_notify", "chat_A")
-        mgr.acquire("/tmp/force_notify", "chat_B")  # blocked
-        mgr.force_release("/tmp/force_notify")
+        mgr.acquire(f"{_TMP}/force_notify", "chat_A")
+        mgr.acquire(f"{_TMP}/force_notify", "chat_B")  # blocked
+        mgr.force_release(f"{_TMP}/force_notify")
 
         assert len(notifications) == 1
         assert "chat_B" in notifications[0][1]
@@ -1352,11 +1356,11 @@ class TestLockAfterShutdown:
 
     def test_acquire_after_shutdown_no_crash(self):
         m = RepoLockManager(idle_timeout=300, cleanup_interval=9999)
-        m.acquire("/tmp/pre_shutdown", "chat_A")
+        m.acquire(f"{_TMP}/pre_shutdown", "chat_A")
         m.shutdown()
 
         # acquire after shutdown should still work (creates new thread)
-        result = m.acquire("/tmp/post_shutdown", "chat_B")
+        result = m.acquire(f"{_TMP}/post_shutdown", "chat_B")
         assert result.success is True
         m.shutdown()
 

@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-05-08
+- **修复 macOS 上 RepoLock + Worktree 系统目录拦截测试常态失败** — `RepoLockManager` 用 `os.path.realpath` 归一化 key，macOS 上 `/tmp` 是 `/private/tmp` 符号链接导致测试硬编码字面量与归一化结果错位；`WorktreeGitService._validate_custom_path` 用 `Path.resolve()` 把 `/etc/...` 解析成 `/private/etc/...` 但 `_FORBIDDEN_PREFIXES` 只列原始 `/etc`，致系统目录校验在 macOS 漏过；引入 `_TMP = os.path.realpath("/tmp")` 常量改写 163 处字面量，扩展禁区前缀匹配 abspath+realpath 两种形态并放行 `tempfile.gettempdir()`；全量 6230 passed → [详细记录](2026-05-08.md)
 - **删除 Worktree 旧 CardBuilder 渲染路径** — 确认旧 `WorktreeBuilder` 只通过 `CardBuilder` facade re-export、无生产调用后，删除旧 builder、旧代理、仅覆盖旧路径的测试和旧 banner context；静态零残留 + py_compile 通过，pytest 受本机审批额度限制未能重跑 → [详细记录](2026-05-08.md)
 - **修复 Worktree 工具选择卡不可交互** — 定位到新三层 Worktree 卡片把工具选择渲染成静态 Markdown 方框，改为真实 Feishu button callback 行并透传 `project_id`/`select_action`；模型选择显式走 `worktree_select_model`；相关回归 113 passed + render/import guard 65 passed → [详细记录](2026-05-08.md)
 - **修复飞书卡片多任务展示审查缺陷（23 项）** — orchestrator 线程安全重构（两阶段锁+_rotation_counts dict）、深链异步回填（on_first_deliver 回调）、overflow 通知、过渡引导文案、UI_TEXT 冻结为 MappingProxyType、max_task_cards 默认值调为 5 并加 ge=1 校验；新增 330+ tests，集成 1015 passed → [详细记录](2026-05-08.md)
