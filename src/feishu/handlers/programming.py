@@ -274,6 +274,12 @@ class ProgrammingModeHandler(BaseHandler):
                 thread_id=thread_id,
             )
         except TimeoutError as e:
+            # silent 路径也必须记录日志，否则上层 handle_message recovery 看到 session=None
+            # 时只能输出泛化的 mode_session_fail_msg，根因（启动超时/失败）完全被吞掉。
+            logger.warning(
+                "[%s] enter_mode session startup timed out (silent=%s): %s",
+                self.mode_name, silent, get_error_detail(e),
+            )
             if not silent:
                 if self.mode_name == "TTADK":
                     project_id = project.project_id if project else None
@@ -291,6 +297,11 @@ class ProgrammingModeHandler(BaseHandler):
                     )
             return
         except Exception as e:
+            logger.warning(
+                "[%s] enter_mode session startup failed (silent=%s): %s",
+                self.mode_name, silent, get_error_detail(e),
+                exc_info=True,
+            )
             if not silent:
                 if self.mode_name == "TTADK":
                     project_id = project.project_id if project else None
@@ -613,6 +624,12 @@ class ProgrammingModeHandler(BaseHandler):
             # Recovery 路径：silent=True 避免在仍未拿到 session 时再 reply "已开启 X 编程模式"，
             # 否则用户会先后看到 "已开启..." 和 "会话启动失败" 两条消息，把启动失败的根因
             # 误导为"已经在模式中但启动不了"。最终统一由下方 mode_session_fail_msg 给出错误。
+            logger.info(
+                "[%s] handle_message: session missing for chat=%s project=%s thread=%s, "
+                "calling enter_mode(silent=True) to (re)start",
+                self.mode_name, chat_id[:12] if chat_id else "?",
+                project_id or "-", (thread_id or "-")[:12],
+            )
             self.enter_mode(message_id, chat_id, silent=True, project=project, thread_id=thread_id)
             if not project:
                 working_dir = self.get_working_dir(chat_id)
@@ -636,6 +653,13 @@ class ProgrammingModeHandler(BaseHandler):
                         thread_id=thread_id,
                     )
             if not session:
+                logger.warning(
+                    "[%s] handle_message: session still missing after enter_mode recovery; "
+                    "chat=%s project=%s thread=%s. Likely ACP startup failed earlier — "
+                    "check the previous '[%s] enter_mode session startup failed' log for root cause.",
+                    self.mode_name, chat_id[:12] if chat_id else "?",
+                    project_id or "-", (thread_id or "-")[:12], self.mode_name,
+                )
                 self.reply_text(
                     message_id,
                     fmt.format_warning(
