@@ -30,6 +30,22 @@ def test_returns_tools_when_binary_available():
     assert coco["display_name"] == "Coco"
 
 
+def test_get_available_tools_triggers_acp_provider_lazy_init():
+    """tool_registry 是 lazy 注册的；worktree 入口必须先调用 get_providers() 触发，
+    否则 ACP 工具会被错判为 CLI 模式（supports_model=False）。
+    """
+    discovery = WorktreeToolDiscovery()
+
+    with patch("src.worktree_engine.tool_discovery.shutil.which", return_value=None), \
+         patch("src.worktree_engine.tool_discovery.get_providers") as mock_get, \
+         patch("src.worktree_engine.tool_discovery.tool_registry") as mock_reg, \
+         patch("src.worktree_engine.tool_discovery.get_ttadk_manager", side_effect=Exception("skip")):
+        mock_reg.get_provider.return_value = None
+        discovery.get_available_tools()
+
+    mock_get.assert_called_once()
+
+
 def test_uses_acp_provider_when_registered():
     """Tools with registered ACP provider should use provider='acp' and support models."""
     discovery = WorktreeToolDiscovery()

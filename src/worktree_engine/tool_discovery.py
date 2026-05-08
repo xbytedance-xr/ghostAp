@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from ..acp.helper import fetch_acp_models
-from ..acp.providers import tool_registry
+from ..acp.providers import get_providers, tool_registry
 from ..ttadk import get_ttadk_manager
 from .selection import WorktreeToolOption
 
@@ -60,6 +60,9 @@ class WorktreeToolDiscovery:
            model selection, otherwise falls back to CLI provider.
         2. TTADK-managed tools — unified entry when TTADK returns tools.
         """
+        # 触发 ACP provider 的 lazy 注册——否则 tool_registry 默认为空，所有 ACP
+        # 工具会被错判为 CLI 模式（supports_model=False），导致 selection_key 撞车。
+        get_providers()
         tools: list[dict] = []
         seen: set[str] = set()
 
