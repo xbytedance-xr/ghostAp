@@ -383,15 +383,11 @@ class TestRenderWorktreeToolSelect:
         result = _render_worktree_tool_select(data)
         assert result["tag"] == "column_set"
         buttons = self._collect_buttons(result)
-        # 空 tools + 空 selected：仍展示置灰确认按钮，无清空/移除按钮
+        # 空 tools + 空 selected：不渲染可点击确认按钮，避免用户触发无效确认错误
         actions = [b["value"].get("action") for b in buttons]
-        assert "worktree_finish_selection" in actions
+        assert "worktree_finish_selection" not in actions
         assert "worktree_remove_item" not in actions
         assert "worktree_clear_items" not in actions
-        # 置灰态：type=default + 文本含 "至少选 1 个"
-        confirm_btns = [b for b in buttons if b["value"].get("action") == "worktree_finish_selection"]
-        assert confirm_btns[0]["type"] == "default"
-        assert "至少选 1 个" in confirm_btns[0]["text"]["content"]
 
     def test_unselected_tool(self):
         data = {

@@ -60,7 +60,7 @@ class WorktreeRenderer(BaseRenderer):
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     def get_or_create_session(
-        self, chat_id: str, project_id: str, *, reply_to: str | None = None, tool_name: str = "Coco"
+        self, chat_id: str, project_id: str, *, reply_to: str | None = None, tool_name: str = ""
     ) -> "CardSession":
         """Get or create a CardSession for a worktree project.
 
@@ -80,7 +80,7 @@ class WorktreeRenderer(BaseRenderer):
             metadata = self.build_unit_metadata(
                 CardMetadata(
                     engine_type="worktree", mode_name="Worktree", mode_emoji="🌳",
-                    tool_name=tool_name or "Coco",
+                    tool_name=tool_name or "",
                 ),
                 unit_id=project_id,
                 unit_kind="worktree",

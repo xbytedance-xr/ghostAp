@@ -248,18 +248,19 @@ def _render_worktree_tool_select(data: dict) -> dict:
 
         elements.append({"tag": "hr"})
         if selected_dicts:
-            confirm_text = UI_TEXT["worktree_confirm_selection_btn"]
-            confirm_type = "primary"
+            elements.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": UI_TEXT["worktree_confirm_selection_btn"]},
+                "type": "primary",
+                "value": {"action": WORKTREE_FINISH_SELECTION, "project_id": project_id},
+                "size": "medium",
+            })
         else:
-            confirm_text = UI_TEXT["worktree_confirm_selection_disabled_btn"]
-            confirm_type = "default"
-        elements.append({
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": confirm_text},
-            "type": confirm_type,
-            "value": {"action": WORKTREE_FINISH_SELECTION, "project_id": project_id},
-            "size": "medium",
-        })
+            elements.append({
+                "tag": "markdown",
+                "content": UI_TEXT["worktree_confirm_selection_disabled_btn"],
+                "text_size": "notation",
+            })
 
     return {
         "tag": "column_set",

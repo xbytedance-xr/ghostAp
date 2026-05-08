@@ -198,6 +198,22 @@ class TestWorktreeRendererMetadata:
         assert captured_metadata[0].unit_kind == "worktree"
         assert captured_metadata[0].unit_label == "proj_parallel"
 
+    def test_selection_session_does_not_default_to_coco_tool_metadata(self):
+        renderer = _make_renderer()
+
+        captured_metadata: list[CardMetadata] = []
+
+        def fake_create_session(*args, **kwargs):
+            captured_metadata.append(kwargs["metadata"])
+            session = MagicMock()
+            session.closed = False
+            return session
+
+        with patch.object(renderer, "create_session", side_effect=fake_create_session):
+            renderer.get_or_create_session("chat_1", "proj_parallel", reply_to="msg_1")
+
+        assert captured_metadata[0].tool_name == ""
+
     def test_worktree_card_header_uses_shared_unit_label(self):
         metadata = CardMetadata(
             engine_type="worktree",

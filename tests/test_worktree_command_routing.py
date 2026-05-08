@@ -752,6 +752,38 @@ class TestWorktreeCommandRouting(unittest.TestCase):
         args, _ = handler.reply_error.call_args
         self.assertIn("工具", args[1])
 
+    def test_handle_worktree_select_tool_dispatches_explicit_model_prompt(self):
+        """选择支持模型的工具后，应进入清晰的模型选择卡。"""
+        handler = self._build_worktree_handler()
+
+        project = MagicMock()
+        project.project_id = "proj-42"
+        project.root_path = "/tmp/project"
+        handler.project_manager.get_project_for_chat.return_value = project
+        handler._get_models_for_tool = MagicMock(return_value=[
+            {"name": "doubao-pro", "display_name": "Doubao Pro", "is_default": True},
+        ])
+
+        mock_session = MagicMock()
+        mock_session.closed = False
+        with patch.object(handler, "_get_or_create_session", return_value=mock_session):
+            handler.handle_worktree_select_tool(
+                "msg-1",
+                "chat-1",
+                project_id="proj-42",
+                value={
+                    "provider": "acp",
+                    "tool_name": "coco",
+                    "display_name": "Coco",
+                    "supports_model": True,
+                },
+            )
+
+        mock_session.dispatch.assert_called_once()
+        event = mock_session.dispatch.call_args[0][0]
+        self.assertEqual(event.payload["select_action"], "worktree_select_model")
+        self.assertEqual(event.payload["message"], "为 Coco 选择模型：")
+
     def test_handle_worktree_prefix_command_with_goal_dispatches_visible_start_feedback(self):
         """带 goal 的 /wt 前缀命令应启动选择流并下发可见卡片反馈。"""
         handler = self._build_worktree_handler()

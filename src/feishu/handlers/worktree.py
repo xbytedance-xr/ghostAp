@@ -308,7 +308,7 @@ class WorktreeHandler(BaseHandler):
             ]
             session.dispatch(CardEvent.worktree_tool_select(
                 tools=model_tools, selected=selected_dicts, project_id=pid,
-                message=UI_TEXT["system_worktree_selection_finished_banner"].format(tool=option.display_name),
+                message=UI_TEXT["system_worktree_select_model_prompt"].format(tool=option.display_name),
                 select_action="worktree_select_model",
             ))
         else:
