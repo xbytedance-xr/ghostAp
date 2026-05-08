@@ -228,7 +228,7 @@ class EmojiHook:
 
     SUCCESS_EMOJI_DEFAULT = "PARTY"
     ERROR_EMOJI_DEFAULT = "SOB"
-    STOP_EMOJI_DEFAULT = "STOP"
+    STOP_EMOJI_DEFAULT = "SKULL"
 
     def __init__(
         self,

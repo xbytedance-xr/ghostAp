@@ -93,7 +93,7 @@ class TestHooksDeliveryE2E:
         session.dispatch(CardEvent(type=CardEventType.STARTED))
         session.dispatch(CardEvent(type=CardEventType.CANCELLED, payload={}))
 
-        add_reaction.assert_called_once_with("msg_trigger", "STOP")
+        add_reaction.assert_called_once_with("msg_trigger", "SKULL")
         assert session.closed
 
     def test_delivery_succeeds_before_hook_fires(self):
