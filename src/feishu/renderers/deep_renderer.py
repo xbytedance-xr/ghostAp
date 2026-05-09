@@ -125,6 +125,7 @@ class DeepRenderer(BaseRenderer):
         _tool_count = [0]
         _plan_steps = [0]
         _phase = ["analyzing"]  # "analyzing" | "executing"
+        _last_plan_statuses: list[dict[str, str]] = [{}]
 
         def on_analyzing_done(deep_project: DeepProject):
             # Start the card session
@@ -151,6 +152,12 @@ class DeepRenderer(BaseRenderer):
                     if steps > 0:
                         _plan_steps[0] = steps
                         _phase[0] = "executing"
+
+                    self._maybe_dispatch_task_done_split(
+                        session,
+                        event.plan.entries,
+                        _last_plan_statuses,
+                    )
 
                     # Unified plan detection + status broadcast
                     if _multi_card_enabled:
@@ -213,6 +220,36 @@ class DeepRenderer(BaseRenderer):
             on_project_done=on_project_done,
             on_error=on_error,
         )
+
+    def _maybe_dispatch_task_done_split(
+        self,
+        session: "Dispatchable",
+        entries,
+        last_statuses: list[dict[str, str]],
+    ) -> None:
+        """Dispatch card_split when a plan task transitions to completed."""
+        prev_statuses = last_statuses[0]
+        new_statuses = {f"step_{idx}": entry.status for idx, entry in enumerate(entries)}
+
+        for task_id, new_status in new_statuses.items():
+            old_status = prev_statuses.get(task_id)
+            if old_status != "in_progress" or new_status != "completed":
+                continue
+            next_entry = next((entry for entry in entries if entry.status == "in_progress"), None)
+            hint = None
+            if next_entry is not None:
+                step_idx = next(
+                    (idx + 1 for idx, entry in enumerate(entries) if entry is next_entry),
+                    1,
+                )
+                hint = f"接续 task {step_idx}「{next_entry.content}」"
+            if not getattr(session, "closed", False):
+                self._dispatch_card_split(session, reason="task_done", hint=hint)
+
+        last_statuses[0] = new_statuses
+
+    def _on_card_split_completed(self, reason: str, hint: str | None) -> None:
+        self._pending_split_hint = hint
 
     def _get_engine(self, chat_id: str, root_path: Optional[str], project: Optional["ProjectContext"]):
         """Helper to get the deep engine instance via snapshot interface."""
