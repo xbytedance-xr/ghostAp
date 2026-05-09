@@ -1,0 +1,52 @@
+"""programming_adapter SectionLayout integration tests."""
+from __future__ import annotations
+
+from src.card.render.budget import RenderBudget
+from src.card.render.renderer import render_card
+from src.card.state.models import CardMetadata, CardState, HeaderState
+from src.card.state.runtime_stats import RuntimeStats
+
+
+def test_programming_direct_mode_has_banner_no_task_list():
+    state = CardState(
+        metadata=CardMetadata(
+            mode_name="Programming",
+            mode_emoji="💬",
+            engine_type=None,
+            tool_name="Coco",
+        ),
+        header=HeaderState(title="Programming"),
+        blocks=(),
+        terminal="running",
+    )
+    object.__setattr__(state, "runtime_stats", RuntimeStats(elapsed_seconds=32.0))
+
+    pages = render_card(state, RenderBudget())
+
+    assert len(pages) == 1
+    body = pages[0]._card_json["body"]["elements"]
+    first = body[0]
+    assert first.get("tag") == "markdown"
+    assert "Programming" in first.get("content", "")
+    panel_titles = [
+        element.get("header", {}).get("title", {}).get("content", "")
+        for element in body
+        if element.get("tag") == "collapsible_panel"
+    ]
+    assert not any("任务列表" in title for title in panel_titles)
+
+
+def test_worktree_subagent_banner_prefix():
+    state = CardState(
+        metadata=CardMetadata(mode_name="Worktree", mode_emoji="🌲", engine_type="worktree"),
+        header=HeaderState(title="Worktree"),
+        blocks=(),
+        terminal="running",
+    )
+    object.__setattr__(state, "runtime_stats", RuntimeStats(elapsed_seconds=72.0, worktree_subagent="aiden"))
+
+    pages = render_card(state, RenderBudget())
+
+    body = pages[0]._card_json["body"]["elements"]
+    first = body[0]
+    assert "wt·aiden" in first.get("content", "")
