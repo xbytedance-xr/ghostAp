@@ -757,6 +757,46 @@ class TestActivitySummaryPanel:
         assert "src/app.py" in rendered
         assert "uv run python -m pytest tests/test_app.py -q" in rendered
 
+    def test_activity_summary_compact_mode_collapses_details(self):
+        from src.card.render.tools import render_activity_summary_panel
+        from src.card.state.models import ContentBlock
+
+        blocks = [
+            ContentBlock(
+                kind="tool_call",
+                status="completed",
+                tool_name="read",
+                tool_input='{"path": "src/app.py"}',
+            ),
+            ContentBlock(
+                kind="tool_call",
+                status="completed",
+                tool_name="edit",
+                tool_input='{"path": "src/app.py"}',
+            ),
+            ContentBlock(
+                kind="tool_call",
+                status="completed",
+                tool_name="bash",
+                tool_input="uv run python -m pytest tests/test_app.py -q",
+            ),
+        ]
+
+        result = render_activity_summary_panel(blocks, compact=True)
+
+        assert result["tag"] == "collapsible_panel"
+        assert result["expanded"] is False
+        title = result["header"]["title"]["content"]
+        assert "已探索 1 项" in title
+        assert "已编辑 1 个文件" in title
+        assert "已运行 1 条命令" in title
+        assert "uv run python" not in result["elements"][0]["content"]
+
+    def test_activity_summary_compact_returns_none_for_empty(self):
+        from src.card.render.tools import render_activity_summary_panel
+
+        assert render_activity_summary_panel((), compact=True) is None
+
 
 class TestCriteriaPanelIcon:
     """Verify criteria panel has standard collapsible icon config."""

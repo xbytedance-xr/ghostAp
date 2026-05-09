@@ -120,8 +120,17 @@ def render_tool_history_panel(blocks: list[ContentBlock]) -> dict | None:
     }
 
 
-def render_activity_summary_panel(blocks: list[ContentBlock] | tuple[ContentBlock, ...]) -> dict | None:
-    """Render a compact, persistent activity summary for programming cards."""
+def render_activity_summary_panel(
+    blocks: list[ContentBlock] | tuple[ContentBlock, ...],
+    *,
+    compact: bool = False,
+) -> dict | None:
+    """Render a compact, persistent activity summary for programming cards.
+
+    Args:
+        blocks: Content blocks to summarize.
+        compact: Collapse details and keep only count header for sticky_head.
+    """
     tool_blocks = [b for b in blocks if getattr(b, "kind", "") == "tool_call"]
     if not tool_blocks:
         return None
@@ -180,6 +189,29 @@ def render_activity_summary_panel(blocks: list[ContentBlock] | tuple[ContentBloc
     if not header_parts:
         return None
 
+    title_content = f"▣ **{', '.join(header_parts)}**"
+
+    if compact:
+        return {
+            "tag": "collapsible_panel",
+            "expanded": False,
+            "header": {
+                "title": {"tag": "markdown", "content": title_content},
+                "vertical_align": "center",
+                "icon": {
+                    "tag": "standard_icon",
+                    "token": "down-small-ccm_outlined",
+                    "size": "16px 16px",
+                },
+                "icon_position": "follow_text",
+                "icon_expanded_angle": -180,
+            },
+            "border": {"color": PANEL_STYLES["border_history"], "corner_radius": PANEL_STYLES["corner_radius"]},
+            "vertical_spacing": PANEL_STYLES["vertical_spacing"],
+            "padding": PANEL_STYLES["padding_standard"],
+            "elements": [{"tag": "markdown", "content": "_(展开查看活动详情)_"}],
+        }
+
     visible_details = detail_lines[-_MAX_ACTIVITY_DETAILS:]
     hidden_count = max(0, len(detail_lines) - len(visible_details))
     detail_content = "\n".join(f"- {line}" for line in visible_details)
@@ -190,7 +222,7 @@ def render_activity_summary_panel(blocks: list[ContentBlock] | tuple[ContentBloc
         "tag": "collapsible_panel",
         "expanded": True,
         "header": {
-            "title": {"tag": "markdown", "content": f"▣ **{', '.join(header_parts)}**"},
+            "title": {"tag": "markdown", "content": title_content},
             "vertical_align": "center",
             "icon": {
                 "tag": "standard_icon",
