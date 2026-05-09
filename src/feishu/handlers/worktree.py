@@ -316,11 +316,26 @@ class WorktreeHandler(BaseHandler):
         if not should_skip_model:
             # Show model selection as tool_select with model list
             session = self._get_or_create_session(chat_id, pid)
-            model_tools = [
-                {"id": m["name"], "name": m.get("display_name", m["name"]),
-                 "description": f"模型: {m.get('display_name', m['name'])}"}
-                for m in models
-            ]
+            model_tools = []
+            for m in models:
+                model_id = str(m.get("name") or "").strip()
+                if not model_id:
+                    continue
+                display = str(m.get("display_name") or model_id).strip() or model_id
+                # Description carries ACP-side metadata (quota, load, ...).
+                # Truncate so it stays a single tidy line under the model name
+                # instead of dwarfing the row.
+                blurb = str(m.get("description") or "").strip()
+                if blurb and blurb != display:
+                    if len(blurb) > 60:
+                        blurb = blurb[:60].rstrip() + "…"
+                else:
+                    blurb = ""
+                model_tools.append({
+                    "id": model_id,
+                    "name": display,
+                    "description": blurb,
+                })
             session.dispatch(CardEvent.worktree_tool_select(
                 tools=model_tools, selected=selected_dicts, project_id=pid,
                 message=UI_TEXT["system_worktree_select_model_prompt"].format(tool=option.display_name),

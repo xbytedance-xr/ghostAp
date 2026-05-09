@@ -447,9 +447,15 @@ def _render_worktree_select_option(
         # 工具按钮始终保持可点击的中性样式，让 "已选组合" 板块承担状态反馈
         button_type = "default"
 
-    title = f"**{name}**"
+    # Title shows the clean name; description (ACP metadata blurb / tool tagline)
+    # renders below as small notation so it doesn't crowd the button column.
+    label_elements: list[dict] = [{"tag": "markdown", "content": f"**{name}**"}]
     if desc:
-        title += f" — {desc}"
+        label_elements.append({
+            "tag": "markdown",
+            "content": desc,
+            "text_size": "notation",
+        })
 
     return {
         "tag": "column_set",
@@ -461,7 +467,7 @@ def _render_worktree_select_option(
                 "width": "weighted",
                 "weight": 2,
                 "vertical_align": "center",
-                "elements": [{"tag": "markdown", "content": title}],
+                "elements": label_elements,
             },
             {
                 "tag": "column",

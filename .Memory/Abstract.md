@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-05-09
+- **Worktree 模型行去冗余：标题/描述拆分 + 按钮露出真实模型名** — 真模型上线后用户反馈按钮显示 `选择 Context window: …` 被截断，标题写 `**Context window: …** — 模型: Context window: …` 双倍冗余；根因是 ACP `description`（quota/load 元数据）被错误塞进 `display_name`，再传给按钮文案；改 tool_discovery 让 display_name=model_id、description 独立保留，handler 截断 metadata 到 60 字符并避免与名称重复，render 把"加粗名 + notation 描述"拆成两行；新增锁定契约的回归用例；86 + 29 passed → [详细记录](2026-05-09.md)
 - **修复 Worktree Coco 模型列表与 /coco 不一致** — 新模型选择卡上线后用户反馈只显示 6 个静态 DEFAULT_MODELS，对照 `/coco_status` 才是真模型；根因是 `fetch_acp_models` 用的 `acp_healthcheck_timeout=2s` 跑不完 ACP `initialize+new_session`（实测 3-4s），且 fallback 没复用 `CocoModelManager` 已缓存的真模型；新增独立 `acp_model_probe_timeout=6s`、Coco 路径优先读 manager cache、probe 失败后再 manager 兜底，统一 /wt /coco /coco_status 三路模型来源；3 + 90 passed，端到端 25 真模型 → [详细记录](2026-05-09.md)
 - **Worktree 模型选择卡 UX 重塑：与工具选择卡视觉区分 + 返回按钮** — 用户反馈"无法选择 Coco / 多选工具"实质是模型卡与工具卡视觉过近，header 仍显示"选择工具"导致用户认为 Coco 点击没有响应；为 `WORKTREE_TOOL_SELECT` 引入 `pending_tool` payload + 在 reducer 用 `select_action` 选择 subtitle，render 层为模型卡输出醒目蓝色 banner、按钮文案改为"选择 X" primary type、保留"已选组合"上下文展示、新增"← 返回工具选择"callback 走 `show_worktree_menu`；ux/card_preview.html 同步新增模型选择卡预览；604 passed → [详细记录](2026-05-09.md)
 - **修复 Worktree 选工具时 ACP 模型探测卡住** — 真实飞书 Web 复现发现按钮 callback 已到服务端但停在 Worktree 选工具后的 ACP 模型探测；为 `fetch_acp_models()` 和 Coco ACP-first 探测加硬超时，Coco fallback 改为静态默认模型避免二次探测阻塞；203 passed → [详细记录](2026-05-09.md)

@@ -166,10 +166,17 @@ class WorktreeToolDiscovery:
                 acp_models = fetch_acp_models(
                     tool_name, cwd=cwd, current_model=current_model
                 )
+                # IMPORTANT: keep display_name == m.name (model_id) so the
+                # worktree model select card shows e.g. "GPT-5.2" / "Doubao Pro"
+                # in the title and button. ACP's `description` carries
+                # quota/load metadata ("Model load: 14%, Quota: 48% used,
+                # resets weekly, …") which is useful as secondary info but
+                # must NOT be promoted into the visible name slot.
                 return [
                     {
                         "name": m.name,
-                        "display_name": m.description or m.name,
+                        "display_name": m.name,
+                        "description": m.description or "",
                         "is_default": m.is_default,
                     }
                     for m in acp_models

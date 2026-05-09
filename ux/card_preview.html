@@ -896,26 +896,34 @@ tests/test_tools.py::test_tool_history_fold PASSED
         <div style="font-size:12px;color:#1e3a8a;margin-top:4px;">点击下方任一模型即可加入组合，点击下方“← 返回工具选择”可取消本次添加。</div>
       </div>
 
+      <!-- 标题只放模型名（加粗），metadata 走 notation 单独一行；按钮文本始终是“选择 <模型名>”，不被长描述挤出截断 -->
       <div class="wt-option-row">
         <div>
           <div class="wt-option-title">GPT-5.2</div>
-          <div class="wt-option-desc">模型: GPT-5.2</div>
+          <div class="wt-option-desc">Model load: 14%</div>
         </div>
         <button class="btn btn-primary" style="flex:initial;">选择 GPT-5.2</button>
       </div>
       <div class="wt-option-row">
         <div>
-          <div class="wt-option-title">Doubao Pro</div>
-          <div class="wt-option-desc">模型: Doubao Pro</div>
+          <div class="wt-option-title">openrouter-1</div>
+          <div class="wt-option-desc">Context window: 168k, Max tool turns: 200, Quota: 48% used…</div>
         </div>
-        <button class="btn btn-primary" style="flex:initial;">选择 Doubao Pro</button>
+        <button class="btn btn-primary" style="flex:initial;">选择 openrouter-1</button>
       </div>
       <div class="wt-option-row">
         <div>
-          <div class="wt-option-title">Claude 3.7 Sonnet</div>
-          <div class="wt-option-desc">模型: Claude 3.7 Sonnet</div>
+          <div class="wt-option-title">Gemini-3.1-Pro-Preview</div>
+          <div class="wt-option-desc">Model load: 9%</div>
         </div>
-        <button class="btn btn-primary" style="flex:initial;">选择 Claude 3.7 Sonnet</button>
+        <button class="btn btn-primary" style="flex:initial;">选择 Gemini-3.1-Pro-Preview</button>
+      </div>
+      <div class="wt-option-row">
+        <div>
+          <div class="wt-option-title">Doubao 1.5 Pro</div>
+          <div class="wt-option-desc">默认模型</div>
+        </div>
+        <button class="btn btn-primary" style="flex:initial;">选择 Doubao 1.5 Pro</button>
       </div>
 
       <hr class="card-hr">

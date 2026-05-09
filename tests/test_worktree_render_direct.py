@@ -365,6 +365,56 @@ class TestRenderWorktreeToolSelectInteractions:
         rendered = render_card(state, RenderBudget())[0].to_feishu_json()
         assert rendered.get("header", {}).get("subtitle", {}).get("content") == "选择工具"
 
+    def test_model_row_shows_clean_name_and_separated_metadata(self):
+        """ACP 模型行：标题加粗显示模型名，metadata 单独以 notation 展示，按钮文案是“选择 <name>”。"""
+        block = WorktreeSelectBlock(
+            block_id="models",
+            data={
+                "project_id": "p",
+                "select_action": "worktree_select_model",
+                "pending_tool": "Coco",
+                "tools": [
+                    {"id": "GPT-5.2", "name": "GPT-5.2", "description": "Model load: 14%"},
+                ],
+                "selected": [],
+            },
+        )
+        result = render_worktree_panel(block)
+
+        # Locate the model row (the column_set with bisect flex_mode that has a button + a markdown column)
+        def find_model_row(node):
+            if isinstance(node, dict):
+                if node.get("tag") == "column_set" and node.get("flex_mode") == "bisect":
+                    cols = node.get("columns") or []
+                    if any(any(el.get("tag") == "button" for el in (col.get("elements") or [])) for col in cols):
+                        return node
+                for v in node.values():
+                    found = find_model_row(v)
+                    if found is not None:
+                        return found
+            elif isinstance(node, list):
+                for x in node:
+                    found = find_model_row(x)
+                    if found is not None:
+                        return found
+            return None
+
+        row = find_model_row(result)
+        assert row is not None, "model row not found"
+        label_col = row["columns"][0]
+        elements = label_col["elements"]
+        # 第一行：加粗模型名（不含 metadata）
+        assert elements[0]["tag"] == "markdown"
+        assert elements[0]["content"] == "**GPT-5.2**"
+        # 第二行：notation 描述
+        assert elements[1]["tag"] == "markdown"
+        assert elements[1].get("text_size") == "notation"
+        assert elements[1]["content"] == "Model load: 14%"
+
+        # 按钮文案必须是“选择 <model_id>”，不含 metadata
+        button = next(el for el in row["columns"][1]["elements"] if el.get("tag") == "button")
+        assert button["text"]["content"] == "选择 GPT-5.2"
+
     def test_model_select_subtitle_uses_model_select_text(self):
         """模型选择阶段 header subtitle 必须显示为'选择模型'，与工具选择视觉区分。"""
         from src.card.events import CardEvent
