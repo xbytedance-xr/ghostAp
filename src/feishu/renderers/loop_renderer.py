@@ -48,10 +48,27 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
     def __init__(self, handler: "LoopHandler") -> None:
         super().__init__(handler)
         self._current_session: "Dispatchable | None" = None
+        self._last_round: int | None = None
+        self._pending_split_hint: str | None = None
 
     def get_active_session(self) -> "Dispatchable | None":
         """Return the currently active loop engine session (rotator)."""
         return self._current_session
+
+    def notify_round_change(self, current_round: int) -> None:
+        """Hook into the loop engine round lifecycle."""
+        if self._last_round is not None and current_round != self._last_round:
+            session = self._current_session
+            if session is not None and not getattr(session, "closed", False):
+                self._dispatch_card_split(
+                    session,
+                    reason="round_changed",
+                    hint=f"进入第 {current_round} 轮",
+                )
+        self._last_round = current_round
+
+    def _on_card_split_completed(self, reason: str, hint: str | None) -> None:
+        self._pending_split_hint = hint
 
     def _get_reporter(self):
         return self.ctx.loop_reporter
@@ -158,6 +175,7 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
         def on_iteration_start(current: int, max_iterations: int):
             # View State Update: Status
             self.update_ui_state(loop_project_id, view_mode="status", view_context={})
+            self.notify_round_change(current)
 
             # Reset orchestrator for fresh plan detection in new iteration
             if _multi_card_enabled:
