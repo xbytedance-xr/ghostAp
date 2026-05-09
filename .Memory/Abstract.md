@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-05-09
+- **优化 GhostAP 重启脚本降低固定等待** — 排查确认 Spec Review retry budget warning 不阻塞启动；`restart.sh` 将远程重启/TERM/残留清理/启动检查等待改为可配置短等待，优先 `.venv/bin/python` 启动，macOS 无 `setsid` 时用 `launchctl submit` 保持服务进程独立运行，远程 worker 复用主 restart 逻辑并通过实测；本地 restart 脚本返回约 1.36 秒，剩余主要是 `src.main` 冷启动 → [详细记录](2026-05-09.md)
 - **修复 Worktree 同工具不同模型二次添加被卡片去重误拦** — 用户在已添加 `Coco / Test-O-New-Thinking` 后再次点击 `+ 添加 Coco`，飞书提示“操作已受理，请勿重复点击”；Worktree selection 层本来用 `provider:tool:model` 支持同工具不同模型，真正误拦在卡片 action 去重层，因为刷新后的同工具按钮 payload 仍完全相同；render 层给工具按钮 value 增加当前已选组合 `_selection_sig`，让卡片状态变化后的同工具点击进入模型选择，同时保留同一张卡快速重复点击防抖；82 passed + 全量 6260 passed, 1 skipped → [详细记录](2026-05-09.md)
 - **修复 Worktree 选工具后模型卡因 Feishu 节点超限无法投递** — `logs.log` 显示 `worktree_select_tool` 后立刻出现 `Card node count 199 exceeds budget 180` 与 Feishu `230099` 永久投递错误，根因是 25+ 模型按“说明列+按钮列”逐行渲染把 Schema 2.0 元素数推到 200 上限附近；模型阶段改为双列 callback 按钮网格，保留真实 `value.model_name`，新增 35 模型节点预算回归；顺手把 ACP/Coco 裸 `asyncio.wait_for` 替换为 `safe_wait_for` 清掉全量静态门禁；一次全量 6258 passed, 1 skipped，最终复跑遇到 validate subprocess 偶发超时、单测复跑通过 → [详细记录](2026-05-09.md)
 - **Worktree 模型按钮文本兜底截断防止飞书折叠按钮** — 用户复现"又无法选模型"，截图显示按钮文本 `选择 Context window: 168k, Max tool turns: 200, …` 被飞书撑爆折叠到不可点；270ce7b 已经把 name 槽位写干净，但部分部署 / 历史 cache / 未重启场景仍会塞 metadata 进 name；render 层为 model 按钮加 24 字符 clamp，优先用 model_id 当短标签，回传 value 仍是真实 model_id 不影响后端；30 passed → [详细记录](2026-05-09.md)
