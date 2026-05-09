@@ -821,7 +821,7 @@ tests/test_tools.py::test_tool_history_fold PASSED
           <div class="step-dot step-pending">4</div>
         </div>
         <div style="font-size:13px;font-weight:600;margin-top:4px;">步骤 1/4 · 选择工具</div>
-        <div style="font-size:12px;color:#646a73;">选择用于并行开发的 AI 工具</div>
+        <div style="font-size:12px;color:#646a73;">可重复选择多个工具组成并行组合，每点一项即加入下方已选区</div>
       </div>
 
       <div class="wt-option-row">
@@ -863,6 +863,69 @@ tests/test_tools.py::test_tool_history_fold PASSED
       <div class="button-row">
         <button class="btn btn-primary">✅ 确认选择</button>
         <button class="btn btn-default">🗑️ 清空选择</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card-wrapper">
+  <div class="card-label">Worktree · 模型选择阶段（选 Coco 后弹出，与工具选择卡视觉区分）</div>
+  <div class="feishu-card">
+    <div class="card-header header-wathet">
+      <div class="title">🌿 Worktree 并行执行</div>
+      <div class="subtitle">选择模型</div>
+    </div>
+    <div class="card-body">
+      <div style="text-align:center;margin-bottom:8px;">
+        <div class="stepper" style="justify-content:center;">
+          <div class="step-dot step-active">1</div>
+          <div class="step-connector"></div>
+          <div class="step-dot step-pending">2</div>
+          <div class="step-connector"></div>
+          <div class="step-dot step-pending">3</div>
+          <div class="step-connector"></div>
+          <div class="step-dot step-pending">4</div>
+        </div>
+        <div style="font-size:13px;font-weight:600;margin-top:4px;">步骤 1/4 · 选择模型</div>
+        <div style="font-size:12px;color:#646a73;">为刚选中的工具挑选模型，点击模型即可加入组合；可点击下方“返回工具选择”取消</div>
+      </div>
+
+      <!-- 醒目 banner：让用户立刻意识到这是 Coco 的模型选择，而非又一张工具卡 -->
+      <div style="background:#dbeafe;border:1px solid #93c5fd;border-radius:6px;padding:10px 12px;margin-bottom:8px;">
+        <div style="font-weight:600;font-size:14px;color:#1d4ed8;">🎯 为 Coco 选择模型</div>
+        <div style="font-size:12px;color:#1e3a8a;margin-top:4px;">点击下方任一模型即可加入组合，点击下方“← 返回工具选择”可取消本次添加。</div>
+      </div>
+
+      <div class="wt-option-row">
+        <div>
+          <div class="wt-option-title">GPT-5.2</div>
+          <div class="wt-option-desc">模型: GPT-5.2</div>
+        </div>
+        <button class="btn btn-primary" style="flex:initial;">选择 GPT-5.2</button>
+      </div>
+      <div class="wt-option-row">
+        <div>
+          <div class="wt-option-title">Doubao Pro</div>
+          <div class="wt-option-desc">模型: Doubao Pro</div>
+        </div>
+        <button class="btn btn-primary" style="flex:initial;">选择 Doubao Pro</button>
+      </div>
+      <div class="wt-option-row">
+        <div>
+          <div class="wt-option-title">Claude 3.7 Sonnet</div>
+          <div class="wt-option-desc">模型: Claude 3.7 Sonnet</div>
+        </div>
+        <button class="btn btn-primary" style="flex:initial;">选择 Claude 3.7 Sonnet</button>
+      </div>
+
+      <hr class="card-hr">
+      <!-- 已选组合保留展示，让用户看到正在累积的选择 -->
+      <div class="text-content notation"><strong>已选组合 (1)</strong></div>
+      <div class="text-content notation">• ACP · Aiden / 默认模型</div>
+
+      <hr class="card-hr">
+      <div class="button-row">
+        <button class="btn btn-default">← 返回工具选择</button>
       </div>
     </div>
   </div>

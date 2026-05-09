@@ -9,6 +9,7 @@ import time
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from src.card.actions.dispatch import (
+    SHOW_WORKTREE_MENU,
     WORKTREE_CLEAR_ITEMS,
     WORKTREE_FINISH_SELECTION,
     WORKTREE_REMOVE_ITEM,
@@ -163,14 +164,22 @@ def render_worktree_panel(block: ContentBlock) -> dict:
     step_idx = _STEP_MAP.get(kind)
     if step_idx is not None:
         stepper_elements = _render_stepper(step_idx)
-        # Generate dynamic step title: "步骤 N/M · {title}"
-        title_key = _STEP_TITLE_KEY_MAP.get(kind, "")
+        # Tool select kind doubles as model select stage; pick title/hint by select_action.
+        is_model_select = (
+            kind == "worktree_tool_select"
+            and str((data or {}).get("select_action") or "") == WORKTREE_SELECT_MODEL
+        )
+        if is_model_select:
+            title_key = "worktree_step_model_select"
+            hint_key = "worktree_step_model_select_hint"
+        else:
+            title_key = _STEP_TITLE_KEY_MAP.get(kind, "")
+            hint_key = _STEP_HINT_KEY_MAP.get(kind, "")
         step_title = UI_TEXT.get(title_key, "")
         step_num = step_idx + 1
         step_label = f"**{UI_TEXT['worktree_step_label_fmt'].format(num=step_num, total=_TOTAL_STEPS, title=step_title)}**"
         title_el = {"tag": "markdown", "content": step_label, "text_size": "normal"}
         # Grey hint notation below stepper
-        hint_key = _STEP_HINT_KEY_MAP.get(kind, "")
         hint_text = UI_TEXT.get(hint_key, "")
         elements = stepper_elements + [title_el]
         if hint_text:
@@ -201,18 +210,41 @@ def _render_worktree_tool_select(data: dict) -> dict:
       [✅ 确认选择 / 置灰提示]  N>0 highlighted；N==0 灰底提示
 
     Layout (MODEL_SELECT stage):
-      仅展示 banner + 模型按钮，不展示已选/确认（由用户选模型后回到 TOOL_SELECT）。
+      [醒目 banner: "为 X 选择模型"]
+      [model rows]           每行：模型描述 + "选择 X" 按钮
+      ── hr ──
+      [已选组合 (N)]          保留上下文展示，但禁用 ✕/清空 操作
+      [← 返回工具选择]        允许撤销本次添加，重新挑工具
     """
     tools = data.get("tools", [])
     selected = data.get("selected", [])
     message = data.get("message", "")
     project_id = str(data.get("project_id") or "")
     default_action = str(data.get("select_action") or WORKTREE_SELECT_TOOL)
+    pending_tool = str(data.get("pending_tool") or "").strip()
     selected_keys = _selected_tool_keys(selected)
     is_model_select = default_action == WORKTREE_SELECT_MODEL
 
     elements: list[dict] = []
-    if message:
+    if is_model_select:
+        # 醒目 banner，避免与工具选择卡视觉上混淆
+        banner_text = UI_TEXT["worktree_model_select_banner"].format(
+            tool=pending_tool or "当前工具",
+            back=UI_TEXT["worktree_back_to_tools_btn"],
+        )
+        elements.append({
+            "tag": "column_set",
+            "flex_mode": "stretch",
+            "background_style": "blue",
+            "columns": [{
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "vertical_align": "top",
+                "elements": [{"tag": "markdown", "content": banner_text}],
+            }],
+        })
+    elif message:
         elements.append({"tag": "markdown", "content": message})
 
     for tool in tools:
@@ -225,11 +257,37 @@ def _render_worktree_tool_select(data: dict) -> dict:
             )
         )
 
-    if not elements:
+    if not tools:
         elements.append({"tag": "markdown", "content": UI_TEXT.get("worktree_data_empty", "暂无数据")})
 
-    if not is_model_select:
-        selected_dicts = [item for item in (selected or []) if isinstance(item, dict)]
+    selected_dicts = [item for item in (selected or []) if isinstance(item, dict)]
+
+    if is_model_select:
+        if selected_dicts:
+            elements.append({"tag": "hr"})
+            elements.append({
+                "tag": "markdown",
+                "content": UI_TEXT["worktree_selected_block_title"].format(count=len(selected_dicts)),
+                "text_size": "notation",
+            })
+            for item in selected_dicts:
+                label = str(
+                    item.get("display_label")
+                    or item.get("display_name")
+                    or item.get("tool_name")
+                    or ""
+                ).strip() or "(unknown)"
+                elements.append({
+                    "tag": "markdown",
+                    "content": f"• {label}",
+                    "text_size": "notation",
+                })
+        elements.append({"tag": "hr"})
+        elements.append(_callback_button(
+            text=UI_TEXT["worktree_back_to_tools_btn"],
+            value={"action": SHOW_WORKTREE_MENU, "project_id": project_id},
+        ))
+    else:
         if selected_dicts:
             elements.append({"tag": "hr"})
             elements.append({
@@ -372,8 +430,8 @@ def _render_worktree_select_option(
             "model_display_name": name,
             "project_id": project_id,
         }
-        button_text = name
-        button_type = "default"
+        button_text = UI_TEXT["worktree_pick_model_btn"].format(name=name)
+        button_type = "primary"
     else:
         value = {
             "action": WORKTREE_SELECT_TOOL,

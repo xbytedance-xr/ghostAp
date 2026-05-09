@@ -197,6 +197,7 @@ class WorktreeToolSelectPayload(TypedDict):
     project_id: str
     message: str
     select_action: NotRequired[str]
+    pending_tool: NotRequired[str]
 
 
 class WorktreeConfirmPayload(TypedDict):

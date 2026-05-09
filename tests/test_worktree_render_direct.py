@@ -305,6 +305,87 @@ class TestRenderWorktreeToolSelectInteractions:
         )
         _assert_callback_button(button, expected)
 
+    def test_model_select_panel_shows_back_button_and_pending_tool_banner(self):
+        """模型选择卡必须：① 显示返回工具选择按钮 ② 突出 pending_tool 名称 ③ 不输出确认/清空按钮。"""
+        block = WorktreeSelectBlock(
+            block_id="models",
+            data={
+                "project_id": "proj-back",
+                "select_action": "worktree_select_model",
+                "pending_tool": "Coco",
+                "tools": [
+                    {"id": "doubao-pro", "name": "Doubao Pro", "description": "模型: Doubao Pro"},
+                ],
+                "selected": [{
+                    "tool_name": "aiden",
+                    "display_name": "Aiden",
+                    "provider": "acp",
+                    "selection_key": "acp:aiden:default",
+                    "display_label": "ACP · Aiden / 默认模型",
+                }],
+            },
+        )
+        result = render_worktree_panel(block)
+        import json
+        rendered = json.dumps(result, ensure_ascii=False)
+        # 必须有醒目的 pending_tool banner
+        assert "为 Coco 选择模型" in rendered
+        # 已选组合上下文保留
+        assert "已选组合 (1)" in rendered
+        assert "ACP · Aiden / 默认模型" in rendered
+        # 不允许出现确认 / 清空 按钮（它们只属于工具选择卡）
+        buttons = _collect_buttons(result)
+        actions = {btn.get("value", {}).get("action") for btn in buttons}
+        assert "worktree_finish_selection" not in actions
+        assert "worktree_clear_items" not in actions
+        assert "worktree_remove_item" not in actions
+        # 必须有返回工具选择按钮，且为 callback
+        back_button = next(
+            btn for btn in buttons
+            if btn.get("value", {}).get("action") == "show_worktree_menu"
+        )
+        _assert_callback_button(back_button, {"action": "show_worktree_menu", "project_id": "proj-back"})
+
+    def test_tool_select_subtitle_uses_tool_select_text(self):
+        """工具选择阶段 header subtitle 文案保持为'选择工具'。"""
+        from src.card.events import CardEvent
+        from src.card.render.budget import RenderBudget
+        from src.card.render.renderer import render_card
+        from src.card.state.models import CardMetadata, CardState
+        from src.card.state.reducer import reduce_card_state
+        state = CardState(metadata=CardMetadata(engine_type="worktree"))
+        state = reduce_card_state(
+            state,
+            CardEvent.worktree_tool_select(
+                tools=[{"provider": "acp", "tool_name": "coco", "display_name": "Coco"}],
+                selected=[],
+                project_id="p-tool",
+            ),
+        )
+        rendered = render_card(state, RenderBudget())[0].to_feishu_json()
+        assert rendered.get("header", {}).get("subtitle", {}).get("content") == "选择工具"
+
+    def test_model_select_subtitle_uses_model_select_text(self):
+        """模型选择阶段 header subtitle 必须显示为'选择模型'，与工具选择视觉区分。"""
+        from src.card.events import CardEvent
+        from src.card.render.budget import RenderBudget
+        from src.card.render.renderer import render_card
+        from src.card.state.models import CardMetadata, CardState
+        from src.card.state.reducer import reduce_card_state
+        state = CardState(metadata=CardMetadata(engine_type="worktree"))
+        state = reduce_card_state(
+            state,
+            CardEvent.worktree_tool_select(
+                tools=[{"id": "gpt", "name": "GPT-5.2", "description": "模型: GPT-5.2"}],
+                selected=[],
+                project_id="p-model",
+                select_action="worktree_select_model",
+                pending_tool="Coco",
+            ),
+        )
+        rendered = render_card(state, RenderBudget())[0].to_feishu_json()
+        assert rendered.get("header", {}).get("subtitle", {}).get("content") == "选择模型"
+
 
 class TestRenderWorktreePanelUnknownKind:
     """Unknown block kind should produce a safe fallback."""

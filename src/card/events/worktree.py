@@ -47,6 +47,7 @@ def worktree_tool_select(
     tools: list[dict], selected: list[str] | None = None,
     project_id: str = "", message: str = "",
     select_action: str = "worktree_select_tool",
+    pending_tool: str = "",
 ) -> CardEvent:
     """Worktree tool selection card state.
 
@@ -56,6 +57,10 @@ def worktree_tool_select(
         project_id: associated project identifier.
         message: optional prompt message.
         select_action: action emitted by option buttons.
+        pending_tool: when select_action=worktree_select_model, the
+            display name of the tool we are picking a model for. Used for
+            the prominent banner so the model card is visually distinct
+            from the tool select card.
     Triggered when: user enters worktree flow or toggles tool selection.
     """
     if not isinstance(tools, list):
@@ -68,6 +73,7 @@ def worktree_tool_select(
         "tools": tools, "selected": selected or [],
         "project_id": project_id, "message": message,
         "select_action": select_action,
+        "pending_tool": pending_tool,
     }
     return CardEvent(type=CardEventType.WORKTREE_TOOL_SELECT, payload=payload)
 

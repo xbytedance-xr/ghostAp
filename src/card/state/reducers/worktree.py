@@ -37,6 +37,7 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
             message = event.payload.get("message", "")
             project_id = event.payload.get("project_id", "")
             select_action = event.payload.get("select_action", "worktree_select_tool")
+            pending_tool = event.payload.get("pending_tool", "")
 
             data = {
                 "tools": tools,
@@ -44,6 +45,7 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
                 "message": message,
                 "project_id": project_id,
                 "select_action": select_action,
+                "pending_tool": pending_tool,
             }
             block = WorktreeSelectBlock(
                 block_id="worktree_tool_list",
@@ -54,8 +56,15 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
             # render 层的 _render_worktree_tool_select 内嵌输出，避免出现两个 "确认选择"。
             buttons: tuple[ButtonSpec, ...] = ()
 
-            header = _build_worktree_header(state, UI_TEXT["worktree_step_tool_select"])
-            footer_text = UI_TEXT["wt_hint_select_at_least_one"] if not selected else UI_TEXT["worktree_footer_confirm_hint"]
+            is_model_select = select_action == "worktree_select_model"
+            subtitle = UI_TEXT["worktree_step_model_select"] if is_model_select else UI_TEXT["worktree_step_tool_select"]
+            header = _build_worktree_header(state, subtitle)
+            if is_model_select:
+                footer_text = UI_TEXT["worktree_step_model_select_hint"]
+            elif not selected:
+                footer_text = UI_TEXT["wt_hint_select_at_least_one"]
+            else:
+                footer_text = UI_TEXT["worktree_footer_confirm_hint"]
             footer = FooterState(status="idle", status_text=footer_text)
             return replace(state, blocks=(block,), buttons=buttons, footer=footer, header=header)
 
