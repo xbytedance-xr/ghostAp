@@ -278,3 +278,139 @@ def test_fail_unit_logs_at_specified_level():
         dispatcher._fail_unit(unit2, "another error", on_unit_update=on_update2)
         mock_logger.log.assert_called_once_with(logging.ERROR, "[Worktree] 单元失败: unit=%s, error=%s", "u1", "another error")
 
+
+# ---------------------------------------------------------------------------
+# TTADK startup recovery tests
+# ---------------------------------------------------------------------------
+
+
+def test_ttadk_unit_invalid_model_retries_with_auto(tmp_path):
+    """TTADK unit with invalid-model error retries with model_name=None."""
+    from dataclasses import dataclass
+
+    d = tmp_path / "wt"
+    d.mkdir()
+
+    @dataclass
+    class FakePromptResult:
+        stop_reason: str
+        text: str
+
+    call_log = []
+
+    class RecoverySession:
+        def __init__(self, *, provider, tool_name, working_dir, model_name=None, ttadk_use_pty=False):
+            self.provider = provider
+            self.tool_name = tool_name
+            self.working_dir = working_dir
+            self.model_name = model_name
+            call_log.append(("create", provider, tool_name, model_name))
+
+        def start(self, startup_timeout=60):
+            # First call with model_name="bad-model" → raise invalid model error
+            if self.model_name == "bad-model":
+                call_log.append(("start_fail", self.model_name))
+                raise RuntimeError("invalid value for --model: bad-model. model must be one of: gpt-4, gpt-5")
+            call_log.append(("start_ok", self.model_name))
+            return "ok"
+
+        def send_prompt(self, text, on_event=None, timeout=None):
+            return FakePromptResult(stop_reason="end_turn", text="done")
+
+        def close(self):
+            return None
+
+    unit = WorktreeUnit(unit_id="u0", worktree_path=str(d))
+    tool = WorktreeSelectionItem(provider="ttadk", tool_name="codex", display_name="Codex")
+
+    dispatcher = WorktreeDispatcher(session_factory=lambda **kw: RecoverySession(**kw))
+    planned = dispatcher.plan_user_goal("test task", [unit], [tool])
+    # Override model_name to trigger invalid-model path
+    planned[0].model_name = "bad-model"
+
+    executed = dispatcher.execute_units(planned, max_workers=1)
+
+    assert executed[0].status == "completed"
+    # Verify: first create with bad-model, then retry with None (auto)
+    creates = [entry for entry in call_log if entry[0] == "create"]
+    assert creates[0] == ("create", "ttadk", "codex", "bad-model")  # original
+    assert creates[1] == ("create", "ttadk", "codex", None)  # auto retry
+
+
+def test_ttadk_unit_generic_error_falls_back_to_coco(tmp_path):
+    """TTADK unit with non-model error falls back to coco session."""
+    from dataclasses import dataclass
+
+    d = tmp_path / "wt"
+    d.mkdir()
+
+    @dataclass
+    class FakePromptResult:
+        stop_reason: str
+        text: str
+
+    call_log = []
+
+    class FallbackSession:
+        def __init__(self, *, provider, tool_name, working_dir, model_name=None, ttadk_use_pty=False):
+            self.provider = provider
+            self.tool_name = tool_name
+            self.model_name = model_name
+            call_log.append(("create", provider, tool_name))
+
+        def start(self, startup_timeout=60):
+            # TTADK codex always fails with generic error
+            if self.provider == "ttadk" and self.tool_name == "codex":
+                raise RuntimeError("connection refused")
+            return "ok"
+
+        def send_prompt(self, text, on_event=None, timeout=None):
+            return FakePromptResult(stop_reason="end_turn", text="coco-done")
+
+        def close(self):
+            return None
+
+    unit = WorktreeUnit(unit_id="u0", worktree_path=str(d))
+    tool = WorktreeSelectionItem(provider="ttadk", tool_name="codex", display_name="Codex")
+
+    dispatcher = WorktreeDispatcher(session_factory=lambda **kw: FallbackSession(**kw))
+    planned = dispatcher.plan_user_goal("test task", [unit], [tool])
+    executed = dispatcher.execute_units(planned, max_workers=1)
+
+    assert executed[0].status == "completed"
+    assert executed[0].summary == "coco-done"
+    # Verify coco fallback was created
+    coco_creates = [(p, t) for _, p, t in call_log if _ == "create" and t == "coco"]
+    assert len(coco_creates) >= 1
+    assert coco_creates[0] == ("acp", "coco")
+
+
+def test_non_ttadk_unit_no_recovery_on_start_failure(tmp_path):
+    """Non-TTADK units do not get recovery; start failure is immediate."""
+    d = tmp_path / "wt"
+    d.mkdir()
+
+    class FailingStartSession:
+        def __init__(self, *, provider, tool_name, working_dir, model_name=None, ttadk_use_pty=False):
+            self.provider = provider
+
+        def start(self, startup_timeout=60):
+            raise RuntimeError("acp startup failed")
+
+        def send_prompt(self, text, on_event=None, timeout=None):
+            raise AssertionError("should not reach send_prompt")
+
+        def close(self):
+            return None
+
+    unit = WorktreeUnit(unit_id="u0", worktree_path=str(d))
+    tool = WorktreeSelectionItem(provider="acp", tool_name="aiden", display_name="Aiden")
+
+    dispatcher = WorktreeDispatcher(session_factory=lambda **kw: FailingStartSession(**kw))
+    planned = dispatcher.plan_user_goal("test task", [unit], [tool])
+    executed = dispatcher.execute_units(planned, max_workers=1)
+
+    assert executed[0].status == "failed"
+    assert "启动失败" in executed[0].error
+    assert "acp startup failed" in executed[0].error
+

@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import threading
+import time as _time
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
@@ -17,6 +19,34 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Generic ACP model probe cache for non-coco tools (Aiden, Codex, Gemini…).
+# Key: tool_name, Value: (timestamp, model_list).  TTL aligned with CocoModelManager.
+# ---------------------------------------------------------------------------
+_acp_probe_cache: dict[str, tuple[float, list[ACPModelOption]]] = {}
+_acp_probe_cache_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+_ACP_PROBE_CACHE_TTL = 300  # 5 minutes
+
+
+def _get_cached_probe(tool_name: str) -> list[ACPModelOption]:
+    """Return cached probe result if within TTL, else empty list."""
+    with _acp_probe_cache_lock:
+        entry = _acp_probe_cache.get(tool_name)
+    if not entry:
+        return []
+    ts, models = entry
+    if (_time.time() - ts) > _ACP_PROBE_CACHE_TTL:
+        return []
+    return list(models)
+
+
+def _set_cached_probe(tool_name: str, models: list[ACPModelOption]) -> None:
+    """Store a successful probe result in cache."""
+    if not models:
+        return
+    with _acp_probe_cache_lock:
+        _acp_probe_cache[tool_name] = (_time.time(), list(models))
 
 
 def list_acp_tools() -> list[ACPToolOption]:
@@ -79,6 +109,9 @@ def fetch_acp_models(
         models = []
 
     if models:
+        # Cache successful probe for non-coco tools
+        if tool_name != "coco":
+            _set_cached_probe(tool_name, models)
         return models
 
     # Fallback for coco — try CocoModelManager again (probe inside it may have
@@ -105,6 +138,16 @@ def fetch_acp_models(
             ]
         except Exception:
             logger.debug("[ACP] coco model fallback failed", exc_info=True)
+
+    # Generic cache fallback for non-coco tools
+    if tool_name != "coco":
+        cached = _get_cached_probe(tool_name)
+        if cached:
+            logger.debug("[ACP] using cached probe for %s (%d models)", tool_name, len(cached))
+            if current_model:
+                for m in cached:
+                    m.is_default = (m.name == current_model)
+            return cached
 
     if current_model:
         return [

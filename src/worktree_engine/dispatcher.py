@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Callable, Iterable, Optional
 from .models import WorktreeSelectionItem, WorktreeUnit, WorktreeUnitStatus
 from .reporter import REASON_DISPLAY_MAP
 from ..config import get_settings
+from ..ttadk.models import is_invalid_model_error
 from ..utils.callbacks import safe_invoke
 from ..utils.errors import classify_timeout, get_error_detail, sanitize_futures_msg
 
@@ -173,14 +174,13 @@ class WorktreeDispatcher:
             self._fail_unit(unit, "工作单元未绑定执行工具", on_unit_update=on_unit_update)
             return
 
-        session = self._session_factory(
-            provider=unit.provider,
-            tool_name=unit.tool_name,
-            working_dir=unit.worktree_path,
-            model_name=unit.model_name,
-        )
         try:
-            session.start()
+            session = self._start_session_with_recovery(unit)
+        except Exception as exc:
+            self._fail_unit(unit, f"启动失败: {get_error_detail(exc)}", log_level=logging.ERROR, on_unit_update=on_unit_update)
+            return
+
+        try:
             result = session.send_prompt(unit.task_prompt or unit.task_title, timeout=timeout)
             # Respect cancellation set by pool-timeout while this unit was running.
             # Uses _cancel_event (threading.Event) for memory-barrier guarantee instead
@@ -201,6 +201,74 @@ class WorktreeDispatcher:
                 session.close()
             except Exception:
                 logger.debug("failed to close session", exc_info=True)
+
+    def _start_session_with_recovery(self, unit: WorktreeUnit) -> "SyncSession":
+        """Start a session with TTADK-specific recovery on failure.
+
+        Recovery flow (TTADK only):
+        1. Normal session.start()
+        2. On invalid-model error: retry with model_name=None (auto)
+        3. On any failure: try coco fallback session
+        Non-TTADK providers raise on failure (no recovery).
+        """
+        session = self._session_factory(
+            provider=unit.provider,
+            tool_name=unit.tool_name,
+            working_dir=unit.worktree_path,
+            model_name=unit.model_name,
+        )
+        try:
+            session.start()
+            return session
+        except Exception as first_err:
+            if unit.provider != "ttadk":
+                raise
+            try:
+                session.close()
+            except Exception:
+                pass
+
+            err_text = get_error_detail(first_err)
+            logger.warning(
+                "[Worktree] TTADK start failed, attempting recovery: unit=%s err=%s",
+                unit.unit_id, err_text,
+            )
+
+            # Retry with model_name=None (auto) if invalid-model error
+            if is_invalid_model_error(err_text):
+                try:
+                    session = self._session_factory(
+                        provider=unit.provider,
+                        tool_name=unit.tool_name,
+                        working_dir=unit.worktree_path,
+                        model_name=None,
+                    )
+                    session.start()
+                    logger.info("[Worktree] TTADK recovery succeeded with auto model: unit=%s", unit.unit_id)
+                    return session
+                except Exception:
+                    try:
+                        session.close()
+                    except Exception:
+                        pass
+
+            # Final fallback: degrade to coco
+            try:
+                session = self._session_factory(
+                    provider="acp",
+                    tool_name="coco",
+                    working_dir=unit.worktree_path,
+                    model_name=None,
+                )
+                session.start()
+                logger.info("[Worktree] TTADK recovery: degraded to coco: unit=%s", unit.unit_id)
+                return session
+            except Exception as coco_err:
+                try:
+                    session.close()
+                except Exception:
+                    pass
+                raise first_err from coco_err
 
     def _assign_roles_smart(
         self,
