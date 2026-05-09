@@ -9,7 +9,7 @@ from src.card.ui_text import UI_TEXT
 
 _MAX_OUTPUT_CHARS = 2000
 _MAX_SUMMARY_CHARS = 80
-_MAX_ACTIVITY_DETAILS = 6
+_MAX_ACTIVITY_DETAILS = 20
 
 _STATUS_ICONS = {
     "active": "⏳",

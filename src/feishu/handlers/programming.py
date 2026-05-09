@@ -840,22 +840,25 @@ class ProgrammingModeHandler(BaseHandler):
 
         logger.info("%s ACP输出完成: 事件数=%d, 最终长度=%d", self.mode_name, update_count[0], len(final_response))
 
-        # Post-processing
-        if project:
-            self._update_snapshot_on_project(project, text, session.message_count, session.session_id)
-            project.add_conversation("user", text, message_id)
-            project.add_conversation("assistant", final_response)
-            source = self.mode_name.lower()
-            self.context_manager.update_context(
-                project.project_id,
-                conversation={"role": "user", "content": text, "source_mode": source, "message_id": message_id},
-                chat_id=chat_id,
-            )
-            self.context_manager.update_context(
-                project.project_id,
-                conversation={"role": "assistant", "content": final_response, "source_mode": source},
-                chat_id=chat_id,
-            )
+        # Post-processing (non-critical, must not block emoji reaction)
+        try:
+            if project:
+                self._update_snapshot_on_project(project, text, session.message_count, session.session_id)
+                project.add_conversation("user", text, message_id)
+                project.add_conversation("assistant", final_response)
+                source = self.mode_name.lower()
+                self.context_manager.update_context(
+                    project.project_id,
+                    conversation={"role": "user", "content": text, "source_mode": source, "message_id": message_id},
+                    chat_id=chat_id,
+                )
+                self.context_manager.update_context(
+                    project.project_id,
+                    conversation={"role": "assistant", "content": final_response, "source_mode": source},
+                    chat_id=chat_id,
+                )
+        except Exception as e:
+            logger.warning("编程后处理异常(不影响表情回复): %s", e, exc_info=True)
 
         self.add_reaction(message_id, EmojiReaction.on_coco_response())
 
@@ -911,6 +914,8 @@ class ProgrammingModeHandler(BaseHandler):
             _hb_stop.set()
             if _hb is not None:
                 _hb.join(timeout=2)
+
+        self.add_reaction(message_id, EmojiReaction.on_coco_response())
 
     # ------------------------------------------------------------------
     # show_info
