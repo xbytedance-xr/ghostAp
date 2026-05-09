@@ -1,6 +1,9 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
+## 2026-05-09
+- **修复 Worktree 卡片按钮交互未触发** — 定位到 Worktree 内嵌按钮与通用 `ButtonSpec` 渲染只输出 `value`、缺少 Schema 2.0 callback `behaviors`；修复后所有 Worktree 选择/模型/移除/清空/确认及后续按钮同时输出 `value` 和 `behaviors`；169 passed → [详细记录](2026-05-09.md)
+- **Worktree 选择卡 UX 预览校准** — 对照当前真实 Worktree 渲染路径修正 `ux/card_preview.html` 中过时的工具选择预览，并新增原生 `checker`/表单多选方向的视觉尝试；结论是投票卡片视觉可参考，但生产替换需保留“工具×模型组合”语义 → [详细记录](2026-05-09.md)
 ## 2026-05-08
 - **编程模式卡片新增持久过程摘要** — 模仿 Codex 执行轨迹展示，在编程模式 render 阶段从 tool blocks 派生 `activity_summary` 折叠面板，聚合"已探索/已编辑/已运行/正在运行/失败"摘要并插在计划/任务上下文之后、正文之前；该摘要不使用 streaming element_id，因此后续正文流式更新不会覆盖；6244 passed, 1 skipped → [详细记录](2026-05-08.md)
 - **精简 Worktree 选择交互旧测试** — 删除已被新点击流覆盖或与当前 ACP 工具选模型语义冲突的 3 个旧测试，收敛一处易碎的完整 dict 断言为关键字段契约，并把 TTADK 聚合入口断言合并到端到端点击流；6242 passed, 1 skipped → [详细记录](2026-05-08.md)

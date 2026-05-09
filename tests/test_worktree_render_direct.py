@@ -33,6 +33,13 @@ def _collect_buttons(node):
     return []
 
 
+def _assert_callback_button(button, expected_value):
+    assert button.get("value") == expected_value
+    assert button.get("behaviors") == [
+        {"type": "callback", "value": expected_value}
+    ]
+
+
 class TestRenderWorktreePanelDataNone:
     """block.data=None should produce a safe fallback."""
 
@@ -162,9 +169,7 @@ class TestRenderWorktreeToolSelectInteractions:
 
         result = render_worktree_panel(block)
         buttons = _collect_buttons(result)
-        values = [btn.get("value", {}) for btn in buttons]
-
-        assert {
+        expected = {
             "action": "worktree_select_tool",
             "tool_name": "coco",
             "display_name": "Coco",
@@ -173,10 +178,75 @@ class TestRenderWorktreeToolSelectInteractions:
             "supports_model": True,
             "skip_model_selection": False,
             "project_id": "proj-1",
-        } in values
-        assert any(v.get("tool_name") == "claude" for v in values)
+        }
+
+        coco_button = next(
+            btn for btn in buttons
+            if btn.get("value", {}).get("tool_name") == "coco"
+        )
+        _assert_callback_button(coco_button, expected)
+        assert any(
+            btn.get("value", {}).get("tool_name") == "claude"
+            and btn.get("behaviors", [{}])[0].get("type") == "callback"
+            for btn in buttons
+        )
 
     def test_reducer_render_path_keeps_tool_buttons_interactive(self):
+        state = CardState(metadata=CardMetadata(engine_type="worktree"))
+        state = reduce_card_state(
+            state,
+            CardEvent.worktree_tool_select(
+                tools=[
+                    {
+                        "provider": "acp",
+                        "tool_name": "coco",
+                        "display_name": "Coco",
+                        "description": "字节跳动 AI",
+                        "supports_model": True,
+                    }
+                ],
+                selected=[],
+                project_id="proj-render",
+            ),
+        )
+
+        rendered = render_card(state, RenderBudget())[0].to_feishu_json()
+        buttons = _collect_buttons(rendered)
+        button = next(
+            btn for btn in buttons
+            if (
+                btn.get("value", {}).get("action") == "worktree_select_tool"
+                and btn.get("value", {}).get("tool_name") == "coco"
+                and btn.get("value", {}).get("project_id") == "proj-render"
+            )
+        )
+        assert button.get("behaviors") == [
+            {"type": "callback", "value": button.get("value")}
+        ]
+
+    def test_selected_actions_render_callback_behaviors(self):
+        block = WorktreeSelectBlock(
+            block_id="ts",
+            data={
+                "project_id": "proj-1",
+                "tools": [{"provider": "cli", "tool_name": "claude", "display_name": "Claude"}],
+                "selected": [{"selection_key": "cli:claude:default", "display_label": "CLI · Claude"}],
+            },
+        )
+
+        result = render_worktree_panel(block)
+        buttons = _collect_buttons(result)
+
+        for action in ("worktree_remove_item", "worktree_clear_items", "worktree_finish_selection"):
+            button = next(
+                btn for btn in buttons
+                if btn.get("value", {}).get("action") == action
+            )
+            assert button.get("behaviors") == [
+                {"type": "callback", "value": button.get("value")}
+            ]
+
+    def test_reducer_render_path_keeps_tool_buttons_interactive_legacy_value(self):
         state = CardState(metadata=CardMetadata(engine_type="worktree"))
         state = reduce_card_state(
             state,
@@ -222,13 +292,18 @@ class TestRenderWorktreeToolSelectInteractions:
         )
 
         result = render_worktree_panel(block)
-        values = [btn.get("value", {}) for btn in _collect_buttons(result)]
-        assert {
+        buttons = _collect_buttons(result)
+        expected = {
             "action": "worktree_select_model",
             "model_name": "gpt-5.2",
             "model_display_name": "GPT-5.2",
             "project_id": "proj-2",
-        } in values
+        }
+        button = next(
+            btn for btn in buttons
+            if btn.get("value", {}).get("action") == "worktree_select_model"
+        )
+        _assert_callback_button(button, expected)
 
 
 class TestRenderWorktreePanelUnknownKind:

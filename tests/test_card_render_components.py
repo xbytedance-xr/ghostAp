@@ -112,6 +112,10 @@ class TestRenderButtons:
         assert result[0]["columns"][0]["width"] == "weighted"
         assert result[0]["columns"][0]["weight"] == 1
         assert result[0]["columns"][0]["elements"][0]["text"]["content"] == "停止"
+        button = result[0]["columns"][0]["elements"][0]
+        assert button["behaviors"] == [
+            {"type": "callback", "value": button["value"]}
+        ]
 
     def test_two_buttons_column_set(self):
         """2 buttons → column_set layout with bisect"""

@@ -238,23 +238,18 @@ def _render_worktree_tool_select(data: dict) -> dict:
             })
             for item in selected_dicts:
                 elements.append(_render_selected_item_row(item, project_id=project_id))
-            elements.append({
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": UI_TEXT["worktree_clear_items_btn"]},
-                "type": "default",
-                "value": {"action": WORKTREE_CLEAR_ITEMS, "project_id": project_id},
-                "size": "medium",
-            })
+            elements.append(_callback_button(
+                text=UI_TEXT["worktree_clear_items_btn"],
+                value={"action": WORKTREE_CLEAR_ITEMS, "project_id": project_id},
+            ))
 
         elements.append({"tag": "hr"})
         if selected_dicts:
-            elements.append({
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": UI_TEXT["worktree_confirm_selection_btn"]},
-                "type": "primary",
-                "value": {"action": WORKTREE_FINISH_SELECTION, "project_id": project_id},
-                "size": "medium",
-            })
+            elements.append(_callback_button(
+                text=UI_TEXT["worktree_confirm_selection_btn"],
+                value={"action": WORKTREE_FINISH_SELECTION, "project_id": project_id},
+                button_type="primary",
+            ))
         else:
             elements.append({
                 "tag": "markdown",
@@ -272,6 +267,24 @@ def _render_worktree_tool_select(data: dict) -> dict:
             "vertical_align": "top",
             "elements": elements,
         }],
+    }
+
+
+def _callback_button(
+    *,
+    text: str,
+    value: dict,
+    button_type: str = "default",
+    size: str = "medium",
+) -> dict:
+    """Build a Schema 2.0 callback button while preserving legacy value access."""
+    return {
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": text},
+        "type": button_type,
+        "value": value,
+        "behaviors": [{"type": "callback", "value": value}],
+        "size": size,
     }
 
 
@@ -301,17 +314,15 @@ def _render_selected_item_row(item: dict, *, project_id: str) -> dict:
                 "width": "weighted",
                 "weight": 1,
                 "vertical_align": "center",
-                "elements": [{
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": UI_TEXT["worktree_remove_item_btn"]},
-                    "type": "default",
-                    "value": {
+                "elements": [_callback_button(
+                    text=UI_TEXT["worktree_remove_item_btn"],
+                    value={
                         "action": WORKTREE_REMOVE_ITEM,
                         "selection_key": selection_key,
                         "project_id": project_id,
                     },
-                    "size": "small",
-                }],
+                    size="small",
+                )],
             },
         ],
     }
@@ -399,13 +410,11 @@ def _render_worktree_select_option(
                 "width": "weighted",
                 "weight": 1,
                 "vertical_align": "center",
-                "elements": [{
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": button_text},
-                    "type": button_type,
-                    "value": value,
-                    "size": "medium",
-                }],
+                "elements": [_callback_button(
+                    text=button_text,
+                    value=value,
+                    button_type=button_type,
+                )],
             },
         ],
     }

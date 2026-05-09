@@ -257,6 +257,7 @@ def _render_button(spec: ButtonSpec, *, engine_type: str | None = None, budget: 
         "text": {"tag": "plain_text", "content": spec.text},
         "type": spec.type,
         "value": value,
+        "behaviors": [{"type": "callback", "value": value}],
         "size": button_size,
     }
 

@@ -283,6 +283,76 @@ body {
   border: 1px solid #f0f1f3;
 }
 
+/* === Worktree Selection Preview === */
+.wt-option-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: #fafbfc;
+  border: 1px solid #eef0f3;
+  border-radius: 6px;
+}
+.wt-option-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+.wt-option-desc {
+  font-size: 12px;
+  color: #646a73;
+}
+.wt-selected-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wt-selected-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  background: #f7f9ff;
+  border: 1px solid #d6e4ff;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.wt-native-box {
+  border: 1px solid #d8dce2;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fff;
+}
+.wt-native-choice {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  padding: 7px 0;
+  font-size: 14px;
+}
+.wt-native-check {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid #8f959e;
+  margin-top: 1px;
+}
+.wt-native-check.checked {
+  border-color: #3370ff;
+  background: radial-gradient(circle at center, #3370ff 0 42%, transparent 45%);
+}
+.wt-native-submit {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border: 1px solid #c9cdd4;
+  border-radius: 6px;
+  color: #8f959e;
+  text-align: center;
+  font-size: 14px;
+}
+
 /* === Activity Summary === */
 .activity-item {
   font-size: 12px;
@@ -732,7 +802,7 @@ tests/test_tools.py::test_tool_history_fold PASSED
 <div class="cards-grid">
 
 <div class="card-wrapper">
-  <div class="card-label">Worktree · 工具选择阶段</div>
+  <div class="card-label">Worktree · 工具选择阶段（当前真实实现）</div>
   <div class="feishu-card">
     <div class="card-header header-wathet">
       <div class="title">🌿 Worktree 并行执行</div>
@@ -754,17 +824,90 @@ tests/test_tools.py::test_tool_history_fold PASSED
         <div style="font-size:12px;color:#646a73;">选择用于并行开发的 AI 工具</div>
       </div>
 
-      <div class="text-content">
-        检测到以下可用工具：<br><br>
-        ✅ <strong>Coco</strong> (ACP direct)<br>
-        ✅ <strong>Claude</strong> (CLI bridge)<br>
-        ✅ <strong>Gemini</strong> (ACP direct)<br>
-        ⬜ <strong>Cursor</strong> (不可用)
+      <div class="wt-option-row">
+        <div>
+          <div class="wt-option-title">Coco</div>
+          <div class="wt-option-desc">ACP direct · 支持模型选择</div>
+        </div>
+        <button class="btn btn-default" style="flex:initial;">+ 添加 Coco</button>
+      </div>
+      <div class="wt-option-row">
+        <div>
+          <div class="wt-option-title">Claude</div>
+          <div class="wt-option-desc">CLI bridge · 默认模型</div>
+        </div>
+        <button class="btn btn-default" style="flex:initial;">+ 添加 Claude</button>
+      </div>
+      <div class="wt-option-row">
+        <div>
+          <div class="wt-option-title">Gemini</div>
+          <div class="wt-option-desc">ACP direct · 支持模型选择</div>
+        </div>
+        <button class="btn btn-default" style="flex:initial;">+ 添加 Gemini</button>
+      </div>
+
+      <hr class="card-hr">
+
+      <div class="text-content"><strong>已选组合 (2)</strong></div>
+      <div class="wt-selected-list">
+        <div class="wt-selected-row">
+          <span>• ACP · Coco / Doubao Pro</span>
+          <button class="btn btn-default" style="flex:initial;padding:5px 10px;">✕</button>
+        </div>
+        <div class="wt-selected-row">
+          <span>• CLI · Claude / 默认模型</span>
+          <button class="btn btn-default" style="flex:initial;padding:5px 10px;">✕</button>
+        </div>
       </div>
 
       <div class="button-row">
-        <button class="btn btn-primary">确认选择</button>
-        <button class="btn btn-default">取消</button>
+        <button class="btn btn-primary">✅ 确认选择</button>
+        <button class="btn btn-default">🗑️ 清空选择</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card-wrapper">
+  <div class="card-label">Worktree · 原生多选尝试（checker / form 方向）</div>
+  <div class="feishu-card">
+    <div class="card-header header-wathet">
+      <div class="title">🌿 Worktree 并行执行</div>
+      <div class="subtitle">项目: ghostAp</div>
+    </div>
+    <div class="card-body">
+      <div style="text-align:center;margin-bottom:8px;">
+        <div class="stepper" style="justify-content:center;">
+          <div class="step-dot step-active">1</div>
+          <div class="step-connector"></div>
+          <div class="step-dot step-pending">2</div>
+          <div class="step-connector"></div>
+          <div class="step-dot step-pending">3</div>
+          <div class="step-connector"></div>
+          <div class="step-dot step-pending">4</div>
+        </div>
+        <div style="font-size:13px;font-weight:600;margin-top:4px;">步骤 1/4 · 选择工具</div>
+        <div style="font-size:12px;color:#646a73;">更接近投票卡片的平铺选择形态</div>
+      </div>
+
+      <div class="wt-native-box">
+        <div class="wt-native-choice">
+          <span class="wt-native-check checked"></span>
+          <span><strong>Coco</strong><br><span class="notation">ACP direct · 选择后继续选模型</span></span>
+        </div>
+        <div class="wt-native-choice">
+          <span class="wt-native-check checked"></span>
+          <span><strong>Claude</strong><br><span class="notation">CLI bridge · 默认模型</span></span>
+        </div>
+        <div class="wt-native-choice">
+          <span class="wt-native-check"></span>
+          <span><strong>Gemini</strong><br><span class="notation">ACP direct · 选择后继续选模型</span></span>
+        </div>
+        <div class="wt-native-choice">
+          <span class="wt-native-check"></span>
+          <span><strong>Cursor</strong><br><span class="notation">当前不可用</span></span>
+        </div>
+        <div class="wt-native-submit">请选择后确认</div>
       </div>
     </div>
   </div>
