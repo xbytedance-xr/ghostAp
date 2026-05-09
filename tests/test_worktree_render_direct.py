@@ -365,6 +365,33 @@ class TestRenderWorktreeToolSelectInteractions:
         rendered = render_card(state, RenderBudget())[0].to_feishu_json()
         assert rendered.get("header", {}).get("subtitle", {}).get("content") == "选择工具"
 
+    def test_model_button_label_clamped_when_name_is_long_metadata(self):
+        """防御：旧版/异常上游把 metadata blurb 塞到 name 槽位时，按钮文本仍要短，
+        否则飞书会把按钮文案过长的行折叠到无法点击，用户表现为'又无法选模型了'。"""
+        long_meta = "Context window: 168k, Max tool turns: 200, Quota: 48% used, resets weekly"
+        block = WorktreeSelectBlock(
+            block_id="models",
+            data={
+                "project_id": "p",
+                "select_action": "worktree_select_model",
+                "pending_tool": "Coco",
+                # 模拟旧版 model_tools 形状：name 被错误塞成 metadata
+                "tools": [{"id": "GPT-5.2", "name": long_meta, "description": ""}],
+                "selected": [],
+            },
+        )
+        result = render_worktree_panel(block)
+        buttons = _collect_buttons(result)
+        button = next(
+            btn for btn in buttons
+            if btn.get("value", {}).get("action") == "worktree_select_model"
+        )
+        # 按钮 value 仍要发回真正的 model_id，不影响后端处理
+        assert button["value"]["model_name"] == "GPT-5.2"
+        # 但按钮文案必须短到飞书可正常渲染（< 30 chars 包含前缀）
+        assert len(button["text"]["content"]) <= 30
+        assert button["text"]["content"].startswith("选择 ")
+
     def test_model_row_shows_clean_name_and_separated_metadata(self):
         """ACP 模型行：标题加粗显示模型名，metadata 单独以 notation 展示，按钮文案是“选择 <name>”。"""
         block = WorktreeSelectBlock(

@@ -424,13 +424,19 @@ def _render_worktree_select_option(
     action = str(tool.get("action") or default_action or WORKTREE_SELECT_TOOL)
 
     if action == WORKTREE_SELECT_MODEL:
+        # 防御：上游若把 metadata blurb 误塞进 name（历史 bug 就是这样），
+        # 直接把 name 限制成短名称做按钮文本，避免飞书因按钮文案过长把交互区压缩
+        # 或截断到无法点击。模型 id 一般 < 32 字符，超过的几乎都是 metadata。
+        button_label = tool_id or name
+        if len(button_label) > 24:
+            button_label = button_label[:24].rstrip() + "…"
         value = {
             "action": WORKTREE_SELECT_MODEL,
             "model_name": tool_id,
             "model_display_name": name,
             "project_id": project_id,
         }
-        button_text = UI_TEXT["worktree_pick_model_btn"].format(name=name)
+        button_text = UI_TEXT["worktree_pick_model_btn"].format(name=button_label)
         button_type = "primary"
     else:
         value = {
