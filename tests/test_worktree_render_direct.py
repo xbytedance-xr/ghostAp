@@ -184,7 +184,12 @@ class TestRenderWorktreeToolSelectInteractions:
             btn for btn in buttons
             if btn.get("value", {}).get("tool_name") == "coco"
         )
-        _assert_callback_button(coco_button, expected)
+        value = dict(coco_button["value"])
+        assert value.pop("_selection_sig")
+        assert value == expected
+        assert coco_button.get("behaviors") == [
+            {"type": "callback", "value": coco_button.get("value")}
+        ]
         assert any(
             btn.get("value", {}).get("tool_name") == "claude"
             and btn.get("behaviors", [{}])[0].get("type") == "callback"
@@ -245,6 +250,43 @@ class TestRenderWorktreeToolSelectInteractions:
             assert button.get("behaviors") == [
                 {"type": "callback", "value": button.get("value")}
             ]
+
+    def test_tool_button_payload_changes_after_selection_changes(self):
+        """已选组合变化后，同一个工具按钮 payload 也要变化，避免被卡片 action 去重误拦。"""
+        def render_coco_value(selected):
+            block = WorktreeSelectBlock(
+                block_id="ts",
+                data={
+                    "project_id": "proj-dedup",
+                    "tools": [
+                        {
+                            "provider": "acp",
+                            "tool_name": "coco",
+                            "display_name": "Coco",
+                            "supports_model": True,
+                        },
+                    ],
+                    "selected": selected,
+                },
+            )
+            result = render_worktree_panel(block)
+            button = next(
+                btn for btn in _collect_buttons(result)
+                if btn.get("value", {}).get("action") == "worktree_select_tool"
+            )
+            return button["value"]
+
+        empty_value = render_coco_value([])
+        selected_value = render_coco_value([
+            {
+                "tool_name": "coco",
+                "display_name": "Coco",
+                "selection_key": "acp:coco:test-o-new-thinking",
+            }
+        ])
+
+        assert empty_value["tool_name"] == selected_value["tool_name"] == "coco"
+        assert empty_value["_selection_sig"] != selected_value["_selection_sig"]
 
     def test_reducer_render_path_keeps_tool_buttons_interactive_legacy_value(self):
         state = CardState(metadata=CardMetadata(engine_type="worktree"))
@@ -392,8 +434,8 @@ class TestRenderWorktreeToolSelectInteractions:
         assert len(button["text"]["content"]) <= 30
         assert button["text"]["content"].startswith("选择 ")
 
-    def test_model_row_shows_clean_name_and_separated_metadata(self):
-        """ACP 模型行：标题加粗显示模型名，metadata 单独以 notation 展示，按钮文案是“选择 <name>”。"""
+    def test_model_grid_uses_clean_callback_buttons_without_metadata(self):
+        """ACP 模型选择用紧凑按钮网格，按钮文案和值都不能混入 metadata。"""
         block = WorktreeSelectBlock(
             block_id="models",
             data={
@@ -408,39 +450,43 @@ class TestRenderWorktreeToolSelectInteractions:
         )
         result = render_worktree_panel(block)
 
-        # Locate the model row (the column_set with bisect flex_mode that has a button + a markdown column)
-        def find_model_row(node):
-            if isinstance(node, dict):
-                if node.get("tag") == "column_set" and node.get("flex_mode") == "bisect":
-                    cols = node.get("columns") or []
-                    if any(any(el.get("tag") == "button" for el in (col.get("elements") or [])) for col in cols):
-                        return node
-                for v in node.values():
-                    found = find_model_row(v)
-                    if found is not None:
-                        return found
-            elif isinstance(node, list):
-                for x in node:
-                    found = find_model_row(x)
-                    if found is not None:
-                        return found
-            return None
+        import json
+        rendered = json.dumps(result, ensure_ascii=False)
+        assert "Model load: 14%" not in rendered
 
-        row = find_model_row(result)
-        assert row is not None, "model row not found"
-        label_col = row["columns"][0]
-        elements = label_col["elements"]
-        # 第一行：加粗模型名（不含 metadata）
-        assert elements[0]["tag"] == "markdown"
-        assert elements[0]["content"] == "**GPT-5.2**"
-        # 第二行：notation 描述
-        assert elements[1]["tag"] == "markdown"
-        assert elements[1].get("text_size") == "notation"
-        assert elements[1]["content"] == "Model load: 14%"
-
-        # 按钮文案必须是“选择 <model_id>”，不含 metadata
-        button = next(el for el in row["columns"][1]["elements"] if el.get("tag") == "button")
+        button = next(
+            btn for btn in _collect_buttons(result)
+            if btn.get("value", {}).get("action") == "worktree_select_model"
+        )
         assert button["text"]["content"] == "选择 GPT-5.2"
+        assert button["value"]["model_name"] == "GPT-5.2"
+        assert button["value"]["model_display_name"] == "GPT-5.2"
+
+    def test_large_model_select_card_stays_under_feishu_node_budget(self):
+        """真实 ACP 模型列表较长时，模型选择卡仍必须低于 Feishu 200 元素硬限制。"""
+        from src.card.render.payload_truncator import count_tagged_nodes
+
+        state = CardState(metadata=CardMetadata(engine_type="worktree"))
+        state = reduce_card_state(
+            state,
+            CardEvent.worktree_tool_select(
+                tools=[
+                    {
+                        "id": f"model-{i:02d}-very-long-name",
+                        "name": f"Model {i:02d}",
+                        "description": "Context window: 168k, Max tool turns: 200, Quota: 48% used",
+                    }
+                    for i in range(35)
+                ],
+                selected=[],
+                project_id="p-large",
+                select_action="worktree_select_model",
+                pending_tool="Coco",
+            ),
+        )
+        rendered = render_card(state, RenderBudget())[0].to_feishu_json()
+
+        assert count_tagged_nodes(rendered) <= 180
 
     def test_model_select_subtitle_uses_model_select_text(self):
         """模型选择阶段 header subtitle 必须显示为'选择模型'，与工具选择视觉区分。"""

@@ -7,6 +7,7 @@ from typing import Optional
 import yaml
 from acp.stdio import spawn_agent_process
 
+from ..utils.async_helpers import safe_wait_for
 from ..utils.errors import get_error_detail
 from .models import CocoModel, ModelListResult
 
@@ -159,7 +160,13 @@ class CocoModelManager:
                 )
             except Exception:
                 timeout_s = 6.0
-            return asyncio.run(asyncio.wait_for(_probe(), timeout=max(0.1, timeout_s)))
+            return asyncio.run(
+                safe_wait_for(
+                    _probe(),
+                    timeout=max(0.1, timeout_s),
+                    action="Coco ACP 模型探测",
+                )
+            )
         except Exception as e:
             logger.debug("Failed to load coco models via ACP: %s", get_error_detail(e))
             return []

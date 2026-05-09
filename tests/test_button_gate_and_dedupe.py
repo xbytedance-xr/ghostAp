@@ -133,6 +133,67 @@ def test_same_worktree_action_with_different_tool_payloads_is_not_deduped():
         client.close()
 
 
+def test_same_worktree_tool_after_selection_change_is_not_deduped():
+    with (
+        patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+        patch("src.feishu.ws_client.ACPSessionManager"),
+        patch("src.feishu.ws_client.IntentRecognizer"),
+        patch("src.feishu.ws_client.ProjectManager"),
+        patch("src.feishu.ws_client.MessageProjectMapper"),
+        patch("src.feishu.ws_client.DeepEngineManager"),
+        patch("src.feishu.ws_client.ProgressReporter"),
+        patch("src.mode.ModeManager"),
+    ):
+        mock_settings = MagicMock()
+        mock_settings.app_id = "test_app_id"
+        mock_settings.app_secret = "test_app_secret"
+        mock_settings.streaming_enabled = False
+        mock_settings.task_scheduler_max_concurrent = 2
+        mock_settings.task_scheduler_per_key_concurrency = 1
+        mock_settings.message_cache_ttl = 300
+        mock_settings.message_cache_max_size = 1000
+        mock_settings.card.action_dedup_ttl = 1
+        mock_settings.card.action_dedup_max_size = 5000
+        mock_settings.system_command_concurrency = 10
+        mock_settings.spec_rate_limit_capacity = 100
+        mock_settings.spec_rate_limit_fill_rate = 50.0
+        mock_settings.spec_circuit_breaker_threshold = 10
+        mock_settings.spec_circuit_breaker_recovery = 5.0
+        mock_settings.message_expire_seconds = 30
+        mock_get_settings.return_value = mock_settings
+
+        client = FeishuWSClient(MagicMock())
+        client._scheduler = MagicMock()
+        client._reply_text = MagicMock()
+        client._get_streaming_manager = MagicMock(
+            return_value=SimpleNamespace(get_card=lambda _mid: None, set_sticky_message=lambda *_a, **_k: None)
+        )
+
+        coco_before_selection = _make_card_action_data(
+            open_message_id="om_1",
+            open_chat_id="oc_1",
+            action="worktree_select_tool",
+            value_extra={"tool_name": "coco", "provider": "acp", "_selection_sig": "empty"},
+        )
+        coco_after_selection = _make_card_action_data(
+            open_message_id="om_1",
+            open_chat_id="oc_1",
+            action="worktree_select_tool",
+            value_extra={"tool_name": "coco", "provider": "acp", "_selection_sig": "coco-model-a"},
+        )
+
+        first_result = client._handle_card_action(coco_before_selection)
+        second_result = client._handle_card_action(coco_after_selection)
+        duplicate_result = client._handle_card_action(coco_after_selection)
+
+        assert client._scheduler.submit.call_count == 2
+        assert first_result is None
+        assert second_result is None
+        assert duplicate_result == {"toast": {"type": "info", "content": "操作已受理，请勿重复点击"}}
+
+        client.close()
+
+
 def test_button_rapid_clicks_are_deduped_and_only_one_task_is_submitted():
     with (
         patch("src.feishu.ws_client.get_settings") as mock_get_settings,

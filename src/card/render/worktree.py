@@ -5,6 +5,7 @@ into formatted Feishu Schema 2.0 markdown elements.
 """
 from __future__ import annotations
 
+import hashlib
 import time
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -247,15 +248,21 @@ def _render_worktree_tool_select(data: dict) -> dict:
     elif message:
         elements.append({"tag": "markdown", "content": message})
 
-    for tool in tools:
-        elements.append(
-            _render_worktree_select_option(
-                tool,
-                project_id=project_id,
-                default_action=default_action,
-                selected_keys=selected_keys,
+    if is_model_select:
+        # 模型列表来自真实 ACP/TTADK 环境，常见 25+ 项。每个模型一整行会把
+        # Schema 2.0 元素数推到 Feishu 200 上限附近，导致 patch 被 230099 拒收。
+        # 模型阶段改用双列按钮网格：按钮本身就是选择目标，value 仍携带真实 model_id。
+        elements.extend(_render_worktree_model_option_grid(tools, project_id=project_id))
+    else:
+        for tool in tools:
+            elements.append(
+                _render_worktree_select_option(
+                    tool,
+                    project_id=project_id,
+                    default_action=default_action,
+                    selected_keys=selected_keys,
+                )
             )
-        )
 
     if not tools:
         elements.append({"tag": "markdown", "content": UI_TEXT.get("worktree_data_empty", "暂无数据")})
@@ -396,11 +403,18 @@ def _selected_tool_keys(selected: list) -> set[str]:
             continue
         if not isinstance(item, dict):
             continue
-        for field in ("tool_name", "id", "name", "display_name"):
+        for field in ("selection_key", "tool_name", "id", "name", "display_name"):
             value = str(item.get(field) or "").strip()
             if value:
                 keys.add(value)
     return keys
+
+
+def _selected_signature(selected_keys: set[str]) -> str:
+    if not selected_keys:
+        return "empty"
+    canonical = "|".join(sorted(selected_keys))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
 
 
 def _tool_identity(tool: dict) -> tuple[str, str, str]:
@@ -408,6 +422,67 @@ def _tool_identity(tool: dict) -> tuple[str, str, str]:
     name = str(tool.get("display_name") or tool.get("name") or tool_id).strip()
     desc = str(tool.get("description") or "").strip()
     return tool_id, name, desc
+
+
+def _model_button_label(model_id: str, name: str) -> str:
+    # Prefer the real model id for transport-facing labels; if an older producer
+    # accidentally put quota metadata in `name`, this keeps the visible button
+    # short and the callback value correct.
+    label = (model_id or name).strip()
+    if len(label) > 24:
+        label = label[:24].rstrip() + "…"
+    return UI_TEXT["worktree_pick_model_btn"].format(name=label)
+
+
+def _render_worktree_model_option_grid(tools: list, *, project_id: str) -> list[dict]:
+    """Render model choices as compact callback buttons.
+
+    The Worktree model card can list dozens of models. A two-column grid keeps
+    the card under Feishu's component budget while preserving one-tap selection.
+    """
+    rows: list[dict] = []
+    pair: list[dict] = []
+
+    def _flush_pair() -> None:
+        if not pair:
+            return
+        rows.append({
+            "tag": "column_set",
+            "flex_mode": "bisect" if len(pair) == 2 else "none",
+            "background_style": "default",
+            "columns": pair.copy(),
+        })
+        pair.clear()
+
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        model_id, name, _ = _tool_identity(tool)
+        if not model_id:
+            continue
+        value = {
+            "action": WORKTREE_SELECT_MODEL,
+            "model_name": model_id,
+            "model_display_name": name,
+            "project_id": project_id,
+        }
+        pair.append({
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "vertical_align": "center",
+            "elements": [_callback_button(
+                text=_model_button_label(model_id, name),
+                value=value,
+                button_type="primary",
+                size="small",
+            )],
+        })
+        if len(pair) == 2:
+            _flush_pair()
+
+    _flush_pair()
+    return rows
 
 
 def _render_worktree_select_option(
@@ -424,19 +499,13 @@ def _render_worktree_select_option(
     action = str(tool.get("action") or default_action or WORKTREE_SELECT_TOOL)
 
     if action == WORKTREE_SELECT_MODEL:
-        # 防御：上游若把 metadata blurb 误塞进 name（历史 bug 就是这样），
-        # 直接把 name 限制成短名称做按钮文本，避免飞书因按钮文案过长把交互区压缩
-        # 或截断到无法点击。模型 id 一般 < 32 字符，超过的几乎都是 metadata。
-        button_label = tool_id or name
-        if len(button_label) > 24:
-            button_label = button_label[:24].rstrip() + "…"
         value = {
             "action": WORKTREE_SELECT_MODEL,
             "model_name": tool_id,
             "model_display_name": name,
             "project_id": project_id,
         }
-        button_text = UI_TEXT["worktree_pick_model_btn"].format(name=button_label)
+        button_text = _model_button_label(tool_id, name)
         button_type = "primary"
     else:
         value = {
@@ -448,20 +517,23 @@ def _render_worktree_select_option(
             "supports_model": bool(tool.get("supports_model", False)),
             "skip_model_selection": bool(tool.get("skip_model_selection", False)),
             "project_id": project_id,
+            "_selection_sig": _selected_signature(selected_keys),
         }
         button_text = UI_TEXT["worktree_add_tool_btn"].format(name=name)
         # 工具按钮始终保持可点击的中性样式，让 "已选组合" 板块承担状态反馈
         button_type = "default"
 
-    # Title shows the clean name; description (ACP metadata blurb / tool tagline)
-    # renders below as small notation so it doesn't crowd the button column.
-    label_elements: list[dict] = [{"tag": "markdown", "content": f"**{name}**"}]
-    if desc:
-        label_elements.append({
-            "tag": "markdown",
-            "content": desc,
-            "text_size": "notation",
-        })
+    # Tool rows can afford one compact markdown label. Model choices normally
+    # bypass this row renderer and use the grid above to stay under node budget.
+    if action == WORKTREE_SELECT_MODEL:
+        label_elements: list[dict] = [
+            {"tag": "markdown", "content": f"**{name}**"}
+        ]
+    else:
+        title = f"**{name}**"
+        if desc:
+            title += f" — {desc}"
+        label_elements = [{"tag": "markdown", "content": title}]
 
     return {
         "tag": "column_set",

@@ -9,6 +9,7 @@ from .client import GhostAPClient
 from .providers import tool_registry
 from ..config import get_settings
 from ..ttadk.models import ACPModelOption, ACPToolOption
+from ..utils.async_helpers import safe_wait_for
 from ..utils.text import get_acp_result_header_text
 
 if TYPE_CHECKING:
@@ -67,9 +68,10 @@ def fetch_acp_models(
     try:
         timeout_s = _resolve_acp_model_probe_timeout(probe_timeout)
         models = asyncio.run(
-            asyncio.wait_for(
+            safe_wait_for(
                 probe_acp_models(tool_name, cwd, current_model),
                 timeout=timeout_s,
+                action=f"ACP {tool_name} 模型探测",
             )
         )
     except Exception:
