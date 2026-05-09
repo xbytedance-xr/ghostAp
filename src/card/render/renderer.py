@@ -313,6 +313,11 @@ def _render_atom_progress_bar(atom: RenderAtom, state: CardState, budget: Render
     return {"tag": "markdown", "content": atom.content}
 
 
+def _render_atom_phase_banner(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict:
+    """Render phase_banner as a top sticky markdown line."""
+    return {"tag": "markdown", "content": atom.content}
+
+
 def _render_atom_worktree_panel(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict | None:
     """Look up the ContentBlock for this atom and delegate to render_worktree_panel."""
     block = block_index.get(atom.block_id)
@@ -343,6 +348,7 @@ _ATOM_RENDERERS: dict[str, Callable[[RenderAtom, CardState, RenderBudget, dict],
     "phase_panel": _render_atom_phase,
     "warning_banner": _render_atom_warning_banner,
     "progress_bar": _render_atom_progress_bar,
+    "phase_banner": _render_atom_phase_banner,
     "worktree_panel": _render_atom_worktree_panel,
     "task_list": _render_atom_task_list,
 }

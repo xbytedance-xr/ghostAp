@@ -274,6 +274,21 @@ class TestInvalidateAtomHandlers:
 class TestAtomKindHandlers:
     """Tests for specific AtomKind handler dispatch in flatten_to_atoms."""
 
+    def test_phase_banner_atom_kind_recognized(self):
+        """phase_banner is a valid AtomKind and has a renderer."""
+        from typing import get_args
+
+        from src.card.render.atoms import AtomKind
+        from src.card.render.renderer import _ATOM_RENDERERS
+
+        kinds = set(get_args(AtomKind))
+        assert "phase_banner" in kinds, "phase_banner must be in AtomKind"
+        assert "phase_banner" in _ATOM_RENDERERS, "phase_banner must have a renderer"
+
+        atom = RenderAtom(kind="phase_banner", content="🧠 Deep · 执行中 · 1m23s", node_count=1)
+        atom.byte_size = estimate_atom_size(atom)
+        assert atom.byte_size > 0
+
     def test_criteria_block_to_criteria_panel_atom(self):
         """criteria block → criteria_panel atom."""
         from src.card.state.models import CriteriaBlock
