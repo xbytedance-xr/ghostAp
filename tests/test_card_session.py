@@ -154,6 +154,43 @@ class TestCardSessionDispatch:
         assert session.closed is True
         assert session.state.terminal == "completed"
 
+    def test_card_split_closes_session_and_fires_terminal_hooks(self):
+        client = MockDeliveryClient()
+        delivery = CardDelivery(client)
+        hook_calls: list[str] = []
+
+        class _Hook:
+            def on_terminal(self, state, reason):
+                hook_calls.append(reason)
+
+        metadata = CardMetadata(mode_name="Coco", tool_name="coco", model_name="gpt-4o")
+        config = SessionConfig(metadata=metadata, sync_delivery=True)
+        session = CardSession(
+            chat_id="chat_1",
+            config=config,
+            delivery=delivery,
+            session_id="test_split_sess",
+            hooks=(_Hook(),),
+        )
+
+        session.dispatch(CardEvent.started())
+        session.dispatch(CardEvent.card_split(reason="task_done", hint="task 3"))
+
+        assert session.closed is True
+        assert session.state.terminal == "completed"
+        assert hook_calls == ["completed"]
+
+    def test_card_split_emits_completed_callback_after_terminal_delivery(self):
+        session, _, _ = self._make_session()
+        session._sync_delivery = True
+        on_split = MagicMock()
+        session.on_card_split_completed = on_split
+
+        session.dispatch(CardEvent.started())
+        session.dispatch(CardEvent.card_split(reason="phase_changed", hint="executing"))
+
+        on_split.assert_called_once_with("phase_changed", "executing")
+
     def test_dispatch_after_close_ignored(self):
         session, client, _ = self._make_session()
         session.dispatch(CardEvent(type=CardEventType.STARTED))
@@ -1324,6 +1361,7 @@ class TestAtomRendererRegistry:
             "text", "tool_panel", "tool_history", "reasoning", "plan",
             "criteria_panel", "phase_panel", "warning_banner",
             "progress_bar", "worktree_panel", "task_list", "activity_summary",
+            "phase_banner",
         }
         assert expected_kinds == set(_ATOM_RENDERERS.keys())
 

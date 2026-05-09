@@ -153,6 +153,8 @@ class CardSession:
         self._action_registry: dict[str, Callable[[dict], CardEvent]] = cbs.action_registry or {}
         self._stop_escalation_handle: "TimerHandle | None" = None
         self._stop_escalation_delay: float = 30.0
+        self._pending_card_split: tuple[str, str] | None = None
+        self.on_card_split_completed: Callable[[str, str], None] | None = None
 
         # Optional callback fired once after first successful delivery with message_id
         # DEPRECATED: use SessionHook.on_first_delivered instead. Kept for backward compat.
@@ -423,6 +425,10 @@ class CardSession:
         if VALIDATE_PAYLOAD:
             assert isinstance(event.payload, Mapping), f"payload must be Mapping, got {type(event.payload)}"
 
+        if event.type == CardEventType.CARD_SPLIT:
+            self._handle_card_split(event)
+            return
+
         # Phase 1: Lock-protected state mutation (reduce only)
         ttl_expired = False
         state_snapshot = None
@@ -456,6 +462,16 @@ class CardSession:
         # Phase 2: Deliver outside lock (I/O-bound) — submit to thread pool
         self._hook_firer.fire_dispatched(event, self._state)
         self._submit_delivery(rendered, is_terminal, event)
+
+    def _handle_card_split(self, event: CardEvent) -> None:
+        """Close this session at a semantic split boundary and notify upstream."""
+        reason = str(event.payload.get("reason", ""))
+        hint = str(event.payload.get("hint", ""))
+        if not reason:
+            logger.warning("CardSession %s: card_split ignored without reason", self._session_id)
+            return
+        self._pending_card_split = (reason, hint)
+        self.dispatch(CardEvent.completed())
 
     # -- dispatch sub-methods (called under self._lock) ----------------------
 
@@ -601,6 +617,21 @@ class CardSession:
         # Finalize only on successful terminal delivery
         if is_terminal:
             self._coordinator.finalize_terminal(self._state, self._terminal_reason)
+            self._fire_card_split_completed_if_pending()
+
+    def _fire_card_split_completed_if_pending(self) -> None:
+        """Fire card_split completion callback after terminal delivery/hooks."""
+        split = self._pending_card_split
+        if split is None:
+            return
+        self._pending_card_split = None
+        cb = self.on_card_split_completed
+        if cb is None:
+            return
+        try:
+            cb(*split)
+        except Exception:
+            logger.debug("CardSession %s: on_card_split_completed callback failed", self._session_id)
 
     def close(self) -> None:
         """Explicitly close the session. Idempotent."""
