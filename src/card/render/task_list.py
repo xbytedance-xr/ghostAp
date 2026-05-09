@@ -20,10 +20,11 @@ _STATUS_ICONS = {
 _FOLD_THRESHOLD = 5
 
 
-def render_task_list_panel(block: TaskListBlock) -> dict | None:
+def render_task_list_panel(block: TaskListBlock, *, compact: bool = False) -> dict | None:
     """Render the task list panel with progress summary.
 
     Returns None if tasks is empty (no panel rendered).
+    Compact mode shows only the current task and progress ratio for sticky_head.
     When total tasks >= _FOLD_THRESHOLD, panel is collapsed by default and
     completed tasks are shown in gray compact format.
     Current task is highlighted with bold + arrow prefix.
@@ -35,6 +36,9 @@ def render_task_list_panel(block: TaskListBlock) -> dict | None:
     current_id = block.current_task_id
     total = len(tasks)
     completed_count = sum(1 for t in tasks if t.get("status") == "completed")
+
+    if compact:
+        return _build_compact_panel(tasks, current_id, completed_count, total)
 
     lines = _build_task_lines(tasks, current_id)
     content = "\n".join(lines)
@@ -48,6 +52,51 @@ def render_task_list_panel(block: TaskListBlock) -> dict | None:
     return {
         "tag": "collapsible_panel",
         "expanded": expanded,
+        "header": {
+            "title": {"tag": "markdown", "content": header_title},
+            "vertical_align": "center",
+            "icon": {
+                "tag": "standard_icon",
+                "token": "down-small-ccm_outlined",
+                "size": "16px 16px",
+            },
+            "icon_position": "follow_text",
+            "icon_expanded_angle": -180,
+        },
+        "border": {"color": PANEL_STYLES["border_task_list"], "corner_radius": PANEL_STYLES["corner_radius"]},
+        "vertical_spacing": PANEL_STYLES["vertical_spacing"],
+        "padding": PANEL_STYLES["padding_standard"],
+        "elements": [{"tag": "markdown", "content": content}],
+    }
+
+
+def _build_compact_panel(
+    tasks: tuple[TaskSnapshotPayload, ...],
+    current_id: str,
+    completed_count: int,
+    total: int,
+) -> dict:
+    """Build compact task list panel for sticky_head.
+
+    Shows one task only (current task, then in_progress fallback, then pending,
+    then first task) while keeping progress in the header.
+    """
+    current_task = next((t for t in tasks if t.get("task_id") == current_id), None)
+    if current_task is None:
+        current_task = (
+            next((t for t in tasks if t.get("status") == "in_progress"), None)
+            or next((t for t in tasks if t.get("status") == "pending"), None)
+            or tasks[0]
+        )
+
+    current_task_id = current_task.get("task_id", "")
+    step_idx = next((idx + 1 for idx, t in enumerate(tasks) if t.get("task_id") == current_task_id), 1)
+    content = _format_task_line(current_task, current_task_id, step_idx, total)
+    header_title = f"📋 **任务列表** — 进度：{completed_count}/{total} ✅"
+
+    return {
+        "tag": "collapsible_panel",
+        "expanded": True,
         "header": {
             "title": {"tag": "markdown", "content": header_title},
             "vertical_align": "center",

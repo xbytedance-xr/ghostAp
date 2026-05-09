@@ -69,6 +69,49 @@ class TestRenderTaskListPanel:
         result = render_task_list_panel(block)
         assert result is None
 
+    def test_compact_mode_shows_current_task_only(self):
+        """Compact mode keeps sticky task context minimal: current task + progress."""
+        tasks = [
+            {"task_id": "t1", "name": "探索代码", "status": "completed"},
+            {"task_id": "t2", "name": "修复路由", "status": "in_progress"},
+            {"task_id": "t3", "name": "单元测试", "status": "pending"},
+            {"task_id": "t4", "name": "集成测试", "status": "pending"},
+            {"task_id": "t5", "name": "文档更新", "status": "pending"},
+        ]
+        block = _make_block(tasks, "t2")
+
+        result = render_task_list_panel(block, compact=True)
+
+        assert result["tag"] == "collapsible_panel"
+        assert result["expanded"] is True
+        content = result["elements"][0]["content"]
+        assert "修复路由" in content
+        assert "探索代码" not in content
+        assert "文档更新" not in content
+        header_content = result["header"]["title"]["content"]
+        assert "1/5" in header_content
+
+    def test_compact_mode_falls_back_when_current_id_missing(self):
+        """Compact mode falls back to in-progress task if current_task_id is stale."""
+        tasks = [
+            {"task_id": "t1", "name": "已完成", "status": "completed"},
+            {"task_id": "t2", "name": "正在执行", "status": "in_progress"},
+            {"task_id": "t3", "name": "后续任务", "status": "pending"},
+        ]
+        block = _make_block(tasks, "missing")
+
+        result = render_task_list_panel(block, compact=True)
+
+        content = result["elements"][0]["content"]
+        assert "正在执行" in content
+        assert "后续任务" not in content
+
+    def test_compact_empty_tasks(self):
+        """Compact mode also returns None for empty task lists."""
+        block = _make_block([], "")
+
+        assert render_task_list_panel(block, compact=True) is None
+
     def test_fold_completed_when_over_threshold(self):
         """When > 5 tasks, completed tasks shown in gray compact format."""
         tasks = [
