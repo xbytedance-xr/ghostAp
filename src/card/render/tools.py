@@ -63,7 +63,7 @@ def render_tool_panel(block: ContentBlock) -> dict | None:
     summary = generate_tool_summary(block)
     title_text = f"{icon} **{block.tool_name or 'tool'}** — {summary}"
 
-    expanded = block.status == "active"
+    expanded = bool(getattr(block, "is_latest_active", False))
     border_color = PANEL_STYLES["border_failed"] if block.status == "failed" else PANEL_STYLES["border_normal"]
 
     detail_content = _render_detail(block)

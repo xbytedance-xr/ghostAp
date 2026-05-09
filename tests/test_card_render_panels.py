@@ -12,13 +12,26 @@ class TestToolPanel:
         """Active tool → ⏳ icon, grey border, expanded=True"""
         block = ContentBlock(
             kind="tool_call", block_id="t1", status="active",
-            tool_name="bash", tool_input="ls -la /src", tool_summary="ls -la /src"
+            tool_name="bash", tool_input="ls -la /src", tool_summary="ls -la /src",
+            is_latest_active=True,
         )
         result = render_tool_panel(block)
         assert result["tag"] == "collapsible_panel"
         assert result["expanded"] is True
         assert "⏳" in result["header"]["title"]["content"]
         assert result["border"]["color"] == "grey"
+
+    def test_tool_panel_active_but_not_latest_collapsed(self):
+        """Only latest active tool expands; older active tools stay collapsed."""
+        block = ContentBlock(
+            kind="tool_call", block_id="t1", status="active",
+            tool_name="bash", tool_input="ls -la /src", tool_summary="ls -la /src",
+            is_latest_active=False,
+        )
+
+        result = render_tool_panel(block)
+
+        assert result["expanded"] is False
 
     def test_tool_panel_completed(self):
         """Completed tool → ✅ icon, grey border, expanded=False"""
