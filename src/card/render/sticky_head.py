@@ -7,6 +7,7 @@ from src.card.render.banner_computer import compute_banner
 from src.card.render.task_list import render_task_list_panel
 from src.card.render.tools import render_activity_summary_panel
 from src.card.state.models import CardMetadata, CardState
+from src.card.state.runtime_stats import RuntimeStats
 
 STICKY_HEAD_MAX_NODES = 25
 
@@ -24,8 +25,8 @@ def build_sticky_head(
     """
     atoms: list[RenderAtom] = []
 
-    runtime = getattr(state, "runtime_stats", None)
-    banner_text = compute_banner(metadata, runtime) if runtime is not None else "🤖 Programming · 进行中 · 0s"
+    runtime = getattr(state, "runtime_stats", None) or RuntimeStats(elapsed_seconds=0.0)
+    banner_text = compute_banner(metadata, runtime)
     banner_atom = RenderAtom(
         kind="phase_banner",
         content=banner_text,

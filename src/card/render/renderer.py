@@ -14,9 +14,10 @@ from src.card.render.budget import RenderBudget
 from src.card.render.buttons import render_buttons
 from src.card.render.footer import render_footer
 from src.card.render.header import render_header
-from src.card.render.pagination import paginate_atoms
+from src.card.render.layout import SectionLayout, paginate_layout
 from src.card.render.plan import render_plan_panel
 from src.card.render.reasoning import render_reasoning_panel
+from src.card.render.sticky_head import build_sticky_head
 from src.card.render.tools import render_activity_summary_panel, render_tool_history_panel, render_tool_panel
 from src.card.render.worktree import render_worktree_panel
 from src.card.state.models import CardState, ContentBlock
@@ -87,11 +88,12 @@ def render_card(
         bid: state.blocks[idx] for bid, idx in state.block_index.items()
     }
 
-    # 1. Flatten blocks to atoms
-    atoms = _order_atoms_by_section(_with_activity_summary_atom(flatten_to_atoms(state.blocks, budget), state))
+    # 1. Flatten blocks to atoms and build SectionLayout skeleton.
+    atoms = _with_activity_summary_atom(flatten_to_atoms(state.blocks, budget), state)
+    layout = _build_section_layout(state, atoms)
 
-    # 2. Paginate
-    pages = paginate_atoms(atoms, budget)
+    # 2. Paginate via SectionLayout (sticky_head/status/body/appendix SSOT)
+    pages = paginate_layout(layout, budget)
     total_pages = len(pages)
 
     # 3. Compute global structure signature (for cache key / fast structural-change detection)
@@ -329,6 +331,8 @@ def _render_atom_worktree_panel(atom: RenderAtom, state: CardState, budget: Rend
 def _render_atom_task_list(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict | None:
     """Look up the ContentBlock for this atom and delegate to render_task_list_panel."""
     from src.card.render.task_list import render_task_list_panel
+    if atom.elements:
+        return atom.elements[0]
     block = block_index.get(atom.block_id)
     if block is None:
         return {"tag": "markdown", "content": atom.content}
@@ -419,6 +423,37 @@ def _order_atoms_by_section(atoms: list[RenderAtom]) -> list[RenderAtom]:
     status_atoms = [*task_list_atoms, *other_status]
 
     return [*status_atoms, *body_atoms, *appendix_atoms]
+
+
+def _build_section_layout(state: CardState, atoms: list[RenderAtom]) -> SectionLayout:
+    """Convert flattened atoms into the SectionLayout pagination contract."""
+    ordered = _order_atoms_by_section(atoms)
+    sticky_head = build_sticky_head(state, state.metadata)
+    sticky_block_ids = {atom.block_id for atom in sticky_head if atom.block_id}
+    sticky_kinds = {atom.kind for atom in sticky_head}
+
+    status_atoms: list[RenderAtom] = []
+    body_atoms: list[RenderAtom] = []
+    appendix_atoms: list[RenderAtom] = []
+
+    for atom in ordered:
+        if atom.block_id in sticky_block_ids:
+            continue
+        if atom.kind in {"task_list", "activity_summary"} and atom.kind in sticky_kinds:
+            continue
+        if atom.kind in _STATUS_ATOM_KINDS:
+            status_atoms.append(atom)
+        elif atom.kind in _APPENDIX_ATOM_KINDS:
+            appendix_atoms.append(atom)
+        else:
+            body_atoms.append(atom)
+
+    return SectionLayout(
+        sticky_head=sticky_head,
+        status=tuple(status_atoms),
+        body=tuple(body_atoms),
+        appendix=tuple(appendix_atoms),
+    )
 
 
 def _with_activity_summary_atom(atoms: list[RenderAtom], state: CardState) -> list[RenderAtom]:

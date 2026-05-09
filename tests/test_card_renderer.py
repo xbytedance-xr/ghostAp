@@ -396,11 +396,10 @@ class TestMultipleBlockTypes:
         body = cards[0]._card_json["body"]["elements"]
         # 3 content elements + 0 footer/buttons
         assert len(body) >= 3
-        assert body[0]["tag"] == "markdown"
-        assert body[0]["content"] == "Intro"
-        assert body[1]["tag"] == "markdown"
-        assert body[1]["content"] == "Conclusion"
-        assert body[2]["tag"] == "collapsible_panel"
+        intro_idx = next(i for i, el in enumerate(body) if el.get("content") == "Intro")
+        conclusion_idx = next(i for i, el in enumerate(body) if el.get("content") == "Conclusion")
+        tool_idx = next(i for i, el in enumerate(body) if el.get("tag") == "collapsible_panel" and "bash" in str(el))
+        assert intro_idx < conclusion_idx < tool_idx
 
 
 class TestPagination:
@@ -430,6 +429,76 @@ class TestPagination:
         cards = render_card(state, budget)
         for card in cards:
             assert card._card_json["header"]["title"]["content"] == "Multi-page"
+
+    def test_section_layout_repeats_sticky_phase_banner_on_every_page(self):
+        big_text = "line\n" * 5000
+        state = CardState(
+            blocks=(ContentBlock(kind="text", block_id="t1", content=big_text),),
+            metadata=CardMetadata(mode_name="Deep", mode_emoji="🧠", engine_type="deep"),
+        )
+        budget = RenderBudget(byte_budget=5000)
+
+        cards = render_card(state, budget)
+
+        assert len(cards) > 1
+        for card in cards:
+            body = card._card_json["body"]["elements"]
+            assert body[0]["tag"] == "markdown"
+            assert "Deep" in body[0]["content"]
+
+    def test_section_layout_keeps_appendix_on_last_page_only(self):
+        big_text = "line\n" * 5000
+        state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="tool_call",
+                    block_id="tool1",
+                    tool_name="Bash",
+                    tool_output="done",
+                    status="completed",
+                ),
+                ContentBlock(kind="text", block_id="t1", content=big_text),
+            ),
+            metadata=CardMetadata(mode_name="Deep", mode_emoji="🧠", engine_type="deep"),
+        )
+        budget = RenderBudget(byte_budget=5000, tool_history_fold_threshold=99)
+
+        cards = render_card(state, budget)
+
+        assert len(cards) > 1
+        non_last_bodies = [card._card_json["body"]["elements"] for card in cards[:-1]]
+        last_body = cards[-1]._card_json["body"]["elements"]
+        assert all("Bash" not in str(body) for body in non_last_bodies)
+        assert "Bash" in str(last_body)
+
+    def test_section_layout_renders_sticky_task_list_once_per_page(self):
+        big_text = "line\n" * 5000
+        state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="task_list",
+                    block_id="tasks",
+                    current_task_id="t2",
+                    tasks=(
+                        {"task_id": "t1", "name": "完成需求", "status": "completed"},
+                        {"task_id": "t2", "name": "实现渲染", "status": "in_progress"},
+                    ),
+                ),
+                ContentBlock(kind="text", block_id="t1", content=big_text),
+            ),
+            metadata=CardMetadata(mode_name="Deep", mode_emoji="🧠", engine_type="deep"),
+        )
+        budget = RenderBudget(byte_budget=5000)
+
+        cards = render_card(state, budget)
+
+        assert len(cards) > 1
+        for card in cards:
+            body = card._card_json["body"]["elements"]
+            task_panels = [el for el in body if "任务列表" in str(el)]
+            assert len(task_panels) == 1
+            assert "实现渲染" in str(task_panels[0])
+            assert "完成需求" not in str(task_panels[0])
 
 
 class TestApprovalRendering:
