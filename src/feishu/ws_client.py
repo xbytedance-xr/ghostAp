@@ -12,6 +12,7 @@
 
 import asyncio
 from collections import OrderedDict
+import hashlib
 import json
 import logging
 import os
@@ -1700,7 +1701,8 @@ class FeishuWSClient:
             operator_id = ""
 
         if open_message_id and action_type_preview:
-            dedupe_key = f"{open_chat_id}:{open_message_id}:{operator_id}:{action_type_preview}"
+            dedupe_fingerprint = self._card_action_dedup_fingerprint(data.event.action)
+            dedupe_key = f"{open_chat_id}:{open_message_id}:{operator_id}:{action_type_preview}:{dedupe_fingerprint}"
             try:
                 if self._card_action_dedup_cache.is_duplicate(dedupe_key):
                     return {"toast": {"type": "info", "content": UI_TEXT["card_session_toast_dedup"]}}
@@ -1777,6 +1779,37 @@ class FeishuWSClient:
                     "link_task失败(card_action): origin=%s, run_id=%s, err=%s", origin_message_id, handle.run_id, e
                 )
         return None
+
+    @classmethod
+    def _card_action_dedup_fingerprint(cls, action: Any) -> str:
+        """Return a stable fingerprint for the concrete card interaction payload."""
+        payload: dict[str, Any] = {"value": cls._normalize_card_action_dedup_value(getattr(action, "value", None))}
+        for attr in ("option", "options", "form_value", "input_value"):
+            extra = getattr(action, attr, None)
+            if isinstance(extra, (str, int, float, bool, list, tuple, dict)):
+                payload[attr] = cls._normalize_card_action_dedup_value(extra)
+
+        try:
+            canonical = json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+        except Exception:
+            canonical = str(payload)
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+    @staticmethod
+    def _normalize_card_action_dedup_value(value: Any) -> Any:
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except Exception:
+                return value
+            return parsed
+        return value
 
     def _is_system_card_action(self, data: P2CardActionTrigger) -> bool:
         """Check if the card action is a system action that should bypass project queue."""
