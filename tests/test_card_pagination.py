@@ -131,3 +131,25 @@ class TestPaginateAtoms:
         pages = paginate_atoms([], budget)
 
         assert pages == [[]]
+
+
+def test_paginate_atoms_shim_preserves_behavior() -> None:
+    from src.card.render.layout import SectionLayout, paginate_layout
+
+    atoms = [
+        RenderAtom(kind="text", content="hello", node_count=1),
+        RenderAtom(kind="text", content="world", node_count=1),
+    ]
+    for atom in atoms:
+        atom.byte_size = estimate_atom_size(atom)
+
+    budget = RenderBudget()
+    legacy = paginate_atoms(atoms, budget)
+    new = paginate_layout(
+        SectionLayout(sticky_head=(), status=(), body=tuple(atoms), appendix=()),
+        budget,
+    )
+
+    legacy_kinds = [[atom.kind for atom in page] for page in legacy]
+    new_kinds = [[atom.kind for atom in page] for page in new]
+    assert legacy_kinds == new_kinds

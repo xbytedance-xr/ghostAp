@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 from src.card.render.atoms import RenderAtom, estimate_atom_size
 from src.card.render.budget import RenderBudget
 
@@ -16,79 +18,27 @@ FIXED_NODE_OVERHEAD = 20
 def paginate_atoms(
     atoms: list[RenderAtom], budget: RenderBudget
 ) -> list[list[RenderAtom]]:
-    """Greedy pagination.
+    """[Deprecated] Use paginate_layout(SectionLayout(...), budget) instead.
 
-    1. Try to fit atom into current page
-    2. If over budget, try to split (paragraph → line → 1600 chars)
-    3. If split fails, start new page
-    4. Never discard content
+    Retained as a thin shim that wraps body atoms into a SectionLayout with
+    no sticky/status/appendix. Behavior stays identical for callers that do
+    not care about sticky_head.
     """
-    if not atoms:
-        return [[]]
+    warnings.warn(
+        "paginate_atoms is deprecated; use paginate_layout instead",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    from src.card.render.layout import SectionLayout, paginate_layout
 
-    page_budget = budget.byte_budget - BASE_OVERHEAD
-    effective_node_budget = budget.node_budget - FIXED_NODE_OVERHEAD
-    pages: list[list[RenderAtom]] = [[]]
-    current_bytes = 0
-    current_nodes = 0
-
-    for atom in atoms:
-        atom_size = atom.byte_size if atom.byte_size > 0 else estimate_atom_size(atom)
-
-        # Check if atom fits in current page
-        if (
-            current_bytes + atom_size <= page_budget
-            and current_nodes + atom.node_count <= effective_node_budget
-        ):
-            pages[-1].append(atom)
-            current_bytes += atom_size
-            current_nodes += atom.node_count
-        else:
-            # Try to split the atom
-            remaining_bytes = page_budget - current_bytes
-            split_result = split_atom(atom, remaining_bytes)
-
-            if split_result is not None and len(split_result) > 1:
-                # First part goes to current page
-                first_part = split_result[0]
-                pages[-1].append(first_part)
-                first_size = (
-                    first_part.byte_size
-                    if first_part.byte_size > 0
-                    else estimate_atom_size(first_part)
-                )
-                current_bytes += first_size
-                current_nodes += first_part.node_count
-
-                # Remaining parts go to new pages
-                for part in split_result[1:]:
-                    part_size = (
-                        part.byte_size
-                        if part.byte_size > 0
-                        else estimate_atom_size(part)
-                    )
-                    if (
-                        current_bytes + part_size > page_budget
-                        or current_nodes + part.node_count > effective_node_budget
-                    ):
-                        pages.append([])
-                        current_bytes = 0
-                        current_nodes = 0
-                    pages[-1].append(part)
-                    current_bytes += part_size
-                    current_nodes += part.node_count
-            else:
-                # Cannot split or not splittable → start new page
-                # But if current page is empty, force the atom in to avoid infinite loop
-                if pages[-1]:
-                    pages.append([])
-                    current_bytes = 0
-                    current_nodes = 0
-                pages[-1].append(atom)
-                current_bytes += atom_size
-                current_nodes += atom.node_count
-
-    return pages
+    layout = SectionLayout(
+        sticky_head=(),
+        status=(),
+        body=tuple(atoms),
+        appendix=(),
+    )
+    pages = paginate_layout(layout, budget)
+    return [list(page) for page in pages]
 
 
 def split_atom(atom: RenderAtom, remaining_bytes: int) -> list[RenderAtom] | None:
