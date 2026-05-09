@@ -7,6 +7,7 @@ from acp.stdio import spawn_agent_process
 
 from .client import GhostAPClient
 from .providers import tool_registry
+from ..config import get_settings
 from ..ttadk.models import ACPModelOption, ACPToolOption
 from ..utils.text import get_acp_result_header_text
 
@@ -45,11 +46,20 @@ def list_acp_tools() -> list[ACPToolOption]:
 
 
 def fetch_acp_models(
-    tool_name: str, cwd: Optional[str], current_model: Optional[str] = None
+    tool_name: str,
+    cwd: Optional[str],
+    current_model: Optional[str] = None,
+    probe_timeout: Optional[float] = None,
 ) -> list[ACPModelOption]:
     """Synchronous wrapper to probe available models from an ACP provider."""
     try:
-        models = asyncio.run(probe_acp_models(tool_name, cwd, current_model))
+        timeout_s = _resolve_acp_model_probe_timeout(probe_timeout)
+        models = asyncio.run(
+            asyncio.wait_for(
+                probe_acp_models(tool_name, cwd, current_model),
+                timeout=timeout_s,
+            )
+        )
     except Exception:
         logger.debug("[ACP] probe models failed for %s", tool_name, exc_info=True)
         models = []
@@ -61,15 +71,24 @@ def fetch_acp_models(
     if tool_name == "coco":
         try:
             from ..coco_model import get_coco_model_manager
+            from ..coco_model.manager import DEFAULT_MODELS
 
-            fallback = get_coco_model_manager().get_models().models
+            configured_current = None
+            try:
+                configured_current = get_coco_model_manager().get_current_model()
+            except Exception:
+                logger.debug("[ACP] coco current model fallback failed", exc_info=True)
+            target_default = str(current_model or configured_current or "").strip()
             return [
                 ACPModelOption(
                     name=m.name,
                     description=m.description,
-                    is_default=bool(getattr(m, "is_default", False)),
+                    is_default=bool(
+                        (target_default and m.name == target_default)
+                        or getattr(m, "is_default", False)
+                    ),
                 )
-                for m in (fallback or [])
+                for m in DEFAULT_MODELS
                 if getattr(m, "name", "")
             ]
         except Exception:
@@ -83,6 +102,16 @@ def fetch_acp_models(
         ]
 
     return []
+
+
+def _resolve_acp_model_probe_timeout(probe_timeout: Optional[float] = None) -> float:
+    if probe_timeout is not None:
+        return max(0.1, float(probe_timeout))
+    try:
+        configured = float(getattr(get_settings(), "acp_healthcheck_timeout", 2.0) or 2.0)
+    except Exception:
+        configured = 2.0
+    return max(0.1, configured)
 
 
 class SessionKeyCodec:

@@ -145,7 +145,13 @@ class CocoModelManager:
                         )
                     return out
 
-            return asyncio.run(_probe())
+            try:
+                from ..config import get_settings
+
+                timeout_s = float(getattr(get_settings(), "acp_healthcheck_timeout", 2.0) or 2.0)
+            except Exception:
+                timeout_s = 2.0
+            return asyncio.run(asyncio.wait_for(_probe(), timeout=max(0.1, timeout_s)))
         except Exception as e:
             logger.debug("Failed to load coco models via ACP: %s", get_error_detail(e))
             return []

@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-05-09
+- **修复 Worktree 选工具时 ACP 模型探测卡住** — 真实飞书 Web 复现发现按钮 callback 已到服务端但停在 Worktree 选工具后的 ACP 模型探测；为 `fetch_acp_models()` 和 Coco ACP-first 探测加硬超时，Coco fallback 改为静态默认模型避免二次探测阻塞；203 passed → [详细记录](2026-05-09.md)
 - **修复 Worktree 多工具点击被误判重复** — 定位到卡片入口去重 key 只包含 `chat/message/operator/action`，同一张 `/wt` 卡中 Aiden/Coco 都是 `worktree_select_tool` 因而被误判为重复点击；修复为纳入稳定 payload fingerprint，保留同 payload 防抖；53 passed → [详细记录](2026-05-09.md)
 - **修复 Worktree 卡片按钮交互未触发** — 定位到 Worktree 内嵌按钮与通用 `ButtonSpec` 渲染只输出 `value`、缺少 Schema 2.0 callback `behaviors`；修复后所有 Worktree 选择/模型/移除/清空/确认及后续按钮同时输出 `value` 和 `behaviors`；169 passed → [详细记录](2026-05-09.md)
 - **Worktree 选择卡 UX 预览校准** — 对照当前真实 Worktree 渲染路径修正 `ux/card_preview.html` 中过时的工具选择预览，并新增原生 `checker`/表单多选方向的视觉尝试；结论是投票卡片视觉可参考，但生产替换需保留“工具×模型组合”语义 → [详细记录](2026-05-09.md)
