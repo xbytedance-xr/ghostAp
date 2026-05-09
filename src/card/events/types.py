@@ -53,3 +53,4 @@ class CardEventType(str, Enum):
     # Task-level card management
     TASK_LIST_UPDATED = "task_list_updated"
     SECTION_SEPARATOR = "section_separator"
+    CARD_SPLIT = "card_split"

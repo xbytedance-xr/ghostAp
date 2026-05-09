@@ -13,7 +13,7 @@ class TestValidatePayloadFlag:
 
 class TestCardEventCreation:
     def test_all_event_types_exist(self):
-        assert len(CardEventType) == 41
+        assert len(CardEventType) == 42
 
     def test_started_factory(self):
         e = CardEvent.started()
@@ -55,6 +55,18 @@ class TestCardEventCreation:
     def test_tool_started_factory(self):
         e = CardEvent.tool_started("t1", "bash", "ls -la")
         assert e.payload == {"block_id": "t1", "tool_name": "bash", "tool_input": "ls -la"}
+
+    def test_card_split_factory(self):
+        from src.card.events.payloads import CardSplitPayload
+
+        e = CardEvent.card_split(reason="task_done", hint="接续 task 3")
+
+        assert e.type == CardEventType.CARD_SPLIT
+        assert e.type.value == "card_split"
+        assert isinstance(e.payload, dict)
+        payload: CardSplitPayload = e.payload
+        assert payload["reason"] == "task_done"
+        assert payload["hint"] == "接续 task 3"
 
     def test_frozen(self):
         e = CardEvent.started()

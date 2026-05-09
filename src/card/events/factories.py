@@ -18,6 +18,7 @@ if TYPE_CHECKING:
         CriteriaUpdatedPayload,
         CycleDonePayload,
         CycleStartedPayload,
+        CardSplitPayload,
         FailedPayload,
         PhaseDonePayload,
         PhaseStartedPayload,
@@ -291,6 +292,21 @@ class CardEvent(Generic[P]):
         return cls(type=CardEventType.PROGRESS_UPDATED, payload={
             "current": current, "total": total, "label": label,
         })
+
+    @classmethod
+    def card_split(cls, reason: str, hint: str = "") -> CardEvent[CardSplitPayload]:
+        """Request a semantic split into a continuation card.
+
+        Payload: {reason: str, hint: str}
+        Triggered when an engine reaches a semantic boundary (task/round/cycle).
+        """
+        if not isinstance(reason, str):
+            raise TypeError(f"reason must be str, got {type(reason).__name__}")
+        if not reason:
+            raise ValueError("reason is required for card_split")
+        if not isinstance(hint, str):
+            raise TypeError(f"hint must be str, got {type(hint).__name__}")
+        return cls(type=CardEventType.CARD_SPLIT, payload={"reason": reason, "hint": hint})
 
     @classmethod
     def cycle_started(cls, cycle_num: int, max_cycles: int) -> CardEvent[CycleStartedPayload]:

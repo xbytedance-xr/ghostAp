@@ -88,6 +88,12 @@ class ProgressPayload(TypedDict):
     label: str
 
 
+class CardSplitPayload(TypedDict):
+    """Payload for CARD_SPLIT event."""
+    reason: str
+    hint: str
+
+
 # ---------------------------------------------------------------------------
 # Engine lifecycle payload TypedDicts
 # ---------------------------------------------------------------------------
