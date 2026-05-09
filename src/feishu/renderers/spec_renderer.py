@@ -42,10 +42,32 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
     def __init__(self, handler: "SpecHandler") -> None:
         super().__init__(handler)
         self._current_session: "Dispatchable | None" = None
+        self._last_cycle: int | None = None
+        self._last_perspective: str | None = None
+        self._pending_split_hint: str | None = None
 
     def get_active_session(self) -> "Dispatchable | None":
         """Return the currently active spec engine session (rotator)."""
         return self._current_session
+
+    def notify_cycle_change(self, *, current_cycle: int, perspective: str | None) -> None:
+        """Hook into the spec engine cycle/perspective lifecycle."""
+        changed_cycle = self._last_cycle is not None and current_cycle != self._last_cycle
+        changed_perspective = self._last_perspective is not None and perspective != self._last_perspective
+        if changed_cycle or changed_perspective:
+            session = self._current_session
+            if session is not None and not getattr(session, "closed", False):
+                persp = perspective or "—"
+                self._dispatch_card_split(
+                    session,
+                    reason="cycle_changed",
+                    hint=f"进入 cycle {current_cycle} · {persp}",
+                )
+        self._last_cycle = current_cycle
+        self._last_perspective = perspective
+
+    def _on_card_split_completed(self, reason: str, hint: str | None) -> None:
+        self._pending_split_hint = hint
 
     def _get_reporter(self):
         return self.ctx.spec_reporter

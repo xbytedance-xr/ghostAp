@@ -168,6 +168,7 @@ class SpecStreamProcessor:
     def on_cycle_start(self, current: int, max_cycles: int) -> None:
         self._max_cycles = max_cycles
         self._renderer.update_ui_state(self._spec_project_id, view_mode="status", view_context={})
+        self._renderer.notify_cycle_change(current_cycle=current, perspective=None)
         self._orchestrator.reset()
         self._rotate_session(current)
         self._rotator.dispatch(CardEvent.started())
@@ -277,12 +278,14 @@ class SpecStreamProcessor:
     def on_phase_start(self, cycle_num: int, phase: SpecPhase) -> None:
         self._acp_renderer.reset()
         self._footer_status = "tool_running"
+        phase_name = phase.value if hasattr(phase, "value") else str(phase)
+        self._renderer.notify_cycle_change(current_cycle=cycle_num, perspective=phase_name)
 
         _, spec_project, state, max_c = self._get_engine_and_state()
         subtitle = self._reporter.format_phase_subtitle(cycle_num, max_c, phase, completed=False)
 
         self._rotator.dispatch(
-            CardEvent.phase_started(cycle_num, phase.value if hasattr(phase, 'value') else str(phase), subtitle=subtitle)
+            CardEvent.phase_started(cycle_num, phase_name, subtitle=subtitle)
         )
 
         if phase == SpecPhase.BUILD:
