@@ -51,7 +51,19 @@ def fetch_acp_models(
     current_model: Optional[str] = None,
     probe_timeout: Optional[float] = None,
 ) -> list[ACPModelOption]:
-    """Synchronous wrapper to probe available models from an ACP provider."""
+    """Synchronous wrapper to probe available models from an ACP provider.
+
+    For Coco, prefer the cached list maintained by ``CocoModelManager`` (the
+    same source ``show_coco_status`` and the agent session bootstrap rely on).
+    A successful probe there is cached for 5 minutes, so subsequent /wt and
+    /model clicks reuse the real ACP model list instead of degrading to the
+    6-entry static ``DEFAULT_MODELS`` fallback.
+    """
+    if tool_name == "coco":
+        cached = _coco_models_from_manager(current_model)
+        if cached:
+            return cached
+
     try:
         timeout_s = _resolve_acp_model_probe_timeout(probe_timeout)
         models = asyncio.run(
@@ -67,18 +79,16 @@ def fetch_acp_models(
     if models:
         return models
 
-    # Fallback for coco
+    # Fallback for coco — try CocoModelManager again (probe inside it may have
+    # populated cache concurrently) before degrading to DEFAULT_MODELS.
     if tool_name == "coco":
+        cached = _coco_models_from_manager(current_model)
+        if cached:
+            return cached
         try:
-            from ..coco_model import get_coco_model_manager
             from ..coco_model.manager import DEFAULT_MODELS
 
-            configured_current = None
-            try:
-                configured_current = get_coco_model_manager().get_current_model()
-            except Exception:
-                logger.debug("[ACP] coco current model fallback failed", exc_info=True)
-            target_default = str(current_model or configured_current or "").strip()
+            target_default = _coco_target_default(current_model)
             return [
                 ACPModelOption(
                     name=m.name,
@@ -104,13 +114,83 @@ def fetch_acp_models(
     return []
 
 
+def _coco_target_default(current_model: Optional[str]) -> str:
+    """Resolve the model name to mark as default for Coco rendering."""
+    try:
+        from ..coco_model import get_coco_model_manager
+
+        configured_current = None
+        try:
+            configured_current = get_coco_model_manager().get_current_model()
+        except Exception:
+            logger.debug("[ACP] coco current model lookup failed", exc_info=True)
+        return str(current_model or configured_current or "").strip()
+    except Exception:
+        return str(current_model or "").strip()
+
+
+def _coco_models_from_manager(current_model: Optional[str]) -> list[ACPModelOption]:
+    """Read Coco models from ``CocoModelManager`` (cache + ACP probe + static).
+
+    Returns the same list ``/coco_status`` and the agent bootstrap rely on,
+    so the worktree model card stays in sync with the rest of the system.
+    Returns an empty list when CocoModelManager has not yet populated and
+    the caller should still attempt a fresh probe.
+    """
+    try:
+        from ..coco_model import get_coco_model_manager
+        from ..coco_model.manager import DEFAULT_MODELS
+
+        manager = get_coco_model_manager()
+        result = manager.get_models()
+        models = list(result.models or [])
+        if not models:
+            return []
+        # If manager only had time to return the static defaults (probe failed
+        # or never ran), let the caller try a fresh ACP probe; we can come back
+        # to manager later if probe also fails.
+        default_names = {m.name for m in DEFAULT_MODELS}
+        unique_names = {m.name for m in models}
+        if unique_names == default_names:
+            return []
+        target_default = _coco_target_default(current_model)
+        out: list[ACPModelOption] = []
+        for m in models:
+            name = str(getattr(m, "name", "") or "").strip()
+            if not name:
+                continue
+            description = str(getattr(m, "description", "") or name)
+            is_default = bool(
+                (target_default and name == target_default)
+                or getattr(m, "is_default", False)
+            )
+            out.append(
+                ACPModelOption(name=name, description=description, is_default=is_default)
+            )
+        return out
+    except Exception:
+        logger.debug("[ACP] coco manager lookup failed", exc_info=True)
+        return []
+
+
 def _resolve_acp_model_probe_timeout(probe_timeout: Optional[float] = None) -> float:
+    """Resolve the probe timeout for fetch_acp_models.
+
+    Prefer ``acp_model_probe_timeout`` (designed for full model-list probing),
+    fall back to the legacy ``acp_healthcheck_timeout`` for backwards-compat
+    when the dedicated setting is unset.
+    """
     if probe_timeout is not None:
         return max(0.1, float(probe_timeout))
     try:
-        configured = float(getattr(get_settings(), "acp_healthcheck_timeout", 2.0) or 2.0)
+        settings = get_settings()
+        configured = float(
+            getattr(settings, "acp_model_probe_timeout", None)
+            or getattr(settings, "acp_healthcheck_timeout", 2.0)
+            or 2.0
+        )
     except Exception:
-        configured = 2.0
+        configured = 6.0
     return max(0.1, configured)
 
 

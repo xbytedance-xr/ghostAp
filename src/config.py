@@ -257,6 +257,13 @@ class Settings(BaseSettings):
     # ACP health check timeout (seconds)
     acp_healthcheck_timeout: float = 2.0
 
+    # ACP model list probe timeout (seconds). Larger than healthcheck because
+    # spawn_agent_process + initialize + new_session round-trip can take 3-4s
+    # before the server returns the available_models list. Falling back to the
+    # static DEFAULT_MODELS hides real model entries (e.g. Gemini-3.x preview,
+    # openrouter pools), so we give the probe a fair window before degrading.
+    acp_model_probe_timeout: float = 6.0
+
     # ACP permission auto-approve (True = agent actions auto-approved, False = denied by default)
     acp_permission_auto_approve: bool = True
 

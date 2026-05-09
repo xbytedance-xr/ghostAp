@@ -148,9 +148,17 @@ class CocoModelManager:
             try:
                 from ..config import get_settings
 
-                timeout_s = float(getattr(get_settings(), "acp_healthcheck_timeout", 2.0) or 2.0)
+                settings = get_settings()
+                # Prefer the dedicated model-probe timeout (5s default) so the
+                # ACP probe has a fair window to return real models before we
+                # fall back to DEFAULT_MODELS.
+                timeout_s = float(
+                    getattr(settings, "acp_model_probe_timeout", None)
+                    or getattr(settings, "acp_healthcheck_timeout", 2.0)
+                    or 2.0
+                )
             except Exception:
-                timeout_s = 2.0
+                timeout_s = 6.0
             return asyncio.run(asyncio.wait_for(_probe(), timeout=max(0.1, timeout_s)))
         except Exception as e:
             logger.debug("Failed to load coco models via ACP: %s", get_error_detail(e))
