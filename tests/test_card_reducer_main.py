@@ -33,6 +33,50 @@ class TestMainReducer:
         assert len(s.blocks) == 3  # text, tool, text
         assert s.blocks[1].tool_output == "files"
 
+    def test_first_tool_start_marks_latest_active(self):
+        s = reduce_card_state(None, CardEvent.started(), metadata=_meta())
+
+        s = reduce_card_state(s, CardEvent.tool_started("tool1", "Grep"))
+
+        block = s.blocks[0]
+        assert block.kind == "tool_call"
+        assert block.status == "active"
+        assert block.is_latest_active is True
+
+    def test_second_tool_start_demotes_first_latest_active(self):
+        s = reduce_card_state(None, CardEvent.started(), metadata=_meta())
+
+        s = reduce_card_state(s, CardEvent.tool_started("tool1", "Grep"))
+        s = reduce_card_state(s, CardEvent.tool_started("tool2", "Edit"))
+
+        by_id = {b.block_id: b for b in s.blocks}
+        assert by_id["tool1"].is_latest_active is False
+        assert by_id["tool2"].is_latest_active is True
+
+    def test_tool_done_promotes_previous_active_tool(self):
+        s = reduce_card_state(None, CardEvent.started(), metadata=_meta())
+
+        s = reduce_card_state(s, CardEvent.tool_started("tool1", "Grep"))
+        s = reduce_card_state(s, CardEvent.tool_started("tool2", "Edit"))
+        s = reduce_card_state(s, CardEvent.tool_done("tool2", tool_output="done"))
+
+        by_id = {b.block_id: b for b in s.blocks}
+        assert by_id["tool2"].status == "completed"
+        assert by_id["tool2"].is_latest_active is False
+        assert by_id["tool1"].is_latest_active is True
+
+    def test_only_one_latest_active_invariant_after_chain(self):
+        s = reduce_card_state(None, CardEvent.started(), metadata=_meta())
+
+        for i in range(5):
+            s = reduce_card_state(s, CardEvent.tool_started(f"t{i}", "Tool"))
+        for i in (1, 3):
+            s = reduce_card_state(s, CardEvent.tool_done(f"t{i}", tool_output="done"))
+
+        actives = [b for b in s.blocks if b.kind == "tool_call" and b.status == "active" and b.is_latest_active]
+        assert len(actives) == 1
+        assert actives[0].block_id == "t4"
+
     def test_unknown_event_no_change(self):
         s = reduce_card_state(None, CardEvent.started(), metadata=_meta())
         v = s.version

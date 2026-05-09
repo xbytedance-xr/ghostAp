@@ -6,6 +6,34 @@ from ...events import CardEvent, CardEventType
 from ...ui_text import UI_TEXT
 
 
+def _demote_latest_tool_blocks(blocks: tuple) -> tuple:
+    """Clear latest-active flag from existing tool blocks."""
+    return tuple(
+        replace(block, is_latest_active=False)
+        if block.kind == "tool_call" and getattr(block, "is_latest_active", False)
+        else block
+        for block in blocks
+    )
+
+
+def _promote_last_active_tool(blocks: tuple) -> tuple:
+    """Mark the most recently started active tool as latest-active."""
+    latest_idx = next(
+        (idx for idx in range(len(blocks) - 1, -1, -1)
+         if blocks[idx].kind == "tool_call" and blocks[idx].status == "active"),
+        None,
+    )
+    if latest_idx is None:
+        return blocks
+    updated = tuple(
+        replace(block, is_latest_active=(idx == latest_idx))
+        if block.kind == "tool_call"
+        else block
+        for idx, block in enumerate(blocks)
+    )
+    return updated
+
+
 def reduce_tool(state: CardState, event: CardEvent) -> CardState:
     """Handle TOOL_STARTED / TOOL_DELTA / TOOL_DONE / TOOL_FAILED."""
     match event.type:
@@ -16,10 +44,12 @@ def reduce_tool(state: CardState, event: CardEvent) -> CardState:
             new_block = ToolBlock(
                 block_id=block_id, status="active",
                 tool_name=tool_name, tool_input=tool_input, content="",
+                is_latest_active=True,
             )
+            blocks = _demote_latest_tool_blocks(state.blocks) + (new_block,)
             footer = replace(state.footer, status="tool_running",
                              status_text=UI_TEXT["card_tool_running"].format(tool_name=tool_name))
-            return replace(state, blocks=state.blocks + (new_block,), footer=footer)
+            return replace(state, blocks=blocks, footer=footer)
 
         case CardEventType.TOOL_DELTA:
             block_id = event.payload.get("block_id", "")
@@ -45,9 +75,10 @@ def reduce_tool(state: CardState, event: CardEvent) -> CardState:
                 # into block.content but don't populate tool_output on TOOL_DONE.
                 if not tool_output and getattr(b, "content", ""):
                     tool_output = b.content
-                updated = replace(b, status="completed",
+                updated = replace(b, status="completed", is_latest_active=False,
                                      tool_output=tool_output, tool_summary=tool_summary)
                 blocks = state.blocks[:idx] + (updated,) + state.blocks[idx + 1:]
+                blocks = _promote_last_active_tool(blocks)
                 footer = replace(state.footer, status=None, status_text=None)
                 return replace(state, blocks=blocks, footer=footer)
             footer = replace(state.footer, status=None, status_text=None)
@@ -60,8 +91,9 @@ def reduce_tool(state: CardState, event: CardEvent) -> CardState:
             idx = state.block_index.get(block_id)
             if idx is not None and idx < len(state.blocks) and state.blocks[idx].kind == "tool_call":
                 b = state.blocks[idx]
-                updated = replace(b, status="failed", tool_output=error)
+                updated = replace(b, status="failed", tool_output=error, is_latest_active=False)
                 blocks = state.blocks[:idx] + (updated,) + state.blocks[idx + 1:]
+                blocks = _promote_last_active_tool(blocks)
                 footer = replace(state.footer, status=None, status_text=None)
                 return replace(state, blocks=blocks, footer=footer)
             footer = replace(state.footer, status=None, status_text=None)

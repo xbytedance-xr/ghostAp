@@ -118,6 +118,7 @@ class ToolBlock:
     tool_summary: str | None = None
     tool_input: str | None = None
     tool_output: str | None = None
+    is_latest_active: bool = False
 
 
 @dataclass(frozen=True)
