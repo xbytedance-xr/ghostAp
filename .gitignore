@@ -80,3 +80,6 @@ image.png
 .ttadk_sandbox/
 .aiden/
 .harness/
+
+# Git worktrees
+.worktrees/
