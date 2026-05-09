@@ -90,6 +90,28 @@ class BaseRenderer:
         """
         return None
 
+    def _dispatch_card_split(
+        self,
+        session,
+        *,
+        reason: str,
+        hint: str | None = None,
+    ) -> None:
+        """Dispatch a card_split event and wire completion callback.
+
+        Subclasses may override ``_on_card_split_completed`` to create a fresh
+        continuation session after the current card has closed successfully.
+        """
+        from ...card.events import CardEvent
+
+        normalized_hint = hint or ""
+        session.on_card_split_completed = self._on_card_split_completed
+        session.dispatch(CardEvent.card_split(reason=reason, hint=normalized_hint))
+
+    def _on_card_split_completed(self, reason: str, hint: str | None) -> None:
+        """Hook for subclasses to start a fresh continuation session."""
+        return None
+
     def build_unit_metadata(
         self,
         metadata,
