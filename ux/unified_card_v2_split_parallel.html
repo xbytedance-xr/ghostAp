@@ -1,0 +1,284 @@
+<h2>第二屏 · 切卡连续性 + 多 subagent 并行</h2>
+<p class="subtitle">单卡确认 OK。这屏看两个场景：① 一张卡打满后切到下一张如何保证连贯；② 多 subagent 同时运行时各自一张卡。</p>
+
+<style>
+.fs-card {
+  width: 380px;
+  border-radius: 8px; overflow: hidden;
+  font-family: -apple-system, "PingFang SC", sans-serif;
+  background: #fff; border: 1px solid #dee0e3;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+  font-size: 12.5px; color: #1f2329; line-height: 1.45;
+}
+.fs-card.frozen { opacity: 0.78; }
+.fs-card.frozen .fs-head { background: #eef0f2 !important; }
+.fs-card.frozen .dot-live { background: #b0b6bf; animation: none; }
+
+.fs-card .sec { padding: 9px 12px; }
+.fs-card .sec + .sec { border-top: 1px solid #ececef; }
+
+.fs-head {
+  background: linear-gradient(135deg, #eef3ff 0%, #f5f0ff 100%);
+  border-bottom: 1px solid #c8d3f0;
+}
+.fs-head .row1 { display:flex; justify-content:space-between; align-items:center; font-weight:600; font-size:13px; }
+.fs-head .badge { font-size: 10.5px; padding: 1px 7px; border-radius: 9px; background: rgba(51,112,255,0.15); color: #2860d6; font-family: ui-monospace, monospace; }
+.fs-head .row2 { margin-top:3px; font-size:10.5px; color:#646a73; display:flex; justify-content:space-between; }
+.fs-head .dir { font-family: ui-monospace, monospace; }
+.dot-live { width:6px; height:6px; border-radius:50%; background:#34c759; display:inline-block; animation:blink 1.2s infinite; vertical-align: middle; margin-right:4px; }
+@keyframes blink { 0%,100%{opacity:1;} 50%{opacity:0.25;} }
+
+.task-block { background:#fafbfc; }
+.task-block .grp-title { font-size:10px; font-weight:600; color:#646a73; letter-spacing:0.4px; text-transform:uppercase; margin-bottom:2px; }
+.task-block .grp { margin-top:5px; }
+.task-block .grp:first-child { margin-top:0; }
+.task-block .t { font-size:11.5px; padding:1px 0; display:flex; gap:5px; }
+.task-block .t .icon { width:13px; flex-shrink:0; text-align:center; }
+.task-block .t.done { color:#8a8f99; text-decoration:line-through; }
+.task-block .t.cur { font-weight:600; background:rgba(255,200,40,0.18); padding:1px 5px; border-radius:3px; margin:1px -3px; }
+
+.flow .reason { background:#f7f8fa; border-left:3px solid #b9c0c8; padding:7px 9px; border-radius:4px; font-size:11.5px; }
+.flow .tool { border:1px solid #e4e6ea; border-radius:4px; margin-top:4px; background:#fcfcfd; }
+.flow .tool > summary { list-style:none; cursor:pointer; padding:4px 9px; font-family: ui-monospace, monospace; font-size:10.5px; color:#4a4f5c; }
+.flow .tool[open] .body { display:block; }
+.flow .tool .body { display:none; padding:7px 9px; border-top:1px dashed #e4e6ea; background:#f5f6f7; font-family: ui-monospace, monospace; font-size:10px; white-space:pre-wrap; }
+.flow .tool.running > summary { color:#2860d6; background: linear-gradient(90deg,transparent 0%,rgba(51,112,255,0.08) 50%,transparent 100%); background-size:200% 100%; animation: shimmer 1.6s linear infinite; }
+@keyframes shimmer { 0%{background-position:100% 0;} 100%{background-position:-100% 0;} }
+
+.fs-foot { background:#f5f6f7; font-size:10.5px; color:#646a73; }
+.fs-foot .agent { display:inline-block; font-size:10px; padding:1px 6px; border-radius:8px; background:#fff3e6; color:#c66e00; border:1px solid #ffd9a8; font-family: ui-monospace, monospace; }
+
+.bridge {
+  text-align:center; font-size:10px; color:#8a8f99;
+  padding: 4px 0;
+  position: relative;
+}
+.bridge::before, .bridge::after {
+  content:""; display:inline-block; width:60px; height:1px; background:#dee0e3;
+  vertical-align: middle; margin: 0 8px;
+}
+
+.scenario-title {
+  font-size: 14px; font-weight: 600; margin: 24px 0 8px;
+  padding-left: 10px; border-left: 3px solid #3370ff;
+}
+.frozen-tag {
+  font-size: 9px; padding: 1px 5px; border-radius: 3px;
+  background: #e8eaed; color: #646a73; margin-left: 4px;
+  font-weight: 500; letter-spacing: 0.3px;
+}
+
+.deck { display:flex; gap:14px; flex-wrap:wrap; }
+.col-cap { font-size:11px; color:#646a73; text-align:center; margin-top:6px; }
+</style>
+
+<!-- ============================================ -->
+<div class="scenario-title">场景 ① · 一张卡打满 → 自然切到 #4</div>
+<p style="font-size:12px;color:#646a73;margin:4px 0 12px;">
+触发：节点预算 / 阶段切换 / task 完成。<strong>旧卡冻结成最终态</strong>，新卡 header 序号 +1，sticky 头重注完整任务列表，body 接续上一卡尾巴的 reasoning。
+</p>
+
+<div class="deck">
+
+  <!-- 旧卡 (frozen) -->
+  <div>
+    <div class="fs-card frozen">
+      <div class="sec fs-head">
+        <div class="row1">
+          <span>📁 ghostAp · 🤖 Coco · <span class="badge">#3</span><span class="frozen-tag">已封存</span></span>
+        </div>
+        <div class="row2"><span class="dir">~/ghostAp</span><span>⏸ 7m02s</span></div>
+      </div>
+      <div class="sec task-block">
+        <div class="grp"><div class="grp-title">最终状态</div>
+          <div class="t done"><span class="icon">✔</span>探索代码库</div>
+          <div class="t done"><span class="icon">✔</span>定位 router 入口</div>
+          <div class="t done"><span class="icon">✔</span>修复路由层异常</div>
+          <div class="t cur" style="background:rgba(180,200,240,0.18);">
+            <span class="icon">→</span>补充单元测试 <span style="font-size:10px;color:#646a73;font-weight:400;">(转入 #4)</span>
+          </div>
+        </div>
+      </div>
+      <div class="sec flow">
+        <div class="reason">补丁已落地，开始写测试…</div>
+        <details class="tool"><summary>📝 Edit dispatch.py · 完成</summary></details>
+        <details class="tool"><summary>🧪 Write test_router.py · 完成</summary></details>
+      </div>
+      <div class="sec fs-foot">本卡已停止更新 · 续接 #4 ↓</div>
+    </div>
+    <div class="col-cap">#3 · frozen</div>
+  </div>
+
+  <div style="display:flex;align-items:center;font-size:18px;color:#8a8f99;">→</div>
+
+  <!-- 新卡 (active) -->
+  <div>
+    <div class="fs-card">
+      <div class="sec fs-head">
+        <div class="row1">
+          <span>📁 ghostAp · 🤖 Coco · <span class="badge">#4</span></span>
+          <span style="font-size:10px;color:#646a73;font-weight:400;">claude-opus-4-7</span>
+        </div>
+        <div class="row2">
+          <span class="dir">~/ghostAp</span>
+          <span><span class="dot-live"></span>0m18s · 累计 7m20s</span>
+        </div>
+      </div>
+      <div class="sec task-block">
+        <div class="grp"><div class="grp-title">▶ 进行中 (1)</div>
+          <div class="t cur"><span class="icon">▶</span>补充单元测试</div>
+        </div>
+        <div class="grp"><div class="grp-title">✅ 已完成 (3)</div>
+          <div class="t done"><span class="icon">✔</span>探索代码库</div>
+          <div class="t done"><span class="icon">✔</span>定位 router 入口</div>
+          <div class="t done"><span class="icon">✔</span>修复路由层异常</div>
+        </div>
+        <div class="grp"><div class="grp-title">⏳ 未处理 (2)</div>
+          <div class="t"><span class="icon">○</span>跑集成测试</div>
+          <div class="t"><span class="icon">○</span>更新 CHANGELOG</div>
+        </div>
+      </div>
+      <div class="sec flow">
+        <div class="reason">续接：覆盖 try/except 分支用 mock 抛 RouteError…</div>
+        <details class="tool running" open>
+          <summary>📝 Edit tests/test_router.py · 进行中…</summary>
+          <div class="body">+22 lines, -0 lines
+def test_route_fallback():
+    ...</div>
+        </details>
+      </div>
+      <div class="sec fs-foot">⚙ <b>Edit</b> · 写入 tests/test_router.py</div>
+    </div>
+    <div class="col-cap">#4 · active</div>
+  </div>
+
+</div>
+
+<div style="background:#f0f8ff; border-left:3px solid #3370ff; padding:8px 12px; margin-top:14px; font-size:12px; max-width:780px;">
+<b>连贯性保证：</b>
+① 旧卡 header badge 加 <code>已封存</code>，去掉绿点，footer 加"续接 #4 ↓"指针；
+② 新卡 header 显示 <code>累计 7m20s</code>（含旧卡时间）；
+③ 新卡 sticky 任务列表完整重注（不依赖旧卡）；
+④ 新卡 flow 区第一行 reasoning 用"续接：…"开头作为语义桥接。
+</div>
+
+<!-- ============================================ -->
+<div class="scenario-title">场景 ② · 多 subagent 并行 · 每 agent 一张卡同时更新</div>
+<p style="font-size:12px;color:#646a73;margin:4px 0 12px;">
+主 agent 派出 2 个 subagent，<strong>三张卡同时存活、同时更新</strong>。subagent 卡 header 显示父 agent 关联，footer 标 model+tool。
+</p>
+
+<div class="deck">
+
+  <!-- 主 agent -->
+  <div>
+    <div class="fs-card" style="border-color:#3370ff; border-width:2px;">
+      <div class="sec fs-head">
+        <div class="row1">
+          <span>📁 ghostAp · 🤖 Coco · <span class="badge">#5 · main</span></span>
+        </div>
+        <div class="row2"><span class="dir">~/ghostAp</span><span><span class="dot-live"></span>9m44s</span></div>
+      </div>
+      <div class="sec task-block">
+        <div class="grp"><div class="grp-title">▶ 进行中 (1)</div>
+          <div class="t cur"><span class="icon">▶</span>派发并发审查</div>
+        </div>
+        <div class="grp"><div class="grp-title">⏳ 未处理 (1)</div>
+          <div class="t"><span class="icon">○</span>汇总审查结论</div>
+        </div>
+      </div>
+      <div class="sec flow">
+        <div class="reason">已派出 2 个 subagent 并行审查。等待结果…</div>
+        <details class="tool" open>
+          <summary>🧬 Dispatch · 2 subagents</summary>
+          <div class="body">→ #5.a · architect-review
+→ #5.b · security-review</div>
+        </details>
+      </div>
+      <div class="sec fs-foot">⚙ <b>等待</b> · 2 subagent 运行中</div>
+    </div>
+    <div class="col-cap">#5 · main</div>
+  </div>
+
+  <!-- subagent A -->
+  <div>
+    <div class="fs-card" style="border-color:#ffb84d;">
+      <div class="sec fs-head" style="background:linear-gradient(135deg,#fff7e6 0%,#fff0d6 100%); border-bottom-color:#ffd9a8;">
+        <div class="row1">
+          <span>📁 ghostAp · 🤖 Aiden · <span class="badge" style="background:rgba(255,140,30,0.15);color:#c66e00;">#5.a</span></span>
+        </div>
+        <div class="row2"><span class="dir">↳ from #5</span><span><span class="dot-live"></span>1m22s</span></div>
+      </div>
+      <div class="sec task-block">
+        <div class="grp"><div class="grp-title">▶ 进行中 (1)</div>
+          <div class="t cur"><span class="icon">▶</span>架构审查</div>
+        </div>
+      </div>
+      <div class="sec flow">
+        <div class="reason">扫描 src/acp 模块边界…</div>
+        <details class="tool running" open>
+          <summary>🔍 Glob src/acp/**/*.py · 进行中…</summary>
+        </details>
+      </div>
+      <div class="sec fs-foot">
+        ⚙ <b>Glob</b> · 列出 acp 文件<br>
+        <span class="agent" style="margin-top:4px;">🧬 sub · model: claude-haiku-4-5 · tool: Aiden</span>
+      </div>
+    </div>
+    <div class="col-cap">#5.a · architect</div>
+  </div>
+
+  <!-- subagent B -->
+  <div>
+    <div class="fs-card" style="border-color:#ffb84d;">
+      <div class="sec fs-head" style="background:linear-gradient(135deg,#fff7e6 0%,#fff0d6 100%); border-bottom-color:#ffd9a8;">
+        <div class="row1">
+          <span>📁 ghostAp · 🤖 Codex · <span class="badge" style="background:rgba(255,140,30,0.15);color:#c66e00;">#5.b</span></span>
+        </div>
+        <div class="row2"><span class="dir">↳ from #5</span><span><span class="dot-live"></span>1m22s</span></div>
+      </div>
+      <div class="sec task-block">
+        <div class="grp"><div class="grp-title">▶ 进行中 (1)</div>
+          <div class="t cur"><span class="icon">▶</span>安全审查</div>
+        </div>
+      </div>
+      <div class="sec flow">
+        <div class="reason">检查注入面 + 凭据落盘…</div>
+        <details class="tool"><summary>🔍 Grep "exec\|eval" · 完成 · 3 hits</summary></details>
+        <details class="tool running" open>
+          <summary>📖 Read src/utils/shutdown.py · 进行中…</summary>
+        </details>
+      </div>
+      <div class="sec fs-foot">
+        ⚙ <b>Read</b> · shutdown.py<br>
+        <span class="agent" style="margin-top:4px;">🧬 sub · model: gpt-5-codex · tool: Codex</span>
+      </div>
+    </div>
+    <div class="col-cap">#5.b · security</div>
+  </div>
+
+</div>
+
+<div style="background:#fff7e6; border-left:3px solid #ffb84d; padding:8px 12px; margin-top:14px; font-size:12px; max-width:780px;">
+<b>并行规则：</b>
+① subagent 卡 header 颜色用<strong>橙系</strong>区分（main 蓝系），编号 <code>#5.a / #5.b</code> 暗示父子；
+② subagent header 第二行 <code>↳ from #5</code> 反向链；
+③ 每张卡独立 element_id，并行 streaming 不互相干扰；
+④ subagent 完成后 footer 切 <code>✔ done · 1m54s</code>，独立卡保留不被合并。
+</div>
+
+<h3 style="margin-top:24px;">问题</h3>
+<div class="options">
+  <div class="option" data-choice="ok-write-spec" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content"><h3>两个场景都 OK</h3><p>开始写 spec → docs/superpowers/specs/2026-05-10-card-redesign-design.md</p></div>
+  </div>
+  <div class="option" data-choice="tweak-split" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content"><h3>切卡要调</h3><p>frozen 视觉 / 累计时间显示 / 任务转移呈现，告诉我哪里不顺</p></div>
+  </div>
+  <div class="option" data-choice="tweak-parallel" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content"><h3>并行要调</h3><p>橙系是否合适 / 编号 #5.a 是否够直观 / subagent 头部是否要更明显标父级</p></div>
+  </div>
+</div>

@@ -83,3 +83,5 @@ image.png
 
 # Git worktrees
 .worktrees/
+
+.superpowers/
