@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
+## 2026-05-10
+- **飞书编程卡片 v2 重设计首批实现** — 基于已确认 HTML mockup/spec/plan，落地 v2 metadata foundation、两行编程 header、三段常开 sticky task list、仅运行中工具展开、footer 当前工具 hint 与 subagent badge；阶段性全量 6342 passed, 1 skipped → [详细记录](2026-05-10.md)
 ## 2026-05-09
 - **统一编程模式卡片重构（SectionLayout SSOT）** — 将 Coco/Claude/Aiden/Codex/Gemini/TTADK 直接编程模式与 Deep/Loop/Spec/Worktree 引擎卡片统一到 SectionLayout 四区骨架；续卡每页重注 phase banner/task_list/activity_summary sticky 锚点，tool panel 仅展开 latest active，新增 card_split 语义切卡并接入 Deep task_done、Loop round_changed、Spec cycle_changed；预算回归覆盖 30 tasks + 100 tools，最终全量 6323 passed, 1 skipped → [详细记录](2026-05-09.md)
 - **优化 GhostAP 重启脚本降低固定等待** — 排查确认 Spec Review retry budget warning 不阻塞启动；`restart.sh` 将远程重启/TERM/残留清理/启动检查等待改为可配置短等待，优先 `.venv/bin/python` 启动，macOS 无 `setsid` 时用 `launchctl submit` 保持服务进程独立运行，远程 worker 复用主 restart 逻辑并通过实测；本地 restart 脚本返回约 1.36 秒，剩余主要是 `src.main` 冷启动 → [详细记录](2026-05-09.md)
