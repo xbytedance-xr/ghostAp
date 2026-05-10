@@ -110,7 +110,13 @@ class CardEvent(Generic[P]):
         return cls(type=CardEventType.CANCELLED, payload=payload)
 
     @classmethod
-    def archived(cls, summary: str = "", sequence: int = 0, new_message_id: str = "") -> CardEvent[Mapping[str, Any]]:
+    def archived(
+        cls,
+        summary: str = "",
+        sequence: int = 0,
+        new_message_id: str = "",
+        bridge_phrase: str | None = None,
+    ) -> CardEvent[Mapping[str, Any]]:
         """Signal that the session has been archived (rotated out by SessionRotator).
 
         Payload: {summary?: str, sequence?: int, new_message_id?: str}
@@ -124,6 +130,8 @@ class CardEvent(Generic[P]):
             payload["sequence"] = sequence
         if new_message_id:
             payload["new_message_id"] = new_message_id
+        if bridge_phrase:
+            payload["bridge_phrase"] = bridge_phrase
         return cls(type=CardEventType.ARCHIVED, payload=payload)
 
     @classmethod

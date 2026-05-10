@@ -40,15 +40,16 @@ def render_header(state: CardState) -> dict:
 
 def _should_render_v2_header(state: CardState) -> bool:
     metadata = state.metadata
-    return any((
-        metadata.tool_name,
-        metadata.model_name,
+    strong_v2_signal = any((
         metadata.working_dir,
         metadata.card_sequence != 1,
-        metadata.session_started_at is not None,
         metadata.is_subagent,
         metadata.frozen,
+        metadata.bridge_phrase,
     ))
+    if metadata.engine_type:
+        return strong_v2_signal
+    return strong_v2_signal or bool(metadata.tool_name or metadata.model_name or metadata.session_started_at is not None)
 
 
 def _render_v2_header(state: CardState) -> dict:
@@ -80,9 +81,13 @@ def _render_v2_header(state: CardState) -> dict:
     else:
         right = marker
 
+    subtitle = f"{left} · {right}"
+    if metadata.engine_type and state.header.subtitle:
+        subtitle = f"{subtitle} · {state.header.subtitle}"
+
     result: dict = {
         "title": {"tag": "plain_text", "content": title},
-        "subtitle": {"tag": "plain_text", "content": f"{left} · {right}"},
+        "subtitle": {"tag": "plain_text", "content": subtitle},
         "template": _v2_header_template(state),
     }
     return result
@@ -98,6 +103,11 @@ def _v2_header_template(state: CardState) -> str:
 
 
 def _elapsed_seconds(state: CardState) -> float:
+    """Return elapsed seconds using CardSession's monotonic start instant.
+
+    ``CardMetadata.session_started_at`` is written from ``SessionConfig.clock``
+    (monotonic by default). Do not populate it with wall-clock timestamps.
+    """
     metadata = state.metadata
     if metadata.frozen:
         return float(metadata.frozen_total_elapsed or 0)

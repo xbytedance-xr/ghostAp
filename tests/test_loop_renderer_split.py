@@ -25,17 +25,18 @@ def test_loop_renderer_splits_on_round_change():
     renderer = _build_renderer()
     renderer._current_session = MagicMock(closed=False)
 
-    captured: list[tuple[str, str | None]] = []
-    renderer._dispatch_card_split = lambda sess, *, reason, hint=None: captured.append((reason, hint))
+    captured: list[tuple[str, str | None, str | None]] = []
+    renderer._dispatch_card_split = lambda sess, *, reason, hint=None, bridge_phrase=None: captured.append((reason, hint, bridge_phrase))
 
     renderer.notify_round_change(current_round=1)
     renderer.notify_round_change(current_round=2)
 
-    assert any(reason == "round_changed" for reason, _ in captured), (
+    assert any(reason == "round_changed" for reason, _, _ in captured), (
         f"expected round_changed split, got {captured}"
     )
-    matching = [hint for reason, hint in captured if reason == "round_changed"]
+    matching = [hint for reason, hint, _ in captured if reason == "round_changed"]
     assert any("第 2 轮" in (hint or "") for hint in matching)
+    assert any(bridge == "续接：" for reason, _, bridge in captured if reason == "round_changed")
 
 
 def test_loop_renderer_no_split_on_first_round():

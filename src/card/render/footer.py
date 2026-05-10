@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-import math
 import json
+import math
 import time
 
 from src.card.render.atoms import RenderAtom, estimate_atom_size
 from src.card.state.models import CardMetadata, CardState, ContentBlock
 from src.card.ui_text import UI_TEXT
-from .progress import render_progress_bar, MOBILE_SEGMENTS
 from .budget import RenderBudget
+from .progress import MOBILE_SEGMENTS, render_progress_bar
+
+_ACTIVE_TOOL_STATUSES = frozenset({"active"})
 
 
 def _format_idle_timeout(seconds: int) -> str:
@@ -114,7 +116,7 @@ def render_now_tool_hint(tool) -> str:
     if tool is None:
         return ""
     status = _tool_status(tool)
-    if status not in {"active", "in_progress", "running"}:
+    if status not in _ACTIVE_TOOL_STATUSES:
         return ""
     name = _tool_name(tool)
     payload = _tool_payload(tool)
@@ -308,7 +310,7 @@ def _find_running_tool(state: CardState) -> ContentBlock | None:
     for block in reversed(state.blocks):
         if getattr(block, "kind", "") != "tool_call":
             continue
-        if getattr(block, "status", "") in {"active", "in_progress", "running"}:
+        if getattr(block, "status", "") in _ACTIVE_TOOL_STATUSES:
             return block
     return None
 

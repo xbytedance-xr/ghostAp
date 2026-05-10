@@ -39,6 +39,8 @@ def test_now_tool_hint_unknown_tool_falls_back_to_name():
 
 def test_now_tool_hint_none_when_no_running_tool():
     assert render_now_tool_hint(_tool("Edit", status="completed")) == ""
+    assert render_now_tool_hint(_tool("Edit", status="running")) == ""
+    assert render_now_tool_hint(_tool("Edit", status="in_progress")) == ""
     assert render_now_tool_hint(None) == ""
 
 

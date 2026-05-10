@@ -44,6 +44,7 @@ def build_programming_metadata(
     tool_name: str | None = None,
     model_name: str | None = None,
     project_name: str | None = None,
+    working_dir: str | None = None,
 ) -> CardMetadata:
     """Build CardMetadata for a programming mode session.
 
@@ -52,6 +53,7 @@ def build_programming_metadata(
         tool_name: Specific tool name (overrides mode default).
         model_name: Model name to display.
         project_name: Optional project name for header.
+        working_dir: Current project/session working directory for v2 header.
     """
     mode_key = mode_name.lower()
     emoji, display = _MODE_DISPLAY.get(mode_key, ("🤖", mode_name))
@@ -63,6 +65,7 @@ def build_programming_metadata(
         tool_name=tool_name or mode_key,
         model_name=model_name,
         engine_type=None,  # Programming mode is not an engine
+        working_dir=working_dir,
     )
 
 
@@ -282,12 +285,16 @@ class ProgrammingCardSession:
             self._text_active = False
 
         task_label = self._build_primary_task_label(current_tasks)
+        next_seq = self._rotator.rotation_count + 2
         metadata = replace(
             self._base_metadata,
             unit_id=task_label,
             unit_kind="task",
             unit_label=task_label,
-            continuation_seq=0,
+            continuation_seq=next_seq - 1,
+            card_sequence=next_seq,
+            session_started_at=self._rotator.current.session_started_at,
+            bridge_phrase="续接：",
         )
         new_session = self._rotator.rotate(lambda: self._session_factory(metadata))
         self._primary_task_signature = current_tasks
@@ -319,12 +326,19 @@ class ProgrammingCardSession:
             return self._rotator.current
 
         task_label = self._extract_agent_task_label(tool_call)
+        branch_id = chr(ord("a") + len(self._agent_sessions))
+        parent_seq = str(self._rotator.current.sequence)
         metadata = replace(
             self._base_metadata,
             unit_id=tool_call.id,
             unit_kind="task",
             unit_label=task_label,
-            continuation_seq=0,
+            tool_name=self._extract_agent_tool_name(tool_call),
+            card_sequence=f"{parent_seq}.{branch_id}",
+            session_started_at=self._rotator.current.session_started_at,
+            is_subagent=True,
+            parent_card_seq=parent_seq,
+            bridge_phrase=None,
         )
         session = self._session_factory(metadata)
         session.dispatch(CardEvent.started())
@@ -372,3 +386,10 @@ class ProgrammingCardSession:
                 return first_line[:60]
         title = (tool_call.title or "").strip()
         return title[:60] if title else "子任务"
+
+    @staticmethod
+    def _extract_agent_tool_name(tool_call: "ToolCallInfo") -> str:
+        title = (tool_call.title or "").strip()
+        if title:
+            return title
+        return "subagent"

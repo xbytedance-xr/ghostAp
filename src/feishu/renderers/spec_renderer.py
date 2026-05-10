@@ -62,11 +62,12 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
                     session,
                     reason="cycle_changed",
                     hint=f"进入 cycle {current_cycle} · {persp}",
+                    bridge_phrase="续接：",
                 )
         self._last_cycle = current_cycle
         self._last_perspective = perspective
 
-    def _on_card_split_completed(self, reason: str, hint: str | None) -> None:
+    def _on_card_split_completed(self, reason: str, hint: str | None, bridge_phrase: str | None = None) -> None:
         self._pending_split_hint = hint
 
     def _get_reporter(self):

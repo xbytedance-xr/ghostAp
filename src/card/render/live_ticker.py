@@ -8,7 +8,7 @@ from typing import Protocol
 
 from src.card.timers.scheduler import TimerHandle, TimerScheduler, get_timer_scheduler
 
-DEFAULT_TICKER_FRAMES: tuple[str, ...] = ("🟢", "🔵", "🟣", "🟠")
+DEFAULT_TICKER_FRAMES: tuple[str, ...] = ("🟢", "⚪")
 
 
 class _Scheduler(Protocol):

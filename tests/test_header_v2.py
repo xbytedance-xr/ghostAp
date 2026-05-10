@@ -97,3 +97,16 @@ def test_header_v2_continuation_shows_card_elapsed_and_cumulative(monkeypatch):
 
     assert "0m12s" in result["subtitle"]["content"]
     assert "累计 7m30s" in result["subtitle"]["content"]
+
+
+def test_engine_header_keeps_legacy_phase_when_only_tool_name_present():
+    state = CardState(
+        header=HeaderState(title="Deep · 执行中", subtitle="phase: analyze", template="purple"),
+        metadata=CardMetadata(engine_type="deep", tool_name="DeepEngine"),
+    )
+
+    result = render_header(state)
+
+    assert result["title"]["content"] == "Deep · 执行中"
+    assert result["subtitle"]["content"] == "phase: analyze"
+    assert result["template"] == "purple"

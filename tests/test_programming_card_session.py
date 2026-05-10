@@ -83,6 +83,10 @@ class TestBuildProgrammingMetadata:
         meta = build_programming_metadata("coco", project_name="MyProject")
         assert meta.project_name == "MyProject"
 
+    def test_with_working_dir_for_v2_header(self):
+        meta = build_programming_metadata("coco", working_dir="/repo")
+        assert meta.working_dir == "/repo"
+
     def test_all_modes_have_display(self):
         modes = ["coco", "claude", "aiden", "codex", "gemini", "ttadk"]
         for mode in modes:
@@ -240,6 +244,9 @@ class TestProgrammingCardSession:
         assert len(client.creates) >= 2
         assert pcs.get_message_id() != first_task_message_id
         assert "任务 B" in (pcs.session.state.metadata.unit_label or "")
+        assert pcs.session.state.metadata.card_sequence == 3
+        assert pcs.session.state.metadata.continuation_seq == 2
+        assert pcs.session.state.metadata.bridge_phrase == "续接："
 
     def test_parallel_agent_tasks_open_independent_cards(self):
         from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
@@ -269,6 +276,10 @@ class TestProgrammingCardSession:
         ))
 
         assert len(client.creates) >= 3
+        states = [session.state for session in pcs._agent_sessions.values()]
+        assert {state.metadata.card_sequence for state in states} == {"1.a", "1.b"}
+        assert all(state.metadata.is_subagent for state in states)
+        assert all(state.metadata.parent_card_seq == "1" for state in states)
 
     def test_render_omits_process_summary_after_later_text_updates(self):
         from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo

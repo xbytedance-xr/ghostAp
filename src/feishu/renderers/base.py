@@ -96,6 +96,7 @@ class BaseRenderer:
         *,
         reason: str,
         hint: str | None = None,
+        bridge_phrase: str | None = None,
     ) -> None:
         """Dispatch a card_split event and wire completion callback.
 
@@ -106,9 +107,9 @@ class BaseRenderer:
 
         normalized_hint = hint or ""
         session.on_card_split_completed = self._on_card_split_completed
-        session.dispatch(CardEvent.card_split(reason=reason, hint=normalized_hint))
+        session.dispatch(CardEvent.card_split(reason=reason, hint=normalized_hint, bridge_phrase=bridge_phrase))
 
-    def _on_card_split_completed(self, reason: str, hint: str | None) -> None:
+    def _on_card_split_completed(self, reason: str, hint: str | None, bridge_phrase: str | None = None) -> None:
         """Hook for subclasses to start a fresh continuation session."""
         return None
 
@@ -131,6 +132,7 @@ class BaseRenderer:
             changes["unit_label"] = unit_label
         if continuation_seq is not None:
             changes["continuation_seq"] = continuation_seq
+            changes["card_sequence"] = continuation_seq + 1
         return replace(metadata, **changes) if changes else metadata
 
     def _build_hooks(

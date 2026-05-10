@@ -17,7 +17,12 @@ _STATUS_ICONS = {
     "running": "🔄",
     "completed": "✅",
     "failed": "❌",
+    "cancelled": "⊘",
 }
+
+_ACTIVE_STATUSES = frozenset({"in_progress", "active", "running"})
+_COMPLETED_STATUSES = frozenset({"completed", "done"})
+_FAILED_STATUSES = frozenset({"failed", "cancelled"})
 
 _DONE_FOLD_THRESHOLD = 8
 _PENDING_VISIBLE = 5
@@ -25,7 +30,7 @@ _ACTIVE_VISIBLE = 3
 
 
 def group_tasks(plan_or_tasks) -> tuple[list, list, list]:
-    """Group tasks into v2 buckets: in-progress, completed/terminal, pending."""
+    """Group tasks into v2 buckets: in-progress, ended, pending."""
     tasks = getattr(plan_or_tasks, "entries", plan_or_tasks)
     in_progress: list = []
     completed: list = []
@@ -33,9 +38,9 @@ def group_tasks(plan_or_tasks) -> tuple[list, list, list]:
 
     for task in tasks or ():
         status = _task_status(task)
-        if status in {"in_progress", "active", "running"}:
+        if status in _ACTIVE_STATUSES:
             in_progress.append(task)
-        elif status in {"completed", "done", "failed", "cancelled"}:
+        elif status in _COMPLETED_STATUSES or status in _FAILED_STATUSES:
             completed.append(task)
         else:
             pending.append(task)
@@ -47,9 +52,8 @@ def render_task_list_panel(block: TaskListBlock, *, compact: bool = False) -> di
     """Render the task list panel with progress summary.
 
     Returns None if tasks is empty (no panel rendered).
-    Compact mode shows only the current task and progress ratio for sticky_head.
-    When total tasks >= _FOLD_THRESHOLD, panel is collapsed by default and
-    completed tasks are shown in gray compact format.
+    Compact mode keeps the same three always-open groups while applying the
+    same height-saving downgrade rules as the full panel.
     Current task is highlighted with bold + arrow prefix.
     """
     tasks = block.tasks
@@ -58,7 +62,7 @@ def render_task_list_panel(block: TaskListBlock, *, compact: bool = False) -> di
 
     current_id = block.current_task_id
     total = len(tasks)
-    completed_count = sum(1 for t in tasks if t.get("status") == "completed")
+    completed_count = sum(1 for t in tasks if str(t.get("status")) in _COMPLETED_STATUSES)
 
     lines = _build_v2_task_lines(tasks, current_id)
     content = "\n".join(lines)
@@ -100,14 +104,21 @@ def _build_v2_task_lines(tasks: tuple[TaskSnapshotPayload, ...], current_id: str
     for task in in_progress[:_ACTIVE_VISIBLE]:
         lines.append(_format_task_line(task, current_id, tasks, total))
 
-    lines.append(f"✅ **已完成 ({len(completed)})**")
+    completed_only = sum(1 for task in completed if _task_status(task) in _COMPLETED_STATUSES)
+    failed_count = len(completed) - completed_only
+    if failed_count:
+        ended_label = f"✅ **已结束 ({len(completed)})** · 完成 {completed_only} / 失败 {failed_count}"
+    else:
+        ended_label = f"✅ **已完成 ({len(completed)})**"
+    lines.append(ended_label)
     done_visible = completed
     if len(completed) > _DONE_FOLD_THRESHOLD or total > 12:
         done_visible = completed[:3]
     for task in done_visible:
         lines.append(_format_done_line(task))
     if len(done_visible) < len(completed):
-        lines.append(f"　…还有 {len(completed) - len(done_visible)} 个已完成")
+        folded_label = "已结束" if failed_count else "已完成"
+        lines.append(f"　…还有 {len(completed) - len(done_visible)} 个{folded_label}")
 
     lines.append(f"⏳ **未处理 ({len(pending)})**")
     pending_visible = pending[:_PENDING_VISIBLE]

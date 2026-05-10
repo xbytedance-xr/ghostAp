@@ -136,6 +136,11 @@ class SpecStreamProcessor:
             unit_label=UI_TEXT["spec_cycle_label"].format(cycle_num=cycle_num),
             continuation_seq=self._rotator.rotation_count + 1,
         )
+        if self._renderer._pending_split_hint:
+            from dataclasses import replace
+            if isinstance(cont_meta, CardMetadata):
+                cont_meta = replace(cont_meta, bridge_phrase="续接：")
+            self._renderer._pending_split_hint = None
         old_msg_id = self._rotator.current.delivered_message_id or self._message_id
         renderer = self._renderer
         chat_id = self._chat_id

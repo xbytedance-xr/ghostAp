@@ -145,6 +145,11 @@ class CardSession:
         self._closed = threading.Event()
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._clock = config.clock
+        # v2 elapsed/cumulative timing uses the session clock, which is
+        # monotonic by SessionConfig contract. Persist the start instant in
+        # metadata once so renderers never mix wall-clock and monotonic time.
+        if self._metadata.session_started_at is None:
+            self._metadata = replace(self._metadata, session_started_at=self._clock())
         self._sync_delivery = bool(config.sync_delivery)
         self._notify_callback = cbs.notify_callback
         self._cancel_callback = cbs.cancel_callback
@@ -153,8 +158,8 @@ class CardSession:
         self._action_registry: dict[str, Callable[[dict], CardEvent]] = cbs.action_registry or {}
         self._stop_escalation_handle: "TimerHandle | None" = None
         self._stop_escalation_delay: float = 30.0
-        self._pending_card_split: tuple[str, str] | None = None
-        self.on_card_split_completed: Callable[[str, str], None] | None = None
+        self._pending_card_split: tuple[str, str, str | None] | None = None
+        self.on_card_split_completed: Callable[..., None] | None = None
 
         # Optional callback fired once after first successful delivery with message_id
         # DEPRECATED: use SessionHook.on_first_delivered instead. Kept for backward compat.
@@ -488,12 +493,10 @@ class CardSession:
         reason = str(event.payload.get("reason", ""))
         hint = str(event.payload.get("hint", ""))
         bridge_phrase = event.payload.get("bridge_phrase")
-        if bridge_phrase:
-            hint = f"{hint}\n{bridge_phrase}" if hint else str(bridge_phrase)
         if not reason:
             logger.warning("CardSession %s: card_split ignored without reason", self._session_id)
             return
-        self._pending_card_split = (reason, hint)
+        self._pending_card_split = (reason, hint, str(bridge_phrase) if bridge_phrase else None)
         self.dispatch(CardEvent.completed())
 
     # -- dispatch sub-methods (called under self._lock) ----------------------
@@ -652,7 +655,11 @@ class CardSession:
         if cb is None:
             return
         try:
-            cb(*split)
+            reason, hint, bridge_phrase = split
+            if bridge_phrase is None:
+                cb(reason, hint)
+            else:
+                cb(reason, hint, bridge_phrase)
         except Exception:
             logger.debug("CardSession %s: on_card_split_completed callback failed", self._session_id)
 

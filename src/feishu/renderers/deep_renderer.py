@@ -244,11 +244,11 @@ class DeepRenderer(BaseRenderer):
                 )
                 hint = f"接续 task {step_idx}「{next_entry.content}」"
             if not getattr(session, "closed", False):
-                self._dispatch_card_split(session, reason="task_done", hint=hint)
+                self._dispatch_card_split(session, reason="task_done", hint=hint, bridge_phrase="续接：")
 
         last_statuses[0] = new_statuses
 
-    def _on_card_split_completed(self, reason: str, hint: str | None) -> None:
+    def _on_card_split_completed(self, reason: str, hint: str | None, bridge_phrase: str | None = None) -> None:
         self._pending_split_hint = hint
 
     def _get_engine(self, chat_id: str, root_path: Optional[str], project: Optional["ProjectContext"]):

@@ -52,6 +52,30 @@ def _compute_duration(state: CardState, now: float | None) -> float | None:
     return now - started_at
 
 
+def _compute_frozen_elapsed(state: CardState, now: float | None) -> float | None:
+    """Compute final elapsed for a frozen/archived card with monotonic clocks."""
+    duration = _compute_duration(state, now)
+    if duration is not None:
+        return duration
+    started_at = state.metadata.session_started_at
+    if started_at is not None and now is not None:
+        return max(0.0, float(now) - float(started_at))
+    return state.footer.duration_seconds
+
+
+def _archived_status_text(payload: dict) -> str:
+    bridge = str(payload.get("bridge_phrase") or "").strip()
+    if bridge:
+        return f"本卡已停止更新 · {bridge}"
+    sequence = payload.get("sequence")
+    if sequence:
+        try:
+            return f"本卡已停止更新 · 续接 #{int(sequence) + 1} ↓"
+        except (TypeError, ValueError):
+            return "本卡已停止更新"
+    return UI_TEXT["card_lifecycle_archived"]
+
+
 def _running_buttons(engine_type: str | None, compact: bool = False) -> tuple[ButtonSpec, ...]:
     """Build buttons for running state (stop button + mode toggle).
 
@@ -229,7 +253,15 @@ def reduce_lifecycle(state: CardState, event: CardEvent) -> CardState:
                            header=header, footer=footer, buttons=cancel_buttons, blocks=blocks)
 
         case CardEventType.ARCHIVED:
-            header = build_header(state.metadata, "archived")
+            frozen_elapsed = _compute_frozen_elapsed(state, now)
+            frozen_metadata = replace(
+                state.metadata,
+                frozen=True,
+                frozen_total_elapsed=frozen_elapsed,
+                final_state_for_freeze=state,
+                bridge_phrase=None,
+            )
+            header = build_header(frozen_metadata, "archived")
             # Append sequence number to title if provided (e.g., "#1 已归档")
             sequence = (event.payload or {}).get("sequence", 0)
             if sequence:
@@ -244,7 +276,7 @@ def reduce_lifecycle(state: CardState, event: CardEvent) -> CardState:
             ),)
             footer = FooterState(
                 status="idle",
-                status_text=UI_TEXT["card_lifecycle_archived"],
+                status_text=_archived_status_text(event.payload or {}),
                 duration_seconds=_compute_duration(state, now),
             )
             # Add URL button to navigate to the new card if message_id available
@@ -264,7 +296,7 @@ def reduce_lifecycle(state: CardState, event: CardEvent) -> CardState:
                     content=UI_TEXT.get("card_archived_scroll_hint", "💡 请在对话底部查看最新卡片"),
                 ),)
             return replace(state, terminal="archived", terminal_reason="archived",
-                           header=header, footer=footer, buttons=archived_buttons, blocks=blocks)
+                           metadata=frozen_metadata, header=header, footer=footer, buttons=archived_buttons, blocks=blocks)
 
         case CardEventType.PAUSED:
             header = build_header(state.metadata, "paused")

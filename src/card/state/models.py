@@ -40,6 +40,10 @@ class CardMetadata:
     compact: bool = False
     expanded: bool = False
     expand_ac: bool = False
+    # Continuation sequence is the canonical SSOT for split/rotation cards.
+    # ``card_sequence`` is kept as a display override for dotted subagent IDs
+    # (for example ``5.a``). When callers still pass only continuation_seq,
+    # __post_init__ derives the visible card sequence from it.
     continuation_seq: int = 0  # >0 means this is a continuation card (续 #N)
     idle_timeout_seconds: int | None = None  # Session idle timeout for footer display
     card_sequence: int | str = 1
@@ -51,6 +55,10 @@ class CardMetadata:
     frozen: bool = False
     frozen_total_elapsed: float | None = None
     bridge_phrase: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.continuation_seq > 0 and self.card_sequence == 1:
+            object.__setattr__(self, "card_sequence", self.continuation_seq + 1)
 
 
 @dataclass(frozen=True)

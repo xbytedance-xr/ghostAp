@@ -64,10 +64,11 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
                     session,
                     reason="round_changed",
                     hint=f"进入第 {current_round} 轮",
+                    bridge_phrase="续接：",
                 )
         self._last_round = current_round
 
-    def _on_card_split_completed(self, reason: str, hint: str | None) -> None:
+    def _on_card_split_completed(self, reason: str, hint: str | None, bridge_phrase: str | None = None) -> None:
         self._pending_split_hint = hint
 
     def _get_reporter(self):
@@ -153,12 +154,14 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
                     compact=st["compact"],
                     expanded=st["expanded"],
                     expand_ac=st.get("expand_ac", False),
+                    bridge_phrase=self._pending_split_hint and "续接：",
                 ),
                 unit_id=str(iteration),
                 unit_kind="iteration",
                 unit_label=UI_TEXT["loop_iteration_label"].format(iteration=iteration),
                 continuation_seq=rotator.rotation_count + 1,
             )
+            self._pending_split_hint = None
             # Use old card's delivered message_id as reply_to for navigation chain
             old_msg_id = rotator.current.delivered_message_id or message_id
             rotator.rotate(lambda: self.create_session(chat_id, old_msg_id, meta, hooks=hooks, budget=_loop_budget))

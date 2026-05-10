@@ -14,17 +14,17 @@ class _FakeRenderer(BaseRenderer):
         self.settings = MagicMock()
         self.ui_states = {}
         self._session_factory = None
-        self.split_calls: list[tuple[str, str | None]] = []
+        self.split_calls: list[tuple[str, str | None, str | None]] = []
 
-    def _on_card_split_completed(self, reason: str, hint: str | None) -> None:
-        self.split_calls.append((reason, hint))
+    def _on_card_split_completed(self, reason: str, hint: str | None, bridge_phrase: str | None = None) -> None:
+        self.split_calls.append((reason, hint, bridge_phrase))
 
 
 def test_dispatch_card_split_emits_event_and_registers_callback():
     renderer = _FakeRenderer()
     session = MagicMock()
 
-    renderer._dispatch_card_split(session, reason="task_done", hint="task 3")
+    renderer._dispatch_card_split(session, reason="task_done", hint="task 3", bridge_phrase="续接：")
 
     args = session.dispatch.call_args
     assert args is not None
@@ -32,11 +32,12 @@ def test_dispatch_card_split_emits_event_and_registers_callback():
     assert event.type == CardEventType.CARD_SPLIT
     assert event.payload["reason"] == "task_done"
     assert event.payload["hint"] == "task 3"
+    assert event.payload["bridge_phrase"] == "续接："
 
     cb = getattr(session, "on_card_split_completed", None)
     assert callable(cb)
-    cb("task_done", "task 3")
-    assert renderer.split_calls == [("task_done", "task 3")]
+    cb("task_done", "task 3", "续接：")
+    assert renderer.split_calls == [("task_done", "task 3", "续接：")]
 
 
 def test_default_on_card_split_completed_is_noop():

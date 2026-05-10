@@ -1,4 +1,4 @@
-from src.card.render.live_ticker import LiveTicker, frame_for_tick
+from src.card.render.live_ticker import DEFAULT_TICKER_FRAMES, LiveTicker, frame_for_tick
 
 
 class FakeHandle:
@@ -32,6 +32,10 @@ def test_frame_for_tick_cycles_frames():
     assert frame_for_tick(0, ("a", "b")) == "a"
     assert frame_for_tick(1, ("a", "b")) == "b"
     assert frame_for_tick(2, ("a", "b")) == "a"
+
+
+def test_default_ticker_frames_match_v2_live_dot_spec():
+    assert DEFAULT_TICKER_FRAMES == ("🟢", "⚪")
 
 
 def test_live_ticker_emits_now_and_reschedules_frames():

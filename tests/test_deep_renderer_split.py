@@ -28,8 +28,8 @@ def _build_renderer() -> DeepRenderer:
 
 def test_deep_renderer_splits_on_task_done():
     renderer = _build_renderer()
-    captured: list[tuple[str, str | None]] = []
-    renderer._dispatch_card_split = lambda sess, *, reason, hint=None: captured.append((reason, hint))
+    captured: list[tuple[str, str | None, str | None]] = []
+    renderer._dispatch_card_split = lambda sess, *, reason, hint=None, bridge_phrase=None: captured.append((reason, hint, bridge_phrase))
 
     callbacks = renderer.create_deep_callbacks(
         message_id="m1",
@@ -50,6 +50,7 @@ def test_deep_renderer_splits_on_task_done():
     ])
     callbacks.on_event(ACPEvent(event_type=ACPEventType.PLAN_UPDATE, plan=updated_plan))
 
-    assert any(reason == "task_done" for reason, _ in captured)
-    matching_hints = [hint for reason, hint in captured if reason == "task_done"]
+    assert any(reason == "task_done" for reason, _, _ in captured)
+    matching_hints = [hint for reason, hint, _ in captured if reason == "task_done"]
     assert any(hint is not None and "task 2" in hint for hint in matching_hints)
+    assert any(bridge == "续接：" for reason, _, bridge in captured if reason == "task_done")

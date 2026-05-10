@@ -63,6 +63,19 @@ class TestRenderTaskListPanel:
         assert "✅" in content  # completed
         assert "❌" in content  # failed
 
+    def test_failed_task_uses_ended_bucket_not_completed_label(self):
+        tasks = [
+            {"task_id": "t1", "name": "失败任务", "status": "failed"},
+            {"task_id": "t2", "name": "成功任务", "status": "completed"},
+        ]
+        block = _make_block(tasks, "t1")
+        result = render_task_list_panel(block)
+        content = result["elements"][0]["content"]
+
+        assert "已结束 (2)" in content
+        assert "完成 1 / 失败 1" in content
+        assert "已完成 (2)" not in content
+
     def test_empty_tasks(self):
         """Empty tasks list returns None (no panel rendered)."""
         block = _make_block([], "")

@@ -199,6 +199,7 @@ class SessionRotator:
                 summary=nav_summary,
                 sequence=rotation_seq,
                 new_message_id=new_msg_id,
+                bridge_phrase=f"续接 #{rotation_seq + 1} ↓",
             ))
         except Exception:
             logger.warning(

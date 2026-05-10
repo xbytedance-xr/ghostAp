@@ -663,9 +663,11 @@ class TaskOrchestrator:
             except Exception:
                 logger.debug("Broadcast to task_id=%s failed", task_id, exc_info=True)
 
-    def _create_task_session(self, task_id: str) -> None:
+    def _create_task_session(self, task_id: str, *, is_subagent: bool = False) -> None:
         """Create a CardSession for a task and bind it."""
         session = self._session_creator(task_id)
+        if is_subagent:
+            self._apply_subagent_metadata(session, task_id)
 
         with self._lock:
             self._sessions[task_id] = session
@@ -743,7 +745,21 @@ class TaskOrchestrator:
     ) -> CardSession | None:
         """Phase 1: Create a new continuation session. Returns None on failure."""
         try:
-            return self._session_creator(task_id)
+            new_session = self._session_creator(task_id)
+            old_meta = getattr(old_session, "_metadata", None)
+            if old_meta is not None:
+                seq = self._rotation_counts.get(task_id, 0) + 2
+                from dataclasses import replace
+                new_session._metadata = replace(
+                    new_session._metadata,
+                    continuation_seq=seq - 1,
+                    card_sequence=seq,
+                    session_started_at=getattr(old_session, "session_started_at", new_session.session_started_at),
+                    bridge_phrase="续接：",
+                    is_subagent=old_meta.is_subagent,
+                    parent_card_seq=old_meta.parent_card_seq,
+                )
+            return new_session
         except Exception:
             logger.warning(
                 "TaskOrchestrator: session_creator failed for task_id=%s, rotation aborted",
@@ -779,7 +795,7 @@ class TaskOrchestrator:
             old_session.dispatch(CardEvent.text_started("_continuation"))
             old_session.dispatch(CardEvent.text_delta("_continuation", msg))
             old_session.dispatch(CardEvent.text_done("_continuation"))
-            old_session.dispatch(CardEvent.archived())
+            old_session.dispatch(CardEvent.archived(bridge_phrase=f"续接 #{rotation_count + 1} ↓"))
         except Exception:
             logger.debug("Error archiving task session for rotation, task_id=%s (name=%s)", task_name, task_name, exc_info=True)
 
@@ -910,7 +926,30 @@ class TaskOrchestrator:
 
         # Register the new subtask
         self._registry.register(task_id=task_id, name=name, status="in_progress")
-        self._create_task_session(task_id)
+        self._create_task_session(task_id, is_subagent=True)
+
+    def _apply_subagent_metadata(self, session: CardSession, task_id: str) -> None:
+        """Mark orchestrator-created subagent sessions with v2 parent/sequence metadata."""
+        task_item = self._registry.get(task_id)
+        if task_item is None:
+            return
+        parent_session = self._thinking_session or self._fallback_session
+        if parent_session is None:
+            return
+        from dataclasses import replace
+        branch_id = chr(ord("a") + len([s for s in self._sessions.values() if getattr(s, "is_subagent", False)]))
+        parent_seq = str(getattr(parent_session, "sequence", 1))
+        session._metadata = replace(
+            session._metadata,
+            unit_id=task_id,
+            unit_kind="subagent",
+            unit_label=task_item.name,
+            card_sequence=f"{parent_seq}.{branch_id}",
+            session_started_at=getattr(parent_session, "session_started_at", session.session_started_at),
+            is_subagent=True,
+            parent_card_seq=parent_seq,
+            bridge_phrase=None,
+        )
 
     def close(self) -> None:
         """Close all sessions and clean up.

@@ -734,6 +734,7 @@ class ProgrammingModeHandler(BaseHandler):
             tool_name=tool_name,
             model_name=model_name,
             project_name=project_name,
+            working_dir=project_path,
         )
 
         # Create card delivery + session
