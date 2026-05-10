@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from src.card.render.budget import RenderBudget
 from src.card.state.models import ContentBlock
-from src.card.themes import REASONING_CORNER_RADIUS
 from src.card.ui_text import UI_TEXT
 
 
@@ -55,7 +54,6 @@ def render_reasoning_panel(
         "tag": "column_set",
         "flex_mode": "none",
         "background_style": "grey",
-        "corner_radius": REASONING_CORNER_RADIUS,
         "columns": [
             {
                 "tag": "column",

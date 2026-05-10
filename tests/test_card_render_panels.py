@@ -178,6 +178,13 @@ class TestReasoningPanel:
         result = render_reasoning_panel(block)
         assert result["background_style"] == "grey"
 
+    def test_reasoning_panel_omits_unsupported_column_set_corner_radius(self):
+        """Feishu Schema 2.0 rejects top-level corner_radius on column_set."""
+        block = ContentBlock(kind="reasoning", block_id="r1", status="active", content="test")
+        result = render_reasoning_panel(block)
+        assert result["tag"] == "column_set"
+        assert "corner_radius" not in result
+
 
 class TestPlanPanel:
     def test_plan_panel(self):
