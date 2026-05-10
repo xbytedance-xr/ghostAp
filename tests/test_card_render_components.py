@@ -27,14 +27,15 @@ class TestRenderHeader:
         assert result["title"]["content"] == "🤖 Coco 编程模式"
 
     def test_header_subtitle_with_tool_and_model(self):
-        """Both tool and model → "🔧 tool · model" """
+        """Both tool and model → v2 header puts them on the first row."""
         state = CardState(
             header=HeaderState(title="test", subtitle="🔧 coco · gpt-4o"),
             metadata=CardMetadata(tool_name="coco", model_name="gpt-4o"),
         )
         result = render_header(state)
         assert "subtitle" in result
-        assert result["subtitle"]["content"] == "🔧 coco · gpt-4o"
+        assert result["title"]["content"] == "📁 test · 🤖 Coco · #1 · gpt-4o"
+        assert result["subtitle"]["content"] == "工作目录未设置 · 🟢"
 
     def test_header_subtitle_with_status(self):
         """Subtitle with status → "🔧 tool · model · status" """
