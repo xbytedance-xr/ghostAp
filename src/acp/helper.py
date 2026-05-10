@@ -105,7 +105,7 @@ def fetch_acp_models(
             )
         )
     except Exception:
-        logger.debug("[ACP] probe models failed for %s", tool_name, exc_info=True)
+        logger.warning("[ACP] probe models failed for %s, will fallback", tool_name, exc_info=True)
         models = []
 
     if models:
