@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 from src.utils.text import get_acp_result_header_text
@@ -209,6 +209,22 @@ class RenderedContent:
         }
 
 
+@dataclass
+class _MutableTurn:
+    """Internal mutable turn representation."""
+
+    reasoning_chunks: list[str] = field(default_factory=list)
+    tools: dict[str, ToolCallInfo] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TurnSnapshot:
+    """Read-only ACP turn snapshot for card v2 rendering."""
+
+    reasoning: str = ""
+    tools: tuple[ToolCallInfo, ...] = ()
+
+
 class ACPEventRenderer:
     """Converts ACP events into Feishu-displayable Markdown content."""
 
@@ -222,10 +238,39 @@ class ACPEventRenderer:
         self._modified_files: set[str] = set()
         self._todo_content: str = ""  # Latest TodoWrite rendered content
         self._thought_chunks: list[str] = []  # Accumulated thought text for structured rendering
+        self._turns: list[_MutableTurn] = []
         # Consecutive same-kind completed tool aggregation state.
         # Tracks the last tool run so repeated read/edit/etc. collapse into a
         # single line like "📖 Read 3 个文件: a.py, b.py, c.py ✅".
         self._last_tool_run: Optional[dict] = None
+
+    def _record_text_turn(self, text: str) -> None:
+        if not text:
+            return
+        if not self._turns or self._turns[-1].tools:
+            self._turns.append(_MutableTurn())
+        self._turns[-1].reasoning_chunks.append(text)
+
+    def _record_tool_turn(self, tool_call: ToolCallInfo) -> None:
+        if not tool_call:
+            return
+        for turn in reversed(self._turns):
+            if tool_call.id in turn.tools:
+                turn.tools[tool_call.id] = tool_call
+                return
+        if not self._turns:
+            self._turns.append(_MutableTurn())
+        self._turns[-1].tools[tool_call.id] = tool_call
+
+    def snapshot_turns(self) -> tuple[TurnSnapshot, ...]:
+        """Return immutable reasoning/tool turns without changing legacy markdown."""
+        snapshots: list[TurnSnapshot] = []
+        for turn in self._turns:
+            reasoning = "".join(turn.reasoning_chunks)
+            tools = tuple(replace(tool) for tool in turn.tools.values())
+            if reasoning or tools:
+                snapshots.append(TurnSnapshot(reasoning=reasoning, tools=tools))
+        return tuple(snapshots)
 
     def _format_tool_run_line(self, kind: str, items: list[tuple[str, str]]) -> str:
         icon = _KIND_ICONS.get(kind, "🔧")
@@ -247,6 +292,7 @@ class ACPEventRenderer:
         match event.event_type:
             case ACPEventType.TEXT_CHUNK:
                 if event.text:
+                    self._record_text_turn(event.text)
                     self._text_chunks.append(event.text)
                     self._text_content += event.text
                     # Any real text breaks the aggregation run.
@@ -258,6 +304,7 @@ class ACPEventRenderer:
 
             case ACPEventType.TOOL_CALL_START:
                 if event.tool_call:
+                    self._record_tool_turn(event.tool_call)
                     self._active_tools[event.tool_call.id] = event.tool_call
                     for loc in event.tool_call.locations:
                         self._modified_files.add(loc)
@@ -267,6 +314,7 @@ class ACPEventRenderer:
 
             case ACPEventType.TOOL_CALL_UPDATE:
                 if event.tool_call:
+                    self._record_tool_turn(event.tool_call)
                     self._active_tools[event.tool_call.id] = event.tool_call
                     for loc in event.tool_call.locations:
                         self._modified_files.add(loc)
@@ -275,6 +323,7 @@ class ACPEventRenderer:
 
             case ACPEventType.TOOL_CALL_DONE:
                 if event.tool_call:
+                    self._record_tool_turn(event.tool_call)
                     tool_id = event.tool_call.id
                     self._completed_tool_count += 1
                     self._active_tools.pop(tool_id, None)
@@ -420,6 +469,7 @@ class ACPEventRenderer:
         self._modified_files = set()
         self._todo_content = ""
         self._thought_chunks = []
+        self._turns = []
         self._last_tool_run = None
 
     # ------------------------------------------------------------------
@@ -658,6 +708,7 @@ class ACPEventRenderer:
         """
         self.reset()
         if summary:
+            self._record_text_turn(summary)
             self._text_chunks.append(summary)
             self._text_content = summary
 
