@@ -188,6 +188,17 @@ class Application:
         except Exception:
             logger.debug("Application.run: TTADK preheat failed", exc_info=True)
 
+        # Coco ACP model list preheat (background best-effort) — keeps the 5min
+        # cache warm so /coco shows the real model list instead of degrading to
+        # the static DEFAULT_MODELS when the cold-spawn probe is slow.
+        try:
+            if getattr(self.settings, "acp_model_preheat_on_startup", True):
+                from coco_model import get_coco_model_manager
+
+                get_coco_model_manager().kickoff_preheat()
+        except Exception:
+            logger.debug("Application.run: coco model preheat failed", exc_info=True)
+
         self._install_signal_handlers()
 
         self.feishu_client = FeishuWSClient(message_callback=self.handle_message)

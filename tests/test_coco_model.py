@@ -169,6 +169,57 @@ class TestCocoModelManager:
                 assert manager.set_model("acp-only-model") is True
                 assert manager.get_current_model() == "acp-only-model"
 
+    def test_static_fallback_uses_short_ttl(self):
+        from src.coco_model.manager import FALLBACK_CACHE_TTL_SECONDS
+
+        manager = CocoModelManager()
+        with patch.object(manager, "_config_path", Path("/nonexistent/path")):
+            with patch.object(manager, "_load_models_via_acp", return_value=[]):
+                manager.get_models()
+            # Probe failed → only static defaults cached → short retry window.
+            assert manager._cache_ttl == FALLBACK_CACHE_TTL_SECONDS
+            # After the short TTL elapses the next call must re-probe (not serve stale).
+            manager._cache_time -= FALLBACK_CACHE_TTL_SECONDS + 1
+            with patch.object(
+                manager,
+                "_load_models_via_acp",
+                return_value=[CocoModel(name="real-model", description="Real")],
+            ) as mock_acp:
+                result = manager.get_models()
+            mock_acp.assert_called_once()
+            assert [m.name for m in result.models] == ["real-model"]
+
+    def test_real_acp_list_uses_full_ttl(self):
+        from src.coco_model.manager import CACHE_TTL_SECONDS
+
+        manager = CocoModelManager()
+        with patch.object(manager, "_config_path", Path("/nonexistent/path")):
+            with patch.object(
+                manager,
+                "_load_models_via_acp",
+                return_value=[CocoModel(name="real-a"), CocoModel(name="real-b")],
+            ):
+                manager.get_models()
+            assert manager._cache_ttl == CACHE_TTL_SECONDS
+
+    def test_kickoff_preheat_warms_cache(self):
+        manager = CocoModelManager()
+        with patch.object(manager, "_config_path", Path("/nonexistent/path")):
+            with patch.object(
+                manager,
+                "_load_models_via_acp",
+                return_value=[CocoModel(name="preheated")],
+            ):
+                manager.kickoff_preheat()
+                # Background daemon thread; give it a brief moment to finish.
+                import time as _t
+
+                deadline = _t.time() + 5
+                while _t.time() < deadline and manager._cached_models is None:
+                    _t.sleep(0.02)
+            assert manager._cached_models is not None
+            assert [m.name for m in manager._cached_models] == ["preheated"]
+
 
 class TestGetCocoModelManager:
     def test_returns_singleton(self):

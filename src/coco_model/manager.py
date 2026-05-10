@@ -23,6 +23,11 @@ DEFAULT_MODELS = [
 ]
 
 CACHE_TTL_SECONDS = 300
+# When the ACP probe fails and we degrade to the static DEFAULT_MODELS list, we
+# must NOT pin that stale list for the full 5 minutes — otherwise the "刷新模型列表"
+# button (and every other caller) keeps seeing fake models until the TTL expires.
+# Use a short retry window so the next request re-attempts the real probe.
+FALLBACK_CACHE_TTL_SECONDS = 20
 
 
 class CocoModelManager:
@@ -30,6 +35,7 @@ class CocoModelManager:
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._cached_models: Optional[list[CocoModel]] = None
         self._cache_time: float = 0
+        self._cache_ttl: float = CACHE_TTL_SECONDS
         self._current_model: Optional[str] = None
         self._config_path = Path.home() / "Library" / "Application Support" / "coco" / "coco.yaml"
         self._initialized = False
@@ -57,7 +63,12 @@ class CocoModelManager:
         return None
 
     def _is_cache_valid(self) -> bool:
-        return self._cached_models is not None and (time.time() - self._cache_time) < CACHE_TTL_SECONDS
+        return self._cached_models is not None and (time.time() - self._cache_time) < self._cache_ttl
+
+    def _is_static_fallback(self, models: list[CocoModel]) -> bool:
+        """True when ``models`` is just the hardcoded DEFAULT_MODELS list (probe failed)."""
+        default_names = {m.name for m in DEFAULT_MODELS}
+        return bool(models) and {m.name for m in models} == default_names
 
     def get_models(self) -> ModelListResult:
         self._ensure_initialized()
@@ -71,6 +82,12 @@ class CocoModelManager:
                 models = self._load_models()
                 self._cached_models = models
                 self._cache_time = time.time()
+                # Pin a real ACP-probed list for the full TTL; if the probe
+                # failed and we only have the static defaults, expire fast so
+                # the next caller (incl. the "刷新模型列表" button) retries.
+                self._cache_ttl = (
+                    FALLBACK_CACHE_TTL_SECONDS if self._is_static_fallback(models) else CACHE_TTL_SECONDS
+                )
                 return ModelListResult(models=list(models), cached=False)
             except Exception as e:
                 logger.error("Failed to load coco models: %s", get_error_detail(e))
@@ -206,6 +223,31 @@ class CocoModelManager:
         with self._lock:
             self._cached_models = None
             self._cache_time = 0
+            self._cache_ttl = CACHE_TTL_SECONDS
+
+    def kickoff_preheat(self) -> None:
+        """Best-effort background warm-up of the ACP-probed model list.
+
+        ``coco acp serve`` cold-start + initialize handshake is slow and highly
+        variable (4-12s observed), so probing it lazily on the first ``/coco``
+        click frequently times out and degrades to the static DEFAULT_MODELS.
+        Kicking it off at process startup populates the 5min cache so the
+        interactive path normally just reads a fresh list.
+        """
+
+        def _run() -> None:
+            try:
+                result = self.get_models()
+                logger.info(
+                    "coco model preheat: %d models (cached=%s, error=%s)",
+                    len(result.models or []),
+                    result.cached,
+                    result.error,
+                )
+            except Exception as e:
+                logger.debug("coco model preheat failed: %s", get_error_detail(e))
+
+        threading.Thread(target=_run, name="coco-model-preheat", daemon=True).start()
 
 
 _manager: Optional[CocoModelManager] = None

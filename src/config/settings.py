@@ -54,12 +54,20 @@ class Settings(BaseSettings):
     # ACP health check timeout (seconds)
     acp_healthcheck_timeout: float = 2.0
 
-    # ACP model list probe timeout (seconds). Larger than healthcheck because
-    # spawn_agent_process + initialize + new_session round-trip can take 3-4s
-    # before the server returns the available_models list. Falling back to the
-    # static DEFAULT_MODELS hides real model entries (e.g. Gemini-3.x preview,
-    # openrouter pools), so we give the probe a fair window before degrading.
-    acp_model_probe_timeout: float = 6.0
+    # ACP model list probe timeout (seconds). Much larger than healthcheck:
+    # cold-spawning `coco acp serve` + initialize + new_session round-trip is
+    # highly variable and routinely takes 5-12s on first use (observed range
+    # 4-12s). A tight 6s window times out often, and falling back to the static
+    # DEFAULT_MODELS hides the real model list (GPT-5.x, GLM-5, Kimi, openrouter
+    # pools, Gemini previews, …), so we give the probe a generous window before
+    # degrading. The startup preheat keeps the 5min cache warm so /coco normally
+    # never pays this cost interactively.
+    acp_model_probe_timeout: float = 15.0
+
+    # Warm up the coco ACP model list in the background at startup so the
+    # interactive /coco model picker reads a fresh 5min-cached list instead of
+    # paying the cold-spawn probe cost (and risking a timeout → stale defaults).
+    acp_model_preheat_on_startup: bool = True
 
     # ACP permission auto-approve (True = agent actions auto-approved, False = denied by default)
     acp_permission_auto_approve: bool = True

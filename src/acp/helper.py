@@ -123,6 +123,10 @@ def fetch_acp_models(
         try:
             from ..coco_model.manager import DEFAULT_MODELS
 
+            logger.warning(
+                "[ACP] coco ACP probe returned no models, falling back to %d static DEFAULT_MODELS",
+                len(DEFAULT_MODELS),
+            )
             target_default = _coco_target_default(current_model)
             return [
                 ACPModelOption(
@@ -137,7 +141,7 @@ def fetch_acp_models(
                 if getattr(m, "name", "")
             ]
         except Exception:
-            logger.debug("[ACP] coco model fallback failed", exc_info=True)
+            logger.warning("[ACP] coco model fallback failed", exc_info=True)
 
     # Generic cache fallback for non-coco tools
     if tool_name != "coco":

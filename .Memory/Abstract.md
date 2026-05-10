@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-05-10
+- **修复 /coco 模型选择卡显示陈旧硬编码模型列表** — 根因：`fetch_acp_models("coco")` 靠 `coco acp serve` 冷启动探测 `available_models`，实测 4-12s 抖动而 `acp_model_probe_timeout` 默认仅 6s 频繁超时，超时后 `CocoModelManager` 与 helper 双双回退到静态 `DEFAULT_MODELS`（6 个假模型）且缓存 5min。修复：探测超时 6→15s；静态回退缓存 TTL 改 20s（让"刷新"按钮可重试）；新增 `CocoModelManager.kickoff_preheat()` 并在 `main.py` 启动时后台预热（`acp_model_preheat_on_startup` 开关）；test_coco_model 19 passed → [详细记录](2026-05-10.md)
 - **修复 Spec 引擎 CardSession 超时关闭 + 按钮无响应双 BUG** — BUG 1: CardSession idle TTL(1800s) 在 Spec/Loop 长时运行时误触发超时关闭，修复：透传 `ttl_seconds=7200` 匹配引擎执行超时；BUG 2: 新 CardSession 按钮被旧 prefix routing 拦截但缺少 `engine_project_id`，修复：`_switch_card_mode` 增加 else 分支直接 dispatch `CardEvent.mode_toggled()`；6391 passed → [详细记录](2026-05-10.md)
 - **修复项目群 /status 锁状态误显示"没有锁"** — 根因：项目群绑定关系只用于自由文本默认 Coco 分支，slash/system 命令解析上下文时仅回退 active_project；当项目群没有 active_project 时 `/status` 拿不到 ProjectContext/root_path，因而无法查询 repo lock。修复：消息上下文解析增加 bound_chat_id → ProjectContext fallback，并补齐优先级/回退测试 → [详细记录](2026-05-10.md)
 - **修复飞书卡片内容重复渲染 Bug** — 根因：block_index last-wins 语义 + reasoning block 共享固定 block_id 导致所有 atom 渲染最后一个 block 内容；修复：render 函数用 atom.content override + ProgrammingCardSession/ACPStreamBridge 生成唯一 per-turn block_id；同时解决 card table number over limit (11310) 错误；6359 passed → [详细记录](2026-05-10.md)
