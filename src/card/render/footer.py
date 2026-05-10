@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import math
+import json
 import time
 
-from src.card.state.models import CardState
+from src.card.state.models import CardState, ContentBlock
 from src.card.ui_text import UI_TEXT
 from .progress import render_progress_bar, MOBILE_SEGMENTS
 from .budget import RenderBudget
@@ -83,6 +84,15 @@ _ENGINE_PROGRESS_COLOR: dict[str, str] = {
     "worktree": "wathet",
 }
 
+_TOOL_BRIEF = {
+    "Read": lambda p: f"读取 {p.get('path', '...')}",
+    "Edit": lambda p: f"写入 {p.get('path', '...')}",
+    "Write": lambda p: f"创建 {p.get('path', '...')}",
+    "Grep": lambda p: f"搜索 “{p.get('pattern') or p.get('query') or '...'}”",
+    "Glob": lambda p: f"列出 {p.get('pattern', '...')}",
+    "Bash": lambda p: f"执行 {_short_cmd(p.get('command') or p.get('cmd') or '')}",
+}
+
 
 def _format_duration(seconds: float) -> str:
     """Format seconds into human-readable duration string."""
@@ -96,6 +106,20 @@ def _format_duration(seconds: float) -> str:
         return UI_TEXT["duration_mins_secs"].format(minutes=minutes, seconds=secs)
     hours, mins = divmod(minutes, 60)
     return UI_TEXT["duration_hours_mins_secs"].format(hours=hours, minutes=mins, seconds=secs)
+
+
+def render_now_tool_hint(tool) -> str:
+    """Render the v2 footer's one-line hint for the currently running tool."""
+    if tool is None:
+        return ""
+    status = _tool_status(tool)
+    if status not in {"active", "in_progress", "running"}:
+        return ""
+    name = _tool_name(tool)
+    payload = _tool_payload(tool)
+    brief_fn = _TOOL_BRIEF.get(name)
+    brief = brief_fn(payload) if brief_fn else name
+    return f"⚙ {name} · {brief}"
 
 
 def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[dict]:
@@ -169,6 +193,12 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
             {"tag": "markdown", "content": status_text, "text_size": "notation"}
         )
 
+    now_tool_hint = render_now_tool_hint(_find_running_tool(state))
+    if now_tool_hint:
+        elements.append(
+            {"tag": "markdown", "content": now_tool_hint, "text_size": "notation"}
+        )
+
     # Tool/model info line + duration (combined into one line)
     meta_parts = []
     if state.metadata.tool_name:
@@ -191,6 +221,18 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
     if meta_parts:
         elements.append(
             {"tag": "markdown", "content": " · ".join(meta_parts), "text_size": "notation"}
+        )
+
+    if state.metadata.is_subagent:
+        sub_parts = ["🧬 sub"]
+        if state.metadata.model_name:
+            sub_parts.append(f"model: {state.metadata.model_name}")
+        if state.metadata.tool_name:
+            sub_parts.append(f"tool: {state.metadata.tool_name}")
+        if state.metadata.parent_card_seq:
+            sub_parts.append(f"from #{state.metadata.parent_card_seq}")
+        elements.append(
+            {"tag": "markdown", "content": " · ".join(sub_parts), "text_size": "notation"}
         )
 
     # Blocked reason as visible text below footer status
@@ -228,3 +270,45 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
         )
 
     return elements
+
+
+def _find_running_tool(state: CardState) -> ContentBlock | None:
+    for block in reversed(state.blocks):
+        if getattr(block, "kind", "") != "tool_call":
+            continue
+        if getattr(block, "status", "") in {"active", "in_progress", "running"}:
+            return block
+    return None
+
+
+def _tool_name(tool) -> str:
+    return str(getattr(tool, "tool_name", None) or getattr(tool, "name", None) or "tool")
+
+
+def _tool_status(tool) -> str:
+    return str(getattr(tool, "status", ""))
+
+
+def _tool_payload(tool) -> dict:
+    raw = getattr(tool, "tool_input", None)
+    if raw is None:
+        raw = getattr(tool, "input", None)
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            if _tool_name(tool) == "Bash":
+                return {"command": raw}
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def _short_cmd(command: str) -> str:
+    command = " ".join(command.split())
+    if not command:
+        return "..."
+    return command[:80] + ("…" if len(command) > 80 else "")

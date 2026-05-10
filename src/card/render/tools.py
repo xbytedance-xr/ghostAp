@@ -63,7 +63,7 @@ def render_tool_panel(block: ContentBlock) -> dict | None:
     summary = generate_tool_summary(block)
     title_text = f"{icon} **{block.tool_name or 'tool'}** — {summary}"
 
-    expanded = bool(getattr(block, "is_latest_active", False))
+    expanded = _should_expand_tool(block)
     border_color = PANEL_STYLES["border_failed"] if block.status == "failed" else PANEL_STYLES["border_normal"]
 
     detail_content = _render_detail(block)
@@ -87,6 +87,11 @@ def render_tool_panel(block: ContentBlock) -> dict | None:
         "padding": PANEL_STYLES["padding_standard"],
         "elements": [{"tag": "markdown", "content": detail_content}],
     }
+
+
+def _should_expand_tool(block: ContentBlock) -> bool:
+    """Only the latest currently-running tool may be expanded."""
+    return block.status == "active" and bool(getattr(block, "is_latest_active", False))
 
 
 def render_tool_history_panel(blocks: list[ContentBlock]) -> dict | None:
