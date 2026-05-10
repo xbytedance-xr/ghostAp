@@ -128,6 +128,30 @@ class TestUnifiedCardSections:
             if el.get("tag") == "markdown"
         )
 
+    def test_programming_card_does_not_inject_activity_summary_panel(self):
+        state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="tool_call",
+                    block_id="tool1",
+                    tool_name="read",
+                    tool_input='{"path": "src/app.py"}',
+                    tool_output="ok",
+                    tool_summary="src/app.py",
+                    status="completed",
+                ),
+                ContentBlock(kind="text", block_id="body1", content="正文内容"),
+            ),
+            metadata=CardMetadata(tool_name="Coco"),
+        )
+
+        cards = render_card(state, RenderBudget(tool_history_fold_threshold=99))
+        body = cards[0]._card_json["body"]["elements"]
+
+        assert "已探索" not in str(body)
+        assert "正文内容" in str(body)
+        assert "read" in str(body)
+
 
 class TestStreamingMode:
     """streaming_mode in config."""

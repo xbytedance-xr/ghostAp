@@ -38,18 +38,17 @@ def test_sticky_head_includes_task_list_when_present():
     assert [a.kind for a in sticky] == ["phase_banner", "task_list"]
 
 
-def test_sticky_head_includes_activity_when_present():
+def test_sticky_head_omits_activity_summary_when_present():
     runtime = RuntimeStats(elapsed_seconds=5.0, deep_phase="executing")
     state = _state_with(has_task_list=True, has_activity=True, runtime=runtime)
     sticky = build_sticky_head(state, state.metadata)
-    kinds = [a.kind for a in sticky]
-    assert kinds[0] == "phase_banner"
-    assert "task_list" in kinds
+    assert [a.kind for a in sticky] == ["phase_banner", "task_list"]
 
 
-def test_sticky_head_node_cap_drops_activity_first():
+def test_sticky_head_node_cap_keeps_required_atoms_only():
     runtime = RuntimeStats(elapsed_seconds=5.0, deep_phase="executing")
     state = _state_with(has_task_list=True, has_activity=True, runtime=runtime)
     sticky = build_sticky_head(state, state.metadata, _force_total_nodes=STICKY_HEAD_MAX_NODES + 5)
     assert "phase_banner" in [a.kind for a in sticky]
+    assert "activity_summary" not in [a.kind for a in sticky]
     assert sum(a.node_count for a in sticky) <= STICKY_HEAD_MAX_NODES

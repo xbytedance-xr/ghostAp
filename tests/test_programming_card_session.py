@@ -270,7 +270,7 @@ class TestProgrammingCardSession:
 
         assert len(client.creates) >= 3
 
-    def test_render_keeps_process_summary_after_later_text_updates(self):
+    def test_render_omits_process_summary_after_later_text_updates(self):
         from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
         from src.card.render.budget import RenderBudget
         from src.card.render.renderer import render_card
@@ -307,9 +307,9 @@ class TestProgrammingCardSession:
         body = cards[0]._card_json["body"]["elements"]
         rendered_text = str(body)
 
-        assert "已运行 1 条命令" in rendered_text
-        assert "uv run python -m pytest tests/test_example.py -q" in rendered_text
-        assert rendered_text.index("已运行 1 条命令") < rendered_text.index("后续正文继续更新。")
+        assert "已运行 1 条命令" not in rendered_text
+        assert "先说明目标。" in rendered_text
+        assert "后续正文继续更新。" in rendered_text
 
 
 class TestSessionMetadataPerMode:
