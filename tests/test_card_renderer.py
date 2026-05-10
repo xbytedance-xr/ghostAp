@@ -104,14 +104,16 @@ class TestUnifiedCardSections:
             metadata=CardMetadata(engine_type="spec", mode_name="Spec · Coco", mode_emoji="📋"),
         )
 
-        cards = render_card(state, RenderBudget(tool_history_fold_threshold=99))
+        cards = render_card(state, RenderBudget())
         body = cards[0]._card_json["body"]["elements"]
 
         phase_idx = next(i for i, el in enumerate(body) if "第 1 轮 · Build" in str(el))
         text_idx = next(i for i, el in enumerate(body) if el.get("content") == "正文内容")
-        tool_idx = next(i for i, el in enumerate(body) if "Read" in str(el) and "read ok" in str(el))
+        # Completed tools now render as activity_digest (one-line summary) in body
+        digest_idx = next(i for i, el in enumerate(body) if "已探索" in str(el))
 
-        assert phase_idx < text_idx < tool_idx
+        # Status (phase) comes first, then body atoms in original order (digest, text)
+        assert phase_idx < digest_idx < text_idx
 
     def test_bridge_phrase_is_prepended_to_first_text_body_atom(self):
         state = CardState(
@@ -129,6 +131,7 @@ class TestUnifiedCardSections:
         )
 
     def test_programming_card_does_not_inject_activity_summary_panel(self):
+        """Completed tools render as compact activity_digest (not full activity_summary_panel)."""
         state = CardState(
             blocks=(
                 ContentBlock(
@@ -145,12 +148,15 @@ class TestUnifiedCardSections:
             metadata=CardMetadata(tool_name="Coco"),
         )
 
-        cards = render_card(state, RenderBudget(tool_history_fold_threshold=99))
+        cards = render_card(state, RenderBudget())
         body = cards[0]._card_json["body"]["elements"]
 
-        assert "已探索" not in str(body)
+        # Activity digest should appear as a compact notation-size line
+        assert "已探索" in str(body)
         assert "正文内容" in str(body)
-        assert "read" in str(body)
+        # Should NOT have a full collapsible_panel for tools
+        tool_panels = [el for el in body if el.get("tag") == "collapsible_panel" and "read" in str(el)]
+        assert len(tool_panels) == 0
 
 
 class TestStreamingMode:
@@ -371,6 +377,7 @@ class TestMultipleBlockTypes:
     """Rendering mixed block types."""
 
     def test_tool_block_renders_collapsible_panel(self):
+        """Completed tool renders as compact activity_digest (notation-size markdown)."""
         state = CardState(
             blocks=(
                 ContentBlock(
@@ -384,7 +391,8 @@ class TestMultipleBlockTypes:
         )
         cards = render_card(state, RenderBudget())
         body = cards[0]._card_json["body"]["elements"]
-        assert any(el.get("tag") == "collapsible_panel" for el in body)
+        # Completed tools now render as activity_digest (notation markdown), not collapsible_panel
+        assert any(el.get("text_size") == "notation" and "已运行" in str(el.get("content", "")) for el in body)
 
     def test_reasoning_block_renders(self):
         state = CardState(
@@ -418,6 +426,7 @@ class TestMultipleBlockTypes:
         assert len(panels) == 1
 
     def test_mixed_blocks_render_in_order(self):
+        """Text, tool, text blocks render in original order with activity_digest inline."""
         state = CardState(
             blocks=(
                 ContentBlock(kind="text", block_id="t1", content="Intro"),
@@ -433,12 +442,12 @@ class TestMultipleBlockTypes:
         )
         cards = render_card(state, RenderBudget())
         body = cards[0]._card_json["body"]["elements"]
-        # 3 content elements + 0 footer/buttons
+        # 3 content elements: text + activity_digest + text (+ footer/buttons)
         assert len(body) >= 3
         intro_idx = next(i for i, el in enumerate(body) if el.get("content") == "Intro")
         conclusion_idx = next(i for i, el in enumerate(body) if el.get("content") == "Conclusion")
-        tool_idx = next(i for i, el in enumerate(body) if el.get("tag") == "collapsible_panel" and "bash" in str(el))
-        assert intro_idx < conclusion_idx < tool_idx
+        digest_idx = next(i for i, el in enumerate(body) if el.get("text_size") == "notation" and "已运行" in str(el.get("content", "")))
+        assert intro_idx < digest_idx < conclusion_idx
 
 
 class TestPagination:
@@ -486,6 +495,12 @@ class TestPagination:
             assert "Deep" in body[0]["content"]
 
     def test_section_layout_keeps_appendix_on_last_page_only(self):
+        """Completed tools render as activity_digest in body (not appendix).
+
+        With the slim-flow redesign, completed tools are aggregated into a
+        one-line activity_digest atom placed in body alongside text, rather
+        than as collapsible panels in the appendix section.
+        """
         big_text = "line\n" * 5000
         state = CardState(
             blocks=(
@@ -500,15 +515,14 @@ class TestPagination:
             ),
             metadata=CardMetadata(mode_name="Deep", mode_emoji="🧠", engine_type="deep"),
         )
-        budget = RenderBudget(byte_budget=5000, tool_history_fold_threshold=99)
+        budget = RenderBudget(byte_budget=5000)
 
         cards = render_card(state, budget)
 
         assert len(cards) > 1
-        non_last_bodies = [card._card_json["body"]["elements"] for card in cards[:-1]]
-        last_body = cards[-1]._card_json["body"]["elements"]
-        assert all("Bash" not in str(body) for body in non_last_bodies)
-        assert "Bash" in str(last_body)
+        # activity_digest is small and sits in body on the first page
+        first_body = cards[0]._card_json["body"]["elements"]
+        assert "已运行" in str(first_body), "activity_digest should appear in first page body"
 
     def test_section_layout_renders_sticky_task_list_once_per_page(self):
         big_text = "line\n" * 5000

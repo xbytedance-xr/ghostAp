@@ -152,10 +152,10 @@ class TestMultiPageFlow:
         assert len(creates) >= 2
 
 
-class TestToolHistoryFolding:
-    """Multiple completed tools fold into history panel."""
+class TestToolBlockTracking:
+    """Multiple completed tool blocks are tracked in card state."""
 
-    def test_tool_history_fold_in_render(self):
+    def test_completed_tools_tracked_in_state(self):
         client = RecordingClient()
         session = _make_session(client)
 

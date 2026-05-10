@@ -1,7 +1,7 @@
 """Tests for tool/reasoning/plan panel rendering."""
 import pytest
 from src.card.state.models import ContentBlock
-from src.card.render.tools import render_tool_panel, render_tool_history_panel, generate_tool_summary
+from src.card.render.tools import render_tool_panel, generate_tool_summary
 from src.card.render.reasoning import render_reasoning_panel
 from src.card.render.plan import render_plan_panel
 from src.card.render.budget import RenderBudget
@@ -88,22 +88,6 @@ class TestToolPanel:
         detail_content = result["elements"][0]["content"]
         # Should contain truncation indicator (unicode ellipsis)
         assert "…" in detail_content
-
-
-class TestToolHistoryPanel:
-    def test_tool_history_panel_structure(self):
-        """Multiple tools → blue border, nested panels"""
-        blocks = [
-            ContentBlock(kind="tool_call", block_id=f"t{i}", status="completed",
-                        tool_name="bash", tool_input=f"cmd{i}", tool_summary=f"cmd{i}")
-            for i in range(4)
-        ]
-        result = render_tool_history_panel(blocks)
-        assert result["tag"] == "collapsible_panel"
-        assert result["expanded"] is False
-        assert result["border"]["color"] == "blue"
-        assert "4 个工具调用已完成" in result["header"]["title"]["content"]
-        assert len(result["elements"]) == 4
 
 
 class TestToolSummary:
@@ -235,28 +219,3 @@ class TestToolPanelEmptyData:
         detail_content = result["elements"][0]["content"]
         assert "**输入**" in detail_content
         assert "**输出**" in detail_content
-
-    def test_history_panel_all_empty_returns_none(self):
-        """AC7: History panel with all empty tools returns None."""
-        blocks = [
-            ContentBlock(kind="tool_call", block_id=f"t{i}", status="completed",
-                        tool_name="read", tool_input=None, tool_output=None)
-            for i in range(3)
-        ]
-        result = render_tool_history_panel(blocks)
-        assert result is None
-
-    def test_history_panel_partial_empty_filters(self):
-        """History panel filters out empty tools, counts only non-empty."""
-        blocks = [
-            ContentBlock(kind="tool_call", block_id="t0", status="completed",
-                        tool_name="read", tool_input=None, tool_output=None),
-            ContentBlock(kind="tool_call", block_id="t1", status="completed",
-                        tool_name="bash", tool_input="ls", tool_output="ok"),
-            ContentBlock(kind="tool_call", block_id="t2", status="completed",
-                        tool_name="bash", tool_input="pwd", tool_output="/home"),
-        ]
-        result = render_tool_history_panel(blocks)
-        assert result is not None
-        assert "2 个工具调用已完成" in result["header"]["title"]["content"]
-        assert len(result["elements"]) == 2

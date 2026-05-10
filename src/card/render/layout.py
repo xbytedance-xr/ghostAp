@@ -16,7 +16,7 @@ class SectionLayout:
     sticky_head: repeated on every page, never moved by pagination.
     status:      first page only; secondary status panels (progress, criteria).
     body:        primary content; subject to greedy pagination.
-    appendix:    last page only; tool_history, references.
+    appendix:    last page only; reserved for future use.
     """
 
     sticky_head: tuple[RenderAtom, ...]

@@ -144,7 +144,7 @@ class BaseHandler:
         Wraps CardDelivery directly without reduce/render pipeline.
         Used by diagnostics handler for pre-built static cards.
         """
-        from ...card.static_session import StaticCardSession
+        from ...card.session.static import StaticCardSession
 
         delivery = self.get_card_delivery()
         return StaticCardSession(

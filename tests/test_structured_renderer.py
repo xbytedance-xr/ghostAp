@@ -133,18 +133,22 @@ class TestProcessEventStructured:
         rendered = self.renderer.process_event(ACPEvent(event_type=ACPEventType.THOUGHT_CHUNK, text="thinking"))
         assert rendered == ""
 
-    def test_tool_done_creates_tool_group(self):
+    def test_tool_done_no_longer_injects_inline_summary(self):
+        """After slim-flow, TOOL_CALL_DONE no longer injects inline text.
+
+        Tool completion rendering is handled by activity_digest in the card
+        render layer (flatten_to_atoms), not by ACPEventRenderer.
+        """
         tc = ToolCallInfo(id="t1", title="Read file", kind="read", status="completed", locations=["a.py"])
         result = self.renderer.process_event_structured(
             ACPEvent(event_type=ACPEventType.TOOL_CALL_DONE, tool_call=tc)
         )
         tool_secs = [s for s in result.sections if s.section_type == "tool_group"]
-        assert len(tool_secs) == 1
-        assert tool_secs[0].tool_kind == "read"
-        assert tool_secs[0].tool_count == 1
-        assert tool_secs[0].collapsed_by_default is True
+        assert len(tool_secs) == 0
+        assert self.renderer.completed_tool_count == 1
 
-    def test_consecutive_same_kind_tools_merge(self):
+    def test_consecutive_same_kind_tools_no_inline_text(self):
+        """Tool done events no longer produce inline text aggregation."""
         for i in range(3):
             tc = ToolCallInfo(id=f"t{i}", title=f"Read file{i}", kind="read", status="completed", locations=[f"f{i}.py"])
             self.renderer.process_event_structured(
@@ -152,14 +156,13 @@ class TestProcessEventStructured:
             )
         result = self.renderer._render_structured()
         tool_secs = [s for s in result.sections if s.section_type == "tool_group"]
-        # Consecutive same-kind lines are aggregated by the text_chunks mechanism,
-        # so we get one tool_group with the aggregated line
-        assert len(tool_secs) >= 1
+        assert len(tool_secs) == 0
+        assert self.renderer.completed_tool_count == 3
 
     def test_text_interleaved_with_tools(self):
         # Text
         self.renderer.process_event_structured(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="first text"))
-        # Tool
+        # Tool (no inline injection anymore)
         tc = ToolCallInfo(id="t1", title="Read file", kind="read", status="completed", locations=["a.py"])
         self.renderer.process_event_structured(ACPEvent(event_type=ACPEventType.TOOL_CALL_DONE, tool_call=tc))
         # More text
@@ -167,7 +170,8 @@ class TestProcessEventStructured:
         result = self.renderer._render_structured()
         types = [s.section_type for s in result.sections]
         assert "text" in types
-        assert "tool_group" in types
+        # Tool completion no longer creates tool_group in text_chunks
+        assert "tool_group" not in types
 
     def test_plan_appears_as_section(self):
         plan = PlanInfo(entries=[PlanEntryInfo(content="step 1", status="completed")])
@@ -186,15 +190,14 @@ class TestProcessEventStructured:
         assert active_secs[0].collapsed_by_default is False
 
     def test_backward_compat_process_event(self):
-        """process_event() returns the exact same string as before refactoring."""
+        """process_event() returns text content without inline tool summaries."""
         # Text + tool done
         self.renderer.process_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="hello"))
         tc = ToolCallInfo(id="t1", title="Read file", kind="read", status="completed", locations=["a.py"])
         rendered = self.renderer.process_event(ACPEvent(event_type=ACPEventType.TOOL_CALL_DONE, tool_call=tc))
-        # Should contain the text and the tool summary
+        # Should contain the text but NOT tool summary (removed by slim-flow)
         assert "hello" in rendered
-        assert "Read file" in rendered
-        assert "📖" in rendered
+        assert self.renderer.completed_tool_count == 1
 
     def test_to_markdown_matches_legacy_render(self):
         """RenderedContent.to_markdown() should produce equivalent content to _render()."""
@@ -210,10 +213,9 @@ class TestProcessEventStructured:
             self.renderer._ingest_event(e)
         legacy = self.renderer._render()
         structured = self.renderer._render_structured()
-        # Structured markdown should contain all the same content pieces
+        # Structured markdown should contain text content
         sm = structured.to_markdown()
         assert "hello" in sm
-        assert "Read" in sm
         assert "world" in sm
 
     def test_reset_clears_thoughts(self):

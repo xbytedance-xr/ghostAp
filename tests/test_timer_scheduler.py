@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from src.card.timer_scheduler import TimerScheduler, _reset_global_scheduler, get_timer_scheduler
+from src.card.timers.scheduler import TimerScheduler, _reset_global_scheduler, get_timer_scheduler
 
 
 @pytest.fixture

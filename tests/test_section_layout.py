@@ -14,7 +14,7 @@ def test_assemble_first_page_includes_status():
         sticky_head=(_atom("phase_banner", "BAN"),),
         status=(_atom("progress_bar", "PROG"),),
         body=(_atom("text", "BODY1"), _atom("text", "BODY2")),
-        appendix=(_atom("tool_history", "HIST"),),
+        appendix=(_atom("activity_digest", "HIST"),),
     )
     page = layout.assemble_for_page(page_idx=0, total_pages=2, body_slice=(layout.body[0],))
     assert [a.content for a in page] == ["BAN", "PROG", "BODY1"]
@@ -25,7 +25,7 @@ def test_assemble_middle_page_no_status_no_appendix():
         sticky_head=(_atom("phase_banner", "BAN"),),
         status=(_atom("progress_bar", "PROG"),),
         body=(_atom("text", "B1"), _atom("text", "B2"), _atom("text", "B3")),
-        appendix=(_atom("tool_history", "HIST"),),
+        appendix=(_atom("activity_digest", "HIST"),),
     )
     page = layout.assemble_for_page(page_idx=1, total_pages=3, body_slice=(layout.body[1],))
     assert [a.content for a in page] == ["BAN", "B2"]
@@ -36,7 +36,7 @@ def test_assemble_last_page_includes_appendix():
         sticky_head=(_atom("phase_banner", "BAN"),),
         status=(),
         body=(_atom("text", "B"),),
-        appendix=(_atom("tool_history", "HIST"),),
+        appendix=(_atom("activity_digest", "HIST"),),
     )
     page = layout.assemble_for_page(page_idx=1, total_pages=2, body_slice=(layout.body[0],))
     assert [a.content for a in page] == ["BAN", "B", "HIST"]
@@ -47,7 +47,7 @@ def test_assemble_single_page_includes_status_and_appendix():
         sticky_head=(_atom("phase_banner", "BAN"),),
         status=(_atom("progress_bar", "PROG"),),
         body=(_atom("text", "B"),),
-        appendix=(_atom("tool_history", "HIST"),),
+        appendix=(_atom("activity_digest", "HIST"),),
     )
     page = layout.assemble_for_page(page_idx=0, total_pages=1, body_slice=layout.body)
     assert [a.content for a in page] == ["BAN", "PROG", "B", "HIST"]
@@ -103,14 +103,14 @@ def test_paginate_layout_appendix_only_on_last_page():
         sticky_head=(_atom("phase_banner", "S"),),
         status=(),
         body=(big_a, big_b),
-        appendix=(_atom("tool_history", "HIST"),),
+        appendix=(_atom("activity_digest", "HIST"),),
     )
     pages = paginate_layout(layout, RenderBudget())
     assert len(pages) >= 2
     last_kinds = [a.kind for a in pages[-1]]
     earlier_kinds = [a.kind for p in pages[:-1] for a in p]
-    assert "tool_history" in last_kinds
-    assert "tool_history" not in earlier_kinds
+    assert "activity_digest" in last_kinds
+    assert "activity_digest" not in earlier_kinds
 
 
 def test_paginate_layout_status_only_on_first_page():

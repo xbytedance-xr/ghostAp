@@ -21,7 +21,7 @@ from .base import BaseRenderer, _StreamThrottle
 if TYPE_CHECKING:
     from ...card.protocols import Dispatchable
     from ...card.session import CardSession
-    from ...card.session_rotator import SessionRotator
+    from ...card.session.rotator import SessionRotator
     from ...project import ProjectContext
     from ..handlers.base import BaseHandler
     from ..handlers.spec import SpecHandler

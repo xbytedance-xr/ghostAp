@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import TYPE_CHECKING, Optional
@@ -149,7 +150,7 @@ class DeepHandler(BaseEngineHandler):
 
         planning_content = reporter.format_planning_start(requirement)
         planning_title = reporter.get_planning_start_title()
-        msg_type, card_content = CardBuilder.build_info_card(
+        _msg_type, card_content = CardBuilder.build_info_card(
             project=project,
             title=planning_title,
             content=f"{planning_content}\n\n{self.format_ref_note(message_id, request_id)}"
@@ -158,7 +159,10 @@ class DeepHandler(BaseEngineHandler):
             engine_name=engine_name,
             show_buttons=False,
         )
-        initial_msg_id = self.reply_card(message_id, card_content)
+        planning_session = self.create_static_card_session(chat_id, reply_to=message_id)
+        planning_session.send(json.loads(card_content))
+        initial_msg_id = planning_session.message_id
+        planning_session.close()
 
         engine = self.ctx.deep_engine_manager.get_or_create(chat_id, root_path, engine_name=engine_name)
 
@@ -217,14 +221,16 @@ class DeepHandler(BaseEngineHandler):
 
         if not candidates:
             engine_name = self.get_engine_name(chat_id, project_id=None)
-            msg_type, card_content = CardBuilder.build_info_card(
+            _msg_type, card_content = CardBuilder.build_info_card(
                 project=None,
                 title="📊 Deep Agent 看板",
                 content="当前没有 Deep Agent 任务\n\n发送 `/deep <需求>` 开始一个复杂任务",
                 engine_name=engine_name,
                 show_buttons=False,
             )
-            self.reply_card(message_id, card_content)
+            session = self.create_static_card_session(chat_id, reply_to=message_id)
+            session.send(json.loads(card_content))
+            session.close()
             return
 
         def _sort_key(e):
@@ -251,14 +257,16 @@ class DeepHandler(BaseEngineHandler):
             status = e.project.status.value
             lines.append(f"- 🧠 **{proj_name}** · `{status}` · {info['progress_bar']} · `{root}`")
 
-        msg_type, card_content = CardBuilder.build_smart_response_card(
+        _msg_type, card_content = CardBuilder.build_smart_response_card(
             project=None,
             title="📊 Deep Agent 看板",
             content="\n".join(lines),
             working_dir=self.get_working_dir(chat_id),
             show_buttons=True,
         )
-        self.reply_card(message_id, card_content)
+        session = self.create_static_card_session(chat_id, reply_to=message_id)
+        session.send(json.loads(card_content))
+        session.close()
 
     # ------------------------------------------------------------------
     # pause / resume / stop
@@ -353,14 +361,16 @@ class DeepHandler(BaseEngineHandler):
             except Exception:
                 project = None
 
-        msg_type, card_content = CardBuilder.build_info_card(
+        _msg_type, card_content = CardBuilder.build_info_card(
             project=project,
             title=title,
             content=content,
             engine_name=engine_name,
             show_buttons=False,
         )
-        self.send_card_to_chat(chat_id, card_content)
+        session = self.create_static_card_session(chat_id)
+        session.send(json.loads(card_content))
+        session.close()
 
     # ------------------------------------------------------------------
     # UI Interaction Handlers

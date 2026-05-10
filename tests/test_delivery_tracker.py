@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.card.delivery_tracker import DeliveryTracker, PendingAction
+from src.card.delivery.tracker import DeliveryTracker, PendingAction
 
 
 class TestDeliveryTrackerBasic:

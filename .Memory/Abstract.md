@@ -2,6 +2,8 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-05-10
+- **维护窗口：Backlog B001-B016 批量清理** — 一次性清理全部技术债务：删除 10 个 shim 文件 + 修复 5 处遗漏 import (B001)、修复测试全局状态泄漏 (B002)、config.py 拆为 config/ 包 (B003)、审计确认无重叠 (B004)、DeepHandler 统一到 StaticCardSession (B005)、activity_digest 死代码全链路清理 (B014)、footer 重复渲染移除 (B015)、死函数删除 (B016)、移动端验证指引 (B017)；清理 ruff 配置与过时测试文件；全量 6359 passed → [详细记录](2026-05-10.md)
+- **飞书编程卡片精简：Activity Digest 替代工具面板** — 解决工具信息三重冗余，新增 `render_activity_digest_line()` 紧凑摘要 + 移除 ACPEventRenderer 内联注入 + 22 个测试 + 多角色审核修复；全量 4688 passed → [详细记录](2026-05-10.md)
 - **飞书编程卡片 v2 深层接线与 Backlog 清理** — 接入切卡冻结态、累计 elapsed、flow bridge、subagent dotted sequence/独立 streaming，并清理 B006-B013；复审后补齐 B006 残留生产 caller（LiveTicker、snapshot_turns、subagent panel、CardSessionFactory.create_subagent），进一步收口 turn block、reasoning boundary、ticker 终态 marker、TimerScheduler 异步 offload 与 dispatch 面板状态汇总；全量 6376 passed, 1 skipped → [详细记录](2026-05-10.md)
 - **飞书编程卡片 v2 后续实现** — 继续执行 card-redesign-v2 plan，补齐 footer helper、ACP turn snapshot、split bridge/cumulative elapsed、subagent session/render contract、LiveTicker 基础能力，并移除 renderer/sticky 中自动 activity_summary 注入；受当前 sandbox 限制，内部 `uv run` lint/validate 子进程用例无法执行，其余套件通过 → [详细记录](2026-05-10.md)
 - **飞书编程卡片 v2 重设计首批实现** — 基于已确认 HTML mockup/spec/plan，落地 v2 metadata foundation、两行编程 header、三段常开 sticky task list、仅运行中工具展开、footer 当前工具 hint 与 subagent badge；阶段性全量 6342 passed, 1 skipped → [详细记录](2026-05-10.md)

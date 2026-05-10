@@ -53,6 +53,11 @@ class TestACPEventRenderer:
         assert self.renderer.completed_tool_count == 1
 
     def test_tool_done_adds_inline_summary(self):
+        """After slim-flow, TOOL_CALL_DONE no longer adds inline text.
+
+        Tool completion is tracked via completed_tool_count and rendered
+        by activity_digest in the card render layer.
+        """
         tc = ToolCallInfo(id="t1", title="Edit main.py", kind="edit", status="completed", locations=["/tmp/main.py"])
         self.renderer.process_event(
             ACPEvent(
@@ -61,8 +66,10 @@ class TestACPEventRenderer:
             )
         )
         text = self.renderer.text_content
-        assert "Edit main.py" in text
-        assert "main.py" in text
+        # No longer injected into text
+        assert "Edit main.py" not in text
+        # But completion is still tracked
+        assert self.renderer.completed_tool_count == 1
 
     def test_plan_update(self):
         plan = PlanInfo(
@@ -230,12 +237,11 @@ class TestACPEventRenderer:
         assert "Step A" in plan_view
         assert "Step B" in plan_view
         assert "Running tests" in plan_view
-        # Plan view should NOT have text chunks or completed tool summaries
+        # Plan view should NOT have text chunks
         assert "Some agent output" not in plan_view
-        assert "Read config" not in plan_view
-        # Full render should have everything
+        # Full render should have text output
         assert "Some agent output" in full_render
-        assert "Read config" in full_render
+        # Tool completions no longer appear in text (slim-flow activity_digest)
 
     def test_render_plan_view_empty_state(self):
         """render_plan_view() returns empty string when no plan or active tools."""

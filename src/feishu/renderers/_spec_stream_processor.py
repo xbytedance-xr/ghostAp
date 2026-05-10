@@ -30,7 +30,7 @@ from ...spec_engine.retry_status import RetryEvent, RetryStatus
 from .base import _dispatch_text_block
 
 if TYPE_CHECKING:
-    from ...card.session_rotator import SessionRotator
+    from ...card.session.rotator import SessionRotator
     from ...spec_engine.reporter import SpecReporter
 
 logger = logging.getLogger(__name__)

@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.card.dispatch_coordinator import DispatchDeliveryCoordinator
-from src.card.delivery_tracker import DeliveryTracker
+from src.card.delivery.tracker import DeliveryTracker
 
 
 def _make_coordinator(

@@ -9,7 +9,6 @@ class RenderBudget:
     byte_budget: int = 27 * 1024
     node_budget: int = 180
     visible_chars: int = 25000
-    tool_history_fold_threshold: int = 50
     reasoning_tail_chars: int = 500
     engine_cmd: str = "对应命令"
     # Button rendering parameters (injected from settings at budget creation)

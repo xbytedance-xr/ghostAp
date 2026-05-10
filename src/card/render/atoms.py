@@ -17,10 +17,10 @@ logger = logging.getLogger(__name__)
 # Single source of truth for all atom kinds.
 # renderer.py validates that _ATOM_RENDERERS keys match this type at load time.
 AtomKind = Literal[
-    "text", "tool_panel", "tool_history", "reasoning", "plan",
+    "text", "tool_panel", "reasoning", "plan",
     "criteria_panel", "phase_panel", "warning_banner", "progress_bar",
     "worktree_panel", "task_list", "phase_banner",
-    "subagent_dispatch",
+    "subagent_dispatch", "activity_digest",
 ]
 
 @dataclass
@@ -54,77 +54,63 @@ def flatten_to_atoms(
 ) -> list[RenderAtom]:
     """Convert ContentBlocks into a flat list of RenderAtoms.
 
-    Implements tool history folding: ≥threshold completed tools → folded into one atom.
+    Tool calls are grouped into compact activity_digest atoms (one-line summary)
+    that interleave with reasoning/text atoms in the body section.
+    Active (running) tools emit a compact tool_panel atom inline.
+
     Uses a registry dispatch pattern for simple block→atom mappings.
     """
+    from src.card.render.tools import render_activity_digest_line, render_active_tool_line
+
     atoms: list[RenderAtom] = []
+    pending_tools: list[ContentBlock] = []
+    handlers = _get_block_kind_handlers()
+
+    def _flush_pending() -> None:
+        """Flush accumulated completed/failed tools as a single activity_digest atom."""
+        if not pending_tools:
+            return
+        digest_text = render_activity_digest_line(pending_tools)
+        if digest_text:
+            atom = RenderAtom(
+                kind="activity_digest",
+                block_id=pending_tools[0].block_id,
+                content=digest_text,
+                splittable=False,
+                node_count=1,
+            )
+            atom.byte_size = estimate_atom_size(atom)
+            atoms.append(atom)
+        pending_tools.clear()
+
     i = 0
     n = len(blocks)
-    handlers = _get_block_kind_handlers()
 
     while i < n:
         block = blocks[i]
 
         if block.kind == "tool_call":
-            # Tool calls require lookahead grouping — handled explicitly
-            if block.status == "completed":
-                group_start = i
-                # Scan forward: group completed tools even when interleaved with
-                # reasoning/text blocks (which get their own atoms separately).
-                # This prevents reasoning from breaking tool grouping and ensures
-                # the fold threshold is evaluated on the aggregate count.
-                interleaved: list[ContentBlock] = []
-                while i < n:
-                    if blocks[i].kind == "tool_call" and blocks[i].status == "completed":
-                        i += 1
-                    elif blocks[i].kind in ("reasoning", "text"):
-                        interleaved.append(blocks[i])
-                        i += 1
-                    else:
-                        break
-                group = [b for b in blocks[group_start:i] if b.kind == "tool_call" and b.status == "completed"]
-
-                if len(group) >= budget.tool_history_fold_threshold:
-                    # Fold into a single tool_history atom
-                    summary_lines = []
-                    for b in group:
-                        name = b.tool_name or "tool"
-                        summary = b.tool_summary or "done"
-                        summary_lines.append(f"✅ {name}: {summary}")
-                    content = "\n".join(summary_lines)
-                    atom = RenderAtom(
-                        kind="tool_history",
-                        block_id=group[0].block_id,
-                        content=content,
-                        splittable=False,
-                        node_count=1,
-                    )
-                    atom.byte_size = estimate_atom_size(atom)
-                    atoms.append(atom)
-                    # Emit interleaved text/reasoning blocks that were absorbed
-                    # during lookahead — they must not be silently discarded.
-                    for ib in interleaved:
-                        handler = handlers.get(ib.kind)
-                        if handler is not None:
-                            atoms.append(handler(ib))
-                else:
-                    # Below threshold: render each tool individually, with
-                    # interleaved blocks in their original positions
-                    for b in blocks[group_start:i]:
-                        if b.kind == "tool_call":
-                            atom = _tool_block_to_atom(b)
-                            atoms.append(atom)
-                        else:
-                            handler = handlers.get(b.kind)
-                            if handler is not None:
-                                atoms.append(handler(b))
-            else:
-                # Active or failed tool_call → never folded
-                atom = _tool_block_to_atom(block)
+            if block.status == "active":
+                # Flush any pending completed tools first
+                _flush_pending()
+                # Active tool: emit compact one-line indicator in body
+                active_text = render_active_tool_line(block)
+                atom = RenderAtom(
+                    kind="tool_panel",
+                    block_id=block.block_id,
+                    content=active_text,
+                    splittable=False,
+                    node_count=1,
+                )
+                atom.byte_size = estimate_atom_size(atom)
                 atoms.append(atom)
-                i += 1
+            else:
+                # Completed or failed: accumulate for digest
+                pending_tools.append(block)
+            i += 1
         else:
-            # Registry dispatch for all other block kinds
+            # Non-tool block: flush pending tools, then dispatch normally
+            _flush_pending()
             handler = handlers.get(block.kind)
             if handler is not None:
                 atom = handler(block)
@@ -142,6 +128,9 @@ def flatten_to_atoms(
                 placeholder.byte_size = estimate_atom_size(placeholder)
                 atoms.append(placeholder)
             i += 1
+
+    # Flush any remaining pending tools at end of blocks
+    _flush_pending()
 
     return atoms
 
@@ -283,21 +272,4 @@ def invalidate_atom_handlers() -> None:
     _block_kind_handlers = None
 
 
-def _tool_block_to_atom(block: ContentBlock) -> RenderAtom:
-    """Convert a single tool_call ContentBlock to a tool_panel RenderAtom."""
-    content_parts = []
-    if block.tool_name:
-        content_parts.append(f"tool: {block.tool_name}")
-    if block.tool_summary:
-        content_parts.append(f"summary: {block.tool_summary}")
-    content = "\n".join(content_parts) if content_parts else block.content
 
-    atom = RenderAtom(
-        kind="tool_panel",
-        block_id=block.block_id,
-        content=content,
-        splittable=False,
-        node_count=2,  # tool panel typically has header + body
-    )
-    atom.byte_size = estimate_atom_size(atom)
-    return atom

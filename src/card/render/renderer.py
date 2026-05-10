@@ -18,7 +18,7 @@ from src.card.render.layout import SectionLayout, paginate_layout
 from src.card.render.plan import render_plan_panel
 from src.card.render.reasoning import render_reasoning_panel
 from src.card.render.sticky_head import build_sticky_head
-from src.card.render.tools import build_subagent_dispatch_atom, render_tool_history_panel, render_tool_panel
+from src.card.render.tools import build_subagent_dispatch_atom, render_tool_panel
 from src.card.render.worktree import render_worktree_panel
 from src.card.state.models import CardState, ContentBlock
 from src.card.themes import PANEL_STYLES
@@ -27,8 +27,7 @@ from src.card.ui_text import UI_TEXT
 logger = logging.getLogger(__name__)
 
 _STATUS_ATOM_KINDS = frozenset({"warning_banner", "progress_bar", "phase_panel", "criteria_panel", "task_list"})
-_BODY_ATOM_KINDS = frozenset({"text", "reasoning", "plan", "worktree_panel", "subagent_dispatch"})
-_APPENDIX_ATOM_KINDS = frozenset({"tool_panel", "tool_history"})
+_BODY_ATOM_KINDS = frozenset({"text", "reasoning", "plan", "worktree_panel", "subagent_dispatch", "activity_digest", "tool_panel"})
 
 
 # Banner background color and icon by warning_type
@@ -282,17 +281,15 @@ def _render_atom_text(atom: RenderAtom, state: CardState, budget: RenderBudget, 
 
 
 def _render_atom_tool_panel(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict | None:
+    # In the new activity_digest flow, tool_panel atoms are only emitted for
+    # active (running) tools with pre-rendered compact content.
+    # Render as compact notation-sized markdown line.
+    if atom.content:
+        return {"tag": "markdown", "content": atom.content, "text_size": "notation"}
     block = block_index.get(atom.block_id)
     if block is not None:
         return render_tool_panel(block)
-    return {"tag": "markdown", "content": atom.content}
-
-
-def _render_atom_tool_history(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict | None:
-    blocks = _find_tool_history_blocks(state, atom.block_id)
-    if blocks:
-        return render_tool_history_panel(blocks)
-    return {"tag": "markdown", "content": atom.content}
+    return None
 
 
 def _render_atom_subagent_dispatch(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict | None:
@@ -356,12 +353,16 @@ def _render_atom_task_list(atom: RenderAtom, state: CardState, budget: RenderBud
     return render_task_list_panel(block)
 
 
+def _render_atom_activity_digest(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict:
+    """Render activity digest as a compact markdown line (notation size)."""
+    return {"tag": "markdown", "content": atom.content, "text_size": "notation"}
+
+
 # Atom renderer registry: maps atom.kind → renderer function.
 # To add a new atom kind, define a function with the standard signature and register it here.
 _ATOM_RENDERERS: dict[str, Callable[[RenderAtom, CardState, RenderBudget, dict], dict | None]] = {
     "text": _render_atom_text,
     "tool_panel": _render_atom_tool_panel,
-    "tool_history": _render_atom_tool_history,
     "subagent_dispatch": _render_atom_subagent_dispatch,
     "reasoning": _render_atom_reasoning,
     "plan": _render_atom_plan,
@@ -372,6 +373,7 @@ _ATOM_RENDERERS: dict[str, Callable[[RenderAtom, CardState, RenderBudget, dict],
     "phase_banner": _render_atom_phase_banner,
     "worktree_panel": _render_atom_worktree_panel,
     "task_list": _render_atom_task_list,
+    "activity_digest": _render_atom_activity_digest,
 }
 
 # Validate AtomKind ↔ _ATOM_RENDERERS single source of truth at import time.
@@ -431,7 +433,7 @@ def _prepend_bridge_phrase(element: dict, phrase: str) -> bool:
 
 
 def _order_atoms_by_section(atoms: list[RenderAtom]) -> list[RenderAtom]:
-    """Render sections in stable order: status → body → appendix.
+    """Render sections in stable order: status → body.
 
     Preserve relative order inside each section so streaming updates remain stable.
     Unknown atoms stay in body section by default to avoid dropping content.
@@ -439,13 +441,10 @@ def _order_atoms_by_section(atoms: list[RenderAtom]) -> list[RenderAtom]:
     """
     status_atoms: list[RenderAtom] = []
     body_atoms: list[RenderAtom] = []
-    appendix_atoms: list[RenderAtom] = []
 
     for atom in atoms:
         if atom.kind in _STATUS_ATOM_KINDS:
             status_atoms.append(atom)
-        elif atom.kind in _APPENDIX_ATOM_KINDS:
-            appendix_atoms.append(atom)
         elif atom.kind in _BODY_ATOM_KINDS:
             body_atoms.append(atom)
         else:
@@ -456,7 +455,7 @@ def _order_atoms_by_section(atoms: list[RenderAtom]) -> list[RenderAtom]:
     other_status = [a for a in status_atoms if a.kind != "task_list"]
     status_atoms = [*task_list_atoms, *other_status]
 
-    return [*status_atoms, *body_atoms, *appendix_atoms]
+    return [*status_atoms, *body_atoms]
 
 
 def _build_section_layout(state: CardState, atoms: list[RenderAtom]) -> SectionLayout:
@@ -468,7 +467,6 @@ def _build_section_layout(state: CardState, atoms: list[RenderAtom]) -> SectionL
 
     status_atoms: list[RenderAtom] = []
     body_atoms: list[RenderAtom] = []
-    appendix_atoms: list[RenderAtom] = []
 
     for atom in ordered:
         if atom.block_id in sticky_block_ids:
@@ -477,8 +475,6 @@ def _build_section_layout(state: CardState, atoms: list[RenderAtom]) -> SectionL
             continue
         if atom.kind in _STATUS_ATOM_KINDS:
             status_atoms.append(atom)
-        elif atom.kind in _APPENDIX_ATOM_KINDS:
-            appendix_atoms.append(atom)
         else:
             body_atoms.append(atom)
 
@@ -486,7 +482,7 @@ def _build_section_layout(state: CardState, atoms: list[RenderAtom]) -> SectionL
         sticky_head=sticky_head,
         status=tuple(status_atoms),
         body=tuple(body_atoms),
-        appendix=tuple(appendix_atoms),
+        appendix=(),
     )
 
 
@@ -514,24 +510,6 @@ def _find_active_element(
         if block is not None and block.status == "active" and block.element_id:
             return ActiveElement(element_id=block.element_id, text=atom.content)
     return None
-
-
-def _find_tool_history_blocks(
-    state: CardState, first_block_id: str
-) -> list[ContentBlock]:
-    """Find consecutive completed tool_call blocks starting from first_block_id."""
-    blocks: list[ContentBlock] = []
-    found = False
-    for block in state.blocks:
-        if block.block_id == first_block_id:
-            found = True
-        if found:
-            if block.kind == "tool_call" and block.status == "completed":
-                blocks.append(block)
-            else:
-                if blocks:
-                    break
-    return blocks
 
 
 def _assemble_card_json(

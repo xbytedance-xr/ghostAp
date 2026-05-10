@@ -148,11 +148,8 @@ def build_footer_atoms(state: CardState) -> list[RenderAtom]:
     assertions and follow-up render paths.
     """
     atoms: list[RenderAtom] = []
-    now_tool_hint = render_now_tool_hint(_find_running_tool(state))
-    if now_tool_hint:
-        atom = RenderAtom(kind="text", content=now_tool_hint, node_count=1)
-        atom.byte_size = estimate_atom_size(atom)
-        atoms.append(atom)
+    # now_tool_hint removed — active tool info is shown inline in body
+    # via render_active_tool_line() (activity_digest flow).
 
     subagent_badge = render_subagent_badge(state.metadata)
     if subagent_badge:
@@ -233,11 +230,8 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
             {"tag": "markdown", "content": status_text, "text_size": "notation"}
         )
 
-    now_tool_hint = render_now_tool_hint(_find_running_tool(state))
-    if now_tool_hint:
-        elements.append(
-            {"tag": "markdown", "content": now_tool_hint, "text_size": "notation"}
-        )
+    # now_tool_hint removed — active tool info is shown inline in body
+    # via render_active_tool_line() (activity_digest flow).
 
     # Tool/model info line + duration (combined into one line)
     meta_parts = []

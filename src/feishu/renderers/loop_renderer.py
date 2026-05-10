@@ -24,7 +24,7 @@ from .base import BaseRenderer, _dispatch_text_block
 
 if TYPE_CHECKING:
     from ...card.protocols import Dispatchable
-    from ...card.session_rotator import SessionRotator
+    from ...card.session.rotator import SessionRotator
     from ...project import ProjectContext
     from ..handlers.loop import LoopHandler
 

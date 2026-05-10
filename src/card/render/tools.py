@@ -28,10 +28,15 @@ _SEARCH_TOOLS = {"grep", "search", "find", "glob", "search_codebase"}
 _COMPACT_TOOLS = {"task", "todowrite", "todo_write"}
 
 _COMMAND_TOOLS = _BASH_TOOLS
-_EDIT_TOOLS = {"write", "edit", "multi_edit", "write_file", "edit_file", "replace"}
+_EDIT_TOOLS = {
+    "write", "edit", "multi_edit", "write_file", "edit_file", "replace",
+    "str_replace_editor", "create_file", "insert", "patch", "apply_diff",
+    "delete_file",
+}
 _EXPLORE_TOOLS = {
     "read", "read_file", "grep", "search", "find", "glob",
     "search_codebase", "list", "ls", "list_dir",
+    "cat", "head", "tail", "tree",
 }
 
 _SUBAGENT_STATUS_ICONS = {
@@ -101,37 +106,6 @@ def render_tool_panel(block: ContentBlock) -> dict | None:
 def _should_expand_tool(block: ContentBlock) -> bool:
     """Only the latest currently-running tool may be expanded."""
     return block.status == "active" and bool(getattr(block, "is_latest_active", False))
-
-
-def render_tool_history_panel(blocks: list[ContentBlock]) -> dict | None:
-    """Render multiple completed tools as a folded panel.
-
-    Returns None if all tool panels are empty.
-    """
-    nested = [p for b in blocks if (p := render_tool_panel(b)) is not None]
-    if not nested:
-        return None
-    n = len(nested)
-
-    return {
-        "tag": "collapsible_panel",
-        "expanded": False,
-        "header": {
-            "title": {"tag": "markdown", "content": UI_TEXT["tool_history_panel_header"].format(n=n)},
-            "vertical_align": "center",
-            "icon": {
-                "tag": "standard_icon",
-                "token": "down-small-ccm_outlined",
-                "size": "16px 16px",
-            },
-            "icon_position": "follow_text",
-            "icon_expanded_angle": -180,
-        },
-        "border": {"color": PANEL_STYLES["border_history"], "corner_radius": PANEL_STYLES["corner_radius"]},
-        "vertical_spacing": PANEL_STYLES["vertical_spacing"],
-        "padding": PANEL_STYLES["padding_standard"],
-        "elements": nested,
-    }
 
 
 def render_subagent_dispatch_panel(subagents: list[dict]) -> dict | None:
@@ -205,125 +179,6 @@ def build_subagent_dispatch_atom(subagents: list[dict]) -> RenderAtom | None:
     )
     atom.byte_size = estimate_atom_size(atom)
     return atom
-
-
-def render_activity_summary_panel(
-    blocks: list[ContentBlock] | tuple[ContentBlock, ...],
-    *,
-    compact: bool = False,
-) -> dict | None:
-    """Render a compact, persistent activity summary for programming cards.
-
-    Args:
-        blocks: Content blocks to summarize.
-        compact: Collapse details and keep only count header for sticky_head.
-    """
-    tool_blocks = [b for b in blocks if getattr(b, "kind", "") == "tool_call"]
-    if not tool_blocks:
-        return None
-
-    explored: set[str] = set()
-    edited: set[str] = set()
-    command_count = 0
-    active_count = 0
-    failed_count = 0
-    detail_lines: list[str] = []
-
-    for block in tool_blocks:
-        tool_name = (getattr(block, "tool_name", "") or "").lower()
-        status = getattr(block, "status", "")
-        summary = _activity_target(block)
-
-        if status == "active":
-            active_count += 1
-        elif status == "failed":
-            failed_count += 1
-
-        if tool_name in _COMMAND_TOOLS:
-            if status != "active":
-                command_count += 1
-            if summary:
-                detail_lines.append(_activity_detail("运行失败" if status == "failed" else "已运行", summary))
-            continue
-
-        if tool_name in _EDIT_TOOLS:
-            if summary:
-                edited.add(summary)
-                detail_lines.append(_activity_detail("已编辑", summary))
-            continue
-
-        if tool_name in _EXPLORE_TOOLS:
-            if summary:
-                explored.add(summary)
-                detail_lines.append(_activity_detail("已探索", summary))
-            continue
-
-        if summary:
-            detail_lines.append(_activity_detail("已调用", f"{block.tool_name}: {summary}"))
-
-    header_parts: list[str] = []
-    if explored:
-        header_parts.append(f"已探索 {len(explored)} 项")
-    if edited:
-        header_parts.append(f"已编辑 {len(edited)} 个文件")
-    if command_count:
-        header_parts.append(f"已运行 {command_count} 条命令")
-    if active_count:
-        header_parts.append(f"正在运行 {active_count} 项")
-    if failed_count:
-        header_parts.append(f"{failed_count} 项失败")
-
-    if not header_parts:
-        return None
-
-    title_content = f"▣ **{', '.join(header_parts)}**"
-
-    if compact:
-        return {
-            "tag": "collapsible_panel",
-            "expanded": False,
-            "header": {
-                "title": {"tag": "markdown", "content": title_content},
-                "vertical_align": "center",
-                "icon": {
-                    "tag": "standard_icon",
-                    "token": "down-small-ccm_outlined",
-                    "size": "16px 16px",
-                },
-                "icon_position": "follow_text",
-                "icon_expanded_angle": -180,
-            },
-            "border": {"color": PANEL_STYLES["border_history"], "corner_radius": PANEL_STYLES["corner_radius"]},
-            "vertical_spacing": PANEL_STYLES["vertical_spacing"],
-            "padding": PANEL_STYLES["padding_standard"],
-            "elements": [{"tag": "markdown", "content": "_(展开查看活动详情)_"}],
-        }
-
-    visible_details = detail_lines[-_MAX_ACTIVITY_DETAILS:]
-    hidden_count = max(0, len(detail_lines) - len(visible_details))
-    detail_content = "\n".join(f"- {line}" for line in visible_details)
-    if hidden_count:
-        detail_content += f"\n- 还有 {hidden_count} 项较早操作已折叠"
-
-    return {
-        "tag": "collapsible_panel",
-        "expanded": True,
-        "header": {
-            "title": {"tag": "markdown", "content": title_content},
-            "vertical_align": "center",
-            "icon": {
-                "tag": "standard_icon",
-                "token": "down-small-ccm_outlined",
-                "size": "16px 16px",
-            },
-            "icon_position": "follow_text",
-            "icon_expanded_angle": -180,
-        },
-        "border": {"color": PANEL_STYLES["border_history"], "corner_radius": PANEL_STYLES["corner_radius"]},
-        "vertical_spacing": PANEL_STYLES["vertical_spacing"],
-        "padding": PANEL_STYLES["padding_standard"],
-        "elements": [{"tag": "markdown", "content": detail_content}],
-    }
 
 
 def generate_tool_summary(block: ContentBlock) -> str:
@@ -476,3 +331,62 @@ def _render_generic_detail(tool_input: str, tool_output: str, output_empty: bool
         output = _truncate_output(tool_output)
         parts.append(f"{UI_TEXT['tool_label_output']}\n```\n{output}\n```")
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Activity Digest: compact one-line summaries for turn-based rendering
+# ---------------------------------------------------------------------------
+
+def render_activity_digest_line(blocks: list[ContentBlock]) -> str:
+    """Render a one-line activity digest for a group of completed/failed tool calls.
+
+    Example output: '▣ **已探索 3 项, 已编辑 1 个文件, 已运行 2 条命令**'
+    """
+    if not blocks:
+        return ""
+
+    explored = 0
+    edited = 0
+    commands = 0
+    other = 0
+    failed = 0
+
+    for b in blocks:
+        name = (getattr(b, "tool_name", "") or "").lower()
+        if getattr(b, "status", "") == "failed":
+            failed += 1
+            continue
+        if name in _EXPLORE_TOOLS:
+            explored += 1
+        elif name in _EDIT_TOOLS:
+            edited += 1
+        elif name in _COMMAND_TOOLS:
+            commands += 1
+        else:
+            other += 1
+
+    parts: list[str] = []
+    if explored:
+        parts.append(f"已探索 {explored} 项")
+    if edited:
+        parts.append(f"已编辑 {edited} 个文件")
+    if commands:
+        parts.append(f"已运行 {commands} 条命令")
+    if other:
+        parts.append(f"{other} 次其他调用")
+    if failed:
+        parts.append(f"{failed} 项失败")
+
+    return f"▣ **{', '.join(parts)}**" if parts else ""
+
+
+def render_active_tool_line(block: ContentBlock) -> str:
+    """Render a single running tool as a compact one-line indicator.
+
+    Example output: '⏳ **Read** · src/card/render/tools.py'
+    """
+    tool_name = block.tool_name or "tool"
+    summary = generate_tool_summary(block)
+    if summary and summary != tool_name:
+        return f"⏳ **{tool_name}** · {summary}"
+    return f"⏳ **{tool_name}**"

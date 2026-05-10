@@ -536,6 +536,11 @@ class TestProgrammingCardSession:
         assert calls == [("a", "Explore")]
 
     def test_render_omits_process_summary_after_later_text_updates(self):
+        """Completed tools render as activity_digest between text blocks.
+
+        With slim-flow redesign, completed tools always produce a one-line
+        activity_digest placed inline in body between surrounding text blocks.
+        """
         from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
         from src.card.render.budget import RenderBudget
         from src.card.render.renderer import render_card
@@ -572,7 +577,8 @@ class TestProgrammingCardSession:
         body = cards[0]._card_json["body"]["elements"]
         rendered_text = str(body)
 
-        assert "已运行 1 条命令" not in rendered_text
+        # activity_digest should be present between text blocks
+        assert "已运行" in rendered_text
         assert "先说明目标。" in rendered_text
         assert "后续正文继续更新。" in rendered_text
 

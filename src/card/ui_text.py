@@ -886,8 +886,6 @@ UI_TEXT = {
     "orch_task_status_running": "🔄",
     "orch_task_status_done": "✅",
     "orch_task_status_failed": "❌",
-    # --- Tool panel ---
-    "tool_history_panel_header": "🔧 **{n} 个工具调用已完成**",
     # --- Renderer inline text ---
     "deep_exec_start": "🚀 ACP Deep 执行开始\n\n📂 **{project_name}**\n🔗 路径: `{root_path}`",
     "deep_phase_executing": "🔄 执行中",

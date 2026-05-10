@@ -9,7 +9,6 @@ Maintains state across events to build a complete view of:
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field, replace
 from typing import Optional
 
@@ -40,16 +39,6 @@ _STATUS_ICONS = {
     "completed": "✅",
     "failed": "❌",
 }
-
-# Regex to detect tool-run summary lines produced by _format_tool_run_line().
-# Matches lines like "\n📖 Read `foo.py` ✅\n" or "\n🔧 3 个调用: ... ✅\n".
-_TOOL_LINE_RE = re.compile(
-    r"^\n?("
-    + "|".join(re.escape(ic) for ic in _KIND_ICONS.values())
-    + r")\s.+("
-    + "|".join(re.escape(ic) for ic in [_STATUS_ICONS["completed"]])
-    + r")\s*\n?$"
-)
 
 
 # ------------------------------------------------------------------
@@ -239,10 +228,6 @@ class ACPEventRenderer:
         self._todo_content: str = ""  # Latest TodoWrite rendered content
         self._thought_chunks: list[str] = []  # Accumulated thought text for structured rendering
         self._turns: list[_MutableTurn] = []
-        # Consecutive same-kind completed tool aggregation state.
-        # Tracks the last tool run so repeated read/edit/etc. collapse into a
-        # single line like "📖 Read 3 个文件: a.py, b.py, c.py ✅".
-        self._last_tool_run: Optional[dict] = None
 
     def _record_text_turn(self, text: str) -> None:
         if not text:
@@ -272,21 +257,6 @@ class ACPEventRenderer:
                 snapshots.append(TurnSnapshot(reasoning=reasoning, tools=tools))
         return tuple(snapshots)
 
-    def _format_tool_run_line(self, kind: str, items: list[tuple[str, str]]) -> str:
-        icon = _KIND_ICONS.get(kind, "🔧")
-        status_icon = _STATUS_ICONS.get("completed", "✅")
-        if len(items) == 1:
-            title, loc = items[0]
-            loc_str = f" `{loc}`" if loc else ""
-            return f"\n{icon} {title}{loc_str} {status_icon}\n"
-        # Aggregate multiple same-kind calls
-        locs = [loc for _, loc in items if loc]
-        titles = [t for t, _ in items]
-        shown = locs if locs else titles
-        sample = ", ".join(f"`{s}`" if locs else s for s in shown[:3])
-        more = f" (+{len(shown) - 3})" if len(shown) > 3 else ""
-        return f"\n{icon} {len(items)} 个调用: {sample}{more} {status_icon}\n"
-
     def _ingest_event(self, event: ACPEvent) -> None:
         """Pure state mutation — update internal state from an ACP event."""
         match event.event_type:
@@ -295,8 +265,6 @@ class ACPEventRenderer:
                     self._record_text_turn(event.text)
                     self._text_chunks.append(event.text)
                     self._text_content += event.text
-                    # Any real text breaks the aggregation run.
-                    self._last_tool_run = None
 
             case ACPEventType.THOUGHT_CHUNK:
                 if event.text:
@@ -333,35 +301,9 @@ class ACPEventRenderer:
                     if event.tool_call.content:
                         # TodoWrite: update dedicated section, don't pollute text buffer
                         self._todo_content = event.tool_call.content
-                        self._last_tool_run = None
-                    else:
-                        # Add inline summary to text (skip empty titles)
-                        title = (event.tool_call.title or "").strip()
-                        if title:
-                            kind = event.tool_call.kind or "other"
-                            loc = event.tool_call.locations[0] if event.tool_call.locations else ""
-                            item = (title, loc)
-                            run = self._last_tool_run
-                            if (
-                                run
-                                and run["kind"] == kind
-                                and run["line_idx"] == len(self._text_chunks) - 1
-                            ):
-                                # Same-kind consecutive run — update the aggregated line in place.
-                                run["items"].append(item)
-                                new_line = self._format_tool_run_line(kind, run["items"])
-                                self._text_chunks[run["line_idx"]] = new_line
-                                self._text_dirty = True
-                            else:
-                                # Start a new run.
-                                line = self._format_tool_run_line(kind, [item])
-                                self._text_chunks.append(line)
-                                self._text_content += line
-                                self._last_tool_run = {
-                                    "kind": kind,
-                                    "items": [item],
-                                    "line_idx": len(self._text_chunks) - 1,
-                                }
+                    # Tool completion rendering is handled by activity_digest
+                    # in the card render layer (flatten_to_atoms), no longer
+                    # injected as inline text here.
 
             case ACPEventType.PLAN_UPDATE:
                 if event.plan:
@@ -478,7 +420,6 @@ class ACPEventRenderer:
         self._todo_content = ""
         self._thought_chunks = []
         self._turns = []
-        self._last_tool_run = None
 
     # ------------------------------------------------------------------
     # Rendering
@@ -548,76 +489,14 @@ class ACPEventRenderer:
         return RenderedContent(sections=sections)
 
     def _split_text_into_stages(self) -> list[ContentSection]:
-        """Split _text_chunks into alternating text / tool_group sections.
-
-        Tool-run summary lines (matching _TOOL_LINE_RE) are grouped into
-        ``tool_group`` sections; everything else becomes ``text`` sections.
-        Consecutive same-kind tool lines merge into one group.
-        """
+        """Return accumulated text as a single text section."""
         if not self._text_chunks:
             return []
 
-        sections: list[ContentSection] = []
-        current_text: list[str] = []
-        current_tools: list[str] = []
-        current_tool_kind: str = ""
-        current_tool_count: int = 0
-
-        def flush_text():
-            nonlocal current_text
-            if current_text:
-                md = "".join(current_text).strip()
-                if md:
-                    sections.append(ContentSection(section_type="text", markdown=md))
-                current_text = []
-
-        def flush_tools():
-            nonlocal current_tools, current_tool_kind, current_tool_count
-            if current_tools:
-                md = "".join(current_tools).strip()
-                if md:
-                    sections.append(
-                        ContentSection(
-                            section_type="tool_group",
-                            markdown=md,
-                            tool_kind=current_tool_kind,
-                            tool_count=current_tool_count,
-                            collapsed_by_default=True,
-                        )
-                    )
-                current_tools = []
-                current_tool_kind = ""
-                current_tool_count = 0
-
-        for chunk in self._text_chunks:
-            if _TOOL_LINE_RE.match(chunk):
-                # Extract kind from the icon at the start
-                kind = self._extract_tool_kind_from_line(chunk)
-                if current_tools and kind != current_tool_kind:
-                    # Different tool kind — flush current group, start new
-                    flush_tools()
-                if not current_tools:
-                    flush_text()
-                    current_tool_kind = kind
-                current_tools.append(chunk)
-                current_tool_count += 1
-            else:
-                if current_tools:
-                    flush_tools()
-                current_text.append(chunk)
-
-        flush_tools()
-        flush_text()
-        return sections
-
-    @staticmethod
-    def _extract_tool_kind_from_line(line: str) -> str:
-        """Extract the tool kind from a tool-run summary line by matching its icon."""
-        stripped = line.strip()
-        for kind, icon in _KIND_ICONS.items():
-            if stripped.startswith(icon):
-                return kind
-        return "other"
+        md = "".join(self._text_chunks).strip()
+        if not md:
+            return []
+        return [ContentSection(section_type="text", markdown=md)]
 
     def _render_plan(self) -> str:
         """Render plan as a checklist."""

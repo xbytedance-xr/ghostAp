@@ -551,7 +551,7 @@ class TestPendingActionToEvent:
     """Test PendingAction → CardEvent conversion."""
 
     def test_show_recovery_maps_to_warning_event(self):
-        from src.card.delivery_tracker import DeliveryTracker, PendingAction
+        from src.card.delivery.tracker import DeliveryTracker, PendingAction
         from src.card.session import _pending_action_to_event
         from src.card.ui_text import UI_TEXT
 
@@ -561,7 +561,7 @@ class TestPendingActionToEvent:
         assert event.payload["warning"] == UI_TEXT["card_session_recovery_banner"]
 
     def test_clear_banner_maps_to_empty_warning(self):
-        from src.card.delivery_tracker import DeliveryTracker, PendingAction
+        from src.card.delivery.tracker import DeliveryTracker, PendingAction
         from src.card.session import _pending_action_to_event
 
         tracker = DeliveryTracker()
@@ -570,7 +570,7 @@ class TestPendingActionToEvent:
         assert event.payload["warning"] == ""
 
     def test_max_failures_maps_to_warning_event(self):
-        from src.card.delivery_tracker import DeliveryTracker, PendingAction
+        from src.card.delivery.tracker import DeliveryTracker, PendingAction
         from src.card.session import _pending_action_to_event
         from src.card.ui_text import UI_TEXT
 
@@ -1358,10 +1358,10 @@ class TestAtomRendererRegistry:
         from src.card.render.renderer import _ATOM_RENDERERS
 
         expected_kinds = {
-            "text", "tool_panel", "tool_history", "reasoning", "plan",
+            "text", "tool_panel", "reasoning", "plan",
             "criteria_panel", "phase_panel", "warning_banner",
             "progress_bar", "worktree_panel", "task_list",
-            "phase_banner", "subagent_dispatch",
+            "phase_banner", "subagent_dispatch", "activity_digest",
         }
         assert expected_kinds == set(_ATOM_RENDERERS.keys())
 
@@ -1653,7 +1653,7 @@ class TestMaxFailuresBannerFormatting:
             def update_element(self, card_id, element_id, content, *, sequence=0):
                 raise ConnectionError("always fail")
 
-        from src.card.delivery_tracker import DeliveryTracker
+        from src.card.delivery.tracker import DeliveryTracker
 
         delivery = CardDelivery(FailingClient())
         metadata = CardMetadata(mode_name="Test", engine_type="deep")
@@ -2519,7 +2519,7 @@ class TestTTLKeepAliveConcurrentWrite:
         import threading
         import time
 
-        from src.card.action_ids import TTL_KEEP_ALIVE
+        from src.card.actions.dispatch import TTL_KEEP_ALIVE
         from src.card.session.core import CardSession
         from src.card.state.models import CardMetadata
         from src.card.session.config import SessionConfig

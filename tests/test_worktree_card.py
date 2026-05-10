@@ -280,7 +280,7 @@ class TestWorktreeCancelAction:
     """worktree_cancel triggers CANCELLED and closes session."""
 
     def test_cancel_action_closes_session(self):
-        from src.card.action_dispatch import build_worktree_action_registry
+        from src.card.actions.dispatch import build_worktree_action_registry
 
         registry = build_worktree_action_registry()
         client = _MockClient()

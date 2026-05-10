@@ -18,6 +18,9 @@ def _tool(name, status="active", tool_input=None):
     )
 
 
+# --- render_now_tool_hint unit tests (function still exists, just not used in footer) ---
+
+
 def test_now_tool_hint_for_edit_path():
     line = render_now_tool_hint(_tool("Edit", tool_input='{"path": "src/router.py"}'))
 
@@ -44,7 +47,11 @@ def test_now_tool_hint_none_when_no_running_tool():
     assert render_now_tool_hint(None) == ""
 
 
-def test_footer_renders_now_tool_hint_for_running_tool():
+# --- Footer no longer renders now_tool_hint (moved to body active tool line) ---
+
+
+def test_footer_does_not_render_now_tool_hint_for_running_tool():
+    """Footer should NOT show ⚙ tool hint — active tool info is in body."""
     state = CardState(
         blocks=(_tool("Bash", tool_input='{"command": "uv run pytest"}'),),
         footer=FooterState(status="tool_running", status_text="执行中"),
@@ -52,7 +59,7 @@ def test_footer_renders_now_tool_hint_for_running_tool():
 
     elements = render_footer(state)
 
-    assert any("⚙ Bash · 执行 uv run pytest" in el.get("content", "") for el in elements)
+    assert not any("⚙ Bash" in el.get("content", "") for el in elements)
 
 
 def test_footer_renders_subagent_badge_when_enabled():
@@ -75,7 +82,8 @@ def test_subagent_badge_helper_is_blank_for_main_card():
     assert render_subagent_badge(CardMetadata(tool_name="Codex")) == ""
 
 
-def test_build_footer_atoms_includes_running_tool_and_subagent_badge():
+def test_build_footer_atoms_excludes_tool_hint_includes_subagent_badge():
+    """build_footer_atoms should only have subagent badge, not tool hint."""
     state = CardState(
         blocks=(_tool("Edit", tool_input='{"path": "src/card/render/footer.py"}'),),
         footer=FooterState(status="tool_running", status_text="执行中"),
@@ -89,7 +97,7 @@ def test_build_footer_atoms_includes_running_tool_and_subagent_badge():
 
     atoms = build_footer_atoms(state)
 
-    assert [atom.content for atom in atoms] == [
-        "⚙ Edit · 写入 src/card/render/footer.py",
-        "🧬 sub · model: claude-haiku-4-5 · tool: Aiden · from #5",
-    ]
+    # Only subagent badge, no tool hint
+    assert len(atoms) == 1
+    assert "🧬 sub" in atoms[0].content
+    assert not any("⚙" in atom.content for atom in atoms)

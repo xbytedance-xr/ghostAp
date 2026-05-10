@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import pytest
 
-from src.card.action_dispatch import build_worktree_action_registry
-from src.card import action_ids
+from src.card.actions.dispatch import build_worktree_action_registry
+from src.card.actions import dispatch as action_ids
 from src.card.events import CardEvent
 
 

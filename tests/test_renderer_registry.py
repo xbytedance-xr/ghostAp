@@ -56,8 +56,8 @@ def test_renderer_reset_all_fields():
         )
     )
 
-    # 3) TOOL_CALL_DONE for tool-A (title, no content) → _completed_tool_count +1,
-    #    starts a new _last_tool_run, pops tool-A from _active_tools
+    # 3) TOOL_CALL_DONE for tool-A → _completed_tool_count +1,
+    #    pops tool-A from _active_tools
     renderer.process_event(
         ACPEvent(
             event_type=ACPEventType.TOOL_CALL_DONE,
@@ -68,8 +68,8 @@ def test_renderer_reset_all_fields():
         )
     )
 
-    # 4) TOOL_CALL_DONE for tool-B (same kind "read", no content) →
-    #    hits aggregation branch → _text_dirty = True
+    # 4) TOOL_CALL_DONE for tool-B (same kind "read") →
+    #    _completed_tool_count +1 (no inline injection since slim-flow)
     renderer.process_event(
         ACPEvent(
             event_type=ACPEventType.TOOL_CALL_DONE,
@@ -111,7 +111,6 @@ def test_renderer_reset_all_fields():
     assert renderer._plan is not None, "_plan should be set"
     assert len(renderer.modified_files) > 0, "modified_files should be non-empty"
     assert renderer.todo_content != "", "todo_content should be non-empty"
-    assert renderer._last_tool_run is not None, "_last_tool_run should be set"
 
     # ── Reset ──
     renderer.reset()
@@ -125,7 +124,6 @@ def test_renderer_reset_all_fields():
     assert renderer._plan is None, "_plan not reset"
     assert renderer.modified_files == set(), "modified_files not reset"
     assert renderer.todo_content == "", "todo_content not reset"
-    assert renderer._last_tool_run is None, "_last_tool_run not reset"
 
 
 def test_reset_does_not_mutate_prior_references():

@@ -69,7 +69,7 @@ class TestForceClosePath:
         assert session._timers._ttl_retry_count == 1
 
         # Exhaust retries
-        from src.card.timer_manager import _MAX_TTL_RETRIES
+        from src.card.timers.manager import _MAX_TTL_RETRIES
         for _ in range(_MAX_TTL_RETRIES - 1):
             session._ttl_handler.on_ttl_expired()
 
@@ -100,7 +100,7 @@ class TestForceClosePath:
         session._lock.acquire()
 
         # Exhaust all retries
-        from src.card.timer_manager import _MAX_TTL_RETRIES
+        from src.card.timers.manager import _MAX_TTL_RETRIES
         for _ in range(_MAX_TTL_RETRIES + 1):
             session._ttl_handler.on_ttl_expired()
 
@@ -140,7 +140,7 @@ class TestForceClosePath:
         session._lock.acquire()
 
         # Exhaust all retries
-        from src.card.timer_manager import _MAX_TTL_RETRIES
+        from src.card.timers.manager import _MAX_TTL_RETRIES
         for _ in range(_MAX_TTL_RETRIES + 1):
             session._ttl_handler.on_ttl_expired()
 
@@ -171,7 +171,7 @@ class TestForceClosePath:
         with patch.object(delivery, 'close', side_effect=RuntimeError("delivery broken")):
             session._lock.acquire()
 
-            from src.card.timer_manager import _MAX_TTL_RETRIES
+            from src.card.timers.manager import _MAX_TTL_RETRIES
             for _ in range(_MAX_TTL_RETRIES + 1):
                 session._ttl_handler.on_ttl_expired()
 
@@ -224,7 +224,7 @@ class TestForceCloseRealConcurrency:
                 # Hold the lock then exhaust retries to trigger force-close
                 session._lock.acquire()
                 try:
-                    from src.card.timer_manager import _MAX_TTL_RETRIES
+                    from src.card.timers.manager import _MAX_TTL_RETRIES
                     for _ in range(_MAX_TTL_RETRIES + 1):
                         session._ttl_handler.on_ttl_expired()
                 finally:
@@ -329,7 +329,7 @@ class TestNotifyCallbackFallback:
         with patch("src.card.session.core.render_card", side_effect=RuntimeError("render failed")):
             # Hold lock and exhaust retries
             session._lock.acquire()
-            from src.card.timer_manager import _MAX_TTL_RETRIES
+            from src.card.timers.manager import _MAX_TTL_RETRIES
             for _ in range(_MAX_TTL_RETRIES + 1):
                 session._ttl_handler.on_ttl_expired()
             session._lock.release()
@@ -360,7 +360,7 @@ class TestRenderCardFailureFallback:
         # Patch render_card to raise during the force-close terminal render
         with patch("src.card.session.core.render_card", side_effect=RuntimeError("render boom")):
             session._lock.acquire()
-            from src.card.timer_manager import _MAX_TTL_RETRIES
+            from src.card.timers.manager import _MAX_TTL_RETRIES
             for _ in range(_MAX_TTL_RETRIES + 1):
                 session._ttl_handler.on_ttl_expired()
             session._lock.release()

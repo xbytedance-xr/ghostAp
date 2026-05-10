@@ -58,8 +58,8 @@ class TestFlattenToAtoms:
         assert atom.splittable is False
         assert atom.content == "thinking..."
 
-    def test_tool_history_fold(self) -> None:
-        """≥3 completed tools → single tool_history atom."""
+    def test_completed_tools_become_activity_digest(self) -> None:
+        """≥3 completed tools → single activity_digest atom (compact summary)."""
         blocks = tuple(
             ContentBlock(
                 kind="tool_call",
@@ -70,17 +70,16 @@ class TestFlattenToAtoms:
             )
             for i in range(4)
         )
-        budget = RenderBudget(tool_history_fold_threshold=3)
+        budget = RenderBudget()
         atoms = flatten_to_atoms(blocks, budget)
 
         assert len(atoms) == 1
         atom = atoms[0]
-        assert atom.kind == "tool_history"
-        assert "tool_0" in atom.content
-        assert "tool_3" in atom.content
+        assert atom.kind == "activity_digest"
+        assert "4 次其他调用" in atom.content
 
-    def test_tool_history_no_fold(self) -> None:
-        """≤2 completed tools → individual atoms."""
+    def test_few_completed_tools_become_activity_digest(self) -> None:
+        """≤2 completed tools → single activity_digest atom (not individual tool_panels)."""
         blocks = tuple(
             ContentBlock(
                 kind="tool_call",
@@ -91,11 +90,13 @@ class TestFlattenToAtoms:
             )
             for i in range(2)
         )
-        budget = RenderBudget(tool_history_fold_threshold=3)
+        budget = RenderBudget()
         atoms = flatten_to_atoms(blocks, budget)
 
-        assert len(atoms) == 2
-        assert all(a.kind == "tool_panel" for a in atoms)
+        # New behavior: all completed tools grouped into one activity_digest
+        assert len(atoms) == 1
+        assert atoms[0].kind == "activity_digest"
+        assert "2 次其他调用" in atoms[0].content
 
     def test_active_tool_never_folded(self) -> None:
         """Active tool stays independent even among completed tools."""
@@ -105,13 +106,13 @@ class TestFlattenToAtoms:
             ContentBlock(kind="tool_call", block_id="t3", status="completed", tool_name="c"),
             ContentBlock(kind="tool_call", block_id="t4", status="active", tool_name="running"),
         )
-        budget = RenderBudget(tool_history_fold_threshold=3)
+        budget = RenderBudget()
         atoms = flatten_to_atoms(blocks, budget)
 
-        # First 3 completed → folded into 1 tool_history
+        # First 3 completed → 1 activity_digest
         # Last active → separate tool_panel
         assert len(atoms) == 2
-        assert atoms[0].kind == "tool_history"
+        assert atoms[0].kind == "activity_digest"
         assert atoms[1].kind == "tool_panel"
         assert "running" in atoms[1].content
 

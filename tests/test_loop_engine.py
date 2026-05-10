@@ -1457,11 +1457,29 @@ class TestLoopReviewCircuitStatePersistence:
 class TestLoopReviewSkipOverrun:
     """Verify warning is emitted when consecutive_skips >= max_consecutive * 2."""
 
+    @patch("src.engine_base.get_settings")
+    def _make_engine(self, tmp_path, mock_settings):
+        s = MagicMock()
+        s.loop_max_iterations = 15
+        s.loop_convergence_window = 3
+        s.loop_execution_timeout = 300
+        s.loop_max_context_tokens = 50000
+        s.loop_review_enabled = True
+        s.loop_review_extra_iterations = 3
+        s.loop_review_timeout = 30
+        s.loop_review_min_timeout = 10
+        s.loop_review_failure_circuit_enabled = True
+        s.loop_review_failure_max_consecutive = 3
+        s.loop_review_failure_cooldown_iterations = 3
+        s.loop_review_failure_max_cooldown_iterations = 12
+        mock_settings.return_value = s
+        return LoopEngine(chat_id="c1", root_path=str(tmp_path))
+
     def test_skip_overrun_warning(self, tmp_path, caplog):
         """When consecutive_skips reaches threshold, a warning is logged and suggestions reflect overrun."""
         from src.loop_engine.engine import LoopReviewCircuitState
 
-        engine = LoopEngine(chat_id="c1", root_path=str(tmp_path))
+        engine = self._make_engine(tmp_path)
         engine._project = LoopProject.create(name="t", root_path=str(tmp_path))
         # Set circuit to be open until iteration 100
         engine._review_circuit = LoopReviewCircuitState(
@@ -1488,7 +1506,7 @@ class TestLoopReviewSkipOverrun:
         """Below threshold, no overrun warning and suggestions have no overrun text."""
         from src.loop_engine.engine import LoopReviewCircuitState
 
-        engine = LoopEngine(chat_id="c1", root_path=str(tmp_path))
+        engine = self._make_engine(tmp_path)
         engine._project = LoopProject.create(name="t", root_path=str(tmp_path))
         engine._review_circuit = LoopReviewCircuitState(
             review_failure_consecutive=3,
@@ -1507,14 +1525,11 @@ class TestLoopReviewSkipOverrun:
         for rev in result.reviews:
             assert not any("跳过次数异常偏高" in s for s in rev.suggestions)
 
-    @pytest.mark.skip(
-        reason="全局状态泄漏 — Backlog B002, 待 fixture 隔离修复"
-    )
     def test_skips_reset_on_success(self, tmp_path):
         """consecutive_skips resets to 0 when review succeeds."""
         from src.loop_engine.engine import LoopReviewCircuitState
 
-        engine = LoopEngine(chat_id="c1", root_path=str(tmp_path))
+        engine = self._make_engine(tmp_path)
         engine._project = LoopProject.create(name="t", root_path=str(tmp_path))
         engine._project.requirement = LoopRequirement(
             goal="test", raw_text="r", acceptance_criteria=["c1"],

@@ -118,7 +118,7 @@ class TestDestructiveConfirm:
 
     def test_destructive_actions_set_completeness(self):
         """Guard: _DESTRUCTIVE_ACTIONS must contain the expected set."""
-        from src.card.action_ids import (
+        from src.card.actions.dispatch import (
             ENGINE_STOP, DEEP_STOP, LOOP_STOP, SPEC_STOP,
             WORKTREE_CLEANUP, WORKTREE_MERGE, WORKTREE_CANCEL,
             APPROVE_ACTION,
