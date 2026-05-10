@@ -208,6 +208,59 @@ class TestProjectChatDefaultCocoRouting(unittest.TestCase):
         self.client._message_dispatcher._handle_enter_coco.assert_not_called()
 
 
+class TestProjectChatContextResolution(unittest.TestCase):
+    """Project-bound group chats should resolve their one-to-one project.
+
+    This covers slash/system commands such as /status: unlike free-form text,
+    they do not pass through the default-Coco project-chat branch, so project
+    context must be resolved before intent dispatch.
+    """
+
+    def test_resolve_project_from_message_falls_back_to_bound_project_chat(self):
+        client = _make_client()
+        bound_project = MagicMock()
+        bound_project.project_id = "pid_bound"
+
+        client._project_manager.find_by_bound_chat_id.return_value = bound_project
+        client._project_manager.get_active_project.return_value = None
+
+        project, auto_mode = client._resolve_project_from_message("m1", "oc_project", parent_id=None)
+
+        self.assertIs(project, bound_project)
+        self.assertIsNone(auto_mode)
+
+    def test_resolve_project_from_message_keeps_parent_reference_priority(self):
+        client = _make_client()
+        referenced_project = MagicMock()
+        referenced_project.project_id = "pid_ref"
+        bound_project = MagicMock()
+        bound_project.project_id = "pid_bound"
+
+        client._message_mapper.get_project_id.return_value = "pid_ref"
+        client._project_manager.get_project_for_chat.return_value = referenced_project
+        client._project_manager.find_by_bound_chat_id.return_value = bound_project
+        client._mode_manager.get_mode.return_value.value = "smart"
+
+        project, auto_mode = client._resolve_project_from_message("m1", "oc_project", parent_id="parent_1")
+
+        self.assertIs(project, referenced_project)
+        self.assertIsNone(auto_mode)
+        client._project_manager.find_by_bound_chat_id.assert_not_called()
+
+    def test_resolve_project_from_message_uses_active_project_when_not_bound(self):
+        client = _make_client()
+        active_project = MagicMock()
+        active_project.project_id = "pid_active"
+
+        client._project_manager.find_by_bound_chat_id.return_value = None
+        client._project_manager.get_active_project.return_value = active_project
+
+        project, auto_mode = client._resolve_project_from_message("m1", "oc_regular", parent_id=None)
+
+        self.assertIs(project, active_project)
+        self.assertIsNone(auto_mode)
+
+
 class TestSystemHandlerPendingPrompt(unittest.TestCase):
     """pending_prompt stash/consume across the model-select card callback."""
 

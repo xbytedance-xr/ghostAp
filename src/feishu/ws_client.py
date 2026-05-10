@@ -838,6 +838,10 @@ class FeishuWSClient:
 
                     return project, auto_enter_mode
 
+        bound_project = self._project_manager.find_by_bound_chat_id(chat_id)
+        if bound_project is not None:
+            return bound_project, None
+
         return self._project_manager.get_active_project(chat_id), None
 
     def _handle_message(self, data: P2ImMessageReceiveV1):

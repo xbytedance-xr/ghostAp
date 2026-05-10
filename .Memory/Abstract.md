@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-05-10
+- **修复项目群 /status 锁状态误显示“没有锁”** — 根因：项目群绑定关系只用于自由文本默认 Coco 分支，slash/system 命令解析上下文时仅回退 active_project；当项目群没有 active_project 时 `/status` 拿不到 ProjectContext/root_path，因而无法查询 repo lock。修复：消息上下文解析增加 bound_chat_id → ProjectContext fallback，并补齐优先级/回退测试 → [详细记录](2026-05-10.md)
 - **修复飞书卡片内容重复渲染 Bug** — 根因：block_index last-wins 语义 + reasoning block 共享固定 block_id 导致所有 atom 渲染最后一个 block 内容；修复：render 函数用 atom.content override + ProgrammingCardSession/ACPStreamBridge 生成唯一 per-turn block_id；同时解决 card table number over limit (11310) 错误；6359 passed → [详细记录](2026-05-10.md)
 - **维护窗口：Backlog B001-B016 批量清理** — 一次性清理全部技术债务：删除 10 个 shim 文件 + 修复 5 处遗漏 import (B001)、修复测试全局状态泄漏 (B002)、config.py 拆为 config/ 包 (B003)、审计确认无重叠 (B004)、DeepHandler 统一到 StaticCardSession (B005)、activity_digest 死代码全链路清理 (B014)、footer 重复渲染移除 (B015)、死函数删除 (B016)、移动端验证指引 (B017)；清理 ruff 配置与过时测试文件；全量 6359 passed → [详细记录](2026-05-10.md)
 - **飞书编程卡片精简：Activity Digest 替代工具面板** — 解决工具信息三重冗余，新增 `render_activity_digest_line()` 紧凑摘要 + 移除 ACPEventRenderer 内联注入 + 22 个测试 + 多角色审核修复；全量 4688 passed → [详细记录](2026-05-10.md)
