@@ -323,6 +323,13 @@ class BaseEngineHandler(BaseHandler):
         if engine_project_id:
             self.renderer.update_ui_state(engine_project_id, compact=compact)
             self._refresh_card_view(message_id, chat_id, project)
+        else:
+            # New CardSession path: buttons rendered by CardSession don't carry
+            # engine_project_id — dispatch MODE_TOGGLED directly to the active session.
+            session = self.renderer.get_active_session()
+            if session and not session.closed:
+                from src.card.events import CardEvent
+                session.dispatch(CardEvent.mode_toggled(compact=compact))
 
     # ------------------------------------------------------------------
     # Project auto-creation helper

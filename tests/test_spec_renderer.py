@@ -52,6 +52,7 @@ class TestSpecRendererCreateRotator:
 
         mock_create.assert_called_once_with(
             "chat1", "msg1", metadata, hooks=mock_hooks, budget=mock_budget,
+            ttl_seconds=None,
         )
 
 

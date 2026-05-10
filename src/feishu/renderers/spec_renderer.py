@@ -101,7 +101,13 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
         hooks = self._build_hooks(message_id)
 
         _spec_budget = RenderBudget(engine_cmd="/spec")
-        rotator: SessionRotator = self._create_rotator(chat_id, message_id, metadata, hooks=hooks, budget=_spec_budget)
+        # Spec engine runs can take hours (review cycles, build phases).
+        # Use spec_execution_timeout as session TTL to prevent premature idle-timeout.
+        _spec_ttl = float(self.settings.spec_execution_timeout)
+        rotator: SessionRotator = self._create_rotator(
+            chat_id, message_id, metadata,
+            hooks=hooks, budget=_spec_budget, ttl_seconds=_spec_ttl,
+        )
         self._current_session = rotator
 
         _throttle = _StreamThrottle(

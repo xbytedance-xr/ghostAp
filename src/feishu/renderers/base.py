@@ -181,6 +181,7 @@ class BaseRenderer:
         action_registry: "dict | None" = None,
         notify_callback=None,
         cancel_callback=None,
+        ttl_seconds: float | None = None,
     ) -> "CardSession":
         """Create a CardSession via the unified factory path.
 
@@ -218,6 +219,8 @@ class BaseRenderer:
             callbacks=cbs,
             budget=budget,
         )
+        if ttl_seconds is not None:
+            kwargs["ttl_seconds"] = ttl_seconds
 
         # Delegate to factory (retry logic is handled inside factory.create())
         try:
@@ -364,6 +367,7 @@ class BaseRenderer:
         *,
         hooks: tuple = (),
         budget=None,
+        ttl_seconds: float | None = None,
     ):
         """Create a SessionRotator wrapping a new CardSession.
 
@@ -374,6 +378,7 @@ class BaseRenderer:
 
         session = self.create_session(
             chat_id, message_id, metadata, hooks=hooks, budget=budget,
+            ttl_seconds=ttl_seconds,
         )
         return SessionRotator(session)
 

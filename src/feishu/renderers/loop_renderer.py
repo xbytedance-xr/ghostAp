@@ -107,7 +107,13 @@ class LoopRenderer(RotatingRendererMixin, BaseRenderer):
         hooks = self._build_hooks(message_id)
 
         _loop_budget = RenderBudget(engine_cmd="/loop")
-        rotator: SessionRotator = self._create_rotator(chat_id, message_id, metadata, hooks=hooks, budget=_loop_budget)
+        # Loop engine runs can be long-lived (multi-round iterations).
+        # Use loop_execution_timeout as session TTL to prevent premature idle-timeout.
+        _loop_ttl = float(self.settings.loop_execution_timeout)
+        rotator: SessionRotator = self._create_rotator(
+            chat_id, message_id, metadata,
+            hooks=hooks, budget=_loop_budget, ttl_seconds=_loop_ttl,
+        )
         self._current_session = rotator
         stream_bridge = ACPStreamBridge(rotator)
 

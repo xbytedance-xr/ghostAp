@@ -230,7 +230,7 @@ class TestLoopRenderer:
 
         created_metadata: list[CardMetadata] = []
 
-        def fake_create_session(chat_id, reply_to, metadata, hooks=(), budget=None):
+        def fake_create_session(chat_id, reply_to, metadata, hooks=(), budget=None, **kwargs):
             session = MagicMock()
             session.closed = False
             session.delivered_message_id = f"delivered-{len(created_metadata)}"
@@ -322,6 +322,7 @@ class TestLoopRendererCreateRotator:
         assert isinstance(rotator, SessionRotator)
         mock_create.assert_called_once_with(
             "chat1", "msg1", metadata, hooks=(), budget=None,
+            ttl_seconds=None,
         )
 
     def test_create_rotator_passes_hooks_and_budget(self, mock_handler):
@@ -342,6 +343,7 @@ class TestLoopRendererCreateRotator:
 
         mock_create.assert_called_once_with(
             "chat2", "msg2", metadata, hooks=test_hooks, budget=test_budget,
+            ttl_seconds=None,
         )
 
 
@@ -366,7 +368,7 @@ class TestLoopRendererContinuationSeq:
 
         created_sessions = []
 
-        def fake_create_session(chat_id, reply_to, metadata, hooks=(), budget=None):
+        def fake_create_session(chat_id, reply_to, metadata, hooks=(), budget=None, **kwargs):
             session = MagicMock()
             session.closed = False
             session.session_id = f"session-{len(created_sessions)}"
