@@ -130,6 +130,24 @@ class TestUnifiedCardSections:
             if el.get("tag") == "markdown"
         )
 
+    def test_bridge_phrase_prepended_to_reasoning_column_set(self):
+        """Bridge phrase prepends into column_set's second column (reasoning panel)."""
+        state = CardState(
+            blocks=(ContentBlock(kind="reasoning", block_id="r1", content="分析中...", status="active"),),
+            metadata=CardMetadata(bridge_phrase="续接："),
+        )
+
+        cards = render_card(state, RenderBudget())
+        body = cards[0]._card_json["body"]["elements"]
+
+        # Find the column_set (reasoning panel)
+        col_sets = [el for el in body if el.get("tag") == "column_set" and el.get("background_style") == "grey"]
+        assert len(col_sets) >= 1
+        # Bridge phrase should be in the content column (second column, weight=20)
+        content_col = col_sets[0]["columns"][1]
+        md_content = content_col["elements"][0]["content"]
+        assert md_content.startswith("续接：")
+
     def test_programming_card_does_not_inject_activity_summary_panel(self):
         """Completed tools render as compact activity_digest (not full activity_summary_panel)."""
         state = CardState(
@@ -308,6 +326,24 @@ class TestActiveElement:
         assert cards[0].active_element is None
 
 
+class TestColumnSetSignature:
+    """column_set content changes should affect page signature."""
+
+    def test_column_set_content_change_updates_signature(self):
+        """Reasoning panel (column_set) with different content should produce different signatures."""
+        s1 = CardState(
+            blocks=(ContentBlock(kind="reasoning", block_id="r1", content="thought A", status="active"),),
+            terminal="running",
+        )
+        s2 = CardState(
+            blocks=(ContentBlock(kind="reasoning", block_id="r1", content="thought B", status="active"),),
+            terminal="running",
+        )
+        cards1 = render_card(s1, RenderBudget())
+        cards2 = render_card(s2, RenderBudget())
+        assert cards1[0].structure_signature != cards2[0].structure_signature
+
+
 class TestStructureSignature:
     """compute_structure_signature tests."""
 
@@ -407,7 +443,7 @@ class TestMultipleBlockTypes:
         )
         cards = render_card(state, RenderBudget())
         body = cards[0]._card_json["body"]["elements"]
-        assert any(el.get("tag") == "collapsible_panel" for el in body)
+        assert any(el.get("tag") == "column_set" and el.get("background_style") == "grey" for el in body)
 
     def test_plan_block_renders(self):
         state = CardState(

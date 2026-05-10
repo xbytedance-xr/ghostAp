@@ -32,6 +32,11 @@ class CardSessionConfig(BaseModel):
     action_dedup_max_size: int = 5000
     action_dedup_cleanup_interval: int = 30
     delivery_pool_max_workers: int = 4
+    ticker_interval: float = Field(
+        default=1.2,
+        gt=0,
+        description="Live ticker 帧切换间隔（秒），对应 v2 设计中绿点动画节奏",
+    )
     task_level_cards_enabled: bool = Field(
         default=True,
         description="启用后多步任务使用独立飞书卡片展示每个子任务，关闭则退化为单卡模式",

@@ -1,4 +1,4 @@
-from src.card.render.live_ticker import DEFAULT_TICKER_FRAMES, LiveTicker, frame_for_tick
+from src.card.render.live_ticker import DEFAULT_TICKER_FRAMES, DEFAULT_TICKER_INTERVAL, FROZEN_FRAME, LiveTicker, frame_for_tick
 
 
 class FakeHandle:
@@ -38,6 +38,18 @@ def test_default_ticker_frames_match_v2_live_dot_spec():
     assert DEFAULT_TICKER_FRAMES == ("🟢", "⚪")
 
 
+def test_default_interval_is_1_2():
+    """Default LiveTicker interval should be 1.2s (v2 design)."""
+    ticker = LiveTicker(session_id="test", on_frame=lambda f: None)
+    assert ticker.interval == 1.2
+    assert DEFAULT_TICKER_INTERVAL == 1.2
+
+
+def test_frozen_frame_constant():
+    """FROZEN_FRAME should be ⏸ (pause marker for archived cards)."""
+    assert FROZEN_FRAME == "⏸"
+
+
 def test_live_ticker_emits_now_and_reschedules_frames():
     scheduler = FakeScheduler()
     frames = []
@@ -57,6 +69,21 @@ def test_live_ticker_emits_now_and_reschedules_frames():
     assert ticker.running is True
     assert scheduler.handles[-1].session_id == "sess_1"
     assert scheduler.handles[-1].delay == 0.25
+
+
+def test_ticker_accepts_custom_interval():
+    """LiveTicker should accept a custom interval and use it for scheduling."""
+    scheduler = FakeScheduler()
+    ticker = LiveTicker(
+        session_id="test",
+        on_frame=lambda f: None,
+        interval=2.5,
+        scheduler=scheduler,
+    )
+
+    ticker.start()
+    assert ticker.interval == 2.5
+    assert scheduler.handles[-1].delay == 2.5
 
 
 def test_live_ticker_stop_cancels_pending_handle():

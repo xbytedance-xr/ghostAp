@@ -93,6 +93,8 @@ ENGINE_STYLES = {
 # ──────────────────────────────────────────────────────────────
 # Collapsible Panel Styles — aligned with pokoclaw tool-calls.ts
 # ──────────────────────────────────────────────────────────────
+REASONING_CORNER_RADIUS = "4px"
+
 PANEL_STYLES = {
     "corner_radius": "8px",
     "padding": "8px 8px 8px 8px",

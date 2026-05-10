@@ -369,9 +369,13 @@ class ProgrammingCardSession:
     def _start_ticker(self) -> None:
         if self._ticker is not None:
             return
+        from src.config import get_settings
+
+        interval = get_settings().card.ticker_interval
         self._ticker = self._ticker_factory(
             session_id=self._rotator.current.session_id,
             on_frame=self._on_ticker_frame,
+            interval=interval,
         )
         self._ticker.start()
 

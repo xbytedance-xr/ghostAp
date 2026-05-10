@@ -153,7 +153,7 @@ def _format_done_line(task) -> str:
 
 
 def _format_pending_line(task) -> str:
-    return f"　○ ⏳ {_task_name(task)}"
+    return f"　○ {_task_name(task)}"
 
 
 def _task_id(task) -> str:

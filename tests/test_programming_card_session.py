@@ -108,7 +108,7 @@ class TestProgrammingCardSession:
         calls: list[str] = []
 
         class FakeTicker:
-            def __init__(self, *, session_id, on_frame):
+            def __init__(self, *, session_id, on_frame, interval=1.2):
                 calls.append(f"create:{session_id}")
                 self.on_frame = on_frame
 

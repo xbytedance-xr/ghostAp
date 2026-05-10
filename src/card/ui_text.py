@@ -769,6 +769,7 @@ UI_TEXT = {
     "card_footer_duration_fmt": "耗时 {duration}",
     "card_footer_system_notice": "（系统提示）",
     "card_footer_idle_timeout_hint": "空闲 {timeout_display} 后自动关闭",
+    "card_footer_frozen_continuation": "本卡已停止更新 · 续接 #{next_seq} ↓",
     "duration_sub_second": "< 1 秒",
     "duration_secs": "{seconds} 秒",
     "duration_mins_secs": "{minutes} 分钟 {seconds} 秒",

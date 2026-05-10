@@ -171,6 +171,12 @@ def render_card(
                     page_sig_parts.append(str(title_obj.get("content", ""))[:32])
                 elif isinstance(header, str):
                     page_sig_parts.append(header[:32])
+            elif tag == "column_set":
+                for col in elem.get("columns", []):
+                    for item in col.get("elements", []):
+                        if item.get("tag") == "markdown":
+                            page_sig_parts.append(str(item.get("content", ""))[:64])
+                            break
         page_signature = hashlib.md5(
             "|".join(page_sig_parts).encode("utf-8")
         ).hexdigest()
@@ -429,8 +435,12 @@ def _prepend_bridge_phrase(element: dict, phrase: str) -> bool:
         content = str(element.get("content", ""))
         element["content"] = f"{phrase}\n\n{content}" if content else phrase
         return True
+    # Recurse into elements (div, collapsible_panel) and columns (column_set)
     for child in element.get("elements", []) or []:
         if isinstance(child, dict) and _prepend_bridge_phrase(child, phrase):
+            return True
+    for col in element.get("columns", []) or []:
+        if isinstance(col, dict) and _prepend_bridge_phrase(col, phrase):
             return True
     return False
 

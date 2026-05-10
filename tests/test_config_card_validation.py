@@ -1,4 +1,4 @@
-"""Tests for CardSessionConfig field validation (max_task_cards bounds)."""
+"""Tests for CardSessionConfig field validation (max_task_cards bounds + ticker_interval)."""
 
 import pytest
 from pydantic import ValidationError
@@ -47,3 +47,19 @@ class TestMaxTaskCardsValidation:
         """None as max_task_cards should raise with friendly message."""
         with pytest.raises(ValidationError, match="必须为有效整数"):
             CardSessionConfig(max_task_cards=None)
+
+
+class TestTickerIntervalValidation:
+    """ticker_interval must be > 0 (gt=0 Pydantic constraint)."""
+
+    def test_ticker_interval_default_is_1_2(self):
+        config = CardSessionConfig()
+        assert config.ticker_interval == 1.2
+
+    def test_ticker_interval_zero_raises(self):
+        with pytest.raises(ValidationError):
+            CardSessionConfig(ticker_interval=0)
+
+    def test_ticker_interval_negative_raises(self):
+        with pytest.raises(ValidationError):
+            CardSessionConfig(ticker_interval=-1.0)

@@ -639,6 +639,7 @@ class Settings(BaseSettings):
             "card_action_dedup_ttl": "action_dedup_ttl",
             "card_action_dedup_max_size": "action_dedup_max_size",
             "card_action_dedup_cleanup_interval": "action_dedup_cleanup_interval",
+            "card_ticker_interval": "ticker_interval",
             "card_task_level_cards_enabled": "task_level_cards_enabled",
             "card_max_task_cards": "max_task_cards",
         }

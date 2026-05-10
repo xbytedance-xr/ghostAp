@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from src.card.render.live_ticker import FROZEN_FRAME
 from src.card.state.models import CardState
 
 _TOOL_DISPLAY = {
@@ -60,7 +61,8 @@ def _render_v2_header(state: CardState) -> dict:
     project_name = metadata.project_name or state.header.title or "当前项目"
     seq = metadata.card_sequence
     archived = " · 已封存" if metadata.frozen else ""
-    model_suffix = f" · {metadata.model_name}" if metadata.model_name else ""
+    # v2 design: frozen cards hide model_name (mutual exclusion with 已封存 tag)
+    model_suffix = "" if metadata.frozen else (f" · {metadata.model_name}" if metadata.model_name else "")
 
     title = f"📁 {project_name} · 🤖 {tool_label} · #{seq}{model_suffix}{archived}"
 
@@ -112,7 +114,7 @@ def _status_marker(state: CardState) -> str:
     """
     metadata = state.metadata
     if metadata.frozen:
-        return "⏸"
+        return FROZEN_FRAME
     terminal_markers = {
         "completed": "✅",
         "failed": "❌",

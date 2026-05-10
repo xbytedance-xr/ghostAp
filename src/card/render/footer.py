@@ -122,7 +122,7 @@ def render_now_tool_hint(tool) -> str:
     payload = _tool_payload(tool)
     brief_fn = _TOOL_BRIEF.get(name)
     brief = brief_fn(payload) if brief_fn else name
-    return f"⚙ {name} · {brief}"
+    return f"⚙ **{name}** · {brief}"
 
 
 def render_subagent_badge(metadata: CardMetadata) -> str:
@@ -144,18 +144,34 @@ def build_footer_atoms(state: CardState) -> list[RenderAtom]:
 
     The production renderer still emits Feishu elements directly from
     ``render_footer`` because footer elements are appended only on the final
-    page. This helper centralizes the v2 footer text contract for reusable
-    assertions and follow-up render paths.
+    page. This helper centralizes the v2 footer text contract so that both
+    the atoms path and the render path emit the same user-visible text set
+    (tool hint, subagent badge, frozen continuation).
     """
     atoms: list[RenderAtom] = []
-    # now_tool_hint removed — active tool info is shown inline in body
-    # via render_active_tool_line() (activity_digest flow).
+
+    # Tool hint — mirrors render_footer's ⚙ tool hint line
+    running_tool = _find_running_tool(state)
+    tool_hint = render_now_tool_hint(running_tool)
+    if tool_hint:
+        atom = RenderAtom(kind="text", content=tool_hint, node_count=1)
+        atom.byte_size = estimate_atom_size(atom)
+        atoms.append(atom)
 
     subagent_badge = render_subagent_badge(state.metadata)
     if subagent_badge:
         atom = RenderAtom(kind="text", content=subagent_badge, node_count=1)
         atom.byte_size = estimate_atom_size(atom)
         atoms.append(atom)
+
+    # Frozen continuation hint — mirrors render_footer's continuation line
+    if state.metadata.frozen and state.metadata.continuation_seq > 0:
+        next_seq = state.metadata.continuation_seq + 1
+        continuation_text = UI_TEXT["card_footer_frozen_continuation"].format(next_seq=next_seq)
+        atom = RenderAtom(kind="text", content=continuation_text, node_count=1)
+        atom.byte_size = estimate_atom_size(atom)
+        atoms.append(atom)
+
     return atoms
 
 
@@ -164,9 +180,10 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
 
     Layout order:
       1. hr separator
-      2. Status text + progress merged (notation size)
-      3. Tool/model info line
-      4. Duration (terminal states show final, running states show elapsed)
+      2. ⚙ tool hint (when active tool exists)
+      3. Status text + progress merged (notation size)
+      4. Tool/model info line
+      5. Duration (terminal states show final, running states show elapsed)
 
     Note: All warning banners (error/warning/info/success) are now rendered
     at body top by renderer.py for unified positioning.
@@ -177,11 +194,22 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
     has_status_content = state.footer.status is not None
     # Also render footer for terminal states (tool/model/duration)
     has_meta_content = bool(state.metadata.tool_name or state.metadata.model_name or state.footer.duration_seconds)
+    # Check for active tool hint
+    running_tool = _find_running_tool(state)
+    tool_hint = render_now_tool_hint(running_tool) if running_tool else ""
+    has_tool_hint = bool(tool_hint)
 
-    if not has_status_content and not has_meta_content:
+    if not has_status_content and not has_meta_content and not has_tool_hint:
         return []
 
     elements.append({"tag": "hr"})
+
+    # ⚙ tool hint line (right after hr, before status)
+    if tool_hint:
+        elements.append(
+            {"tag": "markdown", "content": tool_hint, "text_size": "notation"}
+        )
+
     status_text = state.footer.status_text or ""
 
     # Progress rendering: merge status + progress bar into one line (only when status is active)
@@ -229,9 +257,6 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
         elements.append(
             {"tag": "markdown", "content": status_text, "text_size": "notation"}
         )
-
-    # now_tool_hint removed — active tool info is shown inline in body
-    # via render_active_tool_line() (activity_digest flow).
 
     # Tool/model info line + duration (combined into one line)
     meta_parts = []
@@ -295,6 +320,13 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
         _ts_display = _format_timestamp(state.footer.last_updated_at)
         elements.append(
             {"tag": "markdown", "content": UI_TEXT["card_footer_last_updated"].format(timestamp=_ts_display), "text_size": "notation"}
+        )
+
+    # Frozen card continuation hint
+    if state.metadata.frozen and state.metadata.continuation_seq > 0:
+        next_seq = state.metadata.continuation_seq + 1
+        elements.append(
+            {"tag": "markdown", "content": UI_TEXT["card_footer_frozen_continuation"].format(next_seq=next_seq), "text_size": "notation"}
         )
 
     return elements

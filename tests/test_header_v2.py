@@ -1,9 +1,15 @@
+import re
 from pathlib import Path
+
+import pytest
 
 import src.card.render.header as header_module
 from src.card.render.header import render_header
 from src.card.state.models import CardMetadata, CardState, HeaderState
 from src.card.state.runtime_stats import RuntimeStats
+
+# AC-1 pattern: 📁 {project} · 🤖 {tool} · #{seq} with optional model suffix and 已封存
+_AC1_PATTERN = re.compile(r"^📁 .+ · 🤖 .+ · #\S+( · .+)?$")
 
 
 def test_header_v2_first_row_contains_project_tool_sequence_and_model():
@@ -79,6 +85,47 @@ def test_header_v2_frozen_shows_archived_state_and_final_elapsed():
     assert "⏸ final 7m02s" in result["subtitle"]["content"]
 
 
+def test_header_v2_frozen_uses_frozen_frame_constant():
+    """Frozen card subtitle marker comes from FROZEN_FRAME (⏸), not a hardcoded string."""
+    from src.card.render.live_ticker import FROZEN_FRAME
+
+    state = CardState(
+        header=HeaderState(title="legacy", template="blue"),
+        metadata=CardMetadata(
+            project_name="ghostAp",
+            tool_name="coco",
+            card_sequence=1,
+            frozen=True,
+            frozen_total_elapsed=60.0,
+        ),
+    )
+
+    result = render_header(state)
+
+    assert FROZEN_FRAME in result["subtitle"]["content"]
+
+
+def test_header_v2_frozen_hides_model_name():
+    """v2 design: frozen cards show 已封存 but hide model_name (mutual exclusion)."""
+    state = CardState(
+        header=HeaderState(title="legacy", template="blue"),
+        metadata=CardMetadata(
+            project_name="ghostAp",
+            tool_name="coco",
+            model_name="claude-opus-4-7",
+            card_sequence=3,
+            frozen=True,
+            frozen_total_elapsed=100.0,
+        ),
+    )
+
+    result = render_header(state)
+    title = result["title"]["content"]
+
+    assert "已封存" in title
+    assert "claude-opus-4-7" not in title
+
+
 def test_header_v2_continuation_shows_card_elapsed_and_cumulative(monkeypatch):
     monkeypatch.setattr(header_module.time, "monotonic", lambda: 550.0)
     state = CardState(
@@ -122,3 +169,40 @@ def test_engine_header_uses_v2_when_session_started_for_first_card():
 
     assert "#1" in result["title"]["content"]
     assert "phase: analyze" in result["subtitle"]["content"]
+
+
+# ---------------------------------------------------------------------------
+# AC-1 regex pattern validation
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "project, tool, seq, model, frozen",
+    [
+        ("ghostAp", "coco", 3, "claude-opus-4-7", False),
+        ("myProj", "claude", 1, None, False),
+        ("demo", "gemini", 10, "gemini-2.5-pro", False),
+        ("ghostAp", "coco", 3, "claude-opus-4-7", True),
+    ],
+    ids=["with-model", "no-model", "different-tool", "frozen"],
+)
+def test_ac1_title_matches_pattern(project, tool, seq, model, frozen):
+    """AC-1: active card title.content matches 📁 {project} · 🤖 {tool} · #{seq} pattern."""
+    state = CardState(
+        header=HeaderState(title="legacy", template="blue"),
+        metadata=CardMetadata(
+            project_name=project,
+            tool_name=tool,
+            model_name=model,
+            card_sequence=seq,
+            frozen=frozen,
+            frozen_total_elapsed=100.0 if frozen else None,
+            working_dir="/tmp" if not frozen else None,
+        ),
+    )
+
+    result = render_header(state)
+    title_content = result["title"]["content"]
+
+    assert _AC1_PATTERN.match(title_content), (
+        f"title.content does not match AC-1 pattern: {title_content!r}"
+    )

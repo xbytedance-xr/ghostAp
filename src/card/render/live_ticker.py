@@ -9,6 +9,12 @@ from typing import Protocol
 from src.card.timers.scheduler import TimerHandle, TimerScheduler, get_timer_scheduler
 
 DEFAULT_TICKER_FRAMES: tuple[str, ...] = ("🟢", "⚪")
+# v2 design: 1.2 s frame interval matches the CSS `animation: blink 1.2s infinite` in UX mockups.
+# Feishu Schema 2.0 has no CSS animation; we simulate it with emoji frame switching at this cadence.
+DEFAULT_TICKER_INTERVAL: float = 1.2
+
+# Frozen (archived) cards display a static pause marker instead of the last animation frame.
+FROZEN_FRAME: str = "⏸"
 
 
 class _Scheduler(Protocol):
@@ -35,7 +41,7 @@ class LiveTicker:
 
     session_id: str
     on_frame: Callable[[str], None]
-    interval: float = 1.0
+    interval: float = 1.2
     frames: Sequence[str] = DEFAULT_TICKER_FRAMES
     scheduler: _Scheduler | None = None
 

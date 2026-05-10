@@ -47,7 +47,7 @@ class TestRenderTaskListPanel:
         assert "**任务二**" not in content
 
     def test_all_status_icons(self):
-        """All four status types render correct icons."""
+        """Core status types (pending/in_progress/completed/failed) render correct icons."""
         tasks = [
             {"task_id": "t1", "name": "A", "status": "pending"},
             {"task_id": "t2", "name": "B", "status": "in_progress"},
@@ -58,10 +58,24 @@ class TestRenderTaskListPanel:
         result = render_task_list_panel(block)
         content = result["elements"][0]["content"]
 
-        assert "⏳" in content  # pending
+        assert "⏳" in content  # group header "⏳ 未处理"
         assert "🔄" in content  # in_progress
         assert "✅" in content  # completed
         assert "❌" in content  # failed
+
+    def test_pending_line_no_hourglass(self):
+        """Pending lines use ○ without ⏳ emoji (v2 design)."""
+        tasks = [
+            {"task_id": "t1", "name": "待办任务", "status": "pending"},
+        ]
+        block = _make_block(tasks, "")
+        result = render_task_list_panel(block)
+        content = result["elements"][0]["content"]
+        lines = content.split("\n")
+        pending_lines = [l for l in lines if "待办任务" in l]
+        assert len(pending_lines) == 1
+        assert "○" in pending_lines[0]
+        assert "⏳" not in pending_lines[0]
 
     def test_failed_task_uses_ended_bucket_not_completed_label(self):
         tasks = [
