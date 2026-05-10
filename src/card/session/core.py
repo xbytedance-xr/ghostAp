@@ -299,6 +299,26 @@ class CardSession:
         return self._session_id
 
     @property
+    def sequence(self) -> int | str:
+        return self._metadata.card_sequence
+
+    @property
+    def session_started_at(self) -> float:
+        return self._metadata.session_started_at or self._clock()
+
+    @property
+    def is_subagent(self) -> bool:
+        return self._metadata.is_subagent
+
+    @property
+    def parent_card_seq(self) -> str | None:
+        return self._metadata.parent_card_seq
+
+    @property
+    def final_state_for_freeze(self) -> CardState | None:
+        return self._metadata.final_state_for_freeze
+
+    @property
     def state(self) -> CardState | None:
         """Read-only access to current card state."""
         with self._lock:
@@ -467,6 +487,9 @@ class CardSession:
         """Close this session at a semantic split boundary and notify upstream."""
         reason = str(event.payload.get("reason", ""))
         hint = str(event.payload.get("hint", ""))
+        bridge_phrase = event.payload.get("bridge_phrase")
+        if bridge_phrase:
+            hint = f"{hint}\n{bridge_phrase}" if hint else str(bridge_phrase)
         if not reason:
             logger.warning("CardSession %s: card_split ignored without reason", self._session_id)
             return

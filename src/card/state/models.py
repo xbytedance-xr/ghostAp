@@ -42,6 +42,14 @@ class CardMetadata:
     expand_ac: bool = False
     continuation_seq: int = 0  # >0 means this is a continuation card (续 #N)
     idle_timeout_seconds: int | None = None  # Session idle timeout for footer display
+    card_sequence: int | str = 1
+    session_started_at: float | None = None
+    working_dir: str | None = None
+    is_subagent: bool = False
+    parent_card_seq: str | None = None
+    final_state_for_freeze: "CardState | None" = None
+    frozen: bool = False
+    frozen_total_elapsed: float | None = None
 
 
 @dataclass(frozen=True)

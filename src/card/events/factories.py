@@ -294,10 +294,10 @@ class CardEvent(Generic[P]):
         })
 
     @classmethod
-    def card_split(cls, reason: str, hint: str = "") -> CardEvent[CardSplitPayload]:
+    def card_split(cls, reason: str, hint: str = "", bridge_phrase: str | None = None) -> CardEvent[CardSplitPayload]:
         """Request a semantic split into a continuation card.
 
-        Payload: {reason: str, hint: str}
+        Payload: {reason: str, hint: str, bridge_phrase?: str}
         Triggered when an engine reaches a semantic boundary (task/round/cycle).
         """
         if not isinstance(reason, str):
@@ -306,7 +306,12 @@ class CardEvent(Generic[P]):
             raise ValueError("reason is required for card_split")
         if not isinstance(hint, str):
             raise TypeError(f"hint must be str, got {type(hint).__name__}")
-        return cls(type=CardEventType.CARD_SPLIT, payload={"reason": reason, "hint": hint})
+        payload = {"reason": reason, "hint": hint}
+        if bridge_phrase is not None:
+            if not isinstance(bridge_phrase, str):
+                raise TypeError(f"bridge_phrase must be str, got {type(bridge_phrase).__name__}")
+            payload["bridge_phrase"] = bridge_phrase
+        return cls(type=CardEventType.CARD_SPLIT, payload=payload)
 
     @classmethod
     def cycle_started(cls, cycle_num: int, max_cycles: int) -> CardEvent[CycleStartedPayload]:

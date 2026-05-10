@@ -92,6 +92,7 @@ class CardSplitPayload(TypedDict):
     """Payload for CARD_SPLIT event."""
     reason: str
     hint: str
+    bridge_phrase: NotRequired[str]
 
 
 # ---------------------------------------------------------------------------
