@@ -1,4 +1,9 @@
-from src.card.render.footer import render_footer, render_now_tool_hint
+from src.card.render.footer import (
+    build_footer_atoms,
+    render_footer,
+    render_now_tool_hint,
+    render_subagent_badge,
+)
 from src.card.state.models import CardMetadata, CardState, ContentBlock, FooterState
 
 
@@ -62,3 +67,27 @@ def test_footer_renders_subagent_badge_when_enabled():
     elements = render_footer(state)
 
     assert any("🧬 sub · model: claude-haiku-4-5 · tool: Aiden · from #5" in el.get("content", "") for el in elements)
+
+
+def test_subagent_badge_helper_is_blank_for_main_card():
+    assert render_subagent_badge(CardMetadata(tool_name="Codex")) == ""
+
+
+def test_build_footer_atoms_includes_running_tool_and_subagent_badge():
+    state = CardState(
+        blocks=(_tool("Edit", tool_input='{"path": "src/card/render/footer.py"}'),),
+        footer=FooterState(status="tool_running", status_text="执行中"),
+        metadata=CardMetadata(
+            tool_name="Aiden",
+            model_name="claude-haiku-4-5",
+            is_subagent=True,
+            parent_card_seq="5",
+        ),
+    )
+
+    atoms = build_footer_atoms(state)
+
+    assert [atom.content for atom in atoms] == [
+        "⚙ Edit · 写入 src/card/render/footer.py",
+        "🧬 sub · model: claude-haiku-4-5 · tool: Aiden · from #5",
+    ]

@@ -6,7 +6,8 @@ import math
 import json
 import time
 
-from src.card.state.models import CardState, ContentBlock
+from src.card.render.atoms import RenderAtom, estimate_atom_size
+from src.card.state.models import CardMetadata, CardState, ContentBlock
 from src.card.ui_text import UI_TEXT
 from .progress import render_progress_bar, MOBILE_SEGMENTS
 from .budget import RenderBudget
@@ -122,6 +123,43 @@ def render_now_tool_hint(tool) -> str:
     return f"⚙ {name} · {brief}"
 
 
+def render_subagent_badge(metadata: CardMetadata) -> str:
+    """Render the v2 footer's compact subagent badge."""
+    if not metadata.is_subagent:
+        return ""
+    sub_parts = ["🧬 sub"]
+    if metadata.model_name:
+        sub_parts.append(f"model: {metadata.model_name}")
+    if metadata.tool_name:
+        sub_parts.append(f"tool: {metadata.tool_name}")
+    if metadata.parent_card_seq:
+        sub_parts.append(f"from #{metadata.parent_card_seq}")
+    return " · ".join(sub_parts)
+
+
+def build_footer_atoms(state: CardState) -> list[RenderAtom]:
+    """Build footer-specific atoms for tests and future appendices.
+
+    The production renderer still emits Feishu elements directly from
+    ``render_footer`` because footer elements are appended only on the final
+    page. This helper centralizes the v2 footer text contract for reusable
+    assertions and follow-up render paths.
+    """
+    atoms: list[RenderAtom] = []
+    now_tool_hint = render_now_tool_hint(_find_running_tool(state))
+    if now_tool_hint:
+        atom = RenderAtom(kind="text", content=now_tool_hint, node_count=1)
+        atom.byte_size = estimate_atom_size(atom)
+        atoms.append(atom)
+
+    subagent_badge = render_subagent_badge(state.metadata)
+    if subagent_badge:
+        atom = RenderAtom(kind="text", content=subagent_badge, node_count=1)
+        atom.byte_size = estimate_atom_size(atom)
+        atoms.append(atom)
+    return atoms
+
+
 def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[dict]:
     """Generate footer elements.
 
@@ -223,16 +261,10 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
             {"tag": "markdown", "content": " · ".join(meta_parts), "text_size": "notation"}
         )
 
-    if state.metadata.is_subagent:
-        sub_parts = ["🧬 sub"]
-        if state.metadata.model_name:
-            sub_parts.append(f"model: {state.metadata.model_name}")
-        if state.metadata.tool_name:
-            sub_parts.append(f"tool: {state.metadata.tool_name}")
-        if state.metadata.parent_card_seq:
-            sub_parts.append(f"from #{state.metadata.parent_card_seq}")
+    subagent_badge = render_subagent_badge(state.metadata)
+    if subagent_badge:
         elements.append(
-            {"tag": "markdown", "content": " · ".join(sub_parts), "text_size": "notation"}
+            {"tag": "markdown", "content": subagent_badge, "text_size": "notation"}
         )
 
     # Blocked reason as visible text below footer status
