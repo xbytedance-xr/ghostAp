@@ -369,11 +369,19 @@ class TestProgrammingCardSession:
         assert "当前进行中" in state.blocks[0].content
         assert "实现任务分卡" in state.blocks[0].content
 
-    def test_task_switch_opens_new_card_instead_of_overwriting_previous_one(self):
+    def test_plan_updates_stay_in_single_card(self):
+        """Plan/task changes update the task list in place — no new card per task switch.
+
+        The whole task list lives in one streaming card; a new continuation card
+        is only spawned when the current card nears the Feishu node/byte limit
+        (handled by render-time pagination, not by plan transitions).
+        """
         from src.acp.models import ACPEvent, ACPEventType, PlanEntryInfo, PlanInfo
 
         pcs, client = _make_programming_session()
         pcs.start()
+        first_message_id = pcs.get_message_id()
+        creates_after_start = len(client.creates)
 
         pcs.on_event(ACPEvent(
             event_type=ACPEventType.PLAN_UPDATE,
@@ -382,8 +390,6 @@ class TestProgrammingCardSession:
                 PlanEntryInfo(content="任务 B", status="pending"),
             ]),
         ))
-        first_task_message_id = pcs.get_message_id()
-
         pcs.on_event(ACPEvent(
             event_type=ACPEventType.PLAN_UPDATE,
             plan=PlanInfo(entries=[
@@ -392,12 +398,13 @@ class TestProgrammingCardSession:
             ]),
         ))
 
-        assert len(client.creates) >= 2
-        assert pcs.get_message_id() != first_task_message_id
-        assert "任务 B" in (pcs.session.state.metadata.unit_label or "")
-        assert pcs.session.state.metadata.card_sequence == 3
-        assert pcs.session.state.metadata.continuation_seq == 2
-        assert pcs.session.state.metadata.bridge_phrase == "续接："
+        # No extra cards created — same card, updated in place
+        assert len(client.creates) == creates_after_start
+        assert pcs.get_message_id() == first_message_id
+        # Plan block reflects the latest in-progress task
+        plan_block = pcs.session.state.blocks[0]
+        assert plan_block.kind == "plan"
+        assert "任务 B" in plan_block.content
 
     def test_parallel_agent_tasks_open_independent_cards(self):
         from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo

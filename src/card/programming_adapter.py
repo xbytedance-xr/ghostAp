@@ -23,7 +23,7 @@ from src.card.session.rotator import SessionRotator
 from src.card.state.models import CardMetadata
 
 if TYPE_CHECKING:
-    from src.acp.models import ACPEvent, PlanInfo, ToolCallInfo
+    from src.acp.models import ACPEvent, ToolCallInfo
     from src.mode.manager import InteractionMode
 
 logger = logging.getLogger(__name__)
@@ -110,7 +110,6 @@ class ProgrammingCardSession:
         self._flush_lock_holder = threading.local()  # per-thread flag for lock ownership assertion
         self._flush_timer: threading.Timer | None = None
         self._latest_plan_event: CardEvent | None = None
-        self._primary_task_signature: tuple[str, ...] = ()
         self._agent_sessions: dict[str, CardSession] = {}
         self._agent_summaries: dict[str, dict] = {}
         self._acp_renderer = ACPEventRenderer()
@@ -425,42 +424,19 @@ class ProgrammingCardSession:
         self._rotator.dispatch(CardEvent.tool_model_changed(live_ticker_frame=frame))
 
     def _handle_plan_update(self, acp_event: "ACPEvent") -> None:
+        """Update the in-card task list in place.
+
+        Plan/task changes never spawn a new Feishu card — the whole task list
+        lives in one streaming card and is updated as the agent works through it.
+        A new continuation card is only created when the current card nears the
+        Feishu element/byte limit (handled by render-time pagination).
+        """
         card_event = CardEvent.from_acp(acp_event)
         self._latest_plan_event = card_event
-        current_tasks = self._extract_current_tasks(acp_event.plan)
-        if current_tasks and current_tasks != self._primary_task_signature:
-            self._rotate_primary_session(current_tasks)
         self._rotator.dispatch(card_event)
         for session in self._agent_sessions.values():
             if not session.closed:
                 session.dispatch(card_event)
-
-    def _rotate_primary_session(self, current_tasks: tuple[str, ...]) -> None:
-        if self._session_factory is None:
-            self._primary_task_signature = current_tasks
-            return
-
-        self._flush_now()
-        if self._text_active:
-            self._rotator.dispatch(CardEvent.text_done("_active_text"))
-            self._text_active = False
-
-        task_label = self._build_primary_task_label(current_tasks)
-        next_seq = self._rotator.rotation_count + 2
-        metadata = replace(
-            self._base_metadata,
-            unit_id=task_label,
-            unit_kind="task",
-            unit_label=task_label,
-            continuation_seq=next_seq - 1,
-            card_sequence=next_seq,
-            session_started_at=self._rotator.current.session_started_at,
-            bridge_phrase="续接：",
-        )
-        new_session = self._rotator.rotate(lambda: self._session_factory(metadata))
-        self._primary_task_signature = current_tasks
-        if new_session is not None and not new_session.closed:
-            new_session.dispatch(CardEvent.started())
 
     def _handle_agent_task_event(self, acp_event: "ACPEvent") -> bool:
         tool_call = getattr(acp_event, "tool_call", None)
@@ -559,18 +535,6 @@ class ProgrammingCardSession:
                 self._rotator.dispatch(CardEvent.tool_model_changed(subagents=tuple(self._agent_summaries.values())))
             except Exception:
                 logger.exception("Failed to publish final subagent summary; continuing parent terminal transition")
-
-    @staticmethod
-    def _extract_current_tasks(plan: "PlanInfo | None") -> tuple[str, ...]:
-        if plan is None:
-            return ()
-        return tuple(entry.content.strip() for entry in plan.entries if entry.status == "in_progress" and entry.content.strip())
-
-    @staticmethod
-    def _build_primary_task_label(current_tasks: tuple[str, ...]) -> str:
-        if len(current_tasks) == 1:
-            return current_tasks[0][:60]
-        return f"并发任务（{len(current_tasks)}）"
 
     @staticmethod
     def _is_agent_task(tool_call: "ToolCallInfo") -> bool:

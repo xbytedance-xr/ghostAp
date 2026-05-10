@@ -63,8 +63,11 @@ def render_reasoning_panel(
                 "weight": 1,
                 "vertical_align": "top",
                 "background_style": "grey",
+                # Narrow spacer column approximating the UX mockup's left border.
+                # Must stay a non-markdown element so the bridge-phrase injector
+                # (renderer._prepend_bridge_phrase) lands in the content column below.
                 "elements": [
-                    {"tag": "div", "elements": []},
+                    {"tag": "div", "text": {"tag": "plain_text", "content": " "}},
                 ],
             },
             {
