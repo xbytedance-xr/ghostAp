@@ -12,6 +12,7 @@ def render_plan_panel(
     *,
     budget: RenderBudget | None = None,
     phase: str = "running",
+    content_override: str | None = None,
 ) -> dict:
     """Render plan as a collapsible_panel.
 
@@ -19,9 +20,10 @@ def render_plan_panel(
         block: The content block containing plan markdown.
         budget: Render budget (provides plan_max_chars).
         phase: Current engine phase. Panel auto-collapses when not 'running'.
+        content_override: If provided, use this instead of block.content.
     """
     max_chars = budget.plan_max_chars if budget else 2000
-    content = block.content
+    content = content_override if content_override is not None else block.content
     if len(content) > max_chars and phase != "running":
         content = content[:max_chars] + "\n\n…(已截断，展开查看完整计划)"
 

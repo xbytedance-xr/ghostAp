@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-05-10
+- **修复飞书卡片内容重复渲染 Bug** — 根因：block_index last-wins 语义 + reasoning block 共享固定 block_id 导致所有 atom 渲染最后一个 block 内容；修复：render 函数用 atom.content override + ProgrammingCardSession/ACPStreamBridge 生成唯一 per-turn block_id；同时解决 card table number over limit (11310) 错误；6359 passed → [详细记录](2026-05-10.md)
 - **维护窗口：Backlog B001-B016 批量清理** — 一次性清理全部技术债务：删除 10 个 shim 文件 + 修复 5 处遗漏 import (B001)、修复测试全局状态泄漏 (B002)、config.py 拆为 config/ 包 (B003)、审计确认无重叠 (B004)、DeepHandler 统一到 StaticCardSession (B005)、activity_digest 死代码全链路清理 (B014)、footer 重复渲染移除 (B015)、死函数删除 (B016)、移动端验证指引 (B017)；清理 ruff 配置与过时测试文件；全量 6359 passed → [详细记录](2026-05-10.md)
 - **飞书编程卡片精简：Activity Digest 替代工具面板** — 解决工具信息三重冗余，新增 `render_activity_digest_line()` 紧凑摘要 + 移除 ACPEventRenderer 内联注入 + 22 个测试 + 多角色审核修复；全量 4688 passed → [详细记录](2026-05-10.md)
 - **飞书编程卡片 v2 深层接线与 Backlog 清理** — 接入切卡冻结态、累计 elapsed、flow bridge、subagent dotted sequence/独立 streaming，并清理 B006-B013；复审后补齐 B006 残留生产 caller（LiveTicker、snapshot_turns、subagent panel、CardSessionFactory.create_subagent），进一步收口 turn block、reasoning boundary、ticker 终态 marker、TimerScheduler 异步 offload 与 dispatch 面板状态汇总；全量 6376 passed, 1 skipped → [详细记录](2026-05-10.md)

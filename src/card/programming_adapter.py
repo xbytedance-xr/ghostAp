@@ -101,6 +101,8 @@ class ProgrammingCardSession:
         self._pending_text_block_id: str | None = None
         self._reasoning_active = False
         self._active_reasoning_block_id = "_active_reasoning"
+        self._reasoning_turn_seq = 0
+        self._last_reasoning_boundary_seq = 0
         self._flush_interval = flush_interval or self._DEFAULT_FLUSH_INTERVAL
         # Text batching state
         self._pending_text = ""
@@ -190,8 +192,15 @@ class ProgrammingCardSession:
         if card_event.type == CardEventType.REASONING_DELTA:
             self._flush_now()
             if not self._reasoning_active:
-                self._rotator.dispatch(CardEvent.reasoning_started(self._active_reasoning_block_id))
+                block_id = self._current_reasoning_block_id()
+                self._active_reasoning_block_id = block_id
+                self._rotator.dispatch(CardEvent.reasoning_started(block_id))
                 self._reasoning_active = True
+            # Override the block_id in the delta to match the current reasoning block
+            card_event = CardEvent(
+                type=card_event.type,
+                payload={**card_event.payload, "block_id": self._active_reasoning_block_id},
+            )
             self._rotator.dispatch(card_event)
             return
 
@@ -202,9 +211,10 @@ class ProgrammingCardSession:
             self._rotator.dispatch(CardEvent.reasoning_done(self._active_reasoning_block_id))
             self._reasoning_active = False
 
-        # Tool events mark text as inactive
+        # Tool events mark text as inactive and bump reasoning boundary
         if card_event.type == CardEventType.TOOL_STARTED:
             self._last_tool_boundary_seq += 1
+            self._last_reasoning_boundary_seq += 1
             if self._text_active:
                 self._rotator.dispatch(CardEvent.text_done(self._active_text_block_id))
                 self._text_active = False
@@ -333,6 +343,21 @@ class ProgrammingCardSession:
         if self._last_tool_boundary_seq >= self._text_turn_seq:
             self._text_turn_seq = self._last_tool_boundary_seq + 1
         return f"_turn_{self._text_turn_seq}_text"
+
+    def _current_reasoning_block_id(self) -> str:
+        """Return a unique reasoning block ID for the current ACP turn.
+
+        Mirrors ``_current_text_block_id`` to ensure each reasoning segment
+        (between tool boundaries) gets its own block, preventing the
+        block_index last-wins lookup from collapsing all reasoning panels
+        into the same content.
+        """
+        if self._reasoning_turn_seq == 0:
+            self._reasoning_turn_seq = 1
+            return "_active_reasoning"
+        if self._last_reasoning_boundary_seq >= self._reasoning_turn_seq:
+            self._reasoning_turn_seq = self._last_reasoning_boundary_seq + 1
+        return f"_turn_{self._reasoning_turn_seq}_reasoning"
 
     def _cancel_timer(self) -> None:
         """Cancel any pending flush timer."""

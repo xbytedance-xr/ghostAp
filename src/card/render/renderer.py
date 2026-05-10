@@ -301,7 +301,10 @@ def _render_atom_subagent_dispatch(atom: RenderAtom, state: CardState, budget: R
 def _render_atom_reasoning(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict:
     block = block_index.get(atom.block_id)
     if block is not None:
-        return render_reasoning_panel(block, budget)
+        # Use atom.content (per-block correct content) instead of block.content.
+        # block_index maps shared block_ids (e.g. "_active_reasoning") to the LAST
+        # block, so without override all atoms would render the last block's content.
+        return render_reasoning_panel(block, budget, content_override=atom.content)
     return {"tag": "markdown", "content": atom.content}
 
 
@@ -309,7 +312,7 @@ def _render_atom_plan(atom: RenderAtom, state: CardState, budget: RenderBudget, 
     block = block_index.get(atom.block_id)
     if block is not None:
         phase = state.footer.status if state.footer.status else "running"
-        return render_plan_panel(block, budget=budget, phase=phase)
+        return render_plan_panel(block, budget=budget, phase=phase, content_override=atom.content)
     return {"tag": "markdown", "content": atom.content}
 
 
