@@ -68,10 +68,13 @@ def _render_v2_header(state: CardState) -> dict:
         left = _short_path(metadata.working_dir) if metadata.working_dir else "工作目录未设置"
 
     elapsed = _elapsed_seconds(state)
+    cumulative_elapsed = _cumulative_elapsed_seconds(state)
     marker = "⏸" if metadata.frozen else "🟢"
     elapsed_label = _format_elapsed(elapsed)
     if metadata.frozen:
         right = f"{marker} final {elapsed_label}"
+    elif metadata.continuation_seq > 0 and cumulative_elapsed > elapsed:
+        right = f"{marker} {elapsed_label} · 累计 {_format_elapsed(cumulative_elapsed)}"
     elif elapsed > 0:
         right = f"{marker} {elapsed_label}"
     else:
@@ -97,6 +100,15 @@ def _elapsed_seconds(state: CardState) -> float:
     if metadata.session_started_at is not None:
         return max(0.0, time.monotonic() - metadata.session_started_at)
     return 0.0
+
+
+def _cumulative_elapsed_seconds(state: CardState) -> float:
+    metadata = state.metadata
+    if metadata.frozen:
+        return float(metadata.frozen_total_elapsed or 0)
+    if metadata.session_started_at is None:
+        return _elapsed_seconds(state)
+    return max(0.0, time.monotonic() - metadata.session_started_at)
 
 
 def _format_elapsed(seconds: float) -> str:

@@ -220,6 +220,8 @@ def compute_structure_signature(state: CardState) -> str:
         parts.append(f"tool:{state.metadata.tool_name}")
     if state.metadata.model_name:
         parts.append(f"model:{state.metadata.model_name}")
+    if state.metadata.bridge_phrase:
+        parts.append(f"bridge:{state.metadata.bridge_phrase}")
     if state.footer.status is not None:
         parts.append(f"footer:{state.footer.status}")
     parts.append(f"buttons:{len(state.buttons)}")
@@ -247,6 +249,8 @@ def compute_content_hash(state: CardState) -> str:
         parts.append(f"criteria:{state.engine_ext.criteria_satisfied}/{state.engine_ext.criteria_total}")
     if state.footer.warning_banner:
         parts.append(f"warn:{state.footer.warning_banner}")
+    if state.metadata.bridge_phrase:
+        parts.append(f"bridge:{state.metadata.bridge_phrase}")
     if not parts:
         return ""
     raw = "|".join(parts)
@@ -376,12 +380,17 @@ def _render_atoms_to_elements(
 ) -> list[dict]:
     """Convert RenderAtoms to Feishu Schema 2.0 elements using the atom renderer registry."""
     elements: list[dict] = []
+    bridge_phrase = (state.metadata.bridge_phrase or "").strip() if state.metadata else ""
+    bridge_injected = False
 
     for atom in atoms:
         renderer = _ATOM_RENDERERS.get(atom.kind)
         if renderer is not None:
             el = renderer(atom, state, budget, block_index)
             if el is not None:
+                if bridge_phrase and not bridge_injected and atom.kind in {"text", "reasoning"}:
+                    if _prepend_bridge_phrase(el, bridge_phrase):
+                        bridge_injected = True
                 elements.append(el)
         else:
             logger.warning("Unknown atom kind '%s', rendering as placeholder", atom.kind)
@@ -394,6 +403,18 @@ def _render_atoms_to_elements(
             elements.append({"tag": "markdown", "content": fallback_text})
 
     return elements
+
+
+def _prepend_bridge_phrase(element: dict, phrase: str) -> bool:
+    """Prepend bridge phrase to the first markdown content inside an element."""
+    if element.get("tag") == "markdown":
+        content = str(element.get("content", ""))
+        element["content"] = f"{phrase}\n\n{content}" if content else phrase
+        return True
+    for child in element.get("elements", []) or []:
+        if isinstance(child, dict) and _prepend_bridge_phrase(child, phrase):
+            return True
+    return False
 
 
 def _order_atoms_by_section(atoms: list[RenderAtom]) -> list[RenderAtom]:

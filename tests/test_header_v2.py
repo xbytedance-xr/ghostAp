@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import src.card.render.header as header_module
 from src.card.render.header import render_header
 from src.card.state.models import CardMetadata, CardState, HeaderState
 from src.card.state.runtime_stats import RuntimeStats
@@ -75,3 +76,23 @@ def test_header_v2_frozen_shows_archived_state_and_final_elapsed():
     assert "已封存" in result["title"]["content"]
     assert result["template"] == "grey"
     assert "⏸ final 7m02s" in result["subtitle"]["content"]
+
+
+def test_header_v2_continuation_shows_card_elapsed_and_cumulative(monkeypatch):
+    monkeypatch.setattr(header_module.time, "monotonic", lambda: 550.0)
+    state = CardState(
+        header=HeaderState(title="legacy", template="blue"),
+        metadata=CardMetadata(
+            project_name="ghostAp",
+            tool_name="coco",
+            card_sequence=2,
+            continuation_seq=1,
+            session_started_at=100.0,
+        ),
+    )
+    object.__setattr__(state, "runtime_stats", RuntimeStats(elapsed_seconds=12.0))
+
+    result = render_header(state)
+
+    assert "0m12s" in result["subtitle"]["content"]
+    assert "累计 7m30s" in result["subtitle"]["content"]

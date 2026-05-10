@@ -50,6 +50,7 @@ class CardMetadata:
     final_state_for_freeze: "CardState | None" = None
     frozen: bool = False
     frozen_total_elapsed: float | None = None
+    bridge_phrase: str | None = None
 
 
 @dataclass(frozen=True)

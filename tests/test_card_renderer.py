@@ -113,6 +113,21 @@ class TestUnifiedCardSections:
 
         assert phase_idx < text_idx < tool_idx
 
+    def test_bridge_phrase_is_prepended_to_first_text_body_atom(self):
+        state = CardState(
+            blocks=(ContentBlock(kind="text", block_id="t1", content="继续执行正文"),),
+            metadata=CardMetadata(bridge_phrase="续接上一张卡片："),
+        )
+
+        cards = render_card(state, RenderBudget())
+        body = cards[0]._card_json["body"]["elements"]
+
+        assert any(
+            el.get("content") == "续接上一张卡片：\n\n继续执行正文"
+            for el in body
+            if el.get("tag") == "markdown"
+        )
+
 
 class TestStreamingMode:
     """streaming_mode in config."""
