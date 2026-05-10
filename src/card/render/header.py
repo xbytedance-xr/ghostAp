@@ -46,6 +46,7 @@ def _should_render_v2_header(state: CardState) -> bool:
         metadata.is_subagent,
         metadata.frozen,
         metadata.bridge_phrase,
+        metadata.session_started_at is not None,
     ))
     if metadata.engine_type:
         return strong_v2_signal
@@ -70,7 +71,7 @@ def _render_v2_header(state: CardState) -> dict:
 
     elapsed = _elapsed_seconds(state)
     cumulative_elapsed = _cumulative_elapsed_seconds(state)
-    marker = "⏸" if metadata.frozen else "🟢"
+    marker = "⏸" if metadata.frozen else (metadata.live_ticker_frame or "🟢")
     elapsed_label = _format_elapsed(elapsed)
     if metadata.frozen:
         right = f"{marker} final {elapsed_label}"

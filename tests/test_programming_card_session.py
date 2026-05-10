@@ -104,6 +104,31 @@ class TestProgrammingCardSession:
         assert len(client.creates) == 1
         assert pcs.session.state is not None
 
+    def test_start_and_finish_drive_live_ticker(self):
+        calls: list[str] = []
+
+        class FakeTicker:
+            def __init__(self, *, session_id, on_frame):
+                calls.append(f"create:{session_id}")
+                self.on_frame = on_frame
+
+            def start(self):
+                calls.append("start")
+                self.on_frame("⚪")
+
+            def stop(self):
+                calls.append("stop")
+
+        pcs, _ = _make_programming_session()
+        pcs._ticker_factory = FakeTicker
+
+        pcs.start()
+        assert "start" in calls
+        assert pcs.session.state.metadata.live_ticker_frame == "⚪"
+
+        pcs.finish()
+        assert calls[-1] == "stop"
+
     def test_on_text_appends_content(self):
         pcs, _ = _make_programming_session()
         pcs.start()
@@ -195,6 +220,29 @@ class TestProgrammingCardSession:
         text_blocks = [b for b in state.blocks if b.kind == "text"]
         assert len(text_blocks) >= 2  # Before and after tool
 
+    def test_acp_text_after_tool_uses_new_turn_block(self):
+        from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
+
+        pcs, _ = _make_programming_session()
+        pcs.start()
+        pcs.on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="先分析。"))
+        pcs._flush_now()
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(id="read-1", title="Read", kind="read", status="in_progress", content="src/a.py"),
+        ))
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE,
+            tool_call=ToolCallInfo(id="read-1", title="Read", kind="read", status="completed", content="done"),
+        ))
+        pcs.on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="再总结。"))
+        pcs._flush_now()
+
+        blocks = pcs.session.state.blocks
+        text_blocks = [b for b in blocks if b.kind == "text"]
+        assert [b.content for b in text_blocks] == ["先分析。", "再总结。"]
+        assert [b.kind for b in blocks[:3]] == ["text", "tool_call", "text"]
+
     def test_plan_block_moves_to_card_start_with_task_sections(self):
         from src.acp.models import ACPEvent, ACPEventType, PlanEntryInfo, PlanInfo
 
@@ -280,6 +328,56 @@ class TestProgrammingCardSession:
         assert {state.metadata.card_sequence for state in states} == {"1.a", "1.b"}
         assert all(state.metadata.is_subagent for state in states)
         assert all(state.metadata.parent_card_seq == "1" for state in states)
+        assert {state.metadata.tool_name for state in states} == {"Explore"}
+
+    def test_parallel_agent_tasks_update_main_summary_panel(self):
+        from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
+        from src.card.render.budget import RenderBudget
+        from src.card.render.renderer import render_card
+
+        pcs, _ = _make_programming_session()
+        pcs.start()
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(
+                id="agent-task-1",
+                title="Agent",
+                kind="other",
+                status="in_progress",
+                content="实现后端接口\n子代理：Explore",
+            ),
+        ))
+
+        cards = render_card(pcs.session.state, RenderBudget())
+        body = str(cards[0]._card_json["body"]["elements"])
+        assert "并行子任务" in body
+        assert "实现后端接口" in body
+        assert "#1.a" in body
+
+    def test_agent_task_uses_card_session_factory_create_subagent_when_available(self):
+        from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
+
+        pcs, _ = _make_programming_session()
+        calls: list[tuple[str, str]] = []
+
+        def create_subagent(parent, *, branch_id, tool_name, metadata):
+            calls.append((branch_id, tool_name))
+            return pcs._session_factory(metadata)
+
+        pcs._subagent_session_factory = create_subagent
+        pcs.start()
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(
+                id="agent-task-1",
+                title="Agent",
+                kind="other",
+                status="in_progress",
+                content="实现后端接口\n子代理：Explore",
+            ),
+        ))
+
+        assert calls == [("a", "Explore")]
 
     def test_render_omits_process_summary_after_later_text_updates(self):
         from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo

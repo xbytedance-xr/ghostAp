@@ -18,7 +18,7 @@ from src.card.render.layout import SectionLayout, paginate_layout
 from src.card.render.plan import render_plan_panel
 from src.card.render.reasoning import render_reasoning_panel
 from src.card.render.sticky_head import build_sticky_head
-from src.card.render.tools import render_tool_history_panel, render_tool_panel
+from src.card.render.tools import build_subagent_dispatch_atom, render_tool_history_panel, render_tool_panel
 from src.card.render.worktree import render_worktree_panel
 from src.card.state.models import CardState, ContentBlock
 from src.card.themes import PANEL_STYLES
@@ -90,6 +90,9 @@ def render_card(
 
     # 1. Flatten blocks to atoms and build SectionLayout skeleton.
     atoms = flatten_to_atoms(state.blocks, budget)
+    subagent_atom = build_subagent_dispatch_atom(list(state.metadata.subagents)) if state.metadata.subagents else None
+    if subagent_atom is not None:
+        atoms.insert(0, subagent_atom)
     layout = _build_section_layout(state, atoms)
 
     # 2. Paginate via SectionLayout (sticky_head/status/body/appendix SSOT)

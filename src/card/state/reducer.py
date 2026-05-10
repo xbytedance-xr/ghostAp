@@ -31,9 +31,15 @@ MAX_COMPLETED_TOOL_BLOCKS = 50
 # --- Inline handlers for events that don't warrant their own module ---
 
 def _reduce_tool_model_changed(state: CardState, event: CardEvent) -> CardState:
-    new_meta = replace(state.metadata,
-                       tool_name=event.payload.get("tool_name") or state.metadata.tool_name,
-                       model_name=event.payload.get("model_name") or state.metadata.model_name)
+    changes = {
+        "tool_name": event.payload.get("tool_name") or state.metadata.tool_name,
+        "model_name": event.payload.get("model_name") or state.metadata.model_name,
+    }
+    if "live_ticker_frame" in event.payload:
+        changes["live_ticker_frame"] = event.payload.get("live_ticker_frame")
+    if "subagents" in event.payload:
+        changes["subagents"] = tuple(event.payload.get("subagents") or ())
+    new_meta = replace(state.metadata, **changes)
     header = build_header(new_meta, state.terminal)
     return replace(state, metadata=new_meta, header=header)
 

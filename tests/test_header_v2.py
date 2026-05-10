@@ -110,3 +110,15 @@ def test_engine_header_keeps_legacy_phase_when_only_tool_name_present():
     assert result["title"]["content"] == "Deep · 执行中"
     assert result["subtitle"]["content"] == "phase: analyze"
     assert result["template"] == "purple"
+
+
+def test_engine_header_uses_v2_when_session_started_for_first_card():
+    state = CardState(
+        header=HeaderState(title="Deep · 执行中", subtitle="phase: analyze", template="purple"),
+        metadata=CardMetadata(engine_type="deep", tool_name="DeepEngine", session_started_at=123.0),
+    )
+
+    result = render_header(state)
+
+    assert "#1" in result["title"]["content"]
+    assert "phase: analyze" in result["subtitle"]["content"]

@@ -708,6 +708,8 @@ class ProgrammingModeHandler(BaseHandler):
         from ...card.delivery.feishu_client import FeishuCardAPIClient
         from ...card.programming_adapter import ProgrammingCardSession, build_programming_metadata
         from ...card.session import CardSession
+        from ...card.session.config import SessionCallbacks
+        from ...card.session.factory import CardSessionFactory
 
         project_name = project.project_name if project else None
         project_path = project.root_path if project else global_working_dir
@@ -747,7 +749,21 @@ class ProgrammingModeHandler(BaseHandler):
             config=config,
             delivery=delivery,
         )
-        prog_session = ProgrammingCardSession(card_session)
+        session_factory = CardSessionFactory(delivery)
+        subagent_callbacks = SessionCallbacks(reply_text_fn=self.reply_text)
+
+        def _create_subagent(parent, *, branch_id: str, tool_name: str, metadata):
+            return session_factory.create_subagent(
+                parent,
+                branch_id=branch_id,
+                tool_name=tool_name,
+                metadata=metadata,
+                chat_id=chat_id,
+                reply_to=message_id,
+                callbacks=subagent_callbacks,
+            )
+
+        prog_session = ProgrammingCardSession(card_session, subagent_session_factory=_create_subagent)
 
         # Start card (creates in Feishu)
         try:

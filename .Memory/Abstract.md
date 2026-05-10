@@ -2,7 +2,7 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-05-10
-- **飞书编程卡片 v2 深层接线与 Backlog 清理** — 接入切卡冻结态、累计 elapsed、flow bridge、subagent dotted sequence/独立 streaming，并清理 B006-B013：v2 API 生产 wiring、引擎卡 header 回归、continuation_seq SSOT、monotonic elapsed、任务失败归桶、compact 死参、工具状态集合与 LiveTicker 帧色；全量 6363 passed, 1 skipped → [详细记录](2026-05-10.md)
+- **飞书编程卡片 v2 深层接线与 Backlog 清理** — 接入切卡冻结态、累计 elapsed、flow bridge、subagent dotted sequence/独立 streaming，并清理 B006-B013；复审后补齐 B006 残留死代码生产 caller（LiveTicker、snapshot_turns、subagent panel、CardSessionFactory.create_subagent）及 header/subagent 标签/锁问题；全量 6368 passed, 1 skipped → [详细记录](2026-05-10.md)
 - **飞书编程卡片 v2 后续实现** — 继续执行 card-redesign-v2 plan，补齐 footer helper、ACP turn snapshot、split bridge/cumulative elapsed、subagent session/render contract、LiveTicker 基础能力，并移除 renderer/sticky 中自动 activity_summary 注入；受当前 sandbox 限制，内部 `uv run` lint/validate 子进程用例无法执行，其余套件通过 → [详细记录](2026-05-10.md)
 - **飞书编程卡片 v2 重设计首批实现** — 基于已确认 HTML mockup/spec/plan，落地 v2 metadata foundation、两行编程 header、三段常开 sticky task list、仅运行中工具展开、footer 当前工具 hint 与 subagent badge；阶段性全量 6342 passed, 1 skipped → [详细记录](2026-05-10.md)
 ## 2026-05-09

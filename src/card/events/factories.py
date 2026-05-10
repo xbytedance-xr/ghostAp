@@ -276,15 +276,27 @@ class CardEvent(Generic[P]):
         return cls(type=CardEventType.PLAN_UPDATED, payload={"content": content})
 
     @classmethod
-    def tool_model_changed(cls, tool_name: str | None = None, model_name: str | None = None) -> CardEvent[ToolModelChangedPayload]:
+    def tool_model_changed(
+        cls,
+        tool_name: str | None = None,
+        model_name: str | None = None,
+        *,
+        live_ticker_frame: str | None = None,
+        subagents: tuple[dict, ...] | None = None,
+    ) -> CardEvent[ToolModelChangedPayload]:
         """Update the tool/model metadata displayed in the card header.
 
         Payload: {tool_name?: str | None, model_name?: str | None}
         Triggered when: User switches tool or model mid-session (e.g. via TTADK).
         """
-        return cls(type=CardEventType.TOOL_MODEL_CHANGED, payload={
+        payload = {
             "tool_name": tool_name, "model_name": model_name,
-        })
+        }
+        if live_ticker_frame is not None:
+            payload["live_ticker_frame"] = live_ticker_frame
+        if subagents is not None:
+            payload["subagents"] = subagents
+        return cls(type=CardEventType.TOOL_MODEL_CHANGED, payload=payload)
 
     @classmethod
     def progress_updated(cls, current: int, total: int, label: str = "") -> CardEvent[ProgressPayload]:

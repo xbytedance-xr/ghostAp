@@ -937,7 +937,9 @@ class TaskOrchestrator:
         if parent_session is None:
             return
         from dataclasses import replace
-        branch_id = chr(ord("a") + len([s for s in self._sessions.values() if getattr(s, "is_subagent", False)]))
+        with self._lock:
+            subagent_count = len([s for s in self._sessions.values() if getattr(s, "is_subagent", False)])
+        branch_id = chr(ord("a") + subagent_count)
         parent_seq = str(getattr(parent_session, "sequence", 1))
         session._metadata = replace(
             session._metadata,

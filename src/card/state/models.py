@@ -55,6 +55,8 @@ class CardMetadata:
     frozen: bool = False
     frozen_total_elapsed: float | None = None
     bridge_phrase: str | None = None
+    live_ticker_frame: str | None = None
+    subagents: tuple[dict, ...] = ()
 
     def __post_init__(self) -> None:
         if self.continuation_seq > 0 and self.card_sequence == 1:

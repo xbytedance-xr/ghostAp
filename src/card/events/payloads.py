@@ -79,6 +79,8 @@ class ToolModelChangedPayload(TypedDict, total=False):
     """Payload for TOOL_MODEL_CHANGED event."""
     tool_name: str | None
     model_name: str | None
+    live_ticker_frame: str | None
+    subagents: tuple[dict, ...]
 
 
 class ProgressPayload(TypedDict):

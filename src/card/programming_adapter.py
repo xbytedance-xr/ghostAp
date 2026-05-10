@@ -12,9 +12,11 @@ import threading
 from dataclasses import replace
 from typing import TYPE_CHECKING, Callable
 
+from src.acp.renderer import ACPEventRenderer
 from src.card.delivery.engine import CardDelivery
 from src.card.events import CardEvent, CardEventType
 from src.card.render.budget import RenderBudget
+from src.card.render.live_ticker import LiveTicker
 from src.card.session import CardSession
 from src.card.session.rotator import SessionRotator
 from src.card.state.models import CardMetadata
@@ -85,11 +87,13 @@ class ProgrammingCardSession:
         *,
         flush_interval: float | None = None,
         session_factory: Callable[[CardMetadata], CardSession] | None = None,
+        subagent_session_factory: Callable[..., CardSession] | None = None,
         base_metadata: CardMetadata | None = None,
     ) -> None:
         self._session = session
         self._rotator = SessionRotator(session)
         self._session_factory = session_factory
+        self._subagent_session_factory = subagent_session_factory
         self._base_metadata = base_metadata or CardMetadata()
         self._text_active = False
         self._flush_interval = flush_interval or self._DEFAULT_FLUSH_INTERVAL
@@ -101,6 +105,11 @@ class ProgrammingCardSession:
         self._latest_plan_event: CardEvent | None = None
         self._primary_task_signature: tuple[str, ...] = ()
         self._agent_sessions: dict[str, CardSession] = {}
+        self._agent_summaries: dict[str, dict] = {}
+        self._acp_renderer = ACPEventRenderer()
+        self._turn_snapshots = ()
+        self._ticker_factory = LiveTicker
+        self._ticker = None
 
     @property
     def session(self) -> CardSession:
@@ -115,6 +124,7 @@ class ProgrammingCardSession:
         self._rotator.dispatch(CardEvent.started())
         self._rotator.dispatch(CardEvent.text_started("_active_text"))
         self._text_active = True
+        self._start_ticker()
 
     def on_event(self, acp_event: "ACPEvent") -> None:
         """Process an ACP event (converts to CardEvent internally).
@@ -128,6 +138,9 @@ class ProgrammingCardSession:
 
         if self._handle_agent_task_event(acp_event):
             return
+
+        self._acp_renderer.process_event(acp_event)
+        self._turn_snapshots = self._acp_renderer.snapshot_turns()
 
         card_event = CardEvent.from_acp(acp_event)
 
@@ -184,6 +197,7 @@ class ProgrammingCardSession:
             self._text_active = False
         self._rotator.dispatch(CardEvent.completed())
         self._finish_agent_sessions(failed=False)
+        self._stop_ticker()
 
     def fail(self, error: str = "") -> None:
         """Mark the session as failed."""
@@ -200,6 +214,7 @@ class ProgrammingCardSession:
             self._text_active = False
         self._rotator.dispatch(CardEvent.failed(error))
         self._finish_agent_sessions(failed=True, error=error)
+        self._stop_ticker()
 
     def update_tool_model(self, tool_name: str | None = None, model_name: str | None = None) -> None:
         """Update the displayed tool/model in header subtitle."""
@@ -263,6 +278,26 @@ class ProgrammingCardSession:
                 self._flush_timer.cancel()
                 self._flush_timer = None
 
+    def _start_ticker(self) -> None:
+        if self._ticker is not None:
+            return
+        self._ticker = self._ticker_factory(
+            session_id=self._rotator.current.session_id,
+            on_frame=self._on_ticker_frame,
+        )
+        self._ticker.start()
+
+    def _stop_ticker(self) -> None:
+        ticker = self._ticker
+        self._ticker = None
+        if ticker is not None:
+            ticker.stop()
+
+    def _on_ticker_frame(self, frame: str) -> None:
+        if not frame or self._rotator.current.closed:
+            return
+        self._rotator.dispatch(CardEvent.tool_model_changed(live_ticker_frame=frame))
+
     def _handle_plan_update(self, acp_event: "ACPEvent") -> None:
         card_event = CardEvent.from_acp(acp_event)
         self._latest_plan_event = card_event
@@ -313,8 +348,10 @@ class ProgrammingCardSession:
         if event_name == "TOOL_CALL_DONE":
             if tool_call.status == "failed":
                 session.dispatch(CardEvent.failed(tool_call.content or tool_call.title))
+                self._update_agent_summary(tool_call, status="failed")
             else:
                 session.dispatch(CardEvent.completed())
+                self._update_agent_summary(tool_call, status="completed")
         return True
 
     def _ensure_agent_task_session(self, tool_call: "ToolCallInfo") -> CardSession:
@@ -328,24 +365,52 @@ class ProgrammingCardSession:
         task_label = self._extract_agent_task_label(tool_call)
         branch_id = chr(ord("a") + len(self._agent_sessions))
         parent_seq = str(self._rotator.current.sequence)
+        tool_name = self._extract_agent_tool_name(tool_call)
         metadata = replace(
             self._base_metadata,
             unit_id=tool_call.id,
             unit_kind="task",
             unit_label=task_label,
-            tool_name=self._extract_agent_tool_name(tool_call),
+            tool_name=tool_name,
             card_sequence=f"{parent_seq}.{branch_id}",
             session_started_at=self._rotator.current.session_started_at,
             is_subagent=True,
             parent_card_seq=parent_seq,
             bridge_phrase=None,
         )
-        session = self._session_factory(metadata)
+        if self._subagent_session_factory is not None:
+            session = self._subagent_session_factory(
+                self._rotator.current,
+                branch_id=branch_id,
+                tool_name=tool_name,
+                metadata=metadata,
+            )
+        else:
+            session = self._session_factory(metadata)
         session.dispatch(CardEvent.started())
         if self._latest_plan_event is not None:
             session.dispatch(self._latest_plan_event)
         self._agent_sessions[tool_call.id] = session
+        self._update_agent_summary(tool_call, status="running", session=session)
         return session
+
+    def _update_agent_summary(self, tool_call: "ToolCallInfo", *, status: str, session: CardSession | None = None) -> None:
+        existing = self._agent_summaries.get(tool_call.id, {})
+        current_session = session or self._agent_sessions.get(tool_call.id)
+        metadata = getattr(current_session, "_metadata", None)
+        summary = {
+            **existing,
+            "label": self._extract_agent_task_label(tool_call),
+            "tool": self._extract_agent_tool_name(tool_call),
+            "status": status,
+        }
+        if metadata is not None:
+            summary["sequence"] = metadata.card_sequence
+            if metadata.model_name:
+                summary["model"] = metadata.model_name
+        self._agent_summaries[tool_call.id] = summary
+        if not self._rotator.current.closed:
+            self._rotator.dispatch(CardEvent.tool_model_changed(subagents=tuple(self._agent_summaries.values())))
 
     def _finish_agent_sessions(self, *, failed: bool, error: str = "") -> None:
         for tool_id, session in list(self._agent_sessions.items()):
@@ -389,7 +454,11 @@ class ProgrammingCardSession:
 
     @staticmethod
     def _extract_agent_tool_name(tool_call: "ToolCallInfo") -> str:
-        title = (tool_call.title or "").strip()
-        if title:
-            return title
+        content = (tool_call.content or "").strip()
+        for line in content.splitlines():
+            marker = "子代理："
+            if marker in line:
+                name = line.split(marker, 1)[1].strip()
+                if name:
+                    return name[:40]
         return "subagent"
