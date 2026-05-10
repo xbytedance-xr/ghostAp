@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from src.card.render.atoms import RenderAtom, estimate_atom_size
 from src.card.state.models import ContentBlock
 from src.card.themes import PANEL_STYLES
 from src.card.ui_text import UI_TEXT
@@ -31,6 +32,14 @@ _EDIT_TOOLS = {"write", "edit", "multi_edit", "write_file", "edit_file", "replac
 _EXPLORE_TOOLS = {
     "read", "read_file", "grep", "search", "find", "glob",
     "search_codebase", "list", "ls", "list_dir",
+}
+
+_SUBAGENT_STATUS_ICONS = {
+    "running": "🟠",
+    "active": "🟠",
+    "completed": "✅",
+    "failed": "❌",
+    "cancelled": "⚪",
 }
 
 
@@ -123,6 +132,61 @@ def render_tool_history_panel(blocks: list[ContentBlock]) -> dict | None:
         "padding": PANEL_STYLES["padding_standard"],
         "elements": nested,
     }
+
+
+def render_subagent_dispatch_panel(subagents: list[dict]) -> dict | None:
+    """Render a compact summary panel for parallel subagent dispatch."""
+    if not subagents:
+        return None
+
+    lines: list[str] = []
+    for idx, item in enumerate(subagents, start=1):
+        status = str(item.get("status") or "running")
+        icon = _SUBAGENT_STATUS_ICONS.get(status, "🟠")
+        label = item.get("label") or item.get("branch") or item.get("name") or f"子任务 {idx}"
+        tool = item.get("tool") or item.get("tool_name") or "tool"
+        model = item.get("model") or item.get("model_name") or ""
+        seq = item.get("sequence") or item.get("card_sequence") or ""
+        seq_part = f" · #{seq}" if seq else ""
+        model_part = f" · {model}" if model else ""
+        lines.append(f"- {icon} {label}{seq_part} · {tool}{model_part}")
+
+    return {
+        "tag": "collapsible_panel",
+        "expanded": True,
+        "header": {
+            "title": {"tag": "markdown", "content": f"🟠 **并行子任务** · {len(subagents)} 个"},
+            "vertical_align": "center",
+            "icon": {
+                "tag": "standard_icon",
+                "token": "down-small-ccm_outlined",
+                "size": "16px 16px",
+            },
+            "icon_position": "follow_text",
+            "icon_expanded_angle": -180,
+        },
+        "border": {"color": "orange", "corner_radius": PANEL_STYLES["corner_radius"]},
+        "vertical_spacing": PANEL_STYLES["vertical_spacing"],
+        "padding": PANEL_STYLES["padding_standard"],
+        "elements": [{"tag": "markdown", "content": "\n".join(lines)}],
+    }
+
+
+def build_subagent_dispatch_atom(subagents: list[dict]) -> RenderAtom | None:
+    """Build a render atom for the parallel subagent dispatch summary."""
+    panel = render_subagent_dispatch_panel(subagents)
+    if panel is None:
+        return None
+    atom = RenderAtom(
+        kind="subagent_dispatch",
+        elements=[panel],
+        block_id="_subagent_dispatch",
+        content=str(panel),
+        splittable=False,
+        node_count=1,
+    )
+    atom.byte_size = estimate_atom_size(atom)
+    return atom
 
 
 def render_activity_summary_panel(

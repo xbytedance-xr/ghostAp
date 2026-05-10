@@ -83,9 +83,18 @@ def _render_v2_header(state: CardState) -> dict:
     result: dict = {
         "title": {"tag": "plain_text", "content": title},
         "subtitle": {"tag": "plain_text", "content": f"{left} · {right}"},
-        "template": "grey" if metadata.frozen else state.header.template,
+        "template": _v2_header_template(state),
     }
     return result
+
+
+def _v2_header_template(state: CardState) -> str:
+    metadata = state.metadata
+    if metadata.frozen:
+        return "grey"
+    if metadata.is_subagent:
+        return "orange"
+    return state.header.template
 
 
 def _elapsed_seconds(state: CardState) -> float:

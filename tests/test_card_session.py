@@ -1361,7 +1361,7 @@ class TestAtomRendererRegistry:
             "text", "tool_panel", "tool_history", "reasoning", "plan",
             "criteria_panel", "phase_panel", "warning_banner",
             "progress_bar", "worktree_panel", "task_list", "activity_summary",
-            "phase_banner",
+            "phase_banner", "subagent_dispatch",
         }
         assert expected_kinds == set(_ATOM_RENDERERS.keys())
 

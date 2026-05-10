@@ -27,7 +27,7 @@ from src.card.ui_text import UI_TEXT
 logger = logging.getLogger(__name__)
 
 _STATUS_ATOM_KINDS = frozenset({"warning_banner", "progress_bar", "phase_panel", "criteria_panel", "task_list"})
-_BODY_ATOM_KINDS = frozenset({"text", "reasoning", "plan", "worktree_panel", "activity_summary"})
+_BODY_ATOM_KINDS = frozenset({"text", "reasoning", "plan", "worktree_panel", "activity_summary", "subagent_dispatch"})
 _APPENDIX_ATOM_KINDS = frozenset({"tool_panel", "tool_history"})
 
 
@@ -288,6 +288,12 @@ def _render_atom_activity_summary(atom: RenderAtom, state: CardState, budget: Re
     return None
 
 
+def _render_atom_subagent_dispatch(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict | None:
+    if atom.elements:
+        return atom.elements[0]
+    return None
+
+
 def _render_atom_reasoning(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict:
     block = block_index.get(atom.block_id)
     if block is not None:
@@ -350,6 +356,7 @@ _ATOM_RENDERERS: dict[str, Callable[[RenderAtom, CardState, RenderBudget, dict],
     "tool_panel": _render_atom_tool_panel,
     "tool_history": _render_atom_tool_history,
     "activity_summary": _render_atom_activity_summary,
+    "subagent_dispatch": _render_atom_subagent_dispatch,
     "reasoning": _render_atom_reasoning,
     "plan": _render_atom_plan,
     "criteria_panel": _render_atom_criteria,

@@ -57,6 +57,7 @@ def test_header_v2_subagent_uses_parent_reference_instead_of_path():
 
     assert "↳ from #5" in result["subtitle"]["content"]
     assert "~/p" not in result["subtitle"]["content"]
+    assert result["template"] == "orange"
 
 
 def test_header_v2_frozen_shows_archived_state_and_final_elapsed():

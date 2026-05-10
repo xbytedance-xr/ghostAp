@@ -63,6 +63,37 @@ class TestCardSessionFactoryCreate:
             factory.create(chat_id="chat_6", metadata=metadata, callbacks=_TEST_CALLBACKS)
         assert "engine_type is not set" in caplog.text
 
+    def test_create_subagent_inherits_parent_metadata_and_callbacks(self):
+        factory = _make_factory()
+        parent_metadata = CardMetadata(
+            engine_type="deep",
+            project_name="ghostAp",
+            tool_name="Codex",
+            model_name="gpt-5",
+            card_sequence=5,
+            session_started_at=123.0,
+            working_dir="/repo",
+        )
+        parent = factory.create(chat_id="chat_parent", metadata=parent_metadata, callbacks=_TEST_CALLBACKS)
+
+        child = factory.create_subagent(
+            parent,
+            branch_id="a",
+            tool_name="Aiden",
+            model_name="claude-haiku-4-5",
+            session_id="child-id",
+        )
+
+        assert child.session_id == "child-id"
+        assert child.sequence == "5.a"
+        assert child.is_subagent is True
+        assert child.parent_card_seq == "5"
+        assert child.session_started_at == 123.0
+        assert child._chat_id == "chat_parent"
+        assert child._metadata.project_name == "ghostAp"
+        assert child._metadata.tool_name == "Aiden"
+        assert child._metadata.model_name == "claude-haiku-4-5"
+
 
 class TestCardSessionFactorySnapshot:
     """Tests for CardSessionFactory.create_snapshot()."""
