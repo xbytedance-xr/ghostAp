@@ -498,7 +498,9 @@ class TestPagination:
             task_panels = [el for el in body if "任务列表" in str(el)]
             assert len(task_panels) == 1
             assert "实现渲染" in str(task_panels[0])
-            assert "完成需求" not in str(task_panels[0])
+            assert "完成需求" in str(task_panels[0])
+            assert "进行中 (1)" in str(task_panels[0])
+            assert "已完成 (1)" in str(task_panels[0])
 
 
 class TestApprovalRendering:

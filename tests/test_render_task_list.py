@@ -69,8 +69,8 @@ class TestRenderTaskListPanel:
         result = render_task_list_panel(block)
         assert result is None
 
-    def test_compact_mode_shows_current_task_only(self):
-        """Compact mode keeps sticky task context minimal: current task + progress."""
+    def test_compact_mode_shows_three_groups(self):
+        """Compact mode keeps v2 sticky task context: active/done/pending groups."""
         tasks = [
             {"task_id": "t1", "name": "探索代码", "status": "completed"},
             {"task_id": "t2", "name": "修复路由", "status": "in_progress"},
@@ -86,13 +86,16 @@ class TestRenderTaskListPanel:
         assert result["expanded"] is True
         content = result["elements"][0]["content"]
         assert "修复路由" in content
-        assert "探索代码" not in content
-        assert "文档更新" not in content
+        assert "探索代码" in content
+        assert "文档更新" in content
+        assert "进行中 (1)" in content
+        assert "已完成 (1)" in content
+        assert "未处理 (3)" in content
         header_content = result["header"]["title"]["content"]
         assert "1/5" in header_content
 
-    def test_compact_mode_falls_back_when_current_id_missing(self):
-        """Compact mode falls back to in-progress task if current_task_id is stale."""
+    def test_compact_mode_keeps_in_progress_when_current_id_missing(self):
+        """Compact mode still shows in-progress task if current_task_id is stale."""
         tasks = [
             {"task_id": "t1", "name": "已完成", "status": "completed"},
             {"task_id": "t2", "name": "正在执行", "status": "in_progress"},
@@ -104,7 +107,8 @@ class TestRenderTaskListPanel:
 
         content = result["elements"][0]["content"]
         assert "正在执行" in content
-        assert "后续任务" not in content
+        assert "后续任务" in content
+        assert "未处理 (1)" in content
 
     def test_compact_empty_tasks(self):
         """Compact mode also returns None for empty task lists."""
@@ -141,8 +145,9 @@ class TestRenderTaskListPanel:
         result = render_task_list_panel(block)
         content = result["elements"][0]["content"]
 
-        # All shown individually, no fold summary
-        assert "已完成" not in content
+        # All shown individually, no folded tail summary
+        assert "已完成 (5)" in content
+        assert "还有" not in content
         for i in range(5):
             assert f"Task {i}" in content
 
