@@ -139,9 +139,11 @@ def render_subagent_dispatch_panel(subagents: list[dict]) -> dict | None:
     if not subagents:
         return None
 
+    status_counts: dict[str, int] = {}
     lines: list[str] = []
     for idx, item in enumerate(subagents, start=1):
         status = str(item.get("status") or "running")
+        status_counts[status] = status_counts.get(status, 0) + 1
         icon = _SUBAGENT_STATUS_ICONS.get(status, "🟠")
         label = item.get("label") or item.get("branch") or item.get("name") or f"子任务 {idx}"
         tool = item.get("tool") or item.get("tool_name") or "tool"
@@ -151,11 +153,27 @@ def render_subagent_dispatch_panel(subagents: list[dict]) -> dict | None:
         model_part = f" · {model}" if model else ""
         lines.append(f"- {icon} {label}{seq_part} · {tool}{model_part}")
 
+    running_count = status_counts.get("running", 0) + status_counts.get("active", 0)
+    completed_count = status_counts.get("completed", 0)
+    failed_count = status_counts.get("failed", 0)
+    cancelled_count = status_counts.get("cancelled", 0)
+    summary_parts: list[str] = []
+    if running_count:
+        summary_parts.append(f"运行中 {running_count}")
+    if completed_count:
+        summary_parts.append(f"完成 {completed_count}")
+    if failed_count:
+        summary_parts.append(f"失败 {failed_count}")
+    if cancelled_count:
+        summary_parts.append(f"取消 {cancelled_count}")
+    summary = " / ".join(summary_parts) if summary_parts else "暂无状态"
+    header_icon = "❌" if failed_count else ("🟠" if running_count else "✅")
+
     return {
         "tag": "collapsible_panel",
-        "expanded": True,
+        "expanded": bool(running_count or failed_count),
         "header": {
-            "title": {"tag": "markdown", "content": f"🟠 **并行子任务** · {len(subagents)} 个"},
+            "title": {"tag": "markdown", "content": f"{header_icon} **并行子任务** · {len(subagents)} 个 · {summary}"},
             "vertical_align": "center",
             "icon": {
                 "tag": "standard_icon",

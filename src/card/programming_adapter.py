@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Callable
 
@@ -96,6 +97,10 @@ class ProgrammingCardSession:
         self._subagent_session_factory = subagent_session_factory
         self._base_metadata = base_metadata or CardMetadata()
         self._text_active = False
+        self._active_text_block_id = "_active_text"
+        self._pending_text_block_id: str | None = None
+        self._reasoning_active = False
+        self._active_reasoning_block_id = "_active_reasoning"
         self._flush_interval = flush_interval or self._DEFAULT_FLUSH_INTERVAL
         # Text batching state
         self._pending_text = ""
@@ -108,8 +113,19 @@ class ProgrammingCardSession:
         self._agent_summaries: dict[str, dict] = {}
         self._acp_renderer = ACPEventRenderer()
         self._turn_snapshots = ()
+        self._text_turn_seq = 0
+        self._last_tool_boundary_seq = 0
         self._ticker_factory = LiveTicker
         self._ticker = None
+        self._last_ticker_update_at: float | None = None
+        self._ticker_update_min_interval = 5.0
+        # TimerScheduler callbacks must stay lightweight. In production, ticker
+        # metadata dispatch is submitted to the shared delivery pool so the
+        # scheduler thread never runs reduce/render/delivery inline. Tests that
+        # opt into sync delivery keep synchronous ticker dispatch by default for
+        # deterministic assertions, but can force async via this private flag.
+        self._ticker_dispatch_async = not getattr(session, "_sync_delivery", False)
+        self._ticker_executor_factory = None
 
     @property
     def session(self) -> CardSession:
@@ -139,34 +155,58 @@ class ProgrammingCardSession:
         if self._handle_agent_task_event(acp_event):
             return
 
-        self._acp_renderer.process_event(acp_event)
+        self._acp_renderer.ingest_event(acp_event)
         self._turn_snapshots = self._acp_renderer.snapshot_turns()
 
         card_event = CardEvent.from_acp(acp_event)
 
-        # Text delta: accumulate and schedule flush
+        # Text delta: accumulate and schedule flush. ACP turns get stable,
+        # per-turn block IDs so a later turn never appends to an earlier one.
         if card_event.type == CardEventType.TEXT_DELTA:
             text = card_event.payload.get("text", "")
             if text:
+                if self._reasoning_active:
+                    self._rotator.dispatch(CardEvent.reasoning_done(self._active_reasoning_block_id))
+                    self._reasoning_active = False
+                block_id = self._current_text_block_id()
                 with self._flush_lock:
                     self._flush_lock_holder.held = True
                     try:
+                        if self._text_active and self._active_text_block_id != block_id:
+                            self._flush_now()
+                            self._rotator.dispatch(CardEvent.text_done(self._active_text_block_id))
+                            self._text_active = False
                         if not self._text_active:
-                            self._rotator.dispatch(CardEvent.text_started("_active_text"))
+                            self._active_text_block_id = block_id
+                            self._rotator.dispatch(CardEvent.text_started(block_id))
                             self._text_active = True
+                        self._pending_text_block_id = self._active_text_block_id
                         self._pending_text += text
                         self._schedule_flush()
                     finally:
                         self._flush_lock_holder.held = False
             return
 
+        if card_event.type == CardEventType.REASONING_DELTA:
+            self._flush_now()
+            if not self._reasoning_active:
+                self._rotator.dispatch(CardEvent.reasoning_started(self._active_reasoning_block_id))
+                self._reasoning_active = True
+            self._rotator.dispatch(card_event)
+            return
+
         # Structural event: flush pending text first
         self._flush_now()
 
+        if card_event.type == CardEventType.TOOL_STARTED and self._reasoning_active:
+            self._rotator.dispatch(CardEvent.reasoning_done(self._active_reasoning_block_id))
+            self._reasoning_active = False
+
         # Tool events mark text as inactive
         if card_event.type == CardEventType.TOOL_STARTED:
+            self._last_tool_boundary_seq += 1
             if self._text_active:
-                self._rotator.dispatch(CardEvent.text_done("_active_text"))
+                self._rotator.dispatch(CardEvent.text_done(self._active_text_block_id))
                 self._text_active = False
 
         # Text resumed after tool
@@ -182,8 +222,10 @@ class ProgrammingCardSession:
                 self._flush_lock_holder.held = True
                 try:
                     if not self._text_active:
-                        self._rotator.dispatch(CardEvent.text_started("_active_text"))
+                        self._active_text_block_id = "_active_text"
+                        self._rotator.dispatch(CardEvent.text_started(self._active_text_block_id))
                         self._text_active = True
+                    self._pending_text_block_id = self._active_text_block_id
                     self._pending_text += text
                     self._schedule_flush()
                 finally:
@@ -192,11 +234,14 @@ class ProgrammingCardSession:
     def finish(self) -> None:
         """Complete the session normally."""
         self._flush_now()
+        if self._reasoning_active:
+            self._rotator.dispatch(CardEvent.reasoning_done(self._active_reasoning_block_id))
+            self._reasoning_active = False
         if self._text_active:
-            self._rotator.dispatch(CardEvent.text_done("_active_text"))
+            self._rotator.dispatch(CardEvent.text_done(self._active_text_block_id))
             self._text_active = False
-        self._rotator.dispatch(CardEvent.completed())
         self._finish_agent_sessions(failed=False)
+        self._rotator.dispatch(CardEvent.completed())
         self._stop_ticker()
 
     def fail(self, error: str = "") -> None:
@@ -205,15 +250,21 @@ class ProgrammingCardSession:
         if self._text_active:
             # Flush any pending text before failing
             pending = ""
+            pending_block_id = self._active_text_block_id
             with self._flush_lock:
                 pending = self._pending_text
+                pending_block_id = self._pending_text_block_id or self._active_text_block_id
                 self._pending_text = ""
+                self._pending_text_block_id = None
             if pending:
-                self._rotator.dispatch(CardEvent.text_delta("_active_text", pending))
-            self._rotator.dispatch(CardEvent.text_done("_active_text"))
+                self._rotator.dispatch(CardEvent.text_delta(pending_block_id, pending))
+            self._rotator.dispatch(CardEvent.text_done(self._active_text_block_id))
             self._text_active = False
-        self._rotator.dispatch(CardEvent.failed(error))
+        if self._reasoning_active:
+            self._rotator.dispatch(CardEvent.reasoning_done(self._active_reasoning_block_id))
+            self._reasoning_active = False
         self._finish_agent_sessions(failed=True, error=error)
+        self._rotator.dispatch(CardEvent.failed(error))
         self._stop_ticker()
 
     def update_tool_model(self, tool_name: str | None = None, model_name: str | None = None) -> None:
@@ -265,11 +316,23 @@ class ProgrammingCardSession:
         """Flush pending text immediately."""
         self._cancel_timer()
         pending = ""
+        block_id = self._active_text_block_id
         with self._flush_lock:
             pending = self._pending_text
+            block_id = self._pending_text_block_id or self._active_text_block_id
             self._pending_text = ""
+            self._pending_text_block_id = None
         if pending and not self._rotator.current.closed:
-            self._rotator.dispatch(CardEvent.text_delta("_active_text", pending))
+            self._rotator.dispatch(CardEvent.text_delta(block_id, pending))
+
+    def _current_text_block_id(self) -> str:
+        """Return the stable text block ID for the current ACP turn."""
+        if self._text_turn_seq == 0:
+            self._text_turn_seq = 1
+            return "_active_text"
+        if self._last_tool_boundary_seq >= self._text_turn_seq:
+            self._text_turn_seq = self._last_tool_boundary_seq + 1
+        return f"_turn_{self._text_turn_seq}_text"
 
     def _cancel_timer(self) -> None:
         """Cancel any pending flush timer."""
@@ -294,6 +357,40 @@ class ProgrammingCardSession:
             ticker.stop()
 
     def _on_ticker_frame(self, frame: str) -> None:
+        if not frame or self._rotator.current.closed:
+            return
+        current_frame = None
+        current_state = self._rotator.current.state
+        if current_state is not None:
+            current_frame = current_state.metadata.live_ticker_frame
+        if frame == current_frame:
+            return
+        now = time.monotonic()
+        if (
+            self._last_ticker_update_at is not None
+            and now - self._last_ticker_update_at < self._ticker_update_min_interval
+        ):
+            return
+        self._last_ticker_update_at = now
+        if self._ticker_dispatch_async:
+            try:
+                executor = self._ticker_executor_factory() if self._ticker_executor_factory else None
+                if executor is None:
+                    from src.card.delivery.pool import get_delivery_pool
+
+                    executor = get_delivery_pool()
+                executor.submit(self._dispatch_ticker_frame, frame)
+                return
+            except RuntimeError:
+                logger.debug("Ticker dispatch skipped because delivery pool is unavailable")
+                return
+            except Exception:
+                logger.exception("Failed to submit ticker dispatch; dropping frame")
+                return
+
+        self._dispatch_ticker_frame(frame)
+
+    def _dispatch_ticker_frame(self, frame: str) -> None:
         if not frame or self._rotator.current.closed:
             return
         self._rotator.dispatch(CardEvent.tool_model_changed(live_ticker_frame=frame))
@@ -413,14 +510,26 @@ class ProgrammingCardSession:
             self._rotator.dispatch(CardEvent.tool_model_changed(subagents=tuple(self._agent_summaries.values())))
 
     def _finish_agent_sessions(self, *, failed: bool, error: str = "") -> None:
+        summary_changed = False
         for tool_id, session in list(self._agent_sessions.items()):
             if session.closed:
                 continue
             if failed:
                 session.dispatch(CardEvent.failed(error))
+                terminal_status = "failed"
             else:
                 session.dispatch(CardEvent.completed())
+                terminal_status = "completed"
+            existing = self._agent_summaries.get(tool_id)
+            if existing is not None and existing.get("status") != terminal_status:
+                self._agent_summaries[tool_id] = {**existing, "status": terminal_status}
+                summary_changed = True
         self._agent_sessions.clear()
+        if summary_changed and not self._rotator.current.closed:
+            try:
+                self._rotator.dispatch(CardEvent.tool_model_changed(subagents=tuple(self._agent_summaries.values())))
+            except Exception:
+                logger.exception("Failed to publish final subagent summary; continuing parent terminal transition")
 
     @staticmethod
     def _extract_current_tasks(plan: "PlanInfo | None") -> tuple[str, ...]:

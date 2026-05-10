@@ -372,6 +372,14 @@ class ACPEventRenderer:
         self._ingest_event(event)
         return self._render()
 
+    def ingest_event(self, event: ACPEvent) -> None:
+        """Process an event without rendering legacy markdown output.
+
+        Card v2 callers use this to maintain turn snapshots while avoiding the
+        cost of rebuilding the legacy markdown string for every streamed event.
+        """
+        self._ingest_event(event)
+
     def process_event_structured(self, event: ACPEvent) -> RenderedContent:
         """Process an event and return structured content for collapsible rendering."""
         self._ingest_event(event)

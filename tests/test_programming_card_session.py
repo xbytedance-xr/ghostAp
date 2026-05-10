@@ -129,6 +129,41 @@ class TestProgrammingCardSession:
         pcs.finish()
         assert calls[-1] == "stop"
 
+    def test_live_ticker_frames_are_rate_limited(self):
+        pcs, _ = _make_programming_session()
+        pcs._ticker_update_min_interval = 9999.0
+        pcs.start()
+        pcs._last_ticker_update_at = None
+
+        pcs._on_ticker_frame("⚪")
+        assert pcs.session.state.metadata.live_ticker_frame == "⚪"
+
+        pcs._on_ticker_frame("🟢")
+        assert pcs.session.state.metadata.live_ticker_frame == "⚪"
+
+    def test_live_ticker_dispatch_is_offloaded_when_async_enabled(self):
+        pcs, _ = _make_programming_session()
+        pcs.start()
+        pcs._ticker_dispatch_async = True
+        pcs._last_ticker_update_at = None
+
+        submitted = []
+
+        class FakePool:
+            def submit(self, fn, *args, **kwargs):
+                submitted.append((fn, args, kwargs))
+
+        pcs._ticker_executor_factory = lambda: FakePool()
+
+        def fail_inline_dispatch(_event):
+            raise AssertionError("ticker dispatch must be offloaded")
+
+        pcs._rotator.dispatch = fail_inline_dispatch
+        pcs._on_ticker_frame("⚪")
+
+        assert len(submitted) == 1
+        assert submitted[0][1] == ("⚪",)
+
     def test_on_text_appends_content(self):
         pcs, _ = _make_programming_session()
         pcs.start()
@@ -151,6 +186,22 @@ class TestProgrammingCardSession:
 
         state = pcs.session.state
         text_blocks = [b for b in state.blocks if b.kind == "text"]
+        assert any("streaming text" in b.content for b in text_blocks)
+
+    def test_on_event_updates_turn_snapshot_without_rendering_legacy_markdown(self):
+        pcs, _ = _make_programming_session()
+        pcs.start()
+
+        def fail_render():
+            raise AssertionError("legacy markdown render should not run")
+
+        pcs._acp_renderer._render = fail_render
+
+        from src.acp.models import ACPEvent, ACPEventType
+        pcs.on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="streaming text"))
+        pcs._flush_now()
+
+        text_blocks = [b for b in pcs.session.state.blocks if b.kind == "text"]
         assert any("streaming text" in b.content for b in text_blocks)
 
     def test_on_event_handles_tool_call(self):
@@ -241,7 +292,59 @@ class TestProgrammingCardSession:
         blocks = pcs.session.state.blocks
         text_blocks = [b for b in blocks if b.kind == "text"]
         assert [b.content for b in text_blocks] == ["先分析。", "再总结。"]
+        assert [b.block_id for b in text_blocks] == ["_active_text", "_turn_2_text"]
         assert [b.kind for b in blocks[:3]] == ["text", "tool_call", "text"]
+
+    def test_acp_turn_text_block_ids_are_monotonic_after_renderer_reset(self):
+        from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
+
+        pcs, _ = _make_programming_session()
+        pcs.start()
+        pcs.on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="第一轮。"))
+        pcs._flush_now()
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(id="read-1", title="Read", kind="read", status="in_progress", content="src/a.py"),
+        ))
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE,
+            tool_call=ToolCallInfo(id="read-1", title="Read", kind="read", status="completed", content="done"),
+        ))
+        pcs.on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="第二轮。"))
+        pcs._flush_now()
+
+        pcs._acp_renderer.reset()
+        pcs._turn_snapshots = ()
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(id="read-2", title="Read", kind="read", status="in_progress", content="src/b.py"),
+        ))
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE,
+            tool_call=ToolCallInfo(id="read-2", title="Read", kind="read", status="completed", content="done"),
+        ))
+        pcs.on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="第三轮。"))
+        pcs._flush_now()
+
+        text_blocks = [b for b in pcs.session.state.blocks if b.kind == "text"]
+        assert [b.content for b in text_blocks] == ["第一轮。", "第二轮。", "第三轮。"]
+        assert len({b.block_id for b in text_blocks}) == 3
+
+    def test_acp_reasoning_is_closed_at_turn_boundary(self):
+        from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
+
+        pcs, _ = _make_programming_session()
+        pcs.start()
+        pcs.on_event(ACPEvent(event_type=ACPEventType.THOUGHT_CHUNK, text="需要先读文件"))
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(id="read-1", title="Read", kind="read", status="in_progress", content="src/a.py"),
+        ))
+
+        reasoning_blocks = [b for b in pcs.session.state.blocks if b.kind == "reasoning"]
+        assert len(reasoning_blocks) == 1
+        assert reasoning_blocks[0].block_id == "_active_reasoning"
+        assert reasoning_blocks[0].status == "completed"
 
     def test_plan_block_moves_to_card_start_with_task_sections(self):
         from src.acp.models import ACPEvent, ACPEventType, PlanEntryInfo, PlanInfo
@@ -354,6 +457,59 @@ class TestProgrammingCardSession:
         assert "实现后端接口" in body
         assert "#1.a" in body
 
+    def test_parallel_agent_summary_panel_reflects_terminal_statuses(self):
+        from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
+        from src.card.render.budget import RenderBudget
+        from src.card.render.renderer import render_card
+
+        pcs, _ = _make_programming_session()
+        pcs.start()
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(
+                id="agent-task-1",
+                title="Agent",
+                kind="other",
+                status="in_progress",
+                content="实现后端接口\n子代理：Explore",
+            ),
+        ))
+
+        pcs.finish()
+
+        assert pcs.session.state.metadata.subagents[0]["status"] == "completed"
+        body = str(render_card(pcs.session.state, RenderBudget())[0]._card_json["body"]["elements"])
+        assert "✅ 实现后端接口" in body
+        assert "完成 1" in body
+
+    def test_parent_completion_survives_subagent_summary_dispatch_failure(self):
+        from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
+
+        pcs, _ = _make_programming_session()
+        pcs.start()
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(
+                id="agent-task-1",
+                title="Agent",
+                kind="other",
+                status="in_progress",
+                content="实现后端接口\n子代理：Explore",
+            ),
+        ))
+
+        original_dispatch = pcs._rotator.dispatch
+
+        def flaky_dispatch(event):
+            if event.type == CardEventType.TOOL_MODEL_CHANGED and "subagents" in event.payload:
+                raise RuntimeError("summary dispatch failed")
+            return original_dispatch(event)
+
+        pcs._rotator.dispatch = flaky_dispatch
+        pcs.finish()
+
+        assert pcs.session.state.terminal == "completed"
+
     def test_agent_task_uses_card_session_factory_create_subagent_when_available(self):
         from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
 
@@ -419,6 +575,19 @@ class TestProgrammingCardSession:
         assert "已运行 1 条命令" not in rendered_text
         assert "先说明目标。" in rendered_text
         assert "后续正文继续更新。" in rendered_text
+
+    def test_completed_header_uses_terminal_marker_not_stale_ticker_frame(self):
+        from src.card.render.renderer import render_card
+        from src.card.render.budget import RenderBudget
+
+        pcs, _ = _make_programming_session()
+        pcs.start()
+        pcs._on_ticker_frame("⚪")
+        pcs.finish()
+
+        header = render_card(pcs.session.state, RenderBudget())[0]._card_json["header"]
+        assert "✅" in header["subtitle"]["content"]
+        assert "⚪" not in header["subtitle"]["content"]
 
 
 class TestSessionMetadataPerMode:

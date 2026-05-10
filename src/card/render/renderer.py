@@ -223,6 +223,16 @@ def compute_structure_signature(state: CardState) -> str:
         parts.append(f"tool:{state.metadata.tool_name}")
     if state.metadata.model_name:
         parts.append(f"model:{state.metadata.model_name}")
+    if state.metadata.live_ticker_frame:
+        parts.append(f"ticker:{state.metadata.live_ticker_frame}")
+    if state.metadata.subagents:
+        for item in state.metadata.subagents:
+            parts.append(
+                "subagent:"
+                f"{item.get('sequence') or item.get('card_sequence') or ''}:"
+                f"{item.get('status') or ''}:"
+                f"{item.get('label') or item.get('name') or ''}"
+            )
     if state.metadata.bridge_phrase:
         parts.append(f"bridge:{state.metadata.bridge_phrase}")
     if state.footer.status is not None:

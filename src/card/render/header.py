@@ -71,7 +71,7 @@ def _render_v2_header(state: CardState) -> dict:
 
     elapsed = _elapsed_seconds(state)
     cumulative_elapsed = _cumulative_elapsed_seconds(state)
-    marker = "⏸" if metadata.frozen else (metadata.live_ticker_frame or "🟢")
+    marker = _status_marker(state)
     elapsed_label = _format_elapsed(elapsed)
     if metadata.frozen:
         right = f"{marker} final {elapsed_label}"
@@ -101,6 +101,28 @@ def _v2_header_template(state: CardState) -> str:
     if metadata.is_subagent:
         return "orange"
     return state.header.template
+
+
+def _status_marker(state: CardState) -> str:
+    """Return the v2 header status marker.
+
+    Live ticker frames are meaningful only while the card is actively running;
+    terminal cards must show a stable semantic marker instead of the last
+    animation frame retained in metadata.
+    """
+    metadata = state.metadata
+    if metadata.frozen:
+        return "⏸"
+    terminal_markers = {
+        "completed": "✅",
+        "failed": "❌",
+        "cancelled": "⚪",
+        "paused": "⏸",
+        "blocked": "⛔",
+    }
+    if state.terminal != "running":
+        return terminal_markers.get(state.terminal, "⚪")
+    return metadata.live_ticker_frame or "🟢"
 
 
 def _elapsed_seconds(state: CardState) -> float:
