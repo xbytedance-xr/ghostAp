@@ -163,7 +163,13 @@ def render_card(
             tag = elem.get("tag", "")
             page_sig_parts.append(tag)
             if tag == "markdown":
-                page_sig_parts.append(str(elem.get("content", ""))[:64])
+                # Skip content of streaming elements — their text is delivered
+                # via element_content API and should not trigger full card updates.
+                # Including it causes repeated full patches while content[:64] changes,
+                # then a jarring switch to stream_element that produces a visual newline
+                # artifact in Feishu CardKit.
+                if not elem.get("element_id"):
+                    page_sig_parts.append(str(elem.get("content", ""))[:64])
             elif tag == "collapsible_panel":
                 header = elem.get("header")
                 if isinstance(header, dict):
