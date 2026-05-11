@@ -12,7 +12,6 @@ class TestMessageDispatcher:
 
     def test_process_with_intent_deep_command(self):
         self.client._is_deep_command.return_value = True
-        self.client._is_loop_command.return_value = False
         self.client._is_spec_command.return_value = False
         self.client._is_interceptable_command_match.return_value = False
         
@@ -32,7 +31,6 @@ class TestMessageDispatcher:
     @patch("src.thread.get_current_thread_id", return_value=None)
     def test_process_with_intent_programming_mode_forwarding(self, mock_tid):
         self.client._is_deep_command.return_value = False
-        self.client._is_loop_command.return_value = False
         self.client._is_spec_command.return_value = False
         self.client._is_interceptable_command_match.return_value = False
         self.client._is_exit_command.return_value = False
@@ -57,7 +55,6 @@ class TestMessageDispatcher:
 
     def test_process_with_intent_exit_command(self):
         self.client._is_deep_command.return_value = False
-        self.client._is_loop_command.return_value = False
         self.client._is_spec_command.return_value = False
         self.client._is_interceptable_command_match.return_value = False
         self.client._is_exit_command.return_value = True
@@ -115,7 +112,6 @@ class TestMessageDispatcher:
 
     def test_process_with_intent_smart_mode_recognition(self):
         self.client._is_deep_command.return_value = False
-        self.client._is_loop_command.return_value = False
         self.client._is_spec_command.return_value = False
         self.client._is_interceptable_command_match.return_value = False
         self.client._get_effective_mode.return_value = (InteractionMode.SMART, False)

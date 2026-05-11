@@ -30,12 +30,6 @@ def test_banner_deep_analyzing():
     assert compute_banner(md, rs) == "🧠 Deep · 分析中 · 10s"
 
 
-def test_banner_loop_round():
-    md = CardMetadata(mode_name="Loop", mode_emoji="🔄", engine_type="loop")
-    rs = RuntimeStats(elapsed_seconds=312.0, loop_round=2)
-    assert compute_banner(md, rs) == "🔄 Loop · 第 2 轮 · 5m12s"
-
-
 def test_banner_spec_cycle_perspective():
     md = CardMetadata(mode_name="Spec", mode_emoji="📐", engine_type="spec")
     rs = RuntimeStats(elapsed_seconds=484.0, spec_cycle=2, spec_perspective="code")

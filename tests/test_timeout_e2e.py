@@ -177,68 +177,6 @@ class TestDeepEngineE2E:
             assert "超时" in err
 
 
-class TestLoopEngineE2E:
-    """LoopEngine bare TimeoutError → on_error callback message non-empty."""
-
-    @pytest.fixture
-    def loop_engine(self):
-        from src.loop_engine.engine import LoopEngine
-        with patch("src.engine_base.get_settings") as mock_settings:
-            s = MagicMock()
-            s.loop_max_iterations = 15
-            s.loop_convergence_window = 3
-            s.loop_execution_timeout = 300
-            s.loop_review_enabled = False
-            s.loop_review_extra_iterations = 0
-            s.loop_max_context_tokens = 80000
-            s.loop_review_timeout = 5
-            s.loop_review_failure_circuit_enabled = False
-            s.loop_review_failure_max_consecutive = 3
-            s.loop_review_failure_cooldown_iterations = 3
-            mock_settings.return_value = s
-            yield LoopEngine(chat_id="e2e", root_path="/tmp/e2e")
-
-    def test_bare_timeout_produces_nonempty_error(self, loop_engine, caplog):
-        from src.loop_engine.engine import LoopEngineCallbacks
-        from src.loop_engine.models import LoopRequirement
-
-        cb = LoopEngineCallbacks()
-        errors = []
-        cb.on_error = lambda msg: errors.append(msg)
-
-        loop_engine._parse_requirement = lambda txt: LoopRequirement(
-            goal="g", acceptance_criteria=["c"], raw_text=txt,
-        )
-
-        loop_engine._create_session_fn = lambda **kwargs: _TimeoutSession()
-        loop_engine.execute("test", callbacks=cb)
-
-        assert len(errors) >= 1
-        for err in errors:
-            assert len(err.strip()) > 0, "on_error received empty message"
-            assert "超时" in err
-
-    def test_bare_asyncio_timeout_produces_nonempty_error(self, loop_engine, caplog):
-        from src.loop_engine.engine import LoopEngineCallbacks
-        from src.loop_engine.models import LoopRequirement
-
-        cb = LoopEngineCallbacks()
-        errors = []
-        cb.on_error = lambda msg: errors.append(msg)
-
-        loop_engine._parse_requirement = lambda txt: LoopRequirement(
-            goal="g", acceptance_criteria=["c"], raw_text=txt,
-        )
-
-        loop_engine._create_session_fn = lambda **kwargs: _AsyncioTimeoutSession()
-        loop_engine.execute("test", callbacks=cb)
-
-        assert len(errors) >= 1
-        for err in errors:
-            assert len(err.strip()) > 0, "on_error received empty message for asyncio.TimeoutError"
-            assert "超时" in err
-
-
 class TestSpecEngineE2E:
     """SpecEngine bare TimeoutError → on_error callback message non-empty."""
 

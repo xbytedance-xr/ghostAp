@@ -14,7 +14,6 @@ import pytest
 from src.feishu.handler_context import HandlerContext
 from src.feishu.handlers.base import BaseHandler
 from src.feishu.handlers.deep import DeepHandler
-from src.feishu.handlers.loop import LoopHandler
 from src.feishu.handlers.worktree import WorktreeHandler
 from src.feishu.handlers.diagnostics import DiagnosticsHandler
 from src.feishu.handlers.programming import (
@@ -59,8 +58,6 @@ def _make_handler_context(**overrides) -> HandlerContext:
         context_manager=MagicMock(),
         deep_engine_manager=MagicMock(),
         progress_reporter=MagicMock(),
-        loop_engine_manager=MagicMock(),
-        loop_reporter=MagicMock(),
         spec_engine_manager=MagicMock(),
         spec_reporter=MagicMock(),
         thread_manager=MagicMock(),
@@ -2517,77 +2514,6 @@ class TestSameSenderAutoDetection:
             ctx = helper._collect_lock_conflict_context(err)
 
         assert not hasattr(ctx, "chat_hint")
-
-
-# ======================================================================
-# Loop Handler integration tests
-# ======================================================================
-
-
-class TestLoopHandler:
-    """Integration tests for LoopHandler command routing and renderer delegation."""
-
-    def _make(self):
-        ctx = _make_handler_context()
-        h = LoopHandler(ctx)
-        h.reply_text = MagicMock()
-        h.reply_card = MagicMock(return_value="reply_1")
-        h.reply_error = MagicMock()
-        h.update_card = MagicMock()
-        h.add_reaction = MagicMock()
-        h.register_message_project = MagicMock()
-        return h, ctx
-
-    def test_handle_loop_command_status(self):
-        h, ctx = self._make()
-        h.show_loop_status = MagicMock()
-        h.handle_loop_command("m1", "c1", "/loop_status", None)
-        h.show_loop_status.assert_called_once()
-
-    def test_handle_loop_command_stop(self):
-        h, ctx = self._make()
-        h.stop_loop_engine = MagicMock()
-        h.handle_loop_command("m1", "c1", "/stop_loop", None)
-        h.stop_loop_engine.assert_called_once()
-
-    def test_handle_loop_command_pause(self):
-        h, ctx = self._make()
-        h.pause_loop_engine = MagicMock()
-        h.handle_loop_command("m1", "c1", "/loop_pause", None)
-        h.pause_loop_engine.assert_called_once()
-
-    def test_handle_loop_command_resume(self):
-        h, ctx = self._make()
-        h.resume_loop_engine = MagicMock()
-        h.handle_loop_command("m1", "c1", "/loop_resume", None)
-        h.resume_loop_engine.assert_called_once()
-
-    def test_handle_loop_command_empty(self):
-        h, ctx = self._make()
-        h.handle_loop_command("m1", "c1", "/loop", None)
-        h.reply_error.assert_called_once()
-
-    def test_handle_loop_command_start(self):
-        h, ctx = self._make()
-        h.start_loop_engine = MagicMock()
-        h.handle_loop_command("m1", "c1", "/loop build feature X", None)
-        h.start_loop_engine.assert_called_once_with("m1", "c1", "build feature X", None)
-
-    def test_handle_loop_command_guide_usage(self):
-        h, ctx = self._make()
-        h.handle_loop_command("m1", "c1", "/loop_guide", None)
-        h.reply_error.assert_called_once()
-
-    def test_handle_loop_command_guide_with_text(self):
-        h, ctx = self._make()
-        h.update_loop_guidance = MagicMock()
-        h.handle_loop_command("m1", "c1", "/loop_guide focus on tests", None)
-        h.update_loop_guidance.assert_called_once()
-
-    def test_renderer_is_loop_renderer(self):
-        h, ctx = self._make()
-        from src.feishu.renderers.loop_renderer import LoopRenderer
-        assert isinstance(h.renderer, LoopRenderer)
 
 
 # ======================================================================

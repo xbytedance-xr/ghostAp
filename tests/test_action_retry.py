@@ -165,7 +165,7 @@ class TestRetryCommandRepoLockProbe:
 
         handler = _bootstrap(client)
 
-        cmd = "/loop run"
+        cmd = "/deep run"
         sig = _compute_hmac_sig(cmd)
         handler("mid_5", "chat_5", "proj_1", {
             "command_text": cmd,
@@ -267,7 +267,7 @@ class TestRetryCommandTOCTOURace:
 
         handler = _bootstrap(client)
 
-        cmd = "/loop run"
+        cmd = "/deep run"
         sig = _compute_hmac_sig(cmd)
 
         racer_thread = threading.Thread(target=racer, daemon=True)

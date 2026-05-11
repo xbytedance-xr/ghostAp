@@ -2,7 +2,6 @@ import pytest
 from unittest.mock import MagicMock, patch
 import time
 from src.spec_engine.engine import SpecEngine
-from src.loop_engine.engine import LoopEngine
 from src.deep_engine.engine import DeepEngine
 from src.utils.trace import TraceContext
 
@@ -38,40 +37,6 @@ class TestTraceIntegration:
         mock_trace_context.assert_called_once()
         call_args = mock_trace_context.call_args
         assert call_args.kwargs.get('request_id') == "test_task_id"
-        
-        # Verify TraceContext usage as context manager
-        mock_trace_ctx_instance.__enter__.assert_called_once()
-        mock_trace_ctx_instance.__exit__.assert_called_once()
-
-    @patch("src.loop_engine.engine.TraceContext")
-    @patch("src.engine_base.get_settings")
-    @patch("src.loop_engine.engine.create_engine_session")
-    def test_loop_engine_trace_integration(self, mock_create_session, mock_get_settings, mock_trace_context):
-        # Setup
-        mock_settings = MagicMock()
-        mock_settings.loop_max_iterations = 1
-        mock_settings.loop_execution_timeout = 1
-        mock_settings.loop_watchdog_timeout = 1
-        mock_get_settings.return_value = mock_settings
-        
-        # Mock session to raise exception to stop execution immediately after entering context
-        mock_create_session.side_effect = RuntimeError("Stop execution for test")
-        
-        mock_trace_ctx_instance = MagicMock()
-        mock_trace_context.return_value = mock_trace_ctx_instance
-        
-        engine = LoopEngine(chat_id="test_chat", root_path="/tmp/test_loop")
-        
-        # Execute
-        # We expect RuntimeError because we force it, but TraceContext should still be used
-        # Note: LoopEngine catches Exception and returns project with ABORTED status
-        with patch.object(engine, '_parse_requirement', return_value=MagicMock()):
-             engine.execute(requirement_text="test requirement", task_id="test_task_id")
-            
-        # Verify TraceContext initialization
-        mock_trace_context.assert_called_once()
-        call_args = mock_trace_context.call_args
-        assert call_args.kwargs.get('trace_id') == "test_task_id"
         
         # Verify TraceContext usage as context manager
         mock_trace_ctx_instance.__enter__.assert_called_once()

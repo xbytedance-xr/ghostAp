@@ -33,7 +33,7 @@ def resolve_ttadk_engine_startup_model(
     cwd: str,
     model_intent: Optional[str],
 ) -> dict:
-    """为 Deep/Loop/Spec 引擎统一解析 TTADK 启动模型。
+    """为 Deep/Spec 引擎统一解析 TTADK 启动模型。
 
     注意：该函数仅做"启动阶段预校验"，不做执行阶段强校验/纠错。
     统一收敛到 `src.ttadk.startup_common.precheck_ttadk_startup_model()`，避免多处实现漂移。
@@ -131,7 +131,7 @@ def create_engine_session(
     cancel_event: Optional[threading.Event] = None,
     model_name: Optional[str] = None,
 ) -> SyncSession:
-    """Create and start a session for Deep/Loop/Spec engines.
+    """Create and start a session for Deep/Spec engines.
 
     - Claude: CLI backend (no ACP retry needed)
     - ttadk_*: CLI backend (no ACP retry needed)

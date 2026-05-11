@@ -47,7 +47,6 @@ class TestIsStopIntent:
     @pytest.mark.parametrize("action_id", [
         "intent.engine.stop",
         "intent.deep.stop",
-        "intent.loop.stop",
         "intent.spec.stop",
         "intent.worktree.cancel",
     ])
@@ -73,7 +72,6 @@ class TestIsStopIntent:
         expected = {
             "intent.engine.stop",
             "intent.deep.stop",
-            "intent.loop.stop",
             "intent.spec.stop",
             "intent.worktree.cancel",
         }
@@ -88,7 +86,6 @@ class TestDestructiveConfirm:
     @pytest.mark.parametrize("intent", [
         "intent.engine.stop",
         "intent.deep.stop",
-        "intent.loop.stop",
         "intent.spec.stop",
         "intent.worktree.cleanup",
         "intent.worktree.merge",
@@ -106,7 +103,6 @@ class TestDestructiveConfirm:
         "intent.worktree.confirm_start",
         "intent.worktree.finish_selection",
         "intent.deep.resume",
-        "intent.loop.resume",
         "intent.spec.resume",
         "intent.show_status",
     ])
@@ -119,12 +115,12 @@ class TestDestructiveConfirm:
     def test_destructive_actions_set_completeness(self):
         """Guard: _DESTRUCTIVE_ACTIONS must contain the expected set."""
         from src.card.actions.dispatch import (
-            ENGINE_STOP, DEEP_STOP, LOOP_STOP, SPEC_STOP,
+            ENGINE_STOP, DEEP_STOP, SPEC_STOP,
             WORKTREE_CLEANUP, WORKTREE_MERGE, WORKTREE_CANCEL,
             APPROVE_ACTION,
         )
         expected = frozenset({
-            ENGINE_STOP, DEEP_STOP, LOOP_STOP, SPEC_STOP,
+            ENGINE_STOP, DEEP_STOP, SPEC_STOP,
             WORKTREE_CLEANUP, WORKTREE_MERGE, WORKTREE_CANCEL,
             APPROVE_ACTION,
         })

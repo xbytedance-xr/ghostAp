@@ -17,11 +17,10 @@ def register_default_class_types(registry: ServiceRegistry) -> None:
     from ..mode import ModeManager
     from ..thread import get_thread_manager
     from ..deep_engine import DeepEngineManager, ProgressReporter
-    from ..loop_engine import LoopEngineManager, LoopReporter
     from ..spec_engine import SpecEngineManager, SpecReporter
     from .handlers import (
         CocoModeHandler, ClaudeModeHandler, AidenModeHandler, CodexModeHandler,
-        GeminiModeHandler, TTADKModeHandler, DeepHandler, LoopHandler,
+        GeminiModeHandler, TTADKModeHandler, DeepHandler,
         SpecHandler, ProjectHandler, SystemHandler, DiagnosticsHandler
     )
     from .router import HandlerDispatcher, MessageRouter
@@ -44,8 +43,6 @@ def register_default_class_types(registry: ServiceRegistry) -> None:
         "get_thread_manager": get_thread_manager,
         "DeepEngineManager": DeepEngineManager,
         "ProgressReporter": ProgressReporter,
-        "LoopEngineManager": LoopEngineManager,
-        "LoopReporter": LoopReporter,
         "SpecEngineManager": SpecEngineManager,
         "SpecReporter": SpecReporter,
         "ProjectContextManager": ProjectContextManager,
@@ -56,7 +53,6 @@ def register_default_class_types(registry: ServiceRegistry) -> None:
         "GeminiModeHandler": GeminiModeHandler,
         "TTADKModeHandler": TTADKModeHandler,
         "DeepHandler": DeepHandler,
-        "LoopHandler": LoopHandler,
         "SpecHandler": SpecHandler,
         "ProjectHandler": ProjectHandler,
         "SystemHandler": SystemHandler,
@@ -90,12 +86,11 @@ def setup_feishu_services(
     from ..mode import ModeManager
     from ..thread import get_thread_manager
     from ..deep_engine import DeepEngineManager, ProgressReporter
-    from ..loop_engine import LoopEngineManager, LoopReporter
     from ..spec_engine import SpecEngineManager, SpecReporter
     from .handler_context import HandlerContext
     from .handlers import (
         CocoModeHandler, ClaudeModeHandler, AidenModeHandler, CodexModeHandler,
-        GeminiModeHandler, TTADKModeHandler, DeepHandler, LoopHandler,
+        GeminiModeHandler, TTADKModeHandler, DeepHandler,
         SpecHandler, ProjectHandler, SystemHandler, DiagnosticsHandler
     )
     from .router import HandlerDispatcher, MessageRouter
@@ -160,8 +155,6 @@ def setup_feishu_services(
     
     registry.register_factory_if_absent("deep_engine_manager", lambda: registry.get("DeepEngineManager", default=DeepEngineManager)())
     registry.register_factory_if_absent("progress_reporter", lambda: registry.get("ProgressReporter", default=ProgressReporter)())
-    registry.register_factory_if_absent("loop_engine_manager", lambda: registry.get("LoopEngineManager", default=LoopEngineManager)())
-    registry.register_factory_if_absent("loop_reporter", lambda: registry.get("LoopReporter", default=LoopReporter)())
     registry.register_factory_if_absent("spec_engine_manager", lambda: registry.get("SpecEngineManager", default=SpecEngineManager)())
     registry.register_factory_if_absent("spec_reporter", lambda: registry.get("SpecReporter", default=SpecReporter)())
     registry.register_factory_if_absent("context_manager", lambda: registry.get("ProjectContextManager", default=ProjectContextManager)())
@@ -177,7 +170,6 @@ def setup_feishu_services(
     registry.register_factory_if_absent("gemini_handler", lambda: registry.get("GeminiModeHandler", default=GeminiModeHandler)(registry.get("handler_ctx")))
     registry.register_factory_if_absent("ttadk_handler", lambda: registry.get("TTADKModeHandler", default=TTADKModeHandler)(registry.get("handler_ctx")))
     registry.register_factory_if_absent("deep_handler", lambda: registry.get("DeepHandler", default=DeepHandler)(registry.get("handler_ctx")))
-    registry.register_factory_if_absent("loop_handler", lambda: registry.get("LoopHandler", default=LoopHandler)(registry.get("handler_ctx")))
     registry.register_factory_if_absent("spec_handler", lambda: registry.get("SpecHandler", default=SpecHandler)(registry.get("handler_ctx")))
     registry.register_factory_if_absent("project_handler", lambda: registry.get("ProjectHandler", default=ProjectHandler)(registry.get("handler_ctx")))
     registry.register_factory_if_absent("system_handler", lambda: registry.get("SystemHandler", default=SystemHandler)(registry.get("handler_ctx")))

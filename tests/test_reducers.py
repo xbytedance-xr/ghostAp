@@ -271,13 +271,6 @@ class TestReduceLifecycle:
         new = reduce_lifecycle(state, event)
         assert any(b.action_id == ButtonIntent.DEEP_RESUME for b in new.buttons)
 
-    def test_failed_injects_retry_button_for_loop(self):
-        meta = CardMetadata(engine_type="loop")
-        state = _base_state(metadata=meta)
-        event = CardEvent.failed("error")
-        new = reduce_lifecycle(state, event)
-        assert any(b.action_id == ButtonIntent.LOOP_RESUME for b in new.buttons)
-
     def test_failed_injects_retry_button_for_spec(self):
         meta = CardMetadata(engine_type="spec")
         state = _base_state(metadata=meta)
@@ -291,7 +284,7 @@ class TestReduceLifecycle:
         event = CardEvent.failed("error")
         new = reduce_lifecycle(state, event)
         # No retry button for unknown engine, but "查看详情" is always present
-        assert not any(b.action_id in (ButtonIntent.DEEP_RESUME, ButtonIntent.LOOP_RESUME, ButtonIntent.SPEC_RESUME, ButtonIntent.WORKTREE_RETRY_FAILED) for b in new.buttons)
+        assert not any(b.action_id in (ButtonIntent.DEEP_RESUME, ButtonIntent.SPEC_RESUME, ButtonIntent.WORKTREE_RETRY_FAILED) for b in new.buttons)
         assert any(b.action_id == ButtonIntent.SHOW_STATUS for b in new.buttons)
 
     def test_cancelled_clears_buttons(self):
@@ -317,7 +310,6 @@ class TestLifecycleStopButtons:
 
     @pytest.mark.parametrize("engine_type,expected_action", [
         ("deep", ButtonIntent.ENGINE_STOP),
-        ("loop", ButtonIntent.ENGINE_STOP),
         ("spec", ButtonIntent.ENGINE_STOP),
         ("worktree", ButtonIntent.WORKTREE_CANCEL),
     ])
@@ -337,7 +329,7 @@ class TestLifecycleStopButtons:
         new = reduce_lifecycle(state, event)
         assert new.buttons == ()
 
-    @pytest.mark.parametrize("engine_type", ["deep", "loop", "spec", "worktree"])
+    @pytest.mark.parametrize("engine_type", ["deep", "spec", "worktree"])
     def test_resumed_injects_stop_button(self, engine_type):
         state = _base_state(metadata=CardMetadata(engine_type=engine_type))
         event = CardEvent(type=CardEventType.RESUMED)

@@ -21,9 +21,6 @@ class TestGetConfirmTitleWhiteList:
     def test_deep_stop(self):
         assert _get_confirm_title("intent.deep.stop") == "确定停止当前任务？"
 
-    def test_loop_stop(self):
-        assert _get_confirm_title("intent.loop.stop") == "确定停止当前任务？"
-
     def test_spec_stop(self):
         assert _get_confirm_title("intent.spec.stop") == "确定停止当前任务？"
 
@@ -111,7 +108,6 @@ class TestDeadKeyFallback:
 
     @pytest.mark.parametrize("dead_key", [
         "intent.spec.retry",
-        "intent.loop.retry",
         "intent.deep.retry",
         "intent.worktree.execute",
     ])

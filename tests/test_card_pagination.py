@@ -99,7 +99,7 @@ class TestPaginateAtoms:
         assert result[0].content + result[1].content == content
 
     def test_no_content_lost(self) -> None:
-        """Total chars before == total chars after pagination."""
+        """All paragraph text is preserved after pagination (split separators at page boundaries are not duplicated)."""
         paragraphs = [f"Paragraph {i} with some content." for i in range(20)]
         content = "\n\n".join(paragraphs)
         atoms = [
@@ -118,12 +118,13 @@ class TestPaginateAtoms:
             for atom in page:
                 total_content += atom.content
 
-        # Original content should be fully represented
-        # (split separators might be consumed, so check char-by-char)
-        original_chars = set(enumerate(content))
-        # Simpler check: total length should be at least original length
-        # (separator joins are preserved in split)
-        assert len(total_content) == len(content)
+        # Every paragraph must appear in the combined output
+        for p in paragraphs:
+            assert p in total_content, f"Missing paragraph: {p}"
+        # No content should start with a leading separator (no stray newlines at page start)
+        for page in pages:
+            for atom in page:
+                assert not atom.content.startswith("\n"), f"Atom starts with newline: {atom.content[:40]!r}"
 
     def test_empty_atoms(self) -> None:
         """Empty list → [[]]."""

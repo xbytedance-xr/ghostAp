@@ -287,7 +287,7 @@ class TestGetErrorDetailNeverEmpty:
 
 
 # ---------------------------------------------------------------------------
-# Task 6: Deep/Loop handler — project creation empty error guard
+# Task 6: Deep handler — project creation empty error guard
 # ---------------------------------------------------------------------------
 
 class TestDeepHandlerProjectCreateEmptyGuard:
@@ -322,44 +322,6 @@ class TestDeepHandlerProjectCreateEmptyGuard:
         handler.ctx.project_manager.get_or_create_project_for_path.side_effect = TimeoutError()
 
         handler.start_deep_engine("msg1", "chat1", "test requirement")
-        assert len(sent) == 1
-        exc_val = str(sent[0]["exc"])
-        assert exc_val
-        assert "超时" in exc_val
-
-
-class TestLoopHandlerProjectCreateEmptyGuard:
-    """loop.py: project creation failure must never produce empty error message."""
-
-    def _make_handler(self):
-        from src.feishu.handlers.loop import LoopHandler
-        ctx = MagicMock()
-        ctx.settings = MagicMock()
-        ctx.settings.ref_note_enabled = False
-        handler = LoopHandler(ctx)
-        return handler
-
-    def test_bare_exception_nonempty_error(self):
-        handler = self._make_handler()
-        sent = []
-        handler.send_error_card = lambda **kw: sent.append(kw)
-        handler.get_working_dir = lambda cid: "/tmp"
-        handler.ctx.project_manager.get_or_create_project_for_path.side_effect = Exception()
-
-        handler.start_loop_engine("msg1", "chat1", "test requirement")
-        assert len(sent) == 1
-        exc_val = sent[0]["exc"]
-        assert exc_val
-        assert len(str(exc_val)) > 0
-
-    def test_bare_timeout_error_nonempty(self):
-        handler = self._make_handler()
-        sent = []
-        handler.send_error_card = lambda **kw: sent.append(kw)
-        handler.get_working_dir = lambda cid: "/tmp"
-        handler.ctx.project_manager.get_or_create_project_for_path.side_effect = TimeoutError()
-
-        handler.start_loop_engine("msg1", "chat1", "test requirement")
         assert len(sent) == 1
         exc_val = str(sent[0]["exc"])
         assert exc_val
@@ -1023,7 +985,7 @@ class TestInferFailReasonChainedExceptions:
 
 
 # ---------------------------------------------------------------------------
-# Structured review_metrics log validation (Spec & Loop engines)
+# Structured review_metrics log validation (Spec engine)
 # ---------------------------------------------------------------------------
 
 
@@ -1139,24 +1101,6 @@ class TestSpecReviewMetricsLog:
         assert "review_timeout: int = 0" in source or "review_timeout = 0" in source
 
 
-class TestLoopReviewMetricsLog:
-    """loop_engine/engine.py: review_metrics logger.info has valid JSON."""
-
-    def test_metrics_expected_keys_constant(self):
-        """Sanity: the expected-keys set covers the known schema."""
-        # "cycle" or "iteration" — loop uses "iteration"
-        loop_extra = {"iteration"}
-        assert loop_extra - _EXPECTED_METRICS_KEYS  # iteration is extra, not in base set
-
-    def test_loop_metrics_sentinel_in_source(self):
-        """loop_engine _conduct_review uses review_timeout sentinel, not dir() check."""
-        import inspect
-        from src.loop_engine.engine import LoopEngine
-        source = inspect.getsource(LoopEngine._conduct_review)
-        assert "review_timeout: int = 0" in source or "review_timeout = 0" in source
-        assert "'review_timeout' in dir()" not in source
-
-
 # ---------------------------------------------------------------------------
 # E2E: handle_review_exception with bare asyncio.TimeoutError('')
 # ---------------------------------------------------------------------------
@@ -1166,25 +1110,16 @@ class TestHandleReviewExceptionE2EEmptyMessage:
     """Simulate asyncio.TimeoutError('') through handle_review_exception and
     verify no empty message / '(empty message)' leaks to suggestion_text."""
 
-    def _make_circuit(self, engine: str):
-        if engine == "spec":
-            from src.spec_engine.review import ReviewCircuitState
-            return ReviewCircuitState()
-        from src.loop_engine.engine import LoopReviewCircuitState
-        return LoopReviewCircuitState()
+    def _make_circuit(self):
+        from src.spec_engine.review import ReviewCircuitState
+        return ReviewCircuitState()
 
-    def _make_settings(self, engine: str):
+    def _make_settings(self):
         s = MagicMock()
-        if engine == "loop":
-            s.loop_review_failure_circuit_enabled = True
-            s.loop_review_failure_max_consecutive = 3
-            s.loop_review_failure_cooldown_iterations = 3
-            s.loop_review_failure_max_cooldown_iterations = 12
-        else:
-            s.spec_review_failure_circuit_enabled = True
-            s.spec_review_failure_max_consecutive = 3
-            s.spec_review_failure_cooldown_cycles = 3
-            s.spec_review_failure_max_cooldown_cycles = 12
+        s.spec_review_failure_circuit_enabled = True
+        s.spec_review_failure_max_consecutive = 3
+        s.spec_review_failure_cooldown_cycles = 3
+        s.spec_review_failure_max_cooldown_cycles = 12
         return s
 
     def test_bare_asyncio_timeout_spec(self):
@@ -1193,25 +1128,10 @@ class TestHandleReviewExceptionE2EEmptyMessage:
         from src.utils.review_helpers import handle_review_exception
 
         exc = asyncio.TimeoutError()
-        circuit = self._make_circuit("spec")
+        circuit = self._make_circuit()
         result = handle_review_exception(
             exc, circuit=circuit, cycle=1,
-            settings=self._make_settings("spec"), engine="spec",
-        )
-        assert result.suggestion_text
-        assert "(empty message)" not in result.suggestion_text
-        assert result.suggestion_text.strip() != ""
-
-    def test_bare_asyncio_timeout_loop(self):
-        """asyncio.TimeoutError() with empty message through Loop path."""
-        import asyncio
-        from src.utils.review_helpers import handle_review_exception
-
-        exc = asyncio.TimeoutError()
-        circuit = self._make_circuit("loop")
-        result = handle_review_exception(
-            exc, circuit=circuit, cycle=1,
-            settings=self._make_settings("loop"), engine="loop",
+            settings=self._make_settings(), engine="spec",
         )
         assert result.suggestion_text
         assert "(empty message)" not in result.suggestion_text
@@ -1222,10 +1142,10 @@ class TestHandleReviewExceptionE2EEmptyMessage:
         from src.utils.review_helpers import handle_review_exception
 
         exc = TimeoutError("")
-        circuit = self._make_circuit("spec")
+        circuit = self._make_circuit()
         result = handle_review_exception(
             exc, circuit=circuit, cycle=1,
-            settings=self._make_settings("spec"), engine="spec",
+            settings=self._make_settings(), engine="spec",
         )
         assert result.suggestion_text
         assert "(empty message)" not in result.suggestion_text
@@ -1239,10 +1159,10 @@ class TestHandleReviewExceptionE2EEmptyMessage:
         inner = asyncio.TimeoutError()
         exc = RuntimeError("review failed")
         exc.__cause__ = inner
-        circuit = self._make_circuit("loop")
+        circuit = self._make_circuit()
         result = handle_review_exception(
             exc, circuit=circuit, cycle=2,
-            settings=self._make_settings("loop"), engine="loop",
+            settings=self._make_settings(), engine="spec",
         )
         assert result.suggestion_text
         assert "(empty message)" not in result.suggestion_text
@@ -1252,10 +1172,10 @@ class TestHandleReviewExceptionE2EEmptyMessage:
         from src.utils.review_helpers import handle_review_exception
 
         exc = ValueError("bad input")
-        circuit = self._make_circuit("spec")
+        circuit = self._make_circuit()
         result = handle_review_exception(
             exc, circuit=circuit, cycle=1,
-            settings=self._make_settings("spec"), engine="spec",
+            settings=self._make_settings(), engine="spec",
         )
         assert result.suggestion_text
         assert "bad input" in result.suggestion_text
@@ -1318,12 +1238,11 @@ class TestBuildReviewErrorSuggestionOutputGuard:
 
 class TestReviewCallsTotalTimeout:
     """Lint guard: review-related send_prompt_with_retry calls in spec_engine
-    and loop_engine must include total_timeout parameter to prevent unbounded
+    must include total_timeout parameter to prevent unbounded
     retry duration."""
 
     _REVIEW_FILES = [
         "src/spec_engine/review.py",
-        "src/loop_engine/engine.py",
     ]
 
     def test_review_send_prompt_with_retry_has_total_timeout(self):
@@ -1497,62 +1416,6 @@ class TestRunAsyncTimeoutWrapping:
                 assert "custom timeout msg" in str(e)
         finally:
             self._cleanup(adapter)
-
-
-# ---------------------------------------------------------------------------
-# Task 4: LoopReporter empty-message filtering
-# ---------------------------------------------------------------------------
-
-
-class TestLoopReporterEmptyMessageFilter:
-    """LoopReporter.format_iteration_result must filter (empty message) in errors."""
-
-    def _make_record(self, error_text):
-        from src.loop_engine.models import IterationRecord, IterationStatus
-        rec = IterationRecord(iteration=1)
-        rec.status = IterationStatus.FAILED
-        rec.error = error_text
-        rec.duration = 5.0
-        return rec
-
-    def test_empty_message_filtered(self):
-        from src.loop_engine.reporter import LoopReporter
-        reporter = LoopReporter()
-        rec = self._make_record("TimeoutError (empty message)")
-        result = reporter.format_iteration_done(1, rec)
-        assert "(empty message)" not in result
-        assert "执行异常" in result
-
-    def test_none_error_shows_friendly_text(self):
-        from src.loop_engine.reporter import LoopReporter
-        reporter = LoopReporter()
-        rec = self._make_record(None)
-        result = reporter.format_iteration_done(1, rec)
-        assert "(empty message)" not in result
-        assert "执行异常" in result
-
-    def test_empty_string_error_shows_friendly_text(self):
-        from src.loop_engine.reporter import LoopReporter
-        reporter = LoopReporter()
-        rec = self._make_record("")
-        result = reporter.format_iteration_done(1, rec)
-        assert "(empty message)" not in result
-        assert "执行异常" in result
-
-    def test_whitespace_only_error_shows_friendly_text(self):
-        from src.loop_engine.reporter import LoopReporter
-        reporter = LoopReporter()
-        rec = self._make_record("   ")
-        result = reporter.format_iteration_done(1, rec)
-        assert "(empty message)" not in result
-        assert "执行异常" in result
-
-    def test_real_error_preserved(self):
-        from src.loop_engine.reporter import LoopReporter
-        reporter = LoopReporter()
-        rec = self._make_record("ACP prompt 执行超时 (120s)")
-        result = reporter.format_iteration_done(1, rec)
-        assert "ACP prompt 执行超时 (120s)" in result
 
 
 # ---------------------------------------------------------------------------

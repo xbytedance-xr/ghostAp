@@ -339,13 +339,11 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
             approval_val = {**val, "approved": approved}
             if engine_type == "deep":
                 client._deep_handler.handle_card_action(mid, cid, "deep_approval_resolved", approval_val)
-            elif engine_type == "loop":
-                client._loop_handler.handle_card_action(mid, cid, "loop_approval_resolved", approval_val)
             elif engine_type == "spec":
                 client._spec_handler.handle_card_action(mid, cid, "spec_approval_resolved", approval_val)
             else:
-                # Fallback: try all engines (approval may not have engine_type in value)
-                logger.debug("approval: no engine_type, trying deep→loop→spec")
+                # Fallback: try deep handler (approval may not have engine_type in value)
+                logger.debug("approval: no engine_type, trying deep")
                 client._deep_handler.handle_card_action(mid, cid, "deep_approval_resolved", approval_val)
         except Exception as exc:
             logger.warning("Failed to dispatch APPROVAL_RESOLVED for message_id=%s: %s", mid, repr(exc))
@@ -382,12 +380,6 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         prefix="deep_",
     )
 
-    # Loop Engine
-    client._register_action(
-        lambda mid, cid, pid, val, type=None: client._loop_handler.handle_card_action(mid, cid, type, val),
-        prefix="loop_",
-    )
-
     # Spec Engine
     client._register_action(
         lambda mid, cid, pid, val, type=None: client._spec_handler.handle_card_action(mid, cid, type, val),
@@ -400,13 +392,10 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         # Remap to engine-specific stop action and delegate to the correct handler
         if engine_type == "deep":
             client._deep_handler.handle_card_action(mid, cid, "deep_stop", val)
-        elif engine_type == "loop":
-            client._loop_handler.handle_card_action(mid, cid, "loop_stop", val)
         elif engine_type == "spec":
             client._spec_handler.handle_card_action(mid, cid, "spec_stop", val)
         else:
-            logger.warning("engine_stop: unknown engine_type=%s, trying all handlers", engine_type)
-            # Fallback: try each handler (deep → loop → spec)
+            logger.warning("engine_stop: unknown engine_type=%s, trying deep handler", engine_type)
             client._deep_handler.handle_card_action(mid, cid, "deep_stop", val)
 
     client._register_action(_handle_engine_stop, exact="engine_stop")

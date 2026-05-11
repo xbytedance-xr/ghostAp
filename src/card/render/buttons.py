@@ -13,8 +13,6 @@ from src.card.actions.dispatch import (
     DEEP_RESUME,
     DEEP_STOP,
     ENGINE_STOP,
-    LOOP_RESUME,
-    LOOP_STOP,
     MODE_COMPACT,
     MODE_FULL,
     SHOW_STATUS,
@@ -56,10 +54,6 @@ INTENT_TO_ACTION_ID: dict[str, str] = {
     ButtonIntent.DEEP_RESUME: DEEP_RESUME,
     ButtonIntent.DEEP_STOP: DEEP_STOP,
 
-    # Loop engine
-    ButtonIntent.LOOP_RESUME: LOOP_RESUME,
-    ButtonIntent.LOOP_STOP: LOOP_STOP,
-
     # Spec engine
     ButtonIntent.SPEC_RESUME: SPEC_RESUME,
     ButtonIntent.SPEC_STOP: SPEC_STOP,
@@ -95,14 +89,14 @@ logger = logging.getLogger(__name__)
 
 # Resolved action_ids that require confirm dialog (destructive/irreversible actions)
 _DESTRUCTIVE_ACTIONS = frozenset({
-    ENGINE_STOP, DEEP_STOP, LOOP_STOP, SPEC_STOP,
+    ENGINE_STOP, DEEP_STOP, SPEC_STOP,
     WORKTREE_CLEANUP, WORKTREE_MERGE, WORKTREE_CANCEL,
     APPROVE_ACTION,
 })
 
 # Intents that represent "stop/cancel" actions
 _STOP_INTENTS = frozenset({
-    "intent.engine.stop", "intent.deep.stop", "intent.loop.stop",
+    "intent.engine.stop", "intent.deep.stop",
     "intent.spec.stop", "intent.worktree.cancel",
 })
 
@@ -117,11 +111,9 @@ _CONFIRM_TITLE_MAP: dict[str, str] = {
     # Stop intents — normal (gentle question for first-stage stop)
     ButtonIntent.ENGINE_STOP: "card_btn_confirm_stop_title_normal",
     ButtonIntent.DEEP_STOP: "card_btn_confirm_stop_title_normal",
-    ButtonIntent.LOOP_STOP: "card_btn_confirm_stop_title_normal",
     ButtonIntent.SPEC_STOP: "card_btn_confirm_stop_title_normal",
     # Retry/resume intents
     ButtonIntent.DEEP_RESUME: "card_btn_confirm_retry_title",
-    ButtonIntent.LOOP_RESUME: "card_btn_confirm_retry_title",
     ButtonIntent.SPEC_RESUME: "card_btn_confirm_retry_title",
     ButtonIntent.WORKTREE_RETRY_FAILED: "card_btn_confirm_retry_title",
     ButtonIntent.WORKTREE_RETRY_ALL: "card_btn_confirm_retry_title",

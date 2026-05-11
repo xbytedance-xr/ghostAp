@@ -294,7 +294,7 @@ class TestBuildRepoLockCardRetryButton:
         import time
         _, buttons = build_repo_lock_card(
             "/home/user/repo", time.monotonic() - 10,
-            is_admin=True, command_text="/loop test",
+            is_admin=True, command_text="/deep test",
             repo_token="tok123",
         )
         actions = [b["value"]["action"] for b in buttons]
@@ -484,7 +484,7 @@ class TestSendLockConflictCard:
             root_path="/tmp/repo",
         )
         with patch("src.thread.get_current_sender_id", return_value="ou_admin"):
-            handler.send_lock_conflict_card(err, "msg_456", "/loop test")
+            handler.send_lock_conflict_card(err, "msg_456", "/deep test")
 
         handler.reply_card.assert_called_once()
         call_args = handler.reply_card.call_args
@@ -1089,7 +1089,7 @@ class TestCardBuildersIncludeSig:
         import time
         _, buttons = build_repo_lock_card(
             "/tmp/repo", time.monotonic() - 10,
-            command_text="/loop run tests",
+            command_text="/deep run tests",
         )
         retry_btn = [b for b in buttons if b.get("value", {}).get("action") == "retry_command"][0]
         cmd = retry_btn["value"]["_t"]
@@ -1191,7 +1191,7 @@ class TestRetryButtonNoCount:
     def test_first_retry_no_count(self, _mock_key):
         import time
         md, buttons = build_repo_lock_card(
-            "/tmp/repo", time.monotonic() - 10, command_text="/loop run"
+            "/tmp/repo", time.monotonic() - 10, command_text="/deep run"
         )
         retry_btns = [b for b in buttons if b.get("value", {}).get("action") == "retry_command"]
         assert len(retry_btns) == 1
@@ -1203,7 +1203,7 @@ class TestRetryButtonNoCount:
     def test_subsequent_retry_shows_still_occupied(self, _mock_key):
         import time
         md, buttons = build_repo_lock_card(
-            "/tmp/repo", time.monotonic() - 10, command_text="/loop run", retry_count=3
+            "/tmp/repo", time.monotonic() - 10, command_text="/deep run", retry_count=3
         )
         retry_btns = [b for b in buttons if b.get("value", {}).get("action") == "retry_command"]
         assert len(retry_btns) == 1
@@ -1218,7 +1218,7 @@ class TestRetryButtonNoCount:
     def test_high_retry_count_shows_still_occupied(self, _mock_key):
         import time
         md, buttons = build_repo_lock_card(
-            "/tmp/repo", time.monotonic() - 10, command_text="/loop run", retry_count=99
+            "/tmp/repo", time.monotonic() - 10, command_text="/deep run", retry_count=99
         )
         retry_btns = [b for b in buttons if b.get("value", {}).get("action") == "retry_command"]
         assert retry_btns[0]["text"]["content"] == "🔄 重试"

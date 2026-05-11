@@ -1,7 +1,6 @@
-"""Spec/Loop shared utilities.
+"""Spec shared utilities.
 
-目标：减少 spec_engine / loop_engine 的相互依赖，把可复用的解析/校验逻辑
-下沉到 utils 层。
+目标：把可复用的解析/校验逻辑下沉到 utils 层。
 
 - Review 解析（严格/宽松两条路径，不含 LLM 兜底）
 - Criteria 评估的正则 patterns

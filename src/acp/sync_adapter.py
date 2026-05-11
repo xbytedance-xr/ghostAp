@@ -854,7 +854,7 @@ def start_session_with_retry(
 ) -> SyncACPSession:
     """Start an ACP session with retry and progressive timeout.
 
-    Extracts the retry logic from ACPSessionManager so that Deep/Loop engines
+    Extracts the retry logic from ACPSessionManager so that Deep/Spec engines
     can benefit from the same robustness without per-chat session management.
     """
     settings = get_settings()

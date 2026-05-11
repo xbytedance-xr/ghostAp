@@ -208,7 +208,7 @@ class TTLActuator(TTLStateMutator, TTLDeliverer, TTLTimerScheduler, Protocol):
 class RendererProtocol(Protocol):
     """Protocol for engine renderer instances used by BaseEngineHandler.
 
-    Defines the minimal interface that DeepRenderer, LoopRenderer,
+    Defines the minimal interface that DeepRenderer,
     SpecRenderer, and WorktreeRenderer must implement to be used
     from handler toggle/error-handling methods.
     """

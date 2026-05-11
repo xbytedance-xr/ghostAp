@@ -1333,7 +1333,7 @@ class SpecEngine(BaseEngine):
         )
 
     # ------------------------------------------------------------------
-    # Review (reuses loop engine's parsing infrastructure)
+    # Review (reuses shared parsing infrastructure)
     # ------------------------------------------------------------------
     def _reset_cancel_event(self) -> bool:
         """Reset _review_cancel_event under lock, guarding against stop/pause races.

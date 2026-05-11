@@ -90,25 +90,15 @@ class DiagnosticsBuilder:
 
     @staticmethod
     def format_engine_status_info(mode: str, p: any) -> str:
-        """Format the 'info' string for different engines (Deep/Loop/Spec)."""
+        """Format the 'info' string for different engines (Deep/Spec)."""
         from src.utils.text import format_duration
         dur = format_duration(p.duration()) if p.duration() else ""
 
         deep_label = UI_TEXT["diag_engine_deep"]
-        loop_label = UI_TEXT["diag_engine_loop"]
         spec_label = UI_TEXT["diag_engine_spec"]
 
         if mode == deep_label:
             return f"{dur}" if dur else (p.status.value if hasattr(p.status, "value") else str(p.status))
-
-        if mode == loop_label:
-            criteria = f"{p.satisfied_count}/{p.total_criteria}" if p.total_criteria else ""
-            parts = [UI_TEXT["diag_status_iteration"].format(iteration=p.current_iteration)]
-            if criteria:
-                parts.append(UI_TEXT["diag_status_criteria"].format(criteria=criteria))
-            if dur:
-                parts.append(dur)
-            return " · ".join(parts) if parts else (p.status.value if hasattr(p.status, "value") else str(p.status))
 
         if mode == spec_label:
             criteria = f"{p.satisfied_count}/{p.total_criteria}" if p.total_criteria else ""

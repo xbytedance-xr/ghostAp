@@ -107,11 +107,11 @@ class TestNotifyRejected:
     def test_notify_rejected_falls_back_to_reply_text(self):
         reply_fn = MagicMock()
         coord, _, _, _, _ = _make_coordinator(reply_text_fn=reply_fn, reply_to="msg-123")
-        coord.notify_rejected(engine_cmd="/loop")
+        coord.notify_rejected(engine_cmd="/deep")
         reply_fn.assert_called_once()
         args = reply_fn.call_args[0]
         assert args[0] == "msg-123"
-        assert "/loop" in args[1]
+        assert "/deep" in args[1]
 
 
 class TestFinalizeTerminal:

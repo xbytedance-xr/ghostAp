@@ -1720,7 +1720,7 @@ class TestTTLPrewarningTimer:
         now = [0.0]
         client = MockDeliveryClient()
         delivery = CardDelivery(client)
-        metadata = CardMetadata(mode_name="Test", engine_type="loop")
+        metadata = CardMetadata(mode_name="Test", engine_type="deep")
         config = SessionConfig(
             metadata=metadata,
             ttl_seconds=100.0,
@@ -2082,7 +2082,7 @@ class TestToastClosedElseBranch:
         """Cancelled session → toast includes '重新启动' and engine cmd."""
         client = MockDeliveryClient()
         delivery = CardDelivery(client)
-        metadata = CardMetadata(mode_name="Loop", engine_type="loop")
+        metadata = CardMetadata(mode_name="Deep", engine_type="deep")
         config = SessionConfig(metadata=metadata)
         session = CardSession(
             chat_id="c1", config=config, delivery=delivery,
@@ -2094,7 +2094,7 @@ class TestToastClosedElseBranch:
         assert result is not None
         toast_content = result["toast"]["content"]
         assert "重新启动" in toast_content
-        assert "/loop" in toast_content
+        assert "/deep" in toast_content
 
     def test_cancelled_spec_session_toast_contains_spec_cmd(self):
         """Spec engine cancelled → toast includes '/spec' and '重新启动'."""

@@ -195,3 +195,52 @@ def test_footer_tool_hint_bash_shows_command():
     hints = [el.get("content", "") for el in elements if "⚙ **Bash**" in el.get("content", "")]
     assert len(hints) == 1
     assert "npm run build" in hints[0]
+
+
+# --- Context line tests (working_dir + engine phase in footer) ---
+
+
+def test_footer_context_line_with_working_dir():
+    """Footer should show 📂 ~/path when working_dir is set."""
+    state = CardState(
+        footer=FooterState(status="thinking", status_text="思考中"),
+        metadata=CardMetadata(working_dir="/home/user/projects/myapp", engine_type="spec"),
+    )
+
+    elements = render_footer(state)
+
+    context_els = [el for el in elements if "📂" in el.get("content", "")]
+    assert len(context_els) == 1
+    assert "myapp" in context_els[0]["content"]
+
+
+def test_footer_context_line_absent_when_no_working_dir():
+    """Footer should NOT show 📂 context line when working_dir is None."""
+    state = CardState(
+        footer=FooterState(status="thinking", status_text="思考中"),
+        metadata=CardMetadata(engine_type="spec"),
+    )
+
+    elements = render_footer(state)
+
+    assert not any("📂" in el.get("content", "") for el in elements)
+
+
+def test_footer_context_line_includes_engine_subtitle():
+    """Footer context line includes engine phase from header subtitle."""
+    from src.card.state.models import HeaderState
+
+    state = CardState(
+        header=HeaderState(subtitle="cycle 2 / Build"),
+        footer=FooterState(status="thinking", status_text="思考中"),
+        metadata=CardMetadata(
+            working_dir="/home/user/work/ghostAp",
+            engine_type="spec",
+        ),
+    )
+
+    elements = render_footer(state)
+
+    context_els = [el for el in elements if "📂" in el.get("content", "")]
+    assert len(context_els) == 1
+    assert "cycle 2 / Build" in context_els[0]["content"]

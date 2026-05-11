@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 把 Coco / Claude / Aiden / Codex / Gemini / TTADK + Deep / Loop / Spec / Worktree 全部编程模式卡片统一到 SectionLayout 骨架，续卡每页注入「三明治锚点」(phase_banner + task_list + activity_summary)，tool panel 改为单 active 展开，引擎主动 dispatch `card_split` 触发语义切卡。
+**Goal:** 把 Coco / Claude / Aiden / Codex / Gemini / TTADK + Deep / Spec / Worktree 全部编程模式卡片统一到 SectionLayout 骨架，续卡每页注入「三明治锚点」(phase_banner + task_list + activity_summary)，tool panel 改为单 active 展开，引擎主动 dispatch `card_split` 触发语义切卡。
 
 **Architecture:** 在现有三层 (State + Render + Delivery) 上新增 `SectionLayout` SSOT 模型，承载 `sticky_head / status / body / appendix` 四区。`paginate_layout` 把 sticky_head 当作每页固定预算前置；`render_card` 主流程改用 SectionLayout.assemble_for_page。引擎 renderer 监听语义事件 (task done / round change / cycle change) 并 dispatch `CardEvent.card_split(reason, hint)`，session.py 关闭旧卡、上层起新 session。
 
@@ -31,7 +31,6 @@
 - `tests/test_runtime_stats.py` — RuntimeStats 单测
 - `tests/test_base_renderer_card_split.py` — BaseRenderer helper 单测
 - `tests/test_deep_renderer_split.py` — Deep 切卡单测
-- `tests/test_loop_renderer_split.py` — Loop 切卡单测
 - `tests/test_spec_renderer_split.py` — Spec 切卡单测
 
 ### Modify
@@ -49,7 +48,6 @@
 - `src/card/session/__init__.py`（或对应 session 文件）— 监听 `card_split` 事件
 - `src/feishu/renderers/base.py` — 新辅助 `_dispatch_card_split(session, *, reason, hint)`
 - `src/feishu/renderers/deep_renderer.py` — task 完成检测 → dispatch card_split
-- `src/feishu/renderers/loop_renderer.py` — round 跳变检测 → dispatch card_split
 - `src/feishu/renderers/spec_renderer.py` — cycle/perspective 跳变 → dispatch card_split
 - `src/card/programming_adapter.py` — 直接 programming 模式接入 SectionLayout（不切卡）
 - `.Memory/2026-05-09.md` — 任务记录
@@ -148,7 +146,7 @@ git commit -m "feat(card): add phase_banner AtomKind and renderer
 - Create: `src/card/state/runtime_stats.py`
 - Test: `tests/test_runtime_stats.py`
 
-`RuntimeStats` 承载运行期信息（elapsed、loop_round、spec_cycle、deep_phase、worktree_subagent），banner_computer 消费。
+`RuntimeStats` 承载运行期信息（elapsed、spec_cycle、deep_phase、worktree_subagent），banner_computer 消费。
 
 - [ ] **Step 1: 写测试**
 
@@ -167,7 +165,6 @@ def test_runtime_stats_defaults():
     rs = RuntimeStats()
     assert rs.elapsed_seconds == 0.0
     assert rs.deep_phase is None
-    assert rs.loop_round is None
     assert rs.spec_cycle is None
     assert rs.spec_perspective is None
     assert rs.worktree_subagent is None
@@ -177,14 +174,12 @@ def test_runtime_stats_construction():
     rs = RuntimeStats(
         elapsed_seconds=83.5,
         deep_phase="executing",
-        loop_round=2,
         spec_cycle=1,
         spec_perspective="code",
         worktree_subagent="aiden",
     )
     assert rs.elapsed_seconds == 83.5
     assert rs.deep_phase == "executing"
-    assert rs.loop_round == 2
     assert rs.spec_cycle == 1
     assert rs.spec_perspective == "code"
     assert rs.worktree_subagent == "aiden"
@@ -229,7 +224,6 @@ class RuntimeStats:
 
     elapsed_seconds: float = 0.0
     deep_phase: str | None = None         # "analyzing" | "executing"
-    loop_round: int | None = None
     spec_cycle: int | None = None
     spec_perspective: str | None = None
     worktree_subagent: str | None = None
@@ -300,12 +294,6 @@ def test_banner_deep_analyzing():
     assert compute_banner(md, rs) == "🧠 Deep · 分析中 · 10s"
 
 
-def test_banner_loop_round():
-    md = CardMetadata(mode_name="Loop", mode_emoji="🔄", engine_type="loop")
-    rs = RuntimeStats(elapsed_seconds=312.0, loop_round=2)
-    assert compute_banner(md, rs) == "🔄 Loop · 第 2 轮 · 5m12s"
-
-
 def test_banner_spec_cycle_perspective():
     md = CardMetadata(mode_name="Spec", mode_emoji="📐", engine_type="spec")
     rs = RuntimeStats(elapsed_seconds=484.0, spec_cycle=2, spec_perspective="code")
@@ -371,8 +359,6 @@ def _format_phase(metadata: CardMetadata, runtime: RuntimeStats) -> str:
         if runtime.deep_phase == "analyzing":
             return "分析中"
         return "执行中"
-    if engine == "loop":
-        return f"第 {runtime.loop_round or 1} 轮"
     if engine == "spec":
         cycle = runtime.spec_cycle if runtime.spec_cycle is not None else "?"
         persp = runtime.spec_perspective or "—"
@@ -397,7 +383,7 @@ git add src/card/render/banner_computer.py tests/test_banner_computer.py
 git commit -m "feat(card): add banner_computer module
 
 提供统一 banner 文案构造（{emoji} {mode} · {phase} · {elapsed}），
-按引擎类型派发 phase 文案：Deep 分析/执行、Loop 第N轮、Spec cycle/perspective、
+按引擎类型派发 phase 文案：Deep 分析/执行、Spec cycle/perspective、
 Worktree 子代理名。"
 ```
 
@@ -1641,8 +1627,8 @@ def test_card_split_event_factory():
 def test_card_split_event_no_hint():
     from src.card.events import CardEvent
 
-    ev = CardEvent.card_split(reason="round_changed")
-    assert ev.payload.reason == "round_changed"
+    ev = CardEvent.card_split(reason="cycle_changed")
+    assert ev.payload.reason == "cycle_changed"
     assert ev.payload.hint is None
 ```
 
@@ -1669,7 +1655,6 @@ class CardSplitPayload:
     reason:
       - "task_done"      — current task finished
       - "phase_changed"  — Deep analyzing → executing
-      - "round_changed"  — Loop round increment
       - "cycle_changed"  — Spec cycle/perspective switch
     hint: optional first-line text for the new card body
     """
@@ -1717,7 +1702,7 @@ git add src/card/events/
 git commit -m "feat(card-events): add card_split event
 
 引擎主动触发的语义切卡事件（reason: task_done/phase_changed/
-round_changed/cycle_changed，可选 hint 文案）。session.py 在下一任务接入。"
+cycle_changed，可选 hint 文案）。session.py 在下一任务接入。"
 ```
 
 ---
@@ -2496,135 +2481,11 @@ session 起卡。续卡顶部三明治锚点保持上下文连续。"
 
 ---
 
-## Task 17: LoopRenderer 接入语义切卡（round 跳变）
+## Task 17: ~~LoopRenderer 接入语义切卡（round 跳变）~~ (已废弃——Loop Engine 已于 2026-05 移除)
 
-**Files:**
-- Modify: `src/feishu/renderers/loop_renderer.py`
-- Test: `tests/test_loop_renderer_split.py`
+> **Note**: 此任务已废弃。Loop Engine 及 LoopRenderer 已在 2026-05 完整移除，round 跳变切卡不再适用。
 
-监听 round 变化，跳变时 dispatch card_split。
-
-- [ ] **Step 1: grep 找 round 信号**
-
-```bash
-grep -n "current_round\|round_started\|iteration" /Users/jiataorui/workspaces/aiwork/ghostAp/src/feishu/renderers/loop_renderer.py
-grep -rn "current_round\|round_idx\|on_round" /Users/jiataorui/workspaces/aiwork/ghostAp/src/loop_engine/ | head -10
-```
-
-记录 round 字段名与回调钩入点。
-
-- [ ] **Step 2: 写测试**
-
-新建 `tests/test_loop_renderer_split.py`：
-
-```python
-"""LoopRenderer round-change split tests."""
-from __future__ import annotations
-
-from unittest.mock import MagicMock
-
-from src.feishu.renderers.loop_renderer import LoopRenderer
-
-
-def _build_renderer():
-    handler = MagicMock()
-    handler.ctx = MagicMock()
-    handler.settings = MagicMock()
-    handler.settings.engine_timeout_warning_seconds = 0
-    handler.add_reaction = MagicMock()
-    handler.reply_text = MagicMock()
-    handler.send_text_to_chat = MagicMock()
-    handler.ensure_request_id = MagicMock(return_value="req1")
-    handler.get_card_delivery = MagicMock()
-    handler.project_manager = MagicMock()
-    handler.context_manager = MagicMock()
-    return LoopRenderer(handler)
-
-
-def test_loop_renderer_splits_on_round_change():
-    renderer = _build_renderer()
-    renderer._current_session = MagicMock()
-    renderer._current_session._closed = False
-
-    captured: list[tuple[str, str | None]] = []
-    renderer._dispatch_card_split = lambda sess, *, reason, hint=None: captured.append((reason, hint))
-
-    renderer.notify_round_change(current_round=1)
-    renderer.notify_round_change(current_round=2)
-
-    assert any(r == "round_changed" for r, _ in captured), \
-        f"expected round_changed split, got {captured}"
-    matching = [h for r, h in captured if r == "round_changed"]
-    assert any("第 2 轮" in (h or "") for h in matching)
-
-
-def test_loop_renderer_no_split_on_first_round():
-    """Initial round set should NOT trigger split."""
-    renderer = _build_renderer()
-    renderer._current_session = MagicMock()
-    renderer._current_session._closed = False
-
-    captured: list[tuple[str, str | None]] = []
-    renderer._dispatch_card_split = lambda sess, *, reason, hint=None: captured.append((reason, hint))
-
-    renderer.notify_round_change(current_round=1)
-    assert captured == [], "first round must not trigger split"
-```
-
-- [ ] **Step 3: 跑测试确认失败**
-
-```bash
-uv run pytest tests/test_loop_renderer_split.py -v
-```
-
-预期：FAIL（`notify_round_change` 不存在）。
-
-- [ ] **Step 4: 在 LoopRenderer 加 round 跟踪**
-
-`src/feishu/renderers/loop_renderer.py` `LoopRenderer` 类里：
-
-```python
-def __init__(self, handler):
-    super().__init__(handler)
-    self._last_round: int | None = None
-    self._current_session = None
-    self._pending_split_hint: str | None = None
-
-def notify_round_change(self, current_round: int) -> None:
-    """Hook into the loop engine round lifecycle."""
-    if self._last_round is not None and current_round != self._last_round:
-        if self._current_session is not None and not getattr(self._current_session, "_closed", False):
-            self._dispatch_card_split(
-                self._current_session,
-                reason="round_changed",
-                hint=f"进入第 {current_round} 轮",
-            )
-    self._last_round = current_round
-
-
-def _on_card_split_completed(self, reason: str, hint: str | None) -> None:
-    self._pending_split_hint = hint
-```
-
-把 `self.notify_round_change(round_idx)` 嵌入既有 round 启动回调路径（grep step 1 结果定位，常见在 `on_round_started` / `_on_iteration_start` 等）。
-
-- [ ] **Step 5: 跑测试确认通过**
-
-```bash
-uv run pytest tests/test_loop_renderer_split.py -v
-```
-
-预期：2 PASS。
-
-- [ ] **Step 6: 提交**
-
-```bash
-git add src/feishu/renderers/loop_renderer.py tests/test_loop_renderer_split.py
-git commit -m "feat(loop): semantic card_split on round change
-
-LoopRenderer 监听 round 跳变，dispatch card_split(reason='round_changed',
-hint='进入第 N 轮')。每轮独立卡片，三明治锚点保持收敛进度可见。"
-```
+---
 
 ---
 
@@ -3057,8 +2918,8 @@ sticky_head 节点 ≤25、续卡每页带 sticky banner。"
 2. `ContentBlock` 新增 `is_latest_active` 字段，reducer 维护单例不变量；
    `render_tool_panel` 改用该字段决定 expanded（解决参考图 1 的乱）。
 3. 新增 `card_split` 事件 + payload + factory + session handler，引擎主动
-   触发语义切卡（task done / round changed / cycle changed）。
-4. DeepRenderer / LoopRenderer / SpecRenderer 接入 `_dispatch_card_split`，
+   触发语义切卡（task done / cycle changed）。
+4. DeepRenderer / SpecRenderer 接入 `_dispatch_card_split`，
    续卡 hint 自动写入新卡 body 起头。
 5. `paginate_atoms` 退化为 deprecation shim 包裹 `paginate_layout`。
 6. 极端 state 压力回归：30 tasks + 100 tool calls 下节点 ≤200、字节 ≤30K、
@@ -3100,10 +2961,6 @@ sticky_head 节点 ≤25、续卡每页带 sticky banner。"
     - task 1 完成时自动起新卡，新卡顶部「接续 task 2…」hint
     - 多 active tool 时只展开最新一个
     - 续卡顶部 sticky 与首卡同步
-
-[ ] Loop 模式：≥2 轮 prompt
-    - 第 2 轮自动起新卡，hint「进入第 2 轮」
-    - criteria_panel + activity_summary 在新卡顶部
 
 [ ] Spec 模式：spec→code 切换 prompt
     - perspective 切换时起新卡，hint「进入 cycle N · code」
@@ -3158,7 +3015,7 @@ uv run pytest tests/ -v --timeout=120
 - [ ] §4.4 ToolBlock latest_active + render_tool_panel — Task 9, 10
 - [ ] §4.5 card_split event + session handler — Task 11, 12
 - [ ] §4.6 续卡 hint — Task 16, 17, 18
-- [ ] §4.7 Deep/Loop/Spec/Worktree/Programming 适配矩阵 — Task 16-19
+- [ ] §4.7 Deep/Spec/Worktree/Programming 适配矩阵 — Task 16-19
 - [ ] §5.4 节点预算降级 — Task 6, 20
 - [ ] §6 改动文件清单 — File Map 全部覆盖
 - [ ] §9 验收标准 — Task 20 + 21 手测清单
@@ -3167,7 +3024,7 @@ uv run pytest tests/ -v --timeout=120
 - [ ] `is_latest_active` 字段名在 Task 9, 10 一致
 - [ ] `CardSplitPayload(reason, hint)` 在 Task 11, 12, 15-18 一致
 - [ ] `SectionLayout(sticky_head, status, body, appendix)` 字段在 Task 4, 5, 13 一致
-- [ ] `RuntimeStats(elapsed_seconds, deep_phase, loop_round, spec_cycle, spec_perspective, worktree_subagent)` 在 Task 2, 3, 6 一致
+- [ ] `RuntimeStats(elapsed_seconds, deep_phase, spec_cycle, spec_perspective, worktree_subagent)` 在 Task 2, 3, 6 一致
 - [ ] `_dispatch_card_split(session, *, reason, hint)` 签名在 Task 15-18 一致
 - [ ] `_on_card_split_completed(reason, hint)` 子类 override 签名一致
 

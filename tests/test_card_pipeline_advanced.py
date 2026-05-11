@@ -89,11 +89,11 @@ def _make_ttl_mock(**overrides) -> MagicMock:
 
 
 class TestTTLStreamingInterruption:
-    """TTL expiry while streaming is in progress (Deep/Loop/Spec engines)."""
+    """TTL expiry while streaming is in progress (Deep/Spec engines)."""
 
     @pytest.mark.parametrize("engine_type,engine_cmd", [
         ("deep", "/deep"),
-        ("loop", "/loop"),
+        ("worktree", "/worktree"),
         ("spec", "/spec"),
     ])
     def test_ttl_expires_during_streaming_dispatches_cancel(self, engine_type, engine_cmd):
@@ -130,7 +130,7 @@ class TestTTLStreamingInterruption:
         state = session2.state
         assert state.terminal == "cancelled"
 
-    @pytest.mark.parametrize("engine_type", ["deep", "loop", "spec"])
+    @pytest.mark.parametrize("engine_type", ["deep", "worktree", "spec"])
     def test_ttl_handler_expired_callback_mid_streaming(self, engine_type):
         """TTLHandler.on_ttl_expired works correctly regardless of engine type."""
         s = _make_ttl_mock()
@@ -157,7 +157,7 @@ class TestTTLStreamingInterruption:
 class TestCancellationPaths:
     """Cancellation dispatches correctly for all engine types."""
 
-    @pytest.mark.parametrize("engine_type", ["deep", "loop", "spec"])
+    @pytest.mark.parametrize("engine_type", ["deep", "worktree", "spec"])
     def test_cancel_during_running_transitions_to_cancelled(self, engine_type):
         """CANCELLED event transitions running session to cancelled terminal state."""
         session, client = _make_session(engine_type=engine_type)
@@ -170,7 +170,7 @@ class TestCancellationPaths:
         assert state.terminal == "cancelled"
         assert session.closed is True
 
-    @pytest.mark.parametrize("engine_type", ["deep", "loop", "spec"])
+    @pytest.mark.parametrize("engine_type", ["deep", "worktree", "spec"])
     def test_cancel_with_ttl_expired_reason(self, engine_type):
         """CANCELLED with reason='ttl_expired' sets terminal_reason correctly."""
         session, client = _make_session(engine_type=engine_type)
@@ -182,7 +182,7 @@ class TestCancellationPaths:
         assert state.terminal == "cancelled"
         assert state.terminal_reason == "ttl_expired"
 
-    @pytest.mark.parametrize("engine_type", ["deep", "loop", "spec"])
+    @pytest.mark.parametrize("engine_type", ["deep", "worktree", "spec"])
     def test_cancel_after_close_is_noop(self, engine_type):
         """Dispatching CANCELLED after session.close() is a no-op."""
         session, client = _make_session(engine_type=engine_type)
@@ -205,7 +205,7 @@ class TestRotationDuringStreaming:
 
     def test_rotate_mid_stream_archives_old_starts_new(self):
         """Rotation during streaming archives old session and creates new one."""
-        session1, client1 = _make_session(engine_type="loop")
+        session1, client1 = _make_session(engine_type="deep")
         session1.dispatch(CardEvent(type=CardEventType.STARTED))
         session1.dispatch(CardEvent(type=CardEventType.TEXT_STARTED))
         session1.dispatch(CardEvent(type=CardEventType.TEXT_DELTA, payload={"text": "streaming..."}))
@@ -213,7 +213,7 @@ class TestRotationDuringStreaming:
         rotator = SessionRotator(session1)
 
         # Rotate to new session
-        session2, client2 = _make_session(engine_type="loop")
+        session2, client2 = _make_session(engine_type="deep")
 
         new_session = rotator.rotate(lambda: session2)
 
@@ -388,7 +388,7 @@ class TestCloseEvictionRace:
 
     def test_concurrent_dispatch_and_close_no_deadlock(self):
         """Multiple threads dispatching while close happens doesn't deadlock."""
-        session, client = _make_session(engine_type="loop")
+        session, client = _make_session(engine_type="deep")
         session.dispatch(CardEvent(type=CardEventType.STARTED))
         session.dispatch(CardEvent(type=CardEventType.TEXT_STARTED))
 

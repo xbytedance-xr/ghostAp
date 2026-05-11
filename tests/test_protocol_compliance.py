@@ -37,7 +37,7 @@ class TestDispatchableProtocol:
 
         client = MagicMock()
         delivery = CardDelivery(client)
-        config = SessionConfig(metadata=CardMetadata(engine_type="loop"))
+        config = SessionConfig(metadata=CardMetadata(engine_type="deep"))
         session = CardSession(
             delivery=delivery,
             chat_id="test",
@@ -57,11 +57,6 @@ class TestSnapshotableRealClass:
         # Check the protocol method signatures exist
         assert hasattr(SpecEngineManager, "snapshot")
         assert hasattr(SpecEngineManager, "snapshot_active")
-
-    def test_loop_engine_manager_satisfies_snapshotable(self):
-        from src.loop_engine.engine import LoopEngineManager
-        assert hasattr(LoopEngineManager, "snapshot")
-        assert hasattr(LoopEngineManager, "snapshot_active")
 
     def test_deep_engine_manager_satisfies_snapshotable(self):
         from src.deep_engine.engine import DeepEngineManager
@@ -203,7 +198,7 @@ class TestTTLProtocolCompliance:
 
         client = MagicMock()
         delivery = CardDelivery(client)
-        config = SessionConfig(metadata=CardMetadata(engine_type="loop"), ttl_seconds=300.0)
+        config = SessionConfig(metadata=CardMetadata(engine_type="deep"), ttl_seconds=300.0)
         session = CardSession(
             delivery=delivery,
             chat_id="test",

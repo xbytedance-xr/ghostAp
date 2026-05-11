@@ -19,9 +19,9 @@ TRUNCATION_LIMITS: dict[str, int] = {
 THRESHOLDS = {
     # Card content element max characters (core.py _build_content_element)
     "CONTENT_MAX_CHARS": 25000,
-    # Deep/Loop/Spec engine card folding — compact mode line threshold
+    # Deep/Spec engine card folding — compact mode line threshold
     "COMPACT_LINE_THRESHOLD": 15,
-    # Deep/Loop/Spec engine card folding — full mode line threshold
+    # Deep/Spec engine card folding — full mode line threshold
     "FULL_LINE_THRESHOLD": 50,
     # Acceptance criteria folding line threshold
     "AC_LINE_THRESHOLD": 10,

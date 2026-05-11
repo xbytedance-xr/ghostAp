@@ -26,7 +26,6 @@ class TestRenderFallbackCard:
 
     @pytest.mark.parametrize("engine_type,expected_cmd", [
         ("deep", "/deep"),
-        ("loop", "/loop"),
         ("spec", "/spec"),
         ("worktree", "/wt"),
     ])
@@ -89,8 +88,8 @@ class TestRenderFallbackCard:
 
     def test_signature_is_fallback(self):
         """Rendered card has 'fallback' signature and content_hash."""
-        state = _make_state(engine_type="loop")
-        result = render_fallback_card(state, "loop")
+        state = _make_state(engine_type="unknown")
+        result = render_fallback_card(state, "unknown")
 
         assert result is not None
         assert result[0].structure_signature == "fallback"

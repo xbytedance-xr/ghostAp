@@ -77,7 +77,7 @@ class Settings(BaseSettings):
     # Timeout for agent CLI auto-update subprocess (seconds)
     acp_auto_update_timeout: int = 120
 
-    # Engine eval prompt timeout (seconds) — used by Loop and Spec engines
+    # Engine eval prompt timeout (seconds) — used by Spec engine
     engine_eval_prompt_timeout: int = 60
 
     # ACP stdio stream buffer limit (bytes). Default asyncio limit is 64KB which
@@ -228,32 +228,6 @@ class Settings(BaseSettings):
     # Cooldown for repeated PTY retries per tool (seconds)
     ttadk_pty_retry_cooldown_s: float = 60.0
 
-    # Loop Engine settings
-    loop_max_iterations: int = 100
-    loop_execution_timeout: int = 7200
-    loop_convergence_window: int = 3
-    loop_max_context_tokens: int = 8000
-    loop_default_max_retries: int = 2
-
-    # Loop Engine multi-perspective review (Ralph Loop)
-    loop_review_enabled: bool = True
-    loop_review_extra_iterations: int = 3
-    loop_review_timeout: int = 180
-
-    # Loop Engine review failure circuit breaker
-    # - enabled: master switch
-    # - max_consecutive: open circuit after N consecutive review failures
-    # - cooldown_iterations: keep circuit open for next K iterations (skip review)
-    loop_review_failure_circuit_enabled: bool = True
-    loop_review_failure_max_consecutive: int = 3
-    loop_review_failure_cooldown_iterations: int = 3
-    loop_review_failure_max_cooldown_iterations: int = 12
-    loop_review_min_timeout: int = 45
-    loop_review_hard_floor: int = 20
-
-    # Loop Watchdog
-    loop_watchdog_timeout: float = 300.0
-
     # Spec Engine settings
     spec_max_cycles: int = 500
     # Hard upper bound for long-range spec cycles (configurable via env).
@@ -310,7 +284,7 @@ class Settings(BaseSettings):
     worktree_pool_timeout: int = 600
 
     # Streaming card collapsible panels (tool calls / thoughts folded by default)
-    # Engine card collapsible panels (Deep/Loop/Spec: structured content with collapsible panels)
+    # Engine card collapsible panels (Deep/Spec/Worktree: structured content with collapsible panels)
     engine_collapsible_enabled: bool = True
 
     # Streaming card auto-continuation (create new card when content exceeds threshold)
@@ -323,7 +297,7 @@ class Settings(BaseSettings):
     review_metrics_exporter_type: str = "logger"
     review_metrics_jsonl_path: str = "review_metrics.jsonl"
 
-    # Sliding window dynamic circuit breaker (shared by Spec & Loop)
+    # Sliding window dynamic circuit breaker (used by Spec engine)
     # - window_size: number of recent review outcomes to track (min 3)
     # - success_rate_threshold: open circuit if success_rate < threshold
     review_circuit_window_size: int = 10

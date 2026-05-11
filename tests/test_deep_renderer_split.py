@@ -1,7 +1,7 @@
 """DeepRenderer task-done card split tests."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from src.acp import ACPEvent, ACPEventType
 from src.acp.models import PlanEntryInfo, PlanInfo
@@ -27,10 +27,48 @@ def _build_renderer() -> DeepRenderer:
 
 
 def test_deep_renderer_splits_on_task_done():
+    """In single-card mode (task_level_cards_enabled=False), card_split fires on task transitions."""
     renderer = _build_renderer()
     captured: list[tuple[str, str | None, str | None]] = []
     renderer._dispatch_card_split = lambda sess, *, reason, hint=None, bridge_phrase=None: captured.append((reason, hint, bridge_phrase))
 
+    # Disable multi-card so _maybe_dispatch_task_done_split fires
+    mock_settings = MagicMock()
+    mock_settings.card.task_level_cards_enabled = False
+
+    with patch("src.config.get_settings", return_value=mock_settings):
+        callbacks = renderer.create_deep_callbacks(
+            message_id="m1",
+            chat_id="c1",
+            project=None,
+            engine_name="Coco",
+        )
+
+    initial_plan = PlanInfo(entries=[
+        PlanEntryInfo(content="task 1", status="in_progress"),
+        PlanEntryInfo(content="task 2", status="pending"),
+    ])
+    callbacks.on_event(ACPEvent(event_type=ACPEventType.PLAN_UPDATE, plan=initial_plan))
+
+    updated_plan = PlanInfo(entries=[
+        PlanEntryInfo(content="task 1", status="completed"),
+        PlanEntryInfo(content="task 2", status="in_progress"),
+    ])
+    callbacks.on_event(ACPEvent(event_type=ACPEventType.PLAN_UPDATE, plan=updated_plan))
+
+    assert any(reason == "task_done" for reason, _, _ in captured)
+    matching_hints = [hint for reason, hint, _ in captured if reason == "task_done"]
+    assert any(hint is not None and "task 2" in hint for hint in matching_hints)
+    assert any(bridge == "续接：" for reason, _, bridge in captured if reason == "task_done")
+
+
+def test_deep_renderer_no_split_in_multi_card_mode():
+    """In multi-card mode, _maybe_dispatch_task_done_split must NOT fire (orchestrator handles it)."""
+    renderer = _build_renderer()
+    captured: list[tuple[str, str | None, str | None]] = []
+    renderer._dispatch_card_split = lambda sess, *, reason, hint=None, bridge_phrase=None: captured.append((reason, hint, bridge_phrase))
+
+    # Default: task_level_cards_enabled=True
     callbacks = renderer.create_deep_callbacks(
         message_id="m1",
         chat_id="c1",
@@ -50,7 +88,5 @@ def test_deep_renderer_splits_on_task_done():
     ])
     callbacks.on_event(ACPEvent(event_type=ACPEventType.PLAN_UPDATE, plan=updated_plan))
 
-    assert any(reason == "task_done" for reason, _, _ in captured)
-    matching_hints = [hint for reason, hint, _ in captured if reason == "task_done"]
-    assert any(hint is not None and "task 2" in hint for hint in matching_hints)
-    assert any(bridge == "续接：" for reason, _, bridge in captured if reason == "task_done")
+    # No card_split should have been dispatched
+    assert not any(reason == "task_done" for reason, _, _ in captured)

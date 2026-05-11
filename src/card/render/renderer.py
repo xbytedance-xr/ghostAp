@@ -500,14 +500,21 @@ def _build_section_layout(state: CardState, atoms: list[RenderAtom]) -> SectionL
 
 
 def _render_text_element(atom: RenderAtom, block_index: dict[str, ContentBlock]) -> dict:
-    """Render a text atom. If it's the active block, assign element_id for streaming."""
+    """Render a text atom. If it's the active block, assign element_id for streaming.
+
+    When content is empty, element_id is intentionally omitted — Feishu CardKit
+    enters streaming mode on an empty element and renders the first character on
+    a new line when content is later pushed via update_element().
+    """
     block = block_index.get(atom.block_id)
     element_id = None
     if block is not None and block.element_id and block.status == "active":
         element_id = block.element_id
 
     el: dict = {"tag": "markdown", "content": atom.content}
-    if element_id:
+    # Only assign element_id when content is non-empty to prevent Feishu CardKit
+    # from entering streaming state with an empty element (causes first-char newline).
+    if element_id and atom.content:
         el["element_id"] = element_id
     return el
 
@@ -515,12 +522,21 @@ def _render_text_element(atom: RenderAtom, block_index: dict[str, ContentBlock])
 def _find_active_element(
     atoms: list[RenderAtom], block_index: dict[str, ContentBlock],
 ) -> ActiveElement | None:
-    """Find the active streaming text element on this page."""
+    """Find the active streaming text element on this page.
+
+    Returns None when the active text block is empty — this prevents Feishu
+    CardKit from entering streaming mode with an empty element, which causes
+    the first character to appear on a new line when content is later pushed
+    via update_element().
+    """
     for atom in atoms:
         if atom.kind != "text":
             continue
         block = block_index.get(atom.block_id)
         if block is not None and block.status == "active" and block.element_id:
+            # Skip empty content: don't activate streaming until real text exists
+            if not atom.content:
+                continue
             return ActiveElement(element_id=block.element_id, text=atom.content)
     return None
 

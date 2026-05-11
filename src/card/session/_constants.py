@@ -15,7 +15,6 @@ TTL_ENGINE_KEY_MAP: dict[str, str] = {
     "/deep": "card_session_ttl_expired_deep",
     "/wt": "card_session_ttl_expired_worktree",
     "/worktree": "card_session_ttl_expired_worktree",
-    "/loop": "card_session_ttl_expired_loop",
 }
 
 # Action ID for TTL keep-alive button (mirrors src.card.actions.dispatch.TTL_KEEP_ALIVE)

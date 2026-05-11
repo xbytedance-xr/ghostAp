@@ -26,16 +26,12 @@ class ButtonIntent(str, Enum):
     WORKTREE_SHOW_MENU = "intent.worktree.show_menu"
     WORKTREE_MODIFY_TARGET = "intent.worktree.modify_target"
 
-    # Engine control (shared across deep/loop/spec)
+    # Engine control (shared across deep/spec)
     ENGINE_STOP = "intent.engine.stop"
 
     # Deep engine
     DEEP_RESUME = "intent.deep.resume"
     DEEP_STOP = "intent.deep.stop"
-
-    # Loop engine
-    LOOP_RESUME = "intent.loop.resume"
-    LOOP_STOP = "intent.loop.stop"
 
     # Spec engine
     SPEC_RESUME = "intent.spec.resume"

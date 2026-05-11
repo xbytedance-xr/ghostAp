@@ -91,6 +91,7 @@ class DeepRenderer(BaseRenderer):
             mode_emoji="🧠",
             engine_type="deep",
             tool_name=engine_name,
+            working_dir=project.root_path if project else None,
         )
         _deep_budget = RenderBudget(engine_cmd="/deep")
 
@@ -153,11 +154,17 @@ class DeepRenderer(BaseRenderer):
                         _plan_steps[0] = steps
                         _phase[0] = "executing"
 
-                    self._maybe_dispatch_task_done_split(
-                        session,
-                        event.plan.entries,
-                        _last_plan_statuses,
-                    )
+                    # Only dispatch card_split on task transitions when NOT in
+                    # multi-card mode.  In multi-card mode the orchestrator
+                    # manages per-task sessions independently — sending
+                    # card_split to the thinking session would incorrectly
+                    # close it and create spurious continuation cards.
+                    if not (_multi_card_enabled and orchestrator.has_plan):
+                        self._maybe_dispatch_task_done_split(
+                            session,
+                            event.plan.entries,
+                            _last_plan_statuses,
+                        )
 
                     # Unified plan detection + status broadcast
                     if _multi_card_enabled:
@@ -178,8 +185,15 @@ class DeepRenderer(BaseRenderer):
                 else:
                     session.dispatch(progress_event)
 
-            # Route ACP event content to the correct session/bridge
-            orchestrator.route_or_fallback(event, stream_bridge)
+            # Route ACP event content to the correct session/bridge.
+            # Skip PLAN_UPDATE in multi-card mode: the orchestrator already
+            # handles plan state via broadcast_status_change / TASK_LIST_UPDATED.
+            # Routing PLAN_UPDATE through the bridge would re-push the full task
+            # list text into every per-task card on each status change.
+            if event.event_type == ACPEventType.PLAN_UPDATE and orchestrator.has_plan:
+                pass  # already handled above
+            else:
+                orchestrator.route_or_fallback(event, stream_bridge)
 
             # Check for warning banner based on elapsed time
             elapsed = time.time() - _start_time[0]
@@ -298,6 +312,7 @@ class DeepRenderer(BaseRenderer):
                     mode_emoji="🧠",
                     engine_type="deep",
                     tool_name=engine_name,
+                    working_dir=project.root_path if project else None,
                 )
                 session = self.create_session(chat_id, message_id, metadata, budget=RenderBudget(engine_cmd="/deep"))
                 session.dispatch(CardEvent.started())
@@ -336,6 +351,7 @@ class DeepRenderer(BaseRenderer):
             mode_emoji="🧠",
             engine_type="deep",
             tool_name=engine_name,
+            working_dir=project.root_path if project else None,
         )
         session = self.create_session(chat_id, message_id, metadata, budget=RenderBudget(engine_cmd="/deep"))
         session.dispatch(CardEvent.started())

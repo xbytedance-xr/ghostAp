@@ -9,7 +9,6 @@ from src.card.builder import CardBuilder
 from src.card.engine_snapshot import EngineSnapshot
 from src.deep_engine.models import DeepProjectStatus
 from src.feishu.renderers.deep_renderer import DeepRenderer
-from src.feishu.renderers.loop_renderer import LoopRenderer
 
 
 class TestRendererThrottling:
@@ -27,8 +26,6 @@ class TestRendererThrottling:
 
         # Mock reporter
         handler.ctx.progress_reporter.format_summary.return_value = "Mock Summary"
-        handler.ctx.loop_reporter.format_analyzing_done.return_value = "Mock Analyzing Done"
-        handler.ctx.loop_reporter.format_criteria_section.return_value = "Mock Criteria"
 
         # Mock engines
         mock_engine = MagicMock()
@@ -40,7 +37,6 @@ class TestRendererThrottling:
         mock_engine.progress.format_summary.return_value = "Mock Summary"
         mock_engine.get_rendered_content.return_value = "Mock Content"
         handler.ctx.deep_engine_manager.get.return_value = mock_engine
-        handler.ctx.loop_engine_manager.get.return_value = mock_engine
 
         # Mock new card API methods
         handler.reply_card = MagicMock(return_value="reply_msg_id")
@@ -101,51 +97,6 @@ class TestRendererThrottling:
             calls = [c.args[0] for c in mock_session.dispatch.call_args_list]
             types = [c.type.value for c in calls]
             assert "completed" in types
-
-    def test_loop_renderer_throttling(self, mock_handler):
-        """Test that LoopRenderer uses CardSession for event-driven message delivery"""
-        renderer = LoopRenderer(mock_handler)
-        mock_project = MagicMock()
-        mock_project.project_id = "test_proj"
-        mock_project.root_path = "/tmp/test"
-
-        # Mock snapshot for on_iteration_start path
-        mock_lp = MagicMock()
-        mock_lp.satisfied_count = 2
-        mock_lp.total_criteria = 5
-        mock_lp.duration.return_value = 10.0
-        snap = EngineSnapshot(
-            engine_name="Coco",
-            root_path="/tmp/test",
-            satisfied_count=2,
-            total_criteria=5,
-            is_running=True,
-            ext={"project": mock_lp},
-        )
-        mock_handler.ctx.loop_engine_manager.snapshot.return_value = snap
-
-        with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create:
-            mock_session = MagicMock()
-            mock_create.return_value = mock_session
-
-            callbacks = renderer.create_loop_callbacks("msg_id", "chat_id", mock_project)
-
-            # Verify session was created with CardMetadata
-            mock_create.assert_called_once()
-            call_args = mock_create.call_args
-            assert call_args[0][0] == "chat_id"  # chat_id
-            metadata = call_args[0][2]
-            assert metadata.engine_type == "loop"
-
-            # on_analyzing_done dispatches STARTED + TEXT_DELTA
-            mock_loop_project = MagicMock()
-            callbacks.on_analyzing_done(mock_loop_project)
-            assert mock_session.dispatch.call_count == 2
-
-            # on_iteration_start dispatches CYCLE_STARTED + CRITERIA_UPDATED + WARNING_UPDATED
-            mock_session.reset_mock()
-            callbacks.on_iteration_start(1, 5)
-            assert mock_session.dispatch.call_count >= 1  # At least CYCLE_STARTED
 
     def test_help_card_structure(self):
         """Test that build_help_card returns valid structure"""

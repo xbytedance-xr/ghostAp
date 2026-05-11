@@ -413,7 +413,7 @@
 **内容**:
 模拟完整的 Handler → CardSession → 飞书 API 流程:
 - test_deep_engine_flow: started → text → tool → text → completed
-- test_loop_engine_flow: started → iteration(text+tool) × N → completed
+- test_spec_engine_flow: started → iteration(text+tool) × N → completed
 - test_multi_page_flow: 大量内容触发分页
 - test_tool_history_fold_in_render: 多工具折叠验证
 - test_header_subtitle_updates: 模型切换 → subtitle 更新
@@ -460,7 +460,7 @@
 
 ---
 
-## Phase 6: Handler 适配 (Deep/Loop/Spec)
+## Phase 6: Handler 适配 (Deep/Spec/Worktree)
 
 **目标**: 将引擎 Handler 从直接操作 CardBuilder 改为通过 CardSession 派发事件。
 
@@ -491,26 +491,9 @@
 
 ---
 
-### Task 6.2: Loop Handler 适配
+### Task 6.2: ~~Loop Handler 适配~~ (已废弃——Loop Engine 已于 2026-05 移除)
 
-**修改文件**:
-- `src/feishu/handlers/loop.py`
-- `src/feishu/renderers/loop.py` → `src/feishu/renderers/loop_renderer.py`
-
-**改造内容**:
-- Loop 的多段特性 → Segment 续接:
-  - 每个 iteration 开始分配新 segment
-  - iteration 完成时 finalize 当前 segment
-- 视图状态机保留，但渲染路径改为 CardSession
-- Progress bar → CardEvent.progress_updated()
-
-**测试文件**: `tests/test_loop_handler_card.py`
-- test_loop_iteration_segments: 验证多 segment 分配
-- test_loop_progress_updates: 验证进度事件
-- test_loop_review_done: 验证 review 结果渲染
-- test_loop_multi_iteration: 3 次迭代完整流程
-
-**验收**: `uv run pytest tests/test_loop_handler_card.py -v` 全部通过
+> **Note**: 此任务已废弃。Loop Engine 及相关 Handler/Renderer 已在 2026-05 完整移除，无需适配。
 
 ---
 

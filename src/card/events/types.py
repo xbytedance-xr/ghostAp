@@ -32,7 +32,7 @@ class CardEventType(str, Enum):
     PROGRESS_UPDATED = "progress_updated"
     APPROVAL_REQUESTED = "approval_requested"
     APPROVAL_RESOLVED = "approval_resolved"
-    # Engine lifecycle (Spec/Loop)
+    # Engine lifecycle (Spec)
     CYCLE_STARTED = "cycle_started"
     CYCLE_DONE = "cycle_done"
     PHASE_STARTED = "phase_started"

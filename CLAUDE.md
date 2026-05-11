@@ -10,10 +10,9 @@ GhostAP is a Feishu (Lark) chatbot service that provides safe remote Shell comma
 
 GhostAP has two orthogonal dimensions:
 
-- **Execution strategy layer (4 levels, complexity increasing)**
+- **Execution strategy layer (3 levels, complexity increasing)**
   - **Normal programming mode**: multi-turn coding dialogue mode
   - **Deep mode**: one-shot deep execution (single requirement → autonomous plan+execute)
-  - **Loop mode**: iterative closed-loop execution with acceptance criteria
   - **Spec mode**: structured iterative methodology (`Spec → Plan → Task → Build → Review`)
 - **Tool transport layer (how tools are actually driven)**
   - **ACP direct mode**: tools with ACP support are connected through ACP (JSON-RPC 2.0 over stdio)
@@ -57,12 +56,11 @@ Feishu WebSocket message
               ENTER_CLAUDE  → ACPSessionManager("claude") (Claude CLI session backend)
               ENTER_TTADK   → TTADKManager + ACPSessionManager("ttadk") (CLI bridge only)
               DEEP_COMMAND  → DeepEngine (ACP-driven single-prompt deep execution)
-              LOOP_COMMAND  → LoopEngine (ACP-driven iterative closed-loop)
               SPEC_COMMAND  → SpecEngine (structured iterative execution)
               WORKTREE_CMD  → WorktreeEngine (parallel multi-tool worktree execution)
               CREATE_PROJECT → ProjectManager
               ...
-        → Renderer layer (BaseRenderer → DeepRenderer / LoopRenderer / SpecRenderer)
+        → Renderer layer (BaseRenderer → DeepRenderer / SpecRenderer)
         → ACPEventRenderer (structured tool/plan/text rendering)
         → CardBuilder / CardDelivery (build and deliver response card)
         → Feishu API reply + EmojiReaction feedback
@@ -95,13 +93,12 @@ Feishu WebSocket message
   - `ws_health.py` — `WSHealthMonitor` watchdog for WebSocket connection health.
   - `control_plane.py` — `ControlPlane` for pending exit handling, event queue, system command gate.
   - `router.py` — `FORWARDING_MAP` dispatch table routing methods to handler registries.
-  - `handlers/` — 12 handler modules: `base`, `engine_base`, `programming`, `deep`, `loop`, `spec`, `worktree`, `project`, `system`, `diagnostics`, `lock_helper`, `diagnostics_helper`.
-  - `renderers/` — Renderer layer: `BaseRenderer`, `DeepRenderer`, `LoopRenderer`, `SpecRenderer` (with retry callback support).
+  - `handlers/` — 11 handler modules: `base`, `engine_base`, `programming`, `deep`, `spec`, `worktree`, `project`, `system`, `diagnostics`, `lock_helper`, `diagnostics_helper`.
+  - `renderers/` — Renderer layer: `BaseRenderer`, `DeepRenderer`, `SpecRenderer` (with retry callback support).
   - `user_cache.py` — LRU cache (500 capacity, 1h TTL) for Feishu user display name resolution.
   - `chat_lock_gate.py` — Lock interception gate.
   - `session_hub.py` — Session hub.
 - **`src/deep_engine/`** — ACP-driven deep execution engine. Single prompt with full requirement → agent self-plans and executes. Tracks progress via ACP plan updates and tool calls.
-- **`src/loop_engine/`** — ACP-driven iterative closed-loop engine. Multi-round prompts in a single ACP session, with convergence detection and acceptance criteria evaluation.
 - **`src/spec_engine/`** — Structured iterative engine (`Spec→Plan→Task→Build→Review`) with 26 modules. Review subsystem decomposed into: `ReviewOrchestrator` (orchestration), `review_pipeline` (parallel assembly), `review_strategy` (strategy pattern), `review_retry` (in-cycle retry), `review_parsing` (LLM output parsing), `review_types` (shared types), `perspective_worker` (single-perspective workers), `cycle_budget` (wall-clock cap). Structured retry via `RetryStatus`/`RetryEvent`. UI text constants in `constants.py`. State persistence in `persistence.py`.
 - **`src/worktree_engine/`** — Git worktree-based parallel multi-tool execution engine. Manages worktree creation, tool discovery, selection control, and dispatching.
 - **`src/chat_lock.py`** — Chat-level lock manager with `ChatLockCode` enum for structured result codes. Defines `READONLY_COMMANDS` and `SAFE_INTERRUPT_COMMANDS`.
@@ -117,15 +114,15 @@ Feishu WebSocket message
 
 ### Design Patterns
 
-- **Strategy layering**: user-facing development workflow is split into 4 execution strategies (Normal/Deep/Loop/Spec), independent from backend tool transport.
+- **Strategy layering**: user-facing development workflow is split into 3 execution strategies (Normal/Deep/Spec), independent from backend tool transport.
 - **Hybrid transport (ACP + CLI)**: ACP-capable tools use ACP direct mode; non-ACP tools use Shell CLI bridge; `ttadk_*` is strictly CLI-bridged and isolated from ACP direct startup.
 - **TTADK multi-tool layer**: TTADK provides a unified interface for multiple AI tools (Coco/Claude/Cursor/Gemini/etc) and models, with `TTADKManager` singleton managing tool/model switching and state.
 - **Event-driven rendering**: `ACPEventRenderer` processes `ACPEvent` stream (text chunks, tool calls, plan updates) into Feishu Markdown. Handlers register `on_event` callbacks to drive real-time card updates.
-- **Renderer hierarchy**: `BaseRenderer` → `DeepRenderer` / `LoopRenderer` / `SpecRenderer` encapsulate engine-specific rendering logic.
+- **Renderer hierarchy**: `BaseRenderer` → `DeepRenderer` / `SpecRenderer` encapsulate engine-specific rendering logic.
 - **State machine**: `InteractionMode` enum governs SMART/COCO/CLAUDE/AIDEN/CODEX/GEMINI/SHELL/TTADK transitions; `EngineRunState` enum tracks IDLE/RUNNING/STOPPING for engines.
 - **Singleton**: `get_settings()` for configuration, `get_ttadk_manager()` for TTADK tool/model management
 - **Session managers**: `ACPSessionManager` unifies per-chat/project session lifecycle across ACP and CLI backends (`coco/aiden/gemini/codex` ACP-direct, `claude` CLI backend, `ttadk_*` forced CLI bridge).
-- **Task scheduling**: `TaskScheduler` provides per-chat ordered execution with global concurrency control. Long-running tasks (e.g. Deep Engine, Loop Engine) use separate `queue_key` to avoid blocking control commands.
+- **Task scheduling**: `TaskScheduler` provides per-chat ordered execution with global concurrency control. Long-running tasks (e.g. Deep Engine) use separate `queue_key` to avoid blocking control commands.
 - **Multi-tier locking**: 6-level lock ordering hierarchy (ENGINE_MANAGER → ENGINE_INSTANCE → PROJECT_MANAGER → CHAT_LOCK_CTX → CHAT_LOCK_MGR → REPO_LOCK) with runtime deadlock detection via `utils/lock_order.py`. All `threading.Lock()`/`RLock()` instances annotated as leaf locks.
 - **DI container**: `ServiceRegistry` supports singleton/transient/factory patterns, hierarchical scopes, thread-safe, with `close()` for cleanup.
 - **Review pipeline**: Spec review decomposed into strategy selection → pipeline assembly → parallel workers → retry → output parsing (6 independent modules). Circuit breaker state tracking per review cycle.

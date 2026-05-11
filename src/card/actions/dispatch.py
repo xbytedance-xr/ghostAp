@@ -37,12 +37,6 @@ MODE_FULL = "mode_full"  # Switch card to full (detailed) view mode
 MODE_COMPACT = "mode_compact"  # Switch card to compact (minimal) view mode
 
 # ---------------------------------------------------------------------------
-# Loop engine actions
-# ---------------------------------------------------------------------------
-LOOP_RESUME = "loop_resume"  # Resume/retry Loop engine after failure
-LOOP_STOP = "loop_stop"  # Force-stop current Loop engine execution
-
-# ---------------------------------------------------------------------------
 # Worktree actions
 # ---------------------------------------------------------------------------
 WORKTREE_FINISH_SELECTION = "worktree_finish_selection"  # Confirm tool selection and proceed to config

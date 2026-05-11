@@ -37,7 +37,7 @@ def _dispatch_text_block(dispatchable, block_id: str, content: str) -> None:
 class _ACPStreamBridge:
     """Normalize ACP streaming into programming-mode-like card blocks.
 
-    Reused by Deep/Loop/Spec renderers so text, reasoning and tool panels follow
+    Reused by Deep/Spec renderers so text, reasoning and tool panels follow
     the same event sequencing as direct programming mode.
 
     DEPRECATED: Use src.card.stream_bridge.ACPStreamBridge directly.
@@ -292,7 +292,7 @@ class BaseRenderer:
     ) -> str:
         """
         Render a section that can be collapsed if too long.
-        Generic version of LoopRenderer._render_ac_section.
+        Generic version shared by engine renderers.
 
         Args:
             content: The full content string (e.g. list of ACs, or long text)
@@ -312,7 +312,6 @@ class BaseRenderer:
 
         # Folding logic: Filter out completed items or truncate text
         # Simple text processing approach assuming list format with checkmarks
-        # (Compatible with Loop Engine AC format)
         lines = content.split("\n")
         kept_lines = []
         hidden_count = 0
@@ -371,7 +370,7 @@ class BaseRenderer:
     ):
         """Create a SessionRotator wrapping a new CardSession.
 
-        Template method used by LoopRenderer/SpecRenderer to eliminate
+        Template method used by SpecRenderer to eliminate
         duplicated SessionRotator instantiation boilerplate.
         """
         from ...card.session.rotator import SessionRotator

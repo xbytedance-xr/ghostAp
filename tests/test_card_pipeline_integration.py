@@ -53,18 +53,6 @@ class TestFailedPipeline:
         json_str = json.dumps(card_json, ensure_ascii=False)
         assert "Connection timeout" in json_str
 
-    def test_failed_loop_engine_retry_button(self):
-        meta = CardMetadata(engine_type="loop", mode_name="Loop Engine")
-        state = _dispatch_sequence([
-            CardEvent.started(),
-            CardEvent.failed("Out of memory"),
-        ], meta)
-
-        assert any(b.action_id == ButtonIntent.LOOP_RESUME for b in state.buttons)
-        rendered = render_card(state, RenderBudget())
-        assert len(rendered) >= 1
-
-
 class TestCompletedPipeline:
     """COMPLETED event produces summary block in rendered card."""
 
@@ -421,62 +409,10 @@ class TestCancelledWorktreePipeline:
         assert "已取消" in json_str
 
 
-class TestLoopMultiIterationPipeline:
-    """Loop engine multi-iteration progress + iteration events (replaces deleted test_multi_iteration_flow)."""
-
-    def test_multi_iteration_progress_accumulates(self):
-        """Dispatch 3 iterations with progress updates, verify state accumulates correctly."""
-        meta = CardMetadata(engine_type="loop", mode_name="Loop")
-        events = [
-            CardEvent(type=CardEventType.STARTED, payload={}),
-            # Iteration 1
-            CardEvent(type=CardEventType.CYCLE_STARTED, payload={"cycle_num": 1, "max_cycles": 3}),
-            CardEvent(type=CardEventType.TEXT_STARTED, payload={"block_id": "t1"}),
-            CardEvent(type=CardEventType.TEXT_DELTA, payload={"block_id": "t1", "text": "iter1"}),
-            CardEvent(type=CardEventType.TEXT_DONE, payload={"block_id": "t1"}),
-            CardEvent(type=CardEventType.PROGRESS_UPDATED, payload={"current": 1, "total": 5, "label": "验收"}),
-            CardEvent(type=CardEventType.CYCLE_DONE, payload={}),
-            # Iteration 2
-            CardEvent(type=CardEventType.CYCLE_STARTED, payload={"cycle_num": 2, "max_cycles": 3}),
-            CardEvent(type=CardEventType.TEXT_STARTED, payload={"block_id": "t2"}),
-            CardEvent(type=CardEventType.TEXT_DELTA, payload={"block_id": "t2", "text": "iter2"}),
-            CardEvent(type=CardEventType.TEXT_DONE, payload={"block_id": "t2"}),
-            CardEvent(type=CardEventType.PROGRESS_UPDATED, payload={"current": 3, "total": 5, "label": "验收"}),
-            CardEvent(type=CardEventType.CYCLE_DONE, payload={}),
-            # Iteration 3
-            CardEvent(type=CardEventType.CYCLE_STARTED, payload={"cycle_num": 3, "max_cycles": 3}),
-            CardEvent(type=CardEventType.PROGRESS_UPDATED, payload={"current": 5, "total": 5, "label": "全部通过"}),
-            CardEvent(type=CardEventType.CYCLE_DONE, payload={}),
-        ]
-        state = _dispatch_sequence(events, meta)
-
-        # Loop engine uses text-only progress (no visual bar)
-        assert state.footer.progress_pct is None
-        assert state.footer.progress is not None
-        assert "5/5" in state.footer.progress
-        assert "通过" in state.footer.progress
-
-        # Verify cycle tracking in engine_ext
-        assert state.engine_ext is not None
-        assert state.engine_ext.cycle_num == 3
-
-        # Verify text blocks accumulated
-        text_blocks = [b for b in state.blocks if b.kind == "text"]
-        assert len(text_blocks) >= 2
-
-    def test_loop_progress_no_visual_bar(self):
-        """Loop engine progress_updated should NOT produce progress_pct."""
-        meta = CardMetadata(engine_type="loop", mode_name="Loop")
-        events = [
-            CardEvent(type=CardEventType.STARTED, payload={}),
-            CardEvent(type=CardEventType.PROGRESS_UPDATED, payload={"current": 2, "total": 4}),
-        ]
-        state = _dispatch_sequence(events, meta)
-        assert state.footer.progress_pct is None
-        assert "2/4 通过" in state.footer.progress
+class TestDeepProgressVisualBar:
+    """Deep engine progress_updated SHOULD produce progress_pct for ▰▱ bar."""
 
     def test_deep_progress_uses_visual_bar(self):
-        """Deep engine progress_updated SHOULD produce progress_pct for ▰▱ bar."""
         meta = CardMetadata(engine_type="deep", mode_name="Deep")
         events = [
             CardEvent(type=CardEventType.STARTED, payload={}),
@@ -528,50 +464,6 @@ class TestEndToEndDeepSmoke:
 
         # Verify session is closed after COMPLETED
         assert session.closed
-
-
-class TestLoopEngineE2ESmokeTest:
-    """Loop engine full lifecycle: started → cycle → progress → completed."""
-
-    def test_loop_full_lifecycle_renders(self):
-        meta = CardMetadata(engine_type="loop", mode_name="Loop Engine")
-        state = _dispatch_sequence([
-            CardEvent.started(),
-            CardEvent.cycle_started(cycle_num=1, max_cycles=5),
-            CardEvent.phase_started(cycle_num=1, phase="coding"),
-            CardEvent.text_started("b1"),
-            CardEvent.text_delta("b1", "Implementing feature..."),
-            CardEvent.text_done("b1"),
-            CardEvent.phase_done(cycle_num=1, phase="coding", output="Feature implemented"),
-            CardEvent.phase_started(cycle_num=1, phase="review"),
-            CardEvent.phase_done(cycle_num=1, phase="review", output="LGTM"),
-            CardEvent.criteria_updated("✅ Feature works\n✅ Tests pass", satisfied_count=2, total_count=2),
-            CardEvent.completed(summary="Converged after 1 cycle"),
-        ], meta)
-
-        assert state.terminal == "completed"
-        assert state.engine_ext.cycle_num == 1
-        assert state.engine_ext.criteria_satisfied == 2
-        # Renders without error
-        rendered = render_card(state, RenderBudget())
-        assert len(rendered) >= 1
-        card_str = json.dumps(rendered[0]._card_json, ensure_ascii=False)
-        assert "Feature" in card_str or "Converged" in card_str
-
-    def test_loop_failed_after_cycles(self):
-        meta = CardMetadata(engine_type="loop", mode_name="Loop Engine")
-        state = _dispatch_sequence([
-            CardEvent.started(),
-            CardEvent.cycle_started(cycle_num=1, max_cycles=3),
-            CardEvent.phase_started(cycle_num=1, phase="coding"),
-            CardEvent.phase_done(cycle_num=1, phase="coding", output="partial"),
-            CardEvent.failed("Max cycles exceeded without convergence"),
-        ], meta)
-
-        assert state.terminal == "failed"
-        assert any(b.action_id == ButtonIntent.LOOP_RESUME for b in state.buttons)
-        rendered = render_card(state, RenderBudget())
-        assert len(rendered) >= 1
 
 
 class TestSpecEngineE2ESmokeTest:
@@ -750,7 +642,7 @@ class TestRetryPendingBannerIntegration:
 
         client = _Client()
         delivery = CardDelivery(client)
-        config = SessionConfig(metadata=CardMetadata(mode_name="Test", engine_type="loop"))
+        config = SessionConfig(metadata=CardMetadata(mode_name="Test", engine_type="deep"))
         session = CardSession(
             chat_id="chat_retry2",
             config=config,

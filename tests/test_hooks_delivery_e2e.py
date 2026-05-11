@@ -118,7 +118,7 @@ class TestHooksDeliveryE2E:
             message_id="",  # Empty — degraded mode
             chat_id="chat_empty",
         )
-        metadata = CardMetadata(engine_type="loop")
+        metadata = CardMetadata(engine_type="deep")
         config = SessionConfig(metadata=metadata, sync_delivery=True)
         callbacks = SessionCallbacks(hooks=(emoji_hook,))
         session = CardSession(

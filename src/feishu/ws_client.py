@@ -2,7 +2,7 @@
 
 职责概览：
 - 接收飞书 WS 事件（消息、卡片动作、反应等）并做基础校验/去重。
-- 将用户消息路由到不同 handler（SMART/COCO/CLAUDE/SHELL/TTADK 以及 Deep/Loop/Spec 引擎）。
+- 将用户消息路由到不同 handler（SMART/COCO/CLAUDE/SHELL/TTADK 以及 Deep/Spec 引擎）。
 - 通过 `TaskScheduler` 提供：按项目串行、全局并发限制、系统命令快通道、背压与熔断。
 
 关键设计点：
@@ -44,7 +44,6 @@ from ..card import CardBuilder
 from ..card.ui_text import UI_TEXT
 from ..config import get_settings
 from ..deep_engine import DeepEngineManager, ProgressReporter
-from ..loop_engine import LoopEngineManager, LoopReporter
 from ..project import (
     ContextSourceMode,
     MessageLinker,
@@ -72,7 +71,6 @@ from .handlers import (
     GeminiModeHandler,
     DeepHandler,
     DiagnosticsHandler,
-    LoopHandler,
     ProjectHandler,
     SpecHandler,
     SystemHandler,
@@ -80,7 +78,6 @@ from .handlers import (
 )
 from .handlers.worktree import WorktreeHandler
 from .renderers.deep_renderer import DeepRenderer
-from .renderers.loop_renderer import LoopRenderer
 from .renderers.spec_renderer import SpecRenderer
 from .renderers.worktree_renderer import WorktreeRenderer
 from .image_handler import FeishuImageHandler
@@ -144,7 +141,6 @@ class _ObservedLarkWSClient(lark.ws.Client):
 
 _READONLY_CARD_ACTIONS = {
     "deep_expand", "deep_collapse", "deep_mode_full", "deep_mode_compact", "deep_expand_ac", "deep_collapse_ac",
-    "loop_expand", "loop_collapse", "loop_mode_full", "loop_mode_compact", "loop_expand_ac", "loop_collapse_ac",
     "spec_expand", "spec_collapse", "spec_mode_full", "spec_mode_compact", "spec_expand_ac", "spec_collapse_ac",
 }
 
@@ -257,8 +253,6 @@ class FeishuWSClient:
 
         self._deep_engine_manager = DeepEngineManager()
         self._progress_reporter = ProgressReporter()
-        self._loop_engine_manager = LoopEngineManager()
-        self._loop_reporter = LoopReporter()
         self._spec_engine_manager = SpecEngineManager()
         self._spec_reporter = SpecReporter()
 
@@ -301,8 +295,6 @@ class FeishuWSClient:
             context_manager=self._context_manager,
             deep_engine_manager=self._deep_engine_manager,
             progress_reporter=self._progress_reporter,
-            loop_engine_manager=self._loop_engine_manager,
-            loop_reporter=self._loop_reporter,
             spec_engine_manager=self._spec_engine_manager,
             spec_reporter=self._spec_reporter,
             thread_manager=self._thread_manager,
@@ -326,8 +318,6 @@ class FeishuWSClient:
         ttadk_handler = TTADKModeHandler(self._handler_ctx)
         deep_handler = DeepHandler(self._handler_ctx)
         deep_handler.renderer = DeepRenderer(deep_handler)
-        loop_handler = LoopHandler(self._handler_ctx)
-        loop_handler.renderer = LoopRenderer(loop_handler)
         spec_handler = SpecHandler(self._handler_ctx)
         spec_handler.renderer = SpecRenderer(spec_handler)
         project_handler = ProjectHandler(self._handler_ctx)
@@ -347,7 +337,6 @@ class FeishuWSClient:
         self._gemini_handler = gemini_handler
         self._ttadk_handler = ttadk_handler
         self._deep_handler = deep_handler
-        self._loop_handler = loop_handler
         self._spec_handler = spec_handler
         self._project_handler = project_handler
         self._system_handler = system_handler
@@ -370,7 +359,6 @@ class FeishuWSClient:
             "gemini": gemini_handler,
             "ttadk": ttadk_handler,
             "deep": deep_handler,
-            "loop": loop_handler,
             "spec": spec_handler,
             "project": project_handler,
             "system": system_handler,
@@ -510,7 +498,6 @@ class FeishuWSClient:
 
         # 1) Stop long-running engines first (they may hold ACP subprocesses)
         deep_engines: list[Any] = []
-        loop_engines: list[Any] = []
         spec_engines: list[Any] = []
 
         try:
@@ -525,17 +512,6 @@ class FeishuWSClient:
             logger.debug("failed to stop deep engines", exc_info=True)
 
         try:
-            loop_engines = list(self._loop_engine_manager.list_engines())
-            for engine in loop_engines:
-                try:
-                    if engine and getattr(engine, "is_running", False):
-                        engine.stop()
-                except Exception:
-                    logger.debug("failed to stop loop engine instance", exc_info=True)
-        except Exception:
-            logger.debug("failed to stop loop engines", exc_info=True)
-
-        try:
             spec_engines = list(self._spec_engine_manager.list_engines())
             for engine in spec_engines:
                 try:
@@ -548,7 +524,6 @@ class FeishuWSClient:
 
         # Give running engines a short grace period to exit run loops before hard cleanup.
         _wait_engines_stopped(deep_engines)
-        _wait_engines_stopped(loop_engines)
         _wait_engines_stopped(spec_engines)
 
         try:
@@ -575,7 +550,6 @@ class FeishuWSClient:
 
         for name, mgr in (
             ("deep_engine", self._deep_engine_manager),
-            ("loop_engine", self._loop_engine_manager),
             ("spec_engine", self._spec_engine_manager),
         ):
             try:
@@ -762,11 +736,6 @@ class FeishuWSClient:
     def _is_deep_command(text: str) -> bool:
         """判断是否为 Deep Engine 命令。"""
         return SystemHandler.is_deep_command(text)
-
-    @staticmethod
-    def _is_loop_command(text: str) -> bool:
-        """判断是否为 Loop Engine 命令。"""
-        return SystemHandler.is_loop_command(text)
 
     @staticmethod
     def _is_spec_command(text: str) -> bool:
@@ -982,7 +951,7 @@ class FeishuWSClient:
 
         All slash commands (``/xxx``) are system commands: they should never
         block behind long-running Coco/Claude programming tasks on the project
-        queue.  This includes ``/stop_deep``, ``/exit``, ``/loop_status``, etc.
+        queue.  This includes ``/stop_deep``, ``/exit``, ``/spec_status``, etc.
         """
         try:
             message = data.event.message
@@ -1548,7 +1517,7 @@ class FeishuWSClient:
                     UI_TEXT["ws_topic_hint_msg"],
                 )
                 return
-            if self._is_deep_command(text) or self._is_loop_command(text) or self._is_spec_command(text):
+            if self._is_deep_command(text) or self._is_spec_command(text):
                 self._process_with_intent(
                     message_id,
                     chat_id,
@@ -1873,9 +1842,6 @@ class FeishuWSClient:
                 "deep_pause",
                 "deep_stop",
                 "deep_resume",
-                "loop_pause",
-                "loop_stop",
-                "loop_resume",
                 "spec_pause",
                 "spec_stop",
                 "spec_resume",

@@ -288,7 +288,7 @@ class TestEmojiHookAddReactionFailure:
             success_emoji="PARTY",
             error_emoji="SOB",
         )
-        metadata = CardMetadata(engine_type="loop", mode_name="Loop", mode_emoji="🔄")
+        metadata = CardMetadata(engine_type="deep", mode_name="Deep", mode_emoji="🚀")
         config = SessionConfig(metadata=metadata)
         session = CardSession(
             chat_id="c2", config=config, delivery=delivery,
@@ -505,7 +505,7 @@ class TestHookConcurrentStress:
         fast_sessions = []
         for i in range(5):
             delivery = CardDelivery(MockClient())
-            config_fast = SessionConfig(metadata=CardMetadata(engine_type="loop", mode_name="Loop"))
+            config_fast = SessionConfig(metadata=CardMetadata(engine_type="deep", mode_name="Deep"))
             s = CardSession(
                 chat_id=f"cf{i}",
                 config=config_fast,

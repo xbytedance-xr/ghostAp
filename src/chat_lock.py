@@ -55,7 +55,7 @@ READONLY_COMMANDS: frozenset[str] = frozenset({
 # Separated from READONLY_COMMANDS because they mutate state (stop engines),
 # but are considered safe even during lock-down.
 SAFE_INTERRUPT_COMMANDS: frozenset[str] = frozenset({
-    "/stop_deep", "/stop_loop", "/stop_spec",
+    "/stop_deep", "/stop_spec",
 })
 
 

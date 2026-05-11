@@ -15,6 +15,37 @@ from .progress import MOBILE_SEGMENTS, render_progress_bar
 _ACTIVE_TOOL_STATUSES = frozenset({"active"})
 
 
+def _short_path_footer(path: str | None) -> str:
+    """Shorten an absolute path to ~/relative for display in footer."""
+    if not path:
+        return ""
+    from pathlib import Path as _Path
+    try:
+        resolved = _Path(path).expanduser().resolve()
+        home = _Path.home().resolve()
+        rel = resolved.relative_to(home)
+        return f"~/{rel}"
+    except (OSError, ValueError):
+        return str(path)
+
+
+def _render_context_line(state: CardState) -> str | None:
+    """Build footer context line: working_dir + engine phase subtitle."""
+    metadata = state.metadata
+    parts: list[str] = []
+
+    if metadata.working_dir:
+        parts.append(f"📂 {_short_path_footer(metadata.working_dir)}")
+
+    # Engine subtitle (phase info like "cycle 2/Build") from reducer
+    if metadata.engine_type and state.header.subtitle:
+        parts.append(state.header.subtitle)
+
+    if not parts:
+        return None
+    return " · ".join(parts)
+
+
 def _format_idle_timeout(seconds: int) -> str:
     """Format idle timeout seconds into human-friendly display (e.g. '30 分钟', '2 小时')."""
     if seconds >= 3600 and seconds % 3600 == 0:
@@ -82,7 +113,6 @@ def _format_timestamp(raw: str) -> str:
 # Engine type → progress bar theme color
 _ENGINE_PROGRESS_COLOR: dict[str, str] = {
     "deep": "violet",
-    "loop": "indigo",
     "spec": "green",
     "worktree": "wathet",
 }
@@ -198,13 +228,22 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
     running_tool = _find_running_tool(state)
     tool_hint = render_now_tool_hint(running_tool) if running_tool else ""
     has_tool_hint = bool(tool_hint)
+    # Check for context line (working_dir + engine phase info moved from header)
+    context_line = _render_context_line(state)
+    has_context = bool(context_line)
 
-    if not has_status_content and not has_meta_content and not has_tool_hint:
+    if not has_status_content and not has_meta_content and not has_tool_hint and not has_context:
         return []
 
     elements.append({"tag": "hr"})
 
-    # ⚙ tool hint line (right after hr, before status)
+    # Context line: working_dir + engine phase info (moved from header subtitle)
+    if context_line:
+        elements.append(
+            {"tag": "markdown", "content": context_line, "text_size": "notation"}
+        )
+
+    # ⚙ tool hint line (after context, before status)
     if tool_hint:
         elements.append(
             {"tag": "markdown", "content": tool_hint, "text_size": "notation"}
@@ -223,8 +262,6 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
             prefix = f"{UI_TEXT['card_progress_criteria_label']}: "
         elif state.metadata.engine_type == "deep":
             prefix = f"{UI_TEXT['card_progress_tool_label']}: "
-        elif state.metadata.engine_type == "loop":
-            prefix = f"{UI_TEXT['card_progress_loop_label']}: "
         elif state.metadata.engine_type == "worktree":
             prefix = f"{UI_TEXT['card_progress_worktree_label']}: "
         # Merge status text + bar + progress count into single line

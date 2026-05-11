@@ -326,10 +326,9 @@ class TestWorktreeCommandRouting(unittest.TestCase):
         ):
             client = self._build_ws_client(mock_get_settings)
 
-            # 避免进入编程模式 / Deep / Loop / Spec / 拦截命令等其他分支
+            # 避免进入编程模式 / Deep / Spec / 拦截命令等其他分支
             client._get_effective_mode = MagicMock(return_value=(MagicMock(), False))
             client._is_deep_command = MagicMock(return_value=False)
-            client._is_loop_command = MagicMock(return_value=False)
             client._is_spec_command = MagicMock(return_value=False)
             client._is_interceptable_command_match = MagicMock(return_value=False)
             client._is_exit_command = MagicMock(return_value=False)
@@ -378,7 +377,6 @@ class TestWorktreeCommandRouting(unittest.TestCase):
 
             client._get_effective_mode = MagicMock(return_value=(MagicMock(), False))
             client._is_deep_command = MagicMock(return_value=False)
-            client._is_loop_command = MagicMock(return_value=False)
             client._is_spec_command = MagicMock(return_value=False)
             client._is_interceptable_command_match = MagicMock(return_value=False)
             client._is_exit_command = MagicMock(return_value=False)
@@ -448,7 +446,6 @@ class TestWorktreeCommandRouting(unittest.TestCase):
             client._is_exit_command = MagicMock(return_value=False)
             client._is_programming_entry_command = MagicMock(return_value=False)
             client._is_deep_command = MagicMock(return_value=False)
-            client._is_loop_command = MagicMock(return_value=False)
             client._is_spec_command = MagicMock(return_value=False)
 
             client._dispatch_message_logic(

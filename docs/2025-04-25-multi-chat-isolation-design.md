@@ -147,7 +147,7 @@ is_p2p = (chat_type == "p2p")
 
 ## 5. 锁注入点
 
-### 5.1 Engine 系列（Deep/Loop/Spec）
+### 5.1 Engine 系列（Deep/Spec/Worktree）
 
 **修改文件**: `src/engine_base.py` 或各 engine 的 execute 方法
 
@@ -202,7 +202,7 @@ WorktreeManager 的 `ensure_worktrees()`、`merge_to_base()`、`cleanup_worktree
 
 **修改文件**: `src/feishu/ws_client.py`
 
-在 `_process_card_action_async()` 中，对会触发仓库写操作的 action（如 `worktree_merge`、`worktree_cleanup`）增加 repo 锁检查。`stop` 类动作（`deep_stop`、`loop_stop`、`spec_stop`）属于安全中断操作，允许绕过锁。
+在 `_process_card_action_async()` 中，对会触发仓库写操作的 action（如 `worktree_merge`、`worktree_cleanup`）增加 repo 锁检查。`stop` 类动作（`deep_stop`、`spec_stop`）属于安全中断操作，允许绕过锁。
 
 ## 6. 配置项
 

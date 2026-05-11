@@ -143,7 +143,7 @@ class TaskIdResolver:
 class TaskOrchestrator:
     """Orchestrates task-level card sessions for a single engine execution.
 
-    Not a singleton — one instance per engine execution (e.g., per Deep/Loop/Spec run).
+    Not a singleton — one instance per engine execution (e.g., per Deep/Spec run).
     """
 
     def __init__(
@@ -509,7 +509,7 @@ class TaskOrchestrator:
         """Unified plan detection + status broadcast entry point for renderers.
 
         Encapsulates the full plan-detection logic that was previously duplicated
-        in Deep/Loop/Spec renderers:
+        in Deep/Spec renderers:
         1. Check if PLAN_UPDATE event with sufficient entries
         2. Convert to task dicts and call on_plan_received() if threshold met
         3. Broadcast status changes for all entries

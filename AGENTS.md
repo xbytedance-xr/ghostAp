@@ -10,10 +10,9 @@ GhostAP is a Feishu (Lark) chatbot service that provides safe remote Shell comma
 
 GhostAP has two orthogonal dimensions:
 
-- **Execution strategy layer (4 levels, complexity increasing)**
+- **Execution strategy layer (3 levels, complexity increasing)**
   - **Normal programming mode**: multi-turn coding dialogue mode
   - **Deep mode**: one-shot deep execution (single requirement → autonomous plan+execute)
-  - **Loop mode**: iterative closed-loop execution with acceptance criteria
   - **Spec mode**: structured iterative methodology (`Spec → Plan → Task → Build → Review`)
 - **Tool transport layer (how tools are actually driven)**
   - **ACP direct mode**: tools with ACP support are connected through ACP (JSON-RPC 2.0 over stdio)
@@ -57,12 +56,11 @@ Feishu WebSocket message
               ENTER_CLAUDE  → ACPSessionManager("claude") (Claude CLI session backend)
               ENTER_TTADK   → TTADKManager + ACPSessionManager("ttadk") (CLI bridge only)
               DEEP_COMMAND  → DeepEngine (ACP-driven single-prompt deep execution)
-              LOOP_COMMAND  → LoopEngine (ACP-driven iterative closed-loop)
               SPEC_COMMAND  → SpecEngine (structured iterative execution)
               WORKTREE_CMD  → WorktreeEngine (parallel multi-tool worktree execution)
               CREATE_PROJECT → ProjectManager
               ...
-        → Renderer layer (BaseRenderer → DeepRenderer / LoopRenderer / SpecRenderer)
+        → Renderer layer (BaseRenderer → DeepRenderer / SpecRenderer)
         → ACPEventRenderer (structured tool/plan/text rendering)
         → CardBuilder / CardDelivery (build and deliver response card)
         → Feishu API reply + EmojiReaction feedback
@@ -95,13 +93,12 @@ Feishu WebSocket message
   - `ws_health.py` — `WSHealthMonitor` watchdog for WebSocket connection health.
   - `control_plane.py` — `ControlPlane` for pending exit handling, event queue, system command gate.
   - `router.py` — `FORWARDING_MAP` dispatch table routing methods to handler registries.
-  - `handlers/` — 12 handler modules: `base`, `engine_base`, `programming`, `deep`, `loop`, `spec`, `worktree`, `project`, `system`, `diagnostics`, `lock_helper`, `diagnostics_helper`. BaseHandler 统一消息 API：`reply_text` / `reply_card` / `update_card` / `send_card_to_chat` / `send_text_to_chat`（旧 `reply_message`/`patch_message`/`send_message` 已移除，调用会 warn DeprecationWarning 并 raise NotImplementedError 提示迁移路径）。
-  - `renderers/` — Renderer layer: `BaseRenderer`, `DeepRenderer`, `LoopRenderer`, `SpecRenderer` (with retry callback support).
+  - `handlers/` — 11 handler modules: `base`, `engine_base`, `programming`, `deep`, `spec`, `worktree`, `project`, `system`, `diagnostics`, `lock_helper`, `diagnostics_helper`. BaseHandler 统一消息 API：`reply_text` / `reply_card` / `update_card` / `send_card_to_chat` / `send_text_to_chat`（旧 `reply_message`/`patch_message`/`send_message` 已移除，调用会 warn DeprecationWarning 并 raise NotImplementedError 提示迁移路径）。
+  - `renderers/` — Renderer layer: `BaseRenderer`, `DeepRenderer`, `SpecRenderer` (with retry callback support).
   - `user_cache.py` — LRU cache (500 capacity, 1h TTL) for Feishu user display name resolution.
   - `chat_lock_gate.py` — Lock interception gate.
   - `session_hub.py` — Session hub.
 - **`src/deep_engine/`** — ACP-driven deep execution engine. Single prompt with full requirement → agent self-plans and executes. Tracks progress via ACP plan updates and tool calls.
-- **`src/loop_engine/`** — ACP-driven iterative closed-loop engine. Multi-round prompts in a single ACP session, with convergence detection and acceptance criteria evaluation.
 - **`src/spec_engine/`** — Structured iterative engine (`Spec→Plan→Task→Build→Review`) with 26 modules. Review subsystem decomposed into: `ReviewOrchestrator` (orchestration), `review_pipeline` (parallel assembly), `review_strategy` (strategy pattern), `review_retry` (in-cycle retry), `review_parsing` (LLM output parsing), `review_types` (shared types), `perspective_worker` (single-perspective workers), `cycle_budget` (wall-clock cap). Structured retry via `RetryStatus`/`RetryEvent`. UI text constants in `constants.py`. State persistence in `persistence.py`.
 - **`src/worktree_engine/`** — Git worktree-based parallel multi-tool execution engine. Manages worktree creation, tool discovery, selection control, and dispatching.
 - **`src/chat_lock.py`** — Chat-level lock manager with `ChatLockCode` enum for structured result codes. Defines `READONLY_COMMANDS` and `SAFE_INTERRUPT_COMMANDS`.
@@ -117,22 +114,22 @@ Feishu WebSocket message
 
 ### Design Patterns
 
-- **Strategy layering**: user-facing development workflow is split into 4 execution strategies (Normal/Deep/Loop/Spec), independent from backend tool transport.
+- **Strategy layering**: user-facing development workflow is split into 3 execution strategies (Normal/Deep/Spec), independent from backend tool transport.
 - **Hybrid transport (ACP + CLI)**: ACP-capable tools use ACP direct mode; non-ACP tools use Shell CLI bridge; `ttadk_*` is strictly CLI-bridged and isolated from ACP direct startup.
 - **TTADK multi-tool layer**: TTADK provides a unified interface for multiple AI tools (Coco/Claude/Cursor/Gemini/etc) and models, with `TTADKManager` singleton managing tool/model switching and state.
 - **Event-driven rendering**: `ACPEventRenderer` processes `ACPEvent` stream (text chunks, tool calls, plan updates) into Feishu Markdown. Handlers register `on_event` callbacks to drive real-time card updates.
-- **Renderer hierarchy**: `BaseRenderer` → `DeepRenderer` / `LoopRenderer` / `SpecRenderer` encapsulate engine-specific rendering logic.
+- **Renderer hierarchy**: `BaseRenderer` → `DeepRenderer` / `SpecRenderer` encapsulate engine-specific rendering logic.
 - **State machine**: `InteractionMode` enum governs SMART/COCO/CLAUDE/AIDEN/CODEX/GEMINI/SHELL/TTADK transitions; `EngineRunState` enum tracks IDLE/RUNNING/STOPPING for engines.
 - **Singleton**: `get_settings()` for configuration, `get_ttadk_manager()` for TTADK tool/model management
 - **Session managers**: `ACPSessionManager` unifies per-chat/project session lifecycle across ACP and CLI backends (`coco/aiden/gemini/codex` ACP-direct, `claude` CLI backend, `ttadk_*` forced CLI bridge).
-- **Task scheduling**: `TaskScheduler` provides per-chat ordered execution with global concurrency control. Long-running tasks (e.g. Deep Engine, Loop Engine) use separate `queue_key` to avoid blocking control commands.
+- **Task scheduling**: `TaskScheduler` provides per-chat ordered execution with global concurrency control. Long-running tasks (e.g. Deep Engine) use separate `queue_key` to avoid blocking control commands.
 - **Multi-tier locking**: 6-level lock ordering hierarchy (ENGINE_MANAGER → ENGINE_INSTANCE → PROJECT_MANAGER → CHAT_LOCK_CTX → CHAT_LOCK_MGR → REPO_LOCK) with runtime deadlock detection via `utils/lock_order.py`. All `threading.Lock()`/`RLock()` instances annotated as leaf locks.
 - **DI container**: `ServiceRegistry` supports singleton/transient/factory patterns, hierarchical scopes, thread-safe, with `close()` for cleanup.
 - **Review pipeline**: Spec review decomposed into strategy selection → pipeline assembly → parallel workers → retry → output parsing (6 independent modules). Circuit breaker state tracking per review cycle.
 - **Circuit breaker**: Sliding window failure counting, CLOSED → OPEN → HALF_OPEN three-state transition for fault isolation.
 - **Hook system**: 7 event types (pre/post shell, session start/end, engine start/stop, iteration done) with `register_hook()`/`fire_hooks()`.
 - **CardSession lifecycle hooks**: `SessionHook` protocol (`on_dispatched`, `on_terminal`) injected at session construction via `hooks: tuple[SessionHook, ...]`. Concrete hooks: `EmojiHook` (adds Feishu emoji reactions on terminal events; gracefully skips when message_id is empty), `ContextPersistenceHook` (persists engine results to project context on completion). Hooks are called by CardSession after reduce (dispatched) and after successful terminal delivery (terminal), wrapped in try/except to never block the pipeline. `BaseRenderer._build_hooks(message_id)` provides the standard hook set for all engine renderers. This replaces the old pattern of hardcoding emoji/context calls directly in renderer callback closures.
-  - **ContextPersistenceHook 注入策略**: Deep 引擎注入 ContextPersistenceHook（通过 `context_update_fn` 参数），Loop/Spec 引擎**不注入**（它们各自有独立的上下文持久化路径：Loop 通过 `LoopEngine.on_complete` 回调处理，Spec 通过 `SpecManager.persist_result` 处理）。Worktree 引擎不注入（worktree 结果通过 reporter 独立持久化）。
+  - **ContextPersistenceHook 注入策略**: Deep 引擎注入 ContextPersistenceHook（通过 `context_update_fn` 参数），Spec 引擎**不注入**（它有独立的上下文持久化路径：通过 `SpecManager.persist_result` 处理）。Worktree 引擎不注入（worktree 结果通过 reporter 独立持久化）。
 - **Unified adapter architecture**: `src/card/protocols.py` defines `Dispatchable` and `WorktreeCallbacks` two Protocol classes, providing type constraints for CardSession/SessionRotator. Feishu-specific side effects (emoji, context persistence) are injected via `SessionHook` instances at session construction — not embedded in adapter closures. Renderers create sessions with hooks via `BaseRenderer._create_session()` → return engine callbacks.
 - **Session lock lazy eviction**: `CardDelivery` uses lazy eviction to manage session lock lifecycle — when lock count reaches 80% of `card_session_lock_max`, eviction is triggered, removing at most 50 entries per batch (TTL exceeded via `card_session_lock_ttl` AND no active binding = zombie). Parameters are configurable via `.env`. A WARNING is logged at >=90% capacity.
 - **Deprecations**: `CardBuilder.build_engine_card()` has been completely removed (attribute no longer exists; calling code should use `build_info_card()` for static info cards, or the `CardSession` pipeline for engine cards).

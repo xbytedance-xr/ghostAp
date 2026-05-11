@@ -175,7 +175,7 @@ class CardMetadata:
     mode_emoji: str             # 🤖 / 🔮 / 🧠 / ♾️ / 🎮
     tool_name: str | None       # "coco" / "claude-cli" / "cursor" / "aider"
     model_name: str | None      # "gpt-4o" / "claude-sonnet-4-20250514"
-    engine_type: str | None     # "deep" / "loop" / "spec" / None
+    engine_type: str | None     # "deep" / "spec" / None
 ```
 
 ### 3.6 CardEvent 类型
@@ -531,7 +531,7 @@ class CardSession:
 | TTADK 编程 | `🎮 MyProject · TTADK` | `🔧 cursor · gemini-2.5-pro` |
 | Gemini 编程 | `✨ MyProject · Gemini` | `🔧 gemini · gemini-2.5-pro` |
 | Deep 引擎 | `🧠 MyProject · Deep Agent` | `🔧 coco · gpt-4o · 正在执行` |
-| Loop 引擎 | `♾️ MyProject · Loop Engine` | `🔧 claude-cli · opus · 迭代 2/5` |
+| Worktree 引擎 | `🌿 MyProject · Worktree Engine` | `🔧 coco · gpt-4o · 并行执行` |
 | Spec 引擎 | `🧠 MyProject · Spec Engine` | `🔧 coco · gpt-4o · Build 阶段` |
 | 无项目 | `🤖 Coco 编程模式` | `🔧 coco · gpt-4o` |
 | 模型未知 | `🤖 MyProject · Coco` | `🔧 coco · 模型加载中...` |
@@ -559,7 +559,6 @@ class CardSession:
 | Gemini | `turquoise` |
 | TTADK | `orange` |
 | Deep | `turquoise` |
-| Loop | `indigo` |
 | Spec | `green` |
 | Smart | `turquoise` |
 
@@ -577,7 +576,7 @@ class CardSession:
    - reasoning blocks → collapsible_panel
    - plan blocks → collapsible_panel
 5. ── 分隔线 ──
-6. 📋 验收标准 (可选, Loop/Spec)
+6. 📋 验收标准 (可选, Spec/Worktree)
 7. ── 分隔线 ──
 8. {footer_status_text}          (text_size: notation)
 9. ── 分隔线 ──
@@ -1033,7 +1032,7 @@ def test_structure_change_triggers_update():
 | Phase 3 | 创建 delivery/ 投递引擎 | Mock API 集成测试 |
 | Phase 4 | 实现 CardSession 编排 | 端到端测试 |
 | Phase 5 | 拆分 styles.py | import 检查 |
-| Phase 6 | 适配 Handler (Deep/Loop/Spec) | 功能回归测试 |
+| Phase 6 | 适配 Handler (Deep/Spec/Worktree) | 功能回归测试 |
 | Phase 7 | 适配 StreamingCardManager 场景 | 编程模式回归 |
 | Phase 8 | 移除旧代码 | 全量测试 |
 

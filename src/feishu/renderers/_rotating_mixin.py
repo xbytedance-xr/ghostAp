@@ -1,6 +1,6 @@
-"""RotatingRendererMixin: shared template methods for Loop/Spec renderers.
+"""RotatingRendererMixin: shared template methods for Spec renderer.
 
-Eliminates code duplication between LoopRenderer and SpecRenderer for:
+Eliminates code duplication for:
 - _EngineView wrapper class
 - _build_view_session (parameterized by engine type/name/emoji/cmd)
 - _render_error_view (identical implementation)
@@ -33,10 +33,10 @@ class RotatingRendererMixin:
     """Mixin providing shared view-rendering template methods.
 
     Subclasses MUST define these hook properties/methods:
-    - _engine_type: str  (e.g. "loop", "spec")
-    - _mode_prefix: str  (e.g. "Loop", "Spec")
-    - _mode_emoji: str  (e.g. "🔁", "📋")
-    - _engine_cmd: str  (e.g. "/loop", "/spec")
+    - _engine_type: str  (e.g. "spec")
+    - _mode_prefix: str  (e.g. "Spec")
+    - _mode_emoji: str  (e.g. "📋")
+    - _engine_cmd: str  (e.g. "/spec")
     - _get_reporter(self)  → reporter object with format_status/format_criteria_section/get_progress_info
     """
 

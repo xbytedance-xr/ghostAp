@@ -86,7 +86,7 @@ class TestForceClosePath:
         """Force-close path calls delivery.close()."""
         client = _MockClient()
         delivery = CardDelivery(client)
-        metadata = CardMetadata(engine_type="loop", mode_name="Loop", mode_emoji="🔄")
+        metadata = CardMetadata(engine_type="deep", mode_name="Deep", mode_emoji="🚀")
         config = SessionConfig(metadata=metadata, ttl_seconds=0.1)
         session = CardSession(
             chat_id="chat_2",

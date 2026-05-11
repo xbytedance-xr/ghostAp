@@ -285,7 +285,7 @@ class BaseEngine:
 
         Args:
             error: The caught exception.
-            label: Human-readable prefix (e.g. "Spec执行", "Loop恢复").
+            label: Human-readable prefix (e.g. "Spec执行", "Deep执行").
             is_timeout: True for TimeoutError (warning), False for generic (error).
             callbacks: An object with an optional ``on_error`` callable attribute.
 
@@ -464,3 +464,68 @@ class BaseEngineManager(Generic[T]):
             for key in next_engines:
                 chat_id = key.partition(":")[0]
                 self._chat_keys.setdefault(chat_id, set()).add(key)
+
+
+@dataclass
+class CriteriaTracker:
+    """验收标准追踪器。"""
+
+    criteria: list[str] = field(default_factory=list)
+    satisfied: dict[int, bool] = field(default_factory=dict)
+    satisfied_at_iteration: dict[int, int] = field(default_factory=dict)
+
+    def init_criteria(self, criteria: list[str]):
+        self.criteria = criteria
+        self.satisfied = dict.fromkeys(range(len(criteria)), False)
+        self.satisfied_at_iteration = {}
+
+    def update(self, criteria_id: int, is_satisfied: bool, iteration_id: int):
+        if criteria_id < 0 or criteria_id >= len(self.criteria):
+            return
+        if is_satisfied and not self.satisfied.get(criteria_id, False):
+            self.satisfied[criteria_id] = True
+            self.satisfied_at_iteration[criteria_id] = iteration_id
+
+    def batch_update(self, progress: dict[int, bool], iteration_id: int):
+        for criteria_id, is_satisfied in progress.items():
+            self.update(criteria_id, is_satisfied, iteration_id)
+
+    @property
+    def satisfied_count(self) -> int:
+        return sum(1 for v in self.satisfied.values() if v)
+
+    @property
+    def total_count(self) -> int:
+        return len(self.criteria)
+
+    @property
+    def is_all_satisfied(self) -> bool:
+        return self.total_count > 0 and self.satisfied_count == self.total_count
+
+    @property
+    def unsatisfied_indices(self) -> list[int]:
+        return [i for i, v in self.satisfied.items() if not v]
+
+    @property
+    def unsatisfied_criteria(self) -> list[str]:
+        return [self.criteria[i] for i in self.unsatisfied_indices]
+
+    @property
+    def satisfied_criteria(self) -> list[str]:
+        return [self.criteria[i] for i, v in self.satisfied.items() if v]
+
+    def to_dict(self) -> dict:
+        return {
+            "criteria": self.criteria,
+            "satisfied": self.satisfied,
+            "satisfied_at_iteration": self.satisfied_at_iteration,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CriteriaTracker":
+        tracker = cls()
+        tracker.criteria = data.get("criteria", [])
+        # JSON keys are strings, convert to int
+        tracker.satisfied = {int(k): v for k, v in data.get("satisfied", {}).items()}
+        tracker.satisfied_at_iteration = {int(k): v for k, v in data.get("satisfied_at_iteration", {}).items()}
+        return tracker

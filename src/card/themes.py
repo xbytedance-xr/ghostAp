@@ -60,13 +60,6 @@ def get_theme(color: str) -> ProjectTheme:
 
 # Engine Style Configuration
 ENGINE_STYLES = {
-    "loop": {
-        "color": "indigo",
-        "icon": "♾️",
-        "label_static": "Loop Engine",
-        "meta_separator": "\n",
-        "features": {"history_button": True},
-    },
     "spec": {
         "color": "green",
         "icon": "🧠",
@@ -135,8 +128,6 @@ MODE_TEMPLATES: dict[str, str] = {
     "TTADK": "orange",
     "Deep": "violet",
     "Deep Agent": "violet",
-    "Loop": "indigo",
-    "Loop Engine": "indigo",
     "Spec": "green",
     "Spec Engine": "green",
     "Worktree": "wathet",

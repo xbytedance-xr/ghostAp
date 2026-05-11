@@ -282,9 +282,9 @@ def test_card_builder_unified_status_content_basic():
             info="executing",
         ),
         EngineStatusEntry(
-            mode="Loop",
+            mode="Spec",
             task_id="task-ffffeeee1111",
-            name="LoopRun",
+            name="SpecRun",
             status="failed",
             info="error",
         ),
@@ -295,8 +295,8 @@ def test_card_builder_unified_status_content_basic():
     # Header should contain total count
     assert str(len(entries)) in content
     # Per-entry lines should include mode, name, info and mapped emojis
-    assert "Deep" in content and "Loop" in content
-    assert "DeepRun" in content and "LoopRun" in content
+    assert "Deep" in content and "Spec" in content
+    assert "DeepRun" in content and "SpecRun" in content
     assert "executing" in content and "error" in content
     assert "🔄" in content  # running
     assert "❌" in content  # failed
@@ -334,26 +334,6 @@ def test_card_builder_format_engine_status_info_deep_uses_status_when_no_duratio
     mode_label = UI_TEXT["diag_engine_deep"]
     info = CardBuilder.format_engine_status_info(mode_label, Dummy())
     assert info == "RUNNING"
-
-
-def test_card_builder_format_engine_status_info_loop_includes_iteration_and_criteria():
-    """Loop mode should include iteration index and criteria ratio when available."""
-
-    class Dummy:
-        def __init__(self) -> None:
-            self.status = "LOOP"
-            self.current_iteration = 3
-            self.satisfied_count = 1
-            self.total_criteria = 4
-
-        def duration(self) -> float:
-            return 0.0
-
-    mode_label = UI_TEXT["diag_engine_loop"]
-    info = CardBuilder.format_engine_status_info(mode_label, Dummy())
-
-    assert "3" in info
-    assert "1/4" in info
 
 
 def test_card_builder_format_engine_status_info_spec_includes_cycle_phase_and_criteria():

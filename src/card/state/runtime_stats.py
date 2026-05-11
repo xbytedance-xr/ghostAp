@@ -14,7 +14,6 @@ class RuntimeStats:
 
     elapsed_seconds: float = 0.0
     deep_phase: str | None = None
-    loop_round: int | None = None
     spec_cycle: int | None = None
     spec_perspective: str | None = None
     worktree_subagent: str | None = None

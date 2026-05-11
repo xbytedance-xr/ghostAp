@@ -10,7 +10,6 @@ def test_runtime_stats_defaults():
     rs = RuntimeStats()
     assert rs.elapsed_seconds == 0.0
     assert rs.deep_phase is None
-    assert rs.loop_round is None
     assert rs.spec_cycle is None
     assert rs.spec_perspective is None
     assert rs.worktree_subagent is None
@@ -20,14 +19,12 @@ def test_runtime_stats_construction():
     rs = RuntimeStats(
         elapsed_seconds=83.5,
         deep_phase="executing",
-        loop_round=2,
         spec_cycle=1,
         spec_perspective="code",
         worktree_subagent="aiden",
     )
     assert rs.elapsed_seconds == 83.5
     assert rs.deep_phase == "executing"
-    assert rs.loop_round == 2
     assert rs.spec_cycle == 1
     assert rs.spec_perspective == "code"
     assert rs.worktree_subagent == "aiden"

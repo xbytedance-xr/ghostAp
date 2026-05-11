@@ -30,7 +30,7 @@ class ActionDispatcher:
         分发卡片动作。
 
         Args:
-            action_type: 动作类型字符串 (e.g. "loop_pause")
+            action_type: 动作类型字符串 (e.g. "spec_stop")
             open_message_id: 消息ID
             open_chat_id: 会话ID
             project_id: 项目ID (可能为空)

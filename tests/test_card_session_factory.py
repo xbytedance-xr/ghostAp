@@ -29,7 +29,7 @@ class TestCardSessionFactoryCreate:
 
     def test_create_passes_hooks(self):
         factory = _make_factory()
-        metadata = CardMetadata(engine_type="loop", mode_name="Loop", mode_emoji="🔄")
+        metadata = CardMetadata(engine_type="deep", mode_name="Deep", mode_emoji="🚀")
         hook = MagicMock()
         cbs = SessionCallbacks(notify_callback=lambda _c, _t: None, hooks=(hook,))
         session = factory.create(chat_id="chat_2", metadata=metadata, callbacks=cbs)
@@ -44,9 +44,9 @@ class TestCardSessionFactoryCreate:
 
     def test_create_override_budget(self):
         default_budget = RenderBudget(engine_cmd="/deep")
-        override_budget = RenderBudget(engine_cmd="/loop")
+        override_budget = RenderBudget(engine_cmd="/deep")
         factory = _make_factory(budget=default_budget)
-        metadata = CardMetadata(engine_type="loop", mode_name="Loop", mode_emoji="🔄")
+        metadata = CardMetadata(engine_type="deep", mode_name="Deep", mode_emoji="🚀")
         session = factory.create(chat_id="chat_4", metadata=metadata, budget=override_budget, callbacks=_TEST_CALLBACKS)
         assert session._budget is override_budget
 

@@ -338,7 +338,7 @@ class CardEvent(Generic[P]):
         """Signal the start of an engine iteration cycle.
 
         Payload: {cycle_num: int, max_cycles: int}
-        Triggered when: Spec/Loop engine begins a new iteration cycle.
+        Triggered when: Spec engine begins a new iteration cycle.
         """
         if not isinstance(cycle_num, int):
             raise TypeError(f"cycle_num must be int, got {type(cycle_num).__name__}")
@@ -353,7 +353,7 @@ class CardEvent(Generic[P]):
         """Signal the completion of an engine iteration cycle.
 
         Payload: {cycle_num: int, status: str}
-        Triggered when: Spec/Loop engine finishes one cycle (regardless of outcome).
+        Triggered when: Spec engine finishes one cycle (regardless of outcome).
         """
         if not isinstance(cycle_num, int):
             raise TypeError(f"cycle_num must be int, got {type(cycle_num).__name__}")

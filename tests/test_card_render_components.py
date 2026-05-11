@@ -35,7 +35,8 @@ class TestRenderHeader:
         result = render_header(state)
         assert "subtitle" in result
         assert result["title"]["content"] == "📁 test · 🤖 Coco · #1 · gpt-4o"
-        assert result["subtitle"]["content"] == "工作目录未设置 · 🟢"
+        # Subtitle now only shows status marker (no working_dir)
+        assert result["subtitle"]["content"] == "🟢"
 
     def test_header_subtitle_with_status(self):
         """Subtitle with status → "🔧 tool · model · status" """

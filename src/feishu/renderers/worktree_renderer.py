@@ -1,6 +1,6 @@
 """WorktreeRenderer: session lifecycle management for worktree engine.
 
-Follows the same pattern as DeepRenderer/LoopRenderer/SpecRenderer,
+Follows the same pattern as DeepRenderer/SpecRenderer,
 extracting CardSession management from WorktreeHandler.
 """
 from __future__ import annotations

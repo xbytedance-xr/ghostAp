@@ -1,4 +1,4 @@
-"""Cycle lifecycle sub-reducer for Spec/Loop engines."""
+"""Cycle lifecycle sub-reducer for Spec engine."""
 from __future__ import annotations
 import logging
 from dataclasses import replace

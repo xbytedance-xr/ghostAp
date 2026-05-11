@@ -28,6 +28,13 @@ if TYPE_CHECKING:
 _LOCK_BODY_PLACEHOLDER = "{{__LOCK_BODY_c0f1e2d3a4b5__}}"
 
 
+def _get_version() -> str:
+    """Return the project version string."""
+    from src import __version__
+
+    return __version__
+
+
 class SystemBuilder:
     """System-related card building utilities."""
 
@@ -903,10 +910,6 @@ class SystemBuilder:
                 UI_TEXT["system_help_section_deep_body"]
             ),
             (
-                UI_TEXT["system_help_section_loop"],
-                UI_TEXT["system_help_section_loop_body"]
-            ),
-            (
                 UI_TEXT["system_help_section_spec"],
                 UI_TEXT["system_help_section_spec_body"]
             ),
@@ -989,7 +992,9 @@ class SystemBuilder:
         elements.append({"tag": "hr"})
         elements.append({"tag": "markdown", "content": tips, "text_size": "notation"})
 
-        card = CoreBuilder._wrap_card(UI_TEXT["system_help_title"], "blue", elements)
+        card = CoreBuilder._wrap_card(
+            UI_TEXT["system_help_title"].format(version=_get_version()), "blue", elements
+        )
         return "interactive", json.dumps(card, ensure_ascii=False)
 
     @staticmethod

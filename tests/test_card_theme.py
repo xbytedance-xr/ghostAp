@@ -25,7 +25,7 @@ class TestModeTemplatesComplete:
 
     def test_covers_known_engine_modes(self):
         """All known engine mode names used in AGENTS.md/renderers should have templates."""
-        known_modes = {"Deep Agent", "Loop Engine", "Spec Engine", "Worktree"}
+        known_modes = {"Deep Agent", "Spec Engine", "Worktree"}
         actual = set(MODE_TEMPLATES.keys())
         assert known_modes.issubset(actual), f"Missing: {known_modes - actual}"
 

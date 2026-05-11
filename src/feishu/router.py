@@ -119,16 +119,6 @@ FORWARDING_MAP: dict[str, tuple[str, str]] = {
     "_update_deep_context": ("deep", "update_deep_context"),
     "_toggle_deep_log": ("deep", "_toggle_log"),
     "_switch_deep_card_mode": ("deep", "_switch_card_mode"),
-    # --- Loop Engine ---
-    "_handle_loop_command": ("loop", "handle_loop_command"),
-    "_start_loop_engine": ("loop", "start_loop_engine"),
-    "_show_loop_status": ("loop", "show_loop_status"),
-    "_pause_loop_engine": ("loop", "pause_loop_engine"),
-    "_resume_loop_engine": ("loop", "resume_loop_engine"),
-    "_stop_loop_engine": ("loop", "stop_loop_engine"),
-    "_update_loop_guidance": ("loop", "update_loop_guidance"),
-    "_toggle_loop_log": ("loop", "_toggle_log"),
-    "_switch_loop_card_mode": ("loop", "_switch_card_mode"),
     # --- Spec Engine ---
     "_handle_spec_command": ("spec", "handle_spec_command"),
     "_start_spec_engine": ("spec", "start_spec_engine"),

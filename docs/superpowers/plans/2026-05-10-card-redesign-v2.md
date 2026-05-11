@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Redesign Feishu programming card v2 — unify all programming modes (Coco/Claude/Aiden/Codex/Gemini/TTADK + Deep/Loop/Spec/Worktree) under a single visual contract: project-tool-#seq header, three-group always-open task list, turn-based reasoning↔tool flow with running-only expand, footer with now-tool hint and subagent badge, card_split with frozen-prev + cumulative time, parallel subagent orange theme.
+**Goal:** Redesign Feishu programming card v2 — unify all programming modes (Coco/Claude/Aiden/Codex/Gemini/TTADK + Deep/Spec/Worktree) under a single visual contract: project-tool-#seq header, three-group always-open task list, turn-based reasoning↔tool flow with running-only expand, footer with now-tool hint and subagent badge, card_split with frozen-prev + cumulative time, parallel subagent orange theme.
 
 **Architecture:** Keep SectionLayout SSOT 4-region skeleton. Move `task_list` from status into `sticky_head`. Move `footer` to `appendix` (last-page only). Reduce `activity_summary` panel — its semantics are absorbed by per-turn local reasoning blocks. Add a 1Hz `live_ticker` for emoji frame swaps. CardSession gains 4 fields: `sequence`, `session_started_at`, `is_subagent`, `parent_card_seq`. Parallel subagents get independent CardSession + bridge throttle, displayed in orange theme.
 
@@ -1381,7 +1381,7 @@ def _build_section_layout(state, atoms):
         session=state.current_session,
         running_tool=state.running_tool,
     ))
-    status = tuple(_build_status_atoms(state))  # unchanged for Deep/Loop/Spec
+    status = tuple(_build_status_atoms(state))  # unchanged for Deep/Spec/Worktree
     return SectionLayout(sticky_head=sticky, status=status, body=body, appendix=appendix)
 ```
 
@@ -1530,7 +1530,7 @@ Create `.Memory/2026-05-10.md`:
 
 ## 编程模式卡片 v2 重设计
 ### 任务描述
-统一 Coco/Claude/Aiden/Codex/Gemini/TTADK + Deep/Loop/Spec/Worktree 卡片：项目-工具-#序号 header、三段常开任务列表、turn 级 reasoning↔tool 折叠、footer 工具简介+subagent 标、card_split 冻结+续接、并行 subagent 橙系独立卡。
+统一 Coco/Claude/Aiden/Codex/Gemini/TTADK + Deep/Spec/Worktree 卡片：项目-工具-#序号 header、三段常开任务列表、turn 级 reasoning↔tool 折叠、footer 工具简介+subagent 标、card_split 冻结+续接、并行 subagent 橙系独立卡。
 
 ### 执行内容
 - CardSession 扩 4 字段 (sequence/session_started_at/is_subagent/parent_card_seq + frozen/frozen_total_elapsed)

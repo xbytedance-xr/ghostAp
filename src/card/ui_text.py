@@ -6,7 +6,7 @@ Key naming conventions:
   Where values are identical, system_worktree_* is an alias pointing to worktree_*.
 - `wt_btn_*` — short-form button labels for worktree card actions.
 - `system_*` — general system/handler messages (non-card pipeline).
-- `<engine>_*` (deep_*, loop_*, spec_*) — engine-specific card content.
+- `<engine>_*` (deep_*, spec_*) — engine-specific card content.
 """
 
 import types
@@ -40,13 +40,6 @@ UI_TEXT = {
     "deep_status_empty": "📊 当前没有进行中的任务\n\n发送 `/deep <需求>` 开始一个复杂任务",
     "deep_stop_all_success": "⏹ 已发送停止信号：{count} 个 Deep Agent 任务将在当前步骤完成后停止",
     "deep_no_active_tasks": "📊 当前没有正在执行的 Deep Agent 任务",
-    # Loop Engine
-    "loop_cmd_help_usage": "📝 请提供产品诉求\n\n用法: `/loop <你的需求描述>`\n\n例如: `/loop 实现用户登录注册功能，支持邮箱和手机号`\n\n可用命令:\n• `/loop <需求>` - 启动 Loop 模式\n• `/loop_guide <引导>` - 注入引导信息\n• `/loop_status` - 查看进度\n• `/loop_pause` - 暂停迭代\n• `/loop_resume` - 恢复迭代\n• `/stop_loop` - 停止 Loop",
-    "loop_cmd_guide_usage": "📝 请提供引导信息\n\n用法: `/loop_guide <引导描述>`\n\n例如: `/loop_guide 优先实现邮箱注册功能`",
-    "loop_cmd_unknown": "❓ 未知的 Loop 命令",
-    "loop_task_exists": "⚠️ 当前项目已有 Loop 任务在执行中\n\n发送 `/loop_status` 查看进度\n发送 `/stop_loop` 停止任务",
-    "loop_no_task_running": "⚠️ 当前没有正在运行的 Loop 任务\n\n请先使用 `/loop <需求>` 启动任务",
-    "loop_status_empty": "📊 当前没有 Loop 任务\n\n发送 `/loop 你的需求` 开始迭代式开发",
     # Spec Engine
     "spec_status_empty": "📊 当前没有 Spec 任务\n\n发送 `/spec 你的需求` 开始结构化开发闭环",
     "spec_cmd_guide_usage": "📝 请提供引导信息\n\n用法: `/spec_guide <引导描述>`\n\n例如: `/spec_guide 优先考虑性能优化`",
@@ -54,10 +47,9 @@ UI_TEXT = {
         "📋 **Spec 模式：结构化开发闭环**\n\n"
         "用法：`/spec <你的需求描述>`\n"
         "示例：`/spec 实现用户登录注册功能，支持邮箱和手机号`\n\n"
-        "**Spec vs Deep vs Loop**\n"
+        "**Spec vs Deep**\n"
         "- Spec：按 `Spec→Plan→Task→Build→Review` 产出结构化产物并迭代收敛\n"
-        "- Deep：一次性深度拆解并执行一个复杂任务（更偏单次冲刺）\n"
-        "- Loop：以验收标准为中心做多轮迭代闭环（更偏持续推进达标）\n\n"
+        "- Deep：一次性深度拆解并执行一个复杂任务（更偏单次冲刺）\n\n"
         "**最小示例（推荐命令组合）**\n"
         "- Web：`/spec 做一个登录页+登录接口` → `/spec_status` → `/spec_guide 优先补测试与错误提示`\n"
         "- API：`/spec 新增 /v1/users 查询接口` → `/spec_status`\n"
@@ -84,7 +76,7 @@ UI_TEXT = {
     "engine_stop_no_active": "📊 当前没有正在执行的 {engine_prefix} 任务",
     # System Commands
     "system_help_deep_prompt": "💭 启动 Deep Engine\n\n请发送: `/deep <你的需求>`\n\n例如: `/deep 帮我重构 src/feishu 模块`",
-    "system_help_project_section": "\n\n📋 **项目管理命令**\n• `/projects` - 查看项目看板\n• `/new 名称 路径` - 创建新项目\n• `/switch 名称` - 切换项目\n• `/status` - 查看所有引擎任务状态（Deep/Loop/Spec）\n• `/status <task_id>` - 查看指定任务详情\n• `/diff` - 查看最近两次版本变更（Diff 报告）",
+    "system_help_project_section": "\n\n📋 **项目管理命令**\n• `/projects` - 查看项目看板\n• `/new 名称 路径` - 创建新项目\n• `/switch 名称` - 切换项目\n• `/status` - 查看所有引擎任务状态（Deep/Spec）\n• `/status <task_id>` - 查看指定任务详情\n• `/diff` - 查看最近两次版本变更（Diff 报告）",
     "system_new_project_usage": "用法: `/new 项目名 [路径]`",
     "system_close_project_usage": "用法: `/close <项目名>`\n例如: `/close myApp`",
     "system_current_project": "当前项目: **{name}**\n\n{help}{project_help}",
@@ -263,7 +255,7 @@ UI_TEXT = {
     "system_menu_btn_ttadk": "🎮 TTADK",
     "system_menu_btn_acp": "🧩 ACP",
     "system_menu_btn_help": "📖 帮助",
-    "system_help_title": "📖 GhostAP 使用帮助",
+    "system_help_title": "📖 GhostAP 使用帮助 v{version}",
     "system_help_status_header": "**当前状态**  •  {mode}  •  `{cwd}`  •  项目: {project}",
     "system_help_quick_entry": "**⚡ 快捷入口**（点按执行，手机优先）",
     "system_help_section_modes": "🔄 编程模式切换",
@@ -282,14 +274,6 @@ UI_TEXT = {
         "`/deep <需求>` · 启动 Deep Engine\n"
         "`/deep_status` · 查看任务进度\n"
         "`/stop_deep` · 停止任务"
-    ),
-    "system_help_section_loop": "🔄 Loop Engine · 迭代闭环",
-    "system_help_section_loop_body": (
-        "`/loop <需求>` · 启动 Loop 模式\n"
-        "`/loop_status` · 查看迭代进度\n"
-        "`/loop_guide <引导>` · 注入引导信息\n"
-        "`/loop_pause` · 暂停迭代  ·  `/loop_resume` · 恢复迭代\n"
-        "`/stop_loop` · 停止 Loop"
     ),
     "system_help_section_spec": "📋 Spec Engine · 结构化开发闭环",
     "system_help_section_spec_body": (
@@ -430,8 +414,8 @@ UI_TEXT = {
     "diag_unified_status_header": "**引擎任务 ({count})**\n",
     "diag_engine_line": "- {emoji} **{mode}** · {name}{tid} · {info}",
     "diag_status_all_hint": "\n_发送 `/status all` 查看包括已完成的任务_",
-    "diag_no_engine_tasks": "当前没有 Deep/Loop/Spec 引擎任务\n\n",
-    "diag_engine_launch_hints": "启动任务:\n• `/deep <需求>` — 单次深度执行\n• `/loop <需求>` — 迭代闭环\n• `/spec <需求>` — 结构化开发",
+    "diag_no_engine_tasks": "当前没有 Deep/Spec 引擎任务\n\n",
+    "diag_engine_launch_hints": "启动任务:\n• `/deep <需求>` — 单次深度执行\n• `/spec <需求>` — 结构化开发",
     "diag_task_board_title": "📋 任务看板",
     "diag_no_active_project_tasks": "当前没有活跃项目，无法按项目查看任务。\n\n发送 /projects 查看项目看板",
     "diag_status_iteration": "迭代{iteration}",
@@ -439,7 +423,6 @@ UI_TEXT = {
     "diag_status_cycle": "循环{cycle}",
     "diag_unified_status_title": "📊 统一状态",
     "diag_task_detail_deep_title": "📊 Deep 任务详情",
-    "diag_task_detail_loop_title": "📊 Loop 任务详情",
     "diag_task_detail_spec_title": "📊 Spec 任务详情",
     "diag_diff_no_active_project": "当前没有活跃项目，无法生成 Diff 报告。\n\n发送 /projects 选择项目",
     "diag_diff_report_title": "🧾 Diff 报告",
@@ -453,7 +436,6 @@ UI_TEXT = {
     "diag_step_generating": "生成报告",
     "diag_step_completed": "完成",
     "diag_engine_deep": "Deep",
-    "diag_engine_loop": "Loop",
     "diag_engine_spec": "Spec",
     "diag_label_origin_id": "**Origin ID**",
     "diag_label_request_id": "**Request ID**",
@@ -677,7 +659,6 @@ UI_TEXT = {
     "card_lifecycle_reasoning": "💭 深度思考中…",
     "card_lifecycle_error_fallback": "❌ 执行异常，请重新发送 {engine_cmd} 启动新任务",
     "card_lifecycle_error_fallback_spec": "❌ 执行异常，发送 /spec_recover 可恢复进度，或重新发送 {engine_cmd} 启动新任务",
-    "card_lifecycle_error_fallback_loop": "❌ 执行异常，任务结果已保存。重新发送 {engine_cmd} 启动新任务",
     "card_lifecycle_retry_failed": "🔄 重新执行失败工具",
     "card_lifecycle_restart": "🔄 重新开始",
     "card_lifecycle_show_details": "查看详情",
@@ -722,7 +703,6 @@ UI_TEXT = {
     "card_session_ttl_expired_spec": "⏰ {engine_name} 已超时关闭 · 进度已保存\n发送 /spec_recover 恢复进度 / {engine_cmd} 重新启动",
     "card_session_ttl_expired_deep": "⏰ {engine_name} 已超时关闭 · 执行结果已保存\n发送 /deep_status 查看状态 / {engine_cmd} 重新启动",
     "card_session_ttl_expired_worktree": "⏰ {engine_name} 已超时关闭 · 执行结果已保存\n发送 /wt_status 查看状态 / {engine_cmd} 重新启动",
-    "card_session_ttl_expired_loop": "⏰ {engine_name} 已超时关闭 · 任务结果已保存\n发送 {engine_cmd} 重新启动",
     "card_session_ttl_expired_commands": "",  # dynamically generated below from ENGINE_CMD_MAP
     "card_session_ttl_prewarning": "{engine_name} 会话将在约 {minutes} 分钟后关闭，点击下方「保持连接」按钮或发送任意消息即可续期",
     "card_session_ttl_force_close_notice": "⏰ {engine_name} 已因空闲超时关闭（系统回收资源）· 发送 {engine_cmd} 重新启动",
@@ -777,7 +757,6 @@ UI_TEXT = {
     # --- Progress semantic label ---
     "card_progress_criteria_label": "验收",
     "card_progress_tool_label": "工具进度",
-    "card_progress_loop_label": "迭代",
     "card_progress_worktree_label": "执行",
     # --- Criteria panel ---
     "criteria_panel_header": "📋 **验收标准**",
@@ -895,10 +874,6 @@ UI_TEXT = {
     "deep_exec_incomplete": "⚠️ 执行未完成（已完成 {completed}/{total} 步）\n💡 重试: /deep 继续执行",
     "deep_progress_executing": "执行中",
     "deep_progress_done": "已完成",
-    "loop_iteration_label": "第 {iteration} 轮",
-    "loop_error_unknown": "未知错误",
-    "loop_summary_header": "📋 共 {total} 次迭代\n",
-    "loop_iteration_title": "{status_icon} **迭代 {iteration}**",
     "spec_cycle_label": "第 {cycle_num} 轮",
     "spec_build_progress": "🔨 {tool_count} 次工具调用",
     "spec_build_progress_files": " · {file_count} 文件",

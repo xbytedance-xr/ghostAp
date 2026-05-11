@@ -71,7 +71,7 @@ class TestEngineSnapshotFrozen:
 
     def test_frozen_immutability(self):
         """Assigning to a frozen dataclass field should raise."""
-        snap = EngineSnapshot(engine_name="loop")
+        snap = EngineSnapshot(engine_name="worktree")
         with pytest.raises(dataclasses.FrozenInstanceError):
             snap.engine_name = "deep"
 

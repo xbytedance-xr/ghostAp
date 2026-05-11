@@ -207,7 +207,7 @@ class DiagnosticsHandler(BaseHandler):
         return UI_TEXT["lock_status_section_header"] + "\n\n".join(parts) + _admin_suffix
 
     def show_unified_status(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"] = None):
-        """Show unified status across all engine types (Deep/Loop/Spec).
+        """Show unified status across all engine types (Deep/Spec).
 
         - /status          → list running/paused engine tasks for current chat
         - /status all      → include completed tasks
@@ -276,25 +276,6 @@ class DiagnosticsHandler(BaseHandler):
                     title=title,
                     content=content,
                     engine_name=engine_name,
-                    show_buttons=False,
-                )
-                self.reply_card(message_id, card_content)
-                return
-
-        for engine in self.ctx.loop_engine_manager.list_engines(chat_id):
-            if (
-                engine.project
-                and engine.project.task_id
-                and (engine.project.task_id == task_id or task_id in engine.project.task_id)
-            ):
-                content = self.ctx.loop_reporter.format_status(engine.project)
-                title = UI_TEXT["diag_task_detail_loop_title"]
-                engine_name = engine.engine_name
-                msg_type, card_content = CardBuilder.build_info_card(
-                    project=project,
-                    title=title,
-                    content=content,
-                    engine_name=f"Loop({engine_name})",
                     show_buttons=False,
                 )
                 self.reply_card(message_id, card_content)

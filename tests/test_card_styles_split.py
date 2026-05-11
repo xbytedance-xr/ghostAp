@@ -7,7 +7,7 @@ class TestThemes:
         from src.card.themes import ProjectTheme, THEMES, DARK_THEME_NAMES, ENGINE_STYLES, PANEL_STYLES, get_theme
         assert len(THEMES) >= 18
         assert isinstance(DARK_THEME_NAMES, (set, frozenset))
-        assert "loop" in ENGINE_STYLES or "default" in ENGINE_STYLES
+        assert "default" in ENGINE_STYLES
         theme = get_theme("blue")
         assert isinstance(theme, ProjectTheme)
 

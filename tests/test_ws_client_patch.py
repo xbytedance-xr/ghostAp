@@ -477,15 +477,11 @@ class TestCardActionHandler(unittest.TestCase):
 
             # Previously blocked commands — now should be system commands
             self.assertTrue(client._is_system_command_message(_make_data("/stop_deep")))
-            self.assertTrue(client._is_system_command_message(_make_data("/stop_loop")))
             self.assertTrue(client._is_system_command_message(_make_data("/deep_status")))
-            self.assertTrue(client._is_system_command_message(_make_data("/loop_status")))
             self.assertTrue(client._is_system_command_message(_make_data("/exit")))
             self.assertTrue(client._is_system_command_message(_make_data("/coco")))
             self.assertTrue(client._is_system_command_message(_make_data("/claude")))
             self.assertTrue(client._is_system_command_message(_make_data("/deep do stuff")))
-            self.assertTrue(client._is_system_command_message(_make_data("/loop do stuff")))
-            self.assertTrue(client._is_system_command_message(_make_data("/loop_guide keep going")))
 
             # Already-supported interceptable commands still work
             self.assertTrue(client._is_system_command_message(_make_data("/help")))
@@ -613,7 +609,6 @@ class TestCardActionHandler(unittest.TestCase):
             client._mode_manager.get_mode.return_value = InteractionMode.TTADK
 
             client._is_deep_command = MagicMock(return_value=False)
-            client._is_loop_command = MagicMock(return_value=False)
             client._is_spec_command = MagicMock(return_value=False)
             client._is_exit_command = MagicMock(return_value=False)
 
@@ -708,7 +703,6 @@ class TestCardActionHandler(unittest.TestCase):
             client._mode_manager.get_mode.return_value = InteractionMode.GEMINI
 
             client._is_deep_command = MagicMock(return_value=False)
-            client._is_loop_command = MagicMock(return_value=False)
             client._is_spec_command = MagicMock(return_value=False)
             client._is_exit_command = MagicMock(return_value=False)
 
@@ -906,10 +900,8 @@ class TestCardActionHandler(unittest.TestCase):
 
             deep_engine = _Engine()
             client._deep_engine_manager.list_engines = MagicMock(return_value=[deep_engine])
-            client._loop_engine_manager.list_engines = MagicMock(return_value=[])
             client._spec_engine_manager.list_engines = MagicMock(return_value=[])
             client._deep_engine_manager.cleanup_all = MagicMock()
-            client._loop_engine_manager.cleanup_all = MagicMock()
             client._spec_engine_manager.cleanup_all = MagicMock()
 
             client.close()
@@ -918,7 +910,6 @@ class TestCardActionHandler(unittest.TestCase):
             assert mock_sleep.called
             assert client._coco_manager.cleanup_all.call_count >= 6
             client._deep_engine_manager.cleanup_all.assert_called_once()
-            client._loop_engine_manager.cleanup_all.assert_called_once()
             client._spec_engine_manager.cleanup_all.assert_called_once()
 
     def test_ws_watchdog_triggers_disconnect_on_stale_connection(self):
@@ -1138,7 +1129,7 @@ class TestSystemCmdGateReadonlyBypass(unittest.TestCase):
         from src.feishu.ws_client import _READONLY_CARD_ACTIONS
 
         client = self._make_client_with_gate_active()
-        for action in ["deep_expand", "loop_collapse", "spec_mode_full", "deep_expand_ac"]:
+        for action in ["deep_expand", "spec_mode_full", "deep_expand_ac"]:
             self.assertIn(action, _READONLY_CARD_ACTIONS)
             client._card_event_cache = MagicMock()
             client._card_event_cache.is_duplicate.return_value = False
@@ -1251,7 +1242,6 @@ class TestIsSystemCardActionEngineControls(unittest.TestCase):
         client = self._make_client()
         engine_controls = [
             "deep_pause", "deep_stop", "deep_resume",
-            "loop_pause", "loop_stop", "loop_resume",
             "spec_pause", "spec_stop", "spec_resume",
         ]
         for action in engine_controls:
@@ -2470,7 +2460,6 @@ class TestChatLockInterception(unittest.TestCase):
 
                 # *_stop suffix → exempt
                 assert clm.should_block_card_action("chat-1", "user_2", "deep_stop") is False
-                assert clm.should_block_card_action("chat-1", "user_2", "loop_stop") is False
 
                 # show_* prefix → exempt
                 assert clm.should_block_card_action("chat-1", "user_2", "show_help_menu") is False
@@ -2616,7 +2605,7 @@ class TestSendLockConflictCardFacade(unittest.TestCase):
         client._reply_text = MagicMock()
 
         err = RuntimeError("lock conflict")
-        client.send_lock_conflict_card(err, "msg_2", "/loop test")
+        client.send_lock_conflict_card(err, "msg_2", "/deep test")
 
         client._reply_text.assert_called_once()
         call_args = client._reply_text.call_args

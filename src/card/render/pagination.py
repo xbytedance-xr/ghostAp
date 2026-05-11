@@ -100,7 +100,7 @@ def _try_split_by_separator(
         return None
 
     first_content = separator.join(first_part_segments)
-    rest_content = separator + separator.join(segments[len(first_part_segments):])
+    rest_content = separator.join(segments[len(first_part_segments):])
 
     return _make_split_atoms(atom, first_content, rest_content)
 

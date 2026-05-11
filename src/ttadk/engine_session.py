@@ -29,7 +29,7 @@ def start_ttadk_engine_session(
     get_settings_fn: Callable[[], object] = get_settings,
     time_fn: Callable[[], float] = time.time,
 ) -> dict:
-    """Deep/Loop/Spec 引擎 TTADK 启动编排 SSOT（start/precheck/repair/degrade）。
+    """Deep/Spec 引擎 TTADK 启动编排 SSOT（start/precheck/repair/degrade）。
 
     返回值契约：与 `coordinate_ttadk_startup()` 一致（result/tool/input_model/resolved_model/.../diagnostics）。
 

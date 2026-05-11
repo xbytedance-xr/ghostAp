@@ -26,7 +26,7 @@ def render_fallback_card(state: "CardState | None", engine_type: str | None = No
 
     Args:
         state: The current CardState snapshot (may be None on double-fault).
-        engine_type: The engine type string (e.g. "deep", "loop") for command hint.
+        engine_type: The engine type string (e.g. "deep", "spec") for command hint.
 
     Returns:
         A single-element list of RenderedCard, or None if even fallback construction fails.

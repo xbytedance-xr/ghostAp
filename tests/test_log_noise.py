@@ -3,7 +3,6 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from src.feishu.handlers.deep import DeepHandler
-from src.feishu.handlers.loop import LoopHandler
 
 
 class TestLogNoise(unittest.TestCase):
@@ -59,62 +58,6 @@ class TestLogNoise(unittest.TestCase):
                 mock_logger.warning.assert_called()
                 call_args = mock_logger.warning.call_args
                 self.assertIn("Deep Agent Engine 执行超时", call_args[0][0])
-
-                # Verify NO error log for this exception
-                mock_logger.error.assert_not_called()
-
-    def test_loop_handler_timeout_warning(self):
-        """验证 LoopHandler 将 TimeoutError 记录为 warning"""
-        mock_ctx = MagicMock()
-        handler = LoopHandler(mock_ctx)
-
-        # Setup project manager mock to return a tuple
-        mock_project = MagicMock()
-        mock_project.project_id = "test_project_id"
-        mock_ctx.project_manager.get_or_create_project_for_path.return_value = (mock_project, False)
-
-        # Mock renderer method
-        handler.renderer.create_loop_callbacks = MagicMock()
-
-        # Ensure no existing engine is running
-        mock_ctx.loop_engine_manager.get.return_value = None
-
-        # Mock other dependencies
-        handler.get_working_dir = MagicMock(return_value="/tmp")
-        handler.ensure_request_id = MagicMock(return_value="req_id")
-        handler.get_engine_name = MagicMock(return_value="Coco")
-        handler.reply_text = MagicMock()
-        handler.add_reaction = MagicMock()
-        handler.create_rate_limit_callback = MagicMock()
-        handler.send_card_to_chat = MagicMock()  # used in error handling
-
-        # Mock CardBuilder
-        with patch("src.feishu.handlers.loop.CardBuilder") as mock_card_builder:
-            mock_card_builder.build_info_card.return_value = ("interactive", "{}")
-
-            mock_engine = MagicMock()
-            mock_ctx.loop_engine_manager.get_or_create.return_value = mock_engine
-
-            # Simulate TimeoutError in execute
-            mock_engine.execute.side_effect = asyncio.TimeoutError("Simulated timeout")
-
-            # Patch logger in engine_base where the logging now happens
-            with patch("src.feishu.handlers.engine_base.logger") as mock_logger:
-
-                def mock_submit(spec, func):
-                    func(None)
-                    return MagicMock(run_id="run_id")
-
-                handler.scheduler.submit.side_effect = mock_submit
-
-                mock_ctx.message_linker.link_task = MagicMock()
-
-                handler.start_loop_engine("mid", "cid", "req")
-
-                # Verify warning was logged
-                mock_logger.warning.assert_called()
-                call_args = mock_logger.warning.call_args
-                self.assertIn("Loop Engine 执行超时", call_args[0][0])
 
                 # Verify NO error log for this exception
                 mock_logger.error.assert_not_called()
@@ -240,7 +183,6 @@ class TestLogNoise(unittest.TestCase):
             stack.enter_context(patch("src.mode.ModeManager"))
             stack.enter_context(patch("src.feishu.ws_client.ProjectContextManager"))
             stack.enter_context(patch("src.feishu.ws_client.DeepEngineManager"))
-            stack.enter_context(patch("src.feishu.ws_client.LoopEngineManager"))
             stack.enter_context(patch("src.feishu.ws_client.SpecEngineManager"))
             stack.enter_context(patch("src.feishu.ws_client.HandlerContext"))
             stack.enter_context(patch("src.feishu.ws_client.ActionDispatcher"))
@@ -248,7 +190,6 @@ class TestLogNoise(unittest.TestCase):
             stack.enter_context(patch("src.feishu.ws_client.ClaudeModeHandler"))
             stack.enter_context(patch("src.feishu.ws_client.TTADKModeHandler"))
             stack.enter_context(patch("src.feishu.ws_client.DeepHandler"))
-            stack.enter_context(patch("src.feishu.ws_client.LoopHandler"))
             stack.enter_context(patch("src.feishu.ws_client.SpecHandler"))
             stack.enter_context(patch("src.feishu.ws_client.ProjectHandler"))
             stack.enter_context(patch("src.feishu.ws_client.SystemHandler"))
@@ -302,7 +243,6 @@ class TestLogNoise(unittest.TestCase):
             stack.enter_context(patch("src.mode.ModeManager"))
             stack.enter_context(patch("src.feishu.ws_client.ProjectContextManager"))
             stack.enter_context(patch("src.feishu.ws_client.DeepEngineManager"))
-            stack.enter_context(patch("src.feishu.ws_client.LoopEngineManager"))
             stack.enter_context(patch("src.feishu.ws_client.SpecEngineManager"))
             stack.enter_context(patch("src.feishu.ws_client.HandlerContext"))
             stack.enter_context(patch("src.feishu.ws_client.ActionDispatcher"))
@@ -310,7 +250,6 @@ class TestLogNoise(unittest.TestCase):
             stack.enter_context(patch("src.feishu.ws_client.ClaudeModeHandler"))
             stack.enter_context(patch("src.feishu.ws_client.TTADKModeHandler"))
             stack.enter_context(patch("src.feishu.ws_client.DeepHandler"))
-            stack.enter_context(patch("src.feishu.ws_client.LoopHandler"))
             stack.enter_context(patch("src.feishu.ws_client.SpecHandler"))
             stack.enter_context(patch("src.feishu.ws_client.ProjectHandler"))
             stack.enter_context(patch("src.feishu.ws_client.SystemHandler"))

@@ -397,7 +397,6 @@ class TestHeaderTemplateMapping:
         assert self._pick(status="paused") == "orange"
 
     def test_no_terminal_no_status_uses_engine(self):
-        assert self._pick(engine="loop", status="running") == "indigo"
         assert self._pick(engine="spec", status="running") == "green"
 
 

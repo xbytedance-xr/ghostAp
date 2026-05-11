@@ -45,9 +45,9 @@
 1. **准确反映变更范围**：提交信息必须明确列出所有被修改的主要模块/文件
 2. **示例**：
    ```
-   fix: move inline imports to top level in loop_engine and perspective_worker
+   fix: move inline imports to top level in deep_engine and perspective_worker
 
-   - 将 loop_engine/engine.py 中的内联导入移到顶部
+   - 将 deep_engine/engine.py 中的内联导入移到顶部
    - 将 spec_engine/perspective_worker.py 中的内联导入移到顶部
    - 提升代码可维护性
    ```

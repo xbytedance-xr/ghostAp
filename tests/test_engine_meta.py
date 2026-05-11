@@ -21,8 +21,8 @@ class TestEngineMeta:
         assert set(ENGINE_CMD_MAP.keys()) == set(ENGINE_LABELS.keys())
 
     def test_known_engine_types(self):
-        """All four known engine types are present."""
-        expected = {"deep", "loop", "spec", "worktree"}
+        """All known engine types are present."""
+        expected = {"deep", "spec", "worktree"}
         assert set(ENGINE_CMD_MAP.keys()) == expected
 
     def test_cmd_map_values_start_with_slash(self):
@@ -33,7 +33,6 @@ class TestEngineMeta:
     def test_engine_type_to_cmd_known(self):
         """Known engine types return their mapped command."""
         assert engine_type_to_cmd("deep") == "/deep"
-        assert engine_type_to_cmd("loop") == "/loop"
         assert engine_type_to_cmd("spec") == "/spec"
         assert engine_type_to_cmd("worktree") == "/wt"
 
@@ -51,7 +50,6 @@ class TestEngineMeta:
     def test_engine_type_to_name_known(self):
         """Known engine types return their display name."""
         assert engine_type_to_name("deep") == "Deep"
-        assert engine_type_to_name("loop") == "Loop"
         assert engine_type_to_name("spec") == "Spec"
         assert engine_type_to_name("worktree") == "Worktree"
 

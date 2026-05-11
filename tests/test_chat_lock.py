@@ -295,7 +295,7 @@ class TestReadonlyCommands:
 
     def test_safe_interrupt_commands_present(self):
         from src.chat_lock import SAFE_INTERRUPT_COMMANDS
-        for cmd in ("/stop_deep", "/stop_loop", "/stop_spec"):
+        for cmd in ("/stop_deep", "/stop_spec"):
             assert cmd in SAFE_INTERRUPT_COMMANDS, f"{cmd} should be in SAFE_INTERRUPT_COMMANDS"
 
     def test_wt_worktree_not_blocked_when_no_subargs(self, mgr: ChatLockManager):
@@ -1067,7 +1067,6 @@ class TestShouldBlockCardActionExhaustive:
     def test_stop_suffix_exempt(self):
         with _mock_settings([ADMIN_ID]):
             assert self.mgr.should_block_card_action("chat1", NON_ADMIN_ID, "deep_stop") is False
-            assert self.mgr.should_block_card_action("chat1", NON_ADMIN_ID, "loop_stop") is False
             assert self.mgr.should_block_card_action("chat1", NON_ADMIN_ID, "spec_stop") is False
 
     def test_show_prefix_exempt(self):

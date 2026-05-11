@@ -2172,8 +2172,6 @@ class TestSpecHandler:
             context_manager=MagicMock(),
             deep_engine_manager=MagicMock(),
             progress_reporter=MagicMock(),
-            loop_engine_manager=MagicMock(),
-            loop_reporter=MagicMock(),
             spec_engine_manager=MagicMock(),
             spec_reporter=MagicMock(),
             thread_manager=MagicMock(),
@@ -2313,7 +2311,7 @@ class TestSystemHandlerSpec:
         assert SystemHandler.is_spec_command("/spec_resume")
         assert SystemHandler.is_spec_command("/spec_guide focus")
         assert SystemHandler.is_spec_command("/spec_export")
-        assert not SystemHandler.is_spec_command("/loop build")
+        assert not SystemHandler.is_spec_command("/deep build")
         assert not SystemHandler.is_spec_command("/deep do stuff")
         assert not SystemHandler.is_spec_command("hello")
 

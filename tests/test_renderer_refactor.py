@@ -2,10 +2,8 @@ import unittest
 from unittest.mock import MagicMock
 
 from src.feishu.handlers.base import BaseHandler
-from src.feishu.handlers.loop import LoopHandler
 from src.feishu.handlers.spec import SpecHandler
 from src.feishu.renderers.base import BaseRenderer
-from src.feishu.renderers.loop_renderer import LoopRenderer
 from src.feishu.renderers.spec_renderer import SpecRenderer
 
 
@@ -56,15 +54,6 @@ class TestRendererRefactor(unittest.TestCase):
         result = self.base_renderer._render_collapsible_section(content, total_items=40, expanded=True)
         self.assertEqual(result, content)
 
-    def test_loop_renderer_inheritance(self):
-        """Verify LoopRenderer inherits and uses base methods"""
-        mock_loop_handler = MagicMock(spec=LoopHandler)
-        mock_loop_handler.ctx = MagicMock()
-        mock_loop_handler.settings = MagicMock()
-        renderer = LoopRenderer(mock_loop_handler)
-
-        self.assertTrue(hasattr(renderer, "_render_collapsible_section"))
-
     def test_spec_renderer_inheritance(self):
         """Verify SpecRenderer inherits and uses base methods"""
         mock_spec_handler = MagicMock(spec=SpecHandler)
@@ -89,20 +78,6 @@ class TestGetActiveSession(unittest.TestCase):
         mock_handler.ctx = MagicMock()
         mock_handler.settings = MagicMock()
         renderer = BaseRenderer(mock_handler)
-        self.assertIsNone(renderer.get_active_session())
-
-    def test_loop_renderer_tracks_session(self):
-        """LoopRenderer._current_session is exposed via get_active_session()."""
-        mock_handler = MagicMock(spec=LoopHandler)
-        mock_handler.ctx = MagicMock()
-        mock_handler.settings = MagicMock()
-        renderer = LoopRenderer(mock_handler)
-
-        self.assertIsNone(renderer.get_active_session())
-        mock_session = MagicMock()
-        renderer._current_session = mock_session
-        self.assertIs(renderer.get_active_session(), mock_session)
-        renderer._current_session = None
         self.assertIsNone(renderer.get_active_session())
 
     def test_spec_renderer_tracks_session(self):
@@ -248,24 +223,6 @@ class TestSessionAutoCleanupOnTerminal(unittest.TestCase):
         callbacks.on_error("Something failed")
         self.assertIsNone(renderer.get_active_session())
 
-    def test_loop_renderer_clears_session_on_done(self):
-        """LoopRenderer: on_project_done clears _current_session."""
-        from src.feishu.handlers.loop import LoopHandler
-        from src.feishu.renderers.loop_renderer import LoopRenderer
-
-        handler = self._make_mock_handler(LoopHandler)
-        renderer = LoopRenderer(handler)
-
-        mock_session = self._make_mock_session()
-        # LoopRenderer uses a rotator, but _current_session is still set directly
-        renderer._current_session = mock_session
-        self.assertIs(renderer.get_active_session(), mock_session)
-
-        # Simulate what on_project_done does: dispatch + clear
-        mock_session.dispatch(MagicMock())
-        renderer._current_session = None
-        self.assertIsNone(renderer.get_active_session())
-
     def test_spec_renderer_clears_session_on_error(self):
         """SpecRenderer: _current_session cleared on terminal."""
         from src.feishu.handlers.spec import SpecHandler
@@ -341,7 +298,7 @@ class TestBuildHooksContextHookCombination(unittest.TestCase):
             include_context_hook=False,
             context_update_fn=fn,
             chat_id="c1",
-            engine_type="loop",
+            engine_type="deep",
         )
 
         assert len(hooks) == 2

@@ -12,10 +12,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-from ..engine_base import PerspectiveReview, ReviewPerspective, ReviewResult
-from ..loop_engine.models import (
-    CriteriaTracker,
-)
+from ..engine_base import CriteriaTracker, PerspectiveReview, ReviewPerspective, ReviewResult
 
 # Re-export shared types for convenience
 __all__ = [
@@ -31,7 +28,7 @@ __all__ = [
     "SpecWorkItemStatus",
     "SpecWorkItem",
     "SpecCycleMetrics",
-    # Re-exported from loop_engine
+    # Re-exported from engine_base
     "CriteriaTracker",
     "ReviewResult",
     "PerspectiveReview",

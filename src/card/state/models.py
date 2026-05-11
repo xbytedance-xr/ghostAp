@@ -36,7 +36,7 @@ class CardMetadata:
     unit_label: str | None = None
     tool_name: str | None = None
     model_name: str | None = None
-    engine_type: str | None = None  # "deep" / "loop" / "spec" / "worktree" / None
+    engine_type: str | None = None  # "deep" / "spec" / "worktree" / None
     compact: bool = False
     expanded: bool = False
     expand_ac: bool = False
@@ -165,7 +165,7 @@ class PlanBlock:
 
 @dataclass(frozen=True)
 class PhaseBlock:
-    """Engine phase content block (Spec/Loop)."""
+    """Engine phase content block (Spec)."""
     _atom_kind: ClassVar[str] = "phase_panel"
     kind: Literal["phase"] = "phase"
     block_id: str = ""
@@ -376,7 +376,7 @@ def ContentBlock(kind: str = "text", **kwargs) -> AnyContentBlock:  # noqa: N802
 
 @dataclass(frozen=True)
 class EngineExtState:
-    """Engine-specific extended state (Spec/Loop/Deep shared fields).
+    """Engine-specific extended state (Spec/Deep shared fields).
 
     Isolated from core CardState to keep the model engine-agnostic.
 

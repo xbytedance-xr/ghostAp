@@ -34,7 +34,7 @@ class ReviewMetricsExporter(Protocol):
         metrics : dict
             Structured metrics dict (metric_type, engine, fail_reason, …).
         prefix : str
-            Log prefix, e.g. ``"[Spec]"`` or ``"[Loop]"``.
+            Log prefix, e.g. ``"[Spec]"`` or ``"[Deep]"``.
         """
         ...  # pragma: no cover
 

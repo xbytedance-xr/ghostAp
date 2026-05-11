@@ -163,7 +163,7 @@ def make_session_rotator(make_card_session):
     Args (keyword only):
         factory: Optional callable returning a CardSession. Defaults to
                  a factory that creates sessions via make_card_session.
-        engine_type: Engine type for the initial session (default "loop").
+        engine_type: Engine type for the initial session (default "deep").
         session_id: Optional custom initial session ID.
 
     Returns:
@@ -176,7 +176,7 @@ def make_session_rotator(make_card_session):
     def _factory(
         *,
         factory: object = None,
-        engine_type: str = "loop",
+        engine_type: str = "deep",
         session_id: str | None = None,
     ):
         initial_session, client = make_card_session(
@@ -221,7 +221,7 @@ def make_settings():
     Usage::
 
         def test_something(make_settings):
-            settings = make_settings(loop_max_iterations=5)
+            settings = make_settings(spec_execution_timeout=60)
     """
     # Sensible defaults covering every engine subsystem
     _DEFAULTS = dict(
@@ -234,13 +234,6 @@ def make_settings():
         # Deep engine
         coco_execution_timeout=300,
         claude_execution_timeout=600,
-        # Loop engine
-        loop_max_iterations=15,
-        loop_convergence_window=3,
-        loop_execution_timeout=300,
-        loop_max_context_tokens=200000,
-        loop_review_enabled=False,
-        loop_review_extra_iterations=3,
         # Spec engine
         spec_execution_timeout=300,
         spec_persist_every_phase=False,
@@ -462,6 +455,6 @@ def _shim_deadline_guard():
             category=DeprecationWarning,
             module=r"src\.card\.(?:session_config|session_factory|session_rotator|"
                    r"static_session|delivery_tracker|action_dispatch|action_ids|"
-                   r"action_router|timer_manager|timer_scheduler|_session_ttl)",
+                   r"action_router|timer_manager|timer_scheduler)",
         )
     yield

@@ -21,10 +21,14 @@ def reduce_text(state: CardState, event: CardEvent) -> CardState:
             idx = state.block_index.get(block_id)
             if idx is not None and idx < len(state.blocks) and state.blocks[idx].kind == "text":
                 b = state.blocks[idx]
+                # Strip leading newlines on first chunk to prevent first char wrapping
+                if not b.content:
+                    text = text.lstrip("\n")
                 updated = replace(b, content=b.content + text)
                 blocks = state.blocks[:idx] + (updated,) + state.blocks[idx + 1:]
                 return replace(state, blocks=blocks)
             # Auto-create block for convenience (from_acp uses "_active_text").
+            text = text.lstrip("\n")
             new_block = TextBlock(block_id=block_id, status="active",
                                      element_id=f"el_{block_id}", content=text)
             return replace(state, blocks=state.blocks + (new_block,),

@@ -42,8 +42,9 @@ def test_header_v2_second_row_contains_directory_and_elapsed_from_runtime_stats(
 
     result = render_header(state)
 
-    assert "~/workspaces/aiwork/ghostAp" in result["subtitle"]["content"]
+    # working_dir is now in footer, not subtitle; subtitle only has marker + cumulative time
     assert "4m12s" in result["subtitle"]["content"]
+    assert "~/workspaces/aiwork/ghostAp" not in result["subtitle"]["content"]
 
 
 def test_header_v2_subagent_uses_parent_reference_instead_of_path():
@@ -142,8 +143,11 @@ def test_header_v2_continuation_shows_card_elapsed_and_cumulative(monkeypatch):
 
     result = render_header(state)
 
-    assert "0m12s" in result["subtitle"]["content"]
-    assert "累计 7m30s" in result["subtitle"]["content"]
+    # Subtitle now only shows cumulative time (from session_started_at)
+    assert "7m30s" in result["subtitle"]["content"]
+    # Per-card elapsed (0m12s) and "累计" label are no longer in subtitle
+    assert "0m12s" not in result["subtitle"]["content"]
+    assert "累计" not in result["subtitle"]["content"]
 
 
 def test_engine_header_keeps_legacy_phase_when_only_tool_name_present():
@@ -168,7 +172,8 @@ def test_engine_header_uses_v2_when_session_started_for_first_card():
     result = render_header(state)
 
     assert "#1" in result["title"]["content"]
-    assert "phase: analyze" in result["subtitle"]["content"]
+    # Engine subtitle (phase info) is now in footer, not header subtitle
+    assert "phase: analyze" not in result["subtitle"]["content"]
 
 
 # ---------------------------------------------------------------------------

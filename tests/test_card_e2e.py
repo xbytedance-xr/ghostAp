@@ -90,38 +90,6 @@ class TestDeepEngineFlow:
         assert len(updates) >= 1  # At least one structural update (tool change)
 
 
-class TestLoopEngineFlow:
-    """Simulates a Loop Engine multi-iteration flow."""
-
-    def test_multiple_iterations(self):
-        client = RecordingClient()
-        session = _make_session(client)
-
-        session.dispatch(CardEvent(type=CardEventType.STARTED))
-
-        # Iteration 1
-        session.dispatch(CardEvent(type=CardEventType.TEXT_STARTED, payload={"block_id": "i1_t"}))
-        session.dispatch(CardEvent(type=CardEventType.TEXT_DELTA, payload={"block_id": "i1_t", "text": "Iteration 1..."}))
-        session.dispatch(CardEvent(type=CardEventType.TEXT_DONE, payload={"block_id": "i1_t"}))
-        session.dispatch(CardEvent(type=CardEventType.TOOL_STARTED, payload={"tool_name": "read", "block_id": "tc1"}))
-        session.dispatch(CardEvent(type=CardEventType.TOOL_DONE, payload={"block_id": "tc1", "tool_output": "file content"}))
-
-        # Iteration 2
-        session.dispatch(CardEvent(type=CardEventType.TEXT_STARTED, payload={"block_id": "i2_t"}))
-        session.dispatch(CardEvent(type=CardEventType.TEXT_DELTA, payload={"block_id": "i2_t", "text": "Iteration 2..."}))
-        session.dispatch(CardEvent(type=CardEventType.TEXT_DONE, payload={"block_id": "i2_t"}))
-
-        session.dispatch(CardEvent(type=CardEventType.COMPLETED))
-
-        state = session.state
-        assert state.terminal == "completed"
-        # Multiple text blocks and a tool
-        text_blocks = [b for b in state.blocks if b.kind == "text"]
-        tool_blocks = [b for b in state.blocks if b.kind == "tool_call"]
-        assert len(text_blocks) >= 2
-        assert len(tool_blocks) >= 1
-
-
 class TestMultiPageFlow:
     """Large content triggers pagination."""
 

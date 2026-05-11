@@ -66,27 +66,20 @@ def _render_v2_header(state: CardState) -> dict:
 
     title = f"📁 {project_name} · 🤖 {tool_label} · #{seq}{model_suffix}{archived}"
 
-    if metadata.is_subagent and metadata.parent_card_seq:
-        left = f"↳ from #{metadata.parent_card_seq}"
-    else:
-        left = _short_path(metadata.working_dir) if metadata.working_dir else "工作目录未设置"
-
-    elapsed = _elapsed_seconds(state)
+    # Minimal subtitle: only status marker + cumulative elapsed time
     cumulative_elapsed = _cumulative_elapsed_seconds(state)
     marker = _status_marker(state)
-    elapsed_label = _format_elapsed(elapsed)
-    if metadata.frozen:
-        right = f"{marker} final {elapsed_label}"
-    elif metadata.continuation_seq > 0 and cumulative_elapsed > elapsed:
-        right = f"{marker} {elapsed_label} · 累计 {_format_elapsed(cumulative_elapsed)}"
-    elif elapsed > 0:
-        right = f"{marker} {elapsed_label}"
-    else:
-        right = marker
 
-    subtitle = f"{left} · {right}"
-    if metadata.engine_type and state.header.subtitle:
-        subtitle = f"{subtitle} · {state.header.subtitle}"
+    if metadata.is_subagent and metadata.parent_card_seq:
+        subtitle = f"↳ from #{metadata.parent_card_seq}"
+        if cumulative_elapsed > 0:
+            subtitle = f"{subtitle} · {marker} {_format_elapsed(cumulative_elapsed)}"
+    elif metadata.frozen:
+        subtitle = f"{marker} final {_format_elapsed(cumulative_elapsed)}"
+    elif cumulative_elapsed > 0:
+        subtitle = f"{marker} {_format_elapsed(cumulative_elapsed)}"
+    else:
+        subtitle = marker
 
     result: dict = {
         "title": {"tag": "plain_text", "content": title},

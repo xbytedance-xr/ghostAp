@@ -1,4 +1,4 @@
-"""Shared review exception-handling helpers for SpecEngine & LoopEngine.
+"""Shared review exception-handling helpers for SpecEngine.
 
 Centralizes:
 - Fallback suggestion text generation (timeout / empty / normal errors)
@@ -25,7 +25,7 @@ def build_review_error_suggestion(
 ) -> str:
     """Build a user-friendly Chinese suggestion from review exception diagnostics.
 
-    Logic (same as the previously duplicated branches in SpecEngine & LoopEngine):
+    Logic (same as the previously duplicated branches in SpecEngine):
     - timeout  → "审查超时，跳过本轮审查继续执行"
     - empty / "(empty message)" → "审查执行异常，将在下一轮重试"
     - otherwise → "审查执行异常: {detail}"
@@ -206,8 +206,8 @@ def _is_timeout_error(
     fail_reason: str,
     error_detail: str = "",
 ) -> bool:
-    """Unified timeout detection — merges Spec (fail_reason only) and Loop
-    (fail_reason + isinstance + detail substring) strategies.
+    """Unified timeout detection — checks fail_reason and defensive
+    isinstance + detail substring strategies.
 
     ``fail_reason`` is already computed by ``build_review_exception_diagnostics``
     via ``_infer_fail_reason`` which traverses ``__cause__``/``__context__``.
@@ -231,24 +231,14 @@ class _EngineConfig:
     )
 
     def __init__(self, engine: str, settings: object) -> None:
-        if engine == "loop":
-            self.circuit_open_attr = "review_circuit_open_until_iter"
-            _cfg_circuit_enabled = "loop_review_failure_circuit_enabled"
-            _cfg_max_consecutive = "loop_review_failure_max_consecutive"
-            _cfg_cooldown = "loop_review_failure_cooldown_iterations"
-            _cfg_max_cooldown = "loop_review_failure_max_cooldown_iterations"
-            self.cycle_key = "iteration"
-            self.open_until_key = "open_until_iter"
-            self.log_prefix = "[Loop]"
-        else:
-            self.circuit_open_attr = "review_circuit_open_until_cycle"
-            _cfg_circuit_enabled = "spec_review_failure_circuit_enabled"
-            _cfg_max_consecutive = "spec_review_failure_max_consecutive"
-            _cfg_cooldown = "spec_review_failure_cooldown_cycles"
-            _cfg_max_cooldown = "spec_review_failure_max_cooldown_cycles"
-            self.cycle_key = "cycle"
-            self.open_until_key = "open_until_cycle"
-            self.log_prefix = "[Spec]"
+        self.circuit_open_attr = "review_circuit_open_until_cycle"
+        _cfg_circuit_enabled = "spec_review_failure_circuit_enabled"
+        _cfg_max_consecutive = "spec_review_failure_max_consecutive"
+        _cfg_cooldown = "spec_review_failure_cooldown_cycles"
+        _cfg_max_cooldown = "spec_review_failure_max_cooldown_cycles"
+        self.cycle_key = "cycle"
+        self.open_until_key = "open_until_cycle"
+        self.log_prefix = "[Spec]"
 
         self.enabled = getattr(settings, _cfg_circuit_enabled, True)
         self.max_consecutive = max(1, int(getattr(settings, _cfg_max_consecutive, 3) or 3))
@@ -447,7 +437,7 @@ def handle_review_exception(
     review_timeout: int = 0,
     review_elapsed_ms: int = 0,
 ) -> ReviewExceptionResult:
-    """Centralised review exception handler shared by Spec & Loop engines.
+    """Centralised review exception handler used by Spec engine.
 
     Delegates to single-responsibility sub-functions:
     1. :func:`_build_diagnostics` — structured diagnostics

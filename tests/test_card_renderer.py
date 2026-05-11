@@ -76,9 +76,9 @@ class TestUnifiedCardSections:
         from src.card.state.reducers._shared import build_header
 
         metadata = CardMetadata(
-            engine_type="loop",
-            mode_name="Loop · Coco",
-            mode_emoji="🔁",
+            engine_type="deep",
+            mode_name="Deep · Coco",
+            mode_emoji="🚀",
             unit_label="第 2 轮",
         )
 

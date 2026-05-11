@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 
 
 class FakeSession:
-    """Universal fake session that satisfies Deep / Loop / Spec engine contracts.
+    """Universal fake session that satisfies Deep / Spec engine contracts.
 
     All methods are no-ops or return safe defaults.  Override ``send_prompt``
     in a subclass if you need custom behaviour (error injection, etc.).

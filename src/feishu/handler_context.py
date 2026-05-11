@@ -19,7 +19,6 @@ if TYPE_CHECKING:
     from ..agent.intent_recognizer import IntentRecognizer
     from ..chat_lock import ChatLockManager
     from ..deep_engine import DeepEngineManager, ProgressReporter
-    from ..loop_engine import LoopEngineManager, LoopReporter
     from ..mode import ModeManager
     from ..project import MessageProjectMapper, ProjectContextManager, ProjectManager
     from ..project.mapper import MessageLinker
@@ -56,8 +55,6 @@ class HandlerContext:
     context_manager: "ProjectContextManager"
     deep_engine_manager: "DeepEngineManager"
     progress_reporter: "ProgressReporter"
-    loop_engine_manager: "LoopEngineManager"
-    loop_reporter: "LoopReporter"
     spec_engine_manager: "SpecEngineManager"
     spec_reporter: "SpecReporter"
     thread_manager: "ThreadContextManager"

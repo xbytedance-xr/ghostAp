@@ -11,7 +11,7 @@
 5. 🖼️ 图片（可选）
 6. 📝 主内容（markdown 或 structured elements）
 7. ── 分隔线 ──（如有验收标准）
-8. 📋 验收标准区域（可选，Loop/Spec）
+8. 📋 验收标准区域（可选，Spec）
 9. 📝 脚注（可选）
 10. 📊 Footer 状态行（可选，notation 尺寸）
 11. ── 分隔线 ──（如有按钮）

@@ -56,10 +56,10 @@ def _reduce_progress_updated(state: CardState, event: CardEvent) -> CardState:
     if started_at is None and current > 0 and timestamp is not None:
         started_at = timestamp
 
-    # Spec/Loop engines use text-only progress (criteria satisfaction semantics)
+    # Spec engine uses text-only progress (criteria satisfaction semantics)
     # Deep/Worktree engines use visual ▰▱ progress bar (tool execution semantics)
     engine_type = state.metadata.engine_type
-    use_visual_bar = engine_type not in ("spec", "loop")
+    use_visual_bar = engine_type not in ("spec",)
 
     if total > 0:
         pct = int(current / total * 100) if use_visual_bar else None

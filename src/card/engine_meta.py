@@ -10,7 +10,6 @@ from __future__ import annotations
 # Engine type → user-facing slash command
 ENGINE_CMD_MAP: dict[str, str] = {
     "deep": "/deep",
-    "loop": "/loop",
     "spec": "/spec",
     "worktree": "/wt",
 }
@@ -18,7 +17,6 @@ ENGINE_CMD_MAP: dict[str, str] = {
 # Engine type → user-facing display name
 ENGINE_NAME_MAP: dict[str, str] = {
     "deep": "Deep",
-    "loop": "Loop",
     "spec": "Spec",
     "worktree": "Worktree",
 }
@@ -26,7 +24,6 @@ ENGINE_NAME_MAP: dict[str, str] = {
 # Engine type → restart button label (with emoji prefix)
 ENGINE_LABELS: dict[str, str] = {
     "deep": "🔄 重新开始 /deep",
-    "loop": "🔄 重新开始 /loop",
     "spec": "🔄 重新开始 /spec",
     "worktree": "🔄 重新开始 /wt",
 }
@@ -39,7 +36,7 @@ def engine_type_to_cmd(engine_type: str | None, fallback: str = "命令") -> str
     """Map engine_type to user-facing command string.
 
     Args:
-        engine_type: The engine type key (e.g. "deep", "loop").
+        engine_type: The engine type key (e.g. "deep", "spec").
         fallback: Value to return when engine_type is not recognized.
 
     Returns:
@@ -52,7 +49,7 @@ def engine_type_to_name(engine_type: str | None, fallback: str = "") -> str:
     """Map engine_type to user-facing display name.
 
     Args:
-        engine_type: The engine type key (e.g. "deep", "loop").
+        engine_type: The engine type key (e.g. "deep", "spec").
         fallback: Value to return when engine_type is not recognized.
 
     Returns:

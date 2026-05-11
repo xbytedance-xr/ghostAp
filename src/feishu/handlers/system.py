@@ -155,11 +155,6 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         return text_lower.startswith("/deep") or text_lower.startswith("/stop_deep")
 
     @staticmethod
-    def is_loop_command(text: str) -> bool:
-        text_lower = text.lower().strip()
-        return text_lower.startswith("/loop") or text_lower.startswith("/stop_loop")
-
-    @staticmethod
     def is_spec_command(text: str) -> bool:
         text_lower = text.lower().strip()
         spec_prefixes = (

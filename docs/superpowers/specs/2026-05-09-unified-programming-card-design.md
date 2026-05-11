@@ -9,7 +9,7 @@
 
 ## 1. 目的
 
-让 Coco / Claude / Aiden / Codex / Gemini / TTADK + Deep / Loop / Spec / Worktree 全部编程模式卡片共享同一套骨架，解决以下三个直接问题：
+让 Coco / Claude / Aiden / Codex / Gemini / TTADK + Deep / Spec / Worktree 全部编程模式卡片共享同一套骨架，解决以下三个直接问题：
 
 1. **续卡丢失上下文锚点**：当前 `src/card/render/renderer.py` 在 `page_idx > 0` 时只重注 `warning_banner`，task_list / activity_summary 双双消失，用户翻续卡时不知道当前在哪个 task、做了什么。
 2. **多 active 工具同时展开导致首卡混乱**：`src/card/render/tools.py:render_tool_panel` 用 `expanded = block.status == "active"`，并发场景所有 active 全展开，参考图 1 的"乱"由此产生。
@@ -140,8 +140,6 @@ def _format_phase(metadata: CardMetadata, runtime: RuntimeStats) -> str:
     engine = metadata.engine_type
     if engine == "deep":
         return runtime.deep_phase or "执行中"  # "分析中" / "执行中"
-    if engine == "loop":
-        return f"第 {runtime.loop_round or 1} 轮"
     if engine == "spec":
         return f"cycle {runtime.spec_cycle}/{runtime.spec_perspective or '—'}"
     if engine == "worktree":
@@ -186,9 +184,8 @@ class CardSplitPayload:
 
 各引擎 dispatch 时机：
 - **Deep**：`DeepRenderer.create_deep_callbacks()` 内 `on_event`，检测到 PLAN_UPDATE 且某 task `status` 由 in_progress 变 completed → dispatch card_split。
-- **Loop**：`LoopRenderer` 监听 round 跳变（`current_round` 变化）。
 - **Spec**：`SpecRenderer` 监听 cycle/perspective 跳变。
-- **Worktree**：不变（每子代理已独立 session）。
+- **Worktree**：每子代理已独立 session，不额外切卡。
 - **Programming（直接对话）**：不切（多 task 概念由 plan 驱动，没有 plan 时不切）。
 
 切卡看护门槛（防止过度切卡）：
@@ -210,7 +207,6 @@ class CardSplitPayload:
 | 引擎 | sticky_head 内容 | 切卡触发 | 切卡 hint 示例 |
 |---|---|---|---|
 | Deep | banner(phase) + task_list + activity_summary | task 完成 / phase 跳变 | "接续 task 3「单元测试」" |
-| Loop | banner(round) + criteria_panel(compact) + activity_summary | round 跳变 | "进入第 3 轮" |
 | Spec | banner(cycle/perspective) + task_list + activity_summary | cycle 完成 / perspective 切换 | "进入 cycle 2 · 验收视角" |
 | Worktree | banner(子代理名) + 单子任务 task_list + activity_summary | （不切，已独立 session）| — |
 | Programming（直接） | banner(mode) + activity_summary | 不切 | — |
@@ -269,7 +265,7 @@ class CardSplitPayload:
 - `src/card/session/session.py` — 监听 `card_split` 事件，关闭当前 session、暴露 `card_split_completed` 信号给上层。
 - `src/feishu/renderers/base.py` — 新辅助 `_dispatch_card_split(session, reason, hint)`。
 - `src/feishu/renderers/deep_renderer.py` — task 完成检测 → dispatch card_split；新 session 写 hint。
-- `src/feishu/renderers/loop_renderer.py` — round 跳变 → dispatch card_split。
+- `src/feishu/renderers/worktree_renderer.py` — 子代理状态变化 → dispatch card_split。
 - `src/feishu/renderers/spec_renderer.py` — cycle/perspective 跳变 → dispatch card_split。
 - `src/card/programming_adapter.py`（或对应文件）— 直接 programming 模式接入 SectionLayout（无切卡、无 task_list）。
 - `src/card/builders/layout.py` — `UnifiedCardLayout` 适配新 SectionLayout 输出。
@@ -285,7 +281,7 @@ class CardSplitPayload:
 - `tests/card/render/test_task_list.py` — compact 模式验证。
 - `tests/card/state/test_reducer.py` — latest_active 单例维护、card_split 事件处理。
 - `tests/feishu/renderers/test_deep_renderer.py` — task 完成 → split 验证。
-- `tests/feishu/renderers/test_loop_renderer.py` — round 跳变 → split 验证。
+- `tests/feishu/renderers/test_worktree_renderer.py` — 子代理状态 → split 验证。
 - `tests/feishu/renderers/test_spec_renderer.py` — cycle 跳变 → split 验证。
 
 ### UX 资产
@@ -307,9 +303,9 @@ class CardSplitPayload:
 - 跑 18 主题（`src/card/themes/`）+ 12 builder（`src/card/builders/`）回归。
 - tools.py / task_list.py 升级 compact 模式 + single-active-expanded。
 
-### Step 3：4 引擎接入 + Worktree 验证
+### Step 3：3 引擎接入 + Worktree 验证
 
-- DeepRenderer / LoopRenderer / SpecRenderer 改 dispatch `card_split`。
+- DeepRenderer / WorktreeRenderer / SpecRenderer 改 dispatch `card_split`。
 - Worktree 子卡复用新骨架（不改切卡逻辑）。
 - 直接 Programming 模式接入 SectionLayout（不切卡）。
 - E2E 手测每引擎一遍。
@@ -336,7 +332,6 @@ class CardSplitPayload:
 - [ ] 续卡每页前置三明治锚点，内容与首卡同步（task_list 高亮当前 task、activity_summary 计数最新）。
 - [ ] 多 active 工具时只有最新一个 tool_panel 展开。
 - [ ] Deep 模式 task 完成时主动切卡，新卡 body 起头标注接续 task。
-- [ ] Loop 模式 round 跳变时主动切卡。
 - [ ] Spec 模式 cycle/perspective 跳变时主动切卡。
 - [ ] Worktree 子代理保持每子任务独立卡，骨架与新设计一致。
 - [ ] Programming 直接模式不切卡，但骨架一致。

@@ -94,6 +94,8 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
             mode_emoji="📋",
             tool_name=engine_name,
             model_name=model_name or None,
+            working_dir=project.root_path if project else None,
+            project_name=project.project_name if project else None,
         )
 
         # Session rotator: manages atomic session rotation at cycle boundaries
@@ -163,6 +165,8 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
                     mode_name="Spec",
                     mode_emoji="📋",
                     tool_name=engine_name,
+                    working_dir=project.root_path if project else None,
+                    project_name=project.project_name if project else None,
                 )
                 session = self.create_session(chat_id, message_id, metadata, budget=RenderBudget(engine_cmd="/spec"))
                 session.dispatch(CardEvent.started())
@@ -268,6 +272,8 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
             compact=ui_state.get("compact", False),
             expanded=ui_state.get("expanded", False),
             expand_ac=ui_state.get("expand_ac", False),
+            working_dir=project.root_path if project else None,
+            project_name=project.project_name if project else None,
         )
         # Use a snapshot-only session (no TTL timer, no delivery)
         factory = self._get_session_factory()

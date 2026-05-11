@@ -64,7 +64,7 @@ class TTADKError(GhostAPError):
 
 
 class EngineError(GhostAPError):
-    """Execution engine errors — Deep/Loop/Spec engine lifecycle and execution."""
+    """Execution engine errors — Deep/Spec engine lifecycle and execution."""
 
     def __init__(self, message: str = "引擎执行异常", **kwargs):
         super().__init__(message, action=kwargs.pop("action", "engine"), **kwargs)

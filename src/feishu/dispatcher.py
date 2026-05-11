@@ -54,12 +54,6 @@ class MessageDispatcher:
             self.client._handle_deep_command(message_id, chat_id, text, project)
             return
 
-        if self.client._is_loop_command(text):
-            self.client._add_reaction(message_id, EmojiReaction.on_smart_mode())
-            self.client._add_reaction(message_id, EmojiReaction.on_processing())
-            self.client._handle_loop_command(message_id, chat_id, text, project)
-            return
-
         if self.client._is_spec_command(text):
             self.client._add_reaction(message_id, EmojiReaction.on_smart_mode())
             self.client._add_reaction(message_id, EmojiReaction.on_processing())
@@ -212,15 +206,10 @@ class MessageDispatcher:
 
     _ENGINE_ENTER_MAP: dict = {
         IntentType.ENTER_DEEP: "_start_deep_engine",
-        IntentType.ENTER_LOOP: "_start_loop_engine",
         IntentType.ENTER_SPEC: "_start_spec_engine",
     }
 
     _SIMPLE_ENGINE_DISPATCH: dict = {
-        IntentType.LOOP_STATUS: "_show_loop_status",
-        IntentType.STOP_LOOP: "_stop_loop_engine",
-        IntentType.LOOP_PAUSE: "_pause_loop_engine",
-        IntentType.LOOP_RESUME: "_resume_loop_engine",
         IntentType.SPEC_STATUS: "_show_spec_status",
         IntentType.STOP_SPEC: "_stop_spec_engine",
         IntentType.SPEC_PAUSE: "_pause_spec_engine",
@@ -229,7 +218,6 @@ class MessageDispatcher:
 
     _ENGINE_GUIDE_MAP: dict = {
         IntentType.DEEP_UPDATE: ("_update_deep_context", "📝 请提供上下文信息\n\n用法: `/deep_update <上下文描述>`"),
-        IntentType.LOOP_GUIDE: ("_update_loop_guidance", "📝 请提供引导信息\n\n用法: `/loop_guide <引导描述>`"),
         IntentType.SPEC_GUIDE: ("_update_spec_guidance", "📝 请提供引导信息\n\n用法: `/spec_guide <引导描述>`"),
     }
 

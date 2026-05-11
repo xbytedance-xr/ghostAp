@@ -126,26 +126,11 @@ class TestCircuitStateSerialization:
         c2 = ReviewCircuitState.from_dict(d)
         assert c2.recent_outcomes == ["success", "timeout", "error"]
 
-    def test_loop_circuit_roundtrip(self):
-        from src.loop_engine.engine import LoopReviewCircuitState
-
-        c = LoopReviewCircuitState()
-        c.recent_outcomes = ["timeout", "timeout", "success"]
-        d = c.to_dict()
-        c2 = LoopReviewCircuitState.from_dict(d)
-        assert c2.recent_outcomes == ["timeout", "timeout", "success"]
-
     def test_spec_from_dict_missing_outcomes(self):
         """Old snapshots without recent_outcomes → empty list."""
         from src.spec_engine.review import ReviewCircuitState
 
         c = ReviewCircuitState.from_dict({"review_failure_consecutive": 2})
-        assert c.recent_outcomes == []
-
-    def test_loop_from_dict_missing_outcomes(self):
-        from src.loop_engine.engine import LoopReviewCircuitState
-
-        c = LoopReviewCircuitState.from_dict({})
         assert c.recent_outcomes == []
 
     def test_to_dict_trims_to_20(self):

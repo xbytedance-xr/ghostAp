@@ -32,8 +32,6 @@ def _format_phase(metadata: CardMetadata, runtime: RuntimeStats) -> str:
         if runtime.deep_phase == "analyzing":
             return "分析中"
         return "执行中"
-    if engine == "loop":
-        return f"第 {runtime.loop_round or 1} 轮"
     if engine == "spec":
         cycle = runtime.spec_cycle if runtime.spec_cycle is not None else "?"
         persp = runtime.spec_perspective or "—"

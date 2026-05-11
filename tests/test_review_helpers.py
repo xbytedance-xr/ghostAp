@@ -301,17 +301,6 @@ class _MockCircuitSpec:
     last_review_elapsed_ms: int = 0
 
 
-@dataclass
-class _MockCircuitLoop:
-    """Mimics LoopReviewCircuitState."""
-    review_failure_consecutive: int = 0
-    review_circuit_open_until_iter: int = 0
-    last_review_failure_diag: Optional[dict] = None
-    backoff_level: int = 0
-    consecutive_timeouts: int = 0
-    last_review_elapsed_ms: int = 0
-
-
 def _stub_build_diag(e, *, cycle, **kw):
     """Minimal diagnostics builder for tests."""
     fail_reason = "timeout" if isinstance(e, TimeoutError) else "exception"
@@ -335,10 +324,6 @@ def _make_settings(**overrides):
         "spec_review_failure_max_consecutive": 3,
         "spec_review_failure_cooldown_cycles": 3,
         "spec_review_failure_max_cooldown_cycles": 12,
-        "loop_review_failure_circuit_enabled": True,
-        "loop_review_failure_max_consecutive": 3,
-        "loop_review_failure_cooldown_iterations": 3,
-        "loop_review_failure_max_cooldown_iterations": 12,
     }
     defaults.update(overrides)
     s = MagicMock()
@@ -477,93 +462,6 @@ class TestHandleReviewExceptionSpec:
 
 
 # ---------------------------------------------------------------------------
-# handle_review_exception — loop engine
-# ---------------------------------------------------------------------------
-
-class TestHandleReviewExceptionLoop:
-    def test_timeout_increments_consecutive(self):
-        circuit = _MockCircuitLoop()
-        settings = _make_settings()
-        result = handle_review_exception(
-            TimeoutError(),
-            circuit=circuit,
-            cycle=1,
-            settings=settings,
-            engine="loop",
-            build_diag_fn=_stub_build_diag,
-        )
-        assert circuit.consecutive_timeouts == 1
-        assert "超时" in result.suggestion_text
-
-    def test_circuit_opens_after_max_consecutive(self):
-        circuit = _MockCircuitLoop(review_failure_consecutive=2)
-        settings = _make_settings()
-        result = handle_review_exception(
-            RuntimeError("fail"),
-            circuit=circuit,
-            cycle=10,
-            settings=settings,
-            engine="loop",
-            build_diag_fn=_stub_build_diag,
-        )
-        assert result.review_decision == "review_failed_open_circuit"
-        assert circuit.review_circuit_open_until_iter == 10 + 3
-        assert circuit.backoff_level == 1
-
-    def test_metrics_uses_iteration_key(self):
-        circuit = _MockCircuitLoop()
-        settings = _make_settings()
-        result = handle_review_exception(
-            RuntimeError("x"),
-            circuit=circuit,
-            cycle=7,
-            settings=settings,
-            engine="loop",
-            build_diag_fn=_stub_build_diag,
-        )
-        assert "iteration" in result.metrics
-        assert result.metrics["iteration"] == 7
-        assert "cycle" not in result.metrics
-
-    def test_exponential_backoff_level_increments(self):
-        circuit = _MockCircuitLoop(review_failure_consecutive=2, backoff_level=1)
-        settings = _make_settings()
-        handle_review_exception(
-            RuntimeError("x"),
-            circuit=circuit,
-            cycle=5,
-            settings=settings,
-            engine="loop",
-            build_diag_fn=_stub_build_diag,
-        )
-        assert circuit.backoff_level == 2
-        # cooldown = min(3 * 2^1, 12) = 6
-        assert circuit.review_circuit_open_until_iter == 5 + 6
-
-    def test_build_diag_kwargs_forwarded(self):
-        calls = []
-
-        def _tracking_diag(e, *, cycle, **kw):
-            calls.append(kw)
-            return _stub_build_diag(e, cycle=cycle)
-
-        circuit = _MockCircuitLoop()
-        settings = _make_settings()
-        handle_review_exception(
-            RuntimeError("x"),
-            circuit=circuit,
-            cycle=1,
-            settings=settings,
-            engine="loop",
-            build_diag_fn=_tracking_diag,
-            build_diag_kwargs={"project_name": "test_proj", "chat_id": "c1"},
-        )
-        assert len(calls) == 1
-        assert calls[0]["project_name"] == "test_proj"
-        assert calls[0]["chat_id"] == "c1"
-
-
-# ---------------------------------------------------------------------------
 # handle_review_exception — total_elapsed_ms in metrics
 # ---------------------------------------------------------------------------
 
@@ -587,15 +485,15 @@ class TestHandleReviewExceptionElapsedMs:
         assert result.metrics["total_elapsed_ms"] == 1234
         assert circuit.last_review_elapsed_ms == 1234
 
-    def test_metrics_contains_total_elapsed_ms_loop(self):
-        circuit = _MockCircuitLoop()
+    def test_metrics_contains_total_elapsed_ms_spec(self):
+        circuit = _MockCircuitSpec()
         settings = _make_settings()
         result = handle_review_exception(
             TimeoutError("timeout"),
             circuit=circuit,
             cycle=3,
             settings=settings,
-            engine="loop",
+            engine="spec",
             build_diag_fn=_stub_build_diag,
             review_elapsed_ms=5678,
         )
@@ -629,11 +527,6 @@ class TestHardFloorConfigWiring:
         from src.config import Settings
         s = Settings()
         assert s.spec_review_hard_floor == 20
-
-    def test_config_loop_review_hard_floor_default(self):
-        from src.config import Settings
-        s = Settings()
-        assert s.loop_review_hard_floor == 20
 
     def test_hard_floor_passed_to_compute_adaptive_timeout(self):
         """hard_floor parameter actually affects the result."""

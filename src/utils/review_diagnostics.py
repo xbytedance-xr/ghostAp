@@ -1,7 +1,7 @@
-"""Reusable review exception diagnostics — shared by SpecEngine & LoopEngine.
+"""Reusable review exception diagnostics — shared by SpecEngine.
 
-Extracted from ``src/spec_engine/review.py`` so that LoopEngine can use the
-same structured diagnostics without importing spec_engine internals.
+Extracted from ``src/spec_engine/review.py`` for structured diagnostics
+without importing spec_engine internals.
 """
 
 from __future__ import annotations
@@ -340,7 +340,7 @@ def format_review_exception_log_line(diag: dict, *, diag_json: str, prefix: str 
     diag_json : str
         JSON-serialized diagnostics (will be truncated to 2400 chars).
     prefix : str
-        Log line prefix, e.g. ``"[Spec]"`` or ``"[Loop]"``.
+        Log line prefix, e.g. ``"[Spec]"`` or ``"[Deep]"``.
     """
     d = normalize_review_diagnostics(diag)
 

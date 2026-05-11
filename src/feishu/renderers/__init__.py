@@ -17,9 +17,6 @@ def get_renderer(engine_type: str, handler: "BaseHandler") -> "RendererProtocol"
     if engine_type == "deep":
         from .deep_renderer import DeepRenderer
         return DeepRenderer(handler)
-    elif engine_type == "loop":
-        from .loop_renderer import LoopRenderer
-        return LoopRenderer(handler)
     elif engine_type == "spec":
         from .spec_renderer import SpecRenderer
         return SpecRenderer(handler)

@@ -72,8 +72,6 @@ class TestSpecInteraction(unittest.TestCase):
             patch("src.feishu.ws_client.MessageProjectMapper"),
             patch("src.feishu.ws_client.DeepEngineManager"),
             patch("src.feishu.ws_client.ProgressReporter"),
-            patch("src.feishu.ws_client.LoopEngineManager"),
-            patch("src.feishu.ws_client.LoopReporter"),
             patch("src.feishu.ws_client.SpecEngineManager"),
             patch("src.feishu.ws_client.SpecReporter"),
             patch("src.mode.ModeManager"),

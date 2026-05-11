@@ -5,29 +5,6 @@ from src.card.models import EngineCardState
 
 
 class TestCardMobileLog:
-    def test_loop_engine_color(self):
-        """Test that Loop engine uses indigo color."""
-        # Using _pick_deep_template directly
-        assert CardBuilder._pick_deep_template("loop") == "indigo"
-        assert CardBuilder._pick_deep_template("Loop Engine") == "indigo"
-        assert CardBuilder._pick_deep_template("loop_engine") == "indigo"
-
-        # Verify in card JSON
-        state = EngineCardState(
-            engine_project_id="test_proj",
-            title="Loop Task",
-            content="Running...",
-            engine_name="Loop",
-            action_prefix="loop",
-            compact=True,
-        )
-        # build_info_card returns tuple(type, json_str)
-        _, card_json_str = CardBuilder.build_info_card(None, state)
-        card_json = json.loads(card_json_str)
-
-        # Check header template color
-        assert card_json["header"]["template"] == "indigo"
-
     def test_deep_engine_color(self):
         """Test that Deep engine uses turquoise color."""
         assert CardBuilder._pick_deep_template("deep") == "turquoise"

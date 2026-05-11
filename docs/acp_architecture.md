@@ -19,7 +19,7 @@ Feishu Message → Handler → SessionManager → BaseSession → subprocess.Pop
 - **无执行计划可见性**：agent 的 plan/task 进度对外不可见
 - **无权限控制**：使用 `--dangerously-skip-permissions` 绕过所有检查
 - **会话管理脆弱**：Claude 的 session ID 过期需要特殊恢复逻辑（`_reset_stale_session`）
-- **模块膨胀**：Deep Engine 6 个文件（含 parser/planner/executor），Loop Engine 14 个文件
+- **模块膨胀**：Deep Engine 6 个文件（含 parser/planner/executor）
 
 ### 1.2 目标架构（ACP 模式）
 
@@ -366,54 +366,6 @@ class DeepEngineCallbacks:
     on_error: Callable[[str], None]
 ```
 
-### 4.2 Loop Engine（14→4 文件）
-
-**删除**：`analyzer.py`、`roles.py`、`controller.py`、`adapter.py`、`tool_integrator.py`、`optimizer.py`、`context_manager.py`、`product_analyzer.py`、`iteration_flow.py`、`task_manager.py`、`termination_detector.py`、`termination.py`
-
-**保留/新增**：
-- `engine.py` — 单 ACP 会话多轮 prompt，收敛检测，标准评估
-- `models.py` — 保留核心模型，`IterationRecord` 字段微调
-- `tracker.py`（新）— `IterationTracker` 从 ACP 事件提取单次迭代信息
-- `reporter.py` — 简化签名，移除 adapter 依赖
-
-```python
-# engine.py 核心流程
-class LoopEngine:
-    def execute(self, requirement: str, callbacks: LoopEngineCallbacks):
-        session = SyncACPSession(agent_type=self._agent_type, cwd=self.root_path)
-        session.start()
-
-        for iteration in range(1, max_iterations + 1):
-            iter_tracker = IterationTracker()
-
-            def on_event(event):
-                iter_tracker.process(event)
-                renderer.process_event(event)
-                callbacks.on_iteration_event(iteration, event)
-
-            prompt = self._build_iteration_prompt(iteration, requirement, history)
-            result = session.send_prompt(prompt, on_event=on_event, timeout=timeout)
-
-            # 标准评估（同一 session 中发送评估 prompt）
-            eval_result = self._evaluate_criteria(session, criteria)
-
-            # 收敛检测
-            if self._detect_convergence(recent_outputs):
-                break
-
-        session.close()
-
-@dataclass
-class LoopEngineCallbacks:
-    on_analyzing_start: Callable[[], None]
-    on_analyzing_done: Callable[[LoopProject], None]
-    on_iteration_start: Callable[[int, int], None]
-    on_iteration_event: Callable[[int, ACPEvent], None]
-    on_iteration_done: Callable[[int, IterationRecord], None]
-    on_project_done: Callable[[LoopProject], None]
-    on_error: Callable[[str], None]
-```
-
 ---
 
 ## 五、集成层变更
@@ -476,20 +428,7 @@ class DeepHandler:
         return DeepEngineCallbacks(on_event=on_event, ...)
 ```
 
-### 5.5 handlers/loop.py
-
-```python
-class LoopHandler:
-    def _create_loop_callbacks(self, ...):
-        # 类似 DeepHandler，但以迭代为粒度
-        def on_iteration_event(iteration, event):
-            # 处理 ACP 事件并更新卡片
-            ...
-
-        return LoopEngineCallbacks(on_iteration_event=on_iteration_event, ...)
-```
-
-### 5.6 config.py
+### 5.5 config.py
 
 新增/确认字段：
 ```python
@@ -531,13 +470,10 @@ class Settings(BaseSettings):
 | `src/deep_engine/parser.py` | 需求解析器（agent 自行解析） |
 | `src/deep_engine/planner.py` | 任务规划器（agent 自行规划） |
 | `src/deep_engine/executor.py` | 任务执行器（agent 自行执行） |
-| `src/loop_engine/analyzer.py` | 需求分析器（简化为内联解析） |
-| `src/loop_engine/roles.py` | 角色系统（agent 自行决策） |
-| `src/loop_engine/termination.py` | 终止判定器（简化为内联收敛检测） |
 
 ---
 
-## 八、实施计划（8 阶段）
+## 八、实施计划（7 阶段）
 
 ### Phase 1: ACP 基础层
 **创建 `src/acp/` 全部 6 个文件**
@@ -568,26 +504,19 @@ class Settings(BaseSettings):
 - 重写 `engine.py`
 - **测试**：`test_deep_engine.py`
 
-### Phase 5: Loop Engine 重构
-**改造 `src/loop_engine/`**
-- 删除 `analyzer.py`、`roles.py`、`termination.py`
-- 新增 `tracker.py`
-- 重写 `engine.py`、简化 `models.py`、`reporter.py`
-- **测试**：`test_loop_engine.py`、`test_loop_models.py`
-
-### Phase 6: Handler 层适配
-**改造 `handlers/deep.py`、`handlers/loop.py`**
+### Phase 5: Handler 层适配
+**改造 `handlers/deep.py`**
 - 使用新的 Callbacks 模式
 - ACP 事件驱动卡片更新
 - **测试**：`test_handlers.py` 更新
 
-### Phase 7: 清理与删除
+### Phase 6: 清理与删除
 - 删除 `src/session/` 目录
 - 删除 engine 中废弃模块
 - 更新 `__init__.py` 导出
 - `config.py` 清理
 
-### Phase 8: 全量测试与修复
+### Phase 7: 全量测试与修复
 - 运行全量测试 `uv run pytest tests/ -v`
 - 修复 import 引用、类型不匹配
 - 验证 SMART 模式不受影响
@@ -654,14 +583,13 @@ GhostAP 的核心是同步线程模型（Feishu WebSocket → TaskScheduler → 
 | `test_acp_client.py` | GhostAPClient 事件分发、权限处理、stub 实现 |
 | `test_acp_renderer.py` | ACPEventRenderer 渲染逻辑、状态累积、Markdown 格式 |
 | `test_deep_engine.py` | DeepEngine ACP 集成、回调、进度跟踪 |
-| `test_loop_engine.py` | LoopEngine 多轮 prompt、收敛检测、标准评估 |
 
 ### 更新测试文件
 | 文件 | 变更 |
 |------|------|
 | `test_ws_client_patch.py` | session manager mock 类型更新 |
 | `test_handlers.py` | 编程模式 handler mock 更新 |
-| `test_loop_models.py` | 字段名变更（iteration_id → iteration） |
+| `test_loop_models.py` | 已删除（Loop Engine 已移除） |
 
 ### 删除测试文件
 对应已删除模块的测试文件（15+ 个）。

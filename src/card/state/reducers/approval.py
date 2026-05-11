@@ -10,7 +10,6 @@ from ._shared import build_header
 # Reuse retry actions for restart button on rejection
 _RETRY_ACTIONS: dict[str, str] = {
     "deep": ButtonIntent.DEEP_RESUME,
-    "loop": ButtonIntent.LOOP_RESUME,
     "spec": ButtonIntent.SPEC_RESUME,
     "worktree": ButtonIntent.WORKTREE_RETRY_FAILED,
 }

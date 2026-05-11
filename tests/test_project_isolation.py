@@ -236,8 +236,6 @@ class TestCardActionCrossChatIsolation:
             context_manager=MagicMock(),
             deep_engine_manager=MagicMock(),
             progress_reporter=MagicMock(),
-            loop_engine_manager=MagicMock(),
-            loop_reporter=MagicMock(),
             spec_engine_manager=MagicMock(),
             spec_reporter=MagicMock(),
             thread_manager=MagicMock(),

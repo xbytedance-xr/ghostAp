@@ -38,7 +38,7 @@
 │ ├ HEADER (项目·工具·#seq + 目录/时长) │
 │ └ TASK_BLOCK (三段常开)              │
 ├─────────────────────────────────────┤
-│ status (仅首页)                      │ Deep/Loop/Spec 进度条 / acceptance criteria
+│ status (仅首页)                      │ Deep/Spec/Worktree 进度条 / acceptance criteria
 ├─────────────────────────────────────┤
 │ body (主内容、跨页分页)               │
 │ └ FLOW (reasoning ↔ tool 循环)       │
@@ -151,7 +151,7 @@
 
 ### 4.4 STATUS（仅首页）
 
-仅 Deep/Loop/Spec 引擎使用：进度条 / acceptance criteria 面板。普通编程模式空区。沿用现有实现，不变。
+仅 Deep/Spec/Worktree 引擎使用：进度条 / acceptance criteria 面板。普通编程模式空区。沿用现有实现，不变。
 
 ### 4.5 FOOTER（appendix · 末页）
 
@@ -357,7 +357,7 @@ def group_tasks(plan: PlanInfo) -> tuple[list[Task], list[Task], list[Task]]:
 
 - 飞书卡片 dark mode（飞书自身已处理 light/dark 主题）
 - worktree 选择卡 / 模型选择卡（保留现有实现，不动）
-- Deep/Loop/Spec status panel 内部布局（仅承接新 sticky_head，不动 status）
+- Deep/Spec/Worktree status panel 内部布局（仅承接新 sticky_head，不动 status）
 - 真正的 CSS 动画 / SVG（飞书不支持）
 
 ## 13. 风险

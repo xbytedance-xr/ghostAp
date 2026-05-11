@@ -83,15 +83,11 @@ class DeepBuilder:
         if not config:
             return {}
 
-        # Determine specific action string (e.g. "loop_pause")
+        # Determine specific action string (e.g. "deep_pause")
         if action_suffix:
             action_name = f"{state.action_prefix}_{action_suffix}"
         else:
             action_name = f"{state.action_prefix}_{action_key}"
-
-        # Special handling for "history" which is just "loop_history" currently but let's keep it generic
-        if action_key == "history" and state.action_prefix == "loop":
-            action_name = "loop_history"
 
         btn = {
             "tag": "button",
@@ -419,7 +415,7 @@ class DeepBuilder:
         theme = get_theme(header_template)
 
         # Consistent title using helper (or similar logic)
-        header_title = f"📜 {project.project_name if project else 'Loop'}{UI_TEXT['system_history_record_title']}"
+        header_title = f"📜 {project.project_name if project else engine_name}{UI_TEXT['system_history_record_title']}"
 
         elements = [
             {"tag": "markdown", "content": f"**{title}**\n\n{content}"},
@@ -438,7 +434,7 @@ class DeepBuilder:
                     "text": {"tag": "plain_text", "content": UI_TEXT["system_btn_prev_page"]},
                     "type": "default",
                     "value": {
-                        "action": "loop_history_page",
+                        "action": "history_page",
                         "page": page - 1,
                         "project_id": project.project_id if project else None,
                         "deep_project_id": deep_project_id,
@@ -453,7 +449,7 @@ class DeepBuilder:
                     "text": {"tag": "plain_text", "content": UI_TEXT["system_btn_next_page"]},
                     "type": "default",
                     "value": {
-                        "action": "loop_history_page",
+                        "action": "history_page",
                         "page": page + 1,
                         "project_id": project.project_id if project else None,
                         "deep_project_id": deep_project_id,
@@ -468,7 +464,7 @@ class DeepBuilder:
                 "text": {"tag": "plain_text", "content": UI_TEXT["system_btn_back_status"]},
                 "type": "primary",
                 "value": {
-                    "action": "loop_back_to_list",  # Reusing generic back action name or specific
+                    "action": "back_to_list",
                     "project_id": project.project_id if project else None,
                     "deep_project_id": deep_project_id,
                 },

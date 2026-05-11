@@ -14,7 +14,6 @@ from ._shared import build_header
 # Retry button action IDs per engine type
 _RETRY_ACTIONS: dict[str, str] = {
     "deep": ButtonIntent.DEEP_RESUME,
-    "loop": ButtonIntent.LOOP_RESUME,
     "spec": ButtonIntent.SPEC_RESUME,
     "worktree": ButtonIntent.WORKTREE_RETRY_FAILED,
 }
@@ -25,7 +24,6 @@ _ENGINE_CMD = ENGINE_CMD_MAP
 # Stop button action IDs per engine type
 _STOP_ACTIONS: dict[str, str] = {
     "deep": ButtonIntent.ENGINE_STOP,
-    "loop": ButtonIntent.ENGINE_STOP,
     "spec": ButtonIntent.ENGINE_STOP,
     "worktree": ButtonIntent.WORKTREE_CANCEL,
 }
@@ -33,7 +31,6 @@ _STOP_ACTIONS: dict[str, str] = {
 # Engine-specific retry button CTA text (differentiated by engine_type)
 _RETRY_CTA_TEXT: dict[str, str] = {
     "deep": "🔁 重新执行",
-    "loop": "🔁 重新执行",
     "spec": "🔁 重新 Build",
     "worktree": "🔁 重试失败项",
 }
@@ -187,7 +184,6 @@ def reduce_lifecycle(state: CardState, event: CardEvent) -> CardState:
                 # Select engine-specific error fallback text
                 _fallback_key = {
                     "spec": "card_lifecycle_error_fallback_spec",
-                    "loop": "card_lifecycle_error_fallback_loop",
                 }.get(state.metadata.engine_type or "", "card_lifecycle_error_fallback")
                 error_text = UI_TEXT[_fallback_key].format(engine_cmd=engine_cmd)
             blocks = blocks + (TextBlock(

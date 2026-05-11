@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 class BaseEngineHandler(BaseHandler):
     """
-    Abstract base class for engine handlers (DeepHandler, LoopHandler).
+    Abstract base class for engine handlers (DeepHandler, SpecHandler).
     Provides common lifecycle management logic.
     """
 
@@ -43,11 +43,11 @@ class BaseEngineHandler(BaseHandler):
         raise NotImplementedError
 
     def _get_engine_name_prefix(self) -> str:
-        """Subclasses must return their engine name prefix (e.g. 'Deep', 'Loop')."""
+        """Subclasses must return their engine name prefix (e.g. 'Deep', 'Spec')."""
         raise NotImplementedError
 
     def _get_task_type(self) -> str:
-        """Subclasses must return their task type (e.g. 'deep_engine', 'loop_engine')."""
+        """Subclasses must return their task type (e.g. 'deep_engine', 'spec_engine')."""
         raise NotImplementedError
 
     def _show_status(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
@@ -276,7 +276,7 @@ class BaseEngineHandler(BaseHandler):
             )
 
     # ------------------------------------------------------------------
-    # UI toggle helpers (DRY for Deep/Loop/Spec toggle methods)
+    # UI toggle helpers (DRY for Deep/Spec toggle methods)
     # ------------------------------------------------------------------
 
     def _refresh_card_view(
@@ -378,10 +378,10 @@ class BaseEngineHandler(BaseHandler):
     ):
         """Build a TaskSpec, submit to the scheduler, and link the task.
 
-        Covers the common start/recover pattern shared by Deep/Loop/Spec handlers.
+        Covers the common start/recover pattern shared by Deep/Spec handlers.
         """
         task_type = self._get_task_type()
-        prefix = task_type.split("_")[0]  # deep, loop, spec
+        prefix = task_type.split("_")[0]  # deep, spec
         root_path = project.root_path if project else self.get_working_dir(chat_id)
 
         spec = TaskSpec(

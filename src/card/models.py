@@ -140,14 +140,13 @@ class CardLayoutSpec:
 
 
 class KeyEventKind(str, Enum):
-    """卡片侧“关键事件”最小集合（跨 Normal/Deep/Loop/Spec 统一语义）。
+    """卡片侧"关键事件"最小集合（跨 Normal/Deep/Spec 统一语义）。
 
-    说明：这里的 kind 只描述“是什么类型的信息”，不绑定具体引擎实现。
+    说明：这里的 kind 只描述"是什么类型的信息"，不绑定具体引擎实现。
     """
 
-    STAGE = "stage"  # Deep: 阶段；Spec: phase；Loop: lifecycle stage
+    STAGE = "stage"  # Deep: 阶段；Spec: phase
     TURN = "turn"  # Normal: 轮次
-    ITERATION = "iteration"  # Loop: 迭代
     PLAN = "plan"  # 计划/Checklist 更新
     TOOL = "tool"  # 工具调用（开始/进度/完成）
     ARTIFACT = "artifact"  # 产物（文件、链接、构建产物、报告等）
@@ -194,7 +193,7 @@ class KeyEvent:
     severity: KeyEventSeverity = KeyEventSeverity.INFO
     disposition: Optional[IssueDisposition] = None
     axis_key: Optional[str] = None
-    mode: Optional[str] = None  # Normal/Deep/Loop/Spec
+    mode: Optional[str] = None  # Normal/Deep/Spec
     meta: dict = field(default_factory=dict)
 
 

@@ -11,9 +11,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.deep_engine.engine import DeepEngine, DeepEngineCallbacks
-from src.loop_engine.engine import LoopEngine, LoopEngineCallbacks
 from src.deep_engine.models import DeepProjectStatus
-from src.loop_engine.models import LoopProjectStatus
 
 # Configure logging
 logging.basicConfig(
@@ -36,9 +34,6 @@ class MockSession:
         
         # Simulate events if callback provided
         if on_event:
-            # We need to import ACPEvent here to create mock events, 
-            # but for simplicity in this stress test script, 
-            # we might just Mock the event object structure expected by the engines.
             mock_event = MagicMock()
             mock_event.event_type = "text_chunk"
             mock_event.text = "Simulated response..."
@@ -91,43 +86,8 @@ def run_deep_task(task_id: int):
         logger.error(f"Deep Task {task_id} Failed: {e}", exc_info=True)
         return False
 
-def run_loop_task(task_id: int):
-    logger.info(f"Starting Loop Task {task_id}")
-    try:
-        # Mock create_engine_session and LLM calls
-        with patch("src.loop_engine.engine.create_engine_session", return_value=MockSession()), \
-             patch("src.loop_engine.engine.LoopEngine._decompose_criteria_with_llm", return_value=["Criteria A", "Criteria B"]), \
-             patch("src.loop_engine.engine.LoopEngine._evaluate_criteria", return_value={"all_satisfied": True}):
-            
-            engine = LoopEngine(
-                chat_id=f"stress_chat_{task_id}",
-                root_path=f"/tmp/stress_test/loop_{task_id}",
-                agent_type="coco"
-            )
-            
-            # Override settings for fast execution
-            engine.settings = MagicMock()
-            engine.settings.loop_max_iterations = 2
-            engine.settings.loop_execution_timeout = 10
-            engine.settings.loop_review_enabled = False
-            engine.settings.loop_convergence_window = 3
-            
-            callbacks = LoopEngineCallbacks(
-                on_project_done=lambda p: logger.info(f"Loop Task {task_id} Done: {p.status}")
-            )
-            
-            engine.execute(
-                requirement_text=f"Stress test requirement for task {task_id}",
-                callbacks=callbacks
-            )
-            
-            return True
-    except Exception as e:
-        logger.error(f"Loop Task {task_id} Failed: {e}", exc_info=True)
-        return False
-
 def main():
-    parser = argparse.ArgumentParser(description="Run stress test for Deep/Loop engines")
+    parser = argparse.ArgumentParser(description="Run stress test for Deep engine")
     parser.add_argument("--duration", type=int, default=60, help="Duration in seconds")
     parser.add_argument("--concurrency", type=int, default=5, help="Number of concurrent tasks")
     parser.add_argument("--mock", action="store_true", default=True, help="Use mock session (default: True)")
@@ -148,11 +108,7 @@ def main():
             active_count = len([f for f in futures if not f.done()])
             if active_count < args.concurrency:
                 task_id = task_count
-                # Alternate between Deep and Loop
-                if task_id % 2 == 0:
-                    future = executor.submit(run_deep_task, task_id)
-                else:
-                    future = executor.submit(run_loop_task, task_id)
+                future = executor.submit(run_deep_task, task_id)
                 futures.append(future)
                 task_count += 1
             
@@ -164,14 +120,11 @@ def main():
                             success_count += 1
                     except Exception as e:
                         logger.error(f"Task execution exception: {e}")
-                    # Remove done future safely? List modification while iterating is bad.
-                    # We'll just rebuild the list.
             
             futures = [f for f in futures if not f.done()]
             time.sleep(0.1)
             
-        # Wait for remaining tasks? Or cancel?
-        # For this test, let's wait a bit then shutdown
+        # Wait for remaining tasks
         logger.info("Time's up. Waiting for pending tasks...")
         concurrent.futures.wait(futures, timeout=5)
         

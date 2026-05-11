@@ -63,9 +63,8 @@ class TestButtonMappingResolution:
             assert action_id, f"Empty action_id for {intent.name}"
 
     def test_resolve_engine_intents(self):
-        """Deep/Loop/Spec intents resolve correctly."""
+        """Deep/Spec intents resolve correctly."""
         for intent in [ButtonIntent.DEEP_RESUME, ButtonIntent.DEEP_STOP,
-                       ButtonIntent.LOOP_RESUME, ButtonIntent.LOOP_STOP,
                        ButtonIntent.SPEC_RESUME, ButtonIntent.SPEC_STOP,
                        ButtonIntent.SPEC_SKIP_RETRY]:
             action_id = INTENT_TO_ACTION_ID[intent.value]

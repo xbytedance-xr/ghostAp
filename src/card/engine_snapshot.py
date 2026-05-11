@@ -36,7 +36,7 @@ class EngineSnapshot:
     completed_steps: int = 0
     total_steps: int = 0
 
-    # Criteria (Loop/Spec)
+    # Criteria (Spec)
     satisfied_count: int = 0
     total_criteria: int = 0
 
@@ -47,7 +47,7 @@ class EngineSnapshot:
     status: str = ""  # Engine project status value string
     is_running: bool = False
 
-    # Iteration/Cycle info (Loop/Spec)
+    # Cycle info (Spec)
     iteration_count: int = 0
     cycle_count: int = 0
     cycle_count_total: int = 0

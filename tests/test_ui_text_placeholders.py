@@ -232,10 +232,7 @@ class TestReviewRound2TextCorrections:
         # Generic fallback uses {expired_commands} (not engine_cmd)
         assert "{expired_commands}" in text, f"ttl_expired should include expired_commands placeholder: {text}"
         # Verify it formats without error
-        text.format(expired_commands="/spec /deep /wt /loop")
-        # Loop-specific variant should mention results saved
-        loop_text = UI_TEXT["card_session_ttl_expired_loop"]
-        assert "已保存" in loop_text or "结果" in loop_text
+        text.format(expired_commands="/spec /deep /wt")
 
     def test_help_tips_two_stage_close(self):
         """system_help_tips must mention advance notification before close."""

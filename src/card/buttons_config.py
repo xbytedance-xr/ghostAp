@@ -9,7 +9,7 @@ from src.card.ui_text import UI_TEXT
 
 # Button Configuration
 BUTTON_CONFIG = {
-    # Deep/Loop Engine Buttons
+    # Deep Engine Buttons
     "pause": {"text": "⏸️ 暂停", "type": "default"},
     "stop": {"text": "⏹️ 停止", "type": "danger", "confirm": {"title": "确认停止", "text": "将中止当前运行的引擎任务，已产出内容将保留。"}},
     "resume": {"text": "▶️ 继续", "type": "primary"},

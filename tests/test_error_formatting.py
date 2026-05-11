@@ -148,11 +148,11 @@ class TestHasOnErrorProtocol:
         cb = DeepEngineCallbacks()
         assert isinstance(cb, HasOnError)
 
-    def test_loop_engine_callbacks_satisfies_protocol(self):
+    def test_spec_engine_callbacks_satisfies_protocol(self):
         from src.engine_base import HasOnError
-        from src.loop_engine.engine import LoopEngineCallbacks
+        from src.spec_engine.engine import SpecEngineCallbacks
 
-        cb = LoopEngineCallbacks()
+        cb = SpecEngineCallbacks()
         assert isinstance(cb, HasOnError)
 
     def test_format_engine_error_calls_on_error(self):

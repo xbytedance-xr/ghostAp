@@ -1,6 +1,6 @@
 [project]
 name = "ghostap"
-version = "0.1.0"
+version = "0.2.0"
 description = "飞书机器人Shell沙箱服务 - 通过飞书机器人安全执行本地shell命令"
 requires-python = ">=3.11"
 dependencies = [
@@ -77,12 +77,8 @@ ignore = [
     "E501", # keep line-length enforcement in formatter (ruff format); do not fail lint
 ]
 
-[tool.ruff.lint.flake8-tidy-imports.banned-api]
-"src.card._session_ttl".msg = "Deprecated shim — use src.card.session.ttl instead (removal: 2026-06-01)"
-
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["TID251"]  # allow deprecated imports in tests for backward-compat testing
-"src/card/_session_ttl.py" = ["TID251"]  # shim file itself
 
 [tool.ruff.format]
 quote-style = "double"
@@ -112,7 +108,6 @@ exclude = [
     "src/card",
     "src/coco_model",
     "src/deep_engine",
-    "src/loop_engine",
     "src/project",
     "src/sandbox",
     "src/spec_engine",

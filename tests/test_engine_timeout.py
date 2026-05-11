@@ -13,8 +13,6 @@ import pytest
 from src.deep_engine.engine import DeepEngine, DeepEngineCallbacks
 from src.deep_engine.models import DeepProjectStatus
 from src.engine_base import EngineRunState
-from src.loop_engine.engine import LoopEngine, LoopEngineCallbacks
-from src.loop_engine.models import LoopProjectStatus, LoopRequirement
 from src.spec_engine.engine import SpecEngine, SpecEngineCallbacks
 from src.spec_engine.models import SpecProjectStatus
 
@@ -48,24 +46,6 @@ def deep_engine():
         s.deep_memory_threshold = 90
         mock_settings.return_value = s
         yield DeepEngine(chat_id="t", root_path="/tmp/test")
-
-
-@pytest.fixture
-def loop_engine():
-    with patch("src.engine_base.get_settings") as mock_settings:
-        s = MagicMock()
-        s.loop_max_iterations = 15
-        s.loop_convergence_window = 3
-        s.loop_execution_timeout = 300
-        s.loop_review_enabled = False
-        s.loop_review_extra_iterations = 0
-        s.loop_max_context_tokens = 80000
-        s.loop_review_timeout = 5
-        s.loop_review_failure_circuit_enabled = False
-        s.loop_review_failure_max_consecutive = 3
-        s.loop_review_failure_cooldown_iterations = 3
-        mock_settings.return_value = s
-        yield LoopEngine(chat_id="t", root_path="/tmp/test")
 
 
 @pytest.fixture
@@ -147,58 +127,6 @@ class TestDeepEngineTimeout:
         assert deep_engine.run_state == EngineRunState.IDLE
 
         warning_records = [r for r in caplog.records if r.levelno == logging.WARNING and "恢复执行超时" in r.message]
-        assert len(warning_records) >= 1
-
-
-# ===========================================================================
-# Loop Engine
-# ===========================================================================
-
-class TestLoopEngineTimeout:
-
-    def test_execute_timeout(self, loop_engine, caplog):
-        """execute: TimeoutError → WARNING + 'Loop执行超时' + ABORTED status."""
-        cb = LoopEngineCallbacks()
-        errors = []
-        cb.on_error = lambda msg: errors.append(msg)
-
-        # Stub _parse_requirement to avoid LLM calls
-        loop_engine._parse_requirement = lambda txt: LoopRequirement(
-            goal="g", acceptance_criteria=["c"], raw_text=txt,
-        )
-
-        loop_engine._create_session_fn = lambda **kwargs: _TimeoutSession()
-        project = loop_engine.execute("do something", callbacks=cb)
-
-        assert project.status == LoopProjectStatus.ABORTED
-        assert any("Loop执行超时" in e for e in errors)
-        assert loop_engine.run_state == EngineRunState.IDLE
-
-        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING and "Loop执行超时" in r.message]
-        assert len(warning_records) >= 1
-
-    def test_resume_timeout(self, loop_engine, caplog):
-        """resume: TimeoutError → WARNING + 'Loop恢复超时' + ABORTED status."""
-        from src.loop_engine.models import LoopProject
-        loop_engine._project = LoopProject.create(name="test", root_path="/tmp/test")
-        loop_engine._project.status = LoopProjectStatus.PAUSED
-        # resume requires a requirement object
-        loop_engine._project.set_requirement(
-            LoopRequirement(goal="g", acceptance_criteria=["c"], raw_text="req"),
-        )
-
-        cb = LoopEngineCallbacks()
-        errors = []
-        cb.on_error = lambda msg: errors.append(msg)
-
-        loop_engine._create_session_fn = lambda **kwargs: _TimeoutSession()
-        project = loop_engine.resume(callbacks=cb)
-
-        assert project.status == LoopProjectStatus.ABORTED
-        assert any("Loop恢复超时" in e for e in errors)
-        assert loop_engine.run_state == EngineRunState.IDLE
-
-        warning_records = [r for r in caplog.records if r.levelno == logging.WARNING and "Loop恢复超时" in r.message]
         assert len(warning_records) >= 1
 
 

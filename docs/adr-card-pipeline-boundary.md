@@ -27,7 +27,6 @@ Card rendering is split into two distinct subsystems with non-overlapping respon
 
 **Use cases**:
 - Deep engine execution cards
-- Loop engine iterative cards
 - Spec engine structured iteration cards
 - Worktree parallel execution cards
 - Any future engine with real-time progress or interactive buttons
