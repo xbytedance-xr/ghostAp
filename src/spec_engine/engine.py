@@ -1307,11 +1307,13 @@ class SpecEngine(BaseEngine):
     def _make_aux_send_fn(self) -> Callable[[str], str]:
         """Create a send_fn that uses a disposable ACP sub-session."""
         def _send(text: str) -> str:
+            timeout = getattr(self.settings, "engine_aux_prompt_timeout", 600)
             return prompt_via_acp(
                 text,
                 create_session_fn=self._create_session_fn,
                 agent_type=self._agent_type,
                 cwd=self.root_path,
+                timeout=timeout,
                 model_name=self._model_name,
             )
         return _send

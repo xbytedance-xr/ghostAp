@@ -80,6 +80,13 @@ class Settings(BaseSettings):
     # Engine eval prompt timeout (seconds) — used by Spec engine
     engine_eval_prompt_timeout: int = 60
 
+    # Engine auxiliary prompt timeout (seconds) — used by disposable ACP
+    # sub-sessions for non-critical tasks such as Spec criteria decomposition.
+    # Keep this aligned with SyncACPSession's default prompt timeout to avoid
+    # cold-start/model-selection latency causing noisy 60s timeout errors before
+    # the main Spec cycle even begins.
+    engine_aux_prompt_timeout: int = 600
+
     # ACP stdio stream buffer limit (bytes). Default asyncio limit is 64KB which
     # is too small for large agent responses (code generation, file contents).
     # Set to 0 to use the asyncio default (64KB). 10MB should be generous enough.

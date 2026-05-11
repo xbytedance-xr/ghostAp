@@ -6,6 +6,7 @@ import os
 import re
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -64,6 +65,35 @@ def test_spec_engine_run_phase_fallback_to_send_prompt_when_retry_method_missing
         timeout=1,
     )
     assert output == "ok"
+
+
+def test_spec_engine_aux_criteria_prompt_uses_configured_timeout(monkeypatch):
+    """回归：需求拆解的辅助 ACP prompt 不应继续使用 60s 硬编码默认值。"""
+    engine = SpecEngine(chat_id="c", root_path="/tmp", agent_type="coco", model_name="m1")
+    engine.settings = SimpleNamespace(engine_aux_prompt_timeout=321)
+
+    captured = {}
+
+    def fake_prompt_via_acp(text, create_session_fn, agent_type, cwd, timeout=None, model_name=None):
+        captured.update(
+            text=text,
+            create_session_fn=create_session_fn,
+            agent_type=agent_type,
+            cwd=cwd,
+            timeout=timeout,
+            model_name=model_name,
+        )
+        return "- 验收标准1"
+
+    monkeypatch.setattr("src.spec_engine.engine.prompt_via_acp", fake_prompt_via_acp)
+
+    send = engine._make_aux_send_fn()
+
+    assert send("拆解需求") == "- 验收标准1"
+    assert captured["timeout"] == 321
+    assert captured["agent_type"] == "coco"
+    assert captured["cwd"] == "/tmp"
+    assert captured["model_name"] == "m1"
 
 
 def test_spec_engine_review_error_empty_message_uses_snippets(monkeypatch):

@@ -20,7 +20,7 @@ def prompt_via_acp(
     create_session_fn: Callable,
     agent_type: str,
     cwd: str,
-    timeout: int = 60,
+    timeout: int = 600,
     model_name: Optional[str] = None,
 ) -> str:
     """Send *text* through a disposable ACP sub-session and return the response.

@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
 ## 2026-05-11
+- **修复 Spec/Coco 辅助 ACP prompt 60s 超时误报** — 线上日志显示 `/coco` 后 Spec 启动前 Coco ACP prompt 在 60s 超时并重启 session；定位到需求验收标准拆解的 `prompt_via_acp()` 辅助子会话仍硬编码/默认 60s，主 Spec phase timeout 实际为 7200s。新增 `engine_aux_prompt_timeout=600`，`SpecEngine._make_aux_send_fn()` 显式透传配置，`prompt_via_acp()` 默认改 600；补回归测试，相关 Spec/ACP 测试 201+35 passed → [详细记录](2026-05-11.md)
 - **TaskOrchestrator lazy 建卡 — 任务真正执行才推飞书卡片** — 用户追问根因："只有在任务开始执行了才构建飞书消息卡片，无论主 agent 还是 subagent 都是如此；其他模式的确在明明没有任务时也重复推送卡片"。改造：`TaskOrchestrator.on_plan_received` 退化为"register + 映射器"不再同步建 N 卡；新增 `_ensure_task_session(task_id)` lazy 幂等入口，被 `dispatch_to_task` / `route_acp_event` / `handle_plan_update`(in_progress 时) 触发；flood_merged 合并通知下沉到 lazy 路径；Deep handler 移除静态 planning 卡（`initial_message_id=None`）；Spec handler 移除入口"分析中"占位卡；`tests/test_card_orchestrator.py` 新增 `_trigger_all` helper 恢复 41 项旧 eager 测试，Deep/Spec renderer multi-card 测试把 plan entries 改为 `in_progress` 维持 N+1 卡契约；6154 passed → [详细记录](2026-05-11.md)
 - **修复飞书卡片重叠 + 流式更新延迟双 BUG** — 用户反馈 Deep/Spec 模式下产生 4-5 张内容重叠的卡片且后台已完成卡片仍缓慢流式更新。根因：(1) `_STRUCTURAL_EVENTS` 包含 `TOOL_MODEL_CHANGED`，LiveTicker 每 1.2s 心跳触发 N 张卡整卡 PATCH；(2) `delivery_pool_max_workers` 默认 4 远低于活跃卡数；(3) `_BROADCAST_DEBOUNCE_MS=100` 让密集 plan_update 全量广播。修复：reducer 新增 `_is_structural_event()` 让 ticker frame 走 element_content；pool 4→16；broadcast debounce 100→800ms。6129 项测试通过 → [详细记录](2026-05-11.md)
 
