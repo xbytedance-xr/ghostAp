@@ -1,6 +1,9 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: Low/Medium severity 审计缺口不再即时修复，统一录入 [Backlog.md](Backlog.md) 集中在维护窗口处理。分级标准与流程详见 Backlog 文件头部说明。
+## 2026-05-11
+- **修复飞书卡片重叠 + 流式更新延迟双 BUG** — 用户反馈 Deep/Spec 模式下产生 4-5 张内容重叠的卡片且后台已完成卡片仍缓慢流式更新。根因：(1) `_STRUCTURAL_EVENTS` 包含 `TOOL_MODEL_CHANGED`，LiveTicker 每 1.2s 心跳触发 N 张卡整卡 PATCH；(2) `delivery_pool_max_workers` 默认 4 远低于活跃卡数；(3) `_BROADCAST_DEBOUNCE_MS=100` 让密集 plan_update 全量广播。修复：reducer 新增 `_is_structural_event()` 让 ticker frame 走 element_content；pool 4→16；broadcast debounce 100→800ms。6129 项测试通过 → [详细记录](2026-05-11.md)
+
 ## 2026-05-10
 - **修复 reasoning panel column_set 顶层 corner_radius 非法 JSON** — 用户日志显示飞书拒绝卡片创建：`unknown property, property: corner_radius, path: ROOT -> body -> elements -> [3](tag: column_set)`。根因是 `render_reasoning_panel()` 把 `corner_radius` 直接写在 `column_set` 顶层；Feishu Schema 2.0 不接受该字段。修复：移除顶层 `corner_radius` 与未用 `REASONING_CORNER_RADIUS` 常量，保留 `background_style=grey` 和左右两列结构；新增回归测试锁定 reasoning `column_set` 不再输出该字段；6395 passed → [详细记录](2026-05-10.md)
 - **修复编程卡片重复刷屏 + reasoning panel 非法 JSON** — 根因 A：`ProgrammingCardSession._handle_plan_update` 每当 plan in-progress 任务变化就 `SessionRotator.rotate()` 新建飞书卡，agent 推进 TODO 时频繁刷新卡 → 改为原地 dispatch 更新任务列表，删除 `_rotate_primary_session` 等死代码，新续卡只靠渲染期分页（接近 node_budget 才开新卡）；根因 B：`render_reasoning_panel` 窄边栏写了 `{"tag":"div","elements":[]}`（div 不支持 elements），整卡 JSON 被飞书拒（code=230099/200621），失败后又被当 permanent 强制重建形成刷屏 → 改为合法 `{"tag":"div","text":{"tag":"plain_text","content":" "}}`（不用 markdown 以免抢 bridge-phrase 注入位）；6394 passed → [详细记录](2026-05-10.md)

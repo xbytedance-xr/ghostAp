@@ -31,7 +31,7 @@ class CardSessionConfig(BaseModel):
     action_dedup_ttl: int = 1
     action_dedup_max_size: int = 5000
     action_dedup_cleanup_interval: int = 30
-    delivery_pool_max_workers: int = 4
+    delivery_pool_max_workers: int = 16
     ticker_interval: float = Field(
         default=1.2,
         gt=0,

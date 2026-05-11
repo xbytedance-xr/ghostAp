@@ -33,8 +33,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Debounce window for broadcast (100ms) to coalesce rapid status changes
-_BROADCAST_DEBOUNCE_MS = 100
+# Debounce window for broadcast (800ms) to coalesce rapid status changes.
+# Larger window dramatically reduces structural events fan-out (N task cards × every plan_update),
+# trading at-most ~0.8s task_list lag for far less Feishu API back-pressure and visible
+# "all cards updating in lockstep with overlapping content" UX.
+_BROADCAST_DEBOUNCE_MS = 800
 
 # Minimum number of tasks for multi-card split
 _MIN_TASKS_FOR_MULTI_CARD = 2

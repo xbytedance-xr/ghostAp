@@ -181,8 +181,9 @@ _STRUCTURAL_EVENTS = frozenset({
     # Approval (adds buttons)
     CardEventType.APPROVAL_REQUESTED,
     CardEventType.APPROVAL_RESOLVED,
-    # Meta (header change)
-    CardEventType.TOOL_MODEL_CHANGED,
+    # NOTE: TOOL_MODEL_CHANGED is conditionally structural — see _is_structural_event().
+    # Tool/model/subagents change → structural (header/buttons change);
+    # live_ticker_frame-only updates → non-structural (only footer markdown update).
     # Worktree (all structural — different phases/buttons)
     CardEventType.WORKTREE_PROGRESS,
     CardEventType.WORKTREE_TOOL_SELECT,
@@ -203,6 +204,26 @@ _STRUCTURAL_EVENTS = frozenset({
     # Section separator (adds new block)
     CardEventType.SECTION_SEPARATOR,
 })
+
+
+def _is_structural_event(event: CardEvent) -> bool:
+    """Decide whether an event should bump structural_version (triggers full update_page).
+
+    Most types are looked up in _STRUCTURAL_EVENTS. TOOL_MODEL_CHANGED is special:
+    - LiveTicker frame-only updates (only `live_ticker_frame` payload key) → non-structural,
+      so the green-dot animation does NOT cause N×update_page on every active card per 1.2s.
+    - Real tool/model/subagents updates → structural (header/buttons change).
+    """
+    if event.type in _STRUCTURAL_EVENTS:
+        return True
+    if event.type is CardEventType.TOOL_MODEL_CHANGED:
+        payload = event.payload or {}
+        # Structural only when tool_name / model_name / subagents change (header/footer chips).
+        if any(k in payload for k in ("tool_name", "model_name", "subagents")):
+            return True
+        # Pure ticker frame → element_content only.
+        return False
+    return False
 
 
 def reduce_card_state(state: CardState | None, event: CardEvent, metadata: CardMetadata | None = None) -> CardState:
@@ -233,7 +254,7 @@ def reduce_card_state(state: CardState | None, event: CardEvent, metadata: CardM
     if new_state is not state:
         new_version = state.version + 1
         # Bump structural_version only for structural events
-        if event.type in _STRUCTURAL_EVENTS:
+        if _is_structural_event(event):
             new_structural = state.structural_version + 1
         else:
             new_structural = state.structural_version
