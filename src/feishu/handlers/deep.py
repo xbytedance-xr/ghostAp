@@ -148,22 +148,11 @@ class DeepHandler(BaseEngineHandler):
         engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
         reporter = self.ctx.progress_reporter
 
-        planning_content = reporter.format_planning_start(requirement)
-        planning_title = reporter.get_planning_start_title()
-        _msg_type, card_content = CardBuilder.build_info_card(
-            project=project,
-            title=planning_title,
-            content=f"{planning_content}\n\n{self.format_ref_note(message_id, request_id)}"
-            if request_id
-            else planning_content,
-            engine_name=engine_name,
-            show_buttons=False,
-        )
-        planning_session = self.create_static_card_session(chat_id, reply_to=message_id)
-        planning_session.send(json.loads(card_content))
-        initial_msg_id = planning_session.message_id
-        planning_session.close()
-
+        # NOTE: per user requirement "card built only when a task starts executing",
+        # we no longer push a static "planning" card here. The Deep renderer's thinking
+        # session (created by `create_deep_callbacks`) becomes the single entry surface,
+        # and TaskOrchestrator's lazy mode builds per-task cards only when each task
+        # actually transitions to in_progress (or its first event arrives).
         engine = self.ctx.deep_engine_manager.get_or_create(chat_id, root_path, engine_name=engine_name)
 
         project_name = project.project_name if project else os.path.basename(root_path) or "deep"
@@ -179,7 +168,7 @@ class DeepHandler(BaseEngineHandler):
                     project,
                     engine_name,
                     root_path=root_path,
-                    initial_message_id=initial_msg_id,
+                    initial_message_id=None,
                 )
                 engine.plan_and_execute(requirement, callbacks, task_id=task_id, on_rate_limit=_on_rate_limit)
 

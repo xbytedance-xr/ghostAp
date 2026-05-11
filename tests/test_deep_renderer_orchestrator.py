@@ -143,7 +143,10 @@ class TestDeepRendererMultiCard:
         return renderer, tracker
 
     def test_multi_task_plan_creates_n_plus_1_cards(self):
-        """AC1: 3 plan steps → 4 create_card calls (1 thinking + 3 task cards)."""
+        """AC1: 3 plan steps (all in_progress) → 4 create_card calls (1 thinking + 3 task cards).
+
+        Lazy mode: tasks with status=in_progress trigger eager card creation.
+        """
         renderer, tracker = self._setup_renderer()
 
         callbacks = renderer.create_deep_callbacks(
@@ -161,11 +164,11 @@ class TestDeepRendererMultiCard:
         # At this point: 1 session (thinking)
         assert tracker.create_card_count == 1
 
-        # 2) Emit a PLAN_UPDATE with 3 tasks
+        # 2) Emit a PLAN_UPDATE with 3 tasks already executing
         plan_event = _make_plan_event([
-            ("Analyze requirements", "pending"),
-            ("Write implementation", "pending"),
-            ("Run tests", "pending"),
+            ("Analyze requirements", "in_progress"),
+            ("Write implementation", "in_progress"),
+            ("Run tests", "in_progress"),
         ])
         callbacks.on_event(plan_event)
 
@@ -251,8 +254,8 @@ class TestDeepRendererMultiCard:
 
         # Trigger multi-card
         plan_event = _make_plan_event([
-            ("Task A", "pending"),
-            ("Task B", "pending"),
+            ("Task A", "in_progress"),
+            ("Task B", "in_progress"),
         ])
         callbacks.on_event(plan_event)
         assert tracker.create_card_count == 3  # 1 + 2

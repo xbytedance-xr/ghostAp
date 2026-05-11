@@ -183,6 +183,12 @@ class TaskOrchestrator:
         self._overflow_target: dict[str, str] = {}  # overflow_task_id → target_task_id
         self._overflow_separator_sent: set[str] = set()  # tracks first dispatch per overflow task
 
+        # Lazy task-session creation (built on-demand when a task actually starts executing).
+        # Populated by on_plan_received(); drained by _ensure_task_session() as tasks become active.
+        self._plan_tasks_pending: list[dict] = []  # ordered list of {task_id,name,status} not yet built
+        self._plan_visible_task_ids: list[str] = []  # first N (max_task_cards) task_ids that may build cards
+        self._thinking_finalized: bool = False  # whether thinking session was archived already
+
         # Task-level rotation counters (protected by self._lock)
         self._rotation_counts: dict[str, int] = {}
 
@@ -260,6 +266,9 @@ class TaskOrchestrator:
             self._overflow_target.clear()
             self._overflow_separator_sent.clear()
             self._rotation_counts.clear()
+            self._plan_tasks_pending.clear()
+            self._plan_visible_task_ids.clear()
+            self._thinking_finalized = False
             # Reset shared flags under lock to prevent TOCTOU with dispatch_to_task
             self._plan_received.clear()
             self._fallback_mode = False
@@ -309,9 +318,14 @@ class TaskOrchestrator:
             self._thinking_session.dispatch(event)
 
     def on_plan_received(self, plan_tasks: list[dict]) -> None:
-        """Handle plan reception — parse tasks and create sessions.
+        """Handle plan reception — register tasks for lazy session creation.
 
-        Archives the thinking session (if set) and creates per-task sessions.
+        Per user requirement "only build a Feishu card when a task actually starts
+        executing" (主/sub agent 都一样), this method now ONLY registers tasks and
+        computes overflow mapping; per-task CardSessions are created on-demand by
+        _ensure_task_session() when a task transitions to in_progress (or is the
+        first event target).
+
         Falls back to single-session mode if plan is empty/invalid — in that case,
         the thinking session becomes the fallback session.
 
@@ -340,7 +354,7 @@ class TaskOrchestrator:
 
         self._plan_received.set()
 
-        # Register all tasks
+        # Register all tasks (registry SSOT — needed for task_list rendering once cards appear)
         for t in valid_tasks:
             self._registry.register(
                 task_id=t["task_id"],
@@ -352,52 +366,105 @@ class TaskOrchestrator:
         task_ids = [t["task_id"] for t in valid_tasks]
         self._resolver = TaskIdResolver(task_ids)
 
-        # Create sessions with flood-prevention cap
+        # Compute overflow mapping up-front (the first max_cards tasks may build cards;
+        # the rest will be folded into the last visible card whenever it gets created).
         max_cards = self._max_task_cards
-        overflow_tasks: list[dict] = []
-        for i, t in enumerate(valid_tasks):
-            if i < max_cards:
+        visible_ids = task_ids[:max_cards]
+        overflow_target_id = visible_ids[-1] if visible_ids else None
+        with self._lock:
+            self._plan_tasks_pending = list(valid_tasks)
+            self._plan_visible_task_ids = list(visible_ids)
+            if overflow_target_id is not None:
+                for t in valid_tasks[max_cards:]:
+                    self._overflow_target[t["task_id"]] = overflow_target_id
+
+        # Eager exception: any task already in_progress at plan-reception time should
+        # have its card built right away (matches user intent — "executing" means visible).
+        for t in valid_tasks[:max_cards]:
+            if (t.get("status") or "").lower() == "in_progress":
                 try:
-                    self._create_task_session(t["task_id"])
+                    self._ensure_task_session(t["task_id"])
                 except Exception:
                     logger.warning(
-                        "TaskOrchestrator: _create_task_session failed for task_id=%s, entering fallback mode",
+                        "TaskOrchestrator: eager session for in_progress task_id=%s failed",
                         t["task_id"], exc_info=True,
                     )
                     self._enter_fallback_mode()
                     return
-            else:
-                # Overflow: route to the last created session
-                last_task_id = valid_tasks[max_cards - 1]["task_id"]
-                with self._lock:
-                    self._overflow_target[t["task_id"]] = last_task_id
-                overflow_tasks.append(t)
 
-        # Finalize thinking session with overflow info
-        task_names = [t["name"] for t in valid_tasks]
-        self._finalize_thinking_session(task_names, overflow_count=len(overflow_tasks))
-
-        # Notify overflow tasks on last session
-        if overflow_tasks:
-            last_task_id = valid_tasks[max_cards - 1]["task_id"]
-            with self._lock:
-                last_session = self._sessions.get(last_task_id)
-            if last_session is not None:
-                for ot in overflow_tasks:
-                    msg = UI_TEXT["orch_flood_merged"].format(task_name=ot["name"])
-                    try:
-                        block_id = f"_flood_{ot['task_id']}"
-                        last_session.dispatch(CardEvent.text_started(block_id))
-                        last_session.dispatch(CardEvent.text_delta(block_id, msg))
-                        last_session.dispatch(CardEvent.text_done(block_id))
-                    except Exception:
-                        logger.debug("Error dispatching flood notice for %s", ot["task_id"])
-
-        created_count = min(len(valid_tasks), max_cards)
         logger.info(
-            "TaskOrchestrator: created %d task sessions for chat_id=%s (total tasks: %d, max_cards: %d)",
-            created_count, self._chat_id, len(valid_tasks), max_cards,
+            "TaskOrchestrator: plan registered with %d tasks (lazy session creation; %d visible, %d overflow)",
+            len(valid_tasks), len(visible_ids), max(0, len(valid_tasks) - len(visible_ids)),
         )
+
+    def _ensure_task_session(self, task_id: str) -> bool:
+        """Lazily create a CardSession for ``task_id`` when it begins executing.
+
+        Returns True if a session exists (or was just created); False if the task is
+        not in the registered plan, was an overflow target, or session creation failed.
+        Idempotent: calling multiple times for the same task_id is a no-op.
+        """
+        if self._closed_event.is_set() or self._fallback_mode:
+            return False
+
+        with self._lock:
+            if task_id in self._sessions:
+                return True
+            # Overflow tasks never get their own session — their target session is built
+            # (lazily) when the visible target task itself becomes active.
+            if task_id in self._overflow_target:
+                return False
+            if task_id not in self._plan_visible_task_ids:
+                # Not part of the registered plan (e.g. unknown id) — caller should fallback.
+                return False
+            should_finalize_thinking = not self._thinking_finalized
+
+        # I/O outside the lock
+        try:
+            self._create_task_session(task_id)
+        except Exception:
+            logger.warning(
+                "TaskOrchestrator: lazy _create_task_session failed for task_id=%s, entering fallback",
+                task_id, exc_info=True,
+            )
+            self._enter_fallback_mode()
+            return False
+
+        # If this newly-built session is the overflow visible-target, dispatch
+        # the "flood-merged" notices for every overflow task it absorbs. We do
+        # this once, at the moment the target session first appears.
+        with self._lock:
+            overflow_task_ids = [
+                ot_id for ot_id, target in self._overflow_target.items()
+                if target == task_id
+            ]
+            target_session = self._sessions.get(task_id)
+        if target_session is not None and overflow_task_ids:
+            for ot_id in overflow_task_ids:
+                ot_item = self._registry.get(ot_id)
+                ot_name = ot_item.name if ot_item else ot_id
+                msg = UI_TEXT["orch_flood_merged"].format(task_name=ot_name)
+                block_id = f"_flood_{ot_id}"
+                try:
+                    target_session.dispatch(CardEvent.text_started(block_id))
+                    target_session.dispatch(CardEvent.text_delta(block_id, msg))
+                    target_session.dispatch(CardEvent.text_done(block_id))
+                except Exception:
+                    logger.debug("Error dispatching flood notice for %s", ot_id)
+
+        # First lazy session created → archive thinking session with plan summary.
+        if should_finalize_thinking:
+            with self._lock:
+                if self._thinking_finalized:
+                    return True  # someone beat us to it
+                self._thinking_finalized = True
+                pending = list(self._plan_tasks_pending)
+                visible_count = len(self._plan_visible_task_ids)
+                overflow_count = max(0, len(pending) - visible_count)
+            task_names = [t["name"] for t in pending]
+            self._finalize_thinking_session(task_names, overflow_count=overflow_count)
+
+        return True
 
     def dispatch_to_task(self, task_id: str, event: CardEvent) -> None:
         """Route an event to the specific task's session.
@@ -418,6 +485,17 @@ class TaskOrchestrator:
         # Resolve overflow mapping (flood-prevention)
         resolved_id = self._overflow_target.get(task_id, task_id)
         is_overflow = task_id in self._overflow_target
+
+        # Lazy session creation: if the resolved (visible) task has no session yet,
+        # build it on-demand. This is the core "card built only when task executes"
+        # contract — events ARE execution signals.
+        self._ensure_task_session(resolved_id)
+
+        # Re-check fallback (lazy creation may have triggered _enter_fallback_mode on failure)
+        if self._fallback_mode:
+            if self._fallback_session is not None:
+                self._fallback_session.dispatch(event)
+            return
 
         with self._lock:
             session = self._sessions.get(resolved_id)
@@ -548,6 +626,10 @@ class TaskOrchestrator:
             for idx, entry in enumerate(entries):
                 entry_task_id = f"step_{idx}"
                 if entry.status == "in_progress":
+                    # Lazy-build the card exactly when a task starts executing.
+                    # Overflow tasks route to their target; _ensure_task_session handles both.
+                    resolved_id = self._overflow_target.get(entry_task_id, entry_task_id)
+                    self._ensure_task_session(resolved_id)
                     self.broadcast_status_change(entry_task_id, "in_progress")
                 elif entry.status == "completed":
                     self.broadcast_status_change(entry_task_id, "completed")
@@ -582,6 +664,17 @@ class TaskOrchestrator:
 
         task_id = self._resolver.resolve(acp_event)
         if not task_id:
+            fallback_bridge.on_event(acp_event)
+            return
+
+        # Lazy-build the per-task session (and its bridge) if this task has started
+        # producing events but hasn't been materialized yet. Covers routing paths where
+        # dispatch_to_task's own lazy hook wouldn't fire (bridge-first routing).
+        # NOTE: only ensure the *visible* (non-overflow) session here; overflow events
+        # still flow through dispatch_to_task below to keep separator insertion correct.
+        if task_id not in self._overflow_target:
+            self._ensure_task_session(task_id)
+        if self._fallback_mode:
             fallback_bridge.on_event(acp_event)
             return
 

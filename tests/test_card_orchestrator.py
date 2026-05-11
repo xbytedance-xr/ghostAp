@@ -74,6 +74,20 @@ def _make_orchestrator(session_creator=None, max_task_cards: int = 5):
     return orch, registry, sessions_created
 
 
+def _trigger_all(orch, tasks):
+    """Trigger lazy session creation for every valid task in plan.
+
+    In lazy mode (new default), `on_plan_received` only registers tasks;
+    sessions are built on-demand when tasks actually execute. Tests that
+    want eager session creation (old semantics) call this helper after
+    `on_plan_received` to simulate "all tasks have started executing".
+    """
+    for t in tasks or []:
+        tid = (t or {}).get("task_id") if isinstance(t, dict) else None
+        if tid:
+            orch._ensure_task_session(tid)
+
+
 class TestOnPlanReceived:
     def test_creates_sessions_for_each_task(self):
         """on_plan_received creates one session per valid task."""
@@ -84,6 +98,7 @@ class TestOnPlanReceived:
             {"task_id": "t3", "name": "运行测试"},
         ]
         orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         assert orch.active_session_count == 3
         assert registry.count == 3
@@ -129,10 +144,12 @@ class TestDispatchToTask:
     def test_routes_to_correct_session(self):
         """dispatch_to_task routes event to the bound session only."""
         orch, _, sessions = _make_orchestrator()
-        orch.on_plan_received([
+        tasks = [
             {"task_id": "t1", "name": "A"},
             {"task_id": "t2", "name": "B"},
-        ])
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         event = CardEvent(type=CardEventType.TEXT_DELTA, payload={"block_id": "b1", "text": "hello"})
         orch.dispatch_to_task("t1", event)
@@ -221,7 +238,9 @@ class TestSubagentSession:
     def test_create_subagent_session(self):
         """create_subagent_session adds new task and session."""
         orch, registry, sessions = _make_orchestrator()
-        orch.on_plan_received([{"task_id": "t1", "name": "Main Task"}])
+        tasks = [{"task_id": "t1", "name": "Main Task"}]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         orch.create_subagent_session("sub1", "Subagent 探索")
 
@@ -262,7 +281,9 @@ class TestClose:
     def test_dispatch_after_close_is_no_op(self):
         """Events dispatched after close are silently dropped."""
         orch, _, sessions = _make_orchestrator()
-        orch.on_plan_received([{"task_id": "t1", "name": "A"}])
+        tasks = [{"task_id": "t1", "name": "A"}]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
         orch.close()
 
         initial_count = sessions["t1"].event_count
@@ -358,10 +379,12 @@ class TestThinkingSession:
         orch.dispatch_to_thinking(CardEvent.started())
 
         # Receive plan
-        orch.on_plan_received([
+        tasks = [
             {"task_id": "t1", "name": "Task 1"},
             {"task_id": "t2", "name": "Task 2"},
-        ])
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         # Thinking session should have received ARCHIVED (not COMPLETED)
         archived = thinking.events_of_type(CardEventType.ARCHIVED)
@@ -632,10 +655,12 @@ class TestFallbackRouting:
         thinking = FakeSession("thinking")
         orch.set_thinking_session(thinking)
 
-        orch.on_plan_received([
+        tasks = [
             {"task_id": "t1", "name": "A"},
             {"task_id": "t2", "name": "B"},
-        ])
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         # Mark t1 as active
         orch.resolver.mark_active("t1")
@@ -669,10 +694,12 @@ class TestArchiveThinkingSession:
         thinking = FakeSession("thinking")
         orch.set_thinking_session(thinking)
 
-        orch.on_plan_received([
+        tasks = [
             {"task_id": "t1", "name": "分析需求"},
             {"task_id": "t2", "name": "编写代码"},
-        ])
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         # Check thinking session has text with task names
         text_events = thinking.events_of_type(CardEventType.TEXT_DELTA)
@@ -686,10 +713,12 @@ class TestArchiveThinkingSession:
         thinking = FakeSession("thinking")
         orch.set_thinking_session(thinking)
 
-        orch.on_plan_received([
+        tasks = [
             {"task_id": "t1", "name": "A"},
             {"task_id": "t2", "name": "B"},
-        ])
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         archived = thinking.events_of_type(CardEventType.ARCHIVED)
         completed = thinking.events_of_type(CardEventType.COMPLETED)
@@ -751,11 +780,13 @@ class TestBroadcastIsolation:
             session_creator=_creator,
             registry=TaskRegistry(),
         )
-        orch.on_plan_received([
+        tasks = [
             {"task_id": "t1", "name": "Task A"},
             {"task_id": "t2", "name": "Task B"},
             {"task_id": "t3", "name": "Task C"},
-        ])
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         # Clear initial events from session creation
         sessions_created["t1"].dispatched_events.clear()
@@ -805,10 +836,12 @@ class TestRotateTaskSession:
             session_creator=_creator,
             registry=TaskRegistry(),
         )
-        orch.on_plan_received([
+        tasks = [
             {"task_id": "t1", "name": "Fix Bug"},
             {"task_id": "t2", "name": "Add Feature"},
-        ])
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         # Get the first session for t1
         old_session = sessions_created["t1_1"]
@@ -852,10 +885,12 @@ class TestRotateTaskSession:
             session_creator=_creator,
             registry=TaskRegistry(),
         )
-        orch.on_plan_received([
+        tasks = [
             {"task_id": "t1", "name": "Task A"},
             {"task_id": "t2", "name": "Task B"},
-        ])
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         # Rotate t1 → creates a new session (3rd session overall: t1, t2, t1-continuation)
         orch.rotate_task_session("t1")
@@ -897,6 +932,7 @@ class TestFloodPrevention:
 
         tasks = [{"task_id": f"step_{i}", "name": f"Task {i}"} for i in range(5)]
         orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         # Only 3 sessions created (step_0, step_1, step_2)
         assert len(sessions_created) == 3
@@ -983,11 +1019,13 @@ class TestThinkingCardMerge:
         )
         orch.set_thinking_session(thinking_session)
 
-        orch.on_plan_received([
+        tasks = [
             {"task_id": "t1", "name": "Task A"},
             {"task_id": "t2", "name": "Task B"},
             {"task_id": "t3", "name": "Task C"},
-        ])
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         # Count TEXT_DELTA events (should be exactly 1 summary text block)
         text_deltas = thinking_session.events_of_type(CardEventType.TEXT_DELTA)
@@ -1013,9 +1051,11 @@ class TestThinkingCardMerge:
         )
         orch.set_thinking_session(thinking_session)
 
-        orch.on_plan_received([
+        tasks = [
             {"task_id": "t1", "name": "Task A"},
-        ])
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         archived_events = thinking_session.events_of_type(CardEventType.ARCHIVED)
         assert len(archived_events) == 1
@@ -1109,11 +1149,13 @@ class TestConcurrentSubagentIsolation:
             session_creator=_creator,
             registry=TaskRegistry(),
         )
-        orch.on_plan_received([
+        tasks = [
             {"task_id": "t1", "name": "Task A"},
             {"task_id": "t2", "name": "Task B"},
             {"task_id": "t3", "name": "Task C"},
-        ])
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         # Clear initial events
         for s in sessions_created.values():
@@ -1176,10 +1218,12 @@ class TestRotateTaskSessionThreadSafety:
 
     def test_no_dynamic_rotation_count_attributes(self):
         orch, registry, sessions_created = _make_orchestrator()
-        orch.on_plan_received([
+        tasks = [
             {"task_id": "t1", "name": "Task A"},
             {"task_id": "t2", "name": "Task B"},
-        ])
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         # Rotate t1
         orch.rotate_task_session("t1")
@@ -1190,7 +1234,9 @@ class TestRotateTaskSessionThreadSafety:
 
     def test_rotation_counts_increment_correctly(self):
         orch, registry, sessions_created = _make_orchestrator()
-        orch.on_plan_received([{"task_id": "t1", "name": "Task A"}])
+        tasks = [{"task_id": "t1", "name": "Task A"}]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         orch.rotate_task_session("t1")
         orch.rotate_task_session("t1")
@@ -1212,7 +1258,9 @@ class TestRotateTaskSessionCreatorFail:
             return FakeSession(session_id=f"session_{task_id}")
 
         orch, registry, _ = _make_orchestrator(session_creator=failing_creator)
-        orch.on_plan_received([{"task_id": "t1", "name": "Task A"}])
+        tasks = [{"task_id": "t1", "name": "Task A"}]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         # First session created (call_count=1 from on_plan_received's _create_task_session)
         # plus thinking session was None so no extra creation
@@ -1244,7 +1292,9 @@ class TestRotateTaskSessionCreatorFail:
             raise RuntimeError("boom")
 
         orch, _, _ = _make_orchestrator(session_creator=sometimes_failing_creator)
-        orch.on_plan_received([{"task_id": "t1", "name": "Task A"}])
+        tasks = [{"task_id": "t1", "name": "Task A"}]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         with orch._lock:
             original_session = orch._sessions["t1"]
@@ -1298,12 +1348,14 @@ class TestFloodNotification:
 
     def test_overflow_dispatches_flood_merged_notice(self):
         orch, registry, sessions_created = _make_orchestrator(max_task_cards=2)
-        orch.on_plan_received([
+        tasks = [
             {"task_id": "t1", "name": "Task A"},
             {"task_id": "t2", "name": "Task B"},
             {"task_id": "t3", "name": "Task C"},
             {"task_id": "t4", "name": "Task D"},
-        ])
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         # Last session (t2) should have received flood notifications for t3 and t4
         t2_session = sessions_created["t2"]
@@ -1323,11 +1375,13 @@ class TestFloodBoundary:
 
     def test_max_equals_task_count_no_overflow(self):
         orch, registry, sessions_created = _make_orchestrator(max_task_cards=3)
-        orch.on_plan_received([
+        tasks = [
             {"task_id": "t1", "name": "Task A"},
             {"task_id": "t2", "name": "Task B"},
             {"task_id": "t3", "name": "Task C"},
-        ])
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         assert len(sessions_created) == 3
         with orch._lock:
@@ -1335,7 +1389,9 @@ class TestFloodBoundary:
 
     def test_max_one_single_task(self):
         orch, registry, sessions_created = _make_orchestrator(max_task_cards=1)
-        orch.on_plan_received([{"task_id": "t1", "name": "Task A"}])
+        tasks = [{"task_id": "t1", "name": "Task A"}]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         assert len(sessions_created) == 1
         with orch._lock:
@@ -1343,11 +1399,13 @@ class TestFloodBoundary:
 
     def test_max_one_multiple_tasks_all_overflow_to_first(self):
         orch, registry, sessions_created = _make_orchestrator(max_task_cards=1)
-        orch.on_plan_received([
+        tasks = [
             {"task_id": "t1", "name": "Task A"},
             {"task_id": "t2", "name": "Task B"},
             {"task_id": "t3", "name": "Task C"},
-        ])
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         # Only 1 session created
         assert len(sessions_created) == 1
@@ -1366,10 +1424,12 @@ class TestFinalizeThinkingTransition:
         thinking = FakeSession(session_id="thinking")
         orch._thinking_session = thinking
 
-        orch.on_plan_received([
+        tasks = [
             {"task_id": "t1", "name": "Task A"},
             {"task_id": "t2", "name": "Task B"},
-        ])
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         # Check thinking session received text with transition hint
         text_events = [
@@ -1386,10 +1446,12 @@ class TestFinalizeThinkingTransition:
         thinking = FakeSession(session_id="thinking")
         orch._thinking_session = thinking
 
-        orch.on_plan_received([
+        tasks = [
             {"task_id": "t1", "name": "Login Fix"},
             {"task_id": "t2", "name": "DB Migration"},
-        ])
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         text_events = [
             e.payload.get("text", "")
@@ -1407,7 +1469,9 @@ class TestDeepLinkBackfill:
     def test_backfill_hook_registered_on_new_session(self):
         """Rotation injects a _BackfillHook into the new session's hooks."""
         orch, registry, sessions_created = _make_orchestrator()
-        orch.on_plan_received([{"task_id": "t1", "name": "Task A"}])
+        tasks = [{"task_id": "t1", "name": "Task A"}]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         # Get initial session
         with orch._lock:
@@ -1424,7 +1488,9 @@ class TestDeepLinkBackfill:
 
     def test_backfill_callback_dispatches_deep_link_to_old_session(self):
         orch, registry, sessions_created = _make_orchestrator()
-        orch.on_plan_received([{"task_id": "t1", "name": "Task A"}])
+        tasks = [{"task_id": "t1", "name": "Task A"}]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         with orch._lock:
             old_session = orch._sessions["t1"]
@@ -1487,6 +1553,7 @@ class TestAC1TotalCardCount:
         task_count = 3
         tasks = [{"task_id": f"step_{i}", "name": f"Task {i}"} for i in range(task_count)]
         orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         # Verify: total = task_count + 1 (thinking)
         expected_total = task_count + 1
@@ -1518,6 +1585,7 @@ class TestAC1TotalCardCount:
         task_count = 5
         tasks = [{"task_id": f"step_{i}", "name": f"Task {i}"} for i in range(task_count)]
         orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         expected_total = task_count + 1
         assert len(all_sessions) == expected_total, (
@@ -1549,6 +1617,7 @@ class TestAC1TotalCardCount:
 
         tasks = [{"task_id": f"step_{i}", "name": f"Task {i}"} for i in range(task_count)]
         orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         # With overflow: cards created = min(task_count, max_cards) + 1
         expected_total = min(task_count, max_cards) + 1
@@ -1579,6 +1648,7 @@ class TestAC1TotalCardCount:
 
         tasks = [{"task_id": "t1", "name": "A"}, {"task_id": "t2", "name": "B"}]
         orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         # Thinking card should be archived (transition from thinking to task cards)
         archived = thinking.events_of_type(CardEventType.ARCHIVED)
@@ -1601,6 +1671,7 @@ class TestRotateNoIOInsideLock:
         orch, registry, sessions = _make_orchestrator()
         tasks = [{"task_id": "t1", "name": "Task1"}]
         orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         session = sessions["t1"]
         lock_held_dispatches: list[str] = []
@@ -1692,6 +1763,7 @@ class TestWeakrefBackfill:
         orch, registry, sessions = _make_orchestrator()
         tasks = [{"task_id": "t1", "name": "Task1"}]
         orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         # Track weak references to old sessions
         weak_refs = []
@@ -1731,6 +1803,7 @@ class TestRotationFailDegradation:
         orch, registry, sessions = _make_orchestrator()
         tasks = [{"task_id": "t1", "name": "A"}]
         orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
         session = sessions["t1"]
 
         def _failing_creator(task_id):
@@ -1772,6 +1845,7 @@ class TestCreateTaskSessionException:
             {"task_id": "t3", "name": "C"},
         ]
         orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         # Should be in fallback mode after second creation fails
         assert orch._fallback_mode is True
@@ -1825,9 +1899,11 @@ class TestResetConcurrentDispatchEnhanced:
 
     def test_reset_dispatch_no_route_to_old_session(self):
         orch, registry, sessions_created = _make_orchestrator()
-        orch.on_plan_received([
+        tasks = [
             {"task_id": "t1", "name": "A"},
-        ])
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
         old_session = sessions_created["t1"]
         old_event_count = old_session.event_count
 
@@ -1929,10 +2005,12 @@ class TestBackfillTOCTOU:
             session_creator=_creator,
             registry=TaskRegistry(),
         )
-        orch.on_plan_received([
+        tasks = [
             {"task_id": "t1", "name": "Task"},
             {"task_id": "t2", "name": "Other"},
-        ])
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         old_session = sessions_created["t1_1"]
         result = orch.rotate_task_session("t1")
@@ -1974,10 +2052,12 @@ class TestBackfillTOCTOU:
             session_creator=_creator,
             registry=TaskRegistry(),
         )
-        orch.on_plan_received([
+        tasks = [
             {"task_id": "t1", "name": "Task"},
             {"task_id": "t2", "name": "Other"},
-        ])
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         old_session = sessions_created["t1_1"]
 
@@ -2046,10 +2126,12 @@ class TestBackfillBlockId:
             session_creator=_creator,
             registry=TaskRegistry(),
         )
-        orch.on_plan_received([
+        tasks = [
             {"task_id": "t1", "name": "Task"},
             {"task_id": "t2", "name": "Other"},
-        ])
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
 
         old_session = sessions_created["t1_1"]
         orch.rotate_task_session("t1")
@@ -2486,10 +2568,12 @@ class TestConcurrentCloseIdempotentDispatch:
         orch, _, sessions = _make_orchestrator()
         thinking = FakeSession("thinking")
         orch.set_thinking_session(thinking)
-        orch.on_plan_received([
+        tasks = [
             {"task_id": "t1", "name": "A"},
             {"task_id": "t2", "name": "B"},
-        ])
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
         num_sessions = 2
 
         errors: list[Exception] = []
@@ -2578,10 +2662,12 @@ class TestFullLifecycleResetReentry:
         orch.set_thinking_session(thinking1)
         assert orch.has_plan is False
 
-        orch.on_plan_received([
+        c1_tasks = [
             {"task_id": "c1_t1", "name": "Cycle1 Task1"},
             {"task_id": "c1_t2", "name": "Cycle1 Task2"},
-        ])
+        ]
+        orch.on_plan_received(c1_tasks)
+        _trigger_all(orch, c1_tasks)
         assert orch.has_plan is True
         assert "c1_t1" in sessions
         assert "c1_t2" in sessions
@@ -2602,9 +2688,11 @@ class TestFullLifecycleResetReentry:
         thinking2 = FakeSession("thinking2")
         orch.set_thinking_session(thinking2)
 
-        orch.on_plan_received([
+        c2_tasks = [
             {"task_id": "c2_t1", "name": "Cycle2 Task1"},
-        ])
+        ]
+        orch.on_plan_received(c2_tasks)
+        _trigger_all(orch, c2_tasks)
         assert orch.has_plan is True
         assert "c2_t1" in sessions
 

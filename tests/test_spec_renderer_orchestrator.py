@@ -139,11 +139,11 @@ class TestSpecRendererMultiCard:
         # Initial: 1 card (rotator)
         assert tracker.create_card_count == 1
 
-        # Simulate BUILD phase event with multi-task plan
+        # Simulate BUILD phase event with multi-task plan (all in_progress to trigger lazy build)
         plan_event = _make_plan_event([
-            ("Implement feature A", "pending"),
-            ("Implement feature B", "pending"),
-            ("Add error handling", "pending"),
+            ("Implement feature A", "in_progress"),
+            ("Implement feature B", "in_progress"),
+            ("Add error handling", "in_progress"),
         ])
         callbacks.on_phase_event(1, SpecPhase.BUILD, plan_event)
 
@@ -220,10 +220,10 @@ class TestSpecRendererMultiCard:
 
         task_count = 4
         plan_event = _make_plan_event([
-            ("Implement auth module", "pending"),
-            ("Add database migration", "pending"),
-            ("Write integration tests", "pending"),
-            ("Update API documentation", "pending"),
+            ("Implement auth module", "in_progress"),
+            ("Add database migration", "in_progress"),
+            ("Write integration tests", "in_progress"),
+            ("Update API documentation", "in_progress"),
         ])
         callbacks.on_phase_event(1, SpecPhase.BUILD, plan_event)
 

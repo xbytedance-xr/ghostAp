@@ -182,20 +182,11 @@ class SpecHandler(BaseEngineHandler):
         engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
         reporter = self.ctx.spec_reporter
 
-        # Send startup card
-        content = reporter.format_analyzing_start(requirement)
-        title = reporter.get_analyzing_start_title()
-        msg_type, card_content = CardBuilder.build_info_card(
-            project=project,
-            title=title,
-            content=f"{content}\n\n{self.format_ref_note(message_id, request_id)}" if request_id else content,
-            engine_name=f"Spec({engine_name})",
-            show_buttons=False,
-        )
-        self.reply_card(
-            message_id, card_content
-        )
-
+        # NOTE: per user requirement "card built only when a task starts executing",
+        # we no longer push a startup "分析中" card here. The Spec renderer's first
+        # rotator session (created lazily by `create_spec_callbacks` → engine first
+        # frame) becomes the entry surface, and TaskOrchestrator's lazy mode builds
+        # per-task cards only when each task actually transitions to in_progress.
         engine = self.ctx.spec_engine_manager.get_or_create(chat_id, root_path, engine_name=engine_name)
 
         project_name = project.project_name if project else os.path.basename(root_path) or "spec"
