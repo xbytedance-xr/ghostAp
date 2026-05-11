@@ -602,6 +602,52 @@ class TestProgrammingCardSession:
         assert "✅" in header["subtitle"]["content"]
         assert "⚪" not in header["subtitle"]["content"]
 
+    def test_finish_fallback_text_injected_when_no_text_blocks(self):
+        """When card has only tool calls and no text, fallback_text appears as summary."""
+        from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
+
+        pcs, _ = _make_programming_session()
+        pcs.start()
+
+        # Simulate tool call without any text events
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(
+                id="t1", title="bash", kind="execute",
+                status="running", content="echo hello",
+            ),
+        ))
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE,
+            tool_call=ToolCallInfo(
+                id="t1", title="bash", kind="execute",
+                status="completed", content="hello",
+            ),
+        ))
+
+        pcs.finish(fallback_text="This is the fallback answer")
+
+        state = pcs.session.state
+        text_blocks = [b for b in state.blocks if b.kind == "text" and b.content]
+        assert any("This is the fallback answer" in b.content for b in text_blocks), (
+            f"Expected fallback text in blocks, got: {[b.content for b in text_blocks]}"
+        )
+
+    def test_finish_fallback_text_not_used_when_text_already_present(self):
+        """When card already has streamed text, fallback_text is ignored."""
+        pcs, _ = _make_programming_session()
+        pcs.start()
+
+        pcs.on_text("Streamed answer text.")
+        pcs._flush_now()
+
+        pcs.finish(fallback_text="This fallback should NOT appear")
+
+        state = pcs.session.state
+        text_contents = [b.content for b in state.blocks if b.kind == "text" and b.content]
+        assert any("Streamed answer text." in c for c in text_contents)
+        assert not any("This fallback should NOT appear" in c for c in text_contents)
+
 
 class TestSessionMetadataPerMode:
     """Each mode produces correct metadata in the session."""

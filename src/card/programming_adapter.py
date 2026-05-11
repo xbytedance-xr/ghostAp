@@ -240,8 +240,14 @@ class ProgrammingCardSession:
                 finally:
                     self._flush_lock_holder.held = False
 
-    def finish(self) -> None:
-        """Complete the session normally."""
+    def finish(self, *, fallback_text: str = "") -> None:
+        """Complete the session normally.
+
+        Args:
+            fallback_text: If provided and the card contains no streamed text,
+                this text is injected as a completion summary so the user sees
+                the answer instead of a blank completed card.
+        """
         self._flush_now()
         if self._reasoning_active:
             self._rotator.dispatch(CardEvent.reasoning_done(self._active_reasoning_block_id))
@@ -250,7 +256,15 @@ class ProgrammingCardSession:
             self._rotator.dispatch(CardEvent.text_done(self._active_text_block_id))
             self._text_active = False
         self._finish_agent_sessions(failed=False)
-        self._rotator.dispatch(CardEvent.completed())
+        # If no text was streamed into the card, use fallback_text as completion
+        # summary so the user sees the answer instead of a blank card.
+        summary = ""
+        if fallback_text:
+            state = self._rotator.current.state
+            has_text = any(b.kind == "text" and b.content for b in state.blocks) if state else False
+            if not has_text:
+                summary = fallback_text
+        self._rotator.dispatch(CardEvent.completed(summary=summary))
         self._stop_ticker()
 
     def fail(self, error: str = "") -> None:

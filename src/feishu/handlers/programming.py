@@ -832,7 +832,7 @@ class ProgrammingModeHandler(BaseHandler):
         final_response = ""
         try:
             result = session.send_prompt(text, on_event=on_event, timeout=timeout)
-            prog_session.finish()
+            prog_session.finish(fallback_text=(result.text if result else ""))
             final_response = prog_session.get_final_text()
             # Fallback if no text captured
             if not final_response and result and result.text:
