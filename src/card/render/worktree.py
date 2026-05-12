@@ -221,6 +221,7 @@ def _render_worktree_tool_select(data: dict) -> dict:
     selected = data.get("selected", [])
     message = data.get("message", "")
     project_id = str(data.get("project_id") or "")
+    thread_root_id = str(data.get("thread_root_id") or "")
     default_action = str(data.get("select_action") or WORKTREE_SELECT_TOOL)
     pending_tool = str(data.get("pending_tool") or "").strip()
     selected_keys = _selected_tool_keys(selected)
@@ -252,13 +253,14 @@ def _render_worktree_tool_select(data: dict) -> dict:
         # 模型列表来自真实 ACP/TTADK 环境，常见 25+ 项。每个模型一整行会把
         # Schema 2.0 元素数推到 Feishu 200 上限附近，导致 patch 被 230099 拒收。
         # 模型阶段改用双列按钮网格：按钮本身就是选择目标，value 仍携带真实 model_id。
-        elements.extend(_render_worktree_model_option_grid(tools, project_id=project_id))
+        elements.extend(_render_worktree_model_option_grid(tools, project_id=project_id, thread_root_id=thread_root_id))
     else:
         for tool in tools:
             elements.append(
                 _render_worktree_select_option(
                     tool,
                     project_id=project_id,
+                    thread_root_id=thread_root_id,
                     default_action=default_action,
                     selected_keys=selected_keys,
                 )
@@ -292,7 +294,7 @@ def _render_worktree_tool_select(data: dict) -> dict:
         elements.append({"tag": "hr"})
         elements.append(_callback_button(
             text=UI_TEXT["worktree_back_to_tools_btn"],
-            value={"action": SHOW_WORKTREE_MENU, "project_id": project_id},
+            value=_with_thread_root({"action": SHOW_WORKTREE_MENU, "project_id": project_id}, thread_root_id),
         ))
     else:
         if selected_dicts:
@@ -302,17 +304,17 @@ def _render_worktree_tool_select(data: dict) -> dict:
                 "content": UI_TEXT["worktree_selected_block_title"].format(count=len(selected_dicts)),
             })
             for item in selected_dicts:
-                elements.append(_render_selected_item_row(item, project_id=project_id))
+                elements.append(_render_selected_item_row(item, project_id=project_id, thread_root_id=thread_root_id))
             elements.append(_callback_button(
                 text=UI_TEXT["worktree_clear_items_btn"],
-                value={"action": WORKTREE_CLEAR_ITEMS, "project_id": project_id},
+                value=_with_thread_root({"action": WORKTREE_CLEAR_ITEMS, "project_id": project_id}, thread_root_id),
             ))
 
         elements.append({"tag": "hr"})
         if selected_dicts:
             elements.append(_callback_button(
                 text=UI_TEXT["worktree_confirm_selection_btn"],
-                value={"action": WORKTREE_FINISH_SELECTION, "project_id": project_id},
+                value=_with_thread_root({"action": WORKTREE_FINISH_SELECTION, "project_id": project_id}, thread_root_id),
                 button_type="primary",
             ))
         else:
@@ -353,7 +355,7 @@ def _callback_button(
     }
 
 
-def _render_selected_item_row(item: dict, *, project_id: str) -> dict:
+def _render_selected_item_row(item: dict, *, project_id: str, thread_root_id: str = "") -> dict:
     """One already-selected item row: label + ✕ remove button."""
     label = str(
         item.get("display_label")
@@ -381,11 +383,11 @@ def _render_selected_item_row(item: dict, *, project_id: str) -> dict:
                 "vertical_align": "center",
                 "elements": [_callback_button(
                     text=UI_TEXT["worktree_remove_item_btn"],
-                    value={
+                    value=_with_thread_root({
                         "action": WORKTREE_REMOVE_ITEM,
                         "selection_key": selection_key,
                         "project_id": project_id,
-                    },
+                    }, thread_root_id),
                     size="small",
                 )],
             },
@@ -434,7 +436,13 @@ def _model_button_label(model_id: str, name: str) -> str:
     return UI_TEXT["worktree_pick_model_btn"].format(name=label)
 
 
-def _render_worktree_model_option_grid(tools: list, *, project_id: str) -> list[dict]:
+def _with_thread_root(value: dict, thread_root_id: str) -> dict:
+    if thread_root_id:
+        value["thread_root_id"] = thread_root_id
+    return value
+
+
+def _render_worktree_model_option_grid(tools: list, *, project_id: str, thread_root_id: str = "") -> list[dict]:
     """Render model choices as compact callback buttons.
 
     The Worktree model card can list dozens of models. A two-column grid keeps
@@ -466,6 +474,7 @@ def _render_worktree_model_option_grid(tools: list, *, project_id: str) -> list[
             "model_display_name": name,
             "project_id": project_id,
         }
+        value = _with_thread_root(value, thread_root_id)
         pair.append({
             "tag": "column",
             "width": "weighted",
@@ -491,6 +500,7 @@ def _render_worktree_select_option(
     project_id: str,
     default_action: str,
     selected_keys: set[str],
+    thread_root_id: str = "",
 ) -> dict:
     """Render one tool/model choice as a real callback button row."""
     # `selected_keys` 保留在签名以便未来其他高亮策略复用；当前已选状态由独立 "已选组合" 板块呈现
@@ -505,6 +515,7 @@ def _render_worktree_select_option(
             "model_display_name": name,
             "project_id": project_id,
         }
+        value = _with_thread_root(value, thread_root_id)
         button_text = _model_button_label(tool_id, name)
         button_type = "primary"
     else:
@@ -519,6 +530,7 @@ def _render_worktree_select_option(
             "project_id": project_id,
             "_selection_sig": _selected_signature(selected_keys),
         }
+        value = _with_thread_root(value, thread_root_id)
         button_text = UI_TEXT["worktree_add_tool_btn"].format(name=name)
         # 工具按钮始终保持可点击的中性样式，让 "已选组合" 板块承担状态反馈
         button_type = "default"

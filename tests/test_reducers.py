@@ -519,7 +519,7 @@ class TestReduceWorktree:
         new = reduce_worktree(wt_state, event)
         assert new.buttons == ()
 
-    def test_confirm_sets_block_and_three_buttons(self, wt_state):
+    def test_confirm_sets_block_and_action_buttons(self, wt_state):
         from src.card.state.reducers.worktree import reduce_worktree
         event = CardEvent(type=CardEventType.WORKTREE_CONFIRM, payload={
             "selected_items": [{"tool": "coco", "model": "gpt-4o"}],
@@ -529,9 +529,9 @@ class TestReduceWorktree:
         new = reduce_worktree(wt_state, event)
         assert len(new.blocks) == 1
         assert new.blocks[0].kind == "worktree_confirm"
-        assert len(new.buttons) == 3
+        assert len(new.buttons) == 2
         action_ids = [b.action_id for b in new.buttons]
-        assert ButtonIntent.WORKTREE_CONFIRM_START in action_ids
+        assert ButtonIntent.WORKTREE_CONFIRM_START not in action_ids
         assert ButtonIntent.WORKTREE_SHOW_MENU in action_ids
         assert ButtonIntent.WORKTREE_CANCEL in action_ids
 

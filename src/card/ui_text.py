@@ -551,6 +551,7 @@ UI_TEXT = {
     "ws_session_fail_msg": "⚠️ {name} 会话启动失败，已退回智能模式，请重新发送 /{cmd} 重试",
     "ws_thread_pending_msg": "📝 当前已开启{name}编程模式\n\n请发送你的编程需求，将自动创建编程话题",
     "ws_topic_hint_msg": "💡 当前话题已在编程模式中，直接发送你的需求即可\n\n如需切换工具，请在主对话中发送对应命令创建新话题",
+    "topic_engine_switch_blocked": "当前话题已绑定 {current} 模式，不能直接切换到 {requested}。\n\n请先停止当前话题任务，或在主对话中新开一个话题启动 {requested}。",
     "ws_exit_deferred_msg": "✅ 已收到 /exit，将在当前任务完成后退出（不中断执行）",
     "ws_active_topic_msg": "💡 你有一个活跃的 {name} 编程话题正在进行中\n\n请在话题中回复继续对话\n如需新建编程环境，请先发送对应的编程模式命令（如 /coco）",
     "ws_backpressure_spec": "⚠️ 系统繁忙，当前 Spec cycle 仍会自动重试，请稍候",

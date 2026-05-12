@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Callable, Optional
 
 from ..project.context import ProjectContext
 from .models import WorktreeRuntimeState, WorktreeSelectionStage, WorktreeUnitStatus, ensure_worktree_state
@@ -18,9 +18,16 @@ logger = logging.getLogger(__name__)
 class WorktreeSelectionController:
     """Manages the worktree tool/model selection state machine."""
 
-    @staticmethod
-    def _get_state(project: ProjectContext) -> WorktreeRuntimeState:
-        return ensure_worktree_state(project)
+    def __init__(
+        self,
+        state_getter: Callable[[ProjectContext], WorktreeRuntimeState] | None = None,
+        state_resetter: Callable[[ProjectContext], WorktreeRuntimeState] | None = None,
+    ) -> None:
+        self._state_getter = state_getter or ensure_worktree_state
+        self._state_resetter = state_resetter
+
+    def _get_state(self, project: ProjectContext) -> WorktreeRuntimeState:
+        return self._state_getter(project)
 
     def start_selection(self, project: ProjectContext, goal: str = "") -> WorktreeRuntimeState:
         from .models import WorktreeJourneyState, transition_journey_state
@@ -36,8 +43,11 @@ class WorktreeSelectionController:
         return state
 
     def reset_selection(self, project: ProjectContext) -> WorktreeRuntimeState:
-        project.worktree_state = WorktreeRuntimeState()
-        state = self._get_state(project)
+        if self._state_resetter is not None:
+            state = self._state_resetter(project)
+        else:
+            project.worktree_state = WorktreeRuntimeState()
+            state = self._get_state(project)
         state.selection.active = True
         state.selection.stage = WorktreeSelectionStage.TOOL_SELECT
         state.selection.last_message = "已清空已有选择，请重新开始"

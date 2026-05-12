@@ -100,10 +100,14 @@ class WorktreeGitService:
         root = Path(repo_root).resolve()
         return str(root.parent / f".ghostap-worktrees-{root.name}")
 
-    def build_branch_name(self, index: int) -> str:
+    def build_branch_name(self, index: int, *, session_slug: str = "") -> str:
+        if session_slug:
+            return f"ghostap/wt/{_slugify(session_slug, default='session')}/{index:02d}-unit"
         return f"ghostap/wt/{index:02d}-unit"
 
-    def build_unit_id(self, index: int) -> str:
+    def build_unit_id(self, index: int, *, session_slug: str = "") -> str:
+        if session_slug:
+            return f"wt-{_slugify(session_slug, default='session')}-{index:02d}"
         return f"wt-{index:02d}"
 
     # Forbidden path prefixes for custom_path safety validation
@@ -176,6 +180,7 @@ class WorktreeGitService:
         count: int,
         base_branch: Optional[str] = None,
         custom_base_dir: Optional[str] = None,
+        session_slug: str = "",
     ) -> tuple[GitRepoState, list[WorktreeUnit]]:
         t0 = time.monotonic()
         repo = self.ensure_local_repo(root_path)
@@ -191,8 +196,8 @@ class WorktreeGitService:
         units: list[WorktreeUnit] = []
         base_ref = base_branch or repo.base_branch or "HEAD"
         for index in range(1, count + 1):
-            unit_id = self.build_unit_id(index)
-            branch_name = self.build_branch_name(index)
+            unit_id = self.build_unit_id(index, session_slug=session_slug)
+            branch_name = self.build_branch_name(index, session_slug=session_slug)
             worktree_path = str((worktree_parent / unit_id).resolve())
             self.create_worktree(repo.repo_root, branch_name, worktree_path, base_ref)
             units.append(

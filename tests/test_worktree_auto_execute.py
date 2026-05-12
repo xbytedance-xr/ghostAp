@@ -265,6 +265,7 @@ def test_is_awaiting_goal_truth_table_matches_journey_status_enum():
     truth_table = {
         WorktreeJourneyStatus.IDLE: False,
         WorktreeJourneyStatus.PENDING: True,
+        WorktreeJourneyStatus.AWAITING_GOAL: True,
         WorktreeJourneyStatus.AUTO_EXECUTING: True,
         WorktreeJourneyStatus.RUNNING: False,
         WorktreeJourneyStatus.COMPLETED: False,
@@ -274,7 +275,8 @@ def test_is_awaiting_goal_truth_table_matches_journey_status_enum():
     # 枚举防御：确保测试覆盖全部枚举成员
     assert set(truth_table.keys()) == set(WorktreeJourneyStatus)
 
-    # 当存在 ready 单元时，真值取决于上表；不存在 ready 单元时一律 False。
+    # AWAITING_GOAL is the post-selection state before real units exist; the
+    # others require at least one ready unit.
     for status, expects_true_with_ready in truth_table.items():
         # 有 ready 单元的情况
         state = WorktreeRuntimeState()
@@ -286,7 +288,9 @@ def test_is_awaiting_goal_truth_table_matches_journey_status_enum():
         state_no_ready = WorktreeRuntimeState()
         state_no_ready.journey.status = status
         state_no_ready.units = [WorktreeUnit(unit_id="u1", status="pending")]
-        assert WorktreeManager.is_awaiting_goal(state_no_ready) is False
+        assert WorktreeManager.is_awaiting_goal(state_no_ready) is (
+            status == WorktreeJourneyStatus.AWAITING_GOAL
+        )
 
 
 def test_is_awaiting_goal_handles_none_and_invalid_state_gracefully():

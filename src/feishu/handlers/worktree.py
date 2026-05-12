@@ -125,6 +125,46 @@ class WorktreeHandler(BaseHandler):
             or ""
         ).strip()
 
+    def _ensure_worktree_topic_context(
+        self,
+        *,
+        message_id: str,
+        chat_id: str,
+        project: "ProjectContext",
+    ) -> str:
+        from ...thread import get_current_thread_id, get_thread_manager, set_current_thread_id
+
+        thread_root_id = get_current_thread_id() or message_id
+        mgr = get_thread_manager()
+        ctx = mgr.get(thread_root_id)
+        if not ctx:
+            mgr.bind_engine(
+                thread_root_id=thread_root_id,
+                chat_id=chat_id,
+                project_id=project.project_id,
+                mode="worktree",
+            )
+        elif ctx.mode != "worktree":
+            mgr.bind_engine(
+                thread_root_id=ctx.thread_root_id,
+                chat_id=ctx.chat_id,
+                project_id=ctx.project_id,
+                mode="worktree",
+                tool_name=ctx.tool_name,
+                model_name=ctx.model_name,
+            )
+            thread_root_id = ctx.thread_root_id
+        set_current_thread_id(thread_root_id)
+        return thread_root_id
+
+    def _worktree_thread_root_id(self, project: "ProjectContext") -> str:
+        try:
+            return self._worktree_manager().get_session_key(project).thread_root_id
+        except Exception:
+            from ...thread import get_current_thread_id
+
+            return get_current_thread_id() or ""
+
     def _make_throttled_progress_callback(
         self,
         mgr,
@@ -236,6 +276,11 @@ class WorktreeHandler(BaseHandler):
             return
 
         goal = str(goal or "").strip()[:500]  # cap at 500 chars
+        thread_root_id = self._ensure_worktree_topic_context(
+            message_id=message_id,
+            chat_id=chat_id,
+            project=project,
+        )
 
         mgr = self._worktree_manager()
         state = mgr.start_selection(project, goal=goal)
@@ -253,7 +298,7 @@ class WorktreeHandler(BaseHandler):
         # Dispatch tool selection through CardSession
         session = self._get_or_create_session(chat_id, project_id, reply_to=message_id if not from_card else None)
         session.dispatch(worktree_tool_select(
-            tools=tools, selected=selected_dicts, project_id=project_id,
+            tools=tools, selected=selected_dicts, project_id=project_id, thread_root_id=thread_root_id,
         ))
 
     def handle_worktree_select_tool(
@@ -282,6 +327,7 @@ class WorktreeHandler(BaseHandler):
         mgr = self._worktree_manager()
         state = mgr.get_state(project)
         pid = project.project_id
+        thread_root_id = self._worktree_thread_root_id(project)
 
         if provider == "ttadk" and tool_name == "ttadk":
             selected_dicts = [item.to_dict() for item in state.selection.selected_items]
@@ -291,6 +337,7 @@ class WorktreeHandler(BaseHandler):
             session.dispatch(worktree_tool_select(
                 tools=ttadk_tools, selected=selected_dicts, project_id=pid,
                 message="请选择 TTADK 工具",
+                thread_root_id=thread_root_id,
             ))
             return
 
@@ -356,6 +403,7 @@ class WorktreeHandler(BaseHandler):
                 message=UI_TEXT["system_worktree_select_model_prompt"].format(tool=option.display_name),
                 select_action="worktree_select_model",
                 pending_tool=option.display_name,
+                thread_root_id=thread_root_id,
             ))
         else:
             model_name = None
@@ -377,6 +425,7 @@ class WorktreeHandler(BaseHandler):
             session.dispatch(worktree_tool_select(
                 tools=tools, selected=selected_dicts, project_id=pid,
                 message=msg,
+                thread_root_id=thread_root_id,
             ))
 
     def handle_worktree_select_model(
@@ -419,9 +468,11 @@ class WorktreeHandler(BaseHandler):
         selected_dicts = [item.to_dict() for item in state.selection.selected_items]
         tools = self._get_available_worktree_tools()
         pid = project.project_id
+        thread_root_id = self._worktree_thread_root_id(project)
         session = self._get_or_create_session(chat_id, pid)
         session.dispatch(worktree_tool_select(
             tools=tools, selected=selected_dicts, project_id=pid, message=msg,
+            thread_root_id=thread_root_id,
         ))
 
     def handle_worktree_remove_item(
@@ -445,10 +496,12 @@ class WorktreeHandler(BaseHandler):
         state = mgr.get_state(project)
         selected_dicts = [item.to_dict() for item in state.selection.selected_items]
         pid = project.project_id
+        thread_root_id = self._worktree_thread_root_id(project)
         tools = self._get_available_worktree_tools()
         session = self._get_or_create_session(chat_id, pid)
         session.dispatch(worktree_tool_select(
             tools=tools, selected=selected_dicts, project_id=pid, message=msg,
+            thread_root_id=thread_root_id,
         ))
 
     def handle_worktree_clear_items(
@@ -470,10 +523,12 @@ class WorktreeHandler(BaseHandler):
         state = mgr.get_state(project)
         selected_dicts = [item.to_dict() for item in state.selection.selected_items]
         pid = project.project_id
+        thread_root_id = self._worktree_thread_root_id(project)
         tools = self._get_available_worktree_tools()
         session = self._get_or_create_session(chat_id, pid)
         session.dispatch(worktree_tool_select(
             tools=tools, selected=selected_dicts, project_id=pid, message=msg,
+            thread_root_id=thread_root_id,
         ))
 
     def handle_finish_worktree_selection(
@@ -497,6 +552,7 @@ class WorktreeHandler(BaseHandler):
 
         state = mgr.finalize_selection(project)
         pid = project.project_id
+        thread_root_id = self._worktree_thread_root_id(project)
 
         if not state.enabled:
             self.reply_error(message_id, UI_TEXT["system_worktree_no_selection_error"])
@@ -510,13 +566,17 @@ class WorktreeHandler(BaseHandler):
                 project_id=pid,
                 message=UI_TEXT["worktree_auto_executing_banner"],
                 goal=goal,
+                thread_root_id=thread_root_id,
             ))
             self._auto_execute_worktree(message_id, chat_id, goal, project=project)
             return
 
+        mgr.apply_journey_event(state, event="awaiting_goal")
+        ready_msg = UI_TEXT["system_worktree_created_prompt"] + "\n" + UI_TEXT["worktree_ready_intercept_hint"]
         selected_dicts = [item.to_dict() for item in state.selection.selected_items]
         session.dispatch(worktree_confirm(
-            selected_items=selected_dicts, project_id=pid,
+            selected_items=selected_dicts, project_id=pid, message=ready_msg,
+            thread_root_id=thread_root_id,
         ))
 
     def _auto_execute_worktree(
@@ -535,6 +595,7 @@ class WorktreeHandler(BaseHandler):
 
         mgr = self._worktree_manager()
         state = mgr.ensure_worktrees(project)
+        thread_root_id = self._worktree_thread_root_id(project)
 
         if state.last_error:
             error_msg = UI_TEXT["system_worktree_create_failed"].format(error=state.last_error)
@@ -543,7 +604,7 @@ class WorktreeHandler(BaseHandler):
             if units_dicts:
                 session = self._get_or_create_session(chat_id, pid)
                 session.dispatch(worktree_progress(
-                    units_dicts, pid, message=error_msg,
+                    units_dicts, pid, message=error_msg, thread_root_id=thread_root_id,
                 ))
             self.reply_error(message_id, error_msg)
             return
@@ -570,6 +631,7 @@ class WorktreeHandler(BaseHandler):
 
         mgr = self._worktree_manager()
         state = mgr.ensure_worktrees(project)
+        thread_root_id = self._worktree_thread_root_id(project)
 
         if state.last_error:
             self.reply_error(message_id, UI_TEXT["system_worktree_create_failed"].format(error=state.last_error))
@@ -589,6 +651,7 @@ class WorktreeHandler(BaseHandler):
                 project_id=pid,
                 message=UI_TEXT["worktree_auto_executing_banner"],
                 goal=goal,
+                thread_root_id=thread_root_id,
             ))
             self.handle_worktree_execute(message_id, chat_id, goal, project=project)
             return
@@ -598,6 +661,7 @@ class WorktreeHandler(BaseHandler):
         session = self._get_or_create_session(chat_id, pid)
         session.dispatch(worktree_progress(
             units_dicts, project_id=pid, message=ready_msg,
+            thread_root_id=thread_root_id,
         ))
 
     def handle_worktree_execute(
@@ -622,6 +686,7 @@ class WorktreeHandler(BaseHandler):
 
         mgr = self._worktree_manager()
         pid = project.project_id
+        thread_root_id = self._worktree_thread_root_id(project)
 
         state = mgr.get_state(project)
         units_dicts = [u.to_dict() for u in state.units]
@@ -639,6 +704,7 @@ class WorktreeHandler(BaseHandler):
             units_dicts, project_id=pid, message=init_msg,
             silent=silent_mode,
             iteration=_worktree_iteration_count(state) + 1,
+            thread_root_id=thread_root_id,
         ))
 
         _on_unit_update = self._make_throttled_progress_callback(
@@ -668,12 +734,14 @@ class WorktreeHandler(BaseHandler):
             session.dispatch(worktree_cleanup(
                 state.merge_notes, base_branch=state.base_branch or "main",
                 project_id=pid, units=final_dicts,
+                thread_root_id=thread_root_id,
             ))
         else:
             session.dispatch(worktree_completed_no_change(
                 final_dicts, project_id=pid,
                 message=UI_TEXT["worktree_completed_no_change"],
                 iteration=_worktree_iteration_count(state),
+                thread_root_id=thread_root_id,
             ))
             # Keep session open with retry button — don't close immediately
 
@@ -692,6 +760,7 @@ class WorktreeHandler(BaseHandler):
 
         mgr = self._worktree_manager()
         pid = project.project_id
+        thread_root_id = self._worktree_thread_root_id(project)
         root_path = getattr(project, "root_path", None)
 
         # Provide immediate feedback: show loading state
@@ -717,6 +786,7 @@ class WorktreeHandler(BaseHandler):
             merge_results=[r if isinstance(r, dict) else {"branch": str(r), "success": True} for r in (merge_results or [])],
             project_id=pid,
             cleanup_phase="actions",
+            thread_root_id=thread_root_id,
         ))
         # Merge succeeded — close session
         self._close_session(pid)
@@ -736,6 +806,7 @@ class WorktreeHandler(BaseHandler):
 
         mgr = self._worktree_manager()
         state = mgr.get_state(project)
+        thread_root_id = self._worktree_thread_root_id(project)
 
         if not state.merge_notes:
             self.reply_error(message_id, UI_TEXT["system_worktree_no_merge_content"])
@@ -747,6 +818,7 @@ class WorktreeHandler(BaseHandler):
             merge_notes=state.merge_notes,
             base_branch=state.base_branch or "main",
             project_id=pid,
+            thread_root_id=thread_root_id,
         ))
 
     def handle_worktree_cleanup(
@@ -826,6 +898,7 @@ class WorktreeHandler(BaseHandler):
         mgr = self._worktree_manager()
         pid = project.project_id
         state = mgr.get_state(project)
+        thread_root_id = self._worktree_thread_root_id(project)
 
         if any(u.status == WorktreeUnitStatus.RUNNING for u in state.units):
             self.reply_text(message_id, UI_TEXT["system_worktree_unit_running_error"])
@@ -839,6 +912,7 @@ class WorktreeHandler(BaseHandler):
         session.dispatch(worktree_progress(
             units_dicts, project_id=pid, message=UI_TEXT["system_worktree_retry_starting"],
             iteration=_worktree_iteration_count(state) + 1,
+            thread_root_id=thread_root_id,
         ))
 
         retry_goal = state.journey.goal or UI_TEXT["system_worktree_retry_goal"]
@@ -857,12 +931,14 @@ class WorktreeHandler(BaseHandler):
             session.dispatch(worktree_cleanup(
                 state.merge_notes, base_branch=state.base_branch or "main",
                 project_id=pid, units=final_dicts,
+                thread_root_id=thread_root_id,
             ))
         else:
             session.dispatch(worktree_progress(
                 final_dicts, project_id=pid,
                 message=UI_TEXT["system_worktree_retry_completed"],
                 iteration=_worktree_iteration_count(state),
+                thread_root_id=thread_root_id,
             ))
             session.dispatch(CardEvent.completed())
             self._close_session(pid)

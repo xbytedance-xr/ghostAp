@@ -83,7 +83,7 @@ class TestReduceWorktreeConfirm:
         data = _parse_block_data(new)
         assert data["selected_items"][0]["tool"] == "Coco"
         assert data["goal"] == "实现搜索功能"
-        assert any(b.action_id == ButtonIntent.WORKTREE_CONFIRM_START for b in new.buttons)
+        assert not any(b.action_id == ButtonIntent.WORKTREE_CONFIRM_START for b in new.buttons)
         assert any(b.action_id == ButtonIntent.WORKTREE_SHOW_MENU for b in new.buttons)
 
 

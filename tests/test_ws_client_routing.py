@@ -103,6 +103,47 @@ def test_handle_message_spec_command_routing(mock_ws_client: FeishuWSClient):
     assert ":control:" in spec.queue_key
 
 
+def test_handle_message_plain_message_does_not_fallback_to_recent_engine_topic(mock_ws_client: FeishuWSClient):
+    """Plain chat messages must not continue a topic-bound engine without root_id."""
+    mock_ws_client.settings.thread_programming_enabled = True
+    mock_ws_client._thread_manager.register(
+        "thread-wt",
+        "chat_456",
+        "proj_1",
+        mode="worktree",
+    )
+    msg = create_mock_message("继续")
+    msg.event.message.root_id = None
+    msg.event.message.parent_id = None
+
+    mock_ws_client._handle_message(msg)
+
+    spec, _ = mock_ws_client._scheduler.submit.call_args[0]
+    assert spec.project_id is None
+    assert not spec.queue_key or ":t:thread-wt" not in spec.queue_key
+
+
+def test_resolve_message_context_plain_message_does_not_fallback_to_engine_topic(mock_ws_client: FeishuWSClient):
+    """Context resolution should only use exact Feishu topic roots for engine continuation."""
+    mock_ws_client.settings.thread_programming_enabled = True
+    mock_ws_client._thread_manager.register(
+        "thread-wt",
+        "chat_456",
+        "proj_1",
+        mode="worktree",
+    )
+    fallback_project = ProjectContext("active", "Active", "/tmp")
+    mock_ws_client._resolve_project_from_message = MagicMock(return_value=(fallback_project, None))
+    msg = create_mock_message("继续")
+    msg.event.message.root_id = None
+    msg.event.message.parent_id = None
+
+    project, auto_enter_mode = mock_ws_client._resolve_message_context(msg.event.message)
+
+    assert project is fallback_project
+    assert auto_enter_mode is None
+
+
 def test_process_message_async_auto_enter_mode(mock_ws_client: FeishuWSClient):
     """Test that an ongoing mode (auto_enter_mode) directly forwards to the respective handler."""
     msg = create_mock_message("hello")
@@ -126,6 +167,47 @@ def test_process_message_async_auto_enter_mode(mock_ws_client: FeishuWSClient):
     mock_coco_handler.handle_message.assert_called_once_with(
         "msg_123", "chat_456", "hello", project
     )
+
+
+def test_topic_bound_worktree_blocks_spec_switch_command(mock_ws_client: FeishuWSClient):
+    """A WT topic must not be implicitly switched to Spec by a slash command."""
+    project = ProjectContext("proj_1", "Test", "/tmp")
+    mock_ws_client._reply_text = MagicMock()
+    mock_ws_client._process_with_intent = MagicMock()
+
+    mock_ws_client._dispatch_message_logic(
+        "msg_123",
+        "chat_456",
+        "/spec rewrite this",
+        project,
+        "worktree",
+        command_match=MagicMock(command="/spec"),
+    )
+
+    mock_ws_client._reply_text.assert_called_once()
+    assert "WT" in mock_ws_client._reply_text.call_args.args[1]
+    assert "Spec" in mock_ws_client._reply_text.call_args.args[1]
+    mock_ws_client._process_with_intent.assert_not_called()
+
+
+def test_topic_bound_spec_allows_spec_command(mock_ws_client: FeishuWSClient):
+    """Same-engine explicit commands remain available inside their topic."""
+    project = ProjectContext("proj_1", "Test", "/tmp")
+    mock_ws_client._reply_text = MagicMock()
+    mock_ws_client._process_with_intent = MagicMock()
+    mock_ws_client._is_interceptable_command_match = MagicMock(return_value=False)
+
+    mock_ws_client._dispatch_message_logic(
+        "msg_123",
+        "chat_456",
+        "/spec_status",
+        project,
+        "spec",
+        command_match=MagicMock(command="/spec_status"),
+    )
+
+    mock_ws_client._reply_text.assert_not_called()
+    mock_ws_client._process_with_intent.assert_called_once()
 
 
 def test_process_message_async_slash_parse_is_request_scoped(mock_ws_client: FeishuWSClient):

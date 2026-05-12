@@ -75,6 +75,37 @@ class ThreadContextManager:
                 ctx.touch()
         return ctx
 
+    def get_engine_context(self, thread_root_id: str) -> Optional[ThreadContext]:
+        """Return a topic-bound engine context for an exact thread root."""
+        ctx = self.get(thread_root_id)
+        if ctx and ctx.mode and ctx.mode != "smart":
+            return ctx
+        return None
+
+    def has_active_engine(self, thread_root_id: str) -> bool:
+        return self.get_engine_context(thread_root_id) is not None
+
+    def bind_engine(
+        self,
+        *,
+        thread_root_id: str,
+        chat_id: str,
+        project_id: str,
+        mode: str,
+        tool_name: Optional[str] = None,
+        model_name: Optional[str] = None,
+        alias_keys: Optional[list[str]] = None,
+    ) -> ThreadContext:
+        return self.register(
+            thread_root_id,
+            chat_id,
+            project_id,
+            mode=mode,
+            tool_name=tool_name,
+            model_name=model_name,
+            alias_keys=alias_keys,
+        )
+
     def get_by_chat(self, chat_id: str) -> list[ThreadContext]:
         with self._lock:
             seen: set[int] = set()

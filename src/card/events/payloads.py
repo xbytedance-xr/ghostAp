@@ -198,6 +198,7 @@ class WorktreeProgressPayload(TypedDict, total=False):
     message: str
     silent: bool
     iteration: int
+    thread_root_id: str
 
 
 class WorktreeToolSelectPayload(TypedDict):
@@ -208,6 +209,7 @@ class WorktreeToolSelectPayload(TypedDict):
     message: str
     select_action: NotRequired[str]
     pending_tool: NotRequired[str]
+    thread_root_id: NotRequired[str]
 
 
 class WorktreeConfirmPayload(TypedDict):
@@ -216,6 +218,7 @@ class WorktreeConfirmPayload(TypedDict):
     goal: str
     project_id: str
     message: str
+    thread_root_id: NotRequired[str]
 
 
 class WorktreeCleanupPayload(TypedDict):
@@ -226,6 +229,7 @@ class WorktreeCleanupPayload(TypedDict):
     project_id: str
     units: NotRequired[list[dict] | None]
     cleanup_phase: Literal["summary", "actions"]
+    thread_root_id: NotRequired[str]
 
 
 class WorktreeMergePayload(TypedDict):
@@ -233,6 +237,7 @@ class WorktreeMergePayload(TypedDict):
     merge_notes: list[dict]
     base_branch: str
     project_id: str
+    thread_root_id: NotRequired[str]
 
 
 class WorktreeCompletedNoChangePayload(TypedDict):
@@ -241,6 +246,7 @@ class WorktreeCompletedNoChangePayload(TypedDict):
     project_id: str
     message: str
     iteration: NotRequired[int]
+    thread_root_id: NotRequired[str]
 
 
 # ---------------------------------------------------------------------------

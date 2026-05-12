@@ -162,6 +162,58 @@ class TestThreadContextManager:
         finally:
             mgr.close()
 
+    def test_get_engine_context_requires_exact_thread_root(self):
+        mgr = self._make_manager()
+        try:
+            mgr.register(
+                "thread-wt-1",
+                "chat1",
+                "proj1",
+                mode="worktree",
+                tool_name="coco",
+                model_name="m1",
+            )
+
+            ctx = mgr.get_engine_context("thread-wt-1")
+            assert ctx is not None
+            assert ctx.mode == "worktree"
+            assert mgr.get_engine_context("missing-thread") is None
+            assert [c.thread_root_id for c in mgr.get_by_chat("chat1")] == ["thread-wt-1"]
+        finally:
+            mgr.close()
+
+    def test_has_active_engine_ignores_smart_topic(self):
+        mgr = self._make_manager()
+        try:
+            mgr.register("smart-root", "chat1", "proj1", mode="smart")
+            mgr.register("wt-root", "chat1", "proj1", mode="worktree")
+
+            assert mgr.has_active_engine("smart-root") is False
+            assert mgr.has_active_engine("wt-root") is True
+            assert mgr.has_active_engine("missing-root") is False
+        finally:
+            mgr.close()
+
+    def test_bind_engine_registers_topic_engine_context(self):
+        mgr = self._make_manager()
+        try:
+            ctx = mgr.bind_engine(
+                thread_root_id="thread-1",
+                chat_id="chat1",
+                project_id="proj1",
+                mode="worktree",
+                tool_name="codex",
+                model_name="gpt-5.5",
+            )
+
+            assert ctx.thread_root_id == "thread-1"
+            assert ctx.mode == "worktree"
+            assert ctx.tool_name == "codex"
+            assert ctx.model_name == "gpt-5.5"
+            assert mgr.get_engine_context("thread-1") is ctx
+        finally:
+            mgr.close()
+
     def test_update_mode_success(self):
         mgr = self._make_manager()
         try:

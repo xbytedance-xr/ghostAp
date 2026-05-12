@@ -15,11 +15,13 @@ from .models import (
     transition_journey_state,
 )
 from .reporter import WorktreeReporter
+from .review_adapter import WorktreeReviewAdapter
 from .selection import (
     WorktreeToolOption,
     format_selection_lines,
 )
 from .selection_controller import WorktreeSelectionController
+from .session_store import WorktreeSessionKey, WorktreeSessionStore
 from .tool_discovery import WorktreeToolDiscovery
 
 logger = logging.getLogger(__name__)
@@ -31,8 +33,13 @@ class WorktreeManager:
         self._git = WorktreeGitService()
         self._dispatcher = WorktreeDispatcher()
         self._reporter = WorktreeReporter()
+        self._review_adapter = WorktreeReviewAdapter()
         self._discovery = WorktreeToolDiscovery()
-        self._selection = WorktreeSelectionController()
+        self._session_store = WorktreeSessionStore()
+        self._selection = WorktreeSelectionController(
+            state_getter=self.get_state,
+            state_resetter=self.reset_state,
+        )
 
     # ------------------------------------------------------------------
     # Tool discovery (delegated)
@@ -64,9 +71,59 @@ class WorktreeManager:
             return None
         return self._project_manager.get_active_project(chat_id)
 
-    @staticmethod
-    def get_state(project: ProjectContext) -> WorktreeRuntimeState:
-        return ensure_worktree_state(project)
+    def _session_key_for(self, project: ProjectContext) -> WorktreeSessionKey:
+        from ..thread import get_current_thread_id, get_thread_manager
+
+        project_id = str(getattr(project, "project_id", "") or "")
+        thread_root_id = get_current_thread_id() or "__default__"
+        chat_id = "__default__"
+        if thread_root_id != "__default__":
+            ctx = get_thread_manager().get(thread_root_id)
+            if ctx:
+                project_id = ctx.project_id or project_id
+                chat_id = ctx.chat_id or chat_id
+                thread_root_id = ctx.thread_root_id or thread_root_id
+            else:
+                thread_root_id = "__default__"
+        return WorktreeSessionKey(
+            project_id=project_id,
+            chat_id=chat_id,
+            thread_root_id=thread_root_id,
+        )
+
+    def get_session_key(self, project: ProjectContext) -> WorktreeSessionKey:
+        return self._session_key_for(project)
+
+    def get_state(self, project: ProjectContext | None = None) -> WorktreeRuntimeState:
+        if not isinstance(self, WorktreeManager):
+            return ensure_worktree_state(self)
+        if project is None:
+            raise TypeError("project is required")
+        key = self._session_key_for(project)
+        state = self._session_store.get(key)
+        if state is None:
+            legacy_state = getattr(project, "worktree_state", None)
+            if key.thread_root_id == "__default__" and isinstance(legacy_state, WorktreeRuntimeState):
+                state = legacy_state
+                self._session_store.put(key, state)
+            else:
+                state = self._session_store.get_or_create(key)
+        # Transitional compatibility for existing direct tests and old helper
+        # paths. The session store remains the owner; the project field mirrors
+        # whichever WT topic is active in the current request.
+        try:
+            project.worktree_state = state
+        except Exception:
+            pass
+        return state
+
+    def reset_state(self, project: ProjectContext) -> WorktreeRuntimeState:
+        state = self._session_store.reset(self._session_key_for(project))
+        try:
+            project.worktree_state = state
+        except Exception:
+            pass
+        return state
 
     # ------------------------------------------------------------------
     # Awaiting-goal helper
@@ -81,6 +138,7 @@ class WorktreeManager:
 
         - ``IDLE``          → ``False``  （尚未进入 /wt 旅程，或已完全重置）
         - ``PENDING``       → ``True``   （已记录 goal / pending_goal，等待执行或确认）
+        - ``AWAITING_GOAL`` → ``True``  （工具/模型已确认，等待同话题第一条普通消息作为目标）
         - ``AUTO_EXECUTING``→ ``True``   （自动执行快速路径中，仍视为处于等待/处理该 goal 的阶段）
         - ``RUNNING``       → ``False``  （已开始实际执行各 worktree 单元，不再拦截新 goal）
         - ``COMPLETED``     → ``False``  （本次旅程已完成，后续消息按普通 SMART 流程处理）
@@ -88,7 +146,7 @@ class WorktreeManager:
 
         结合运行态中的 unit 列表，本函数的**完整判定规则**为：
 
-        - 仅当 ``journey.status`` 处于 ``PENDING`` / ``AUTO_EXECUTING``，且
+        - 仅当 ``journey.status`` 处于 ``PENDING`` / ``AWAITING_GOAL`` / ``AUTO_EXECUTING``，且
           至少存在一个 ``unit.status == "ready"`` 的工作单元时返回 ``True``；
         - 其它枚举值（``IDLE``/``RUNNING``/``COMPLETED``/``FAILED``）、缺失字段、
           类型不匹配或内部异常一律返回 ``False``，以避免在 WS 层抛出错误。
@@ -110,6 +168,7 @@ class WorktreeManager:
             # 显式基于枚举的真值表：仅在 PENDING/AUTO_EXECUTING 阶段才有可能等待 goal。
             awaiting_by_status = {
                 WorktreeJourneyStatus.PENDING: True,
+                WorktreeJourneyStatus.AWAITING_GOAL: True,
                 WorktreeJourneyStatus.AUTO_EXECUTING: True,
                 WorktreeJourneyStatus.IDLE: False,
                 WorktreeJourneyStatus.RUNNING: False,
@@ -119,6 +178,8 @@ class WorktreeManager:
 
             if awaiting_by_status.get(status) is not True:
                 return False
+            if status == WorktreeJourneyStatus.AWAITING_GOAL:
+                return True
 
             units = getattr(state, "units", None) or []
             return any(getattr(u, "status", "") == WorktreeUnitStatus.READY for u in units)
@@ -211,6 +272,7 @@ class WorktreeManager:
         custom_base_dir: Optional[str] = None,
     ) -> WorktreeRuntimeState:
         state = self.get_state(project)
+        session_key = self._session_key_for(project)
         if not state.selection.selected_items:
             state.last_error = "当前没有可创建 worktree 的工具-模型组合"
             return state
@@ -220,6 +282,7 @@ class WorktreeManager:
                 count=len(state.selection.selected_items),
                 base_branch=state.base_branch or None,
                 custom_base_dir=custom_base_dir,
+                session_slug=session_key.slug if session_key.thread_root_id != "__default__" else "",
             )
         except Exception as exc:
             from ..utils.errors import get_error_detail
@@ -290,6 +353,17 @@ class WorktreeManager:
                 state.units, timeout=timeout, on_unit_update=on_unit_update,
             )
             state.last_error = ""
+            changed_files = [
+                str(unit.worktree_path or unit.branch_name or unit.unit_id)
+                for unit in state.units
+                if getattr(unit, "has_changes", False)
+            ]
+            review_plan = self._review_adapter.plan_roles(
+                goal=state.journey.goal,
+                changed_files=changed_files,
+            )
+            state.review_plan = review_plan.to_dict()
+            state.review_outcome = self._review_adapter.aggregate([]).to_dict()
             self.apply_journey_event(state, event="execution_succeeded")
         except Exception as exc:
             from ..utils.errors import get_error_detail

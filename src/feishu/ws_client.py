@@ -661,15 +661,19 @@ class FeishuWSClient:
         """SSOT variant: decide based on request-scoped CommandMatch."""
         return SystemHandler.is_interceptable_command_match(command_match)
 
-    @staticmethod
-    def _is_worktree_awaiting_goal(project: "ProjectContext") -> bool:
+    def _is_worktree_awaiting_goal(self, project: "ProjectContext") -> bool:
         """Return True when worktree journey is awaiting a goal.
 
         具体判定逻辑下沉到 ``WorktreeManager.is_awaiting_goal``，避免在
         WS 层拼装布尔条件，统一依赖 WorktreeRuntimeState / journey 状态机。
         """
 
-        state = getattr(project, "worktree_state", None)
+        if not getattr(project, "project_id", None):
+            return WorktreeManager.is_awaiting_goal(getattr(project, "worktree_state", None))
+        try:
+            state = self._worktree_handler._worktree_manager().get_state(project)
+        except Exception:
+            state = getattr(project, "worktree_state", None)
         return WorktreeManager.is_awaiting_goal(state)
 
     @staticmethod
@@ -705,6 +709,8 @@ class FeishuWSClient:
 
         if parent_id:
             project_id = self._message_mapper.get_project_id(parent_id)
+            if not isinstance(project_id, str):
+                project_id = None
             if project_id:
                 project = self._project_manager.get_project_for_chat(project_id, chat_id)
                 if project:
@@ -768,22 +774,12 @@ class FeishuWSClient:
                 else:
                     logger.debug("[Thread] _handle_message miss: msg_root=%s", root_id[:12] if root_id else "N")
 
-            if not project_id and self.settings.thread_programming_enabled and not thread_ctx:
-                chat_fallbacks = self._thread_manager.get_by_chat(chat_id)
-                if chat_fallbacks:
-                    _fb = chat_fallbacks[0]
-                    if _fb.mode and _fb.mode != "smart":
-                        project_id = _fb.project_id
-                        thread_root_id = _fb.thread_root_id
-                        logger.debug(
-                            "[Thread] _handle_message chat-fallback: chat=%s canonical=%s mode=%s",
-                            chat_id[:12], _fb.thread_root_id[:12], _fb.mode,
-                        )
-
             if not project_id:
                 for ref in (parent_id, root_id):
                     if ref:
                         project_id = self._message_mapper.get_project_id(ref)
+                        if not isinstance(project_id, str):
+                            project_id = None
                         if project_id:
                             break
         except (AttributeError, KeyError, TypeError):
@@ -793,6 +789,8 @@ class FeishuWSClient:
             try:
                 active = self._project_manager.get_active_project(chat_id)
                 project_id = active.project_id if active else None
+                if not isinstance(project_id, str):
+                    project_id = None
             except (AttributeError, KeyError):
                 project_id = None
 
@@ -1037,19 +1035,6 @@ class FeishuWSClient:
                             "[Thread] Safety-net resolved mode: root=%s canonical=%s mode=%s",
                             _root[:12], _tctx.thread_root_id[:12], auto_enter_mode,
                         )
-                if not auto_enter_mode and self.settings.thread_programming_enabled:
-                    _chat_ctxs = self._thread_manager.get_by_chat(chat_id)
-                    if _chat_ctxs:
-                        _best = _chat_ctxs[0]
-                        if _best.mode and _best.mode != "smart":
-                            auto_enter_mode = _best.mode
-                            set_current_thread_id(_best.thread_root_id)
-                            if not project:
-                                project = self._project_manager.get_project_for_chat(_best.project_id, chat_id) or self._project_manager.get_active_project(chat_id)
-                            logger.info(
-                                "[Thread] Safety-net fallback by chat: chat=%s canonical=%s mode=%s",
-                                chat_id[:12], _best.thread_root_id[:12], auto_enter_mode,
-                            )
 
             # 5. Handle Context Updates (Task Scheduler)
             if task_ctx and project:
@@ -1202,23 +1187,6 @@ class FeishuWSClient:
                     root_id[:12], thread_ctx.thread_root_id[:12], thread_ctx.project_id, thread_ctx.mode, project is not None,
                 )
                 return project, auto_enter_mode
-
-        if self.settings.thread_programming_enabled:
-            chat_ctxs = self._thread_manager.get_by_chat(chat_id)
-            if chat_ctxs:
-                best_ctx = chat_ctxs[0]
-                if best_ctx.mode and best_ctx.mode != "smart":
-                    from ..thread import set_current_thread_id
-                    set_current_thread_id(best_ctx.thread_root_id)
-                    auto_enter_mode = best_ctx.mode
-                    project = self._project_manager.get_project_for_chat(best_ctx.project_id, chat_id)
-                    if not project:
-                        project = self._project_manager.get_active_project(chat_id)
-                    logger.info(
-                        "[Thread] Fallback by chat: chat=%s canonical=%s project=%s mode=%s",
-                        chat_id[:12], best_ctx.thread_root_id[:12], best_ctx.project_id, best_ctx.mode,
-                    )
-                    return project, auto_enter_mode
 
         return self._resolve_project_from_message(message_id, chat_id, parent_id or root_id)
 
@@ -1419,6 +1387,12 @@ class FeishuWSClient:
                 command_match = None
 
         if auto_enter_mode:
+            if self._reply_if_topic_engine_switch_blocked(
+                message_id,
+                auto_enter_mode,
+                command_match=command_match,
+            ):
+                return
             if self._is_exit_command(text):
                 self._add_reaction(message_id, EmojiReaction.on_coco_mode())
                 _pid = project.project_id if project else None
@@ -1547,6 +1521,46 @@ class FeishuWSClient:
                 command_match=command_match,
                 shell_fast_tracked=shell_fast_tracked,
             )
+
+    @staticmethod
+    def _requested_topic_engine(command_match) -> Optional[str]:
+        command = getattr(command_match, "command", None)
+        if command == "/worktree":
+            return "worktree"
+        if command == "/deep":
+            return "deep"
+        if command == "/spec":
+            return "spec"
+        return None
+
+    @staticmethod
+    def _engine_display_name(engine: str) -> str:
+        return {
+            "worktree": "WT",
+            "deep": "Deep",
+            "spec": "Spec",
+        }.get(engine, engine)
+
+    def _reply_if_topic_engine_switch_blocked(
+        self,
+        message_id: str,
+        current_engine: str,
+        *,
+        command_match=None,
+    ) -> bool:
+        requested = self._requested_topic_engine(command_match)
+        if not requested or requested == current_engine:
+            return False
+        if current_engine not in {"worktree", "deep", "spec"}:
+            return False
+        self._reply_text(
+            message_id,
+            UI_TEXT["topic_engine_switch_blocked"].format(
+                current=self._engine_display_name(current_engine),
+                requested=self._engine_display_name(requested),
+            ),
+        )
+        return True
 
     def _handle_card_action(self, data: P2CardActionTrigger) -> Optional[P2CardActionTriggerResponse]:
         """飞书卡片回调入口：做去重 + 任务入队（system action 走快通道）。"""

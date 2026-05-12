@@ -21,7 +21,7 @@ from .types import CardEventType
 
 def worktree_progress(
     units: list[dict], project_id: str = "", message: str = "", silent: bool = False,
-    iteration: int | None = None,
+    iteration: int | None = None, thread_root_id: str = "",
 ) -> CardEvent:
     """Worktree execution progress update.
 
@@ -41,6 +41,8 @@ def worktree_progress(
     payload: WorktreeProgressPayload = {
         "units": units, "project_id": project_id, "message": message, "silent": silent,
     }
+    if thread_root_id:
+        payload["thread_root_id"] = thread_root_id
     if iteration is not None:
         if not isinstance(iteration, int):
             raise TypeError(f"iteration must be int, got {type(iteration).__name__}")
@@ -54,6 +56,7 @@ def worktree_tool_select(
     project_id: str = "", message: str = "",
     select_action: str = "worktree_select_tool",
     pending_tool: str = "",
+    thread_root_id: str = "",
 ) -> CardEvent:
     """Worktree tool selection card state.
 
@@ -81,12 +84,15 @@ def worktree_tool_select(
         "select_action": select_action,
         "pending_tool": pending_tool,
     }
+    if thread_root_id:
+        payload["thread_root_id"] = thread_root_id
     return CardEvent(type=CardEventType.WORKTREE_TOOL_SELECT, payload=payload)
 
 
 def worktree_confirm(
     selected_items: list[dict], goal: str = "",
     project_id: str = "", message: str = "",
+    thread_root_id: str = "",
 ) -> CardEvent:
     """Worktree execution confirmation card state.
 
@@ -103,6 +109,8 @@ def worktree_confirm(
         "selected_items": selected_items, "goal": goal,
         "project_id": project_id, "message": message,
     }
+    if thread_root_id:
+        payload["thread_root_id"] = thread_root_id
     return CardEvent(type=CardEventType.WORKTREE_CONFIRM, payload=payload)
 
 
@@ -110,7 +118,7 @@ def worktree_cleanup(
     merge_notes: list[dict], base_branch: str = "main",
     merge_results: list[dict] | None = None,
     project_id: str = "", units: list[dict] | None = None,
-    cleanup_phase: str = "summary",
+    cleanup_phase: str = "summary", thread_root_id: str = "",
 ) -> CardEvent:
     """Worktree cleanup/merge action card state.
 
@@ -136,12 +144,14 @@ def worktree_cleanup(
         "merge_results": merge_results, "project_id": project_id,
         "units": units, "cleanup_phase": cleanup_phase,
     }
+    if thread_root_id:
+        payload["thread_root_id"] = thread_root_id
     return CardEvent(type=CardEventType.WORKTREE_CLEANUP, payload=payload)
 
 
 def worktree_merge(
     merge_notes: list[dict], base_branch: str = "main",
-    project_id: str = "",
+    project_id: str = "", thread_root_id: str = "",
 ) -> CardEvent:
     """Worktree merge entry card state.
 
@@ -161,12 +171,14 @@ def worktree_merge(
         "merge_notes": merge_notes, "base_branch": base_branch,
         "project_id": project_id,
     }
+    if thread_root_id:
+        payload["thread_root_id"] = thread_root_id
     return CardEvent(type=CardEventType.WORKTREE_MERGE, payload=payload)
 
 
 def worktree_completed_no_change(
     units: list[dict], project_id: str = "", message: str = "",
-    iteration: int | None = None,
+    iteration: int | None = None, thread_root_id: str = "",
 ) -> CardEvent:
     """Worktree execution completed but no file changes detected.
 
@@ -181,6 +193,8 @@ def worktree_completed_no_change(
     payload: WorktreeCompletedNoChangePayload = {
         "units": units, "project_id": project_id, "message": message,
     }
+    if thread_root_id:
+        payload["thread_root_id"] = thread_root_id
     if iteration is not None:
         if not isinstance(iteration, int):
             raise TypeError(f"iteration must be int, got {type(iteration).__name__}")

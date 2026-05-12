@@ -2,6 +2,7 @@ import subprocess
 from pathlib import Path
 
 from src.project.context import ProjectContext
+from src.thread import get_thread_manager, set_current_thread_id
 from src.worktree_engine.git_service import WorktreeGitService
 from src.worktree_engine.manager import WorktreeManager
 from src.worktree_engine.selection import WorktreeToolOption
@@ -104,6 +105,41 @@ def test_git_service_creates_distinct_worktrees_for_multiple_selections(tmp_path
     assert len(state.units) == 2
     assert state.units[0].worktree_path != state.units[1].worktree_path
     assert state.units[0].branch_name != state.units[1].branch_name
+
+
+def test_git_service_scopes_worktree_names_by_topic_session(tmp_path):
+    project_root = tmp_path / "project-topic"
+    project_root.mkdir()
+    _init_repo(project_root)
+
+    thread_mgr = get_thread_manager()
+    thread_mgr.register("thread-a", "chat1", "p-topic", mode="worktree")
+    thread_mgr.register("thread-b", "chat1", "p-topic", mode="worktree")
+    project = ProjectContext(project_id="p-topic", project_name="P", root_path=str(project_root))
+    manager = WorktreeManager(project_manager=None)
+    try:
+        set_current_thread_id("thread-a")
+        manager.start_selection(project)
+        manager.select_tool(project, WorktreeToolOption(provider="acp", tool_name="coco", display_name="Coco"))
+        manager.add_pending_item(project, model_name="m1")
+        manager.finalize_selection(project)
+        state_a = manager.ensure_worktrees(project)
+
+        set_current_thread_id("thread-b")
+        manager.start_selection(project)
+        manager.select_tool(project, WorktreeToolOption(provider="acp", tool_name="coco", display_name="Coco"))
+        manager.add_pending_item(project, model_name="m1")
+        manager.finalize_selection(project)
+        state_b = manager.ensure_worktrees(project)
+
+        assert state_a.units[0].branch_name != state_b.units[0].branch_name
+        assert state_a.units[0].worktree_path != state_b.units[0].worktree_path
+        assert "thread-a" in state_a.units[0].branch_name
+        assert "thread-b" in state_b.units[0].branch_name
+    finally:
+        set_current_thread_id(None)
+        thread_mgr.remove("thread-a")
+        thread_mgr.remove("thread-b")
 
 
 # ------------------------------------------------------------------

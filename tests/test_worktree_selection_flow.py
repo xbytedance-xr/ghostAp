@@ -492,6 +492,34 @@ def test_worktree_card_click_flow_accumulates_native_default_and_ttadk_model_too
     assert confirm_event.payload["selected_items"] == exported
 
 
+def test_worktree_command_binds_topic_even_without_existing_thread_context():
+    """WT force-enables topic semantics by binding the command message as root."""
+    from src.thread import get_current_thread_id, get_thread_manager, set_current_thread_id
+
+    handler = _make_system_handler()
+    project = ProjectContext(project_id="p-topic-force", project_name="P", root_path="/tmp/p")
+    handler.ctx.project_manager.get_active_project.return_value = project
+    mock_session = MagicMock()
+    mock_session.closed = False
+
+    try:
+        set_current_thread_id(None)
+        with patch.object(handler, "_get_available_worktree_tools", return_value=[
+            {"provider": "acp", "tool_name": "coco", "display_name": "Coco", "supports_model": False},
+        ]), patch.object(handler, "_get_or_create_session", return_value=mock_session):
+            handler.handle_worktree_command("msg-root", "chat1", project)
+
+        assert get_current_thread_id() == "msg-root"
+        ctx = get_thread_manager().get_engine_context("msg-root")
+        assert ctx is not None
+        assert ctx.mode == "worktree"
+        event = mock_session.dispatch.call_args.args[0]
+        assert event.payload["thread_root_id"] == "msg-root"
+    finally:
+        get_thread_manager().remove("msg-root")
+        set_current_thread_id(None)
+
+
 def test_worktree_select_model_accepts_generic_model_payload_and_returns_to_confirmable_menu():
     """Model callbacks may carry id/name fields; selecting one should add the item and show confirm."""
     handler = _make_system_handler()

@@ -36,6 +36,7 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
             selected = event.payload.get("selected", [])
             message = event.payload.get("message", "")
             project_id = event.payload.get("project_id", "")
+            thread_root_id = event.payload.get("thread_root_id", "")
             select_action = event.payload.get("select_action", "worktree_select_tool")
             pending_tool = event.payload.get("pending_tool", "")
 
@@ -44,6 +45,7 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
                 "selected": selected,
                 "message": message,
                 "project_id": project_id,
+                "thread_root_id": thread_root_id,
                 "select_action": select_action,
                 "pending_tool": pending_tool,
             }
@@ -72,15 +74,15 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
             selected_items = event.payload.get("selected_items", [])
             goal = event.payload.get("goal", "")
             message = event.payload.get("message", "")
+            thread_root_id = event.payload.get("thread_root_id", "")
 
-            data = {"selected_items": selected_items, "goal": goal, "message": message}
+            data = {"selected_items": selected_items, "goal": goal, "message": message, "thread_root_id": thread_root_id}
             block = WorktreeConfirmBlock(
                 block_id="worktree_confirm",
                 data=data,
             )
 
             buttons = (
-                ButtonSpec(text=UI_TEXT["wt_btn_start"], action_id=ButtonIntent.WORKTREE_CONFIRM_START, type="primary"),
                 ButtonSpec(text=UI_TEXT["wt_btn_reselect"], action_id=ButtonIntent.WORKTREE_SHOW_MENU),
                 ButtonSpec(text=UI_TEXT["wt_btn_cancel"], action_id=ButtonIntent.WORKTREE_CANCEL, type="danger"),
             )
@@ -91,6 +93,7 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
         case CardEventType.WORKTREE_PROGRESS:
             units = event.payload.get("units", [])
             message = event.payload.get("message", "")
+            thread_root_id = event.payload.get("thread_root_id", "")
             iteration = event.payload.get("iteration")
             metadata = state.metadata
             if isinstance(iteration, int) and iteration > 0:
@@ -102,7 +105,7 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
             failed_count = sum(1 for u in units if u.get("status") == "failed")
             total = len(units)
 
-            data = {"units": units, "message": message, "completed": completed, "total": total}
+            data = {"units": units, "message": message, "completed": completed, "total": total, "thread_root_id": thread_root_id}
             block = WorktreeUnitsBlock(
                 block_id="worktree_progress",
                 data=data,
@@ -147,8 +150,9 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
         case CardEventType.WORKTREE_MERGE:
             merge_notes = event.payload.get("merge_notes", [])
             base_branch = event.payload.get("base_branch", "main")
+            thread_root_id = event.payload.get("thread_root_id", "")
 
-            data = {"merge_notes": merge_notes, "base_branch": base_branch}
+            data = {"merge_notes": merge_notes, "base_branch": base_branch, "thread_root_id": thread_root_id}
             block = WorktreeMergeBlock(
                 block_id="worktree_merge",
                 data=data,
@@ -171,10 +175,12 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
             base_branch = event.payload.get("base_branch", "main")
             merge_results = event.payload.get("merge_results")
             cleanup_phase = event.payload.get("cleanup_phase", "summary")
+            thread_root_id = event.payload.get("thread_root_id", "")
 
             data = {
                 "merge_notes": merge_notes, "base_branch": base_branch,
                 "merge_results": merge_results, "cleanup_phase": cleanup_phase,
+                "thread_root_id": thread_root_id,
             }
             block = WorktreeCleanupBlock(
                 block_id="worktree_cleanup",
@@ -234,13 +240,14 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
         case CardEventType.WORKTREE_COMPLETED_NO_CHANGE:
             units = event.payload.get("units", [])
             message = event.payload.get("message", "") or UI_TEXT["worktree_completed_no_change"]
+            thread_root_id = event.payload.get("thread_root_id", "")
             iteration = event.payload.get("iteration")
             metadata = state.metadata
             if isinstance(iteration, int) and iteration > 0:
                 metadata = replace(metadata, iteration_index=iteration)
                 state = replace(state, metadata=metadata)
 
-            data = {"units": units, "message": message}
+            data = {"units": units, "message": message, "thread_root_id": thread_root_id}
             block = WorktreeUnitsBlock(
                 block_id="worktree_no_change",
                 data=data,

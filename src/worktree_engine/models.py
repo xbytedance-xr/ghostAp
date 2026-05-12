@@ -170,6 +170,7 @@ class WorktreeJourneyStatus(str, Enum):
 
     - ``IDLE``: 尚未进入 /wt 流程，或上一次执行已被完全重置；
     - ``PENDING``: 目标已解析/记入，但尚未发起自动执行（选择工具/模型阶段）；
+    - ``AWAITING_GOAL``: 工具/模型已确认并创建 worktree，等待同话题第一条普通消息作为目标；
     - ``AUTO_EXECUTING``: 已进入自动执行关键路径，控制器负责串联"确认 / 创建 / 执行"逻辑；
     - ``RUNNING``: 调度器已开始实际执行 worktree 单元，进度通过回调推送；
     - ``COMPLETED``: 本次旅程成功完成且无致命错误；
@@ -181,6 +182,7 @@ class WorktreeJourneyStatus(str, Enum):
 
     IDLE = "idle"
     PENDING = "pending"
+    AWAITING_GOAL = "awaiting_goal"
     AUTO_EXECUTING = "auto_executing"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -443,6 +445,8 @@ class WorktreeRuntimeState:
     merge_notes: list[dict] = field(default_factory=list)
     last_error: str = ""
     iteration_count: int = 0
+    review_plan: dict[str, Any] = field(default_factory=dict)
+    review_outcome: dict[str, Any] = field(default_factory=dict)
     # 高层旅程状态，用于统一 /wt 自动执行路径的状态流转
     journey: WorktreeJourneyState = field(default_factory=WorktreeJourneyState)
 
@@ -459,6 +463,8 @@ class WorktreeRuntimeState:
             "merge_notes": list(self.merge_notes),
             "last_error": self.last_error,
             "iteration_count": int(self.iteration_count),
+            "review_plan": dict(self.review_plan or {}),
+            "review_outcome": dict(self.review_outcome or {}),
             "journey": self.journey.to_dict(),
         }
 
@@ -488,6 +494,8 @@ class WorktreeRuntimeState:
             merge_notes=_migrate_merge_notes(data.get("merge_notes")),
             last_error=_clean_str(data.get("last_error")),
             iteration_count=_clean_int(data.get("iteration_count")),
+            review_plan=dict(data.get("review_plan") or {}),
+            review_outcome=dict(data.get("review_outcome") or {}),
             journey=journey,
         )
 
@@ -540,8 +548,16 @@ def transition_journey_state(
         new.last_error = ""
         return new
 
+    if event_key == "awaiting_goal":
+        if new.status not in {WorktreeJourneyStatus.IDLE, WorktreeJourneyStatus.PENDING}:
+            new.last_error = new.last_error or "非法状态迁移: 仅在 IDLE/PENDING 时可等待目标"
+            return new
+        new.status = WorktreeJourneyStatus.AWAITING_GOAL
+        new.last_error = ""
+        return new
+
     if event_key == "auto_execute_started":
-        if new.status not in {WorktreeJourneyStatus.PENDING, WorktreeJourneyStatus.IDLE}:
+        if new.status not in {WorktreeJourneyStatus.PENDING, WorktreeJourneyStatus.AWAITING_GOAL, WorktreeJourneyStatus.IDLE}:
             # 不允许在运行中反复进入 auto-executing，交由上层决定是否重试
             new.last_error = new.last_error or "非法状态迁移: 仅在 PENDING/IDLE 时可进入 AUTO_EXECUTING"
             return new
@@ -554,7 +570,7 @@ def transition_journey_state(
         return new
 
     if event_key == "execution_started":
-        if new.status not in {WorktreeJourneyStatus.PENDING, WorktreeJourneyStatus.AUTO_EXECUTING}:
+        if new.status not in {WorktreeJourneyStatus.PENDING, WorktreeJourneyStatus.AWAITING_GOAL, WorktreeJourneyStatus.AUTO_EXECUTING}:
             new.last_error = new.last_error or "非法状态迁移: 仅在 PENDING/AUTO_EXECUTING 时可进入 RUNNING"
             return new
         new.status = WorktreeJourneyStatus.RUNNING

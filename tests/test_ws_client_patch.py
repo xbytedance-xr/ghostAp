@@ -2237,7 +2237,7 @@ class TestDualKeyThreadContext(unittest.TestCase):
         set_current_thread_id(None)
         real_mgr.close()
 
-    def test_handle_message_chat_id_fallback_sets_queue_key(self):
+    def test_handle_message_unknown_root_does_not_fallback_to_chat_thread(self):
         client = self._make_client()
         client.settings = MagicMock()
         client.settings.thread_programming_enabled = True
@@ -2246,6 +2246,7 @@ class TestDualKeyThreadContext(unittest.TestCase):
         real_mgr = ThreadContextManager(ttl=3600, cleanup_interval=99999)
         real_mgr.register("reply_id_1", "c1", "p1", mode="coco", alias_keys=["msg_id_1"])
         client._thread_manager = real_mgr
+        client._project_manager.get_active_project.return_value = None
 
         mock_scheduler = MagicMock()
         client._scheduler = mock_scheduler
@@ -2272,10 +2273,11 @@ class TestDualKeyThreadContext(unittest.TestCase):
         call_args = mock_scheduler.submit.call_args
         self.assertIsNotNone(call_args)
         spec = call_args[0][0]
-        self.assertIn("reply_id_1", spec.queue_key)
+        self.assertNotIn("reply_id_1", spec.queue_key)
+        self.assertIn("unknown_root", spec.queue_key)
         real_mgr.close()
 
-    def test_process_async_safety_net_chat_fallback(self):
+    def test_process_async_safety_net_without_root_does_not_fallback_to_chat_thread(self):
         client = self._make_client()
         client.settings = MagicMock()
         client.settings.thread_programming_enabled = True
@@ -2302,9 +2304,9 @@ class TestDualKeyThreadContext(unittest.TestCase):
             _project, _auto_mode, _text, _is_img = client._handle_image_content(
                 message, [], "hello world", "req1", None,
             )
-        self.assertEqual(_auto_mode, "claude")
+        self.assertIsNone(_auto_mode)
         from src.thread import get_current_thread_id, set_current_thread_id
-        self.assertEqual(get_current_thread_id(), "reply_c")
+        self.assertIsNone(get_current_thread_id())
         set_current_thread_id(None)
         real_mgr.close()
 
@@ -2366,7 +2368,7 @@ class TestDualKeyThreadContext(unittest.TestCase):
             client = FeishuWSClient(MagicMock())
         return client
 
-    def test_resolve_context_chat_id_fallback_when_root_id_mismatch(self):
+    def test_resolve_context_root_mismatch_does_not_fallback_to_chat_thread(self):
         client = self._make_client()
         client.settings = MagicMock()
         client.settings.thread_programming_enabled = True
@@ -2380,6 +2382,8 @@ class TestDualKeyThreadContext(unittest.TestCase):
         project.project_id = "p1"
         client._project_manager.get_project.return_value = project
         client._project_manager.get_project_for_chat.return_value = project
+        client._project_manager.find_by_bound_chat_id.return_value = None
+        client._project_manager.get_active_project.return_value = project
 
         message = MagicMock()
         message.message_id = "m2"
@@ -2388,14 +2392,15 @@ class TestDualKeyThreadContext(unittest.TestCase):
         message.parent_id = None
 
         from src.thread import get_current_thread_id, set_current_thread_id
+        set_current_thread_id(None)
         resolved_project, auto_mode = client._resolve_message_context(message)
-        self.assertEqual(auto_mode, "coco")
+        self.assertIsNone(auto_mode)
         self.assertIs(resolved_project, project)
-        self.assertEqual(get_current_thread_id(), "reply_id_1")
+        self.assertIsNone(get_current_thread_id())
         set_current_thread_id(None)
         real_mgr.close()
 
-    def test_safety_net_chat_id_fallback(self):
+    def test_safety_net_without_root_does_not_fallback_to_chat_thread(self):
         client = self._make_client()
         client.settings = MagicMock()
         client.settings.thread_programming_enabled = True
@@ -2418,12 +2423,13 @@ class TestDualKeyThreadContext(unittest.TestCase):
         setattr(message, "content", "{}")
 
         from src.thread import get_current_thread_id, set_current_thread_id
+        set_current_thread_id(None)
         with patch("src.feishu.ws_client.SystemHandler.is_likely_shell_command", return_value=False):
             _project, _auto_mode, _text, _is_img = client._handle_image_content(
                 message, [], "hello world", "req1", None,
             )
-        self.assertEqual(_auto_mode, "claude")
-        self.assertEqual(get_current_thread_id(), "reply_id_1")
+        self.assertIsNone(_auto_mode)
+        self.assertIsNone(get_current_thread_id())
         set_current_thread_id(None)
         real_mgr.close()
 

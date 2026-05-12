@@ -98,9 +98,9 @@ class TestWorktreeE2E:
         assert len(state.blocks) == 1
         assert state.blocks[0].kind == "worktree_confirm"
         assert state.blocks[0].data["goal"] == "Fix bug"
-        # Should have start, reselect, cancel buttons
+        # No separate start button: WT starts when a same-topic goal message arrives.
         action_ids = [b.action_id for b in state.buttons]
-        assert ButtonIntent.WORKTREE_CONFIRM_START in action_ids
+        assert ButtonIntent.WORKTREE_CONFIRM_START not in action_ids
         assert ButtonIntent.WORKTREE_CANCEL in action_ids
 
     def test_confirm_card_renders_schema_v2_compatible_buttons(self):
@@ -116,7 +116,7 @@ class TestWorktreeE2E:
         card_json = rendered[0].to_feishu_json()
         tags = _collect_tags(card_json["body"]["elements"])
         assert "action" not in tags
-        assert tags.count("button") == 3
+        assert tags.count("button") == 2
 
     # ------------------------------------------------------------------
     # Step 3: Progress
