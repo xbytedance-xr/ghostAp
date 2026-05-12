@@ -18,7 +18,7 @@ class MockClient:
         self._counter = 0
         self.creates = []
 
-    def create_card(self, chat_id, card_json, *, reply_to=None):
+    def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
         self._counter += 1
         self.creates.append({"chat_id": chat_id, "card_json": card_json, "reply_to": reply_to})
         return (f"msg_{self._counter}", f"card_{self._counter}")

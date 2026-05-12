@@ -16,7 +16,7 @@ class MockCardClient:
     def __init__(self):
         self._counter = 0
 
-    def create_card(self, chat_id, card_json, *, reply_to=None):
+    def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
         self._counter += 1
         return (f"msg_{self._counter}", f"card_{self._counter}")
 
@@ -30,7 +30,7 @@ class MockCardClient:
         self._counter += 1
         return (f"msg_{self._counter}", f"card_{self._counter}")
 
-    def send_card_reference(self, chat_id, source_card_id, *, reply_to=None):
+    def send_card_reference(self, chat_id, source_card_id, *, reply_to=None, idempotency_key=None):
         self._counter += 1
         return f"msg_{self._counter}"
 

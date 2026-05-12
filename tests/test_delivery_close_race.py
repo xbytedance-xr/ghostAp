@@ -23,7 +23,7 @@ class _SlowCreateClient:
         self.creates: list[dict] = []
         self.create_started = threading.Event()
 
-    def create_card(self, chat_id, card_json, *, reply_to=None):
+    def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
         self.create_started.set()  # signal that we're inside the API call
         time.sleep(self._delay)  # simulate network latency
         self._create_counter += 1
@@ -41,7 +41,7 @@ class _SlowCreateClient:
     def create_streaming_card(self, card_json):
         raise NotImplementedError
 
-    def send_card_reference(self, chat_id, card_id, *, reply_to=None):
+    def send_card_reference(self, chat_id, card_id, *, reply_to=None, idempotency_key=None):
         raise NotImplementedError
 
 

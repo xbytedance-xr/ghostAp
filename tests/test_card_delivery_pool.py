@@ -21,7 +21,7 @@ class MockDeliveryClient:
     def __init__(self):
         self.creates = []
 
-    def create_card(self, chat_id, card_json, *, reply_to=None):
+    def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
         self.creates.append(chat_id)
         return ("msg_1", "card_1")
 

@@ -31,7 +31,7 @@ class _MockClient:
         self.created = []
         self.updated = []
 
-    def create_card(self, chat_id, card_json, *, reply_to=None):
+    def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
         self.created.append((chat_id, card_json))
         return ("msg_1", "card_1")
 
@@ -151,7 +151,7 @@ class TestForceClosePath:
     def test_force_close_survives_delivery_exception(self):
         """Force-close doesn't crash even if delivery.close() raises."""
         class BrokenClient:
-            def create_card(self, chat_id, card_json, *, reply_to=None):
+            def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
                 return ("msg_1", "card_1")
             def update_card(self, card_id, card_json, *, sequence=0):
                 pass

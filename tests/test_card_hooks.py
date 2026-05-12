@@ -212,7 +212,7 @@ class TestHookExceptionIsolation:
                 second_calls.append(reason)
 
         class MockClient:
-            def create_card(self, chat_id, card_json, *, reply_to=None):
+            def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
                 return ("msg_1", "card_1")
             def update_card(self, card_id, card_json, *, sequence=0):
                 pass
@@ -243,7 +243,7 @@ class TestEmojiHookAddReactionFailure:
         add_reaction = MagicMock(side_effect=ConnectionError("network down"))
 
         class MockClient:
-            def create_card(self, chat_id, card_json, *, reply_to=None):
+            def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
                 return ("msg_1", "card_1")
             def update_card(self, card_id, card_json, *, sequence=0):
                 pass
@@ -276,7 +276,7 @@ class TestEmojiHookAddReactionFailure:
         add_reaction = MagicMock(side_effect=RuntimeError("API rate limited"))
 
         class MockClient:
-            def create_card(self, chat_id, card_json, *, reply_to=None):
+            def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
                 return ("msg_1", "card_1")
             def update_card(self, card_id, card_json, *, sequence=0):
                 pass
@@ -414,7 +414,7 @@ class TestHookConcurrentStress:
                     call_log.append(self._sid)
 
         class MockClient:
-            def create_card(self, chat_id, card_json, *, reply_to=None):
+            def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
                 return ("msg_1", "card_1")
             def update_card(self, card_id, card_json, *, sequence=0):
                 pass
@@ -484,7 +484,7 @@ class TestHookConcurrentStress:
                     fast_calls.append(self._sid)
 
         class MockClient:
-            def create_card(self, chat_id, card_json, *, reply_to=None):
+            def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
                 return ("msg_1", "card_1")
             def update_card(self, card_id, card_json, *, sequence=0):
                 pass

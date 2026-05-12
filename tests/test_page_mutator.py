@@ -9,7 +9,7 @@ Covers:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -59,7 +59,12 @@ class TestCreatePageStreamingSuccess:
         assert result.kind == "applied"
         assert "msg_id_1" in result.message
         client.create_streaming_card.assert_called_once()
-        client.send_card_reference.assert_called_once_with("chat_1", "card_id_1", reply_to=None)
+        client.send_card_reference.assert_called_once_with(
+            "chat_1",
+            "card_id_1",
+            reply_to=None,
+            idempotency_key=ANY,
+        )
 
 
 class TestCreatePageStreamingFallback:

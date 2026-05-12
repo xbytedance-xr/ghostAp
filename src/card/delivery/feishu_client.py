@@ -35,7 +35,12 @@ class FeishuCardAPIClient:
         self._settings = get_settings()
 
     def create_card(
-        self, chat_id: str, card_json: dict, *, reply_to: str | None = None
+        self,
+        chat_id: str,
+        card_json: dict,
+        *,
+        reply_to: str | None = None,
+        idempotency_key: str | None = None,
     ) -> tuple[str, str]:
         """Create a card message. Returns (message_id, card_id).
 
@@ -61,6 +66,7 @@ class FeishuCardAPIClient:
                     .msg_type("interactive")
                     .content(content)
                     .reply_in_thread(reply_in_thread)
+                    .uuid(idempotency_key)
                     .build()
                 )
                 .build()
@@ -75,6 +81,7 @@ class FeishuCardAPIClient:
                     .receive_id(chat_id)
                     .msg_type("interactive")
                     .content(content)
+                    .uuid(idempotency_key)
                     .build()
                 )
                 .build()
@@ -190,7 +197,12 @@ class FeishuCardAPIClient:
         return response.data.card_id
 
     def send_card_reference(
-        self, chat_id: str, card_id: str, *, reply_to: str | None = None
+        self,
+        chat_id: str,
+        card_id: str,
+        *,
+        reply_to: str | None = None,
+        idempotency_key: str | None = None,
     ) -> str:
         """Send an IM message referencing a CardKit card entity.
 
@@ -215,6 +227,7 @@ class FeishuCardAPIClient:
                     .msg_type("interactive")
                     .content(content)
                     .reply_in_thread(reply_in_thread)
+                    .uuid(idempotency_key)
                     .build()
                 )
                 .build()
@@ -229,6 +242,7 @@ class FeishuCardAPIClient:
                     .receive_id(chat_id)
                     .msg_type("interactive")
                     .content(content)
+                    .uuid(idempotency_key)
                     .build()
                 )
                 .build()

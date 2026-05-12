@@ -66,7 +66,7 @@ class TrackingClient:
         self.created: list[dict] = []
         self.updated: list[dict] = []
 
-    def create_card(self, chat_id, card_json, *, reply_to=None):
+    def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
         self.created.append(card_json)
         idx = len(self.created)
         return (f"msg_{idx}", f"card_{idx}")

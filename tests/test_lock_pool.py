@@ -359,7 +359,7 @@ class TestPoolStatsIntegration:
             def __init__(self):
                 self._n = 0
 
-            def create_card(self, chat_id, card_json, *, reply_to=None):
+            def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
                 self._n += 1
                 return (f"msg_{self._n}", f"card_{self._n}")
 
@@ -373,7 +373,7 @@ class TestPoolStatsIntegration:
                 self._n += 1
                 return f"card_{self._n}"
 
-            def send_card_reference(self, chat_id, card_id, *, reply_to=None):
+            def send_card_reference(self, chat_id, card_id, *, reply_to=None, idempotency_key=None):
                 self._n += 1
                 return f"msg_{self._n}"
 

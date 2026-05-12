@@ -28,7 +28,7 @@ class MockDeliveryClient:
         self._counter = 0
         self._fail_deliver = fail_deliver
 
-    def create_card(self, chat_id, card_json, *, reply_to=None):
+    def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
         if self._fail_deliver:
             raise RuntimeError("delivery failed")
         self._counter += 1
@@ -157,7 +157,7 @@ class RejectingDeliveryClient:
         self._counter = 0
         self._reject_after = 1  # reject after first successful create
 
-    def create_card(self, chat_id, card_json, *, reply_to=None):
+    def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
         self._counter += 1
         self.creates.append({"chat_id": chat_id})
         return (f"msg_{self._counter}", f"card_{self._counter}")

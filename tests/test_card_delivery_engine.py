@@ -28,7 +28,7 @@ class MockCardClient:
         self._raise_on_update: Exception | None = None
         self._raise_on_streaming_create: Exception | None = None
 
-    def create_card(self, chat_id, card_json, *, reply_to=None):
+    def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
         self._create_counter += 1
         msg_id = f"msg_{self._create_counter}"
         card_id = f"card_{self._create_counter}"
@@ -36,6 +36,7 @@ class MockCardClient:
             "chat_id": chat_id,
             "card_json": card_json,
             "reply_to": reply_to,
+            "idempotency_key": idempotency_key,
         })
         return (msg_id, card_id)
 
@@ -66,10 +67,15 @@ class MockCardClient:
         self.streaming_creates.append({"card_json": card_json})
         return card_id
 
-    def send_card_reference(self, chat_id, card_id, *, reply_to=None):
+    def send_card_reference(self, chat_id, card_id, *, reply_to=None, idempotency_key=None):
         self._create_counter += 1
         msg_id = f"msg_{self._create_counter}"
-        self.card_references.append({"chat_id": chat_id, "card_id": card_id, "reply_to": reply_to})
+        self.card_references.append({
+            "chat_id": chat_id,
+            "card_id": card_id,
+            "reply_to": reply_to,
+            "idempotency_key": idempotency_key,
+        })
         return msg_id
 
 
@@ -718,12 +724,17 @@ class TestPartialMultipageFailure:
         call_count = 0
         original_create = client.create_card
 
-        def _failing_second_create(chat_id, card_json, *, reply_to=None):
+        def _failing_second_create(chat_id, card_json, *, reply_to=None, idempotency_key=None):
             nonlocal call_count
             call_count += 1
             if call_count == 2:
                 raise RuntimeError("Simulated page 1 creation failure")
-            return original_create(chat_id, card_json, reply_to=reply_to)
+            return original_create(
+                chat_id,
+                card_json,
+                reply_to=reply_to,
+                idempotency_key=idempotency_key,
+            )
 
         client.create_card = _failing_second_create
 
@@ -754,6 +765,64 @@ class TestPartialMultipageFailure:
         assert outcomes2[1].kind == "applied"
         # Total creates: 1 (page 0 initial) + 1 (page 1 retry)
         assert len(client.creates) == 2
+
+    def test_retry_missing_page_reuses_same_idempotency_key(self):
+        """A retried page create must use the same Feishu uuid for the same session/page."""
+        client = MockCardClient()
+        delivery = CardDelivery(client)
+
+        call_count = 0
+        original_create = client.create_card
+
+        def _failing_second_create(chat_id, card_json, *, reply_to=None, idempotency_key=None):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                _failing_second_create.last_idempotency_key = idempotency_key
+                raise TimeoutError("create response lost after server-side send")
+            return original_create(
+                chat_id,
+                card_json,
+                reply_to=reply_to,
+                idempotency_key=idempotency_key,
+            )
+
+        _failing_second_create.last_idempotency_key = None
+        client.create_card = _failing_second_create
+
+        rendered = [
+            RenderedCard(_card_json={"page": 0}, structure_signature="sig_a", page_index=0, total_pages=2),
+            RenderedCard(_card_json={"page": 1}, structure_signature="sig_b", page_index=1, total_pages=2),
+        ]
+
+        outcomes = delivery.deliver("sess_partial_retry", "chat_abc", rendered)
+        assert [outcome.kind for outcome in outcomes] == ["applied", "reconcile"]
+
+        failed_page_key = _failing_second_create.last_idempotency_key
+        client.create_card = original_create
+        outcomes2 = delivery.deliver("sess_partial_retry", "chat_abc", rendered)
+
+        assert [outcome.kind for outcome in outcomes2] == ["skipped", "applied"]
+        assert failed_page_key
+        assert client.creates[-1]["idempotency_key"] == failed_page_key
+
+    def test_streaming_reference_uses_stable_idempotency_key(self):
+        """Streaming cards create a visible IM reference; that send must be idempotent too."""
+        client = MockCardClient()
+        delivery = CardDelivery(client)
+        rendered = [
+            RenderedCard(
+                _card_json={"config": {"streaming_mode": True}, "body": {}},
+                structure_signature="sig_stream",
+                page_index=1,
+                total_pages=2,
+            )
+        ]
+
+        delivery.deliver("sess_stream", "chat_abc", rendered)
+        first_key = client.card_references[0]["idempotency_key"]
+
+        assert first_key
 
 
 class TestSessionLockEviction:

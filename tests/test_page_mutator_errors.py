@@ -21,7 +21,7 @@ class _ErrorClient:
         self._error = error
         self._create_counter = 0
 
-    def create_card(self, chat_id, card_json, *, reply_to=None):
+    def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
         if self._error:
             raise self._error
         self._create_counter += 1
@@ -40,7 +40,7 @@ class _ErrorClient:
             raise self._error
         return "stream_card_1"
 
-    def send_card_reference(self, chat_id, card_id, *, reply_to=None):
+    def send_card_reference(self, chat_id, card_id, *, reply_to=None, idempotency_key=None):
         if self._error:
             raise self._error
         return "ref_msg_1"

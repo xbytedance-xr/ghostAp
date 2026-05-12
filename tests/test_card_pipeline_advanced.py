@@ -35,7 +35,7 @@ class MockDeliveryClient:
         self.elements = []
         self._counter = 0
 
-    def create_card(self, chat_id, card_json, *, reply_to=None):
+    def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
         self._counter += 1
         self.creates.append(card_json)
         return (f"msg_{self._counter}", f"card_{self._counter}")
