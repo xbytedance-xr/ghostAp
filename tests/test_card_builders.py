@@ -184,6 +184,46 @@ def test_help_card_mentions_worktree_wt_alias_and_separators():
     assert "分隔符支持空格/Tab" in card_text
 
 
+def test_help_card_quick_actions_use_compact_mobile_grid():
+    """Front help actions should render as compact two-column callback buttons."""
+    SystemBuilder._build_help_card_cached.cache_clear()
+
+    msg_type, card_json = SystemBuilder.build_help_card(
+        session_idle_timeout=600,
+        session_idle_warn_at_remaining=120,
+        lock_undo_window_seconds=300,
+    )
+
+    assert msg_type == "interactive"
+    card = json.loads(card_json)
+    buttons = _collect_buttons(card)
+    quick_buttons = [
+        button
+        for button in buttons
+        if button.get("value", {}).get("action")
+        in {
+            "enter_deep_prompt",
+            "show_worktree_menu",
+            "show_acp_menu",
+            "show_ttadk_menu",
+            "show_status",
+            "switch_project",
+        }
+    ]
+
+    assert [button["value"]["action"] for button in quick_buttons[:6]] == [
+        "enter_deep_prompt",
+        "show_worktree_menu",
+        "show_acp_menu",
+        "show_ttadk_menu",
+        "show_status",
+        "switch_project",
+    ]
+    assert all(button["size"] == "small" for button in quick_buttons)
+    assert all(button.get("behaviors") == [{"type": "callback", "value": button["value"]}] for button in quick_buttons)
+    assert [button["type"] for button in quick_buttons[:2]] == ["primary", "primary"]
+
+
 def test_project_status_card_includes_switch_and_group_jump_without_duplicate_path():
     project = ProjectContext(project_id="p1", project_name="P1", root_path="/tmp/p1")
     project.bound_chat_id = "oc_group_123"

@@ -47,9 +47,11 @@ def test_header_v2_includes_iteration_task_and_page_context():
 
     result = render_header(state, page_index=1, total_pages=3)
 
-    assert result["title"]["content"] == (
-        "📁 ghostAp · 🤖 Coco · 第 3/10 轮 · 任务 2: 修复紧凑工具摘要 · #3.2 · 页 2/3"
+    assert result["title"]["content"] == "第 3/10 轮"
+    assert result["subtitle"]["content"].startswith(
+        "任务 2: 修复紧凑工具摘要 · #3.2 · 页 2/3"
     )
+    assert "Coco" not in result["title"]["content"]
 
 
 def test_header_v2_includes_subagent_task_context():
@@ -71,8 +73,9 @@ def test_header_v2_includes_subagent_task_context():
 
     result = render_header(state)
 
-    assert "第 3 轮" in result["title"]["content"]
-    assert "子任务 2a: 排查渲染边界" in result["title"]["content"]
+    assert result["title"]["content"] == "第 3 轮"
+    assert "子任务 2a: 排查渲染边界" in result["subtitle"]["content"]
+    assert "#3.a" in result["subtitle"]["content"]
     assert result["template"] == "orange"
 
 

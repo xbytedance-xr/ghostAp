@@ -248,16 +248,17 @@ UI_TEXT = {
     "system_acp_model_select_title": "💭 {tool} 模型选择",
     "system_menu_title": "📱 快捷菜单",
     "system_menu_header": "**📱 常用指令菜单**",
-    "system_menu_btn_new_project": "➕ 新建项目",
-    "system_menu_btn_switch_project": "🔄 切换项目",
-    "system_menu_btn_deep_task": "💭 Deep 任务",
-    "system_menu_btn_status": "📊 状态概览",
-    "system_menu_btn_ttadk": "🎮 TTADK",
-    "system_menu_btn_acp": "🧩 ACP",
+    "system_menu_btn_new_project": "新项目",
+    "system_menu_btn_switch_project": "切项目",
+    "system_menu_btn_deep_task": "Deep",
+    "system_menu_btn_worktree": "Worktree",
+    "system_menu_btn_status": "状态",
+    "system_menu_btn_ttadk": "TTADK",
+    "system_menu_btn_acp": "工具",
     "system_menu_btn_help": "📖 帮助",
     "system_help_title": "📖 GhostAP 使用帮助 v{version}",
-    "system_help_status_header": "**当前状态**  •  {mode}  •  `{cwd}`  •  项目: {project}",
-    "system_help_quick_entry": "**⚡ 快捷入口**（点按执行，手机优先）",
+    "system_help_status_header": "**当前状态** · {mode} · 项目: {project}\n<font color='grey'>{cwd}</font>",
+    "system_help_quick_entry": "**常用操作**",
     "system_help_section_modes": "🔄 编程模式切换",
     "system_help_section_modes_body": (
         "`/coco` · 进入 Coco 编程模式（字节跳动 AI）\n"
@@ -311,7 +312,7 @@ UI_TEXT = {
         "**💡 使用提示**\n"
         "1. 发送 `/menu` 打开完整快捷菜单\n"
         "2. 发送 `/help` 随时查看帮助\n"
-        "3. ⏰ 闲置 {timeout_display} 后关闭 · 关闭前 {warn_display} 会弹出续期按钮，点击即可延长\n"
+        "3. ⏰ 长时间无更新超过 {timeout_display} 才会关闭/回收；运行中的任务会自动顺延，回收前 {warn_display} 会提醒续期\n"
         "<font color='grey'>调整: CARD_SESSION_IDLE_TIMEOUT</font>"
     ),
     "system_tools_list_title": "🛠️ 工具选择",

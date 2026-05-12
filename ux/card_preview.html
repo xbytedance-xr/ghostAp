@@ -273,6 +273,46 @@ body {
 .btn-default { background: #f0f1f3; color: #1f2329; }
 .btn-danger { background: #dc2626; color: #fff; }
 
+/* === Help Card === */
+.help-status {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #f5f8ff;
+  border: 1px solid #d6e4ff;
+  font-size: 13px;
+}
+.help-status .path {
+  display: block;
+  margin-top: 2px;
+  color: #8f959e;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 12px;
+}
+.help-actions-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.help-actions-grid .btn {
+  padding: 7px 10px;
+  font-size: 13px;
+}
+.help-section {
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: #646a73;
+}
+.help-section strong {
+  color: #1f2329;
+}
+@media (max-width: 360px) {
+  .help-actions-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 /* === Task List === */
 .task-list {
   font-size: 13px;
@@ -458,8 +498,8 @@ body {
   <div class="card-label">Programming · 精简过程流</div>
   <div class="feishu-card slim-flow-card">
     <div class="card-header header-blue">
-      <div class="title">📁 ghostAp · 🤖 Coco · 第 3/10 轮 · 任务 2: 卡片精简 · #1 · 页 1/2</div>
-      <div class="subtitle">Spec / Build · 已执行 7 分 35 秒</div>
+      <div class="title">第 3/10 轮</div>
+      <div class="subtitle">任务 2: 卡片精简 · #1 · 页 1/2 · 已执行 7 分 35 秒</div>
     </div>
     <div class="card-body">
       <div class="slim-target">
@@ -685,6 +725,53 @@ tests/test_tools.py::test_tool_history_fold PASSED
 </div>
 </div>
 
+<!-- ==================== Help Card ==================== -->
+<h2 class="section-title">Help 页面优化</h2>
+<div class="cards-grid">
+<div class="card-wrapper">
+  <div class="card-label">System · /help</div>
+  <div class="feishu-card">
+    <div class="card-header header-blue">
+      <div class="title">📖 GhostAP 使用帮助 v0.2.0</div>
+    </div>
+    <div class="card-body">
+      <div class="help-status">
+        <strong>当前状态</strong> · ☁️ 智能模式 · 项目: <strong>ghostAp</strong>
+        <span class="path">.../aiwork/ghostAp</span>
+      </div>
+
+      <div class="text-content"><strong>常用操作</strong></div>
+      <div class="help-actions-grid">
+        <button class="btn btn-primary">Deep</button>
+        <button class="btn btn-primary">Worktree</button>
+        <button class="btn btn-default">工具</button>
+        <button class="btn btn-default">TTADK</button>
+        <button class="btn btn-default">状态</button>
+        <button class="btn btn-default">切项目</button>
+      </div>
+
+      <div class="help-section">
+        <strong>🔄 编程模式切换</strong><br>
+        <code>/coco</code> · <code>/claude</code> · <code>/aiden</code> · <code>/codex</code> · <code>/gemini</code> · <code>/exit</code>
+      </div>
+      <div class="help-section">
+        <strong>📋 Spec / 🌳 Worktree</strong><br>
+        <code>/spec &lt;需求&gt;</code> · <code>/wt &lt;目标&gt;</code> · <code>/worktree &lt;目标&gt;</code>
+      </div>
+      <div class="help-section">
+        <strong>📂 项目管理</strong><br>
+        <code>/projects</code> · <code>/new</code> · <code>/new-chat</code> · <code>/switch</code> · <code>/diff</code>
+      </div>
+
+      <hr class="card-hr">
+      <div class="notation">
+        ⏰ 长时间无更新超过 30 分钟才会关闭/回收；运行中的任务会自动顺延，回收前提醒续期。
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
 <!-- ==================== Spec Iteration ==================== -->
 <h2 class="section-title">Spec Engine 迭代卡片</h2>
 <div class="cards-grid">
@@ -694,8 +781,8 @@ tests/test_tools.py::test_tool_history_fold PASSED
   <div class="card-label">Spec Engine · 迭代执行中（第 3 轮）</div>
   <div class="feishu-card">
     <div class="card-header header-indigo">
-      <div class="title">📁 ghostAp · 🤖 Coco · 第 3/10 轮 · 任务 2: 紧凑工具摘要 · #3.2</div>
-      <div class="subtitle">Spec Engine · 多卡并行时可直接按轮次和任务定位</div>
+      <div class="title">第 3/10 轮</div>
+      <div class="subtitle">任务 2: 紧凑工具摘要 · #3.2 · 多卡并行时可定位</div>
     </div>
     <div class="card-body">
       <!-- Criteria Panel -->
@@ -1140,8 +1227,8 @@ tests/test_tools.py::test_tool_history_fold PASSED
   <div class="card-label">Worktree · 执行中</div>
   <div class="feishu-card">
     <div class="card-header header-wathet">
-      <div class="title">📁 ghostAp · 🤖 Worktree · 第 2 轮 · #1 · 页 1/2</div>
-      <div class="subtitle">执行中 · 3 个并行任务会同步更新在同一轮次下</div>
+      <div class="title">第 2 轮</div>
+      <div class="subtitle">Worktree · #1 · 页 1/2 · 3 个并行任务同步更新</div>
     </div>
     <div class="card-body">
       <!-- Stepper -->
@@ -1622,7 +1709,7 @@ tests/test_tools.py::test_tool_history_fold PASSED
   </div>
   <h3 style="font-size:16px;margin:16px 0 12px;">📐 布局规范</h3>
   <div style="font-size:13px;color:#646a73;line-height:1.8;">
-    • <strong>Header</strong>：项目名 + 工具 + 迭代轮次 + 任务/子任务 + 卡片序号/分页<br>
+    • <strong>Header</strong>：有迭代时标题只保留轮次，任务/子任务 + 卡片序号/分页下沉到副标题或 footer<br>
     • <strong>Body 三段式排列</strong>：Status区（任务列表/阶段/验收标准/告警）→ Body区（文本/思考/计划）→ Appendix区（工具面板/历史）<br>
     • <strong>Footer</strong>：工具名 · 模型名 · 执行时长 · 进度条<br>
     • <strong>按钮</strong>：底部操作栏，破坏性操作需确认对话框<br>

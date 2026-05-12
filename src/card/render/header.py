@@ -65,9 +65,14 @@ def _render_v2_header(state: CardState, *, page_index: int = 0, total_pages: int
     # v2 design: frozen cards hide model_name (mutual exclusion with 已封存 tag)
     model_suffix = "" if metadata.frozen else (f" · {metadata.model_name}" if metadata.model_name else "")
 
-    context_suffix = _title_context_suffix(state)
-    page_suffix = _page_label(page_index=page_index, total_pages=total_pages)
-    title = f"📁 {project_name} · 🤖 {tool_label}{context_suffix} · #{seq}{page_suffix}{model_suffix}{archived}"
+    iteration = _iteration_label(state)
+    unit = _unit_label(metadata, iteration)
+    page = _page_label(page_index=page_index, total_pages=total_pages)
+    if iteration:
+        title = f"{iteration}{model_suffix}{archived}"
+    else:
+        context_suffix = _title_context_suffix(state)
+        title = f"📁 {project_name} · 🤖 {tool_label}{context_suffix} · #{seq}{page}{model_suffix}{archived}"
     if state.terminal == "failed" and "错误" not in title:
         title = f"❌ 错误 · {title}"
 
@@ -75,16 +80,14 @@ def _render_v2_header(state: CardState, *, page_index: int = 0, total_pages: int
     cumulative_elapsed = _cumulative_elapsed_seconds(state)
     marker = _status_marker(state)
 
-    if metadata.is_subagent and metadata.parent_card_seq:
-        subtitle = f"↳ from #{metadata.parent_card_seq}"
-        if cumulative_elapsed > 0:
-            subtitle = f"{subtitle} · {marker} {_format_elapsed(cumulative_elapsed)}"
-    elif metadata.frozen:
-        subtitle = f"{marker} final {_format_elapsed(cumulative_elapsed)}"
-    elif cumulative_elapsed > 0:
-        subtitle = f"{marker} {_format_elapsed(cumulative_elapsed)}"
-    else:
-        subtitle = marker
+    subtitle = _build_v2_subtitle(
+        state,
+        marker=marker,
+        elapsed_seconds=cumulative_elapsed,
+        unit=unit,
+        page=page,
+        include_card_position=bool(iteration),
+    )
 
     result: dict = {
         "title": {"tag": "plain_text", "content": title},
@@ -104,6 +107,36 @@ def _title_context_suffix(state: CardState) -> str:
     if unit:
         labels.append(unit)
     return "".join(f" · {label}" for label in labels)
+
+
+def _build_v2_subtitle(
+    state: CardState,
+    *,
+    marker: str,
+    elapsed_seconds: float,
+    unit: str,
+    page: str,
+    include_card_position: bool,
+) -> str:
+    metadata = state.metadata
+    parts: list[str] = []
+    if unit:
+        parts.append(unit)
+    if include_card_position:
+        parts.append(f"#{metadata.card_sequence}")
+    if page:
+        parts.append(page.removeprefix(" · "))
+    if metadata.is_subagent and metadata.parent_card_seq:
+        parts.append(f"↳ from #{metadata.parent_card_seq}")
+
+    if metadata.frozen:
+        status = f"{marker} final {_format_elapsed(elapsed_seconds)}"
+    elif elapsed_seconds > 0:
+        status = f"{marker} {_format_elapsed(elapsed_seconds)}"
+    else:
+        status = marker
+    parts.append(status)
+    return " · ".join(part for part in parts if part)
 
 
 def _iteration_label(state: CardState) -> str:

@@ -102,6 +102,44 @@ class SystemBuilder:
         return SystemBuilder._mobile_safe_label(label, limit=_BUTTON_LABEL_MOBILE_LIMIT)
 
     @staticmethod
+    def _compact_help_path(path: object, *, limit: int = 42) -> str:
+        text = str(path or "~").strip() or "~"
+        if len(text) <= limit:
+            return text
+        parts = [part for part in text.split("/") if part]
+        if len(parts) >= 3:
+            compact = ".../" + "/".join(parts[-3:])
+            if len(compact) <= limit:
+                return compact
+        return "..." + text[-max(1, limit - 3):]
+
+    @staticmethod
+    def _help_callback_button(label: str, button_type: str, action: str, project_id: Optional[str]) -> dict:
+        button = SystemBuilder._callback_button(
+            text=SystemBuilder._mobile_safe_button_label(label),
+            button_type=button_type,
+            action={"action": action, "project_id": project_id},
+        )
+        button["size"] = "small"
+        return button
+
+    @staticmethod
+    def _build_help_quick_action_elements(project_id: Optional[str]) -> list[dict]:
+        quick_actions = [
+            (UI_TEXT["system_menu_btn_deep_task"], "primary", "enter_deep_prompt"),
+            (UI_TEXT["system_menu_btn_worktree"], "primary", "show_worktree_menu"),
+            (UI_TEXT["system_menu_btn_acp"], "default", "show_acp_menu"),
+            (UI_TEXT["system_menu_btn_ttadk"], "default", "show_ttadk_menu"),
+            (UI_TEXT["system_menu_btn_status"], "default", "show_status"),
+            (UI_TEXT["system_menu_btn_switch_project"], "default", "switch_project"),
+        ]
+        quick_buttons = [
+            SystemBuilder._help_callback_button(label, btn_type, action, project_id)
+            for label, btn_type, action in quick_actions
+        ]
+        return build_responsive_layout(quick_buttons, mobile_force_vertical=False)
+
+    @staticmethod
     def _build_select_static(
         *,
         placeholder_key: str,
@@ -1162,27 +1200,8 @@ class SystemBuilder:
         """
         del category  # kept for call-site compatibility; unused
 
-        project_info = f"**{project_name}** (`{root_path}`)" if project_name else UI_TEXT["system_no_project"]
-
-        # Quick-action buttons — tap targets that map to existing callbacks.
-        # Ordered by expected mobile usage frequency.
-        quick_actions = [
-            (UI_TEXT["system_menu_btn_deep_task"], "primary", "enter_deep_prompt"),
-            (UI_TEXT["system_menu_btn_ttadk"], "default", "show_ttadk_menu"),
-            (UI_TEXT["system_menu_btn_acp"], "default", "show_acp_menu"),
-            (UI_TEXT["system_menu_btn_status"], "default", "show_status"),
-            (UI_TEXT["system_menu_btn_switch_project"], "default", "switch_project"),
-            (UI_TEXT["system_menu_btn_new_project"], "default", "new_project_prompt"),
-        ]
-        quick_buttons = [
-            {
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": label},
-                "type": btn_type,
-                "value": {"action": action, "project_id": project_id},
-            }
-            for label, btn_type, action in quick_actions
-        ]
+        project_info = f"**{project_name}**" if project_name else UI_TEXT["system_no_project"]
+        cwd_display = SystemBuilder._compact_help_path(working_dir or root_path or "~")
 
         # All command sections — rendered inline so nothing is hidden behind a tab.
         sections = [
@@ -1250,14 +1269,14 @@ class SystemBuilder:
                 "text_size": "notation",
                 "content": UI_TEXT["system_help_status_header"].format(
                     mode=current_mode_str,
-                    cwd=working_dir or '~',
+                    cwd=cwd_display,
                     project=project_info
                 ),
             },
             {"tag": "hr"},
             {"tag": "markdown", "content": UI_TEXT["system_help_quick_entry"]},
         ]
-        elements.extend(build_responsive_layout(quick_buttons))
+        elements.extend(SystemBuilder._build_help_quick_action_elements(project_id))
         elements.append({"tag": "hr"})
 
         for idx, (title, body) in enumerate(sections):
