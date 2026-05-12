@@ -6,7 +6,7 @@ import pytest
 from src.card.builder import CardBuilder
 from src.card.builders.core import CoreBuilder
 from src.card.builders.project import ProjectBuilder
-from src.card.styles import UI_TEXT
+from src.card.ui_text import UI_TEXT
 from src.card.builders.system import SystemBuilder
 from src.card.builders.deep import DeepBuilder
 from src.card.models import (
@@ -1213,33 +1213,15 @@ class TestHelpCardTimeoutNotePosition:
             )
 
 
-class TestBuildDeepCardDeprecation:
-    """Verify build_deep_card alias emits DeprecationWarning."""
+class TestBuildDeepCardAliasRemoved:
+    """Guard: deprecated build_deep_card aliases stay removed."""
 
-    def test_deep_builder_deprecation_warning(self):
-        import warnings
-
+    def test_deep_builder_alias_removed(self):
         from src.card.builders.deep import DeepBuilder
-        from src.card.models import EngineCardState
 
-        state = EngineCardState(title="test", content="hello")
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            DeepBuilder.build_deep_card(None, state)
-        assert len(w) == 1
-        assert issubclass(w[0].category, DeprecationWarning)
-        assert "build_deep_card" in str(w[0].message)
+        assert not hasattr(DeepBuilder, "build_deep_card")
 
-    def test_card_builder_deprecation_warning(self):
-        import warnings
-
+    def test_card_builder_alias_removed(self):
         from src.card.builder import CardBuilder
-        from src.card.models import EngineCardState
 
-        state = EngineCardState(title="test", content="hello")
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            CardBuilder.build_deep_card(None, state)
-        assert len(w) == 1
-        assert issubclass(w[0].category, DeprecationWarning)
-        assert "build_deep_card" in str(w[0].message)
+        assert not hasattr(CardBuilder, "build_deep_card")

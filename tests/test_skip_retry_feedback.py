@@ -8,7 +8,7 @@ Covers:
 import threading
 from unittest.mock import MagicMock, patch
 
-from src.card.styles import UI_TEXT
+from src.card.ui_text import UI_TEXT
 
 
 class TestSkipRetryWithActiveEngine:

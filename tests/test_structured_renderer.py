@@ -310,7 +310,7 @@ class TestPanelStyles:
     """Verify _wrap_collapsible uses PANEL_STYLES constants and dynamic border colors."""
 
     def test_panel_uses_panel_styles_constants(self):
-        from src.card.styles import PANEL_STYLES
+        from src.card.themes import PANEL_STYLES
         sec = ContentSection(
             section_type="thought", markdown="thinking...", collapsed_by_default=True,
         )
@@ -320,7 +320,7 @@ class TestPanelStyles:
         assert panel["corner_radius"] == PANEL_STYLES["corner_radius"]
 
     def test_tool_group_complete_gets_border_history(self):
-        from src.card.styles import PANEL_STYLES
+        from src.card.themes import PANEL_STYLES
         sec = ContentSection(
             section_type="tool_group", markdown="done", tool_kind="read",
             tool_count=1, is_complete=True, collapsed_by_default=True,
@@ -329,7 +329,7 @@ class TestPanelStyles:
         assert panel["border"]["color"] == PANEL_STYLES["border_history"]
 
     def test_tool_group_failed_gets_border_failed(self):
-        from src.card.styles import PANEL_STYLES
+        from src.card.themes import PANEL_STYLES
         sec = ContentSection(
             section_type="tool_group", markdown="err", tool_kind="execute",
             tool_count=1, is_complete=True, has_failure=True, collapsed_by_default=True,
@@ -338,7 +338,7 @@ class TestPanelStyles:
         assert panel["border"]["color"] == PANEL_STYLES["border_failed"]
 
     def test_tool_group_incomplete_gets_border_normal(self):
-        from src.card.styles import PANEL_STYLES
+        from src.card.themes import PANEL_STYLES
         sec = ContentSection(
             section_type="tool_group", markdown="running", tool_kind="read",
             tool_count=1, is_complete=False, collapsed_by_default=True,
@@ -347,7 +347,7 @@ class TestPanelStyles:
         assert panel["border"]["color"] == PANEL_STYLES["border_normal"]
 
     def test_thought_gets_border_normal(self):
-        from src.card.styles import PANEL_STYLES
+        from src.card.themes import PANEL_STYLES
         sec = ContentSection(
             section_type="thought", markdown="hmm", collapsed_by_default=True,
         )
@@ -459,7 +459,7 @@ class TestToolGrouping:
         assert len(elems) == 4
 
     def test_grouped_failure_gets_red_border(self):
-        from src.card.styles import PANEL_STYLES
+        from src.card.themes import PANEL_STYLES
         rc = RenderedContent(sections=[
             self._make_tool_section("read", 1),
             self._make_tool_section("read", 1, has_failure=True),

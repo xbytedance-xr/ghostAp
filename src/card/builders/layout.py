@@ -24,7 +24,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, NewType, Union
 
 from ..shared import build_responsive_layout
-from ..styles import FOOTER_STATUS, TERMINAL_MARKERS
+from ..terminal import FOOTER_STATUS, TERMINAL_MARKERS
 from ..ui_text import UI_TEXT
 
 # Type-level distinction: FOOTER_STATUS dict keys vs pre-formatted display strings.

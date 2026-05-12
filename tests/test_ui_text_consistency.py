@@ -7,7 +7,6 @@ Covers:
 - AC-R07: RetryStatus enum members all have inline comments
 - AC-R08: .env.example constraint formula uses full SPEC_REVIEW_* names
 - SPEC_UI_TEXT merge: all constants.py keys present in UI_TEXT with matching values
-- No independent SPEC keys: styles.py has no standalone assignments of SPEC_UI_TEXT keys
 """
 
 import re
@@ -18,7 +17,7 @@ class TestSpecResumeWordingUnique:
     """AC-R01: All UI_TEXT entries mentioning /spec resume use identical wording."""
 
     def test_spec_resume_wording_unique(self):
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
 
         # Collect all values containing "/spec resume"
         resume_entries = {
@@ -47,7 +46,7 @@ class TestNoTimeoutWorkerBusyNoRetryKey:
     """AC-R02: timeout_worker_busy_no_retry is not an independent UI_TEXT key."""
 
     def test_key_does_not_exist(self):
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
 
         assert "timeout_worker_busy_no_retry" not in UI_TEXT
 
@@ -56,7 +55,7 @@ class TestRetrySucceededRemoved:
     """AC-R06: retry_succeeded is removed from UI_TEXT (never rendered)."""
 
     def test_retry_succeeded_not_in_ui_text(self):
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
 
         assert "retry_succeeded" not in UI_TEXT
 
@@ -105,7 +104,7 @@ class TestRendererUITextKeysExist:
     """Guard: all UI_TEXT['key'] references in spec_renderer.py resolve to valid keys."""
 
     def test_all_renderer_ui_text_keys_exist(self):
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
 
         source_path = Path(__file__).parent.parent / "src" / "feishu" / "renderers" / "spec_renderer.py"
         content = source_path.read_text(encoding="utf-8")
@@ -124,14 +123,14 @@ class TestSpecUiTextMerge:
     """Verify SPEC_UI_TEXT keys are merged into UI_TEXT with matching values."""
 
     def test_all_spec_keys_in_ui_text(self):
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
         from src.spec_engine.constants import SPEC_UI_TEXT
 
         missing = set(SPEC_UI_TEXT.keys()) - set(UI_TEXT.keys())
         assert not missing, f"SPEC_UI_TEXT keys missing from UI_TEXT: {missing}"
 
     def test_spec_values_match(self):
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
         from src.spec_engine.constants import SPEC_UI_TEXT
 
         mismatched = {
@@ -140,29 +139,6 @@ class TestSpecUiTextMerge:
             if k in UI_TEXT and UI_TEXT[k] != SPEC_UI_TEXT[k]
         }
         assert not mismatched, f"SPEC_UI_TEXT values differ from UI_TEXT: {mismatched}"
-
-
-class TestNoIndependentSpecKeysInStyles:
-    """Verify styles.py has no independent assignments of keys owned by SPEC_UI_TEXT."""
-
-    def test_no_duplicate_spec_keys_in_styles(self):
-        from src.spec_engine.constants import SPEC_UI_TEXT
-
-        source_path = Path(__file__).parent.parent / "src" / "card" / "styles.py"
-        content = source_path.read_text(encoding="utf-8")
-
-        # Look for "key": ... patterns inside UI_TEXT dict that match SPEC_UI_TEXT keys
-        found = []
-        for key in SPEC_UI_TEXT:
-            # Match standalone dict entries like "retry_waiting": "..."
-            pattern = re.compile(rf'^\s+"{re.escape(key)}"\s*:', re.MULTILINE)
-            if pattern.search(content):
-                found.append(key)
-
-        assert not found, (
-            f"styles.py contains independent assignments of SPEC_UI_TEXT keys "
-            f"(should come from .update()): {found}"
-        )
 
 
 class TestUiTextKeyConflictAssertion:
@@ -179,8 +155,8 @@ class TestUiTextKeyConflictAssertion:
         assert "UI_TEXT key conflict" in source
 
     def test_no_actual_conflicts_at_import(self):
-        """Importing styles.py should succeed (no key conflicts in production)."""
-        from src.card.styles import UI_TEXT
+        """Importing aggregate UI_TEXT should succeed with no production key conflicts."""
+        from src.card.ui_text import UI_TEXT
         from src.spec_engine.constants import SPEC_UI_TEXT
         from src.card.styles_lock import LOCK_UI_TEXT
 
@@ -204,13 +180,6 @@ class TestUiTextDomainViews:
         assert "system_error_title" in CORE_CARD_UI_TEXT
         for key, value in CORE_CARD_UI_TEXT.items():
             assert UI_TEXT[key] == value
-
-    def test_styles_ui_text_shim_documents_migration_target_and_removal_window(self):
-        source = (Path(__file__).parent.parent / "src" / "card" / "styles.py").read_text(encoding="utf-8")
-
-        assert "from src.card.ui_text import UI_TEXT" in source
-        assert "removed after 2026-06-01" in source
-        assert "DeprecationWarning" in source
 
 
 class TestDegradedPathTextConsistency:
@@ -276,7 +245,7 @@ class TestEvictionTextConsistency:
     """AC-18: ws_project_eviction_notify and eviction_notify_body use consistent wording."""
 
     def test_both_contain_same_core_phrase(self):
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
 
         core_phrase = "暂时与当前群断开连接"
         assert core_phrase in UI_TEXT["ws_project_eviction_notify"], (
@@ -291,13 +260,13 @@ class TestDegradedRetryTextConsistency:
     """降级错误卡的次级重试按钮必须表达“重试原模式”，不能像重启任务。"""
 
     def test_degraded_retry_label_is_not_restart(self):
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
 
         assert UI_TEXT["card_lifecycle_retry_original"] == "重试原模式"
         assert UI_TEXT["card_lifecycle_retry_original"] != UI_TEXT["card_lifecycle_restart"]
 
     def test_degraded_primary_and_feedback_require_specific_mode(self):
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
 
         assert "{mode}" in UI_TEXT["card_lifecycle_degraded_primary"]
         assert "{mode}" in UI_TEXT["card_lifecycle_continue_degraded_ack"]

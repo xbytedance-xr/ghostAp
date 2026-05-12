@@ -521,18 +521,6 @@ class CardBuilder:
         return DeepBuilder.build_info_card(project, state)
 
     @staticmethod
-    def build_deep_card(*args, **kwargs):
-        """Deprecated alias for build_info_card. Will be removed after 2026-06-01."""
-        import warnings
-
-        warnings.warn(
-            "CardBuilder.build_deep_card is deprecated, use build_info_card instead",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return CardBuilder.build_info_card(*args, **kwargs)
-
-    @staticmethod
     def build_history_list_card(
         project: Optional[ProjectContext],
         title: str,

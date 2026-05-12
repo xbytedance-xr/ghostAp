@@ -13,8 +13,8 @@ from src.utils.errors import GhostAPError, get_error_detail
 from ..actions import dispatch as action_ids
 from ..models import ModelOptionView, ToolOptionView
 from ..shared import build_responsive_layout
-from ..styles import THRESHOLDS
 from ..themes import PANEL_STYLES
+from ..thresholds import THRESHOLDS
 from ..ui_text import UI_TEXT
 from .core import CoreBuilder
 from .lock import build_lock_help_body

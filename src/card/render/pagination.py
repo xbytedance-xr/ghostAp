@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
-
 from src.card.render.atoms import RenderAtom, estimate_atom_size
 from src.card.render.budget import RenderBudget
 
@@ -13,32 +11,6 @@ BASE_OVERHEAD = 500
 # Fixed node overhead for elements injected after pagination:
 # header/config(3) + banner(3) + footer(8) + buttons(6) = 20
 FIXED_NODE_OVERHEAD = 20
-
-
-def paginate_atoms(
-    atoms: list[RenderAtom], budget: RenderBudget
-) -> list[list[RenderAtom]]:
-    """[Deprecated] Use paginate_layout(SectionLayout(...), budget) instead.
-
-    Retained as a thin shim that wraps body atoms into a SectionLayout with
-    no sticky/status/appendix. Behavior stays identical for callers that do
-    not care about sticky_head.
-    """
-    warnings.warn(
-        "paginate_atoms is deprecated; use paginate_layout instead",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    from src.card.render.layout import SectionLayout, paginate_layout
-
-    layout = SectionLayout(
-        sticky_head=(),
-        status=(),
-        body=tuple(atoms),
-        appendix=(),
-    )
-    pages = paginate_layout(layout, budget)
-    return [list(page) for page in pages]
 
 
 def split_atom(atom: RenderAtom, remaining_bytes: int) -> list[RenderAtom] | None:

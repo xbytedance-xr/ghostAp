@@ -20,7 +20,6 @@ class FakeSession:
         self.session_id = session_id
         self.dispatched_events: list[CardEvent] = []
         self._lock = threading.Lock()
-        self.on_first_deliver = None
         self.delivered_message_id = ""
         self._hooks: list = []
 
@@ -2706,4 +2705,3 @@ class TestFullLifecycleResetReentry:
 
         # Verify cycle 2 session is independent (not the same object as cycle 1)
         assert s2 is not s1
-

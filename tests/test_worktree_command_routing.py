@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from src.feishu.handlers.system import SystemHandler
 from src.feishu.handlers.worktree import WorktreeHandler
-from src.card.styles import UI_TEXT
+from src.card.ui_text import UI_TEXT
 from src.card.builder import CardBuilder
 from src.feishu.slash_command_parser import SlashCommandParser
 from src.worktree_engine.manager import WorktreeManager

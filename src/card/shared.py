@@ -4,7 +4,8 @@ from typing import Optional
 
 from src.mode.manager import InteractionMode
 
-from .styles import BUTTON_CONFIG, THEMES, ProjectTheme
+from .buttons_config import BUTTON_CONFIG
+from .themes import THEMES, ProjectTheme
 from .ui_text import UI_TEXT
 
 
@@ -84,7 +85,6 @@ def build_responsive_layout(
     *,
     layout: str = "responsive",
     mobile_force_vertical: bool = True,
-    mobile_layout_mode: str = "vertical",
 ) -> list[dict]:
     """Build responsive button layout based on config setting.
 
@@ -96,8 +96,6 @@ def build_responsive_layout(
         Layout mode: "desktop", "mobile", "flow", or "responsive" (default).
     mobile_force_vertical : bool
         When True and layout is "responsive", force vertical for >2 buttons.
-    mobile_layout_mode : str
-        Sub-mode for mobile vertical ("vertical" or "flow").
 
     - desktop: native action layout (horizontal)
     - mobile: forced vertical stack for better touch targets
@@ -121,16 +119,6 @@ def build_responsive_layout(
     # Force vertical for >2 buttons if mobile optimization is enabled
     # This helps avoid clutter on small screens while keeping 2 buttons side-by-side
     if mobile_force_vertical and len(buttons) > 2:
-        effective_mobile_mode = (mobile_layout_mode or "vertical").strip().lower()
-        if effective_mobile_mode != "vertical":
-            import warnings
-            warnings.warn(
-                "card_mobile_layout_mode is deprecated; use card_mobile_force_vertical instead",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-        if effective_mobile_mode == "flow":
-            return _build_button_flow(buttons)
         return _build_button_vertical(buttons)
 
     if len(buttons) <= 2:

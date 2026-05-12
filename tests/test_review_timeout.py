@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.engine_base import PerspectiveReview, ReviewPerspective, ReviewResult
-from src.card.styles import UI_TEXT
+from src.card.ui_text import UI_TEXT
 from src.spec_engine.convergence import detect_convergence
 from src.spec_engine.models import (
     CriteriaTracker,
@@ -2617,7 +2617,7 @@ class TestRetryTextTemplates:
 
     def test_retry_exhausted_has_placeholder(self):
         """retry_exhausted should contain {n} placeholder for attempt count."""
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
 
         text = UI_TEXT["retry_exhausted"]
         assert "{n}" in text
@@ -2625,7 +2625,7 @@ class TestRetryTextTemplates:
 
     def test_retry_exhausted_multi_has_placeholder(self):
         """retry_exhausted should mention retry outcome."""
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
 
         text = UI_TEXT["retry_exhausted"]
         assert "重试" in text
@@ -2633,14 +2633,14 @@ class TestRetryTextTemplates:
 
     def test_timeout_worker_busy_no_retry_excludes_auto_retry(self):
         """retry_no_retry should mention '未进行重试'."""
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
 
         text = UI_TEXT["retry_no_retry"]
         assert "未进行重试" in text
 
     def test_retry_exhausted_mentions_retry_outcome(self):
         """retry_exhausted (with retry enabled) should mention '重试'."""
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
 
         text = UI_TEXT["retry_exhausted"].format(n=2, elapsed_friendly="约 1 分钟")
         assert "重试" in text
@@ -2695,7 +2695,7 @@ class TestBuildRetryDiagnosticsBranches:
     def test_retry_exhausted_branches(self, max_attempts):
         """Branch: all_timeout=True, retry_attempted=True."""
         from src.spec_engine.perspective_worker import ReviewErrorCode
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
         from src.utils.text import format_friendly_duration
 
         expected_text = UI_TEXT["retry_exhausted"].format(
@@ -2732,7 +2732,7 @@ class TestBuildRetryDiagnosticsBranches:
     def test_timeout_worker_busy_no_retry(self):
         """Branch: all_timeout=True, retry_attempted=False, max_attempts=0."""
         from src.spec_engine.perspective_worker import ReviewErrorCode
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
 
         outcomes = self._make_outcomes(ReviewErrorCode.TIMEOUT)
         circuit = self._make_circuit()
@@ -2761,7 +2761,7 @@ class TestBuildRetryDiagnosticsBranches:
         we should see retry_no_retry (not retry_exhausted).
         """
         from src.spec_engine.perspective_worker import ReviewErrorCode
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
 
         outcomes = self._make_outcomes(ReviewErrorCode.TIMEOUT)
         circuit = self._make_circuit()
@@ -2787,7 +2787,7 @@ class TestBuildRetryDiagnosticsBranches:
         """Branch: all_timeout=False, first failed worker has TIMEOUT error_code."""
         from src.spec_engine.perspective_worker import PerspectiveOutcome, ReviewErrorCode
         from src.engine_base import PerspectiveReview, ReviewPerspective
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
 
         p = ReviewPerspective.ARCHITECT
         failed = [PerspectiveOutcome(

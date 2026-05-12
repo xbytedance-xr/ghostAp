@@ -10,7 +10,7 @@ from src.mode.manager import InteractionMode
 from ..shared import (
     build_mode_buttons,
 )
-from ..styles import THRESHOLDS
+from ..thresholds import THRESHOLDS
 from ..ui_text import UI_TEXT
 
 logger = logging.getLogger(__name__)

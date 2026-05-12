@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import sys
-import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar, TYPE_CHECKING, overload
@@ -488,104 +487,6 @@ class CardEvent(Generic[P]):
     def stop_escalated(cls) -> CardEvent[Mapping[str, Any]]:
         """Escalate a pending stop to force-stop after timeout."""
         return cls(type=CardEventType.STOP_ESCALATED)
-
-    @classmethod
-    def _warn_worktree_factory_deprecated(cls, method_name: str) -> None:
-        warnings.warn(
-            f"CardEvent.{method_name}() is deprecated and will be removed after "
-            "2026-06-01; use src.card.events.worktree instead "
-            "(migration target: src.card.events.worktree; removal: 2026-06-01).",
-            DeprecationWarning,
-            stacklevel=3,
-        )
-
-    @classmethod
-    def worktree_progress(
-        cls, units: list[dict], project_id: str = "", message: str = "", silent: bool = False
-    ) -> CardEvent[Mapping[str, Any]]:
-        """Deprecated compatibility shim for :mod:`src.card.events.worktree`."""
-        cls._warn_worktree_factory_deprecated("worktree_progress")
-        from .worktree import worktree_progress
-
-        return worktree_progress(units=units, project_id=project_id, message=message, silent=silent)
-
-    @classmethod
-    def worktree_tool_select(
-        cls,
-        tools: list[dict],
-        selected: list[str] | None = None,
-        project_id: str = "",
-        message: str = "",
-        select_action: str = "worktree_select_tool",
-        pending_tool: str = "",
-    ) -> CardEvent[Mapping[str, Any]]:
-        """Deprecated compatibility shim for :mod:`src.card.events.worktree`."""
-        cls._warn_worktree_factory_deprecated("worktree_tool_select")
-        from .worktree import worktree_tool_select
-
-        return worktree_tool_select(
-            tools=tools,
-            selected=selected,
-            project_id=project_id,
-            message=message,
-            select_action=select_action,
-            pending_tool=pending_tool,
-        )
-
-    @classmethod
-    def worktree_confirm(
-        cls, selected_items: list[dict], goal: str = "", project_id: str = "", message: str = ""
-    ) -> CardEvent[Mapping[str, Any]]:
-        """Deprecated compatibility shim for :mod:`src.card.events.worktree`."""
-        cls._warn_worktree_factory_deprecated("worktree_confirm")
-        from .worktree import worktree_confirm
-
-        return worktree_confirm(
-            selected_items=selected_items, goal=goal, project_id=project_id, message=message
-        )
-
-    @classmethod
-    def worktree_cleanup(
-        cls,
-        merge_notes: list[dict],
-        base_branch: str = "main",
-        merge_results: list[dict] | None = None,
-        project_id: str = "",
-        units: list[dict] | None = None,
-        cleanup_phase: str = "summary",
-    ) -> CardEvent[Mapping[str, Any]]:
-        """Deprecated compatibility shim for :mod:`src.card.events.worktree`."""
-        cls._warn_worktree_factory_deprecated("worktree_cleanup")
-        from .worktree import worktree_cleanup
-
-        return worktree_cleanup(
-            merge_notes=merge_notes,
-            base_branch=base_branch,
-            merge_results=merge_results,
-            project_id=project_id,
-            units=units,
-            cleanup_phase=cleanup_phase,
-        )
-
-    @classmethod
-    def worktree_merge(
-        cls, merge_notes: list[dict], base_branch: str = "main", project_id: str = ""
-    ) -> CardEvent[Mapping[str, Any]]:
-        """Deprecated compatibility shim for :mod:`src.card.events.worktree`."""
-        cls._warn_worktree_factory_deprecated("worktree_merge")
-        from .worktree import worktree_merge
-
-        return worktree_merge(merge_notes=merge_notes, base_branch=base_branch, project_id=project_id)
-
-    @classmethod
-    def worktree_completed_no_change(
-        cls, units: list[dict], project_id: str = "", message: str = ""
-    ) -> CardEvent[Mapping[str, Any]]:
-        """Deprecated compatibility shim for :mod:`src.card.events.worktree`."""
-        cls._warn_worktree_factory_deprecated("worktree_completed_no_change")
-        from .worktree import worktree_completed_no_change
-
-        return worktree_completed_no_change(units=units, project_id=project_id, message=message)
 
     @classmethod
     def from_acp(cls, acp_event: "ACPEvent") -> CardEvent[Mapping[str, Any]]:

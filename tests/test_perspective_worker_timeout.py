@@ -1,7 +1,7 @@
 from concurrent.futures import TimeoutError
 import logging
 
-from src.card.styles import UI_TEXT
+from src.card.ui_text import UI_TEXT
 
 _RETRY_NO_RETRY = UI_TEXT["retry_no_retry"]
 

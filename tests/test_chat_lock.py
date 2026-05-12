@@ -657,12 +657,12 @@ class TestChatLockCodeUITextMapping:
     """Ensure every ChatLockCode member has a corresponding non-empty UI_TEXT entry."""
 
     def test_all_codes_have_ui_text(self):
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
         missing = [c for c in ChatLockCode if c.value not in UI_TEXT]
         assert not missing, f"ChatLockCode members missing from UI_TEXT: {missing}"
 
     def test_ui_text_values_are_nonempty_strings(self):
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
         for code in ChatLockCode:
             val = UI_TEXT[code.value]
             assert isinstance(val, str) and val, (

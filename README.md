@@ -435,7 +435,6 @@ ghostAp/
 │   │   ├── session/                 #   CardSession 生命周期、TTL、session factory
 │   │   ├── state/                   #   reducer 与状态变更
 │   │   ├── timers/                  #   session/live ticker 定时器
-│   │   ├── styles.py                #   主题 re-export
 │   │   ├── themes.py                #   主题系统（18 主题）+ ENGINE_STYLES
 │   │   ├── ui_text.py               #   UI 文案 SSOT
 │   │   ├── styles_lock.py           #   锁定相关 UI 文本

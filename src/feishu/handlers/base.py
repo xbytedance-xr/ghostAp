@@ -196,49 +196,6 @@ class BaseHandler:
                 logger.warning("Failed to link reply %s → origin %s: %s", reply_id, origin_message_id, str(e))
 
     # ------------------------------------------------------------------
-    # Removed method tombstones (kept for one release cycle for migration guidance)
-    # ------------------------------------------------------------------
-
-    def reply_message(self, *args, **kwargs):
-        """Removed. Use reply_text() or reply_card() instead."""
-        import warnings
-        warnings.warn(
-            "BaseHandler.reply_message() is deprecated and removed. "
-            "Use reply_text() for plain text or reply_card() for cards.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        raise AttributeError(
-            "reply_message has been removed. Use reply_text() or reply_card() instead."
-        )
-
-    def patch_message(self, *args, **kwargs):
-        """Removed. Use update_card() instead."""
-        import warnings
-        warnings.warn(
-            "BaseHandler.patch_message() is deprecated and removed. "
-            "Use update_card() instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        raise AttributeError(
-            "patch_message has been removed. Use update_card() instead."
-        )
-
-    def send_message(self, *args, **kwargs):
-        """Removed. Use send_card_to_chat() or send_text_to_chat() instead."""
-        import warnings
-        warnings.warn(
-            "BaseHandler.send_message() is deprecated and removed. "
-            "Use send_card_to_chat() or send_text_to_chat() instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        raise AttributeError(
-            "send_message has been removed. Use send_card_to_chat() or send_text_to_chat() instead."
-        )
-
-    # ------------------------------------------------------------------
     # Messaging API
     # ------------------------------------------------------------------
 

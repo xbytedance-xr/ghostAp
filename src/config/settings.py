@@ -615,7 +615,6 @@ class Settings(BaseSettings):
             "card_button_layout": "button_layout",
             "card_button_size": "button_size",
             "card_mobile_force_vertical": "mobile_force_vertical",
-            "card_mobile_layout_mode": "mobile_layout_mode",
             "card_deep_compact_default": "deep_compact_default",
             "card_max_chars": "max_chars",
             "card_session_lock_max": "session_lock_max",

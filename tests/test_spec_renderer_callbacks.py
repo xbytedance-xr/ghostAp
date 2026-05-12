@@ -9,7 +9,7 @@ Covers:
 from unittest.mock import MagicMock, patch
 
 from src.acp import ACPEventType
-from src.card.styles import UI_TEXT
+from src.card.ui_text import UI_TEXT
 from src.card.events import CardEventType
 from src.card.render.budget import RenderBudget
 from src.card.state.models import CardMetadata

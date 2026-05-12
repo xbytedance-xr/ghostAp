@@ -5,15 +5,12 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-import warnings
 import weakref
 from collections.abc import Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from src.card.delivery.engine import CardDelivery
-from src.card.events import CardEvent
-from src.card.hooks import SessionHook
 from src.card.render.budget import RenderBudget
 from src.card.session.config import SessionCallbacks, SessionConfig
 from src.card.state.models import CardMetadata
@@ -58,48 +55,16 @@ class CardSessionFactory:
         ttl_seconds: float | None = None,
         clock: Callable[[], float] | None = None,
         retry_delay: float = 3.0,
-        # --- deprecated params (will be removed next minor) ---
-        action_registry: dict[str, Callable[[dict], CardEvent]] | None = None,
-        notify_callback: Callable[[str, str], None] | None = None,
-        cancel_callback: Callable[[], None] | None = None,
-        hooks: tuple[SessionHook, ...] | None = None,
     ) -> CardSession:
         """Create a new CardSession.
 
-        Preferred: pass a ``SessionCallbacks`` instance via *callbacks*.
-        Legacy keyword params (action_registry, notify_callback, cancel_callback,
-        hooks) are still accepted but deprecated — they will be merged into the
-        callbacks object with a DeprecationWarning.
+        Pass callbacks, action registry, notification handlers, and hooks via
+        ``SessionCallbacks``.
         """
         from src.card.session.core import CardSession as _CS
 
         if not metadata.engine_type:
             logger.warning("CardSessionFactory.create(): metadata.engine_type is not set for chat_id=%s", chat_id)
-
-        # --- Backward-compat: merge deprecated params into callbacks ---
-        _deprecated_used = any(p is not None for p in (action_registry, notify_callback, cancel_callback, hooks))
-        if _deprecated_used:
-            if callbacks is not None:
-                # Caller passed both new and old — old params are ignored with warning
-                warnings.warn(
-                    "Passing both 'callbacks' and legacy params (action_registry/notify_callback/"
-                    "cancel_callback/hooks) to CardSessionFactory.create() is ambiguous. "
-                    "Legacy params are ignored when 'callbacks' is provided.",
-                    DeprecationWarning, stacklevel=2,
-                )
-            else:
-                warnings.warn(
-                    "Passing action_registry/notify_callback/cancel_callback/hooks as "
-                    "top-level params to CardSessionFactory.create() is deprecated. "
-                    "Use the 'callbacks' parameter (SessionCallbacks) instead.",
-                    DeprecationWarning, stacklevel=2,
-                )
-                callbacks = SessionCallbacks(
-                    notify_callback=notify_callback,
-                    cancel_callback=cancel_callback,
-                    action_registry=action_registry,
-                    hooks=hooks or (),
-                )
 
         cbs = callbacks or SessionCallbacks()
 

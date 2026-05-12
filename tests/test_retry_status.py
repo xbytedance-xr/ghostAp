@@ -53,7 +53,7 @@ class TestRendererMapping:
     """Verify spec_renderer's RetryStatus → UI_TEXT mapping covers all enum values."""
 
     def test_mapping_covers_all_statuses(self):
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
 
         # The mapping used in spec_renderer (replicated here for verification).
         # SUCCEEDED is handled by early-return (no card push), so it has no UI_TEXT mapping.
@@ -111,7 +111,7 @@ class TestExhaustedEmittedOnRetryFailure:
         """When all retry attempts fail, EXHAUSTED is emitted via on_retry_status."""
         from src.spec_engine.review_retry import PipelineRetryContext, handle_pipeline_errors_with_retry
         from src.engine_base import ReviewResult
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
 
         outcomes = self._make_outcomes()
         review_result = ReviewResult(reviews=[o.review for o in outcomes], iteration=1)
@@ -194,7 +194,7 @@ class TestNoRetryEmittedWhenDisabled:
         """When max_attempts=0, NO_RETRY is emitted without attempting retry."""
         from src.spec_engine.review_retry import PipelineRetryContext, handle_pipeline_errors_with_retry
         from src.engine_base import ReviewResult
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
 
         outcomes = self._make_outcomes()
         review_result = ReviewResult(reviews=[o.review for o in outcomes], iteration=1)
@@ -245,7 +245,7 @@ class TestBuildDiagnosticsNoFalseExhausted:
         from src.spec_engine.perspective_worker import PerspectiveOutcome, ReviewErrorCode
         from src.spec_engine.review_types import ReviewCircuitState
         from src.engine_base import PerspectiveReview, ReviewPerspective
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
 
         p = ReviewPerspective.ARCHITECT
         outcomes = [
@@ -288,7 +288,7 @@ class TestBuildDiagnosticsRetryTextsFromUIText:
         from src.spec_engine.review_types import ReviewCircuitState
         from src.engine_base import ReviewPerspective
         from src.spec_engine.perspective_worker import PerspectiveOutcome, PerspectiveReview, ReviewErrorCode
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
 
         p = ReviewPerspective.ARCHITECT
         outcomes = [

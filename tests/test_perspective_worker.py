@@ -229,7 +229,7 @@ def test_run_workers_parallel_timeout():
 
     assert len(outcomes) == 1
     assert not outcomes[0].review.passed
-    from src.card.styles import UI_TEXT
+    from src.card.ui_text import UI_TEXT
     expected_err = UI_TEXT["retry_no_retry"]
     assert outcomes[0].error == expected_err
     assert len(outcomes[0].review.suggestions) == 1

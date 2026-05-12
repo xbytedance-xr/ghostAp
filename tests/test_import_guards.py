@@ -1,6 +1,7 @@
 """Verify that public __all__ symbols in key modules are importable."""
 
 import importlib
+import re
 from pathlib import Path
 
 import pytest
@@ -80,13 +81,18 @@ def test_domain_compat_entries_exist_for_spec_and_ttadk_utils() -> None:
     assert ttadk_wrapper.pump_filtered_stream is legacy_ttadk_wrapper.pump_filtered_stream
 
 
-def test_card_styles_has_no_wildcard_reexports_and_documents_ui_text_shim() -> None:
-    """Refactoring-analysis guard: styles.py must stay explicit and UI_TEXT shim bounded."""
-    source = (Path(__file__).parent.parent / "src" / "card" / "styles.py").read_text(encoding="utf-8")
+def test_card_styles_compat_module_removed_and_not_referenced_by_production() -> None:
+    """Refactoring-analysis guard: legacy styles.py re-export module stays removed."""
+    root = Path(__file__).parent.parent
+    assert not (root / "src" / "card" / "styles.py").exists()
 
-    assert "import *" not in source
-    assert "from src.card.ui_text import UI_TEXT" in source
-    assert "removed after 2026-06-01" in source
+    offenders: list[str] = []
+    for path in (root / "src").rglob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        if re.search(r"(?:from|import)\s+src\.card\.styles\b|from\s+\.{1,3}styles\s+import\b", source):
+            offenders.append(str(path.relative_to(root)))
+
+    assert offenders == []
 
 
 def test_production_code_does_not_call_cardevent_worktree_compat_shims() -> None:

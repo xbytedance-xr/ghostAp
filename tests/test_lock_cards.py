@@ -801,7 +801,7 @@ class TestAC15ThrottledTextReply:
 
     def test_throttled_reply_text_is_nonempty(self):
         """The UI_TEXT key used for throttled reply must be a non-empty string."""
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
         assert UI_TEXT["chat_locked_throttled_reply"]
         assert isinstance(UI_TEXT["chat_locked_throttled_reply"], str)
         assert len(UI_TEXT["chat_locked_throttled_reply"]) > 0
@@ -813,14 +813,14 @@ class TestThrottledReplyContainsName:
     def test_throttled_reply_contains_formatted_name(self):
         """Formatted throttled reply must match '群已被 .+ 锁定' regex."""
         import re
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
         text = UI_TEXT["chat_locked_throttled_reply"].format(name="张三")
         assert re.search(r"群已被 .+ 锁定", text), f"Text did not match: {text}"
 
     def test_throttled_reply_fallback_name(self):
         """When name is empty, fallback 'Bot 管理员' should still match the pattern."""
         import re
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
         text = UI_TEXT["chat_locked_throttled_reply"].format(name="Bot 管理员")
         assert re.search(r"群已被 .+ 锁定", text), f"Text did not match: {text}"
 
@@ -874,13 +874,13 @@ class TestAC18ExpiryButtonWording:
     """Verify that expiry button uses '再次尝试释放' not '重新释放'."""
 
     def test_retry_force_release_button_text(self):
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
         val = UI_TEXT["lock_btn_retry_force_release"]
         assert "再次尝试释放" in val
         assert "重新释放" not in val
 
     def test_expired_title_uses_ui_text(self):
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
         assert "lock_force_release_expired_title" in UI_TEXT
         assert "过期" in UI_TEXT["lock_force_release_expired_title"]
 
@@ -895,7 +895,7 @@ class TestAC19NoDuplicateHardcodedStrings:
 
     def test_known_duplicates_are_in_ui_text(self):
         """The 5 known duplicate string pairs must exist as UI_TEXT keys."""
-        from src.card.styles import UI_TEXT
+        from src.card.ui_text import UI_TEXT
         expected_keys = [
             "lock_force_release_admin_only",
             "lock_repo_mgr_not_init",

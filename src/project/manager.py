@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from ..card.styles import get_available_themes
+from ..card.themes import get_available_themes
 from ..config import get_settings
 from ..utils.errors import get_error_detail
 from ..utils.lock_order import LockLevel, ordered_rlock

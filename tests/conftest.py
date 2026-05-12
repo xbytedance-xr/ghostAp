@@ -272,7 +272,6 @@ def make_settings():
             card_mock.button_size = "default"
             card_mock.button_layout = "responsive"
             card_mock.mobile_force_vertical = False
-            card_mock.mobile_layout_mode = "vertical"
             card_mock.continuation_enabled = True
             card_mock.action_dedup_ttl = 5
             card_mock.action_dedup_max_size = 200

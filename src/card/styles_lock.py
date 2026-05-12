@@ -1,7 +1,6 @@
 """Lock-related UI text constants.
 
-Extracted from ``styles.py`` to keep lock UI entries in a dedicated module.
-Merged back into the main ``UI_TEXT`` dict at import time in ``styles.py``.
+Merged into the main ``UI_TEXT`` dict at import time in ``ui_text.py``.
 """
 
 LOCK_UI_TEXT: dict[str, str] = {

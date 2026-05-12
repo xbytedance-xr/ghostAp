@@ -10,7 +10,9 @@ from ..shared import (
     build_responsive_layout,
     get_theme,
 )
-from ..styles import BUTTON_CONFIG, ENGINE_STYLES, THRESHOLDS
+from ..buttons_config import BUTTON_CONFIG
+from ..themes import ENGINE_STYLES
+from ..thresholds import THRESHOLDS
 from ..ui_text import UI_TEXT
 from .core import CoreBuilder
 
@@ -389,18 +391,6 @@ class DeepBuilder:
 
         card = CoreBuilder._wrap_card(header_title, theme.header_template, elements, subtitle=state.subtitle)
         return "interactive", json.dumps(card, ensure_ascii=False)
-
-    @staticmethod
-    def build_deep_card(*args, **kwargs):
-        """Deprecated alias for build_info_card. Will be removed after 2026-06-01."""
-        import warnings
-
-        warnings.warn(
-            "build_deep_card is deprecated, use build_info_card instead",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return DeepBuilder.build_info_card(*args, **kwargs)
 
     @staticmethod
     def build_history_list_card(

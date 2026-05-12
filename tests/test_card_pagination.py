@@ -1,8 +1,17 @@
-"""Tests for src/card/render/pagination.py — paginate_atoms and split_atom."""
+"""Tests for src/card/render/pagination.py — layout pagination and split_atom."""
 
 from src.card.render.atoms import RenderAtom, estimate_atom_size
 from src.card.render.budget import RenderBudget
-from src.card.render.pagination import paginate_atoms, split_atom
+from src.card.render.pagination import split_atom
+from src.card.render.layout import SectionLayout, paginate_layout
+
+
+def _paginate_body(atoms: list[RenderAtom], budget: RenderBudget) -> list[list[RenderAtom]]:
+    pages = paginate_layout(
+        SectionLayout(sticky_head=(), status=(), body=tuple(atoms), appendix=()),
+        budget,
+    )
+    return [list(page) for page in pages]
 
 
 class TestPaginateAtoms:
@@ -17,7 +26,7 @@ class TestPaginateAtoms:
             a.byte_size = estimate_atom_size(a)
 
         budget = RenderBudget()
-        pages = paginate_atoms(atoms, budget)
+        pages = _paginate_body(atoms, budget)
 
         assert len(pages) == 1
         assert len(pages[0]) == 1
@@ -40,7 +49,7 @@ class TestPaginateAtoms:
 
         # Use a small budget to force pagination
         budget = RenderBudget(byte_budget=16000)
-        pages = paginate_atoms(atoms, budget)
+        pages = _paginate_body(atoms, budget)
 
         assert len(pages) > 1
 
@@ -110,7 +119,7 @@ class TestPaginateAtoms:
 
         # Small budget to force splitting
         budget = RenderBudget(byte_budget=2000)
-        pages = paginate_atoms(atoms, budget)
+        pages = _paginate_body(atoms, budget)
 
         # Collect all content from all pages
         total_content = ""
@@ -129,28 +138,6 @@ class TestPaginateAtoms:
     def test_empty_atoms(self) -> None:
         """Empty list → [[]]."""
         budget = RenderBudget()
-        pages = paginate_atoms([], budget)
+        pages = _paginate_body([], budget)
 
         assert pages == [[]]
-
-
-def test_paginate_atoms_shim_preserves_behavior() -> None:
-    from src.card.render.layout import SectionLayout, paginate_layout
-
-    atoms = [
-        RenderAtom(kind="text", content="hello", node_count=1),
-        RenderAtom(kind="text", content="world", node_count=1),
-    ]
-    for atom in atoms:
-        atom.byte_size = estimate_atom_size(atom)
-
-    budget = RenderBudget()
-    legacy = paginate_atoms(atoms, budget)
-    new = paginate_layout(
-        SectionLayout(sticky_head=(), status=(), body=tuple(atoms), appendix=()),
-        budget,
-    )
-
-    legacy_kinds = [[atom.kind for atom in page] for page in legacy]
-    new_kinds = [[atom.kind for atom in page] for page in new]
-    assert legacy_kinds == new_kinds

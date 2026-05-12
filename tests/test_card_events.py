@@ -152,46 +152,17 @@ class TestFromACP:
 class TestWorktreePayloadValidation:
     """Assert validations on worktree factory methods."""
 
-    def test_deprecated_card_event_worktree_factories_warn_and_match_module_factories(self):
-        """Compatibility shims stay until 2026-06-01 and delegate to module factories."""
-        cases = [
-            (
-                "worktree_progress",
-                {"units": [{"name": "u1", "status": "running"}], "project_id": "p1"},
-                worktree_progress(units=[{"name": "u1", "status": "running"}], project_id="p1"),
-            ),
-            (
-                "worktree_tool_select",
-                {"tools": [{"id": "coco", "name": "Coco"}], "selected": ["coco"]},
-                worktree_tool_select(tools=[{"id": "coco", "name": "Coco"}], selected=["coco"]),
-            ),
-            (
-                "worktree_confirm",
-                {"selected_items": [{"tool": "coco", "model": "gpt4"}], "goal": "ship"},
-                worktree_confirm(selected_items=[{"tool": "coco", "model": "gpt4"}], goal="ship"),
-            ),
-            (
-                "worktree_cleanup",
-                {"merge_notes": [{"branch": "feat", "status": "ready"}], "base_branch": "main"},
-                worktree_cleanup(merge_notes=[{"branch": "feat", "status": "ready"}], base_branch="main"),
-            ),
-            (
-                "worktree_merge",
-                {"merge_notes": [{"branch": "feat", "status": "ready"}], "base_branch": "main"},
-                worktree_merge(merge_notes=[{"branch": "feat", "status": "ready"}], base_branch="main"),
-            ),
-            (
-                "worktree_completed_no_change",
-                {"units": [{"name": "u1", "status": "done"}], "message": "no diff"},
-                worktree_completed_no_change(units=[{"name": "u1", "status": "done"}], message="no diff"),
-            ),
-        ]
-
-        for method_name, kwargs, expected in cases:
-            with pytest.warns(DeprecationWarning, match="src.card.events.worktree.*2026-06-01"):
-                actual = getattr(CardEvent, method_name)(**kwargs)
-
-            assert actual == expected
+    def test_card_event_worktree_compat_factories_removed(self):
+        """Worktree factories live only in src.card.events.worktree."""
+        for method_name in (
+            "worktree_progress",
+            "worktree_tool_select",
+            "worktree_confirm",
+            "worktree_cleanup",
+            "worktree_merge",
+            "worktree_completed_no_change",
+        ):
+            assert not hasattr(CardEvent, method_name)
 
     def test_production_code_uses_worktree_module_factories_not_deprecated_shims(self):
         """Task 26 guard: production paths must not call CardEvent.worktree_* shims."""

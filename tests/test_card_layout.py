@@ -37,25 +37,24 @@ class TestCardLayout:
         assert len(result[0]["columns"]) == 2
 
     @pytest.mark.parametrize(
-        "mobile_mode, expected_flex_mode",
+        "layout_mode, expected_flex_mode",
         [
-            ("vertical", "none"),
+            ("responsive", "none"),
             ("flow", "flow"),
         ],
     )
-    def test_mobile_force_vertical_strategy(self, mobile_mode, expected_flex_mode):
+    def test_mobile_force_vertical_strategy(self, layout_mode, expected_flex_mode):
         """Test mobile optimization strategy when buttons > 2."""
         # 3 buttons to trigger mobile optimization
         buttons = [{"tag": "button", "text": {"tag": "plain_text", "content": f"Btn {i}"}} for i in range(3)]
 
         result = build_responsive_layout(
             buttons,
-            layout="responsive",
+            layout=layout_mode,
             mobile_force_vertical=True,
-            mobile_layout_mode=mobile_mode,
         )
 
-        if mobile_mode == "vertical":
+        if expected_flex_mode == "none":
             # Vertical stack: multiple column_sets or one with flex_mode=none?
             # _build_button_vertical returns multiple rows (one per button)
             assert len(result) == 3

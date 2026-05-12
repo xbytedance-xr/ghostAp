@@ -1291,7 +1291,7 @@ class TestTerminalMarkers:
             ),
         )
         card = json.loads(card_content)
-        from src.card.styles import TERMINAL_MARKERS
+        from src.card.terminal import TERMINAL_MARKERS
         all_text = " ".join(str(e.get("content", "")) for e in card["body"]["elements"])
         for marker in TERMINAL_MARKERS.values():
             assert marker not in all_text
@@ -1336,7 +1336,7 @@ class TestFooterStatus:
             ),
         )
         card = json.loads(card_content)
-        from src.card.styles import FOOTER_STATUS
+        from src.card.terminal import FOOTER_STATUS
         all_text = " ".join(str(e.get("content", "")) for e in card["body"]["elements"])
         for fs in FOOTER_STATUS.values():
             assert fs not in all_text

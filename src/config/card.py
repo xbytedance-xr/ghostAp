@@ -20,7 +20,6 @@ class CardSessionConfig(BaseModel):
     button_layout: Literal["desktop", "mobile", "responsive"] = "responsive"
     button_size: Literal["small", "medium", "large"] = "medium"
     mobile_force_vertical: bool = True
-    mobile_layout_mode: str = "vertical"  # DEPRECATED
     deep_compact_default: bool = False
     max_chars: int = 28000
     session_lock_max: int = 10_000

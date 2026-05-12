@@ -52,7 +52,7 @@ def _set_cached_probe(tool_name: str, models: list[ACPModelOption]) -> None:
 def list_acp_tools() -> list[ACPToolOption]:
     """List available ACP tools.
 
-    使用共享文案层提供的工具描述文案，避免直接依赖 card.styles.UI_TEXT。
+    使用共享文案层提供的工具描述文案，避免直接依赖旧 styles 聚合入口。
     """
 
     names = ["coco", "claude", "aiden", "codex", "gemini"]

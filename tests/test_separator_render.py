@@ -153,7 +153,6 @@ class TestOverflowFoldingInOrchestrator:
                 self.session_id = session_id
                 self.dispatched_events: list[CardEvent] = []
                 self._lock = threading.Lock()
-                self.on_first_deliver = None
                 self.delivered_message_id = ""
                 self._hooks: list = []
 

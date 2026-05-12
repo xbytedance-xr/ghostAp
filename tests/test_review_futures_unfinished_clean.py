@@ -58,7 +58,7 @@ def test_review_futures_unfinished_cleaned(monkeypatch):
     assert "futures unfinished" not in diag.get("err_type", "")
     assert "个视角未完成" not in diag.get("err_type", "")
     # After retry exhaustion, err_type should be the retry_exhausted message
-    from src.card.styles import UI_TEXT
+    from src.card.ui_text import UI_TEXT
     from src.utils.text import format_friendly_duration
     # elapsed_sec = spec_review_timeout + spec_review_retry_max_delay * attempts = 10 + 1*1 = 11
     assert diag.get("err_type", "") == UI_TEXT["retry_exhausted"].format(n=1, elapsed_friendly=format_friendly_duration(11))
