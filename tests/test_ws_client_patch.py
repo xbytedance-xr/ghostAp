@@ -2090,6 +2090,8 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
         client = self._make_client()
         client._add_reaction = MagicMock()
         client._reply_text = MagicMock()
+        client._process_with_intent = MagicMock()
+        client._is_interceptable_command_match = MagicMock(return_value=True)
         client._get_mode_handler = MagicMock()
 
         project = MagicMock()
@@ -2102,9 +2104,15 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
             command_match=SlashCommandParser.parse("/coco"),
         )
 
-        client._reply_text.assert_called_once()
-        call_str = str(client._reply_text.call_args)
-        assert "已在编程模式" in call_str
+        client._process_with_intent.assert_called_once_with(
+            "m1",
+            "c1",
+            "/coco",
+            project,
+            command_match=SlashCommandParser.parse("/coco"),
+            shell_fast_tracked=False,
+        )
+        client._reply_text.assert_not_called()
         client._get_mode_handler.assert_not_called()
 
     def test_dispatch_message_logic_deep_command_forwarded_to_process_with_intent(self):

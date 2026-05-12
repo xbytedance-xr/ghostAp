@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 
 from src.feishu.handlers.system import SystemHandler
 from src.feishu.slash_command_parser import SlashCommandParser
+from src.ttadk.models import ACPModelOption
 
 
 def _make_handler():
@@ -170,6 +171,17 @@ class TestHandleModelCommandList(unittest.TestCase):
         # card title should mention "coco" (the default tool)
         title = card["header"]["title"]["content"].lower()
         self.assertIn("coco", title)
+
+    def test_select_acp_tool_replies_before_model_probe_result(self):
+        fake_models = [
+            ACPModelOption(name="gpt-5", description="GPT-5", is_default=True),
+        ]
+
+        with self._patch_fetch(fake_models):
+            self.handler.handle_select_acp_tool("msg1", "chat1", "codex")
+
+        self.handler.reply_text.assert_called_once_with("msg1", "🔍 正在查询 codex 支持的模型…")
+        self.handler.reply_card.assert_called_once()
 
     def test_model_list_card_carries_thread_root_id(self):
         fake_models = [MagicMock()]

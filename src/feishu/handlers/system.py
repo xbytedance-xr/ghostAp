@@ -788,6 +788,8 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         if project and getattr(project, "acp_tool_name", "") == tool:
             current_model = getattr(project, "acp_model_name", None)
 
+        logger.info("[ACP] selecting tool=%s project_id=%s cwd=%s", tool, project_id or "-", cwd)
+        self.reply_text(message_id, UI_TEXT["system_acp_querying_models"].format(tool_name=tool))
         models = self._fetch_acp_models(tool, cwd=cwd, current_model=current_model)
         if not models:
             self.reply_error(message_id, UI_TEXT["system_acp_get_models_failed"].format(tool=tool))

@@ -1428,6 +1428,19 @@ class FeishuWSClient:
                     return
                 self._exit_current_mode(message_id, chat_id, project=project)
                 return
+            # Interceptable system commands (/wt, /worktree, /help, /status, /codex, etc.)
+            # must be routed to the system handler even inside thread programming mode,
+            # otherwise they can be hidden behind same-mode/topic-hint handling.
+            if self._is_interceptable_command_match(command_match):
+                self._process_with_intent(
+                    message_id,
+                    chat_id,
+                    text,
+                    project,
+                    command_match=command_match,
+                    shell_fast_tracked=shell_fast_tracked,
+                )
+                return
             normalized_entry = (text or "").strip().lower()
             same_mode_entries = {
                 "coco": {"/coco", "/enter_coco"},
@@ -1441,22 +1454,6 @@ class FeishuWSClient:
                 self._reply_text(
                     message_id,
                     UI_TEXT["ws_topic_hint_msg"],
-                )
-                return
-            # Interceptable system commands (/wt, /worktree, /help, /status, /codex, etc.)
-            # must be routed to the system handler even inside thread programming mode,
-            # otherwise they are swallowed by the programming mode handler silently.
-            # NOTE: Must come BEFORE _is_programming_entry_command so that /codex
-            # (and other mode-enter commands) can trigger mode switch instead of
-            # being blocked with a topic_hint_msg.
-            if self._is_interceptable_command_match(command_match):
-                self._process_with_intent(
-                    message_id,
-                    chat_id,
-                    text,
-                    project,
-                    command_match=command_match,
-                    shell_fast_tracked=shell_fast_tracked,
                 )
                 return
             if self._is_programming_entry_command(text):
