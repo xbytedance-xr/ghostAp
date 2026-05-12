@@ -77,7 +77,9 @@ class WorktreeDispatcher:
             unit.task_prompt = (
                 f"用户目标：{normalized_goal}\n"
                 f"你的角色：{role_prompt}\n"
-                "请只在当前 worktree 中工作，并输出清晰结论与必要修改。"
+                "你会和其它 worktree 单元并行执行。请只在当前 worktree 中工作，"
+                "优先处理与你角色匹配且不会和其它单元争用同一文件/接口契约的任务；"
+                "如发现潜在冲突，请记录冲突点和建议串行顺序，不要跨 worktree 修改。"
             )
             unit.status = WorktreeUnitStatus.PLANNED
         return planned_units

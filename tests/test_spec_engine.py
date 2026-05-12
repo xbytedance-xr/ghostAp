@@ -1549,11 +1549,15 @@ class TestSpecEngine:
         assert "spec output here" in prompt
         assert "```json" in prompt
         assert "file_changes" in prompt
+        assert "subagent / 子任务委托" in prompt
+        assert "无共享文件写入" in prompt
 
     def test_build_task_prompt(self):
         prompt = build_task_prompt("plan output here")
         assert "plan output here" in prompt
         assert "任务编号" in prompt
+        assert "可并行、可委托给 subagent" in prompt
+        assert "潜在冲突" in prompt
 
     def test_build_build_prompt(self):
         tasks = [
@@ -1564,6 +1568,9 @@ class TestSpecEngine:
         assert "Create models" in prompt
         assert "Add tests" in prompt
         assert "plan content" in prompt
+        assert "严格按照依赖关系推进" in prompt
+        assert "优先使用当前工具支持的 subagent / 子任务委托并行执行" in prompt
+        assert "严格按照任务顺序执行" not in prompt
 
     def test_build_review_prompt(self):
         prompt = build_review_prompt("Build auth")

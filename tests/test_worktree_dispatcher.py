@@ -48,6 +48,8 @@ def test_dispatcher_plans_and_executes_units_without_cross_contamination(tmp_pat
 
     assert executed[0].task_title == "分析与方案"
     assert executed[1].task_title == "审查与汇总"
+    assert "其它 worktree 单元并行执行" in executed[0].task_prompt
+    assert "不要跨 worktree 修改" in executed[0].task_prompt
     assert executed[0].status == "completed"
     assert executed[1].status == "completed"
     assert (unit1_dir / "coco.txt").exists() or (unit1_dir / "codex.txt").exists()
@@ -134,6 +136,7 @@ def test_plan_user_goal_smart_role_assignment():
     assert "审查与汇总" in reasoning_roles
     # codex (general) → implementation
     assert "实现与修改" in by_name["codex"].task_title
+    assert "不会和其它单元争用同一文件/接口契约" in by_name["codex"].task_prompt
 
 
 def test_plan_user_goal_no_reasoning_tools_falls_back():
