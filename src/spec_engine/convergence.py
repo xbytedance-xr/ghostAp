@@ -132,6 +132,37 @@ def detect_backlog_stuck(project: SpecProject, *, window: int = 3) -> bool:
     return all(m.backlog_pending >= recent[0].backlog_pending for m in recent[1:])
 
 
+def update_review_pass_streak(
+    project: SpecProject,
+    review_result,
+    *,
+    all_satisfied: bool,
+    review_passed: bool,
+    required: int,
+) -> bool:
+    """Update project-level consecutive blocking-free review pass state."""
+    required = max(1, int(required or 1))
+    role_plan_hash = str(getattr(review_result, "role_plan_hash", "") or "")
+    blocking_hash = str(getattr(review_result, "blocking_suggestion_hash", "") or "")
+    blocking_passed = bool(getattr(review_result, "blocking_review_passed", review_passed))
+
+    current_role_hash = str(getattr(project, "last_review_role_plan_hash", "") or "")
+    if not all_satisfied or not review_passed or not blocking_passed or blocking_hash:
+        project.review_pass_streak = 0
+        project.last_review_role_plan_hash = role_plan_hash or current_role_hash
+        project.last_review_blocking_suggestion_hash = blocking_hash
+        return False
+
+    if role_plan_hash and current_role_hash and role_plan_hash != current_role_hash:
+        project.review_pass_streak = 0
+
+    project.review_pass_streak = int(project.review_pass_streak or 0) + 1
+    if role_plan_hash:
+        project.last_review_role_plan_hash = role_plan_hash
+    project.last_review_blocking_suggestion_hash = ""
+    return project.review_pass_streak >= required
+
+
 def compute_cycle_metrics(
     cycle,
     project: SpecProject,

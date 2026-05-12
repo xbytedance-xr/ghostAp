@@ -335,7 +335,8 @@ def build_refinement_input(
         if failed:
             lines.append("## 上轮审查改进建议\n以下建议需要在本轮 Spec 循环中解决：\n")
             for pr in failed:
-                lines.append(f"{pr.perspective.emoji} **{pr.perspective.display_name}**:")
+                label = pr.role_display_name or pr.perspective.display_name
+                lines.append(f"{pr.perspective.emoji} **{label}**:")
                 for s in pr.suggestions:
                     lines.append(f"  - {s}")
                 lines.append("")

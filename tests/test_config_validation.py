@@ -234,6 +234,11 @@ class TestSpecReviewConfigProperty:
             spec_review_min_timeout=50,
             spec_review_hard_floor=25,
             spec_review_max_parallel=5,
+            spec_review_strategy="adaptive_roles",
+            spec_review_dynamic_roles_enabled=False,
+            spec_review_dynamic_roles_max=2,
+            spec_review_total_roles_max=7,
+            spec_review_pass_streak_required=3,
             spec_review_retry_max_delay=20,
             spec_review_retry_max_attempts=1,
             spec_review_failure_circuit_enabled=False,
@@ -252,6 +257,11 @@ class TestSpecReviewConfigProperty:
         assert cfg.failure_max_consecutive == 6
         assert cfg.failure_cooldown_cycles == 3
         assert cfg.failure_max_cooldown_cycles == 10
+        assert cfg.strategy == "adaptive_roles"
+        assert cfg.dynamic_roles_enabled is False
+        assert cfg.dynamic_roles_max == 2
+        assert cfg.total_roles_max == 7
+        assert cfg.pass_streak_required == 3
 
     def test_spec_review_from_env(self):
         """SpecReviewConfig reflects environment variable overrides."""

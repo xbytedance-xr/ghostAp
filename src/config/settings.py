@@ -244,8 +244,13 @@ class Settings(BaseSettings):
     spec_convergence_window: int = 2
     spec_min_cycles: int = 2
     spec_review_enabled: bool = True
+    spec_review_strategy: Literal["adaptive_roles", "multi_perspective", "none"] = "adaptive_roles"
     spec_review_timeout: int = 240
     spec_review_max_parallel: int = 3
+    spec_review_dynamic_roles_enabled: bool = True
+    spec_review_dynamic_roles_max: int = 3
+    spec_review_total_roles_max: int = 8
+    spec_review_pass_streak_required: int = 2
 
     # Spec Engine review failure circuit breaker
     # - enabled: master switch
@@ -285,6 +290,11 @@ class Settings(BaseSettings):
             failure_cooldown_cycles=self.spec_review_failure_cooldown_cycles,
             failure_max_cooldown_cycles=self.spec_review_failure_max_cooldown_cycles,
             parse_failure_default=self.spec_review_parse_failure_default,
+            strategy=self.spec_review_strategy,
+            dynamic_roles_enabled=self.spec_review_dynamic_roles_enabled,
+            dynamic_roles_max=self.spec_review_dynamic_roles_max,
+            total_roles_max=self.spec_review_total_roles_max,
+            pass_streak_required=self.spec_review_pass_streak_required,
         )
 
     # Worktree dispatcher pool-level timeout (seconds)
@@ -574,6 +584,21 @@ class Settings(BaseSettings):
             raise ValueError(f"{info.field_name} 必须 ≥ 1，当前值为 {v}")
         if val > 20:
             raise ValueError(f"{info.field_name} 必须 ≤ 20，当前值为 {v}")
+        return val
+
+    @field_validator(
+        "spec_review_dynamic_roles_max",
+        "spec_review_total_roles_max",
+        "spec_review_pass_streak_required",
+        mode="before",
+    )
+    @classmethod
+    def _spec_review_adaptive_fields_must_be_positive(cls, v: int, info) -> int:
+        val = int(v)
+        if val < 1:
+            raise ValueError(f"{info.field_name} 必须 > 0，当前值为 {v}")
+        if info.field_name == "spec_review_total_roles_max" and val < 5:
+            raise ValueError(f"{info.field_name} 必须 ≥ 5，当前值为 {v}")
         return val
 
     @field_validator("spec_review_retry_max_delay", mode="before")

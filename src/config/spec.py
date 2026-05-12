@@ -24,3 +24,8 @@ class SpecReviewConfig:
     failure_cooldown_cycles: int
     failure_max_cooldown_cycles: int
     parse_failure_default: str
+    strategy: str
+    dynamic_roles_enabled: bool
+    dynamic_roles_max: int
+    total_roles_max: int
+    pass_streak_required: int

@@ -346,6 +346,7 @@ def test_spec_engine_review_failure_diagnostics_written_to_cycle_and_metrics(mon
         spec_review_failure_circuit_enabled = False
         spec_review_failure_max_consecutive = 3
         spec_review_failure_cooldown_cycles = 3
+        spec_review_strategy = "multi_perspective"
         # Add for review pipeline settings
         spec_review_timeout = 120
         spec_review_min_timeout = 30
@@ -461,6 +462,7 @@ def test_spec_engine_review_failure_circuit_breaker_skips_review(monkeypatch, ca
         spec_review_failure_circuit_enabled = True
         spec_review_failure_max_consecutive = 1
         spec_review_failure_cooldown_cycles = 10
+        spec_review_strategy = "multi_perspective"
 
         # Add for review pipeline settings
         spec_review_timeout = 120
@@ -568,6 +570,7 @@ def test_spec_engine_review_circuit_skip_does_not_block_main_loop(monkeypatch, t
         spec_review_failure_circuit_enabled = True
         spec_review_failure_max_consecutive = 1
         spec_review_failure_cooldown_cycles = 10
+        spec_review_strategy = "multi_perspective"
 
         # Add for review pipeline settings
         spec_review_timeout = 120

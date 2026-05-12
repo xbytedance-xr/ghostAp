@@ -62,9 +62,7 @@ from .tracker import PhaseTracker
 from .review import (
     ReviewCircuitState,
     ReviewOrchestrator,
-    ReviewPipelineConfig,
     build_review_exception_diagnostics,
-    conduct_review as _conduct_review_impl,
     extract_reviews_from_llm_response,
     format_review_exception_log_line,
     normalize_review_diagnostics,
@@ -72,12 +70,14 @@ from .review import (
     parse_review_with_llm as _parse_review_with_llm_impl,
     review_result_to_text,
 )
+from .review_strategy import ReviewContext, select_review_strategy
 from .retry_status import RetryEvent, RetryStatus
 from .convergence import (
     ContinuationPolicy,
     compute_cycle_metrics,
     detect_backlog_stuck,
     detect_convergence,
+    update_review_pass_streak,
 )
 from .criteria import (
     decompose_criteria_with_llm as _decompose_criteria_with_llm_impl,
@@ -1214,10 +1214,27 @@ class SpecEngine(BaseEngine):
         if _backlog_stuck:
             logger.info("[Spec:%s] backlog stuck 检测触发, 循环 %d 轮", self._project.name, cycle_num)
 
+        effective_review_passed = review_passed
+        if self.settings.spec_review_enabled:
+            effective_review_passed = update_review_pass_streak(
+                self._project,
+                cycle.review_result,
+                all_satisfied=all_satisfied,
+                review_passed=review_passed,
+                required=getattr(self.settings, "spec_review_pass_streak_required", 2),
+            )
+            if review_passed and not effective_review_passed:
+                logger.info(
+                    "[Spec:%s] 审查通过但连续通过次数不足: %d/%d",
+                    self._project.name,
+                    int(self._project.review_pass_streak or 0),
+                    int(getattr(self.settings, "spec_review_pass_streak_required", 2) or 2),
+                )
+
         decision = policy.should_stop(
             cycle_num=cycle_num,
             all_satisfied=all_satisfied,
-            review_passed=review_passed,
+            review_passed=effective_review_passed,
             converged=converged,
             metrics=metrics,
             backlog_stuck=_backlog_stuck,
@@ -1370,10 +1387,11 @@ class SpecEngine(BaseEngine):
             if callbacks.on_review_retry:
                 callbacks.on_review_retry(cycle, event)
 
-        return self._review_orchestrator.conduct_review(
-            pipeline_cfg=ReviewPipelineConfig(
+        strategy = select_review_strategy(self.settings)
+        return strategy.run(
+            ReviewContext(
                 settings=self.settings,
-                circuit=ReviewCircuitState(),  # placeholder; orchestrator overwrites
+                circuit=self._review_orchestrator.circuit,
                 cycle=cycle,
                 session=self._session,
                 project=self._project,
@@ -1384,6 +1402,7 @@ class SpecEngine(BaseEngine):
                 agent_type=self._agent_type or "coco",
                 model_name=self._model_name,
                 on_retry_status=_on_retry_status,
+                cancel_event=self._review_orchestrator.cancel_event,
             ),
         )
 
@@ -1464,7 +1483,11 @@ class SpecEngine(BaseEngine):
         last_review_passed = True
         if self.settings.spec_review_enabled:
             if self._last_review:
-                last_review_passed = self._last_review.all_passed
+                required = int(getattr(self.settings, "spec_review_pass_streak_required", 1) or 1)
+                last_review_passed = (
+                    self._last_review.all_passed
+                    and int(getattr(self._project, "review_pass_streak", 0) or 0) >= required
+                )
             else:
                 last_review_passed = False
 

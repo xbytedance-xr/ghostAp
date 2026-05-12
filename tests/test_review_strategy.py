@@ -10,6 +10,7 @@ import pytest
 from src.engine_base import ReviewPerspective, ReviewResult
 from src.spec_engine.review import ReviewCircuitState
 from src.spec_engine.review_strategy import (
+    AdaptiveRoleReviewStrategy,
     MultiPerspectiveStrategy,
     NoReviewStrategy,
     ReviewContext,
@@ -38,6 +39,11 @@ def _make_ctx(**overrides):
 
 def test_select_default():
     s = select_review_strategy(types.SimpleNamespace())
+    assert isinstance(s, AdaptiveRoleReviewStrategy)
+
+
+def test_select_multi_perspective():
+    s = select_review_strategy(types.SimpleNamespace(spec_review_strategy="multi_perspective"))
     assert isinstance(s, MultiPerspectiveStrategy)
 
 

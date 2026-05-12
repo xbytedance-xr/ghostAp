@@ -22,9 +22,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from ..agent_session import EphemeralReviewSession
 from ..engine_base import ReviewResult
+from .adaptive_review import PromptRunner, run_adaptive_role_review_pipeline
 from .review import ReviewCircuitState, ReviewPipelineConfig, conduct_review
 from .review_artifacts import ReviewArtifacts
+from .review_roles import ReviewRoleSpec, build_adaptive_role_plan, fixed_programming_roles
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +36,7 @@ __all__ = [
     "ReviewStrategy",
     "NoReviewStrategy",
     "MultiPerspectiveStrategy",
+    "AdaptiveRoleReviewStrategy",
     "select_review_strategy",
 ]
 
@@ -59,6 +63,8 @@ class ReviewContext:
     on_retry_status: Optional[Callable[[str], None]] = None
     agent_type: str = "coco"
     model_name: Optional[str] = None
+    prompt_runner_factory: Optional[Callable[[ReviewRoleSpec], PromptRunner]] = None
+    role_plan_override: Optional[list[ReviewRoleSpec]] = None
 
 
 class ReviewStrategy(ABC):
@@ -114,19 +120,99 @@ class MultiPerspectiveStrategy(ReviewStrategy):
         )
 
 
+class AdaptiveRoleReviewStrategy(ReviewStrategy):
+    """Adaptive task-aware review with parallel per-role workers."""
+
+    name = "adaptive_roles"
+
+    def run(self, ctx: ReviewContext) -> ReviewResult:
+        if not ctx.artifacts:
+            logger.warning("[ReviewStrategy:adaptive_roles] missing artifacts, falling back to multi_perspective")
+            return MultiPerspectiveStrategy().run(ctx)
+
+        if (
+            getattr(ctx.settings, "spec_review_failure_circuit_enabled", False)
+            and int(ctx.circuit.review_circuit_open_until_cycle or 0)
+            and int(ctx.cycle or 0) <= int(ctx.circuit.review_circuit_open_until_cycle or 0)
+        ):
+            return MultiPerspectiveStrategy().run(ctx)
+
+        try:
+            role_plan = build_adaptive_role_plan(
+                ctx.artifacts,
+                dynamic_roles_enabled=bool(getattr(ctx.settings, "spec_review_dynamic_roles_enabled", True)),
+                dynamic_roles_max=int(getattr(ctx.settings, "spec_review_dynamic_roles_max", 3) or 3),
+                total_roles_max=int(getattr(ctx.settings, "spec_review_total_roles_max", 8) or 8),
+            )
+            roles = list(ctx.role_plan_override or role_plan.roles)
+            role_plan_hash = role_plan.blocking_role_hash()
+        except Exception as e:
+            logger.warning("[ReviewStrategy:adaptive_roles] role planning failed, using fixed programming roles: %s", repr(e))
+            roles = list(ctx.role_plan_override or fixed_programming_roles())
+            role_plan_hash = self._hash_roles(roles)
+        if ctx.role_plan_override:
+            role_plan_hash = self._hash_roles(roles)
+
+        prompt_runner_factory = ctx.prompt_runner_factory or self._build_ephemeral_prompt_runner_factory(ctx)
+        result = run_adaptive_role_review_pipeline(
+            ctx.artifacts,
+            roles,
+            prompt_runner_factory=prompt_runner_factory,
+            iteration=ctx.cycle,
+            max_parallel=int(getattr(ctx.settings, "spec_review_max_parallel", 3) or 3),
+            timeout=float(getattr(ctx.settings, "spec_review_timeout", 240) or 240),
+        )
+        result.role_plan_hash = role_plan_hash
+        result.blocking_suggestion_hash = result.aggregated.blocking_hash() if result.aggregated else ""
+        result.blocking_review_passed = result.all_passed and not result.blocking_suggestion_hash
+        ctx.circuit.reset_on_success()
+
+        if ctx.on_review_done:
+            try:
+                ctx.on_review_done(ctx.cycle, result)
+            except Exception as e:
+                logger.debug("[ReviewStrategy:adaptive_roles] on_review_done raised: %s", repr(e))
+        return result
+
+    def _build_ephemeral_prompt_runner_factory(self, ctx: ReviewContext) -> Callable[[ReviewRoleSpec], PromptRunner]:
+        cwd = (ctx.artifacts.cwd if ctx.artifacts else "") or "."
+
+        def _factory(role: ReviewRoleSpec) -> PromptRunner:
+            def _runner(prompt: str, on_event: Optional[Callable] = None, timeout: float = 240.0) -> str:
+                if callable(ctx.send_prompt_with_retry_fn) and ctx.session is None:
+                    res = ctx.send_prompt_with_retry_fn(prompt, on_event=on_event, timeout=timeout)
+                    return str(getattr(res, "text", res) or "")
+                with EphemeralReviewSession(ctx.agent_type, cwd, ctx.model_name) as session:
+                    res = session.send_prompt(prompt, on_event=on_event, timeout=timeout)
+                    return str(getattr(res, "text", res) or "")
+
+            return _runner
+
+        return _factory
+
+    @staticmethod
+    def _hash_roles(roles: list[ReviewRoleSpec]) -> str:
+        import hashlib
+        import json
+
+        payload = [r.to_dict() for r in roles if getattr(r, "blocking", True)]
+        return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
 _STRATEGY_REGISTRY: dict[str, type[ReviewStrategy]] = {
     NoReviewStrategy.name: NoReviewStrategy,
     MultiPerspectiveStrategy.name: MultiPerspectiveStrategy,
+    AdaptiveRoleReviewStrategy.name: AdaptiveRoleReviewStrategy,
 }
 
 
 def select_review_strategy(settings) -> ReviewStrategy:
-    """Pick a strategy by `settings.spec_review_strategy` (default: multi_perspective).
+    """Pick a strategy by `settings.spec_review_strategy` (default: adaptive_roles).
 
     Unknown names fall back to MultiPerspectiveStrategy with a warning so
     misconfig never breaks cycles.
     """
-    name = str(getattr(settings, "spec_review_strategy", "") or "multi_perspective").strip().lower()
+    name = str(getattr(settings, "spec_review_strategy", "") or "adaptive_roles").strip().lower()
     cls = _STRATEGY_REGISTRY.get(name)
     if cls is None:
         logger.warning(

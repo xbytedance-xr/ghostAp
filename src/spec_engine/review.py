@@ -68,7 +68,8 @@ def review_result_to_text(review: ReviewResult) -> str:
     lines: list[str] = []
     for pr in review.reviews:
         verdict = "PASS" if pr.passed else "FAIL"
-        lines.append(f"[{pr.perspective.name}] {verdict}")
+        label = pr.role_display_name or pr.perspective.name
+        lines.append(f"[{label}] {verdict}")
         for s in pr.suggestions:
             lines.append(f"- {s}")
         lines.append("")

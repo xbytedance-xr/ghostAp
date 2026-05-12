@@ -460,6 +460,9 @@ class SpecProject:
     error: Optional[str] = None
     task_id: Optional[str] = None  # Human-readable task ID
     verify_command: str = ""
+    review_pass_streak: int = 0
+    last_review_role_plan_hash: str = ""
+    last_review_blocking_suggestion_hash: str = ""
 
     @classmethod
     def create(cls, name: str = "", root_path: str = "") -> "SpecProject":
@@ -540,6 +543,9 @@ class SpecProject:
             "error": self.error,
             "task_id": self.task_id,
             "verify_command": self.verify_command,
+            "review_pass_streak": self.review_pass_streak,
+            "last_review_role_plan_hash": self.last_review_role_plan_hash,
+            "last_review_blocking_suggestion_hash": self.last_review_blocking_suggestion_hash,
         }
 
     @classmethod
@@ -562,6 +568,9 @@ class SpecProject:
             compact_meta=data.get("_compact") if isinstance(data.get("_compact"), dict) else None,
             task_id=data.get("task_id"),
             verify_command=str(data.get("verify_command") or ""),
+            review_pass_streak=int(data.get("review_pass_streak") or 0),
+            last_review_role_plan_hash=str(data.get("last_review_role_plan_hash") or ""),
+            last_review_blocking_suggestion_hash=str(data.get("last_review_blocking_suggestion_hash") or ""),
         )
         if data.get("cycles"):
             project.cycles = [SpecCycle.from_dict(c) for c in data["cycles"]]

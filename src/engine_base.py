@@ -90,6 +90,10 @@ class PerspectiveReview:
     passed: bool
     suggestions: list[str] = field(default_factory=list)
     summary: str = ""
+    role_id: str = ""
+    role_display_name: str = ""
+    role_category: str = ""
+    blocking: bool = True
 
     def to_dict(self) -> dict:
         return {
@@ -97,6 +101,10 @@ class PerspectiveReview:
             "passed": self.passed,
             "suggestions": self.suggestions,
             "summary": self.summary,
+            "role_id": self.role_id,
+            "role_display_name": self.role_display_name,
+            "role_category": self.role_category,
+            "blocking": self.blocking,
         }
 
     @classmethod
@@ -106,6 +114,10 @@ class PerspectiveReview:
             passed=data["passed"],
             suggestions=data.get("suggestions", []),
             summary=data.get("summary", ""),
+            role_id=str(data.get("role_id") or ""),
+            role_display_name=str(data.get("role_display_name") or ""),
+            role_category=str(data.get("role_category") or ""),
+            blocking=bool(data.get("blocking", True)),
         )
 
 
