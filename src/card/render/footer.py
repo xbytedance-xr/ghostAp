@@ -129,6 +129,15 @@ _TOOL_BRIEF = {
     "Bash": lambda p: f"执行 {_short_cmd(p.get('command') or p.get('cmd') or '')}",
 }
 
+_TERMINAL_DURATION_MARKERS = {
+    "completed": "✅",
+    "failed": "❌",
+    "cancelled": "⚪",
+    "blocked": "⛔",
+    "archived": "⏸",
+    "ttl_expired": "⏱",
+}
+
 
 def _format_duration(seconds: float) -> str:
     """Format seconds into human-readable duration string."""
@@ -142,6 +151,15 @@ def _format_duration(seconds: float) -> str:
         return UI_TEXT["duration_mins_secs"].format(minutes=minutes, seconds=secs)
     hours, mins = divmod(minutes, 60)
     return UI_TEXT["duration_hours_mins_secs"].format(hours=hours, minutes=mins, seconds=secs)
+
+
+def _format_compact_duration(seconds: float) -> str:
+    total = max(0, int(seconds))
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m{secs:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m{secs:02d}s"
 
 
 def _total_elapsed_from_session(state: CardState) -> float | None:
@@ -332,8 +350,9 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
     duration_str = None
     duration_label = ""
     if state.footer.duration_seconds is not None and is_final_terminal:
-        duration_str = _format_duration(state.footer.duration_seconds)
-        duration_label = UI_TEXT.get("card_footer_duration_fmt", "耗时 {duration}").format(duration=duration_str)
+        duration_str = _format_compact_duration(state.footer.duration_seconds)
+        marker = _TERMINAL_DURATION_MARKERS.get(state.terminal, "✅")
+        duration_label = f"{marker} {duration_str}"
     elif running_spec_elapsed is not None:
         duration_str = _format_duration(running_spec_elapsed)
         duration_label = UI_TEXT.get("card_footer_elapsed_total_fmt", "已执行 {duration}").format(duration=duration_str)
@@ -343,7 +362,7 @@ def render_footer(state: CardState, budget: RenderBudget | None = None) -> list[
             duration_str = _format_duration(elapsed)
 
     if duration_str:
-        meta_parts.append(f"⏱ {duration_label or duration_str}")
+        meta_parts.append(duration_label or f"⏱ {duration_str}")
 
     if meta_parts:
         elements.append(

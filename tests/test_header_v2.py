@@ -3,10 +3,8 @@ from pathlib import Path
 
 import pytest
 
-import src.card.render.header as header_module
 from src.card.render.header import render_header
 from src.card.state.models import CardMetadata, CardState, HeaderState
-from src.card.state.runtime_stats import RuntimeStats
 
 # AC-1 pattern: 📁 {project} · 🤖 {tool} · #{seq} with optional model suffix and 已封存
 _AC1_PATTERN = re.compile(r"^📁 .+ · 🤖 .+ · #\S+( · .+)?$")
@@ -79,22 +77,21 @@ def test_header_v2_includes_subagent_task_context():
     assert result["template"] == "orange"
 
 
-def test_header_v2_second_row_contains_directory_and_elapsed_from_runtime_stats():
+def test_header_v2_omits_redundant_elapsed_subtitle():
     state = CardState(
         header=HeaderState(title="legacy", template="blue"),
         metadata=CardMetadata(
             project_name="ghostAp",
             tool_name="coco",
+            model_name="Test-O-New-Thinking",
             working_dir=str(Path.home() / "workspaces/aiwork/ghostAp"),
         ),
     )
-    object.__setattr__(state, "runtime_stats", RuntimeStats(elapsed_seconds=252.0))
 
     result = render_header(state)
 
-    # working_dir is now in footer, not subtitle; subtitle only has marker + cumulative time
-    assert "4m12s" in result["subtitle"]["content"]
-    assert "~/workspaces/aiwork/ghostAp" not in result["subtitle"]["content"]
+    assert result["title"]["content"] == "📁 ghostAp · 🤖 Coco · #1 · Test-O-New-Thinking"
+    assert "subtitle" not in result
 
 
 def test_header_v2_subagent_uses_parent_reference_instead_of_path():
@@ -133,13 +130,10 @@ def test_header_v2_frozen_shows_archived_state_and_final_elapsed():
 
     assert "已封存" in result["title"]["content"]
     assert result["template"] == "grey"
-    assert "⏸ final 7m02s" in result["subtitle"]["content"]
+    assert "subtitle" not in result
 
 
-def test_header_v2_frozen_uses_frozen_frame_constant():
-    """Frozen card subtitle marker comes from FROZEN_FRAME (⏸), not a hardcoded string."""
-    from src.card.render.live_ticker import FROZEN_FRAME
-
+def test_header_v2_frozen_keeps_elapsed_out_of_header():
     state = CardState(
         header=HeaderState(title="legacy", template="blue"),
         metadata=CardMetadata(
@@ -153,7 +147,7 @@ def test_header_v2_frozen_uses_frozen_frame_constant():
 
     result = render_header(state)
 
-    assert FROZEN_FRAME in result["subtitle"]["content"]
+    assert "subtitle" not in result
 
 
 def test_header_v2_frozen_hides_model_name():
@@ -177,8 +171,7 @@ def test_header_v2_frozen_hides_model_name():
     assert "claude-opus-4-7" not in title
 
 
-def test_header_v2_continuation_shows_card_elapsed_and_cumulative(monkeypatch):
-    monkeypatch.setattr(header_module.time, "monotonic", lambda: 550.0)
+def test_header_v2_continuation_keeps_elapsed_out_of_header():
     state = CardState(
         header=HeaderState(title="legacy", template="blue"),
         metadata=CardMetadata(
@@ -189,15 +182,10 @@ def test_header_v2_continuation_shows_card_elapsed_and_cumulative(monkeypatch):
             session_started_at=100.0,
         ),
     )
-    object.__setattr__(state, "runtime_stats", RuntimeStats(elapsed_seconds=12.0))
 
     result = render_header(state)
 
-    # Subtitle now only shows cumulative time (from session_started_at)
-    assert "7m30s" in result["subtitle"]["content"]
-    # Per-card elapsed (0m12s) and "累计" label are no longer in subtitle
-    assert "0m12s" not in result["subtitle"]["content"]
-    assert "累计" not in result["subtitle"]["content"]
+    assert "subtitle" not in result
 
 
 def test_engine_header_keeps_legacy_phase_when_only_tool_name_present():
@@ -223,7 +211,7 @@ def test_engine_header_uses_v2_when_session_started_for_first_card():
 
     assert "#1" in result["title"]["content"]
     # Engine subtitle (phase info) is now in footer, not header subtitle
-    assert "phase: analyze" not in result["subtitle"]["content"]
+    assert "subtitle" not in result
 
 
 # ---------------------------------------------------------------------------

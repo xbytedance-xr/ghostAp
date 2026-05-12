@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 from src.card.engine_meta import engine_type_to_cmd
 from src.card.types import ActiveElement, RenderedCard
-from src.card.render.atoms import AtomKind, RenderAtom, flatten_to_atoms
+from src.card.render.atoms import AtomKind, RenderAtom, estimate_atom_size, flatten_to_atoms
 from src.card.render.budget import RenderBudget
 from src.card.render.buttons import render_buttons
 from src.card.render.footer import render_footer
@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 _STATUS_ATOM_KINDS = frozenset({"warning_banner", "progress_bar", "phase_panel", "criteria_panel", "task_list"})
 _BODY_ATOM_KINDS = frozenset({"text", "reasoning", "plan", "worktree_panel", "subagent_dispatch", "activity_digest", "tool_panel"})
+_MIN_STREAMING_TEXT_CHARS = 2
 
 
 # Banner background color and icon by warning_type
@@ -92,6 +93,7 @@ def render_card(
     subagent_atom = build_subagent_dispatch_atom(list(state.metadata.subagents)) if state.metadata.subagents else None
     if subagent_atom is not None:
         atoms.insert(0, subagent_atom)
+    atoms = _coalesce_adjacent_text_fragments(atoms)
     layout = _build_section_layout(state, atoms)
 
     # 2. Paginate via SectionLayout (sticky_head/status/body/appendix SSOT)
@@ -445,6 +447,47 @@ def _render_atoms_to_elements(
     return elements
 
 
+def _coalesce_adjacent_text_fragments(atoms: list[RenderAtom]) -> list[RenderAtom]:
+    """Merge pathological one-character text fragments into the next text atom.
+
+    ACP streams can briefly split a Chinese word across text block boundaries
+    (for example ``数`` + ``字很大``). Rendering the first block as a standalone
+    markdown element makes Feishu show a single character on its own line. Keep
+    normal paragraph blocks separate, but stitch a leading one-character
+    fragment into the following adjacent text atom.
+    """
+    if len(atoms) < 2:
+        return atoms
+
+    merged: list[RenderAtom] = []
+    for atom in atoms:
+        if (
+            atom.kind == "text"
+            and merged
+            and merged[-1].kind == "text"
+            and _visible_text_len(merged[-1].content) == 1
+            and atom.content
+            and not atom.content[0].isspace()
+        ):
+            previous = merged.pop()
+            stitched = RenderAtom(
+                kind="text",
+                block_id=atom.block_id or previous.block_id,
+                content=f"{previous.content}{atom.content}",
+                splittable=previous.splittable or atom.splittable,
+                node_count=1,
+            )
+            stitched.byte_size = estimate_atom_size(stitched)
+            merged.append(stitched)
+            continue
+        merged.append(atom)
+    return merged
+
+
+def _visible_text_len(text: str) -> int:
+    return len("".join(str(text or "").split()))
+
+
 def _prepend_bridge_phrase(element: dict, phrase: str) -> bool:
     """Prepend bridge phrase to the first markdown content inside an element."""
     if element.get("tag") == "markdown":
@@ -530,7 +573,7 @@ def _render_text_element(atom: RenderAtom, block_index: dict[str, ContentBlock])
     el: dict = {"tag": "markdown", "content": atom.content}
     # Only assign element_id when content is non-empty to prevent Feishu CardKit
     # from entering streaming state with an empty element (causes first-char newline).
-    if element_id and atom.content:
+    if element_id and _is_streaming_text_ready(atom.content):
         el["element_id"] = element_id
     return el
 
@@ -551,10 +594,14 @@ def _find_active_element(
         block = block_index.get(atom.block_id)
         if block is not None and block.status == "active" and block.element_id:
             # Skip empty content: don't activate streaming until real text exists
-            if not atom.content:
+            if not _is_streaming_text_ready(atom.content):
                 continue
             return ActiveElement(element_id=block.element_id, text=atom.content)
     return None
+
+
+def _is_streaming_text_ready(content: str) -> bool:
+    return _visible_text_len(content) >= _MIN_STREAMING_TEXT_CHARS
 
 
 def _assemble_card_json(

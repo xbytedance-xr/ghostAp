@@ -279,3 +279,17 @@ def test_spec_footer_renders_elapsed_even_without_status(monkeypatch):
 
     assert elements[0] == {"tag": "hr"}
     assert "已执行 30 秒" in content
+
+
+def test_terminal_footer_places_duration_after_tool_model():
+    state = CardState(
+        terminal="completed",
+        metadata=CardMetadata(tool_name="coco", model_name="Test-O-New-Thinking"),
+        footer=FooterState(duration_seconds=58),
+    )
+
+    elements = render_footer(state)
+    content_lines = [e.get("content", "") for e in elements if e.get("tag") == "markdown"]
+
+    assert "🔧 coco · 🧩 Test-O-New-Thinking · ✅ 0m58s" in content_lines
+    assert not any("耗时" in line for line in content_lines)

@@ -1489,11 +1489,40 @@ class FeishuWSClient:
             ):
                 bound_project = self._project_manager.find_by_bound_chat_id(chat_id)
                 if bound_project is not None:
+                    bound_project_id = getattr(bound_project, "project_id", None)
+                    current_mode, is_programming = self._get_effective_mode(
+                        chat_id, project_id=bound_project_id
+                    )
+                    if is_programming:
+                        self._process_with_intent(
+                            message_id,
+                            chat_id,
+                            text,
+                            bound_project,
+                            command_match=command_match,
+                            shell_fast_tracked=shell_fast_tracked,
+                        )
+                        return
+
+                    default_tool = str(
+                        getattr(bound_project, "acp_tool_name", None)
+                        or getattr(self.settings, "default_acp_tool", None)
+                        or "coco"
+                    ).strip().lower()
                     self._add_reaction(message_id, EmojiReaction.on_coco_mode())
                     self._add_reaction(message_id, EmojiReaction.on_processing())
-                    self._message_dispatcher._handle_enter_coco(
-                        message_id, chat_id, bound_project, pending_prompt=text,
-                    )
+                    if default_tool == "coco":
+                        self._message_dispatcher._handle_enter_coco(
+                            message_id, chat_id, bound_project, pending_prompt=text,
+                        )
+                    elif default_tool in {"codex"}:
+                        self._message_dispatcher._handle_enter_acp_mode(
+                            default_tool, message_id, chat_id, bound_project, pending_prompt=text,
+                        )
+                    else:
+                        self._message_dispatcher._handle_enter_coco(
+                            message_id, chat_id, bound_project, pending_prompt=text,
+                        )
                     return
             self._process_with_intent(
                 message_id,

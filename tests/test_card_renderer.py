@@ -297,6 +297,43 @@ class TestActiveElement:
         assert cards[0].active_element.element_id == "el_stream"
         assert cards[0].active_element.text == "streaming text"
 
+    def test_one_character_active_text_waits_before_streaming(self):
+        state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="text",
+                    block_id="t1",
+                    content="数",
+                    element_id="el_stream",
+                    status="active",
+                ),
+            ),
+            terminal="running",
+        )
+
+        cards = render_card(state, RenderBudget())
+
+        assert cards[0].active_element is None
+        assert "streaming_mode" not in cards[0]._card_json["config"]
+
+    def test_adjacent_single_character_text_fragment_is_coalesced(self):
+        state = CardState(
+            blocks=(
+                ContentBlock(kind="text", block_id="t1", content="数", status="completed"),
+                ContentBlock(kind="text", block_id="t2", content="字很大，需要继续分析。", status="completed"),
+            ),
+        )
+
+        cards = render_card(state, RenderBudget())
+        markdown = [
+            el.get("content", "")
+            for el in cards[0]._card_json["body"]["elements"]
+            if el.get("tag") == "markdown"
+        ]
+
+        assert "数字很大，需要继续分析。" in markdown
+        assert "数" not in markdown
+
     def test_no_active_element_when_completed(self):
         state = CardState(
             blocks=(

@@ -93,6 +93,8 @@ class ProgrammingModeHandler(BaseHandler):
     def _set_mode_on_project(self, project: "ProjectContext", active: bool, session_id: str = "", count: int = 0):
         if active:
             project.set_programming_mode(self.mode_key, True, session_id, count)
+            if self.mode_key in {"coco", "claude", "aiden", "codex", "gemini"}:
+                project.acp_tool_name = self.mode_key
         else:
             project.set_programming_mode(self.mode_key, False)
 

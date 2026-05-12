@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 from src.agent.intent_recognizer import IntentRecognizer
 from src.feishu.slash_command_parser import SlashCommandParser
 from src.feishu.ws_client import FeishuWSClient
+from src.mode.manager import InteractionMode
 from src.project.manager import ProjectManager
 
 
@@ -126,6 +127,7 @@ class TestProjectChatDefaultCocoRouting(unittest.TestCase):
         # By default make looks_like_shell predictable via real IR logic stub
         self.client._intent_recognizer = MagicMock()
         self.client._intent_recognizer.looks_like_shell.return_value = False
+        self.client._get_effective_mode = MagicMock(return_value=(InteractionMode.SMART, False))
         # Bound project for a specific chat id
         self.bound_project = MagicMock()
         self.bound_project.project_id = "pid_bound"
@@ -145,6 +147,33 @@ class TestProjectChatDefaultCocoRouting(unittest.TestCase):
         _, kwargs = self.client._message_dispatcher._handle_enter_coco.call_args
         self.assertEqual(kwargs.get("pending_prompt"), "帮我重构 foo.py")
         self.client._process_with_intent.assert_not_called()
+
+    def test_free_text_in_project_chat_respects_project_codex_tool(self):
+        self.bound_project.acp_tool_name = "codex"
+
+        self.client._dispatch_message_logic(
+            "m1", "oc_project", "帮我重构 foo.py",
+            project=self.bound_project, auto_enter_mode=None,
+            command_match=None, is_image_only=False,
+        )
+
+        self.client._message_dispatcher._handle_enter_acp_mode.assert_called_once_with(
+            "codex", "m1", "oc_project", self.bound_project, pending_prompt="帮我重构 foo.py"
+        )
+        self.client._message_dispatcher._handle_enter_coco.assert_not_called()
+        self.client._process_with_intent.assert_not_called()
+
+    def test_free_text_in_project_chat_with_active_codex_mode_uses_intent_path(self):
+        self.client._get_effective_mode.return_value = (InteractionMode.CODEX, True)
+
+        self.client._dispatch_message_logic(
+            "m1", "oc_project", "继续写",
+            project=self.bound_project, auto_enter_mode=None,
+            command_match=None, is_image_only=False,
+        )
+
+        self.client._process_with_intent.assert_called_once()
+        self.client._message_dispatcher._handle_enter_coco.assert_not_called()
 
     def test_slash_command_in_project_chat_goes_to_intent_not_coco(self):
         match = SlashCommandParser.parse("/help")

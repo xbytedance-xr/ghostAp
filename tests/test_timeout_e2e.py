@@ -214,6 +214,11 @@ class TestSpecEngineE2E:
             lambda **kw: _TimeoutSession(),
         )
         monkeypatch.setattr(
+            spec_engine,
+            "_create_session_fn",
+            lambda **kw: _TimeoutSession(),
+        )
+        monkeypatch.setattr(
             "src.spec_engine.engine.parse_acceptance_criteria",
             lambda txt, decompose_fn=None: ["criterion1"],
         )
@@ -238,6 +243,11 @@ class TestSpecEngineE2E:
 
         monkeypatch.setattr(
             "src.spec_engine.engine.create_engine_session",
+            lambda **kw: _AsyncioTimeoutSession(),
+        )
+        monkeypatch.setattr(
+            spec_engine,
+            "_create_session_fn",
             lambda **kw: _AsyncioTimeoutSession(),
         )
         monkeypatch.setattr(

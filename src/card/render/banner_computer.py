@@ -17,7 +17,15 @@ def format_elapsed(seconds: float) -> str:
 
 
 def compute_banner(metadata: CardMetadata, runtime: RuntimeStats) -> str:
-    """Build banner text: `{emoji} {mode} · {phase} · {elapsed}`."""
+    """Build engine phase banner text.
+
+    Plain programming cards already show project/tool/model in the header and
+    footer; rendering a generic ``Coco · 进行中 · 0s`` line in the body repeats
+    that context and wastes mobile vertical space. Keep sticky phase banners for
+    engines where phase/cycle/subagent context is meaningful on repeated pages.
+    """
+    if not metadata.engine_type:
+        return ""
     emoji = metadata.mode_emoji or "🤖"
     mode = metadata.mode_name or "Programming"
     phase = _format_phase(metadata, runtime)

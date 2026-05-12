@@ -7,7 +7,7 @@ from src.card.state.models import CardMetadata, CardState, HeaderState
 from src.card.state.runtime_stats import RuntimeStats
 
 
-def test_programming_direct_mode_has_banner_no_task_list():
+def test_programming_direct_mode_omits_redundant_phase_banner():
     state = CardState(
         metadata=CardMetadata(
             mode_name="Programming",
@@ -25,9 +25,9 @@ def test_programming_direct_mode_has_banner_no_task_list():
 
     assert len(pages) == 1
     body = pages[0]._card_json["body"]["elements"]
-    first = body[0]
-    assert first.get("tag") == "markdown"
-    assert "Programming" in first.get("content", "")
+    body_text = str(body)
+    assert "Programming · Coco · 进行中" not in body_text
+    assert "Coco · 进行中" not in body_text
     panel_titles = [
         element.get("header", {}).get("title", {}).get("content", "")
         for element in body

@@ -26,14 +26,15 @@ def build_sticky_head(
 
     runtime = getattr(state, "runtime_stats", None) or RuntimeStats(elapsed_seconds=0.0)
     banner_text = compute_banner(metadata, runtime)
-    banner_atom = RenderAtom(
-        kind="phase_banner",
-        content=banner_text,
-        node_count=1,
-        block_id="_phase_banner",
-    )
-    banner_atom.byte_size = estimate_atom_size(banner_atom)
-    atoms.append(banner_atom)
+    if banner_text:
+        banner_atom = RenderAtom(
+            kind="phase_banner",
+            content=banner_text,
+            node_count=1,
+            block_id="_phase_banner",
+        )
+        banner_atom.byte_size = estimate_atom_size(banner_atom)
+        atoms.append(banner_atom)
 
     task_list = getattr(state, "task_list", None)
     if task_list is None:

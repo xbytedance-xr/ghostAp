@@ -683,6 +683,7 @@ class TestCocoModeHandler:
         project = MagicMock()
         h._set_mode_on_project(project, True, "sid", 5)
         project.set_programming_mode.assert_called_once_with("coco", True, "sid", 5)
+        assert project.acp_tool_name == "coco"
 
     def test_set_mode_on_project_deactivate(self):
         h, _ = self._make()

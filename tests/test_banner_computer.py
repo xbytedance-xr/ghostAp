@@ -42,7 +42,7 @@ def test_banner_worktree_subagent():
     assert compute_banner(md, rs) == "🌲 Worktree · wt·aiden · 2m18s"
 
 
-def test_banner_emoji_fallback():
+def test_banner_omits_plain_programming_context():
     md = CardMetadata(mode_name=None, mode_emoji=None, engine_type=None)  # type: ignore[arg-type]
     rs = RuntimeStats(elapsed_seconds=5.0)
-    assert compute_banner(md, rs) == "🤖 Programming · 进行中 · 5s"
+    assert compute_banner(md, rs) == ""

@@ -257,6 +257,8 @@ class MessageDispatcher:
         IntentType.GEMINI_MESSAGE: "gemini",
     }
 
+    _MODEL_SELECT_ENTER_MODES: set[str] = {"codex"}
+
     _ENGINE_ENTER_MAP: dict = {
         IntentType.ENTER_DEEP: "_start_deep_engine",
         IntentType.ENTER_SPEC: "_start_spec_engine",
@@ -308,6 +310,8 @@ class MessageDispatcher:
             mode = self._MODE_ENTER_MAP[intent]
             if data.get("auto_forward") is True:
                 self._auto_enter_and_forward(mode, message_id, chat_id, original_text, project)
+            elif mode in self._MODEL_SELECT_ENTER_MODES:
+                self._handle_enter_acp_mode(mode, message_id, chat_id, project)
             else:
                 getattr(self.client, f"_enter_{mode}_mode")(message_id, chat_id, project=project)
         # Mode exit
@@ -394,6 +398,38 @@ class MessageDispatcher:
             # Best-effort: forward the pending prompt after fallback entry.
             if pending_prompt:
                 handle_fn = getattr(self.client, "_handle_coco_message", None)
+                if handle_fn:
+                    try:
+                        handle_fn(message_id, chat_id, pending_prompt, project)
+                    except (RuntimeError, OSError, TimeoutError, TypeError, ValueError) as fwd_err:
+                        classify_dispatch_error(fwd_err, phase="pending_prompt_forward")
+                        logger.warning("fallback 转发 pending prompt 失败: %s", str(fwd_err))
+
+    def _handle_enter_acp_mode(self, mode: str, message_id: str, chat_id: str, project, *, pending_prompt: Optional[str] = None):
+        _pid = project.project_id if project else None
+        mode_checker = getattr(self.client._mode_manager, f"is_{mode}_mode", None)
+        if callable(mode_checker) and mode_checker(chat_id, project_id=_pid):
+            if pending_prompt:
+                handler = self.client._get_mode_handler(
+                    self.client._mode_manager.get_mode(chat_id, project_id=_pid)
+                )
+                if handler:
+                    handler.handle_message(message_id, chat_id, pending_prompt, project)
+            return
+
+        try:
+            self.client._system_handler.handle_select_acp_tool(
+                message_id, chat_id, mode, project_id=_pid,
+                pending_prompt=pending_prompt,
+            )
+        except (RuntimeError, OSError, TimeoutError, TypeError, ValueError) as e:
+            classify_dispatch_error(e, phase=f"{mode}_model_card")
+            logger.warning("展示 %s 模型选择卡失败，回退直接进入: %s", mode, get_error_detail(e))
+            enter_fn = getattr(self.client, f"_enter_{mode}_mode", None)
+            if enter_fn:
+                enter_fn(message_id, chat_id, project=project)
+            if pending_prompt:
+                handle_fn = getattr(self.client, f"_handle_{mode}_message", None)
                 if handle_fn:
                     try:
                         handle_fn(message_id, chat_id, pending_prompt, project)

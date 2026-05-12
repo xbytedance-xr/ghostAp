@@ -31,6 +31,18 @@ def test_sticky_head_minimum_phase_banner_only():
     assert "Deep" in sticky[0].content
 
 
+def test_sticky_head_omits_plain_programming_phase_banner():
+    state = MagicMock(spec=CardState)
+    state.metadata = CardMetadata(mode_name="Coco", mode_emoji="🤖", engine_type=None)
+    state.runtime_stats = RuntimeStats(elapsed_seconds=10.0)
+    state.blocks = ()
+    state.task_list = None
+
+    sticky = build_sticky_head(state, state.metadata)
+
+    assert sticky == ()
+
+
 def test_sticky_head_includes_task_list_when_present():
     runtime = RuntimeStats(elapsed_seconds=5.0, deep_phase="executing")
     state = _state_with(has_task_list=True, has_activity=False, runtime=runtime)

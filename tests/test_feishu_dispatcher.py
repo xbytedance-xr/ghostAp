@@ -104,6 +104,21 @@ class TestMessageDispatcher:
         
         self.client._system_handler.handle_select_acp_tool.assert_called_once()
 
+    def test_execute_single_task_enter_codex_shows_model_select(self):
+        task = MagicMock()
+        task.intent = IntentType.ENTER_CODEX
+        task.data = {}
+        project = MagicMock()
+        project.project_id = "pid1"
+        self.client._mode_manager.is_codex_mode.return_value = False
+
+        self.dispatcher.execute_single_task("m1", "c1", task, "/codex", project)
+
+        self.client._system_handler.handle_select_acp_tool.assert_called_once_with(
+            "m1", "c1", "codex", project_id="pid1", pending_prompt=None
+        )
+        self.client._enter_codex_mode.assert_not_called()
+
     def test_execute_single_task_shell(self):
         task = MagicMock()
         task.intent = IntentType.SHELL_COMMAND

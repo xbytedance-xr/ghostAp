@@ -589,7 +589,7 @@ class TestProgrammingCardSession:
         assert "先说明目标。" in rendered_text
         assert "后续正文继续更新。" in rendered_text
 
-    def test_completed_header_uses_terminal_marker_not_stale_ticker_frame(self):
+    def test_completed_header_does_not_show_stale_ticker_frame(self):
         from src.card.render.renderer import render_card
         from src.card.render.budget import RenderBudget
 
@@ -598,9 +598,10 @@ class TestProgrammingCardSession:
         pcs._on_ticker_frame("⚪")
         pcs.finish()
 
-        header = render_card(pcs.session.state, RenderBudget())[0]._card_json["header"]
-        assert "✅" in header["subtitle"]["content"]
-        assert "⚪" not in header["subtitle"]["content"]
+        card = render_card(pcs.session.state, RenderBudget())[0]._card_json
+        body_text = str(card["body"]["elements"])
+        assert "⚪" not in body_text
+        assert "subtitle" not in card["header"]
 
     def test_finish_fallback_text_injected_when_no_text_blocks(self):
         """When card has only tool calls and no text, fallback_text appears as summary."""

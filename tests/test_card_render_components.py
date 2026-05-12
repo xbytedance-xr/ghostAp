@@ -33,10 +33,8 @@ class TestRenderHeader:
             metadata=CardMetadata(tool_name="coco", model_name="gpt-4o"),
         )
         result = render_header(state)
-        assert "subtitle" in result
         assert result["title"]["content"] == "📁 test · 🤖 Coco · #1 · gpt-4o"
-        # Subtitle now only shows status marker (no working_dir)
-        assert result["subtitle"]["content"] == "🟢"
+        assert "subtitle" not in result
 
     def test_header_subtitle_with_status(self):
         """Subtitle with status → "🔧 tool · model · status" """
