@@ -21,12 +21,15 @@ The product direction is:
 - allow the same project to have multiple independent WT tasks in different
   topics;
 - make WT, Deep, Spec, and future engines share one topic-bound continuation
-  model.
+  model;
+- make WT force topic mode even when general thread programming is disabled.
 
 ## Goals
 
 - Bind engine sessions to Feishu topics, not only to projects.
 - Make ordinary replies inside a bound topic continue the topic's engine mode.
+- Require topic continuation to be rooted in Feishu `thread_root_id`/`root_id`;
+  non-topic messages must not fall back to the most recent topic session.
 - Support multiple concurrent WT sessions for the same project when they live in
   different topics.
 - Keep WT single-task: one topic, one WT goal, one iterative WT lifecycle.
@@ -47,6 +50,7 @@ The product direction is:
 - Do not require users to manually manage branches or worktree paths.
 - Do not redesign ACP/TTADK provider selection beyond what WT needs for tool and
   model pools.
+- Do not keep chat-level continuation fallback for Deep/Spec/WT engine sessions.
 
 ## Recommended Approach
 
@@ -61,6 +65,11 @@ part of the key but the topic should normally have only one active engine at a
 time. If a user starts `/spec` in a topic that already has active `/wt`, the
 system should show an explicit switch/stop confirmation instead of silently
 rerouting.
+
+Topic continuation is strict. A message continues an engine only when Feishu
+provides `root_id`/`thread_root_id` and that root is registered to an engine
+session. Chat-level fallback to the most recent topic is not allowed for
+Deep/Spec/WT because it breaks the "topic equals task boundary" model.
 
 WT should move from project-scoped state to topic-scoped state:
 
@@ -100,20 +109,34 @@ Primary command:
 This starts or resumes a WT task in the current Feishu topic.
 
 If the message is not already inside a topic, GhostAP should create/reply with a
-topic card and bind that topic as the WT session root. If it is already inside a
-topic, the current topic is the session root.
+WT topic-root card and bind that topic as the WT session root. If it is already
+inside a topic, the current topic is the session root.
+
+Both `/wt <goal>` and `/wt` enter tool/model selection first:
+
+- `/wt <goal>` stores the goal while the user selects tools/models. After
+  selection is complete, WT automatically starts planning and execution for that
+  goal.
+- `/wt` stores no goal. After selection is complete, WT enters `AWAITING_GOAL`.
+  The first ordinary non-command message in the same Feishu topic becomes the WT
+  main goal and immediately starts planning/execution.
+
+WT does not need a separate "start execution" button. The combination of
+completed tool selection and a topic message containing the goal is the start
+signal.
 
 ### Empty `/wt`
 
 If a user sends plain `/wt`:
 
 - if the current topic has an active WT session, show that WT status;
-- if the current topic has no WT session, show a goal-input card;
+- if the current topic has no WT session, create/bind a WT topic and show
+  tool/model selection;
 - if there are other WT sessions in the same project, show them as secondary
   context but do not enter them automatically.
 
-The goal-input card must make the next required step explicit. It should not show
-"start execution" until a non-empty goal exists.
+After tool/model selection, a no-goal WT card must show `AWAITING_GOAL` and tell
+the user to send the task goal in the topic. It must not show "start execution".
 
 ### Continue WT
 
@@ -122,6 +145,7 @@ the current WT session when WT is the active topic engine.
 
 Examples:
 
+- if WT is `AWAITING_GOAL`, the first ordinary message becomes the main goal;
 - user replies "这个方案里不要改配置层" -> WT treats it as guidance;
 - user replies "继续" -> WT continues current cycle when paused/awaiting input;
 - user replies "合并" or clicks merge -> WT enters merge gate.
@@ -141,7 +165,8 @@ system/slash control command.
 Precedence:
 
 1. safety/system commands (`/exit`, `/stop_*`, lock commands, status commands);
-2. explicit engine command in the message (`/spec`, `/deep`, `/wt`, etc.);
+2. explicit engine command in a topic that has no active engine, or explicit
+   switch/stop confirmation for a topic that already has another active engine;
 3. topic-bound engine session;
 4. project active mode fallback;
 5. smart routing/intent recognition.
@@ -149,14 +174,20 @@ Precedence:
 This makes Deep/Spec/WT behavior consistent and gives future engines the same
 continuation mechanism.
 
+One topic can have only one active engine. If a topic is already bound to WT and
+the user sends `/spec` or `/deep`, GhostAP must not switch implicitly. It should
+show a prompt explaining that the topic is bound to WT and offer clear next
+actions: stop/complete the current WT or start the new engine in another topic.
+
 ## WT Lifecycle
 
 Each WT session is one task:
 
 ```text
 NEW
-  -> GOAL_READY
   -> TOOL_SELECTION
+  -> AWAITING_GOAL
+  -> GOAL_READY
   -> PLANNING
   -> EXECUTING
   -> REVIEWING
@@ -174,15 +205,19 @@ CANCELLED
 MERGE_CONFLICT
 ```
 
+`AWAITING_GOAL` is skipped when the user starts with `/wt <goal>`.
+
 ### Goal
 
 The goal is required before execution. It can arrive from:
 
 - `/wt <goal>`;
-- goal-input card;
 - ordinary topic reply when WT is waiting for a goal.
 
 The goal becomes part of the WT session and is shown on every major card.
+After the main goal is set, later ordinary topic messages are guidance,
+feedback, or continue signals. They do not replace the main goal unless a future
+explicit retarget command is added.
 
 ### Tool And Model Pool
 
@@ -342,8 +377,10 @@ WT cards should show:
 Important copy rule:
 
 - Do not show "开始执行" before the goal exists.
-- If the system is waiting for a goal, show "输入任务目标".
-- If goal exists and tools are selected, then show "开始规划/执行".
+- Do not use a separate "开始执行" button for WT selection.
+- If tools are selected but no goal exists, show "发送任务目标以开始".
+- If goal exists and tools are selected, automatically show planning/execution
+  progress.
 
 The `/wt` entry card should avoid implying that selection alone is enough to
 run a task.
@@ -353,8 +390,8 @@ run a task.
 1. Introduce shared topic-engine routing contract and tests for Deep/Spec/WT.
 2. Change WT session ownership from `ProjectContext.worktree_state` to
    topic-scoped session store.
-3. Update `/wt` flow so goal is required before execution and plain `/wt` shows
-   goal input or current topic status.
+3. Update `/wt` flow so both `/wt` and `/wt <goal>` create/bind a WT topic and
+   enter tool/model selection.
 4. Make WT worktree branch/path names session-scoped.
 5. Add WT review loop adapter that reuses Spec adaptive review concepts.
 6. Add project-level merge serialization tests for multiple WT sessions.
@@ -367,9 +404,21 @@ Targeted tests:
 - `/wt <goal>` inside a topic creates a WT session keyed by
   `project_id + chat_id + thread_root_id`;
 - plain `/wt` inside an existing WT topic shows that WT status;
+- plain `/wt` outside a topic creates a WT topic and enters tool/model
+  selection;
+- `/wt <goal>` outside a topic creates a WT topic, stores the goal, enters
+  tool/model selection, and auto-starts after selection completes;
+- after plain `/wt`, completing tool selection without a goal enters
+  `AWAITING_GOAL`;
+- the first ordinary message in an `AWAITING_GOAL` WT topic becomes the main
+  goal and starts planning/execution;
+- later ordinary messages in the same WT topic do not replace the main goal;
 - plain text in a WT topic routes to WT, not project active mode;
 - plain text in a Spec topic routes to Spec;
 - plain text in a Deep topic routes to Deep;
+- non-topic messages do not route to the most recent WT/Deep/Spec topic session;
+- a topic already bound to WT rejects implicit `/spec` or `/deep` switching and
+  shows stop/new-topic choices;
 - two topics in the same project can create independent WT sessions;
 - two WT sessions do not overwrite selected tools, goal, units, or merge notes;
 - branch/path names do not collide across sessions;
@@ -389,6 +438,16 @@ Regression tests:
 - When `/wt <goal>` is sent outside a topic, GhostAP should create a topic-root
   card reply and bind the new WT session to that root message. The user should
   continue the task in that topic.
+- WT forces topic mode. Even if general thread programming is disabled for the
+  project or globally, `/wt` and `/wt <goal>` must create or use a Feishu topic
+  and bind the WT session to it.
+- Topic continuation is strict for Deep/Spec/WT. Remove engine continuation
+  chat-level fallback; non-topic messages require explicit commands.
+- One topic can have only one active engine. Explicit commands for another
+  engine in a bound topic show a stop/new-topic prompt instead of switching.
+- WT has no separate "start execution" button. Selection completion plus an
+  existing goal starts automatically; selection completion without a goal waits
+  for the first ordinary topic message.
 - The first implementation should not block or queue WT sessions based on
   estimated overlap. It may show overlap warnings if the session index already
   has enough data, but merge-time conflict handling is the only required
