@@ -59,7 +59,8 @@ def test_uses_acp_provider_when_registered():
     with patch("src.worktree_engine.tool_discovery.shutil.which", side_effect=_which), \
          patch("src.worktree_engine.tool_discovery.tool_registry") as mock_reg, \
          patch("src.worktree_engine.tool_discovery.get_ttadk_manager", side_effect=Exception("skip")):
-        mock_reg.get_provider.return_value = mock_provider
+        mock_reg.get_provider.side_effect = lambda name: mock_provider if name == "coco" else None
+        mock_reg.get_availability.side_effect = lambda name, **_kwargs: name == "coco"
         result = discovery.get_available_tools()
 
     assert len(result) == 1
@@ -67,6 +68,34 @@ def test_uses_acp_provider_when_registered():
     assert coco["provider"] == "acp"
     assert coco["supports_model"] is True
     assert coco["model_optional"] is True
+
+
+def test_uses_available_acp_provider_even_when_binary_not_on_path():
+    """ACP-backed tools should appear when the provider is available without a direct binary path."""
+    discovery = WorktreeToolDiscovery()
+
+    def _provider_for(name):
+        if name in {"aiden", "codex"}:
+            provider = MagicMock()
+            provider.get_fallback_command.return_value = None
+            return provider
+        return None
+
+    def _available(name, **_kwargs):
+        return name in {"aiden", "codex"}
+
+    with patch("src.worktree_engine.tool_discovery.shutil.which", return_value=None), \
+         patch("src.worktree_engine.tool_discovery.get_providers"), \
+         patch("src.worktree_engine.tool_discovery.tool_registry") as mock_reg, \
+         patch("src.worktree_engine.tool_discovery.get_ttadk_manager", side_effect=Exception("skip")):
+        mock_reg.get_provider.side_effect = _provider_for
+        mock_reg.get_availability.side_effect = _available
+        result = discovery.get_available_tools()
+
+    names = [tool["tool_name"] for tool in result]
+    assert names == ["aiden", "codex"]
+    assert all(tool["provider"] == "acp" for tool in result)
+    assert all(tool["supports_model"] is True for tool in result)
 
 
 def test_returns_ttadk_as_single_aggregate_entry():
