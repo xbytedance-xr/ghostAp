@@ -1428,6 +1428,21 @@ class FeishuWSClient:
                     return
                 self._exit_current_mode(message_id, chat_id, project=project)
                 return
+            normalized_entry = (text or "").strip().lower()
+            same_mode_entries = {
+                "coco": {"/coco", "/enter_coco"},
+                "claude": {"/claude", "/enter_claude"},
+                "aiden": {"/aiden", "/enter_aiden"},
+                "codex": {"/codex", "/enter_codex"},
+                "gemini": {"/gemini", "/enter_gemini"},
+                "ttadk": {"/ttadk", "/acp"},
+            }
+            if normalized_entry in same_mode_entries.get(auto_enter_mode, set()):
+                self._reply_text(
+                    message_id,
+                    UI_TEXT["ws_topic_hint_msg"],
+                )
+                return
             # Interceptable system commands (/wt, /worktree, /help, /status, /codex, etc.)
             # must be routed to the system handler even inside thread programming mode,
             # otherwise they are swallowed by the programming mode handler silently.

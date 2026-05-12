@@ -95,9 +95,12 @@ class MessageDispatcher:
     ):
         """SMART mode routing logic."""
         from ..mode import InteractionMode
+        from .slash_command_parser import SlashCommandParser
 
         _pid = project.project_id if project else None
         current_mode, is_in_programming = self.client._get_effective_mode(chat_id, project_id=_pid)
+        if command_match is None and (text or "").strip().startswith("/"):
+            command_match = SlashCommandParser.parse(text)
 
         # Control-plane commands: handle consistently in all modes
         if self.client._is_deep_command(text):
@@ -112,9 +115,29 @@ class MessageDispatcher:
             self.client._handle_spec_command(message_id, chat_id, text, project)
             return
 
-        # Request-scoped slash parsing: do NOT re-parse raw text here.
+        if is_in_programming and self.client._is_exit_command(text):
+            self.client._add_reaction(message_id, EmojiReaction.on_coco_mode())
+            if self.client._control_plane.should_defer_exit(chat_id=chat_id, project_id=_pid):
+                self.client._control_plane.request_deferred_exit(message_id=message_id, chat_id=chat_id, project_id=_pid)
+                self.client._reply_text(message_id, UI_TEXT["ws_exit_deferred_msg"])
+                return
+            self.client._exit_current_mode(message_id, chat_id, project=project)
+            return
+
+        # Request-scoped slash parsing: direct system commands must not fall
+        # through to intent recognition, which can be slow or ambiguous.
         if self.client._is_interceptable_command_match(command_match):
             self.client._handle_intercepted_command(message_id, chat_id, text, project, command_match=command_match)
+            return
+
+        if command_match is not None:
+            self.client._handle_intercepted_command(
+                message_id,
+                chat_id,
+                text,
+                project,
+                command_match=command_match,
+            )
             return
 
         # Worktree mode
@@ -125,15 +148,6 @@ class MessageDispatcher:
 
         # Programming mode (Coco / Claude / TTADK): exit or forward to active session
         if is_in_programming:
-            if self.client._is_exit_command(text):
-                self.client._add_reaction(message_id, EmojiReaction.on_coco_mode())
-                if self.client._control_plane.should_defer_exit(chat_id=chat_id, project_id=_pid):
-                    self.client._control_plane.request_deferred_exit(message_id=message_id, chat_id=chat_id, project_id=_pid)
-                    self.client._reply_text(message_id, UI_TEXT["ws_exit_deferred_msg"])
-                    return
-                self.client._exit_current_mode(message_id, chat_id, project=project)
-                return
-
             from ..thread import get_current_thread_id
             if not get_current_thread_id() and self.client.settings.thread_programming_enabled:
                 pending, handler = self.client._is_one_shot_pending(chat_id, _pid, current_mode)

@@ -119,6 +119,34 @@ class TestMessageDispatcher:
         )
         self.client._enter_codex_mode.assert_not_called()
 
+    def test_process_with_intent_reparses_codex_slash_and_bypasses_intent(self):
+        self.client._is_deep_command.return_value = False
+        self.client._is_spec_command.return_value = False
+        self.client._is_interceptable_command_match.side_effect = lambda m: bool(m and m.command == "/codex")
+        self.client._get_effective_mode.return_value = (InteractionMode.SMART, False)
+
+        self.dispatcher.process_with_intent("m1", "c1", "/codex", None)
+
+        self.client._handle_intercepted_command.assert_called_once()
+        args, kwargs = self.client._handle_intercepted_command.call_args
+        assert args[:4] == ("m1", "c1", "/codex", None)
+        assert kwargs["command_match"].command == "/codex"
+        self.client._intent_recognizer.recognize.assert_not_called()
+
+    def test_process_with_intent_unknown_slash_still_bypasses_intent(self):
+        self.client._is_deep_command.return_value = False
+        self.client._is_spec_command.return_value = False
+        self.client._is_interceptable_command_match.return_value = False
+        self.client._get_effective_mode.return_value = (InteractionMode.SMART, False)
+
+        self.dispatcher.process_with_intent("m1", "c1", "/unknown_command", None)
+
+        self.client._handle_intercepted_command.assert_called_once()
+        args, kwargs = self.client._handle_intercepted_command.call_args
+        assert args[:4] == ("m1", "c1", "/unknown_command", None)
+        assert kwargs["command_match"].command == "/unknown_command"
+        self.client._intent_recognizer.recognize.assert_not_called()
+
     def test_execute_single_task_shell(self):
         task = MagicMock()
         task.intent = IntentType.SHELL_COMMAND

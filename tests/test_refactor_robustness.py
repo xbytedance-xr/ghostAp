@@ -122,15 +122,21 @@ class TestRefactorRobustness(unittest.TestCase):
         )
         diagnostics_mock.show_unified_status.assert_called_with("mid", "cid", "/status detail", None)
     
-        # Test fallback
-        with patch.object(handler, "show_full_help") as mock_help:
+        # Test fallback: unknown slash commands get a concise system reply
+        # instead of rendering the full help card.
+        with (
+            patch.object(handler, "show_full_help") as mock_help,
+            patch.object(handler, "reply_text") as mock_reply,
+        ):
             handler.handle_intercepted_command(
                 "mid",
                 "cid",
                 "/unknown_cmd",
                 command_match=SlashCommandParser.parse("/unknown_cmd"),
             )
-            mock_help.assert_called_with("mid", "cid", None)
+            mock_reply.assert_called_once()
+            self.assertIn("未知命令", mock_reply.call_args.args[1])
+            mock_help.assert_not_called()
 
     def test_ws_client_refactor_structure(self):
         """Test that the refactored WSClient methods exist and validate basic message."""

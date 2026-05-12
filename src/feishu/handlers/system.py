@@ -62,6 +62,11 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         self.lock_commands = _SystemSubcommands(self, ("handle_force_release_repo_lock", "handle_confirm_lock", "handle_cancel_lock", "handle_confirm_force_release", "handle_cancel_force_release"))
 
     @staticmethod
+    def _project_id(project: Optional["ProjectContext"]) -> Optional[str]:
+        project_id = getattr(project, "project_id", None) if project else None
+        return project_id if isinstance(project_id, str) else None
+
+    @staticmethod
     def _pending_prompt_key(chat_id: str, tool_name: str) -> str:
         return f"{chat_id}:{(tool_name or '').lower()}"
 
@@ -86,6 +91,30 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         self._exact_handlers = {
             "/help": lambda m, c, t, p: self.show_full_help(m, c, p),
             "/帮助": lambda m, c, t, p: self.show_full_help(m, c, p),
+            "/coco": lambda m, c, t, p: self.handle_select_acp_tool(m, c, "coco", project_id=self._project_id(p)),
+            "/enter_coco": lambda m, c, t, p: self.handle_select_acp_tool(m, c, "coco", project_id=self._project_id(p)),
+            "/claude": lambda m, c, t, p: self._handle_direct_mode_enter(m, c, "claude", p),
+            "/enter_claude": lambda m, c, t, p: self._handle_direct_mode_enter(m, c, "claude", p),
+            "/aiden": lambda m, c, t, p: self._handle_direct_mode_enter(m, c, "aiden", p),
+            "/enter_aiden": lambda m, c, t, p: self._handle_direct_mode_enter(m, c, "aiden", p),
+            "/codex": lambda m, c, t, p: self.handle_select_acp_tool(m, c, "codex", project_id=self._project_id(p)),
+            "/enter_codex": lambda m, c, t, p: self.handle_select_acp_tool(m, c, "codex", project_id=self._project_id(p)),
+            "/gemini": lambda m, c, t, p: self._handle_direct_mode_enter(m, c, "gemini", p),
+            "/enter_gemini": lambda m, c, t, p: self._handle_direct_mode_enter(m, c, "gemini", p),
+            "/exit": lambda m, c, t, p: self.exit_current_mode(m, c, p),
+            "/quit": lambda m, c, t, p: self.exit_current_mode(m, c, p),
+            "/end_coco": lambda m, c, t, p: self.exit_current_mode(m, c, p),
+            "/exit_coco": lambda m, c, t, p: self.exit_current_mode(m, c, p),
+            "/end_claude": lambda m, c, t, p: self.exit_current_mode(m, c, p),
+            "/exit_claude": lambda m, c, t, p: self.exit_current_mode(m, c, p),
+            "/end_aiden": lambda m, c, t, p: self.exit_current_mode(m, c, p),
+            "/exit_aiden": lambda m, c, t, p: self.exit_current_mode(m, c, p),
+            "/end_codex": lambda m, c, t, p: self.exit_current_mode(m, c, p),
+            "/exit_codex": lambda m, c, t, p: self.exit_current_mode(m, c, p),
+            "/end_gemini": lambda m, c, t, p: self.exit_current_mode(m, c, p),
+            "/exit_gemini": lambda m, c, t, p: self.exit_current_mode(m, c, p),
+            "/end_ttadk": lambda m, c, t, p: self.exit_current_mode(m, c, p),
+            "/exit_ttadk": lambda m, c, t, p: self.exit_current_mode(m, c, p),
             "/coco_status": lambda m, c, t, p: self.show_coco_status(m, c),
             "/coco_info": lambda m, c, t, p: self.get_handler("coco").show_info(m, c, p),
             "/claude_info": lambda m, c, t, p: self.get_handler("claude").show_info(m, c, p),
@@ -96,6 +125,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/project": lambda m, c, t, p: self.get_handler("project").show_project_board(m, c),
             "/switch": lambda m, c, t, p: self.get_handler("project").show_project_board(m, c),
             "/ttadk": lambda m, c, t, p: self.handle_ttadk_command(m, c, p),
+            "/enter_ttadk": lambda m, c, t, p: self.handle_ttadk_command(m, c, p),
             "/acp": lambda m, c, t, p: self.handle_acp_command(m, c, p),
             # Worktree: canonical command is /worktree (aliases like /wt are normalized by SlashCommandParser)
             "/worktree": lambda m, c, t, p: self.get_handler("worktree").handle_worktree_command(m, c, p),
@@ -118,6 +148,23 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             ("/trace", lambda m, c, t, p: self.get_handler("diagnostics").show_message_trace(m, c, t, p)),
             ("/model", self.handle_model_command),
         ]
+
+    def _handle_direct_mode_enter(
+        self,
+        message_id: str,
+        chat_id: str,
+        mode_key: str,
+        project: Optional["ProjectContext"] = None,
+    ) -> None:
+        handler = self.get_handler(mode_key)
+        if not handler:
+            self.reply_error(
+                message_id,
+                UI_TEXT["system_acp_unsupported_tool"].format(tool_name=mode_key),
+                title=UI_TEXT["system_internal_error"],
+            )
+            return
+        handler.enter_mode(message_id, chat_id, project=project)
 
     def _handle_switch_args(self, message_id: str, chat_id: str, args: str) -> None:
         name = (args or "").strip()
@@ -161,8 +208,34 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
     @staticmethod
     def is_exit_command(text: str) -> bool:
         text_lower = text.lower().strip()
-        exit_commands = {"/exit", "/quit", "/end_coco", "/exit_coco", "/end_claude", "/exit_claude"}
-        exit_keywords = {"退出模式", "退出编程模式", "退出编程", "结束编程", "退出claude", "退出coco"}
+        exit_commands = {
+            "/exit",
+            "/quit",
+            "/end_coco",
+            "/exit_coco",
+            "/end_claude",
+            "/exit_claude",
+            "/end_aiden",
+            "/exit_aiden",
+            "/end_codex",
+            "/exit_codex",
+            "/end_gemini",
+            "/exit_gemini",
+            "/end_ttadk",
+            "/exit_ttadk",
+        }
+        exit_keywords = {
+            "退出模式",
+            "退出编程模式",
+            "退出编程",
+            "结束编程",
+            "退出claude",
+            "退出coco",
+            "退出aiden",
+            "退出codex",
+            "退出gemini",
+            "退出ttadk",
+        }
         if text_lower in exit_commands:
             return True
         return any(kw in text_lower for kw in exit_keywords)
@@ -269,6 +342,32 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         exact_commands = {
             "/help",
             "/帮助",
+            "/coco",
+            "/enter_coco",
+            "/claude",
+            "/enter_claude",
+            "/aiden",
+            "/enter_aiden",
+            "/codex",
+            "/enter_codex",
+            "/gemini",
+            "/enter_gemini",
+            "/enter_ttadk",
+            "/exit",
+            "/quit",
+            "/end_coco",
+            "/exit_coco",
+            "/end_claude",
+            "/exit_claude",
+            "/end_aiden",
+            "/exit_aiden",
+            "/end_codex",
+            "/exit_codex",
+            "/end_gemini",
+            "/exit_gemini",
+            "/end_ttadk",
+            "/exit_ttadk",
+            "/coco_status",
             "/coco_info",
             "/claude_info",
             "/aiden_info",
@@ -287,12 +386,12 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/worktree",
             "/ttadk_refresh",
             "/menu",
+            "/tools",
+            "/tools_status",
             "/model",
             "/lock",
             "/unlock",
-            # Mode-enter commands that go through ACP model selection
-            "/codex",
-            "/enter_codex",
+            "/btw",
         }
         if not m.has_args and cmd in exact_commands:
             return True
@@ -306,6 +405,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/trace",
             "/status",
             "/model",
+            "/btw",
         }
         return cmd in prefix_commands
 
@@ -343,8 +443,12 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
 
         # ACP model-select mode enter: /codex, /enter_codex
         if not m.has_args and text_lower in {"/codex", "/enter_codex"}:
-            _pid = project.project_id if project else None
+            _pid = self._project_id(project)
             self.handle_select_acp_tool(message_id, chat_id, "codex", project_id=_pid)
+            return
+
+        if text_lower == "/btw":
+            self._handle_btw_command(message_id, chat_id, m, project)
             return
 
         # 1. Try exact match
@@ -371,8 +475,69 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
                 handler(message_id, chat_id, text, project)
                 return
 
-        # 3. Fallback to help
-        self.show_full_help(message_id, chat_id, project)
+        self.reply_text(
+            message_id,
+            UI_TEXT["system_unknown_slash_command"].format(command=m.raw_command or text_lower),
+        )
+
+    def _handle_btw_command(
+        self,
+        message_id: str,
+        chat_id: str,
+        command_match: CommandMatch,
+        project: Optional["ProjectContext"] = None,
+    ) -> None:
+        if not command_match.has_args:
+            self.reply_text(message_id, UI_TEXT["system_btw_usage"])
+            return
+
+        mode_key = self._resolve_active_programming_mode_key(chat_id, project)
+        if not mode_key:
+            self.reply_text(message_id, UI_TEXT["system_btw_no_active_session"])
+            return
+
+        handler = self.get_handler(mode_key)
+        if not handler:
+            self.reply_text(message_id, UI_TEXT["system_btw_no_active_session"])
+            return
+
+        handler.handle_message(message_id, chat_id, command_match.normalized_text, project)
+
+    def _resolve_active_programming_mode_key(
+        self,
+        chat_id: str,
+        project: Optional["ProjectContext"] = None,
+    ) -> Optional[str]:
+        from ...mode import InteractionMode
+        from ...thread import get_current_thread_id
+
+        programming_modes = {
+            InteractionMode.COCO,
+            InteractionMode.CLAUDE,
+            InteractionMode.AIDEN,
+            InteractionMode.CODEX,
+            InteractionMode.GEMINI,
+            InteractionMode.TTADK,
+        }
+        thread_id = get_current_thread_id()
+        if thread_id:
+            thread_ctx = self.ctx.thread_manager.get(thread_id)
+            if thread_ctx and thread_ctx.mode:
+                try:
+                    mode = InteractionMode(thread_ctx.mode)
+                except ValueError:
+                    mode = None
+                if mode in programming_modes:
+                    return mode.value
+
+        project_id = self._project_id(project)
+        mode = self.mode_manager.get_mode(chat_id, project_id=project_id)
+        if mode in programming_modes and self.mode_manager.is_programming_mode(
+            chat_id,
+            project_id=project_id,
+        ):
+            return mode.value
+        return None
 
     def handle_menu_command(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         msg_type, card_content = CardBuilder.build_command_menu_card(project)

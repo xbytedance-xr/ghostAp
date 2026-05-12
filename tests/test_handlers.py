@@ -297,6 +297,12 @@ class TestSystemHandlerPredicates:
         m = SlashCommandParser.parse
         assert SystemHandler.is_interceptable_command_match(m("/help")) is True
         assert SystemHandler.is_interceptable_command_match(m("/帮助")) is True
+        assert SystemHandler.is_interceptable_command_match(m("/codex")) is True
+        assert SystemHandler.is_interceptable_command_match(m("/coco")) is True
+        assert SystemHandler.is_interceptable_command_match(m("/enter_ttadk")) is True
+        assert SystemHandler.is_interceptable_command_match(m("/coco_status")) is True
+        assert SystemHandler.is_interceptable_command_match(m("/tools")) is True
+        assert SystemHandler.is_interceptable_command_match(m("/btw remember this")) is True
         assert SystemHandler.is_interceptable_command_match(m("/coco_info")) is True
         assert SystemHandler.is_interceptable_command_match(m("/claude_info")) is True
         assert SystemHandler.is_interceptable_command_match(m("/gemini_info")) is True
@@ -307,7 +313,6 @@ class TestSystemHandlerPredicates:
         assert SystemHandler.is_interceptable_command_match(m("/tasks")) is True
         assert SystemHandler.is_interceptable_command_match(m("/diff")) is True
         assert SystemHandler.is_interceptable_command_match(m("/trace")) is True
-        assert SystemHandler.is_interceptable_command_match(m("/exit")) is False
         assert SystemHandler.is_interceptable_command_match(m("/deep stuff")) is False
         assert SystemHandler.is_interceptable_command_match(m("hello")) is False
 
@@ -377,6 +382,61 @@ class TestSystemHandlerRouting:
         h = self._make()
         h.handle_intercepted_command("m1", "c1", "/trace msg123", None, command_match=SlashCommandParser.parse("/trace msg123"))
         h.diagnostics_handler.show_message_trace.assert_called_once_with("m1", "c1", "/trace msg123", None)
+
+    def test_intercepted_unknown_slash_replies_without_help_card(self):
+        h = self._make()
+        h.reply_text = MagicMock()
+        h.show_full_help = MagicMock()
+
+        h.handle_intercepted_command(
+            "m1",
+            "c1",
+            "/unknown_command",
+            None,
+            command_match=SlashCommandParser.parse("/unknown_command"),
+        )
+
+        h.reply_text.assert_called_once()
+        assert "未知命令" in h.reply_text.call_args.args[1]
+        h.show_full_help.assert_not_called()
+
+    @patch("src.thread.get_current_thread_id", return_value=None)
+    def test_btw_forwards_to_active_programming_handler(self, _):
+        h = self._make()
+        project = MagicMock()
+        project.project_id = "p1"
+        codex = MagicMock()
+        h.ctx.handlers["codex"] = codex
+        h.mode_manager.get_mode.return_value = InteractionMode.CODEX
+        h.mode_manager.is_programming_mode.return_value = True
+
+        h.handle_intercepted_command(
+            "m1",
+            "c1",
+            "/btw add a constraint",
+            project,
+            command_match=SlashCommandParser.parse("/btw add a constraint"),
+        )
+
+        codex.handle_message.assert_called_once_with("m1", "c1", "/btw add a constraint", project)
+
+    @patch("src.thread.get_current_thread_id", return_value=None)
+    def test_btw_without_active_programming_replies_usage(self, _):
+        h = self._make()
+        h.reply_text = MagicMock()
+        h.mode_manager.get_mode.return_value = InteractionMode.SMART
+        h.mode_manager.is_programming_mode.return_value = False
+
+        h.handle_intercepted_command(
+            "m1",
+            "c1",
+            "/btw add a constraint",
+            None,
+            command_match=SlashCommandParser.parse("/btw add a constraint"),
+        )
+
+        h.reply_text.assert_called_once()
+        assert "没有活跃编程会话" in h.reply_text.call_args.args[1]
 
     def test_route_new_project(self):
         h = self._make()
