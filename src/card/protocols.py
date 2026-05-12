@@ -281,7 +281,12 @@ class CardAPIClient(Protocol):
     """
 
     def create_card(
-        self, chat_id: str, card_json: dict, *, reply_to: str | None = None
+        self,
+        chat_id: str,
+        card_json: dict,
+        *,
+        reply_to: str | None = None,
+        idempotency_key: str | None = None,
     ) -> tuple[str, str]:
         """Create a card message. Returns (message_id, card_id)."""
         ...
@@ -299,7 +304,12 @@ class CardAPIClient(Protocol):
         ...
 
     def send_card_reference(
-        self, chat_id: str, card_id: str, *, reply_to: str | None = None
+        self,
+        chat_id: str,
+        card_id: str,
+        *,
+        reply_to: str | None = None,
+        idempotency_key: str | None = None,
     ) -> str:
         """Send an IM message referencing a CardKit card. Returns message_id."""
         ...

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 
 from src.card.delivery.binding import BindingStore, PageBinding
 from src.card.delivery.sequence import SequenceManager
@@ -12,6 +13,8 @@ from src.card.render.payload_truncator import check_and_truncate_payload
 from src.card.types import RenderedCard
 
 logger = logging.getLogger(__name__)
+
+_PAGE_CREATE_NAMESPACE = uuid.UUID("4388eebc-b0bc-5d6a-9c65-6ac058db0324")
 
 
 def _guard_payload(card_payload: dict) -> dict:
@@ -45,6 +48,11 @@ def _fallback_invalid_card(reason: str) -> dict:
     }
 
 
+def _page_create_idempotency_key(session_id: str, page_index: int) -> str:
+    """Stable Feishu IM uuid for visible card-message creation."""
+    return str(uuid.uuid5(_PAGE_CREATE_NAMESPACE, f"{session_id}:{page_index}"))
+
+
 class PageMutator:
     """Handles page-level card mutations against the Feishu API.
 
@@ -71,21 +79,22 @@ class PageMutator:
         try:
             card_payload = _guard_payload(card.to_feishu_json())
             is_streaming = card_payload.get("config", {}).get("streaming_mode", False)
+            idempotency_key = _page_create_idempotency_key(session_id, card.page_index)
 
             if is_streaming:
                 try:
                     card_id = self._client.create_streaming_card(card_payload)
                     message_id = self._client.send_card_reference(
-                        chat_id, card_id, reply_to=reply_to
+                        chat_id, card_id, reply_to=reply_to, idempotency_key=idempotency_key
                     )
                 except Exception:
                     logger.debug("Streaming card creation failed, falling back to IM API")
                     message_id, card_id = self._client.create_card(
-                        chat_id, card_payload, reply_to=reply_to
+                        chat_id, card_payload, reply_to=reply_to, idempotency_key=idempotency_key
                     )
             else:
                 message_id, card_id = self._client.create_card(
-                    chat_id, card_payload, reply_to=reply_to
+                    chat_id, card_payload, reply_to=reply_to, idempotency_key=idempotency_key
                 )
 
             last_text = card.active_element.text if card.active_element else ""
