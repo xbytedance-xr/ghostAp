@@ -74,7 +74,7 @@ def render_reasoning_panel(
                 "weight": 20,
                 "vertical_align": "top",
                 "elements": [
-                    {"tag": "markdown", "content": display_content, "text_size": "notation"},
+                    {"tag": "markdown", "content": display_content, "text_size": "normal"},
                 ],
             },
         ],

@@ -23,6 +23,28 @@ def _guard_payload(card_payload: dict) -> dict:
     return json.loads(guarded)
 
 
+def _fallback_invalid_card(reason: str) -> dict:
+    """Small known-good card used when Feishu rejects the rendered card JSON."""
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "template": "red",
+            "title": {"tag": "plain_text", "content": "⚠️ 卡片渲染失败"},
+        },
+        "body": {
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": (
+                        "当前卡片内容不符合飞书卡片格式，已停止自动重建以避免重复刷屏。\n\n"
+                        f"原因：{reason or 'card_content_invalid'}"
+                    ),
+                }
+            ]
+        },
+    }
+
+
 class PageMutator:
     """Handles page-level card mutations against the Feishu API.
 
@@ -97,14 +119,16 @@ class PageMutator:
             logger.debug("Sequence conflict on %s, raised floor to %d", page.card_id, e.next_floor)
             return MutationOutcome(kind="reconcile", message="sequence_conflict")
         except TransportError as e:
-            if e.is_permanent:
+            if e.needs_recreate:
                 logger.warning(
-                    "Permanent transport error on %s (code=%d), removing binding to force recreation",
+                    "Stale card binding on %s (code=%d), removing binding to force recreation",
                     page.card_id, e.code,
                 )
                 self._bindings.remove_page(session_id, page.page_index)
                 self._sequences.reset(page.card_id)
-                return MutationOutcome(kind="reconcile", message=f"permanent:{e.code}")
+                return MutationOutcome(kind="reconcile", message=f"recreate:{e.code}")
+            if e.is_content_invalid:
+                return self._replace_with_invalid_card_fallback(session_id, page, card, e)
             logger.warning("Transport error updating %s: %s", page.card_id, str(e))
             return MutationOutcome(kind="reconcile", message=str(e))
         except Exception as e:
@@ -134,14 +158,14 @@ class PageMutator:
             logger.debug("Element sequence conflict on %s, falling back to full update", page.card_id)
             return self.update_page(session_id, page, card)
         except TransportError as e:
-            if e.is_permanent:
+            if e.needs_recreate:
                 logger.warning(
-                    "Permanent transport error on %s (code=%d), removing binding to force recreation",
+                    "Stale card binding on %s (code=%d), removing binding to force recreation",
                     page.card_id, e.code,
                 )
                 self._bindings.remove_page(session_id, page.page_index)
                 self._sequences.reset(page.card_id)
-                return MutationOutcome(kind="reconcile", message=f"permanent:{e.code}")
+                return MutationOutcome(kind="reconcile", message=f"recreate:{e.code}")
             logger.debug("Element update failed (%s), falling back to full update", str(e))
             return self.update_page(session_id, page, card)
         except Exception as e:
@@ -153,3 +177,38 @@ class PageMutator:
         if page.card_id:
             self._sequences.reset(page.card_id)
         self._bindings.remove_page(session_id, page.page_index)
+
+    def _replace_with_invalid_card_fallback(
+        self,
+        session_id: str,
+        page: PageBinding,
+        card: RenderedCard,
+        error: TransportError,
+    ) -> MutationOutcome:
+        """Patch a stable fallback card and mark the bad signature handled."""
+        logger.error(
+            "Feishu rejected rendered card JSON on %s (code=%d); patching fallback and suppressing recreate loop: %s",
+            page.card_id,
+            error.code,
+            str(error),
+        )
+        try:
+            seq = self._sequences.next_sequence(page.card_id)
+            reason = f"code={error.code}" if error.code else "card_content_invalid"
+            self._client.update_card(page.card_id, _fallback_invalid_card(reason), sequence=seq)
+            self._bindings.update_signature(session_id, page.page_index, card.structure_signature)
+            self._bindings.update_text(session_id, page.page_index, "card_content_invalid")
+            return MutationOutcome(kind="applied", message=f"fallback_content_invalid:{error.code}")
+        except SequenceConflictError as seq_err:
+            self._sequences.raise_floor(page.card_id, seq_err.next_floor)
+            return MutationOutcome(kind="reconcile", message="sequence_conflict")
+        except TransportError as fallback_err:
+            if fallback_err.needs_recreate:
+                self._bindings.remove_page(session_id, page.page_index)
+                self._sequences.reset(page.card_id)
+                return MutationOutcome(kind="reconcile", message=f"recreate:{fallback_err.code}")
+            logger.warning("Fallback card patch failed on %s: %s", page.card_id, str(fallback_err))
+            return MutationOutcome(kind="reconcile", message=str(fallback_err))
+        except Exception as fallback_exc:
+            logger.warning("Fallback card patch failed on %s: %s", page.card_id, str(fallback_exc))
+            return MutationOutcome(kind="reconcile", message=str(fallback_exc))

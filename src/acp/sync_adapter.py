@@ -899,7 +899,9 @@ def resolve_agent_spec(
     # tools (coco/aiden) are probed in the background instead of blocking
     # the first real session startup.
     try:
-        from .providers import tool_registry
+        from .providers import get_providers, tool_registry
+
+        get_providers()
 
         try:
             # Best-effort: warms availability cache via a daemon thread.

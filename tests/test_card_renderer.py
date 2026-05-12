@@ -413,7 +413,7 @@ class TestMultipleBlockTypes:
     """Rendering mixed block types."""
 
     def test_tool_block_renders_collapsible_panel(self):
-        """Completed tool renders as compact activity_digest (notation-size markdown)."""
+        """Completed tool renders as compact activity_digest markdown."""
         state = CardState(
             blocks=(
                 ContentBlock(
@@ -427,8 +427,8 @@ class TestMultipleBlockTypes:
         )
         cards = render_card(state, RenderBudget())
         body = cards[0]._card_json["body"]["elements"]
-        # Completed tools now render as activity_digest (notation markdown), not collapsible_panel
-        assert any(el.get("text_size") == "notation" and "已运行" in str(el.get("content", "")) for el in body)
+        # Completed tools now render as activity_digest markdown, not collapsible_panel.
+        assert any(el.get("text_size") == "normal" and "已运行" in str(el.get("content", "")) for el in body)
 
     def test_reasoning_block_renders(self):
         state = CardState(
@@ -482,7 +482,7 @@ class TestMultipleBlockTypes:
         assert len(body) >= 3
         intro_idx = next(i for i, el in enumerate(body) if el.get("content") == "Intro")
         conclusion_idx = next(i for i, el in enumerate(body) if el.get("content") == "Conclusion")
-        digest_idx = next(i for i, el in enumerate(body) if el.get("text_size") == "notation" and "已运行" in str(el.get("content", "")))
+        digest_idx = next(i for i, el in enumerate(body) if el.get("text_size") == "normal" and "已运行" in str(el.get("content", "")))
         assert intro_idx < digest_idx < conclusion_idx
 
 

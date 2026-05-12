@@ -183,7 +183,7 @@ class RenderedContent:
 
         md_element: dict = {"tag": "markdown", "content": sec.markdown}
         if sec.section_type == "thought":
-            md_element["text_size"] = "notation"
+            md_element["text_size"] = "normal"
 
         return {
             "tag": "collapsible_panel",

@@ -468,7 +468,7 @@ class BaseHandler:
                     body["elements"].append(
                         {
                             "tag": "markdown",
-                            "text_size": "notation",
+                            "text_size": "normal",
                             "content": ref_note,
                         }
                     )

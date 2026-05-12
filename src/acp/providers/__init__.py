@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import functools
+import json
 import logging
-import os
 import re
+import shutil
 import subprocess
 import threading
 from dataclasses import dataclass
@@ -12,6 +13,8 @@ from typing import Callable, Optional, Sequence
 from ..provider import ACPProvider, ToolRegistry, tool_registry
 
 logger = logging.getLogger(__name__)
+
+CODEX_ACP_NPM_PACKAGE = "@zed-industries/codex-acp@0.14.0"
 
 
 def _detect_model_arg_style(help_blob: str) -> str:
@@ -138,6 +141,8 @@ def _apply_model_args(
 
     if style == "config_c":
         return args + ["-c", f"model.name={m}"]
+    if style == "config_model":
+        return args + ["-c", f"model={json.dumps(m)}"]
     if style == "model_long":
         return args + ["--model", m]
     if style == "model_short":
@@ -169,6 +174,48 @@ class GenericACPProvider:
 
     def get_fallback_command(self, model_name: Optional[str] = None) -> Optional[tuple[str, list[str]]]:
         return None
+
+
+class CodexACPProvider(GenericACPProvider):
+    """Codex ACP provider with an npx fallback for CLIs without `acp serve`."""
+
+    def __init__(
+        self,
+        config: _ProviderConfig,
+        *,
+        fallback_package: str = CODEX_ACP_NPM_PACKAGE,
+    ) -> None:
+        super().__init__(config)
+        self._fallback_package = fallback_package
+
+    def _native_available(self) -> bool:
+        try:
+            return bool(self._config.availability_checker())
+        except Exception:
+            return False
+
+    def _fallback_available(self) -> bool:
+        return shutil.which("npx") is not None
+
+    def check_availability(self) -> bool:
+        return self._native_available() or self._fallback_available()
+
+    def get_serve_command(self, model_name: Optional[str] = None) -> tuple[str, list[str]]:
+        if self._native_available():
+            return super().get_serve_command(model_name)
+        fallback = self.get_fallback_command(model_name)
+        if fallback:
+            return fallback
+        raise RuntimeError(
+            "Codex ACP is unavailable: `codex acp serve` is not supported and `npx` was not found."
+        )
+
+    def get_fallback_command(self, model_name: Optional[str] = None) -> Optional[tuple[str, list[str]]]:
+        if not self._fallback_available():
+            return None
+        args = ["--yes", self._fallback_package]
+        args = _apply_model_args(args, model_name, "config_model", None)
+        return "npx", args
 
 
 def _make_custom_help_checker_with_cache_handle(
@@ -271,7 +318,10 @@ def _ensure_providers() -> dict[str, GenericACPProvider]:
         # --- 3) build and register providers ---
         result: dict[str, GenericACPProvider] = {}
         for cfg in configs:
-            p = GenericACPProvider(cfg)
+            if cfg.tool_name == "codex":
+                p = CodexACPProvider(cfg)
+            else:
+                p = GenericACPProvider(cfg)
             result[cfg.tool_name] = p
             tool_registry.register(p, is_default=cfg.is_default)
         _providers = result
@@ -351,6 +401,8 @@ __all__ = [
     "CodexProvider",
     "GeminiProvider",
     "GenericACPProvider",
+    "CodexACPProvider",
+    "CODEX_ACP_NPM_PACKAGE",
     "_get_aiden_acp_serve_help_blob",
     "_get_codex_acp_serve_help_blob",
     "_get_gemini_acp_serve_help_blob",

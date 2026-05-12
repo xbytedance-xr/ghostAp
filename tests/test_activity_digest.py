@@ -291,7 +291,7 @@ class TestActivityDigestInCard:
         assert "已探索" in body_str
         assert "已编辑" in body_str
 
-    def test_digest_uses_notation_text_size(self):
+    def test_digest_uses_normal_text_size_for_mobile_readability(self):
         from src.card.render.budget import RenderBudget
         from src.card.render.renderer import render_card
 
@@ -305,6 +305,6 @@ class TestActivityDigestInCard:
         cards = render_card(state, RenderBudget())
         body = cards[0]._card_json["body"]["elements"]
         # Find the digest element
-        digest_els = [el for el in body if el.get("text_size") == "notation"]
+        digest_els = [el for el in body if el.get("text_size") == "normal"]
         assert len(digest_els) >= 1
         assert "已运行" in str(digest_els[0])

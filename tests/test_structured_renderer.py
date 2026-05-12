@@ -481,9 +481,9 @@ class TestToolGrouping:
 
 
 class TestReasoningBlock:
-    """Task 6: reasoning block rendering with truncation and notation text_size."""
+    """Task 6: reasoning block rendering with truncation and mobile-readable text_size."""
 
-    def test_thought_panel_has_notation_text_size(self):
+    def test_thought_panel_has_normal_text_size(self):
         rc = RenderedContent(sections=[
             ContentSection(section_type="thought", markdown="thinking...", collapsed_by_default=True),
         ])
@@ -491,7 +491,7 @@ class TestReasoningBlock:
         assert len(elems) == 1
         assert elems[0]["tag"] == "collapsible_panel"
         inner = elems[0]["elements"][0]
-        assert inner["text_size"] == "notation"
+        assert inner["text_size"] == "normal"
 
     def test_thought_complete_header(self):
         rc = RenderedContent(sections=[

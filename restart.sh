@@ -14,6 +14,8 @@ LOG_MODE="${GHOSTAP_LOG_MODE:-truncate}"
 STARTED_PID=""
 LAUNCHCTL_LABEL="${GHOSTAP_LAUNCHCTL_LABEL:-com.ghostap.local}"
 RESTART_LAUNCHCTL_LABEL="${GHOSTAP_RESTART_LAUNCHCTL_LABEL:-${LAUNCHCTL_LABEL}.restart}"
+CODEX_ACP_NPM_PACKAGE="${GHOSTAP_CODEX_ACP_NPM_PACKAGE:-@zed-industries/codex-acp@0.14.0}"
+PREPARE_CODEX_ACP="${GHOSTAP_PREPARE_CODEX_ACP:-1}"
 
 cd "$PROJECT_DIR"
 
@@ -65,6 +67,35 @@ service_command_label() {
         echo "$PYTHON_BIN -m src.main"
     else
         echo "uv run python -m src.main"
+    fi
+}
+
+codex_native_acp_available() {
+    command -v codex >/dev/null 2>&1 || return 1
+    codex acp serve --help 2>&1 | grep -Eiq "(acp serve|acp.*server)"
+}
+
+prepare_codex_acp_dependency() {
+    if [ "$PREPARE_CODEX_ACP" = "0" ]; then
+        log_restart "codex acp fallback preheat skipped"
+        return
+    fi
+    if codex_native_acp_available; then
+        log_restart "codex native acp serve available"
+        return
+    fi
+    if ! command -v npx >/dev/null 2>&1; then
+        echo "⚠️  未找到 npx，Codex ACP fallback 可能无法启动"
+        log_restart "codex acp fallback missing npx"
+        return
+    fi
+
+    echo "准备 Codex ACP fallback 依赖..."
+    if npx --yes "$CODEX_ACP_NPM_PACKAGE" --help >/dev/null 2>&1; then
+        log_restart "codex acp fallback ready package=$CODEX_ACP_NPM_PACKAGE"
+    else
+        echo "⚠️  Codex ACP fallback 依赖预热失败，后续 /codex 可能启动失败"
+        log_restart "codex acp fallback preheat failed package=$CODEX_ACP_NPM_PACKAGE"
     fi
 }
 
@@ -121,6 +152,7 @@ start_service() {
         : > "$LOG_FILE"
         start_log_mode="append"
     fi
+    prepare_codex_acp_dependency
     log_restart "start begin cmd=$(service_command_label)"
     start_service_process "$start_log_mode"
     PID="$STARTED_PID"

@@ -185,6 +185,56 @@ class TestUpdatePage:
 
         assert outcome.kind == "reconcile"
 
+    def test_update_page_content_invalid_patches_fallback_without_removing_binding(self):
+        client = MockClient()
+        bindings = BindingStore()
+        sequences = SequenceManager()
+        mutator = PageMutator(client, bindings, sequences)
+
+        bindings.create("sess_1", "chat_1")
+        bindings.set_page("sess_1", 0, "msg_1", "card_1", "old_sig", "old_text")
+        page = bindings.get("sess_1").pages[0]
+
+        calls = []
+
+        def update_card(card_id, card_json, *, sequence=0):
+            calls.append({"card_id": card_id, "card_json": card_json, "sequence": sequence})
+            if len(calls) == 1:
+                raise TransportError(
+                    "Patch failed: code=230099, msg=ErrCode: 200621 content parse failed",
+                    code=230099,
+                )
+
+        client.update_card = update_card
+        card = _make_card(signature="new_sig")
+        outcome = mutator.update_page("sess_1", page, card)
+
+        assert outcome.kind == "applied"
+        assert outcome.message == "fallback_content_invalid:230099"
+        binding = bindings.get("sess_1")
+        assert binding is not None
+        assert 0 in binding.pages
+        assert binding.pages[0].signature == "new_sig"
+        assert len(calls) == 2
+        assert calls[1]["card_json"]["header"]["title"]["content"] == "⚠️ 卡片渲染失败"
+
+    def test_update_page_missing_message_removes_binding_for_recreate(self):
+        client = MockClient()
+        client._raise_on_update = TransportError("message not found", code=99992354)
+        bindings = BindingStore()
+        sequences = SequenceManager()
+        mutator = PageMutator(client, bindings, sequences)
+
+        bindings.create("sess_1", "chat_1")
+        bindings.set_page("sess_1", 0, "msg_1", "card_1", "old_sig", "old_text")
+        page = bindings.get("sess_1").pages[0]
+
+        outcome = mutator.update_page("sess_1", page, _make_card(signature="new_sig"))
+
+        assert outcome.kind == "reconcile"
+        assert outcome.message == "recreate:99992354"
+        assert 0 not in bindings.get("sess_1").pages
+
 
 class TestStreamElement:
     def test_stream_element_success(self):

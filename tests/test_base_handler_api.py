@@ -253,6 +253,24 @@ class TestReplyInThreadDefault:
 # ===========================================================================
 
 
+class TestInjectRefNoteInteractive:
+    def test_ref_note_uses_normal_text_size_for_mobile_readability(self):
+        card_content = json.dumps({
+            "body": {
+                "elements": [
+                    {"tag": "markdown", "content": "hello"},
+                ],
+            },
+        })
+
+        result = BaseHandler._inject_ref_note(card_content, "interactive", "REF-001")
+        parsed = json.loads(result)
+        note = parsed["body"]["elements"][-1]
+
+        assert note["content"] == "REF-001"
+        assert note["text_size"] == "normal"
+
+
 class TestInjectRefNotePost:
     def test_injects_into_last_md_node(self):
         """ref_note should be appended to the last md node's text."""

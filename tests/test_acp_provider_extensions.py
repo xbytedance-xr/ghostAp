@@ -1,14 +1,19 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from src.acp.providers import (
     AidenProvider,
+    CODEX_ACP_NPM_PACKAGE,
     CodexProvider,
     GeminiProvider,
     _get_aiden_acp_serve_help_blob,
     _get_codex_acp_serve_help_blob,
     _get_gemini_acp_serve_help_blob,
+    _reset_providers_for_testing,
 )
+from src.acp.sync_adapter import resolve_agent_spec
 
 
 def test_aiden_provider_name():
@@ -51,13 +56,18 @@ def test_codex_provider_name():
     assert CodexProvider().name == "codex"
 
 
+@patch("src.acp.providers.shutil.which")
 @patch("src.acp.sync_adapter._probe_acp_serve_help")
-def test_codex_provider_availability(mock_probe):
+def test_codex_provider_availability(mock_probe, mock_which):
     mock_probe.return_value = (True, 0, "Usage: codex acp serve", "")
+    mock_which.return_value = None
     assert CodexProvider().check_availability() is True
 
     mock_probe.return_value = (False, 1, "", "")
     assert CodexProvider().check_availability() is False
+
+    mock_which.return_value = "/usr/bin/npx"
+    assert CodexProvider().check_availability() is True
 
 
 @patch("src.acp.sync_adapter._probe_acp_serve_help")
@@ -76,6 +86,42 @@ def test_codex_provider_serve_command_model_style_short(mock_probe):
     cmd, args = CodexProvider().get_serve_command("gpt-4")
     assert cmd == "codex"
     assert args == ["acp", "serve", "-m", "gpt-4"]
+
+
+@patch("src.acp.providers.shutil.which")
+@patch("src.acp.sync_adapter._probe_acp_serve_help")
+def test_codex_provider_falls_back_to_zed_codex_acp_when_native_serve_missing(mock_probe, mock_which):
+    mock_probe.return_value = (False, 2, "", "error: unrecognized subcommand 'serve'")
+    mock_which.return_value = "/usr/bin/npx"
+
+    cmd, args = CodexProvider().get_serve_command("gpt-5")
+
+    assert cmd == "npx"
+    assert args == ["--yes", CODEX_ACP_NPM_PACKAGE, "-c", 'model="gpt-5"']
+
+
+@patch("src.acp.providers.shutil.which")
+@patch("src.acp.sync_adapter._probe_acp_serve_help")
+def test_codex_provider_unavailable_without_native_or_npx(mock_probe, mock_which):
+    mock_probe.return_value = (False, 2, "", "error: unrecognized subcommand 'serve'")
+    mock_which.return_value = None
+
+    assert CodexProvider().check_availability() is False
+    with pytest.raises(RuntimeError, match="Codex ACP is unavailable"):
+        CodexProvider().get_serve_command("gpt-5")
+
+
+@patch("src.acp.providers.shutil.which")
+@patch("src.acp.sync_adapter._probe_acp_serve_help")
+def test_resolve_agent_spec_uses_registered_codex_provider_fallback(mock_probe, mock_which):
+    _reset_providers_for_testing()
+    mock_probe.return_value = (False, 2, "", "error: unrecognized subcommand 'serve'")
+    mock_which.return_value = "/usr/bin/npx"
+
+    cmd, args = resolve_agent_spec("codex", model_name="gpt-5")
+
+    assert cmd == "npx"
+    assert args == ["--yes", CODEX_ACP_NPM_PACKAGE, "-c", 'model="gpt-5"']
 
 
 def test_gemini_provider_name():

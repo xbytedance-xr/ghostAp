@@ -295,9 +295,9 @@ def _render_atom_text(atom: RenderAtom, state: CardState, budget: RenderBudget, 
 def _render_atom_tool_panel(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict | None:
     # In the new activity_digest flow, tool_panel atoms are only emitted for
     # active (running) tools with pre-rendered compact content.
-    # Render as compact notation-sized markdown line.
+    # Keep compact lines at normal size; mobile Feishu can render notation too small.
     if atom.content:
-        return {"tag": "markdown", "content": atom.content, "text_size": "notation"}
+        return {"tag": "markdown", "content": atom.content, "text_size": "normal"}
     block = block_index.get(atom.block_id)
     if block is not None:
         return render_tool_panel(block)
@@ -369,8 +369,8 @@ def _render_atom_task_list(atom: RenderAtom, state: CardState, budget: RenderBud
 
 
 def _render_atom_activity_digest(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict:
-    """Render activity digest as a compact markdown line (notation size)."""
-    return {"tag": "markdown", "content": atom.content, "text_size": "notation"}
+    """Render activity digest as a compact, mobile-readable markdown line."""
+    return {"tag": "markdown", "content": atom.content, "text_size": "normal"}
 
 
 # Atom renderer registry: maps atom.kind → renderer function.
