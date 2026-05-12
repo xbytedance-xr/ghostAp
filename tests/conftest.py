@@ -431,30 +431,3 @@ def _reset_all_singletons():
         _reset_env_for_testing()
     except Exception:
         pass
-
-
-# ---------------------------------------------------------------------------
-# Shim deadline CI guard — after 2026-06-01, deprecated shim imports fail tests.
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(autouse=True, scope="session")
-def _shim_deadline_guard():
-    """After the shim deadline, convert DeprecationWarning from shim modules to errors.
-
-    This ensures deprecated shim modules cannot be silently used past their removal date.
-    The shim modules themselves raise ImportError after deadline, but this guard catches
-    any DeprecationWarning that might slip through during the transition window.
-    """
-    import datetime
-    import warnings
-
-    deadline = datetime.date(2026, 6, 1)
-    if datetime.date.today() > deadline:
-        warnings.filterwarnings(
-            "error",
-            category=DeprecationWarning,
-            module=r"src\.card\.(?:session_config|session_factory|session_rotator|"
-                   r"static_session|delivery_tracker|action_dispatch|action_ids|"
-                   r"action_router|timer_manager|timer_scheduler)",
-        )
-    yield

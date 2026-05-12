@@ -48,6 +48,4 @@ Card rendering is split into two distinct subsystems with non-overlapping respon
 
 ## Related
 
-- [Card Refactor Design](./2026-04-30-card-refactor-design.md)
-- [Migration FAQ](./card-migration-faq.md)
 - [CHANGELOG](../CHANGELOG.md)

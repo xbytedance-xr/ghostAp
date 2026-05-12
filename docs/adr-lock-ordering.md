@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-04-26
-**Context:** Multi-chat isolation design (see `docs/2025-04-25-multi-chat-isolation-design.md`)
+**Context:** Multi-chat and repo-level isolation need a stable lock acquisition order.
 
 ## Problem
 

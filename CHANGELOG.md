@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-> **另见**: [卡片管线迁移 FAQ](docs/card-migration-faq.md) | [迁移设计文档](docs/2026-04-30-card-refactor-design.md) | [ADR: Pipeline 边界](docs/adr-card-pipeline-boundary.md)
+> **另见**: [ADR: Pipeline 边界](docs/adr-card-pipeline-boundary.md)
 
 ## [Unreleased]
 
@@ -17,32 +17,6 @@ All notable changes to this project will be documented in this file.
 
 - **`BaseRenderer._create_session()` → `BaseRenderer.create_session()`**: Renamed to public API (no underscore prefix). All renderer subclasses and test patch targets updated.
 - **`CardDelivery.drain_in_flight()`**: Now uses O(1) counter-based wait instead of O(n) lock iteration.
-- **Shim deprecation messages**: All 10 shim modules now include `(deprecated in v0.1.0)` version marker.
-- **`src/card/action_ids.py`**: Converted from eager `from X import *` + module-level `warnings.warn` to lazy `__getattr__` + `__dir__` pattern (warning fires only on attribute access, not import).
-
-### Deprecated
-
-- **Re-export shim modules** (deprecated since 2026-05-04, removal deadline: **2026-06-01**):
-
-  The following top-level shim files under `src/card/` now emit `DeprecationWarning` when
-  their exported symbols are accessed. Callers should migrate to the canonical import paths
-  listed below before the removal deadline.
-
-  | Deprecated shim module | Migrate to |
-  |---|---|
-  | `src.card.session_config` | `src.card.session.config` |
-  | `src.card.session_factory` | `src.card.session.factory` |
-  | `src.card.session_rotator` | `src.card.session.rotator` |
-  | `src.card.static_session` | `src.card.session.static` |
-  | `src.card.delivery_tracker` | `src.card.delivery.tracker` |
-  | `src.card.action_dispatch` | `src.card.actions.dispatch` |
-  | `src.card.action_ids` | `src.card.actions.dispatch` |
-  | `src.card.action_router` | `src.card.actions.router` |
-  | `src.card.timer_manager` | `src.card.timers.manager` |
-  | `src.card.timer_scheduler` | `src.card.timers.scheduler` |
-
-  After **2026-06-01**, these shim files will be deleted and the change will be declared as a
-  **breaking change**. All imports must be updated to the canonical paths before that date.
 
 ### ⚠️ Breaking Changes
 
@@ -60,6 +34,7 @@ All notable changes to this project will be documented in this file.
 - **`src/card/events.py`** (top-level module): Refactored into `src/card/events/` package (`types.py`, `factories.py`, `payloads.py`, `acp_adapter.py`).
 - **`CardBuilder.build_engine_card()`**: 已完全移除（访问将触发 `AttributeError`）。Use `renderer.create_session()` + `session.dispatch(CardEvent.*)` instead.
 - **Migration verification**: Run `grep -rn 'build_engine_card\|DirectCardSession\|_create_direct_session' src/` to confirm no legacy references remain.
+- **Deprecated card re-export shims**: Removed the old top-level `src/card/*` compatibility shims and their deadline checker. Canonical imports now live under `src/card/session/`, `src/card/delivery/`, `src/card/actions/`, and `src/card/timers/`.
 
 ### Migration FAQ
 

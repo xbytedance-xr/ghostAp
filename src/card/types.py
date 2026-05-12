@@ -37,7 +37,7 @@ class RenderedCard:
 
     @property
     def _raw_payload(self) -> dict:
-        """Preferred internal access to card payload. See docs/2026-04-30-card-refactor-design.md."""
+        """Preferred internal access to card payload. See docs/adr-card-pipeline-boundary.md."""
         return self._card_json
 
     def to_feishu_json(self, *, copy: bool = True) -> dict:
