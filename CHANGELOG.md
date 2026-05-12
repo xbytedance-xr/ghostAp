@@ -33,7 +33,7 @@ All notable changes to this project will be documented in this file.
 - **`src/card/adapter.py`**: Replaced by per-engine adapter functions in `src/card/events/acp_adapter.py` and engine-specific protocols in `src/card/protocols.py`.
 - **`src/card/events.py`** (top-level module): Refactored into `src/card/events/` package (`types.py`, `factories.py`, `payloads.py`, `acp_adapter.py`).
 - **`CardBuilder.build_engine_card()`**: 已完全移除（访问将触发 `AttributeError`）。Use `renderer.create_session()` + `session.dispatch(CardEvent.*)` instead.
-- **Migration verification**: Run `grep -rn 'build_engine_card\|DirectCardSession\|_create_direct_session' src/` to confirm no legacy references remain.
+- **Migration verification**: Run the docs/reference regression tests and `rg -n 'build_engine_card|DirectCardSession|_create_direct_session' src tests -g '*.py'` when touching the card migration boundary.
 - **Deprecated card re-export shims**: Removed the old top-level `src/card/*` compatibility shims and their deadline checker. Canonical imports now live under `src/card/session/`, `src/card/delivery/`, `src/card/actions/`, and `src/card/timers/`.
 
 ### Migration FAQ

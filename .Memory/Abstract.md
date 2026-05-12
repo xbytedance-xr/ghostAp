@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志；当前 Backlog 无开放条目。
 ## 2026-05-12
+- **保留文档过期引用二次收口** — 继续清理上轮删除历史材料后仍保留在活文档中的旧口径：README 的 `src/card/` 说明与目录树更新为 CardSession/render/delivery/actions/events/state/timers 当前管线，CHANGELOG 的迁移验证命令从旧 `grep` 改为 `rg` + docs regression；新增 `tests/test_docs_references.py` 锁定保留文档不再引用已删历史文档/mock/shim、Markdown 本地链接可解析、README card tree 覆盖当前 pipeline 目录；引用扫描无输出，定向测试 3 passed → [详细记录](2026-05-12.md)
 - **历史文档与旧迁移包袱清理** — 清理完成态的一次性设计/计划文档、旧 superpowers 规格/计划、过时统一卡片 UX mock、已失效 card shim deadline 脚本与相关测试/ruff 配置；保留仍被代码或测试引用的 ADR、commit 规范、Refactoring Analysis issue matrix 与 `.Memory` 历史记录；同步更新 README/CHANGELOG/ADR 链接，避免活文档继续指向已删除材料；`git diff --check`、删除路径引用扫描与全量 `6351 passed, warnings=49` 通过 → [详细记录](2026-05-12.md)
 - **Deep/Spec/Worktree 并行子任务委托倾向补强** — 核查确认 Worktree 已通过多 worktree 单元并行执行，但 Deep 与 Spec prompt 没有主动要求模型使用 subagent/子任务委托，且 Spec Build 旧文案“严格按照任务顺序执行”会压制并行；本轮补强 Spec Plan/Task/Build、Deep prompt、Worktree unit prompt：依赖满足且不触碰相同文件/接口契约/迁移配置时优先并行/委托，存在冲突则串行并记录边界；244 passed → [详细记录](2026-05-12.md)
 - **B017 移动端 notation 可读性风险移除** — 不再等待真实移动端人工验证，直接把 B017 涉及的 ref_note、ACP thought、programming reasoning、running tool compact line、activity_digest 从 `text_size=notation` 改为 `normal`，消除飞书移动端小字号不可读风险；补充 ref_note、thought panel、activity digest 回归；Backlog 清空 → [详细记录](2026-05-12.md)
