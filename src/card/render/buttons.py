@@ -275,9 +275,9 @@ def render_buttons(state: CardState, budget: RenderBudget | None = None) -> list
     - No buttons → empty list
     - 1 button → column_set with flex_mode 'none' (full width for mobile accessibility)
     - 2 buttons → column_set with flex_mode 'bisect' (equal width)
-    - ≥3 buttons with card_mobile_force_vertical → action block with flow layout (vertical on mobile)
+    - ≥3 buttons with card_mobile_force_vertical → vertical column_set
     - 3 buttons otherwise → column_set with flex_mode 'none' (equal trisect)
-    - >3 buttons → action block with flow layout
+    - >3 buttons → two-column column_set rows
     """
     if not state.buttons:
         return []
@@ -331,18 +331,25 @@ def _layout_buttons(buttons: list[dict], *, budget: RenderBudget | None = None) 
             }
         ]
 
-    # ≥3 buttons: check config for mobile force vertical
+    # ≥3 buttons: check config for mobile force vertical.
+    # Feishu Schema 2.0 rejects the old V1 `action` container, so all button
+    # groups are expressed as column_set layouts.
     mobile_force_vertical = budget.mobile_force_vertical if budget else False
     if mobile_force_vertical and len(buttons) >= 3:
-        # Vertical action flow for mobile accessibility
-        # Set min_width for better tap targets on mobile
-        for btn in buttons:
-            btn.setdefault("width", "default")
         return [
             {
-                "tag": "action",
-                "layout": "flow",
-                "actions": buttons,
+                "tag": "column_set",
+                "flex_mode": "none",
+                "background_style": "default",
+                "columns": [
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "vertical_align": "top",
+                        "elements": buttons,
+                    },
+                ],
             }
         ]
 
@@ -366,14 +373,26 @@ def _layout_buttons(buttons: list[dict], *, budget: RenderBudget | None = None) 
             }
         ]
 
-    # >3 buttons: action flow layout (auto-width, no full-row stretch)
-    return [
-        {
-            "tag": "action",
-            "layout": "flow",
-            "actions": buttons,
-        }
-    ]
+    # >3 buttons: render as two-column rows to stay Schema 2.0 compatible
+    # without creating oversized single-row button groups.
+    rows: list[dict] = []
+    for idx in range(0, len(buttons), 2):
+        pair = buttons[idx:idx + 2]
+        rows.append({
+            "tag": "column_set",
+            "flex_mode": "bisect" if len(pair) == 2 else "none",
+            "background_style": "default",
+            "columns": [
+                {
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 1,
+                    "elements": [btn],
+                }
+                for btn in pair
+            ],
+        })
+    return rows
 
 
 def build_restart_button(engine_type: str, budget: RenderBudget | None = None) -> dict:

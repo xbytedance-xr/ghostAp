@@ -58,15 +58,18 @@ class TestRenderFallbackCard:
 
         assert result is not None
         card_json = result[0].to_feishu_json()
-        # Find action block with button
-        action_block = next(
-            (el for el in card_json["body"] if el.get("tag") == "action"),
+        # Find Schema V2 column_set with button
+        button_block = next(
+            (el for el in card_json["body"]["elements"] if el.get("tag") == "column_set"),
             None,
         )
-        assert action_block is not None
-        buttons = action_block["actions"]
+        assert button_block is not None
+        buttons = button_block["columns"][0]["elements"]
         assert len(buttons) >= 1
         assert "重新开始" in buttons[0]["text"]["content"]
+        assert buttons[0]["behaviors"] == [
+            {"type": "callback", "value": buttons[0]["value"]}
+        ]
 
     def test_none_engine_type_uses_fallback_text(self):
         """When engine_type is None, uses generic fallback text."""

@@ -129,11 +129,11 @@ class TestRenderButtons:
         assert len(result[0]["columns"]) == 2
         assert result[0]["flex_mode"] == "bisect"
 
-    def test_many_buttons_action_flow(self):
-        """3+ buttons with mobile_force_vertical=True → action flow layout"""
+    def test_many_buttons_schema_v2_layout(self):
+        """3+ buttons avoid the Schema V2-incompatible action container."""
         from src.card.render.budget import RenderBudget
         budget = RenderBudget(mobile_force_vertical=True)
-        # 3 buttons with mobile_force_vertical=True → action flow
+        # 3 buttons with mobile_force_vertical=True → vertical column_set
         state = CardState(buttons=(
             ButtonSpec(text="A", action_id="a"),
             ButtonSpec(text="B", action_id="b"),
@@ -141,11 +141,12 @@ class TestRenderButtons:
         ))
         result = render_buttons(state, budget=budget)
         assert len(result) == 1
-        assert result[0]["tag"] == "action"
-        assert result[0]["layout"] == "flow"
-        assert len(result[0]["actions"]) == 3
+        assert result[0]["tag"] == "column_set"
+        assert result[0]["flex_mode"] == "none"
+        assert len(result[0]["columns"]) == 1
+        assert len(result[0]["columns"][0]["elements"]) == 3
 
-        # 4 buttons → action flow
+        # 4 buttons → two Schema V2-compatible rows
         state4 = CardState(buttons=(
             ButtonSpec(text="A", action_id="a"),
             ButtonSpec(text="B", action_id="b"),
@@ -153,10 +154,10 @@ class TestRenderButtons:
             ButtonSpec(text="D", action_id="d"),
         ))
         result4 = render_buttons(state4)
-        assert len(result4) == 1
-        assert result4[0]["tag"] == "action"
-        assert result4[0]["layout"] == "flow"
-        assert len(result4[0]["actions"]) == 4
+        assert len(result4) == 2
+        assert all(row["tag"] == "column_set" for row in result4)
+        assert all(row["flex_mode"] == "bisect" for row in result4)
+        assert sum(len(row["columns"]) for row in result4) == 4
 
     def test_button_with_confirm(self):
         """Button with confirm → confirm dialog"""

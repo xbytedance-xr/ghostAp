@@ -9,6 +9,8 @@ from __future__ import annotations
 import pytest
 
 from src.card.events import CardEvent, CardEventType
+from src.card.render.budget import RenderBudget
+from src.card.render.renderer import render_card
 from src.card.state.models import CardMetadata, CardState
 from src.card.state.reducer import reduce_card_state
 from src.card.state.button_intent import ButtonIntent
@@ -17,6 +19,20 @@ from src.card.state.button_intent import ButtonIntent
 def _reduce(state: CardState | None, event: CardEvent) -> CardState:
     """Shorthand: reduce with worktree metadata."""
     return reduce_card_state(state, event, CardMetadata(engine_type="worktree"))
+
+
+def _collect_tags(node) -> list[str]:
+    if isinstance(node, dict):
+        tags = [node["tag"]] if isinstance(node.get("tag"), str) else []
+        for value in node.values():
+            tags.extend(_collect_tags(value))
+        return tags
+    if isinstance(node, list):
+        tags: list[str] = []
+        for item in node:
+            tags.extend(_collect_tags(item))
+        return tags
+    return []
 
 
 class TestWorktreeE2E:
@@ -86,6 +102,21 @@ class TestWorktreeE2E:
         action_ids = [b.action_id for b in state.buttons]
         assert ButtonIntent.WORKTREE_CONFIRM_START in action_ids
         assert ButtonIntent.WORKTREE_CANCEL in action_ids
+
+    def test_confirm_card_renders_schema_v2_compatible_buttons(self):
+        state = self._initial_state()
+        state = _reduce(state, CardEvent(
+            type=CardEventType.WORKTREE_CONFIRM,
+            payload={"selected_items": [{"tool": "a", "model": "gpt-4"}], "goal": "Fix bug"},
+        ))
+
+        rendered = render_card(state, RenderBudget(mobile_force_vertical=True))
+
+        assert rendered
+        card_json = rendered[0].to_feishu_json()
+        tags = _collect_tags(card_json["body"]["elements"])
+        assert "action" not in tags
+        assert tags.count("button") == 3
 
     # ------------------------------------------------------------------
     # Step 3: Progress

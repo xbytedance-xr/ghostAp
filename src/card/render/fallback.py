@@ -45,6 +45,11 @@ def render_fallback_card(state: "CardState | None", engine_type: str | None = No
         # Build warning banner text
         warning_text = f"⚠️ **渲染异常，卡片内容可能不完整。发送 {engine_cmd} 重新执行。**"
 
+        restart_value = {
+            "action": "retry_command",
+            "_t": engine_cmd,
+        }
+
         card_json = {
             "schema": "2.0",
             "config": {"wide_screen_mode": True, "update_multi": True},
@@ -52,7 +57,7 @@ def render_fallback_card(state: "CardState | None", engine_type: str | None = No
                 "title": {"tag": "plain_text", "content": title},
                 "template": template,
             },
-            "body": [
+            "body": {"elements": [
                 {
                     "tag": "div",
                     "fields": [
@@ -60,20 +65,27 @@ def render_fallback_card(state: "CardState | None", engine_type: str | None = No
                     ],
                 },
                 {
-                    "tag": "action",
-                    "actions": [
+                    "tag": "column_set",
+                    "flex_mode": "none",
+                    "background_style": "default",
+                    "columns": [
                         {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": restart_label},
-                            "type": "primary",
-                            "value": {
-                                "action": "retry_command",
-                                "_t": engine_cmd,
-                            },
+                            "tag": "column",
+                            "width": "weighted",
+                            "weight": 1,
+                            "elements": [
+                                {
+                                    "tag": "button",
+                                    "text": {"tag": "plain_text", "content": restart_label},
+                                    "type": "primary",
+                                    "value": restart_value,
+                                    "behaviors": [{"type": "callback", "value": restart_value}],
+                                },
+                            ],
                         },
                     ],
                 },
-            ],
+            ]},
         }
         return [RenderedCard(_card_json=card_json, structure_signature="fallback", content_hash="fallback")]
     except Exception:
