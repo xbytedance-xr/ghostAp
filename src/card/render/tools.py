@@ -10,7 +10,7 @@ from src.card.ui_text import UI_TEXT
 
 _MAX_OUTPUT_CHARS = 2000
 _MAX_SUMMARY_CHARS = 80
-_MAX_ACTIVITY_DETAILS = 20
+_MAX_ACTIVITY_DETAILS = 6
 
 _STATUS_ICONS = {
     "active": "⏳",
@@ -38,6 +38,7 @@ _EXPLORE_TOOLS = {
     "search_codebase", "list", "ls", "list_dir",
     "cat", "head", "tail", "tree",
 }
+_SEARCH_ACTIVITY_TOOLS = {"grep", "search", "find", "glob", "search_codebase"}
 
 _SUBAGENT_STATUS_ICONS = {
     "running": "🟠",
@@ -237,8 +238,26 @@ def _activity_target(block: ContentBlock) -> str:
     return generate_tool_summary(block)
 
 
-def _activity_detail(action: str, target: str) -> str:
-    return f"{action} `{_truncate_activity_target(target)}`"
+def _activity_detail(block: ContentBlock) -> str:
+    tool_name = (block.tool_name or "").lower()
+    target = _activity_target(block)
+    target_part = f" `{_truncate_activity_target(target)}`" if target else ""
+
+    if getattr(block, "status", "") == "failed":
+        label = block.tool_name or "工具"
+        return f"失败 {label}{target_part}"
+    if tool_name in _SEARCH_ACTIVITY_TOOLS:
+        return f"搜索{target_part}"
+    if tool_name in _EXPLORE_TOOLS:
+        return f"读取{target_part}"
+    if tool_name in _EDIT_TOOLS:
+        return f"编辑{target_part}"
+    if tool_name in _COMMAND_TOOLS:
+        return f"运行{target_part}"
+    if tool_name in _COMPACT_TOOLS:
+        return f"处理{target_part}"
+    label = block.tool_name or "工具"
+    return f"调用 {label}{target_part}"
 
 
 def _truncate_activity_target(value: str) -> str:
@@ -346,6 +365,7 @@ def render_activity_digest_line(blocks: list[ContentBlock]) -> str:
         return ""
 
     explored = 0
+    searched = 0
     edited = 0
     commands = 0
     other = 0
@@ -356,7 +376,9 @@ def render_activity_digest_line(blocks: list[ContentBlock]) -> str:
         if getattr(b, "status", "") == "failed":
             failed += 1
             continue
-        if name in _EXPLORE_TOOLS:
+        if name in _SEARCH_ACTIVITY_TOOLS:
+            searched += 1
+        elif name in _EXPLORE_TOOLS:
             explored += 1
         elif name in _EDIT_TOOLS:
             edited += 1
@@ -368,6 +390,8 @@ def render_activity_digest_line(blocks: list[ContentBlock]) -> str:
     parts: list[str] = []
     if explored:
         parts.append(f"已探索 {explored} 项")
+    if searched:
+        parts.append(f"已搜索 {searched} 次")
     if edited:
         parts.append(f"已编辑 {edited} 个文件")
     if commands:
@@ -378,6 +402,81 @@ def render_activity_digest_line(blocks: list[ContentBlock]) -> str:
         parts.append(f"{failed} 项失败")
 
     return f"▣ **{', '.join(parts)}**" if parts else ""
+
+
+def _activity_panel_border(blocks: list[ContentBlock]) -> str:
+    if any(getattr(block, "status", "") == "failed" for block in blocks):
+        return PANEL_STYLES["border_failed"]
+
+    counts = {
+        "edit": 0,
+        "command": 0,
+        "search": 0,
+        "explore": 0,
+    }
+    for block in blocks:
+        name = (getattr(block, "tool_name", "") or "").lower()
+        if name in _EDIT_TOOLS:
+            counts["edit"] += 1
+        elif name in _COMMAND_TOOLS:
+            counts["command"] += 1
+        elif name in _SEARCH_ACTIVITY_TOOLS:
+            counts["search"] += 1
+        elif name in _EXPLORE_TOOLS:
+            counts["explore"] += 1
+
+    dominant = max(counts, key=counts.get)
+    if counts[dominant] == 0:
+        return PANEL_STYLES["border_history"]
+    return {
+        "edit": "green",
+        "command": "wathet",
+        "search": "indigo",
+        "explore": PANEL_STYLES["border_history"],
+    }[dominant]
+
+
+def render_activity_digest_panel(blocks: list[ContentBlock]) -> dict | None:
+    """Render completed tool calls as one compact aggregate panel.
+
+    The panel intentionally summarizes inputs only. Tool outputs, especially
+    file contents from read operations, stay out of the card to keep the
+    Feishu message scannable and small.
+    """
+    summary = render_activity_digest_line(blocks)
+    if not summary:
+        return None
+
+    details = [_activity_detail(block) for block in blocks[:_MAX_ACTIVITY_DETAILS]]
+    remaining = len(blocks) - len(details)
+    if remaining > 0:
+        details.append(f"另有 {remaining} 项已折叠")
+    detail_text = "\n".join(f"- {line}" for line in details if line.strip())
+
+    return {
+        "tag": "collapsible_panel",
+        "expanded": False,
+        "header": {
+            "title": {"tag": "markdown", "content": summary},
+            "vertical_align": "center",
+            "icon": {
+                "tag": "standard_icon",
+                "token": "down-small-ccm_outlined",
+                "size": "16px 16px",
+            },
+            "icon_position": "follow_text",
+            "icon_expanded_angle": -180,
+        },
+        "border": {
+            "color": _activity_panel_border(blocks),
+            "corner_radius": PANEL_STYLES["corner_radius"],
+        },
+        "vertical_spacing": PANEL_STYLES["vertical_spacing"],
+        "padding": PANEL_STYLES["padding_compact"],
+        "elements": [
+            {"tag": "markdown", "content": detail_text, "text_size": "normal"}
+        ] if detail_text else [],
+    }
 
 
 def render_active_tool_line(block: ContentBlock) -> str:

@@ -142,10 +142,7 @@ class TestSpecEngineTimeout:
         errors = []
         cb.on_error = lambda msg: errors.append(msg)
 
-        monkeypatch.setattr(
-            "src.spec_engine.engine.create_engine_session",
-            lambda **kw: _TimeoutSession(),
-        )
+        monkeypatch.setattr(spec_engine, "_create_session_fn", lambda **kw: _TimeoutSession())
         # Stub criteria parsing to avoid LLM
         monkeypatch.setattr(
             "src.spec_engine.engine.parse_acceptance_criteria",
@@ -178,10 +175,7 @@ class TestSpecEngineTimeout:
         errors = []
         cb.on_error = lambda msg: errors.append(msg)
 
-        monkeypatch.setattr(
-            "src.spec_engine.engine.create_engine_session",
-            lambda **kw: _TimeoutSession(),
-        )
+        monkeypatch.setattr(spec_engine, "_create_session_fn", lambda **kw: _TimeoutSession())
         # Stub _run_cycle_loop to directly raise TimeoutError
         monkeypatch.setattr(
             spec_engine, "_run_cycle_loop",

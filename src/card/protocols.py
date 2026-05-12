@@ -189,7 +189,19 @@ class TTLTimerScheduler(Protocol):
         ...
 
 
-class TTLActuator(TTLStateMutator, TTLDeliverer, TTLTimerScheduler, Protocol):
+class TTLIdleExtender(Protocol):
+    """Timer refresh interface for active long-running work."""
+
+    def defer_idle_timeout(
+        self,
+        on_expired: Callable[[], None],
+        on_prewarning: Callable[[], None],
+    ) -> None:
+        """Refresh idle activity and reschedule TTL timers."""
+        ...
+
+
+class TTLActuator(TTLStateMutator, TTLDeliverer, TTLTimerScheduler, TTLIdleExtender, Protocol):
     """Combined TTL actuator protocol (union of all 3 sub-protocols).
 
     Provided as a convenience for type annotations that need the full

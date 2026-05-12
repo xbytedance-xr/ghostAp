@@ -34,6 +34,8 @@ class CardMetadata:
     unit_id: str | None = None
     unit_kind: str | None = None
     unit_label: str | None = None
+    iteration_index: int | None = None
+    iteration_total: int | None = None
     tool_name: str | None = None
     model_name: str | None = None
     engine_type: str | None = None  # "deep" / "spec" / "worktree" / None

@@ -18,7 +18,7 @@ _TOOL_DISPLAY = {
 }
 
 
-def render_header(state: CardState) -> dict:
+def render_header(state: CardState, *, page_index: int = 0, total_pages: int = 1) -> dict:
     """Generate Feishu Schema 2.0 header JSON.
 
     Programming cards with v2 metadata render project/tool/#seq on the first
@@ -26,10 +26,11 @@ def render_header(state: CardState) -> dict:
     reducer-provided title/subtitle.
     """
     if _should_render_v2_header(state):
-        return _render_v2_header(state)
+        return _render_v2_header(state, page_index=page_index, total_pages=total_pages)
 
+    title = _append_page_label(state.header.title, page_index=page_index, total_pages=total_pages)
     result: dict = {
-        "title": {"tag": "plain_text", "content": state.header.title},
+        "title": {"tag": "plain_text", "content": title},
         "template": state.header.template,
     }
 
@@ -54,7 +55,7 @@ def _should_render_v2_header(state: CardState) -> bool:
     return strong_v2_signal or bool(metadata.tool_name or metadata.model_name or metadata.session_started_at is not None)
 
 
-def _render_v2_header(state: CardState) -> dict:
+def _render_v2_header(state: CardState, *, page_index: int = 0, total_pages: int = 1) -> dict:
     metadata = state.metadata
     tool_id = metadata.tool_name or metadata.mode_name
     tool_label = _TOOL_DISPLAY.get((tool_id or "").lower(), tool_id or metadata.mode_name or "?")
@@ -64,7 +65,9 @@ def _render_v2_header(state: CardState) -> dict:
     # v2 design: frozen cards hide model_name (mutual exclusion with 已封存 tag)
     model_suffix = "" if metadata.frozen else (f" · {metadata.model_name}" if metadata.model_name else "")
 
-    title = f"📁 {project_name} · 🤖 {tool_label} · #{seq}{model_suffix}{archived}"
+    context_suffix = _title_context_suffix(state)
+    page_suffix = _page_label(page_index=page_index, total_pages=total_pages)
+    title = f"📁 {project_name} · 🤖 {tool_label}{context_suffix} · #{seq}{page_suffix}{model_suffix}{archived}"
     if state.terminal == "failed" and "错误" not in title:
         title = f"❌ 错误 · {title}"
 
@@ -89,6 +92,67 @@ def _render_v2_header(state: CardState) -> dict:
         "template": _v2_header_template(state),
     }
     return result
+
+
+def _title_context_suffix(state: CardState) -> str:
+    labels: list[str] = []
+    iteration = _iteration_label(state)
+    if iteration:
+        labels.append(iteration)
+
+    unit = _unit_label(state.metadata, iteration)
+    if unit:
+        labels.append(unit)
+    return "".join(f" · {label}" for label in labels)
+
+
+def _iteration_label(state: CardState) -> str:
+    metadata = state.metadata
+    index = metadata.iteration_index
+    total = metadata.iteration_total
+    if index is None and state.engine_ext is not None and state.engine_ext.cycle_num > 0:
+        index = state.engine_ext.cycle_num
+        total = state.engine_ext.max_cycles or total
+    if not index:
+        return ""
+    if total and total > 1:
+        return f"第 {index}/{total} 轮"
+    return f"第 {index} 轮"
+
+
+def _unit_label(metadata, iteration_label: str) -> str:
+    label = (metadata.unit_label or "").strip()
+    if not label or label == iteration_label:
+        return ""
+    unit_id = (metadata.unit_id or "").strip()
+    if metadata.unit_kind == "task":
+        prefix = f"任务 {unit_id}" if unit_id else "任务"
+        if label.startswith(prefix):
+            return _truncate_title_part(label)
+        return _truncate_title_part(f"{prefix}: {label}")
+    if metadata.unit_kind == "subagent":
+        prefix = f"子任务 {unit_id}" if unit_id else "子任务"
+        if label.startswith(prefix):
+            return _truncate_title_part(label)
+        return _truncate_title_part(f"{prefix}: {label}")
+    return _truncate_title_part(label)
+
+
+def _truncate_title_part(text: str, limit: int = 28) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
+def _append_page_label(title: str, *, page_index: int, total_pages: int) -> str:
+    page = _page_label(page_index=page_index, total_pages=total_pages)
+    return f"{title}{page}" if page else title
+
+
+def _page_label(*, page_index: int, total_pages: int) -> str:
+    if total_pages <= 1:
+        return ""
+    return f" · 页 {page_index + 1}/{total_pages}"
 
 
 def _v2_header_template(state: CardState) -> str:

@@ -157,7 +157,7 @@ class TestUnifiedCardSections:
                     block_id="tool1",
                     tool_name="read",
                     tool_input='{"path": "src/app.py"}',
-                    tool_output="ok",
+                    tool_output="FULL_FILE_CONTENT_SHOULD_NOT_RENDER",
                     tool_summary="src/app.py",
                     status="completed",
                 ),
@@ -169,12 +169,10 @@ class TestUnifiedCardSections:
         cards = render_card(state, RenderBudget())
         body = cards[0]._card_json["body"]["elements"]
 
-        # Activity digest should appear as a compact notation-size line
+        # Activity digest should appear as a compact aggregate panel.
         assert "已探索" in str(body)
         assert "正文内容" in str(body)
-        # Should NOT have a full collapsible_panel for tools
-        tool_panels = [el for el in body if el.get("tag") == "collapsible_panel" and "read" in str(el)]
-        assert len(tool_panels) == 0
+        assert "FULL_FILE_CONTENT_SHOULD_NOT_RENDER" not in str(body)
 
 
 class TestStreamingMode:
@@ -413,7 +411,7 @@ class TestMultipleBlockTypes:
     """Rendering mixed block types."""
 
     def test_tool_block_renders_collapsible_panel(self):
-        """Completed tool renders as compact activity_digest markdown."""
+        """Completed tool renders as compact activity_digest panel."""
         state = CardState(
             blocks=(
                 ContentBlock(
@@ -427,8 +425,7 @@ class TestMultipleBlockTypes:
         )
         cards = render_card(state, RenderBudget())
         body = cards[0]._card_json["body"]["elements"]
-        # Completed tools now render as activity_digest markdown, not collapsible_panel.
-        assert any(el.get("text_size") == "normal" and "已运行" in str(el.get("content", "")) for el in body)
+        assert any(el.get("tag") == "collapsible_panel" and "已运行" in str(el) for el in body)
 
     def test_reasoning_block_renders(self):
         state = CardState(
@@ -482,7 +479,10 @@ class TestMultipleBlockTypes:
         assert len(body) >= 3
         intro_idx = next(i for i, el in enumerate(body) if el.get("content") == "Intro")
         conclusion_idx = next(i for i, el in enumerate(body) if el.get("content") == "Conclusion")
-        digest_idx = next(i for i, el in enumerate(body) if el.get("text_size") == "normal" and "已运行" in str(el.get("content", "")))
+        digest_idx = next(
+            i for i, el in enumerate(body)
+            if el.get("tag") == "collapsible_panel" and "已运行" in str(el)
+        )
         assert intro_idx < digest_idx < conclusion_idx
 
 
@@ -512,7 +512,9 @@ class TestPagination:
         budget = RenderBudget(byte_budget=5000)
         cards = render_card(state, budget)
         for card in cards:
-            assert card._card_json["header"]["title"]["content"] == "Multi-page"
+            assert card._card_json["header"]["title"]["content"] == (
+                f"Multi-page · 页 {card.page_index + 1}/{card.total_pages}"
+            )
 
     def test_section_layout_repeats_sticky_phase_banner_on_every_page(self):
         big_text = "line\n" * 5000

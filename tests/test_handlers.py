@@ -716,6 +716,26 @@ class TestCocoModeHandler:
 
         assert h._get_model_name_override(project) == "handler-model"
 
+    def test_register_thread_context_preserves_selected_acp_tool_and_model(self):
+        h, _ = self._make()
+        project = SimpleNamespace(
+            project_id="p1",
+            ttadk_tool_name=None,
+            ttadk_model_name=None,
+            acp_tool_name="coco",
+            acp_model_name="selected-model",
+        )
+        session = SimpleNamespace(session_id="sid")
+        thread_manager = MagicMock()
+
+        with patch("src.thread.get_thread_manager", return_value=thread_manager):
+            h._register_thread_context("root1", "chat1", project, session)
+
+        thread_manager.register.assert_called_once()
+        kwargs = thread_manager.register.call_args.kwargs
+        assert kwargs["tool_name"] == "coco"
+        assert kwargs["model_name"] == "selected-model"
+
     def test_programming_mode_handler_declares_single_base_model_override(self):
         source = inspect.getsource(ProgrammingModeHandler)
         tree = ast.parse(source)

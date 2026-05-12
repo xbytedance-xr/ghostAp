@@ -4,6 +4,7 @@ import logging
 from dataclasses import replace
 from ..models import CardState, FooterState, HeaderState
 from ...events import CardEvent, CardEventType
+from ._shared import build_header
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ def reduce_cycle(state: CardState, event: CardEvent) -> CardState:
             cycle_num = event.payload.get("cycle_num", 1)
             max_cycles = event.payload.get("max_cycles", 1)
             ext = replace(state.engine_ext, cycle_num=cycle_num, max_cycles=max_cycles)
+            metadata = replace(state.metadata, iteration_index=cycle_num, iteration_total=max_cycles)
             footer = replace(state.footer, status="tool_running",
                              status_text=f"⏳ 迭代 {cycle_num}/{max_cycles}")
             # Inject iteration/cycle info into header subtitle
@@ -25,8 +27,9 @@ def reduce_cycle(state: CardState, event: CardEvent) -> CardState:
                 subtitle = f"Cycle {cycle_num}/{max_cycles}"
             else:
                 subtitle = f"Iteration {cycle_num}"
-            header = replace(state.header, subtitle=subtitle) if state.header else None
-            changes: dict = {"engine_ext": ext, "footer": footer, "terminal": "running"}
+            base_header = build_header(metadata, "running")
+            header = replace(base_header, subtitle=subtitle) if state.header else None
+            changes: dict = {"engine_ext": ext, "footer": footer, "terminal": "running", "metadata": metadata}
             if header:
                 changes["header"] = header
             return replace(state, **changes)

@@ -105,6 +105,15 @@ class TestReduceWorktreeProgress:
         assert data["completed"] == 1
         assert data["total"] == 3
 
+    def test_progress_records_iteration_for_header_context(self):
+        state = _base_state(metadata=CardMetadata(engine_type="worktree", mode_name="Worktree"))
+        event = worktree_progress([{"name": "Unit A", "status": "running"}], project_id="p1", iteration=2)
+
+        new = reduce_worktree(state, event)
+
+        assert new.metadata.iteration_index == 2
+        assert "第 2 轮" in new.header.title
+
     def test_progress_with_failed_shows_retry_button(self):
         state = _base_state()
         units = [{"name": "U1", "status": "failed"}]
@@ -326,12 +335,14 @@ class TestWorktreeStateRoundTrip:
 
     def test_roundtrip_preserves_merge_notes(self):
         state = WorktreeRuntimeState()
+        state.iteration_count = 2
         state.merge_notes = [
             {"branch": "feature/a", "status": "ready", "summary": "Feature A"},
             {"branch": "feature/b", "status": "conflict", "summary": "Feature B"},
         ]
         data = state.to_dict()
         restored = WorktreeRuntimeState.from_dict(data)
+        assert restored.iteration_count == 2
         assert len(restored.merge_notes) == 2
         assert restored.merge_notes[0]["branch"] == "feature/a"
         assert restored.merge_notes[0]["summary"] == "Feature A"
@@ -354,6 +365,11 @@ class TestWorktreeStateRoundTrip:
         state = WorktreeRuntimeState.from_dict(data)
         assert state.merge_notes[0]["summary"] == "bare note text"
         assert state.merge_notes[0]["branch"] == ""
+
+    def test_invalid_iteration_count_falls_back_to_zero(self):
+        state = WorktreeRuntimeState.from_dict({"iteration_count": "not-a-number"})
+
+        assert state.iteration_count == 0
 
 
 class TestReporterSummaryEndToEnd:
@@ -481,6 +497,19 @@ class TestWorktreeProgressSilentBranch:
         )
         assert state.terminal == "completed_empty"
         assert state.blocks[0].block_id == "worktree_no_change"
+
+    def test_no_change_records_iteration_for_header_context(self):
+        meta = CardMetadata(engine_type="worktree", mode_name="Worktree")
+        state = reduce_card_state(None, CardEvent.started(), meta)
+        state = reduce_card_state(
+            state,
+            worktree_completed_no_change(
+                [{"name": "U1", "status": "completed"}], message="无变更", iteration=3
+            ),
+        )
+
+        assert state.metadata.iteration_index == 3
+        assert "第 3 轮" in state.header.title
 
 
 class TestRetryButtonConfirmText:

@@ -2,14 +2,13 @@
 
 Covers:
 - render_activity_digest_line() categorization and formatting
+- render_activity_digest_panel() compact expandable details
 - render_active_tool_line() compact indicator
 - flatten_to_atoms integration: pending buffer → activity_digest atoms
 - End-to-end: activity_digest appears in rendered card body
 """
 
 from __future__ import annotations
-
-import pytest
 
 from src.card.state.models import CardMetadata, CardState, ContentBlock
 
@@ -57,6 +56,7 @@ class TestRenderActivityDigestLine:
         blocks = [
             self._make_block("Read"),
             self._make_block("Read"),
+            self._make_block("Grep"),
             self._make_block("Edit"),
             self._make_block("Bash"),
             self._make_block("Bash"),
@@ -64,6 +64,7 @@ class TestRenderActivityDigestLine:
         ]
         result = render_activity_digest_line(blocks)
         assert "已探索 2 项" in result
+        assert "已搜索 1 次" in result
         assert "已编辑 1 个文件" in result
         assert "已运行 3 条命令" in result
 
@@ -110,6 +111,92 @@ class TestRenderActivityDigestLine:
         block = ContentBlock(kind="tool_call", block_id="b-empty", tool_name="", status="completed")
         result = render_activity_digest_line([block])
         assert "1 次其他调用" in result
+
+
+class TestRenderActivityDigestPanel:
+    """Verify the expandable aggregate panel stays compact."""
+
+    def test_panel_lists_inputs_but_omits_tool_outputs(self):
+        from src.card.render.tools import render_activity_digest_panel
+
+        panel = render_activity_digest_panel([
+            ContentBlock(
+                kind="tool_call",
+                block_id="read",
+                tool_name="Read",
+                status="completed",
+                tool_input='{"path": "src/card/render/tools.py"}',
+                tool_output="full file content should not appear",
+            ),
+            ContentBlock(
+                kind="tool_call",
+                block_id="cmd",
+                tool_name="Bash",
+                status="completed",
+                tool_input="git diff --stat",
+                tool_output="large command output should not appear",
+            ),
+        ])
+
+        assert panel is not None
+        assert panel["tag"] == "collapsible_panel"
+        assert panel["expanded"] is False
+        rendered = str(panel)
+        assert "已探索 1 项" in rendered
+        assert "已运行 1 条命令" in rendered
+        assert "读取 `src/card/render/tools.py`" in rendered
+        assert "运行 `git diff --stat`" in rendered
+        assert "full file content" not in rendered
+        assert "large command output" not in rendered
+
+    def test_panel_limits_detail_rows(self):
+        from src.card.render.tools import render_activity_digest_panel
+
+        blocks = [
+            ContentBlock(
+                kind="tool_call",
+                block_id=f"read-{i}",
+                tool_name="Read",
+                status="completed",
+                tool_input=f'{{"path": "file{i}.py"}}',
+            )
+            for i in range(8)
+        ]
+        panel = render_activity_digest_panel(blocks)
+
+        assert panel is not None
+        detail = panel["elements"][0]["content"]
+        assert "file0.py" in detail
+        assert "file5.py" in detail
+        assert "file6.py" not in detail
+        assert "另有 2 项已折叠" in detail
+
+    def test_panel_border_reflects_dominant_activity(self):
+        from src.card.render.tools import render_activity_digest_panel
+
+        panel = render_activity_digest_panel([
+            ContentBlock(
+                kind="tool_call",
+                block_id="edit-1",
+                tool_name="Edit",
+                status="completed",
+            ),
+            ContentBlock(
+                kind="tool_call",
+                block_id="edit-2",
+                tool_name="Write",
+                status="completed",
+            ),
+            ContentBlock(
+                kind="tool_call",
+                block_id="read-1",
+                tool_name="Read",
+                status="completed",
+            ),
+        ])
+
+        assert panel is not None
+        assert panel["border"]["color"] == "green"
 
 
 # ------------------------------------------------------------------
@@ -304,7 +391,35 @@ class TestActivityDigestInCard:
         )
         cards = render_card(state, RenderBudget())
         body = cards[0]._card_json["body"]["elements"]
-        # Find the digest element
-        digest_els = [el for el in body if el.get("text_size") == "normal"]
+        digest_els = [
+            el for el in body
+            if el.get("tag") == "collapsible_panel" and "已运行" in str(el)
+        ]
         assert len(digest_els) >= 1
-        assert "已运行" in str(digest_els[0])
+        assert digest_els[0]["elements"][0]["text_size"] == "normal"
+
+    def test_running_tool_renders_as_distinct_banner(self):
+        from src.card.render.budget import RenderBudget
+        from src.card.render.renderer import render_card
+
+        state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="tool_call",
+                    block_id="tool1",
+                    tool_name="Bash",
+                    status="active",
+                    tool_input="uv run python -m pytest tests/ -q",
+                ),
+            ),
+            metadata=CardMetadata(mode_name="Deep", mode_emoji="🧠", engine_type="deep"),
+        )
+        cards = render_card(state, RenderBudget())
+        body = cards[0]._card_json["body"]["elements"]
+
+        running = [
+            el for el in body
+            if el.get("tag") == "column_set" and el.get("background_style") == "wathet"
+        ]
+        assert running
+        assert "uv run python -m pytest tests/ -q" in str(running[0])

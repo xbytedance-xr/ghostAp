@@ -282,6 +282,7 @@ class WorktreeManager:
 
         # 规划目标并进入 RUNNING 之前，先更新旅程事件流。
         state = self.plan_goal(project, goal)
+        state.iteration_count += 1
         self.apply_journey_event(state, event="execution_started", goal=state.journey.goal)
 
         try:
@@ -331,6 +332,7 @@ class WorktreeManager:
             return self._reporter.refresh_state(state)
 
         # Reset failed units' state fields
+        state.iteration_count += 1
         for unit in failed_units:
             unit._cancel_event.clear()  # Must clear before retry — otherwise _run_single_unit skips immediately
             unit.status = WorktreeUnitStatus.PENDING

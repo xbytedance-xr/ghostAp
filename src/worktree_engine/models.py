@@ -57,6 +57,13 @@ def _parse_unit_status(value: object) -> "WorktreeUnitStatus":
         return WorktreeUnitStatus.PENDING
 
 
+def _clean_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass
 class WorktreeSelectionItem:
     provider: str
@@ -435,6 +442,7 @@ class WorktreeRuntimeState:
     summary_lines: list[str] = field(default_factory=list)
     merge_notes: list[dict] = field(default_factory=list)
     last_error: str = ""
+    iteration_count: int = 0
     # 高层旅程状态，用于统一 /wt 自动执行路径的状态流转
     journey: WorktreeJourneyState = field(default_factory=WorktreeJourneyState)
 
@@ -450,6 +458,7 @@ class WorktreeRuntimeState:
             "summary_lines": list(self.summary_lines),
             "merge_notes": list(self.merge_notes),
             "last_error": self.last_error,
+            "iteration_count": int(self.iteration_count),
             "journey": self.journey.to_dict(),
         }
 
@@ -478,6 +487,7 @@ class WorktreeRuntimeState:
             summary_lines=[_clean_str(x) for x in list(data.get("summary_lines") or []) if _clean_str(x)],
             merge_notes=_migrate_merge_notes(data.get("merge_notes")),
             last_error=_clean_str(data.get("last_error")),
+            iteration_count=_clean_int(data.get("iteration_count")),
             journey=journey,
         )
 

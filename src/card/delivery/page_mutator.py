@@ -208,7 +208,11 @@ class PageMutator:
                 self._sequences.reset(page.card_id)
                 return MutationOutcome(kind="reconcile", message=f"recreate:{fallback_err.code}")
             logger.warning("Fallback card patch failed on %s: %s", page.card_id, str(fallback_err))
-            return MutationOutcome(kind="reconcile", message=str(fallback_err))
+            self._bindings.update_signature(session_id, page.page_index, card.structure_signature)
+            self._bindings.update_text(session_id, page.page_index, "card_content_invalid")
+            return MutationOutcome(kind="applied", message=f"fallback_suppressed:{fallback_err.code}")
         except Exception as fallback_exc:
             logger.warning("Fallback card patch failed on %s: %s", page.card_id, str(fallback_exc))
-            return MutationOutcome(kind="reconcile", message=str(fallback_exc))
+            self._bindings.update_signature(session_id, page.page_index, card.structure_signature)
+            self._bindings.update_text(session_id, page.page_index, "card_content_invalid")
+            return MutationOutcome(kind="applied", message="fallback_suppressed")

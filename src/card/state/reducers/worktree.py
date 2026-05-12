@@ -19,7 +19,7 @@ from ._shared import build_header
 
 def _build_worktree_header(state: CardState, subtitle: str) -> HeaderState:
     """Reuse shared programming-style title while updating worktree step subtitle."""
-    current = state.header if state.header and state.header.title else build_header(state.metadata, state.terminal)
+    current = build_header(state.metadata, state.terminal)
     return HeaderState(
         title=current.title,
         subtitle=subtitle,
@@ -91,6 +91,11 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
         case CardEventType.WORKTREE_PROGRESS:
             units = event.payload.get("units", [])
             message = event.payload.get("message", "")
+            iteration = event.payload.get("iteration")
+            metadata = state.metadata
+            if isinstance(iteration, int) and iteration > 0:
+                metadata = replace(metadata, iteration_index=iteration)
+                state = replace(state, metadata=metadata)
 
             # Compute progress stats (pure data)
             completed = sum(1 for u in units if u.get("status") == "completed")
@@ -137,7 +142,7 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
                                      status_text=UI_TEXT["worktree_footer_silent"])
             else:
                 footer = FooterState(status="tool_running", progress=progress_text, progress_pct=pct)
-            return replace(state, blocks=(block,), buttons=buttons, footer=footer, header=header)
+            return replace(state, blocks=(block,), buttons=buttons, footer=footer, header=header, metadata=metadata)
 
         case CardEventType.WORKTREE_MERGE:
             merge_notes = event.payload.get("merge_notes", [])
@@ -229,6 +234,11 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
         case CardEventType.WORKTREE_COMPLETED_NO_CHANGE:
             units = event.payload.get("units", [])
             message = event.payload.get("message", "") or UI_TEXT["worktree_completed_no_change"]
+            iteration = event.payload.get("iteration")
+            metadata = state.metadata
+            if isinstance(iteration, int) and iteration > 0:
+                metadata = replace(metadata, iteration_index=iteration)
+                state = replace(state, metadata=metadata)
 
             data = {"units": units, "message": message}
             block = WorktreeUnitsBlock(
@@ -242,6 +252,6 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
             )
             header = _build_worktree_header(state, UI_TEXT["worktree_no_change_subtitle"])
             footer = FooterState(status="idle", status_text=message)
-            return replace(state, blocks=(block,), buttons=buttons, footer=footer, header=header, terminal="completed_empty")
+            return replace(state, blocks=(block,), buttons=buttons, footer=footer, header=header, terminal="completed_empty", metadata=metadata)
 
     return state

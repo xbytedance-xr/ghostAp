@@ -197,6 +197,7 @@ class WorktreeProgressPayload(TypedDict, total=False):
     project_id: str
     message: str
     silent: bool
+    iteration: int
 
 
 class WorktreeToolSelectPayload(TypedDict):
@@ -239,6 +240,7 @@ class WorktreeCompletedNoChangePayload(TypedDict):
     units: list[WorktreeUnitPayload]
     project_id: str
     message: str
+    iteration: NotRequired[int]
 
 
 # ---------------------------------------------------------------------------

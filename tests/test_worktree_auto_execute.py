@@ -670,10 +670,12 @@ def test_execute_goal_emits_execution_events_on_success_and_failure():
     ok_state = mgr.execute_goal(project, "修复 bug")
     assert ok_state.journey.status == WorktreeJourneyStatus.COMPLETED
     assert ok_state.journey.goal == "修复 bug"
+    assert ok_state.iteration_count == 1
 
     # 失败路径：第二次调用 execute_goal，会走 execute_units 异常分支
     fail_state = mgr.execute_goal(project, "再次修复 bug")
     assert fail_state.journey.status == WorktreeJourneyStatus.FAILED
+    assert fail_state.iteration_count == 2
     # last_error 由 get_error_detail 生成，这里只要求非空
     assert fail_state.journey.last_error
 

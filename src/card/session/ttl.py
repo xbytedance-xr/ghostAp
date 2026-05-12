@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from src.card.events import CardEvent
 from src.card.session._constants import TTL_ENGINE_KEY_MAP
+from src.card.session.ttl_activity import has_active_card_work
 from src.card.ui_text import UI_TEXT
 
 if TYPE_CHECKING:
@@ -47,6 +48,13 @@ class TTLHandler:
         if state.closed or state.ttl_warned:
             return
         if state.idle_seconds <= state.ttl_seconds:
+            return
+        if has_active_card_work(state.state_snapshot):
+            logger.info(
+                "CardSession %s: TTL deferred because card still has active work",
+                state.session_id,
+            )
+            a.defer_idle_timeout(self.on_ttl_expired, self.on_ttl_prewarning)
             return
 
         # Mark as expired before attempting reduce/render
@@ -116,6 +124,13 @@ class TTLHandler:
         if state.closed or state.ttl_warned:
             return
         if state.idle_seconds < state.ttl_seconds * self._PREWARNING_THRESHOLD:
+            return
+        if has_active_card_work(state.state_snapshot):
+            logger.debug(
+                "CardSession %s: TTL prewarning deferred because card still has active work",
+                state.session_id,
+            )
+            a.defer_idle_timeout(self.on_ttl_expired, self.on_ttl_prewarning)
             return
 
         remaining_min = max(1, int((state.ttl_seconds - state.idle_seconds) / 60))

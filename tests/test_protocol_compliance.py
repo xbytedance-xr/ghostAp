@@ -184,6 +184,7 @@ class TestTTLProtocolCompliance:
         assert callable(actuator.schedule_ttl_retry)
         assert callable(actuator.cancel_timers)
         assert callable(actuator.schedule_retry)
+        assert callable(actuator.defer_idle_timeout)
         assert callable(actuator.flag_retry_pending)
 
         session.close()

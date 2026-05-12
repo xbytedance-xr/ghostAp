@@ -60,7 +60,7 @@ def flatten_to_atoms(
 
     Uses a registry dispatch pattern for simple block→atom mappings.
     """
-    from src.card.render.tools import render_activity_digest_line, render_active_tool_line
+    from src.card.render.tools import render_activity_digest_panel, render_active_tool_line
 
     atoms: list[RenderAtom] = []
     pending_tools: list[ContentBlock] = []
@@ -70,12 +70,13 @@ def flatten_to_atoms(
         """Flush accumulated completed/failed tools as a single activity_digest atom."""
         if not pending_tools:
             return
-        digest_text = render_activity_digest_line(pending_tools)
-        if digest_text:
+        digest_panel = render_activity_digest_panel(pending_tools)
+        if digest_panel:
             atom = RenderAtom(
                 kind="activity_digest",
                 block_id=pending_tools[0].block_id,
-                content=digest_text,
+                content=str(digest_panel["header"]["title"].get("content", "")),
+                elements=[digest_panel],
                 splittable=False,
                 node_count=1,
             )
@@ -270,6 +271,5 @@ def invalidate_atom_handlers() -> None:
     """Reset the cached handler mapping. Intended for testing/hot-reload scenarios."""
     global _block_kind_handlers
     _block_kind_handlers = None
-
 
 

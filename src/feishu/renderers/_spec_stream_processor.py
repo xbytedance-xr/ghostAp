@@ -100,6 +100,7 @@ class SpecStreamProcessor:
         self._acp_renderer: ACPEventRenderer = ACPEventRenderer()
         self._footer_status: Optional[str] = None
         self._last_phase_content: str = ""
+        self._current_cycle: int = 0
         self._stream_bridge = ACPStreamBridge(self._rotator)
         # Build phase tool tracking
         self._build_tool_count: int = 0
@@ -110,7 +111,14 @@ class SpecStreamProcessor:
             from dataclasses import replace as _replace
             task_item = self._orchestrator.registry.get(task_id)
             task_label = task_item.name if task_item else task_id
-            task_metadata = _replace(metadata, unit_label=task_label, unit_id=task_id)
+            task_metadata = _replace(
+                metadata,
+                unit_kind="task",
+                unit_label=task_label,
+                unit_id=task_id,
+                iteration_index=self._current_cycle or None,
+                iteration_total=self._max_cycles or None,
+            )
             return renderer.create_session(chat_id, message_id, task_metadata, hooks=hooks, budget=budget)
 
         from ...config import get_settings
@@ -134,6 +142,8 @@ class SpecStreamProcessor:
             unit_id=str(cycle_num),
             unit_kind="cycle",
             unit_label=UI_TEXT["spec_cycle_label"].format(cycle_num=cycle_num),
+            iteration_index=cycle_num,
+            iteration_total=self._max_cycles or None,
             continuation_seq=self._rotator.rotation_count + 1,
         )
         if self._renderer._pending_split_hint:
@@ -172,6 +182,7 @@ class SpecStreamProcessor:
 
     def on_cycle_start(self, current: int, max_cycles: int) -> None:
         self._max_cycles = max_cycles
+        self._current_cycle = current
         self._renderer.update_ui_state(self._spec_project_id, view_mode="status", view_context={})
         self._renderer.notify_cycle_change(current_cycle=current, perspective=None)
         self._orchestrator.reset()

@@ -36,6 +36,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _worktree_iteration_count(state) -> int:
+    value = getattr(state, "iteration_count", 0)
+    return value if isinstance(value, int) else 0
+
+
 class WorktreeHandler(BaseHandler):
     """Parallel multi-tool worktree execution flow."""
 
@@ -158,6 +163,7 @@ class WorktreeHandler(BaseHandler):
                         if session:
                             session.dispatch(worktree_progress(
                                 cur_dicts, project_id=pid, message=msg,
+                                iteration=_worktree_iteration_count(cur_state),
                             ))
                     except Exception:
                         logger.warning("worktree progress update failed", exc_info=True)
@@ -173,6 +179,7 @@ class WorktreeHandler(BaseHandler):
                 if session:
                     session.dispatch(worktree_progress(
                         cur_dicts, project_id=pid, message=msg,
+                        iteration=_worktree_iteration_count(cur_state),
                     ))
             except Exception:
                 logger.warning("worktree progress update failed", exc_info=True)
@@ -619,6 +626,7 @@ class WorktreeHandler(BaseHandler):
         session.dispatch(worktree_progress(
             units_dicts, project_id=pid, message=init_msg,
             silent=silent_mode,
+            iteration=_worktree_iteration_count(state) + 1,
         ))
 
         _on_unit_update = self._make_throttled_progress_callback(
@@ -653,6 +661,7 @@ class WorktreeHandler(BaseHandler):
             session.dispatch(worktree_completed_no_change(
                 final_dicts, project_id=pid,
                 message=UI_TEXT["worktree_completed_no_change"],
+                iteration=_worktree_iteration_count(state),
             ))
             # Keep session open with retry button — don't close immediately
 
@@ -817,6 +826,7 @@ class WorktreeHandler(BaseHandler):
         session.dispatch(CardEvent.started())
         session.dispatch(worktree_progress(
             units_dicts, project_id=pid, message=UI_TEXT["system_worktree_retry_starting"],
+            iteration=_worktree_iteration_count(state) + 1,
         ))
 
         retry_goal = state.journey.goal or UI_TEXT["system_worktree_retry_goal"]
@@ -840,6 +850,7 @@ class WorktreeHandler(BaseHandler):
             session.dispatch(worktree_progress(
                 final_dicts, project_id=pid,
                 message=UI_TEXT["system_worktree_retry_completed"],
+                iteration=_worktree_iteration_count(state),
             ))
             session.dispatch(CardEvent.completed())
             self._close_session(pid)

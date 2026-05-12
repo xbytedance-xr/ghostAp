@@ -244,3 +244,38 @@ def test_footer_context_line_includes_engine_subtitle():
     context_els = [el for el in elements if "📂" in el.get("content", "")]
     assert len(context_els) == 1
     assert "cycle 2 / Build" in context_els[0]["content"]
+
+
+def test_spec_footer_uses_session_start_for_total_elapsed(monkeypatch):
+    """Spec footer total runtime should not start at the first progress update."""
+    monkeypatch.setattr("src.card.render.footer.time.monotonic", lambda: 220.0)
+    state = CardState(
+        metadata=CardMetadata(engine_type="spec", session_started_at=100.0),
+        footer=FooterState(
+            status="thinking",
+            status_text="思考中",
+            progress="1/3 通过",
+            progress_started_at=190.0,
+        ),
+    )
+
+    elements = render_footer(state)
+    content = "\n".join(e.get("content", "") for e in elements)
+
+    assert "已执行 2 分钟 0 秒" in content
+    assert "30 秒" not in content
+
+
+def test_spec_footer_renders_elapsed_even_without_status(monkeypatch):
+    """Spec total runtime should make the footer visible by itself."""
+    monkeypatch.setattr("src.card.render.footer.time.monotonic", lambda: 130.0)
+    state = CardState(
+        metadata=CardMetadata(engine_type="spec", session_started_at=100.0),
+        footer=FooterState(),
+    )
+
+    elements = render_footer(state)
+    content = "\n".join(e.get("content", "") for e in elements)
+
+    assert elements[0] == {"tag": "hr"}
+    assert "已执行 30 秒" in content

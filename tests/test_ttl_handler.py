@@ -91,6 +91,40 @@ class TestOnTTLExpired:
 
         s.mark_ttl_expired.assert_not_called()
 
+    def test_defers_expiry_when_card_has_active_tool(self):
+        """Active long-running tool work should not be treated as idle abandonment."""
+        from src.card.state.models import CardState, ContentBlock
+
+        s = _make_mock_session()
+        s.get_ttl_state.return_value = TTLState(
+            closed=False,
+            ttl_warned=False,
+            idle_seconds=2000.0,
+            ttl_seconds=1800.0,
+            session_id="test",
+            state_snapshot=CardState(
+                blocks=(
+                    ContentBlock(
+                        kind="tool_call",
+                        block_id="tool",
+                        tool_name="Bash",
+                        status="active",
+                    ),
+                ),
+            ),
+        )
+        handler = TTLHandler(decider=s, actuator=s)
+
+        handler.on_ttl_expired()
+
+        s.defer_idle_timeout.assert_called_once_with(
+            handler.on_ttl_expired,
+            handler.on_ttl_prewarning,
+        )
+        s.mark_ttl_expired.assert_not_called()
+        s.reduce_and_render.assert_not_called()
+        s.deliver_terminal.assert_not_called()
+
     def test_rollback_on_reduce_failure(self):
         """When reduce_and_render raises, rollback_ttl_warned is called."""
         s = _make_mock_session()
@@ -245,6 +279,29 @@ class TestOnTTLPrewarning:
         handler.on_ttl_prewarning()
 
         s.reduce_and_render.assert_not_called()
+
+    def test_prewarning_defers_when_card_has_active_progress(self):
+        from src.card.state.models import CardState, FooterState
+
+        s = _make_mock_session()
+        s.get_ttl_state.return_value = TTLState(
+            closed=False,
+            ttl_warned=False,
+            idle_seconds=1700.0,
+            ttl_seconds=1800.0,
+            session_id="test",
+            state_snapshot=CardState(footer=FooterState(status="thinking", progress_pct=50)),
+        )
+        handler = TTLHandler(decider=s, actuator=s)
+
+        handler.on_ttl_prewarning()
+
+        s.defer_idle_timeout.assert_called_once_with(
+            handler.on_ttl_expired,
+            handler.on_ttl_prewarning,
+        )
+        s.reduce_and_render.assert_not_called()
+        s.deliver_update.assert_not_called()
 
     def test_prewarning_handles_render_failure(self):
         """When reduce_and_render raises, prewarning returns without delivering."""

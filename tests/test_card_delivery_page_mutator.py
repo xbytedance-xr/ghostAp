@@ -218,6 +218,42 @@ class TestUpdatePage:
         assert len(calls) == 2
         assert calls[1]["card_json"]["header"]["title"]["content"] == "⚠️ 卡片渲染失败"
 
+    def test_update_page_content_invalid_suppresses_repeated_bad_signature_when_fallback_fails(self):
+        client = MockClient()
+        bindings = BindingStore()
+        sequences = SequenceManager()
+        mutator = PageMutator(client, bindings, sequences)
+
+        bindings.create("sess_1", "chat_1")
+        bindings.set_page("sess_1", 0, "msg_1", "card_1", "old_sig", "old_text")
+        page = bindings.get("sess_1").pages[0]
+
+        calls = []
+
+        def update_card(card_id, card_json, *, sequence=0):
+            calls.append({"card_id": card_id, "card_json": card_json, "sequence": sequence})
+            if len(calls) == 1:
+                raise TransportError(
+                    "Patch failed: code=230099, ErrCode: 11310; card table number over limit",
+                    code=230099,
+                )
+            raise TransportError(
+                "Patch failed: code=230099, ErrCode: 200830; schemaV2 card can not change schemaV1",
+                code=230099,
+            )
+
+        client.update_card = update_card
+        card = _make_card(signature="bad_sig")
+        outcome = mutator.update_page("sess_1", page, card)
+
+        assert outcome.kind == "applied"
+        assert outcome.message == "fallback_suppressed:230099"
+        binding = bindings.get("sess_1")
+        assert binding is not None
+        assert binding.pages[0].signature == "bad_sig"
+        assert binding.pages[0].last_text == "card_content_invalid"
+        assert len(calls) == 2
+
     def test_update_page_missing_message_removes_binding_for_recreate(self):
         client = MockClient()
         client._raise_on_update = TransportError("message not found", code=99992354)

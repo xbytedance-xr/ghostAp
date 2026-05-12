@@ -23,6 +23,7 @@ from src.card.events import CardEvent, CardEventType, VALIDATE_PAYLOAD
 from src.card.render.fallback import render_fallback_card
 from src.card.render.renderer import render_card
 from src.card.session.config import SessionCallbacks
+from src.card.session.ttl_activity import has_active_card_work
 from src.card.state.reducer import reduce_card_state
 from src.card.ui_text import UI_TEXT
 
@@ -160,6 +161,10 @@ class CardSession:
         self._stop_escalation_delay: float = 30.0
         self._pending_card_split: tuple[str, str, str | None] | None = None
         self.on_card_split_completed: Callable[..., None] | None = None
+        self._delivery_gate = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+        self._delivery_in_flight = False
+        self._delivery_in_flight_terminal = False
+        self._delivery_pending: tuple[list, bool, CardEvent] | None = None
 
         # Optional callback fired once after first successful delivery with message_id
         # DEPRECATED: use SessionHook.on_first_delivered instead. Kept for backward compat.
@@ -510,6 +515,10 @@ class CardSession:
             return False
         if (self._clock() - self._last_dispatch_time) <= self._ttl_seconds:
             return False
+        if has_active_card_work(self._state):
+            self._last_dispatch_time = self._clock()
+            self._reset_ttl_timer()
+            return False
         return True
 
     def _enrich_event(self, event: CardEvent) -> CardEvent:
@@ -576,13 +585,58 @@ class CardSession:
         if self._sync_delivery:
             self._deliver_and_track(rendered, is_terminal, event=event)
             return
+        CardSession._ensure_delivery_coalescing_state(self)
+        with self._delivery_gate:
+            if self._delivery_in_flight:
+                if self._delivery_in_flight_terminal and not is_terminal:
+                    return
+                pending_is_terminal = bool(self._delivery_pending and self._delivery_pending[1])
+                if is_terminal or not pending_is_terminal:
+                    self._delivery_pending = (rendered, is_terminal, event)
+                return
+            self._delivery_in_flight = True
+            self._delivery_in_flight_terminal = is_terminal
+        CardSession._submit_delivery_job(self, rendered, is_terminal, event)
+
+    def _ensure_delivery_coalescing_state(self) -> None:
+        if not hasattr(self, "_delivery_gate"):
+            self._delivery_gate = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+        if not hasattr(self, "_delivery_in_flight"):
+            self._delivery_in_flight = False
+        if not hasattr(self, "_delivery_in_flight_terminal"):
+            self._delivery_in_flight_terminal = False
+        if not hasattr(self, "_delivery_pending"):
+            self._delivery_pending = None
+
+    def _submit_delivery_job(self, rendered: list, is_terminal: bool, event: CardEvent) -> None:
         from src.card.delivery.pool import get_delivery_pool
         try:
-            get_delivery_pool().submit(self._deliver_and_track, rendered, is_terminal, event=event)
+            get_delivery_pool().submit(CardSession._run_delivery_job, self, rendered, is_terminal, event)
         except RuntimeError:
-            # Pool shut down — fall back to synchronous delivery
+            # Pool shut down: fall back to synchronous delivery.
             logger.warning("CardSession %s: delivery pool unavailable, delivering synchronously", self._session_id)
+            CardSession._run_delivery_job(self, rendered, is_terminal, event)
+        except Exception:
+            logger.exception("CardSession %s: delivery pool submit failed, delivering synchronously", self._session_id)
+            CardSession._run_delivery_job(self, rendered, is_terminal, event)
+
+    def _run_delivery_job(self, rendered: list, is_terminal: bool, event: CardEvent) -> None:
+        try:
             self._deliver_and_track(rendered, is_terminal, event=event)
+        finally:
+            CardSession._submit_pending_delivery_if_any(self)
+
+    def _submit_pending_delivery_if_any(self) -> None:
+        with self._delivery_gate:
+            pending = self._delivery_pending
+            if pending is None:
+                self._delivery_in_flight = False
+                self._delivery_in_flight_terminal = False
+                return
+            self._delivery_pending = None
+            self._delivery_in_flight_terminal = pending[1]
+        rendered, is_terminal, event = pending
+        CardSession._submit_delivery_job(self, rendered, is_terminal, event)
 
     def _deliver_and_track(self, rendered: list, is_terminal: bool, *, event: CardEvent | None = None) -> None:
         """Deliver rendered cards via coordinator and handle outcomes."""

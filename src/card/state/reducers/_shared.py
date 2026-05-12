@@ -25,6 +25,13 @@ def build_header(metadata: CardMetadata, terminal: str) -> HeaderState:
     if metadata.unit_label:
         title = f"{title} · {metadata.unit_label}"
 
+    if metadata.iteration_index and not (metadata.unit_label and str(metadata.iteration_index) in metadata.unit_label):
+        if metadata.iteration_total and metadata.iteration_total > 1:
+            iteration_label = f"第 {metadata.iteration_index}/{metadata.iteration_total} 轮"
+        else:
+            iteration_label = f"第 {metadata.iteration_index} 轮"
+        title = f"{title} · {iteration_label}"
+
     # Append continuation marker for rotated cards
     if metadata.continuation_seq > 0:
         title = f"{title} (续 #{metadata.continuation_seq})"

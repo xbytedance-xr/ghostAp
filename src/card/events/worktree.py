@@ -20,7 +20,8 @@ from .types import CardEventType
 
 
 def worktree_progress(
-    units: list[dict], project_id: str = "", message: str = "", silent: bool = False
+    units: list[dict], project_id: str = "", message: str = "", silent: bool = False,
+    iteration: int | None = None,
 ) -> CardEvent:
     """Worktree execution progress update.
 
@@ -40,6 +41,11 @@ def worktree_progress(
     payload: WorktreeProgressPayload = {
         "units": units, "project_id": project_id, "message": message, "silent": silent,
     }
+    if iteration is not None:
+        if not isinstance(iteration, int):
+            raise TypeError(f"iteration must be int, got {type(iteration).__name__}")
+        if iteration > 0:
+            payload["iteration"] = iteration
     return CardEvent(type=CardEventType.WORKTREE_PROGRESS, payload=payload)
 
 
@@ -159,7 +165,8 @@ def worktree_merge(
 
 
 def worktree_completed_no_change(
-    units: list[dict], project_id: str = "", message: str = ""
+    units: list[dict], project_id: str = "", message: str = "",
+    iteration: int | None = None,
 ) -> CardEvent:
     """Worktree execution completed but no file changes detected.
 
@@ -174,4 +181,9 @@ def worktree_completed_no_change(
     payload: WorktreeCompletedNoChangePayload = {
         "units": units, "project_id": project_id, "message": message,
     }
+    if iteration is not None:
+        if not isinstance(iteration, int):
+            raise TypeError(f"iteration must be int, got {type(iteration).__name__}")
+        if iteration > 0:
+            payload["iteration"] = iteration
     return CardEvent(type=CardEventType.WORKTREE_COMPLETED_NO_CHANGE, payload=payload)

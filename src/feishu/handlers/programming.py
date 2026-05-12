@@ -582,6 +582,10 @@ class ProgrammingModeHandler(BaseHandler):
                 tool_name = project.ttadk_tool_name
             if project and project.ttadk_model_name:
                 model_name = project.ttadk_model_name
+            if project and not tool_name and getattr(project, "acp_tool_name", None):
+                tool_name = project.acp_tool_name
+            if project and not model_name and getattr(project, "acp_model_name", None):
+                model_name = project.acp_model_name
 
             get_thread_manager().register(
                 thread_root_id=thread_root_id,

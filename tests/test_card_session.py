@@ -20,7 +20,7 @@ from src.card.session import CardSession
 from src.card.session.config import SessionCallbacks, SessionConfig
 from src.card.session.factory import CardSessionFactory
 from src.card.state.button_intent import ButtonIntent
-from src.card.state.models import CardMetadata, CardState
+from src.card.state.models import CardMetadata, CardState, ContentBlock
 from src.card.state.reducer import reduce_card_state
 
 
@@ -98,6 +98,90 @@ class TestCardSessionDispatch:
         tool_blocks = [b for b in state.blocks if b.kind == "tool_call"]
         assert len(tool_blocks) == 1
         assert tool_blocks[0].tool_name == "bash"
+
+    def test_async_delivery_coalesces_non_terminal_updates_behind_in_flight_job(self, monkeypatch):
+        session, _, _ = self._make_session()
+        session._sync_delivery = False
+        delivered = []
+
+        class FakePool:
+            def __init__(self):
+                self.jobs = []
+
+            def submit(self, fn, *args, **kwargs):
+                self.jobs.append((fn, args, kwargs))
+
+        pool = FakePool()
+        monkeypatch.setattr("src.card.delivery.pool.get_delivery_pool", lambda: pool)
+        monkeypatch.setattr(session, "_deliver_and_track", lambda rendered, is_terminal, *, event=None: delivered.append(rendered))
+
+        started = CardEvent.started()
+        session._submit_delivery(["first"], False, started)
+        session._submit_delivery(["middle"], False, CardEvent.text_delta("b", "middle"))
+        session._submit_delivery(["latest"], False, CardEvent.text_delta("b", "latest"))
+
+        assert len(pool.jobs) == 1
+        fn, args, kwargs = pool.jobs.pop(0)
+        fn(*args, **kwargs)
+
+        assert delivered == [["first"]]
+        assert len(pool.jobs) == 1
+        fn, args, kwargs = pool.jobs.pop(0)
+        fn(*args, **kwargs)
+        assert delivered == [["first"], ["latest"]]
+
+    def test_async_delivery_terminal_replaces_pending_non_terminal_update(self, monkeypatch):
+        session, _, _ = self._make_session()
+        session._sync_delivery = False
+        delivered = []
+
+        class FakePool:
+            def __init__(self):
+                self.jobs = []
+
+            def submit(self, fn, *args, **kwargs):
+                self.jobs.append((fn, args, kwargs))
+
+        pool = FakePool()
+        monkeypatch.setattr("src.card.delivery.pool.get_delivery_pool", lambda: pool)
+        monkeypatch.setattr(session, "_deliver_and_track", lambda rendered, is_terminal, *, event=None: delivered.append(rendered))
+
+        session._submit_delivery(["first"], False, CardEvent.started())
+        session._submit_delivery(["stale"], False, CardEvent.text_delta("b", "stale"))
+        session._submit_delivery(["terminal"], True, CardEvent.completed())
+
+        fn, args, kwargs = pool.jobs.pop(0)
+        fn(*args, **kwargs)
+        fn, args, kwargs = pool.jobs.pop(0)
+        fn(*args, **kwargs)
+
+        assert delivered == [["first"], ["terminal"]]
+
+    def test_async_delivery_drops_non_terminal_updates_behind_terminal_job(self, monkeypatch):
+        session, _, _ = self._make_session()
+        session._sync_delivery = False
+        delivered = []
+
+        class FakePool:
+            def __init__(self):
+                self.jobs = []
+
+            def submit(self, fn, *args, **kwargs):
+                self.jobs.append((fn, args, kwargs))
+
+        pool = FakePool()
+        monkeypatch.setattr("src.card.delivery.pool.get_delivery_pool", lambda: pool)
+        monkeypatch.setattr(session, "_deliver_and_track", lambda rendered, is_terminal, *, event=None: delivered.append(rendered))
+
+        session._submit_delivery(["terminal"], True, CardEvent.completed())
+        session._submit_delivery(["stale"], False, CardEvent.text_delta("b", "stale"))
+
+        assert len(pool.jobs) == 1
+        fn, args, kwargs = pool.jobs.pop(0)
+        fn(*args, **kwargs)
+
+        assert delivered == [["terminal"]]
+        assert pool.jobs == []
 
     def test_tool_panel_has_input_and_output_from_acp_raw_fields(self):
         """ACP ToolCall raw_input/raw_output should surface in tool panel."""
@@ -872,6 +956,30 @@ class TestTTLTimeout:
         session.dispatch(CardEvent.text_delta("b1", "hello"))
         assert session.closed
         assert session.state.terminal == "cancelled"
+
+    def test_ttl_inline_defers_when_tool_is_active(self):
+        """Long-running active tool work refreshes TTL instead of closing the card."""
+        now = [0.0]
+        session = self._make_session_with_clock(lambda: now[0], ttl_seconds=10.0)
+        self._patch_reset_timer(session)
+        session.dispatch(CardEvent.started())
+        session._state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="tool_call",
+                    block_id="active-tool",
+                    tool_name="Bash",
+                    status="active",
+                ),
+            ),
+            terminal="running",
+        )
+
+        now[0] = 11.0
+        session.dispatch(CardEvent.text_delta("b1", "still working"))
+
+        assert not session.closed
+        assert session._last_dispatch_time == 11.0
 
     def test_dispatch_refreshes_idle_timer(self):
         """Each dispatch refreshes idle time: TTL measured from last dispatch."""

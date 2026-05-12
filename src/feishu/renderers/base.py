@@ -158,6 +158,8 @@ class BaseRenderer:
         unit_id: str | None = None,
         unit_kind: str | None = None,
         unit_label: str | None = None,
+        iteration_index: int | None = None,
+        iteration_total: int | None = None,
         continuation_seq: int | None = None,
     ):
         """Clone base metadata with iteration/cycle-scoped labeling."""
@@ -168,6 +170,10 @@ class BaseRenderer:
             changes["unit_kind"] = unit_kind
         if unit_label is not None:
             changes["unit_label"] = unit_label
+        if iteration_index is not None:
+            changes["iteration_index"] = iteration_index
+        if iteration_total is not None:
+            changes["iteration_total"] = iteration_total
         if continuation_seq is not None:
             changes["continuation_seq"] = continuation_seq
             changes["card_sequence"] = continuation_seq + 1

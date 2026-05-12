@@ -159,6 +159,18 @@ class TTLActuator:
         with ctx.lock:
             ctx.mutable.ttl_warned = False
 
+    def defer_idle_timeout(
+        self,
+        on_expired: Callable[[], None],
+        on_prewarning: Callable[[], None],
+    ) -> None:
+        """Treat currently active engine work as fresh activity and reschedule TTL."""
+        ctx = self._ctx
+        with ctx.lock:
+            ctx.mutable.last_dispatch_time = ctx.clock()
+            ctx.mutable.ttl_warned = False
+        ctx.timers.reset_ttl_timer(on_expired=on_expired, on_prewarning=on_prewarning)
+
     def mark_closed(self) -> None:
         """Mark the session as closed (under lock)."""
         ctx = self._ctx

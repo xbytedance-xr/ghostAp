@@ -717,7 +717,7 @@ UI_TEXT = {
     "card_session_ttl_expired_deep": "⏰ {engine_name} 已超时关闭 · 执行结果已保存\n发送 /deep_status 查看状态 / {engine_cmd} 重新启动",
     "card_session_ttl_expired_worktree": "⏰ {engine_name} 已超时关闭 · 执行结果已保存\n发送 /wt_status 查看状态 / {engine_cmd} 重新启动",
     "card_session_ttl_expired_commands": "",  # dynamically generated below from ENGINE_CMD_MAP
-    "card_session_ttl_prewarning": "{engine_name} 会话将在约 {minutes} 分钟后关闭，点击下方「保持连接」按钮或发送任意消息即可续期",
+    "card_session_ttl_prewarning": "{engine_name} 会话长时间无更新，将在约 {minutes} 分钟后关闭；执行中的任务会自动顺延。点击下方「保持连接」按钮或发送任意消息即可续期",
     "card_session_ttl_force_close_notice": "⏰ {engine_name} 已因空闲超时关闭（系统回收资源）· 发送 {engine_cmd} 重新启动",
     "card_session_terminal_fallback_notice": "⚠️ 任务已结束，但卡片未能及时更新。请发送 {engine_cmd} 开始新任务，无需点击之前卡片中的按钮",
     "card_session_warning_render_fail": "⚠️ 状态更新异常，任务仍在运行，可发送 {engine_cmd} 查看最新状态",
@@ -760,8 +760,9 @@ UI_TEXT = {
     "card_session_toast_btn_ttl_expired": "{engine_name}已超时关闭，按钮不再可用。重新发送 {engine_cmd} 可开始新任务",
     # --- Footer ---
     "card_footer_duration_fmt": "耗时 {duration}",
+    "card_footer_elapsed_total_fmt": "已执行 {duration}",
     "card_footer_system_notice": "（系统提示）",
-    "card_footer_idle_timeout_hint": "空闲 {timeout_display} 后自动关闭",
+    "card_footer_idle_timeout_hint": "长时间无更新超过 {timeout_display} 后才会回收；执行中任务会自动顺延",
     "card_footer_frozen_continuation": "本卡已停止更新 · 续接 #{next_seq} ↓",
     "duration_sub_second": "< 1 秒",
     "duration_secs": "{seconds} 秒",

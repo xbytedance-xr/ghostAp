@@ -29,6 +29,53 @@ def test_header_v2_first_row_contains_project_tool_sequence_and_model():
     assert result["title"]["content"] == "📁 ghostAp · 🤖 Coco · #3 · claude-opus-4-7"
 
 
+def test_header_v2_includes_iteration_task_and_page_context():
+    state = CardState(
+        header=HeaderState(title="legacy", template="blue"),
+        metadata=CardMetadata(
+            project_name="ghostAp",
+            tool_name="coco",
+            card_sequence="3.2",
+            unit_kind="task",
+            unit_id="2",
+            unit_label="修复紧凑工具摘要",
+            iteration_index=3,
+            iteration_total=10,
+            working_dir=str(Path.home() / "workspaces/aiwork/ghostAp"),
+        ),
+    )
+
+    result = render_header(state, page_index=1, total_pages=3)
+
+    assert result["title"]["content"] == (
+        "📁 ghostAp · 🤖 Coco · 第 3/10 轮 · 任务 2: 修复紧凑工具摘要 · #3.2 · 页 2/3"
+    )
+
+
+def test_header_v2_includes_subagent_task_context():
+    state = CardState(
+        header=HeaderState(title="legacy", template="blue"),
+        metadata=CardMetadata(
+            project_name="ghostAp",
+            tool_name="aiden",
+            card_sequence="3.a",
+            unit_kind="subagent",
+            unit_id="2a",
+            unit_label="排查渲染边界",
+            iteration_index=3,
+            is_subagent=True,
+            parent_card_seq="3",
+            working_dir=str(Path.home() / "workspaces/aiwork/ghostAp"),
+        ),
+    )
+
+    result = render_header(state)
+
+    assert "第 3 轮" in result["title"]["content"]
+    assert "子任务 2a: 排查渲染边界" in result["title"]["content"]
+    assert result["template"] == "orange"
+
+
 def test_header_v2_second_row_contains_directory_and_elapsed_from_runtime_stats():
     state = CardState(
         header=HeaderState(title="legacy", template="blue"),

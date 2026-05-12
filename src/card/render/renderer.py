@@ -144,6 +144,8 @@ def render_card(
             body_elements=body_elements,
             streaming=streaming,
             active_element=active_element,
+            page_index=page_idx,
+            total_pages=total_pages,
         )
 
         # Post-render node count check (early warning for regressions)
@@ -234,6 +236,12 @@ def compute_structure_signature(state: CardState) -> str:
         parts.append(f"tool:{state.metadata.tool_name}")
     if state.metadata.model_name:
         parts.append(f"model:{state.metadata.model_name}")
+    if state.metadata.iteration_index:
+        parts.append(f"iter:{state.metadata.iteration_index}/{state.metadata.iteration_total or ''}")
+    if state.metadata.unit_label:
+        parts.append(f"unit:{state.metadata.unit_kind or ''}:{state.metadata.unit_id or ''}:{state.metadata.unit_label}")
+    if state.metadata.card_sequence != 1:
+        parts.append(f"seq:{state.metadata.card_sequence}")
     if state.metadata.live_ticker_frame:
         parts.append(f"ticker:{state.metadata.live_ticker_frame}")
     if state.metadata.subagents:
@@ -297,7 +305,7 @@ def _render_atom_tool_panel(atom: RenderAtom, state: CardState, budget: RenderBu
     # active (running) tools with pre-rendered compact content.
     # Keep compact lines at normal size; mobile Feishu can render notation too small.
     if atom.content:
-        return {"tag": "markdown", "content": atom.content, "text_size": "normal"}
+        return _build_column_banner(content=atom.content, background_style="wathet")
     block = block_index.get(atom.block_id)
     if block is not None:
         return render_tool_panel(block)
@@ -370,6 +378,8 @@ def _render_atom_task_list(atom: RenderAtom, state: CardState, budget: RenderBud
 
 def _render_atom_activity_digest(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict:
     """Render activity digest as a compact, mobile-readable markdown line."""
+    if atom.elements:
+        return atom.elements[0]
     return {"tag": "markdown", "content": atom.content, "text_size": "normal"}
 
 
@@ -552,6 +562,8 @@ def _assemble_card_json(
     body_elements: list[dict],
     streaming: bool,
     active_element: ActiveElement | None,
+    page_index: int = 0,
+    total_pages: int = 1,
 ) -> dict:
     """Assemble a complete Feishu Schema 2.0 card JSON."""
     card: dict = {
@@ -560,7 +572,7 @@ def _assemble_card_json(
             "wide_screen_mode": True,
             "update_multi": True,
         },
-        "header": render_header(state),
+        "header": render_header(state, page_index=page_index, total_pages=total_pages),
         "body": {"elements": body_elements},
     }
 
