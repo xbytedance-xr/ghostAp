@@ -490,3 +490,53 @@ def test_worktree_card_click_flow_accumulates_native_default_and_ttadk_model_too
     ]
     confirm_event = mock_session.dispatch.call_args[0][0]
     assert confirm_event.payload["selected_items"] == exported
+
+
+def test_worktree_select_model_accepts_generic_model_payload_and_returns_to_confirmable_menu():
+    """Model callbacks may carry id/name fields; selecting one should add the item and show confirm."""
+    handler = _make_system_handler()
+    project = ProjectContext(project_id="p-codex", project_name="CODEX", root_path="/tmp/codex")
+    handler.ctx.project_manager.get_active_project.return_value = project
+    handler.ctx.project_manager.get_project.return_value = project
+    handler.ctx.project_manager.get_project_for_chat.return_value = project
+
+    mgr = handler._worktree_manager()
+    mgr.start_selection(project)
+    mgr.select_tool(
+        project,
+        WorktreeToolOption(
+            provider="acp",
+            tool_name="codex",
+            display_name="Codex",
+            supports_model=True,
+            model_optional=True,
+        ),
+    )
+
+    top_tools = [
+        {"provider": "acp", "tool_name": "aiden", "display_name": "Aiden", "supports_model": True},
+        {"provider": "acp", "tool_name": "codex", "display_name": "Codex", "supports_model": True},
+    ]
+    mock_session = MagicMock()
+    mock_session.closed = False
+
+    with patch.object(handler, "_get_available_worktree_tools", return_value=top_tools), \
+         patch.object(handler, "_get_or_create_session", return_value=mock_session):
+        handler.handle_worktree_select_model(
+            "msg-model",
+            "chat1",
+            project_id="p-codex",
+            value={"id": "gpt-5.5", "name": "GPT-5.5"},
+        )
+
+    state = WorktreeManager.get_state(project)
+    assert len(state.selection.selected_items) == 1
+    assert state.selection.selected_items[0].tool_name == "codex"
+    assert state.selection.selected_items[0].model_name == "gpt-5.5"
+    assert state.selection.selected_items[0].model_display_name == "GPT-5.5"
+    assert state.selection.stage == "tool_select"
+
+    event = mock_session.dispatch.call_args[0][0]
+    assert event.payload["tools"] == top_tools
+    assert len(event.payload["selected"]) == 1
+    assert event.payload["selected"][0]["selection_key"] == "acp:codex:gpt-5.5"

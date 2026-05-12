@@ -393,8 +393,20 @@ class WorktreeHandler(BaseHandler):
             self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
             return
 
-        model_name = value.get("_option") or value.get("model_name") or None
-        model_display = value.get("model_display_name") or model_name
+        model_name = (
+            value.get("_option")
+            or value.get("model_name")
+            or value.get("id")
+            or value.get("name")
+            or value.get("tool_name")
+            or None
+        )
+        model_display = (
+            value.get("model_display_name")
+            or value.get("display_name")
+            or value.get("name")
+            or model_name
+        )
 
         mgr = self._worktree_manager()
 

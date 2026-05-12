@@ -68,14 +68,19 @@ class WorktreeToolDiscovery:
 
         # --- Known top-level tools (same level for all) ---
         for known in _KNOWN_TOOLS:
-            if not shutil.which(known.name):
+            provider_obj = tool_registry.get_provider(known.name)
+            has_cli = shutil.which(known.name) is not None
+            has_acp = bool(provider_obj) and (
+                has_cli or self._is_acp_provider_available(known.name, provider_obj)
+            )
+            if not has_cli and not has_acp:
                 continue
             if known.name in seen:
                 continue
 
-            # Determine provider: prefer ACP if provider is registered
-            provider_obj = tool_registry.get_provider(known.name)
-            if provider_obj:
+            # Determine provider: prefer ACP if provider is available, including
+            # package-backed fallbacks such as Codex ACP via npx.
+            if provider_obj and has_acp:
                 provider_type = "acp"
                 supports_model = True
                 model_optional = True
@@ -117,6 +122,25 @@ class WorktreeToolDiscovery:
             )
 
         return self._sort_top_level_tools(tools)
+
+    def _is_acp_provider_available(self, tool_name: str, provider_obj: object) -> bool:
+        if not provider_obj:
+            return False
+        try:
+            if tool_registry.get_availability(
+                tool_name,
+                allow_sync_probe=True,
+                trigger_async_probe=False,
+            ):
+                return True
+        except Exception:
+            logger.debug("ACP availability check failed for %s", tool_name, exc_info=True)
+        try:
+            get_fallback = getattr(provider_obj, "get_fallback_command", None)
+            return bool(callable(get_fallback) and get_fallback())
+        except Exception:
+            logger.debug("ACP fallback check failed for %s", tool_name, exc_info=True)
+            return False
 
     def _sort_top_level_tools(self, tools: list[dict]) -> list[dict]:
         def key(item: dict) -> tuple[int, str]:
